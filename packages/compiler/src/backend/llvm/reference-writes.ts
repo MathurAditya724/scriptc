@@ -429,8 +429,8 @@ export class ReferenceWrites {
       case "arrIntrinsic":
         if (!PRESERVING_ARRAY_METHODS.has(e.method)) {
           // The comparator sort orders a private snapshot.
-          if (e.method === "sortValues") {
-            const comparator = e.args[1];
+          if (e.method === "sortValues" || e.method === "sortDense") {
+            const comparator = e.args[e.method === "sortValues" ? 1 : 0];
             const targets =
               fn !== null && comparator !== undefined ? this.callTargets.of(comparator, fn) : null;
             if (targets === null) {

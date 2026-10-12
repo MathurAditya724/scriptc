@@ -1850,13 +1850,23 @@ test("runtime comparator sort validates element kinds and the comparator shape",
     type: funcOf(params, ret),
     loc,
   });
-  const sortModule = (elem: IrType, cmp: IrExpr, arms?: IrType[]): IrModule => {
-    const mod = numericReadModule({
-      method: "sortValues",
-      receiver: { kind: "arrayLit", elems: [], type: arrayOf(elem), loc },
-      args: [{ kind: "numLit", value: 0, type: F64, loc }, cmp],
-      type: VOID,
-    });
+  const sortModule = (
+    elem: IrType,
+    cmp: IrExpr,
+    arms?: IrType[],
+    owned: IrExpr | null = null,
+  ): IrModule => {
+    const receiver: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(elem), loc };
+    const mod = numericReadModule(
+      owned === null
+        ? {
+            method: "sortValues",
+            receiver,
+            args: [{ kind: "numLit", value: 0, type: F64, loc }, cmp],
+            type: VOID,
+          }
+        : { method: "sortDense", receiver, args: [cmp, owned], type: BOOL },
+    );
     const params = cmp.type.kind === "func" ? cmp.type.params : [];
     mod.functions.push({
       name: "cmp",
@@ -1875,10 +1885,14 @@ test("runtime comparator sort validates element kinds and the comparator shape",
     return mod;
   };
   const union: IrType = { kind: "union", unionId: "u" };
+  const owned: IrExpr = { kind: "boolLit", value: true, type: BOOL, loc };
+  const shared: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
   for (const mod of [
     sortModule(F64, comparator([F64, F64])),
     sortModule(STRING, comparator([STRING])),
     sortModule(union, comparator([union, union]), [STRING, F64]),
+    sortModule(F64, comparator([F64, F64]), undefined, owned),
+    sortModule(STRING, comparator([STRING, STRING]), undefined, shared),
   ]) {
     expect(validateModule(mod)).toEqual([]);
     expect(deserializeModule(serializeModule(mod))).toEqual(mod);
@@ -1888,6 +1902,17 @@ test("runtime comparator sort validates element kinds and the comparator shape",
     [sortModule(union, comparator([union, union]), [STRING, UNDEFINED_T]), "sortValues on union"],
     [sortModule(F64, comparator([STRING, STRING])), "comparator must be"],
     [sortModule(F64, comparator([F64, F64, F64])), "comparator must be"],
+    [sortModule(BOOL, comparator([BOOL, BOOL]), undefined, owned), "sortDense on bool"],
+    [sortModule(F64, comparator([STRING, STRING]), undefined, owned), "comparator must be"],
+    [
+      sortModule(F64, comparator([F64, F64]), undefined, {
+        kind: "varRef",
+        localId: "x",
+        type: BOOL,
+        loc,
+      }),
+      "owned flag must be a boolean literal",
+    ],
   ] as const) {
     expect(validateModule(mod).some((error) => error.message.includes(message))).toBe(true);
   }

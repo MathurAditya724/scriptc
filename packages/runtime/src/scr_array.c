@@ -2190,18 +2190,7 @@ static bool scr_sort_greater(const ScrSortCompare *c, uint64_t left, uint64_t ri
 #define SCR_SORT_PREFETCH(c, buf, index, limit) \
   SCR_SORT_PREFETCH_AT(c, buf, (index) + SCR_SORT_PREFETCH_DISTANCE, limit)
 
-/* The stable natural merge sort of the compiler's IR helper, over borrowed
- * slot copies: strictly descending runs reverse, short runs grow to 16 with
- * binary insertion after equal values, then merge passes consume pairs of
- * runs. Comparator calls happen in exactly the IR helper's order. The array
- * keeps owning every element and stays untouched while user code runs, so
- * the cycle collector and a throwing comparator both see the original
- * snapshot; the sorted permutation is published only after success. */
-void scr_arr_sort_values(ScrArr *a, double count, ScrClosure *f, uint32_t arity) {
-  size_t n = (size_t)count;
-  if (n < 2) return;
-  if (n > a->len || n > SIZE_MAX / 2 / sizeof(uint64_t))
-    scr_trap("scriptc: invalid comparator sort snapshot\n");
+static ScrSortCompare scr_sort_compare_for(const ScrArr *a, ScrClosure *f, uint32_t arity) {
   ScrSortCompare c = {f, NULL, arity, a->elem == SCR_ELEM_F64};
   if (!c.numbers) {
     if (a->elem == SCR_ELEM_STR) c.retain = scr_sort_retain_str;
@@ -2210,14 +2199,29 @@ void scr_arr_sort_values(ScrArr *a, double count, ScrClosure *f, uint32_t arity)
     else if (a->elem == SCR_ELEM_REF) c.retain = a->ops->retain;
     else scr_trap("scriptc: invalid comparator sort element kind\n");
   }
-  uint64_t *src = malloc(n * sizeof(*src));
-  uint64_t *dst = malloc(n * sizeof(*dst));
-  size_t *runs = malloc((n + 1) * sizeof(*runs));
-  if (!src || !dst || !runs) scr_arr_oom();
-  for (size_t i = 0; i < n; i++) {
-    if (scr_arr_state_at(a, i, &src[i]) != SCR_ARR_VALUE)
-      scr_trap("scriptc: invalid comparator sort snapshot\n");
-  }
+  return c;
+}
+
+/* The stable natural merge sort of the compiler's IR helper, in place over
+ * `n >= 2` slots: strictly descending runs reverse, short runs grow to 16
+ * with binary insertion after equal values, then merge passes consume pairs
+ * of runs. Comparator calls happen in exactly the IR helper's order.
+ * Returns false when a comparator throws.
+ *
+ * `values` holds every slot exactly once on either return, and, unless
+ * `scratch` lets it serve as a merge target, whenever a comparator runs:
+ * runs form in place (insertion moves a value only after its search
+ * completes), and merge passes then only read it until the last
+ * comparison. That keeps array storage passed here consistent for the
+ * cycle collector, and lets callers release or keep the slots after an
+ * exception. */
+static bool scr_sort_slots(uint64_t *values, size_t n, const ScrSortCompare *cmp,
+                           bool scratch) {
+  ScrSortCompare c = *cmp;
+  uint64_t *src = values, *dst = NULL, *spare = NULL;
+  /* Every run but the last reaches 16 slots; the table also holds a 0. */
+  size_t *runs = malloc((n / 16 + 2) * sizeof(*runs));
+  if (!runs) scr_arr_oom();
   bool failed = false;
   scr_dyn_this_push_dyn(NULL);
 #define SCR_SORT_GREATER(x, y) (scr_sort_greater(&c, (x), (y), &failed))
@@ -2265,7 +2269,18 @@ void scr_arr_sort_values(ScrArr *a, double count, ScrClosure *f, uint32_t arity)
     runs[run_count++] = end;
     start = end;
   }
+  if (run_count > 2) {
+    dst = malloc(n * sizeof(*dst));
+    if (!dst) scr_arr_oom();
+  }
   while (run_count > 2) {
+    if (dst == values && !scratch) {
+      if (!spare) {
+        spare = malloc(n * sizeof(*spare));
+        if (!spare) scr_arr_oom();
+      }
+      dst = spare;
+    }
     size_t next_run = 1;
     for (size_t run = 0; run + 1 < run_count; run += 2) {
       size_t lo = runs[run], mid = runs[run + 1];
@@ -2309,8 +2324,36 @@ void scr_arr_sort_values(ScrArr *a, double count, ScrClosure *f, uint32_t arity)
   }
 #undef SCR_SORT_CHECK
 #undef SCR_SORT_GREATER
-  /* A permutation of the same owned slots: no reference count changes. */
+done:
+  scr_dyn_this_pop();
+  /* After an exception too: a merge pass's source holds every slot. */
+  if (src != values) memcpy(values, src, n * sizeof(*values));
+  if (src != values) free(src);
+  if (dst != values) free(dst);
+  if (spare != src && spare != dst) free(spare);
+  free(runs);
+  return !failed;
+}
+
+/* Sorts the first `count` slots of a private, compacted snapshot. The array
+ * keeps owning every element and stays untouched while user code runs, so
+ * the cycle collector and a throwing comparator both see the original
+ * snapshot; the sorted permutation is published only after success. */
+void scr_arr_sort_values(ScrArr *a, double count, ScrClosure *f, uint32_t arity) {
+  size_t n = (size_t)count;
+  if (n < 2) return;
+  if (n > a->len || n > SIZE_MAX / 2 / sizeof(uint64_t))
+    scr_trap("scriptc: invalid comparator sort snapshot\n");
+  ScrSortCompare c = scr_sort_compare_for(a, f, arity);
+  uint64_t *src = malloc(n * sizeof(*src));
+  if (!src) scr_arr_oom();
   for (size_t i = 0; i < n; i++) {
+    if (scr_arr_state_at(a, i, &src[i]) != SCR_ARR_VALUE)
+      scr_trap("scriptc: invalid comparator sort snapshot\n");
+  }
+  bool sorted = scr_sort_slots(src, n, &c, true);
+  /* A permutation of the same owned slots: no reference count changes. */
+  for (size_t i = 0; sorted && i < n; i++) {
     if (i < a->cap) {
       a->data[i] = src[i];
     } else {
@@ -2318,11 +2361,90 @@ void scr_arr_sort_values(ScrArr *a, double count, ScrClosure *f, uint32_t arity)
       SCR_AX(a)->sparse[pos].slot = src[i];
     }
   }
-done:
-  scr_dyn_this_pop();
   free(src);
-  free(dst);
-  free(runs);
+}
+
+/* Whether every index below the length holds a value in dense storage: no
+ * holes, no storage-level undefined and no sparse tail. */
+static bool scr_arr_dense_values(const ScrArr *a) {
+  if (!scr_arr_is_dense(a)) return false;
+  const uint8_t *present = a->present;
+  bool all = true;
+  for (size_t i = 0; i < a->len; i++) all &= present[i] == SCR_ARR_VALUE;
+  return all;
+}
+
+/* The dense comparator sort: `a.sort(f)` (or, with `owned`, the private copy
+ * of `a.toSorted(f)`) when every index below the length holds a value.
+ * Returns false, having run no user code, when the array has holes,
+ * storage-level undefined or a sparse tail, or is published: the caller
+ * then takes the compacting snapshot path.
+ *
+ * Otherwise this is the spec's SortIndexedProperties then write-back without
+ * the IR snapshot. A private copy sorts in its own storage. For `sort`, the
+ * values are read once into a heap buffer, sorted there, and only a
+ * successful sort writes `a[0..n)`: while the comparator runs, `a` itself is
+ * untouched and observable as before. The comparator may write `a`; a
+ * reference element it overwrites stays alive because the buffer holds its
+ * own reference. The write-back then follows Set semantics: in place when
+ * indices below the snapshot length are still dense storage, else through
+ * the general element write, which fills holes, regrows a truncated array
+ * and keeps appended indices. A comparator exception leaves `a` as the
+ * comparator left it. */
+bool scr_arr_sort_dense(ScrArr *a, ScrClosure *f, uint32_t arity, bool owned) {
+  if (a->rc == SIZE_MAX || !scr_arr_dense_values(a)) return false;
+  size_t n = a->len;
+  if (n < 2) return true;
+  if (n > SIZE_MAX / 2 / sizeof(uint64_t)) scr_arr_oom();
+  ScrSortCompare c = scr_sort_compare_for(a, f, arity);
+  /* Nothing else can reach a private copy: its own storage is sorted, and
+   * the same owned slots only permute. */
+  if (owned) {
+    scr_sort_slots(a->data, n, &c, false);
+    return true;
+  }
+  bool retained = !c.numbers;
+  uint64_t *src = malloc(n * sizeof(*src));
+  if (!src) scr_arr_oom();
+  memcpy(src, a->data, n * sizeof(*src));
+  if (retained)
+    for (size_t i = 0; i < n; i++) src[i] = scr_elem_retain_slot(a, src[i]);
+  if (!scr_sort_slots(src, n, &c, true)) {
+    if (retained)
+      for (size_t i = 0; i < n; i++) scr_elem_release(a, src[i]);
+    free(src);
+    return true;
+  }
+  if (a->rc == SIZE_MAX) {
+    /* The comparator published the array: the first write fails as in Node
+     * (scr_throw_published_array's index write). */
+    if (retained)
+      for (size_t i = 0; i < n; i++) scr_elem_release(a, src[i]);
+    static const char assign[] = "Cannot assign to read only property '0' of object '[object Array]'";
+    static const char add[] = "Cannot add property 0, object is not extensible";
+    if (a->len > 0) scr_throw_error_msg(SCR_ERR_TYPE, assign, sizeof assign - 1);
+    else scr_throw_error_msg(SCR_ERR_TYPE, add, sizeof add - 1);
+  } else if (a->len >= n && a->cap >= n) {
+    if (!retained) {
+      memcpy(a->data, src, n * sizeof(*src));
+      memset(a->present, SCR_ARR_VALUE, n);
+    } else {
+      /* Publish each new edge before releasing the value it replaces: a
+       * release can collect cycles. The buffer still holds the slots not
+       * yet written. */
+      for (size_t i = 0; i < n; i++) {
+        bool held = a->present[i] == SCR_ARR_VALUE;
+        uint64_t old = held ? a->data[i] : 0;
+        a->data[i] = src[i];
+        a->present[i] = SCR_ARR_VALUE;
+        if (held) scr_elem_release(a, old);
+      }
+    }
+  } else {
+    for (size_t i = 0; i < n; i++) scr_arr_set_slot(a, (double)i, src[i]);
+  }
+  free(src);
+  return true;
 }
 
 ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep) {

@@ -1110,6 +1110,135 @@ static void test_comparator_sort(void) {
   scr_arr_release(wide);
 }
 
+/* scr_arr_sort_dense: in-place comparator sort of dense arrays. */
+static ScrArr *dense_target = NULL;
+static long dense_edit_at = -1;
+static ScrStr *dense_replacement = NULL;
+
+static double dense_by_length(ScrClosure *self, void *a, void *b) {
+  (void)self;
+  double d = (double)((ScrStr *)a)->len - (double)((ScrStr *)b)->len;
+  scr_str_release((ScrStr *)a);
+  scr_str_release((ScrStr *)b);
+  if (++sort_calls == dense_edit_at) {
+    /* Overwrite one element, then truncate: the dropped originals must
+     * survive in the sort's own buffer. */
+    scr_arr_set_ref(dense_target, 0, scr_str_retain(dense_replacement));
+    scr_arr_set_len(dense_target, 0);
+  }
+  if (sort_calls == sort_throw_at) scr_throw_f64(7);
+  return d;
+}
+
+static double dense_observe(ScrClosure *self, double a, double b) {
+  (void)self;
+  /* The receiver keeps its unsorted values while the comparator runs. */
+  if (sort_calls++ == 0 && scr_arr_get_f64(dense_target, 0) != 9) sort_throw_at = -2;
+  return a - b;
+}
+
+static void test_dense_comparator_sort(void) {
+  ScrClosure floor_fn = {SIZE_MAX, (void *)sort_by_floor, 0, NULL, 0};
+  ScrClosure observe_fn = {SIZE_MAX, (void *)dense_observe, 0, NULL, 0};
+  ScrArr *nums = scr_arr_new(SCR_ELEM_F64, 0);
+  for (int i = 0; i < 100; i++) scr_arr_push_f64(nums, (double)((i * 37) % 100) + (i % 2) * 0.5);
+  scr_arr_push_f64(nums, 9); /* keys stay distinct by floor */
+  scr_arr_set_f64(nums, 0, 9);
+  dense_target = nums;
+  sort_calls = 0;
+  sort_throw_at = -1;
+  check(scr_arr_sort_dense(nums, &observe_fn, 2, false), "a dense number array sorts in place");
+  check(sort_throw_at == -1, "the comparator sees the unsorted receiver");
+  bool ordered = true;
+  for (size_t i = 1; i < 101; i++)
+    if (scr_arr_get_f64(nums, (double)(i - 1)) > scr_arr_get_f64(nums, (double)i)) ordered = false;
+  check(ordered && scr_arr_len(nums) == 101, "dense number sort orders every value");
+
+  ScrArr *holes = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_push_f64(holes, 3);
+  scr_arr_set_f64(holes, 2, 1);
+  sort_calls = 0;
+  check(!scr_arr_sort_dense(holes, &floor_fn, 2, false) && sort_calls == 0,
+        "an array with holes takes the snapshot path without comparator calls");
+  ScrArr *undef = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_push_f64(undef, 3);
+  scr_arr_set_undefined(undef, 1);
+  scr_arr_push_f64(undef, 1);
+  check(!scr_arr_sort_dense(undef, &floor_fn, 2, true) && sort_calls == 0,
+        "storage-level undefined takes the snapshot path");
+  ScrArr *one = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_push_f64(one, 5);
+  check(scr_arr_sort_dense(one, &floor_fn, 2, false) && sort_calls == 0,
+        "a single value needs no comparator call");
+  size_t rc = one->rc;
+  one->rc = SIZE_MAX; /* as publication marks it */
+  check(!scr_arr_sort_dense(one, &floor_fn, 2, false), "a published array takes the general path");
+  one->rc = rc;
+  scr_arr_release(one);
+  scr_arr_release(undef);
+  scr_arr_release(holes);
+  scr_arr_release(nums);
+
+  long strings0 = scr_str_live_count();
+  ScrClosure length_fn = {SIZE_MAX, (void *)dense_by_length, 0, NULL, 0};
+  const char *spellings[] = {"ccc", "a", "bb", "dddd", "e", "ff", "ggg", "h", "iiiii", "jj",
+                             "k", "llll", "mmm", "n", "oo", "p", "qqq", "r", "ss", "t"};
+  const size_t count = sizeof(spellings) / sizeof(*spellings);
+  for (int owned = 0; owned < 2; owned++) {
+    for (long at = 1; at <= 40; at += 39) {
+      ScrArr *words = scr_arr_new(SCR_ELEM_STR, 0);
+      for (size_t i = 0; i < count; i++)
+        scr_arr_push_ref(words, scr_str_new(spellings[i], strlen(spellings[i])));
+      ScrStr *first = scr_arr_peek_ref(words, 0);
+      sort_calls = 0;
+      sort_throw_at = at;
+      dense_edit_at = -1;
+      check(scr_arr_sort_dense(words, &length_fn, 2, owned) && scr_exc_pending(),
+            "a throwing comparator leaves the exception pending");
+      scr_exc_clear();
+      check(sort_calls == at && scr_arr_len(words) == count,
+            "the dense sort stops at the first comparator exception");
+      if (!owned) {
+        check(scr_arr_peek_ref(words, 0) == first, "an exception leaves the receiver unwritten");
+      } else {
+        /* A private copy is discarded after an exception; it must still
+         * own every element exactly once. */
+        bool permutation = true;
+        for (size_t i = 0; i < count; i++) {
+          size_t uses = 0;
+          for (size_t j = 0; j < count; j++)
+            uses += strcmp(((ScrStr *)scr_arr_peek_ref(words, (double)j))->data, spellings[i]) == 0;
+          permutation &= uses == 1;
+        }
+        check(permutation, "an exception leaves the private copy a permutation");
+      }
+      scr_arr_release(words);
+    }
+  }
+  check(scr_str_live_count() == strings0, "throwing dense sorts release every string");
+
+  dense_replacement = scr_str_new("zz", 2);
+  ScrArr *words = scr_arr_new(SCR_ELEM_STR, 0);
+  for (size_t i = 0; i < count; i++)
+    scr_arr_push_ref(words, scr_str_new(spellings[i], strlen(spellings[i])));
+  dense_target = words;
+  sort_calls = 0;
+  sort_throw_at = -1;
+  dense_edit_at = 3;
+  check(scr_arr_sort_dense(words, &length_fn, 2, false) && !scr_exc_pending(),
+        "a comparator that truncates the receiver still completes");
+  dense_edit_at = -1;
+  bool lengths = scr_arr_len(words) == count;
+  for (size_t i = 1; lengths && i < count; i++)
+    lengths = ((ScrStr *)scr_arr_peek_ref(words, (double)(i - 1)))->len <=
+              ((ScrStr *)scr_arr_peek_ref(words, (double)i))->len;
+  check(lengths, "the sorted original values are written back after truncation");
+  scr_arr_release(words);
+  scr_str_release(dense_replacement);
+  check(scr_str_live_count() == strings0, "a mutating comparator leaks no string");
+  dense_target = NULL;
+}
+
 static void test_exact_construction(void) {
   /* Construction reserves the requested slots (rounded up to the small
    * allocator's block where it is live); appends past them grow
@@ -1161,6 +1290,7 @@ int main(int argc, char **argv) {
 
   test_primitive_sort();
   test_comparator_sort();
+  test_dense_comparator_sort();
   test_f64_basics();
   test_numeric_read();
   test_borrowed_ref_read();
