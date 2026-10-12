@@ -61,6 +61,29 @@ static char scr_sa_thp_mode(void) {
 }
 #endif
 
+/* Core dumps. The reservation is tens of GiB of address space, almost none
+ * of it ever touched. A core written to a file skips untouched pages, but a
+ * core piped to a handler (a kernel.core_pattern of "|...", such as apport
+ * or systemd-coredump) carries every page of a dumped mapping, untouched
+ * ones as zeros, and RLIMIT_CORE does not bound it: an aborting program
+ * would take seconds to minutes to die. The reservation is therefore mapped
+ * MADV_DONTDUMP, and whenever the slow path raises a slice's bump limit,
+ * the slice up to that limit becomes dumpable again (scr_sa_dumpable), so a
+ * core still holds every carved block. Without pre-faulting, limits advance
+ * in bounded steps for this (SCR_SA_DUMP_STEP on small pages, one huge page
+ * past the switch point). The dumpable part ends on a grid that coarsens as
+ * the slice grows (scr_sa_dump_edge): its untouched tail is at most
+ * SCR_SA_DUMP_GRAIN or a quarter of what the slice has carved, and a slice
+ * makes a few madvise calls per doubling, not one per step (each takes the
+ * mmap lock for writing, which would wait for the pre-fault helper). Grid
+ * points are huge-page aligned: a mapping boundary inside a huge page would
+ * split it. */
+#if defined(__linux__) && defined(MADV_DONTDUMP)
+#define SCR_SA_DUMP 1
+#define SCR_SA_DUMP_STEP ((size_t)1 << 20)
+#define SCR_SA_DUMP_GRAIN ((size_t)2 << 20) /* a multiple of the page size */
+#endif
+
 /* Maps span bytes of address space for slices (huge-page aligned where the
  * policy above applies), or NULL. */
 static void *scr_sa_map(size_t span) {
@@ -82,8 +105,34 @@ static void *scr_sa_map(size_t span) {
   p = a;
   (void)madvise(p, span, MADV_NOHUGEPAGE);
 #endif
+#ifdef SCR_SA_DUMP
+  (void)madvise(p, span, MADV_DONTDUMP);
+#endif
   return p;
 }
+
+#ifdef SCR_SA_DUMP
+/* The end of the dumpable part of the class slice [start, end) whose
+ * limit is p: p rounded up to a multiple of SCR_SA_DUMP_GRAIN or of a
+ * quarter of the largest power of two at or below p - start, whichever is
+ * larger (see above). Monotonic in p. */
+static char *scr_sa_dump_edge(char *start, char *end, char *p) {
+  size_t off = (size_t)(p - start), grain = SCR_SA_DUMP_GRAIN;
+  if (off) {
+    size_t quarter = ((size_t)1 << (63 - __builtin_clzll((unsigned long long)off))) >> 2;
+    if (quarter > grain) grain = quarter;
+  }
+  off = (off + grain - 1) & ~(grain - 1);
+  return off < (size_t)(end - start) ? start + off : end;
+}
+
+/* The slice [start, end) raised its bump limit from lim to next: makes
+ * the memory up to next dumpable (see above). */
+static void scr_sa_dumpable(char *start, char *end, char *lim, char *next) {
+  char *lo = scr_sa_dump_edge(start, end, lim), *hi = scr_sa_dump_edge(start, end, next);
+  if (hi > lo) (void)madvise(lo, (size_t)(hi - lo), MADV_DODUMP);
+}
+#endif
 
 /* Pre-faulting (Linux executables). First touch of a fresh slice page costs
  * a fault and a page clear on the allocating thread. With pre-faulting the
@@ -292,8 +341,8 @@ static void scr_sa_prefault(char *lo, char *hi) {
 
 /* The next bump limit of a class slice [start, end) whose limit is lim
  * (< end): its small-page prefix ends at SCR_SA_HUGE_AFTER, where the rest
- * of the slice switches to huge pages. With pre-faulting, limits advance in
- * steps (see above). */
+ * of the slice switches to huge pages. Limits advance in steps: the
+ * pre-fault steps (see above), or else the core-dump steps (SCR_SA_DUMP). */
 static char *scr_sa_extend(char *start, char *lim, char *end) {
 #ifdef SCR_SA_THP
   char *sw = start + SCR_SA_HUGE_AFTER;
@@ -320,11 +369,23 @@ static char *scr_sa_extend(char *start, char *lim, char *end) {
     return next;
   }
 #endif
-  if ((size_t)(lim - start) < SCR_SA_HUGE_AFTER && tiered) return sw;
-  if (lim > start) (void)madvise(lim, (size_t)(end - lim), MADV_HUGEPAGE);
+  if (tiered && lim < sw) {
+#ifdef SCR_SA_DUMP
+    if ((size_t)(sw - lim) > SCR_SA_DUMP_STEP) return lim + SCR_SA_DUMP_STEP;
+#endif
+    return sw;
+  }
+  if (tiered && lim == sw) (void)madvise(sw, (size_t)(end - sw), MADV_HUGEPAGE);
+#ifdef SCR_SA_DUMP
+  if (tiered && (size_t)(end - lim) > SCR_SA_HUGE_PAGE) return lim + SCR_SA_HUGE_PAGE;
+#endif
 #else
   (void)start;
+#ifdef SCR_SA_DUMP
+  if ((size_t)(end - lim) > SCR_SA_DUMP_STEP) return lim + SCR_SA_DUMP_STEP;
+#else
   (void)lim;
+#endif
 #endif
   return end;
 }
@@ -878,7 +939,13 @@ __attribute__((cold, noinline)) void *scr_sa_slow(size_t n, bool zero) {
     char *end = start + ((size_t)1 << scr_sa.shift);
     char *p = scr_sa.lim[c] ? scr_sa.bump[c] : start;
     char *lim = scr_sa.lim[c] ? scr_sa.lim[c] : start;
+#ifdef SCR_SA_DUMP
+    char *from = lim;
+#endif
     while ((size_t)(lim - p) < sz && lim < end) lim = scr_sa_extend(start, lim, end);
+#ifdef SCR_SA_DUMP
+    if (lim > from) scr_sa_dumpable(start, end, from, lim);
+#endif
     scr_sa.lim[c] = lim;
     if ((size_t)(lim - p) >= sz) {
       scr_sa.bump[c] = p + sz;
