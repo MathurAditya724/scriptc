@@ -60,7 +60,7 @@ import {
   pathModuleValue,
   utilTypesModuleValue,
 } from "./lower-builtin-values.js";
-import { transformStmtList } from "../../ir/traverse.js";
+import { devirtualizeVirtualCalls } from "./devirtualize.js";
 import { RuntimeOptionalProvenance } from "./runtime-optional-provenance.js";
 import { presentAtUse, reassignedBindings } from "./runtime-optional-guards.js";
 import { NarrowingStability } from "./narrowing-stability.js";
@@ -2465,6 +2465,9 @@ export class Lowerer {
    * can contain any retained descendant, but importing its declaration
    * alone does not make every descendant constructible. */
   private constructedClasses: Set<string> | null = null;
+  /** Set while a subclass constructor's super() call notes its base
+   * constructor edge: that edge does not instantiate the base exactly. */
+  private superConstructorEdge = false;
   private readonly virtualEdges = new Map<ClassInfo, Set<string>>();
 
   classCanBeConstructed(info: ClassInfo): boolean {
@@ -6050,11 +6053,17 @@ export class Lowerer {
     };
     const reachable = new Set<string>();
     this.constructedClasses = new Set();
+    // Every constructor edge except super() may create an instance of
+    // exactly that class (`new C`, class values, library roots, dynamic
+    // construction, ...).
+    const instantiated = new Set<string>();
     const queue: string[] = [];
     const loweredUnits = new Map<string, IrFunction>();
     const initFunctions: IrFunction[] = [];
     const instanceFunctions: IrFunction[] = [];
     this.onEdge = (name: string): void => {
+      if (!this.superConstructorEdge && name.endsWith(".constructor"))
+        instantiated.add(name.slice(1, -".constructor".length));
       if (reachable.has(name)) return;
       reachable.add(name);
       if (units.has(name)) queue.push(name);
@@ -6284,39 +6293,14 @@ export class Lowerer {
       ...this.liftedFns,
       ...this.implicitFns,
     ];
-    // The worklist can leave a virtual site with only its base method.
+    // The worklist can leave a virtual site with a single implementation.
     // Devirtualize after construction/override reachability has settled.
-    for (const fn of functions)
-      fn.body = transformStmtList(fn.body, {
-        stmt: (statement) => statement,
-        expr: (expression) => {
-          if (expression.kind !== "virtualCall") return expression;
-          const info = this.classes.get(expression.className);
-          const method = info && this.findMethodOn(info, expression.method);
-          if (
-            !method ||
-            method.sig.abstract ||
-            [...this.classes.values()].some(
-              (candidate) =>
-                this.isSubclassOf(candidate.def.name, expression.className) &&
-                candidate.def.name !== expression.className &&
-                candidate.methods.has(expression.method) &&
-                reachable.has(`%${candidate.def.name}.${expression.method}`),
-            )
-          )
-            return expression;
-          return {
-            kind: "call",
-            callee: `%${method.declarer.def.name}.${expression.method}`,
-            args: [
-              this.upcastTo(expression.args[0]!, method.declarer.def.name),
-              ...expression.args.slice(1),
-            ],
-            type: expression.type,
-            loc: expression.loc,
-          };
-        },
-      });
+    devirtualizeVirtualCalls(this, functions, {
+      reachable,
+      instantiated,
+      library: extraRoots !== undefined,
+      files: parts.map((fp) => fp.sf),
+    });
     this.reachableForArtifacts = reachable;
     return { reachable, result: this.finishModule(functions) };
   }
@@ -6325,6 +6309,17 @@ export class Lowerer {
    * reference to a lowerable body. */
   noteEdge(name: string): void {
     if (this.onEdge) this.onEdge(name);
+  }
+
+  /** A subclass constructor's super() edge: the base constructor runs, but
+   * no instance of exactly the base class is created. */
+  noteSuperConstructorEdge(name: string): void {
+    this.superConstructorEdge = true;
+    try {
+      this.noteEdge(name);
+    } finally {
+      this.superConstructorEdge = false;
+    }
   }
 
   /** Discovery hook for virtual dispatch: a virtualCall on `info`'s static

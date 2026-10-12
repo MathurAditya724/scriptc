@@ -7594,7 +7594,7 @@ export function superCallStmt(
       info.decl ?? info.ctor!,
     )[0]!;
   }
-  lowerer.noteEdge(`%${base.def.name}.constructor`);
+  lowerer.noteSuperConstructorEdge(`%${base.def.name}.constructor`);
   return {
     kind: "exprStmt",
     expr: {
