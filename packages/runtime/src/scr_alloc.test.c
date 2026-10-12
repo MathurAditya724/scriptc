@@ -123,8 +123,9 @@ static void vm_flags(const void *p, char *out, size_t cap) {
 
 /* A class slice carves contiguously from its start, across the points where
  * its limit is raised; on Linux the slices are huge-page aligned, the first
- * 8 MiB of a slice stay on small pages and the rest may use huge pages, and
- * a helper thread faults in memory ahead of the limit. Every fresh block
+ * 8 MiB of a slice stay on small pages and the rest may use huge pages, a
+ * helper thread faults in memory ahead of the limit, and only the slice up
+ * to its limit is included in core dumps. Every fresh block
  * still reads as zero, wherever the limit steps and whoever faulted it. */
 static void check_slice_growth(void) {
   enum { SZ = 496, AFTER = 8 << 20, PAST = 3 * (2 << 20) + (1 << 20) };
@@ -152,6 +153,17 @@ static void check_slice_growth(void) {
     vm_flags((void *)(start + AFTER), flags, sizeof flags);
     assert(strstr(flags, " hg") && !strstr(flags, " nh"));
   }
+  /* Core dumps hold the carved blocks but not the untouched rest of the
+   * reservation (" dd" is VM_DONTDUMP). */
+  char flags[256];
+  vm_flags(first, flags, sizeof flags);
+  assert(!strstr(flags, " dd"));
+  vm_flags(prev + SZ - 1, flags, sizeof flags);
+  assert(!strstr(flags, " dd"));
+  vm_flags((void *)(start + ((uintptr_t)1 << scr_sa.shift) - 1), flags, sizeof flags);
+  assert(strstr(flags, " dd"));
+  vm_flags((void *)(scr_sa.base + scr_sa.span - 1), flags, sizeof flags);
+  assert(strstr(flags, " dd"));
 #endif
   /* The blocks recycle through the free list like any others. */
   for (size_t i = blocks; i-- > 0;) scr_mem_free(first + i * SZ);
