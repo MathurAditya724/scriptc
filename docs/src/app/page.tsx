@@ -115,21 +115,19 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Three tiers */}
+      {/* How code compiles */}
       <section className="border-t border-gray-alpha-400">
         <div className="mx-auto max-w-[1200px] px-6 py-16">
-          <h2 className="text-heading-24 text-gray-1000">Compilation modes</h2>
+          <h2 className="text-heading-24 text-gray-1000">How code compiles</h2>
           <p className="mt-3 max-w-2xl text-copy-14 text-gray-900">
-            Programs can combine native code and an optional embedded JavaScript engine.
-            Unsupported operations produce compilation diagnostics.
+            Application code and eligible npm dependencies compile to native instructions.
+            Unsupported operations produce compilation diagnostics, with no runtime JavaScript
+            engine fallback.
           </p>
           <div className="mt-8 grid gap-6 md:grid-cols-3">
-            {tiers.map((tier, i) => (
+            {tiers.map((tier) => (
               <div key={tier.title} className="rounded-lg border border-gray-alpha-400 p-6">
-                <div className="text-label-12 font-medium uppercase tracking-wider text-gray-700">
-                  Tier {i + 1}
-                </div>
-                <h3 className="mt-2 text-heading-16 text-gray-1000">{tier.title}</h3>
+                <h3 className="text-heading-16 text-gray-1000">{tier.title}</h3>
                 <p className="mt-2 text-copy-13 text-gray-900">{tier.body}</p>
               </div>
             ))}
