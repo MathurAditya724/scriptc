@@ -414,6 +414,25 @@ export function tryLowerNumericIndexRead(
   };
 }
 
+/** Fuse our own typed-array read helper with strict equality against a
+ * plain number: `t[i] === b` is false when `t[i]` is undefined, and the
+ * NaN-for-invalid read is never equal to anything either, so the plain
+ * read answers exactly (`!==` is the negation). The other operand must
+ * lower to a double that never stands for undefined: a union keeps the
+ * box (undefined === undefined is true), and so does a NaN-coded value
+ * (nan-coded-reads.ts), which encodes undefined as NaN. The read keeps
+ * its arguments, so evaluation order is unchanged. */
+export function tryLowerBytesReadNumberEquality(
+  lowerer: Lowerer,
+  operand: IrExpr,
+  other: IrExpr,
+  otherNode: ts.Expression,
+): IrExpr | null {
+  if (other.type.kind !== "f64" || !isBytesReadHelperCall(lowerer, operand)) return null;
+  if (lowerer.nanCodedReads?.mayStandForUndefined(otherNode) === true) return null;
+  return tryLowerNumericIndexRead(lowerer, operand, operand.loc);
+}
+
 /** Fuse our own scalar-array read helper with an immediate ToBoolean, so a
  * condition such as `if (flags[i])` never boxes `T | undefined`. Numbers
  * reuse getNumber: a missing slot reads as NaN, which is falsy exactly like

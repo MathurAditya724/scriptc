@@ -110,6 +110,7 @@ import {
   lowerSafeIndexRead,
   tryLowerIndexTruthiness,
   tryLowerNumericIndexRead,
+  tryLowerBytesReadNumberEquality,
   lowerSafeBytesRead,
 } from "./array-values.js";
 import { strCharsCall } from "./containers/array-construction.js";
@@ -9497,6 +9498,14 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     const storedRight = runtimeOptionalStorageOperand(lowerer, expr.right);
     if (storedLeft !== null && right.type.kind !== "union") left = storedLeft;
     if (storedRight !== null && left.type.kind !== "union") right = storedRight;
+    // A typed-array read compared with a plain number needs no
+    // `number | undefined` box.
+    const fusedLeft = tryLowerBytesReadNumberEquality(lowerer, left, right, expr.right);
+    if (fusedLeft) left = fusedLeft;
+    else {
+      const fusedRight = tryLowerBytesReadNumberEquality(lowerer, right, left, expr.left);
+      if (fusedRight) right = fusedRight;
+    }
   }
   if (strictEquality && (left.type.kind === "caught" || right.type.kind === "caught")) {
     if (left.type.kind === "caught")
