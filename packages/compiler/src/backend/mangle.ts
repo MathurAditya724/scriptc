@@ -171,6 +171,11 @@ export function mangleAsyncSpawn(fnName: string): string {
 export function mangleAsyncAwaitCall(fnName: string): string {
   return `sc_aw_${sanitize(fnName)}`;
 }
+/** `return f(...)` of a direct async call in an async function: the call,
+ * the adoption turn, and the await as one entry returning the value. */
+export function mangleAsyncAdoptCall(fnName: string): string {
+  return `sc_ad_${sanitize(fnName)}`;
+}
 export function mangleTrampoline(fnName: string): string {
   return `sc_tr_${sanitize(fnName)}`;
 }

@@ -71,3 +71,68 @@ test("awaiting a direct call to a suspending body spawns and awaits in one call"
   // middle awaits, so it keeps its fiber.
   expect(definition(llvm, "sc_as_middle")).toContain("@scr_async_spawn(");
 });
+
+const adoptSource = `
+async function leaf(x: number): Promise<number> {
+  return x + 1;
+}
+async function slow(x: number): Promise<number> {
+  await null;
+  return x + 1;
+}
+async function relay(x: number): Promise<number> {
+  return leaf(x);
+}
+async function relaySlow(x: number): Promise<number> {
+  return slow(x);
+}
+async function guarded(x: number): Promise<number> {
+  try {
+    return leaf(x);
+  } catch {
+    return -1;
+  } finally {
+    console.log("finally");
+  }
+}
+async function main(): Promise<void> {
+  console.log((await relay(1)) + (await relaySlow(2)) + (await guarded(3)));
+}
+void main();
+`;
+
+test("returning a direct call adopts its promise one microtask turn later", async () => {
+  const llvm = await emit(adoptSource);
+  expect(definition(llvm, "sc_f_relay")).toContain("call double @sc_ad_leaf(double");
+  // A body that never suspends: the adoption's then-job turn, then the
+  // settled promise's own turn, still without materializing the promise.
+  const entry = definition(llvm, "sc_ad_leaf");
+  const exit = entry.indexOf("call void @scr_async_inline_exit(ptr %frame)");
+  const hop = entry.indexOf("call void @scr_await_hop()");
+  expect(exit).toBeGreaterThan(0);
+  expect(hop).toBeGreaterThan(exit);
+  expect(hop).toBeLessThan(entry.indexOf("clean:"));
+  const clean = entry.slice(entry.indexOf("clean:"), entry.indexOf("thrown:"));
+  expect(clean).toContain("call void @scr_await_hop()");
+  expect(clean).not.toContain("@scr_promise_new");
+  // A body that may suspend: its promise, the then-job turn, then the await.
+  const slow = definition(llvm, "sc_ad_slow");
+  expect(slow).toContain("call ptr @sc_as_slow(double %a0)");
+  expect(slow.indexOf("call void @scr_await_hop()")).toBeLessThan(
+    slow.indexOf("call double @scr_await_f64(ptr %p)"),
+  );
+});
+
+test("a returned promise is adopted after finally regions, outside catch handlers", async () => {
+  const llvm = await emit(adoptSource);
+  const guarded = definition(llvm, "sc_f_guarded");
+  // The call produces the promise; the finally body runs; only then the
+  // adoption turn and the await.
+  const call = guarded.indexOf("call ptr @sc_as_leaf(double");
+  const log = guarded.indexOf("@scr_console_log", call);
+  const hop = guarded.indexOf("call void @scr_await_hop()");
+  expect(call).toBeGreaterThan(0);
+  expect(log).toBeGreaterThan(call);
+  expect(hop).toBeGreaterThan(log);
+  expect(guarded.indexOf("call double @scr_await_f64(", hop)).toBeGreaterThan(hop);
+});

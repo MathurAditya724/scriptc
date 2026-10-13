@@ -5078,18 +5078,46 @@ export function lowerPromiseMethodCall(
           ? [{ kind: "varDecl", localId: vLocal.id, init: awaitE, loc }]
           : [{ kind: "exprStmt", expr: awaitE, loc }];
         const resultOf = (value: IrExpr, returnsPromise = false): IrStmt[] => {
-          const settled: IrExpr =
-            value.type.kind === "promise"
-              ? { kind: "awaitExpr", value, type: value.type.inner, loc }
-              : returnsPromise
-                ? { kind: "libCall", fn: "async.awaitDyn", args: [value], type: DYN, loc }
-                : value;
+          if (value.type.kind === "promise")
+            return [lowerer.adoptingReturn(value, R, (e) => lowerer.coerceInto(call, e, R))];
+          if (returnsPromise) {
+            // A boxed handler's promise result adopts too: the then job's
+            // turn after the call, then the await of the returned value.
+            const hLocal = lowerer.declareHiddenLocal("h", DYN);
+            const settledDyn: IrExpr = {
+              kind: "libCall",
+              fn: "async.awaitDyn",
+              args: [{ kind: "varRef", localId: hLocal.id, type: DYN, loc }],
+              type: DYN,
+              loc,
+            };
+            return [
+              { kind: "varDecl", localId: hLocal.id, init: value, loc },
+              {
+                kind: "exprStmt",
+                expr: { kind: "libCall", fn: "async.hop", args: [], type: VOID, loc },
+                loc,
+              },
+              ...(R.kind === "void"
+                ? [
+                    { kind: "exprStmt" as const, expr: settledDyn, loc },
+                    { kind: "return" as const, value: null, loc },
+                  ]
+                : [
+                    {
+                      kind: "return" as const,
+                      value: lowerer.coerceInto(call, settledDyn, R),
+                      loc,
+                    },
+                  ]),
+            ];
+          }
           return R.kind === "void"
             ? [
-                { kind: "exprStmt", expr: settled, loc },
+                { kind: "exprStmt", expr: value, loc },
                 { kind: "return", value: null, loc },
               ]
-            : [{ kind: "return", value: lowerer.coerceInto(call, settled, R), loc }];
+            : [{ kind: "return", value: lowerer.coerceInto(call, value, R), loc }];
         };
         const rejectedCall: IrExpr | null = rLocal
           ? {
@@ -5400,27 +5428,13 @@ export function lowerPromiseMethodCall(
         loc,
       };
       // The handler's result: promise returns flatten exactly like
-      // `return p` in any async body (awaitExpr re-throws rejections —
-      // the spec's thenable adoption); everything else coerces into R.
-      if (R.kind === "void") {
-        if (handlerCall.type.kind === "promise") {
-          body.push({
-            kind: "exprStmt",
-            expr: { kind: "awaitExpr", value: handlerCall, type: handlerCall.type.inner, loc },
-            loc,
-          });
-        } else {
-          body.push({ kind: "exprStmt", expr: handlerCall, loc });
-        }
+      // `return p` in any async body (the spec's thenable adoption);
+      // everything else coerces into R.
+      if (handlerCall.type.kind === "promise" && R.kind !== "promise") {
+        body.push(lowerer.adoptingReturn(handlerCall, R, (e) => lowerer.coerceInto(call, e, R)));
+      } else if (R.kind === "void") {
+        body.push({ kind: "exprStmt", expr: handlerCall, loc });
         body.push({ kind: "return", value: null, loc });
-      } else if (handlerCall.type.kind === "promise" && R.kind !== "promise") {
-        const awaited: IrExpr = {
-          kind: "awaitExpr",
-          value: handlerCall,
-          type: handlerCall.type.inner,
-          loc,
-        };
-        body.push({ kind: "return", value: lowerer.coerceInto(call, awaited, R), loc });
       } else {
         body.push({ kind: "return", value: lowerer.coerceInto(call, handlerCall, R), loc });
       }
