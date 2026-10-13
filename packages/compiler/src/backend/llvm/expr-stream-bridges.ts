@@ -16,7 +16,7 @@ import {
 } from "../../ir/ir.js";
 import { mangleFunction, mangleGlobal, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
-import { classFieldIndex, classStructSym } from "./classes.js";
+import { type LlClassMeta, classFieldIndex, classStructSym } from "./classes.js";
 import { SCR_ARR_FIELD, llvmCommentText } from "./common.js";
 import {
   FN_ATTRS,
@@ -697,6 +697,10 @@ export function streamTypedRefMaterializeAdapter(
         `llvm emitter bug: typed-ref materialize of unknown class ${t.className}`,
       );
     }
+    if (liveClassOpsEligible(meta)) {
+      adapter.classOps = `@${snapshot}_cops`;
+      liveClassOps(host, snapshot, meta);
+    }
     if (meta.hierarchy && meta.children.length) {
       const vtSlot = B.tmp(),
         vt = B.tmp(),
@@ -1241,12 +1245,86 @@ function liveRecordOps(
   );
 }
 
+/** Compiled classes whose instance views have no prototype object. Runtime
+ * classes and JavaScript classes with prototype data answer through their
+ * own views. */
+function liveClassOpsEligible(meta: LlClassMeta): boolean {
+  return (
+    !meta.def.runtime &&
+    !meta.root.def.runtime &&
+    !meta.def.prototypeDataHelper &&
+    !meta.def.instancePrototypeHelper
+  );
+}
+
+/** The prototype member names of a class instance capsule
+ * (ScrDynTypedClassOps): the class's and its bases' methods and accessors,
+ * plus `constructor`. A hierarchy's table resolves the instance's exact
+ * class first, like the materializer, since an instance seen through a base
+ * type still has its own class's prototype. */
+function liveClassOps(host: LlvmEmitterContext, snapshot: string, meta: LlClassMeta): void {
+  const ops = `${snapshot}_cops`;
+  const names = `${snapshot}_cnames`;
+  const members = ["constructor"];
+  for (let current: LlClassMeta | null = meta; current; current = current.base) {
+    for (const name of current.def.prototypeNames ?? []) {
+      if (!members.includes(name)) members.push(name);
+    }
+  }
+  const literals = members.map((name) => `ptr ${host.internLiteral(name)}`);
+  const descendants = (current: LlClassMeta): LlClassMeta[] =>
+    current.children.flatMap((child) => [child, ...descendants(child)]);
+  const subclasses = meta.hierarchy ? descendants(meta).filter(liveClassOpsEligible) : [];
+  let exact = "null";
+  if (subclasses.length > 0) {
+    exact = `@${snapshot}_cexact`;
+    const B = new BlockBuilder();
+    const vtSlot = B.tmp(),
+      vt = B.tmp(),
+      preSlot = B.tmp(),
+      pre = B.tmp();
+    B.line(
+      `${vtSlot} = getelementptr inbounds %${classStructSym(meta.def.name)}, ptr %p, i64 0, i32 1`,
+    );
+    B.line(`${vt} = load ptr, ptr ${vtSlot}`);
+    B.line(`${preSlot} = getelementptr inbounds %ScrVt, ptr ${vt}, i64 0, i32 0`);
+    B.line(`${pre} = load ${host.sizeType}, ptr ${preSlot}`);
+    for (const child of subclasses.reverse()) {
+      const childAdapter = host.liveDynRefAdapter({ kind: "object", className: child.def.name });
+      const match = B.tmp(),
+        yes = B.newLabel("class.ops.derived"),
+        next = B.newLabel("class.ops.next");
+      B.line(`${match} = icmp eq ${host.sizeType} ${pre}, ${child.pre}`);
+      B.condBr(match, yes, next);
+      B.startBlock(yes);
+      B.terminate(`ret ptr ${childAdapter.classOps ?? `@${ops}`}`);
+      B.startBlock(next);
+    }
+    B.terminate(`ret ptr @${ops}`);
+    host.resolveThunkDefs.push(
+      `define internal ptr ${exact}(ptr %p) ${FN_ATTRS} { ; exact class members of ${meta.def.name}`,
+      B.render(),
+      `}`,
+      ``,
+    );
+  }
+  host.resolveThunkDefs.push(
+    `@${names} = internal constant [${members.length} x ptr] [${literals.join(", ")}]`,
+    `@${ops} = internal constant { ptr, ${host.sizeType}, ptr } { ptr ${exact}, ${host.sizeType} ${members.length}, ptr @${names} }`,
+    ``,
+  );
+}
+
 /** Attach the element or field hooks right after a live capsule is built. */
 export function bindLiveArrayOps(
   host: ShapeHost,
   adapter: LlStreamTypedRefAdapter,
   capsule: string,
 ): string[] {
+  if (adapter.classOps !== undefined) {
+    host.declare(`declare void @scr_dyn_typed_ref_bind_class(ptr, ptr)`);
+    return [`call void @scr_dyn_typed_ref_bind_class(ptr ${capsule}, ptr ${adapter.classOps})`];
+  }
   if (adapter.recordOps !== undefined) {
     host.declare(`declare void @scr_dyn_typed_ref_bind_record(ptr, ptr)`);
     return [`call void @scr_dyn_typed_ref_bind_record(ptr ${capsule}, ptr ${adapter.recordOps})`];

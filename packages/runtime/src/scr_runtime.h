@@ -4543,6 +4543,19 @@ typedef struct ScrDynTypedRecordOps {
   ScrDyn *(*get)(void *rec, size_t index);
 } ScrDynTypedRecordOps;
 
+/* Prototype members of a compiled class seen as `unknown`, emitted per
+ * class by the compiler: the string names of methods, getters and setters
+ * declared on the class and its bases, and `constructor`. The checked
+ * view of an instance holds only its own fields; `in` answers inherited
+ * members from this table.
+ *   exact: the table of the instance's own class when it may be a
+ *          subclass of the capsule's static class; NULL otherwise. */
+typedef struct ScrDynTypedClassOps {
+  const struct ScrDynTypedClassOps *(*exact)(void *instance);
+  size_t count;
+  ScrStr *const *names; /* immortal member-name strings */
+} ScrDynTypedClassOps;
+
 struct ScrDyn {
   size_t rc; /* SIZE_MAX = immortal (unused for dyn; kept per convention) */
   ScrDynKind kind;
@@ -4609,7 +4622,9 @@ struct ScrDyn {
       /* Live native arrays: per-element access that bypasses the whole-array
        * snapshot (scr_dyn_typed_ref_bind_array). Declared-field records
        * keep their ScrDynTypedRecordOps here instead, flagged by `record`
-       * (scr_dyn_typed_ref_bind_record). NULL for other referents. */
+       * (scr_dyn_typed_ref_bind_record), and class instances their
+       * ScrDynTypedClassOps, flagged by `klass`
+       * (scr_dyn_typed_ref_bind_class). NULL for other referents. */
       const ScrDynTypedArrayOps *array;
       /* Both caches belong to this capsule. ReadableStream canonicalizes
        * capsules for repeated source references, so the refreshed dyn view
@@ -4618,10 +4633,11 @@ struct ScrDyn {
       ScrDyn *materialized;
       ScrDynTypedCast *casts;
       /* One word keeps this, the largest payload, at its previous size. */
-      uint32_t type_key_len : 29;
+      uint32_t type_key_len : 28;
       uint32_t traced : 1; /* native referent has a cycle header */
       uint32_t observed : 1; /* native release reports this identity's disposal */
       uint32_t record : 1; /* `array` holds ScrDynTypedRecordOps */
+      uint32_t klass : 1; /* `array` holds ScrDynTypedClassOps */
     } typed_ref;
     /* SCR_DYN_PROMISE: the retained promise. The boundary contract: it
      * settles with a dyn payload (SCR_EXC_REF ScrDyn fulfillment or a
@@ -4652,9 +4668,9 @@ static inline ScrDyn *scr_dyn_retain(ScrDyn *d) {
 void scr_dyn_release(ScrDyn *d); /* releases the tree recursively; NULL-tolerant */
 
 /* The element hooks of a live array capsule, or NULL (including for record
- * capsules, which keep their field hooks in the same slot). */
+ * and class capsules, which keep their hooks in the same slot). */
 static inline const ScrDynTypedArrayOps *scr_dyn_typed_ref_array_ops(const ScrDyn *d) {
-  return d->v.typed_ref.record ? NULL : d->v.typed_ref.array;
+  return d->v.typed_ref.record || d->v.typed_ref.klass ? NULL : d->v.typed_ref.array;
 }
 
 /* RFC 8259 parse of a UTF-8 string. Borrows text; returns +1, or throws a
@@ -4700,7 +4716,8 @@ void *scr_json_parse_schema(const ScrStr *text, const ScrJsonSchema *schema);
 
 /* Native JSON callbacks. All inputs borrowed, result owned (+1), NULL on
  * pending exception. Stringify returns a dyn string OR actual undefined
- * when the replacer omits the root. gap has already applied space rules. */
+ * when the replacer omits the root. An array replacer selects the object
+ * keys to serialize. gap has already applied space rules. */
 ScrDyn *scr_json_parse_reviver(ScrStr *text, const ScrDyn *reviver);
 ScrDyn *scr_json_stringify_replacer(const ScrDyn *value, const ScrDyn *replacer, const ScrStr *gap);
 ScrDyn *scr_json_stringify_value(const ScrDyn *value, const ScrDyn *replacer, const ScrDyn *space);
@@ -4899,6 +4916,9 @@ void scr_dyn_typed_ref_bind_array(ScrDyn *d, const ScrDynTypedArrayOps *ops);
  * for-in, Object.keys/values/entries, typeof and Array.isArray answer from
  * the native record, creating only the field values they return. */
 void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
+/* Attach the prototype member names of a class instance capsule
+ * (idempotent), so `in` sees its methods and accessors. */
+void scr_dyn_typed_ref_bind_class(ScrDyn *d, const ScrDynTypedClassOps *ops);
 /* Fast keyed read on a live array capsule: +1 value for `length` and for
  * present or explicitly-undefined elements; NULL when the answer needs the
  * snapshot (holes, out-of-range, non-index names, or no bound ops). */
@@ -4977,6 +4997,9 @@ void scr_dyn_global_symbol_delete(ScrSym *key);
 /* `key in v` with a runtime key (OBJ own members, ARR length/valid indices,
  * Proxy has traps). Traps and unsupported representations may throw. */
 bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key);
+/* The `in` operator: scr_dyn_has_key plus members inherited from builtin
+ * prototypes and compiled class prototypes. */
+bool scr_dyn_in(const ScrDyn *v, const ScrStr *key);
 /* Bare `typeof v` on a dyn value: the dyn kind's JS answer (+1 string;
  * null answers "object"). Never throws. */
 ScrStr *scr_dyn_typeof(const ScrDyn *d);

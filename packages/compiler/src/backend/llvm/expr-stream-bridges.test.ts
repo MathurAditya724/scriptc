@@ -154,3 +154,56 @@ test("live record capsules bind field hooks in snapshot order", () => {
     /define internal zeroext i1 @\S+_has(?:\.i32)?\(ptr %p, i64 %i\).*; live field presence of record:leaf/,
   );
 });
+
+test("class instance capsules bind prototype member names by exact class", () => {
+  const loc = { file: "live-references.ts", start: 0, end: 0 };
+  const base: IrType = { kind: "object", className: "Base" };
+  const module: IrModule = {
+    irVersion: 16,
+    sourceFile: loc.file,
+    entry: "main",
+    classes: [
+      { name: "Base", fields: [{ name: "size", type: STRING }], prototypeNames: ["grow"], loc },
+      {
+        name: "Derived",
+        base: "Base",
+        fields: [{ name: "size", type: STRING }],
+        prototypeNames: ["shrink", "grow"],
+        loc,
+      },
+    ],
+    functions: [
+      { name: "main", params: [], returnType: VOID, locals: [], body: [], loc },
+      {
+        name: "box",
+        params: [{ name: "value", localId: "value", type: base }],
+        returnType: DYN,
+        locals: [{ id: "value", name: "value", type: base, mutable: false }],
+        loc,
+        body: [
+          {
+            kind: "return",
+            value: {
+              kind: "dynFrom",
+              value: { kind: "varRef", localId: "value", type: base, loc },
+              liveRef: true,
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ],
+      },
+    ],
+  };
+  const llvm = emitLlvmModule(module, { pointerBits: 64 });
+  const tables = [...llvm.matchAll(/^@(\S+)_cnames = internal constant \[(\d+) x ptr\]/gm)].map(
+    (match) => Number(match[2]),
+  );
+  // Base: constructor, grow. Derived: constructor, shrink, grow (deduplicated).
+  expect(tables.sort()).toEqual([2, 3]);
+  expect(llvm).toMatch(
+    /^define internal ptr @\S+_cexact\(ptr %p\).*; exact class members of Base$/m,
+  );
+  expect(llvm).toMatch(/call void @scr_dyn_typed_ref_bind_class\(/);
+});

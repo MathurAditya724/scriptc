@@ -1314,6 +1314,10 @@ export interface IrClassDef {
    * `get:<prop>` / `set:<prop>` entries — names no user identifier can
    * spell — and behave as ordinary methods here. */
   methods?: string[];
+  /** String names of the methods and accessors this class declares on its
+   * prototype (not inherited), independent of method reachability. A
+   * reflective `in` over an instance seen as `unknown` answers them. */
+  prototypeNames?: string[];
   /** Declared `abstract class` — never instantiated (tsc rejects `new` on
    * it, including through class values), so its own vtable entries for
    * abstract slots may stay empty. */

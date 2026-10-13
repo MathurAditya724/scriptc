@@ -241,6 +241,7 @@ const DYN_READ_ONLY = new Set<string>([
   "dyn.bagGet",
   "dyn.compare",
   "dyn.hasKey",
+  "dyn.in",
   "dyn.iterator",
   "dyn.iteratorCanStep",
   "dyn.iteratorResult",

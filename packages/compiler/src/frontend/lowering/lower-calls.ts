@@ -6825,6 +6825,18 @@ function lowerObjectStaticCall(
       proto.type.kind === "string"
     )
       proto = { kind: "dynFrom", value: proto, type: DYN, loc };
+    // Typed records, arrays and class instances stay live prototypes.
+    if (
+      (proto.type.kind === "record" ||
+        proto.type.kind === "array" ||
+        proto.type.kind === "object") &&
+      canConvertToDyn(
+        proto.type,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      )
+    )
+      proto = lowerer.coerceInto(protoNode, proto, DYN);
     if (proto.type.kind === "dyn") {
       if (call.arguments.length === 1)
         return { kind: "libCall", fn: "dyn.objCreate", args: [proto], type: DYN, loc };

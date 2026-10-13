@@ -460,6 +460,12 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       errors.push({ message: `class ${cls.name}: invalid constructor length`, loc: cls.loc });
     }
     if (
+      cls.prototypeNames !== undefined &&
+      new Set(cls.prototypeNames).size !== cls.prototypeNames.length
+    ) {
+      errors.push({ message: `class ${cls.name}: duplicate prototype member names`, loc: cls.loc });
+    }
+    if (
       cls.tracksOwnFields &&
       (cls.runtime ||
         cls.fields.find((field) => field.name === DYN_CLASS_PROPERTIES)?.type.kind !== "dyn")

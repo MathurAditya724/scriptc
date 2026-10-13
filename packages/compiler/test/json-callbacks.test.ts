@@ -11,7 +11,6 @@ const temp = (): string =>
 // Unsupported forms must be named; accepting a third argument but never
 // supplying context.source would silently change data recovery code.
 test.each([
-  ["replacer property list", `JSON.stringify({ n: 1 }, ["n"]);`, "JSON replacer"],
   ["reviver context", `JSON.parse("1", (key, value, context) => context.source);`, "JSON reviver"],
   ["reviver rest context", `JSON.parse("1", (...args) => args.length);`, "JSON reviver"],
   [

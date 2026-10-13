@@ -17,8 +17,8 @@ import { optionalStringTags } from "./arguments.js";
 
 /** JSON parse produces checked-dynamic data; a native reviver walks it
  * bottom-up before any checked cast. Stringify without a callback keeps
- * its type-directed fast path. A function replacer boxes the input and
- * walks it before primitive normalization. Both paths share literal gap
+ * its type-directed fast path. A function or array replacer boxes the input
+ * and walks it before primitive normalization. Both paths share literal gap
  * rules, and callback failures use ordinary native exception unwinding. */
 export function lowerJsonMethodCall(
   lowerer: Lowerer,
@@ -286,7 +286,9 @@ function jsonNullishArgument(lowerer: Lowerer, node: ts.Expression): boolean {
 
 /** JSON callbacks cross the same checked native function boundary as other
  * runtime callbacks. Reviver source contexts need parser source tracking;
- * refuse signatures that request one until that protocol is implemented. */
+ * refuse signatures that request one until that protocol is implemented.
+ * A replacer may also be an array of property names, which the runtime
+ * reads as Node's PropertyList. */
 function lowerJsonCallback(
   lowerer: Lowerer,
   node: ts.Expression,
@@ -295,6 +297,12 @@ function lowerJsonCallback(
   const callback = lowerer.lowerExpr(node);
   if (callback.type.kind === "dyn") return callback;
   if (
+    role === "replacer" &&
+    callback.type.kind === "array" &&
+    lowerer.dynConvertible(callback.type)
+  )
+    return lowerer.coerceToExpected(callback, DYN);
+  if (
     callback.type.kind === "union" &&
     lowerer.dynConvertible(callback.type) &&
     lowerer.unions
@@ -302,6 +310,7 @@ function lowerJsonCallback(
       ?.arms.every(
         (arm) =>
           isUnitType(arm) ||
+          (role === "replacer" && arm.kind === "array") ||
           (arm.kind === "func" &&
             arm.params.length <= 2 &&
             (role !== "reviver" || (!arm.rest && !arm.argumentsAll))),
@@ -323,7 +332,9 @@ function lowerJsonCallback(
   lowerer.noLowering(
     `JSON ${role} of type '${lowerer.fmt(callback.type)}'`,
     node,
-    "use a native function taking key and value; replacer arrays and reviver source contexts are not supported yet",
+    role === "replacer"
+      ? "use a native function taking key and value, or an array of property names"
+      : "use a native function taking key and value; reviver source contexts are not supported yet",
   );
 }
 
