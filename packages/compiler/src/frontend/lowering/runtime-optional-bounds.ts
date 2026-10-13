@@ -30,6 +30,10 @@ export interface BoundsFacts {
    * fixed-length typed arrays allocated with the same length), so a guard
    * `i < other.length` bounds `array[i]` as well. */
   sameLength?(array: ts.Expression, other: ts.Expression): boolean;
+  /** `bound` always holds `array.length` (for example, a `const` copy of
+   * the length of a typed array whose binding is never reassigned), so a
+   * guard `i < bound` bounds `array[i]`. */
+  lengthAlias?(bound: ts.Expression, array: ts.Expression): boolean;
   /** A read inside an `if` condition is bounded like one in a statement.
    * Opt-in: a caller that does not also prove the index a non-negative
    * integer keeps its established decision for such reads. */
@@ -202,6 +206,7 @@ function sameReference(a: ts.Expression, b: ts.Expression): boolean {
 
 function isLengthOf(node: ts.Expression, array: ts.Expression, facts?: BoundsFacts): boolean {
   const e = peel(node);
+  if (ts.isIdentifier(e)) return facts?.lengthAlias?.(e, array) === true;
   return (
     ts.isPropertyAccessExpression(e) &&
     !e.questionDotToken &&

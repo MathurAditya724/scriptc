@@ -154,6 +154,7 @@ test("proven-present reads and guarded occurrences keep numeric parameters plain
   ).toEqual([f64, f64]);
   // `shorter` is not as long as `xs`: its read may be undefined.
   expect(fn(mod, "probe").params[1]!.type.kind).toBe("union");
-  // Code holding `zs` could detach its buffer: no proof.
-  expect(fn(mod, "escaped").params[0]!.type.kind).toBe("union");
+  // A typed array's length never changes (static code cannot resize or
+  // detach a buffer), so `zs` escaping to `grab` keeps the proof.
+  expect(fn(mod, "escaped").params[0]!.type).toEqual(f64);
 });

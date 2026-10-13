@@ -237,6 +237,7 @@ export class NanCodedReads {
   private readonly presentReads = new Map<ts.ElementAccessExpression, IrBytesElem>();
   private readonly counters = new Map<ts.Symbol, boolean>();
   private readonly fixedLengths = new Map<ts.Symbol, ts.NewExpression | null>();
+  private readonly stableReceivers = new Map<ts.Symbol, boolean>();
   private readonly bindings = new Map<ts.Symbol, BindingSlot>();
   private readonly notSlots = new Set<ts.Symbol>();
   /** Every slot's value occurrences. */
@@ -272,6 +273,12 @@ export class NanCodedReads {
     const left = this.loweredInfo(expr.left);
     const right = this.loweredInfo(expr.right);
     return left.nce && right.nce && !left.nan && !right.nan;
+  }
+
+  /** The value lowers to a double that may stand for undefined (a
+   * NaN-coded read or slot). */
+  mayStandForUndefined(node: ts.Expression): boolean {
+    return this.loweredInfo(node).nce;
   }
 
   /** Bindings and returns that are NaN-coded (consistency checks). */
@@ -437,15 +444,95 @@ export class NanCodedReads {
     const index = peelTransparent(read.argumentExpression);
     if (!ts.isIdentifier(array) || !ts.isIdentifier(index)) return false;
     const arraySymbol = this.symbolOf(array);
-    if (!arraySymbol || !this.fixedLength(arraySymbol)) return false;
+    if (!arraySymbol || !this.stableReceiver(arraySymbol)) return false;
     const symbol = this.symbolOf(index);
     if (!symbol || !this.nonNegativeCounter(symbol)) return false;
     const decl = this.host.declarationOf(symbol);
     if (!decl || this.containingFunction(decl) !== this.containingFunction(read)) return false;
     return indexReadInBounds(read, {
       sameLength: (array, other) => this.sameFixedLength(array, other),
+      lengthAlias: (bound, array) => this.lengthAlias(bound, array),
       conditions: true,
     });
+  }
+
+  /** A typed-array binding that always names the same typed array: a
+   * fixed-length allocation, or a parameter or `let`/`const` binding that
+   * no code ever writes. A typed array's length never changes (static
+   * code cannot resize or detach a buffer), so a guard on its length
+   * stays true for that binding. */
+  private stableReceiver(symbol: ts.Symbol): boolean {
+    const known = this.stableReceivers.get(symbol);
+    if (known !== undefined) return known;
+    this.stableReceivers.set(symbol, false);
+    if (this.fixedLength(symbol)) {
+      this.stableReceivers.set(symbol, true);
+      return true;
+    }
+    const decl = this.host.declarationOf(symbol);
+    if (!decl || isJsSourceFile(decl.getSourceFile()) || decl.getSourceFile().isDeclarationFile)
+      return false;
+    let name: ts.Identifier;
+    if (ts.isParameter(decl)) {
+      if (!ts.isIdentifier(decl.name) || decl.dotDotDotToken) return false;
+      // Sloppy-mode `arguments` aliases parameters.
+      const fn = decl.parent;
+      let usesArguments = false;
+      if (fn && ts.isFunctionLike(fn))
+        ts.walkPreorder(fn, (node) => {
+          if (ts.isIdentifier(node) && node.text === "arguments") usesArguments = true;
+        });
+      if (usesArguments) return false;
+      name = decl.name;
+    } else if (
+      ts.isVariableDeclaration(decl) &&
+      ts.isIdentifier(decl.name) &&
+      ts.isVariableDeclarationList(decl.parent) &&
+      decl.parent.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const) &&
+      !ts.isForOfStatement(decl.parent.parent) &&
+      !ts.isForInStatement(decl.parent.parent)
+    )
+      name = decl.name;
+    else return false;
+    if (this.host.bytesElemOf(name) === null) return false;
+    for (const id of this.names.get(name.text) ?? []) {
+      if (id === name || this.symbolOf(id) !== symbol) continue;
+      if (this.writeOf(id) !== "read") return false;
+    }
+    this.stableReceivers.set(symbol, true);
+    return true;
+  }
+
+  /** `bound` is a `const` binding initialized with `array.length`, where
+   * `array` is the same stable typed-array binding: it always holds the
+   * length. */
+  private lengthAlias(bound: ts.Expression, array: ts.Expression): boolean {
+    const b = peelTransparent(bound);
+    const a = peelTransparent(array);
+    if (!ts.isIdentifier(b) || !ts.isIdentifier(a)) return false;
+    const symbol = this.symbolOf(b);
+    const decl = symbol ? this.host.declarationOf(symbol) : undefined;
+    if (
+      !decl ||
+      !ts.isVariableDeclaration(decl) ||
+      !decl.initializer ||
+      !ts.isVariableDeclarationList(decl.parent) ||
+      !(decl.parent.flags & ts.NodeFlags.Const)
+    )
+      return false;
+    const init = peelTransparent(decl.initializer);
+    if (
+      !ts.isPropertyAccessExpression(init) ||
+      init.questionDotToken ||
+      init.name.text !== "length"
+    )
+      return false;
+    const owner = peelTransparent(init.expression);
+    if (!ts.isIdentifier(owner)) return false;
+    const ownerSymbol = this.symbolOf(owner);
+    return (
+      ownerSymbol !== null && ownerSymbol === this.symbolOf(a) && this.stableReceiver(ownerSymbol)
+    );
   }
 
   /** A `let`/`const` binding that starts at a non-negative integer literal
@@ -1329,6 +1416,21 @@ export class NanCodedReads {
         // Compound assignment reads of a binding: arithmetic.
         return NUMERIC_COMPOUND.has(k) || k === ts.SyntaxKind.PlusEqualsToken;
       }
+      if (k === ts.SyntaxKind.EqualsToken && this.typedArrayStoreTarget(p.left)) {
+        // A typed-array element store converts the value with ToNumber,
+        // so undefined and NaN store the same element. The assignment's
+        // own value is the unconverted one.
+        const outer = transparentParent(p);
+        const consumer = outer.parent;
+        if (
+          !consumer ||
+          ts.isExpressionStatement(consumer) ||
+          (ts.isForStatement(consumer) &&
+            (consumer.incrementor === outer || consumer.initializer === outer))
+        )
+          return true;
+        return this.useSafe(p);
+      }
       if (k === ts.SyntaxKind.EqualsToken) {
         const slot = this.sinkOf(e);
         if (!slot || !this.eligible.has(slot)) return false;
@@ -1383,6 +1485,16 @@ export class NanCodedReads {
       );
     }
     return false;
+  }
+
+  /** `t[k]` on a number typed array, as an assignment target. */
+  private typedArrayStoreTarget(target: ts.Expression): boolean {
+    const e = peelTransparent(target);
+    return (
+      ts.isElementAccessExpression(e) &&
+      !e.questionDotToken &&
+      this.host.bytesElemOf(e.expression) !== null
+    );
   }
 
   /** The value of a logical expression is only tested for truthiness. */

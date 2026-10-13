@@ -112,3 +112,34 @@ test("an if condition reads like a statement, and a same-length fact extends the
   });
   expect(plain).toEqual([false, false, false, false, false]);
 });
+
+test("a length-alias fact lets a cached length bound the read", () => {
+  const file = parseSourceFile(
+    "length-alias.ts",
+    `function f(src: Uint8Array, dst: Uint8Array) {
+      const n = src.length;
+      for (let i = 0; i < n; i++) { const c = src[i]; }
+      for (let i = 0; i < n; i++) { const c = dst[i]; }
+    }`,
+    "ts",
+  );
+  const results: boolean[] = [];
+  const facts = {
+    lengthAlias: (bound: ts.Expression, array: ts.Expression) =>
+      ts.isIdentifier(bound) &&
+      bound.text === "n" &&
+      ts.isIdentifier(array) &&
+      array.text === "src",
+  };
+  ts.walkPreorder(file, (node) => {
+    if (ts.isElementAccessExpression(node)) results.push(indexReadInBounds(node, facts));
+    return undefined;
+  });
+  expect(results).toEqual([true, false]);
+  const plain: boolean[] = [];
+  ts.walkPreorder(file, (node) => {
+    if (ts.isElementAccessExpression(node)) plain.push(indexReadInBounds(node));
+    return undefined;
+  });
+  expect(plain).toEqual([false, false]);
+});
