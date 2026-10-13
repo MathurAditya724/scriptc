@@ -1322,6 +1322,25 @@ static void test_filled_prefix(void) {
   s = scr_arr_slice(b, 0, INFINITY);
   check(s->filled == 2 && filled_ok(s), "slice keeps holes out of the bound");
   scr_arr_release(s);
+  /* The rescan after a copy stops exactly at the first non-value state,
+   * whichever eight-state step holds it, and a slice that starts past a
+   * source's bound still finds the values after it. */
+  for (size_t hole = 0; hole < 37; hole++) {
+    ScrArr *w = scr_arr_new(SCR_ELEM_F64, 0);
+    for (int i = 0; i < 37; i++) scr_arr_push_f64(w, i);
+    if (hole % 2) scr_arr_set_undefined(w, (double)hole);
+    else scr_arr_delete(w, (double)hole);
+    for (size_t from = 0; from < 20; from += 3) {
+      ScrArr *c = scr_arr_slice(w, (double)from, INFINITY);
+      size_t want = hole >= from ? hole - from : 37 - from;
+      check(c->filled == want && filled_ok(c), "slice bound ends at the first non-value");
+      scr_arr_release(c);
+    }
+    ScrArr *c = scr_arr_slice(w, 30, 10);
+    check(c->len == 0 && c->filled == 0, "an empty slice has an empty bound");
+    scr_arr_release(c);
+    scr_arr_release(w);
+  }
   scr_arr_release(scr_arr_reverse(b));
   check(filled_ok(b), "reverse of a holey array recomputes the bound");
   scr_arr_release(scr_arr_sort_primitive(b, false));

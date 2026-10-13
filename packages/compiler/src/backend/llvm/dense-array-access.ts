@@ -399,9 +399,16 @@ export function emitDenseArraySet(
     afterBump = B.newLabel("arr.set.state");
   B.condBr(continues, bumpLabel, afterBump);
   B.startBlock(bumpLabel);
+  // The new bound comes from the index, not from the loaded bound: a loop
+  // of appending stores then carries no store-to-load chain through it.
+  let index32 = offset;
+  if (host.sizeType === "i64") {
+    index32 = B.tmp();
+    B.line(`${index32} = trunc i64 ${offset} to i32`);
+  }
   const nextFilled = B.tmp(),
     filledPtr = B.tmp();
-  B.line(`${nextFilled} = add i32 ${guard.filled}, 1`);
+  B.line(`${nextFilled} = add i32 ${index32}, 1`);
   B.line(
     `${filledPtr} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 ${SCR_ARR_FIELD.filled}`,
   );

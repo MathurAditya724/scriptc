@@ -14,6 +14,9 @@ import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 export interface Int32Local {
   signed: boolean;
   range: IntegerRange;
+  /** A parameter the body never writes: its incoming double is still
+   * its value, so reads use it instead of widening the i32 again. */
+  incoming?: boolean;
 }
 
 /** Number locals whose every write is an exact int32 (or every write an
@@ -51,9 +54,12 @@ export function findInt32Locals(
     if (captured.has(local.id) || excluded.has(local.id)) continue;
     writes.set(local.id, []);
   }
+  const params = new Set<string>();
   for (const param of fn.params) {
     const list = writes.get(param.localId);
-    if (list) list.push(facts.params?.get(param.localId) ?? contract(param.localId));
+    if (!list) continue;
+    list.push(facts.params?.get(param.localId) ?? contract(param.localId));
+    params.add(param.localId);
   }
   const write = (id: string, range: IntegerRange | null | undefined, value?: IrExpr): void => {
     const list = writes.get(id);
@@ -95,8 +101,10 @@ export function findInt32Locals(
       range.min = Math.min(range.min, write.min);
       range.max = Math.max(range.max, write.max);
     }
-    if (withinInt32(range)) result.set(id, { signed: true, range });
-    else if (withinUint32(range)) result.set(id, { signed: false, range });
+    if (!withinInt32(range) && !withinUint32(range)) continue;
+    const local: Int32Local = { signed: withinInt32(range), range };
+    if (params.has(id) && list.length === 1) local.incoming = true;
+    result.set(id, local);
   }
   return { locals: result, values };
 }
