@@ -2690,8 +2690,13 @@ export type IrExpr =
     }
   /** Await a promise: parks the current fiber until it settles; a rejected
    * promise re-throws into the awaiter (may-throw seed). Result is the
-   * promise's inner value (+1 for refcounted kinds). Only inside async fns. */
-  | { kind: "awaitExpr"; value: IrExpr; type: IrType; loc: SrcLoc }
+   * promise's inner value (+1 for refcounted kinds). Only inside async fns.
+   * `adopt`: the operand of `return` in an async (non-generator) function.
+   * JS resolves the function's promise with the returned promise, which
+   * adopts its settlement through a then job: one microtask turn before
+   * the await proper. Any enclosing finally runs first, and a rejection
+   * leaves the function without reaching its catch handlers. */
+  | { kind: "awaitExpr"; value: IrExpr; type: IrType; adopt?: true; loc: SrcLoc }
   /** Await of a promise-or-absent union (`Promise<T> | undefined`, the
    * mapped `Promise<T> | void`): `value` is a union whose arm `promiseTag`
    * is a promise and whose other arms are all units. The promise arm awaits

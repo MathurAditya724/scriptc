@@ -10,6 +10,7 @@ import {
   type IrParam,
   type IrStmt,
   type SrcLoc,
+  VOID,
   canBoxFuncIntoDyn,
   typeEquals,
 } from "../../ir/ir.js";
@@ -322,10 +323,14 @@ export function lowerLambda(
           body = [lowerer.lowerExprStatement(stripped)];
         } else {
           const value = lowerer.lowerExpr(bodyExpr);
+          // `async () => p` with a void result still resolves the
+          // function's promise with p (its settlement, rejections included).
           body =
             value.kind === "unitLit"
               ? []
-              : [{ kind: "exprStmt", expr: value, loc: locOf(node.body!) }];
+              : isAsync && value.type.kind === "promise"
+                ? [lowerer.adoptingReturn(value, VOID, (e) => e)]
+                : [{ kind: "exprStmt", expr: value, loc: locOf(node.body!) }];
         }
       } else {
         // Concise and block bodies use the same destination layout for
@@ -339,7 +344,7 @@ export function lowerLambda(
         // thenable into the function's own promise — lowerReturnValue's
         // await-through, applied to the implicit return.
         if (isAsync && value.type.kind === "promise" && bodyReturn.kind !== "promise") {
-          value = { kind: "awaitExpr", value, type: value.type.inner, loc: value.loc };
+          value = lowerer.returnedPromiseAwait(value);
         }
         body =
           value.type.kind === "void" && lowerer.wrappedUndefined(bodyReturn, locOf(node.body!))
