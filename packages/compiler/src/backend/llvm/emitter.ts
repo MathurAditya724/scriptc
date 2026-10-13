@@ -531,6 +531,8 @@ export class LlEmitter {
   private readonly literals = new Map<string, { sym: string; len: number }>();
   /** Literal equality helpers: literal text → helper symbol (literalEquals). */
   private readonly literalEqualities = new Map<string, string>();
+  /** Interned bigint literals: hex magnitude with sign → { symbol, value }. */
+  private readonly bigintLiterals = new Map<string, { sym: string; value: bigint }>();
   /** Symbols of interned constant data, named by content (contentSymbol). */
   private readonly contentSymbols = new Set<string>();
   /** Interned unit-armed union instances: "unionId:tag" → symbol — one
@@ -1994,6 +1996,26 @@ export class LlEmitter {
       );
     }
     if (this.literals.size > 0) out.push(``);
+    for (const lit of this.bigintLiterals.values()) {
+      // Immortal ScrBigInt: { rc = SIZE_MAX, len, sign, cap, limbs } with
+      // pointer-sized little-endian limbs (scr_bigint.c); zero keeps one
+      // zero limb so limb 0 is always readable.
+      const size = this.sizeType;
+      const limbBits = size === "i64" ? 64n : 32n;
+      const mask = (1n << limbBits) - 1n;
+      const limbs: string[] = [];
+      for (let m = lit.value < 0n ? -lit.value : lit.value; m > 0n; m = m >> limbBits) {
+        limbs.push(`${size} ${m & mask}`);
+      }
+      const len = limbs.length;
+      if (len === 0) limbs.push(`${size} 0`);
+      const sign = lit.value < 0n ? -1 : lit.value > 0n ? 1 : 0;
+      out.push(
+        `@${lit.sym} = internal global { ${size}, ${size}, i32, i32, [${limbs.length} x ${size}] } ` +
+          `{ ${size} -1, ${size} ${len}, i32 ${sign}, i32 ${limbs.length}, [${limbs.length} x ${size}] [${limbs.join(", ")}] }`,
+      );
+    }
+    if (this.bigintLiterals.size > 0) out.push(``);
     for (const [key, sym] of this.unitInstances) {
       // One immortal instance per unit-armed (union, tag): tag set, payload
       // slot and RC entry points zero — retain/release/collector all skip
@@ -3711,6 +3733,28 @@ export class LlEmitter {
         this.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
       }
     }
+    return name;
+  }
+
+  /** `@`-ref of an immortal ScrBigInt holding `value`, or null when the
+   * text is not a valid StringToBigInt input (the runtime parse then
+   * throws as usual). BigInt here is the same StringToBigInt as the
+   * program's, so every accepted spelling folds to the value Node gives. */
+  internBigIntLiteral(text: string): string | null {
+    let value: bigint;
+    try {
+      value = BigInt(text);
+    } catch {
+      return null;
+    }
+    const key = value.toString(16);
+    let lit = this.bigintLiterals.get(key);
+    if (!lit) {
+      lit = { sym: this.contentSymbol("sc_bigint_", key), value };
+      this.bigintLiterals.set(key, lit);
+    }
+    const name = `@${lit.sym}`;
+    this.immortalValues.add(name);
     return name;
   }
 

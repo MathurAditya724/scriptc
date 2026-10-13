@@ -4229,6 +4229,15 @@ ScrStr *scr_bigint_inspect(ScrBigInt *value); /* decimal plus trailing n; +1 */
 double scr_bigint_to_f64(ScrBigInt *value);
 ScrBigInt *scr_bigint_as_uint_n(double bits, ScrBigInt *value);
 ScrBigInt *scr_bigint_as_int_n(double bits, ScrBigInt *value);
+/* Small-value bigint trees the compiler evaluates in 64-bit registers:
+ * mag64 stores the low 64 bits of the magnitude and its length in 64-bit
+ * words, and returns the sign (-1, 0, 1); from_mag64 builds +-mag (+1).
+ * wrap_eval is the exact fallback over a compiler-built postfix program
+ * (leaves, and numbers for BigInt(number) operands); +1 or NULL with an
+ * exception pending. */
+int scr_bigint_mag64(const ScrBigInt *value, uint64_t *mag, uint32_t *words);
+ScrBigInt *scr_bigint_from_mag64(uint64_t mag, bool negative);
+ScrBigInt *scr_bigint_wrap_eval(const char *program, ScrBigInt *const *leaves, const double *numbers);
 ScrBigInt *scr_bigint_buffer_read(ScrBytes *bytes, double offset, bool sign, bool le);
 double scr_bigint_buffer_write(ScrBytes *bytes, ScrBigInt *value, double offset, bool sign, bool le);
 ScrBigInt *scr_bigint_dataview_get(ScrBytes *bytes, double offset, bool sign, bool le);
