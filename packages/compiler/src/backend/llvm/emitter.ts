@@ -82,6 +82,7 @@ import { analyzeInt32Slots, type Int32Slots } from "../../ir/int32-slots.js";
 import { analyzeFinalFields, constructorClass, type FinalFields } from "../../ir/final-fields.js";
 import { foldConstantGlobals } from "../../ir/constant-globals.js";
 import { findIntegerViews } from "./integer-views.js";
+import { findInt32Abis, INT32_ABI_SUFFIX, type Int32Abi } from "./int32-abi.js";
 import { findInt32Locals, type Int32Local } from "./int32-locals.js";
 import { exactInteger, narrowInteger } from "./integer-values.js";
 import { findInitializerBindings, withInitializerBindings } from "../../ir/initializer-bindings.js";
@@ -781,6 +782,8 @@ export class LlEmitter {
   private readonly initializerBindings: ReturnType<typeof findInitializerBindings>;
   /** Whole-program int32 storage and parameter/result facts. */
   readonly int32Slots: Int32Slots;
+  /** Functions whose direct calls use i32 parameters or results. */
+  readonly int32Abis: ReadonlyMap<string, Int32Abi>;
   /** Immutable module constants (contract types) whose graphs become
    * immortal once initialized: their reads need no reference counting. */
   readonly immortalGlobals: ReadonlySet<string>;
@@ -836,6 +839,8 @@ export class LlEmitter {
   /** Return type of the function being emitted — the unwind path returns
    * a dummy of this type (never read: callers check the flag first). */
   private currentReturnType: IrType = VOID;
+  /** The current body returns its number result as i32. */
+  private currentInt32Result = false;
   /** Active only while emitting a body lowered with LLVM's
    * switched-coroutine intrinsics (wasm32 async bodies and generators,
    * native synchronous generators; see coroLowered). */
@@ -882,6 +887,7 @@ export class LlEmitter {
     this.constantNumericTables = findConstantNumericTables(mod);
     this.initializerBindings = findInitializerBindings(mod);
     this.int32Slots = analyzeInt32Slots(mod);
+    this.int32Abis = this.debug === null ? findInt32Abis(mod, this.int32Slots) : new Map();
     this.immortalGlobals = new Set(mod.contracts?.immortalGlobals ?? []);
     this.programLifetime = new Set(mod.contracts?.programLifetime ?? []);
     this.finalFields = analyzeFinalFields(mod);
@@ -4084,11 +4090,13 @@ export class LlEmitter {
       terminator =
         t === "void"
           ? "ret void"
-          : t === "double"
-            ? `ret double ${f64Lit(0)}`
-            : t === "i1"
-              ? "ret i1 false"
-              : "ret ptr null";
+          : this.currentInt32Result
+            ? "ret i32 0"
+            : t === "double"
+              ? `ret double ${f64Lit(0)}`
+              : t === "i1"
+                ? "ret i1 false"
+                : "ret ptr null";
     }
     // Copy the entries now: later declarations extend these lexical scopes.
     // Release order and the handler are part of the shared block's identity.
@@ -4101,7 +4109,12 @@ export class LlEmitter {
       }
     }
     if (entries.length === 0) {
-      if (passThrough !== undefined && !target && this.currentCoro === null) {
+      if (
+        passThrough !== undefined &&
+        !target &&
+        this.currentCoro === null &&
+        !this.currentInt32Result
+      ) {
         const t = this.llType(this.currentReturnType);
         if (t === "double" || t === "i1") terminator = `ret ${t} ${passThrough}`;
       }
@@ -5404,6 +5417,8 @@ export class LlEmitter {
     this.tryStack = [];
     this.loopDepth = 0;
     this.currentReturnType = fn.returnType;
+    const int32Abi = this.int32Abis.get(fn.name);
+    this.currentInt32Result = int32Abi?.result === true;
     this.currentGenerator = fn.generator ?? null;
     this.currentBorrowedReturn = this.borrowedReturns.has(fn.name);
     this.inConstructor = this.constructorFunctions.has(fn.name);
@@ -5555,10 +5570,15 @@ export class LlEmitter {
         fnScope.push({ slot, type: p.type, boxed: true });
         continue;
       }
-      const incoming = { name: `%p_${mangleLocal(p.localId)}`, type: p.type };
+      const incoming: LlValue = { name: `%p_${mangleLocal(p.localId)}`, type: p.type };
+      if (int32Abi?.params[index]) {
+        const bits = `%p_${mangleLocal(p.localId)}${INT32_ABI_SUFFIX}`;
+        incoming.uint32 = bits;
+        incoming.integer = { name: bits, type: "i32", signed: true, range: INT32_RANGE };
+      }
       if (this.storeInt32Local(p.localId, incoming)) continue;
       B.line(`store ${this.llType(p.type)} %p_${mangleLocal(p.localId)}, ptr ${slot}`);
-      this.storeIntegerView(p.localId, { name: `%p_${mangleLocal(p.localId)}`, type: p.type });
+      this.storeIntegerView(p.localId, incoming);
       if (isRefCounted(p.type) && !borrowed?.has(index)) fnScope.push({ slot, type: p.type });
       if (this.reboundByFunction.get(fn.name)?.has(p.localId) && borrowed?.has(index)) {
         // The caller's borrow stays in the parameter slot; values the body
@@ -5650,10 +5670,22 @@ export class LlEmitter {
     if (this.logArgSlots > 0) {
       B.entryAllocas.push(`%logargs = alloca [${this.logArgSlots} x %ScrLogArg]`);
     }
-    const params = fn.params.map((p) => `${this.llType(p.type)} %p_${mangleLocal(p.localId)}`);
+    const params = fn.params.map((p, index) =>
+      int32Abi?.params[index]
+        ? `i32 %p_${mangleLocal(p.localId)}${INT32_ABI_SUFFIX}`
+        : `${this.llType(p.type)} %p_${mangleLocal(p.localId)}`,
+    );
+    // The i32 entry widens its i32 parameters once; the proof makes the
+    // double exact, so readers of the incoming number see the same value.
+    if (int32Abi)
+      fn.params.forEach((p, index) => {
+        if (!int32Abi.params[index]) return;
+        const name = `%p_${mangleLocal(p.localId)}`;
+        B.entryAllocas.push(`${name} = sitofp i32 ${name}${INT32_ABI_SUFFIX} to double`);
+      });
     // Lifted functions receive their closure first (the callValue ABI).
     if (fn.captures !== undefined) params.unshift("ptr %sc_env");
-    const ret = this.llType(fn.returnType);
+    const ret = int32Abi?.result ? "i32" : this.llType(fn.returnType);
     let attrs = coro !== null ? "#1" : FN_ATTRS;
     // The shared indexed-read helper (lowerSafeIndexRead) is a dense bounds
     // test, a state test and a load behind cold runtime fallbacks, called
@@ -5663,7 +5695,8 @@ export class LlEmitter {
     if (fn.name.startsWith("%arr.idxOr.")) attrs = `inlinehint ${attrs}`;
     const debug = this.debugScope === null ? "" : ` !dbg ${this.debugScope}`;
     const symbol = borrowed ? mangleBorrowedFunction(fn.name) : mangleFunction(fn.name);
-    const body = `define internal ${ret} @${symbol}(${params.join(", ")}) ${attrs}${debug} { ; ${fn.name}\n${B.render()}\n}`;
+    let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${debug} { ; ${fn.name}\n${B.render()}\n}`;
+    if (int32Abi) body += "\n" + this.emitInt32AbiWrapper(fn, symbol, int32Abi);
     if (!borrowed) return body;
     const slot = this.implSlotBorrowed(fn.name);
     const virtual =
@@ -5671,6 +5704,55 @@ export class LlEmitter {
         ? "\n" + this.emitOwnedCallAdapter(fn, borrowed, slot)
         : "";
     return body + "\n" + this.emitOwnedCallAdapter(fn, borrowed) + virtual;
+  }
+
+  /** The double-ABI entry of a function with an i32 entry: every caller
+   * that is not a direct call (closures, dispatch, adapters, the runtime)
+   * enters here. A pending exception passes through to its caller. */
+  private emitInt32AbiWrapper(fn: IrFunction, symbol: string, abi: Int32Abi): string {
+    const lines: string[] = [];
+    const params: string[] = [];
+    const args: string[] = [];
+    fn.params.forEach((param, index) => {
+      const type = this.llType(param.type);
+      params.push(`${type} %p${index}`);
+      if (abi.params[index]) {
+        lines.push(`  %a${index} = fptosi double %p${index} to i32`);
+        args.push(`i32 %a${index}`);
+      } else args.push(`${type} %p${index}`);
+    });
+    const ret = this.llType(fn.returnType);
+    const call = `call ${abi.result ? "i32" : ret} @${symbol}${INT32_ABI_SUFFIX}(${args.join(", ")})`;
+    if (ret === "void") lines.push(`  ${call}`, "  ret void");
+    else if (abi.result)
+      lines.push(`  %r = ${call}`, `  %d = sitofp i32 %r to double`, `  ret double %d`);
+    else lines.push(`  %r = ${call}`, `  ret ${ret} %r`);
+    return `define internal ${ret} @${symbol}(${params.join(", ")}) ${FN_ATTRS} {\nentry:\n${lines.join("\n")}\n}`;
+  }
+
+  /** The i32 bits of a number proven an int32 (a direct call's i32
+   * argument or an i32 result): its exact integer when the value carries
+   * one, else the conversion the proof makes exact. */
+  int32Argument(value: LlValue, expr: IrExpr): string {
+    const integer = exactInteger(this, value, expr);
+    if (integer && /^-?\d+$/.test(integer.name)) return String(Number(integer.name) | 0);
+    if (integer) return narrowInteger(this, integer);
+    const bits = this.B.tmp();
+    this.B.line(`${bits} = fptosi double ${value.name} to i32`);
+    return bits;
+  }
+
+  /** A direct call's i32 result as a number, with the i32 as its integer
+   * and ToUint32 forms. */
+  int32Result(bits: string, type: IrType): LlValue {
+    const number = this.B.tmp();
+    this.B.line(`${number} = sitofp i32 ${bits} to double`);
+    return {
+      name: number,
+      type,
+      uint32: bits,
+      integer: { name: bits, type: "i32", signed: true, range: INT32_RANGE },
+    };
   }
 
   /** Keep the ordinary owned ABI for closures, virtual dispatch, generated
@@ -7241,6 +7323,8 @@ export class LlEmitter {
             this.emitWasiFulfill(v);
             B.terminate(`br label %${this.currentCoro.finalLabel}`);
           } else if (v === null) B.terminate("ret void");
+          else if (this.currentInt32Result)
+            B.terminate(`ret i32 ${this.int32Argument(v, s.value!)}`);
           else B.terminate(`ret ${this.llType(s.value!.type)} ${v.name}`);
         }
         break;

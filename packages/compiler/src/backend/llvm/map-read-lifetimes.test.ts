@@ -90,7 +90,7 @@ function body(mod: IrModule, bits: 32 | 64 = 64): string {
   // Record values are nullable pointers; the other fixtures pin stack boxes.
   const nullable = mod.unions?.[0]?.arms[0]?.kind === "record";
   const llvm = emitLlvmModule(nullable ? mod : keepUnionsBoxed(mod), { pointerBits: bits });
-  return /^define internal [^\n]*@sc_(?:b)?f_work\([^]*?^}/m.exec(llvm)![0];
+  return /^define internal [^\n]*@sc_(?:b)?f_work(?:\.i32)?\([^]*?^}/m.exec(llvm)![0];
 }
 
 test("local map results keep scalar and owned reference payloads without heap wrappers on both ABIs", () => {
@@ -248,7 +248,7 @@ test("string-key lookups test the absent-key filter inline on 64-bit targets onl
   const mod = keepUnionsBoxed(fixture(F64, STRING));
   expect(validateModule(mod)).toEqual([]);
   const helper = (bits: 32 | 64) =>
-    /^define internal ptr @sc_map_entry_str\([^]*?^}/m.exec(
+    /^define internal ptr @sc_map_entry_str(?:\.i32)?\([^]*?^}/m.exec(
       emitLlvmModule(mod, { pointerBits: bits }),
     )![0];
   const wide = helper(64);

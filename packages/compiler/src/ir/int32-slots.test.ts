@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import { analyzeInt32Slots } from "./int32-slots.js";
 import {
+  BOOL,
   DYN,
   F64,
   STRING,
@@ -22,13 +23,29 @@ const ref = (localId: string, type: IrType = F64): IrExpr => ({
   localId,
   type,
 });
-const bin = (op: "|" | "&" | "+" | "/", left: IrExpr, right: IrExpr): IrExpr => ({
+const bin = (op: "|" | "&" | "+" | "-" | "/", left: IrExpr, right: IrExpr): IrExpr => ({
   loc,
   kind: "bin",
   op,
   left,
   right,
   type: F64,
+});
+const cmp = (op: "===" | "!==" | ">", left: IrExpr, right: IrExpr): IrExpr => ({
+  loc,
+  kind: "bin",
+  op,
+  left,
+  right,
+  type: BOOL,
+});
+const cond = (test: IrExpr, then: IrExpr, else_: IrExpr): IrExpr => ({
+  loc,
+  kind: "ternary",
+  cond: test,
+  then,
+  else_,
+  type: then.type,
 });
 const get = (target: IrExpr, className: string, field: string): IrExpr => ({
   loc,
@@ -314,4 +331,47 @@ test("worker builds specialize int32 fields like ordinary executables", () => {
   );
   expect(analyzeInt32Slots(program).isField("T", "x")).toBe(true);
   expect(analyzeInt32Slots({ ...program, workers: true }).isField("T", "x")).toBe(true);
+});
+
+test("counting-down recursion proves its parameter from the call-site ranges", () => {
+  // count(d) = d === 0 ? 0 : count(d - 1): `d - 1` leaves int32 only for
+  // the smallest int32, which no call passes.
+  const count = fn(
+    "count",
+    [{ id: "d" }],
+    [ret(cond(cmp("===", ref("d"), num(0)), num(0), call("count", [bin("-", ref("d"), num(1))])))],
+    F64,
+  );
+  // even/odd count down through each other.
+  const even = fn(
+    "even",
+    [{ id: "n" }],
+    [ret(cond(cmp("!==", ref("n"), num(0)), call("odd", [bin("-", ref("n"), num(1))]), num(1)))],
+    F64,
+  );
+  const odd = fn(
+    "odd",
+    [{ id: "n" }],
+    [ret(cond(cmp("!==", ref("n"), num(0)), call("even", [bin("-", ref("n"), num(1))]), num(0)))],
+    F64,
+  );
+  const user = (args: number[]): IrFunction =>
+    fn(
+      "user",
+      [],
+      args.flatMap((a) => [stmt(call("count", [num(a)])), stmt(call("even", [num(a)]))]),
+    );
+  const slots = analyzeInt32Slots(mod([], [count, even, odd, user([18, 3])]));
+  // Ranges grow from the calls, then widen down to 0.
+  expect(slots.facts("count").params?.get("d")).toEqual({ min: 0, max: 18 });
+  expect(slots.facts("even").params?.get("n")).toEqual({ min: 0, max: 18 });
+  expect(slots.facts("odd").params?.get("n")).toEqual({ min: 0, max: 17 });
+
+  // A negative start counts down past the smallest int32.
+  const negative = analyzeInt32Slots(mod([], [count, even, odd, user([18, -1])]));
+  expect(negative.facts("count").params?.has("d") ?? false).toBe(false);
+  expect(negative.facts("even").params?.has("n") ?? false).toBe(false);
+  // A fraction never reaches the parameter either.
+  const fraction = analyzeInt32Slots(mod([], [count, even, odd, user([0.5])]));
+  expect(fraction.facts("count").params?.has("d") ?? false).toBe(false);
 });

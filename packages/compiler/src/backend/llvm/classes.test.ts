@@ -50,7 +50,9 @@ test("leaf layouts keep direct teardown while recursive layouts share the depth 
       [`${mangleClassRelease("Linked")}_slow`, true],
       [`${mangleRecordRelease("branch")}_slow`, true],
     ] as const) {
-      const body = new RegExp(`^define internal void @${name}\\([^]*?^}`, "m").exec(llvm)?.[0];
+      const body = new RegExp(`^define internal void @${name}(?:\\.i32)?\\([^]*?^}`, "m").exec(
+        llvm,
+      )?.[0];
       expect(body, name).toBeDefined();
       expect(body?.includes("call void @scr_rc_destroy"), name).toBe(bounded);
     }
@@ -72,7 +74,7 @@ test("releases split into an inlinable fast path and an out-of-line remainder", 
   };
   const llvm = emitLlvmModule(mod, { pointerBits: 64 });
   const body = (name: string): string =>
-    new RegExp(`^define internal void @${name}\\([^]*?^}`, "m").exec(llvm)?.[0] ?? "";
+    new RegExp(`^define internal void @${name}(?:\\.i32)?\\([^]*?^}`, "m").exec(llvm)?.[0] ?? "";
   // A hierarchy rooted in the program: a surviving release decrements and
   // takes the possible-root step without loading the vtable.
   const fast = body(mangleClassRelease("Node"));
@@ -113,7 +115,7 @@ test("ProgramLifetime hierarchies are never freed and take no reference counts",
   };
   const llvm = emitLlvmModule(mod, { pointerBits: 64 });
   const body = (name: string): string =>
-    new RegExp(`^define internal [a-z]+ @${name}\\([^]*?^}`, "m").exec(llvm)?.[0] ?? "";
+    new RegExp(`^define internal [a-z]+ @${name}(?:\\.i32)?\\([^]*?^}`, "m").exec(llvm)?.[0] ?? "";
   for (const cls of ["Node", "Leaf"]) {
     // Retain and release are empty, so every inlined call site folds away.
     expect(body(mangleClassRetain(cls)), cls).toMatch(/entry:\n {2}ret ptr %o\n}/);
@@ -215,7 +217,7 @@ test("published ProgramLifetime instances use the published mark every other obj
   // 32-bit targets use 2^31.
   const llvm32 = emitLlvmModule(mod, { pointerBits: 32 });
   const nw32 =
-    new RegExp(`^define internal [a-z]+ @${mangleClassNew("Leaf")}\\([^]*?^}`, "m").exec(
+    new RegExp(`^define internal [a-z]+ @${mangleClassNew("Leaf")}(?:\\.i32)?\\([^]*?^}`, "m").exec(
       llvm32,
     )?.[0] ?? "";
   expect(nw32).toContain("store i32 -2147483648, ptr %o");

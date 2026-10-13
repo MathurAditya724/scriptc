@@ -84,7 +84,7 @@ suspended("a,b").then(console.log);
     expect(validateModule(module)).toEqual([]);
     const body = (llvm: string, name: string): string => {
       const definition = new RegExp(
-        `^define internal [^\\n]*@sc_(?:bf|f)_${name}\\([^]*?^}`,
+        `^define internal [^\\n]*@sc_(?:bf|f)_${name}(?:\\.i32)?\\([^]*?^}`,
         "m",
       ).exec(llvm);
       expect(definition, name).not.toBeNull();

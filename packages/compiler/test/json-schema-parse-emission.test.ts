@@ -32,7 +32,7 @@ console.log(orders.length, typed.sku, loose.name, pair[0]);
     const llvm = emitLlvmModule(mod);
     // Order[] and Item (an annotated binding) take the fused path; the
     // record schema lists fields in declaration order with struct offsets.
-    expect(llvm.match(/^define internal ptr @sc_jp_\d+\(ptr %text\)/gm)).toHaveLength(2);
+    expect(llvm.match(/^define internal ptr @sc_jp_\d+(?:\.i32)?\(ptr %text\)/gm)).toHaveLength(2);
     expect(llvm).toContain("call ptr @scr_json_parse_schema(ptr %text, ptr @sc_jsch_");
     expect(llvm).toMatch(
       /@sc_jsch_\d+_fields = internal constant \[3 x \{ ptr, i64, i64, ptr \}\] \[\{ ptr, i64, i64, ptr \} \{ ptr @sc_cs_\d+, i64 3, i64 ptrtoint/,

@@ -21,7 +21,9 @@ async function emit(source: string): Promise<string> {
 }
 
 function definition(llvm: string, symbol: string): string {
-  const match = new RegExp(`^define internal [^\\n]*@${symbol}\\([^]*?^}`, "m").exec(llvm);
+  const match = new RegExp(`^define internal [^\\n]*@${symbol}(?:\\.i32)?\\([^]*?^}`, "m").exec(
+    llvm,
+  );
   expect(match, symbol).not.toBeNull();
   return match![0];
 }
@@ -36,7 +38,7 @@ for (const x of range(10)) sum += x;
 console.log(sum);
 `);
   expect(definition(llvm, "sc_f_range")).toMatch(
-    /^define internal void @sc_f_range\(double [^)]*\) #1 /,
+    /^define internal void @sc_f_range(?:\.i32)?\(double [^)]*\) #1 /,
   );
   expect(definition(llvm, "sc_f_range")).toContain("@llvm.coro.suspend(");
   expect(definition(llvm, "sc_f_range")).toContain("call void @scr_coro_yield_f64(");

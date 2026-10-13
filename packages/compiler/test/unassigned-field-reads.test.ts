@@ -28,7 +28,9 @@ async function lower(source: string): Promise<IrModule> {
 }
 
 function body(llvm: string, symbol: string): string {
-  const found = new RegExp(`^define internal [^\\n]*@${symbol}\\([^]*?^}`, "m").exec(llvm);
+  const found = new RegExp(`^define internal [^\\n]*@${symbol}(?:\\.i32)?\\([^]*?^}`, "m").exec(
+    llvm,
+  );
   expect(found, symbol).not.toBeNull();
   return found![0];
 }

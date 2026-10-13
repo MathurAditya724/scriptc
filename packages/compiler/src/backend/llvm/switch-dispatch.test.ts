@@ -39,7 +39,7 @@ function emitWith(disc: IrExpr, tests: (IrExpr | null)[], pointerBits: 32 | 64 =
       },
     ],
   };
-  return /^define internal [^\n]*@sc_[bf]+_dispatch\([^]*?^}/m.exec(
+  return /^define internal [^\n]*@sc_[bf]+_dispatch(?:\.i32)?\([^]*?^}/m.exec(
     emitLlvmModule(mod, { pointerBits }),
   )![0];
 }
@@ -137,7 +137,7 @@ test("long string labels select by their first word and confirm the rest inline"
   expect(body).not.toContain("@sc_str_eq");
   const mod = emitLlvmModuleFor(["functions", long]);
   const helper = (name: string) =>
-    new RegExp(`^define internal [^\\n]*@sc_streq_${name}\\([^]*?^}`, "m");
+    new RegExp(`^define internal [^\\n]*@sc_streq_${name}(?:\\.i32)?\\([^]*?^}`, "m");
   const short = helper("\\d+").exec(mod)![0];
   expect(short).toContain("icmp eq i64 %len, 9");
   expect(short).toContain("load i64, ptr %data, align 1");

@@ -34,7 +34,9 @@ console.log(safe(0.5));
     const ll = emitLlvmModule(mod);
     const llBody = (name: string): string =>
       ll.match(
-        new RegExp(`define internal [^\\n]+ @sc_f_${name}\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`),
+        new RegExp(
+          `define internal [^\\n]+ @sc_f_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`,
+        ),
       )![1]!;
     expect(llBody("safe")).toContain(" = add nsw i64 ");
     // The arbitrary input's slow ToUint32 path is integer arithmetic: no

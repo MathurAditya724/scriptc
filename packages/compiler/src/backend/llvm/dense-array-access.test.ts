@@ -53,7 +53,9 @@ function module(name: string, returnType: IrExpr["type"], body: IrStmt[]): IrMod
 }
 
 function body(llvm: string, name: string): string {
-  return new RegExp(`^define internal [^\\n]*@sc_bf_${name}\\([^]*?^}`, "m").exec(llvm)![0];
+  return new RegExp(`^define internal [^\\n]*@sc_bf_${name}(?:\\.i32)?\\([^]*?^}`, "m").exec(
+    llvm,
+  )![0];
 }
 
 test.each([32, 64] as const)("strict scalar reads check dense storage inline (%i-bit)", (bits) => {

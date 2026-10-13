@@ -41,7 +41,7 @@ function logBody(name: "console.log" | "console.error", args: IrExpr[]): string 
     ],
   };
   expect(validateModule(mod)).toEqual([]);
-  return /^define internal [^\n]*@sc_bf_report\([^]*?^}/m.exec(emitLlvmModule(mod))![0];
+  return /^define internal [^\n]*@sc_bf_report(?:\.i32)?\([^]*?^}/m.exec(emitLlvmModule(mod))![0];
 }
 
 test("a template-literal argument passes its parts without joining them", () => {

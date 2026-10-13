@@ -60,7 +60,7 @@ test.each([32, 64] as const)("concat uses a borrowed stack vector with %i-bit si
   const mod = module(concat(concat(text("<"), ref("value")), text(">")));
   expect(validateModule(mod)).toEqual([]);
   const ir = emitLlvmModule(mod, { pointerBits: bits });
-  const body = /^define internal [^\n]*@sc_bf_assemble\([^]*?^}/m.exec(ir)![0];
+  const body = /^define internal [^\n]*@sc_bf_assemble(?:\.i32)?\([^]*?^}/m.exec(ir)![0];
   expect(body).toContain("alloca [3 x ptr]");
   expect(body).toMatch(new RegExp(`call ptr @scr_str_concat_parts\\(ptr %[^,]+, i${bits} 3\\)`));
   expect(body).not.toContain("@scr_str_retain_v");
@@ -77,7 +77,9 @@ test("later writes preserve an owned snapshot of earlier string parts", () => {
   };
   const mod = module(concat(concat(ref("value"), changed), ref("value")));
   expect(validateModule(mod)).toEqual([]);
-  const body = /^define internal [^\n]*@sc_f_assemble\([^]*?^}/m.exec(emitLlvmModule(mod))![0];
+  const body = /^define internal [^\n]*@sc_f_assemble(?:\.i32)?\([^]*?^}/m.exec(
+    emitLlvmModule(mod),
+  )![0];
   const retain = body.indexOf("@scr_str_retain_v");
   const release = body.indexOf("@scr_str_release");
   const assemble = body.indexOf("@scr_str_concat_parts");

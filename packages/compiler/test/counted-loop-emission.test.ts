@@ -15,7 +15,9 @@ test("counted loops guard exact induction and preserve wide remainders on both p
     const mod = deserializeModule(await readFile(outPath, "utf8"));
     const body = (ll: string, name: string): string =>
       ll.match(
-        new RegExp(`define internal [^\\n]+ @sc_f_${name}\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`),
+        new RegExp(
+          `define internal [^\\n]+ @sc_f_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`,
+        ),
       )![1]!;
     for (const pointerBits of [32, 64] as const) {
       const ll = emitLlvmModule(mod, { pointerBits, wasi: pointerBits === 32 });

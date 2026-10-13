@@ -152,7 +152,7 @@ function candidates(mod: IrModule) {
   );
 }
 function workBody(mod: IrModule, pointerBits: 32 | 64 = 64) {
-  return /^define internal [^\n]*@sc_(?:b)?f_work\([^]*?^}/m.exec(
+  return /^define internal [^\n]*@sc_(?:b)?f_work(?:\.i32)?\([^]*?^}/m.exec(
     emitLlvmModule(keepUnionsBoxed(mod), { pointerBits }),
   )![0];
 }
@@ -315,7 +315,8 @@ test("borrows array payloads across direct and transitive scalar helpers", () =>
   expect(candidates(mod).get("value")?.borrow).toBe(true);
   for (const pointerBits of [32, 64] as const) {
     const body = workBody(mod, pointerBits);
-    expect(body).toContain("@sc_f_outer(");
+    // The int32 argument selects the helper's i32 entry.
+    expect(body).toContain("@sc_f_outer.i32(i32 2)");
     expect(body).not.toContain("@sc_rretain_");
     expect(body).not.toContain("@sc_rrelease_");
   }

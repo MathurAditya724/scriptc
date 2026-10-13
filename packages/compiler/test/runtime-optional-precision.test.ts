@@ -47,7 +47,7 @@ function signature(module: IrModule, name: string): string {
 /** The emitted body of a function, under its body or entry symbol. */
 function body(llvm: string, name: string): string {
   const find = (symbol: string): RegExpExecArray | null =>
-    new RegExp(`^define internal [^\\n]*@${symbol}\\([^]*?^}`, "m").exec(llvm);
+    new RegExp(`^define internal [^\\n]*@${symbol}(?:\\.i32)?\\([^]*?^}`, "m").exec(llvm);
   const found = find(`sc_bf_${name}`) ?? find(`sc_f_${name}`);
   expect(found, name).not.toBeNull();
   return found![0];

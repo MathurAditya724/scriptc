@@ -24,7 +24,9 @@ async function emit(source: string): Promise<string> {
 
 function body(llvm: string, name: RegExp): string {
   const match = llvm.match(
-    new RegExp(`define internal [^\\n]+ @${name.source}\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`),
+    new RegExp(
+      `define internal [^\\n]+ @${name.source}(?:\\.i32)?\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`,
+    ),
   );
   expect(match, `${name.source} LLVM function`).not.toBeNull();
   return match![1]!;

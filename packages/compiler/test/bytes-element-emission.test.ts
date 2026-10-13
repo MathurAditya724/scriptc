@@ -290,7 +290,8 @@ test("stable receivers borrow across index calls", () => {
 
   // The call cannot replace this uncaptured local's owning binding.
   expect(ll).not.toContain("call ptr @scr_bytes_retain_v");
-  expect(ll).toContain("call double @sc_f_sideIndex(");
+  // An int32 index result returns through the i32 entry.
+  expect(ll).toMatch(/call (?:double|i32) @sc_f_sideIndex(?:\.i32)?\(/);
 
   expect(ll).toContain("call double @scr_bytes_get");
 });

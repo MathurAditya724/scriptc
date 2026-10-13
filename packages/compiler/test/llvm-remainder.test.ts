@@ -33,7 +33,9 @@ console.log(remainder(5, 2.5), signed(-7.5), maybeZero(7.5, 2.5));
     const mod = deserializeModule(await readFile(outPath, "utf8"));
     const ll = emitLlvmModule(mod);
     const fn = (name: string): string =>
-      new RegExp(`^define internal [^\\n]*@sc_[bf]+_${name}\\([^]*?^}`, "m").exec(ll)![0];
+      new RegExp(`^define internal [^\\n]*@sc_[bf]+_${name}(?:\\.i32)?\\([^]*?^}`, "m").exec(
+        ll,
+      )![0];
     // Four source remainders keep a floating fallback behind a runtime
     // integer check; ToUint32 coercion fallbacks use integer arithmetic.
     expect(ll.match(/ = frem double /g)).toHaveLength(4);

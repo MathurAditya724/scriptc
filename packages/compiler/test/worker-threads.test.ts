@@ -249,7 +249,7 @@ console.log(mix(1, 2), spin(5));
     if (result.ok) {
       const llvm = await readFile(request.outPath, "utf8");
       const body = (name: string): string => {
-        const start = llvm.search(new RegExp(`^define [^\\n]*@${name}\\(`, "m"));
+        const start = llvm.search(new RegExp(`^define [^\\n]*@${name}(?:\\.i32)?\\(`, "m"));
         expect(start).toBeGreaterThanOrEqual(0);
         return llvm.slice(start, llvm.indexOf("\n}\n", start));
       };
@@ -294,7 +294,7 @@ test.each([
   expect(result.ok, JSON.stringify(result)).toBe(true);
   if (result.ok) {
     const llvm = await readFile(request.outPath, "utf8");
-    const start = llvm.search(/^define [^\n]*@sc_f_depth\(/m);
+    const start = llvm.search(/^define [^\n]*@sc_f_depth(?:\.i32)?\(/m);
     expect(start).toBeGreaterThanOrEqual(0);
     const depth = llvm.slice(start, llvm.indexOf("\n}\n", start));
     expect(depth).toContain("call ptr @llvm.stacksave.p0()");

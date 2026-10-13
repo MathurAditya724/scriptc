@@ -230,7 +230,7 @@ test("exceptional exits use each scalar kind's LLVM return type", () => {
         work.locals = [];
       }
       const llvm = emitLlvmModule(module);
-      const body = /^define internal [^\n]*@sc_f_work\([^]*?^}/m.exec(llvm)?.[0];
+      const body = /^define internal [^\n]*@sc_f_work(?:\.i32)?\([^]*?^}/m.exec(llvm)?.[0];
       expect(body).toBeDefined();
       expect(body).toContain(
         type.kind === "bool" ? "ret i1 false" : "ret double 0x0000000000000000",
@@ -326,7 +326,7 @@ function work(expr: IrExpr, parameter: IrType, boxed = false, tdz = false): stri
     ],
   };
   const llvm = emitLlvmModule(module);
-  const body = /^define internal [^\n]*@sc_(?:b)?f_work\([^]*?^}/m.exec(llvm)?.[0];
+  const body = /^define internal [^\n]*@sc_(?:b)?f_work(?:\.i32)?\([^]*?^}/m.exec(llvm)?.[0];
   expect(body).toBeDefined();
   return body!;
 }
@@ -511,7 +511,7 @@ test("wide unions share field reads with identical storage prefixes", () => {
       ),
       { pointerBits },
     );
-    const body = /^define internal [^\n]*@sc_bf_read\([^]*?^}/m.exec(llvm)![0];
+    const body = /^define internal [^\n]*@sc_bf_read(?:\.i32)?\([^]*?^}/m.exec(llvm)![0];
     expect(body).not.toContain("switch i32");
     expect(body).toMatch(/icmp ult i32 %\w+, 128/);
     expect(body).toContain("call void @sc_bad_tag()");
@@ -526,7 +526,7 @@ test("different union field offsets retain per-variant dispatch", () => {
     [[STRING], [BOOL]],
   ]) {
     const llvm = emitLlvmModule(sharedFieldModule(prefixes, STRING));
-    const body = /^define internal [^\n]*@sc_bf_read\([^]*?^}/m.exec(llvm)![0];
+    const body = /^define internal [^\n]*@sc_bf_read(?:\.i32)?\([^]*?^}/m.exec(llvm)![0];
     expect(body).toContain("switch i32");
     expect(body.match(/call ptr @scr_str_retain_v/g)).toHaveLength(2);
   }
@@ -539,7 +539,7 @@ test("partially shared union layouts emit one read per storage prefix", () => {
       STRING,
     ),
   );
-  const body = /^define internal [^\n]*@sc_bf_read\([^]*?^}/m.exec(llvm)![0];
+  const body = /^define internal [^\n]*@sc_bf_read(?:\.i32)?\([^]*?^}/m.exec(llvm)![0];
   expect(body).toContain("switch i32");
   expect(body.match(/call ptr @scr_str_retain_v/g)).toHaveLength(2);
   const destinations = [...body.matchAll(/i32 \d+, label %(u\.a\d+)/g)].map((match) => match[1]);
@@ -549,7 +549,7 @@ test("partially shared union layouts emit one read per storage prefix", () => {
 
 test("shared boolean union fields keep their byte storage and scalar result", () => {
   const llvm = emitLlvmModule(sharedFieldModule([[], []], BOOL));
-  const body = /^define internal [^\n]*@sc_bf_read\([^]*?^}/m.exec(llvm)![0];
+  const body = /^define internal [^\n]*@sc_bf_read(?:\.i32)?\([^]*?^}/m.exec(llvm)![0];
   expect(body).not.toContain("switch i32");
   expect(body.match(/load i8, ptr/g)).toHaveLength(1);
   expect(body).toMatch(/trunc i8 %\w+ to i1/);

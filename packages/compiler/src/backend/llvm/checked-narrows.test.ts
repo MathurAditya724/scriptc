@@ -165,7 +165,7 @@ function fixture(helper: IrFunction): IrModule {
 }
 
 function workBody(mod: IrModule, pointerBits: 32 | 64 = 64): string {
-  return /^define internal [^\n]*@sc_(?:b)?f_work\([^]*?^}/m.exec(
+  return /^define internal [^\n]*@sc_(?:b)?f_work(?:\.i32)?\([^]*?^}/m.exec(
     emitLlvmModule(mod, { pointerBits }),
   )![0];
 }
