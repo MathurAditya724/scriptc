@@ -178,7 +178,7 @@ export function emitOperatorExpr(
         host.llType(e.left.type) === "ptr";
       // A sum that only feeds the conversion of a bitwise operator can be
       // computed in 32 bits (emitWrappingSum).
-      if (isBitwiseOp(e.op)) markWrappingOperands(e.left, e.right);
+      if (isBitwiseOp(e.op)) markWrappingOperands(host, e.left, e.right);
       const operands = identity
         ? emitBorrowedInputs(host, [e.left, e.right])
         : [host.emitExpr(e.left), host.emitExpr(e.right)];
@@ -349,7 +349,7 @@ export function emitOperatorExpr(
       return { name: t, type: e.type };
     }
     case "unary": {
-      if (e.op === "~") markWrappingOperands(e.operand);
+      if (e.op === "~") markWrappingOperands(host, e.operand);
       const v = host.emitExpr(e.operand);
       const t = B.tmp();
       if (e.op === "-") B.line(`${t} = fneg double ${v.name}`);

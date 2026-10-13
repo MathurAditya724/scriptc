@@ -3,17 +3,16 @@ import { integerArithmeticRange, type IntegerRange } from "../../ir/integer-rang
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import type { LlInteger } from "./integer-values.js";
 
-/** `+` and `-` whose number only reaches ToInt32/ToUint32 consumers (`| 0`,
- * the other bitwise operators, `Math.imul`, `Math.clz32`), directly or
- * through further sums. Marked by the consumer before its operands emit. */
-const wrapping = new WeakSet<IrExpr>();
-
-export function markWrappingOperands(...operands: IrExpr[]): void {
+/** Marks the `+` and `-` operands whose number only reaches ToInt32/ToUint32
+ * consumers (`| 0`, the other bitwise operators, `Math.imul`, `Math.clz32`),
+ * directly or through further sums, in the emitter's `wrappingSums`. Called
+ * by the consumer before its operands emit. */
+export function markWrappingOperands(host: LlvmEmitterContext, ...operands: IrExpr[]): void {
   for (const operand of operands) {
     if (operand.kind !== "bin" || (operand.op !== "+" && operand.op !== "-")) continue;
-    if (operand.type.kind !== "f64" || wrapping.has(operand)) continue;
-    wrapping.add(operand);
-    markWrappingOperands(operand.left, operand.right);
+    if (operand.type.kind !== "f64" || host.wrappingSums.has(operand)) continue;
+    host.wrappingSums.add(operand);
+    markWrappingOperands(host, operand.left, operand.right);
   }
 }
 
@@ -103,7 +102,7 @@ export function emitWrappingSum(
   li: LlInteger | null,
   ri: LlInteger | null,
 ): string | undefined {
-  if ((e.op !== "+" && e.op !== "-") || !wrapping.has(e)) return undefined;
+  if ((e.op !== "+" && e.op !== "-") || !host.wrappingSums.has(e)) return undefined;
   const leftRange = li ? li.range : integerOrNaNRange(host, e.left);
   const rightRange = leftRange && (ri ? ri.range : integerOrNaNRange(host, e.right));
   if (!rightRange || !integerArithmeticRange(e.op, leftRange!, rightRange)) return undefined;

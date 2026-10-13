@@ -762,6 +762,8 @@ export class LlEmitter {
    * not a constructor (where they change), not async or a generator. */
   private finalFieldBorrows = false;
   integerRanges: IntegerRanges = new Map();
+  /** Sums whose result only feeds 32-bit conversions (wrapping-sums.ts). */
+  wrappingSums = new Set<IrExpr>();
   private byteWindowsEnabled = true;
   private byteWindowEntries: ReturnType<typeof findInitializedByteLoopBindings> = new Map();
   bytesBounds: ReadonlySet<IrExpr | IrStmt> = new Set();

@@ -695,7 +695,7 @@ export function emitPrimitiveLibCall(host: LlvmEmitterContext, e: LibCallExpr): 
     return { name: t, type: e.type };
   }
   if (e.fn === "math.clz32") {
-    markWrappingOperands(e.args[0]!);
+    markWrappingOperands(host, e.args[0]!);
     const v = host.emitExpr(e.args[0]!);
     const bits = host.emitToUint32(v.name, e.args[0]!, v.uint32);
     host.declare(`declare i32 @llvm.ctlz.i32(i32, i1)`);
@@ -706,7 +706,7 @@ export function emitPrimitiveLibCall(host: LlvmEmitterContext, e: LibCallExpr): 
     return { name: t, type: e.type, uint32: count };
   }
   if (e.fn === "math.imul") {
-    markWrappingOperands(e.args[0]!, e.args[1]!);
+    markWrappingOperands(host, e.args[0]!, e.args[1]!);
     const a = host.emitExpr(e.args[0]!);
     const b = host.emitExpr(e.args[1]!);
     const lhs = host.emitToUint32(a.name, e.args[0]!, a.uint32);
