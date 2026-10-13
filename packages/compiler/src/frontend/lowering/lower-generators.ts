@@ -26,7 +26,7 @@ import {
 import { locOf } from "../program.js";
 import { genResultRecord } from "../type-mapper.js";
 import { forOfVarTarget, lowerDestructuringAssign } from "./lower-stmts.js";
-import { lowerCheckedDelegation } from "./generator-delegation.js";
+import { lowerBuiltinDelegation, lowerCheckedDelegation } from "./generator-delegation.js";
 
 export type GenType = IrType & { kind: "generator" };
 
@@ -224,6 +224,58 @@ export function extractIteratorValue(
   const helper = lowerer.unionRetagHelper(valueT.unionId, yt.unionId, loc, trappable);
   if (!helper) return null;
   return { kind: "call", callee: helper, args: [read], type: yt, loc };
+}
+
+/** Whether `node` reads `.value` from an IteratorResult the checker has
+ * not narrowed to IteratorYieldResult. A finished generator and a
+ * valueless return() answer `{ value: undefined, done: true }` even where
+ * the checker types that read as the return channel. */
+export function isSettledIteratorValueRead(
+  lowerer: Lowerer,
+  node: ts.PropertyAccessExpression,
+): boolean {
+  if (node.name.text !== "value") return false;
+  const receiver = lowerer.typeOf(node.expression);
+  const stdlib = (sym: ts.Symbol | undefined): boolean =>
+    sym !== undefined &&
+    lowerer.checker
+      .declarationsOf(sym)
+      .some(
+        (d) =>
+          (ts.isInterfaceDeclaration(d) || ts.isTypeAliasDeclaration(d)) &&
+          lowerer.isStdlibFile(d.getSourceFile()),
+      );
+  const alias = receiver.getAliasSymbol();
+  const symbol = receiver.getSymbol();
+  if (
+    !(alias?.name === "IteratorResult" && stdlib(alias)) &&
+    !(symbol?.name === "IteratorReturnResult" && stdlib(symbol))
+  )
+    return false;
+  const checked = lowerer.mapTypeOf(lowerer.typeOf(node));
+  return (
+    checked !== null &&
+    checked.kind !== "dyn" &&
+    checked.kind !== "void" &&
+    !(checked.kind === "union" && lowerer.armTag(checked.unionId, UNDEFINED_T) >= 0)
+  );
+}
+
+/** A settled IteratorResult `.value` read (isSettledIteratorValueRead)
+ * keeps the record slot's undefined arm, as array reads do. Null when
+ * this is not such a read. */
+export function iteratorResultValueRead(
+  lowerer: Lowerer,
+  read: IrExpr,
+  node: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (read.kind !== "recordGet" || read.field !== "value" || read.type.kind !== "union")
+    return null;
+  if (lowerer.armTag(read.type.unionId, UNDEFINED_T) < 0) return null;
+  if (!isSettledIteratorValueRead(lowerer, node)) return null;
+  const optional = lowerer.withUndefinedArmOf(lowerer.mapTypeOf(lowerer.typeOf(node))!);
+  if (optional?.kind !== "union") return null;
+  return extractIteratorValue(lowerer, optional, read.type, read, read.loc);
 }
 
 /** Whether the compiler's own drive of `genT` can use the record-free
@@ -734,7 +786,17 @@ function lowerYieldStar(lowerer: Lowerer, expr: ts.YieldExpression): IrExpr {
   }
   if (!expr.expression) lowerer.unsupported("SC1071", expr, "'yield*' with no operand");
   const loc = locOf(expr);
-  const lowered = lowerer.lowerExpr(expr.expression);
+  // An array literal operand builds as its own array type: the yield*
+  // context would otherwise type it by the generator.
+  let operand: ts.Expression = expr.expression;
+  while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+  const literalT = ts.isArrayLiteralExpression(operand)
+    ? lowerer.mapTypeOf(lowerer.typeOf(operand))
+    : null;
+  const lowered =
+    literalT?.kind === "array"
+      ? lowerer.lowerExprExpecting(expr.expression, literalT)
+      : lowerer.lowerExpr(expr.expression);
   const delegate =
     lowered.kind === "dynCheck" && lowered.value.type.kind === "dyn" ? lowered.value : lowered;
   if (
@@ -751,11 +813,18 @@ function lowerYieldStar(lowerer: Lowerer, expr: ts.YieldExpression): IrExpr {
     delegate.type.kind === "classval"
   )
     return lowerCheckedDelegation(lowerer, expr, delegate);
+  if (
+    delegate.type.kind === "array" ||
+    delegate.type.kind === "string" ||
+    delegate.type.kind === "map" ||
+    delegate.type.kind === "set"
+  )
+    return lowerBuiltinDelegation(lowerer, expr, delegate);
   if (delegate.type.kind !== "generator") {
     lowerer.unsupported(
       "SC1071",
       expr,
-      `'yield*' over '${lowerer.fmt(delegate.type)}' (only generator delegates have a lowering — spell out the loop for other iterables)`,
+      `'yield*' over '${lowerer.fmt(delegate.type)}' (generators, arrays, strings, Sets, Maps and iterator objects have a lowering — spell out the loop for other iterables)`,
     );
   }
   const dT = delegate.type;

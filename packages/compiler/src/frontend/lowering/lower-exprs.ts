@@ -159,7 +159,7 @@ import {
   unitOnlyUnion,
   withUnitArm,
 } from "../type-mapper.js";
-import { lowerYield } from "./lower-generators.js";
+import { iteratorResultValueRead, lowerYield } from "./lower-generators.js";
 import { errorPropertyRead, errorPropertyWrite, errorToStringCall } from "./error-methods.js";
 import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "./lower-stream.js";
 import { unionWideningTags } from "../../ir/analysis.js";
@@ -2147,7 +2147,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       // read to the assigned value's bare type, but the stored undefined
       // arm is real (`obj.n = bytes[i]; obj.n` is undefined in Node).
       if (runtimeOptionalClassField(lowerer, handled, expr)) return handled;
-      return lowerer.maybeNarrow(handled, expr);
+      return iteratorResultValueRead(lowerer, handled, expr) ?? lowerer.maybeNarrow(handled, expr);
     }
     // `globalThis.<name>` that no lowering above claimed
     // (globalThis.crypto, globalThis.SubtleCrypto, globalThis.localStorage
@@ -2368,17 +2368,15 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           const shape = lowerer.shapes.get(recv.type.shapeId);
           const field = shape?.fields.find((f) => f.name === expr.name.text);
           if (field) {
-            return lowerer.maybeNarrow(
-              {
-                kind: "recordGet",
-                obj: recv,
-                shapeId: recv.type.shapeId,
-                field: field.name,
-                type: field.type,
-                loc,
-              },
-              expr,
-            );
+            const read: IrExpr = {
+              kind: "recordGet",
+              obj: recv,
+              shapeId: recv.type.shapeId,
+              field: field.name,
+              type: field.type,
+              loc,
+            };
+            return iteratorResultValueRead(lowerer, read, expr) ?? lowerer.maybeNarrow(read, expr);
           }
         }
       }
