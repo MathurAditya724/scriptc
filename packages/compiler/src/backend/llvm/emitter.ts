@@ -859,6 +859,8 @@ export class LlEmitter {
    * generator bodies): yieldExpr emission reads them, and emitTryCatch's
    * catch prologue emits the GENRET sentinel re-unwind exactly here. */
   currentGenerator: { yieldT: IrType; nextT: IrType } | null = null;
+  /** The function being emitted is an async generator body. */
+  private currentAsyncGenerator = false;
   /** Active optional-chain bind slots, by chain id (chainRecv reads). */
   readonly chainSlots = new Map<string, LlValue>();
   logArgSlots = 0;
@@ -5464,6 +5466,7 @@ export class LlEmitter {
     const int32Abi = this.int32Abis.get(fn.name);
     this.currentInt32Result = int32Abi?.result === true;
     this.currentGenerator = fn.generator ?? null;
+    this.currentAsyncGenerator = fn.async === true && fn.generator !== undefined;
     this.currentBorrowedReturn = this.borrowedReturns.has(fn.name);
     this.inConstructor = this.constructorFunctions.has(fn.name);
     this.currentCoro = null;
@@ -5654,6 +5657,8 @@ export class LlEmitter {
     // whose unwind released everything down to depth 0).
     if (fn.returnType.kind === "void" && !B.isTerminated()) {
       this.releaseScope(this.scopes[0]!);
+      // Completing by falling off the end has nothing to await.
+      if (this.currentAsyncGenerator) this.emitAsyncGenSettled();
       if (this.currentCoro !== null) {
         this.emitWasiFulfill(null);
         B.terminate(`br label %${this.currentCoro.finalLabel}`);
@@ -6046,6 +6051,13 @@ export class LlEmitter {
     this.scopes = savedScopes;
     this.finallyStack = savedFinally;
     this.tryStack = savedTry;
+  }
+
+  /** An async generator completing without a further turn: its request
+   * settles as the body returns (scr_async_gen_hop_done). */
+  private emitAsyncGenSettled(): void {
+    this.declare(`declare void @scr_async_gen_hop_done()`);
+    this.B.line(`call void @scr_async_gen_hop_done()`);
   }
 
   /** `return x` of a local whose slot is an owned scope entry of the same
@@ -7332,6 +7344,19 @@ export class LlEmitter {
           v = this.emitExpr(s.value);
           this.moveTemp(v);
         }
+        // An async generator's `return v` awaits v before any crossed
+        // finally runs. Past finally regions that turn is taken here and
+        // the request settles at completion; otherwise the completion's
+        // own turn is the await (nothing runs in between).
+        const genSettles =
+          this.currentAsyncGenerator && (s.awaited === true || this.finallyStack.length > 0);
+        if (this.currentAsyncGenerator && s.awaited !== true && this.finallyStack.length > 0) {
+          if (this.wasi) this.emitWasiSuspend(null);
+          else {
+            this.declare(`declare void @scr_await_hop()`);
+            B.line(`call void @scr_await_hop()`);
+          }
+        }
         if (this.finallyStack.length > 0) {
           let pretSlot: string | null = null;
           if (v !== null && isRefCounted(v.type)) {
@@ -7363,6 +7388,7 @@ export class LlEmitter {
           this.releaseForJump(0, 0);
         }
         if (!B.isTerminated()) {
+          if (genSettles) this.emitAsyncGenSettled();
           if (this.currentCoro !== null) {
             this.emitWasiFulfill(v);
             B.terminate(`br label %${this.currentCoro.finalLabel}`);

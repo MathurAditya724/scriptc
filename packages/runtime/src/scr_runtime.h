@@ -5656,13 +5656,18 @@ ScrPromise *scr_promise_settled_void(void);
 ScrPromise *scr_promise_settled_ref(void *v, void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace);
 
 /* ── Promise.race (compiler-emitted combinator plumbing) ──────────────
- * race_add: settle the result from an already-settled entry, or park a
- * callback waiter that fires inside the entry's settle — fulfillments run
- * `adapt` (an emitted per-type adapter building the result's inner type
- * from the entry's payload; scr_promise_adapt_copy is the same-type
- * one), rejections copy raw and count as HANDLED on the entry. The
+ * race_join: subscribe the result to an entry with a reaction job that
+ * runs one microtask turn after the entry settles (or after the join, for
+ * an entry already settled) — fulfillments run `adapt` (an emitted
+ * per-type adapter building the result's inner type from the entry's
+ * payload; scr_promise_adapt_copy is the same-type one), rejections copy
+ * raw; the entry counts as HANDLED from the join. race_add is the same
+ * callback run inside the entry's own settlement (or now, if settled),
+ * for destinations that view the entry at another inner type. The
  * payload accessors return retained/by-value fulfillment payloads for
  * the emitted adapters (losing entries keep their settlements). */
+void scr_promise_race_join(ScrPromise *race, ScrPromise *in,
+                            void (*adapt)(ScrPromise *dst, ScrPromise *src));
 void scr_promise_race_add(ScrPromise *race, ScrPromise *in,
                            void (*adapt)(ScrPromise *dst, ScrPromise *src));
 
@@ -5670,10 +5675,11 @@ void scr_promise_race_add(ScrPromise *race, ScrPromise *in,
  * BORROWS the Promise<T>[] entries array and the pre-capacity (empty,
  * cap >= ps->len) values array — NULL values/store for Promise<void>
  * entries, whose result fulfills void — retains what it keeps, and
- * returns the result promise +1. Node-exact: values land at their INPUT
- * index regardless of settlement order, the first rejection in
- * SETTLEMENT order wins (later ones count as handled on their entries),
- * and the empty array fulfills immediately. The store helpers are the
+ * returns the result promise +1. Node-exact: each entry settles the
+ * result through a reaction job one microtask turn after it settles,
+ * values land at their INPUT index regardless of settlement order, the
+ * first rejection's job wins (every entry counts as handled), and the
+ * empty array fulfills immediately. The store helpers are the
  * per-element-kind payload writers the compiler picks from. */
 ScrPromise *scr_promise_all(ScrArr *ps, ScrArr *values,
                              void (*store)(ScrArr *a, double i, ScrPromise *src));
