@@ -48,6 +48,7 @@ export const REGEX_INTRINSIC_SIGS: Record<
   // checks the union's arms.
   match: { receiver: STRING, argTypes: [REGEX], result: VOID },
   exec: { receiver: STRING, argTypes: [REGEX], result: VOID },
+  execGroups: { receiver: STRING, argTypes: [REGEX, F64], result: VOID },
   lastIndex: { receiver: REGEX, argTypes: [], result: F64 },
   matchAll: { receiver: STRING, argTypes: [REGEX], result: arrayOf(arrayOf(STRING)) },
   matchAllInto: {

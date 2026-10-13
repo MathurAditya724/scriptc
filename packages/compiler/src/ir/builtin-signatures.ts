@@ -526,6 +526,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** `a.localeCompare(b)`: -1/0/1 in Node's root-locale collation for
    * Latin-script text (scr_str_locale_compare). Never throws. */
   "str.localeCompare": { argTypes: [STRING, STRING], result: F64 },
+  "str.replaceLiteral": { argTypes: [STRING, STRING, STRING, BOOL], result: STRING },
   /* ToNumber(string) — ECMA-262 7.1.4.1 StringToNumber (scr_string.c):
    * trim the JS StrWhiteSpace set, empty/whitespace-only → +0, then the
    * whole span must be one StrNumericLiteral — signed decimal (Infinity

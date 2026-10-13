@@ -1796,6 +1796,126 @@ ScrArr *scr_str_split(ScrStr *s, ScrStr *sep) {
   return scr_str_split_limit(s, sep, 4294967295.0);
 }
 
+/* ── replace / replaceAll with a string search value ──────────────────
+ * One forward scan over the subject bytes. A nonempty needle is well-formed
+ * UTF-8, so every byte match starts on a character boundary and is exactly
+ * a UTF-16 match; the substitution spans are byte ranges of the subject. */
+
+/* GetSubstitution with no captures: $$, $&, $` and $' expand. With no
+ * capture groups and no named groups, $n and $<name> stay literal, as does
+ * every other '$'. */
+static void scr_replace_template(ScrJsonBuf *b, const char *before, size_t before_len,
+                                 const char *match, size_t match_len, const char *after,
+                                 size_t after_len, const ScrStr *rep) {
+  size_t i = 0;
+  while (i < rep->len) {
+    const char *dollar = memchr(rep->data + i, '$', rep->len - i);
+    size_t stop = dollar ? (size_t)(dollar - rep->data) : rep->len;
+    scr_jb_write(b, rep->data + i, stop - i);
+    if (!dollar) return;
+    i = stop;
+    char next = i + 1 < rep->len ? rep->data[i + 1] : '\0';
+    if (i + 1 < rep->len && (next == '$' || next == '&' || next == '`' || next == '\'')) {
+      if (next == '$') scr_jb_putc(b, '$');
+      else if (next == '&') scr_jb_write(b, match, match_len);
+      else if (next == '`') scr_jb_write(b, before, before_len);
+      else scr_jb_write(b, after, after_len);
+      i += 2;
+    } else {
+      scr_jb_putc(b, '$');
+      i += 1;
+    }
+  }
+}
+
+const char *scr_str_find_bytes(const char *hay, size_t hay_len, const char *needle,
+                               size_t needle_len) {
+  return scr_byte_find(hay, hay_len, needle, needle_len);
+}
+
+ScrStr *scr_str_replace_bytes(ScrStr *s, const char *pat, size_t plen, ScrStr *rep, bool all) {
+  const char *end = s->data + s->len;
+  const char *hit = scr_byte_find(s->data, s->len, pat, plen);
+  if (!hit) return scr_str_retain(s);
+  if (memchr(rep->data, '$', rep->len) != NULL) {
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    const char *from = s->data;
+    while (hit) {
+      size_t pos = (size_t)(hit - s->data);
+      scr_jb_write(&b, from, (size_t)(hit - from));
+      scr_replace_template(&b, s->data, pos, hit, plen, hit + plen, s->len - pos - plen, rep);
+      from = hit + plen;
+      if (!all) break;
+      hit = scr_byte_find(from, (size_t)(end - from), pat, plen);
+    }
+    scr_jb_write(&b, from, (size_t)(end - from));
+    return scr_jb_finish(&b);
+  }
+  /* A plain replacement: count, size the result once, then copy. */
+  size_t count = 1;
+  if (all) {
+    for (const char *p = scr_byte_find(hit + plen, (size_t)(end - hit - plen), pat, plen); p;
+         p = scr_byte_find(p + plen, (size_t)(end - p - plen), pat, plen))
+      count++;
+  }
+  size_t kept = s->len - count * plen;
+  if (rep->len && count > (SCR_STR_MAX_CAP - kept) / rep->len) scr_oom();
+  size_t total = kept + count * rep->len;
+  ScrStr *out = scr_str_alloc_raw(total, total);
+  char *w = out->data;
+  const char *from = s->data;
+  for (size_t k = 0; k < count; k++) {
+    size_t gap = (size_t)(hit - from);
+    memcpy(w, from, gap);
+    w += gap;
+    memcpy(w, rep->data, rep->len);
+    w += rep->len;
+    from = hit + plen;
+    if (k + 1 < count) hit = scr_byte_find(from, (size_t)(end - from), pat, plen);
+  }
+  memcpy(w, from, (size_t)(end - from));
+  out->data[total] = '\0';
+  scr_str_hash_forget(out);
+  if (s->ascii && rep->ascii) scr_str_note_ascii(out);
+  return out;
+}
+
+ScrStr *scr_str_replace_literal(ScrStr *s, ScrStr *search, ScrStr *rep, bool all) {
+  if (search->len) return scr_str_replace_bytes(s, search->data, search->len, rep, all);
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  if (!all) {
+    scr_replace_template(&b, s->data, 0, s->data, 0, s->data, s->len, rep);
+    scr_jb_write(&b, s->data, s->len);
+    return scr_jb_finish(&b);
+  }
+  /* The empty needle matches at every UTF-16 position, including between
+   * the halves of a surrogate pair; those spans follow slice's contract. */
+  size_t len16 = (size_t)scr_str_utf16_len(s);
+  if (len16 == s->len) {
+    for (size_t k = 0; k <= s->len; k++) {
+      scr_replace_template(&b, s->data, k, s->data + k, 0, s->data + k, s->len - k, rep);
+      if (k < s->len) scr_jb_putc(&b, s->data[k]);
+    }
+    return scr_jb_finish(&b);
+  }
+  for (size_t k = 0; k <= len16; k++) {
+    ScrStr *before = scr_str_slice(s, 0, (double)k);
+    ScrStr *after = scr_str_slice(s, (double)k, (double)len16);
+    scr_replace_template(&b, before->data, before->len, after->data, 0, after->data, after->len,
+                         rep);
+    scr_str_release(before);
+    scr_str_release(after);
+    if (k < len16) {
+      ScrStr *unit = scr_str_slice(s, (double)k, (double)(k + 1));
+      scr_jb_put_str(&b, unit);
+      scr_str_release(unit);
+    }
+  }
+  return scr_jb_finish(&b);
+}
+
 /* StringPad (ECMA-262 22.1.3.16/17): target length in UTF-16 units, the
  * filler built from whole repetitions of `fill` plus a truncated prefix.
  * A target at or below the length (or an empty fill) returns the receiver

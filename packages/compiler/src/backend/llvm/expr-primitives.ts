@@ -1,7 +1,7 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { matchStringSelfConcat, undefinedArmTag } from "../../ir/analysis.js";
-import { isRefCounted } from "../../ir/ir.js";
+import { isRefCounted, type IrExpr } from "../../ir/ir.js";
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -484,6 +484,26 @@ export function emitOperatorExpr(
   }
 }
 
+/** The immortal template of a regex literal: one static per (pattern,
+ * flags) pair. Pattern/flags strings intern NOW (the literal table is still
+ * open — the runtime ABI's regex-literal discipline). */
+export function regexLiteralTemplate(
+  host: LlvmEmitterContext,
+  e: IrExpr & { kind: "regexLit" },
+): string {
+  const key = `${e.flags}/${e.pattern}`;
+  let re = host.regexInstances.get(key);
+  if (!re) {
+    re = {
+      sym: `sc_re_${host.regexInstances.size}`,
+      src: host.internLiteral(e.pattern),
+      fl: host.internLiteral(e.flags),
+    };
+    host.regexInstances.set(key, re);
+  }
+  return `@${re.sym}`;
+}
+
 export function emitStringExpr(
   host: LlvmEmitterContext,
   e: ExprOf<
@@ -666,23 +686,12 @@ export function emitStringExpr(
     case "strIntrinsic":
       return host.emitStrIntrinsic(e);
     case "regexLit": {
-      // One immortal static per (pattern, flags) pair; the +1 retain is
-      // a no-op on immortals but keeps the owned-temps discipline
-      // uniform. Pattern/flags strings intern NOW (the literal table is
-      // still open — the runtime ABI’s regex-literal discipline).
-      const key = `${e.flags}/${e.pattern}`;
-      let re = host.regexInstances.get(key);
-      if (!re) {
-        re = {
-          sym: `sc_re_${host.regexInstances.size}`,
-          src: host.internLiteral(e.pattern),
-          fl: host.internLiteral(e.flags),
-        };
-        host.regexInstances.set(key, re);
-      }
+      // Each evaluation is a fresh RegExp over the site's shared template
+      // (compiled bytecode and matcher); the +1 result is owned.
+      const template = regexLiteralTemplate(host, e);
       host.declare("declare ptr @scr_regex_literal(ptr)");
       const value = B.tmp();
-      B.line(`${value} = call ptr @scr_regex_literal(ptr @${re.sym})`);
+      B.line(`${value} = call ptr @scr_regex_literal(ptr ${template})`);
       return host.own({ name: value, type: e.type });
     }
     case "templateStrings": {

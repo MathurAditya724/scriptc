@@ -2183,6 +2183,12 @@ export type IrRegexIntrinsicMethod =
   /** exec uses the same string-first operands but keeps the g/y
    * lastIndex refusal, independently of global String.match iteration. */
   | "exec"
+  /** exec whose result is read only by null tests and constant-index
+   * element reads: args[1] is a numeric literal whose bit k marks capture k
+   * as read (k < 53). Unmarked captures read as undefined and the result
+   * carries no index/input properties; the match, lastIndex transitions
+   * and null result are exec's. */
+  | "execGroups"
   | "lastIndex"
   /** `s.matchAll(re)` — every match as its honest string[] slice (match's
    * rule), drained EAGERLY into a fresh string[][]: the lazy iterator is

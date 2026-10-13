@@ -1949,7 +1949,10 @@ function validateFunction(
           const want = sig.argTypes[i];
           if (want) expectType(a, want, `regexIntrinsic ${e.method} arg ${i}`);
         });
-        if (e.method === "match" || e.method === "exec") {
+        if (e.method === "execGroups" && e.args[1]?.kind !== "numLit") {
+          err("regexIntrinsic execGroups mask must be a numeric literal", e.loc);
+        }
+        if (e.method === "match" || e.method === "exec" || e.method === "execGroups") {
           // The `string[] | null` union (program-dependent id) — checked
           // by arms, like the libCall case checks process.envGet.
           const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
