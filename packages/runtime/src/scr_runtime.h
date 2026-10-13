@@ -74,7 +74,7 @@ void scr_init(void);
 /* Program objects emitted by the bundled LLVM helper reference this symbol.
  * Its versioned spelling makes a mismatched manual runtime link fail before
  * the program can start. */
-void scr_runtime_abi_v14(void);
+void scr_runtime_abi_v15(void);
 void scr_runtime_workers_v8(void);
 
 /* ── the trap funnel (scr_console.c; scr_library.c under -DSCR_LIB) ──────
@@ -1583,7 +1583,8 @@ typedef struct ScrArr {
   size_t rc; /* SIZE_MAX = immortal (unused for arrays; kept per convention) */
   size_t len;
   size_t cap; /* dense capacity; sparse entries cover indices >= cap */
-  ScrElemKind elem;
+  /* One ScrElemKind. */
+  uint8_t elem;
   /* 1 exactly when ops->trace is non-NULL: the element type carries a cycle
    * header, so the array is CYCLE-CAPABLE (an element can point back at the
    * array that owns it) and allocates with the hidden collector header —
@@ -1591,7 +1592,15 @@ typedef struct ScrArr {
    * the slot storage (all elements are traced children). Arrays of acyclic
    * ref elements and the historic element kinds keep the lean 1-word
    * header. Kept beside `elem` so the RC fast paths test it with one load. */
-  uint32_t cyc;
+  uint8_t cyc;
+  uint16_t spare;
+  /* A lower bound on the hole-free prefix: filled <= len, filled <= cap,
+   * and every dense state below it is SCR_ARR_VALUE. Element reads below
+   * it need no state check and element writes below it leave the states
+   * alone. Any operation that may store another state (a hole, present
+   * undefined) or move states below it lowers it first (scr_arr_cut);
+   * 0 is always valid. */
+  uint32_t filled;
   /* SCR_ELEM_REF only; NULL for every other element kind. */
   const ScrArrOps *ops;
   uint64_t *data;
@@ -1611,15 +1620,31 @@ typedef struct ScrArrExt {
   size_t prop_cap;
   struct ScrDyn *metadata; /* heterogeneous named properties of match results */
 } ScrArrExt;
-/* The LLVM backend's inline retain/release read `cyc` through its mirrored
- * %ScrArr type (field 4, i32) to decide mark-live / candidate buffering
- * exactly like scr_arr_retain and scr_arr_release; its inline element reads
- * use data (field 6) and present (field 7). */
-_Static_assert(sizeof(ScrElemKind) == sizeof(uint32_t), "ScrArr.elem is an i32 (%ScrArr field 3)");
-_Static_assert(offsetof(ScrArr, cyc) == 3 * sizeof(size_t) + sizeof(uint32_t),
+/* The LLVM backend mirrors ScrArr as %ScrArr: its inline retain/release read
+ * `cyc` (field 4, i8) to decide mark-live / candidate buffering exactly like
+ * scr_arr_retain and scr_arr_release; its inline element access uses filled
+ * (field 6, i32), data (field 8) and present (field 9). */
+_Static_assert(offsetof(ScrArr, cyc) == 3 * sizeof(size_t) + 1,
                "inline RC fast paths read ScrArr.cyc as %ScrArr field 4");
-_Static_assert(offsetof(ScrArr, data) == 3 * sizeof(size_t) + 2 * sizeof(uint32_t) + sizeof(void *),
-               "inline element reads use ScrArr.data as %ScrArr field 6");
+_Static_assert(offsetof(ScrArr, filled) == 3 * sizeof(size_t) + 4,
+               "inline element access reads ScrArr.filled as %ScrArr field 6");
+_Static_assert(offsetof(ScrArr, data) == 3 * sizeof(size_t) + 8 + sizeof(void *),
+               "inline element reads use ScrArr.data as %ScrArr field 8");
+
+/* Lower the hole-free prefix to at most `index`: call before storing a
+ * non-value state at `index`, or before moving states into [index, ...). */
+static inline void scr_arr_cut(ScrArr *a, size_t index) {
+  if (a->filled > index) a->filled = (uint32_t)index;
+}
+
+/* Extend the hole-free prefix over populated dense states. Starts at the
+ * current bound, so after an append it costs only the appended range. */
+static inline void scr_arr_refill(ScrArr *a) {
+  size_t end = a->len < a->cap ? a->len : a->cap;
+  size_t f = a->filled;
+  while (f < end && a->present[f] == SCR_ARR_VALUE) f++;
+  a->filled = (uint32_t)f;
+}
 
 typedef struct ScrArrSparseSlot {
   size_t index;

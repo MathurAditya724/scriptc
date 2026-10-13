@@ -1204,6 +1204,7 @@ export class LlDyn {
                   { index: 2, type: host.sizeType, name: "capacity" },
                   { index: SCR_ARR_FIELD.data, type: "ptr" as const, name: "data" },
                   { index: SCR_ARR_FIELD.present, type: "ptr" as const, name: "presence" },
+                  { index: SCR_ARR_FIELD.filled, type: "i32" as const, name: "filled" },
                 ];
           members.forEach((member) => {
             const cachedPtr = B.tmp();

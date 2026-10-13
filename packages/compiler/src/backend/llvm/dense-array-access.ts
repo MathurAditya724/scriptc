@@ -8,10 +8,16 @@
  * `undefined`, sparse indices, noncanonical numeric properties (negative,
  * fractional, NaN, infinite, 2^32-1), and out-of-range reads branch to the
  * unchanged runtime call, which is marked cold. The ScrArr field indices
- * (SCR_ARR_FIELD) match the C layout in scr_runtime.h. */
+ * (SCR_ARR_FIELD) match the C layout in scr_runtime.h.
+ *
+ * Indices below the array's hole-free prefix bound (`filled`) skip the
+ * state bytes altogether: the runtime keeps every state below it a present
+ * value, so reads load the slot directly and writes replace it without
+ * touching its state. Other dense indices take the state-checked path,
+ * whose writes extend the bound when they continue it. */
 
 import { isRefCounted, type IrExpr, type IrType } from "../../ir/ir.js";
-import { SCR_ARR_FIELD } from "./common.js";
+import { f64Lit, SCR_ARR_FIELD } from "./common.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
 
@@ -28,6 +34,8 @@ interface DenseGuard {
   offset: string;
   /** The array length loaded by the guard, in the target's size type. */
   len: string;
+  /** The hole-free prefix bound loaded by the guard (i32). */
+  filled: string;
   /** Dense value and state storage base pointers. */
   data: string;
   states: string;
@@ -36,7 +44,10 @@ interface DenseGuard {
 /** Branch to `slow` unless `index` names a canonical array index inside
  * dense storage. Reads also require it below the length; writes may land
  * at or past the length while still inside the dense capacity (the runtime
- * then extends the length over hole states exactly the same way). */
+ * then extends the length over hole states exactly the same way). An index
+ * below the hole-free prefix bound branches to `filledLabel` first; both
+ * that block and the returned (state-checked) dense block may use the
+ * guard's values. */
 function emitDenseGuard(
   host: LlvmEmitterContext,
   array: string,
@@ -44,6 +55,7 @@ function emitDenseGuard(
   indexExpr: IrExpr | undefined,
   slow: string,
   requireBelowLen: boolean,
+  filledLabel: string,
 ): DenseGuard {
   const B = host.B;
   const size = host.sizeType;
@@ -72,17 +84,8 @@ function emitDenseGuard(
   const lenPtr = B.tmp(),
     len = B.tmp(),
     capPtr = B.tmp(),
-    cap = B.tmp();
-  B.line(`${lenPtr} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 1`);
-  host.markMemoryPointer(lenPtr, "array:header");
-  B.line(`${len} = load ${size}, ptr ${lenPtr}${host.fieldAliasAttachment(lenPtr)}`);
-  B.line(`${capPtr} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 2`);
-  host.markMemoryPointer(capPtr, "array:header");
-  B.line(`${cap} = load ${size}, ptr ${capPtr}${host.fieldAliasAttachment(capPtr)}`);
-  // Load the storage bases before branching: the header of a live array is
-  // always readable, and unconditional loads let LLVM hoist them out of
-  // loops whose only calls are read-only fallbacks.
-  const dataPtr = B.tmp(),
+    cap = B.tmp(),
+    dataPtr = B.tmp(),
     data = B.tmp(),
     statesPtr = B.tmp(),
     states = B.tmp();
@@ -91,17 +94,58 @@ function emitDenseGuard(
   );
   host.markMemoryPointer(dataPtr, "array:header");
   B.line(`${data} = load ptr, ptr ${dataPtr}${host.fieldAliasAttachment(dataPtr)}`);
+  const loadChecked = (): void => {
+    B.line(`${lenPtr} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 1`);
+    host.markMemoryPointer(lenPtr, "array:header");
+    B.line(`${len} = load ${size}, ptr ${lenPtr}${host.fieldAliasAttachment(lenPtr)}`);
+    B.line(`${capPtr} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 2`);
+    host.markMemoryPointer(capPtr, "array:header");
+    B.line(`${cap} = load ${size}, ptr ${capPtr}${host.fieldAliasAttachment(capPtr)}`);
+    B.line(
+      `${statesPtr} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 ${SCR_ARR_FIELD.present}`,
+    );
+    host.markMemoryPointer(statesPtr, "array:header");
+    B.line(`${states} = load ptr, ptr ${statesPtr}${host.fieldAliasAttachment(statesPtr)}`);
+  };
+  // Reads load the storage bases before branching: the header of a live
+  // array is always readable, and unconditional loads let LLVM hoist them
+  // out of loops whose only calls are read-only fallbacks. Writes load the
+  // fields that only the state-checked path needs inside it, which keeps
+  // them off a hot loop of prefix stores (that path stores to the header).
+  const eagerHeader = requireBelowLen;
+  if (eagerHeader) loadChecked();
+  const filledPtr = B.tmp(),
+    filled = B.tmp(),
+    filledWide = B.tmp();
   B.line(
-    `${statesPtr} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 ${SCR_ARR_FIELD.present}`,
+    `${filledPtr} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 ${SCR_ARR_FIELD.filled}`,
   );
-  host.markMemoryPointer(statesPtr, "array:header");
-  B.line(`${states} = load ptr, ptr ${statesPtr}${host.fieldAliasAttachment(statesPtr)}`);
+  host.markMemoryPointer(filledPtr, "array:header");
+  B.line(`${filled} = load i32, ptr ${filledPtr}${host.fieldAliasAttachment(filledPtr)}`);
+  B.line(`${filledWide} = zext i32 ${filled} to i64`);
   const widen = (value: string): string => {
     if (size === "i64") return value;
     const t = B.tmp();
     B.line(`${t} = zext i32 ${value} to i64`);
     return t;
   };
+  let offset = wide;
+  if (size !== "i64") {
+    offset = B.tmp();
+    B.line(`${offset} = trunc i64 ${wide} to i32`);
+  }
+  // The bound never exceeds the length or the dense capacity.
+  let inFilled = B.tmp();
+  B.line(`${inFilled} = icmp ult i64 ${wide}, ${filledWide}`);
+  if (integral) {
+    const t = B.tmp();
+    B.line(`${t} = and i1 ${integral}, ${inFilled}`);
+    inFilled = t;
+  }
+  const check = B.newLabel("arr.check");
+  B.condBr(inFilled, filledLabel, check);
+  B.startBlock(check);
+  if (!eagerHeader) loadChecked();
   const conditions: string[] = [];
   if (integral) conditions.push(integral);
   const belowCap = B.tmp();
@@ -121,15 +165,21 @@ function emitDenseGuard(
   const dense = B.newLabel("arr.dense");
   B.condBr(ok, dense, slow);
   B.startBlock(dense);
-  let offset = wide;
-  if (size !== "i64") {
-    offset = B.tmp();
-    B.line(`${offset} = trunc i64 ${wide} to i32`);
-  }
-  return { offset, len, data, states };
+  return { offset, len, filled, data, states };
 }
 
-function statePointer(host: LlvmEmitterContext, guard: DenseGuard): string {
+/** The i32 prefix bound in the target's size type. */
+function sizedFilled(host: LlvmEmitterContext, filled: string): string {
+  if (host.sizeType !== "i64") return filled;
+  const t = host.B.tmp();
+  host.B.line(`${t} = zext i32 ${filled} to i64`);
+  return t;
+}
+
+function statePointer(
+  host: LlvmEmitterContext,
+  guard: Pick<DenseGuard, "offset" | "states">,
+): string {
   const B = host.B;
   const statePtr = B.tmp();
   B.line(
@@ -139,7 +189,10 @@ function statePointer(host: LlvmEmitterContext, guard: DenseGuard): string {
   return statePtr;
 }
 
-function valuePointer(host: LlvmEmitterContext, guard: DenseGuard): string {
+function valuePointer(
+  host: LlvmEmitterContext,
+  guard: Pick<DenseGuard, "offset" | "data">,
+): string {
   const B = host.B;
   const valuePtr = B.tmp();
   B.line(
@@ -183,12 +236,12 @@ export function emitDenseArrayGet(
     return t;
   }
   const slow = B.newLabel("arr.get.slow"),
-    join = B.newLabel("arr.get.join");
-  const guard = emitDenseGuard(host, array, index, indexExpr, slow, true);
+    join = B.newLabel("arr.get.join"),
+    valueLabel = B.newLabel("arr.get.value");
+  const guard = emitDenseGuard(host, array, index, indexExpr, slow, true, valueLabel);
   const state = loadState(host, guard);
   const present = B.tmp();
   B.line(`${present} = icmp eq i8 ${state}, ${SCR_ARR_VALUE}`);
-  const valueLabel = B.newLabel("arr.get.value");
   B.condBr(present, valueLabel, slow);
   B.startBlock(valueLabel);
   const ptr = valuePointer(host, guard);
@@ -259,8 +312,9 @@ export function emitDenseArrayState(
   const ty = kind === "state" ? "double" : "i1";
   host.declare(`declare ${kind === "state" ? "double" : "zeroext i1"} @${fn}(ptr, double)`);
   const slow = B.newLabel("arr.state.slow"),
-    join = B.newLabel("arr.state.join");
-  const guard = emitDenseGuard(host, array, index, indexExpr, slow, true);
+    join = B.newLabel("arr.state.join"),
+    filledLabel = B.newLabel("arr.state.filled");
+  const guard = emitDenseGuard(host, array, index, indexExpr, slow, true, filledLabel);
   const state = loadState(host, guard);
   const fast = B.tmp();
   if (kind === "state") B.line(`${fast} = uitofp i8 ${state} to double`);
@@ -269,13 +323,19 @@ export function emitDenseArrayState(
   B.br(fastLabel);
   B.startBlock(fastLabel);
   B.br(join);
+  // Below the bound every state is a present value.
+  B.startBlock(filledLabel);
+  B.br(join);
   B.startBlock(slow);
   const slowValue = B.tmp();
   B.line(`${slowValue} = call ${ty} @${fn}(ptr ${array}, double ${index.name})${READ_FALLBACK}`);
   B.br(join);
   B.startBlock(join);
   const result = B.tmp();
-  B.line(`${result} = phi ${ty} [ ${fast}, %${fastLabel} ], [ ${slowValue}, %${slow} ]`);
+  const filledValue = kind === "state" ? f64Lit(SCR_ARR_VALUE) : "true";
+  B.line(
+    `${result} = phi ${ty} [ ${fast}, %${fastLabel} ], [ ${filledValue}, %${filledLabel} ], [ ${slowValue}, %${slow} ]`,
+  );
   return result;
 }
 
@@ -304,9 +364,21 @@ export function emitDenseArraySet(
     return;
   }
   const slow = B.newLabel("arr.set.slow"),
-    join = B.newLabel("arr.set.join");
-  const guard = emitDenseGuard(host, array, index, indexExpr, slow, false);
+    join = B.newLabel("arr.set.join"),
+    filledLabel = B.newLabel("arr.set.filled");
+  const guard = emitDenseGuard(host, array, index, indexExpr, slow, false, filledLabel);
   const { offset, len } = guard;
+  const storeValue = (valuePtr: string): void => {
+    if (acc === "f64") {
+      B.line(`store double ${value}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+    } else if (acc === "bool") {
+      const bits = B.tmp();
+      B.line(`${bits} = zext i1 ${value} to i64`);
+      B.line(`store i64 ${bits}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+    } else {
+      B.line(`store ptr ${value}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+    }
+  };
   const statePtr = statePointer(host, guard);
   const valuePtr = valuePointer(host, guard);
   let oldState: string | null = null;
@@ -317,16 +389,26 @@ export function emitDenseArraySet(
     B.line(`${oldState} = load i8, ptr ${statePtr}${host.fieldAliasAttachment(statePtr)}`);
     B.line(`${old} = load ptr, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
   }
-  if (acc === "f64") {
-    B.line(`store double ${value}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
-  } else if (acc === "bool") {
-    const bits = B.tmp();
-    B.line(`${bits} = zext i1 ${value} to i64`);
-    B.line(`store i64 ${bits}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
-  } else {
-    B.line(`store ptr ${value}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
-  }
+  storeValue(valuePtr);
   B.line(`store i8 ${SCR_ARR_VALUE}, ptr ${statePtr}${host.fieldAliasAttachment(statePtr)}`);
+  // A store at the bound continues the hole-free prefix.
+  const filledWide = sizedFilled(host, guard.filled),
+    continues = B.tmp();
+  B.line(`${continues} = icmp eq ${host.sizeType} ${offset}, ${filledWide}`);
+  const bumpLabel = B.newLabel("arr.set.bump"),
+    afterBump = B.newLabel("arr.set.state");
+  B.condBr(continues, bumpLabel, afterBump);
+  B.startBlock(bumpLabel);
+  const nextFilled = B.tmp(),
+    filledPtr = B.tmp();
+  B.line(`${nextFilled} = add i32 ${guard.filled}, 1`);
+  B.line(
+    `${filledPtr} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 ${SCR_ARR_FIELD.filled}`,
+  );
+  host.markMemoryPointer(filledPtr, "array:header");
+  B.line(`store i32 ${nextFilled}, ptr ${filledPtr}${host.fieldAliasAttachment(filledPtr)}`);
+  B.br(afterBump);
+  B.startBlock(afterBump);
   // Writes at or past the length extend it over the (hole) gap, exactly
   // like the runtime's dense store.
   const grows = B.tmp();
@@ -351,6 +433,20 @@ export function emitDenseArraySet(
     B.startBlock(releaseLabel);
     host.releaseValue(old, element);
   }
+  B.br(join);
+  // Below the bound the slot holds a present value: replace it, leaving
+  // the state alone, and release a replaced reference after the store.
+  B.startBlock(filledLabel);
+  const filledValuePtr = valuePointer(host, guard);
+  let filledOld: string | null = null;
+  if (acc === "ref") {
+    filledOld = B.tmp();
+    B.line(
+      `${filledOld} = load ptr, ptr ${filledValuePtr}${host.fieldAliasAttachment(filledValuePtr)}`,
+    );
+  }
+  storeValue(filledValuePtr);
+  if (filledOld) host.releaseValue(filledOld, element);
   B.br(join);
   B.startBlock(slow);
   call(" cold");
@@ -400,8 +496,8 @@ export function emitDenseArrayPush(
     states = B.tmp();
   B.line(`${data} = load ptr, ptr ${dataPtr}${host.fieldAliasAttachment(dataPtr)}`);
   B.line(`${states} = load ptr, ptr ${statesPtr}${host.fieldAliasAttachment(statesPtr)}`);
-  const statePtr = statePointer(host, { offset: len, len, data, states });
-  const valuePtr = valuePointer(host, { offset: len, len, data, states });
+  const statePtr = statePointer(host, { offset: len, states });
+  const valuePtr = valuePointer(host, { offset: len, data });
   if (acc === "f64") {
     B.line(`store double ${value}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
   } else if (acc === "bool") {
@@ -416,6 +512,18 @@ export function emitDenseArrayPush(
     fastValue = B.tmp();
   B.line(`${next} = add nuw ${size} ${len}, 1`);
   B.line(`store ${size} ${next}, ptr ${lenPtr}${host.fieldAliasAttachment(lenPtr)}`);
+  // An append to a hole-free array keeps it hole-free.
+  const filledPtr = header(SCR_ARR_FIELD.filled),
+    filled = B.tmp(),
+    packed = B.tmp(),
+    nextFilled = B.tmp(),
+    bumped = B.tmp();
+  B.line(`${filled} = load i32, ptr ${filledPtr}${host.fieldAliasAttachment(filledPtr)}`);
+  const filledWide = sizedFilled(host, filled);
+  B.line(`${packed} = icmp eq ${size} ${filledWide}, ${len}`);
+  B.line(`${nextFilled} = add i32 ${filled}, 1`);
+  B.line(`${bumped} = select i1 ${packed}, i32 ${nextFilled}, i32 ${filled}`);
+  B.line(`store i32 ${bumped}, ptr ${filledPtr}${host.fieldAliasAttachment(filledPtr)}`);
   B.line(`${fastValue} = sitofp ${size} ${next} to double`);
   B.br(join);
   B.startBlock(slow);

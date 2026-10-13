@@ -152,6 +152,56 @@ test.each([32, 64] as const)(
   },
 );
 
+test.each([32, 64] as const)(
+  "indices below the hole-free prefix bound skip the state bytes (%i-bit)",
+  (bits) => {
+    const read: IrExpr = { kind: "arrayGet", arr: ref("a", nums), index, type: F64, loc };
+    const llvm = emitLlvmModule(
+      module("bound", VOID, [
+        {
+          kind: "arraySet",
+          arr: ref("a", nums),
+          index,
+          value: { kind: "bin", op: "+", left: read, right: read, type: F64, loc },
+          loc,
+        },
+        {
+          kind: "arraySet",
+          arr: ref("s", words),
+          index,
+          value: { kind: "strLit", value: "x", type: STRING, loc },
+          loc,
+        },
+      ]),
+      { pointerBits: bits },
+    );
+    const fn = body(llvm, "bound");
+    const size = bits === 32 ? "i32" : "i64";
+    // The bound is %ScrArr field 6, an i32 compared against the index.
+    const bound = fn.match(/getelementptr inbounds %ScrArr, ptr .*, i32 0, i32 6$/gm) ?? [];
+    expect(bound.length).toBeGreaterThanOrEqual(4);
+    expect(fn).toMatch(/load i32, ptr /);
+    // The prefix blocks load or store the slot without a state access.
+    const blocks = (label: string): string[] =>
+      [...fn.matchAll(new RegExp(`^${label}\\d+:\\n((?:  .*\\n)*)`, "gm"))].map((m) => m[1]!);
+    const reads = blocks("arr\\.get\\.value");
+    expect(reads).toHaveLength(2);
+    for (const block of reads) {
+      expect(block).toMatch(/load double, ptr /);
+      expect(block).not.toMatch(/i8/);
+    }
+    const writes = blocks("arr\\.set\\.filled");
+    expect(writes).toHaveLength(2);
+    for (const block of writes) expect(block).not.toMatch(/i8/);
+    expect(writes[0]).toMatch(/store double .*, ptr /);
+    // The replaced string below the bound is released after the store.
+    expect(writes[1]).toMatch(/store ptr .*\n[^]*call void @scr_str_release\(/);
+    // A state-checked store at the bound extends it.
+    expect(fn).toMatch(new RegExp(`icmp eq ${size} .*`));
+    expect(fn).toMatch(/store i32 .*, ptr /);
+  },
+);
+
 test("state and presence queries answer dense slots inline", () => {
   const state: IrExpr = { kind: "arrayState", arr: ref("b", flags), index, type: F64, loc };
   const has: IrExpr = { kind: "arrayHas", arr: ref("s", words), index, type: BOOL, loc };

@@ -319,8 +319,8 @@ function rcHeaderTest(cycle: "arr" | "map", yes: string, no: string): string[] {
   if (cycle === "arr") {
     return [
       `  %cycp = getelementptr inbounds %ScrArr, ptr %o, i32 0, i32 ${SCR_ARR_FIELD.cyc} ; cyc`,
-      `  %cyc = load i32, ptr %cycp`,
-      `  %headered = icmp ne i32 %cyc, 0`,
+      `  %cyc = load i8, ptr %cycp`,
+      `  %headered = icmp ne i8 %cyc, 0`,
       `  br i1 %headered, label %${yes}, label %${no}`,
     ];
   }
