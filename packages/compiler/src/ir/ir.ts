@@ -1692,7 +1692,11 @@ export type IrStmt =
       labels?: string[];
       loc: SrcLoc;
     }
-  | { kind: "return"; value: IrExpr | null; loc: SrcLoc }
+  /** `awaited`: a return of an async generator that needs no Await of its
+   * own — its operand's await performed it (`return p` of a promise), or
+   * it has no operand (`return;`). The request settles as the body
+   * completes instead of one microtask turn later. */
+  | { kind: "return"; value: IrExpr | null; awaited?: true; loc: SrcLoc }
   /** Field write `obj.f = v` — statement-only, like `assign`/`arraySet`.
    * Evaluation order: obj, then value. The old value is released; ownership
    * of a refcounted new value MOVES into the object. */
@@ -3310,7 +3314,7 @@ export type IrExpr =
    * promise.race: every arg is a PROMISE (the array literal's
    * entries, lowered individually — the array never materializes), the
    * type is the checker's combined result promise; the backend emits a
-   * fresh promise plus one scr_promise_race_add per entry with an
+   * fresh promise plus one scr_promise_race_join per entry with an
    * interned per-(entry-inner → result-inner) adapter (raceAdapterFor) —
    * same-type entries share the runtime's copy adapter, arm entries wrap
    * into the result union, sub-union entries re-tag arm-wise. First

@@ -159,14 +159,14 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
         return out;
       }
       if (e.name === "promise.race") {
-        // A fresh result promise + one race_add per entry: settled
-        // entries settle it immediately (first add wins), pending ones
-        // park a callback waiter. Entry temps stay frame-owned
-        // (race_add retains what it keeps).
+        // A fresh result promise + one race_join per entry: each entry
+        // settles it from a reaction job (first job wins), queued when the
+        // entry settles or at the join for a settled entry. Entry temps
+        // stay frame-owned (race_join retains what it keeps).
         if (e.type.kind !== "promise")
           throw new InternalCompilerError("llvm emitter bug: promise.race type");
         host.declare(`declare ptr @scr_promise_new()`);
-        host.declare(`declare void @scr_promise_race_add(ptr, ptr, ptr)`);
+        host.declare(`declare void @scr_promise_race_join(ptr, ptr, ptr)`);
         const result = B.tmp();
         B.line(`${result} = call ptr @scr_promise_new()`);
         const out = host.own({ name: result, type: e.type });
@@ -175,7 +175,7 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
             throw new InternalCompilerError("llvm emitter bug: promise.race entry");
           const p = host.emitExpr(entry);
           const adapter = host.raceAdapterFor(entry.type.inner, e.type.inner);
-          B.line(`call void @scr_promise_race_add(ptr ${result}, ptr ${p.name}, ptr @${adapter})`);
+          B.line(`call void @scr_promise_race_join(ptr ${result}, ptr ${p.name}, ptr @${adapter})`);
         }
         return out;
       }

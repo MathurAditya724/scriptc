@@ -1312,6 +1312,9 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
         `bare 'return' where the declared return type is '${lowerer.fmt(lowerer.ctx.returnType)}' (JS hands the caller undefined, which this representation cannot hold — return a value, or widen the declared return type with undefined)`,
       );
     }
+    // An async generator's bare return has no operand to await.
+    if (lowerer.ctx.isAsync === true && lowerer.ctx.generator)
+      return { kind: "return", value, awaited: true, loc: locOf(stmt) };
     return { kind: "return", value, loc: locOf(stmt) };
   }
   if (ts.isBreakStatement(stmt) || ts.isContinueStatement(stmt)) {

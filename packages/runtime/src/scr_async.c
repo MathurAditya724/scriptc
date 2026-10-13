@@ -157,6 +157,9 @@ static void scr_fiber_stack_free(void *stack) {
 
 enum { SCR_PROM_PENDING = 0, SCR_PROM_FULFILLED = 1, SCR_PROM_REJECTED = 2 };
 
+#define SCR_CB_SYNC SIZE_MAX
+#define SCR_CB_BATCH (SIZE_MAX - 1)
+
 typedef struct ScrFiber ScrFiber;
 
 typedef struct { size_t rc; } ScrPromiseIdentity;
@@ -183,18 +186,22 @@ struct ScrPromise {
   ScrFiber **waiters; /* waiter_inline until a second fiber parks */
   size_t nwaiters, waiters_cap;
   ScrFiber *waiter_inline;
-  /* Combinator callbacks (Promise.race / Promise.all): at settle,
-   * fulfilled promises run adapt(dst, this) — an emitted adapter
-   * converting the payload into the destination's inner type — and
-   * rejections copy raw (reasons are dynamically tagged). Each entry owns
-   * a reference on its dst. Promise.all entries carry the shared
-   * countdown state (`all` non-NULL, `all_idx` the entry's INPUT index);
-   * race entries leave both zeroed and keep the adapt dispatch. */
+  /* Callback waiters: fulfilled promises run adapt(dst, this) — an
+   * emitted adapter converting the payload into the destination's inner
+   * type — and rejections copy raw (reasons are dynamically tagged). Each
+   * entry owns a reference on its dst. Promise.all entries carry the
+   * shared countdown state (`all` non-NULL, `all_idx` the entry's INPUT
+   * index); the others leave both zeroed and keep the adapt dispatch.
+   * Combinator entries (Promise.all / Promise.race) are reaction jobs:
+   * `job_at` is the number of waiters parked before the entry subscribed,
+   * so settlement queues the job in subscription order among the waking
+   * fibers. Conversions (SCR_CB_SYNC) run inside the settle itself. */
   struct ScrPromiseCbWaiter {
     void (*adapt)(ScrPromise *dst, ScrPromise *src);
     ScrPromise *dst;
     struct ScrAllState *all;
     size_t all_idx;
+    size_t job_at;
   } *cbs;
   size_t ncbs, cbs_cap;
   /* Unhandled-rejection tracking: set when rejected, cleared on await. */
@@ -229,7 +236,7 @@ typedef struct ScrAllState {
 static void scr_promise_all_state_release(ScrAllState *st) {
   if (--st->rc == 0) {
     if (st->values) scr_arr_release(st->values);
-    free(st);
+    scr_mem_free(st);
   }
 }
 
@@ -601,6 +608,14 @@ struct ScrFiber {
   /* Async-generator settlement jobs: stackless READY-queue envelopes.
    * The retained generator is pumped on the main stack. */
   ScrGen *gen_job;
+  /* Promise.all / Promise.race reaction jobs (cb_job set): stackless
+   * READY-queue envelopes carrying the settled entry (owned) and its
+   * callback waiter (which owns its destination and countdown state). A
+   * Promise.all batch job (cb.job_at == SCR_CB_BATCH) carries the first
+   * rejected entry, or none. */
+  bool cb_job;
+  ScrPromise *cb_src;
+  struct ScrPromiseCbWaiter cb;
   /* Set during the eager prefix of a fiber spawned by an await-call entry
    * (scr_async_spawn_await_*): the spawner that awaits this fiber's promise
    * as soon as the spawn returns. The first suspension parks it on the
@@ -1371,68 +1386,156 @@ void scr_promise_adapt_copy(ScrPromise *dst, ScrPromise *src) {
   scr_promise_settle_from(dst, src);
 }
 
-/* One Promise.all entry settling: a fulfillment stores its payload into
+/* One Promise.all entry's reaction job: a fulfillment stores its payload into
  * the values array at the entry's INPUT index (input order regardless of
  * settlement order) and the LAST missing fulfillment fulfills the result
  * with the array (void-element all fulfills void); a rejection copies raw
- * into the result — the first one in SETTLEMENT order wins through the
- * destination's own pending check, and later ones still count as HANDLED
- * on their entries (settle_from marks them observed), exactly Node's
+ * into the result — the first job to run wins through the destination's
+ * own pending check, and later ones still count as HANDLED on their
+ * entries (marked at the subscription), exactly Node's
  * subscribe-to-everything behavior. */
+static void scr_promise_all_fulfill(ScrAllState *st, ScrPromise *result) {
+  if (st->values) {
+    scr_promise_fulfill_ref(result, scr_arr_retain(st->values), scr_arr_retain_v,
+                             scr_arr_release_v, st->values->cyc ? scr_arr_trace_v : NULL);
+  } else {
+    scr_promise_fulfill_void(result);
+  }
+}
+
+static void scr_promise_all_count(ScrAllState *st, ScrPromise *result, size_t fulfilled) {
+  st->remaining -= fulfilled;
+  if (st->remaining == 0 && result->state == SCR_PROM_PENDING) scr_promise_all_fulfill(st, result);
+}
+
 static void scr_promise_all_settle(ScrAllState *st, ScrPromise *result, size_t idx,
                                     ScrPromise *src) {
   if (src->state == SCR_PROM_FULFILLED) {
     if (st->store) st->store(st->values, (double)idx, src);
-    if (--st->remaining == 0 && result->state == SCR_PROM_PENDING) {
-      if (st->values) {
-        scr_promise_fulfill_ref(result, scr_arr_retain(st->values), scr_arr_retain_v,
-                                 scr_arr_release_v,
-                                 st->values->cyc ? scr_arr_trace_v : NULL);
-      } else {
-        scr_promise_fulfill_void(result);
-      }
-    }
+    scr_promise_all_count(st, result, 1);
   } else {
     scr_promise_settle_from(result, src);
   }
 }
 
-/* Settle helpers wake waiters into the microtask queue and run the
- * combinator callbacks: adapters for fulfillments (they convert the
- * payload to the destination's inner type), the raw copy for rejections
- * (reasons are dynamically tagged). first-settle-wins rides the
- * destination's own pending check. Promise.all entries dispatch through
- * their shared countdown state instead of the adapt pair. */
-static void scr_promise_settle_wake(ScrPromise *p) {
-  for (size_t i = 0; i < p->nwaiters; i++) {
+static inline void scr_promise_wake_one(ScrFiber *f) {
 #ifdef SCR_WORKERS
-    p->waiters[i]->waiting = NULL;
+  f->waiting = NULL;
 #endif
-    scr_ready_push(p->waiters[i]);
+  scr_ready_push(f);
+}
+
+/* Runs one callback waiter against its settled source and drops the
+ * waiter's references (its destination and countdown state). */
+static void scr_promise_cb_run(struct ScrPromiseCbWaiter *cb, ScrPromise *src) {
+  if (cb->all) {
+    scr_promise_all_settle(cb->all, cb->dst, cb->all_idx, src);
+    scr_promise_all_state_release(cb->all);
+  } else if (src->state == SCR_PROM_FULFILLED) {
+    cb->adapt(cb->dst, src);
+  } else {
+    scr_promise_settle_from(cb->dst, src);
   }
+  scr_promise_release(cb->dst);
+}
+
+/* Queues a combinator's reaction job for a settled entry. The waiter's
+ * references move into the envelope, which also retains the entry. */
+static void scr_promise_cb_queue(const struct ScrPromiseCbWaiter *cb, ScrPromise *src) {
+  ScrFiber *job = scr_mem_calloc(sizeof *job);
+  if (!job) scr_oom();
+  job->cb_job = true;
+  job->cb_src = scr_promise_retain(src);
+  job->cb = *cb;
+  scr_ready_push(job);
+}
+
+/* Runs and frees a reaction job envelope. */
+static void scr_promise_job_run(ScrFiber *f) {
+  ScrPromise *src = f->cb_src;
+  struct ScrPromiseCbWaiter cb = f->cb;
+  scr_mem_free(f);
+  if (cb.job_at != SCR_CB_BATCH) {
+    scr_promise_cb_run(&cb, src);
+  } else {
+    if (src != NULL) scr_promise_settle_from(cb.dst, src);
+    else scr_promise_all_count(cb.all, cb.dst, cb.all_idx);
+    scr_promise_all_state_release(cb.all);
+    scr_promise_release(cb.dst);
+  }
+  scr_promise_release(src);
+}
+
+static struct ScrPromiseCbWaiter *scr_promise_cb_push(ScrPromise *in) {
+  if (in->ncbs == in->cbs_cap) {
+    in->cbs_cap = in->cbs_cap ? in->cbs_cap * 2 : 4;
+    in->cbs = realloc(in->cbs, in->cbs_cap * sizeof *in->cbs);
+    if (!in->cbs) scr_oom();
+  }
+  return &in->cbs[in->ncbs++];
+}
+
+/* A combinator subscribing to an entry: Node's `then` on the entry. The
+ * entry counts as handled from here on; a settled entry queues its
+ * reaction job now, a pending one when it settles. */
+static void scr_promise_cb_subscribe(ScrPromise *in, struct ScrPromiseCbWaiter cb) {
+  scr_prom_observe(in);
+  if (in->state != SCR_PROM_PENDING) {
+    scr_promise_cb_queue(&cb, in);
+  } else {
+    cb.job_at = in->nwaiters;
+    *scr_promise_cb_push(in) = cb;
+  }
+}
+
+/* Settlement with callback waiters: combinator jobs enter the microtask
+ * queue interleaved with the waking fibers in subscription order, then
+ * the conversions run in place (they settle their destinations now, so
+ * those destinations' waiters queue behind this promise's). */
+static void scr_promise_settle_wake_cbs(ScrPromise *p) {
+  size_t w = 0;
+  for (size_t i = 0; i < p->ncbs; i++) {
+    const struct ScrPromiseCbWaiter *cb = &p->cbs[i];
+    if (cb->job_at == SCR_CB_SYNC) continue;
+    for (; w < cb->job_at && w < p->nwaiters; w++) scr_promise_wake_one(p->waiters[w]);
+    scr_promise_cb_queue(cb, p);
+  }
+  for (; w < p->nwaiters; w++) scr_promise_wake_one(p->waiters[w]);
   p->nwaiters = 0;
   for (size_t i = 0; i < p->ncbs; i++) {
-    if (p->cbs[i].all) {
-      scr_promise_all_settle(p->cbs[i].all, p->cbs[i].dst, p->cbs[i].all_idx, p);
-      scr_promise_all_state_release(p->cbs[i].all);
-    } else if (p->state == SCR_PROM_FULFILLED) {
-      p->cbs[i].adapt(p->cbs[i].dst, p);
-    } else {
-      scr_promise_settle_from(p->cbs[i].dst, p);
-    }
-    scr_promise_release(p->cbs[i].dst);
+    if (p->cbs[i].job_at == SCR_CB_SYNC) scr_promise_cb_run(&p->cbs[i], p);
   }
   p->ncbs = 0;
+}
+
+/* Settle helpers wake waiters into the microtask queue and dispatch the
+ * callback waiters. */
+static void scr_promise_settle_wake(ScrPromise *p) {
+  if (p->ncbs != 0) {
+    scr_promise_settle_wake_cbs(p);
+  } else {
+    for (size_t i = 0; i < p->nwaiters; i++) scr_promise_wake_one(p->waiters[i]);
+    p->nwaiters = 0;
+  }
   if (p->state == SCR_PROM_REJECTED) scr_track_rejection(p);
 }
 
 /* ── Promise.race ─────────────────────────────────────────────────────
- * The compiler emits: a fresh result promise, then one race_add per
- * entry. A settled entry settles the result immediately (first add
- * wins); pending entries park a callback waiter that fires inside the
- * entry's settle. Fibers awaiting the result still wake through the
- * microtask queue. Losing entries keep their own settlements (payloads
- * are retained, not moved). */
+ * The compiler emits: a fresh result promise, then one race_join per
+ * entry. Each entry settles the result from its reaction job (first job
+ * wins), one microtask turn after the entry settles or, for an entry
+ * already settled, after the join. Losing entries keep their own
+ * settlements (payloads are retained, not moved).
+ *
+ * race_add is the same callback without the job: the destination is a
+ * view of the entry at another inner type (dyn boxes, typed reads of
+ * dyn promises), so it settles inside the entry's own settlement. */
+
+void scr_promise_race_join(ScrPromise *race, ScrPromise *in,
+                            void (*adapt)(ScrPromise *dst, ScrPromise *src)) {
+  scr_promise_cb_subscribe(
+      in, (struct ScrPromiseCbWaiter){ adapt, scr_promise_retain(race), NULL, 0, 0 });
+}
 
 void scr_promise_race_add(ScrPromise *race, ScrPromise *in,
                            void (*adapt)(ScrPromise *dst, ScrPromise *src)) {
@@ -1441,16 +1544,8 @@ void scr_promise_race_add(ScrPromise *race, ScrPromise *in,
     else scr_promise_settle_from(race, in);
     return;
   }
-  if (in->ncbs == in->cbs_cap) {
-    in->cbs_cap = in->cbs_cap ? in->cbs_cap * 2 : 4;
-    in->cbs = realloc(in->cbs, in->cbs_cap * sizeof *in->cbs);
-    if (!in->cbs) scr_oom();
-  }
-  in->cbs[in->ncbs].adapt = adapt;
-  in->cbs[in->ncbs].dst = scr_promise_retain(race);
-  in->cbs[in->ncbs].all = NULL;
-  in->cbs[in->ncbs].all_idx = 0;
-  in->ncbs++;
+  *scr_promise_cb_push(in) =
+      (struct ScrPromiseCbWaiter){ adapt, scr_promise_retain(race), NULL, 0, SCR_CB_SYNC };
 }
 
 /* ── Promise.all ──────────────────────────────────────────────────────
@@ -1459,12 +1554,14 @@ void scr_promise_race_add(ScrPromise *race, ScrPromise *in,
  * the result promise +1. `values` arrives EMPTY with cap >= ps->len (the
  * emitted construction passes the length) and is pre-sized here: every
  * slot's zero bits are the per-kind placeholder (0.0 / false / NULL),
- * legal to overwrite through the store helpers and to release. Entries
- * already settled settle inline (a rejection settles the result NOW —
- * first rejection in settlement order — and later rejected entries are
- * still marked handled); pending entries park a countdown waiter. The
- * empty array fulfills immediately (awaiters take the settled-await
- * microtask hop, like Node's one-tick resolve). */
+ * legal to overwrite through the store helpers and to release. Every
+ * entry subscribes a countdown reaction job (Node's `then` on each entry):
+ * it runs one microtask turn after the entry settles, or after this call
+ * for an entry already settled, so the last fulfillment's job fulfills
+ * the result and the first rejection's job rejects it. Every entry is
+ * marked handled at the subscription. The empty array fulfills
+ * immediately (awaiters take the settled-await microtask hop, like Node's
+ * one-tick resolve). */
 ScrPromise *scr_promise_all(ScrArr *ps, ScrArr *values,
                              void (*store)(ScrArr *a, double i, ScrPromise *src)) {
   size_t n = ps->len;
@@ -1475,41 +1572,48 @@ ScrPromise *scr_promise_all(ScrArr *ps, ScrArr *values,
      * the array intentionally has no dense allocation. */
     scr_arr_set_len(values, (double)n);
   }
-  ScrAllState *st = malloc(sizeof *st);
+  ScrAllState *st = scr_mem_alloc(sizeof *st);
   if (!st) scr_oom();
   st->rc = 1; /* the builder's reference, dropped at the end */
   st->remaining = n;
   st->values = values ? scr_arr_retain(values) : NULL;
   st->store = store;
+  /* The jobs of entries already settled would run back to back with
+   * nothing in between, so they run as one batch job: fulfillments store
+   * their values now (the array is unobservable until the result
+   * fulfills) and count down in the job; the first rejected entry in input
+   * order rejects the result there. */
+  size_t fulfilled = 0;
+  ScrPromise *rejected = NULL;
   for (size_t i = 0; i < n; i++) {
     ScrPromise *in = (ScrPromise *)scr_arr_get_ref(ps, (double)i); /* +1 */
-    if (in->state != SCR_PROM_PENDING) {
-      scr_promise_all_settle(st, result, i, in);
-    } else {
-      if (in->ncbs == in->cbs_cap) {
-        in->cbs_cap = in->cbs_cap ? in->cbs_cap * 2 : 4;
-        in->cbs = realloc(in->cbs, in->cbs_cap * sizeof *in->cbs);
-        if (!in->cbs) scr_oom();
-      }
-      in->cbs[in->ncbs].adapt = NULL;
-      in->cbs[in->ncbs].dst = scr_promise_retain(result);
-      in->cbs[in->ncbs].all = st;
-      in->cbs[in->ncbs].all_idx = i;
-      in->ncbs++;
+    if (in->state == SCR_PROM_PENDING) {
       st->rc++;
+      scr_promise_cb_subscribe(
+          in, (struct ScrPromiseCbWaiter){ NULL, scr_promise_retain(result), st, i, 0 });
+    } else {
+      scr_prom_observe(in);
+      if (in->state == SCR_PROM_FULFILLED) {
+        if (st->store) st->store(st->values, (double)i, in);
+        fulfilled++;
+      } else if (rejected == NULL) {
+        rejected = scr_promise_retain(in);
+      }
     }
     scr_promise_release(in);
   }
-  /* n == 0, or every entry was already fulfilled inline. */
-  if (st->remaining == 0 && result->state == SCR_PROM_PENDING) {
-    if (st->values) {
-      scr_promise_fulfill_ref(result, scr_arr_retain(st->values), scr_arr_retain_v,
-                               scr_arr_release_v,
-                               st->values->cyc ? scr_arr_trace_v : NULL);
-    } else {
-      scr_promise_fulfill_void(result);
-    }
+  if (fulfilled > 0 || rejected != NULL) {
+    ScrFiber *job = scr_mem_calloc(sizeof *job);
+    if (!job) scr_oom();
+    st->rc++;
+    job->cb_job = true;
+    job->cb_src = rejected; /* the reference moves in */
+    job->cb = (struct ScrPromiseCbWaiter){ NULL, scr_promise_retain(result), st, fulfilled,
+                                           SCR_CB_BATCH };
+    scr_ready_push(job);
   }
+  /* The empty array. */
+  if (n == 0) scr_promise_all_fulfill(st, result);
   scr_promise_all_state_release(st);
   return result;
 }
@@ -3071,6 +3175,11 @@ static void scr_resume_fiber(ScrFiber *f) {
     scr_mem_free(f);
     ((void (*)(ScrClosure *))cb->fn)(cb);
     scr_closure_release(cb);
+    return;
+  }
+  /* A Promise.all / Promise.race reaction job, also on the main stack. */
+  if (f->cb_job) {
+    scr_promise_job_run(f);
     return;
   }
   if (f->gen != NULL) {
@@ -4778,6 +4887,11 @@ static void scr_context_ready_discard(void) {
       ScrGen *generator = fiber->gen_job;
       generator->settle_queued = false;
       scr_gen_release(generator);
+      scr_mem_free(fiber);
+    } else if (fiber->cb_job) {
+      scr_promise_release(fiber->cb.dst);
+      if (fiber->cb.all) scr_promise_all_state_release(fiber->cb.all);
+      scr_promise_release(fiber->cb_src);
       scr_mem_free(fiber);
     }
     /* Real fibers belong to the context registry, including queued ones. */

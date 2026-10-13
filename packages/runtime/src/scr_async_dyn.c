@@ -914,13 +914,10 @@ ScrPromise *scr_dyn_promise_all(const ScrDyn *entries) {
       if (scr_exc_pending()) scr_promise_reject_pending(source);
       else scr_promise_fulfill_ref(source, scr_dyn_retain(value), scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
     }
-    /* Each element contributes a reaction job, even an already fulfilled
-     * plain value. The aggregate preserves input order and Node's hops. */
-    scr_promise_mark_handled(source);
-    ScrDyn *reaction = scr_dyn_promise_then(source, NULL, NULL, NULL);
-    scr_arr_push_ref(promises, scr_promise_retain(reaction->v.promise));
-    scr_dyn_release(reaction);
-    scr_promise_release(source);
+    /* scr_promise_all subscribes a reaction job to each element, even an
+     * already fulfilled plain value, preserving input order and Node's
+     * hops. */
+    scr_arr_push_ref(promises, source);
   }
   ScrPromise *all = scr_promise_all(promises, values, scr_promise_all_store_ref);
   ScrPromise *result = scr_promise_new();

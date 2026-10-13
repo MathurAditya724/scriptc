@@ -2473,6 +2473,9 @@ export class Lowerer {
   /** Set while a subclass constructor's super() call notes its base
    * constructor edge: that edge does not instantiate the base exactly. */
   private superConstructorEdge = false;
+  /** Set when the async generator `return` being lowered awaited its
+   * promise operand (returnedPromiseAwait). */
+  private returnAwaitedPromise = false;
   private readonly virtualEdges = new Map<ClassInfo, Set<string>>();
 
   classCanBeConstructed(info: ClassInfo): boolean {
@@ -8602,8 +8605,10 @@ export class Lowerer {
   returnedPromiseAwait(e: IrExpr): IrExpr {
     if (e.type.kind !== "promise")
       throw new InternalCompilerError("returned-promise await of a non-promise");
-    if (!this.adoptsReturnedPromise())
+    if (!this.adoptsReturnedPromise()) {
+      this.returnAwaitedPromise = true;
       return { kind: "awaitExpr", value: e, type: e.type.inner, loc: e.loc };
+    }
     return { kind: "awaitExpr", value: e, type: e.type.inner, adopt: true, loc: e.loc };
   }
 
@@ -8614,6 +8619,24 @@ export class Lowerer {
    * caller never sees a value, so the return goes out bare. Async
    * void-inner returns still resolve a returned promise first. */
   lowerReturnStmt(node: ts.Expression, loc: SrcLoc): IrStmt {
+    if (!(this.ctx.isAsync === true && this.ctx.generator)) return this.lowerReturnOf(node, loc);
+    // An async generator's `return x` awaits x; for a promise that await
+    // is the returned-promise await, and the return needs no other turn.
+    const saved = this.returnAwaitedPromise;
+    this.returnAwaitedPromise = false;
+    const s = this.lowerReturnOf(node, loc);
+    const awaited = this.returnAwaitedPromise;
+    this.returnAwaitedPromise = saved;
+    if (!awaited) return s;
+    if (s.kind === "return") return { ...s, awaited: true };
+    if (s.kind === "block" && s.body.at(-1)?.kind === "return") {
+      const last = s.body.at(-1) as IrStmt & { kind: "return" };
+      return { ...s, body: [...s.body.slice(0, -1), { ...last, awaited: true }] };
+    }
+    return s;
+  }
+
+  private lowerReturnOf(node: ts.Expression, loc: SrcLoc): IrStmt {
     const expected = this.ctx.returnType;
     if (expected.kind === "void") {
       let e = this.lowerExpr(node);
