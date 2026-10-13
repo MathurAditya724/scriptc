@@ -2,7 +2,9 @@
 title: "npm Dependencies"
 ---
 
-scriptc compiles eligible npm dependencies to native code alongside your application. Package support is partial: unsupported packages and operations receive diagnostics, and there is no runtime JavaScript engine fallback.
+Programs can import npm packages the same way they do under Node.js. scriptc compiles each package your program uses to native code along with your own code. The executable doesn't read `node_modules` at runtime.
+
+Package support is partial. Packages that scriptc can't compile are reported at build time with a diagnostic, so check new dependencies with [`scriptc coverage`](/docs/coverage) before relying on them.
 
 ## Use a package
 
@@ -34,7 +36,7 @@ $ ./greet ada --upper
 HELLO, ADA
 ```
 
-Both the callback and the package implementation compile to native instructions. Use [coverage reports](/docs/coverage) to inspect package compilation and deferred operations.
+Your callback and the commander implementation both compile to native code. No extra flags are needed.
 
 <span id="package-resolution-and-embedding" />
 <span id="runtime-behavior" />
@@ -42,9 +44,16 @@ Both the callback and the package implementation compile to native instructions.
 
 ## Package resolution
 
-The compiler resolves dependencies from `node_modules` using Node.js package resolution, including `package.json` export conditions. It recursively compiles eligible dependencies. The executable does not load `node_modules` at runtime.
+scriptc finds packages in `node_modules` with Node.js's resolution rules, including the export conditions in `package.json`, and compiles their dependencies too. TypeScript workspace packages compile as part of your program, including `.js` import specifiers that resolve to `.ts` sources.
 
-Automatic selection requires readable runtime source and a package-owned declaration surface. Packages that fail eligibility or preflight receive a package-specific diagnostic. TypeScript workspace entries compile as program modules, including `.js` specifiers that resolve to `.ts` sources.
+## Which packages compile
+
+scriptc compiles a package automatically when it:
+
+- ships its own type declarations, and
+- ships readable, unminified JavaScript.
+
+A package that doesn't meet these requirements, or that uses something scriptc can't compile, gets a package-specific diagnostic that explains why. The usual fixes are to switch to a version or alternative package that compiles, or to replace the call with code you write yourself.
 
 <span id="value-conversion" />
 <span id="static-package-compilation-experimental" />
@@ -52,10 +61,24 @@ Automatic selection requires readable runtime source and a package-owned declara
 
 ## Explicit package selection
 
-`--npm-static <pkg[,pkg…]|auto>` remains available for explicit selection. Naming a package overrides the automatic declaration-surface eligibility check, allowing an attempt to compile packages that rely on separately installed declarations or inferred JavaScript types. `auto` uses the default automatic selection. Neither form bypasses compilation checks.
+Some packages rely on separately installed declarations, such as an `@types/` package, or on types inferred from their JavaScript. To try compiling one of them, name it with `--npm-static`:
 
-An accepted package may contain deferred operations: the build succeeds and coverage lists those sites, but executing an unsupported deferred operation raises a runtime error. Review the coverage report and test the paths your application uses. See [Limitations](/docs/limitations) for native runtime differences.
+```console
+$ scriptc build app.ts --npm-static=three -o app >/dev/null
+```
+
+Naming a package skips the declaration requirement above, but the package still has to compile. `--npm-static=auto` uses the default automatic selection. The option accepts a comma-separated list and can be repeated.
+
+## Unsupported code inside a package
+
+A JavaScript package can contain operations scriptc can't compile, often in functions your program never calls. These don't fail the build: each one compiles to code that throws a runtime error if it ever runs. Coverage reports list them as deferred sites, so review the list and test the parts of the package your program uses.
 
 ## Provenance sources (experimental)
 
-`--provenance-sources` attempts to compile a package from source at its npm provenance-attested commit. This allows TypeScript source to compile as TypeScript instead of compiling the published JavaScript. Packages without usable attestations keep their installed-source compilation path, subject to the same native eligibility and compilation checks.
+`--provenance-sources` compiles a package from the source at the commit its npm provenance attestation names, instead of from its published JavaScript. This lets packages written in TypeScript compile from their original TypeScript. Packages without a usable attestation compile from their installed files as usual.
+
+## Upgrading from scriptc 0.2
+
+scriptc 0.2 had a `--dynamic` mode that embedded a JavaScript engine in the executable to run code that didn't compile, including packages that failed native compilation. scriptc 0.3 removed `--dynamic` and the embedded engine, so all application and package code now compiles to native code.
+
+If you built with `--dynamic`, remove the flag and run `scriptc coverage` on your entry file. The report lists the operations and packages that need a change; rewrite those sites or replace the package. If you link [native program objects](/docs/native-objects) into your own builds, use the runtime pack that matches the 0.3 compiler.

@@ -2,7 +2,7 @@
 title: "CLI Reference"
 ---
 
-The CLI has four commands. `scriptc --help` prints this same surface.
+The `scriptc` command has four subcommands: `build`, `run`, `coverage`, and `cache warm`. `scriptc --help` prints this summary and the options below, and `scriptc --version` prints the installed version.
 
 ```console
 $ scriptc --help
@@ -14,21 +14,28 @@ Usage:
   scriptc coverage <file.ts|.js>            how much compiles statically, and why not
   scriptc coverage <file.ts|.js> --external-types <specifier=file.d.ts>
                                             type-resolve an embedder-provided module for analysis
+  scriptc build --lib --profile <p.json>    library mode: compile the profile's entry
+                                            module to a linkable static archive
+                                            (<name>.lib.a), or a Wasm reactor
+                                            (<name>.wasm) on wasm32-wasi,
+                                            exporting the profile symbols; a profile
+                                            with a sidecar section also gets the
+                                            contract sidecar JSON beside the archive
   scriptc cache warm [runtime|tls…] verify and load precompiled runtime families
                                             for the current compiler/SDK/target
 ```
 
 ## scriptc build
 
-Compiles a TypeScript (or JavaScript) entry file to serialized typed IR, textual LLVM IR, native assembly, a relocatable object, a native executable, or a WebAssembly module when the <code>wasm32-wasi</code> target is selected. The program is type-checked first — by the real TypeScript compiler, honoring the nearest `tsconfig.json` — and any construct without a lowering is a compile error with an `SC`-prefixed code, a code frame, and usually a rewrite hint.
+Compiles a TypeScript or JavaScript entry file. By default it writes a native executable, or a WebAssembly module when the target is <code>wasm32-wasi</code>. The program is type-checked first by the TypeScript compiler, honoring the nearest `tsconfig.json`. Anything that can't compile is an error with an `SC`-prefixed code, a code frame, and usually a rewrite hint.
 
 ```console
-$ scriptc build fib.ts -o fib
+$ scriptc build fib.ts -o fib >/dev/null
 $ ./fib
 832040
 ```
 
-Without `-o`, the primary artifact lands in `.scriptc/` next to the input. Source outputs have stable suffixes and stop before native compilation:
+`build` prints the path of the file it writes. Without `-o`, the file goes in `.scriptc/` next to the input. Use `--emit` to stop at an earlier stage of compilation:
 
 ```console
 $ scriptc build fib.ts --emit=ir >/dev/null
@@ -53,26 +60,30 @@ fib.s
 
 Different output kinds accumulate in `.scriptc/`; rebuilding a kind updates its file.
 
-The IR and LLVM source outputs require only Node. On supported macOS, Linux, and Windows hosts, assembly and object outputs use the matching native helper installed with scriptc and do not invoke an external compiler, archiver, linker, or SDK. The object is a relocatable program object with undefined <code>scr_*</code> runtime symbols and a required <code>scr_runtime_abi_v15</code> marker, not a standalone library. External consumption is experimental and requires the exact runtime version reported by <code>--print=native-link-info</code>. That option still writes the object, performs no link, and prints a versioned JSON recipe with the target, <code>main</code> entry, installed precompiled runtime pack, FFI inputs, and system libraries. It never reports private scriptc cache paths. See <a href="/native-objects">Native Program Objects</a> for complete C-driver and direct-linker examples. <code>--emit=exe</code> is the default. LLVM builds emit the program object through the helper and link precompiled runtime objects; runtime development with AddressSanitizer compiles an instrumented C runtime.
+<code>--emit=exe</code> is the default. Assembly and object output use the LLVM helper installed with scriptc and need no external compiler, linker, or SDK. An object is a relocatable program object that leaves scriptc's runtime functions undefined; it is not a standalone library. Linking objects yourself is experimental and requires the exact runtime pack reported by <code>--print=native-link-info</code>; see <a href="/docs/native-objects">Native Program Objects</a>.
+
+### Library mode
+
+`scriptc build --lib --profile <profile.json>` compiles the entry module named in a library profile into a static archive (`<name>.lib.a`) that a host application links, or into a Wasm reactor (`<name>.wasm`) on `wasm32-wasi`. The profile declares the exported functions and their symbols. Library builds take no input file and don't accept `--emit`, `--print`, `--optimization`, `--strip`, `--ffi`, or `--npm-static`; the profile controls emission and optimization. See [WebAssembly Modules](/docs/wasm) for a complete profile and [iOS and Android](/docs/platforms#ios-and-android-arm64-library-mode) for mobile targets.
 
 ## scriptc run
 
-`build` followed by executing the binary, with stdio inherited. For <code>wasm32-wasi</code>, the CLI starts the module through Node's WASI Preview 1 host, preopens the current working directory as <code>/</code>, and exposes the host's <code>/tmp</code> as the guest's <code>/tmp</code>.
+Builds the program, then runs it with stdio inherited. For <code>wasm32-wasi</code>, it runs the module with Node.js's WASI Preview 1 implementation, makes the current working directory available as <code>/</code>, and maps the host's temporary directory to <code>/tmp</code>.
 
 ```console
 $ scriptc run fib.ts
 832040
 ```
 
-Note: `run` does not forward extra command-line arguments to the program. To pass arguments, `build` the executable and invoke it directly.
+`run` does not pass extra command-line arguments to the program. To pass arguments, build an executable and run it directly.
 
 ## scriptc coverage
 
-Analyzes the program without producing a binary and reports, statement by statement, what compiles to native code and what blocks the rest. Reports are covered in depth in [Coverage Reports](/docs/coverage).
+Analyzes the program without building it and reports what compiles and what blocks the rest. See [Coverage Reports](/docs/coverage).
 
 ## scriptc cache warm
 
-Verifies and reads the installed precompiled runtime objects and vendor archives. Pass one or more of `runtime` and `tls` to select those families. Ordinary builds need no runtime compilation or installation-time warming. With `--sanitize`, this command builds instrumented runtime objects using the development C toolchain.
+Verifies and loads the installed precompiled runtime objects and vendored libraries, and prints the cache directory. Pass `runtime`, `tls`, or both to select which to warm. Ordinary builds don't need this step. With `--sanitize`, it builds the instrumented runtime objects using a C toolchain.
 
 ## Options
 
@@ -81,7 +92,7 @@ Verifies and reads the installed precompiled runtime objects and vendor archives
   <dd>Primary artifact path. An explicit path is exact. Defaults are <code>.scriptc/&lt;name&gt;.ir.json</code>, <code>.ll</code>, <code>.s</code>, <code>.o</code>, or the platform executable name.</dd>
 
   <dt><code>--emit &lt;ir|llvm|asm|obj|exe&gt;</code></dt>
-  <dd>Select the invocation's one primary artifact. <code>ir</code> and <code>llvm</code> need only Node. <code>asm</code> and <code>obj</code> use a matching bundled LLVM helper on supported macOS, Linux, and Windows hosts and for WASI; they need no installed C compiler. <code>exe</code> is the default.</dd>
+  <dd>Select the primary artifact: serialized typed IR (<code>ir</code>), textual LLVM IR (<code>llvm</code>), assembly (<code>asm</code>), a relocatable object (<code>obj</code>), or an executable (<code>exe</code>, the default). Every kind except <code>exe</code> is produced without an external compiler, linker, or SDK.</dd>
 
   <dt><code>--print &lt;native-link-info|diagnostics&gt;</code></dt>
   <dd><code>native-link-info</code>: build an object (equivalent to <code>--emit=obj</code>) and print its machine-readable external link recipe as JSON instead of printing the artifact path. The document names the exact installed precompiled runtime pack and all link inputs, but does not invoke a linker. <code>diagnostics</code>: for <code>build</code> and <code>coverage</code>, print the versioned JSON diagnostics document described in <a href="/docs/coverage#machine-readable-diagnostics">Coverage Reports</a> instead of the human output.</dd>
@@ -90,16 +101,16 @@ Verifies and reads the installed precompiled runtime objects and vendor archives
   <dd>Coverage only. Exit with status 1 when the entry has blockers that would fail a build, or with <code>divergences</code>, also when it has Node divergence warnings. See <a href="/docs/coverage#gating-builds-and-ci">Gating builds and CI</a>.</dd>
 
   <dt><code>--ffi &lt;file&gt;</code></dt>
-  <dd>Bind signature-only TypeScript declarations to native C ABI symbols and link the manifest's archive, object, and system-library inputs. See <a href="/ffi">Native FFI</a>.</dd>
+  <dd>Bind signature-only TypeScript declarations to native C ABI symbols and link the manifest's archive, object, and system-library inputs. See <a href="/docs/ffi">Native FFI</a>.</dd>
 
   <dt><code>--backend &lt;llvm&gt;</code></dt>
-  <dd>The production code generator is <code>llvm</code>. This is also the default when the option is omitted.</dd>
+  <dd>The code generator. <code>llvm</code> is the only backend and the default.</dd>
 
   <dt><code>--strip</code></dt>
   <dd>Remove symbol and debug payload when linking an executable, including cross-compiled targets. This flag preserves code optimization.</dd>
 
   <dt><code>--optimization &lt;release|dev|speed&gt;</code></dt>
-  <dd>Select native optimization for executable, assembly, or object output. The default is <code>release</code> (<code>-O2</code>). <code>dev</code> uses <code>-O0</code> and emits source locations for TypeScript and JavaScript breakpoints and stack frames. LLVM builds include source variable names and native storage descriptions; see <a href="/limitations#native-debugging">Native debugging</a> for the supported representations. macOS executable builds also produce an adjacent <code>.dSYM</code> bundle. <code>speed</code> is <code>-O2</code> plus optimizations that trade binary size and build time for run-time speed: it lets LLVM inline small runtime functions into program code, emits reference counting inline, and on x86-64 starts every runtime function on a cache-line boundary. Expect larger executables and longer cold builds than <code>release</code>; how much faster a program runs depends on how much of its time is spent in the runtime. Runtime inlining needs a runtime pack built with the LLVM helper; where a runtime pack lacks it, <code>speed</code> links the release runtime and keeps inline reference counting. Selecting <code>speed</code> never changes what <code>release</code> builds produce, and the two never share cached artifacts. Library profiles accept <code>"optimization": "speed"</code> for inline reference counting.</dd>
+  <dd>Select native optimization for executable, assembly, or object output. The default is <code>release</code> (<code>-O2</code>). <code>dev</code> uses <code>-O0</code> and emits source locations for TypeScript and JavaScript breakpoints and stack frames. LLVM builds include source variable names and native storage descriptions; see <a href="/docs/limitations#native-debugging">Native debugging</a> for the supported representations. macOS executable builds also produce an adjacent <code>.dSYM</code> bundle. <code>speed</code> is <code>-O2</code> plus optimizations that trade binary size and build time for run-time speed: it lets LLVM inline small runtime functions into program code, emits reference counting inline, and on x86-64 starts every runtime function on a cache-line boundary. Expect larger executables and longer cold builds than <code>release</code>; how much faster a program runs depends on how much of its time is spent in the runtime. Runtime inlining needs a runtime pack built with the LLVM helper; where a runtime pack lacks it, <code>speed</code> links the release runtime and keeps inline reference counting. Selecting <code>speed</code> never changes what <code>release</code> builds produce, and the two never share cached artifacts. Library profiles accept <code>"optimization": "speed"</code> for inline reference counting.</dd>
 
   <dt><code>--windows-subsystem &lt;console|gui&gt;</code></dt>
   <dd>Select the subsystem of a Windows executable. <code>console</code> is the default; <code>gui</code> prevents Windows from opening a console window for the app. Valid only for executable builds targeting Windows.</dd>
@@ -108,16 +119,16 @@ Verifies and reads the installed precompiled runtime objects and vendor archives
   <dd>On Linux, when the program calls <code>process.exit()</code>, hand the release of its memory to a helper process so the parent sees the exit sooner. The kernel otherwise frees the whole address space before the exit is reported, which takes tens of milliseconds per gigabyte. Opt in only where the trade-offs are acceptable: for up to about 100 ms after the exit, the helper keeps the executable mapped (overwriting the binary in place fails with "text file busy"), its memory stays charged to the cgroup, and the teardown CPU time no longer appears in the parent's resource usage. Valid only for executable builds; it has no effect on other platforms.</dd>
 
   <dt><code>--npm-static &lt;pkg[,pkg…]|auto&gt;</code></dt>
-  <dd>Explicitly select npm packages for native compilation (repeatable). Naming a package overrides the automatic declaration-surface eligibility check; <code>auto</code> uses the default automatic selection. Refused packages produce diagnostics. See <a href="/dependencies">npm Dependencies</a> for maturity notes.</dd>
+  <dd>Name npm packages to compile even if they don't ship their own type declarations (repeatable). <code>auto</code> uses the default automatic selection. Packages that can't compile produce diagnostics. See <a href="/docs/dependencies#explicit-package-selection">npm Dependencies</a>.</dd>
 
   <dt><code>--provenance-sources</code></dt>
-  <dd>EXPERIMENTAL. Compile npm dependencies from their provenance-attested source, fetched at the attested commit, as static program modules; packages without a usable attestation keep the installed-source compilation path.</dd>
+  <dd>Experimental. Compile npm dependencies from the source at the commit their provenance attestation names. Packages without a usable attestation compile from their installed files.</dd>
 
   <dt><code>--external-types &lt;specifier=file.d.ts&gt;</code></dt>
   <dd>Coverage only. Map an exact bare module specifier to a local declaration file supplied by an embedder. Repeat the option for multiple modules. The declaration supplies checker types so application coverage can continue; runtime imports and values remain explicit <code>SC1010</code> blockers. Relative paths resolve from the current working directory. Accepted files end in <code>.d.ts</code>, <code>.d.mts</code>, or <code>.d.cts</code>.</dd>
 
   <dt><code>--sanitize</code></dt>
-  <dd>Build an executable with AddressSanitizer plus the runtime reference-count audit — the same lane the compiler's own test corpus runs under. <code>--emit=asm|obj</code> rejects this option until the helper's sanitizer pipeline has parity.</dd>
+  <dd>Build an executable with AddressSanitizer and a reference-count audit at exit, the same checks scriptc's own test suite uses. Requires a C compiler and is available only for host builds. Not supported with <code>--emit=asm</code> or <code>--emit=obj</code>.</dd>
 
   <dt><code>--emit-ir</code></dt>
   <dd>Additive IR side artifact. It is deprecated for executable builds for one release cycle; prefer <code>--emit=ir</code> when IR is the primary output. Library mode retains <code>--emit-ir</code> because <code>--emit</code> does not select library artifacts.</dd>
@@ -125,8 +136,14 @@ Verifies and reads the installed precompiled runtime objects and vendor archives
   <dt><code>--keep-llvm</code> / <code>--no-keep-llvm</code></dt>
   <dd>Keep (default) or delete the generated <code>.ll</code> file next to the executable.</dd>
 
+  <dt><code>--lib</code>, <code>--profile &lt;profile.json&gt;</code></dt>
+  <dd>Build in <a href="#library-mode">library mode</a> from the given profile. <code>--lib</code> requires <code>--profile</code> and works only with <code>build</code>.</dd>
+
   <dt><code>-h, --help</code></dt>
   <dd>Show usage.</dd>
+
+  <dt><code>-v, --version</code></dt>
+  <dd>Print the installed version.</dd>
 </dl>
 
 ## Environment variables
@@ -142,13 +159,16 @@ Verifies and reads the installed precompiled runtime objects and vendor archives
   <dd>Maximum build-cache size in megabytes. The default is <code>4096</code>; the default cache is swept periodically, while an explicitly configured cap is checked after every successful cache write. Least-recently-used entries are removed when the cache exceeds the cap.</dd>
 
   <dt><code>SCRIPTC_CC</code></dt>
-  <dd>The external compiler for runtime development with AddressSanitizer and native FFI build tooling. <code>zigcc</code> selects Zig's <code>cc</code> subcommand.</dd>
+  <dd>The C compiler used for <code>--sanitize</code> builds. <code>zigcc</code> selects zig's <code>cc</code> subcommand.</dd>
 
   <dt><code>SCRIPTC_LINKER</code></dt>
-  <dd>Platform linker driver for ordinary LLVM executables. The driver receives only the helper-produced program object, precompiled runtime objects/archives, FFI inputs, and system libraries; it locates the platform SDK and CRT inputs but does not compile scriptc-generated or runtime C.</dd>
+  <dd>The linker driver for executable builds, in place of the default (clang on macOS and glibc Linux, zig elsewhere). It receives only object files, archives, and system libraries, and locates the platform SDK and C runtime itself.</dd>
 
   <dt><code>SCRIPTC_TARGET</code></dt>
-  <dd>Target triple for cross-compilation, e.g. <code>aarch64-linux-gnu.2.36</code>, <code>x86_64-windows-gnu</code>, or <code>wasm32-wasi</code>. WASI builds default to a <code>.wasm</code> output name. See <a href="/platforms">Platform Support</a>.</dd>
+  <dd>Target triple for cross-compilation, such as <code>aarch64-linux-gnu.2.36</code>, <code>x86_64-windows-gnu</code>, or <code>wasm32-wasi</code>. WASI builds default to a <code>.wasm</code> output name. See <a href="/docs/platforms">Platform Support</a>.</dd>
+
+  <dt><code>SCRIPTC_RUNTIME_PACK</code></dt>
+  <dd>A runtime pack directory to use instead of an installed <code>@scriptc/runtime-&lt;target&gt;</code> package.</dd>
 </dl>
 
 ```console
@@ -159,7 +179,7 @@ fib-linux: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), dynamically
 
 ## LLVM backend
 
-scriptc emits LLVM IR and lowers it to native code. Executable builds link the resulting object with the matching precompiled C runtime pack. Use <code>--emit=llvm</code> to inspect generated code.
+scriptc generates LLVM IR and compiles it to native code. Executable builds link the result with the matching precompiled runtime pack. Use <code>--emit=llvm</code> to inspect the generated code.
 
 For source breakpoints in Xcode or LLDB, build with <code>--optimization=dev</code>. In an Xcode custom build rule, list the executable and its <code>.dSYM</code> bundle as outputs. Keep the bundle next to the executable and retain the original source files at their build paths. LLVM preserves source locations across imported modules.
 
@@ -169,35 +189,33 @@ For source breakpoints in Xcode or LLDB, build with <code>--optimization=dev</co
   <thead>
     <tr>
       <th>Operation</th>
-      <th>Node</th>
-      <th>Compiler</th>
-      <th>Linker / SDK</th>
+      <th>Needs</th>
     </tr>
   </thead>
   <tbody>
     <tr>
-      <td><code>coverage</code>, <code>--emit=ir|llvm</code></td>
-      <td>Required</td>
-      <td>Not used</td>
-      <td>Not used</td>
+      <td>Installing with npm</td>
+      <td>Node.js 24 or later</td>
     </tr>
     <tr>
-      <td><code>--emit=asm|obj</code> (macOS 15+ arm64)</td>
-      <td>Required</td>
-      <td>Bundled scriptc LLVM helper</td>
-      <td>Not used</td>
+      <td><code>coverage</code>, <code>--emit=ir|llvm|asm|obj</code></td>
+      <td>Only the installed compiler</td>
     </tr>
     <tr>
-      <td>External link of <code>--emit=obj</code> with the reported precompiled runtime pack</td>
-      <td>Not used by the artifact</td>
-      <td>Precompiled runtime objects</td>
-      <td>macOS linker and SDK required</td>
+      <td><code>--emit=exe</code> (the default)</td>
+      <td>A linker and the platform SDK or sysroot: clang and the Xcode Command Line Tools on macOS, clang on glibc Linux, zig on Windows, musl Linux, and for cross-compiled targets</td>
     </tr>
     <tr>
-      <td><code>--emit=exe</code></td>
-      <td>Required to run scriptc</td>
-      <td>Bundled LLVM helper</td>
-      <td>Platform linker and SDK/sysroot</td>
+      <td>Cross-compiling</td>
+      <td>The target's <code>@scriptc/runtime-&lt;target&gt;</code> pack and zig (see <a href="/docs/platforms">Platform Support</a>)</td>
+    </tr>
+    <tr>
+      <td><code>scriptc run</code> on <code>wasm32-wasi</code></td>
+      <td>Node.js 24 or later on <code>PATH</code></td>
+    </tr>
+    <tr>
+      <td><code>--sanitize</code></td>
+      <td>A C compiler and LLVM toolchain</td>
     </tr>
   </tbody>
 </table>
