@@ -291,7 +291,7 @@ test("strict equality against a wrapped literal borrows the local and stack-boxe
   expect(facts(mod).has("item")).toBe(true);
   for (const bits of [32, 64] as const) {
     const ir = body(mod, bits);
-    expect(ir).toContain("@sc_str_eq");
+    expect(ir).toMatch(/call zeroext i1 @sc_streq_\d+\(ptr /);
     expect(ir).not.toMatch(/@scr_union_(?:new|retain|release)/);
   }
 });

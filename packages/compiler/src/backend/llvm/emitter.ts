@@ -307,6 +307,7 @@ import {
   vAdapters,
 } from "./shapes.js";
 import type { ExprOf, LibCallExpr, LlStreamTypedRefAdapter, LlValue } from "./expr-context.js";
+import { INLINE_LITERAL_BYTES, literalEqualityDefinition } from "./string-literal-equality.js";
 
 export { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -528,6 +529,8 @@ export class LlEmitter {
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
   private readonly literals = new Map<string, { sym: string; len: number }>();
+  /** Literal equality helpers: literal text → helper symbol (literalEquals). */
+  private readonly literalEqualities = new Map<string, string>();
   /** Symbols of interned constant data, named by content (contentSymbol). */
   private readonly contentSymbols = new Set<string>();
   /** Interned unit-armed union instances: "unionId:tag" → symbol — one
@@ -2835,6 +2838,18 @@ export class LlEmitter {
         ``,
       );
     }
+    for (const [text, name] of this.literalEqualities) {
+      defs.push(
+        ...literalEqualityDefinition(
+          name,
+          Buffer.from(text, "utf8"),
+          this.internLiteral(text),
+          this.sizeType,
+          FN_ATTRS,
+        ),
+        ``,
+      );
+    }
     // String length and charCodeAt read proven-ASCII strings inline: bit 31
     // of the capacity word (SCR_STR_ASCII_BIT, the low half's sign bit on
     // little-endian targets) makes UTF-16 units bytes. Unproven strings and
@@ -3682,6 +3697,20 @@ export class LlEmitter {
     }
     const name = `@${lit.sym}`;
     this.immortalValues.add(name);
+    return name;
+  }
+
+  /** The inline equality test against one string literal (an
+   * `i1 (ptr)` helper LLVM inlines at each site), by literal symbol. */
+  literalEquals(text: string): string {
+    const literal = this.internLiteral(text);
+    const name = `@sc_streq_${literal.slice("@sc_lit_".length)}`;
+    if (!this.literalEqualities.has(text)) {
+      this.literalEqualities.set(text, name);
+      if (Buffer.byteLength(text, "utf8") > INLINE_LITERAL_BYTES) {
+        this.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
+      }
+    }
     return name;
   }
 
@@ -6423,7 +6452,6 @@ export class LlEmitter {
           break;
         }
         const join = B.newLabel("rks.j");
-        this.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
         if (iv.kind === "dyn" && shape.indexValue) {
           // A dyn-valued shape (the C recordKeySetHelper's dyn arm,
           // inline): declared keys VALIDATE the dyn value against the
@@ -6433,10 +6461,9 @@ export class LlEmitter {
           // insert the dyn value into the overflow map as-is.
           this.declare(`declare void @scr_dyn_release(ptr)`);
           for (const f of shape.fields) {
-            const lit = this.internLiteral(f.name);
             const hit = B.tmp();
             B.line(
-              `${hit} = call zeroext i1 @sc_str_eq(ptr ${key.name}, ptr ${lit}) ; ${llvmCommentText(f.name)}`,
+              `${hit} = call zeroext i1 ${this.literalEquals(f.name)}(ptr ${key.name}) ; ${llvmCommentText(f.name)}`,
             );
             const lh = B.newLabel("rks.h");
             const ln = B.newLabel("rks.n");
@@ -6490,10 +6517,9 @@ export class LlEmitter {
         }
         for (const f of shape.fields) {
           // typeEquals(f.type, iv) — the frontend fences everything else.
-          const lit = this.internLiteral(f.name);
           const hit = B.tmp();
           B.line(
-            `${hit} = call zeroext i1 @sc_str_eq(ptr ${key.name}, ptr ${lit}) ; ${llvmCommentText(f.name)}`,
+            `${hit} = call zeroext i1 ${this.literalEquals(f.name)}(ptr ${key.name}) ; ${llvmCommentText(f.name)}`,
           );
           const lh = B.newLabel("rks.h");
           const ln = B.newLabel("rks.n");
@@ -7374,7 +7400,9 @@ export class LlEmitter {
         this.frames.push([]);
         const t = this.emitExpr(c.test);
         const hit = B.tmp();
-        if (c.test.type.kind === "string") {
+        if (c.test.kind === "strLit") {
+          B.line(`${hit} = call zeroext i1 ${this.literalEquals(c.test.value)}(ptr ${disc.name})`);
+        } else if (c.test.type.kind === "string") {
           this.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
           B.line(`${hit} = call zeroext i1 @sc_str_eq(ptr ${disc.name}, ptr ${t.name})`);
         } else if (c.test.type.kind === "bool") {
