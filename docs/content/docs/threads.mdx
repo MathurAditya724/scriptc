@@ -2,9 +2,11 @@
 title: "Sharing Data Between Workers"
 ---
 
-Native [worker threads](/docs/limitations#native-worker-threads) normally receive a structured clone of every message, as in Node.js. A large graph sent to several workers is therefore copied once per worker. The `@scriptc/threads` package adds `publish(value)`, which makes a graph immutable so that a scriptc executable can hand the same objects to every thread by reference.
+Compiled programs can use `node:worker_threads` to run work in parallel on several CPU cores. As in Node.js, each message a worker receives is a copy (a structured clone) of what was sent, so a large data set sent to four workers is copied four times. See [worker threads](/docs/limitations#native-worker-threads) for the supported worker APIs.
 
-Add `@scriptc/threads` to your project's dependencies. It is scriptc's own package: scriptc builds compile its exports to compiler intrinsics, and Node.js runs its JavaScript implementation, so the same program runs under both.
+When workers need to read the same large data, use the `@scriptc/threads` package. Its `publish(value)` function makes a graph of objects immutable, so a scriptc executable can hand the same objects to every thread by reference instead of copying them.
+
+Add `@scriptc/threads` to your project's dependencies. scriptc compiles its functions directly into your program, and Node.js runs its JavaScript implementation, so the same program runs under both.
 
 ## Example
 
@@ -232,4 +234,4 @@ Without `@scriptc/threads`, a scriptc executable also shares a message of untype
 
 `publish` visits each object of the graph once and marks it immortal, so publication takes time proportional to the graph. Published objects then cost nothing on later sends, and reference counting and the cycle collector skip them. Stores into the types a program publishes carry one extra load and branch.
 
-See [Limitations](/docs/limitations#published-graphs) for what scriptc does not support.
+See [published graphs](/docs/limitations#published-graphs) for remaining differences from Node.js.

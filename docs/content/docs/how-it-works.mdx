@@ -2,7 +2,7 @@
 title: "How It Works"
 ---
 
-scriptc uses TypeScript's type checker, a typed intermediate representation, and LLVM to compile programs. Executable builds link the generated code with a native runtime.
+This page describes how scriptc turns a TypeScript program into an executable: the compiler stages, the outputs you can inspect at each stage, the native runtime that executables link, and how the compiler is tested.
 
 ## Compiler pipeline
 
@@ -28,7 +28,9 @@ Runtime pack and linker -> executable
 1. **Frontend:** TypeScript parses and checks the program against `es2025`, scriptc's ambient declarations, and available project declarations. `tsconfig.json` controls checker strictness. The compiler uses the checked types and narrowing information to lower supported operations; unsupported operations produce diagnostics.
 2. **Typed IR:** A validated, serializable intermediate representation connects the frontend and backend. Types are concrete: generic functions are specialized, unions use tags, and closures have explicit captures. `--emit=ir` writes this representation as JSON.
 3. **LLVM backend:** `--emit=llvm` writes textual LLVM IR. The matching LLVM 22 helper generates assembly or objects on supported macOS, Linux, and Windows hosts, including output targeting WASI. Executable and library builds use this backend. Large native executables are divided into partitions that are optimized and compiled in parallel; optimized builds summarize every partition first so small functions can still be inlined across partitions. The partition count depends only on the program, so output is the same on every host, and a rebuild reuses the compiled partitions that an edit does not affect.
-4. **Linking:** Runtime packs contain precompiled C objects and vendor archives. A hashed manifest selects artifacts for the program's features, optimization mode, and library state model. The target linker and SDK or sysroot produce the executable. Sanitizer builds use an instrumented C runtime.
+4. **Linking:** Runtime packs contain the precompiled C runtime and vendored libraries. A hashed manifest selects the artifacts the program needs for its features, optimization mode, and (for libraries) state model. The target linker and SDK or sysroot produce the executable. Sanitizer builds use an instrumented C runtime.
+
+`comptime` calls run during the frontend stage in an isolated evaluator inside the compiler, based on QuickJS. Their results are embedded in the program as constants.
 
 ## Inspect compiler output
 
@@ -78,23 +80,19 @@ Program objects define `main` and leave selected `scr_*` runtime functions undef
 - **Concurrency:** `async`/`await` uses stackful fibers. The native event loop schedules microtasks, timers, and I/O, using kqueue on macOS and epoll on Linux.
 - **Networking:** Supported `net`, `http`, `https`, `tls`, `dgram`, and `dns` APIs use native implementations. TLS uses vendored mbedTLS.
 - **Numbers:** Values use JavaScript's double-precision representation. Number-to-string formatting uses shortest-roundtrip output and is tested against Node.js.
-- **Regular expressions:** The runtime uses QuickJS's regular-expression bytecode interpreter, linked into programs that use regex operations.
+- **Regular expressions and Unicode:** The runtime uses QuickJS's regular-expression and Unicode libraries, linked into programs that use them.
 
 See [Limitations](/docs/limitations) for runtime differences and the [Node.js compatibility reference](/compatibility) for API support.
 
 ## Testing
 
-The differential corpus runs programs under Node.js and as compiled executables, comparing stdout, stderr, and exit codes. Server tests use client drivers against both implementations. Number formatting also has fuzz-test coverage against Node.js's `String(x)`.
+The test suite runs each test program under Node.js and as a compiled executable, and compares stdout, stderr, and exit codes. Server tests drive both implementations with the same clients. Number formatting is also fuzz-tested against Node.js's `String(x)`.
 
-The sanitizer lane runs the corpus with AddressSanitizer and a reference-count audit at exit to detect leaks and memory errors. Supported executable builds can enable these checks with `--sanitize`.
+The same tests also run with AddressSanitizer and a reference-count audit at exit, to catch leaks and memory errors. You can enable these checks in your own executable builds with `--sanitize`.
 
 Test coverage provides evidence for the cases exercised. It does not establish complete compatibility with Node.js.
 
 <span id="embedded-javascript-engine" />
-
-## JavaScript at build time
-
-Application and dependency code compile to native instructions. The compiler retains an isolated JavaScript evaluator for `comptime`; its results become native literals. The native compiler uses QuickJS for that build-time evaluator. The runtime retains QuickJS-derived regular-expression and Unicode libraries without linking the JavaScript execution engine into application binaries.
 
 ## Repository layout
 
@@ -116,7 +114,7 @@ Application and dependency code compile to native instructions. The compiler ret
     </tr>
     <tr>
       <td><code>packages/runtime</code></td>
-      <td>C runtime, reference counting and cycle collection, fibers, event loop, networking,.</td>
+      <td>C runtime, reference counting and cycle collection, fibers, event loop, networking, and the Node.js API implementations.</td>
     </tr>
     <tr>
       <td><code>packages/runtime-*</code></td>

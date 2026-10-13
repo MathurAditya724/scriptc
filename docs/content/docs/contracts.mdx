@@ -2,7 +2,9 @@
 title: "Contract Types"
 ---
 
-Contract types are type aliases that mean nothing to TypeScript or Node.js but are promises scriptc checks. You import them from `@scriptc/types` with `import type`, which TypeScript erases, so Node.js never loads the package and runs the program exactly as without the annotations. scriptc proves each contract or rejects the program with a diagnostic that explains why the contract does not hold. A program that compiles behaves exactly as under Node.js; the contract only adds an optimization that scriptc can now rely on.
+Contract types let you state a promise about your code, such as "this function never throws" or "this value is always a 32-bit integer", that scriptc checks at build time and then uses to generate faster code or use less memory. Reach for them in performance-sensitive code once it already compiles.
+
+Contracts are type aliases imported from `@scriptc/types` with `import type`. TypeScript erases them, so Node.js never loads the package and runs the program as if the annotations weren't there. scriptc either proves each contract or fails the build with a diagnostic that explains why it doesn't hold. Contracts don't change what a program computes; they only tell scriptc what it can rely on.
 
 <table>
   <thead>
@@ -174,7 +176,7 @@ Each value stored into an `Int32` slot (initializers, assignments, compound assi
 
 `x >>> 0` is a uint32 and is not accepted. Anything else needs an explicit `| 0`, which makes Node.js compute the same 32-bit value. Reads keep JavaScript semantics: `a + b` of two `Int32` values is an ordinary number that may exceed the int32 range.
 
-scriptc refuses an `Int32` slot whose writes it cannot all see (SC7003): a parameter of a function used as a value, or a field of a class whose instances reach `any` or dynamic code.
+scriptc refuses an `Int32` slot whose writes it cannot all see (SC7003): a parameter of a function used as a value, or a field of a class whose instances are stored in `any` or `unknown` values.
 
 ## Immutable
 
@@ -185,13 +187,13 @@ scriptc refuses an `Int32` slot whose writes it cannot all see (SC7003): a param
 - a cast such as `value as number[]`, an `any` alias, `Object.assign`, or index-signature writes;
 - a value stored into an `Immutable` slot that another reference can still change.
 
-A value stored into an `Immutable` slot must be fresh: a literal, a `new` expression whose constructor keeps `this` to itself, or a function that returns what it builds. Values that reach dynamic code, or functions scriptc cannot see, are refused.
+A value stored into an `Immutable` slot must be fresh: a literal, a `new` expression whose constructor keeps `this` to itself, or a function that returns what it builds. Values that are stored in `any` or `unknown`, or passed to functions scriptc cannot see, are refused.
 
 ## Acyclic
 
 scriptc frees objects by reference counting and finds unreachable reference cycles with a cycle collector. Objects of a type that can never lie on a cycle need neither the collector's object header nor its bookkeeping. scriptc already proves this for many types; `Acyclic` turns the proof into a guarantee and shows the cycle when it does not hold.
 
-A reference can close a cycle when it is stored after its object was constructed (a later write can point an older object at a newer one), when it sits in an array, `Map` or `Set` (whose contents change), or when a field holds a function, a promise or a dynamic value (which can reference anything). Scalar fields never matter. A subclass shares its base class's object layout, so a class hierarchy is acyclic only as a whole.
+A reference can close a cycle when it is stored after its object was constructed (a later write can point an older object at a newer one), when it sits in an array, `Map` or `Set` (whose contents change), or when a field holds a function, a promise or an `any` or `unknown` value (which can reference anything). Scalar fields never matter. A subclass shares its base class's object layout, so a class hierarchy is acyclic only as a whole.
 
 ```ts:tree.ts
 import type { Acyclic } from "@scriptc/types";

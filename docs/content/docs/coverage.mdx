@@ -2,11 +2,13 @@
 title: "Coverage Reports"
 ---
 
-`scriptc coverage` analyzes a program without building an executable. It reports how many executable statements compile to native code and groups unsupported operations by diagnostic code. Counts describe the program being analyzed, not JavaScript or Node.js support in general.
+`scriptc coverage` tells you how much of a program compiles before you build it. Use it when you bring an existing Node.js program to scriptc, add a dependency, or want CI to catch unsupported code early. It analyzes the program without producing an executable, counts the statements that compile, and groups anything unsupported by diagnostic code with a location and a hint.
 
 <span id="static-programs" />
 
-## A native program
+## Run a report
+
+Pass the program's entry file:
 
 ```console
 $ cat hello.ts
@@ -21,11 +23,13 @@ $ scriptc coverage hello.ts
   fully static — all analyzed statements compile to native code.
 ```
 
+Every statement in this program compiles, so `scriptc build` will succeed. The counts describe this program only, not JavaScript or Node.js support in general.
+
 <span id="report-fields" />
 
 ## Reading the report
 
-Each blocker group collects the sites that share one root cause: the same code and message, with type arguments of generic instantiations collapsed, so one uncompilable declaration reported through several instantiations appears once. The `at` line lists the first sites in source order, and every group carries a hint.
+When a program has unsupported operations, the report adds a group for each root cause. A group shows the diagnostic code, the reason, the first few sites in source order, and a hint. A generic declaration that fails for several type arguments appears once.
 
 <table>
   <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
@@ -39,9 +43,9 @@ Each blocker group collects the sites that share one root cause: the same code a
   </tbody>
 </table>
 
-Unreached code and deferred JavaScript operations are reported separately. A deferred operation can remain in a compiled package, but executing it raises a runtime error. A successful build therefore does not establish compatibility for every package API.
+Blockers in unreached code and deferred operations in JavaScript packages are listed separately because they don't fail a build. A deferred operation throws a runtime error if it runs, so a successful build doesn't mean every API of a package works; see [unsupported code inside a package](/docs/dependencies#unsupported-code-inside-a-package).
 
-The statement totals include the bodies of functions whose signatures cannot compile. Their statements count as not static, so the percentage reflects how much of the program compiles.
+If a function's signature can't compile, the statements in its body count as not compiling, so the percentage reflects how much of the program compiles.
 
 <span id="programs-that-require-dynamic-execution" />
 <span id="analyze-with-dynamic" />
@@ -49,16 +53,16 @@ The statement totals include the bodies of functions whose signatures cannot com
 
 ## Diagnostic codes
 
-Coverage uses the same diagnostic codes as `scriptc build`. Common examples include:
+Coverage and `scriptc build` report the same diagnostic codes. Common ones include:
 
 - `SC2020`: a declared standard-library or Node.js API has no supported compiler implementation.
 - `SC2012`: this API form cannot compile natively.
 - `SC2013`: a package cannot compile natively; inspect the package-specific reason and the [dependency guide](/docs/dependencies).
-- `SC1100`: a value crosses an unsupported checked-value boundary. Narrow or cast the value as directed by the diagnostic.
+- `SC1100`: a value whose type is only known at runtime, such as `unknown`, is used where scriptc needs a specific type. Narrow or cast the value as the diagnostic suggests.
 
 ## Node divergences
 
-Some programs compile but behave differently natively than under Node.js. Coverage reports the cases it can detect at compile time as `SC6xxx` warnings; `scriptc build` prints the same warnings after a successful build. They never fail a build.
+Some code compiles but can behave differently than under Node.js. Coverage reports the cases it can detect as `SC6xxx` warnings, and `scriptc build` prints the same warnings after a successful build. They never fail a build, but `--fail-on=divergences` can fail a CI job on them.
 
 - `SC6001`: an object passed to, or stored as, a narrower record type is copied, and the program then writes through the copy or compares it by identity.
 - `SC6002`: an object literal's key order differs from its type's declaration order, and the program observes the order through `JSON.stringify`, `Object.keys`, `Object.values`, `Object.entries`, `for...in`, or console output.
@@ -68,13 +72,19 @@ Some programs compile but behave differently natively than under Node.js. Covera
 
 ## Gating builds and CI
 
-By default `scriptc coverage` exits with status 0 whenever the program typechecks, so the report can be used to measure progress. Add `--fail-on=blockers` to exit with status 1 when the entry has blockers that would fail `scriptc build`; blockers in unreached code and JavaScript statements deferred to runtime do not count. `--fail-on=divergences` additionally fails on Node divergences. A program that does not typecheck always exits with status 1.
+By default, `scriptc coverage` exits with status 0 whenever the program type-checks, so you can use the report to track progress. To fail a CI job instead, add `--fail-on`:
 
-An unchanged program reuses the previous verdict: coverage records the files and directories the analysis read and replays the verdict while all of them are unchanged. Edits that only change TypeScript comments also reuse it, with reported locations moved to the edited text. Set `SCRIPTC_NO_CACHE=1` to disable the cache.
+```console
+$ scriptc coverage src/main.ts --fail-on=blockers
+```
+
+`--fail-on=blockers` exits with status 1 when the program has blockers that would fail `scriptc build`. Blockers in unreached code and deferred operations don't count. `--fail-on=divergences` also fails on Node divergences. A program that doesn't type-check always exits with status 1.
+
+Coverage caches its result. Running it again on an unchanged program, or after edits that only touch comments, reuses the previous verdict. Set `SCRIPTC_NO_CACHE=1` to turn the cache off.
 
 ## Machine-readable diagnostics
 
-`scriptc coverage --print=diagnostics` and `scriptc build --print=diagnostics` write one JSON document to stdout instead of the human report. The exit status is unchanged. The document has the following shape:
+For editors, CI annotations, and other tools, `scriptc coverage --print=diagnostics` and `scriptc build --print=diagnostics` write one JSON document to stdout instead of the human-readable report. The exit status is unchanged. The document looks like this:
 
 ```json
 {
@@ -177,13 +187,17 @@ An unchanged program reuses the previous verdict: coverage records the files and
 
 ## Type errors
 
-Coverage requires a program that typechecks. If type checking fails, the report identifies the errors instead of producing statement counts. Fix those errors before interpreting compilation coverage.
+Coverage needs a program that type-checks. If type checking fails, the report lists the type errors instead of statement counts; fix them first.
 
 scriptc type-checks with its own settings: strict null checks, the ES2025 library, and Node.js types (its bundled declarations when the project has no `@types/node`). An error those settings cause, rather than the project's own `tsc` configuration, carries a hint naming the cause, such as a library member newer than ES2025 or a global of another runtime, and machine-readable output reports it in the `environment` category.
 
 ## External host type declarations
 
-An embedder may provide modules that are absent from `node_modules`. Use `--external-types` to map an exact bare module specifier to the embedder's declaration file during analysis. For example: `scriptc coverage src/core.ts --external-types @native-sdk/core=types/native-sdk-core.d.ts`.
+When your code will run inside a host application that provides its own modules, those modules aren't in `node_modules`. Use `--external-types` to give coverage their declarations so it can analyze the rest of your code:
+
+```console
+$ scriptc coverage src/core.ts --external-types @native-sdk/core=types/native-sdk-core.d.ts
+```
 
 The option is repeatable. Relative declaration paths resolve from the current working directory. Supported declaration extensions are `.d.ts`, `.d.mts`, and `.d.cts`. Relative declaration imports and re-exports are included, so the mapped file can be an `index.d.ts` barrel. Project-owned code using these types participates in coverage; type-only imports add no runtime boundary.
 
