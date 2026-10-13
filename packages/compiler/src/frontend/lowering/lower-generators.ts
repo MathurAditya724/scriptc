@@ -13,6 +13,7 @@ import type { Lowerer } from "./lowerer.js";
 import {
   BOOL,
   DYN,
+  isRefCounted,
   type IrExpr,
   type IrStmt,
   type IrType,
@@ -201,7 +202,11 @@ export function extractIteratorValue(
   loc: SrcLoc,
 ): IrExpr | null {
   const yt = yieldT;
-  if (valueT.kind === "dyn") return read; // the dyn channel: V IS the value
+  if (valueT.kind === "dyn") {
+    // The dyn channel: V IS the value. A concrete channel beside a dyn
+    // one checks back to its type (it holds one: done was tested).
+    return yt.kind === "dyn" ? read : lowerer.coerceToExpected(read, yt);
+  }
   if (valueT.kind !== "union") return null;
   if (typeEquals(valueT, yt)) return read;
   if (yt.kind !== "union") {
@@ -218,6 +223,25 @@ export function extractIteratorValue(
   const helper = lowerer.unionRetagHelper(valueT.unionId, yt.unionId, loc, trappable);
   if (!helper) return null;
   return { kind: "call", callee: helper, args: [read], type: yt, loc };
+}
+
+/** Whether the compiler's own drive of `genT` can use the record-free
+ * step/value resume modes: a sync generator resumed without a value whose
+ * yield channel has an OUT-slot form (number, boolean, or a refcounted
+ * value). */
+export function stepDrivable(genT: GenType): boolean {
+  if (genT.async) return false;
+  if (genT.nextT.kind !== "undefinedT" && genT.nextT.kind !== "dyn") return false;
+  const yt = genT.yieldT;
+  return yt.kind === "f64" || yt.kind === "date" || yt.kind === "bool" || isRefCounted(yt);
+}
+
+/** `step` and `value` resumes of a generator-typed borrowed read. */
+export function genStep(gen: IrExpr, loc: SrcLoc): IrExpr {
+  return { kind: "genResume", mode: "step", gen, arg: null, type: BOOL, loc };
+}
+export function genValue(gen: IrExpr & { type: GenType }, loc: SrcLoc): IrExpr {
+  return { kind: "genResume", mode: "value", gen, arg: null, type: gen.type.yieldT, loc };
 }
 
 function generatorLoopBinding(
@@ -375,56 +399,79 @@ export function lowerForOfGenerator(
     const g = lowerer.declareHiddenLocal("%gof", genT);
     const done = lowerer.declareHiddenLocal("%gdone", BOOL);
     done.mutable = true;
-    const r = lowerer.declareHiddenLocal("%gres", recT);
     const gRef = (): IrExpr => ({ kind: "varRef", localId: g.id, type: genT, loc });
-    const rRef = (): IrExpr => ({ kind: "varRef", localId: r.id, type: recT, loc });
-    const valueRead: IrExpr = {
-      kind: "recordGet",
-      obj: rRef(),
-      shapeId: recT.shapeId,
-      field: "value",
-      type: valueT,
-      loc,
-    };
-    const extracted = extractIteratorValue(lowerer, genT.yieldT, valueT, valueRead, loc);
-    if (!extracted) {
-      lowerer.unsupported(
-        "SC1090",
-        stmt.expression,
-        `for-of over a generator yielding '${lowerer.fmt(genT.yieldT)}' (no per-element extraction exists — drive it with .next() and narrow r.value)`,
-      );
-    }
     const setDone = (value: boolean): IrStmt => ({
       kind: "assign",
       localId: done.id,
       value: { kind: "boolLit", value, type: BOOL, loc },
       loc,
     });
-    const head: IrStmt[] = [
-      setDone(true),
-      {
-        kind: "varDecl",
-        localId: r.id,
-        init: { kind: "genResume", mode: "next", gen: gRef(), arg: null, type: recT, loc },
-        loc,
-      },
-      {
-        kind: "if",
-        cond: {
-          kind: "recordGet",
-          obj: rRef(),
-          shapeId: recT.shapeId,
-          field: "done",
-          type: BOOL,
+    let head: IrStmt[];
+    if (stepDrivable(genT)) {
+      // The record-free drive: test done, then move the yielded value
+      // straight out of the generator.
+      head = [
+        setDone(true),
+        {
+          kind: "if",
+          cond: genStep(gRef(), loc),
+          then: [{ kind: "break", loc }],
+          else_: null,
           loc,
         },
-        then: [{ kind: "break", loc }],
-        else_: null,
+        setDone(false),
+        ...generatorLoopBinding(
+          lowerer,
+          stmt,
+          genValue({ kind: "varRef", localId: g.id, type: genT, loc }, loc),
+          genT.yieldT,
+        ),
+      ];
+    } else {
+      const r = lowerer.declareHiddenLocal("%gres", recT);
+      const rRef = (): IrExpr => ({ kind: "varRef", localId: r.id, type: recT, loc });
+      const valueRead: IrExpr = {
+        kind: "recordGet",
+        obj: rRef(),
+        shapeId: recT.shapeId,
+        field: "value",
+        type: valueT,
         loc,
-      },
-      setDone(false),
-      ...generatorLoopBinding(lowerer, stmt, extracted, genT.yieldT),
-    ];
+      };
+      const extracted = extractIteratorValue(lowerer, genT.yieldT, valueT, valueRead, loc);
+      if (!extracted) {
+        lowerer.unsupported(
+          "SC1090",
+          stmt.expression,
+          `for-of over a generator yielding '${lowerer.fmt(genT.yieldT)}' (no per-element extraction exists — drive it with .next() and narrow r.value)`,
+        );
+      }
+      head = [
+        setDone(true),
+        {
+          kind: "varDecl",
+          localId: r.id,
+          init: { kind: "genResume", mode: "next", gen: gRef(), arg: null, type: recT, loc },
+          loc,
+        },
+        {
+          kind: "if",
+          cond: {
+            kind: "recordGet",
+            obj: rRef(),
+            shapeId: recT.shapeId,
+            field: "done",
+            type: BOOL,
+            loc,
+          },
+          then: [{ kind: "break", loc }],
+          else_: null,
+          loc,
+        },
+        setDone(false),
+        ...generatorLoopBinding(lowerer, stmt, extracted, genT.yieldT),
+      ];
+    }
     const body = lowerer.inCtl("loop", () => lowerer.lowerScopedBlock(stmt.statement), labels);
     return {
       kind: "block",
@@ -466,10 +513,10 @@ export function lowerForOfGenerator(
                   kind: "exprStmt",
                   expr: {
                     kind: "genResume",
-                    mode: "return",
+                    mode: "close",
                     gen: gRef(),
                     arg: null,
-                    type: recT,
+                    type: VOID,
                     loc,
                   },
                   loc,
@@ -768,6 +815,32 @@ function lowerYieldStar(lowerer: Lowerer, expr: ts.YieldExpression): IrExpr {
       forwarded = reYield;
     }
     const resumeArg: IrExpr | null = forwarded;
+    if (resumeArg === null && dT.retT.kind === "void" && stepDrivable(dT)) {
+      // Nothing forwards and the completion is undefined: drive the
+      // delegate record-free, re-yielding each value as it is taken.
+      const taken = genValue({ kind: "varRef", localId: d.id, type: dT, loc }, loc);
+      const stepYield: IrExpr = {
+        ...reYield,
+        value: typeEquals(dT.yieldT, gen.yieldT)
+          ? taken
+          : lowerer.coerceInto(expr.expression!, taken, gen.yieldT),
+      };
+      return {
+        kind: "seqExpr",
+        result: channelUndefined(lowerer, DYN, loc)!,
+        type: DYN,
+        loc,
+        stmts: [
+          { kind: "varDecl", localId: d.id, init: delegate, loc },
+          {
+            kind: "while",
+            cond: { kind: "unary", op: "!", operand: genStep(dRef(), loc), type: BOOL, loc },
+            body: [{ kind: "exprStmt", expr: stepYield, loc }],
+            loc,
+          },
+        ],
+      };
+    }
     // When the yield's value cannot ride the resume argument (undefined
     // channels), it must still EXECUTE before the delegate resumes: the
     // loop body becomes [exprStmt(yield), assign(next)].

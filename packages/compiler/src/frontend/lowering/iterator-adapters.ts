@@ -16,7 +16,7 @@ import {
 import { streamTypedRefEligible } from "../../ir/analysis.js";
 import { typeKey, genResultRecord } from "../type-mapper.js";
 import type { Lowerer } from "./lowerer.js";
-import { extractIteratorValue } from "./lower-generators.js";
+import { extractIteratorValue, genStep, genValue, stepDrivable } from "./lower-generators.js";
 import { lowerSafeIndexRead } from "./array-values.js";
 
 /** The conversion into an iterator-typed slot (a generator type): a
@@ -399,10 +399,10 @@ function generatorRetypeAdapter(
                       kind: "exprStmt",
                       expr: {
                         kind: "genResume",
-                        mode: "return",
+                        mode: "close",
                         gen: source,
                         arg: null,
-                        type: fromResult,
+                        type: VOID,
                         loc,
                       },
                       loc,
@@ -446,6 +446,53 @@ export function generatorDrain(
   const arrT: IrType = { kind: "array", elem };
   const key = `genDrain:${typeKey(gen)}:${typeKey(elem)}`;
   let name = lowerer.valueHelpers.get(key);
+  if (!name && stepDrivable(gen)) {
+    // The record-free drive: test done, then take the yielded value.
+    const genRef = varRef("gen.0", gen, loc) as IrExpr & { type: typeof gen };
+    const outRef = varRef("out.0", arrT, loc);
+    const value = lowerer.coerceToExpected(genValue(genRef, loc), elem);
+    if (!typeEquals(value.type, elem)) return null;
+    name = `%gen.drain.${lowerer.valueHelpers.size}`;
+    lowerer.valueHelpers.set(key, name);
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "gen.0", name: "gen", type: gen }],
+      returnType: arrT,
+      locals: [
+        { id: "gen.0", name: "gen", type: gen, mutable: false },
+        { id: "out.0", name: "out", type: arrT, mutable: false },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "out.0",
+          init: { kind: "arrayLit", elems: [], type: arrT, loc },
+          loc,
+        },
+        {
+          kind: "while",
+          cond: { kind: "unary", op: "!", operand: genStep(genRef, loc), type: BOOL, loc },
+          body: [
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "arrIntrinsic",
+                method: "push",
+                receiver: outRef,
+                args: [value],
+                type: F64,
+                loc,
+              },
+              loc,
+            },
+          ],
+          loc,
+        },
+        { kind: "return", value: outRef, loc },
+      ],
+      loc,
+    });
+  }
   if (!name) {
     const genRef = varRef("gen.0", gen, loc);
     const outRef = varRef("out.0", arrT, loc);

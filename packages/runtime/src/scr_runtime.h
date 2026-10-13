@@ -5867,6 +5867,19 @@ typedef struct ScrGen ScrGen;
 
 ScrGen *scr_gen_new(void (*entry)(ScrFiber *, void *), void *argpack,
                     void (*drop_args)(void *));
+/* A synchronous generator whose body the compiler emitted as an LLVM
+ * switched coroutine: no fiber stack; resumes call into the coroutine frame
+ * on the resumer's stack. The body registers its frame with
+ * scr_coro_started and ends in scr_gen_coro_finish (the trampoline
+ * epilogue of the fiber form). Native targets only. */
+ScrGen *scr_gen_new_stackless(void (*entry)(ScrFiber *, void *), void *argpack,
+                              void (*drop_args)(void *));
+void scr_coro_started(void *handle);
+/* The OUT stores of a coroutine body's yield (its suspension follows). */
+void scr_coro_yield_f64(ScrFiber *self, double v);
+void scr_coro_yield_bool(ScrFiber *self, bool v);
+void scr_coro_yield_ref(ScrFiber *self, void *v, void (*release)(void *)); /* moves */
+void scr_gen_coro_finish(ScrFiber *self);
 ScrGen *scr_async_gen_new(void (*entry)(ScrFiber *, void *), void *argpack,
                           void (*drop_args)(void *),
                           void (*settle)(ScrGen *, ScrPromise *));
@@ -5877,6 +5890,10 @@ void scr_gen_release_v(void *g);
 
 void scr_gen_resume(ScrGen *g);
 void scr_gen_resume_return(ScrGen *g);
+/* A valueless next() that answers done (the compiler's own drives). */
+bool scr_gen_step(ScrGen *g);
+/* IteratorClose: a valueless return() whose result is dropped. */
+void scr_gen_close(ScrGen *g);
 void scr_gen_resume_throw(ScrGen *g);
 bool scr_gen_done(ScrGen *g);
 
@@ -5902,6 +5919,7 @@ void scr_gen_in_none(ScrGen *g);
 double scr_gen_take_in_f64(void); /* body side: the running fiber's gen */
 bool scr_gen_take_in_bool(void);
 void *scr_gen_take_in_ref(void); /* +1 moved out; NONE → NULL */
+ScrDyn *scr_gen_take_in_dyn(void); /* dyn channel: +1; NONE → undefined */
 /* yield* captures next/return/throw before ordinary yield unwinding. Ref
  * converters borrow their typed payload and return an owned dyn value. */
 ScrDyn *scr_gen_delegate_resume(ScrDyn *(*next_ref)(void *),
