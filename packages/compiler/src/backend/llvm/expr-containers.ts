@@ -513,6 +513,9 @@ export function emitStableReceiver(
 export function emitArrIntrinsic(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "arrIntrinsic" },
+  /** A `pop`/`shift` of number or boolean elements stores its scalar
+   * union result's tag and payload bits here instead of boxing it. */
+  into?: { box: string; tag: string; payload: string },
 ): LlValue {
   const B = host.B;
   // Every array intrinsic borrows its receiver, including mutation and
@@ -656,6 +659,25 @@ export function emitArrIntrinsic(
       const raw = B.tmp();
       const value = B.tmp();
       B.line(`${raw} = load i64, ptr ${rawSlot}`);
+      if (into) {
+        // Slot bits for f64; a canonical 0/1 for bool, like scr_union_new_bool.
+        let bits = raw;
+        if (elem.kind === "bool") {
+          const nonzero = B.tmp();
+          bits = B.tmp();
+          B.line(`${nonzero} = icmp ne i64 ${raw}, 0`);
+          B.line(`${bits} = zext i1 ${nonzero} to i64`);
+        }
+        B.line(`store i32 ${tag}, ptr ${into.tag}`);
+        B.line(`store i64 ${bits}, ptr ${into.payload}`);
+        B.br(lj);
+        B.startBlock(la);
+        B.line(`store i32 ${undefTag}, ptr ${into.tag}`);
+        B.line(`store i64 0, ptr ${into.payload}`);
+        B.br(lj);
+        B.startBlock(lj);
+        return { name: into.box, type: e.type };
+      }
       if (elem.kind === "f64") B.line(`${value} = bitcast i64 ${raw} to double`);
       else if (elem.kind === "bool") B.line(`${value} = icmp ne i64 ${raw}, 0`);
       else B.line(`${value} = inttoptr i64 ${raw} to ptr`);

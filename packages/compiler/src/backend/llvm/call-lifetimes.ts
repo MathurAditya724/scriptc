@@ -73,7 +73,11 @@ function eligible(local: IrLocal): boolean {
  * extracts and retains the payload, so the stored union is only projected. */
 export type NullableFieldTest = (className: string, field: string) => boolean;
 
-function collectUses(fn: IrFunction, nullableField: NullableFieldTest): Uses {
+function collectUses(
+  fn: IrFunction,
+  nullableField: NullableFieldTest,
+  registerReturn: boolean,
+): Uses {
   const uses: Uses = {
     invalid: new Set(),
     written: new Set(),
@@ -161,6 +165,10 @@ function collectUses(fn: IrFunction, nullableField: NullableFieldTest): Uses {
   }
   function stmt(node: IrStmt, inExpression: boolean): boolean {
     switch (node.kind) {
+      case "return":
+        // A register result reads the returned binding's tag and bits.
+        if (registerReturn && node.value?.kind === "varRef") return true;
+        break;
       case "varDecl":
         uses.declarations.set(node.localId, (uses.declarations.get(node.localId) ?? 0) + 1);
         break;
@@ -220,6 +228,9 @@ export function analyzeCallLifetimes(
   /** Rebound parameters that only ever hold borrowed walk pointers
    * (walk-borrows.ts): they keep the borrowed convention although written. */
   walkParameters: ReadonlyMap<string, ReadonlySet<number>> = new Map(),
+  /** Functions returning a scalar union as tag and payload bits
+   * (Int32Abi.union): `return x` only projects `x`. */
+  registerReturns: ReadonlySet<string> = new Set(),
 ): CallLifetimes {
   const usesByFunction = new Map<string, Uses>();
   const lazyCaptures = new LazyCaptures(functions);
@@ -234,7 +245,7 @@ export function analyzeCallLifetimes(
   };
   for (const fn of functions.values()) {
     if (fn.async || fn.generator) continue;
-    const uses = collectUses(fn, nullableField);
+    const uses = collectUses(fn, nullableField, registerReturns.has(fn.name));
     usesByFunction.set(fn.name, uses);
     // Class-capturing bodies get only local facts (computed below from
     // their uses; class captures are already invalid). Binding and
