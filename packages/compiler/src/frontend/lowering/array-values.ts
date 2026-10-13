@@ -40,6 +40,21 @@ export function arrayValueType(lowerer: Lowerer, elem: IrType): IrType {
     : lowerer.withUndefinedArm(elem);
 }
 
+/** ToNumber of one stabilized `number[]` element read: a hole, a present
+ * undefined and a missing index all read as NaN, which is
+ * ToNumber(undefined). Numeric updates use it in place of the optional
+ * element value. */
+export function arrayNumberRead(arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr {
+  return {
+    kind: "arrIntrinsic",
+    method: "getNumber",
+    receiver: arr,
+    args: [index],
+    type: F64,
+    loc,
+  };
+}
+
 /** Read one stabilized receiver/index pair. Both a hole and present undefined yield undefined. */
 export function arrayValueRead(
   lowerer: Lowerer,

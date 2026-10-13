@@ -103,6 +103,7 @@ import {
 import { PoisonError, dynFallbackType, jsFuncNameOf, neverTaintedJsType, own } from "./lowerer.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import {
+  arrayNumberRead,
   arrayValueRead,
   arrayValueStore,
   arrayValueType,
@@ -3245,6 +3246,11 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     const symbol = lowerer.resolveValueSymbol(node);
     if (symbol && lowerer.unstableSwitchBindings.has(symbol)) return expr;
   }
+  if (
+    ts.isPropertyAccessExpression(node) &&
+    getterResultHoldsUndeclaredUndefined(lowerer, node, expr)
+  )
+    return expr;
   const narrowedTs = lowerer.typeOf(node);
   const narrowed = lowerer.mapTypeOf(narrowedTs);
   // `Array.isArray(u)` on a union with one readonly array/tuple arm: the
@@ -3368,6 +3374,34 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     type: narrowed,
     loc: expr.loc,
   };
+}
+
+/** A getter read whose runtime result can be undefined (an unchecked
+ * element read in its body, or in another member of its override family)
+ * although its declared type cannot. The checker's type for the read is
+ * then no narrowing proof, so the read keeps the getter's result. */
+function getterResultHoldsUndeclaredUndefined(
+  lowerer: Lowerer,
+  node: ts.PropertyAccessExpression,
+  expr: IrExpr,
+): boolean {
+  if (expr.type.kind !== "union" || lowerer.armTag(expr.type.unionId, UNDEFINED_T) < 0)
+    return false;
+  const getter =
+    (expr.kind === "virtualCall" && expr.method.startsWith("get:")) ||
+    (expr.kind === "call" && expr.callee.includes(".get:"));
+  if (!getter) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(node.name);
+  if (!symbol || (symbol.flags & ts.SymbolFlags.GetAccessor) === 0) return false;
+  const declared = lowerer.checker.getTypeOfSymbol(symbol);
+  const holdsUndefined = (type: ts.Type): boolean =>
+    (type.flags &
+      (ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
+    0;
+  return !(
+    holdsUndefined(declared) ||
+    (declared.isUnionType() && ts.constituentTypes(declared).some(holdsUndefined))
+  );
 }
 
 /** The checked form of maybeNarrow's arm extraction for a narrowing the
@@ -7343,7 +7377,13 @@ export function lowerElementCompound(
   const indexRef = (): IrExpr => varRef(indexLocal.id, F64, loc);
   const oldValue: IrExpr =
     receiver.type.kind === "array"
-      ? arrayValueRead(lowerer, receiverRef(), indexRef(), receiver.type.elem, locOf(target))
+      ? receiver.type.elem.kind === "f64"
+        ? // Every numeric operator applies ToNumber to the old value, so a
+          // missing element is NaN without materializing `number | undefined`.
+          arrayNumberRead(receiverRef(), indexRef(), locOf(target))
+        : receiver.type.elem.kind === "string" && op === "+"
+          ? arrayStringOperand(receiverRef(), indexRef(), locOf(target))
+          : arrayValueRead(lowerer, receiverRef(), indexRef(), receiver.type.elem, locOf(target))
       : {
           // An invalid index reads undefined in Node, which every numeric
           // compound operator turns into NaN; the write is then ignored.
@@ -7418,6 +7458,26 @@ export function lowerElementCompound(
     ],
     result: resultRef(),
     type: computed.type,
+    loc,
+  };
+}
+
+/** ToString of one stabilized `string[]` element read for `+=`: a missing
+ * element concatenates as "undefined". */
+function arrayStringOperand(arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr {
+  return {
+    kind: "ternary",
+    cond: {
+      kind: "bin",
+      op: "===",
+      left: { kind: "arrayState", arr, index, type: F64, loc },
+      right: { kind: "numLit", value: 1, type: F64, loc },
+      type: BOOL,
+      loc,
+    },
+    then: { kind: "arrayGet", arr, index, type: STRING, loc },
+    else_: strLit("undefined", loc),
+    type: STRING,
     loc,
   };
 }
@@ -8736,7 +8796,9 @@ export function lowerIncDec(
       const type = raw.type;
       const read: IrExpr =
         type.kind === "array"
-          ? arrayValueRead(lowerer, receiver, index, type.elem, loc)
+          ? type.elem.kind === "f64"
+            ? arrayNumberRead(receiver, index, loc)
+            : arrayValueRead(lowerer, receiver, index, type.elem, loc)
           : {
               kind: "bytesIntrinsic",
               method: "get",
