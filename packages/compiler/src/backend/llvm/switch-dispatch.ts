@@ -2,6 +2,7 @@ import type { IrExpr, IrStmt } from "../../ir/ir.js";
 import { withinInt32 } from "../../ir/integer-ranges.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
+import { littleEndianWord } from "./string-literal-equality.js";
 
 type SwitchCase = Extract<IrStmt, { kind: "switch" }>["cases"][number];
 
@@ -107,32 +108,79 @@ function emitStringSwitch(
     if (group === undefined) groups.set(length, (group = []));
     group.push({ value: test.value, label: labels[index]! });
   }
-  if (seen.size < 4 || groups.size < 2) return false;
+  if (seen.size < 2) return false;
 
+  // Strings are equal exactly when their UTF-8 bytes are (scr_str_eq): the
+  // byte length selects a group, and a group of literals up to eight bytes
+  // long selects by the bytes as one little-endian word.
   const B = host.B;
   const pointer = B.tmp();
   const length = B.tmp();
   B.line(`${pointer} = getelementptr inbounds ${host.sizeType}, ptr ${disc.name}, i32 1`);
   B.line(`${length} = load ${host.sizeType}, ptr ${pointer}`);
   const groupLabels = new Map<number, string>();
-  for (const size of groups.keys()) groupLabels.set(size, B.newLabel("sw.length"));
+  for (const [size, group] of groups) {
+    // The empty string is the only literal of length zero.
+    groupLabels.set(size, size === 0 ? group[0]!.label : B.newLabel("sw.length"));
+  }
   B.terminate(
     `switch ${host.sizeType} ${length}, label %${fallback} [ ${[...groupLabels]
       .map(([size, label]) => `${host.sizeType} ${size}, label %${label}`)
       .join(" ")} ]`,
   );
-  host.declare("declare zeroext i1 @scr_str_eq(ptr, ptr)");
   for (const [size, group] of groups) {
+    if (size === 0) continue;
     B.startBlock(groupLabels.get(size)!);
-    for (let index = 0; index < group.length; index++) {
-      const item = group[index]!;
-      const literal = host.internLiteral(item.value);
-      const hit = B.tmp();
-      const next = index + 1 < group.length ? B.newLabel("sw.equal") : fallback;
-      B.line(`${hit} = call zeroext i1 @sc_str_eq(ptr ${disc.name}, ptr ${literal})`);
-      B.condBr(hit, item.label, next);
-      if (next !== fallback) B.startBlock(next);
+    if (size <= 8) {
+      const type = `i${size * 8}`;
+      const data = B.tmp();
+      const word = B.tmp();
+      B.line(`${data} = getelementptr inbounds %ScrStr, ptr ${disc.name}, i32 1`);
+      B.line(`${word} = load ${type}, ptr ${data}, align 1`);
+      // Distinct texts can share bytes (lone surrogates encode as U+FFFD);
+      // the first case keeps the word, as the comparison chain would.
+      const targets = new Map<string, string>();
+      for (const item of group) {
+        const value = littleEndianWord(Buffer.from(item.value, "utf8"), 0, size);
+        if (!targets.has(value)) targets.set(value, item.label);
+      }
+      B.terminate(
+        `switch ${type} ${word}, label %${fallback} [ ${[...targets]
+          .map(([value, label]) => `${type} ${value}, label %${label}`)
+          .join(" ")} ]`,
+      );
+      continue;
     }
+    // Longer literals select by their first eight bytes, then confirm the
+    // whole literal (the helper's repeated loads fold into this block's).
+    const data = B.tmp();
+    const word = B.tmp();
+    B.line(`${data} = getelementptr inbounds %ScrStr, ptr ${disc.name}, i32 1`);
+    B.line(`${word} = load i64, ptr ${data}, align 1`);
+    const prefixes = new Map<string, { value: string; label: string }[]>();
+    for (const item of group) {
+      const prefix = littleEndianWord(Buffer.from(item.value, "utf8"), 0, 8);
+      let same = prefixes.get(prefix);
+      if (same === undefined) prefixes.set(prefix, (same = []));
+      same.push(item);
+    }
+    const prefixLabels = [...prefixes.keys()].map(() => B.newLabel("sw.prefix"));
+    B.terminate(
+      `switch i64 ${word}, label %${fallback} [ ${[...prefixes.keys()]
+        .map((prefix, index) => `i64 ${prefix}, label %${prefixLabels[index]!}`)
+        .join(" ")} ]`,
+    );
+    [...prefixes.values()].forEach((same, prefixIndex) => {
+      B.startBlock(prefixLabels[prefixIndex]!);
+      for (let index = 0; index < same.length; index++) {
+        const item = same[index]!;
+        const hit = B.tmp();
+        const next = index + 1 < same.length ? B.newLabel("sw.equal") : fallback;
+        B.line(`${hit} = call zeroext i1 ${host.literalEquals(item.value)}(ptr ${disc.name})`);
+        B.condBr(hit, item.label, next);
+        if (next !== fallback) B.startBlock(next);
+      }
+    });
   }
   return true;
 }

@@ -547,9 +547,22 @@ export function emitStringExpr(
     }
     case "strEq": {
       const [l, r] = emitStringInputs(host, [e.left, e.right]);
-      host.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
       const eq = B.tmp();
-      B.line(`${eq} = call zeroext i1 @sc_str_eq(ptr ${l!.name}, ptr ${r!.name})`);
+      // A literal side compares its length and bytes inline.
+      const literal =
+        e.right.kind === "strLit"
+          ? { text: e.right.value, other: l! }
+          : e.left.kind === "strLit"
+            ? { text: e.left.value, other: r! }
+            : null;
+      if (literal !== null) {
+        B.line(
+          `${eq} = call zeroext i1 ${host.literalEquals(literal.text)}(ptr ${literal.other.name})`,
+        );
+      } else {
+        host.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
+        B.line(`${eq} = call zeroext i1 @sc_str_eq(ptr ${l!.name}, ptr ${r!.name})`);
+      }
       if (!e.negated) return { name: eq, type: e.type };
       const t = B.tmp();
       B.line(`${t} = xor i1 ${eq}, true`);
