@@ -76401,7 +76401,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "detail": "Collects a Node Readable stream's chunks for the tested forms; web ReadableStreams and other async iterables remain unsupported.",
         "verification": "test-backed"
       }
     },
@@ -76447,7 +76447,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "detail": "Collects a Node Readable stream's chunks for the tested forms; web ReadableStreams and other async iterables remain unsupported.",
         "verification": "test-backed"
       }
     },
@@ -76493,7 +76493,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "detail": "Collects a Node Readable stream's chunks for the tested forms; web ReadableStreams and other async iterables remain unsupported.",
         "verification": "test-backed"
       }
     },
@@ -76516,7 +76516,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "detail": "Collects a Node Readable stream's chunks for the tested forms; web ReadableStreams and other async iterables remain unsupported.",
         "verification": "test-backed"
       }
     },
