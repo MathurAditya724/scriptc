@@ -2227,7 +2227,7 @@ ScrPromise *scr_sp_pipeline(double n, ScrStream **streams) {
 }
 
 /* ── node:stream/consumers ────────────────────────────────────────────
- * text/json/buffer over the readable machinery: a native 'data' listener
+ * text/json/buffer/arrayBuffer over the readable machinery: a native 'data' listener
  * accumulates every chunk (Buffer chunks as-is; string chunks — an
  * encoded stream or Readable.from strings — as their utf8 bytes, the
  * Blob rule Node's consumers share for whole-stream accumulation), and
@@ -2239,7 +2239,7 @@ ScrPromise *scr_sp_pipeline(double n, ScrStream **streams) {
  * closures share the cap layout: caps[0] the pending promise, caps[1]
  * the chunk list (Buffer entries). */
 
-enum { SCR_SC_TEXT = 0, SCR_SC_JSON = 1, SCR_SC_BUFFER = 2 };
+enum { SCR_SC_TEXT = 0, SCR_SC_JSON = 1, SCR_SC_BUFFER = 2, SCR_SC_ARRAY_BUFFER = 3 };
 
 static void scr_sc_settle_ok(ScrClosure *cb, int kind) {
   ScrPromise *p = scr_box_get_ref(cb->caps[0]);  /* +1 */
@@ -2248,6 +2248,15 @@ static void scr_sc_settle_ok(ScrClosure *cb, int kind) {
   scr_arr_release(chunks);
   if (kind == SCR_SC_BUFFER) {
     scr_promise_fulfill_ref(p, all, scr_bytes_retain_v, scr_bytes_release_v, NULL);
+    scr_promise_release(p);
+    return;
+  }
+  if (kind == SCR_SC_ARRAY_BUFFER) {
+    /* The concatenation is a fresh exact-length owner, so the buffer
+     * wraps it with no second copy (Node copies into a Blob, then out). */
+    ScrDyn *ab = scr_array_buffer_from_bytes(all);
+    scr_bytes_release(all);
+    scr_promise_fulfill_ref(p, ab, scr_dyn_retain_v, scr_dyn_release_v, NULL);
     scr_promise_release(p);
     return;
   }
@@ -2309,6 +2318,10 @@ static void scr_sc_fin_buffer(ScrClosure *cb, ScrStream *s, ScrError *err) {
   (void)s;
   scr_sc_fin(cb, err, SCR_SC_BUFFER);
 }
+static void scr_sc_fin_array_buffer(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  (void)s;
+  scr_sc_fin(cb, err, SCR_SC_ARRAY_BUFFER);
+}
 
 static ScrClosure *scr_sc_closure(void *fn, ScrPromise *p, ScrArr *chunks) {
   ScrClosure *c = scr_closure_new(fn, 2);
@@ -2333,7 +2346,8 @@ static ScrPromise *scr_sc_consume(ScrStream *s, int kind) {
   ScrArr *chunks = scr_arr_new_ops(&bytes_ops, 4);
   ScrStreamErrInv fin_inv = kind == SCR_SC_TEXT    ? &scr_sc_fin_text
                             : kind == SCR_SC_JSON  ? &scr_sc_fin_json
-                                                   : &scr_sc_fin_buffer;
+                            : kind == SCR_SC_BUFFER ? &scr_sc_fin_buffer
+                                                    : &scr_sc_fin_array_buffer;
   /* The terminal watcher first (it marks lifecycle errors handled); the
    * promise form exposes no unhook — the cleanup closure drops. */
   ScrClosure *cleanup = scr_stream_finished(s, scr_sc_closure((void *)fin_inv, p, chunks), fin_inv);
@@ -2353,6 +2367,7 @@ static ScrPromise *scr_sc_consume(ScrStream *s, int kind) {
 ScrPromise *scr_sc_text(ScrStream *s) { return scr_sc_consume(s, SCR_SC_TEXT); }
 ScrPromise *scr_sc_json(ScrStream *s) { return scr_sc_consume(s, SCR_SC_JSON); }
 ScrPromise *scr_sc_buffer(ScrStream *s) { return scr_sc_consume(s, SCR_SC_BUFFER); }
+ScrPromise *scr_sc_array_buffer(ScrStream *s) { return scr_sc_consume(s, SCR_SC_ARRAY_BUFFER); }
 
 /* ── node:console Console instances over writable streams ─────────────
  * Node's kWriteToConsole: with ignoreErrors (the default) one shared noop

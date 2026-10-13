@@ -629,16 +629,29 @@ export function emitAsyncExpr(
       // `await f(...)` of a direct async call: the call and the await go
       // through f's await-call entry, which returns the awaited value
       // (owned, with the pending check done by the call emission).
-      if (e.value.kind === "call" && host.awaitCallEligible(e.value.callee)) {
+      // An adopting await (the operand of an async function's `return`)
+      // first takes the turn of the then job that JS's promise resolution
+      // queues for a returned promise; a direct call folds that turn into
+      // the callee's adopting entry. Past finally regions, the return has
+      // already produced the promise (adoptedOperand).
+      const adopted = e.adopt === true ? host.takeAdoptedOperand() : null;
+      if (adopted === null && e.value.kind === "call" && host.awaitCallEligible(e.value.callee)) {
         const callee = host.fnByName.get(e.value.callee)!;
         if (
           typeEquals(callee.returnType, e.type) &&
           !host.callLifetimes.borrowed.has(e.value.callee)
         ) {
-          return host.emitAwaitedCall(e.value);
+          return host.emitAwaitedCall(e.value, e.adopt === true);
         }
       }
-      const pr = host.emitExpr(e.value);
+      const pr = adopted ?? host.emitExpr(e.value);
+      if (e.adopt === true) {
+        if (host.wasi) host.emitWasiSuspend(null);
+        else {
+          host.declare(`declare void @scr_await_hop()`);
+          B.line(`call void @scr_await_hop()`);
+        }
+      }
       if (host.wasi) host.emitWasiSuspend(pr.name);
       if (e.type.kind === "void") {
         host.declare(`declare void @scr_await_void(ptr)`);

@@ -1572,9 +1572,9 @@ export const BUILTIN_MODULE_FNS: Record<
   // exists so unlowered members fence module-qualified.
   "stream/promises": {},
   // node:stream/consumers rides the stream spoke as well (text/json/
-  // buffer special-case their stream argument); arrayBuffer and blob
-  // fence module-qualified with the pointed hints below — neither value
-  // has a representation in a compiled binary.
+  // buffer/arrayBuffer special-case their stream argument); blob fences
+  // module-qualified with the pointed hint below — Blob has no
+  // representation in a compiled binary.
   "stream/consumers": {},
   // node:timers/promises — the delay-only setTimeout and bare setImmediate
   // (void promises the shared timer heap settles). The arity completion
@@ -2380,9 +2380,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
       "the lowered shapes are const bindings over child_process.execFile and fs.readFile; call the bound function directly",
   },
   "stream/consumers": {
-    arrayBuffer:
-      "collecting a stream directly into an ArrayBuffer has no native lowering yet; " +
-      "buffer(stream) collects the same bytes as a Buffer",
     blob:
       "Blob values have no representation in a compiled binary — " +
       "buffer(stream) collects the same bytes as a Buffer, text(stream) the decoded text",

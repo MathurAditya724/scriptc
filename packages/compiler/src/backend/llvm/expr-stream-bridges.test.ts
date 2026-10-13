@@ -102,3 +102,55 @@ test("converter registries belong to one emitted module", () => {
   expect(second).not.toBe(first);
   expect(emitLlvmModule(original)).toBe(first);
 });
+
+test("live record capsules bind field hooks in snapshot order", () => {
+  const module = sharedGraph(1);
+  module.records!.push({
+    id: "numbered",
+    fields: [
+      { name: "0", type: STRING },
+      { name: "name", type: STRING },
+    ],
+  });
+  module.unions!.push({
+    id: "numberedInput",
+    arms: [{ kind: "record", shapeId: "numbered" }, STRING],
+  });
+  const loc = { file: "live-references.ts", start: 0, end: 0 };
+  const type: IrType = { kind: "union", unionId: "numberedInput" };
+  module.functions.push({
+    name: "boxNumbered",
+    params: [{ name: "value", localId: "value", type }],
+    returnType: DYN,
+    locals: [{ id: "value", name: "value", type, mutable: false }],
+    loc,
+    body: [
+      {
+        kind: "return",
+        value: {
+          kind: "dynFrom",
+          value: { kind: "varRef", localId: "value", type, loc },
+          liveRef: true,
+          type: DYN,
+          loc,
+        },
+        loc,
+      },
+    ],
+  });
+  const llvm = emitLlvmModule(module, { pointerBits: 64 });
+  const tables = [
+    ...llvm.matchAll(/^@(\S+)_rops = internal constant \{ i64, ptr, ptr, ptr \} \{ i64 (\d+), /gm),
+  ];
+  // root and leaf get field hooks; the record with an index-like field name
+  // keeps every operation on its snapshot, whose keys sort that name first.
+  expect(tables.map((match) => Number(match[2])).sort()).toEqual([2, 3]);
+  expect(llvm).toMatch(/; materialize live stream value record:numbered$/m);
+  const leafNames = llvm.match(/^@\S+_names = internal constant \[3 x ptr\] \[(.+)\]$/m);
+  expect(leafNames).not.toBeNull();
+  const binds = llvm.match(/call void @scr_dyn_typed_ref_bind_record\(/g) ?? [];
+  expect(binds.length).toBeGreaterThan(0);
+  expect(llvm).toMatch(
+    /define internal zeroext i1 @\S+_has\(ptr %p, i64 %i\).*; live field presence of record:leaf/,
+  );
+});

@@ -30,4 +30,6 @@ export interface LlStreamTypedRefAdapter {
   commit: string;
   /** `@sym` of the ScrDynTypedArrayOps table for live array capsules. */
   arrayOps?: string;
+  /** `@sym` of the ScrDynTypedRecordOps table for live record capsules. */
+  recordOps?: string;
 }

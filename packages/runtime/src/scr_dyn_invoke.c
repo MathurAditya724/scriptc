@@ -721,7 +721,7 @@ static ScrDyn *scr_dyn_invoke_impl(
  * and takes the snapshot path. */
 static ScrDyn *dyn_live_array_method(ScrDyn *recv, const char *method, ScrDyn *const *args,
                                      size_t argc, const char *what, bool *handled) {
-  const ScrDynTypedArrayOps *ops = recv->v.typed_ref.array;
+  const ScrDynTypedArrayOps *ops = scr_dyn_typed_ref_array_ops(recv);
   if (!ops) return NULL;
   ScrArr *arr = recv->v.typed_ref.ptr;
   size_t len = arr->len;

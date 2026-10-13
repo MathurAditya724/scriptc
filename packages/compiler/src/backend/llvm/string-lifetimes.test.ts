@@ -452,10 +452,10 @@ test("string comparisons decide identity, lengths and leading bytes before the r
       type: BOOL,
       loc,
     });
-  const same = fn("same", [], {
+  const same = fn("same", ["a", "b"], {
     kind: "strEq",
-    left: str("a"),
-    right: str("b"),
+    left: { kind: "varRef", localId: "a", type: STRING, loc },
+    right: { kind: "varRef", localId: "b", type: STRING, loc },
     negated: false,
     type: BOOL,
     loc,

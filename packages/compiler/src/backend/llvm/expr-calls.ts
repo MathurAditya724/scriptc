@@ -9,6 +9,7 @@ import {
 } from "../../ir/ir.js";
 import { collectFfiRetainedOps, parseFfiCallbackKey } from "../ffi-callbacks.js";
 import {
+  mangleAsyncAdoptCall,
   mangleAsyncAwaitCall,
   mangleBorrowedFunction,
   mangleClassNew,
@@ -52,7 +53,7 @@ export function emitCallExpr(
     | "instanceOf"
     | "virtualCall"
   >,
-  awaitEntry = false,
+  awaitEntry: false | "await" | "adopt" = false,
 ): LlValue {
   const B = host.B;
   switch (e.kind) {
@@ -125,10 +126,12 @@ export function emitCallExpr(
       if (awaitEntry) {
         // The enclosing await routes this call through the callee's
         // await-call entry: the result is the awaited value, and the
-        // await's rejection re-throw is the pending check.
-        host.awaitCallees.add(e.callee);
+        // await's rejection re-throw is the pending check. An adopting
+        // entry (`return f(...)`) also takes the adoption's then-job turn.
+        const adopt = awaitEntry === "adopt";
+        (adopt ? host.adoptCallees : host.awaitCallees).add(e.callee);
         const awaited = callee.returnType;
-        const entry = `@${mangleAsyncAwaitCall(e.callee)}`;
+        const entry = `@${adopt ? mangleAsyncAdoptCall(e.callee) : mangleAsyncAwaitCall(e.callee)}`;
         if (awaited.kind === "void") {
           B.line(`call void ${entry}(${argList})`);
           host.emitPendingCheck();

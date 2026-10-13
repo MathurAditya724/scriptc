@@ -63,6 +63,7 @@ static SCR_TL ScrDyn *scr_async_iterator_symbol;
 static SCR_TL ScrDyn *scr_to_primitive_symbol;
 static bool scr_dyn_generator(const ScrDyn *value) {
   return value && value->kind == SCR_DYN_TYPED_REF &&
+    (value->v.typed_ref.type_key[0] == 'g' || value->v.typed_ref.type_key[0] == 'a') &&
     (!strncmp(value->v.typed_ref.type_key, "generator<", 10) || !strncmp(value->v.typed_ref.type_key, "async-generator<", 16));
 }
 static bool scr_dyn_generator_symbol(const ScrDyn *value, const ScrDyn *key) {
@@ -2042,7 +2043,7 @@ ScrDyn *scr_dyn_new_typed_ref(
         value->v.typed_ref.type_key_len == type_key_len && !memcmp(value->v.typed_ref.type_key, type_key, type_key_len))
       return scr_dyn_retain(value);
   }
-  if (type_key_len >= (size_t)1 << 30) scr_trap("scriptc: typed reference key too long\n");
+  if (type_key_len >= (size_t)1 << 29) scr_trap("scriptc: typed reference key too long\n");
   ScrDyn *d = scr_dyn_alloc(SCR_DYN_TYPED_REF);
   d->v.typed_ref.ptr = retain(ptr);
   d->v.typed_ref.retain = retain;
@@ -2056,6 +2057,7 @@ ScrDyn *scr_dyn_new_typed_ref(
   d->v.typed_ref.casts = NULL;
   d->v.typed_ref.traced = false;
   d->v.typed_ref.observed = false;
+  d->v.typed_ref.record = false;
   ScrTypedRefIdentity *identity = malloc(sizeof *identity);
   if (!identity) scr_json_oom();
   identity->value = d; identity->next = scr_typed_ref_identities[bucket];
@@ -2220,8 +2222,59 @@ void scr_dyn_typed_ref_commit(ScrDyn *d) {
  * whose answer may come from the prototype chain — holes and out-of-range
  * indexes — or needs the snapshot's diagnostics still takes the snapshot. */
 void scr_dyn_typed_ref_bind_array(ScrDyn *d, const ScrDynTypedArrayOps *ops) {
-  if (d && d->kind == SCR_DYN_TYPED_REF) d->v.typed_ref.array = ops;
+  if (d && d->kind == SCR_DYN_TYPED_REF) {
+    d->v.typed_ref.array = ops;
+    d->v.typed_ref.record = false;
+  }
 }
+
+/* ── live native records: per-field access ───────────────────────────────
+ * A record's snapshot is a fresh ordinary object holding exactly its
+ * present fields, in `names` order, with no prototype, symbols or extra
+ * properties. Until something creates the capsule's cached view (a write,
+ * a property definition, a prototype change, or any operation without a
+ * field path), that snapshot is fully determined by the native record, so
+ * reads, presence and key walks answer from the record directly and
+ * convert only the field values they return. Once the view exists it may
+ * hold state the record cannot (added properties, a prototype, changed
+ * attributes), and every operation goes through it as before. */
+void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops) {
+  if (d && d->kind == SCR_DYN_TYPED_REF) {
+    d->v.typed_ref.array = (const ScrDynTypedArrayOps *)(const void *)ops;
+    d->v.typed_ref.record = true;
+  }
+}
+
+static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d) {
+  if (!d->v.typed_ref.record || d->v.typed_ref.materialized) return NULL;
+  return (const ScrDynTypedRecordOps *)(const void *)d->v.typed_ref.array;
+}
+
+static bool scr_typed_ref_record_field(const ScrDynTypedRecordOps *ops, const ScrStr *key,
+                                       size_t *out) {
+  for (size_t i = 0; i < ops->count; i++) {
+    const ScrStr *name = ops->names[i];
+    if (name == key ||
+        (name->len == key->len && memcmp(name->data, key->data, key->len) == 0)) {
+      *out = i;
+      return true;
+    }
+  }
+  return false;
+}
+
+/* +1 own field value, or NULL when `key` is not a present field. */
+static ScrDyn *scr_typed_ref_record_get(const ScrDyn *d, const ScrStr *key) {
+  const ScrDynTypedRecordOps *ops = scr_typed_ref_record_ops(d);
+  size_t index;
+  if (!ops || !scr_typed_ref_record_field(ops, key, &index)) return NULL;
+  if (!ops->has(d->v.typed_ref.ptr, index)) return NULL;
+  return ops->get(d->v.typed_ref.ptr, index);
+}
+
+/* The snapshot's own keys/values/entries walk, answered from the record. */
+static ScrDyn *scr_typed_ref_record_walk(const ScrDyn *d, const ScrDynTypedRecordOps *ops,
+                                         int mode /* ScrObjWalk */);
 
 static bool scr_typed_ref_canonical_index(const char *data, size_t len, size_t *out) {
   if (len == 0 || len > 10 || (len > 1 && data[0] == '0')) return false;
@@ -2243,12 +2296,13 @@ ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index) {
   ScrArr *arr = d->v.typed_ref.ptr;
   if (index >= arr->len) return NULL;
   double state = scr_arr_state(arr, (double)index);
-  if (state == (double)SCR_ARR_VALUE) return d->v.typed_ref.array->get(arr, (double)index);
+  if (state == (double)SCR_ARR_VALUE) return scr_dyn_typed_ref_array_ops(d)->get(arr, (double)index);
   if (state == (double)SCR_ARR_UNDEFINED) return scr_dyn_retain(scr_dyn_undefined());
   return NULL;
 }
 
 ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key) {
+  if (d->v.typed_ref.record) return scr_typed_ref_record_get(d, key);
   if (!d->v.typed_ref.array) return NULL;
   if (scr_typed_ref_is_length(key)) return scr_dyn_new_num((double)((ScrArr *)d->v.typed_ref.ptr)->len);
   size_t index;
@@ -2258,7 +2312,7 @@ ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key) {
 
 /* An own `length` or element answers `in`/hasOwn without the snapshot. */
 static bool scr_typed_ref_array_has_own(const ScrDyn *d, const ScrStr *key) {
-  if (!d->v.typed_ref.array) return false;
+  if (!scr_dyn_typed_ref_array_ops(d)) return false;
   if (scr_typed_ref_is_length(key)) return true;
   size_t index;
   if (!scr_typed_ref_canonical_index(key->data, key->len, &index)) return false;
@@ -2270,7 +2324,7 @@ static bool scr_typed_ref_array_has_own(const ScrDyn *d, const ScrStr *key) {
  * when the value does not fit the element type or the write could grow the
  * array by more than one element: the snapshot path owns those outcomes. */
 static bool scr_typed_ref_array_set(ScrDyn *d, const ScrStr *key, const ScrDyn *value) {
-  const ScrDynTypedArrayOps *ops = d->v.typed_ref.array;
+  const ScrDynTypedArrayOps *ops = scr_dyn_typed_ref_array_ops(d);
   if (!ops || !ops->set) return false;
   size_t index;
   if (!scr_typed_ref_canonical_index(key->data, key->len, &index)) return false;
@@ -2991,8 +3045,10 @@ ScrDyn *scr_dyn_alloc_promise(void (*release_fn)(ScrPromise *p)) {
 bool scr_dyn_ref_typeof_is(const ScrDyn *d, const char *name) {
   if (scr_dyn_generator(d)) return strcmp(name, "object") == 0;
   if (d->kind == SCR_DYN_TYPED_REF) {
-    if (d->v.typed_ref.type_key_len >= 7 &&
-        memcmp(d->v.typed_ref.type_key, "object:", 7) == 0)
+    /* Bound records and arrays always view as an ordinary object/array. */
+    if ((d->v.typed_ref.type_key_len >= 7 &&
+         memcmp(d->v.typed_ref.type_key, "object:", 7) == 0) ||
+        scr_typed_ref_record_ops(d) || scr_dyn_typed_ref_array_ops(d))
       return strcmp(name, "object") == 0;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     bool out;
@@ -3019,6 +3075,8 @@ bool scr_dyn_ref_is_array(const ScrDyn *d) {
   if (d->kind == SCR_DYN_TYPED_REF) {
     if (d->v.typed_ref.type_key_len >= 7 &&
         memcmp(d->v.typed_ref.type_key, "object:", 7) == 0) return false;
+    if (scr_typed_ref_record_ops(d)) return false;
+    if (scr_dyn_typed_ref_array_ops(d)) return true;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     if (!materialized) return false;
     bool out = materialized->kind == SCR_DYN_ARR ||
@@ -3411,7 +3469,7 @@ static ScrDyn *scr_native_iterator_value(ScrNativeIterator *iterator, bool *done
   if (source) scr_dyn_retain(source);
   /* A live native array answers an in-range own element directly. Holes
    * (prototype lookups) and completion fall through to the view below. */
-  if (source && source->kind == SCR_DYN_TYPED_REF && source->v.typed_ref.array &&
+  if (source && source->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(source) &&
       iterator->kind == 0 && !iterator->array_like &&
       iterator->index < (double)((ScrArr *)source->v.typed_ref.ptr)->len) {
     double index = iterator->index;
@@ -3429,6 +3487,16 @@ static ScrDyn *scr_native_iterator_value(ScrNativeIterator *iterator, bool *done
       *done_out = false;
       return value;
     }
+  }
+  /* Completion depends only on the live length, which the view would copy. */
+  if (source && source->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(source) &&
+      iterator->kind == 0 && !iterator->array_like &&
+      iterator->index >= (double)((ScrArr *)source->v.typed_ref.ptr)->len) {
+    iterator->source = NULL;
+    scr_dyn_release(source);
+    scr_dyn_release(source);
+    *done_out = true;
+    return scr_dyn_retain(scr_dyn_undefined());
   }
   /* Native array capsules retain the live array, so refresh its view at each
    * step rather than iterating a snapshot taken when the iterator opened. */
@@ -4237,8 +4305,9 @@ ScrStr *scr_dyn_typeof(const ScrDyn *d) {
   const char *s;
   if (d->kind == SCR_DYN_PROXY) return scr_dyn_typeof(d->v.proxy.target);
   if (d->kind == SCR_DYN_TYPED_REF) {
-    if (d->v.typed_ref.type_key_len >= 7 &&
-        memcmp(d->v.typed_ref.type_key, "object:", 7) == 0)
+    if ((d->v.typed_ref.type_key_len >= 7 &&
+         memcmp(d->v.typed_ref.type_key, "object:", 7) == 0) ||
+        scr_typed_ref_record_ops(d) || scr_dyn_typed_ref_array_ops(d))
       return scr_str_new("object", 6);
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     ScrStr *out = scr_dyn_typeof(materialized);
@@ -5468,6 +5537,11 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
 
   if (v->kind == SCR_DYN_TYPED_REF) {
     if (scr_typed_ref_array_has_own(v, key)) return true;
+    const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
+    size_t field;
+    if (record && scr_typed_ref_record_field(record, key, &field) &&
+        record->has(v->v.typed_ref.ptr, field))
+      return true;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
     bool out = scr_dyn_has_key(materialized, key);
     scr_dyn_release(materialized);
@@ -6696,6 +6770,9 @@ static ScrStr *scr_json_index_key(size_t index) {
 /* Keys passed here come from our own index formatter or own-key walk. */
 static ScrDyn *scr_json_member(const ScrDyn *holder, const ScrStr *key) {
   if (holder->kind == SCR_DYN_TYPED_REF) {
+    /* Bound records and arrays answer present members from the native value. */
+    ScrDyn *live = scr_dyn_typed_ref_key_get(holder, key);
+    if (live) return live;
     ScrDyn *view = scr_dyn_typed_ref_materialize(holder);
     ScrDyn *member = scr_exc_pending() ? NULL : scr_json_member(view, key);
     scr_dyn_release(view);
@@ -6883,12 +6960,30 @@ static ScrDyn *scr_json_buffer_view(const ScrDyn *value) {
   return view;
 }
 
+/* A capsule whose JSON walk needs no checked view: a bound live array
+ * (never converted by toJSON), or a bound live record without a cached view
+ * and, when `inspect`ing for conversion, without a present `toJSON` field. */
+static bool scr_json_live_container(const ScrDyn *value, bool inspect) {
+  if (scr_dyn_typed_ref_array_ops(value)) return true;
+  const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(value);
+  if (!record) return false;
+  if (!inspect) return true;
+  for (size_t i = 0; i < record->count; i++) {
+    const ScrStr *name = record->names[i];
+    if (name->len == 6 && memcmp(name->data, "toJSON", 6) == 0 && record->has(value->v.typed_ref.ptr, i))
+      return false;
+  }
+  return true;
+}
+
 static ScrDyn *scr_json_replace(const ScrDyn *holder, const ScrStr *key, const ScrDyn *replacer) {
   ScrDyn *value = scr_json_member(holder, key);
   if (!value) return NULL;
   /* Inspect a typed reference without replacing its live identity. Later
-   * members must read the source again after a callback mutates it. */
-  ScrDyn *view = value->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(value) : NULL;
+   * members must read the source again after a callback mutates it. A live
+   * array, or a live record without a `toJSON` field, needs no conversion. */
+  ScrDyn *view = value->kind == SCR_DYN_TYPED_REF && !scr_json_live_container(value, true)
+      ? scr_dyn_typed_ref_materialize(value) : NULL;
   const ScrDyn *inspected = view ? view : value;
   if (scr_exc_pending()) { scr_dyn_release(view); scr_dyn_release(value); return NULL; }
   if (inspected->kind == SCR_DYN_HANDLE && (inspected->v.handle.tag == SCR_DYNH_DATE || inspected->v.handle.tag == SCR_DYNH_URL)) {
@@ -6998,28 +7093,33 @@ static bool scr_json_plain_write(ScrJsonBuf *buffer, const ScrDyn *value,
 static bool scr_json_replaced_write(ScrJsonBuf *buffer, const ScrDyn *value,
                                    const ScrDyn *replacer, const ScrStr *gap, size_t depth) {
   if (!scr_json_callback_depth(depth)) return false;
-  ScrDyn *view = value->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(value) : NULL;
+  /* A live record or array is walked through the capsule itself: its keys
+   * and members come from the native value, one member at a time. */
+  bool live = value->kind == SCR_DYN_TYPED_REF && scr_json_live_container(value, false);
+  ScrDyn *view = value->kind == SCR_DYN_TYPED_REF && !live ? scr_dyn_typed_ref_materialize(value) : NULL;
   const ScrDyn *observed = view ? view : value;
   if (scr_exc_pending()) { scr_dyn_release(view); return false; }
-  if (!view && replacer->kind == SCR_DYN_UNDEF && scr_json_plain_container(value))
+  if (!view && !live && replacer->kind == SCR_DYN_UNDEF && scr_json_plain_container(value))
     return scr_json_plain_write(buffer, value, gap, depth);
-  if (observed->kind != SCR_DYN_OBJ && observed->kind != SCR_DYN_ARR && observed->kind != SCR_DYN_BYTES) {
+  ScrDynKind kind = !live ? observed->kind : scr_dyn_typed_ref_array_ops(value) ? SCR_DYN_ARR : SCR_DYN_OBJ;
+  if (kind != SCR_DYN_OBJ && kind != SCR_DYN_ARR && kind != SCR_DYN_BYTES) {
 
 
     scr_dyn_json_write(buffer, observed);
     scr_dyn_release(view);
     return !scr_exc_pending();
   }
-  bool array = observed->kind == SCR_DYN_ARR;
+  bool array = kind == SCR_DYN_ARR;
   /* Different capsules may refer to the same native container. Detect
    * cycles by the original payload, while sibling references remain legal
    * after the current frame leaves the traversal stack. */
-  const void *identity = view ? value->v.typed_ref.ptr : (const void *)value;
+  const void *identity = view || live ? value->v.typed_ref.ptr : (const void *)value;
   if (!scr_jb_enter(buffer, identity, array)) { scr_dyn_release(view); return false; }
   scr_jb_putc(buffer, array ? '[' : '{');
   ScrDyn *keys = array ? NULL : scr_dyn_obj_keys(observed);
   if (scr_exc_pending()) { scr_dyn_release(keys); scr_dyn_release(view); scr_jb_leave(buffer); return false; }
-  size_t length = array ? observed->v.arr.len : keys->v.arr.len;
+  size_t length = !array ? keys->v.arr.len
+      : live ? ((ScrArr *)value->v.typed_ref.ptr)->len : observed->v.arr.len;
   bool first = true;
   bool ok = true;
   for (size_t i = 0; i < length; i++) {
@@ -8031,6 +8131,8 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
     return out;
   }
   if (v->kind == SCR_DYN_TYPED_REF) {
+    const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
+    if (record) return scr_typed_ref_record_walk(v, record, (int)mode);
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
     ScrDyn *out = scr_dyn_objwalk(materialized, mode);
     scr_dyn_release(materialized);
@@ -8123,10 +8225,39 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
 
 ScrDyn *scr_dyn_obj_keys(const ScrDyn *v) { return scr_dyn_objwalk(v, SCR_OBJWALK_KEYS); }
 
+static ScrDyn *scr_typed_ref_record_walk(const ScrDyn *d, const ScrDynTypedRecordOps *ops,
+                                         int mode) {
+  ScrDyn *out = scr_dyn_new_arr();
+  void *rec = d->v.typed_ref.ptr;
+  for (size_t i = 0; i < ops->count; i++) {
+    if (!ops->has(rec, i)) continue;
+    ScrStr *name = ops->names[i];
+    if (mode == SCR_OBJWALK_KEYS) {
+      scr_dyn_arr_push(out, scr_dyn_new_str(name));
+      continue;
+    }
+    ScrDyn *value = ops->get(rec, i);
+    if (mode == SCR_OBJWALK_VALUES) {
+      scr_dyn_arr_push(out, value);
+    } else {
+      ScrDyn *pair = scr_dyn_new_arr();
+      scr_dyn_arr_push(pair, scr_dyn_new_str(name));
+      scr_dyn_arr_push(pair, value);
+      scr_dyn_arr_push(out, pair);
+    }
+  }
+  return out;
+}
+
 /* Snapshot enumerable names from the receiver and each live prototype.
  * Non-enumerable own names shadow names farther up the chain. */
 ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v) {
   if (scr_dyn_class_reflection_fence(v)) return NULL;
+  if (v->kind == SCR_DYN_TYPED_REF) {
+    /* The snapshot has no prototype: for-in visits its own keys. */
+    const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
+    if (record) return scr_typed_ref_record_walk(v, record, SCR_OBJWALK_KEYS);
+  }
   if (v->kind == SCR_DYN_TYPED_REF && (scr_dyn_ref_is_array(v) ||
       !strncmp(v->v.typed_ref.type_key, "record:", 7))) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(v);
@@ -8247,6 +8378,19 @@ static void scr_dyn_assign_strings_from(ScrDyn *target, const ScrDyn *src, bool 
 }
 
 static void scr_dyn_assign_from(ScrDyn *target, const ScrDyn *src, bool define) {
+  const ScrDynTypedRecordOps *record =
+      src->kind == SCR_DYN_TYPED_REF ? scr_typed_ref_record_ops(src) : NULL;
+  if (record) {
+    /* The record view has only enumerable string-keyed data fields. */
+    void *rec = src->v.typed_ref.ptr;
+    for (size_t i = 0; i < record->count && !scr_exc_pending(); i++) {
+      if (!record->has(rec, i)) continue;
+      ScrDyn *value = record->get(rec, i);
+      scr_dyn_copy_property(target, record->names[i], value, define);
+      scr_dyn_release(value);
+    }
+    return;
+  }
   if (src->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(src);
     if (view) scr_dyn_assign_from(target, view, define);
@@ -8316,6 +8460,23 @@ ScrDyn *scr_dyn_copy_data_properties(ScrDyn *target, const ScrDyn *src) {
 
 ScrDyn *scr_dyn_object_rest(const ScrDyn *source, const ScrDyn *excluded) {
   ScrDyn *out = scr_dyn_new_obj();
+  const ScrDynTypedRecordOps *record =
+      source->kind == SCR_DYN_TYPED_REF ? scr_typed_ref_record_ops(source) : NULL;
+  if (record) {
+    void *rec = source->v.typed_ref.ptr;
+    for (size_t i = 0; i < record->count; i++) {
+      if (!record->has(rec, i)) continue;
+      ScrStr *name = record->names[i];
+      bool skip = false;
+      for (size_t j = 0; j < excluded->v.arr.len && !skip; j++) {
+        const ScrDyn *key = excluded->v.arr.items[j];
+        skip = key->kind == SCR_DYN_STR && key->v.str->len == name->len &&
+               memcmp(key->v.str->data, name->data, name->len) == 0;
+      }
+      if (!skip) scr_dyn_obj_set(out, name->data, name->len, record->get(rec, i));
+    }
+    return out;
+  }
   ScrDyn *names = scr_dyn_get_own_property_names(source);
   if (!names) { scr_dyn_release(out); return NULL; }
   ScrDyn *symbols = scr_dyn_get_own_property_symbols(source);
@@ -8520,7 +8681,12 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
   if (v->kind == SCR_DYN_TYPED_REF) {
     /* Own canonical indexes never consult the prototype: a hole is absent. */
     size_t index;
-    if (v->v.typed_ref.array &&
+    const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
+    if (record) {
+      size_t field;
+      return scr_typed_ref_record_field(record, key, &field) && record->has(v->v.typed_ref.ptr, field);
+    }
+    if (scr_dyn_typed_ref_array_ops(v) &&
         (scr_typed_ref_is_length(key) || scr_typed_ref_canonical_index(key->data, key->len, &index)))
       return scr_typed_ref_array_has_own(v, key);
     ScrDyn *view = scr_dyn_typed_ref_materialize(v);

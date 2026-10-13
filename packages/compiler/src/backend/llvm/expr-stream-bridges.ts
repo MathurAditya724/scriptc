@@ -3,6 +3,7 @@ import { typedRefConstructor } from "./shapes.js";
 import { InternalCompilerError } from "../../errors.js";
 import { streamTypedRefEligible, undefinedArmTag } from "../../ir/analysis.js";
 import {
+  type IrRecordShape,
   type IrType,
   DYN_CLASS_PROPERTIES,
   RUNTIME_STREAM_CLASSES,
@@ -941,6 +942,11 @@ export function streamTypedRefMaterializeAdapter(
         ...order.map((name) => byName.get(name)).filter((field) => field !== undefined),
         ...shape.fields.filter((field) => !inOrder.has(field.name)),
       ];
+      // Published before the field converters, like the array hooks below.
+      if (liveRecordOpsEligible(fields)) {
+        adapter.recordOps = `@${snapshot}_rops`;
+        liveRecordOps(host, t, snapshot, fields);
+      }
       for (const field of fields) {
         const index = shape.fields.indexOf(field) + 1;
         const fieldPtr = B.tmp();
@@ -1131,12 +1137,120 @@ function liveArrayOps(
   );
 }
 
-/** Attach the element hooks right after a live array capsule is built. */
+/** Field names whose snapshot order is not JS own-key order (array-index
+ * spellings sort first) or that an object literal cannot own as data
+ * (`__proto__`) keep every operation on the snapshot. */
+function liveRecordOpsEligible(fields: readonly { name: string }[]): boolean {
+  return fields.every(
+    (field) => field.name !== "__proto__" && !/^(?:0|[1-9][0-9]*)$/.test(field.name),
+  );
+}
+
+/** Per-field hooks for a live record capsule (ScrDynTypedRecordOps). The
+ * runtime answers keyed reads, presence and key walks of a capsule whose
+ * checked view was never created from the native record: `has` applies the
+ * snapshot's absent-optional-field rule and `get` boxes one field exactly
+ * like the snapshot does, so a walk over the record as `unknown` converts
+ * only the fields it reads instead of rebuilding the whole object per
+ * access. `fields` is the snapshot's definition order. */
+function liveRecordOps(
+  host: LlvmEmitterContext,
+  t: IrType & { kind: "record" },
+  snapshot: string,
+  fields: readonly IrRecordShape["fields"][number][],
+): void {
+  const shape = host.recordsById.get(t.shapeId)!;
+  const struct = mangleRecordStruct(t.shapeId);
+  const has = `${snapshot}_has`;
+  const get = `${snapshot}_get`;
+  const names = `${snapshot}_names`;
+  const ops = `${snapshot}_rops`;
+  const loadField = (B: BlockBuilder, field: IrRecordShape["fields"][number]): string => {
+    const index = shape.fields.indexOf(field) + 1;
+    const fieldPtr = B.tmp();
+    let fieldValue = B.tmp();
+    B.line(`${fieldPtr} = getelementptr inbounds %${struct}, ptr %p, i64 0, i32 ${index}`);
+    B.line(`${fieldValue} = load ${llFieldType(field.type)}, ptr ${fieldPtr}`);
+    if (llFieldType(field.type) === "i8") {
+      const boolValue = B.tmp();
+      B.line(`${boolValue} = trunc i8 ${fieldValue} to i1`);
+      fieldValue = boolValue;
+    }
+    return fieldValue;
+  };
+
+  const H = new BlockBuilder();
+  const optional = fields
+    .map((field, position) => ({ field, position }))
+    .filter(
+      ({ field }) =>
+        field.type.kind === "union" && undefinedArmTag(field.type, host.unionsById) >= 0,
+    );
+  const hasLabels = optional.map(() => H.newLabel("live.record.has"));
+  const always = H.newLabel("live.record.always");
+  H.terminate(
+    `switch ${host.sizeType} %i, label %${always} [ ${optional
+      .map(({ position }, k) => `${host.sizeType} ${position}, label %${hasLabels[k]}`)
+      .join(" ")} ]`,
+  );
+  optional.forEach(({ field }, k) => {
+    H.startBlock(hasLabels[k]!);
+    const value = loadField(H, field);
+    const absent = host.fieldAbsentTestIn(
+      H,
+      value,
+      (field.type as IrType & { kind: "union" }).unionId,
+    );
+    const present = H.tmp();
+    H.line(`${present} = xor i1 ${absent}, true`);
+    H.terminate(`ret i1 ${present}`);
+  });
+  H.startBlock(always);
+  H.terminate(`ret i1 true`);
+
+  const G = new BlockBuilder();
+  const getLabels = fields.map(() => G.newLabel("live.record.get"));
+  const bad = G.newLabel("live.record.bad");
+  G.terminate(
+    `switch ${host.sizeType} %i, label %${bad} [ ${fields
+      .map((_, position) => `${host.sizeType} ${position}, label %${getLabels[position]}`)
+      .join(" ")} ]`,
+  );
+  fields.forEach((field, position) => {
+    G.startBlock(getLabels[position]!);
+    const value = loadField(G, field);
+    const boxed = host.streamTypedRefBoxValue(G, field.type, value);
+    G.terminate(`ret ptr ${boxed}`);
+  });
+  G.startBlock(bad);
+  G.terminate(`unreachable`);
+
+  const literals = fields.map((field) => `ptr ${host.internLiteral(field.name)}`);
+  host.resolveThunkDefs.push(
+    `define internal zeroext i1 @${has}(ptr %p, ${host.sizeType} %i) ${FN_ATTRS} { ; live field presence of ${typeKey(t)}`,
+    H.render(),
+    `}`,
+    ``,
+    `define internal ptr @${get}(ptr %p, ${host.sizeType} %i) ${FN_ATTRS} { ; live field of ${typeKey(t)}`,
+    G.render(),
+    `}`,
+    ``,
+    `@${names} = internal constant [${fields.length} x ptr] [${literals.join(", ")}]`,
+    `@${ops} = internal constant { ${host.sizeType}, ptr, ptr, ptr } { ${host.sizeType} ${fields.length}, ptr @${names}, ptr @${has}, ptr @${get} }`,
+    ``,
+  );
+}
+
+/** Attach the element or field hooks right after a live capsule is built. */
 export function bindLiveArrayOps(
   host: ShapeHost,
   adapter: LlStreamTypedRefAdapter,
   capsule: string,
 ): string[] {
+  if (adapter.recordOps !== undefined) {
+    host.declare(`declare void @scr_dyn_typed_ref_bind_record(ptr, ptr)`);
+    return [`call void @scr_dyn_typed_ref_bind_record(ptr ${capsule}, ptr ${adapter.recordOps})`];
+  }
   if (adapter.arrayOps === undefined) return [];
   host.declare(`declare void @scr_dyn_typed_ref_bind_array(ptr, ptr)`);
   return [`call void @scr_dyn_typed_ref_bind_array(ptr ${capsule}, ptr ${adapter.arrayOps})`];

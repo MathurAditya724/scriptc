@@ -74,7 +74,7 @@ import {
 } from "./split-loops.js";
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
-import { everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
+import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
 import { analyzeIntegerRanges, INT32_RANGE, type IntegerRanges } from "../../ir/integer-ranges.js";
 import { unshareNodes } from "../../ir/unshare.js";
 import { analyzeInt32Slots, type Int32Slots } from "../../ir/int32-slots.js";
@@ -95,6 +95,7 @@ import { RUNTIME_ABI_MARKER } from "../runtime-abi.js";
 import { computeMayThrow } from "../may-throw.js";
 import {
   mangleArgPack,
+  mangleAsyncAdoptCall,
   mangleAsyncAwaitCall,
   mangleAsyncSpawn,
   mangleBorrowedFunction,
@@ -306,6 +307,7 @@ import {
   vAdapters,
 } from "./shapes.js";
 import type { ExprOf, LibCallExpr, LlStreamTypedRefAdapter, LlValue } from "./expr-context.js";
+import { INLINE_LITERAL_BYTES, literalEqualityDefinition } from "./string-literal-equality.js";
 
 export { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -527,6 +529,8 @@ export class LlEmitter {
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
   private readonly literals = new Map<string, { sym: string; len: number }>();
+  /** Literal equality helpers: literal text → helper symbol (literalEquals). */
+  private readonly literalEqualities = new Map<string, string>();
   /** Symbols of interned constant data, named by content (contentSymbol). */
   private readonly contentSymbols = new Set<string>();
   /** Interned unit-armed union instances: "unionId:tag" → symbol — one
@@ -663,6 +667,19 @@ export class LlEmitter {
   /** Async functions awaited directly at some `await f(...)` site; each
    * gets an await-call entry (emitAsyncAwaitCall). */
   readonly awaitCallees = new Set<string>();
+  /** Async functions returned directly at some `return f(...)` site of an
+   * async function; each gets an adopting entry (emitAsyncAwaitCall). */
+  readonly adoptCallees = new Set<string>();
+  /** The promise a `return` emitted past its finally regions already
+   * produced for its adopting await (borrowed from the return's parked
+   * slot); that await takes it instead of evaluating its operand. */
+  private adoptedOperand: LlValue | null = null;
+
+  takeAdoptedOperand(): LlValue | null {
+    const value = this.adoptedOperand;
+    this.adoptedOperand = null;
+    return value;
+  }
   /** setTimeout and friends appeared somewhere: main must run the event
    * loop even in programs with no async functions. */
   usesTimers = false;
@@ -2821,6 +2838,18 @@ export class LlEmitter {
         ``,
       );
     }
+    for (const [text, name] of this.literalEqualities) {
+      defs.push(
+        ...literalEqualityDefinition(
+          name,
+          Buffer.from(text, "utf8"),
+          this.internLiteral(text),
+          this.sizeType,
+          FN_ATTRS,
+        ),
+        ``,
+      );
+    }
     // String length and charCodeAt read proven-ASCII strings inline: bit 31
     // of the capacity word (SCR_STR_ASCII_BIT, the low half's sign bit on
     // little-endian targets) makes UTF-16 units bytes. Unproven strings and
@@ -3104,7 +3133,7 @@ export class LlEmitter {
     const eligible = new Set<string>();
     if (this.wasi || this.mod.workers === true) return eligible;
     const suspends =
-      /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_)|sc_aw_)/;
+      /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_)|sc_a[wd]_)/;
     for (const decl of this.decls) if (/@scr_test_sub\b/.test(decl)) return eligible;
     for (const text of this.fnDefText.values()) if (/@scr_test_sub\b/.test(text)) return eligible;
     const byMangled = new Map<string, string>();
@@ -3211,8 +3240,14 @@ export class LlEmitter {
    * awaits it, so the rejection reaches the awaiter on the same turn. Other
    * bodies pack their arguments as the spawn wrapper does and enter
    * scr_async_spawn_await_*, which parks the caller on the promise as soon
-   * as the body first suspends. */
-  private emitAsyncAwaitCall(fn: IrFunction, argPackLines: string[] | null): string[] {
+   * as the body first suspends. The adopting entry (`sc_ad_*`, for
+   * `return f(...)` in an async function) adds the turn of the then job
+   * that adopts the returned promise, before the await proper. */
+  private emitAsyncAwaitCall(
+    fn: IrFunction,
+    argPackLines: string[] | null,
+    adopt = false,
+  ): string[] {
     const ret = fn.returnType;
     const retTy = this.llType(ret);
     const params = fn.params.map((p, i) => `${this.llType(p.type)} %a${i}`);
@@ -3238,8 +3273,27 @@ export class LlEmitter {
     };
     const retLine = (v: string): string =>
       retTy === "void" ? `  ret void` : `  ret ${retTy} ${v}`;
-    const head = `define internal ${retTy} @${mangleAsyncAwaitCall(fn.name)}(${params.join(", ")}) ${FN_ATTRS} { ; await ${fn.name}`;
+    const head = adopt
+      ? `define internal ${retTy} @${mangleAsyncAdoptCall(fn.name)}(${params.join(", ")}) ${FN_ATTRS} { ; adopt ${fn.name}`
+      : `define internal ${retTy} @${mangleAsyncAwaitCall(fn.name)}(${params.join(", ")}) ${FN_ATTRS} { ; await ${fn.name}`;
     const args = params.join(", ");
+    if (adopt && argPackLines !== null) {
+      // A body that may suspend settles later than the adoption's then job
+      // runs: materialize its promise, take that turn, then await it.
+      this.declare(`declare void @scr_await_hop()`);
+      this.declare(`declare void @scr_promise_release(ptr)`);
+      return [
+        head,
+        `entry:`,
+        `  %p = call ptr @${mangleAsyncSpawn(fn.name)}(${args})`,
+        `  call void @scr_await_hop()`,
+        awaitLine("%v", "%p"),
+        `  call void @scr_promise_release(ptr %p)`,
+        retLine("%v"),
+        `}`,
+        ``,
+      ];
+    }
     if (argPackLines !== null) {
       const kind =
         ret.kind === "void"
@@ -3280,6 +3334,9 @@ export class LlEmitter {
       retTy === "void" ? `  ${bodyCall}` : `  %r = ${bodyCall}`,
       ...this.pendingTestLines("%pend"),
       `  call void @scr_async_inline_exit(ptr %frame)`,
+      // Adopting: the then job's turn comes before the settled promise's
+      // own reaction, whichever way the body completed.
+      ...(adopt ? [`  call void @scr_await_hop()`] : []),
       `  br i1 %pend, label %thrown, label %clean`,
       `clean:`,
       `  call void @scr_await_hop()`,
@@ -3334,6 +3391,9 @@ export class LlEmitter {
       if (fiberless.has(fn.name) && this.awaitCallees.has(fn.name)) {
         for (const line of this.emitAsyncAwaitCall(fn, null)) out.push(line);
       }
+      if (fiberless.has(fn.name) && this.adoptCallees.has(fn.name)) {
+        for (const line of this.emitAsyncAwaitCall(fn, null, true)) out.push(line);
+      }
       if (fiberless.has(fn.name)) {
         const fieldTys = [
           ...(fn.captures !== undefined ? ["ptr"] : []),
@@ -3348,6 +3408,9 @@ export class LlEmitter {
       for (const line of definitions) out.push(line);
       if (this.awaitCallees.has(fn.name)) {
         for (const line of this.emitAsyncAwaitCall(fn, argPackLines)) out.push(line);
+      }
+      if (this.adoptCallees.has(fn.name)) {
+        for (const line of this.emitAsyncAwaitCall(fn, argPackLines, true)) out.push(line);
       }
       this.declare(`declare ptr @scr_fiber_promise(ptr)`);
       this.declare(`declare ptr @scr_async_spawn(ptr, ptr)`);
@@ -3634,6 +3697,20 @@ export class LlEmitter {
     }
     const name = `@${lit.sym}`;
     this.immortalValues.add(name);
+    return name;
+  }
+
+  /** The inline equality test against one string literal (an
+   * `i1 (ptr)` helper LLVM inlines at each site), by literal symbol. */
+  literalEquals(text: string): string {
+    const literal = this.internLiteral(text);
+    const name = `@sc_streq_${literal.slice("@sc_lit_".length)}`;
+    if (!this.literalEqualities.has(text)) {
+      this.literalEqualities.set(text, name);
+      if (Buffer.byteLength(text, "utf8") > INLINE_LITERAL_BYTES) {
+        this.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
+      }
+    }
     return name;
   }
 
@@ -5691,6 +5768,66 @@ export class LlEmitter {
     return !rw.conflicts(["a", ...keys], writes);
   }
 
+  /** `return p` of a promise inside try regions of an async function. JS
+   * completes the return first: p is evaluated, every crossed finally runs,
+   * and only then does the function's promise adopt p's settlement (a then
+   * job, then p's reaction). So the promise parks in a slot through the
+   * finally copies, like any pending return value, and the adopting await
+   * runs afterwards with no handler in scope: a rejection settles the
+   * function's promise instead of reaching its own catch clauses. */
+  private emitAdoptingReturn(s: IrStmt & { kind: "return" }, adopted: ExprOf<"awaitExpr">): void {
+    const B = this.B;
+    const promise = this.emitExpr(adopted.value);
+    this.moveTemp(promise);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca ptr ; adopted return promise`);
+    B.line(`store ptr ${promise.name}, ptr ${slot}`);
+    const parked: LlScopeEntry = { slot, type: adopted.value.type };
+    const savedFrames = this.frames;
+    const savedScopes = this.scopes;
+    const savedFinally = this.finallyStack;
+    const savedTry = this.tryStack;
+    for (let i = savedFinally.length - 1; i >= 0 && !B.isTerminated(); i--) {
+      const fin = savedFinally[i]!;
+      this.releaseForJump(fin.frameDepth, fin.scopeDepth);
+      this.frames = this.frames.slice(0, fin.frameDepth);
+      this.scopes = this.scopes.slice(0, fin.scopeDepth);
+      this.finallyStack = savedFinally.slice(0, i);
+      this.tryStack = savedTry.slice(0, fin.tryDepth);
+      this.scopes.push([parked]);
+      this.emitBlock(fin.body);
+      this.scopes.pop();
+    }
+    if (!B.isTerminated()) {
+      this.releaseForJump(0, 0);
+      // Nothing of the body is live any more except the parked promise,
+      // whose scope releases it on either exit of the await.
+      this.frames = [[]];
+      this.scopes = [[parked]];
+      this.finallyStack = [];
+      this.tryStack = [];
+      const loaded = B.tmp();
+      B.line(`${loaded} = load ptr, ptr ${slot}`);
+      this.adoptedOperand = { name: loaded, type: adopted.value.type };
+      const v = this.emitExpr(s.value!);
+      if (this.adoptedOperand !== null)
+        throw new InternalCompilerError("llvm emitter bug: adopted return promise was not awaited");
+      this.moveTemp(v);
+      this.releaseForJump(0, 0);
+      if (!B.isTerminated()) {
+        if (this.currentWasiCoro !== null) {
+          this.emitWasiFulfill(v);
+          B.terminate(`br label %${this.currentWasiCoro.finalLabel}`);
+        } else if (s.value!.type.kind === "void") B.terminate("ret void");
+        else B.terminate(`ret ${this.llType(s.value!.type)} ${v.name}`);
+      }
+    }
+    this.frames = savedFrames;
+    this.scopes = savedScopes;
+    this.finallyStack = savedFinally;
+    this.tryStack = savedTry;
+  }
+
   /** `return x` of a local whose slot is an owned scope entry of the same
    * type: the return can take over the local's reference. */
   private movableReturn(
@@ -6315,7 +6452,6 @@ export class LlEmitter {
           break;
         }
         const join = B.newLabel("rks.j");
-        this.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
         if (iv.kind === "dyn" && shape.indexValue) {
           // A dyn-valued shape (the C recordKeySetHelper's dyn arm,
           // inline): declared keys VALIDATE the dyn value against the
@@ -6325,10 +6461,9 @@ export class LlEmitter {
           // insert the dyn value into the overflow map as-is.
           this.declare(`declare void @scr_dyn_release(ptr)`);
           for (const f of shape.fields) {
-            const lit = this.internLiteral(f.name);
             const hit = B.tmp();
             B.line(
-              `${hit} = call zeroext i1 @sc_str_eq(ptr ${key.name}, ptr ${lit}) ; ${llvmCommentText(f.name)}`,
+              `${hit} = call zeroext i1 ${this.literalEquals(f.name)}(ptr ${key.name}) ; ${llvmCommentText(f.name)}`,
             );
             const lh = B.newLabel("rks.h");
             const ln = B.newLabel("rks.n");
@@ -6382,10 +6517,9 @@ export class LlEmitter {
         }
         for (const f of shape.fields) {
           // typeEquals(f.type, iv) — the frontend fences everything else.
-          const lit = this.internLiteral(f.name);
           const hit = B.tmp();
           B.line(
-            `${hit} = call zeroext i1 @sc_str_eq(ptr ${key.name}, ptr ${lit}) ; ${llvmCommentText(f.name)}`,
+            `${hit} = call zeroext i1 ${this.literalEquals(f.name)}(ptr ${key.name}) ; ${llvmCommentText(f.name)}`,
           );
           const lh = B.newLabel("rks.h");
           const ln = B.newLabel("rks.n");
@@ -6940,6 +7074,14 @@ export class LlEmitter {
         // try, past its own catch), then the function-level releases and
         // the actual ret. The parked value owns a synthetic slot-backed
         // scope entry during each copy so a throwing finally releases it.
+        const adopted =
+          this.finallyStack.length > 0 || this.tryStack.length > 0
+            ? adoptingAwaitOf(s.value)
+            : null;
+        if (adopted !== null) {
+          this.emitAdoptingReturn(s, adopted);
+          break;
+        }
         let v: LlValue | null = null;
         const moved = this.finallyStack.length === 0 ? this.movableReturn(s.value) : null;
         if (moved !== null) {
@@ -7258,7 +7400,9 @@ export class LlEmitter {
         this.frames.push([]);
         const t = this.emitExpr(c.test);
         const hit = B.tmp();
-        if (c.test.type.kind === "string") {
+        if (c.test.kind === "strLit") {
+          B.line(`${hit} = call zeroext i1 ${this.literalEquals(c.test.value)}(ptr ${disc.name})`);
+        } else if (c.test.type.kind === "string") {
           this.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
           B.line(`${hit} = call zeroext i1 @sc_str_eq(ptr ${disc.name}, ptr ${t.name})`);
         } else if (c.test.type.kind === "bool") {
@@ -7573,8 +7717,8 @@ export class LlEmitter {
 
   /** A direct async call an enclosing `await` consumes whole: emitted
    * through the callee's await-call entry, yielding the awaited value. */
-  emitAwaitedCall(e: ExprOf<"call">): LlValue {
-    return emitCallExpr(this, e, true);
+  emitAwaitedCall(e: ExprOf<"call">, adopt = false): LlValue {
+    return emitCallExpr(this, e, adopt ? "adopt" : "await");
   }
 
   emitRecordExpr(
@@ -8510,11 +8654,15 @@ export class LlEmitter {
   }
 
   /** The number of an int32-stored local's i32, with the i32 as its
-   * integer and ToUint32 forms. */
+   * integer and ToUint32 forms. A parameter the body never writes reads
+   * as its incoming double, which is the same number. */
   int32LocalValue(localId: string, bits: string, type: IrType): LlValue {
     const local = this.int32Locals.get(localId)!;
-    const number = this.B.tmp();
-    this.B.line(`${number} = ${local.signed ? "sitofp" : "uitofp"} i32 ${bits} to double`);
+    let number = `%p_${mangleLocal(localId)}`;
+    if (!local.incoming) {
+      number = this.B.tmp();
+      this.B.line(`${number} = ${local.signed ? "sitofp" : "uitofp"} i32 ${bits} to double`);
+    }
     return {
       name: number,
       type,
@@ -8663,4 +8811,23 @@ export class LlEmitter {
   emitLibCall(e: LibCallExpr): LlValue {
     return emitLibCall(this, e);
   }
+}
+
+/** The adopting await a `return` value resolves through, if any: the value
+ * itself or the operand of its conversion into the declared result. */
+function adoptingAwaitOf(value: IrExpr | null): ExprOf<"awaitExpr"> | null {
+  if (value === null) return null;
+  let found: ExprOf<"awaitExpr"> | null = null;
+  everyExpr(value, {
+    expr: (node) => {
+      if (found !== null) return false;
+      if (node.kind === "awaitExpr" && node.adopt === true) {
+        found = node;
+        return false;
+      }
+      return true;
+    },
+    stmt: () => true,
+  });
+  return found;
 }

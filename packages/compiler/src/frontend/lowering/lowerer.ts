@@ -8536,10 +8536,10 @@ export class Lowerer {
 
   /** The value of a `return` statement. In an async function `return p`
    * where p is a promise flattens (JS: the returned promise's settlement
-   * becomes the async function's result), so it lowers exactly as
-   * `return await p` — the awaitExpr parks the fiber and re-throws
-   * rejections, which IS the flattening. Everything else flows into the
-   * function's return slot through the usual coercion path. */
+   * becomes the async function's result) through an adopting awaitExpr,
+   * which parks the fiber and re-throws rejections after the adoption's
+   * then-job turn. Everything else flows into the function's return slot
+   * through the usual coercion path. */
   /** The value of `return <expr>` against the context's declared return —
    * or NULL for a bare return: `return undefined`/`return null` in a
    * void-returning function (`{ bar() { return undefined } }`, inferred
@@ -8570,10 +8570,41 @@ export class Lowerer {
     const e = this.lowerExpr(node);
     if (expected.kind === "void" && e.kind === "unitLit") return null;
     if (this.ctx.isAsync && e.type.kind === "promise" && expected.kind !== "promise") {
-      const awaited: IrExpr = { kind: "awaitExpr", value: e, type: e.type.inner, loc: e.loc };
+      const awaited = this.returnedPromiseAwait(e);
       return this.coerceInto(node, awaited, expected);
     }
     return this.coerceInto(node, e, expected);
+  }
+
+  /** Whether a promise returned here resolves the function's own promise
+   * by adoption (async functions; async generators await their return
+   * operand instead). */
+  adoptsReturnedPromise(): boolean {
+    return this.ctx.isAsync === true && !this.ctx.generator;
+  }
+
+  /** `return p` of a promise into a non-promise result `R` (a void result
+   * drops the settled value; widening keeps the adopting await the return's
+   * own value). */
+  adoptingReturn(e: IrExpr, R: IrType, coerce: (awaited: IrExpr) => IrExpr): IrStmt {
+    const loc = e.loc;
+    if (R.kind !== "void")
+      return { kind: "return", value: coerce(this.returnedPromiseAwait(e)), loc };
+    const widened: IrExpr =
+      e.type.kind === "promise" && e.type.inner.kind !== "void"
+        ? { kind: "promiseVoidWiden", value: e, type: { kind: "promise", inner: VOID }, loc }
+        : e;
+    return { kind: "return", value: this.returnedPromiseAwait(widened), loc };
+  }
+
+  /** The await a returned promise `e` lowers to: adopting in async
+   * functions (one then-job turn first, outside the function's handlers). */
+  returnedPromiseAwait(e: IrExpr): IrExpr {
+    if (e.type.kind !== "promise")
+      throw new InternalCompilerError("returned-promise await of a non-promise");
+    if (!this.adoptsReturnedPromise())
+      return { kind: "awaitExpr", value: e, type: e.type.inner, loc: e.loc };
+    return { kind: "awaitExpr", value: e, type: e.type.inner, adopt: true, loc: e.loc };
   }
 
   /** `return <expr>` lowered as a STATEMENT against the declared return.
@@ -8587,7 +8618,8 @@ export class Lowerer {
     if (expected.kind === "void") {
       let e = this.lowerExpr(node);
       if (this.ctx.isAsync && e.type.kind === "promise") {
-        e = { kind: "awaitExpr", value: e, type: e.type.inner, loc: e.loc };
+        if (this.adoptsReturnedPromise()) return this.adoptingReturn(e, VOID, (x) => x);
+        e = this.returnedPromiseAwait(e);
       }
       if (e.kind === "unitLit") return { kind: "return", value: null, loc };
       if (e.type.kind === "void") return { kind: "return", value: e, loc };

@@ -792,9 +792,16 @@ export function emitDynamicExpr(
         B.line(`${go} = and i1 ${notSame}, ${present}`);
         B.condBr(go, bytes, join);
         B.startBlock(bytes);
-        host.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
         const eqBytes = B.tmp();
-        B.line(`${eqBytes} = call zeroext i1 @sc_str_eq(ptr ${l.name}, ptr ${r.name})`);
+        const literal = wrappedStringLiteral(e.right) ?? wrappedStringLiteral(e.left);
+        if (literal !== null) {
+          // Both hold strings here; the literal's length and bytes compare inline.
+          const other = wrappedStringLiteral(e.right) !== null ? l : r;
+          B.line(`${eqBytes} = call zeroext i1 ${host.literalEquals(literal)}(ptr ${other.name})`);
+        } else {
+          host.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
+          B.line(`${eqBytes} = call zeroext i1 @sc_str_eq(ptr ${l.name}, ptr ${r.name})`);
+        }
         B.line(`store i1 ${eqBytes}, ptr ${slot}`);
         B.br(join);
         B.startBlock(join);
@@ -846,11 +853,19 @@ export function emitDynamicExpr(
             break;
           }
           case "string": {
-            host.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
             const a = host.unionPeek(l.name, def.id);
             const b = host.unionPeek(r.name, def.id);
             const t = B.tmp();
-            B.line(`${t} = call zeroext i1 @sc_str_eq(ptr ${a}, ptr ${b})`);
+            const right = wrappedStringLiteral(e.right);
+            const left = wrappedStringLiteral(e.left);
+            if (right !== null) {
+              B.line(`${t} = call zeroext i1 ${host.literalEquals(right)}(ptr ${a})`);
+            } else if (left !== null) {
+              B.line(`${t} = call zeroext i1 ${host.literalEquals(left)}(ptr ${b})`);
+            } else {
+              host.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
+              B.line(`${t} = call zeroext i1 @sc_str_eq(ptr ${a}, ptr ${b})`);
+            }
             B.line(`store i1 ${t}, ptr ${slot}`);
             break;
           }
@@ -1180,4 +1195,9 @@ function emitUnionEqWrappedScalar(
   const negated = B.tmp();
   B.line(`${negated} = xor i1 ${result}, true`);
   return { name: negated, type: e.type };
+}
+
+/** The text of a string literal wrapped into a union, or null. */
+function wrappedStringLiteral(e: IrExpr): string | null {
+  return e.kind === "unionWrap" && e.value.kind === "strLit" ? e.value.value : null;
 }

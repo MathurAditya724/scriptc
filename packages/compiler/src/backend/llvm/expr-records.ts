@@ -353,12 +353,10 @@ export function keyedRecordReadInto(
     // convert through the per-type toDyn walker (borrowed read → fresh
     // +1 tree), a dyn-valued overflow hit passes through (+1 from the
     // map get), and a miss is JS's undefined — the dyn singleton.
-    host.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
     for (const f of overflowOnly ? [] : shape.fields) {
-      const lit = host.internLiteral(f.name);
       const hit = B.tmp();
       B.line(
-        `${hit} = call zeroext i1 @sc_str_eq(ptr ${keyName}, ptr ${lit}) ; ${llvmCommentText(f.name)}`,
+        `${hit} = call zeroext i1 ${host.literalEquals(f.name)}(ptr ${keyName}) ; ${llvmCommentText(f.name)}`,
       );
       const lh = B.newLabel("rkg.h");
       const ln = B.newLabel("rkg.n");
@@ -474,12 +472,10 @@ export function keyedRecordReadInto(
     const payload = owned ? expr : host.retainValue(expr, vt);
     return host.unionNewOwned(def.id, tag, { name: payload, type: vt });
   };
-  host.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
   for (const f of overflowOnly ? [] : shape.fields) {
-    const lit = host.internLiteral(f.name);
     const hit = B.tmp();
     B.line(
-      `${hit} = call zeroext i1 @sc_str_eq(ptr ${keyName}, ptr ${lit}) ; ${llvmCommentText(f.name)}`,
+      `${hit} = call zeroext i1 ${host.literalEquals(f.name)}(ptr ${keyName}) ; ${llvmCommentText(f.name)}`,
     );
     const lh = B.newLabel("rkg.h");
     const ln = B.newLabel("rkg.n");

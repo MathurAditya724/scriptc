@@ -5421,6 +5421,8 @@ function validateFunction(
           err(`await type ${e.type.kind} != promise inner ${e.value.type.inner.kind}`, e.loc);
         }
         if (!fn.async) err("await outside an async function", e.loc);
+        if (e.adopt === true && fn.generator !== undefined)
+          err("returned-promise adoption inside a generator", e.loc);
         break;
       }
       case "yieldExpr": {
