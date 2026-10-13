@@ -6,7 +6,10 @@ import {
   isFfiContextParam,
   isFfiReleaseParam,
   isRefCounted,
+  type IrExpr,
+  type IrFunction,
 } from "../../ir/ir.js";
+import { INT32_ABI_SUFFIX } from "./int32-abi.js";
 import { collectFfiRetainedOps, parseFfiCallbackKey } from "../ffi-callbacks.js";
 import {
   mangleAsyncAdoptCall,
@@ -121,8 +124,13 @@ export function emitCallExpr(
       args.forEach((a, index) => {
         if (!borrowed?.has(index)) host.moveTemp(a);
       });
+      const abi = awaitEntry ? undefined : host.int32Abis.get(e.callee);
       const argList = args
-        .map((a, i) => `${host.llType(callee.params[i]!.type)} ${a.name}`)
+        .map((a, i) =>
+          abi?.params[i]
+            ? `i32 ${host.int32Argument(a, e.args[i]!)}`
+            : `${host.llType(callee.params[i]!.type)} ${a.name}`,
+        )
         .join(", ");
       if (awaitEntry) {
         // The enclosing await routes this call through the callee's
@@ -148,7 +156,7 @@ export function emitCallExpr(
       // first suspension and returns the promise (+1). The call itself
       // never unwinds — rejections surface at await (computeMayThrow's
       // async exclusion).
-      const target = `@${borrowed ? mangleBorrowedFunction(e.callee) : host.callTarget(e.callee)}`;
+      const target = `@${borrowed ? mangleBorrowedFunction(e.callee) : host.callTarget(e.callee)}${abi ? INT32_ABI_SUFFIX : ""}`;
       if (e.type.kind === "void") {
         B.line(`call void ${target}(${argList})`);
         if (host.mayThrow.has(e.callee)) host.emitPendingCheck();
@@ -156,6 +164,13 @@ export function emitCallExpr(
         return { name: "", type: e.type };
       }
       const t = B.tmp();
+      if (abi?.result) {
+        B.line(`${t} = call i32 ${target}(${argList})`);
+        const out = host.int32Result(t, e.type);
+        if (host.mayThrow.has(e.callee)) host.emitPendingCheck(out);
+        if (borrowed) host.releaseFrame(host.frames.pop()!);
+        return out;
+      }
       B.line(`${t} = call ${host.llType(e.type)} ${target}(${argList})`);
       let out: LlValue;
       if (borrowed && host.borrowedReturns.has(e.callee)) {
@@ -912,11 +927,12 @@ export function emitCallExpr(
               B.line(`${r} = call ptr @${mangleClassRetain(e.className)}(ptr ${o})`);
               return r;
             })();
-        const argList = [
-          `ptr ${self}`,
-          ...args.map((a, i) => `${host.llType(ctor.params[i + 1]!.type)} ${a.name}`),
-        ].join(", ");
-        B.line(`call void @${mangleBorrowedFunction(ctorName)}(${argList})`);
+        const argList = [`ptr ${self}`, ...ctorArguments(host, ctorName, ctor, args, e.args)].join(
+          ", ",
+        );
+        B.line(
+          `call void @${mangleBorrowedFunction(ctorName)}${host.int32Abis.has(ctorName) ? INT32_ABI_SUFFIX : ""}(${argList})`,
+        );
         if (host.mayThrow.has(ctorName)) host.emitPendingCheck();
         host.releaseFrame(host.frames.pop()!);
         return out;
@@ -925,11 +941,10 @@ export function emitCallExpr(
       for (const a of args) host.moveTemp(a);
       const r = B.tmp();
       B.line(`${r} = call ptr @${mangleClassRetain(e.className)}(ptr ${o})`);
-      const argList = [
-        `ptr ${r}`,
-        ...args.map((a, i) => `${host.llType(ctor.params[i + 1]!.type)} ${a.name}`),
-      ].join(", ");
-      B.line(`call void @${mangleFunction(`%${e.className}.constructor`)}(${argList})`);
+      const argList = [`ptr ${r}`, ...ctorArguments(host, ctorName, ctor, args, e.args)].join(", ");
+      B.line(
+        `call void @${mangleFunction(ctorName)}${host.int32Abis.has(ctorName) ? INT32_ABI_SUFFIX : ""}(${argList})`,
+      );
       if (host.mayThrow.has(`%${e.className}.constructor`)) host.emitPendingCheck();
       return out;
     }
@@ -1160,6 +1175,23 @@ export function emitCallExpr(
   }
 }
 
+/** A constructor call's arguments after the receiver, i32 where the
+ * constructor's i32 entry takes them. */
+function ctorArguments(
+  host: LlvmEmitterContext,
+  ctorName: string,
+  ctor: IrFunction,
+  args: LlValue[],
+  exprs: IrExpr[],
+): string[] {
+  const abi = host.int32Abis.get(ctorName);
+  return args.map((a, i) =>
+    abi?.params[i + 1]
+      ? `i32 ${host.int32Argument(a, exprs[i]!)}`
+      : `${host.llType(ctor.params[i + 1]!.type)} ${a.name}`,
+  );
+}
+
 /** A direct call to a borrowed-return function whose result a receiver or
  * walk consumes without owning it (LlEmitter.canBorrowReceiver proved every
  * reference argument borrowable and every argument edge-preserving). The
@@ -1171,10 +1203,17 @@ export function emitBorrowedResultCall(host: LlvmEmitterContext, e: ExprOf<"call
   const args = e.args.map((arg) =>
     isRefCounted(arg.type) ? host.emitReadReceiver(arg) : host.emitExpr(arg),
   );
-  const argList = args.map((a, i) => `${host.llType(callee.params[i]!.type)} ${a.name}`).join(", ");
+  const abi = host.int32Abis.get(e.callee);
+  const argList = args
+    .map((a, i) =>
+      abi?.params[i]
+        ? `i32 ${host.int32Argument(a, e.args[i]!)}`
+        : `${host.llType(callee.params[i]!.type)} ${a.name}`,
+    )
+    .join(", ");
   const t = host.B.tmp();
   host.B.line(
-    `${t} = call ${host.llType(e.type)} @${mangleBorrowedFunction(e.callee)}(${argList}) ; borrowed result`,
+    `${t} = call ${host.llType(e.type)} @${mangleBorrowedFunction(e.callee)}${abi ? INT32_ABI_SUFFIX : ""}(${argList}) ; borrowed result`,
   );
   if (host.mayThrow.has(e.callee)) host.emitPendingCheck();
   return { name: t, type: e.type };

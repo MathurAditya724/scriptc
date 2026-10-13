@@ -465,6 +465,10 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
     else if (op === "===") {
       min = Math.max(min, boundRange.min);
       max = Math.min(max, boundRange.max);
+    } else if (op === "!==" && boundRange.min === boundRange.max) {
+      // Excluding one value narrows a range that ends at it.
+      if (min === boundRange.min) min += 1;
+      else if (max === boundRange.max) max -= 1;
     }
     if (min <= max && Number.isInteger(min) && Number.isInteger(max))
       facts.set(ref.localId, { min, max });

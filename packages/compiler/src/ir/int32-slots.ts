@@ -18,8 +18,9 @@ import { everyExprChild, everyStmtChild, everyStmtList, everyTypeChild } from ".
  * stored as an i32: reading it back as a double is exact, so every program
  * observation is unchanged. The same proof seeds parameters of functions
  * that are only ever called directly (every call site passes an int32) and
- * results of functions whose every return is an int32. Parameter and result
- * ABIs stay double; only the facts reach the callee and the call sites.
+ * results of functions whose every return is an int32. The LLVM backend
+ * passes those parameters and results as i32 on direct calls
+ * (backend/llvm/int32-abi.ts); every other entry keeps the double ABI.
  *
  * The analysis is optimistic: every candidate slot starts as int32, each
  * function is analyzed by analyzeIntegerRanges under the current facts, and
@@ -53,6 +54,8 @@ export class Int32Slots {
   private readonly boxGroupOf = new Map<string, string>();
   /** Field write values proven int32 by the final analysis. */
   readonly provenWrites = new Set<IrExpr>();
+  /** Functions some IR `call` or `new` reaches directly. */
+  readonly called = new Set<string>();
   /** Disqualified candidates and the first reason, for tests. */
   readonly reasons = new Map<string, string>();
   /** Slots an Int32 contract pins (`field:`, `param:`, `ret:`, `box:` keys):
@@ -160,10 +163,10 @@ export class Int32Slots {
   hasFamily(family: string): boolean {
     return this.fields.has(family);
   }
-  addParam(fnName: string, localId: string): void {
+  addParam(fnName: string, localId: string, range: IntegerRange = INT32_RANGE): void {
     let params = this.paramFacts.get(fnName);
     if (!params) this.paramFacts.set(fnName, (params = new Map()));
-    params.set(localId, INT32_RANGE);
+    params.set(localId, range);
   }
   dropParam(fnName: string, localId: string): boolean {
     if (this.refusePinned(`param:${fnName}\0${localId}`)) return false;
@@ -628,7 +631,7 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
   };
   // Only functions some IR call reaches directly get parameter facts: one
   // the backend invokes by convention has no call site to prove against.
-  const called = new Set<string>();
+  const called = slots.called;
   for (const fn of mod.functions)
     walkFunction(fn, {
       expr: (e) => {
@@ -660,6 +663,14 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
           arityChecked(functions.get(`%${e.className}.constructor`), e.args.length, 1);
       },
     });
+
+  // Candidates the fixpoint may drop; rangedParameters retries some.
+  const candidates = new Map<string, string[]>();
+  const retry = new Set<string>();
+  for (const fn of mod.functions) {
+    const ids = fn.params.filter((p) => slots.hasParam(fn.name, p.localId)).map((p) => p.localId);
+    if (ids.length > 0) candidates.set(fn.name, ids);
+  }
 
   /* ── captured bindings ── */
   // A captured local lives in one box shared by its declaring function and
@@ -763,6 +774,8 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
           const family = slots.family(e.className, e.field);
           if (family) reads(`field:${family}`, fn.name);
         } else if (e.kind === "call") reads(`ret:${e.callee}`, fn.name);
+        // Constructors return nothing: this only records their callers.
+        else if (e.kind === "new") reads(`ret:%${e.className}.constructor`, fn.name);
         else if (e.kind === "varRef") {
           const group = slots.boxGroup(fn.name, e.localId);
           if (group !== null) reads(`box:${group}`, fn.name);
@@ -837,8 +850,13 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
         const param = callee.params[i + offset];
         if (!param || !slots.hasParam(callee.name, param.localId) || int32(arg)) return;
         const slot = `param:${callee.name}\0${param.localId}`;
-        if (dropParam(callee.name, param.localId, `argument in ${fn.name} is not int32`))
+        if (dropParam(callee.name, param.localId, `argument in ${fn.name} is not int32`)) {
           invalidate(slot);
+          // An argument computed where the caller's own parameters were
+          // (or are no longer) assumed int32: ranges from the call sites
+          // may still prove it (rangedParameters).
+          if (candidates.has(fn.name)) retry.add(`${callee.name}\0${param.localId}`);
+        }
         const group = boxOrigin.get(slot) ?? null;
         if (dropBox(group, `parameter ${param.localId} is not int32`)) invalidate(`box:${group}`);
       });
@@ -877,5 +895,133 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
   }
   for (const proven of provenByFunction.values())
     for (const value of proven) slots.provenWrites.add(value);
+  rangedParameters(slots, functions, retry, numeric, (callee) => readers.get(`ret:${callee}`));
   return slots;
+}
+
+/** Bounds a widened parameter range jumps to: the int32 limits, and the
+ * small values recursion usually counts down to. */
+const WIDEN_MIN = [1, 0, -1, INT32_RANGE.min];
+const WIDEN_MAX = [-1, 0, 1, INT32_RANGE.max];
+const widenMin = (min: number): number => WIDEN_MIN.find((bound) => bound <= min) ?? -Infinity;
+const widenMax = (max: number): number => WIDEN_MAX.find((bound) => bound >= max) ?? Infinity;
+
+/** Retries the parameters the INT32 assumption could not prove with
+ * ranges inferred from their call sites. Recursion that counts down, as in
+ * `f(n - 1)` under `n !== 0` or `n > 0`, leaves int32 only when `n` may be
+ * the smallest int32; the call sites show it never is. Only parameters
+ * dropped for an argument computed in a function that had int32 parameter
+ * candidates itself are retried (`retry`).
+ *
+ * An ascending fixpoint: a parameter's range is the union of its argument
+ * ranges at every call site, each analyzed under the ranges its own
+ * function's parameters have so far. A function is analyzed once every
+ * retried parameter of it has a range, so its body sees only values some
+ * caller passes. A range that grows again widens to the bounds above, so
+ * the iteration ends; an argument without an int32 range fails its
+ * parameter for good (no fact, which only weakens later analyses). When
+ * nothing is left to analyze, functions still waiting (reached only from
+ * other waiting functions) fail their parameters and are analyzed too, so
+ * every call site is checked under the final ranges. The facts the main
+ * fixpoint proved are fixed here: these ranges only add precision. */
+function rangedParameters(
+  slots: Int32Slots,
+  functions: ReadonlyMap<string, IrFunction>,
+  retry: ReadonlySet<string>,
+  numeric: (fn: IrFunction) => IrFunction,
+  callersOf: (callee: string) => ReadonlySet<string> | undefined,
+): void {
+  if (retry.size === 0) return;
+  // Per function: retried parameter → its range so far (absent: no call
+  // site analyzed yet; null: failed).
+  const retried = new Map<string, Map<string, IntegerRange | null>>();
+  for (const key of retry) retried.set(key.slice(0, key.indexOf("\0")), new Map());
+  const isRetried = (fnName: string, localId: string): boolean =>
+    retry.has(`${fnName}\0${localId}`);
+  // Callers: functions whose bodies pass arguments to retried parameters.
+  const callerNames = new Set<string>();
+  for (const callee of retried.keys()) {
+    const names = callersOf(callee);
+    if (names) for (const name of names) callerNames.add(name);
+  }
+  const callers = [...callerNames].map((name) => functions.get(name)!);
+  const ready = (fn: IrFunction): boolean => {
+    const ranges = retried.get(fn.name);
+    if (!ranges) return true;
+    return fn.params.every((p) => !isRetried(fn.name, p.localId) || ranges.has(p.localId));
+  };
+  const queue: IrFunction[] = [];
+  const queued = new Set<string>();
+  const enqueue = (fn: IrFunction): void => {
+    if (callerNames.has(fn.name) && !queued.has(fn.name) && ready(fn)) {
+      queued.add(fn.name);
+      queue.push(fn);
+    }
+  };
+  const factsOf = (fn: IrFunction): IntegerSlotFacts => {
+    const base = slots.facts(fn.name);
+    const ranges = retried.get(fn.name);
+    if (!ranges) return base;
+    const params = new Map(base.params ?? []);
+    for (const [id, range] of ranges) if (range) params.set(id, range);
+    return { ...base, params };
+  };
+  const contribute = (callee: IrFunction, localId: string, range: IntegerRange | null): void => {
+    const ranges = retried.get(callee.name)!;
+    const previous = ranges.get(localId);
+    if (previous === null) return;
+    let next: IntegerRange | null;
+    if (!withinInt32(range)) next = null;
+    else if (previous === undefined) next = range;
+    else if (range!.min >= previous.min && range!.max <= previous.max) return;
+    else {
+      next = {
+        min: range!.min < previous.min ? widenMin(range!.min) : previous.min,
+        max: range!.max > previous.max ? widenMax(range!.max) : previous.max,
+      };
+      if (!withinInt32(next)) next = null;
+    }
+    ranges.set(localId, next);
+    // The callee's body now sees other values: analyze it (again).
+    queued.delete(callee.name);
+    const index = queue.indexOf(callee);
+    if (index >= 0) queue.splice(index, 1);
+    enqueue(callee);
+  };
+  const analyze = (fn: IrFunction): void => {
+    const ranges = analyzeIntegerRanges(numeric(fn), factsOf(fn));
+    const args = (callee: IrFunction | undefined, list: IrExpr[], offset: number): void => {
+      if (!callee || !retried.has(callee.name)) return;
+      list.forEach((arg, i) => {
+        const param = callee.params[i + offset];
+        if (param && isRetried(callee.name, param.localId))
+          contribute(callee, param.localId, ranges.get(arg) ?? null);
+      });
+    };
+    walkFunction(fn, {
+      expr: (e) => {
+        if (e.kind === "call") args(functions.get(e.callee), e.args, 0);
+        else if (e.kind === "new") args(functions.get(`%${e.className}.constructor`), e.args, 1);
+      },
+    });
+  };
+  for (const fn of callers) enqueue(fn);
+  for (;;) {
+    while (queue.length) {
+      const fn = queue.shift()!;
+      queued.delete(fn.name);
+      analyze(fn);
+    }
+    // Functions only waiting callers reach: fail their missing ranges.
+    const waiting = callers.filter((fn) => !ready(fn));
+    if (waiting.length === 0) break;
+    for (const fn of waiting) {
+      const ranges = retried.get(fn.name)!;
+      for (const p of fn.params)
+        if (isRetried(fn.name, p.localId) && !ranges.has(p.localId)) ranges.set(p.localId, null);
+      enqueue(fn);
+    }
+  }
+  for (const [fnName, ranges] of retried)
+    for (const [id, range] of ranges) if (range) slots.addParam(fnName, id, range);
 }
