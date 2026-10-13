@@ -344,6 +344,7 @@ import {
   lowerFunction,
 } from "./lower-functions.js";
 import { lowerArrayMethodCall } from "./containers/array-methods.js";
+import { type ArrayHofInfo, fuseArrayPipelines } from "./containers/array-pipelines.js";
 import {
   lowerMapMethodCall,
   lowerMapForEachCall,
@@ -2111,6 +2112,9 @@ export class Lowerer {
   /** Synthetic array-HOF loop functions (map/filter/forEach desugar),
    * interned per method + element/callback-result type: key → fn name. */
   readonly arrHofHelpers = new Map<string, string>();
+  /** What each array-HOF helper computes, keyed by helper name: the chain
+   * fusion pass reads it to recognize pipelines of helper calls. */
+  readonly arrHofInfo = new Map<string, ArrayHofInfo>();
   /** Per-arm calls through union-typed class receivers, interned by the
    * receiver union, member, completed argument ABI, and result type. */
   readonly unionCallHelpers = new Map<string, string>();
@@ -5699,6 +5703,7 @@ export class Lowerer {
   /** Final retention, pruning, and module assembly shared by ordinary emit
    * and the retained reachability worklist. */
   finishModule(functions: IrFunction[]): LowerResult {
+    if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
     trackClassFieldCreation(this, functions);
 
