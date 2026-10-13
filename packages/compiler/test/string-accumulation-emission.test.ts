@@ -129,7 +129,9 @@ test("LLVM hands off canonical string self-concats after suffix evaluation", () 
   // retained sibling. A suffix assignment changes the binding before the
   // final detach, so the detach must occur after its replacement store.
 
-  const suffixBody = llvm.match(/define internal void @sc_f_suffixReassign\([^]*?\n\}/)?.[0];
+  const suffixBody = llvm.match(
+    /define internal void @sc_f_suffixReassign(?:\.i32)?\([^]*?\n\}/,
+  )?.[0];
   expect(suffixBody).toBeDefined();
   expectInOrder(suffixBody!, [
     "call ptr @scr_str_retain_v",
@@ -142,7 +144,7 @@ test("LLVM hands off canonical string self-concats after suffix evaluation", () 
   ]);
 
   // Concatenating another binding keeps the destination live until concat.
-  const negative = llvm.match(/define internal void @sc_f_negative\([^]*?\n\}/)?.[0];
+  const negative = llvm.match(/define internal void @sc_f_negative(?:\.i32)?\([^]*?\n\}/)?.[0];
   expect(negative).toBeDefined();
   expect(negative).toContain("call ptr @scr_str_concat");
   const concat = negative!.indexOf("call ptr @scr_str_concat");

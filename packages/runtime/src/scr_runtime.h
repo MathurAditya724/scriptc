@@ -74,7 +74,7 @@ void scr_init(void);
 /* Program objects emitted by the bundled LLVM helper reference this symbol.
  * Its versioned spelling makes a mismatched manual runtime link fail before
  * the program can start. */
-void scr_runtime_abi_v16(void);
+void scr_runtime_abi_v17(void);
 void scr_runtime_workers_v8(void);
 
 /* ── the trap funnel (scr_console.c; scr_library.c under -DSCR_LIB) ──────
@@ -1903,6 +1903,9 @@ ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep);
  * missing ones skip. Borrows both; +1 result; never throws. */
 ScrStr *scr_str_raw(ScrArr *raw, ScrArr *subs);
 
+typedef int32_t (*ScrRegexMatcherFn)(const uint8_t *s, int32_t len, int32_t start,
+                                     uint8_t **capture);
+
 typedef struct ScrRegex {
   size_t rc;      /* SIZE_MAX = immortal literal template */
   ScrStr *source; /* pattern text between the slashes */
@@ -1911,7 +1914,17 @@ typedef struct ScrRegex {
   double last_index;
   struct ScrRegex *literal; /* immutable bytecode owner for literal instances */
   void *native;   /* one-byte-subject matcher built with bc (NULL: lre_exec only) */
+  /* Build-time matcher of a literal template (NULL: none). Searches the
+   * ASCII bytes s[0..len) from start (one anchored attempt when sticky);
+   * on a match stores 2 * ncap pointers into s (NULL when unset) and
+   * returns 1, otherwise 0. A negative len returns ncap. */
+  ScrRegexMatcherFn matcher;
 } ScrRegex;
+
+/* Backtrack stack of build-time regex matchers: grow *stack (initially the
+ * matcher's inline buffer) to at least `need` words; traps on OOM. */
+void scr_regex_stack_grow(int32_t **stack, int32_t *cap, int32_t *inline_buf, int32_t need);
+void scr_regex_stack_free(int32_t *stack);
 
 static inline ScrRegex *scr_regex_retain(ScrRegex *re) {
   if (re->rc != SIZE_MAX) re->rc++;
@@ -4438,6 +4451,7 @@ typedef enum {
   SCR_DYNH_WORKER,
   SCR_DYNH_MESSAGE_PORT,
   SCR_DYNH_SHARED_ARRAY_BUFFER,
+  SCR_DYNH_CONSOLE_INSTANCE, /* node:console Console instance */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
@@ -5162,6 +5176,29 @@ ScrDyn *scr_process_builtin_unsupported(ScrStr *id, ScrStr *member);
 ScrDyn *scr_global_native(ScrArr *known);
 ScrDyn *scr_global_native_init(ScrArr *known, ScrDyn *(*console_get)(void));
 ScrDyn *scr_console_native(void);
+/* node:console Console instances: a native handle over the stdout/stderr
+ * targets — process stdio (fd 1/2) or a writable stream bound by
+ * scr_console_bind (scr_stream.c, which also installs the stream writer so
+ * console-only programs never link the stream unit) — and the
+ * ignoreErrors flag. new answers a +1 handle with both targets set to
+ * the given fds (0 = a stream is bound next); bind retains the stream.
+ * write prints `text\n` to the selected target: a stream receives ONE
+ * write, wrapped in Node's ignoreErrors handling (a noop 'error' listener
+ * around the call, a completion handler that swallows the write's own
+ * error, synchronous throws discarded); the global console handle writes
+ * the process streams like console.log/error. */
+typedef struct ScrConsoleInst {
+  size_t rc;
+  double fd[2];                /* 1/2 process stdio targets; 0 when stream[i] is bound */
+  ScrStream *stream[2];        /* owned */
+  ScrClosure *on_written[2];   /* owned: the per-stream completion handlers */
+  bool ignore_errors;
+  void (*stream_write)(struct ScrConsoleInst *, int which, ScrStr *line);
+  void (*stream_drop)(struct ScrConsoleInst *); /* releases the bound streams */
+} ScrConsoleInst;
+ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors);
+void scr_console_bind(ScrDyn *console, double which, ScrStream *stream);
+void scr_console_inst_write(ScrDyn *console, ScrStr *text, bool to_stderr);
 ScrDyn *scr_process_stdio(double fd);
 bool scr_dyn_process_stdio_is(const ScrDyn *value);
 double scr_dyn_process_stdio_fd(const ScrDyn *value, const ScrDynPath *path);
@@ -5867,6 +5904,19 @@ typedef struct ScrGen ScrGen;
 
 ScrGen *scr_gen_new(void (*entry)(ScrFiber *, void *), void *argpack,
                     void (*drop_args)(void *));
+/* A synchronous generator whose body the compiler emitted as an LLVM
+ * switched coroutine: no fiber stack; resumes call into the coroutine frame
+ * on the resumer's stack. The body registers its frame with
+ * scr_coro_started and ends in scr_gen_coro_finish (the trampoline
+ * epilogue of the fiber form). Native targets only. */
+ScrGen *scr_gen_new_stackless(void (*entry)(ScrFiber *, void *), void *argpack,
+                              void (*drop_args)(void *));
+void scr_coro_started(void *handle);
+/* The OUT stores of a coroutine body's yield (its suspension follows). */
+void scr_coro_yield_f64(ScrFiber *self, double v);
+void scr_coro_yield_bool(ScrFiber *self, bool v);
+void scr_coro_yield_ref(ScrFiber *self, void *v, void (*release)(void *)); /* moves */
+void scr_gen_coro_finish(ScrFiber *self);
 ScrGen *scr_async_gen_new(void (*entry)(ScrFiber *, void *), void *argpack,
                           void (*drop_args)(void *),
                           void (*settle)(ScrGen *, ScrPromise *));
@@ -5877,6 +5927,10 @@ void scr_gen_release_v(void *g);
 
 void scr_gen_resume(ScrGen *g);
 void scr_gen_resume_return(ScrGen *g);
+/* A valueless next() that answers done (the compiler's own drives). */
+bool scr_gen_step(ScrGen *g);
+/* IteratorClose: a valueless return() whose result is dropped. */
+void scr_gen_close(ScrGen *g);
 void scr_gen_resume_throw(ScrGen *g);
 bool scr_gen_done(ScrGen *g);
 
@@ -5902,6 +5956,7 @@ void scr_gen_in_none(ScrGen *g);
 double scr_gen_take_in_f64(void); /* body side: the running fiber's gen */
 bool scr_gen_take_in_bool(void);
 void *scr_gen_take_in_ref(void); /* +1 moved out; NONE → NULL */
+ScrDyn *scr_gen_take_in_dyn(void); /* dyn channel: +1; NONE → undefined */
 /* yield* captures next/return/throw before ordinary yield unwinding. Ref
  * converters borrow their typed payload and return an owned dyn value. */
 ScrDyn *scr_gen_delegate_resume(ScrDyn *(*next_ref)(void *),

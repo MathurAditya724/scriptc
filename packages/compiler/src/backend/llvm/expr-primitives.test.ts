@@ -86,8 +86,8 @@ test.each([32, 64] as const)(
       })),
     ];
     const llvm = emitLlvmModule(mod, { pointerBits: bits });
-    const zero = /^define internal [^\n]*@sc_[bf]+_length_0\([^]*?^}/m.exec(llvm)![0];
-    const one = /^define internal [^\n]*@sc_[bf]+_length_1\([^]*?^}/m.exec(llvm)![0];
+    const zero = /^define internal [^\n]*@sc_[bf]+_length_0(?:\.i32)?\([^]*?^}/m.exec(llvm)![0];
+    const one = /^define internal [^\n]*@sc_[bf]+_length_1(?:\.i32)?\([^]*?^}/m.exec(llvm)![0];
     expect(zero).toContain(`getelementptr inbounds i${bits}`);
     expect(zero).not.toContain("_str_utf16_len");
     expect(one).toContain("@sc_str_utf16_len");
@@ -136,9 +136,10 @@ test("reference identity and instanceof borrow their operands", () => {
   };
   const llvm = emitLlvmModule(mod);
   for (const name of ["same", "leaf"]) {
-    const body = new RegExp(`^define internal [^\\n]*@sc_bf_${name}\\([^]*?^}`, "m").exec(
-      llvm,
-    )?.[0];
+    const body = new RegExp(
+      `^define internal [^\\n]*@sc_bf_${name}(?:\\.i32)?\\([^]*?^}`,
+      "m",
+    ).exec(llvm)?.[0];
     expect(body, name).toBeDefined();
     expect(body, name).not.toMatch(/call ptr @sc_retain_Node/);
     expect(body, name).not.toMatch(/call void @sc_release_Node/);
@@ -189,7 +190,9 @@ test("identity bitwise forms over a proven int32 return the operand's number", (
   ];
   const llvm = emitLlvmModule(mod);
   const body = (name: string): string =>
-    new RegExp(`^define internal [^\\n]*@sc_[bf]+_${name}\\([^]*?^}`, "m").exec(llvm)![0];
+    new RegExp(`^define internal [^\\n]*@sc_[bf]+_${name}(?:\\.i32)?\\([^]*?^}`, "m").exec(
+      llvm,
+    )![0];
   for (const name of ["length_or", "length_ushr"]) {
     expect(body(name)).not.toMatch(/ = (or|lshr) i32 /);
     expect(body(name)).not.toMatch(/ = [su]itofp i32 /);
@@ -274,7 +277,9 @@ test("sums that only feed a bitwise conversion of int32 operands add in 32 bits"
   ];
   const llvm = emitLlvmModule(mod);
   const body = (name: string): string =>
-    new RegExp(`^define internal [^\\n]*@sc_[bf]+_${name}\\([^]*?^}`, "m").exec(llvm)![0];
+    new RegExp(`^define internal [^\\n]*@sc_[bf]+_${name}(?:\\.i32)?\\([^]*?^}`, "m").exec(
+      llvm,
+    )![0];
   // Wrapping 32-bit arithmetic, never `nsw`: the exact sum may leave int32.
   expect(body("proven_add")).toMatch(/ = add i32 /);
   expect(body("proven_sub")).toMatch(/ = sub i32 /);

@@ -498,6 +498,8 @@ export function regexLiteralTemplate(
       sym: `sc_re_${host.regexInstances.size}`,
       src: host.internLiteral(e.pattern),
       fl: host.internLiteral(e.flags),
+      pattern: e.pattern,
+      flags: e.flags,
     };
     host.regexInstances.set(key, re);
   }

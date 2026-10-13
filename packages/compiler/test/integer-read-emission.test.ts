@@ -51,7 +51,9 @@ console.log(text.skip(), text.sum(3), text.sum(9));
     const ll = emitLlvmModule(mod);
     const body = (name: string): string =>
       ll.match(
-        new RegExp(`define internal [^\\n]+ @sc_bf_${name}\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`),
+        new RegExp(
+          `define internal [^\\n]+ @sc_bf_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`,
+        ),
       )![1]!;
     const skip = body("_x25_Text_skip");
     // The counter's increment is 32-bit arithmetic that cannot overflow and

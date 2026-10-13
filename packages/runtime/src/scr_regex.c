@@ -221,8 +221,35 @@ static uint8_t *scr_regex_bc(ScrRegex *re) {
   }
   re->bc = bc;
   re->native = scr_regex_native_build(re, bc);
+  /* A build-time matcher must agree with the bytecode's capture count. */
+  if (re->matcher && re->matcher(NULL, -1, 0, NULL) != lre_get_capture_count(bc))
+    re->matcher = NULL;
   scr_note_compiled(re);
   return bc;
+}
+
+void scr_regex_stack_grow(int32_t **stack, int32_t *cap, int32_t *inline_buf, int32_t need) {
+  size_t ncap = (size_t)*cap * 2;
+  if (ncap < (size_t)need) ncap = (size_t)need;
+  if (ncap > (size_t)INT32_MAX) scr_regex_oom();
+  int32_t *grown;
+  if (*stack == inline_buf) {
+    grown = malloc(ncap * sizeof *grown);
+    if (grown) memcpy(grown, *stack, (size_t)*cap * sizeof *grown);
+  } else {
+    grown = realloc(*stack, ncap * sizeof *grown);
+  }
+  if (!grown) scr_regex_oom();
+  *stack = grown;
+  *cap = (int32_t)ncap;
+}
+
+void scr_regex_stack_free(int32_t *stack) { free(stack); }
+
+/* The build-time matcher of a regex (literal instances use their
+ * template's). */
+static inline ScrRegexMatcherFn scr_regex_matcher(const ScrRegex *re) {
+  return re->literal ? re->literal->matcher : re->matcher;
 }
 
 /* ── RC entry points ──────────────────────────────────────────────────
@@ -418,6 +445,7 @@ typedef struct ScrRegexInput {
   const uint8_t *data;
   uint16_t *utf16;
   const ScrReNative *native; /* one-byte subjects of translated patterns */
+  ScrRegexMatcherFn matcher; /* one-byte subjects of build-time matchers */
   int len;
   int wide;
   bool borrowed_utf16; /* utf16 belongs to the subject cache below */
@@ -451,6 +479,7 @@ static void scr_regex_input_init(ScrRegexInput *input, const ScrRegex *re,
   if (s->len > (size_t)INT32_MAX - 1) scr_regex_oom();
   input->wide = !scr_text_ascii(s);
   input->native = input->wide ? NULL : (const ScrReNative *)re->native;
+  input->matcher = input->wide ? NULL : scr_regex_matcher(re);
   input->utf16 = input->wide ? scr_to_utf16(s, &input->len) : NULL;
   input->borrowed_utf16 = false;
   input->data = input->wide ? (const uint8_t *)input->utf16 : (const uint8_t *)s->data;
@@ -507,6 +536,7 @@ static void scr_regex_input_init_cached(ScrRegexInput *input, const ScrRegex *re
   }
   input->wide = scr_subject_wide;
   input->native = input->wide ? NULL : (const ScrReNative *)re->native;
+  input->matcher = input->wide ? NULL : scr_regex_matcher(re);
   input->utf16 = scr_subject_utf16;
   input->borrowed_utf16 = true;
   input->data = input->wide ? (const uint8_t *)input->utf16 : (const uint8_t *)s->data;
@@ -519,7 +549,10 @@ static void scr_regex_input_dispose(ScrRegexInput *input) {
   if (!input->borrowed_utf16) free(input->utf16);
 }
 
-static int scr_exec(ScrRegexInput *input, const uint8_t *bc, int index) {
+/* The bytecode engines; kept out of line so a build-time matcher call does
+ * not pay their frame. */
+__attribute__((noinline)) static int scr_exec_engine(ScrRegexInput *input, const uint8_t *bc,
+                                                     int index) {
   int rc = input->native
     ? scr_re_native_exec(input->native, input->capture, input->data, index, input->len)
     : lre_exec(input->capture, bc, input->data, index, input->len, input->wide, lre_opaque());
@@ -528,6 +561,12 @@ static int scr_exec(ScrRegexInput *input, const uint8_t *bc, int index) {
     scr_trap("scriptc: regular expression execution failed\n");
   }
   return rc;
+}
+
+/* Build-time matchers trap on allocation failure themselves. */
+static inline int scr_exec(ScrRegexInput *input, const uint8_t *bc, int index) {
+  if (input->matcher) return input->matcher(input->data, input->len, index, input->capture);
+  return scr_exec_engine(input, bc, index);
 }
 
 static int scr_capture_index(const ScrRegexInput *input, const uint8_t *capture) {

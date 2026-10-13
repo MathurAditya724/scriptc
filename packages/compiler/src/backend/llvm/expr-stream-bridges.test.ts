@@ -79,7 +79,7 @@ test("overlapping union roots share the recursive materialization graph", () => 
       const llvm = emitLlvmModule(sharedGraph(roots), { pointerBits });
       const materializers = [
         ...llvm.matchAll(
-          /^define internal ptr @\S+\(ptr %p\).*; materialize live stream value (.+)$/gm,
+          /^define internal ptr @\S+(?:\.i32)?\(ptr %p\).*; materialize live stream value (.+)$/gm,
         ),
       ];
       // One record root, one recursive leaf, and its array, independent of
@@ -151,6 +151,6 @@ test("live record capsules bind field hooks in snapshot order", () => {
   const binds = llvm.match(/call void @scr_dyn_typed_ref_bind_record\(/g) ?? [];
   expect(binds.length).toBeGreaterThan(0);
   expect(llvm).toMatch(
-    /define internal zeroext i1 @\S+_has\(ptr %p, i64 %i\).*; live field presence of record:leaf/,
+    /define internal zeroext i1 @\S+_has(?:\.i32)?\(ptr %p, i64 %i\).*; live field presence of record:leaf/,
   );
 });

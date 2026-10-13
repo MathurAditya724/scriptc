@@ -19,7 +19,9 @@ async function emit(source: string): Promise<(name: string) => string> {
     const ll = emitLlvmModule(mod);
     return (name) =>
       ll.match(
-        new RegExp(`define internal [^\\n]+ @sc_bf_${name}\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`),
+        new RegExp(
+          `define internal [^\\n]+ @sc_bf_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`,
+        ),
       )![1]!;
   } finally {
     await rm(dir, { recursive: true, force: true });

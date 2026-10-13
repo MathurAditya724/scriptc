@@ -83,7 +83,7 @@ function fixture(arm: IrType = record): IrModule {
 }
 
 function body(ir: string, name: string): string {
-  const found = new RegExp(`^define internal [^\\n]*@${name}\\([^]*?^}`, "m").exec(ir);
+  const found = new RegExp(`^define internal [^\\n]*@${name}(?:\\.i32)?\\([^]*?^}`, "m").exec(ir);
   expect(found, name).not.toBeNull();
   return found![0];
 }

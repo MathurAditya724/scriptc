@@ -2365,10 +2365,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   string,
   Record<string, string | undefined> | undefined
 > = {
-  console: {
-    Console:
-      "custom Console instances are not supported yet; direct node:console log/info/debug/error/warn calls use the process output streams",
-  },
   assert: ASSERT_MODULE_HINTS,
   // The strict module's equal/notEqual/deepEqual/notDeepEqual ARE the
   // strict comparisons (aliased in the spoke) — only the members with no

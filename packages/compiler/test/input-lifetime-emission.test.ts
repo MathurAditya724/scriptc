@@ -23,7 +23,10 @@ async function emit(source: string): Promise<string> {
   }
 }
 function body(llvm: string, name: string): string {
-  const found = new RegExp(`^define internal [^\\n]*@sc_(?:b)?f_${name}\\([^]*?^}`, "m").exec(llvm);
+  const found = new RegExp(
+    `^define internal [^\\n]*@sc_(?:b)?f_${name}(?:\\.i32)?\\([^]*?^}`,
+    "m",
+  ).exec(llvm);
   expect(found, name).not.toBeNull();
   return found![0];
 }
@@ -46,7 +49,7 @@ console.log(preserve(holder), snapshot(holder));
   // `read` returns a projection of its borrowed parameter without a
   // reference; its owned adapter takes one for callers outside direct calls.
   expect(body(llvm, "read")).not.toContain("@scr_str_retain_v");
-  expect(/^define internal [^\n]*@sc_f_read\([^]*?^}/m.exec(llvm)?.[0]).toContain(
+  expect(/^define internal [^\n]*@sc_f_read(?:\.i32)?\([^]*?^}/m.exec(llvm)?.[0]).toContain(
     "@scr_str_retain_v",
   );
 });

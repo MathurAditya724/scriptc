@@ -185,7 +185,8 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
     const debug = program()
       .split("\n")
       .map((line) => {
-        const definition = /^define internal void @step(\d+)\(i64 %value\) noinline \{$/.exec(line);
+        const definition =
+          /^define internal void @step(\d+)(?:\.i32)?\(i64 %value\) noinline \{$/.exec(line);
         if (definition !== null)
           return line.replace(" {", ` !dbg !${10 + Number(definition[1])} {`);
         const call = /^ {2}call void @step(\d+)\(i64 %value\)$/.exec(line);

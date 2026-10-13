@@ -21,7 +21,9 @@ async function emit(source: string): Promise<string> {
 }
 
 function definition(llvm: string, symbol: string): string {
-  const match = new RegExp(`^define internal [^\\n]*@${symbol}\\([^]*?^}`, "m").exec(llvm);
+  const match = new RegExp(`^define internal [^\\n]*@${symbol}(?:\\.i32)?\\([^]*?^}`, "m").exec(
+    llvm,
+  );
   expect(match, symbol).not.toBeNull();
   return match![0];
 }

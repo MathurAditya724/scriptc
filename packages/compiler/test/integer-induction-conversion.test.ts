@@ -26,7 +26,9 @@ console.log(weigh([1, 2, 3, 4]));
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     const mod = deserializeModule(await readFile(outPath, "utf8"));
     const body = (ll: string): string =>
-      ll.match(/define internal [^\n]+ @sc_(?:b)?f_weigh\([^\n]*\) #0 \{([\s\S]*?)\n\}/)![1]!;
+      ll.match(
+        /define internal [^\n]+ @sc_(?:b)?f_weigh(?:\.i32)?\([^\n]*\) #0 \{([\s\S]*?)\n\}/,
+      )![1]!;
 
     const wide = body(emitLlvmModule(mod));
     expect(wide).toContain("integer induction");

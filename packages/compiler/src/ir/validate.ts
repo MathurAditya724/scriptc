@@ -5470,6 +5470,23 @@ function validateFunction(
         }
         const genT = e.gen.type;
         if (e.arg !== null) checkExpr(e.arg);
+        if (e.mode === "step" || e.mode === "value" || e.mode === "close") {
+          if (genT.async) err(`genResume ${e.mode} on an async generator`, e.loc);
+          if (e.arg !== null) err(`genResume ${e.mode} with an argument`, e.loc);
+          if (e.mode === "step") {
+            if (genT.nextT.kind !== "undefinedT" && genT.nextT.kind !== "dyn")
+              err(`genResume step on a ${typeKey(genT.nextT)} next-channel`, e.loc);
+            if (e.type.kind !== "bool") err(`genResume step result ${typeKey(e.type)}`, e.loc);
+          } else if (e.mode === "close") {
+            if (e.type.kind !== "void") err(`genResume close result ${typeKey(e.type)}`, e.loc);
+          } else if (genT.yieldT.kind === "void" || !typeEquals(e.type, genT.yieldT)) {
+            err(
+              `genResume value ${typeKey(e.type)} != yield channel ${typeKey(genT.yieldT)}`,
+              e.loc,
+            );
+          }
+          break;
+        }
         if (e.mode === "next") {
           if (e.arg === null) {
             if (genT.nextT.kind !== "undefinedT" && genT.nextT.kind !== "dyn") {
