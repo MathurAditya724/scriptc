@@ -4503,6 +4503,21 @@ function implicitReceiverOverloadReturn(
  * with no honest bridge keep coerceInto's exactness fences. Calls that
  * resolved to the implementation itself (non-overloaded callees) pass
  * through untouched. */
+/** A body-less abstract method that is its name's only declaration is the
+ * virtual slot itself, not an overload signature: its lowered return is the
+ * family ABI every override shares, so the call keeps that result instead
+ * of narrowing it to the declared type. */
+function isSoleAbstractMethod(decl: ts.FunctionDeclaration | ts.MethodDeclaration): boolean {
+  if (!ts.isMethodDeclaration(decl)) return false;
+  if (!ts.getModifiers(decl)?.some((m) => m.kind === ts.SyntaxKind.AbstractKeyword)) return false;
+  const owner = decl.parent;
+  if (!ts.isClassDeclaration(owner) && !ts.isClassExpression(owner)) return false;
+  const name = decl.name.getText();
+  return !owner.members.some(
+    (member) => member !== decl && ts.isMethodDeclaration(member) && member.name.getText() === name,
+  );
+}
+
 function reconcileOverloadReturn(
   lowerer: Lowerer,
   expr: ts.CallExpression | ts.TaggedTemplateExpression,
@@ -4525,7 +4540,8 @@ function reconcileOverloadReturn(
     rsig &&
     rdecl &&
     (ts.isFunctionDeclaration(rdecl) || ts.isMethodDeclaration(rdecl)) &&
-    !rdecl.body
+    !rdecl.body &&
+    !isSoleAbstractMethod(rdecl)
       ? lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(rsig))
       : null;
   const rt = resolvedOverload ?? implicitReceiverOverloadReturn(lowerer, expr);

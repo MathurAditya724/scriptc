@@ -3689,7 +3689,6 @@ export class Lowerer {
     const signatureBySymbol = new Map<ts.Symbol, RuntimeSig>();
     const methodFamilies = new Map<string, ts.Symbol[]>();
     const familyBySymbol = new Map<ts.Symbol, ts.Symbol[]>();
-    const optionalMethodFamilies = new Set<ts.Symbol[]>();
     for (const [symbol, sig] of this.fnSigsBySymbol)
       signatureBySymbol.set(symbol, { params: sig.params, returnType: sig.returnType, top: sig });
     for (const decl of fnDecls) {
@@ -3978,6 +3977,13 @@ export class Lowerer {
       if (ts.isPropertyAccessExpression(e)) {
         const symbol = symbolOf(e.name);
         if (symbol && optionalSymbols.has(symbol)) return true;
+        // A getter read is a call of its body.
+        if (
+          symbol &&
+          (symbol.flags & ts.SymbolFlags.GetAccessor) !== 0 &&
+          optionalReturns.has(symbol)
+        )
+          return true;
       }
       if (ts.isCallExpression(e) && ts.isIdentifier(e.expression)) {
         const symbol = callableSymbolOf(e.expression);
@@ -4045,6 +4051,23 @@ export class Lowerer {
       if (!stringRead(e.left) && !stringRead(e.right)) return null;
       if (!primitive(e.left) || !primitive(e.right)) return null;
       return { kind: "union", unionId: this.unions.intern([F64, STRING]) };
+    };
+    /** The union of primitive result types, or null when any is missing or
+     * not a number, string or boolean (or a union of them). */
+    const joinPrimitiveTypes = (types: readonly (IrType | undefined)[]): IrType | null => {
+      const arms = new Map<string, IrType>();
+      for (const type of types) {
+        if (!type) return null;
+        const parts = type.kind === "union" ? this.unions.get(type.unionId)?.arms : [type];
+        if (!parts) return null;
+        for (const arm of parts) {
+          if (arm.kind !== "f64" && arm.kind !== "string" && arm.kind !== "bool") return null;
+          arms.set(typeKey(arm), arm);
+        }
+      }
+      const sorted = [...arms.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([, t]) => t);
+      if (sorted.length === 1) return sorted[0]!;
+      return { kind: "union", unionId: this.unions.intern(sorted) };
     };
     const noteField = (decl: ts.VariableDeclaration, name: string): boolean => {
       if (!ts.isIdentifier(decl.name)) return false;
@@ -5061,8 +5084,6 @@ export class Lowerer {
                 (this.typeOf(arg).flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) === 0
               )
                 continue;
-              const family = familyBySymbol.get(symbol);
-              if (family) optionalMethodFamilies.add(family);
               for (const target of familyBySymbol.get(symbol) ?? [symbol]) {
                 const shape = signatureBySymbol.get(target)?.params[i];
                 if (!shape || shape.mode !== "required") continue;
@@ -5180,7 +5201,6 @@ export class Lowerer {
             // Promote every implementation and its parameter bindings so
             // downstream calls and returns see the same optional value.
             const family = familyBySymbol.get(symbol);
-            if (family) optionalMethodFamilies.add(family);
             for (const target of family ?? [symbol]) {
               const parameterShape = signatureBySymbol.get(target)?.params[i];
               if (!parameterShape) continue;
@@ -5307,11 +5327,14 @@ export class Lowerer {
           changed = true;
         }
       }
-      // Every implementation of a virtual slot must retain the same ABI,
-      // including when just one body forwards an omitted parameter.
-      for (const family of optionalMethodFamilies) {
-        if (!family.some((symbol) => optionalReturns.has(symbol))) continue;
-        for (const symbol of family) {
+      // Every implementation of a virtual slot must retain the same ABI:
+      // when one body can return undefined at runtime (an unchecked element
+      // read, a forwarded omitted parameter), the abstract or base
+      // declaration and every override return the widened type too.
+      for (const family of methodFamilies.values()) {
+        if (family.length < 2) continue;
+        const optional = family.some((symbol) => optionalReturns.has(symbol));
+        for (const symbol of optional ? family : []) {
           if (!optionalReturns.has(symbol)) {
             optionalReturns.add(symbol);
             provenance?.note(
@@ -5322,6 +5345,21 @@ export class Lowerer {
             );
             changed = true;
           }
+        }
+        // A primitive-widened result (`names[i] + 1` is NaN for a missing
+        // string) likewise becomes the slot's result for every member.
+        if (!family.some((symbol) => arithmeticReturns.has(symbol))) continue;
+        const joined = joinPrimitiveTypes(
+          family.map(
+            (symbol) => arithmeticReturns.get(symbol) ?? signatureBySymbol.get(symbol)?.returnType,
+          ),
+        );
+        if (!joined) continue;
+        for (const symbol of family) {
+          const previous = arithmeticReturns.get(symbol);
+          if (previous && typeEquals(previous, joined)) continue;
+          arithmeticReturns.set(symbol, joined);
+          changed = true;
         }
       }
     }
