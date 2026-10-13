@@ -524,6 +524,7 @@ function arrayHofHelper(
   if (existing) return existing;
   const name = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
+  lowerer.arrHofInfo.set(name, { method, elem, fnRet, arity, outElem, present, split: !!fastT });
   const fn = buildArrayHofFn(
     lowerer,
     name,
@@ -1288,6 +1289,16 @@ function findIndexHelper(
   if (existing) return existing;
   const name = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
+  if (!last)
+    lowerer.arrHofInfo.set(name, {
+      method: "findIndex",
+      elem,
+      fnRet,
+      arity,
+      outElem: elem,
+      present,
+      split: !!fastT,
+    });
   const arrT = arrayOf(elem);
   const fnT = funcOf([callbackValueType(lowerer, elem, present), F64, arrT].slice(0, arity), fnRet);
 
@@ -1362,6 +1373,15 @@ function someEveryHelper(
   if (existing) return existing;
   const name = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
+  lowerer.arrHofInfo.set(name, {
+    method,
+    elem,
+    fnRet,
+    arity,
+    outElem: elem,
+    present,
+    split: !!fastT,
+  });
   const arrT = arrayOf(elem);
   const fnT = funcOf([callbackValueType(lowerer, elem, present), F64, arrT].slice(0, arity), fnRet);
   const callF: IrExpr = predicateToBoolean(
@@ -1552,6 +1572,15 @@ function flatMapHelper(
   if (existing) return existing;
   const name = `%arr.flatMap.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
+  lowerer.arrHofInfo.set(name, {
+    method: "flatMapArray",
+    elem,
+    fnRet,
+    arity,
+    outElem: fnRet.elem,
+    present,
+    split: !!fastT,
+  });
   const arrT = arrayOf(elem);
   const inner = fnRet.elem;
   const fnT = funcOf([callbackValueType(lowerer, elem, present), F64, arrT].slice(0, arity), fnRet);
@@ -1785,6 +1814,17 @@ function reduceHelper(
   if (existing) return existing;
   const name = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
+  if (method === "reduce")
+    lowerer.arrHofInfo.set(name, {
+      method,
+      elem,
+      fnRet,
+      arity,
+      outElem: accT,
+      present: false,
+      split: !!fastT,
+      hasInit,
+    });
   const arrT = arrayOf(elem);
   const fnT = funcOf([accT, arrayValueType(lowerer, elem), F64, arrT].slice(0, arity), fnRet);
 
