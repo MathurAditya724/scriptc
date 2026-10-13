@@ -74,7 +74,7 @@ void scr_init(void);
 /* Program objects emitted by the bundled LLVM helper reference this symbol.
  * Its versioned spelling makes a mismatched manual runtime link fail before
  * the program can start. */
-void scr_runtime_abi_v16(void);
+void scr_runtime_abi_v17(void);
 void scr_runtime_workers_v8(void);
 
 /* ── the trap funnel (scr_console.c; scr_library.c under -DSCR_LIB) ──────
@@ -1903,6 +1903,9 @@ ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep);
  * missing ones skip. Borrows both; +1 result; never throws. */
 ScrStr *scr_str_raw(ScrArr *raw, ScrArr *subs);
 
+typedef int32_t (*ScrRegexMatcherFn)(const uint8_t *s, int32_t len, int32_t start,
+                                     uint8_t **capture);
+
 typedef struct ScrRegex {
   size_t rc;      /* SIZE_MAX = immortal literal template */
   ScrStr *source; /* pattern text between the slashes */
@@ -1911,7 +1914,17 @@ typedef struct ScrRegex {
   double last_index;
   struct ScrRegex *literal; /* immutable bytecode owner for literal instances */
   void *native;   /* one-byte-subject matcher built with bc (NULL: lre_exec only) */
+  /* Build-time matcher of a literal template (NULL: none). Searches the
+   * ASCII bytes s[0..len) from start (one anchored attempt when sticky);
+   * on a match stores 2 * ncap pointers into s (NULL when unset) and
+   * returns 1, otherwise 0. A negative len returns ncap. */
+  ScrRegexMatcherFn matcher;
 } ScrRegex;
+
+/* Backtrack stack of build-time regex matchers: grow *stack (initially the
+ * matcher's inline buffer) to at least `need` words; traps on OOM. */
+void scr_regex_stack_grow(int32_t **stack, int32_t *cap, int32_t *inline_buf, int32_t need);
+void scr_regex_stack_free(int32_t *stack);
 
 static inline ScrRegex *scr_regex_retain(ScrRegex *re) {
   if (re->rc != SIZE_MAX) re->rc++;

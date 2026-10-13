@@ -346,6 +346,60 @@ static void test_exec_groups(void) {
   scr_str_release(s);
 }
 
+/* A build-time matcher stand-in for /(b)/: the first 'b'. Counts its calls,
+ * and grows the backtrack stack once to exercise the runtime helper. */
+static int fake_calls = 0;
+static int32_t fake_b_matcher(const uint8_t *s, int32_t len, int32_t start, uint8_t **capture) {
+  if (len < 0) return 2;
+  fake_calls++;
+  int32_t inline_buf[4];
+  int32_t *stack = inline_buf, cap = 4;
+  for (int32_t i = 0; i < 4; i++) inline_buf[i] = i;
+  scr_regex_stack_grow(&stack, &cap, inline_buf, 9);
+  bool kept = stack != inline_buf && cap >= 9 && stack[3] == 3;
+  scr_regex_stack_free(stack);
+  if (!kept) return 0;
+  for (int32_t i = start; i < len; i++) {
+    if (s[i] == 'b') {
+      capture[0] = capture[2] = (uint8_t *)s + i;
+      capture[1] = capture[3] = (uint8_t *)s + i + 1;
+      return 1;
+    }
+  }
+  return 0;
+}
+static int32_t fake_wrong_count(const uint8_t *s, int32_t len, int32_t start, uint8_t **capture) {
+  (void)s;
+  (void)start;
+  (void)capture;
+  if (len < 0) return 7;
+  fake_calls++;
+  return 0;
+}
+RE(re_matched, "(b)", "");
+RE(re_mismatched, "(b)", "");
+
+static void test_build_time_matcher(void) {
+  re_matched.matcher = fake_b_matcher;
+  re_mismatched.matcher = fake_wrong_count;
+  ScrStr *ascii = S("abc");
+  ScrStr *wide = S("\xC3\xA9" "b");
+  ScrArr *m = scr_regex_exec(ascii, &re_matched);
+  ScrStr *g = m ? scr_arr_get_ref(m, 1) : NULL;
+  check(fake_calls == 1 && g && str_is(g, "b"), "matcher: ASCII subjects use the build-time matcher");
+  scr_str_release(g);
+  scr_arr_release(m);
+  check(scr_regex_test(&re_matched, wide) && fake_calls == 1,
+        "matcher: non-ASCII subjects keep the bytecode engine");
+  ScrRegex *instance = scr_regex_literal(&re_matched);
+  check(scr_regex_test(instance, ascii) && fake_calls == 2, "matcher: literal instances use the template's");
+  scr_regex_release(instance);
+  check(scr_regex_test(&re_mismatched, ascii) && fake_calls == 2 && re_mismatched.matcher == NULL,
+        "matcher: a capture-count mismatch falls back to the bytecode engine");
+  scr_str_release(ascii);
+  scr_str_release(wide);
+}
+
 static void test_string_replace(void) {
   /* String search values: one pass, GetSubstitution without captures. */
   ScrStr *s = S("a.b.c");
@@ -388,6 +442,7 @@ int main(int argc, char **argv) {
   test_capture_capacity();
   test_exec_groups();
   test_string_replace();
+  test_build_time_matcher();
 
 #ifdef SCR_RC_AUDIT
   check(scr_str_live_count() == 0, "no live heap strings at exit (RC audit)");
