@@ -18,6 +18,7 @@ import {
   type IrStmt,
   type IrType,
   type SrcLoc,
+  UNDEFINED_T,
   VOID,
   isUnitType,
   typeEquals,
@@ -232,7 +233,11 @@ export function extractIteratorValue(
 export function stepDrivable(genT: GenType): boolean {
   if (genT.async) return false;
   if (genT.nextT.kind !== "undefinedT" && genT.nextT.kind !== "dyn") return false;
-  const yt = genT.yieldT;
+  return hasOutSlot(genT.yieldT);
+}
+
+/** Whether a yield channel's values have an OUT-slot form `value` reads. */
+function hasOutSlot(yt: IrType): boolean {
   return yt.kind === "f64" || yt.kind === "date" || yt.kind === "bool" || isRefCounted(yt);
 }
 
@@ -704,15 +709,14 @@ export function lowerForAwaitGenerator(
 
 /** Statement-position `yield* e;` — the forwarding loop:
  *
- *   { const %dele = <e>; let %dr = %dele.next();
- *     while (!%dr.done) { %dr = %dele.next(<yield %dr.value>); } }
+ *   { const %dele = <e>; let %dr = delegate(%dele);
+ *     while (!%dr.done) { %dr = delegate(%dele, <yield %dr.value>); } }
  *
  * The inner yield value re-yields out of the OUTER generator (coerced
- * across the channels); the consumer's `.next(v)` argument forwards into
- * the delegate; the delegate's return value is this statement's dropped
- * result. Consumer `.return()`/`.throw()` while suspended here unwinds
- * the OUTER generator without forwarding to the delegate (numbered
- * divergence). Null when this is not a yield* statement. */
+ * across the channels); the consumer's `.next(v)`, `.return(v)`, and
+ * `.throw(e)` forward into the delegate; the delegate's return value is
+ * this statement's dropped result. Null when this is not a yield*
+ * statement. */
 export function lowerYieldStarStatement(lowerer: Lowerer, expr: ts.Expression): IrStmt | null {
   if (!ts.isYieldExpression(expr) || expr.asteriskToken === undefined) return null;
   return { kind: "exprStmt", expr: lowerYieldStar(lowerer, expr), loc: locOf(expr) };
@@ -755,6 +759,7 @@ function lowerYieldStar(lowerer: Lowerer, expr: ts.YieldExpression): IrExpr {
     );
   }
   const dT = delegate.type;
+  if (dT.async) lowerer.unsupported("SC1071", expr, "'yield*' over an async generator");
   if (
     dT.nextT.kind !== "undefinedT" &&
     dT.nextT.kind !== "dyn" &&
@@ -772,9 +777,76 @@ function lowerYieldStar(lowerer: Lowerer, expr: ts.YieldExpression): IrExpr {
   lowerer.scopes.push(new Map());
   try {
     const d = lowerer.declareHiddenLocal("%dele", dT);
+    const dRef = (): IrExpr => ({ kind: "varRef", localId: d.id, type: dT, loc });
+    // The re-yield: the delegate's value coerced into the outer yield
+    // channel. The delegate resume that follows passes the consumer's
+    // next(v), return(v), or throw(e) on to the delegate.
+    const reYield = (value: IrExpr): IrExpr => ({
+      kind: "yieldExpr",
+      value:
+        typeEquals(dT.yieldT, gen.yieldT) && typeEquals(value.type, gen.yieldT)
+          ? value
+          : lowerer.coerceInto(expr.expression!, value, gen.yieldT),
+      delegated: true,
+      type: VOID,
+      loc,
+    });
+    const drive = (arg: IrExpr | null, type: IrType): IrExpr => ({
+      kind: "genResume",
+      mode: "delegate",
+      gen: dRef(),
+      arg,
+      type,
+      loc,
+    });
+    const retT = dT.retT;
+    if (
+      hasOutSlot(dT.yieldT) &&
+      (retT.kind === "void" || (hasOutSlot(retT) && retT.kind !== "union" && retT.kind !== "dyn"))
+    ) {
+      // Drive the delegate record-free, re-yielding each value as it is
+      // taken; a valued completion moves out of the delegate last.
+      const done = lowerer.declareHiddenLocal("%ddone", BOOL);
+      done.mutable = true;
+      const result: IrExpr =
+        retT.kind === "void"
+          ? channelUndefined(lowerer, DYN, loc)!
+          : { kind: "genResume", mode: "value", gen: dRef(), arg: null, type: retT, loc };
+      return {
+        kind: "seqExpr",
+        result,
+        type: result.type,
+        loc,
+        stmts: [
+          { kind: "varDecl", localId: d.id, init: delegate, loc },
+          { kind: "varDecl", localId: done.id, init: drive(null, BOOL), loc },
+          {
+            kind: "while",
+            cond: {
+              kind: "unary",
+              op: "!",
+              operand: { kind: "varRef", localId: done.id, type: BOOL, loc },
+              type: BOOL,
+              loc,
+            },
+            body: [
+              {
+                kind: "assign",
+                localId: done.id,
+                value: drive(
+                  reYield(genValue({ kind: "varRef", localId: d.id, type: dT, loc }, loc)),
+                  BOOL,
+                ),
+                loc,
+              },
+            ],
+            loc,
+          },
+        ],
+      };
+    }
     const r = lowerer.declareHiddenLocal("%dres", recT);
     r.mutable = true;
-    const dRef = (): IrExpr => ({ kind: "varRef", localId: d.id, type: dT, loc });
     const rRef = (): IrExpr => ({ kind: "varRef", localId: r.id, type: recT, loc });
     const valueRead: IrExpr = {
       kind: "recordGet",
@@ -792,84 +864,6 @@ function lowerYieldStar(lowerer: Lowerer, expr: ts.YieldExpression): IrExpr {
         `'yield*' over a generator yielding '${lowerer.fmt(dT.yieldT)}' (no per-element extraction exists)`,
       );
     }
-    // The re-yield: the delegate's value coerced into the outer yield
-    // channel; the resumed value (outer nextT) forwards into the
-    // delegate's next slot (or drops on an undefined channel).
-    const reYield: IrExpr = {
-      kind: "yieldExpr",
-      value:
-        typeEquals(dT.yieldT, gen.yieldT) && typeEquals(inner.type, gen.yieldT)
-          ? inner
-          : lowerer.coerceInto(expr.expression!, inner, gen.yieldT),
-      type: gen.nextT.kind === "undefinedT" ? VOID : gen.nextT,
-      loc,
-    };
-    let forwarded: IrExpr | null;
-    if (dT.nextT.kind === "undefinedT") {
-      forwarded = null; // reYield still evaluates as the arg? no — see below
-    } else if (reYield.type.kind === "void") {
-      forwarded = null;
-    } else if (dT.nextT.kind === "dyn" && reYield.type.kind !== "dyn") {
-      forwarded = { kind: "dynFrom", value: reYield, type: DYN, loc };
-    } else {
-      forwarded = reYield;
-    }
-    const resumeArg: IrExpr | null = forwarded;
-    if (resumeArg === null && dT.retT.kind === "void" && stepDrivable(dT)) {
-      // Nothing forwards and the completion is undefined: drive the
-      // delegate record-free, re-yielding each value as it is taken.
-      const taken = genValue({ kind: "varRef", localId: d.id, type: dT, loc }, loc);
-      const stepYield: IrExpr = {
-        ...reYield,
-        value: typeEquals(dT.yieldT, gen.yieldT)
-          ? taken
-          : lowerer.coerceInto(expr.expression!, taken, gen.yieldT),
-      };
-      return {
-        kind: "seqExpr",
-        result: channelUndefined(lowerer, DYN, loc)!,
-        type: DYN,
-        loc,
-        stmts: [
-          { kind: "varDecl", localId: d.id, init: delegate, loc },
-          {
-            kind: "while",
-            cond: { kind: "unary", op: "!", operand: genStep(dRef(), loc), type: BOOL, loc },
-            body: [{ kind: "exprStmt", expr: stepYield, loc }],
-            loc,
-          },
-        ],
-      };
-    }
-    // When the yield's value cannot ride the resume argument (undefined
-    // channels), it must still EXECUTE before the delegate resumes: the
-    // loop body becomes [exprStmt(yield), assign(next)].
-    const loopBody: IrStmt[] =
-      resumeArg === null
-        ? [
-            { kind: "exprStmt", expr: reYield, loc } satisfies IrStmt,
-            {
-              kind: "assign",
-              localId: r.id,
-              value: { kind: "genResume", mode: "next", gen: dRef(), arg: null, type: recT, loc },
-              loc,
-            },
-          ]
-        : [
-            {
-              kind: "assign",
-              localId: r.id,
-              value: {
-                kind: "genResume",
-                mode: "next",
-                gen: dRef(),
-                arg: resumeArg,
-                type: recT,
-                loc,
-              },
-              loc,
-            },
-          ];
     const completed =
       dT.retT.kind === "void"
         ? channelUndefined(lowerer, DYN, loc)!
@@ -878,19 +872,48 @@ function lowerYieldStar(lowerer: Lowerer, expr: ts.YieldExpression): IrExpr {
       lowerer.unsupported("SC1071", expr, "a delegate whose return channel has no extraction");
     const result =
       dT.retT.kind === "void" ? completed : lowerer.coerceInto(expr, completed, dT.retT);
-    return {
+    // A delegate that was already finished, or that finished a forwarded
+    // return() without a value, completes with undefined.
+    const undefinedTag = valueT.kind === "union" ? lowerer.armTag(valueT.unionId, UNDEFINED_T) : -1;
+    const completion: IrStmt[] =
+      undefinedTag >= 0 &&
+      dT.retT.kind !== "void" &&
+      dT.retT.kind !== "undefinedT" &&
+      !(dT.retT.kind === "union" && lowerer.armTag(dT.retT.unionId, UNDEFINED_T) >= 0)
+        ? [
+            {
+              kind: "if",
+              cond: {
+                kind: "unionIsTag",
+                unionId: (valueT as IrType & { kind: "union" }).unionId,
+                tag: undefinedTag,
+                negated: false,
+                value: valueRead,
+                type: BOOL,
+                loc,
+              },
+              then: [
+                {
+                  kind: "runtimeFence",
+                  code: "SC1071",
+                  message:
+                    "yield* of a generator that completes with undefined through a return type that cannot hold it is not supported",
+                  loc,
+                },
+              ],
+              else_: null,
+              loc,
+            },
+          ]
+        : [];
+    const sequence: IrExpr & { kind: "seqExpr" } = {
       kind: "seqExpr",
       result,
       type: result.type,
       loc,
       stmts: [
         { kind: "varDecl", localId: d.id, init: delegate, loc },
-        {
-          kind: "varDecl",
-          localId: r.id,
-          init: { kind: "genResume", mode: "next", gen: dRef(), arg: null, type: recT, loc },
-          loc,
-        },
+        { kind: "varDecl", localId: r.id, init: drive(null, recT), loc },
         {
           kind: "while",
           cond: {
@@ -907,11 +930,15 @@ function lowerYieldStar(lowerer: Lowerer, expr: ts.YieldExpression): IrExpr {
             type: BOOL,
             loc,
           },
-          body: loopBody,
+          body: [{ kind: "assign", localId: r.id, value: drive(reYield(inner), recT), loc }],
           loc,
         },
+        ...completion,
       ],
     };
+    // The fence may leave the sequence (the validator admits it there).
+    if (completion.length > 0) sequence.generatorDelegate = true;
+    return sequence;
   } finally {
     lowerer.scopes.pop();
   }

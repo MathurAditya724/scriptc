@@ -840,7 +840,7 @@ export class LlEmitter {
   private tryStack: { label: string; used: boolean; frameDepth: number; scopeDepth: number }[] = [];
   /** Return type of the function being emitted — the unwind path returns
    * a dummy of this type (never read: callers check the flag first). */
-  private currentReturnType: IrType = VOID;
+  currentReturnType: IrType = VOID;
   /** The current body returns its number result as i32. */
   private currentInt32Result = false;
   /** Active only while emitting a body lowered with LLVM's
