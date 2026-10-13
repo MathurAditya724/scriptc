@@ -126,7 +126,7 @@ static void scr_enable_utf8_console_output(void) {
 }
 #endif
 
-void scr_runtime_abi_v15(void) {}
+void scr_runtime_abi_v16(void) {}
 
 void scr_init(void) {
 #ifdef SCR_WORKERS

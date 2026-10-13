@@ -729,6 +729,14 @@ export class ReferenceWrites {
     return this.union(targets.map((t) => this.summary(t)));
   }
 
+  /** Writes of the node's own operation, without its operands: for a
+   * call, what its possible targets may write. */
+  ownWrites(e: IrExpr): Writes {
+    const parts: Writes[] = [];
+    this.nodeWrites(e, this.querySink(parts), this.currentBoxed, this.current, new Set());
+    return this.union(parts);
+  }
+
   /** Writes of evaluating an expression, with its operands. */
   expr(e: IrExpr): Writes {
     const known = this.exprCache.get(e);

@@ -252,10 +252,20 @@ export function analyzeCallLifetimes(
       ),
     );
     if (fn.captures !== undefined) {
-      // A closure body is invoked through its environment trampoline, so
-      // its parameters keep the owned convention and no direct call can
-      // forward to them. Its own unboxed locals follow the same rules as
-      // any synchronous body; captured cells are boxed and marked invalid.
+      // A closure body is invoked through its environment: its owned entry
+      // adapts the closure ABI to a body that borrows every unchanged
+      // reference parameter, and callers that know the body (or the
+      // runtime, through the closure's borrowing entry) may lend instead.
+      // No direct call can forward to these parameters. Its own unboxed
+      // locals follow the same rules as any synchronous body; captured
+      // cells are boxed and marked invalid.
+      const borrowed = new Set<number>();
+      fn.params.forEach((param, index) => {
+        const local = locals.get(param.localId);
+        if (local && isRefCounted(param.type) && stable(local) && !uses.declarations.has(local.id))
+          borrowed.add(index);
+      });
+      if (borrowed.size > 0) result.borrowed.set(fn.name, borrowed);
       continue;
     }
     const borrowed = new Set<number>(walkParameters.get(fn.name));

@@ -55,6 +55,12 @@ export function mangleWrapper(fnName: string): string {
   return `sc_w_${sanitize(fnName)}`;
 }
 
+/** Env-signature wrapper of a declared function's borrowing body: the
+ * closure entry that lends every reference argument. */
+export function mangleBorrowingWrapper(fnName: string): string {
+  return `sc_wb_${sanitize(fnName)}`;
+}
+
 /** The interned (immortal) closure value of a declared function. */
 export function mangleFnClosure(fnName: string): string {
   return `sc_fc_${sanitize(fnName)}`;
