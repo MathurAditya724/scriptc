@@ -168,10 +168,15 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   expect(macos.env["SCRIPTC_CI_SUITE"]).toBe(
     "${{ github.event_name == 'pull_request' && 'darwin' || 'full' }}",
   );
-  for (const job of [linux, macos]) {
-    expect(job.strategy.matrix.flavor).toEqual(["plain", "san"]);
-    expect(job.steps.at(-1)!.run).toBe("node scripts/ci-test.mjs");
-  }
+  // Expected aborts must not stream cores through Ubuntu's piped handler.
+  const coreStep = linux.steps.findIndex(
+    (step) => step.run === "sudo sysctl -w kernel.core_pattern=core",
+  );
+  expect(coreStep).toBeGreaterThan(-1);
+  expect(coreStep).toBeLessThan(linux.steps.length - 1);
+  expect(linux.steps.at(-1)!.run).toBe("ulimit -c 0\nnode scripts/ci-test.mjs\n");
+  expect(macos.steps.at(-1)!.run).toBe("node scripts/ci-test.mjs");
+  for (const job of [linux, macos]) expect(job.strategy.matrix.flavor).toEqual(["plain", "san"]);
 });
 
 test("CI rejects malformed scheduling inputs", () => {

@@ -150,11 +150,20 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
       - run: pnpm build
+      # Ubuntu pipes core dumps to apport, and RLIMIT_CORE does not limit a
+      # piped dump. The kernel then streams every page of the runtime's
+      # reserved allocator address space through the pipe, so each expected
+      # abort outlives its test timeout. Write cores to files instead, where
+      # the limit below applies.
+      - name: Disable piped core dumps
+        run: sudo sysctl -w kernel.core_pattern=core
       # Start the corpus immediately beside a serial side queue. One shared
       # worker budget covers both processes; file and case shard axes stay
       # separate so every fixture still runs exactly once in each lane.
       - name: Tests (corpus and integration suites)
-        run: node scripts/ci-test.mjs
+        run: |
+          ulimit -c 0
+          node scripts/ci-test.mjs
 
   tests_macos:
     needs: [validation_scope, native_macos]
