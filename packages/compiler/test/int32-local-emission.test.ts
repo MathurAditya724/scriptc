@@ -78,10 +78,13 @@ function contract(seed: Int32, steps: Int32): Int32 {
   for (let i: Int32 = 0; i < steps; i = (i + 1) | 0) acc = (Math.imul(acc, 3) + i) | 0;
   return acc;
 }
+function fibo(n: number): number {
+  return n < 2 ? n : fibo(n - 1) + fibo(n - 2);
+}
 const bytes = new Uint8Array([1, 2, 3, 250]);
 console.log(rsync(bytes), mix("abcd"), counters(), unsigned(new Uint32Array([4294967295, 7])));
 console.log(fraction(5), mixed(3), captured(["ab", "c"]), capturedParam(3)());
-console.log([...frames(["ab", "cd"])].join(" "), contract(7, 20));
+console.log([...frames(["ab", "cd"])].join(" "), contract(7, 20), fibo(10));
 suspended(["ab"]).then((t) => console.log(t));
 `;
 
@@ -208,6 +211,17 @@ test("int32-closed locals are stored as i32 and keep doubles only for floating c
       expect(contract).toMatch(/alloca i32 ; seed\n/);
       expect(contract).toMatch(/ = fptosi double %p_\w+ to i32\n/);
       expect(carriers(contract)).toEqual([]);
+
+      // A parameter the body never writes reads as its incoming double:
+      // the base case returns it without converting the i32 back.
+      const fibo = live(body(ll, "fibo"));
+      expect(fibo).toMatch(/alloca i32 ; n\n/);
+      const nReads = new Set(
+        [...fibo.matchAll(/^\s*(%[\w.]+) = load i32, ptr %sc_l_n_\w+$/gm)].map((m) => m[1]),
+      );
+      const widened = [...fibo.matchAll(/^\s*%[\w.]+ = sitofp i32 (%[\w.]+) to double$/gm)];
+      expect(widened.filter((m) => nReads.has(m[1]))).toEqual([]);
+      expect(fibo).toMatch(/store double %p_sc_l_n_\w+, ptr /);
     }
 
     // Debug builds keep every number local a double for the variable view.

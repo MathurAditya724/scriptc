@@ -1648,12 +1648,27 @@ static inline void scr_arr_cut(ScrArr *a, size_t index) {
   if (a->filled > index) a->filled = (uint32_t)index;
 }
 
+/* The first index in [f, end) whose state is not a present value (or end).
+ * Compares eight states per step: bulk copies (slice, concat, spread) end
+ * with this scan over the whole copied range. */
+static inline size_t scr_arr_value_run(const uint8_t *present, size_t f, size_t end) {
+  const uint64_t values = 0x0101010101010101ull * SCR_ARR_VALUE;
+  while (end - f >= 8) {
+    uint64_t word;
+    memcpy(&word, present + f, sizeof word);
+    if (word != values) break;
+    f += 8;
+  }
+  while (f < end && present[f] == SCR_ARR_VALUE) f++;
+  return f;
+}
+
 /* Extend the hole-free prefix over populated dense states. Starts at the
  * current bound, so after an append it costs only the appended range. */
 static inline void scr_arr_refill(ScrArr *a) {
   size_t end = a->len < a->cap ? a->len : a->cap;
   size_t f = a->filled;
-  while (f < end && a->present[f] == SCR_ARR_VALUE) f++;
+  if (f < end) f = scr_arr_value_run(a->present, f, end);
   a->filled = (uint32_t)f;
 }
 

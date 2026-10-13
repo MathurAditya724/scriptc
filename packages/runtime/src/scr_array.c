@@ -531,7 +531,7 @@ static void scr_arr_refill_to(ScrArr *a, size_t limit) {
   size_t end = a->len < a->cap ? a->len : a->cap;
   if (limit < end) end = limit;
   size_t f = a->filled;
-  while (f < end && a->present[f] == SCR_ARR_VALUE) f++;
+  if (f < end) f = scr_arr_value_run(a->present, f, end);
   a->filled = (uint32_t)f;
 }
 
@@ -2032,6 +2032,9 @@ ScrArr *scr_arr_slice(ScrArr *a, double start, double end) {
   out->len = n;
   if (to <= a->cap) {
     scr_arr_copy_dense(out, 0, a, from, n, false, false);
+    /* States copied from below the source's bound are present values. */
+    if (n > 0 && from < a->filled)
+      out->filled = (uint32_t)((to < a->filled ? to : a->filled) - from);
     scr_arr_refill(out);
     return out;
   }

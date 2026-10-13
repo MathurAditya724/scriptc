@@ -196,9 +196,20 @@ test.each([32, 64] as const)(
     expect(writes[0]).toMatch(/store double .*, ptr /);
     // The replaced string below the bound is released after the store.
     expect(writes[1]).toMatch(/store ptr .*\n[^]*call void @scr_str_release\(/);
-    // A state-checked store at the bound extends it.
+    // A state-checked store at the bound extends it to the index plus one,
+    // not to the loaded bound plus one (no store-to-load chain in a loop).
     expect(fn).toMatch(new RegExp(`icmp eq ${size} .*`));
-    expect(fn).toMatch(/store i32 .*, ptr /);
+    const bumps = blocks("arr\\.set\\.bump");
+    expect(bumps).toHaveLength(2);
+    const loadedBounds = new Set(
+      [...fn.matchAll(/^\s*(%[\w.]+) = load i32, ptr /gm)].map((m) => m[1]),
+    );
+    for (const block of bumps) {
+      const next = block.match(/= add i32 (%[\w.]+), 1\n/);
+      expect(next).not.toBeNull();
+      expect(loadedBounds.has(next![1]!)).toBe(false);
+      expect(block).toMatch(/store i32 .*, ptr /);
+    }
   },
 );
 

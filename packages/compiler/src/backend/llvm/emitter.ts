@@ -8510,11 +8510,15 @@ export class LlEmitter {
   }
 
   /** The number of an int32-stored local's i32, with the i32 as its
-   * integer and ToUint32 forms. */
+   * integer and ToUint32 forms. A parameter the body never writes reads
+   * as its incoming double, which is the same number. */
   int32LocalValue(localId: string, bits: string, type: IrType): LlValue {
     const local = this.int32Locals.get(localId)!;
-    const number = this.B.tmp();
-    this.B.line(`${number} = ${local.signed ? "sitofp" : "uitofp"} i32 ${bits} to double`);
+    let number = `%p_${mangleLocal(localId)}`;
+    if (!local.incoming) {
+      number = this.B.tmp();
+      this.B.line(`${number} = ${local.signed ? "sitofp" : "uitofp"} i32 ${bits} to double`);
+    }
     return {
       name: number,
       type,
