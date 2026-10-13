@@ -2495,6 +2495,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * unwind abandons — the value never exists). */
   "global.undefRead": { argTypes: [STRING], result: VOID },
   "console.native": { argTypes: [], result: DYN },
+  /** node:console Console instances (scr_console_native.c): new mints the
+   * handle over the stdout/stderr fds (1/2; 0 = a stream binds next) and
+   * the ignoreErrors flag; bind attaches a borrowed writable stream to
+   * target 0 (stdout) or 1 (stderr); write prints `text\n` to the
+   * selected target of an instance or the global console handle. */
+  "console.new": { argTypes: [F64, F64, BOOL], result: DYN },
+  "console.bind": { argTypes: [DYN, F64, null], result: VOID },
+  "console.write": { argTypes: [DYN, STRING, BOOL], result: VOID },
   /** A native reference to the global object; known names retain value fences. */
   "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
   // `X.name` through a class value: the arg is a program-dependent

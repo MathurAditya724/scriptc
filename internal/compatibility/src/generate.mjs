@@ -645,6 +645,9 @@ function publicDetail(tier) {
     ) {
       return "Native codec values support UTF-8 encoding and whole-buffer decoding with recognized literal labels and default options.";
     }
+    if (source === "compiler-feature:console.Console") {
+      return "Instances over process.stdout, process.stderr, or stream writables support log, info, debug, error, and warn with Node's ignoreErrors handling; other options and methods remain refused.";
+    }
     if (tier.status === "not-applicable")
       return "Node configuration or documentation that does not map to a compiled program API.";
     if (tier.status === "not-implemented")

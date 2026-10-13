@@ -403,6 +403,7 @@ import {
   lowerProcessStreamProperty,
 } from "./builtins/process.js";
 import { isConsoleLog, consoleCallMember } from "./builtins/console.js";
+import { lowerConsoleNew } from "./lower-console.js";
 import { lowerNumberStaticCall, lowerNumberStaticProperty } from "./builtins/numbers.js";
 import { lowerDateCall } from "./builtins/dates.js";
 import {
@@ -10535,7 +10536,8 @@ export class Lowerer {
       lowerAbortControllerNew(this, expr) ??
       lowerFetchWebNew(this, expr) ??
       lowerResponseNew(this, expr) ??
-      lowerStaticReadableStreamNew(this, expr);
+      lowerStaticReadableStreamNew(this, expr) ??
+      lowerConsoleNew(this, expr);
     return (
       builtin ?? this.withRuntimeOptionalClassValue(expr.expression, () => lowerNew(this, expr))
     );

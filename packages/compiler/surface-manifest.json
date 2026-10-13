@@ -499,14 +499,6 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
-      "id": "node-builtin.console.Console",
-      "kind": "node-builtin",
-      "name": "console.Console",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "custom Console instances are not supported yet; direct node:console log/info/debug/error/warn calls use the process output streams"
-    },
-    {
       "id": "node-builtin.crypto",
       "kind": "node-builtin",
       "name": "crypto",

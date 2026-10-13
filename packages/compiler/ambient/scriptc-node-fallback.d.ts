@@ -113,10 +113,13 @@ declare const console: {
   timeLog(label?: string, ...data: unknown[]): void;
   timeStamp(label?: string): void;
   trace(...data: unknown[]): void;
+  Console: typeof import("node:console").Console;
 };
 
-// node:console exports the global instance's bound methods. The constructor
-// and remaining methods are declared so unsupported uses reach named fences.
+// node:console exports the global instance's bound methods and the Console
+// constructor: instances over process.stdout/process.stderr or node:stream
+// writables lower their log/info/debug/error/warn members; the remaining
+// methods are declared so unsupported uses reach named fences.
 type ScriptcConsoleMethods = typeof console;
 declare module "node:console" {
   export class Console {

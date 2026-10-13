@@ -100,7 +100,6 @@ import {
   classSymbolKeyOfSymbol,
   symbolFieldDisplayName,
 } from "./symbol-fields.js";
-import { builtinFenceHintOf } from "./surfaces.js";
 import { lowerHttpAgentNew, lowerHttpServerNew } from "./lower-server.js";
 import {
   ambientNsRootOf,
@@ -8083,15 +8082,6 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     });
     const result: IrExpr = { kind: "libCall", fn: "intl.segmenterNew", args: [], type: DYN, loc };
     return stmts.length ? { kind: "seqExpr", stmts, result, type: DYN, loc } : result;
-  }
-  const consoleCtor = ts.isIdentifier(expr.expression)
-    ? lowerer.builtinImportOf(expr.expression)
-    : ts.isPropertyAccessExpression(expr.expression) &&
-        lowerer.builtinNamespaceModuleOf(expr.expression.expression) === "console"
-      ? { module: "console", member: expr.expression.name.text }
-      : null;
-  if (consoleCtor?.module === "console" && consoleCtor.member === "Console") {
-    lowerer.noLowering("new console.Console", expr, builtinFenceHintOf("console", "Console"));
   }
   // A package declaration without a compiled constructor cannot provide
   // a runtime value. Report the package at the construction site.

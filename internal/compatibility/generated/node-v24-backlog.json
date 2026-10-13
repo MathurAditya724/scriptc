@@ -7,9 +7,9 @@
     "tierItemCount": 3288,
     "tiers": {
       "static": {
-        "replace-refusal": 42,
+        "replace-refusal": 41,
         "verify-gap": 2417,
-        "audit-partial": 747,
+        "audit-partial": 748,
         "classify": 2,
         "implement": 80
       }
@@ -5897,12 +5897,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.console.Console",
-          "tests": []
+          "source": "compiler-feature:console.Console",
+          "tests": [
+            "tests/corpus/4900-console-instances.ts",
+            "tests/corpus/4901-console-instance-errors.ts"
+          ]
         }
       }
     },

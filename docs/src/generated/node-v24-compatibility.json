@@ -194,8 +194,8 @@
       "apiEntries": 24,
       "static": {
         "supported": 0,
-        "partial": 6,
-        "refused": 1,
+        "partial": 7,
+        "refused": 0,
         "not-implemented": 17,
         "by-design": 0,
         "unreviewed": 0,
@@ -10907,9 +10907,9 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "detail": "Explicitly rejected by a named compiler diagnostic.",
-        "verification": "explicit-refusal"
+        "status": "partial",
+        "detail": "Instances over process.stdout, process.stderr, or stream writables support log, info, debug, error, and warn with Node's ignoreErrors handling; other options and methods remain refused.",
+        "verification": "test-backed"
       }
     },
     {

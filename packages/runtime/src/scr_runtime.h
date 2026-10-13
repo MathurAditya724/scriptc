@@ -4416,6 +4416,7 @@ typedef enum {
   SCR_DYNH_WORKER,
   SCR_DYNH_MESSAGE_PORT,
   SCR_DYNH_SHARED_ARRAY_BUFFER,
+  SCR_DYNH_CONSOLE_INSTANCE, /* node:console Console instance */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
@@ -5109,6 +5110,29 @@ ScrDyn *scr_process_builtin_unsupported(ScrStr *id, ScrStr *member);
 ScrDyn *scr_global_native(ScrArr *known);
 ScrDyn *scr_global_native_init(ScrArr *known, ScrDyn *(*console_get)(void));
 ScrDyn *scr_console_native(void);
+/* node:console Console instances: a native handle over the stdout/stderr
+ * targets — process stdio (fd 1/2) or a writable stream bound by
+ * scr_console_bind (scr_stream.c, which also installs the stream writer so
+ * console-only programs never link the stream unit) — and the
+ * ignoreErrors flag. new answers a +1 handle with both targets set to
+ * the given fds (0 = a stream is bound next); bind retains the stream.
+ * write prints `text\n` to the selected target: a stream receives ONE
+ * write, wrapped in Node's ignoreErrors handling (a noop 'error' listener
+ * around the call, a completion handler that swallows the write's own
+ * error, synchronous throws discarded); the global console handle writes
+ * the process streams like console.log/error. */
+typedef struct ScrConsoleInst {
+  size_t rc;
+  double fd[2];                /* 1/2 process stdio targets; 0 when stream[i] is bound */
+  ScrStream *stream[2];        /* owned */
+  ScrClosure *on_written[2];   /* owned: the per-stream completion handlers */
+  bool ignore_errors;
+  void (*stream_write)(struct ScrConsoleInst *, int which, ScrStr *line);
+  void (*stream_drop)(struct ScrConsoleInst *); /* releases the bound streams */
+} ScrConsoleInst;
+ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors);
+void scr_console_bind(ScrDyn *console, double which, ScrStream *stream);
+void scr_console_inst_write(ScrDyn *console, ScrStr *text, bool to_stderr);
 ScrDyn *scr_process_stdio(double fd);
 bool scr_dyn_process_stdio_is(const ScrDyn *value);
 double scr_dyn_process_stdio_fd(const ScrDyn *value, const ScrDynPath *path);

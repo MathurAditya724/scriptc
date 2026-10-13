@@ -129,6 +129,7 @@ import {
 import { classCallbackCall, isClassCallback } from "./class-callbacks.js";
 import { emitterRooted, lowerEmitterMethodCall } from "./lower-event-emitter.js";
 import { lowerConsoleInspectArg, lowerFormatCall } from "./lower-inspect.js";
+import { lowerConsoleInstanceCall } from "./lower-console.js";
 import {
   STREAM_API_MEMBERS,
   lowerStreamMethodCall,
@@ -490,6 +491,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       loc,
     });
   }
+
+  const consoleInstanceCall = lowerConsoleInstanceCall(lowerer, expr, loc);
+  if (consoleInstanceCall) return consoleInstanceCall;
 
   if (
     ts.isPropertyAccessExpression(expr.expression) &&

@@ -136,7 +136,8 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn === "stream.prop" ||
         fn === "stream.errored" ||
         fn === "sp.finished" ||
-        fn === "sp.pipeline"
+        fn === "sp.pipeline" ||
+        fn === "console.bind"
       )
         features.stream = true;
       if (fn.startsWith("zlib.")) features.zlib = true;
@@ -156,7 +157,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       if (DYN_ASYNC_LIB_FNS.has(fn)) features.dynAsync = true;
       if (
         fn.startsWith("insp.") ||
-        fn === "console.native" ||
+        fn.startsWith("console.") ||
         fn === "global.native" ||
         fn === "util.styleText"
       )
