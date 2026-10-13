@@ -189,9 +189,9 @@ typedef struct {
   size_t trigger;
   size_t scheduled_mature_age;
   size_t xg_freed;
+  size_t mature_dead;
   struct ScrCycKind *kinds;
   size_t kinds_cap;
-  unsigned bypass_tick;
 } ScrCycThread;
 static _Thread_local ScrCycThread scr_cyc_thread = {.gen_limit = SCR_CYC_OLD};
 #define scr_destroy_depth (scr_cyc_thread.destroy_depth)
@@ -215,9 +215,9 @@ static _Thread_local ScrCycThread scr_cyc_thread = {.gen_limit = SCR_CYC_OLD};
 #define scr_cyc_trigger (scr_cyc_thread.trigger)
 #define scr_cyc_scheduled_mature_age (scr_cyc_thread.scheduled_mature_age)
 #define scr_xg_freed (scr_cyc_thread.xg_freed)
+#define scr_cyc_mature_dead (scr_cyc_thread.mature_dead)
 #define scr_cyc_kinds (scr_cyc_thread.kinds)
 #define scr_cyc_kinds_cap (scr_cyc_thread.kinds_cap)
-#define scr_cyc_bypass_tick (scr_cyc_thread.bypass_tick)
 #endif
 #ifndef SCR_WORKERS
 static SCR_TL unsigned scr_destroy_depth;
@@ -399,6 +399,11 @@ static unsigned scr_cyc_growth_max_shift(void) {
 static SCR_TL unsigned scr_cyc_backlog_shift[SCR_CYC_NGENS];
 #endif
 
+/* Mature objects in the last full pass's dead set (scr_cyc_adapt_growth). */
+#ifndef SCR_WORKERS
+static SCR_TL size_t scr_cyc_mature_dead = 0;
+#endif
+
 static size_t scr_cyc_nursery_threshold(void) {
   static SCR_TL size_t cached = 0;
   if (cached == 0) {
@@ -484,9 +489,13 @@ static size_t scr_cyc_backlog_threshold(unsigned gen) {
 /* Adapt a level's growth fraction to the yield of a growth-triggered pass at
  * that level: `reclaimed` objects found against `growth` objects of heap
  * growth since the previous pass there. Only full passes reclaim the old
- * generation, so a full pass counts old objects alone (younger garbage is the
- * mature level's to find, without walking the old heap); a mature pass counts
- * everything it freed.
+ * generation, so a full pass counts old objects, plus the mature objects of
+ * its dead set (scr_cyc_mature_dead): a dead structure whose members are
+ * partly old and partly mature, which is what a type that stops bypassing
+ * the mature level leaves behind, is invisible to mature passes, so a full
+ * pass is the only one that finds any of it. Garbage that has not survived
+ * a pass is the nursery's to find, and a mature pass counts everything it
+ * freed.
  *
  * The fraction is sized so the garbage a level lets float stays near what the
  * base schedule allows. A pass whose yield reaches 1/GROWTH_DIV of the growth
@@ -546,6 +555,7 @@ static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_grow
   size_t growth = scr_cyc_live > base ? scr_cyc_live - base : 0;
   size_t old_freed_before = scr_cyc_old_freed;
   size_t freed = scr_cyc_pass(gen);
+  size_t old_reclaimed = scr_cyc_old_freed - old_freed_before + scr_cyc_mature_dead;
   if (gen == SCR_CYC_NURSERY) return;
   if (scr_cands.n != 0) {
     if (freed * SCR_CYC_GROWTH_DIV >= scr_cands.n)
@@ -555,7 +565,7 @@ static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_grow
   }
   if (by_growth)
     scr_cyc_adapt_growth(gen, growth,
-                         gen == SCR_CYC_OLD ? scr_cyc_old_freed - old_freed_before : freed);
+                         gen == SCR_CYC_OLD ? old_reclaimed : freed);
 }
 
 /* Cold half of the release path: pick the level and collect. It runs once
@@ -615,9 +625,19 @@ void scr_cyc_collect_scheduled(void) {
  * it past the level first, and so does a nursery pass that re-buffers a
  * survivor into a level the type bypasses: the candidate waits in an older
  * buffer, and passes of the bypassed level stop at it as they stop at any
- * older object. One in BYPASS_SAMPLE such candidates stays put, so a
- * bypassed type keeps being measured, and a type whose objects start dying
- * at that level again is walked there again after one window.
+ * older object.
+ *
+ * A bypassing type is still measured, by probing: after BYPASS_PROBE
+ * windows' worth of candidates have gone past the level, the type is walked
+ * there again for a full window and judged afresh. Measuring a sample of
+ * candidates instead (some kept at the level while the rest go past it) is
+ * biased towards survival: a dead cycle of the type usually has several
+ * candidate members, and a sampled member is kept alive by the edges of its
+ * partners that went past, which a pass at the level does not trial-delete.
+ * A type that once bypassed would then keep bypassing while its cycles died
+ * young, and its garbage would wait for full passes over the whole heap. In
+ * a probe window every candidate of the type stays at the level, so the
+ * cycles it builds during the window die there.
  *
  * This changes only which generation an object is judged in. Any
  * generation assignment is sound (a restricted pass treats edges from older
@@ -631,13 +651,14 @@ void scr_cyc_collect_scheduled(void) {
  * complete a window and are collected exactly as before. */
 #define SCR_CYC_BYPASS_WINDOW 8192 /* walked candidates per decision */
 #define SCR_CYC_BYPASS_RATIO 128   /* bypass when freed < walked / RATIO */
-#define SCR_CYC_BYPASS_SAMPLE 16   /* a bypassed type still walks 1 in SAMPLE */
+#define SCR_CYC_BYPASS_PROBE 16    /* windows of bypassed candidates per probe */
 
 /* One level's statistics for a type. */
 typedef struct {
   uint32_t walked; /* candidates walked by passes at this level, this window */
   uint32_t freed;  /* objects freed by passes at this level, this window */
-  uint32_t bypass; /* the last window's decision */
+  uint32_t bypass; /* candidates to send past the level before the next
+                    * probe window; 0 while the type is walked there */
 } ScrCycLevelStat;
 typedef struct ScrCycKind {
   ScrCycLevelStat level[2]; /* SCR_CYC_NURSERY, SCR_CYC_MATURE */
@@ -646,7 +667,6 @@ typedef struct ScrCycKind {
 #ifndef SCR_WORKERS
 static SCR_TL ScrCycKind *scr_cyc_kinds;
 static SCR_TL size_t scr_cyc_kinds_cap;
-static SCR_TL unsigned scr_cyc_bypass_tick;
 #endif
 
 /* The statistics of `kind` (nonzero), growing the table to cover it. */
@@ -665,11 +685,15 @@ static inline ScrCycKind *scr_cyc_kind(uint32_t kind) {
 }
 
 /* Whether a candidate of this type at level `gen` (nursery or mature)
- * skips that level's passes (see above). */
+ * skips that level's passes (see above). The last candidate a bypass sends
+ * past the level opens a probe window, with fresh counts. */
 static inline bool scr_cyc_bypassed(const ScrCycType *type, unsigned gen) {
   uint32_t kind = type->kind;
-  return kind < scr_cyc_kinds_cap && scr_cyc_kinds[kind].level[gen].bypass
-         && ++scr_cyc_bypass_tick % SCR_CYC_BYPASS_SAMPLE != 0;
+  if (kind >= scr_cyc_kinds_cap) return false;
+  ScrCycLevelStat *k = &scr_cyc_kinds[kind].level[gen];
+  if (k->bypass == 0) return false;
+  if (--k->bypass == 0) k->walked = k->freed = 0;
+  return true;
 }
 
 /* The generation a release buffers an object into: its own, or past the
@@ -686,7 +710,9 @@ static inline void scr_cyc_walked(const ScrCycType *type, unsigned gen) {
   if (!type->kind) return;
   ScrCycLevelStat *k = &scr_cyc_kind(type->kind)->level[gen];
   if (++k->walked == SCR_CYC_BYPASS_WINDOW) {
-    k->bypass = k->freed * SCR_CYC_BYPASS_RATIO < SCR_CYC_BYPASS_WINDOW;
+    k->bypass = k->freed * SCR_CYC_BYPASS_RATIO < SCR_CYC_BYPASS_WINDOW
+                    ? SCR_CYC_BYPASS_WINDOW * SCR_CYC_BYPASS_PROBE
+                    : 0;
     k->walked = k->freed = 0;
   }
 }
@@ -889,12 +915,14 @@ static SCR_CYC_COMPACT void scr_xg_release(void *obj) {
  * many objects the pass freed. */
 static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit) {
   size_t dead = 0;
+  scr_cyc_mature_dead = 0;
   for (size_t i = 0; i < scr_white.n; i++) {
     void *obj = scr_white.v[i];
     ScrCycHdr *h = scr_cyc_hdr(obj);
     if (h->color != SCR_CYC_WHITE) continue;
     h->color = SCR_CYC_DOOMED;
     if (gen_limit < SCR_CYC_OLD) scr_cyc_freed(h->type, gen_limit);
+    else scr_cyc_mature_dead += h->gen == SCR_CYC_MATURE;
     scr_white.v[dead++] = obj;
   }
   scr_white.n = dead;
