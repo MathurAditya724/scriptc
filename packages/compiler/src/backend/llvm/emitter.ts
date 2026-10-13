@@ -95,6 +95,7 @@ import { RUNTIME_ABI_MARKER } from "../runtime-abi.js";
 import { computeMayThrow } from "../may-throw.js";
 import {
   mangleArgPack,
+  mangleAsyncAwaitCall,
   mangleAsyncSpawn,
   mangleBorrowedFunction,
   mangleClassObj,
@@ -659,6 +660,9 @@ export class LlEmitter {
   /** Method names with at least one may-throw implementation — the
    * virtualCall pending check's key. */
   readonly mayThrowMethods = new Set<string>();
+  /** Async functions awaited directly at some `await f(...)` site; each
+   * gets an await-call entry (emitAsyncAwaitCall). */
+  readonly awaitCallees = new Set<string>();
   /** setTimeout and friends appeared somewhere: main must run the event
    * loop even in programs with no async functions. */
   usesTimers = false;
@@ -2996,8 +3000,14 @@ export class LlEmitter {
     const definitions = [`%${pack} = type { ${fieldTys.join(", ") || "i8"} } ; ${fn.name} args`];
     const sizeOf = `ptrtoint (ptr getelementptr (%${pack}, ptr null, i32 1) to ${this.sizeType})`;
 
-    this.declare(`declare void @free(ptr)`);
-    this.declare(`declare ptr @malloc(${this.sizeType})`);
+    // Async argument packs live from the spawn to the trampoline's first
+    // instructions, so they take the runtime's small-block allocator.
+    // Generator packs keep malloc: the runtime frees never-started ones.
+    const smallPack = fn.generator === undefined;
+    const packAlloc = smallPack ? "scr_rt_calloc" : "malloc";
+    const packFree = smallPack ? "scr_rt_free" : "free";
+    this.declare(`declare void @${packFree}(ptr)`);
+    this.declare(`declare ptr @${packAlloc}(${this.sizeType})`);
 
     const tr: string[] = [
       `define internal void @${mangleTrampoline(fn.name)}(ptr %self, ptr %ap) ${FN_ATTRS} {`,
@@ -3011,7 +3021,7 @@ export class LlEmitter {
       );
       loads.push(`${ty} %a${i}`);
     });
-    tr.push(`  call void @free(ptr %ap)`);
+    tr.push(`  call void @${packFree}(ptr %ap)`);
     const ret = fn.returnType;
     const retTy = this.llType(ret);
     const bodyCall = `call ${retTy} @${mangleFunction(fn.name)}(${loads.join(", ")})`;
@@ -3022,7 +3032,7 @@ export class LlEmitter {
 
     const spawnParams = fieldTys.map((ty, i) => `${ty} %a${i}`);
     const argPackLines = [
-      `  %ap = call ptr @malloc(${this.sizeType} ${sizeOf})`,
+      `  %ap = call ptr @${packAlloc}(${this.sizeType} ${sizeOf})`,
       `  %isnull = icmp eq ptr %ap, null`,
       `  br i1 %isnull, label %oom, label %ok`,
       `oom:`,
@@ -3094,7 +3104,7 @@ export class LlEmitter {
     const eligible = new Set<string>();
     if (this.wasi || this.mod.workers === true) return eligible;
     const suspends =
-      /@scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_)/;
+      /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_)|sc_aw_)/;
     for (const decl of this.decls) if (/@scr_test_sub\b/.test(decl)) return eligible;
     for (const text of this.fnDefText.values()) if (/@scr_test_sub\b/.test(text)) return eligible;
     const byMangled = new Map<string, string>();
@@ -3180,6 +3190,118 @@ export class LlEmitter {
     return out;
   }
 
+  /** Whether `await f(...)` may enter f through its await-call entry. The
+   * entry's result is the awaited value of f's own body type; direct calls
+   * never carry a lifted environment. */
+  awaitCallEligible(fnName: string): boolean {
+    if (this.wasi || this.mod.workers === true) return false;
+    const fn = this.fnByName.get(fnName);
+    if (fn === undefined || fn.async !== true || fn.generator !== undefined) return false;
+    if (fn.captures !== undefined || fn.returnType.kind === "dyn") return false;
+    return fn.asyncCacheGlobal === undefined && fn.asyncCycleCacheGlobal === undefined;
+  }
+
+  /** The await-call entry of an async function (`sc_aw_*`): one direct
+   * `await f(...)` as a call returning the awaited value, so the call site
+   * needs no promise of its own. A fiberless body runs on the caller's
+   * stack as in its spawn wrapper; a clean result then takes the await's
+   * one microtask turn (scr_await_hop) and is returned without ever
+   * materializing the promise, which nothing else could observe. A throw
+   * builds the rejected promise exactly as the spawn wrapper would and
+   * awaits it, so the rejection reaches the awaiter on the same turn. Other
+   * bodies pack their arguments as the spawn wrapper does and enter
+   * scr_async_spawn_await_*, which parks the caller on the promise as soon
+   * as the body first suspends. */
+  private emitAsyncAwaitCall(fn: IrFunction, argPackLines: string[] | null): string[] {
+    const ret = fn.returnType;
+    const retTy = this.llType(ret);
+    const params = fn.params.map((p, i) => `${this.llType(p.type)} %a${i}`);
+    const awaitLine = (dest: string, promise: string): string => {
+      switch (ret.kind) {
+        case "void":
+          this.declare(`declare void @scr_await_void(ptr)`);
+          return `  call void @scr_await_void(ptr ${promise})`;
+        case "f64":
+        case "date":
+          this.declare(`declare double @scr_await_f64(ptr)`);
+          return `  ${dest} = call double @scr_await_f64(ptr ${promise})`;
+        case "bool":
+          this.declare(`declare zeroext i1 @scr_await_bool(ptr)`);
+          return `  ${dest} = call zeroext i1 @scr_await_bool(ptr ${promise})`;
+        case "string":
+          this.declare(`declare ptr @scr_await_str(ptr)`);
+          return `  ${dest} = call ptr @scr_await_str(ptr ${promise})`;
+        default:
+          this.declare(`declare ptr @scr_await_ref(ptr)`);
+          return `  ${dest} = call ptr @scr_await_ref(ptr ${promise})`;
+      }
+    };
+    const retLine = (v: string): string =>
+      retTy === "void" ? `  ret void` : `  ret ${retTy} ${v}`;
+    const head = `define internal ${retTy} @${mangleAsyncAwaitCall(fn.name)}(${params.join(", ")}) ${FN_ATTRS} { ; await ${fn.name}`;
+    const args = params.join(", ");
+    if (argPackLines !== null) {
+      const kind =
+        ret.kind === "void"
+          ? "void"
+          : ret.kind === "f64" || ret.kind === "date"
+            ? "f64"
+            : ret.kind === "bool"
+              ? "bool"
+              : ret.kind === "string"
+                ? "str"
+                : "ref";
+      const cret = kind === "bool" ? "zeroext i1" : retTy;
+      this.declare(`declare ${cret} @scr_async_spawn_await_${kind}(ptr, ptr)`);
+      this.needOom();
+      const call = `call ${cret} @scr_async_spawn_await_${kind}(ptr @${mangleTrampoline(fn.name)}, ptr %ap)`;
+      return [
+        head,
+        `entry:`,
+        ...argPackLines,
+        kind === "void" ? `  ${call}` : `  %v = ${call}`,
+        retLine("%v"),
+        `}`,
+        ``,
+      ];
+    }
+    this.declare(`declare void @scr_async_inline_enter(ptr)`);
+    this.declare(`declare void @scr_async_inline_exit(ptr)`);
+    this.declare(`declare void @scr_await_hop()`);
+    this.declare(`declare ptr @scr_promise_new()`);
+    this.declare(`declare void @scr_promise_reject_pending(ptr)`);
+    this.declare(`declare void @scr_promise_release(ptr)`);
+    const bodyCall = `call ${retTy} @${mangleFunction(fn.name)}(${args})`;
+    const out = [
+      head,
+      `entry:`,
+      `  %frame = alloca { ptr, ptr }`,
+      `  call void @scr_async_inline_enter(ptr %frame)`,
+      retTy === "void" ? `  ${bodyCall}` : `  %r = ${bodyCall}`,
+      ...this.pendingTestLines("%pend"),
+      `  call void @scr_async_inline_exit(ptr %frame)`,
+      `  br i1 %pend, label %thrown, label %clean`,
+      `clean:`,
+      `  call void @scr_await_hop()`,
+      retLine("%r"),
+      `thrown:`,
+    ];
+    if (ret.kind !== "void" && isRefCounted(ret)) {
+      // An escaping throw means %r is the never-read dummy (NULL).
+      out.push(`  call void ${releaseSym(this.shapeHost, ret)}(ptr %r)`);
+    }
+    out.push(
+      `  %p = call ptr @scr_promise_new()`,
+      `  call void @scr_promise_reject_pending(ptr %p)`,
+      awaitLine("%v", "%p"),
+      `  call void @scr_promise_release(ptr %p)`,
+      retLine("%v"),
+      `}`,
+      ``,
+    );
+    return out;
+  }
+
   /** Per-async-function machinery — async.ts's scaffolding, .ll
    * flavored: an argument-pack struct type, a fiber trampoline (unpacks,
    * frees the pack, runs the ordinary compiled body, settles the
@@ -3209,6 +3331,9 @@ export class LlEmitter {
     const fiberless = this.fiberlessAsyncFunctions();
     for (const fn of this.mod.functions) {
       if (fn.async !== true || fn.generator !== undefined) continue;
+      if (fiberless.has(fn.name) && this.awaitCallees.has(fn.name)) {
+        for (const line of this.emitAsyncAwaitCall(fn, null)) out.push(line);
+      }
       if (fiberless.has(fn.name)) {
         const fieldTys = [
           ...(fn.captures !== undefined ? ["ptr"] : []),
@@ -3221,6 +3346,9 @@ export class LlEmitter {
       const { definitions, ret, tr, spawnParams, argPackLines } =
         this.emitArgPackAndTrampolinePrologue(fn);
       for (const line of definitions) out.push(line);
+      if (this.awaitCallees.has(fn.name)) {
+        for (const line of this.emitAsyncAwaitCall(fn, argPackLines)) out.push(line);
+      }
       this.declare(`declare ptr @scr_fiber_promise(ptr)`);
       this.declare(`declare ptr @scr_async_spawn(ptr, ptr)`);
       this.needOom();
@@ -7441,6 +7569,12 @@ export class LlEmitter {
     >,
   ): LlValue {
     return emitCallExpr(this, e);
+  }
+
+  /** A direct async call an enclosing `await` consumes whole: emitted
+   * through the callee's await-call entry, yielding the awaited value. */
+  emitAwaitedCall(e: ExprOf<"call">): LlValue {
+    return emitCallExpr(this, e, true);
   }
 
   emitRecordExpr(
