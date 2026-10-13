@@ -752,6 +752,21 @@ export function emitArrIntrinsic(
       host.emitPendingCheck();
       return { name: "", type: e.type };
     }
+    case "sortDense": {
+      // Answers false, without calling the comparator, when the receiver
+      // needs the compacting snapshot path.
+      const comparator = emitBorrowedInput(host, e.args[0]!);
+      const owned = e.args[1]!.kind === "boolLit" && e.args[1]!.value;
+      const cmp = e.args[0]!.type;
+      const arity = cmp.kind === "func" ? cmp.params.length : 0;
+      host.declare(`declare zeroext i1 @scr_arr_sort_dense(ptr, ptr, i32, i1 zeroext)`);
+      const handled = B.tmp();
+      B.line(
+        `${handled} = call zeroext i1 @scr_arr_sort_dense(ptr ${r.name}, ptr ${comparator.name}, i32 ${arity}, i1 ${owned ? 1 : 0})`,
+      );
+      host.emitPendingCheck();
+      return { name: handled, type: e.type };
+    }
     case "reverse": {
       // Mutates in place and returns the same receiver as a fresh +1.
       host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);

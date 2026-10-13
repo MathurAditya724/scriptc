@@ -1788,6 +1788,13 @@ ScrArr *scr_arr_sort_primitive(ScrArr *a, bool copy);
  * the sort and leaves the snapshot unchanged. */
 struct ScrClosure;
 void scr_arr_sort_values(ScrArr *a, double count, struct ScrClosure *f, uint32_t arity);
+/* Comparator sort of a dense array in place: `a.sort(f)`, or with `owned`
+ * the private copy of `a.toSorted(f)`. Returns false without calling `f`
+ * when `a` has holes, storage-level undefined or a sparse tail, or is
+ * published; the caller then sorts a compacted snapshot. Otherwise sorts
+ * and returns true; a pending exception from `f` leaves a shared `a`
+ * unwritten (an owned copy then holds a permutation of its values). */
+bool scr_arr_sort_dense(ScrArr *a, struct ScrClosure *f, uint32_t arity, bool owned);
 
 /* pop traps on an empty array; _ref transfers ownership out (+1 to the
  * caller, no release). */

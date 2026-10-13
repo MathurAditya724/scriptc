@@ -1813,6 +1813,14 @@ export type IrArrIntrinsicMethod =
    * with exactly its declared arity. Returns void; comparator exceptions
    * propagate and leave the snapshot unchanged. */
   | "sortValues"
+  /** Internal stable comparator sort of a dense array in place: arguments
+   * are [comparator, owned]. Returns false, without calling the comparator,
+   * when the receiver has holes, storage-level undefined or sparse slots, or
+   * is published; the caller then sorts a compacted snapshot. Otherwise the
+   * receiver's values are sorted outside it and written back only after
+   * success, as the spec's sort writes them, and it returns true. `owned`
+   * (a boolean literal) marks a private copy no user code can reach. */
+  | "sortDense"
   | "length"
   /** Internal ToNumber(a[index]) for f64-backed arrays: one numeric index,
    * returning the stored number or NaN for a hole/undefined/missing key.
@@ -1866,6 +1874,7 @@ export const MAY_THROW_ARR_METHODS: ReadonlySet<IrArrIntrinsicMethod> = new Set(
   "with",
   "withUndefined",
   "sortValues",
+  "sortDense",
 ]);
 
 /** Element types whose comparator sort can run in the runtime over raw

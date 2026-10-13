@@ -2312,7 +2312,9 @@ function validateFunction(
                                                     ? { argTypes: [], result: e.type } // union-checked below
                                                     : e.method === "sortValues"
                                                       ? { argTypes: [F64, null], result: VOID }
-                                                      : { argTypes: [], result: F64 }; // length
+                                                      : e.method === "sortDense"
+                                                        ? { argTypes: [null, BOOL], result: BOOL }
+                                                        : { argTypes: [], result: F64 }; // length
         if (
           (e.method === "sortPrimitive" || e.method === "toSortedPrimitive") &&
           elem.kind !== "string" &&
@@ -2321,11 +2323,11 @@ function validateFunction(
         ) {
           err(`arrIntrinsic ${e.method} requires primitive elements, got ${elem.kind}`, e.loc);
         }
-        if (e.method === "sortValues") {
+        if (e.method === "sortValues" || e.method === "sortDense") {
           const arms = elem.kind === "union" ? unions.get(elem.unionId)?.arms : undefined;
           if (!isSortValuesElement(elem, arms))
-            err(`arrIntrinsic sortValues on ${elem.kind} elements`, e.loc);
-          const cmp = e.args[1]?.type;
+            err(`arrIntrinsic ${e.method} on ${elem.kind} elements`, e.loc);
+          const cmp = e.args[e.method === "sortValues" ? 1 : 0]?.type;
           if (
             !cmp ||
             cmp.kind !== "func" ||
@@ -2333,7 +2335,9 @@ function validateFunction(
             !cmp.params.every((param) => typeEquals(param, elem)) ||
             cmp.ret.kind !== "f64"
           )
-            err("arrIntrinsic sortValues comparator must be (elem, elem) => number", e.loc);
+            err(`arrIntrinsic ${e.method} comparator must be (elem, elem) => number`, e.loc);
+          if (e.method === "sortDense" && e.args[1]?.kind !== "boolLit")
+            err("arrIntrinsic sortDense owned flag must be a boolean literal", e.loc);
         }
         if (e.method === "getNumber" && elem.kind !== "f64") {
           err(`arrIntrinsic getNumber requires f64 elements, got ${elem.kind}`, e.loc);

@@ -811,7 +811,7 @@ const BOUNDED_BYTES_METHODS: ReadonlySet<string> = new Set(["get", "length", "su
 
 /** Array methods that can call back into scriptc code (a comparator, or
  * element string conversion). */
-const UNBOUNDED_ARR_METHODS: ReadonlySet<string> = new Set(["sortValues", "join"]);
+const UNBOUNDED_ARR_METHODS: ReadonlySet<string> = new Set(["sortValues", "sortDense", "join"]);
 
 function primitiveArgument(arg: IrExpr): boolean {
   const kind = arg.type.kind;
