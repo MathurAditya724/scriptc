@@ -6,6 +6,35 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.3.1
+
+### Features
+
+- **`node:console` `Console` instances** write to `process.stdout`, `process.stderr` or other writable streams, with Node's `ignoreErrors` handling.
+- **`stream/consumers` `arrayBuffer()`** is supported, and `ArrayBuffer` and `SharedArrayBuffer` values print like Node.
+- **Compound assignment and `++`/`--` work on bigint locals and fields.**
+
+### Performance
+
+- **Integer code stays in integer registers.** Locals proven to stay within 32 bits are stored as 32-bit integers, int32 parameters and results pass in integer registers on direct calls, integer sums that feed bitwise conversions wrap in 32 bits, and loop accumulators keep uint32 ranges.
+- **Array callback chains run as single loops.** `filter`, `map`, `flatMap` and `slice` chains feeding `reduce`, `some`, `every`, `findIndex`, `forEach`, `length` or a final array no longer build intermediate arrays when the callbacks' effects allow it.
+- **Array element access does less work.** Arrays track a hole-free prefix whose reads and writes skip per-slot state, compound element updates are native, dense arrays sort without a snapshot, and typed-array reads compared with numbers stay unboxed.
+- **Calls and closures retain less.** Calls are devirtualized by the classes a program constructs, closure bodies borrow unchanged reference parameters, the comparator sort lends its slots, and unchanged captures are read in place.
+- **Async calls and generators are cheaper.** Awaiting a direct async call that completes without suspending creates no promise, and synchronous generators run as stackless coroutines.
+- **Strings and regular expressions are faster.** Comparisons and `switch` against string literals run inline, regex literals compile to native matchers at build time, literal sites reuse their compiled pattern, and plain-text patterns and string `replace`/`replaceAll` scan directly.
+- **BigInt arithmetic and text conversion are much faster,** with limb-based division, chunked radix conversion and Karatsuba multiplication; literals are constants, and small-value expressions run in 64-bit registers.
+- **Reflective reads of typed values** (`for...in`, `Object.keys`/`values`/`entries`, `in`, spread and `JSON.stringify` of typed records seen as `unknown`) read native fields instead of copying the record.
+- **The cycle collector frees young garbage sooner and teardown is direct.** Types the collector bypasses are measured again in probe windows, and typed children are torn down without the generic release path.
+- **The compiler is faster,** because its own analyses walk the IR through typed fields.
+
+### Fixes
+
+- **`return p` in an async function takes Node's microtask turns,** and a rejection of the returned promise reaches the caller instead of the function's own `catch`.
+- **Core dumps leave out the allocator's untouched reservation,** so crashing programs no longer write gigabytes of empty memory, and glibc's heap is left to the huge-page policy.
+- **Native program objects use runtime ABI v17.** Array, closure and regex layouts changed, so external object consumers must link the matching v0.3.1 runtime pack; the versioned marker rejects incompatible runtime objects at link time.
+
+<!-- release:end -->
+
 ## 0.3.0
 
 ### Breaking changes
@@ -25,8 +54,6 @@ All notable changes to scriptc will be documented in this file.
 ### Fixes
 
 - **Native program objects use runtime ABI v14.** The embedded JavaScript runtime's symbols were removed, so external object consumers must link the matching v0.3.0 runtime pack; the versioned marker rejects incompatible runtime objects at link time.
-
-<!-- release:end -->
 
 ## 0.2.10
 
