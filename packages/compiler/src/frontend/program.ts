@@ -2690,8 +2690,9 @@ function computeCycleEarlyBindings7(
   return out;
 }
 
-/** Top-level let/const bindings, in modules outside the exactly-initialized
- * cycles, that code running before their declaration completes can read.
+/** Top-level let/const and class bindings, in modules outside the
+ * exactly-initialized cycles, that code running before their declaration
+ * completes can read.
  * Function declarations are callable from the module's start, so a call
  * made by earlier top-level code (or by the declaration's own initializer)
  * can observe the temporal dead zone. Reachability is syntactic: a stored
@@ -2733,6 +2734,8 @@ function moduleEarlyBindingsOf7(
     name: ts.Identifier;
     index: number;
     start: number;
+    /** A class declaration: its own body sees the inner binding. */
+    cls?: ts.ClassDeclaration;
   }
   const candidates: Candidate[] = [];
   const candidateNames = new Set<string>();
@@ -2802,6 +2805,8 @@ function moduleEarlyBindingsOf7(
       store(stmt.name, [stmt]);
     } else if (ts.isClassDeclaration(stmt) && stmt.name !== undefined) {
       store(stmt.name, [stmt]);
+      candidates.push({ name: stmt.name, index, start: stmt.getStart(sf), cls: stmt });
+      candidateNames.add(stmt.name.text);
     } else if (ts.isVariableStatement(stmt)) {
       const lexical = (stmt.declarationList.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0;
       for (const d of stmt.declarationList.declarations) {
@@ -2900,7 +2905,12 @@ function moduleEarlyBindingsOf7(
       const symbol = symbolOf(node);
       if (symbol === undefined) return undefined;
       const c = candidateSymbols.get(symbol);
-      if (c !== undefined && node !== c.name && !reachedRefs.has(symbol)) {
+      if (
+        c !== undefined &&
+        node !== c.name &&
+        !reachedRefs.has(symbol) &&
+        !(c.cls !== undefined && node.getStart(sf) >= c.cls.pos && node.end <= c.cls.end)
+      ) {
         if (inDeferredPosition7(node) || node.getStart(sf) < c.start) reachedRefs.set(symbol, node);
       }
       for (const unit of unitsBySymbol.get(symbol) ?? []) {
@@ -2927,12 +2937,24 @@ function moduleEarlyBindingsOf7(
       const symbol = checker.getSymbolAtLocation(c.name);
       const reference = symbol === undefined ? undefined : reachedRefs.get(symbol);
       if (symbol === undefined || reference === undefined) continue;
-      out.push({ symbol, name: c.name, kind: "lexical", module: sf, reference, settled });
+      out.push({
+        symbol,
+        name: c.name,
+        kind: c.cls !== undefined ? "class" : "lexical",
+        module: sf,
+        reference,
+        settled,
+      });
     }
   };
   for (const stmt of sf.statements) {
-    if (ts.isClassDeclaration(stmt)) for (const part of classSyncParts7(stmt)) visit(part);
-    else if (ts.isVariableStatement(stmt)) {
+    if (ts.isClassDeclaration(stmt)) {
+      // The binding initializes once the class definition, static
+      // initializers included, has run.
+      for (const part of classSyncParts7(stmt)) visit(part);
+      drain();
+      report(stmt);
+    } else if (ts.isVariableStatement(stmt)) {
       // Declarators run in order: a later declarator's initializer cannot
       // observe an earlier binding before it was initialized.
       for (const d of stmt.declarationList.declarations) {

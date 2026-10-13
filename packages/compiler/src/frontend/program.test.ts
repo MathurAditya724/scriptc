@@ -377,6 +377,19 @@ test.for([
     "const shelf = { [Symbol.iterator]() { return [size][Symbol.iterator](); } }; const size = 2; console.log([...shelf]);",
     [],
   ],
+  // A class reached before its statement ran.
+  ["function make() { return new Box(); } console.log(make()); class Box {}", ["Box"]],
+  ["class Box {} function make() { return new Box(); } console.log(make());", []],
+  // Its own body sees the inner binding.
+  [
+    "class Self { static label = Self.name; static make() { return new Self(); } } console.log(Self.make());",
+    [],
+  ],
+  // A static initializer calling out to code that names the class.
+  [
+    "function tag(): string { return Late.label; } class Late { static label = 'l'; static probe = tag(); } console.log(Late.probe);",
+    ["Late"],
+  ],
 ] as const)("module bindings read before initialization: %s", ([source, early]) => {
   const directory = mkdtempSync(
     join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-module-early-"),

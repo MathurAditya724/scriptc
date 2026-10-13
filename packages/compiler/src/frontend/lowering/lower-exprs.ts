@@ -977,8 +977,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           lowerer.unions.get(g.type.unionId)?.arms.length === 2 &&
           lowerer.unions.get(g.type.unionId)!.arms.some((a) => a.kind === "f64") &&
           lowerer.unions.get(g.type.unionId)!.arms.some((a) => a.kind === "string");
+        const symbol = lowerer.resolveValueSymbol(expr);
         if (
           !arithmeticUnion &&
+          !(symbol !== null && lowerer.earlyReadVars.has(symbol)) &&
           g.type.kind === "union" &&
           narrowed &&
           narrowed.kind !== "union" &&

@@ -86,6 +86,8 @@ import { InternalCompilerError } from "../../errors.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
 import { ClassDynamicDispatch, trackClassFieldCreation } from "./class-dynamic-dispatch.js";
 import { ClassProtocols } from "./class-protocols.js";
+import { earlyReadVarSymbols } from "./var-hoisting.js";
+import { recordTextCodecClass } from "../../ir/ir.js";
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import { finalizeClassMethodValues } from "./class-method-values.js";
 import type { ClassSymbolKey } from "./symbol-fields.js";
@@ -1736,6 +1738,9 @@ export class Lowerer {
   /** All storage slots widened for runtime absence, including slots whose
    * current control-flow branch has temporarily narrowed the value. */
   readonly runtimeOptionalStorageLocals = new Set<IrLocal>();
+  /** `var` bindings code can read before their first store
+   * (var-hoisting.ts): their storage holds undefined until then. */
+  readonly earlyReadVars = new Set<ts.Symbol>();
   /** Globals whose checker-bare type was widened because an indexed read can
    * carry undefined at runtime. Identifier reads keep the union tag so
    * typeof and later boundaries observe the real value. */
@@ -2448,6 +2453,9 @@ export class Lowerer {
   /** Import-cycle bindings with an initialization flag, by global id, and
    * the top-level statements declaring them (cycle-initialization.ts). */
   readonly cycleInitFlags = new Map<string, CycleInitFlag>();
+  /** Initialization flags of classes reachable before their statement ran,
+   * by class name (cycle-initialization.ts). */
+  readonly classInitFlags = new Map<string, CycleInitFlag>();
   readonly cycleInitDeclarations = new Map<ts.Statement, CycleInitFlag[]>();
 
   get ctx(): FnCtx {
@@ -3734,6 +3742,16 @@ export class Lowerer {
           family.push(symbol);
           methodFamilies.set(key, family);
           familyBySymbol.set(symbol, family);
+        }
+      }
+      // Static methods never share a dispatch slot: each is its own family.
+      if (info.staticMethods) {
+        for (const sig of info.staticMethods.values()) {
+          const name = sig.member.name;
+          if (!(ts.isIdentifier(name) || ts.isStringLiteral(name))) continue;
+          const symbol = symbolOf(name);
+          if (symbol && !signatureBySymbol.has(symbol))
+            signatureBySymbol.set(symbol, { params: sig.params, returnType: sig.ret, method: sig });
         }
       }
     }
@@ -5259,6 +5277,20 @@ export class Lowerer {
       }
       return changed;
     };
+    // A `var` that code can read before its first store holds undefined
+    // there, whatever its declared type.
+    for (const symbol of earlyReadVarSymbols(this, sourceFiles)) {
+      // Text codec bindings keep their own presence-checked storage.
+      const declaration = this.checker.valueDeclarationOf(symbol);
+      const mapped =
+        declaration && ts.isVariableDeclaration(declaration)
+          ? mappedOrNull(declaration.name)
+          : null;
+      if (mapped?.kind === "record" && recordTextCodecClass(this.shapes.get(mapped.shapeId)!))
+        continue;
+      optionalSymbols.add(symbol);
+      this.earlyReadVars.add(symbol);
+    }
     let changed = true;
     while (changed) {
       changed = false;

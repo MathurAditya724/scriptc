@@ -961,7 +961,8 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
     type = staticImportNamespaceType(lowerer, nameNode.parent.initializer) ?? type;
   }
   if (!type || type.kind === "void") return null;
-  return type;
+  // A binding readable before its first store holds undefined until then.
+  return lowerer.runtimeOptionalBindingType(nameNode, type);
 }
 
 /** `var` declarations hoist to their FUNCTION: the binding exists across
@@ -1011,6 +1012,7 @@ function hoistVarBinding(lowerer: Lowerer, symbol: ts.Symbol, nameNode: ts.Ident
   };
   lowerer.ctx.locals.push(local);
   lowerer.ctx.scopes[0]!.set(symbol, local);
+  noteEarlyReadVar(lowerer, symbol, local);
   // A checked-dynamic slot holds the dyn undefined (a NULL dyn is a
   // trap); everything else rides unassignedSlotInit (interned union arm,
 
@@ -1037,6 +1039,8 @@ function hoistVarBinding(lowerer: Lowerer, symbol: ts.Symbol, nameNode: ts.Ident
  * would yield if the capture ran early, and guessing "it won't" is the
  * silent-wrong-output sin. */
 export function predeclareForwardVar(lowerer: Lowerer, symbol: ts.Symbol): boolean {
+  // Module-scope vars already have their global storage.
+  if (lowerer.globalsBySymbol.has(symbol)) return false;
   const decl = lowerer.checker.valueDeclarationOf(symbol);
   if (!decl || !ts.isVariableDeclaration(decl) || !isVarDeclared(decl)) return false;
   const nameNode = ts.isIdentifier(decl.name) ? decl.name : null;
@@ -1080,9 +1084,19 @@ export function predeclareForwardVar(lowerer: Lowerer, symbol: ts.Symbol): boole
   };
   ctx.locals.push(local);
   ctx.scopes[0]!.set(symbol, local);
+  noteEarlyReadVar(lowerer, symbol, local);
   root.out.push({ kind: "varDecl", localId: local.id, init: wrapped, loc: locOf(decl) });
   ctx.hoistedVars.set(symbol, local);
   return true;
+}
+
+/** A var readable before its first store (the runtime-optional analysis
+ * widened it): reads keep the undefined-armed value. */
+function noteEarlyReadVar(lowerer: Lowerer, symbol: ts.Symbol, local: IrLocal): void {
+  if (!lowerer.earlyReadVars.has(symbol)) return;
+  const root = lowerer.runtimeOptionalRootOf(local);
+  lowerer.runtimeOptionalLocals.add(root);
+  lowerer.runtimeOptionalStorageLocals.add(root);
 }
 
 /** Records the symbols a poisoned DECLARATION statement would have bound

@@ -6,6 +6,7 @@
  * temporal-dead-zone ReferenceError, with the same message. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
+import type { ClassInfo } from "./lower-classes.js";
 import {
   cycleEarlyBindings,
   locOf,
@@ -40,6 +41,10 @@ export interface CycleInitFlag {
    * own module's early calls is checked opportunistically: whatever cannot
    * be checked keeps the unchecked behavior instead of refusing. */
   cycle: boolean;
+  /** A class binding: its references are the class's own IR forms and its
+   * static field storage (`global` is the flag itself). */
+  className?: string;
+  staticGlobals?: ReadonlySet<string>;
 }
 
 /** Registers the initialization flags after global collection. Bindings
@@ -87,11 +92,52 @@ export function markCycleEarlyBindings(lowerer: Lowerer): void {
   // bindings are declared. Only bindings that such early-running code can
   // read get a flag; the others keep their unchecked storage.
   for (const binding of moduleEarlyBindings(lowerer.program, lowerer.moduleOrder)) {
+    if (binding.kind === "class") {
+      const info = lowerer.classBySymbol.get(binding.symbol);
+      if (info !== undefined) registerClassInitFlag(lowerer, binding, info);
+      continue;
+    }
     const global = lowerer.globalsBySymbol.get(binding.symbol);
     if (global !== undefined && binding.folded === undefined) {
       registerInitFlag(lowerer, binding, global, false);
     }
   }
+}
+
+/** A class that its module's early-running code can reach before the class
+ * statement ran: the flag is set once the definition (static initializers
+ * included) completed, and every reference from code that can run earlier
+ * checks it — `new`, static member access, the class value and
+ * `instanceof`. */
+function registerClassInitFlag(
+  lowerer: Lowerer,
+  binding: CycleEarlyBinding,
+  info: ClassInfo,
+): void {
+  const className = info.def.name;
+  if (lowerer.classInitFlags.has(className)) return;
+  const flagId = `%g.class.${className}%initialized`;
+  const global: IrGlobal = { id: flagId, name: "%initialized", type: BOOL, mutable: true };
+  lowerer.globalsList.push(global);
+  lowerer.classInitFlags.set(className, {
+    global,
+    flagId,
+    name: binding.name.text,
+    module: binding.module,
+    settled: binding.settled,
+    cycle: false,
+    className,
+    staticGlobals: new Set(info.staticFields.map((f) => f.globalId)),
+  });
+}
+
+/** The class statement's static initialization, followed by the store of
+ * its initialization flag when it has one. */
+export function withClassInitFlag(lowerer: Lowerer, info: ClassInfo, stmts: IrStmt[]): IrStmt[] {
+  const flag = lowerer.classInitFlags.get(info.def.name);
+  if (flag === undefined) return stmts;
+  const loc = info.decl ? locOf(info.decl) : (stmts[0]?.loc ?? { file: "", start: 0, end: 0 });
+  return [{ kind: "block", body: [...stmts, setFlag(flag, loc)], loc }];
 }
 
 function registerInitFlag(
@@ -217,7 +263,7 @@ export function withCycleInitFlags(
  * check before reading; writes check after evaluating the assigned value,
  * as PutValue does. The declaration's own store is never checked. */
 export function checkCycleBindingAccesses(lowerer: Lowerer, mod: IrModule): void {
-  if (lowerer.cycleInitFlags.size === 0) return;
+  if (lowerer.cycleInitFlags.size === 0 && lowerer.classInitFlags.size === 0) return;
   const fileOfInit = new Map<string, ts.SourceFile>();
   for (const [sf, name] of lowerer.initNameOf) fileOfInit.set(name, sf);
   for (const fn of mod.functions) rewriteFunction(lowerer, fn, fileOfInit.get(fn.name));
@@ -229,12 +275,42 @@ function rewriteFunction(
   initOf: ts.SourceFile | undefined,
 ): void {
   const active = new Map<string, CycleInitFlag>();
+  const runsEarly = (flag: CycleInitFlag): boolean =>
+    initOf === undefined || initOf === flag.module || !flag.settled.has(initOf);
   for (const [id, flag] of lowerer.cycleInitFlags) {
-    if (initOf === undefined || initOf === flag.module || !flag.settled.has(initOf)) {
-      active.set(id, flag);
-    }
+    if (runsEarly(flag)) active.set(id, flag);
   }
-  if (active.size === 0) return;
+  // Classes, by name; their static field storage joins `active`. A class's
+  // own members run only once the class exists, or inside its own
+  // definition, where the inner binding is initialized.
+  const classes = new Map<string, CycleInitFlag>();
+  for (const [className, flag] of lowerer.classInitFlags) {
+    if (!runsEarly(flag) || fn.name.startsWith(`%${className}.`)) continue;
+    classes.set(className, flag);
+    if (flag.staticGlobals) for (const id of flag.staticGlobals) active.set(id, flag);
+  }
+  if (active.size === 0 && classes.size === 0) return;
+  const classFlagOf = (e: IrExpr): CycleInitFlag | undefined => {
+    if (classes.size === 0) return undefined;
+    switch (e.kind) {
+      case "new":
+      case "classRef":
+      case "instanceOf":
+      case "caughtCheck":
+        return classes.get(e.className);
+      case "call":
+        for (const [className, flag] of classes) {
+          if (
+            e.callee.startsWith(`%${className}.static:`) ||
+            e.callee === `%dyn.class.instanceof:${className}`
+          )
+            return flag;
+        }
+        return undefined;
+      default:
+        return undefined;
+    }
+  };
   let temps = 0;
   const check = (flag: CycleInitFlag, loc: SrcLoc): IrStmt => {
     const expr: IrExpr = {
@@ -259,6 +335,15 @@ function rewriteFunction(
   // cannot key weak collections by IR records.)
   const wrap = {
     expr: (e: IrExpr): IrExpr => {
+      const classFlag = classFlagOf(e);
+      if (classFlag !== undefined)
+        return {
+          kind: "seqExpr",
+          stmts: [check(classFlag, e.loc)],
+          result: e,
+          type: e.type,
+          loc: e.loc,
+        };
       if (e.kind !== "varRef" && e.kind !== "incDec" && e.kind !== "assignExpr") return e;
       const flag = active.get(e.localId);
       if (flag === undefined) return e;
@@ -309,16 +394,24 @@ function rewriteFunction(
   }
   // A module %init: its own bindings stop needing checks once the
   // top-level statement setting their flag completed.
+  const setsFlag = (s: IrStmt, flag: CycleInitFlag): boolean =>
+    !everyStmt(s, {
+      expr: () => true,
+      stmt: (inner) => !(inner.kind === "assign" && inner.localId === flag.flagId),
+    });
   fn.body = fn.body.map((s) => {
-    if (active.size === 0) return s;
+    if (active.size === 0 && classes.size === 0) return s;
+    // A class statement's own static initialization sees the inner
+    // binding: its flag stops applying before that statement.
+    for (const [className, flag] of [...classes]) {
+      if (flag.module !== initOf || !setsFlag(s, flag)) continue;
+      classes.delete(className);
+      if (flag.staticGlobals) for (const id of flag.staticGlobals) active.delete(id);
+    }
     const out = rewriteStmt(s);
     for (const [id, flag] of [...active]) {
       if (flag.module !== initOf) continue;
-      const sets = !everyStmt(out, {
-        expr: () => true,
-        stmt: (inner) => !(inner.kind === "assign" && inner.localId === flag.flagId),
-      });
-      if (sets) active.delete(id);
+      if (setsFlag(out, flag)) active.delete(id);
     }
     return out;
   });
