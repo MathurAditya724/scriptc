@@ -35,6 +35,11 @@ import {
   traceFieldVisitLines,
   FN_ATTRS,
   cycleDeadLines,
+  destroyDefinitions,
+  directChildReleaseLines,
+  directDestroyTarget,
+  usedDirectTargets,
+  type DirectDestroy,
   llFieldType,
   releaseBody,
   releaseFastPath,
@@ -457,6 +462,36 @@ export function emitClassShapes(
     );
   }
 
+  // Classes with an out-of-line teardown (a bounded release) whose instances
+  // are all of that exact class can be torn down directly by a parent's
+  // teardown: standalone classes, and hierarchy leaves of program-rooted
+  // hierarchies (class identity is nominal, so a reference of a leaf type
+  // holds an instance of the leaf). Other hierarchy members release through
+  // their dynamic class. Only classes that some class holds are.
+  const storedFieldType = (cls: IrClassDef, f: IrClassDef["fields"][number]): IrType =>
+    nullable?.storageType(cls.name, f.name, f.type) ?? f.type;
+  const candidates: [string, DirectDestroy][] = [];
+  const fieldTypes: IrType[] = [];
+  for (const cls of emitted) {
+    const meta = metaMap.get(cls.name)!;
+    const types = cls.fields.map((f) => storedFieldType(cls, f));
+    for (const t of types) fieldTypes.push(t);
+    if (programLifetimeClass(host, meta)) continue;
+    if (meta.hierarchy && (meta.children.length !== 0 || meta.root.def.runtime === true)) continue;
+    if (!types.some((t) => isRefCounted(t) && needsBoundedRelease(t))) continue;
+    const release = mangleClassRelease(cls.name);
+    const teardown = meta.hierarchy ? mangleClassReleaseDirect(cls.name) : release;
+    candidates.push([
+      `object:${cls.name}`,
+      {
+        release: `@${release}`,
+        destroy: `${teardown}_destroy`,
+        traced: host.tracedShapes.has(`object:${cls.name}`),
+      },
+    ]);
+  }
+  const directTargets = usedDirectTargets(host, candidates, fieldTypes);
+
   for (const cls of emitted) {
     const meta = metaMap.get(cls.name)!;
     const struct = mangleClassStruct(cls.name);
@@ -471,7 +506,7 @@ export function emitClassShapes(
     const indexedFields = [
       ...cls.fields.map((f, i) => ({
         name: f.name,
-        type: nullable?.storageType(cls.name, f.name, f.type) ?? f.type,
+        type: storedFieldType(cls, f),
         index: fieldIndex(i),
       })),
     ];
@@ -507,6 +542,13 @@ export function emitClassShapes(
     // hierarchy members need no dispatch.
     defs.push(...retainBody(host, mangleClassRetain(cls.name), `retain ${cls.name}`, lifetime), ``);
 
+    // An out-of-line teardown tears typed children down directly
+    // (directChildReleaseLines). It takes the chain length when it has such
+    // children or is itself a direct target.
+    const chained =
+      bounded &&
+      (directTargets.has(`object:${cls.name}`) ||
+        refFields.some((f) => directDestroyTarget(host, f.type, directTargets) !== null));
     // The field-releasing teardown body shared by both release shapes
     // (the public one on standalone classes, the DIRECT one on hierarchy
     // members). Runs at rc == 0.
@@ -515,8 +557,16 @@ export function emitClassShapes(
         lines.push(
           `  %f${t} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f.index}`,
           `  %v${t} = load ptr, ptr %f${t}`,
-          `  call void ${releaseSym(host, f.type)}(ptr %v${t}) ; ${llvmCommentText(f.name)}`,
         );
+        const direct = bounded ? directDestroyTarget(host, f.type, directTargets) : null;
+        if (direct)
+          lines.push(
+            ...directChildReleaseLines(host, `td${t}`, `%v${t}`, direct, llvmCommentText(f.name)),
+          );
+        else
+          lines.push(
+            `  call void ${releaseSym(host, f.type)}(ptr %v${t}) ; ${llvmCommentText(f.name)}`,
+          );
       });
       if (isEmitterRooted) lines.push(...regCall("td", "scr_emitter_reg_drop", ""));
       if (isStreamRooted) lines.push(...stCall("tds", "scr_stream_st_release", ""));
@@ -584,13 +634,9 @@ export function emitClassShapes(
       if (traced) reld.push(...cycleDeadLines(host, "teardown"));
       if (bounded) {
         const destroy = `${mangleClassReleaseDirect(cls.name)}_destroy`;
-        const destroyBody: string[] = [
-          `define internal void @${destroy}(ptr %o) ${FN_ATTRS} {`,
-          `entry:`,
-        ];
+        const destroyBody: string[] = [];
         teardown(destroyBody);
-        destroyBody.push(`  ret void`, `}`, ``);
-        defs.push(...destroyBody);
+        defs.push(...destroyDefinitions(destroy, destroyBody, chained), ``);
         host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
         reld.push(`  call void @scr_rc_destroy(ptr %o, ptr @${destroy})`);
       } else teardown(reld);
@@ -610,6 +656,7 @@ export function emitClassShapes(
           `release ${cls.name}`,
           bounded,
           lifetime,
+          chained,
         ),
         ``,
       );
