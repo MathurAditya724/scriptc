@@ -28,7 +28,7 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
         // fiber, while settled ones continue synchronously.
         const p = host.emitExpr(e.args[0]!);
         if (host.wasi) {
-          const coro = host.currentWasiCoro;
+          const coro = host.currentCoro;
           if (coro === null)
             throw new InternalCompilerError(
               "llvm emitter bug: module await outside wasm coroutine",
@@ -42,7 +42,7 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
           );
           B.condBr(needsSuspend, suspend, ready);
           B.startBlock(suspend);
-          host.emitWasiSuspendPrepared();
+          host.emitCoroSuspendPrepared();
           B.br(ready);
           B.startBlock(ready);
           host.declare(`declare void @scr_module_await(ptr)`);
@@ -379,40 +379,56 @@ export function emitAsyncExpr(
         B.line(`call void @scr_async_gen_hop_done()`);
       }
       if (yt.kind === "f64" || yt.kind === "date") {
-        if (host.wasi) {
-          const coro = host.currentWasiCoro!;
-          host.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
-          host.declare(`declare void @scr_gen_out_f64(ptr, double)`);
-          const g = B.tmp();
-          B.line(`${g} = call ptr @scr_gen_of_fiber(ptr ${coro.self})`);
-          B.line(`call void @scr_gen_out_f64(ptr ${g}, double ${v.name})`);
+        if (host.currentCoro !== null) {
+          const coro = host.currentCoro;
+          if (host.wasi) {
+            host.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
+            host.declare(`declare void @scr_gen_out_f64(ptr, double)`);
+            const g = B.tmp();
+            B.line(`${g} = call ptr @scr_gen_of_fiber(ptr ${coro.self})`);
+            B.line(`call void @scr_gen_out_f64(ptr ${g}, double ${v.name})`);
+          } else {
+            host.declare(`declare void @scr_coro_yield_f64(ptr, double)`);
+            B.line(`call void @scr_coro_yield_f64(ptr ${coro.self}, double ${v.name})`);
+          }
         } else {
           host.declare(`declare void @scr_gen_yield_f64(double)`);
           B.line(`call void @scr_gen_yield_f64(double ${v.name})`);
         }
       } else if (yt.kind === "bool") {
-        if (host.wasi) {
-          const coro = host.currentWasiCoro!;
-          host.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
-          host.declare(`declare void @scr_gen_out_bool(ptr, i1 zeroext)`);
-          const g = B.tmp();
-          B.line(`${g} = call ptr @scr_gen_of_fiber(ptr ${coro.self})`);
-          B.line(`call void @scr_gen_out_bool(ptr ${g}, i1 ${v.name})`);
+        if (host.currentCoro !== null) {
+          const coro = host.currentCoro;
+          if (host.wasi) {
+            host.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
+            host.declare(`declare void @scr_gen_out_bool(ptr, i1 zeroext)`);
+            const g = B.tmp();
+            B.line(`${g} = call ptr @scr_gen_of_fiber(ptr ${coro.self})`);
+            B.line(`call void @scr_gen_out_bool(ptr ${g}, i1 ${v.name})`);
+          } else {
+            host.declare(`declare void @scr_coro_yield_bool(ptr, i1 zeroext)`);
+            B.line(`call void @scr_coro_yield_bool(ptr ${coro.self}, i1 ${v.name})`);
+          }
         } else {
           host.declare(`declare void @scr_gen_yield_bool(i1 zeroext)`);
           B.line(`call void @scr_gen_yield_bool(i1 ${v.name})`);
         }
       } else {
         host.moveTemp(v); // the OUT slot takes ownership
-        if (host.wasi) {
-          const coro = host.currentWasiCoro!;
-          host.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
-          host.declare(`declare void @scr_gen_out_ref(ptr, ptr, ptr)`);
-          const g = B.tmp();
-          B.line(`${g} = call ptr @scr_gen_of_fiber(ptr ${coro.self})`);
-          B.line(
-            `call void @scr_gen_out_ref(ptr ${g}, ptr ${v.name}, ptr ${vAdapters(host.shapeHost, yt).release})`,
-          );
+        if (host.currentCoro !== null) {
+          const coro = host.currentCoro;
+          const release = vAdapters(host.shapeHost, yt).release;
+          if (host.wasi) {
+            host.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
+            host.declare(`declare void @scr_gen_out_ref(ptr, ptr, ptr)`);
+            const g = B.tmp();
+            B.line(`${g} = call ptr @scr_gen_of_fiber(ptr ${coro.self})`);
+            B.line(`call void @scr_gen_out_ref(ptr ${g}, ptr ${v.name}, ptr ${release})`);
+          } else {
+            host.declare(`declare void @scr_coro_yield_ref(ptr, ptr, ptr)`);
+            B.line(
+              `call void @scr_coro_yield_ref(ptr ${coro.self}, ptr ${v.name}, ptr ${release})`,
+            );
+          }
         } else {
           host.declare(`declare void @scr_gen_yield_ref(ptr, ptr)`);
           B.line(
@@ -420,7 +436,7 @@ export function emitAsyncExpr(
           );
         }
       }
-      if (host.wasi) host.emitWasiSuspendPrepared();
+      if (host.currentCoro !== null) host.emitCoroSuspendPrepared();
       if (e.captureCompletion) {
         const converter = (type: IrType): string =>
           isRefCounted(type) ? `@${host.dyn.toDynHelper(type)}` : "null";
@@ -450,6 +466,12 @@ export function emitAsyncExpr(
         B.line(`${t} = call zeroext i1 @scr_gen_take_in_bool()`);
         return { name: t, type: e.type };
       }
+      if (e.type.kind === "dyn") {
+        // A valueless resume leaves IN empty: JS's undefined.
+        host.declare(`declare ptr @scr_gen_take_in_dyn()`);
+        B.line(`${t} = call ptr @scr_gen_take_in_dyn()`);
+        return host.own({ name: t, type: e.type });
+      }
       // Refcounted channels: the slot's +1 moves out.
       host.declare(`declare ptr @scr_gen_take_in_ref()`);
       B.line(`${t} = call ptr @scr_gen_take_in_ref()`);
@@ -462,6 +484,49 @@ export function emitAsyncExpr(
       const genT = e.gen.type;
       if (genT.kind !== "generator")
         throw new InternalCompilerError("llvm emitter bug: genResume on a non-generator");
+      if (e.mode === "close") {
+        if (genT.async)
+          throw new InternalCompilerError("llvm emitter bug: genResume close on async");
+        const gb = emitBorrowedInput(host, e.gen);
+        host.declare(`declare void @scr_gen_close(ptr)`);
+        B.line(`call void @scr_gen_close(ptr ${gb.name})`);
+        host.emitPendingCheck();
+        return { name: "", type: e.type };
+      }
+      if (e.mode === "step" || e.mode === "value") {
+        // The compiler's own drives: no IteratorResult record. `step`
+        // resumes and answers done; `value` moves the typed yield out of
+        // OUT (a yield-channel value, since the step answered false).
+        if (genT.async)
+          throw new InternalCompilerError(`llvm emitter bug: genResume ${e.mode} on async`);
+        const gb = emitBorrowedInput(host, e.gen);
+        if (e.mode === "value") {
+          const t = B.tmp();
+          if (e.type.kind === "f64" || e.type.kind === "date") {
+            host.declare(`declare double @scr_gen_take_out_f64(ptr)`);
+            B.line(`${t} = call double @scr_gen_take_out_f64(ptr ${gb.name})`);
+            return { name: t, type: e.type };
+          }
+          if (e.type.kind === "bool") {
+            host.declare(`declare zeroext i1 @scr_gen_take_out_bool(ptr)`);
+            B.line(`${t} = call zeroext i1 @scr_gen_take_out_bool(ptr ${gb.name})`);
+            return { name: t, type: e.type };
+          }
+          if (!isRefCounted(e.type))
+            throw new InternalCompilerError(
+              `llvm emitter bug: genResume value of ${e.type.kind} (no OUT form)`,
+            );
+          host.declare(`declare ptr @scr_gen_take_out_ref(ptr)`);
+          B.line(`${t} = call ptr @scr_gen_take_out_ref(ptr ${gb.name})`);
+          return host.own({ name: t, type: e.type });
+        }
+        // Valueless: an empty IN slot reads as undefined on any channel.
+        host.declare(`declare zeroext i1 @scr_gen_step(ptr)`);
+        const d = B.tmp();
+        B.line(`${d} = call zeroext i1 @scr_gen_step(ptr ${gb.name})`);
+        host.emitPendingCheck();
+        return { name: d, type: e.type };
+      }
       const resultT = genT.async ? (e.type.kind === "promise" ? e.type.inner : null) : e.type;
       if (resultT?.kind !== "record")
         throw new InternalCompilerError(
@@ -556,22 +621,10 @@ export function emitAsyncExpr(
       }
       if (e.mode === "next") {
         if (e.arg === null) {
-          if (genT.nextT.kind === "dyn") {
-            // Valueless resume on a dyn channel: JS's undefined — the
-            // dyn singleton rides the IN slot (+1 moves in).
-            host.declare(`declare ptr @scr_dyn_undefined()`);
-            host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
-            host.declare(`declare void @scr_dyn_release_v(ptr)`);
-            host.declare(`declare void @scr_gen_in_ref(ptr, ptr, ptr)`);
-            const u = B.tmp();
-            const r = B.tmp();
-            B.line(`${u} = call ptr @scr_dyn_undefined()`);
-            B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${u})`);
-            B.line(`call void @scr_gen_in_ref(ptr ${g.name}, ptr ${r}, ptr @scr_dyn_release_v)`);
-          } else {
-            host.declare(`declare void @scr_gen_in_none(ptr)`);
-            B.line(`call void @scr_gen_in_none(ptr ${g.name})`);
-          }
+          // Valueless resume: an empty IN slot, which the body's yield
+          // reads as JS's undefined on a dyn channel.
+          host.declare(`declare void @scr_gen_in_none(ptr)`);
+          B.line(`call void @scr_gen_in_none(ptr ${g.name})`);
         } else {
           sendArg(parkIn);
         }

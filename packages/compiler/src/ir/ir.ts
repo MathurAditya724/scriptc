@@ -1526,7 +1526,8 @@ export interface IrFunction {
    * completion verdict instead of a build-time-selected member. */
   asyncCycleCacheGlobal?: string;
   /** Generator (`function*` / `async function*`): the body runs on a fiber created SUSPENDED
-   * (nothing runs until the first `.next()`); `returnType` is the
+   * (nothing runs until the first `.next()`; backends may instead compile a
+   * synchronous body as a stackless coroutine with the same protocol); `returnType` is the
    * generator's TReturn (VOID when it carries no value — `return;`
    * completes with the undefined arm) while call sites receive the
    * generator type `{ async?, yieldT, retT: returnType, nextT }` from an emitted
@@ -2679,10 +2680,19 @@ export type IrExpr =
    * non-suspended generator marks it done and re-throws at the call site.
    * Sync generators return that record directly and propagate body errors
    * synchronously. Async generators return Promise<record>; requests queue,
-   * and body errors reject the corresponding promise. */
+   * and body errors reject the corresponding promise.
+   *
+   * Three record-free modes serve the compiler's own drives of a sync
+   * generator (for-of, spread, yield*), which read only `done` and then the
+   * yielded value: `step` is a valueless next() answering `done` (BOOL;
+   * throws like next); `value` moves the yielded value out, typed as the
+   * yield channel (valid only right after a `step` that answered false;
+   * never throws); `close` is a valueless return() whose result is dropped
+   * (IteratorClose; VOID; throws like return). All three have a null
+   * `arg`. */
   | {
       kind: "genResume";
-      mode: "next" | "return" | "throw";
+      mode: "next" | "return" | "throw" | "step" | "value" | "close";
       gen: IrExpr;
       arg: IrExpr | null;
       type: IrType;

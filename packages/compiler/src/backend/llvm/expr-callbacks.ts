@@ -185,19 +185,59 @@ export function genResultThunkFor(
   if (!shape || !valueT)
     throw new InternalCompilerError("llvm emitter bug: genResume record lacks its value field");
   if (valueT.kind === "dyn") {
-    // The any/unknown channel: OUT holds a dyn (or nothing — undefined).
+    // A checked channel: OUT holds a dyn, or a typed value of a concrete
+    // yield/return channel beside a dyn one (boxed here), or nothing —
+    // undefined.
     const doneIdxD = shape.fields.findIndex((f) => f.name === "done");
     const valueIdxD = shape.fields.findIndex((f) => f.name === "value");
     if (doneIdxD < 0 || valueIdxD < 0)
       throw new InternalCompilerError("llvm emitter bug: genResume record shape");
     host.declare(`declare zeroext i1 @scr_gen_done(ptr)`);
     host.declare(`declare zeroext i1 @scr_gen_out_has(ptr)`);
-    host.declare(`declare ptr @scr_gen_take_out_ref(ptr)`);
     host.declare(`declare ptr @scr_dyn_undefined()`);
     host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
-    host.resolveThunkDefs.push(
+    // The lines that move OUT (holding a `srcT` value) into %vslot as an
+    // owned dyn, then branch to %join.
+    const boxFrom = (srcT: IrType, px: string): string[] => {
+      if (srcT.kind === "f64") {
+        host.declare(`declare double @scr_gen_take_out_f64(ptr)`);
+        return [
+          `  %${px}x = call double @scr_gen_take_out_f64(ptr %g)`,
+          `  %${px}v = call ptr @${host.dyn.toDynHelper(srcT)}(double %${px}x)`,
+          `  store ptr %${px}v, ptr %vslot`,
+          `  br label %join`,
+        ];
+      }
+      if (srcT.kind === "bool") {
+        host.declare(`declare zeroext i1 @scr_gen_take_out_bool(ptr)`);
+        return [
+          `  %${px}x = call zeroext i1 @scr_gen_take_out_bool(ptr %g)`,
+          `  %${px}v = call ptr @${host.dyn.toDynHelper(srcT)}(i1 %${px}x)`,
+          `  store ptr %${px}v, ptr %vslot`,
+          `  br label %join`,
+        ];
+      }
+      host.declare(`declare ptr @scr_gen_take_out_ref(ptr)`);
+      if (srcT.kind === "dyn") {
+        return [
+          `  %${px}v = call ptr @scr_gen_take_out_ref(ptr %g)`,
+          `  store ptr %${px}v, ptr %vslot`,
+          `  br label %join`,
+        ];
+      }
+      // Ref converters borrow their payload: box, then drop OUT's +1.
+      return [
+        `  %${px}x = call ptr @scr_gen_take_out_ref(ptr %g)`,
+        `  %${px}v = call ptr @${host.dyn.toDynHelper(srcT)}(ptr %${px}x)`,
+        `  call void ${releaseSym(host.shapeHost, srcT)}(ptr %${px}x)`,
+        `  store ptr %${px}v, ptr %vslot`,
+        `  br label %join`,
+      ];
+    };
+    const d: string[] = [
       `define internal ptr @${sym}(ptr %g) ${FN_ATTRS} { ; IteratorResult<${typeKey(genT)}> (dyn channel)`,
       `entry:`,
+      `  %vslot = alloca ptr`,
       `  %r = call ptr @${mangleRecordNew(recT.shapeId)}()`,
       `  %d = call zeroext i1 @scr_gen_done(ptr %g)`,
       `  %dz = zext i1 %d to i8`,
@@ -206,20 +246,25 @@ export function genResultThunkFor(
       `  %has = call zeroext i1 @scr_gen_out_has(ptr %g)`,
       `  br i1 %has, label %take, label %undefv`,
       `take:`,
-      `  %v0 = call ptr @scr_gen_take_out_ref(ptr %g)`,
-      `  br label %join`,
+      `  br i1 %d, label %retv, label %yieldv`,
+      `yieldv:`,
+      ...(genT.yieldT.kind === "void" ? [`  br label %undefv`] : boxFrom(genT.yieldT, "y")),
+      `retv:`,
+      ...(genT.retT.kind === "void" ? [`  br label %undefv`] : boxFrom(genT.retT, "r")),
       `undefv:`,
       `  %u = call ptr @scr_dyn_undefined()`,
-      `  %v1 = call ptr @scr_dyn_retain_v(ptr %u)`,
+      `  %u1 = call ptr @scr_dyn_retain_v(ptr %u)`,
+      `  store ptr %u1, ptr %vslot`,
       `  br label %join`,
       `join:`,
-      `  %v = phi ptr [ %v0, %take ], [ %v1, %undefv ]`,
+      `  %v = load ptr, ptr %vslot`,
       `  %vp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${valueIdxD + 1}`,
       `  store ptr %v, ptr %vp`,
       `  ret ptr %r`,
       `}`,
       ``,
-    );
+    ];
+    host.resolveThunkDefs.push(...d);
     return sym;
   }
   if (valueT.kind !== "union") throw new LlvmUnsupportedError(`genResume:${valueT.kind}`);

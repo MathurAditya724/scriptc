@@ -579,6 +579,10 @@ struct ScrFiber {
    * fiber (the exc-cell pattern) so run()'s window rides awaits. */
   ScrAlsCtx *als;
   bool done;
+  /* A native synchronous generator compiled as an LLVM coroutine (see coro
+   * above): no stack or saved context; resumes call into the frame on the
+   * resumer's stack. */
+  bool stackless;
   /* Fiberless async bodies (scr_async_inline_enter) currently running on
    * this fiber's stack. Such a body was proven never to park, so a park
    * or hop while this is nonzero is a compiler bug — trap loudly instead
@@ -685,6 +689,22 @@ static void scr_fiber_keep_abandoned(ScrFiber *fiber) {
 #endif
 
 void *scr_fiber_self(void) { return scr_current; }
+
+#ifndef __wasi__
+/* LLVM's switched-resume coroutine frame begins with its resume and destroy
+ * functions (what llvm.coro.resume / llvm.coro.destroy call). */
+typedef void (*ScrCoroFn)(void *);
+static inline void scr_coro_resume(void *handle) { ((ScrCoroFn *)handle)[0](handle); }
+static inline void scr_coro_destroy(void *handle) { ((ScrCoroFn *)handle)[1](handle); }
+
+void scr_coro_started(void *handle) {
+  if (scr_current == NULL || !scr_current->stackless) {
+    fputs("scriptc: internal error: coroutine started outside a stackless generator\n", stderr);
+    abort();
+  }
+  scr_current->coro = handle;
+}
+#endif
 
 #ifdef __wasi__
 extern void scr_wasi_coro_resume(void *handle);
@@ -1669,10 +1689,13 @@ static void scr_fiber_destroy(ScrFiber *f) {
     if (f->context_next) f->context_next->context_previous = f->context_previous;
   }
 #endif
-#ifdef _WIN32
-  DeleteFiber(f->ctx);
-#elif defined(__wasi__)
+#ifdef __wasi__
   if (f->coro != NULL) scr_wasi_coro_destroy(f->coro);
+#else
+  if (f->coro != NULL) scr_coro_destroy(f->coro);
+#ifdef _WIN32
+  if (!f->stackless) DeleteFiber(f->ctx);
+#endif
 #endif
   scr_als_ctx_release(f->als);
 #if !defined(_WIN32) && !defined(__wasi__)
@@ -2000,6 +2023,17 @@ bool scr_wasi_module_await_prepare(ScrFiber *self, ScrPromise *p) {
 void scr_wasi_async_finish(ScrFiber *self) { scr_fiber_finish(self); }
 
 void scr_wasi_gen_finish(ScrFiber *self) {
+  if (scr_exc_genret_pending()) {
+    scr_exc_clear();
+    scr_gen_ret_to_out(self->gen);
+  }
+  scr_fiber_finish(self);
+}
+#else
+/* A stackless generator body's final block: the native trampoline
+ * epilogue (consume a GENRET unwind, promoting the parked .return value)
+ * plus the fiber's completion mark. */
+void scr_gen_coro_finish(ScrFiber *self) {
   if (scr_exc_genret_pending()) {
     scr_exc_clear();
     scr_gen_ret_to_out(self->gen);
@@ -4043,8 +4077,9 @@ struct ScrGen {
 
 static ScrGen *scr_gen_new_common(void (*entry)(ScrFiber *, void *), void *argpack,
                                   void (*drop_args)(void *),
-                                  void (*settle_async)(ScrGen *, ScrPromise *)) {
-  ScrGen *g = calloc(1, sizeof *g);
+                                  void (*settle_async)(ScrGen *, ScrPromise *),
+                                  bool stackless) {
+  ScrGen *g = scr_mem_calloc(sizeof *g);
   if (!g) scr_oom();
   g->rc = 1;
   g->receiver = scr_dyn_this_get();
@@ -4065,13 +4100,16 @@ static ScrGen *scr_gen_new_common(void (*entry)(ScrFiber *, void *), void *argpa
    * fiber switch). */
   f->als = scr_als_ctx_retain(*SCR_ALS_SLOT());
   scr_fibers_live++;
+  f->stackless = stackless;
 #ifdef _WIN32
-  f->ctx = CreateFiberEx(4096, 0, 0, scr_trampoline, NULL);
-  if (f->ctx == NULL) scr_oom();
+  if (!stackless) {
+    f->ctx = CreateFiberEx(4096, 0, 0, scr_trampoline, NULL);
+    if (f->ctx == NULL) scr_oom();
+  }
 #elif defined(__wasi__)
   f->ctx = 0;
 #else
-  scr_fiber_context_init(f);
+  if (!stackless) scr_fiber_context_init(f);
 #endif
   g->fiber = f;
   return g;
@@ -4079,13 +4117,18 @@ static ScrGen *scr_gen_new_common(void (*entry)(ScrFiber *, void *), void *argpa
 
 ScrGen *scr_gen_new(void (*entry)(ScrFiber *, void *), void *argpack,
                     void (*drop_args)(void *)) {
-  return scr_gen_new_common(entry, argpack, drop_args, NULL);
+  return scr_gen_new_common(entry, argpack, drop_args, NULL, false);
+}
+
+ScrGen *scr_gen_new_stackless(void (*entry)(ScrFiber *, void *), void *argpack,
+                              void (*drop_args)(void *)) {
+  return scr_gen_new_common(entry, argpack, drop_args, NULL, true);
 }
 
 ScrGen *scr_async_gen_new(void (*entry)(ScrFiber *, void *), void *argpack,
                           void (*drop_args)(void *),
                           void (*settle)(ScrGen *, ScrPromise *)) {
-  return scr_gen_new_common(entry, argpack, drop_args, settle);
+  return scr_gen_new_common(entry, argpack, drop_args, settle, false);
 }
 
 ScrGen *scr_gen_retain(ScrGen *g) {
@@ -4132,7 +4175,7 @@ void scr_gen_release(ScrGen *g) {
     }
   }
   scr_obj_free_note();
-  free(g);
+  scr_mem_free(g);
 }
 
 void *scr_gen_retain_v(void *g) { return scr_gen_retain((ScrGen *)g); }
@@ -4220,6 +4263,11 @@ static ScrGen *scr_gen_self(void) {
 double scr_gen_take_in_f64(void) { return scr_gen_slot_take_f64(&scr_gen_self()->in); }
 bool scr_gen_take_in_bool(void) { return scr_gen_slot_take_bool(&scr_gen_self()->in); }
 void *scr_gen_take_in_ref(void) { return scr_gen_slot_take_ref(&scr_gen_self()->in); }
+ScrDyn *scr_gen_take_in_dyn(void) {
+  ScrGenSlot *in = &scr_gen_self()->in;
+  if (in->kind == SCR_EXC_NONE) return scr_dyn_retain(scr_dyn_undefined());
+  return scr_gen_slot_take_ref(in);
+}
 
 ScrDyn *scr_gen_delegate_resume(ScrDyn *(*next_ref)(void *),
                                 ScrDyn *(*return_ref)(void *),
@@ -4276,6 +4324,14 @@ void scr_gen_yield_ref(void *v, void (*release)(void *)) {
   scr_gen_yield_switch();
 }
 
+/* Coroutine-body yields: park the value in the body's own generator; the
+ * emitted suspension follows. */
+void scr_coro_yield_f64(ScrFiber *self, double v) { scr_gen_slot_f64(&self->gen->out, v); }
+void scr_coro_yield_bool(ScrFiber *self, bool v) { scr_gen_slot_bool(&self->gen->out, v); }
+void scr_coro_yield_ref(ScrFiber *self, void *v, void (*release)(void *)) {
+  scr_gen_slot_ref(&self->gen->out, v, release);
+}
+
 void scr_async_gen_hop_done(void) {
   ScrGen *g = scr_gen_self();
   if (!g->is_async) {
@@ -4297,6 +4353,57 @@ void scr_gen_ret_to_out(ScrGen *g) {
   g->ret.release_fn = NULL;
 }
 
+/* Back from the body (a yield, a finish, or an async generator's await):
+ * settle the generator's state, moving a finished body's exception to the
+ * resumer and tearing the finished fiber down. */
+__attribute__((always_inline)) static inline void scr_gen_switched_back(ScrGen *g,
+                                                                  ScrFiber *f) {
+  if (f->done) {
+    g->state = SCR_GEN_DONE;
+    if (f->exc.kind != SCR_EXC_NONE) {
+      if (g->is_async) {
+        /* Async-generator failures reject the active request; they never
+         * throw synchronously from next/return/throw. */
+        scr_gen_exc_move(&g->async_error, &f->exc);
+      } else {
+        /* The sync body's exception escapes at the resume site. */
+        ScrExcCell *mine = scr_exc_current_cell();
+        scr_gen_exc_move(mine, &f->exc);
+      }
+    }
+    scr_fiber_destroy(f);
+    g->fiber = NULL;
+    scr_fibers_live--;
+  } else {
+    /* An async generator can return to its resumer because it yielded OR
+     * because await parked it. OUT distinguishes the two. */
+    g->state = g->is_async && !scr_gen_out_has(g)
+        ? SCR_GEN_AWAITING
+        : SCR_GEN_SUSPENDED;
+  }
+  scr_gen_release(g);
+}
+
+#ifndef __wasi__
+/* The stackless form of the hop: the coroutine frame runs on this stack
+ * until its next yield or its final suspension returns here. */
+static void scr_gen_coro_in(ScrGen *g) {
+  ScrFiber *f = g->fiber;
+  scr_gen_retain(g);
+  g->state = SCR_GEN_RUNNING;
+  ScrFiber *me = scr_current;
+  scr_current = f;
+  scr_exc_swap_cell(&f->exc);
+  scr_als_active = &f->als;
+  if (f->coro == NULL) f->entry(f, f->argpack);
+  else scr_coro_resume(f->coro);
+  scr_current = me;
+  scr_exc_swap_cell(me != NULL ? &me->exc : NULL);
+  scr_als_active = me != NULL ? &me->als : &scr_als_main_slot;
+  scr_gen_switched_back(g, f);
+}
+#endif
+
 /* The consumer→fiber hop shared by every resume mode: switches in, and on
  * the way back moves a pending body exception into the RESUMER's cell
  * (synchronous propagation — the await-rethrow analog) and tears down a
@@ -4304,6 +4411,12 @@ void scr_gen_ret_to_out(ScrGen *g) {
  * releases the consumer's last reference cannot free it mid-run. */
 static void scr_gen_switch_in(ScrGen *g) {
   ScrFiber *f = g->fiber;
+#ifndef __wasi__
+  if (f->stackless) {
+    scr_gen_coro_in(g);
+    return;
+  }
+#endif
   scr_gen_retain(g);
   g->state = SCR_GEN_RUNNING;
 #ifdef _WIN32
@@ -4331,30 +4444,7 @@ static void scr_gen_switch_in(ScrGen *g) {
   scr_current = me;
   scr_exc_swap_cell(me != NULL ? &me->exc : NULL);
 #endif
-  if (f->done) {
-    g->state = SCR_GEN_DONE;
-    if (f->exc.kind != SCR_EXC_NONE) {
-      if (g->is_async) {
-        /* Async-generator failures reject the active request; they never
-         * throw synchronously from next/return/throw. */
-        scr_gen_exc_move(&g->async_error, &f->exc);
-      } else {
-        /* The sync body's exception escapes at the resume site. */
-        ScrExcCell *mine = scr_exc_current_cell();
-        scr_gen_exc_move(mine, &f->exc);
-      }
-    }
-    scr_fiber_destroy(f);
-    g->fiber = NULL;
-    scr_fibers_live--;
-  } else {
-    /* An async generator can return to its resumer because it yielded OR
-     * because await parked it. OUT distinguishes the two. */
-    g->state = g->is_async && !scr_gen_out_has(g)
-        ? SCR_GEN_AWAITING
-        : SCR_GEN_SUSPENDED;
-  }
-  scr_gen_release(g);
+  scr_gen_switched_back(g, f);
 }
 
 void scr_gen_resume(ScrGen *g) {
@@ -4371,6 +4461,18 @@ void scr_gen_resume(ScrGen *g) {
   default:
     scr_gen_switch_in(g);
   }
+}
+
+void scr_gen_close(ScrGen *g) {
+  scr_gen_slot_reset(&g->ret);
+  scr_gen_resume_return(g);
+  scr_gen_slot_reset(&g->out);
+}
+
+bool scr_gen_step(ScrGen *g) {
+  scr_gen_slot_reset(&g->in);
+  scr_gen_resume(g);
+  return g->state == SCR_GEN_DONE;
 }
 
 void scr_gen_resume_return(ScrGen *g) {
