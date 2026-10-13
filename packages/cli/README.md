@@ -1,6 +1,6 @@
 # scriptc
 
-Compile ordinary TypeScript and JavaScript to small, fast native executables or WASI WebAssembly modules that run without Node.js installed.
+Compile TypeScript and JavaScript to native executables or WASI WebAssembly modules that run without Node.js installed.
 
 ```console
 $ cat fib.ts
@@ -16,7 +16,7 @@ $ scriptc build fib.ts -o fib >/dev/null && ./fib
 832040
 ```
 
-There are no annotations to add and no dialect to learn: scriptc compiles the same TypeScript you run on Node.js, type-checked by the TypeScript compiler. npm packages your program imports compile along with it. Anything scriptc can't compile fails the build with a specific error code and usually a rewrite hint.
+scriptc compiles the same TypeScript you run on Node.js, type-checked by the TypeScript compiler. npm packages your program imports compile along with it. Code scriptc can't compile fails the build with an error code and, where available, a rewrite hint.
 
 scriptc is experimental. See the [limitations](https://scriptc.dev/docs/limitations) and the [Node.js compatibility reference](https://scriptc.dev/compatibility).
 

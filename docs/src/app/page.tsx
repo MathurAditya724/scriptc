@@ -33,7 +33,7 @@ const steps = [
   },
   {
     title: "Compile",
-    body: "LLVM generates optimized machine code for your program and the npm packages it imports. Anything unsupported is reported with a code, a location, and a hint.",
+    body: "LLVM generates machine code for your program and the npm packages it imports. Anything unsupported is reported with a code, a location, and a hint.",
   },
   {
     title: "Ship",
@@ -48,7 +48,7 @@ const points = [
   },
   {
     title: "npm packages included",
-    body: "Packages your program imports compile into the executable, so it never reads node_modules at runtime.",
+    body: "Packages your program imports compile into the executable, which doesn't read node_modules at runtime.",
   },
   {
     title: "Cross-compilation",

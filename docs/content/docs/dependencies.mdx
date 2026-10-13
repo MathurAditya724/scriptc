@@ -2,7 +2,7 @@
 title: "npm Dependencies"
 ---
 
-Programs can import npm packages the same way they do under Node.js. scriptc compiles each package your program uses to native code along with your own code, so the executable carries everything it needs and never reads `node_modules` at runtime.
+Programs can import npm packages the same way they do under Node.js. scriptc compiles each package your program uses to native code along with your own code. The executable doesn't read `node_modules` at runtime.
 
 Package support is partial. Packages that scriptc can't compile are reported at build time with a diagnostic, so check new dependencies with [`scriptc coverage`](/docs/coverage) before relying on them.
 

@@ -7,7 +7,7 @@
   <a href="https://www.npmjs.com/package/scriptc"><img alt="npm downloads per month: scriptc" src="https://img.shields.io/npm/dm/scriptc.svg?style=for-the-badge&amp;labelColor=000000&amp;label=npm%20downloads" height="28"></a>
 </p>
 
-scriptc compiles TypeScript and JavaScript to native executables and WebAssembly. It uses the types the TypeScript compiler checks to generate optimized machine code, so a program you run with Node.js today can ship as a single binary that runs without Node.js installed. npm packages your program imports compile along with it, and anything scriptc can't compile is reported at build time with a diagnostic and usually a rewrite hint.
+scriptc compiles TypeScript and JavaScript to native executables and WebAssembly. It uses the types checked by the TypeScript compiler to generate machine code, and the output runs without Node.js installed. npm packages your program imports compile along with it. Code scriptc can't compile is reported at build time with a diagnostic and, where available, a rewrite hint.
 
 scriptc is experimental and supports a subset of JavaScript, TypeScript, and Node.js APIs. Run `scriptc coverage` on an existing program to see how much of it compiles, and see the [limitations](https://scriptc.dev/docs/limitations) and [Node.js compatibility reference](https://scriptc.dev/compatibility) for details.
 
@@ -32,14 +32,14 @@ const who = process.argv.length > 2 ? process.argv[2] : "world";
 console.log(`hello, ${who}`);
 ```
 
-Compile and run it in one step:
+`scriptc run` compiles the file and runs the result:
 
 ```console
 $ scriptc run hello.ts
 hello, world
 ```
 
-Or write a standalone executable:
+`scriptc build` writes an executable:
 
 ```console
 $ scriptc build hello.ts -o hello >/dev/null
