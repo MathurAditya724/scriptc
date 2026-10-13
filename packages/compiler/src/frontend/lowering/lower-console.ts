@@ -1,5 +1,13 @@
 import * as ts from "../ts7/adapter.js";
-import { BOOL, DYN, type IrExpr, type IrStmt, type SrcLoc, VOID } from "../../ir/ir.js";
+import {
+  BOOL,
+  DYN,
+  type IrExpr,
+  type IrStmt,
+  type IrType,
+  type SrcLoc,
+  VOID,
+} from "../../ir/ir.js";
 import { boolLit, numLit, varRef } from "../../ir/build.js";
 import { locOf } from "../program.js";
 import { type Lowerer } from "./lowerer.js";
@@ -44,19 +52,20 @@ function isUndefinedArg(node: ts.Expression | undefined): boolean {
   );
 }
 
-type Target = { fd: number } | { local: string };
+type Target = { fd: number } | { local: string; type: IrType };
+
+type OptionRole = "stdout" | "stderr" | "ignoreErrors";
 
 /** `new Console(stdout[, stderr][, ignoreErrors])` and `new
- * Console({ stdout, stderr, ignoreErrors })`. Arguments evaluate in source
- * order into hidden locals before the handle exists (Node evaluates them
- * before the constructor body); an absent stderr shares stdout's target. */
+ * Console({ stdout, stderr, ignoreErrors })`. Arguments and option
+ * initializers evaluate in source order into hidden locals before the
+ * handle exists (Node evaluates them before the constructor body); an
+ * absent stderr shares stdout's target. */
 export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
   if (!isConsoleCtor(lowerer, expr.expression)) return null;
   const loc = locOf(expr);
   const args = expr.arguments ?? [];
-  let stdoutNode: ts.Expression | undefined;
-  let stderrNode: ts.Expression | undefined;
-  let ignoreNode: ts.Expression | undefined;
+  const entries: { role: OptionRole; node: ts.Expression | undefined }[] = [];
   const first = args[0];
   if (first && ts.isObjectLiteralExpression(first)) {
     for (const prop of first.properties) {
@@ -79,15 +88,12 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
           "colorMode, inspectOptions, and groupIndentation have no lowering yet",
         );
       }
-      if (name === "stdout") stdoutNode = value;
-      else if (name === "stderr") stderrNode = value;
-      else ignoreNode = value;
+      entries.push({ role: name as OptionRole, node: value });
     }
   } else {
-    [stdoutNode, stderrNode, ignoreNode] = args;
-  }
-  if (stdoutNode === undefined) {
-    lowerer.noLowering("new Console without a stdout stream", expr, "pass the stdout stream");
+    entries.push({ role: "stdout", node: args[0] });
+    entries.push({ role: "stderr", node: args[1] });
+    entries.push({ role: "ignoreErrors", node: args[2] });
   }
   const stmts: IrStmt[] = [];
   const target = (node: ts.Expression, role: string): Target => {
@@ -109,24 +115,50 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
     }
     const local = lowerer.declareHiddenLocal(`%console${role}`, value.type);
     stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
-    return { local: local.id };
+    return { local: local.id, type: value.type };
   };
-  const out = target(stdoutNode, "stdout");
-  const err = isUndefinedArg(stderrNode) ? out : target(stderrNode!, "stderr");
-  let ignore: IrExpr = boolLit(true, loc);
-  if (!isUndefinedArg(ignoreNode)) {
-    const value = lowerer.lowerExpr(ignoreNode!);
-    if (value.type.kind !== "bool") {
-      lowerer.noLowering(
-        `ignoreErrors of type '${lowerer.fmt(value.type)}'`,
-        ignoreNode!,
-        "pass a boolean",
-      );
+  let out: Target | null = null;
+  let err: Target | null = null;
+  let ignore: IrExpr | null = null;
+  for (const entry of entries) {
+    const node = entry.node;
+    if (isUndefinedArg(node)) {
+      // `void expr` still evaluates its operand.
+      if (node !== undefined && ts.isVoidExpression(node)) {
+        stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(node), loc });
+      }
+      if (entry.role === "stdout") out = null;
+      else if (entry.role === "stderr") err = null;
+      else ignore = null;
+      continue;
     }
-    const local = lowerer.declareHiddenLocal("%consoleIgnoreErrors", BOOL);
-    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
-    ignore = varRef(local.id, BOOL, loc);
+    if (entry.role === "stdout") {
+      out = target(node!, "stdout");
+    } else if (entry.role === "stderr") {
+      err = target(node!, "stderr");
+    } else {
+      const value = lowerer.lowerExpr(node!);
+      if (value.type.kind !== "bool") {
+        lowerer.noLowering(
+          `ignoreErrors of type '${lowerer.fmt(value.type)}'`,
+          node!,
+          "pass a boolean",
+        );
+      }
+      const local = lowerer.declareHiddenLocal("%consoleIgnoreErrors", BOOL);
+      stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+      ignore = varRef(local.id, BOOL, loc);
+    }
   }
+  if (out === null) {
+    return lowerer.noLowering(
+      "new Console without a stdout stream",
+      expr,
+      "pass the stdout stream",
+    );
+  }
+  const stdoutTarget: Target = out;
+  const stderrTarget: Target = err ?? stdoutTarget;
   const handle = lowerer.declareHiddenLocal("%console", DYN);
   const fdOf = (t: Target): IrExpr => numLit("fd" in t ? t.fd : 0, loc);
   stmts.push({
@@ -135,33 +167,28 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
     init: {
       kind: "libCall",
       fn: "console.new",
-      args: [fdOf(out), fdOf(err), ignore],
+      args: [fdOf(stdoutTarget), fdOf(stderrTarget), ignore ?? boolLit(true, loc)],
       type: DYN,
       loc,
     },
     loc,
   });
-  [out, err].forEach((t, which) => {
-    if (!("local" in t)) return;
-    const stream = stmts.find(
-      (s): s is IrStmt & { kind: "varDecl" } => s.kind === "varDecl" && s.localId === t.local,
-    )!;
+  const targets: Target[] = [stdoutTarget, stderrTarget];
+  for (let which = 0; which < targets.length; which++) {
+    const t = targets[which]!;
+    if (!("local" in t)) continue;
     stmts.push({
       kind: "exprStmt",
       expr: {
         kind: "libCall",
         fn: "console.bind",
-        args: [
-          varRef(handle.id, DYN, loc),
-          numLit(which, loc),
-          varRef(t.local, stream.init!.type, loc),
-        ],
+        args: [varRef(handle.id, DYN, loc), numLit(which, loc), varRef(t.local, t.type, loc)],
         type: VOID,
         loc,
       },
       loc,
     });
-  });
+  }
   return { kind: "seqExpr", stmts, result: varRef(handle.id, DYN, loc), type: DYN, loc };
 }
 

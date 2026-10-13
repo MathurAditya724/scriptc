@@ -3,7 +3,8 @@
 // interleaving with the global console in source order, util.format
 // rendering (%-specifiers, inspected values, the empty call) as ONE write
 // of the formatted line per call, and instances (and the global console)
-// carried through Console-typed records, parameters, and closures.
+// carried through Console-typed records, parameters, and closures. Option
+// initializers evaluate in source order.
 import { Console } from "node:console";
 import { PassThrough, Writable } from "node:stream";
 
@@ -66,6 +67,26 @@ async function main(): Promise<void> {
   const global: Console = console;
   line(global, 2);
   report(global, { a: 3, b: [] });
+
+  const order: string[] = [];
+  const pick = (label: string, s: Writable): Writable => {
+    order.push(label);
+    return s;
+  };
+  const flag = (label: string, v: boolean): boolean => {
+    order.push(label);
+    return v;
+  };
+  const x = collector();
+  const y = collector();
+  const reordered = new Console({
+    ignoreErrors: flag("ignoreErrors", true),
+    stderr: pick("stderr", y.stream),
+    stdout: pick("stdout", x.stream),
+  });
+  reordered.log("x out");
+  reordered.error("y err");
+  console.log(order.join(","), JSON.stringify(x.chunks), JSON.stringify(y.chunks));
 
   const pt = new PassThrough();
   const piped = new Console(pt);
