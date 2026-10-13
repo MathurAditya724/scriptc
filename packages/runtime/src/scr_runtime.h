@@ -2922,13 +2922,15 @@ ScrPromise *scr_sp_pipeline(double n, ScrStream **streams);
  * and settle at the terminal point (right after 'close', the eos timing
  * Node's consumers share) — text answers the utf8 decode, json parses
  * the text (malformed input rejects with the parse's SyntaxError; the
- * result is a +1 dyn tree), buffer the concatenated bytes. Stream
- * errors reject; an early close rejects ERR_STREAM_PREMATURE_CLOSE; a
- * stream with no readable side rejects Node's async-iterable TypeError.
+ * result is a +1 dyn tree), buffer the concatenated bytes, arrayBuffer
+ * a +1 ArrayBuffer dyn over them. Stream errors reject; an early close
+ * rejects ERR_STREAM_PREMATURE_CLOSE; a stream with no readable side
+ * rejects Node's async-iterable TypeError.
  * Streams borrowed; +1 promises. */
 ScrPromise *scr_sc_text(ScrStream *s);
 ScrPromise *scr_sc_json(ScrStream *s);
 ScrPromise *scr_sc_buffer(ScrStream *s);
+ScrPromise *scr_sc_array_buffer(ScrStream *s);
 /* Readable.from(array): +1 fully-seeded object-entry stream (one WHOLE
  * chunk per element — strings or Buffers per the flag; hwm 1, already
  * EOF'd). Borrows arr. */

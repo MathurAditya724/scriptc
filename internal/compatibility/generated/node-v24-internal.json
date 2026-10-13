@@ -911,9 +911,9 @@
       "apiEntries": 88,
       "static": {
         "supported": 0,
-        "partial": 3,
-        "refused": 2,
-        "not-implemented": 83,
+        "partial": 7,
+        "refused": 1,
+        "not-implemented": 80,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -101671,7 +101671,10 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/2629-stream-consumers.ts",
+          "tests/corpus/2630-stream-consumers-errors.ts",
           "tests/corpus/2862-web-readable-async-iteration.ts",
+          "tests/corpus/4870-stream-consumers-array-buffer.ts",
           "tests/harness/fetch-conformance.test.ts"
         ]
       },
@@ -101787,8 +101790,11 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.stream.consumers.arrayBuffer"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.streamConsumers.arrayBuffer",
+        "tests": [
+          "tests/corpus/4870-stream-consumers-array-buffer.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101833,8 +101839,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.streamConsumers.buffer",
+        "tests": [
+          "tests/corpus/2629-stream-consumers.ts",
+          "tests/corpus/2630-stream-consumers-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101879,8 +101889,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.streamConsumers.json",
+        "tests": [
+          "tests/corpus/2629-stream-consumers.ts",
+          "tests/corpus/2630-stream-consumers-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101902,8 +101916,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.streamConsumers.text",
+        "tests": [
+          "tests/corpus/2629-stream-consumers.ts",
+          "tests/corpus/2630-stream-consumers-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
