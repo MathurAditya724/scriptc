@@ -1844,13 +1844,13 @@ export class LlEmitter {
       `%ScrFfiTable = type { ptr, ${this.sizeType}, ${this.sizeType}, ptr, i8, ptr, ptr, ${this.sizeType}, ${this.sizeType}, ${this.sizeType}, ptr, ptr }`,
       `%ScrRegex = type { ${this.sizeType}, ptr, ptr, ptr, double, ptr, ptr }`,
       // ScrArr mirrors scr_runtime.h field-for-field: { rc, len, cap, elem,
-      // cyc, ops, data, present, ext } (field numbers in SCR_ARR_FIELD),
-      // where ops points at the element type's constant RC descriptor
+      // cyc, spare, filled, ops, data, present, ext } (field numbers in
+      // SCR_ARR_FIELD), where filled bounds the hole-free prefix, ops points at the element type's constant RC descriptor
       // (%ScrArrOps, SCR_ELEM_REF only) and ext at the out-of-line sparse,
       // property and metadata storage (NULL until first used). Live dynamic
       // stream commits swap its dense, presence and out-of-line storage while
       // preserving the target object's identity.
-      `%ScrArr = type { ${this.sizeType}, ${this.sizeType}, ${this.sizeType}, i32, i32, ptr, ptr, ptr, ptr }`,
+      `%ScrArr = type { ${this.sizeType}, ${this.sizeType}, ${this.sizeType}, i8, i8, i16, i32, ptr, ptr, ptr, ptr }`,
       `%ScrArrOps = type { ptr, ptr, ptr }`,
       // The ScrMap prefix { rc, key_kind, val_kind, val_retain, val_release,
       // val_trace, key_retain, key_release, key_trace } — the inline RC
@@ -2034,16 +2034,16 @@ export class LlEmitter {
     for (const [, inst] of this.templateStringsInstances) {
       // One immortal ScrArr per tagged-template site: a [N x ptr] data
       // global of interned cooked-string literals, and the ScrArr header
-      // over it (rc == SIZE_MAX, len == cap, SCR_ELEM_STR = 2, no REF
-      // entry points). Every dense slot is present; reads retain immortal
-      // strings — a no-op.
+      // over it (rc == SIZE_MAX, len == cap == filled, SCR_ELEM_STR = 2,
+      // no REF entry points). Every dense slot is present; reads retain
+      // immortal strings — a no-op.
       const n = inst.slots.length;
       const present =
         n === 0 ? "zeroinitializer" : `[ ${inst.slots.map(() => "i8 1").join(", ")} ]`;
       out.push(
         `@${inst.sym}_data = internal constant [${n} x ptr] [ ${inst.slots.map((s) => `ptr ${s}`).join(", ")} ]`,
         `@${inst.sym}_present = internal constant [${n} x i8] ${present}`,
-        `@${inst.sym} = internal global %ScrArr { ${this.sizeType} -1, ${this.sizeType} ${n}, ${this.sizeType} ${n}, i32 2, i32 0, ptr null, ptr @${inst.sym}_data, ptr @${inst.sym}_present, ptr null }`,
+        `@${inst.sym} = internal global %ScrArr { ${this.sizeType} -1, ${this.sizeType} ${n}, ${this.sizeType} ${n}, i8 2, i8 0, i16 0, i32 ${n}, ptr null, ptr @${inst.sym}_data, ptr @${inst.sym}_present, ptr null }`,
       );
     }
     if (this.templateStringsInstances.size > 0) out.push(``);

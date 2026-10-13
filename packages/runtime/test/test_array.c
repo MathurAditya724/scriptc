@@ -1266,6 +1266,86 @@ static void test_exact_construction(void) {
   scr_arr_release(refs);
 }
 
+/* The hole-free prefix bound never covers a non-value state, and the
+ * operations that keep an array hole-free keep the bound at its length. */
+static bool filled_ok(const ScrArr *a) {
+  if (a->filled > a->len || a->filled > a->cap) return false;
+  for (size_t i = 0; i < a->filled; i++)
+    if (a->present[i] != SCR_ARR_VALUE) return false;
+  return true;
+}
+
+static void test_filled_prefix(void) {
+  ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
+  for (int i = 0; i < 8; i++) scr_arr_push_f64(a, i);
+  check(a->filled == 8 && filled_ok(a), "pushes keep the bound at the length");
+  scr_arr_set_len(a, 12);
+  check(a->filled == 8 && filled_ok(a), "length growth leaves the bound below the holes");
+  scr_arr_set_f64(a, 8, 8);
+  check(a->filled == 9 && filled_ok(a), "a write at the bound extends it");
+  scr_arr_set_f64(a, 11, 11);
+  check(a->filled == 9 && filled_ok(a), "a write past a hole does not extend it");
+  scr_arr_release(scr_arr_fill_f64(a, 0, 0, INFINITY));
+  check(a->filled == 12 && filled_ok(a), "fill over the whole array restores it");
+  scr_arr_delete(a, 3);
+  check(a->filled == 3 && filled_ok(a), "delete cuts the bound at the hole");
+  scr_arr_set_f64(a, 3, 3);
+  check(a->filled == 4 && filled_ok(a), "refilling the hole continues the prefix");
+  scr_arr_set_undefined(a, 1);
+  check(a->filled == 1 && filled_ok(a), "present undefined cuts the bound");
+  scr_arr_set_len(a, 0);
+  check(a->filled == 0 && filled_ok(a), "truncation cuts the bound");
+  scr_arr_release(a);
+
+  ScrArr *b = scr_arr_new(SCR_ELEM_F64, 0);
+  for (int i = 0; i < 10; i++) scr_arr_push_f64(b, i);
+  check(scr_arr_shift_f64(b) == 0 && b->filled == 9 && filled_ok(b), "shift keeps a full bound");
+  scr_arr_unshift_f64(b, -1);
+  check(b->filled == 10 && filled_ok(b), "unshift keeps a full bound");
+  scr_arr_release(scr_arr_splice(b, 2, 3));
+  check(b->filled == 7 && filled_ok(b), "splice removal keeps a full bound");
+  double values[2] = {5, 6};
+  uint64_t two[2];
+  memcpy(two, values, sizeof two);
+  scr_arr_splice_drop(b, 1, 0, 2, two);
+  check(b->filled == 9 && filled_ok(b), "splice insertion keeps a full bound");
+  scr_arr_release(scr_arr_reverse(b));
+  check(b->filled == 9 && filled_ok(b), "reverse keeps a full bound");
+  scr_arr_release(scr_arr_copy_within(b, 0, 4, 6));
+  check(b->filled == 9 && filled_ok(b), "copyWithin inside the prefix keeps it");
+  scr_arr_set_len(b, 12);
+  scr_arr_release(scr_arr_copy_within(b, 2, 10, 12));
+  check(b->filled == 2 && filled_ok(b), "copyWithin of holes cuts the bound");
+  ScrArr *s = scr_arr_slice(b, 0, 2);
+  check(s->filled == 2 && filled_ok(s), "slice of a hole-free range is hole-free");
+  scr_arr_release(s);
+  s = scr_arr_slice(b, 0, INFINITY);
+  check(s->filled == 2 && filled_ok(s), "slice keeps holes out of the bound");
+  scr_arr_release(s);
+  scr_arr_release(scr_arr_reverse(b));
+  check(filled_ok(b), "reverse of a holey array recomputes the bound");
+  scr_arr_release(scr_arr_sort_primitive(b, false));
+  check(filled_ok(b), "sorting moves holes past the bound");
+  for (size_t i = 0; i < b->len; i++) {
+    if (i < b->cap && b->present[i] != SCR_ARR_VALUE) break;
+    check(i < b->filled, "sorted values form the bound");
+  }
+  while (scr_arr_len(b) > 0) {
+    scr_arr_pop_state(b, NULL);
+    check(filled_ok(b), "pop keeps the bound below the length");
+  }
+  scr_arr_release(b);
+
+  ScrArr *r = scr_arr_new(SCR_ELEM_STR, 0);
+  for (int i = 0; i < 4; i++) scr_arr_push_ref(r, scr_str_new("ab", 2));
+  check(r->filled == 4 && filled_ok(r), "reference pushes keep the bound");
+  scr_arr_delete(r, 0);
+  check(r->filled == 0 && filled_ok(r), "deleting the first reference empties the bound");
+  scr_arr_set_ref(r, 0, scr_str_new("c", 1));
+  check(r->filled == 1 && filled_ok(r), "a write at an empty bound extends it by one");
+  scr_arr_release(r);
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) {
     ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
@@ -1310,6 +1390,7 @@ int main(int argc, char **argv) {
   test_large_storage();
   test_bulk_reference_ownership();
   test_splice_drop();
+  test_filled_prefix();
 
   fprintf(stderr, "%ld/%ld cases passed\n", total - failed, total);
   return failed == 0 ? 0 : 1;
