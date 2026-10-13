@@ -129,7 +129,15 @@ for (const [fixture, backend] of ["ir-build", "contextual-ir", "coercion-builder
         const llvmPath = join(outDir, `generated-${bound}.ll`);
         const outPath = exe(`generated-${bound}`);
         writeFileSync(llvmPath, emitLlvmModule(mod));
-        await compileC({ cPath: llvmPath, outPath, sanitize });
+        // The emitted module is a compiler-generated TU, so it takes the same
+        // cached runtime objects as compile() rather than rebuilding the whole
+        // runtime from source for every bound.
+        await compileC({
+          cPath: llvmPath,
+          outPath,
+          sanitize,
+          cacheIdentity: "scriptc-generated-v1",
+        });
         const program = spawnSync(outPath, [], options);
         expect(program.error).toBeUndefined();
         expect(program.signal).toBeNull();
