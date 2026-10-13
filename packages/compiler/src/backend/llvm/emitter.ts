@@ -110,6 +110,7 @@ import {
   mangleRecordStruct,
   mangleTrampoline,
   mangleWrapper,
+  mangleBorrowingWrapper,
   mangleVtInstance,
 } from "../mangle.js";
 import { analyzeCallLifetimes, type CallLifetimes } from "./call-lifetimes.js";
@@ -609,6 +610,9 @@ export class LlEmitter {
   private readonly lazyCaptureBoxes = new Map<string, string>();
   private readonly lazyStackBoxes = new Map<string, string>();
   private borrowedParameters = new Set<string>();
+  /** Captures of the current closure body that its environment holds
+   * unchanged for the closure's whole life (LazyCaptures.stableCaptures). */
+  private stableCaptureIds: ReadonlySet<string> = new Set<string>();
   /** Parameters proven projection-only: callers may pass stack boxes. */
   private projectedParameters = new Set<string>();
   private stableCallBindings: ReadonlySet<string> = new Set();
@@ -1861,7 +1865,7 @@ export class LlEmitter {
       `%ScrLogArg = type { i32, i64 }`,
       `%ScrVt = type { ${this.sizeType}, ${this.sizeType}, ptr }`,
       `%ScrUnion = type { ${this.sizeType}, i32, ptr, ptr, ptr, i64 }`,
-      `%ScrClosure = type { ${this.sizeType}, ptr, ${this.sizeType}, ptr, i32, i32, ptr }`,
+      `%ScrClosure = type { ${this.sizeType}, ptr, ${this.sizeType}, ptr, i32, i32, ptr, ptr }`,
       `%ScrFfiTable = type { ptr, ${this.sizeType}, ${this.sizeType}, ptr, i8, ptr, ptr, ${this.sizeType}, ${this.sizeType}, ${this.sizeType}, ptr, ptr }`,
       `%ScrRegex = type { ${this.sizeType}, ptr, ptr, ptr, double, ptr, ptr }`,
       // ScrArr mirrors scr_runtime.h field-for-field: { rc, len, cap, elem,
@@ -3006,15 +3010,27 @@ export class LlEmitter {
       const ret =
         fn.async === true || fn.generator !== undefined ? "ptr" : this.llType(fn.returnType);
       const call = `call ${ret} @${this.callTarget(name)}(${args})`;
+      const lending = this.lendsEveryArgument(name);
       out.push(
         `define internal ${ret} @${mangleWrapper(name)}(ptr %env${params.length ? ", " + params.join(", ") : ""}) ${FN_ATTRS} { ; ${name} as a value`,
         `entry:`,
         ret === "void" ? `  ${call}` : `  %r = ${call}`,
         ret === "void" ? `  ret void` : `  ret ${ret} %r`,
         `}`,
-        `@${mangleFnClosure(name)} = internal ${this.mod.workers === true || this.mod.lib?.threadInstances === true ? "thread_local " : ""}global %ScrClosure { ${this.sizeType} -1, ptr @${mangleWrapper(name)}, ${this.sizeType} 0, ptr null, i32 ${(fn.generator ? 1 : 0) + (fn.async ? 2 : 0) + (fn.ownsPrototype ? 4 : 0)}, i32 0, ptr null }`,
+        `@${mangleFnClosure(name)} = internal ${this.mod.workers === true || this.mod.lib?.threadInstances === true ? "thread_local " : ""}global %ScrClosure { ${this.sizeType} -1, ptr @${mangleWrapper(name)}, ${this.sizeType} 0, ptr null, i32 ${(fn.generator ? 1 : 0) + (fn.async ? 2 : 0) + (fn.ownsPrototype ? 4 : 0)}, i32 0, ptr null, ptr ${lending ? `@${mangleBorrowingWrapper(name)}` : "null"} }`,
         ``,
       );
+      if (lending)
+        out.push(
+          `define internal ${ret} @${mangleBorrowingWrapper(name)}(ptr %env${params.length ? ", " + params.join(", ") : ""}) ${FN_ATTRS} { ; ${name} as a value, lending its arguments`,
+          `entry:`,
+          ret === "void"
+            ? `  call void @${mangleBorrowedFunction(name)}(${args})`
+            : `  %r = call ${ret} @${mangleBorrowedFunction(name)}(${args})`,
+          ret === "void" ? `  ret void` : `  ret ${ret} %r`,
+          `}`,
+          ``,
+        );
     }
     return out;
   }
@@ -5084,6 +5100,25 @@ export class LlEmitter {
 
   // ── functions ───────────────────────────────────────────────────────────
 
+  /** True when `fnName`'s borrowing body lends every reference parameter
+   * and returns an owned result: a closure over it then carries that body
+   * as its borrowing entry (ScrClosure.fn_borrowed), which callers that
+   * keep their arguments alive across the call may enter instead of `fn`. */
+  lendsEveryArgument(fnName: string): boolean {
+    const fn = this.fnByName.get(fnName);
+    if (!fn || fn.async || fn.generator || this.borrowedReturns.has(fnName)) return false;
+    if (fn.classCaptures !== undefined || this.implSlotBorrowed(fnName).size > 0) return false;
+    const borrowed = this.callLifetimes.borrowed.get(fnName);
+    if (!borrowed) return false;
+    let any = false;
+    for (const [index, param] of fn.params.entries()) {
+      if (!isRefCounted(param.type)) continue;
+      if (!borrowed.has(index)) return false;
+      any = true;
+    }
+    return any;
+  }
+
   /** The LLVM symbol a direct call or closure enters a function through:
    * async bodies are entered via their emitted spawn wrapper (which runs
    * the fiber eagerly to its first suspension and returns the promise);
@@ -5255,6 +5290,8 @@ export class LlEmitter {
     this.captureIds = new Set(
       [...(fn.captures ?? []), ...(fn.classCaptures ?? [])].map((c) => c.localId),
     );
+    this.stableCaptureIds =
+      fn.captures !== undefined ? this.lazyCaptures.stableCaptures(fn.name) : new Set();
     this.integerLoopBindings.clear();
     this.countedLoopsEnabled = this.debug === null && !fn.async && !fn.generator;
     this.finalFieldBorrows =
@@ -5586,8 +5623,9 @@ export class LlEmitter {
   }
 
   /** Keep the ordinary owned ABI for closures, virtual dispatch, generated
-   * runtime adapters and library exports. Only direct IR calls select the
-   * borrowing body. Ownership of other parameters moves into that body;
+   * runtime adapters and library exports. Only direct IR calls, calls of a
+   * known closure body and borrowing closure entries (fn_borrowed) select
+   * the borrowing body. Ownership of other parameters moves into that body;
    * borrowed parameters are released here on normal and exceptional exits.
    * The pending exception remains for the adapter's caller to handle. */
   /** With `kept`, the virtual adapter of a borrowing slot instead: the
@@ -5601,6 +5639,8 @@ export class LlEmitter {
     const B = new BlockBuilder();
     this.B = B;
     const params = fn.params.map((param, index) => `${this.llType(param.type)} %p${index}`);
+    // Lifted bodies receive their closure first (the callValue ABI).
+    if (fn.captures !== undefined) params.unshift("ptr %sc_env");
     const ret = this.llType(fn.returnType);
     const call = `call ${ret} @${mangleBorrowedFunction(fn.name)}(${params.join(", ")})`;
     B.line(ret === "void" ? call : `%result = ${call}`);
@@ -5688,6 +5728,9 @@ export class LlEmitter {
     const binding = this.binding(value.localId);
     // A module constant owns its value for the rest of the program.
     if (binding.kind === "global") return this.stableGlobals.has(value.localId);
+    // So does the environment for a capture nothing ever rebinds.
+    if (binding.kind === "boxed")
+      return this.stableCaptureIds.has(value.localId) && this.canBorrowReceiver(value);
     return (
       binding.kind === "local" &&
       binding.local !== undefined &&
@@ -6248,8 +6291,10 @@ export class LlEmitter {
       case "arraySet": {
         // Evaluation order matches JS: array, index, then value. Ownership
         // of a refcounted value moves into the array (the runtime releases
-        // the replaced element itself).
-        const arr = emitBorrowedInput(this, s.arr);
+        // the replaced element itself). A local receiver that the index and
+        // value cannot rebind is read in place, as for field stores; the
+        // released element cannot reach that binding.
+        const arr = this.emitStableReceiver(s.arr, [s.index, s.value]);
         const idx = this.emitExpr(s.index);
         const v = this.emitExpr(s.value);
         if (s.arr.type.kind !== "array")

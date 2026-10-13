@@ -37,7 +37,8 @@ function moduleFor(
     name: "work",
     params,
     returnType: options.numberReturn ? F64 : VOID,
-    // Exercise owned scope cleanup independently of direct-call borrowing.
+    // Exercise owned scope cleanup independently of parameter borrowing:
+    // the closure body rebinds its parameters (below), so it owns them.
     captures: [],
     locals: [
       ...params.map((p) => ({
@@ -51,6 +52,12 @@ function moduleFor(
     ],
     body: [
       ...body,
+      ...params.map((p) => ({
+        kind: "assign" as const,
+        localId: p.localId,
+        value: { kind: "varRef" as const, localId: p.localId, type: STRING, loc },
+        loc,
+      })),
       ...(options.numberReturn
         ? [
             {

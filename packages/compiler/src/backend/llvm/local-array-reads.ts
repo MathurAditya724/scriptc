@@ -13,6 +13,7 @@ import { analyzeCallLifetimes, type CallLifetimes } from "./call-lifetimes.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { ReferenceEffects } from "./reference-effects.js";
 import { SCR_ARR_FIELD, exactIndexLines } from "./common.js";
+import { exactInteger, widenInteger } from "./integer-values.js";
 
 export interface LocalArrayRead {
   type: IrType;
@@ -568,8 +569,13 @@ export function emitBorrowedArrayRead(
 ): void {
   const B = host.B;
   const array = host.emitStableReceiver(read.arr, [read.index]);
-  const integerIndex = host.emitIntegerLoopIndex(read.index);
+  const loopIndex = host.emitIntegerLoopIndex(read.index);
   const index = host.emitExpr(read.index);
+  // A proven integer index (an int32 local, say) needs no double
+  // round-trip; a negative one compares above the capacity as unsigned.
+  const exact =
+    loopIndex === null && host.sizeType === "i64" ? exactInteger(host, index, read.index) : null;
+  const integerIndex = loopIndex ?? (exact ? widenInteger(host, exact) : null);
   const slow = B.newLabel("borrow.array.slow"),
     join = B.newLabel("borrow.array.join");
   emitDenseReferenceArrayRead(

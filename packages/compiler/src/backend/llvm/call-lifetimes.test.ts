@@ -283,7 +283,9 @@ test("closure locals get local facts while their parameters stay unproven", () =
   ];
   const result = analyze(fn);
   expect(result.parameters.has("closure")).toBe(false);
-  expect(result.borrowed.has("closure")).toBe(false);
+  // Its owned entry adapts the closure ABI to a body that borrows the
+  // unchanged parameter.
+  expect(result.borrowed.get("closure")).toEqual(new Set([0]));
   expect(result.locals.get("closure")).toEqual(new Set(["item"]));
   // A captured local is never a stack candidate inside the closure body.
   fn.captures = [{ localId: "item", name: "item", type: optional }];
@@ -519,7 +521,7 @@ test("environment bodies prove their own locals but never their parameters", () 
   expect(facts.locals.get("lifted")).toEqual(new Set(["item"]));
   expect(facts.bindings.get("lifted")).toEqual(new Set(["item"]));
   expect(facts.parameters.has("lifted")).toBe(false);
-  expect(facts.borrowed.has("lifted")).toBe(false);
+  expect(facts.borrowed.get("lifted")).toEqual(new Set([0]));
   fn.async = true;
   expect(analyze(fn, leaf).locals.has("lifted")).toBe(false);
 });
@@ -562,6 +564,16 @@ test("strict union equality is a borrowing use of a local operand", () => {
   expect(analyze(fn).parameters.get("same")).toEqual(new Set([0]));
 });
 
+test("closure bodies borrow only reference parameters nothing rebinds", () => {
+  const fn = helper("closure", ["kept", "written", "boxed"]);
+  fn.captures = [];
+  fn.locals[2]!.boxed = true;
+  fn.body.push({ kind: "assign", localId: "written", value: ref("kept"), loc });
+  expect(analyze(fn).borrowed.get("closure")).toEqual(new Set([0]));
+  fn.async = true;
+  expect(analyze(fn).borrowed.has("closure")).toBe(false);
+});
+
 test("closure bodies get local facts but never parameter facts", () => {
   const fn = helper("closure");
   fn.captures = [];
@@ -572,7 +584,7 @@ test("closure bodies get local facts but never parameter facts", () => {
   ];
   const result = analyze(fn);
   expect(result.parameters.has("closure")).toBe(false);
-  expect(result.borrowed.has("closure")).toBe(false);
+  expect(result.borrowed.get("closure")).toEqual(new Set([0]));
   expect(result.locals.get("closure")).toEqual(new Set(["item"]));
   expect(result.projectedLocals.get("closure")).toEqual(new Set(["item"]));
   expect(result.bindings.get("closure")).toEqual(new Set(["item"]));

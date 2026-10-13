@@ -2230,6 +2230,7 @@ typedef struct {
   void *(*retain)(void *); /* reference elements; NULL for numbers */
   uint32_t arity;
   bool numbers;
+  bool borrowing; /* enter through f->fn_borrowed, lending the slots */
 } ScrSortCompare;
 
 static void *scr_sort_retain_str(void *p) { return scr_str_retain((ScrStr *)p); }
@@ -2238,9 +2239,12 @@ static void *scr_sort_retain_bytes(void *p) { return scr_bytes_retain((ScrBytes 
 
 /* One comparator call with the closure ABI of the emitted callValue: the
  * callee owns its reference parameters and reports an exception through
- * the pending flag. The caller holds the undefined-`this` window open for
- * the whole sort; every emitted call restores the receiver stack it
- * pushed, so its top is undefined at each comparator entry. */
+ * the pending flag. A closure with a borrowing entry (fn_borrowed) is
+ * entered there instead, lending both slots: the sort's storage owns every
+ * slot until the sort returns, and the comparator cannot reach it. The
+ * caller holds the undefined-`this` window open for the whole sort; every
+ * emitted call restores the receiver stack it pushed, so its top is
+ * undefined at each comparator entry. */
 static bool scr_sort_greater(const ScrSortCompare *c, uint64_t left, uint64_t right,
                              bool *failed) {
   double result;
@@ -2251,16 +2255,16 @@ static bool scr_sort_greater(const ScrSortCompare *c, uint64_t left, uint64_t ri
     else result = ((double (*)(ScrClosure *))c->f->fn)(c->f);
   } else {
     void *x = scr_slot_to_ptr(left), *y = scr_slot_to_ptr(right);
-    if (c->arity == 2) {
-      if (x) x = c->retain(x);
-      if (y) y = c->retain(y);
-      result = ((double (*)(ScrClosure *, void *, void *))c->f->fn)(c->f, x, y);
-    } else if (c->arity == 1) {
-      if (x) x = c->retain(x);
-      result = ((double (*)(ScrClosure *, void *))c->f->fn)(c->f, x);
+    void *fn = c->f->fn;
+    if (c->borrowing) {
+      fn = c->f->fn_borrowed;
     } else {
-      result = ((double (*)(ScrClosure *))c->f->fn)(c->f);
+      if (x && c->arity >= 1) x = c->retain(x);
+      if (y && c->arity >= 2) y = c->retain(y);
     }
+    if (c->arity == 2) result = ((double (*)(ScrClosure *, void *, void *))fn)(c->f, x, y);
+    else if (c->arity == 1) result = ((double (*)(ScrClosure *, void *))fn)(c->f, x);
+    else result = ((double (*)(ScrClosure *))fn)(c->f);
   }
   if (scr_exc_pending()) {
     *failed = true;
@@ -2288,8 +2292,9 @@ static bool scr_sort_greater(const ScrSortCompare *c, uint64_t left, uint64_t ri
   SCR_SORT_PREFETCH_AT(c, buf, (index) + SCR_SORT_PREFETCH_DISTANCE, limit)
 
 static ScrSortCompare scr_sort_compare_for(const ScrArr *a, ScrClosure *f, uint32_t arity) {
-  ScrSortCompare c = {f, NULL, arity, a->elem == SCR_ELEM_F64};
+  ScrSortCompare c = {f, NULL, arity, a->elem == SCR_ELEM_F64, false};
   if (!c.numbers) {
+    c.borrowing = f->fn_borrowed != NULL;
     if (a->elem == SCR_ELEM_STR) c.retain = scr_sort_retain_str;
     else if (a->elem == SCR_ELEM_ARR) c.retain = scr_sort_retain_arr;
     else if (a->elem == SCR_ELEM_BYTES) c.retain = scr_sort_retain_bytes;

@@ -87,3 +87,56 @@ test("class environments, async bodies and unknown targets keep the eager box", 
   expect(lazy(outer([closure("reader", ["options"])], { async: true }), reader).size).toBe(0);
   expect(lazy(outer([closure("missing", ["options"])])).size).toBe(0);
 });
+
+function stable(name: string, ...functions: IrFunction[]): Set<string> {
+  const map = new Map(functions.map((fn) => [fn.name, fn]));
+  return new LazyCaptures(map).stableCaptures(name);
+}
+
+test("closures read unchanged captured parameters and single declarations", () => {
+  const reader = lifted("reader", [{ kind: "return", value: ref("options"), loc }]);
+  expect(stable("reader", outer([closure("reader", ["options"])]), reader)).toEqual(
+    new Set(["options"]),
+  );
+  // Through a nested closure that captures the creating closure's capture.
+  const inner = lifted("inner", [{ kind: "return", value: ref("x"), loc }], "x");
+  const middle = lifted("middle", [closure("inner", ["mid"])], "mid");
+  const fns = [outer([closure("middle", ["options"])]), middle, inner];
+  expect(stable("inner", ...fns)).toEqual(new Set(["x"]));
+  // A boxed local bound by one declaration.
+  const declared = outer([
+    { kind: "varDecl", localId: "local", init: ref("plain"), loc },
+    closure("reader", ["local"]),
+  ]);
+  declared.locals.push({ id: "local", name: "local", type: record, mutable: false, boxed: true });
+  expect(stable("reader", declared, reader)).toEqual(new Set(["options"]));
+});
+
+test("any rebinding or unknown creation site keeps captured reads owned", () => {
+  const reader = lifted("reader", [{ kind: "return", value: ref("options"), loc }]);
+  const rebinding = outer([closure("reader", ["options"]), assign("options")]);
+  expect(stable("reader", rebinding, reader).size).toBe(0);
+  const writer = lifted("writer", [assign("options")]);
+  expect(stable("writer", outer([closure("writer", ["options"])]), writer).size).toBe(0);
+  // One creation site over a plain (unboxed) binding is enough to refuse.
+  const mixed = outer([closure("reader", ["options"]), closure("reader", ["plain"])]);
+  expect(stable("reader", mixed, reader).size).toBe(0);
+  // A local declared twice, or rebound after its declaration.
+  const twice = outer([
+    { kind: "varDecl", localId: "local", init: ref("plain"), loc },
+    { kind: "varDecl", localId: "local", init: ref("plain"), loc },
+    closure("reader", ["local"]),
+  ]);
+  twice.locals.push({ id: "local", name: "local", type: record, mutable: true, boxed: true });
+  expect(stable("reader", twice, reader).size).toBe(0);
+  const later = outer([
+    { kind: "varDecl", localId: "local", init: ref("plain"), loc },
+    closure("reader", ["local"]),
+    assign("local"),
+  ]);
+  later.locals.push({ id: "local", name: "local", type: record, mutable: true, boxed: true });
+  expect(stable("reader", later, reader).size).toBe(0);
+  // Async creators never box lazily.
+  const asyncOuter = outer([closure("reader", ["options"])], { async: true });
+  expect(stable("reader", asyncOuter, reader).size).toBe(0);
+});

@@ -74,7 +74,7 @@ void scr_init(void);
 /* Program objects emitted by the bundled LLVM helper reference this symbol.
  * Its versioned spelling makes a mismatched manual runtime link fail before
  * the program can start. */
-void scr_runtime_abi_v15(void);
+void scr_runtime_abi_v16(void);
 void scr_runtime_workers_v8(void);
 
 /* ── the trap funnel (scr_console.c; scr_library.c under -DSCR_LIB) ──────
@@ -2362,6 +2362,11 @@ typedef struct ScrClosure {
    * SameValue, searches and own properties all observe one function.
    * Borrowed: the adapter keeps its original alive through its captures. */
   struct ScrClosure *identity;
+  /* The same function with every reference argument borrowed (the caller
+   * keeps each one alive across the call and releases nothing extra), or
+   * NULL. Same signature as `fn`; only callers that hold their arguments
+   * for the whole call may enter through it. */
+  void *fn_borrowed;
   ScrBox *caps[];
 } ScrClosure;
 

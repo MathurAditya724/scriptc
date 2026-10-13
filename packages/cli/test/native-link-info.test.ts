@@ -72,7 +72,7 @@ describe.runIf(supported)("macOS arm64 native link info", () => {
         minimum_os: "14.0",
       },
       program: { object, entry_symbol: "main" },
-      runtime_abi: { version: 15, marker: "scr_runtime_abi_v15" },
+      runtime_abi: { version: 16, marker: "scr_runtime_abi_v16" },
       runtime_pack: {
         kind: "precompiled",
         package: "@scriptc/runtime-darwin-arm64",
@@ -165,6 +165,6 @@ describe.runIf(supported)("macOS arm64 native link info", () => {
       () => null,
       (failure: { stderr?: string }) => failure,
     );
-    expect(error?.stderr).toContain("scr_runtime_abi_v15");
+    expect(error?.stderr).toContain("scr_runtime_abi_v16");
   });
 });

@@ -41,6 +41,11 @@ export class BlockBuilder {
     return `${hint}${this.labelCounter++}`;
   }
 
+  /** The label of the block instructions currently append to. */
+  currentLabel(): string {
+    return this.cur.label;
+  }
+
   startBlock(label: string): void {
     this.cur = { label, lines: [], term: null };
     this.blocks.push(this.cur);

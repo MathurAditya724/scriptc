@@ -195,6 +195,7 @@ ScrClosure *scr_closure_new(void *fn, size_t ncaps) {
   c->function_kind = 0;
   c->identity_length = 0;
   c->identity = NULL;
+  c->fn_borrowed = NULL;
 #ifdef SCR_RC_AUDIT
   scr_live_closures++;
 #endif
