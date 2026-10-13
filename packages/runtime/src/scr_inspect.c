@@ -650,6 +650,60 @@ ScrStr *scr_insp_buffer(ScrBytes *b) {
   return ib_take(&out);
 }
 
+/* ArrayBuffer/SharedArrayBuffer: formatArrayBuffer's
+ * `[Uint8Contents]: <hex pairs>` (the first maxArrayLength = 100 bytes,
+ * then ` ... N more byte(s)`) followed by the byteLength key, inside the
+ * class braces. `[ArrayBuffer]` beyond depth. */
+static ScrStr *scr_insp_array_buffer(const ScrBytes *h, const char *cls, double recurse,
+                                     double depth) {
+  if (recurse > depth) {
+    InspBuf out = {0};
+    ib_char(&out, '[');
+    ib_cstr(&out, cls);
+    ib_char(&out, ']');
+    return ib_take(&out);
+  }
+  size_t len = (size_t)scr_bytes_byte_len(h);
+  size_t shown = len < 100 ? len : 100;
+  uint8_t head[100];
+  if (shown) scr_bytes_read(h, 0, head, shown);
+  static const char hex[] = "0123456789abcdef";
+  InspBuf contents = {0};
+  ib_cstr(&contents, "[Uint8Contents]: <");
+  for (size_t i = 0; i < shown; i++) {
+    if (i) ib_char(&contents, ' ');
+    ib_char(&contents, hex[head[i] >> 4]);
+    ib_char(&contents, hex[head[i] & 15]);
+  }
+  if (len > shown) {
+    char more[64];
+    size_t remaining = len - shown;
+    int n = snprintf(more, sizeof more, " ... %zu more byte%s", remaining, remaining > 1 ? "s" : "");
+    ib_bytes(&contents, more, (size_t)n);
+  }
+  ib_char(&contents, '>');
+  char byte_length[48];
+  int bn = snprintf(byte_length, sizeof byte_length, "[byteLength]: %zu", len);
+  scr_insp_begin(recurse + 1);
+  ScrStr *entry = ib_take(&contents);
+  scr_insp_entry(entry, false);
+  scr_str_release(entry);
+  entry = scr_str_new(byte_length, (size_t)bn);
+  scr_insp_entry(entry, false);
+  scr_str_release(entry);
+  InspBuf open = {0};
+  ib_cstr(&open, cls);
+  ib_cstr(&open, " {");
+  ScrStr *base = scr_str_new("", 0);
+  ScrStr *b0 = ib_take(&open);
+  ScrStr *b1 = scr_str_new("}", 1);
+  ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, false, false);
+  scr_str_release(base);
+  scr_str_release(b0);
+  scr_str_release(b1);
+  return out;
+}
+
 /* Errors: the STACKLESS rendering — compiled binaries carry no stack, so
  * the base is formatError's bracket form `[Name: message]` / `[Name]`
  * (Node prints these exact forms for an error whose stack is empty;
@@ -908,6 +962,10 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       return ib_take(&out);
     }
     case SCR_DYN_HANDLE: {
+      if (d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER ||
+          d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER) {
+        return scr_insp_array_buffer(d->v.handle.ptr, scr_dyn_handle_cls(d), recurse, depth);
+      }
       /* Node prints the class's full property dump (ServerResponse {
        * ... }) — internals we do not model. Fence loudly instead of a
        * silent-wrong shape (SEMANTICS.md). */

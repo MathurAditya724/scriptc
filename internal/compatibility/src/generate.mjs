@@ -645,6 +645,9 @@ function publicDetail(tier) {
     ) {
       return "Native codec values support UTF-8 encoding and whole-buffer decoding with recognized literal labels and default options.";
     }
+    if (source.startsWith("compiler-feature:webstreams.streamConsumers.")) {
+      return "Collects a Node Readable stream's chunks for the tested forms; web ReadableStreams and other async iterables remain unsupported.";
+    }
     if (tier.status === "not-applicable")
       return "Node configuration or documentation that does not map to a compiled program API.";
     if (tier.status === "not-implemented")

@@ -1860,14 +1860,6 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
-      "id": "node-builtin.stream.consumers.arrayBuffer",
-      "kind": "node-builtin",
-      "name": "stream/consumers.arrayBuffer",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "collecting a stream directly into an ArrayBuffer has no native lowering yet; buffer(stream) collects the same bytes as a Buffer"
-    },
-    {
       "id": "node-builtin.stream.consumers.blob",
       "kind": "node-builtin",
       "name": "stream/consumers.blob",
