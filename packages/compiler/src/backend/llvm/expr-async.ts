@@ -626,6 +626,18 @@ export function emitAsyncExpr(
       // re-throw here (hence the pending check). Promise temp borrowed;
       // refcounted results arrive +1 and join the frame pre-check so an
       // unwind releases the dummy (NULL) harmlessly.
+      // `await f(...)` of a direct async call: the call and the await go
+      // through f's await-call entry, which returns the awaited value
+      // (owned, with the pending check done by the call emission).
+      if (e.value.kind === "call" && host.awaitCallEligible(e.value.callee)) {
+        const callee = host.fnByName.get(e.value.callee)!;
+        if (
+          typeEquals(callee.returnType, e.type) &&
+          !host.callLifetimes.borrowed.has(e.value.callee)
+        ) {
+          return host.emitAwaitedCall(e.value);
+        }
+      }
       const pr = host.emitExpr(e.value);
       if (host.wasi) host.emitWasiSuspend(pr.name);
       if (e.type.kind === "void") {

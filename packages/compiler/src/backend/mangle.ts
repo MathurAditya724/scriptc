@@ -166,6 +166,11 @@ export function mangleGlobal(globalId: string): string {
 export function mangleAsyncSpawn(fnName: string): string {
   return `sc_as_${sanitize(fnName)}`;
 }
+/** `await f(...)` of a direct async call: the call and its await as one
+ * entry that returns the awaited value. */
+export function mangleAsyncAwaitCall(fnName: string): string {
+  return `sc_aw_${sanitize(fnName)}`;
+}
 export function mangleTrampoline(fnName: string): string {
   return `sc_tr_${sanitize(fnName)}`;
 }

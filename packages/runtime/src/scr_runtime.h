@@ -5351,6 +5351,13 @@ void scr_promise_release_v(void *p);
 typedef struct ScrFiber ScrFiber;
 /* Spawn + run eagerly to the first suspension; returns the promise, +1. */
 ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack);
+/* `await f(...)` of a fiber-backed async f: spawn and await in one call,
+ * returning the awaited value (a rejection re-throws into the caller). */
+void scr_async_spawn_await_void(void (*entry)(ScrFiber *, void *), void *argpack);
+double scr_async_spawn_await_f64(void (*entry)(ScrFiber *, void *), void *argpack);
+bool scr_async_spawn_await_bool(void (*entry)(ScrFiber *, void *), void *argpack);
+ScrStr *scr_async_spawn_await_str(void (*entry)(ScrFiber *, void *), void *argpack);
+void *scr_async_spawn_await_ref(void (*entry)(ScrFiber *, void *), void *argpack);
 /* Runtime-authored C waiters cannot themselves become LLVM switched
  * coroutines on wasm32. Spawn after `dependency` settles so their first
  * (and only) await is extraction from an already-settled promise, while
@@ -5370,6 +5377,10 @@ typedef struct ScrAsyncInline {
 } ScrAsyncInline;
 void scr_async_inline_enter(ScrAsyncInline *frame);
 ScrPromise *scr_async_inline_leave(ScrAsyncInline *frame);
+/* Leaves the frame without creating the call's promise: `await f()` of a
+ * fiberless f consumes the result directly (the emitted await-call entry
+ * still takes the await's microtask turn). */
+void scr_async_inline_exit(ScrAsyncInline *frame);
 
 /* wasm32-wasi lowers async functions and generators through LLVM switched
  * coroutines instead of the native stack-switching implementations. The

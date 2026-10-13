@@ -9,6 +9,7 @@ import {
 } from "../../ir/ir.js";
 import { collectFfiRetainedOps, parseFfiCallbackKey } from "../ffi-callbacks.js";
 import {
+  mangleAsyncAwaitCall,
   mangleBorrowedFunction,
   mangleClassNew,
   mangleClassRetain,
@@ -51,6 +52,7 @@ export function emitCallExpr(
     | "instanceOf"
     | "virtualCall"
   >,
+  awaitEntry = false,
 ): LlValue {
   const B = host.B;
   switch (e.kind) {
@@ -120,6 +122,24 @@ export function emitCallExpr(
       const argList = args
         .map((a, i) => `${host.llType(callee.params[i]!.type)} ${a.name}`)
         .join(", ");
+      if (awaitEntry) {
+        // The enclosing await routes this call through the callee's
+        // await-call entry: the result is the awaited value, and the
+        // await's rejection re-throw is the pending check.
+        host.awaitCallees.add(e.callee);
+        const awaited = callee.returnType;
+        const entry = `@${mangleAsyncAwaitCall(e.callee)}`;
+        if (awaited.kind === "void") {
+          B.line(`call void ${entry}(${argList})`);
+          host.emitPendingCheck();
+          return { name: "", type: awaited };
+        }
+        const t = B.tmp();
+        B.line(`${t} = call ${host.llType(awaited)} ${entry}(${argList})`);
+        const out = host.own({ name: t, type: awaited });
+        host.emitPendingCheck();
+        return out;
+      }
       // Async callee: the spawn wrapper runs the body eagerly to its
       // first suspension and returns the promise (+1). The call itself
       // never unwinds — rejections surface at await (computeMayThrow's

@@ -163,6 +163,8 @@ typedef struct { size_t rc; } ScrPromiseIdentity;
 
 struct ScrPromise {
   size_t rc; /* The cycle collector reads the reference count at offset zero. */
+  /* Shared identity cell for promises adopted across inner types (NULL
+   * until scr_promise_share_identity first links this promise). */
   ScrPromiseIdentity *identity;
   int state;
   bool top_level_handled; /* uncaughtException handled entry evaluation */
@@ -178,8 +180,9 @@ struct ScrPromise {
   void (*release_fn)(void *);
   ScrTraceFn trace_fn;
   /* Fibers parked on this promise. */
-  ScrFiber **waiters;
+  ScrFiber **waiters; /* waiter_inline until a second fiber parks */
   size_t nwaiters, waiters_cap;
+  ScrFiber *waiter_inline;
   /* Combinator callbacks (Promise.race / Promise.all): at settle,
    * fulfilled promises run adapt(dst, this) — an emitted adapter
    * converting the payload into the destination's inner type — and
@@ -235,6 +238,37 @@ static void scr_oom(void) {
   abort();
 }
 
+static void scr_promise_free_side(ScrPromise *p) {
+  if (p->identity && --p->identity->rc == 0) free(p->identity);
+  if (p->waiters != &p->waiter_inline) free(p->waiters);
+}
+
+static void scr_promise_add_waiter(ScrPromise *p, ScrFiber *f) {
+  if (p->nwaiters == p->waiters_cap) {
+    if (p->waiters_cap == 0) {
+      p->waiters = &p->waiter_inline;
+      p->waiters_cap = 1;
+    } else {
+      size_t cap = p->waiters_cap < 4 ? 4 : p->waiters_cap * 2;
+      ScrFiber **grown = p->waiters == &p->waiter_inline
+                             ? malloc(cap * sizeof *grown)
+                             : realloc(p->waiters, cap * sizeof *grown);
+      if (!grown) scr_oom();
+      if (p->waiters == &p->waiter_inline) grown[0] = p->waiter_inline;
+      p->waiters = grown;
+      p->waiters_cap = cap;
+    }
+  }
+  p->waiters[p->nwaiters++] = f;
+}
+
+static bool scr_promise_has_traced_children(const ScrPromise *p) {
+  return p->ncbs != 0 ||
+         ((p->payload_kind == SCR_EXC_REF || p->payload_kind == SCR_EXC_OBJ ||
+           p->payload_kind == SCR_EXC_PRIMITIVE_REF) &&
+          p->trace_fn && p->payload);
+}
+
 static void scr_promise_trace(void *o, ScrTraceVisit visit, void *ctx) {
   ScrPromise *p = (ScrPromise *)o;
   /* Waiters are fibers (not refcounted objects) — the settled payload and
@@ -266,8 +300,7 @@ static void scr_promise_gcfree(void *o) {
   for (size_t i = 0; i < p->ncbs; i++) {
     if (p->cbs[i].all) scr_promise_all_state_release(p->cbs[i].all);
   }
-  if (--p->identity->rc == 0) free(p->identity);
-  free(p->waiters);
+  scr_promise_free_side(p);
   free(p->cbs);
 #ifdef SCR_RC_AUDIT
   scr_live_promises--;
@@ -279,9 +312,6 @@ ScrPromise *scr_promise_new(void) {
   static const ScrCycType cyc_type = { &scr_promise_trace, &scr_promise_gcfree, SCR_CYC_KIND_PROMISE };
   ScrPromise *p = scr_cyc_alloc(sizeof *p, &cyc_type);
   p->rc = 1;
-  p->identity = malloc(sizeof *p->identity);
-  if (!p->identity) scr_oom();
-  p->identity->rc = 1;
 #ifdef SCR_RC_AUDIT
   scr_live_promises++;
 #endif
@@ -289,14 +319,20 @@ ScrPromise *scr_promise_new(void) {
 }
 
 void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src) {
+  if (dst == src) return;
+  if (!src->identity) {
+    src->identity = malloc(sizeof *src->identity);
+    if (!src->identity) scr_oom();
+    src->identity->rc = 1;
+  }
   if (dst->identity == src->identity) return;
-  if (--dst->identity->rc == 0) free(dst->identity);
+  if (dst->identity && --dst->identity->rc == 0) free(dst->identity);
   dst->identity = src->identity;
   dst->identity->rc++;
 }
 
 bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b) {
-  return a->identity == b->identity;
+  return a == b || (a->identity != NULL && a->identity == b->identity);
 }
 
 /* The 'rejectionHandled' hook (scr_async_dyn.c installs it at listener
@@ -352,8 +388,7 @@ void scr_promise_release(ScrPromise *p) {
   if (--p->rc == 0) {
     scr_cyc_dead(p);
     scr_promise_release_payload(p);
-    if (--p->identity->rc == 0) free(p->identity);
-    free(p->waiters);
+    scr_promise_free_side(p);
     for (size_t i = 0; i < p->ncbs; i++) {
       scr_promise_release(p->cbs[i].dst);
       if (p->cbs[i].all) scr_promise_all_state_release(p->cbs[i].all);
@@ -363,9 +398,14 @@ void scr_promise_release(ScrPromise *p) {
     scr_live_promises--;
 #endif
     scr_cyc_free(p);
-  } else {
+  } else if (scr_promise_has_traced_children(p)) {
     scr_cyc_released(p); /* possible cycle root; may collect — p is done */
   }
+  /* A promise the trace walks nothing from cannot be on a cycle at this
+   * decrement, so it is not a candidate root. If it later gains traced
+   * children (a cycle-capable payload or a combinator destination) while
+   * still referenced, the decrement that could strand a cycle through it
+   * sees them and buffers it then. */
 }
 
 void *scr_promise_retain_v(void *p) { return scr_promise_retain((ScrPromise *)p); }
@@ -557,6 +597,14 @@ struct ScrFiber {
   /* Async-generator settlement jobs: stackless READY-queue envelopes.
    * The retained generator is pumped on the main stack. */
   ScrGen *gen_job;
+  /* Set during the eager prefix of a fiber spawned by an await-call entry
+   * (scr_async_spawn_await_*): the spawner that awaits this fiber's promise
+   * as soon as the spawn returns. The first suspension parks it on the
+   * promise right away (scr_fiber_park_awaiters) instead of switching back
+   * just so it can park itself. */
+  struct ScrFiber *awaiter;
+  /* This fiber was parked by such a child; set before the switch away. */
+  bool await_parked;
 #ifdef SCR_ASAN_FIBERS
   void *fake_stack;
 #endif
@@ -599,6 +647,8 @@ void scr_als_ctx_release(ScrAlsCtx *c) {
 
 static SCR_TL ScrCtx scr_loop_ctx; /* the main stack (scheduler home) */
 static SCR_TL ScrFiber *scr_current = NULL;
+/* A finished fiber whose last switch went to the loop (scr_resume_fiber). */
+static SCR_TL ScrFiber *scr_loop_reap = NULL;
 static SCR_TL long scr_fibers_live = 0;
 static SCR_TL long scr_fibers_abandoned = 0;
 
@@ -1548,6 +1598,10 @@ static void scr_trampoline(void) {
   ScrFiber *self = scr_current;
   self->entry(self, self->argpack);
   scr_fiber_finish(self);
+  /* The loop reaps the fiber that comes back to it finished, which need
+   * not be the one it resumed: a fiber that continued in place for the
+   * awaiters it parked (scr_await_yield) returns to the loop too. */
+  if (self->gen == NULL && self->return_to == &scr_loop_ctx) scr_loop_reap = self;
   /* Dead fiber: hop back to whoever resumed us. The loop frees us. */
   scr_switch(&self->ctx, self->return_to, NULL);
   /* unreachable */
@@ -1626,13 +1680,24 @@ static void scr_fiber_destroy(ScrFiber *f) {
 #else
   free(f->stack);
 #endif
-  free(f);
+  scr_mem_free(f);
 }
 
+#if !defined(_WIN32) && !defined(__wasi__) && !defined(SCR_WORKERS)
+#define SCR_SPAWN_AWAIT 1
+#endif
+
 /* Spawns and EAGERLY runs an async body until its first suspension (JS's
- * synchronous-prefix rule). Returns the fiber's promise, +1. */
-ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack) {
-  ScrFiber *f = calloc(1, sizeof *f);
+ * synchronous-prefix rule). Returns the fiber's promise, +1. A non-NULL
+ * `awaiter` (the current fiber, SCR_SPAWN_AWAIT only) awaits that promise
+ * immediately: the child saves into and returns to the awaiter's own
+ * context, so a child suspension can park the awaiter and switch past
+ * it (scr_fiber_park_awaiters). The promise is retained before the child
+ * runs, as the child may then finish and be reaped by the loop before the
+ * awaiter resumes. */
+static ScrPromise *scr_async_spawn_impl(void (*entry)(ScrFiber *, void *), void *argpack,
+                                        ScrFiber *awaiter) {
+  ScrFiber *f = scr_mem_calloc(sizeof *f);
   if (!f) scr_oom();
   scr_fiber_track(f);
   f->promise = scr_promise_new();
@@ -1651,6 +1716,7 @@ ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack) {
   f->ctx = CreateFiberEx(4096, 0, 0, scr_trampoline, NULL);
   if (f->ctx == NULL) scr_oom();
 #elif defined(__wasi__)
+  (void)awaiter;
   ScrFiber *spawner = scr_current;
   scr_current = f;
   scr_exc_swap_cell(&f->exc);
@@ -1672,9 +1738,21 @@ ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack) {
   ScrCtx here;
 #endif
 #ifndef __wasi__
-  f->return_to = &here;
+  ScrCtx *home = &here;
+  ScrPromise *awaited = NULL;
+#ifdef SCR_SPAWN_AWAIT
+  if (awaiter != NULL) {
+    f->awaiter = awaiter;
+    awaiter->await_parked = false;
+    home = &awaiter->ctx;
+    awaited = scr_promise_retain(f->promise);
+  }
+#else
+  (void)awaiter;
+#endif
+  f->return_to = home;
   ScrFiber *spawner = scr_current;
-  scr_switch(&here, &f->ctx, f);
+  scr_switch(home, &f->ctx, f);
   /* back: the fiber suspended or finished. The switch back targeted NULL
    * (the child doesn't know who spawned it), which pointed both the current
    * fiber AND the exception machinery at main — restore the spawner's cell
@@ -1684,7 +1762,12 @@ ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack) {
   scr_current = spawner;
   scr_exc_swap_cell(spawner ? &spawner->exc : NULL);
   scr_als_active = spawner ? &spawner->als : &scr_als_main_slot;
-  ScrPromise *result = scr_promise_retain(f->promise);
+  if (awaited != NULL) {
+    /* Parked by the child: the loop owns (and may have reaped) it. */
+    if (awaiter->await_parked) return awaited;
+    f->awaiter = NULL;
+  }
+  ScrPromise *result = awaited != NULL ? awaited : scr_promise_retain(f->promise);
   if (f->done) {
     scr_promise_release(f->promise);
     scr_fiber_destroy(f);
@@ -1692,6 +1775,81 @@ ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack) {
   }
   return result;
 #endif
+}
+
+ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack) {
+  return scr_async_spawn_impl(entry, argpack, NULL);
+}
+
+static void scr_await_park(ScrPromise *p);
+static void scr_promise_rethrow(ScrPromise *p);
+
+/* `await f(...)` of a fiber-backed async f in one call (the compiler's
+ * await-call entry): spawn, then await the promise, with the same turns
+ * as the two steps. When the child suspends in its eager prefix, the
+ * awaiter is already parked on the pending promise, so the settle wake
+ * resumes it with the result and no further hop; a child that finished
+ * eagerly leaves a settled promise, which the ordinary await hops on.
+ * Returns the promise +1; `ok` false means the rejection was re-thrown. */
+
+static ScrPromise *scr_async_spawn_await(void (*entry)(ScrFiber *, void *), void *argpack,
+                                         bool *ok) {
+#ifdef SCR_SPAWN_AWAIT
+  ScrFiber *self = scr_current;
+  if (self != NULL && self->gen == NULL && self->inline_depth == 0) {
+    ScrPromise *p = scr_async_spawn_impl(entry, argpack, self);
+    if (self->await_parked) {
+      self->await_parked = false;
+      while (p->state == SCR_PROM_PENDING) scr_await_park(p);
+      scr_prom_observe(p);
+      if (p->state == SCR_PROM_REJECTED) {
+        scr_promise_rethrow(p);
+        *ok = false;
+      } else {
+        *ok = true;
+      }
+      return p;
+    }
+    *ok = scr_await_settled(p);
+    return p;
+  }
+#endif
+  ScrPromise *p = scr_async_spawn(entry, argpack);
+  *ok = scr_await_settled(p);
+  return p;
+}
+
+void scr_async_spawn_await_void(void (*entry)(ScrFiber *, void *), void *argpack) {
+  bool ok;
+  scr_promise_release(scr_async_spawn_await(entry, argpack, &ok));
+}
+double scr_async_spawn_await_f64(void (*entry)(ScrFiber *, void *), void *argpack) {
+  bool ok;
+  ScrPromise *p = scr_async_spawn_await(entry, argpack, &ok);
+  double v = ok ? p->f64 : 0;
+  scr_promise_release(p);
+  return v;
+}
+bool scr_async_spawn_await_bool(void (*entry)(ScrFiber *, void *), void *argpack) {
+  bool ok;
+  ScrPromise *p = scr_async_spawn_await(entry, argpack, &ok);
+  bool v = ok ? p->b : false;
+  scr_promise_release(p);
+  return v;
+}
+ScrStr *scr_async_spawn_await_str(void (*entry)(ScrFiber *, void *), void *argpack) {
+  bool ok;
+  ScrPromise *p = scr_async_spawn_await(entry, argpack, &ok);
+  ScrStr *v = ok && p->payload ? scr_str_retain((ScrStr *)p->payload) : NULL;
+  scr_promise_release(p);
+  return v;
+}
+void *scr_async_spawn_await_ref(void (*entry)(ScrFiber *, void *), void *argpack) {
+  bool ok;
+  ScrPromise *p = scr_async_spawn_await(entry, argpack, &ok);
+  void *v = ok && p->payload ? p->retain_fn(p->payload) : NULL;
+  scr_promise_release(p);
+  return v;
 }
 
 /* ── fiberless async calls ─────────────────────────────────────────────
@@ -1721,7 +1879,7 @@ void scr_async_inline_enter(ScrAsyncInline *frame) {
   if (scr_current != NULL) scr_current->inline_depth++;
 }
 
-ScrPromise *scr_async_inline_leave(ScrAsyncInline *frame) {
+void scr_async_inline_exit(ScrAsyncInline *frame) {
   if (scr_current != NULL) scr_current->inline_depth--;
   scr_exc_current_cell()->stack = (ScrStackFrame *)frame->stack;
   ScrAlsCtx *saved = (ScrAlsCtx *)frame->als;
@@ -1732,6 +1890,10 @@ ScrPromise *scr_async_inline_leave(ScrAsyncInline *frame) {
   } else {
     scr_als_ctx_release(saved);
   }
+}
+
+ScrPromise *scr_async_inline_leave(ScrAsyncInline *frame) {
+  scr_async_inline_exit(frame);
   return scr_promise_new();
 }
 
@@ -1747,7 +1909,7 @@ ScrPromise *scr_async_spawn_after(ScrPromise *dependency,
   (void)dependency;
   return scr_async_spawn(entry, argpack);
 #else
-  ScrFiber *f = calloc(1, sizeof *f);
+  ScrFiber *f = scr_mem_calloc(sizeof *f);
   if (!f) scr_oom();
   f->promise = scr_promise_new();
   f->entry = entry;
@@ -1756,18 +1918,35 @@ ScrPromise *scr_async_spawn_after(ScrPromise *dependency,
   scr_fibers_live++;
 
   if (dependency->state == SCR_PROM_PENDING) {
-    if (dependency->nwaiters == dependency->waiters_cap) {
-      dependency->waiters_cap = dependency->waiters_cap ? dependency->waiters_cap * 2 : 4;
-      dependency->waiters = realloc(
-          dependency->waiters, dependency->waiters_cap * sizeof *dependency->waiters);
-      if (!dependency->waiters) scr_oom();
-    }
-    dependency->waiters[dependency->nwaiters++] = f;
+    scr_promise_add_waiter(dependency, f);
   } else {
     scr_ready_push(f);
   }
   return scr_promise_retain(f->promise);
 #endif
+}
+
+/* Where a suspending async fiber switches to. During the eager prefix
+ * under an await-call entry (awaiter set), control would return to the
+ * awaiter only for it to park on this fiber's still-pending promise and
+ * switch to its own resumer: park it here, for each such awaiter up the
+ * chain, and switch there directly. Nothing runs in between either way. */
+static ScrCtx *scr_fiber_park_awaiters(ScrFiber *self) {
+  ScrCtx *to = self->return_to;
+#ifdef SCR_SPAWN_AWAIT
+  for (ScrFiber *cur = self; cur->awaiter != NULL;) {
+    ScrFiber *aw = cur->awaiter;
+    cur->awaiter = NULL;
+    scr_promise_add_waiter(cur->promise, aw);
+    aw->await_parked = true;
+    to = aw->return_to;
+    cur = aw;
+  }
+  /* Whoever resumes this fiber next (the loop) becomes its return target;
+   * also right when the caller continues in place without switching. */
+  self->return_to = to;
+#endif
+  return to;
 }
 
 /* Parks the current fiber on `p` until it settles. Only fibers await. */
@@ -1778,16 +1957,11 @@ static void scr_await_park(ScrPromise *p) {
     abort();
   }
   if (self->inline_depth != 0) scr_inline_park_trap();
-  if (p->nwaiters == p->waiters_cap) {
-    p->waiters_cap = p->waiters_cap ? p->waiters_cap * 2 : 4;
-    p->waiters = realloc(p->waiters, p->waiters_cap * sizeof *p->waiters);
-    if (!p->waiters) scr_oom();
-  }
-  p->waiters[p->nwaiters++] = self;
+  scr_promise_add_waiter(p, self);
 #ifdef SCR_WORKERS
   self->waiting = p;
 #endif
-  scr_switch(&self->ctx, self->return_to, NULL);
+  scr_switch(&self->ctx, scr_fiber_park_awaiters(self), NULL);
 #ifdef SCR_WORKERS
   /* Shutdown resumes suspended stacks without settling their dependencies.
    * Remove the borrowed waiter before the stack releases its promise. */
@@ -1809,12 +1983,7 @@ static void scr_await_park(ScrPromise *p) {
  * the continuation through their waiter list. */
 void scr_wasi_await_prepare(ScrFiber *self, ScrPromise *p) {
   if (p->state == SCR_PROM_PENDING) {
-    if (p->nwaiters == p->waiters_cap) {
-      p->waiters_cap = p->waiters_cap ? p->waiters_cap * 2 : 4;
-      p->waiters = realloc(p->waiters, p->waiters_cap * sizeof *p->waiters);
-      if (!p->waiters) scr_oom();
-    }
-    p->waiters[p->nwaiters++] = self;
+    scr_promise_add_waiter(p, self);
   } else {
     scr_ready_push(self);
   }
@@ -1851,8 +2020,22 @@ static void scr_await_yield(void) {
     abort();
   }
   if (self->inline_depth != 0) scr_inline_park_trap();
+  if (self->gen != NULL) {
+    scr_ready_push(self);
+    scr_switch(&self->ctx, self->return_to, NULL);
+    return;
+  }
+  /* The hop would return control to the loop's microtask drain with
+   * nothing else queued (this async fiber, or the awaiters parked for it,
+   * were resumed by the drain), so this fiber would be the very next job:
+   * the drain runs to exhaustion with no checkpoint in between. Continuing
+   * in place is the same turn order without the two switches. A fiber
+   * resumed by its spawner (the eager prefix) must still hop: the spawner
+   * has code to run first. */
+  ScrCtx *to = scr_fiber_park_awaiters(self);
+  if (to == &scr_loop_ctx && scr_ready_len == 0) return;
   scr_ready_push(self);
-  scr_switch(&self->ctx, self->return_to, NULL);
+  scr_switch(&self->ctx, to, NULL);
 }
 
 /* The emitted promise-or-absent await's unit arm (`await u` where u holds
@@ -2782,7 +2965,7 @@ ScrDyn *scr_set_immediate_dyn_value(void) {
  * main stack; a throw is an uncaught exception (Node's queueMicrotask),
  * never a rejection. */
 void scr_queue_microtask(ScrClosure *cb) {
-  ScrFiber *f = calloc(1, sizeof *f);
+  ScrFiber *f = scr_mem_calloc(sizeof *f);
   if (!f) scr_oom();
   f->micro_cb = cb; /* ownership moves in */
   scr_ready_push(f);
@@ -2840,7 +3023,7 @@ void scr_loop_set_events(bool (*pending)(void), bool (*watching)(void),
 static void scr_resume_fiber(ScrFiber *f) {
   if (f->gen_job != NULL) {
     ScrGen *g = f->gen_job;
-    free(f);
+    scr_mem_free(f);
     scr_async_gen_job(g);
     scr_gen_release(g);
     return;
@@ -2851,7 +3034,7 @@ static void scr_resume_fiber(ScrFiber *f) {
    * semantics (uncaughtException, never an unhandled rejection). */
   if (f->micro_cb != NULL) {
     ScrClosure *cb = f->micro_cb;
-    free(f);
+    scr_mem_free(f);
     ((void (*)(ScrClosure *))cb->fn)(cb);
     scr_closure_release(cb);
     return;
@@ -2884,6 +3067,9 @@ static void scr_resume_fiber(ScrFiber *f) {
   scr_als_active = &scr_als_main_slot;
 #else
   scr_switch(&scr_loop_ctx, &f->ctx, f);
+  f = scr_loop_reap;
+  if (f == NULL) return;
+  scr_loop_reap = NULL;
 #endif
   if (f->done) {
     scr_promise_release(f->promise);
@@ -3868,7 +4054,7 @@ static ScrGen *scr_gen_new_common(void (*entry)(ScrFiber *, void *), void *argpa
   g->settle_async = settle_async;
   scr_obj_alloc_note();
 
-  ScrFiber *f = calloc(1, sizeof *f);
+  ScrFiber *f = scr_mem_calloc(sizeof *f);
   if (!f) scr_oom();
   f->gen = g;
   scr_fiber_track(f);
@@ -4273,7 +4459,7 @@ static void scr_async_gen_start_queued(ScrGen *g);
 
 static void scr_async_gen_schedule_settle(ScrGen *g) {
   if (g->settle_queued) return;
-  ScrFiber *job = calloc(1, sizeof *job);
+  ScrFiber *job = scr_mem_calloc(sizeof *job);
   if (!job) scr_oom();
   job->gen_job = scr_gen_retain(g);
   g->settle_queued = true;
@@ -4485,12 +4671,12 @@ static void scr_context_ready_discard(void) {
     scr_ready_len--;
     if (fiber->micro_cb) {
       scr_closure_release(fiber->micro_cb);
-      free(fiber);
+      scr_mem_free(fiber);
     } else if (fiber->gen_job) {
       ScrGen *generator = fiber->gen_job;
       generator->settle_queued = false;
       scr_gen_release(generator);
-      free(fiber);
+      scr_mem_free(fiber);
     }
     /* Real fibers belong to the context registry, including queued ones. */
   }
