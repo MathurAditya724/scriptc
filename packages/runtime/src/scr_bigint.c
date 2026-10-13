@@ -1076,7 +1076,19 @@ static ScrBigInt *bi_parse_invalid(const ScrStr *s, bool report_error) {
   return report_error ? bi_parse_fail(s) : NULL;
 }
 
-/* count validated digits of a power-of-two base: pack bits from the end. */
+/* Whether `digits` significant digits in `radix` (2, 8, 10 or 16) can stay
+ * within the size limit. It never forms digits * bits-per-digit, which
+ * wraps on 32-bit targets: power-of-two digits carry exactly log2(radix)
+ * bits each, and a decimal digit at least 3, so a longer text is too wide
+ * (the parse also checks the exact result length). Every size computed
+ * while parsing is at most digits * 4 / 32 + 2 limbs once this holds. */
+bool scr_bigint_digits_fit(size_t digits, unsigned radix) {
+  unsigned per = radix == 16 ? 4 : radix == 2 ? 1 : 3;
+  return digits <= BI_MAX_BITS / per;
+}
+
+/* count validated digits of a power-of-two base (scr_bigint_digits_fit
+ * holds): pack bits from the end. */
 SCR_COLD static ScrBigInt *bi_parse_pow2(const char *p, size_t count, unsigned bits_per, int sign) {
   size_t bits = count * bits_per;
   size_t n = bits / BI_LIMB_BITS + 1;
@@ -1145,14 +1157,19 @@ static ScrBigInt *bi_parse_string(ScrStr *s, bool report_error) {
   while (lo < hi && s->data[lo] == '0') lo++; /* leading zeros carry nothing */
   if (lo == hi) return bi_zero();
   size_t count = hi - lo;
-  if (count > BI_MAX_BITS) {
-    /* every significant digit adds at least one bit */
+  if (!scr_bigint_digits_fit(count, base)) {
     bi_max_size_exceeded();
     return NULL;
   }
   const char *p = s->data + lo;
-  if (base == 10) return bi_parse_decimal(p, count, sign);
-  return bi_parse_pow2(p, count, base == 16 ? 4 : base == 8 ? 3 : 1, sign);
+  ScrBigInt *v = base == 10 ? bi_parse_decimal(p, count, sign)
+                            : bi_parse_pow2(p, count, base == 16 ? 4 : base == 8 ? 3 : 1, sign);
+  if (v->len > BI_MAX_LIMBS) {
+    scr_bigint_release(v);
+    bi_max_size_exceeded();
+    return NULL;
+  }
+  return v;
 }
 
 ScrBigInt *scr_bigint_parse(ScrStr *s) { return bi_parse_string(s, true); }
@@ -1525,7 +1542,9 @@ ScrBigInt *scr_bigint_as_int_n(double bits_value, ScrBigInt *value) {
 
 int scr_bigint_mag64(const ScrBigInt *value, uint64_t *mag, uint32_t *words) {
   *mag = bi_mag_u64(value);
-  size_t n = (value->len * BI_LIMB_BITS + 63) / 64;
+  /* in 64-bit words, without multiplying the limb count */
+  size_t per = 64 / BI_LIMB_BITS;
+  size_t n = value->len / per + (value->len % per != 0);
   *words = n > UINT32_MAX ? UINT32_MAX : (uint32_t)n;
   return value->sign;
 }

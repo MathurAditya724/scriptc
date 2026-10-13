@@ -274,7 +274,23 @@ static void test_wrap_eval(void) {
   for (size_t i = 0; i < sizeof vals / sizeof vals[0]; i++) scr_bigint_release(vals[i]);
 }
 
+/* The parse guard works on digit counts alone, so the limits are testable
+ * without gigabyte strings, including counts whose bit totals would wrap
+ * a 32-bit size_t. */
+static void test_parse_limits(void) {
+  const size_t max_bits = (size_t)1 << 30;
+  check(scr_bigint_digits_fit(max_bits / 4, 16), "hex digits up to the limit fit");
+  check(!scr_bigint_digits_fit(max_bits / 4 + 1, 16), "one more hex digit does not");
+  check(!scr_bigint_digits_fit(max_bits, 16), "2^30 hex digits (2^32 bits) do not fit");
+  check(scr_bigint_digits_fit(max_bits, 2) && !scr_bigint_digits_fit(max_bits + 1, 2), "binary digits");
+  check(!scr_bigint_digits_fit(max_bits / 3 + 1, 8), "octal digits");
+  check(!scr_bigint_digits_fit(max_bits / 3 + 1, 10), "decimal digits");
+  check(!scr_bigint_digits_fit(SIZE_MAX, 16) && !scr_bigint_digits_fit(SIZE_MAX, 10), "huge counts");
+  check(scr_bigint_digits_fit(1000, 16) && scr_bigint_digits_fit(1000, 10), "ordinary texts");
+}
+
 int main(void) {
+  test_parse_limits();
   test_wrap_eval();
   test_known_values();
   test_division();

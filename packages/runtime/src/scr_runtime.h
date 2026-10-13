@@ -4236,6 +4236,10 @@ ScrBigInt *scr_bigint_as_int_n(double bits, ScrBigInt *value);
  * (leaves, and numbers for BigInt(number) operands); +1 or NULL with an
  * exception pending. */
 int scr_bigint_mag64(const ScrBigInt *value, uint64_t *mag, uint32_t *words);
+/* Whether a StringToBigInt text with this many significant digits in radix
+ * 2, 8, 10 or 16 can fit the maximum BigInt size (no size arithmetic that
+ * can wrap; the parser's guard before it allocates). */
+bool scr_bigint_digits_fit(size_t digits, unsigned radix);
 ScrBigInt *scr_bigint_from_mag64(uint64_t mag, bool negative);
 ScrBigInt *scr_bigint_wrap_eval(const char *program, ScrBigInt *const *leaves, const double *numbers);
 ScrBigInt *scr_bigint_buffer_read(ScrBytes *bytes, double offset, bool sign, bool le);

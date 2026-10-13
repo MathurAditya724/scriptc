@@ -256,11 +256,22 @@ function i64Const(value: bigint): string {
 
 /** A value in the exact mode: sign and 64-bit magnitude (zero is never
  * negative). */
-type SignMag = { neg: string; mag: string };
+interface SignMag {
+  neg: string;
+  mag: string;
+}
 
-/** A tree's operands as emitted: two's complement low bits (fixed width)
- * or sign and magnitude (exact). */
-type Operand = { bits: string; neg: string; mag: string };
+/** A tree's operand as emitted: two's complement low bits (fixed width),
+ * sign and magnitude (exact), whether its magnitude fits in 64 bits (`ok`)
+ * and whether it is short enough below a narrowing (`short`). Every
+ * operand has this one shape. */
+interface Operand {
+  bits: string;
+  neg: string;
+  mag: string;
+  ok: string;
+  short: string;
+}
 
 class TreeEmitter {
   /** i1 conditions that send the tree to the exact fallback. */
@@ -364,10 +375,14 @@ class TreeEmitter {
   /** Exact: sign and magnitude below 2^64; anything else falls back. */
   exact(node: Node): SignMag {
     switch (node.kind) {
-      case "leaf":
-        return this.leafValues[node.index]!;
-      case "number":
-        return this.numberValues[node.index]!;
+      case "leaf": {
+        const leaf = this.leafValues[node.index]!;
+        return { neg: leaf.neg, mag: leaf.mag };
+      }
+      case "number": {
+        const number = this.numberValues[node.index]!;
+        return { neg: number.neg, mag: number.mag };
+      }
       case "const": {
         const neg = node.value < 0n;
         return { neg: neg ? "true" : "false", mag: i64Const(neg ? -node.value : node.value) };
@@ -472,10 +487,7 @@ const NARROWED_LEAF_WORDS = 65536;
  * is short enough for a narrowed tree (`short`). 64-bit targets read the
  * value inline ({ rc, len, i32 sign, i32 cap, limbs }; limb 0 is always
  * readable); 32-bit ones ask the runtime. */
-function leafOperand(
-  host: LlvmEmitterContext,
-  value: string,
-): Operand & { ok: string; short: string } {
+function leafOperand(host: LlvmEmitterContext, value: string): Operand {
   const B = host.B;
   const ok = B.tmp();
   const short = B.tmp();
@@ -515,12 +527,12 @@ function leafOperand(
   const bits = B.tmp();
   B.line(`${negated} = sub i64 0, ${mag}`);
   B.line(`${bits} = select i1 ${neg}, i64 ${negated}, i64 ${mag}`);
-  return { ok, short, neg, mag, bits };
+  return { bits, neg, mag, ok, short };
 }
 
 /** A number operand of BigInt(): an integer below 2^64 in magnitude, or
  * the fallback converts it (and throws for non-integers). */
-function numberOperand(host: LlvmEmitterContext, value: string): Operand & { ok: string } {
+function numberOperand(host: LlvmEmitterContext, value: string): Operand {
   const B = host.B;
   const abs = B.tmp();
   const inRange = B.tmp();
@@ -544,7 +556,7 @@ function numberOperand(host: LlvmEmitterContext, value: string): Operand & { ok:
   B.line(`${neg} = fcmp olt double ${value}, 0.0`);
   B.line(`${negated} = sub i64 0, ${mag}`);
   B.line(`${bits} = select i1 ${neg}, i64 ${negated}, i64 ${mag}`);
-  return { ok, neg, mag, bits };
+  return { bits, neg, mag, ok, short: ok };
 }
 
 /** Emits a small-value bigint tree, or returns null when `e` is not one
@@ -571,7 +583,9 @@ export function emitBigIntWrap(host: LlvmEmitterContext, e: LibCallExpr): LlValu
   const numbers: LlValue[] = tree.numbers.map((n) => host.emitExpr(n));
   const checks: string[] = [];
   const leafValues: Operand[] = values.map((v, i) => {
-    if (literalValue(tree.leaves[i]!) !== null) return { bits: "0", neg: "false", mag: "0" };
+    if (literalValue(tree.leaves[i]!) !== null) {
+      return { bits: "0", neg: "false", mag: "0", ok: "true", short: "true" };
+    }
     const leaf = leafOperand(host, v.name);
     checks.push(tree.strict.has(i) ? leaf.ok : leaf.short);
     return leaf;

@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -54,4 +54,37 @@ beforeAll(async () => {
 test("bigint runtime: division, radix conversion, products, widths", async () => {
   const { stderr } = await execFileAsync(bin, []);
   expect(stderr.trim()).toMatch(/^(\d+)\/\1 cases passed$/);
+});
+
+function zigOnPath(): boolean {
+  try {
+    execFileSync("zig", ["version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// 32-bit size_t: the size guards (scr_bigint_digits_fit and the limb-count
+// checks) must compile, warning-free, where a bit count can wrap.
+test.skipIf(!zigOnPath())("bigint runtime builds for wasm32 with its size guards", async () => {
+  const out = join(testDir, "build", "scr_bigint.wasm32.o");
+  await execFileAsync("zig", [
+    "cc",
+    "-target",
+    "wasm32-wasi",
+    "-std=c11",
+    "-O2",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-c",
+    "-o",
+    out,
+    join(testDir, "../src/scr_bigint.c"),
+  ]);
+  const { stdout } = await execFileAsync("zig", ["nm", out]).catch(async () =>
+    execFileAsync("llvm-nm", [out]),
+  );
+  expect(stdout).toContain("scr_bigint_digits_fit");
 });
