@@ -35,6 +35,19 @@ void *lre_realloc(void *opaque, void *ptr, size_t size) {
   return realloc(ptr, size);
 }
 
+/* The plain-text form of a pattern rides on its matcher (see
+ * scr_regex_plain_text): NULL when there is none. */
+static inline const ScrStr *scr_regex_lit(const ScrRegex *re) {
+  const ScrReNative *native = re->native;
+  return native ? (const ScrStr *)native->lit : NULL;
+}
+
+static void scr_regex_native_free(void *native) {
+  if (!native) return;
+  free(((ScrReNative *)native)->lit);
+  scr_re_native_free(native);
+}
+
 static SCR_TL ScrRegex **scr_compiled = NULL;
 static SCR_TL size_t scr_compiled_len = 0, scr_compiled_cap = 0;
 
@@ -42,7 +55,7 @@ static void scr_regex_free_bytecodes(void) {
   for (size_t i = 0; i < scr_compiled_len; i++) {
     lre_realloc(lre_opaque(), scr_compiled[i]->bc, 0);
     scr_compiled[i]->bc = NULL;
-    scr_re_native_free(scr_compiled[i]->native);
+    scr_regex_native_free(scr_compiled[i]->native);
     scr_compiled[i]->native = NULL;
   }
   free(scr_compiled);
@@ -128,6 +141,54 @@ static char *scr_pattern_cesu8(const ScrStr *src, size_t *plen) {
   return out;
 }
 
+/* A pattern that matches exactly its own text: printable ASCII with no
+ * syntax characters (an escaped syntax character or '/' stands for
+ * itself), no sticky anchoring, and no case folding unless it has no
+ * letters. Multiline, dotAll, global and unicode do not change what such a
+ * pattern matches. Every byte match of an ASCII needle in well-formed UTF-8
+ * is a code-unit match at the same position. Returns an immortal string
+ * owned by the matcher (freed with it), or NULL. */
+static ScrStr *scr_regex_plain_text(const ScrRegex *re) {
+  const ScrStr *flags = re->flags;
+  bool fold = false;
+  for (size_t i = 0; i < flags->len; i++) {
+    if (flags->data[i] == 'y') return NULL;
+    if (flags->data[i] == 'i') fold = true;
+  }
+  const ScrStr *src = re->source;
+  if (src->len == 0 || src->len > 256) return NULL;
+  char text[256];
+  size_t n = 0;
+  for (size_t i = 0; i < src->len; i++) {
+    unsigned char c = (unsigned char)src->data[i];
+    if (c == '\\') {
+      if (i + 1 >= src->len) return NULL;
+      c = (unsigned char)src->data[++i];
+      if (!strchr("^$\\.*+?()[]{}|/", c) || c == '\0') return NULL;
+    } else if (c < 0x20 || c >= 0x7F || strchr("^$.*+?()[]{}|", c)) {
+      return NULL;
+    }
+    if (fold && ((c | 0x20) >= 'a' && (c | 0x20) <= 'z')) return NULL;
+    text[n++] = (char)c;
+  }
+  ScrStr *lit = malloc(sizeof(ScrStr) + n + 1);
+  if (!lit) scr_regex_oom();
+  memset(lit, 0, sizeof(ScrStr));
+  lit->rc = SIZE_MAX;
+  lit->len = n;
+  lit->cap = (uint32_t)n;
+  lit->ascii = 1;
+  memcpy(lit->data, text, n);
+  lit->data[n] = '\0';
+  return lit;
+}
+
+static void *scr_regex_native_build(const ScrRegex *re, const uint8_t *bc) {
+  ScrReNative *native = scr_re_native_build(bc);
+  if (native) native->lit = scr_regex_plain_text(re);
+  return native;
+}
+
 /* The compiled bytecode, compiling (and caching) on first use. */
 static uint8_t *scr_regex_bc(ScrRegex *re) {
   if (re->bc) return re->bc;
@@ -159,7 +220,7 @@ static uint8_t *scr_regex_bc(ScrRegex *re) {
                  re->source->data, re->flags->data, error_msg);
   }
   re->bc = bc;
-  re->native = scr_re_native_build(bc);
+  re->native = scr_regex_native_build(re, bc);
   scr_note_compiled(re);
   return bc;
 }
@@ -175,7 +236,7 @@ void scr_regex_release(ScrRegex *re) {
     scr_str_release(re->flags);
     if (re->bc && !re->literal) {
       lre_realloc(lre_opaque(), re->bc, 0);
-      scr_re_native_free(re->native);
+      scr_regex_native_free(re->native);
     }
     free(re);
   }
@@ -525,9 +586,11 @@ static int scr_regex_start(ScrRegex *re, int len) {
 /* A predicate needs only boundaries; it never materializes result strings. */
 bool scr_regex_test(ScrRegex *re, ScrStr *s) {
   uint8_t *bc = scr_regex_bc(re);
+  bool stateful = (lre_get_flags(bc) & (LRE_FLAG_GLOBAL | LRE_FLAG_STICKY)) != 0;
+  const ScrStr *lit = scr_regex_lit(re);
+  if (lit && !stateful) return scr_str_find_bytes(s->data, s->len, lit->data, lit->len) != NULL;
   ScrRegexInput input;
   scr_regex_input_init_cached(&input, re, bc, s);
-  bool stateful = (lre_get_flags(bc) & (LRE_FLAG_GLOBAL | LRE_FLAG_STICKY)) != 0;
   int pos = stateful ? scr_regex_start(re, input.len) : 0;
   int rc = pos < 0 ? 0 : scr_exec(&input, bc, pos);
   if (stateful) re->last_index = rc == 1
@@ -543,7 +606,7 @@ bool scr_regex_test(ScrRegex *re, ScrStr *s) {
  * and sticky regexes start at lastIndex, set it to the match end, and
  * reset it on failure. Nonparticipating captures are present undefined
  * elements, distinct from participating empty captures and array holes. */
-ScrArr *scr_regex_exec(ScrStr *s, ScrRegex *re) {
+static ScrArr *scr_regex_exec_core(ScrStr *s, ScrRegex *re, uint64_t mask, bool metadata) {
   uint8_t *bc = scr_regex_bc(re);
   bool stateful = (lre_get_flags(bc) & (LRE_FLAG_GLOBAL | LRE_FLAG_STICKY)) != 0;
   ScrRegexInput input;
@@ -558,13 +621,15 @@ ScrArr *scr_regex_exec(ScrStr *s, ScrRegex *re) {
   if (rc == 1) {
     int count = lre_get_capture_count(bc);
     out = scr_arr_new(SCR_ELEM_STR, (size_t)count);
-    ScrDyn *metadata = scr_dyn_new_obj();
-    scr_arr_ext(out)->metadata = metadata;
-    scr_dyn_obj_set(metadata, "index", 5, scr_dyn_new_num((double)scr_capture_index(&input, capture[0])));
-    scr_dyn_obj_set(metadata, "input", 5, scr_dyn_new_str(s));
+    if (metadata) {
+      ScrDyn *props = scr_dyn_new_obj();
+      scr_arr_ext(out)->metadata = props;
+      scr_dyn_obj_set(props, "index", 5, scr_dyn_new_num((double)scr_capture_index(&input, capture[0])));
+      scr_dyn_obj_set(props, "input", 5, scr_dyn_new_str(s));
+    }
     for (int k = 0; k < count; k++) {
       const uint8_t *cs = capture[2 * k], *ce = capture[2 * k + 1];
-      if (cs == NULL || ce == NULL) {
+      if (cs == NULL || ce == NULL || (k < 64 && !(mask >> k & 1))) {
         scr_arr_set_undefined(out, (double)out->len);
       } else {
         scr_arr_push_ref(
@@ -574,6 +639,16 @@ ScrArr *scr_regex_exec(ScrStr *s, ScrRegex *re) {
   }
   scr_regex_input_dispose(&input);
   return out; /* +1, or NULL (no match) */
+}
+
+ScrArr *scr_regex_exec(ScrStr *s, ScrRegex *re) {
+  return scr_regex_exec_core(s, re, UINT64_MAX, true);
+}
+
+/* Unselected captures are present undefined elements: nothing reads them. */
+ScrArr *scr_regex_exec_groups(ScrStr *s, ScrRegex *re, double mask) {
+  uint64_t bits = mask >= 0 && mask < 18446744073709551616.0 ? (uint64_t)mask : UINT64_MAX;
+  return scr_regex_exec_core(s, re, bits, false);
 }
 
 /* Global Symbol.match always starts at zero and drains whole matches,
@@ -614,6 +689,19 @@ ScrArr *scr_regex_match(ScrStr *s, ScrRegex *re) {
  * bytecode omits the implicit forward scan) — exactly Node. */
 double scr_regex_search(ScrStr *s, ScrRegex *re) {
   uint8_t *bc = scr_regex_bc(re);
+  const ScrStr *lit = scr_regex_lit(re);
+  if (lit) {
+    const char *hit = scr_str_find_bytes(s->data, s->len, lit->data, lit->len);
+    if (!hit) return -1;
+    /* UTF-16 units before the match: one per UTF-8 lead byte, two for an
+     * astral (4-byte) lead. */
+    double units = 0;
+    for (const char *p = s->data; p < hit; p++) {
+      unsigned char c = (unsigned char)*p;
+      if ((c & 0xC0) != 0x80) units += c >= 0xF0 ? 2 : 1;
+    }
+    return units;
+  }
   ScrRegexInput input;
   scr_regex_input_init(&input, re, bc, s);
   uint8_t **capture = input.capture;
@@ -786,6 +874,13 @@ static ScrStr *scr_replace_impl(ScrStr *s, ScrRegex *re, ScrStr *rep) {
   bool global = (re_flags & LRE_FLAG_GLOBAL) != 0;
   bool sticky = (re_flags & LRE_FLAG_STICKY) != 0;
   bool unicode = (re_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0;
+  const ScrStr *lit = scr_regex_lit(re);
+  if (lit && !sticky) {
+    /* A plain-text pattern has no captures, so its substitutions are the
+     * string-search ones. */
+    if (global) re->last_index = 0;
+    return scr_str_replace_bytes(s, lit->data, lit->len, rep, global);
+  }
   int capture_count = lre_get_capture_count(bc);
   const char *groupnames = lre_get_groupnames(bc);
   ScrRegexInput input;
@@ -978,7 +1073,7 @@ ScrStr *scr_util_strip_vt(const ScrDyn *input) {
     source = { SIZE_MAX, sizeof SCR_VT_PATTERN - 1, sizeof SCR_VT_PATTERN - 1, SCR_VT_PATTERN };
   static const struct { size_t rc, len, cap; char data[2]; }
     flags = { SIZE_MAX, 1, 1, "g" };
-  static SCR_TL ScrRegex template = { SIZE_MAX, (ScrStr *)&source, (ScrStr *)&flags, NULL, 0, NULL };
+  static SCR_TL ScrRegex template = { SIZE_MAX, (ScrStr *)&source, (ScrStr *)&flags, NULL, 0, NULL, NULL };
   ScrRegex *regex = scr_regex_literal(&template);
   ScrStr *empty = scr_str_new("", 0);
   ScrStr *result = scr_regex_replace(subject, regex, empty);
@@ -1004,6 +1099,10 @@ ScrStr *scr_regex_replace_all(ScrStr *s, ScrRegex *re, ScrStr *rep) {
 
 ScrArr *scr_regex_split_limit(ScrStr *s, ScrRegex *re, double limit_num) {
   uint8_t *bc = scr_regex_bc(re);
+  /* Without captures or sticky probing, splitting on a plain-text pattern
+   * is splitting on its text. */
+  const ScrStr *lit = scr_regex_lit(re);
+  if (lit) return scr_str_split_limit(s, (ScrStr *)lit, limit_num);
   uint32_t limit = scr_to_uint32(limit_num);
   if (limit == 0) return scr_arr_new(SCR_ELEM_STR, 0);
   int capture_count = lre_get_capture_count(bc);
@@ -1544,7 +1643,7 @@ ScrRegex *scr_regex_new(ScrStr *pattern, ScrStr *flags) {
     return NULL;
   }
   re->bc = bc;
-  re->native = scr_re_native_build(bc);
+  re->native = scr_regex_native_build(re, bc);
   scr_regex_ctor_remember(re);
   return re;
 }

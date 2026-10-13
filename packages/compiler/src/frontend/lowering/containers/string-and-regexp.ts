@@ -20,6 +20,7 @@ import type { Lowerer } from "../lowerer.js";
 import { own } from "../lowerer.js";
 import { isRequireMainFilename } from "../expressions/optional-chains.js";
 import { STRING_INDEX_METHODS, STRING_REPLACE_METHODS, STR_METHODS } from "../surfaces.js";
+import { execResultCaptureMask } from "./exec-result-uses.js";
 import { lowerStringReplacement } from "./string-replacement.js";
 import {
   coerceStringSearchValue,
@@ -767,17 +768,23 @@ export function lowerRegexMethodCall(
       kind: "union",
       unionId: lowerer.unions.intern([arrayOf(STRING), { kind: "nullT" }]),
     };
+    // A result read only through null tests and constant indices skips
+    // the captures and properties no reader uses.
+    const mask = execResultCaptureMask(lowerer, call);
+    const execCall = (regex: IrExpr): IrExpr => ({
+      kind: "regexIntrinsic",
+      method: mask === null ? "exec" : "execGroups",
+      receiver: subject,
+      args: mask === null ? [regex] : [regex, numLit(mask, loc)],
+      type: resultT,
+      loc,
+    });
+    // A literal receiver has no evaluation to order against the subject.
+    if (re.kind === "regexLit") return execCall(re);
     // The shared match intrinsic takes the string first; preserve exec's
     // receiver-before-subject evaluation order before swapping operands.
     const saved = lowerer.declareHiddenLocal("%execReceiver", re.type);
-    const result: IrExpr = {
-      kind: "regexIntrinsic",
-      method: "exec",
-      receiver: subject,
-      args: [varRef(saved.id, re.type, loc)],
-      type: resultT,
-      loc,
-    };
+    const result = execCall(varRef(saved.id, re.type, loc));
     return {
       kind: "seqExpr",
       stmts: [{ kind: "varDecl", localId: saved.id, init: re, loc }],

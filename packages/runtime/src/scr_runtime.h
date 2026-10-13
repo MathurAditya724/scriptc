@@ -1336,6 +1336,17 @@ ScrStr *scr_str_trim_end(ScrStr *s);
  * U+FFFD — divergence, see above); otherwise splits on every occurrence,
  * empty pieces kept. Borrows both; returns a +1 string[] (SCR_ELEM_STR). */
 struct ScrArr;
+/* String.prototype.replace/replaceAll with a string search value and a
+ * string replacement: GetSubstitution without captures ($$, $&, $`, $';
+ * every other '$' spelling stays literal). An empty search value matches
+ * at 0, or at every UTF-16 position under replaceAll. Borrows; +1. */
+ScrStr *scr_str_replace_literal(ScrStr *s, ScrStr *search, ScrStr *rep, bool all);
+/* The same over a nonempty well-formed UTF-8 needle (literal regex
+ * patterns share it). Borrows; +1. */
+ScrStr *scr_str_replace_bytes(ScrStr *s, const char *pat, size_t plen, ScrStr *rep, bool all);
+/* First occurrence of a nonempty needle in a byte span, or NULL. */
+const char *scr_str_find_bytes(const char *hay, size_t hay_len, const char *needle,
+                               size_t needle_len);
 struct ScrArr *scr_str_split(ScrStr *s, ScrStr *sep);
 struct ScrArr *scr_str_split_limit(ScrStr *s, ScrStr *sep, double limit);
 /* Internal dense split traversal. The cursor borrows input strings, returns
@@ -1913,6 +1924,11 @@ ScrArr *scr_regex_match(ScrStr *s, ScrRegex *re);
 /* re.exec(s), string-first ABI: match slice with global/sticky lastIndex
  * transitions. Borrows both; +1 or NULL. */
 ScrArr *scr_regex_exec(ScrStr *s, ScrRegex *re);
+/* exec for a result read only through constant indices and null tests:
+ * bit k of `mask` (k < 53) selects the captures that are materialized; the
+ * rest, and the index/input properties, are left out. Same lastIndex
+ * transitions and NULL result as scr_regex_exec. Borrows both; +1 or NULL. */
+ScrArr *scr_regex_exec_groups(ScrStr *s, ScrRegex *re, double mask);
 /* s.search(re): the first match's UTF-16 index, or -1 — a fresh exec from
  * position 0 (Symbol.search never touches lastIndex, so no flag fence:
  * /g is irrelevant, /y anchors at 0). Borrows both; never throws. */

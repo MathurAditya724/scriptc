@@ -324,6 +324,51 @@ static void test_capture_capacity(void) {
   expect_str(capture, "\xF0\x9F\x98\x80", "capture owns its bytes after subject release");
 }
 
+static void test_exec_groups(void) {
+  /* Only the selected captures are materialized; the rest read undefined. */
+  ScrStr *s = S("xac");
+  ScrArr *full = scr_regex_exec(s, &re_opt_group);
+  ScrArr *lean = scr_regex_exec_groups(s, &re_opt_group, 2.0);
+  check(full && lean && full->len == lean->len && lean->len == 2, "exec_groups keeps the capture count");
+  check(lean->present[0] == SCR_ARR_UNDEFINED && lean->present[1] == SCR_ARR_UNDEFINED,
+        "exec_groups: unselected and nonparticipating captures are undefined");
+  check(lean->ext == NULL || lean->ext->metadata == NULL, "exec_groups: no index/input properties");
+  scr_arr_release(full);
+  scr_arr_release(lean);
+  ScrStr *ab = S("ab");
+  lean = scr_regex_exec_groups(ab, &re_group, 2.0);
+  ScrStr *group = lean ? scr_arr_get_ref(lean, 1) : NULL;
+  check(group && str_is(group, "b"), "exec_groups: a selected capture keeps its value");
+  scr_str_release(group);
+  scr_arr_release(lean);
+  check(scr_regex_exec_groups(s, &re_group, 1.0) == NULL, "exec_groups: no match is NULL");
+  scr_str_release(ab);
+  scr_str_release(s);
+}
+
+static void test_string_replace(void) {
+  /* String search values: one pass, GetSubstitution without captures. */
+  ScrStr *s = S("a.b.c");
+  ScrStr *dot = S(".");
+  ScrStr *empty = S("");
+  ScrStr *rep = S("<$&|$`|$'|$1|$$>");
+  ScrStr *plain = S("--");
+  expect_str(scr_str_replace_literal(s, dot, plain, false), "a--b.c", "string replace: first match");
+  expect_str(scr_str_replace_literal(s, dot, plain, true), "a--b--c", "string replaceAll: every match");
+  expect_str(scr_str_replace_literal(s, dot, rep, false), "a<.|a|b.c|$1|$>b.c",
+             "string replace: substitutions");
+  expect_str(scr_str_replace_literal(s, empty, plain, true), "--a--.--b--.--c--",
+             "string replaceAll: empty search at every position");
+  expect_str(scr_str_replace_literal(s, plain, dot, true), "a.b.c", "string replaceAll: no match");
+  expect_str(scr_regex_replace(s, &re_dot_g, plain), "a--b--c", "plain-text regex replace");
+  check(scr_regex_search(s, &re_dot_noglobal) == 1, "plain-text regex search");
+  scr_str_release(s);
+  scr_str_release(dot);
+  scr_str_release(empty);
+  scr_str_release(rep);
+  scr_str_release(plain);
+}
+
 int main(int argc, char **argv) {
   (void)argc;
   (void)argv;
@@ -341,6 +386,8 @@ int main(int argc, char **argv) {
   test_split();
   test_borrowed_results();
   test_capture_capacity();
+  test_exec_groups();
+  test_string_replace();
 
 #ifdef SCR_RC_AUDIT
   check(scr_str_live_count() == 0, "no live heap strings at exit (RC audit)");

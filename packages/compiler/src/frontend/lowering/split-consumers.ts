@@ -2,6 +2,7 @@ import * as ts from "../ts7/adapter.js";
 import type { IrExpr } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
 import { stripValueWrappers } from "./binding-analysis.js";
+import { identifiersNamed } from "./identifier-uses.js";
 
 /** A fresh split array is dense. A stored result has the same guarantee
  * only when this loop is its sole observation: even a const array can be
@@ -44,21 +45,7 @@ export function isPrivateSplitConsumer(
   )
     return false;
 
-  // Index spelling once per file; resolve only this binding's names. Type
-  // positions and shorthand properties conservatively count as uses too.
-  const file = decl.getSourceFile();
-  let names = lowerer.splitIdentifierUses.get(file);
-  if (!names) {
-    names = new Map();
-    ts.walkPreorder(file, (node) => {
-      if (!ts.isIdentifier(node)) return;
-      const uses = names!.get(node.text);
-      if (uses) uses.push(node);
-      else names!.set(node.text, [node]);
-    });
-    lowerer.splitIdentifierUses.set(file, names);
-  }
-  for (const use of names.get(name.text) ?? []) {
+  for (const use of identifiersNamed(lowerer, decl.getSourceFile(), name.text)) {
     if (use === decl.name || use === name) continue;
     if (lowerer.resolveValueSymbol(use) === symbol) return false;
   }

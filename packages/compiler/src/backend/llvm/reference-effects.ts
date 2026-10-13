@@ -23,6 +23,7 @@ export function preservesRegexInputs(method: string): boolean {
   switch (method) {
     case "test":
     case "exec":
+    case "execGroups":
     case "match":
     case "search":
     case "matchAll":

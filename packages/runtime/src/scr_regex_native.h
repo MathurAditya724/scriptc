@@ -107,6 +107,9 @@ typedef struct ScrReNative {
   bool first_bol; /* some path is anchored at position 0 */
   int first_byte; /* the only byte that can start a match, or -1 */
   uint8_t first[128];
+  /* scr_regex.c: the ScrStr text of a pattern that matches only itself,
+   * or NULL. Owned by the matcher; released before scr_re_native_free. */
+  void *lit;
 } ScrReNative;
 
 static uint32_t rn_u16(const uint8_t *p) {
