@@ -466,7 +466,7 @@ function emitDenseReferenceArrayRead(
   no: string,
   slow: string,
   join: string,
-  loadType: "ptr" | "i64" = "ptr",
+  loadType: "ptr" | "i64" | "i8" = "ptr",
 ): void {
   const B = host.B;
   const range = B.newLabel("local.array.range"),
@@ -552,7 +552,11 @@ function emitDenseReferenceArrayRead(
   );
   host.markMemoryPointer(dataPtr, "array:header");
   B.line(`${data} = load ptr, ptr ${dataPtr}${host.fieldAliasAttachment(dataPtr)}`);
-  B.line(`${valuePtr} = getelementptr inbounds i64, ptr ${data}, ${host.sizeType} ${offset}`);
+  // Boolean arrays store one byte per element; every other kind an 8-byte slot.
+  const slotType = loadType === "i8" ? "i8" : "i64";
+  B.line(
+    `${valuePtr} = getelementptr inbounds ${slotType}, ptr ${data}, ${host.sizeType} ${offset}`,
+  );
   host.markMemoryPointer(valuePtr, "array:elements");
   B.line(`${raw} = load ${loadType}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
   present(raw);
@@ -663,7 +667,7 @@ export function emitLocalArrayRead(
       if (read.element.kind === "bool") {
         const nonzero = B.tmp();
         bits = B.tmp();
-        B.line(`${nonzero} = icmp ne i64 ${value}, 0`);
+        B.line(`${nonzero} = icmp ne i8 ${value}, 0`);
         B.line(`${bits} = zext i1 ${nonzero} to i64`);
       }
       B.line(`store i64 ${bits}, ptr ${payload}`);
@@ -684,7 +688,7 @@ export function emitLocalArrayRead(
       no,
       slow,
       join,
-      scalar ? "i64" : "ptr",
+      !scalar ? "ptr" : read.element.kind === "bool" ? "i8" : "i64",
     );
   else B.br(slow);
   B.startBlock(slow);

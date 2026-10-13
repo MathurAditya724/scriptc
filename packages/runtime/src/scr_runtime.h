@@ -74,7 +74,7 @@ void scr_init(void);
 /* Program objects emitted by the bundled LLVM helper reference this symbol.
  * Its versioned spelling makes a mismatched manual runtime link fail before
  * the program can start. */
-void scr_runtime_abi_v17(void);
+void scr_runtime_abi_v18(void);
 void scr_runtime_workers_v8(void);
 
 /* ── the trap funnel (scr_console.c; scr_library.c under -DSCR_LIB) ──────
@@ -1536,8 +1536,9 @@ ScrStr *scr_b64_missing_arg(void);
 
 /* ── arrays ─────────────────────────────────────────────────────────
  * Monomorphic, growable, refcounted. Elements live in 8-byte slots
- * (doubles/bools/pointers via memcpy and casts); `elem` records what the
- * slots hold so the array can release its own reference elements — ScrStr's
+ * (doubles/pointers via memcpy and casts), except SCR_ELEM_BOOL, whose
+ * dense storage holds one byte (0 or 1) per element; `elem` records what
+ * the slots hold so the array can release its own reference elements — ScrStr's
  * layout is untouched (interned-literal statics depend on it), so the
  * element kind lives here instead of in a shared object header. A separate
  * presence bitset distinguishes a hole from a present `undefined`-carrying
@@ -1614,6 +1615,9 @@ typedef struct ScrArr {
   uint32_t filled;
   /* SCR_ELEM_REF only; NULL for every other element kind. */
   const ScrArrOps *ops;
+  /* Dense values: `cap` 8-byte slots, or `cap` bytes for SCR_ELEM_BOOL
+   * (scr_arr_slot_width). Sparse entries and properties keep 8-byte slots
+   * for every kind; a bool slot is 0 or 1 wherever it lives. */
   uint64_t *data;
   uint8_t *present; /* one state per dense slot; heap arrays share data allocation */
   /* Rarely used storage (sparse indices, noncanonical numeric properties,
@@ -1641,6 +1645,22 @@ _Static_assert(offsetof(ScrArr, filled) == 3 * sizeof(size_t) + 4,
                "inline element access reads ScrArr.filled as %ScrArr field 6");
 _Static_assert(offsetof(ScrArr, data) == 3 * sizeof(size_t) + 8 + sizeof(void *),
                "inline element reads use ScrArr.data as %ScrArr field 8");
+
+/* Bytes per dense value slot. */
+static inline size_t scr_arr_slot_width(const ScrArr *a) {
+  return a->elem == SCR_ELEM_BOOL ? 1 : sizeof(uint64_t);
+}
+
+/* The dense value at `index` (< cap) as an 8-byte slot, and its store. */
+static inline uint64_t scr_arr_dense_get(const ScrArr *a, size_t index) {
+  if (a->elem == SCR_ELEM_BOOL) return ((const uint8_t *)a->data)[index];
+  return a->data[index];
+}
+
+static inline void scr_arr_dense_put(ScrArr *a, size_t index, uint64_t slot) {
+  if (a->elem == SCR_ELEM_BOOL) ((uint8_t *)a->data)[index] = (uint8_t)slot;
+  else a->data[index] = slot;
+}
 
 /* Lower the hole-free prefix to at most `index`: call before storing a
  * non-value state at `index`, or before moving states into [index, ...). */

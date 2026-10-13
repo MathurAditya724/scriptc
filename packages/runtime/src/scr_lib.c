@@ -7625,7 +7625,7 @@ ScrArr *scr_set_to_arr_bool(const ScrMap *s) {
   if (scr_set_to_arr_sparse(s, out)) return out;
   for (size_t i = 0; i < s->nentries; i++) {
     if (!s->entries[i].hash) continue;
-    out->data[out->len] = s->entries[i].key;
+    scr_arr_dense_put(out, out->len, s->entries[i].key != 0);
     out->present[out->len++] = SCR_ARR_VALUE;
   }
   return out;

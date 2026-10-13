@@ -1365,6 +1365,107 @@ static void test_filled_prefix(void) {
   scr_arr_release(r);
 }
 
+/* Boolean arrays store one byte per dense element, followed by the states in
+ * the same allocation. Growth moves the states past the larger value area,
+ * densifying absorbs sparse entries into bytes, and every moving and copying
+ * operation keeps values, holes and present undefined in place. */
+static bool bool_layout_ok(const ScrArr *a) {
+  return a->cap == 0 || a->present == (const uint8_t *)a->data + a->cap;
+}
+
+static bool bool_states(const ScrArr *a, const char *want) {
+  if (scr_arr_len(a) != (double)strlen(want)) return false;
+  for (size_t i = 0; want[i]; i++) {
+    double state = scr_arr_state(a, (double)i);
+    char got = state == SCR_ARR_HOLE        ? '_'
+               : state == SCR_ARR_UNDEFINED ? 'u'
+               : scr_arr_get_bool((ScrArr *)a, (double)i) ? 't'
+                                                          : 'f';
+    if (got != want[i]) return false;
+  }
+  return true;
+}
+
+static void test_bool_bytes(void) {
+  ScrArr *a = scr_arr_new(SCR_ELEM_BOOL, 0);
+  for (int i = 0; i < 1000; i++) scr_arr_push_bool(a, i % 3 == 0);
+  check(bool_layout_ok(a) && a->filled == 1000, "bool pushes grow one-byte storage");
+  bool values_ok = true;
+  for (int i = 0; i < 1000; i++) {
+    values_ok &= ((const uint8_t *)a->data)[i] == (i % 3 == 0);
+    values_ok &= scr_arr_get_bool(a, i) == (i % 3 == 0);
+  }
+  check(values_ok, "bool values are stored as 0/1 bytes");
+  check(scr_arr_index_of_bool(a, false) == 1 && scr_arr_includes_bool(a, true),
+        "bool search reads bytes");
+  scr_arr_set_len(a, 5);
+  scr_arr_set_len(a, 8);
+  scr_arr_set_undefined(a, 6);
+  check(bool_layout_ok(a) && bool_states(a, "tfftf_u_"), "bool truncation clears bytes");
+
+  ScrArr *s = scr_arr_new(SCR_ELEM_BOOL, 0);
+  scr_arr_set_bool(s, 0, true);
+  scr_arr_set_bool(s, 3000000, true);
+  scr_arr_set_bool(s, 2000000, false);
+  check(arr_sparse_len(s) == 2 && !scr_arr_get_bool(s, 2000000) && scr_arr_get_bool(s, 3000000),
+        "bool sparse entries keep their values");
+  scr_arr_set_len(s, 2000001);
+  scr_arr_release(scr_arr_fill_bool(s, true, 1, 2000000));
+  check(arr_sparse_len(s) == 0 && bool_layout_ok(s) && !scr_arr_get_bool(s, 2000000) &&
+            scr_arr_get_bool(s, 1999999) && scr_arr_index_of_bool(s, false) == 2000000,
+        "densifying absorbs sparse bool entries into bytes");
+  scr_arr_release(s);
+
+  ScrArr *m = scr_arr_new(SCR_ELEM_BOOL, 0);
+  uint64_t slots[3] = {1, 0, 1};
+  scr_arr_push_many(m, 3, slots);
+  scr_arr_unshift_many(m, 2, slots + 1);
+  check(bool_states(m, "fttft"), "slot buffers narrow to bytes");
+  scr_arr_unshift_bool(m, false);
+  scr_arr_set_undefined(m, 2);
+  scr_arr_delete(m, 4);
+  check(bool_states(m, "ffut_t"), "unshift moves bytes and states together");
+  ScrArr *removed = scr_arr_splice(m, 1, 2);
+  check(bool_states(removed, "fu") && bool_states(m, "ft_t"), "splice moves bytes out");
+  scr_arr_release(removed);
+  ScrArr *items = scr_arr_new(SCR_ELEM_BOOL, 0);
+  scr_arr_push_bool(items, true);
+  scr_arr_push_bool(items, false);
+  scr_arr_release(scr_arr_splice_insert(m, 1, 1, items));
+  check(bool_states(m, "ftf_t"), "splice insertion copies bytes in");
+  scr_arr_splice_drop(m, 0, 1, 2, slots);
+  check(bool_states(m, "tftf_t"), "statement splice stores bytes");
+  scr_arr_release(scr_arr_reverse(m));
+  check(bool_states(m, "t_ftft"), "reverse swaps bytes");
+  ScrArr *copy = scr_arr_slice(m, 1, INFINITY);
+  check(bool_states(copy, "_ftft") && bool_layout_ok(copy), "slice copies bytes");
+  scr_arr_release(copy);
+  copy = scr_arr_to_reversed(m);
+  check(bool_states(copy, "tftfut"), "toReversed copies bytes and materializes holes");
+  scr_arr_release(copy);
+  scr_arr_concat_copy(m, items);
+  scr_arr_push_spread(m, m);
+  check(bool_states(m, "t_ftfttftuftfttf"), "concat keeps holes; self spread reads them as undefined");
+  scr_arr_release(scr_arr_copy_within(m, 0, 2, 5));
+  check(scr_arr_index_eq(m, 0, items, 1) && scr_arr_index_eq(m, 1, items, 0),
+        "copyWithin moves bytes and index equality reads them");
+  check(scr_arr_shift_bool(m) == false && scr_arr_pop_bool(m) == false, "shift and pop read bytes");
+  scr_arr_release(scr_arr_sort_primitive(m, false));
+  bool sorted = true;
+  for (double i = 1; i < scr_arr_len(m); i++)
+    if (scr_arr_state(m, i) == SCR_ARR_VALUE && scr_arr_state(m, i - 1) == SCR_ARR_VALUE)
+      sorted &= scr_arr_get_bool(m, i - 1) <= scr_arr_get_bool(m, i);
+  check(sorted, "default sort orders bytes");
+  ScrStr *sep = scr_str_new(",", 1);
+  ScrStr *joined = scr_arr_join(items, sep);
+  check(strcmp(joined->data, "true,false") == 0, "join reads bytes");
+  scr_str_release(joined);
+  scr_str_release(sep);
+  scr_arr_release(items);
+  scr_arr_release(m);
+  scr_arr_release(a);
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) {
     ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
@@ -1410,6 +1511,7 @@ int main(int argc, char **argv) {
   test_bulk_reference_ownership();
   test_splice_drop();
   test_filled_prefix();
+  test_bool_bytes();
 
   fprintf(stderr, "%ld/%ld cases passed\n", total - failed, total);
   return failed == 0 ? 0 : 1;

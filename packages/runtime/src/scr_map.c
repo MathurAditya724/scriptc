@@ -1462,7 +1462,7 @@ void scr_set_add_all(ScrMap *set, ScrArr *values) {
      * Avoid taking a temporary owner only to release it after insertion.
      * Sparse/missing positions retain the existing accessor semantics. */
     if (i < values->cap && values->present[i] == SCR_ARR_VALUE) {
-      uint64_t key = values->data[i];
+      uint64_t key = scr_arr_dense_get(values, i);
       if (set->key_kind == SCR_MAP_KEY_F64) key = scr_map_f64_bits(scr_map_slot_to_f64(key));
       scr_map_set(set, scr_map_hash_key(set, key), key, 0);
     } else if (values->elem == SCR_ELEM_STR) {
