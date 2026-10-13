@@ -1,0 +1,221 @@
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { expect, test } from "vitest";
+import { compile, deserializeModule } from "../src/index.js";
+import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
+
+const repoRoot = join(import.meta.dirname, "../../..");
+
+const source = `
+import type { Int32 } from "@scriptc/types";
+function rsync(a: Uint8Array): number {
+  let s1 = 0,
+    s2 = 0;
+  for (let i = 0; i < a.length; i++) {
+    s1 = (s1 + a[i]) & 0xffff;
+    s2 = (s2 + s1) & 0xffff;
+  }
+  return ((s2 << 16) | s1) >>> 0;
+}
+function mix(s: string): number {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + i) | 0;
+  return h;
+}
+function counters(): number {
+  let up = 0;
+  const before = up++;
+  const after = ++up;
+  let down = 3;
+  const was = down--;
+  return before * 1000 + after * 100 + was * 10 + down;
+}
+function unsigned(a: Uint32Array): number {
+  let acc = 0;
+  for (let i = 0; i < a.length; i++) acc = (acc + (a[i] ^ i)) >>> 0;
+  return acc;
+}
+function fraction(n: number): number {
+  let h = 0;
+  for (let i = 0; i < n; i++) h = (h + i) | 0;
+  h = h / 2;
+  return h;
+}
+function mixed(n: number): number {
+  let m = -1 | 0;
+  if (n > 1) m = m >>> 0;
+  return m;
+}
+function captured(words: string[]): number {
+  let h = 17;
+  const add = (w: string): void => {
+    for (let i = 0; i < w.length; i++) h = (Math.imul(h, 31) + w.charCodeAt(i)) | 0;
+  };
+  for (const w of words) add(w);
+  return h;
+}
+function capturedParam(seed: number): () => number {
+  return () => seed;
+}
+function* frames(words: string[]): Generator<number> {
+  let h = 0;
+  for (const w of words) {
+    for (let i = 0; i < w.length; i++) h = (Math.imul(h, 33) ^ w.charCodeAt(i)) | 0;
+    yield h;
+  }
+}
+async function suspended(words: string[]): Promise<number> {
+  let total = 0;
+  for (const w of words) {
+    await Promise.resolve();
+    total = (total + w.length) | 0;
+  }
+  return total;
+}
+function contract(seed: Int32, steps: Int32): Int32 {
+  let acc: Int32 = seed;
+  for (let i: Int32 = 0; i < steps; i = (i + 1) | 0) acc = (Math.imul(acc, 3) + i) | 0;
+  return acc;
+}
+const bytes = new Uint8Array([1, 2, 3, 250]);
+console.log(rsync(bytes), mix("abcd"), counters(), unsigned(new Uint32Array([4294967295, 7])));
+console.log(fraction(5), mixed(3), captured(["ab", "c"]), capturedParam(3)());
+console.log([...frames(["ab", "cd"])].join(" "), contract(7, 20));
+suspended(["ab"]).then((t) => console.log(t));
+`;
+
+const body = (ll: string, name: string): string =>
+  ll.match(
+    new RegExp(`define internal [^\\n]+ @sc_(?:b)?f_${name}\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`),
+  )![1]!;
+
+/** Every function definition whose header or body matches. */
+const functionsWith = (ll: string, pattern: RegExp): string[] =>
+  ll.split(/^(?=define )/m).filter((fn) => fn.startsWith("define ") && pattern.test(fn));
+
+/** The blocks of a function's first loop, from its header to its exit. */
+const loopOf = (fn: string): string => {
+  const start = fn.search(/\nloop\.c\d+:/);
+  expect(start).toBeGreaterThan(0);
+  const end = fn.indexOf("\nloop.e", start);
+  return fn.slice(start, end < 0 ? undefined : end);
+};
+
+/** The function without pure instructions whose results nothing uses,
+ * repeatedly, as LLVM's dead code elimination leaves it. */
+const live = (fn: string): string => {
+  const pure =
+    /^\s*(%[\w.]+) = (?:[su]itofp|fpto[su]i|f(?:add|sub|mul|div|neg|cmp)|select|[sz]ext|trunc|add|sub|mul|and|or|xor|shl|lshr|ashr|icmp|phi|freeze|bitcast|getelementptr|load) /;
+  let lines = fn.split("\n");
+  for (let changed = true; changed;) {
+    changed = false;
+    const text = lines.join("\n");
+    lines = lines.filter((line) => {
+      const name = line.match(pure)?.[1];
+      if (!name) return true;
+      const uses = text.split(new RegExp(`${name.replace(/\./g, "\\.")}(?![\\w.])`)).length - 2;
+      if (uses > 0) return true;
+      changed = true;
+      return false;
+    });
+  }
+  return lines.join("\n");
+};
+
+/** What keeps a double carrier of a local in a function's loop once dead
+ * values are gone: double loads and stores of local slots, and widened
+ * reads of a local's i32. */
+const carriers = (fn: string): string[] => {
+  const loop = loopOf(live(fn));
+  const reads = new Set(
+    [...loop.matchAll(/^\s*(%[\w.]+) = load i32, ptr %sc_l_\w+$/gm)].map((m) => m[1]),
+  );
+  return [
+    ...loop.matchAll(/^\s*(?:%[\w.]+ = load double, ptr|store double [^,]+, ptr) %sc_l_\w+$/gm),
+    ...[...loop.matchAll(/^\s*%[\w.]+ = [su]itofp i32 (%[\w.]+) to double$/gm)].filter((m) =>
+      reads.has(m[1]),
+    ),
+  ].map((m) => m[0].trim());
+};
+
+test("int32-closed locals are stored as i32 and keep doubles only for floating consumers", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-int32-locals-"));
+  try {
+    await symlink(join(repoRoot, "node_modules"), join(dir, "node_modules"));
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(entry, source);
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    for (const pointerBits of [32, 64] as const) {
+      const ll = emitLlvmModule(mod, { pointerBits, wasi: pointerBits === 32 });
+
+      // Loop-carried accumulators and counters: i32 slots, no per-iteration
+      // conversion to or from a double, no integer view beside them.
+      const rsync = body(ll, "rsync");
+      expect(rsync).toMatch(/alloca i32 ; s1\n/);
+      expect(rsync).toMatch(/alloca i32 ; s2\n/);
+      expect(rsync).not.toMatch(/alloca double ; s[12]\n/);
+      expect(rsync).not.toContain("integer view");
+      expect(carriers(rsync)).toEqual([]);
+      const mix = body(ll, "mix");
+      expect(mix).toMatch(/alloca i32 ; h\n/);
+      expect(mix).toMatch(/alloca i32 ; i\n/);
+      expect(carriers(mix)).toEqual([]);
+      // The result is the one double the function needs.
+      expect(mix).toMatch(/ = sitofp i32 %\w+ to double\n\s+ret double/);
+
+      // ++ and -- write proven int32s in place.
+      const counters = body(ll, "counters");
+      expect(counters).toMatch(/alloca i32 ; up\n/);
+      expect(counters).toMatch(/alloca i32 ; down\n/);
+      expect(counters.match(/ = add i32 %\w+, 1\n/g)).toHaveLength(2);
+      expect(counters).toMatch(/ = sub i32 %\w+, 1\n/);
+
+      // A uint32 accumulator holds its bits and widens unsigned.
+      const unsigned = body(ll, "unsigned");
+      expect(unsigned).toMatch(/alloca i32 ; acc\n/);
+      expect(carriers(unsigned)).toEqual([]);
+      expect(unsigned).toMatch(/ = uitofp i32 %\w+ to double\n\s+ret double/);
+
+      // Locals that leave int32, or hold both int32 and uint32 values.
+      expect(body(ll, "fraction")).toMatch(/alloca double ; h\n/);
+      expect(body(ll, "mixed")).toMatch(/alloca double ; m\n/);
+
+      // Captured bindings keep their boxes, inside and outside the closure.
+      const captured = body(ll, "captured");
+      expect(captured).toMatch(/alloca ptr ; h\n/);
+      expect(captured).not.toMatch(/alloca i32 ; h\n/);
+      const closures = functionsWith(ll, /; captured h\n/);
+      expect(closures.length).toBeGreaterThan(0);
+      for (const fn of closures) expect(fn).not.toMatch(/alloca i32 ; h\n/);
+      expect(body(ll, "capturedParam")).not.toMatch(/alloca i32 ; seed\n/);
+
+      // Generator and async frames keep doubles.
+      for (const name of ["frames", "suspended"]) {
+        const fns = functionsWith(ll, new RegExp(`^define [^\\n]*${name}`));
+        expect(fns.length).toBeGreaterThan(0);
+        for (const fn of fns) expect(fn).not.toMatch(/alloca i32 ; (?:h|total)\n/);
+      }
+
+      // Int32 contract locals and parameters use the same storage; the
+      // parameter converts once on entry.
+      const contract = body(ll, "contract");
+      expect(contract).toMatch(/alloca i32 ; acc\n/);
+      expect(contract).toMatch(/alloca i32 ; seed\n/);
+      expect(contract).toMatch(/ = fptosi double %p_\w+ to i32\n/);
+      expect(carriers(contract)).toEqual([]);
+    }
+
+    // Debug builds keep every number local a double for the variable view.
+    const debug = emitLlvmModule(mod, { debugSources: new Map([[entry, source]]) });
+    expect(debug).not.toMatch(/alloca i32 ; (?:s1|h|acc)\n/);
+    expect(debug).toMatch(/alloca double ; s1\n/);
+    expect(debug).toContain("@llvm.dbg.declare");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
