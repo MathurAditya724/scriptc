@@ -999,7 +999,8 @@ export function emitCallExpr(
       B.line(
         `${vtp} = getelementptr inbounds %${classStructSym(e.className)}, ptr ${recv}, i64 0, i32 1`,
       );
-      B.line(`${vt} = load ptr, ptr ${vtp}`);
+      // Set once at allocation (classes.ts launders each new object).
+      B.line(`${vt} = load ptr, ptr ${vtp}, !invariant.group !{}`);
       B.line(
         `${fnp} = getelementptr inbounds %${mangleVtStruct(meta.root.def.name)}, ptr ${vt}, i64 0, i32 ${slotIdx + 1}`,
       );

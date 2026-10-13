@@ -654,9 +654,16 @@ export function emitClassShapes(
       nw.push(`  call void @scr_obj_lifetime_note(ptr %o)`);
     }
     if (meta.hierarchy) {
+      // The vtable word is written once, here, and never changes while the
+      // object lives: its store and the virtual-call loads carry
+      // !invariant.group. A recycled block may have held an object of
+      // another class, so the result is laundered first: every lifetime
+      // gets a fresh pointer identity for the group.
+      host.declare(`declare ptr @llvm.launder.invariant.group.p0(ptr)`);
       nw.push(
-        `  %vtp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 1`,
-        `  store ptr @${mangleVtInstance(cls.name)}, ptr %vtp`,
+        `  %o.vt = call ptr @llvm.launder.invariant.group.p0(ptr %o)`,
+        `  %vtp = getelementptr inbounds %${struct}, ptr %o.vt, i64 0, i32 1`,
+        `  store ptr @${mangleVtInstance(cls.name)}, ptr %vtp, !invariant.group !{}`,
       );
     }
     if (isEmitterRooted) {
@@ -672,7 +679,7 @@ export function emitClassShapes(
       );
     }
     nw.push(...undefFieldInits(host, meta, nullable));
-    nw.push(`  ret ptr %o`, `}`, ``);
+    nw.push(`  ret ptr ${meta.hierarchy ? "%o.vt" : "%o"}`, `}`, ``);
     defs.push(...nw);
 
     if (traced) {

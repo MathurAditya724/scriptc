@@ -90,7 +90,8 @@ class Dog extends Animal {
   }
 }
 const a: Animal = new Dog("rex");
-console.log(a.id(), a.speak());
+const b: Animal = new Animal("cat");
+console.log(a.id(), a.speak(), b.speak());
 `,
     );
     // The devirtualized call is a direct sc_f_ call of Animal's id...
@@ -157,8 +158,9 @@ class LoudCell extends Cell {
   }
 }
 const c: Cell = new LoudCell();
+const plain: Cell = new Cell();
 c.v = 3;
-console.log(c.v, c.label);
+console.log(c.v, c.label, plain.label);
 `,
     );
     // The overridden getter dispatches through its slot...
@@ -248,12 +250,14 @@ class SealedBox extends Box {
   }
 }
 const b: Box = new SealedBox();
+const plain: Box = new Box();
 try {
   b.v = 9;
 } catch {
   console.log("sealed");
 }
-console.log(b.v);
+plain.v = 2;
+console.log(b.v, plain.v);
 `,
     );
     // JS shadowing: the derived class's synthesized setter occupies the
