@@ -449,6 +449,8 @@ export function emitAsyncExpr(
         host.emitPendingCheck();
         return out;
       }
+      // The delegate resume that follows reads the resumption.
+      if (e.delegated) return { name: "", type: e.type };
       host.emitPendingCheck();
       if (e.type.kind === "void") {
         // An undefined next-channel: nothing to read (the frontend
@@ -484,6 +486,89 @@ export function emitAsyncExpr(
       const genT = e.gen.type;
       if (genT.kind !== "generator")
         throw new InternalCompilerError("llvm emitter bug: genResume on a non-generator");
+      if (e.mode === "delegate") {
+        // yield*'s drive of a sync generator: the first valueless next(),
+        // or the delegated yield and then the consumer's next/return/throw
+        // passed on to the delegate. Both answer the delegate's done.
+        const outer = host.currentGenerator;
+        if (genT.async || outer === null)
+          throw new InternalCompilerError(
+            "llvm emitter bug: genResume delegate outside a generator",
+          );
+        if (e.arg !== null) host.emitExpr(e.arg);
+        const gb = emitBorrowedInput(host, e.gen);
+        const done = B.tmp();
+        // A record-free drive reads a valued completion out of OUT, typed
+        // as the return channel: an empty one (undefined) throws instead.
+        const typedRet = e.type.kind === "bool" && genT.retT.kind !== "void";
+        if (e.arg === null) {
+          // A suspended delegate reads the empty IN slot as undefined only
+          // on an undefined or dyn next channel.
+          const typedNext = genT.nextT.kind !== "undefinedT" && genT.nextT.kind !== "dyn";
+          host.declare(`declare zeroext i1 @scr_gen_delegate_start(ptr, i32)`);
+          B.line(
+            `${done} = call zeroext i1 @scr_gen_delegate_start(ptr ${gb.name}, i32 ${(typedNext ? 1 : 0) | (typedRet ? 2 : 0)})`,
+          );
+        } else {
+          // One slot transfer between channels (scr_async.c): 0 moves, 1
+          // boxes into dyn, 2 admits only an empty slot (a return value
+          // stays parked in this body), 3 drops.
+          const transfer = (from: IrType, to: IrType, next: boolean): [number, string] => {
+            if (next && to.kind === "undefinedT") return [3, "null"];
+            if (typeEquals(from, to) || from.kind === "undefinedT" || from.kind === "void")
+              return [0, "null"];
+            if (to.kind === "dyn" && (from.kind === "f64" || from.kind === "bool"))
+              return [1, "null"];
+            if (to.kind === "dyn" && isRefCounted(from))
+              return [1, `@${host.dyn.toDynHelper(from)}`];
+            return [2, "null"];
+          };
+          const [nm, nc] = transfer(outer.nextT, genT.nextT, true);
+          const [rm, rc] = transfer(host.currentReturnType, genT.retT, false);
+          const [dm, dc] = transfer(genT.retT, host.currentReturnType, false);
+          // A resume with nothing pending passes next(v) on inline; a
+          // pending throw or return takes the forwarding call.
+          const pending = B.tmp();
+          for (const line of host.pendingTestLines(pending)) B.line(line);
+          const ln = B.newLabel("dg.next");
+          const lf = B.newLabel("dg.fwd");
+          const lj = B.newLabel("dg.join");
+          B.condBr(pending, lf, ln);
+          B.startBlock(ln);
+          const nextDone = B.tmp();
+          if (!typedRet && (nm === 3 || outer.nextT.kind === "undefinedT")) {
+            host.declare(`declare zeroext i1 @scr_gen_step(ptr)`);
+            B.line(`${nextDone} = call zeroext i1 @scr_gen_step(ptr ${gb.name})`);
+          } else {
+            host.declare(`declare zeroext i1 @scr_gen_delegate_next(ptr, i32, ptr)`);
+            B.line(
+              `${nextDone} = call zeroext i1 @scr_gen_delegate_next(ptr ${gb.name}, i32 ${nm | (typedRet ? 4 : 0)}, ptr ${nc})`,
+            );
+          }
+          B.br(lj);
+          B.startBlock(lf);
+          const forwardDone = B.tmp();
+          host.declare(`declare zeroext i1 @scr_gen_delegate_forward(ptr, i32, ptr, ptr, ptr)`);
+          B.line(
+            `${forwardDone} = call zeroext i1 @scr_gen_delegate_forward(ptr ${gb.name}, i32 ${nm | (rm << 2) | (dm << 4) | (typedRet ? 64 : 0)}, ptr ${nc}, ptr ${rc}, ptr ${dc})`,
+          );
+          B.br(lj);
+          B.startBlock(lj);
+          B.line(`${done} = phi i1 [ ${nextDone}, %${ln} ], [ ${forwardDone}, %${lf} ]`);
+        }
+        if (e.type.kind === "bool") {
+          host.emitPendingCheck();
+          return { name: done, type: e.type };
+        }
+        if (e.type.kind !== "record")
+          throw new InternalCompilerError("llvm emitter bug: genResume delegate result");
+        const helper = host.genResultThunkFor(genT, e.type);
+        const t = B.tmp();
+        B.line(`${t} = call ptr @${helper}(ptr ${gb.name})`);
+        const out = host.own({ name: t, type: e.type });
+        host.emitPendingCheck();
+        return out;
+      }
       if (e.mode === "close") {
         if (genT.async)
           throw new InternalCompilerError("llvm emitter bug: genResume close on async");

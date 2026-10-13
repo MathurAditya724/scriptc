@@ -5401,6 +5401,9 @@ function validateFunction(
     }
   }
 
+  // The yield a `delegate` genResume is checking as its argument.
+  let delegatedYield: IrExpr | null = null;
+
   function checkAsyncExpr(
     e: IrExpr & {
       kind:
@@ -5443,7 +5446,10 @@ function validateFunction(
         }
         // The undefined next-channel has no C value form: such yields are
         // void-typed (statement position only — the frontend fences reads).
-        if (e.captureCompletion) {
+        if (e.delegated) {
+          if (delegatedYield !== e) err("delegated yield outside a delegate resume", e.loc);
+          if (e.type.kind !== "void" || e.captureCompletion) err("invalid delegated yield", e.loc);
+        } else if (e.captureCompletion) {
           if (
             fn.async ||
             e.type.kind !== "dyn" ||
@@ -5469,6 +5475,29 @@ function validateFunction(
           break;
         }
         const genT = e.gen.type;
+        if (e.mode === "delegate") {
+          if (e.arg !== null) {
+            if (e.arg.kind === "yieldExpr" && e.arg.delegated) delegatedYield = e.arg;
+            else err("genResume delegate argument is not a delegated yield", e.loc);
+            checkExpr(e.arg);
+            delegatedYield = null;
+          }
+          const outer = fn.generator;
+          if (outer === undefined || fn.async || genT.async)
+            err("genResume delegate outside a sync generator body", e.loc);
+          else if (
+            genT.nextT.kind !== "undefinedT" &&
+            genT.nextT.kind !== "dyn" &&
+            !typeEquals(genT.nextT, outer.nextT)
+          )
+            err(
+              `genResume delegate into a ${typeKey(genT.nextT)} next-channel from ${typeKey(outer.nextT)}`,
+              e.loc,
+            );
+          if (e.type.kind !== "bool" && e.type.kind !== "record")
+            err(`genResume delegate result ${typeKey(e.type)}`, e.loc);
+          break;
+        }
         if (e.arg !== null) checkExpr(e.arg);
         if (e.mode === "step" || e.mode === "value" || e.mode === "close") {
           if (genT.async) err(`genResume ${e.mode} on an async generator`, e.loc);
@@ -5479,7 +5508,10 @@ function validateFunction(
             if (e.type.kind !== "bool") err(`genResume step result ${typeKey(e.type)}`, e.loc);
           } else if (e.mode === "close") {
             if (e.type.kind !== "void") err(`genResume close result ${typeKey(e.type)}`, e.loc);
-          } else if (genT.yieldT.kind === "void" || !typeEquals(e.type, genT.yieldT)) {
+          } else if (
+            (genT.yieldT.kind === "void" || !typeEquals(e.type, genT.yieldT)) &&
+            (genT.retT.kind === "void" || !typeEquals(e.type, genT.retT))
+          ) {
             err(
               `genResume value ${typeKey(e.type)} != yield channel ${typeKey(genT.yieldT)}`,
               e.loc,

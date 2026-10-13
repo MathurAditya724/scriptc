@@ -4304,6 +4304,125 @@ ScrDyn *scr_gen_delegate_resume(ScrDyn *(*next_ref)(void *),
   return result;
 }
 
+/* yield* into a sync generator delegate. A channel transfer moves one
+ * slot into another: MOVE as is (same channel type), DYN boxed into a dyn
+ * channel, STRICT only when empty (any value would change type: the
+ * SC1071 fence), DROP onto an undefined channel. A return(v) whose value
+ * the delegate's return channel cannot hold keeps v parked in the
+ * delegating body (STRICT in the return position): the delegate returns
+ * without a value and v becomes the body's completion unless the
+ * delegate's finally returns its own. */
+enum { SCR_GEN_XFER_MOVE, SCR_GEN_XFER_DYN, SCR_GEN_XFER_STRICT, SCR_GEN_XFER_DROP };
+
+static bool scr_gen_delegate_fence(const char *message, size_t len) {
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, len, "SC1071");
+  return false;
+}
+
+static bool scr_gen_slot_transfer(ScrGenSlot *dst, ScrGenSlot *src, unsigned mode,
+                                  ScrDyn *(*to_dyn)(void *)) {
+  scr_gen_slot_reset(dst);
+  if (mode == SCR_GEN_XFER_DROP || src->kind == SCR_EXC_NONE) {
+    scr_gen_slot_reset(src);
+    return true;
+  }
+  if (mode == SCR_GEN_XFER_STRICT) {
+    static const char sc_m[] =
+        "yield* completing with a value outside the delegating generator's return type is not "
+        "supported";
+    return scr_gen_delegate_fence(sc_m, sizeof sc_m - 1);
+  }
+  if (mode == SCR_GEN_XFER_DYN) {
+    ScrDyn *v;
+    switch (src->kind) {
+    case SCR_EXC_F64: v = scr_dyn_new_num(src->f64); break;
+    case SCR_EXC_BOOL: v = scr_dyn_new_bool(src->b); break;
+    default: v = to_dyn(src->payload); break;
+    }
+    scr_gen_slot_reset(src);
+    scr_gen_slot_ref(dst, v, scr_dyn_release_v);
+    return true;
+  }
+  *dst = *src;
+  src->kind = SCR_EXC_NONE;
+  src->payload = NULL;
+  src->release_fn = NULL;
+  return true;
+}
+
+/* Whether the delegate is done. `typed_ret`: the delegating body reads the
+ * completion as a return type that cannot hold undefined, which an empty
+ * completion (a finished delegate, or a valueless return) would be. */
+static bool scr_gen_delegate_done(ScrGen *d, bool typed_ret) {
+  if (d->state != SCR_GEN_DONE) return false;
+  if (typed_ret && d->out.kind == SCR_EXC_NONE && !scr_exc_pending()) {
+    static const char sc_m[] =
+        "yield* of a generator that completes with undefined through a return type that cannot "
+        "hold it is not supported";
+    scr_gen_delegate_fence(sc_m, sizeof sc_m - 1);
+  }
+  return true;
+}
+
+bool scr_gen_delegate_start(ScrGen *d, unsigned flags) {
+  if ((flags & 1) && d->state == SCR_GEN_SUSPENDED) {
+    static const char sc_m[] =
+        "yield* into a started generator with a typed next channel is not supported (it would "
+        "deliver undefined into a typed yield)";
+    return scr_gen_delegate_fence(sc_m, sizeof sc_m - 1);
+  }
+  scr_gen_slot_reset(&d->in);
+  scr_gen_resume(d);
+  return scr_gen_delegate_done(d, flags & 2);
+}
+
+bool scr_gen_delegate_next(ScrGen *d, unsigned flags, ScrDyn *(*to_dyn)(void *)) {
+  scr_gen_slot_transfer(&d->in, &scr_gen_self()->in, flags & 3, to_dyn);
+  scr_gen_resume(d);
+  return scr_gen_delegate_done(d, flags & 4);
+}
+
+bool scr_gen_delegate_forward(ScrGen *d, unsigned modes, ScrDyn *(*next_dyn)(void *),
+                              ScrDyn *(*ret_dyn)(void *), ScrDyn *(*done_dyn)(void *)) {
+  ScrGen *g = scr_gen_self();
+  ScrExcCell *cell = scr_exc_current_cell();
+  if (cell->kind == SCR_EXC_NONE) {
+    scr_gen_slot_transfer(&d->in, &g->in, modes & 3, next_dyn);
+    scr_gen_resume(d);
+    return scr_gen_delegate_done(d, modes & 64);
+  }
+  if (cell->kind != SCR_EXC_GENRET) {
+    /* throw(e): the pending payload moves into the delegate. */
+    scr_gen_resume_throw(d);
+    return scr_gen_delegate_done(d, modes & 64);
+  }
+  /* return(v): the delegate's return runs first; only its completion
+   * returns from this body. */
+  unsigned ret_mode = (modes >> 2) & 3;
+  scr_exc_clear();
+  if (ret_mode == SCR_GEN_XFER_STRICT) scr_gen_slot_reset(&d->ret);
+  else scr_gen_slot_transfer(&d->ret, &g->ret, ret_mode, ret_dyn);
+  scr_gen_resume_return(d);
+  if (scr_exc_pending()) return false;
+  if (d->state == SCR_GEN_DONE) {
+    if (d->out.kind == SCR_EXC_NONE ||
+        scr_gen_slot_transfer(&g->ret, &d->out, (modes >> 4) & 3, done_dyn)) {
+      scr_exc_current_cell()->kind = SCR_EXC_GENRET;
+      scr_exc_cell_changed();
+    }
+    return true;
+  }
+  if (g->ret.kind != SCR_EXC_NONE) {
+    /* The delegate's finally yielded; its later completion could not
+     * carry the parked value. */
+    static const char sc_m[] =
+        "yield* forwarding return(value) to a generator with a different return type whose "
+        "finally block yields is not supported";
+    scr_gen_delegate_fence(sc_m, sizeof sc_m - 1);
+  }
+  return false;
+}
+
 /* yield: park the value in OUT and hop back to the resumer. Control
  * returns here at the next resume — possibly with an injected .throw
  * payload or the GENRET sentinel pending (the emitted check handles it). */

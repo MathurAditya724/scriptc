@@ -2654,11 +2654,14 @@ export type IrExpr =
    * as the GENRET sentinel — pending like an exception, it unwinds
    * through finally blocks but must NOT be taken by catch handlers
    * (backends emit a sentinel re-unwind prologue at catch entry inside
-   * generator bodies; scr_exc_genret_pending answers it). */
+   * generator bodies; scr_exc_genret_pending answers it). `delegated`:
+   * only as the `arg` of a `delegate` genResume, which reads the resumed
+   * value and handles a pending throw or return; the yield itself is VOID. */
   | {
       kind: "yieldExpr";
       value: IrExpr | null;
       awaited?: true;
+      delegated?: true;
       captureCompletion?: { returnType: IrType };
       type: IrType;
       loc: SrcLoc;
@@ -2686,13 +2689,27 @@ export type IrExpr =
    * generator (for-of, spread, yield*), which read only `done` and then the
    * yielded value: `step` is a valueless next() answering `done` (BOOL;
    * throws like next); `value` moves the yielded value out, typed as the
-   * yield channel (valid only right after a `step` that answered false;
-   * never throws); `close` is a valueless return() whose result is dropped
+   * yield channel (valid only right after a `step` or `delegate` that
+   * answered false; never throws), or the completion value typed as the
+   * return channel (once a `delegate` answered true); `close` is a valueless return() whose result is dropped
    * (IteratorClose; VOID; throws like return). All three have a null
-   * `arg`. */
+   * `arg`.
+   *
+   * `delegate` drives a sync generator from a `yield*` in a sync generator
+   * body. With a null `arg` it is the delegation's first resume: a
+   * valueless next() on any next channel (a suspended delegate whose next
+   * channel is typed throws an SC1071 fence error instead). Otherwise `arg`
+   * is a `delegated` yieldExpr, and once the body resumes, the consumer's
+   * next(v), return(v), or throw(e) passes to the delegate; the body
+   * itself unwinds only on a delegate exception or when the delegate
+   * completes a forwarded return(). The delegate's next channel is
+   * undefined, dyn, or the body's own. The result is the delegate's
+   * IteratorResult record, or BOOL `done` for a record-free drive (then
+   * `value` reads a yielded value or the completion; an empty completion
+   * on a valued return channel throws an SC1071 fence error). */
   | {
       kind: "genResume";
-      mode: "next" | "return" | "throw" | "step" | "value" | "close";
+      mode: "next" | "return" | "throw" | "step" | "value" | "close" | "delegate";
       gen: IrExpr;
       arg: IrExpr | null;
       type: IrType;

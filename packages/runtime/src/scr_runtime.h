@@ -5976,6 +5976,21 @@ ScrDyn *scr_gen_delegate_resume(ScrDyn *(*next_ref)(void *),
                                 ScrDyn *(*return_ref)(void *),
                                 ScrDyn *(*caught_ref)(const ScrCaught *));
 
+/* yield* over a typed generator delegate. start runs the first valueless
+ * next(); flag 1 marks a typed next channel, which a suspended delegate
+ * cannot take undefined into (the SC1071 fence), and flag 2 a completion
+ * read as a return type that cannot hold undefined. forward runs right
+ * after the delegating body's yield resumes and passes the consumer's
+ * next(v), return(v), or throw(e) to the delegate; next is its form for a
+ * resume with nothing pending. `modes` packs the next, return, and
+ * completion channel transfers (two bits each) and the typed-completion
+ * flag (64; 4 for next); the converters box a borrowed ref payload into
+ * an owned dyn. All answer whether the delegate is done. */
+bool scr_gen_delegate_start(ScrGen *d, unsigned flags);
+bool scr_gen_delegate_next(ScrGen *d, unsigned flags, ScrDyn *(*to_dyn)(void *));
+bool scr_gen_delegate_forward(ScrGen *d, unsigned modes, ScrDyn *(*next_dyn)(void *),
+                              ScrDyn *(*ret_dyn)(void *), ScrDyn *(*done_dyn)(void *));
+
 /* RET slot (consumer parks the `.return(v)` value before resume_return). */
 void scr_gen_ret_f64(ScrGen *g, double v);
 void scr_gen_ret_bool(ScrGen *g, bool v);

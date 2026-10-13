@@ -63,7 +63,33 @@ console.log(n, [...leaves(2)].join(","));
 `);
   expect(llvm).toContain("call zeroext i1 @scr_gen_step(");
   expect(llvm).toContain("call ptr @scr_gen_take_out_ref(");
+  expect(definition(llvm, "sc_f_leaves")).toContain("call zeroext i1 @scr_gen_delegate_forward(");
   expect(llvm).not.toMatch(/^define internal ptr @sc_gres_/m);
+});
+
+test("yield* passes typed next values to the delegate without result records", async () => {
+  const llvm = await emit(`
+function* words(): Generator<number, string, string> {
+  const a = yield 1;
+  const b = yield 2;
+  return a + b;
+}
+function* sentence(): Generator<number, string, string> {
+  return yield* words();
+}
+const s = sentence();
+s.next("x");
+s.next("y");
+console.log(s.next("z").value);
+`);
+  const body = definition(llvm, "sc_f_sentence");
+  expect(body).toContain("call zeroext i1 @scr_gen_delegate_start(ptr %t");
+  expect(body).toMatch(/@scr_gen_delegate_start\(ptr %t\d+, i32 3\)/);
+  expect(body).toContain("call zeroext i1 @scr_gen_delegate_next(");
+  expect(body).toContain("call zeroext i1 @scr_gen_delegate_forward(");
+  expect(body).toContain("call ptr @scr_gen_take_out_ref(");
+  expect(body).not.toContain("@scr_gen_take_in_");
+  expect(body).not.toContain("@sc_gres_");
 });
 
 test("default any channels keep a typed yield and box only in result records", async () => {
