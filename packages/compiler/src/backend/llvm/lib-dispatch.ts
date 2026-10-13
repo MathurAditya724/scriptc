@@ -1,3 +1,4 @@
+import { emitBigIntWrap } from "./bigint-wrap.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { borrowsIteratorInputs, borrowsJsonInputs } from "./checked-value-lifetimes.js";
 import { emitTlsLibCall } from "./lib-tls.js";
@@ -290,6 +291,17 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (USES_TIMERS_LIB_FNS.has(e.fn)) host.usesTimers = true;
   if (e.fn === "process.nextTick") return host.emitAsyncContextLibCall(e);
   if (e.fn === "sp.pipeline") return host.emitStreamLibCall(e);
+  if (e.fn === "bigint.parse" && e.args[0]?.kind === "strLit") {
+    // Literals (`123n`) and constant BigInt("...") texts are immortal
+    // statics instead of a parse at every evaluation.
+    const sym = host.internBigIntLiteral(e.args[0].value);
+    if (sym) return host.own({ name: host.retainValue(sym, e.type), type: e.type });
+  }
+  if (e.fn.startsWith("bigint.")) {
+    // Small-value operator trees run in 64-bit registers (bigint-wrap.ts).
+    const fused = emitBigIntWrap(host, e);
+    if (fused) return fused;
+  }
   const prefix = e.fn.slice(0, e.fn.indexOf(".")) as LibCallPrefix;
   switch (prefix) {
     case "fetch":

@@ -8742,6 +8742,13 @@ export function lowerIncDec(
       return varRef(local.id, value.type, loc);
     };
     const finish = (read: IrExpr, write: (value: IrExpr) => IrStmt): IrExpr => {
+      if (read.type.kind === "bigint") {
+        const old = save(read, "%incrementOld");
+        const next = save(bigintStep(op, old, loc), "%incrementNext");
+        stmts.push(write(next));
+        const result = prefix ? next : old;
+        return { kind: "seqExpr", stmts, result, type: result.type, loc };
+      }
       const old = save(
         read.type.kind === "f64"
           ? read
@@ -8990,6 +8997,26 @@ export function lowerIncDecTarget(
       };
     }
   }
+  if (target.type.kind === "bigint") {
+    const old = lowerer.declareHiddenLocal("%bigintOld", BIGINT_T);
+    const next = lowerer.declareHiddenLocal("%bigintNext", BIGINT_T);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: old.id, init: varRef(target.id, BIGINT_T, loc), loc },
+        {
+          kind: "varDecl",
+          localId: next.id,
+          init: bigintStep(op, varRef(old.id, BIGINT_T, loc), loc),
+          loc,
+        },
+        { kind: "assign", localId: target.id, value: varRef(next.id, BIGINT_T, loc), loc },
+      ],
+      result: varRef(prefix ? next.id : old.id, BIGINT_T, loc),
+      type: BIGINT_T,
+      loc,
+    };
+  }
   if (target.type.kind !== "f64") lowerer.unsupported("SC1043", expr);
   return { kind: "incDec", op, prefix, localId: target.id, type: F64, loc };
 }
@@ -9019,6 +9046,50 @@ function seqExprSafeStmt(s: IrStmt): boolean {
     default:
       return false;
   }
+}
+
+const BIGINT_COMPOUND = {
+  "+": "bigint.add",
+  "-": "bigint.sub",
+  "*": "bigint.mul",
+  "/": "bigint.div",
+  "%": "bigint.mod",
+  "**": "bigint.pow",
+  "&": "bigint.and",
+  "|": "bigint.or",
+  "^": "bigint.xor",
+  "<<": "bigint.shl",
+  ">>": "bigint.shr",
+} as const;
+
+/** `old op= rhs` over two bigints: the binary operator's libCall. Null
+ * for other operand types (and `>>>`, which BigInt does not have). */
+function bigintCompoundValue(
+  op: CompoundOp,
+  left: IrExpr,
+  right: IrExpr,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (left.type.kind !== "bigint" || right.type.kind !== "bigint" || op === ">>>") return null;
+  return { kind: "libCall", fn: BIGINT_COMPOUND[op], args: [left, right], type: BIGINT_T, loc };
+}
+
+/** `++`/`--` on a bigint value: old ± 1n. */
+function bigintStep(op: "+" | "-", old: IrExpr, loc: SrcLoc): IrExpr {
+  const one: IrExpr = {
+    kind: "libCall",
+    fn: "bigint.parse",
+    args: [{ kind: "strLit", value: "1", type: STRING, loc }],
+    type: BIGINT_T,
+    loc,
+  };
+  return {
+    kind: "libCall",
+    fn: op === "+" ? "bigint.add" : "bigint.sub",
+    args: [old, one],
+    type: BIGINT_T,
+    loc,
+  };
 }
 
 export function lowerCompoundValueToTarget(
@@ -9083,6 +9154,8 @@ export function lowerCompoundValueToTarget(
     };
     return lowerer.coerceInto(expr, computed, target.type);
   }
+  const bigint = bigintCompoundValue(compound, read, rhs, loc);
+  if (bigint) return bigint;
   lowerer.unsupported("SC1043", expr);
 }
 
@@ -14801,6 +14874,7 @@ function lowerFieldCompoundValue(
       : lowerOptionalNumber(lowerer, rhs, loc);
   let value: IrExpr;
   const numericRead = lowerOptionalNumber(lowerer, read, loc, access);
+  const bigintValue = rhsNode ? bigintCompoundValue(op, read, rhs, loc) : null;
   if (op === "+" && read.type.kind === "string") {
     value = {
       kind: "strConcat",
@@ -14811,6 +14885,8 @@ function lowerFieldCompoundValue(
     };
   } else if (numericRead.type.kind === "f64" && numericRhs.type.kind === "f64") {
     value = { kind: "bin", op, left: numericRead, right: numericRhs, type: F64, loc };
+  } else if (bigintValue) {
+    value = bigintValue;
   } else if (target.fieldType.kind === "dyn" && isJsSourceFile(access.getSourceFile())) {
     const numeric = ["-", "*", "/", "%", "**"].includes(op);
     const left = lowerer.coerceToExpected(read, DYN);
