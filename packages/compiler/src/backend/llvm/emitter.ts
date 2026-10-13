@@ -81,6 +81,8 @@ import { analyzeInt32Slots, type Int32Slots } from "../../ir/int32-slots.js";
 import { analyzeFinalFields, constructorClass, type FinalFields } from "../../ir/final-fields.js";
 import { foldConstantGlobals } from "../../ir/constant-globals.js";
 import { findIntegerViews } from "./integer-views.js";
+import { findInt32Locals, type Int32Local } from "./int32-locals.js";
+import { exactInteger, narrowInteger } from "./integer-values.js";
 import { findInitializerBindings, withInitializerBindings } from "../../ir/initializer-bindings.js";
 import { findConstantNumericTables, type ConstantNumericTable } from "../../ir/constant-tables.js";
 import {
@@ -768,6 +770,11 @@ export class LlEmitter {
   private byteWindowEntries: ReturnType<typeof findInitializedByteLoopBindings> = new Map();
   bytesBounds: ReadonlySet<IrExpr | IrStmt> = new Set();
   integerViews = new Map<string, string>();
+  /** Number locals of the current function stored only as an i32
+   * (int32-locals.ts); their slots are `alloca i32`. */
+  int32Locals = new Map<string, Int32Local>();
+  /** The written values (and `++`/`--` nodes) the int32 proof covers. */
+  int32LocalWrites: ReadonlySet<IrExpr> = new Set();
   /** Enclosing try-with-FINALLY regions, innermost last: a `return`
    * inside one runs every crossed finally (innermost first) before the
    * actual ret — the runtime ABI’s pending-return path, with the finally
@@ -1837,13 +1844,13 @@ export class LlEmitter {
       `%ScrFfiTable = type { ptr, ${this.sizeType}, ${this.sizeType}, ptr, i8, ptr, ptr, ${this.sizeType}, ${this.sizeType}, ${this.sizeType}, ptr, ptr }`,
       `%ScrRegex = type { ${this.sizeType}, ptr, ptr, ptr, double, ptr, ptr }`,
       // ScrArr mirrors scr_runtime.h field-for-field: { rc, len, cap, elem,
-      // cyc, ops, data, present, ext } (field numbers in SCR_ARR_FIELD),
-      // where ops points at the element type's constant RC descriptor
+      // cyc, spare, filled, ops, data, present, ext } (field numbers in
+      // SCR_ARR_FIELD), where filled bounds the hole-free prefix, ops points at the element type's constant RC descriptor
       // (%ScrArrOps, SCR_ELEM_REF only) and ext at the out-of-line sparse,
       // property and metadata storage (NULL until first used). Live dynamic
       // stream commits swap its dense, presence and out-of-line storage while
       // preserving the target object's identity.
-      `%ScrArr = type { ${this.sizeType}, ${this.sizeType}, ${this.sizeType}, i32, i32, ptr, ptr, ptr, ptr }`,
+      `%ScrArr = type { ${this.sizeType}, ${this.sizeType}, ${this.sizeType}, i8, i8, i16, i32, ptr, ptr, ptr, ptr }`,
       `%ScrArrOps = type { ptr, ptr, ptr }`,
       // The ScrMap prefix { rc, key_kind, val_kind, val_retain, val_release,
       // val_trace, key_retain, key_release, key_trace } — the inline RC
@@ -2027,16 +2034,16 @@ export class LlEmitter {
     for (const [, inst] of this.templateStringsInstances) {
       // One immortal ScrArr per tagged-template site: a [N x ptr] data
       // global of interned cooked-string literals, and the ScrArr header
-      // over it (rc == SIZE_MAX, len == cap, SCR_ELEM_STR = 2, no REF
-      // entry points). Every dense slot is present; reads retain immortal
-      // strings — a no-op.
+      // over it (rc == SIZE_MAX, len == cap == filled, SCR_ELEM_STR = 2,
+      // no REF entry points). Every dense slot is present; reads retain
+      // immortal strings — a no-op.
       const n = inst.slots.length;
       const present =
         n === 0 ? "zeroinitializer" : `[ ${inst.slots.map(() => "i8 1").join(", ")} ]`;
       out.push(
         `@${inst.sym}_data = internal constant [${n} x ptr] [ ${inst.slots.map((s) => `ptr ${s}`).join(", ")} ]`,
         `@${inst.sym}_present = internal constant [${n} x i8] ${present}`,
-        `@${inst.sym} = internal global %ScrArr { ${this.sizeType} -1, ${this.sizeType} ${n}, ${this.sizeType} ${n}, i32 2, i32 0, ptr null, ptr @${inst.sym}_data, ptr @${inst.sym}_present, ptr null }`,
+        `@${inst.sym} = internal global %ScrArr { ${this.sizeType} -1, ${this.sizeType} ${n}, ${this.sizeType} ${n}, i8 2, i8 0, i16 0, i32 ${n}, ptr null, ptr @${inst.sym}_data, ptr @${inst.sym}_present, ptr null }`,
       );
     }
     if (this.templateStringsInstances.size > 0) out.push(``);
@@ -5096,6 +5103,20 @@ export class LlEmitter {
     this.walkBorrows = this.walkBorrowsByFunction.get(fn.name) ?? new Set();
     this.integerRanges = analyzeIntegerRanges(numericFn, this.int32Slots.facts(fn.name));
     this.bytesBounds = findBytesBounds(numericFn, this.integerRanges);
+    // Debug builds keep every number local a double for the debugger's
+    // variable view. Lazily boxed captured parameters keep their double,
+    // which the box is created from.
+    const int32Locals =
+      this.debug === null
+        ? findInt32Locals(
+            fn,
+            this.integerRanges,
+            this.int32Slots.facts(fn.name),
+            new Set(this.lazyCaptureBoxes.keys()),
+          )
+        : null;
+    this.int32Locals = int32Locals?.locals ?? new Map();
+    this.int32LocalWrites = int32Locals?.values ?? new Set();
     this.chainSlots.clear();
     this.finallyStack = [];
     this.tryStack = [];
@@ -5144,6 +5165,8 @@ export class LlEmitter {
     const paramIds = new Set(fn.params.map((p) => p.localId));
     if (this.debug === null) {
       for (const id of findIntegerViews(numericFn)) {
+        // An i32 slot is its own view.
+        if (this.int32Locals.has(id)) continue;
         const slot = B.slot();
         B.entryAllocas.push(
           `${slot} = alloca i32 ; integer view ${this.numericLocals.get(id)!.name}`,
@@ -5165,7 +5188,9 @@ export class LlEmitter {
       const slotTy =
         local.boxed || this.captureIds.has(local.id) || local.type.kind === "caught"
           ? "ptr"
-          : this.llType(local.type);
+          : this.int32Locals.has(local.id)
+            ? "i32"
+            : this.llType(local.type);
       B.entryAllocas.push(`%${mangleLocal(local.id)} = alloca ${slotTy} ; ${local.name}`);
       this.emitDebugLocal(
         local,
@@ -5244,6 +5269,8 @@ export class LlEmitter {
         fnScope.push({ slot, type: p.type, boxed: true });
         continue;
       }
+      const incoming = { name: `%p_${mangleLocal(p.localId)}`, type: p.type };
+      if (this.storeInt32Local(p.localId, incoming)) continue;
       B.line(`store ${this.llType(p.type)} %p_${mangleLocal(p.localId)}, ptr ${slot}`);
       this.storeIntegerView(p.localId, { name: `%p_${mangleLocal(p.localId)}`, type: p.type });
       if (isRefCounted(p.type) && !borrowed?.has(index)) fnScope.push({ slot, type: p.type });
@@ -5712,6 +5739,10 @@ export class LlEmitter {
     this.frames.push([]);
     switch (s.kind) {
       case "varDecl": {
+        if (s.init && this.int32Locals.has(s.localId)) {
+          this.storeInt32Local(s.localId, this.emitExpr(s.init), s.init);
+          break;
+        }
         const b = this.binding(s.localId);
         if (this.walkBorrows.has(s.localId) && b.kind === "local") {
           // A borrowed walk pointer: no retain now, no release at scope exit.
@@ -5862,6 +5893,10 @@ export class LlEmitter {
         break;
       }
       case "assign": {
+        if (this.int32Locals.has(s.localId)) {
+          this.storeInt32Local(s.localId, this.emitExpr(s.value), s.value);
+          break;
+        }
         const owner = this.reboundOwnerSlots.get(s.localId);
         if (owner !== undefined && !this.walkBorrows.has(s.localId)) {
           // A rebound borrowed parameter: the new value moves into the owner
@@ -8315,6 +8350,43 @@ export class LlEmitter {
 
   emitToUint32(value: string, expr?: IrExpr, uint32?: string): string {
     return emitToUint32(this, value, expr, uint32);
+  }
+
+  /** Stores a number into its int32-stored local, when it is one. The
+   * value is proven to be in the local's range, so its low 32 bits are the
+   * exact value. */
+  storeInt32Local(localId: string, value: LlValue, expr?: IrExpr): boolean {
+    const local = this.int32Locals.get(localId);
+    if (local === undefined) return false;
+    if (expr !== undefined && !this.int32LocalWrites.has(expr))
+      throw new InternalCompilerError(`llvm emitter bug: unproven write of int32 local ${localId}`);
+    const B = this.B;
+    const integer = exactInteger(this, value, expr);
+    let bits: string;
+    if (integer && /^-?\d+$/.test(integer.name)) bits = String(Number(integer.name) | 0); // a literal's i32 bits
+    else if (integer) bits = narrowInteger(this, integer);
+    else if (value.uint32 !== undefined) bits = value.uint32;
+    else {
+      // An Int32 contract proved this write without a range at the value.
+      bits = B.tmp();
+      B.line(`${bits} = ${local.signed ? "fptosi" : "fptoui"} double ${value.name} to i32`);
+    }
+    B.line(`store i32 ${bits}, ptr %${mangleLocal(localId)}`);
+    return true;
+  }
+
+  /** The number of an int32-stored local's i32, with the i32 as its
+   * integer and ToUint32 forms. */
+  int32LocalValue(localId: string, bits: string, type: IrType): LlValue {
+    const local = this.int32Locals.get(localId)!;
+    const number = this.B.tmp();
+    this.B.line(`${number} = ${local.signed ? "sitofp" : "uitofp"} i32 ${bits} to double`);
+    return {
+      name: number,
+      type,
+      uint32: bits,
+      integer: { name: bits, type: "i32", signed: local.signed, range: local.range },
+    };
   }
 
   storeIntegerView(localId: string, value: LlValue, expr?: IrExpr): void {

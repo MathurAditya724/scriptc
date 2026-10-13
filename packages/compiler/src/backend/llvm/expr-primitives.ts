@@ -81,6 +81,11 @@ export function emitLiteralExpr(
           },
         };
       }
+      if (host.int32Locals.has(e.localId)) {
+        const bits = B.tmp();
+        B.line(`${bits} = load i32, ptr ${host.binding(e.localId).slot}`);
+        return host.int32LocalValue(e.localId, bits, e.type);
+      }
       const b = host.binding(e.localId);
       if (b.kind === "global") host.checkGlobalTdz(e.localId);
       if (b.kind === "boxed") {
@@ -368,6 +373,17 @@ export function emitOperatorExpr(
       // globals, capture boxes): read, write ±1, yield old (postfix) or
       // new (prefix).
       const b = host.binding(e.localId);
+      if (host.int32Locals.has(e.localId)) {
+        if (!host.int32LocalWrites.has(e))
+          throw new InternalCompilerError(`llvm emitter bug: unproven ++/-- of ${e.localId}`);
+        // The written value is proven in the local's range: no wrap.
+        const old = B.tmp();
+        const next = B.tmp();
+        B.line(`${old} = load i32, ptr ${b.slot}`);
+        B.line(`${next} = ${e.op === "+" ? "add" : "sub"} i32 ${old}, 1`);
+        B.line(`store i32 ${next}, ptr ${b.slot}`);
+        return host.int32LocalValue(e.localId, e.prefix ? next : old, e.type);
+      }
       if (b.kind === "boxed") {
         const box = host.loadBox(b.slot);
         const old = b.local!.tdz
@@ -434,6 +450,7 @@ export function emitOperatorExpr(
       }
       const b = host.binding(e.localId);
       const v = host.emitExpr(e.value);
+      if (host.storeInt32Local(e.localId, v, e.value)) return v;
       if (b.kind === "global") host.checkGlobalTdz(e.localId);
       if (b.kind === "boxed") {
         // box_set takes ownership of the passed reference, so hand it a

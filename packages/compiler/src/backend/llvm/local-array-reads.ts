@@ -497,6 +497,25 @@ function emitDenseReferenceArrayRead(
   B.startBlock(range);
   B.br(dense);
   B.startBlock(dense);
+  // Below the hole-free prefix bound every state is a present value.
+  const filledPtr = B.tmp(),
+    filled = B.tmp(),
+    belowFilled = B.tmp(),
+    lenLabel = B.newLabel("local.array.len");
+  B.line(
+    `${filledPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 ${SCR_ARR_FIELD.filled}`,
+  );
+  host.markMemoryPointer(filledPtr, "array:header");
+  B.line(`${filled} = load i32, ptr ${filledPtr}${host.fieldAliasAttachment(filledPtr)}`);
+  let filledSized = filled;
+  if (host.sizeType !== "i32") {
+    filledSized = B.tmp();
+    B.line(`${filledSized} = zext i32 ${filled} to ${host.sizeType}`);
+  }
+  B.line(`${belowFilled} = icmp ult ${host.sizeType} ${offset}, ${filledSized}`);
+  const valueLabel = B.newLabel("local.array.value");
+  B.condBr(belowFilled, valueLabel, lenLabel);
+  B.startBlock(lenLabel);
   const lenPtr = B.tmp(),
     len = B.tmp(),
     belowLen = B.tmp();
@@ -504,8 +523,7 @@ function emitDenseReferenceArrayRead(
   host.markMemoryPointer(lenPtr, "array:header");
   B.line(`${len} = load ${host.sizeType}, ptr ${lenPtr}${host.fieldAliasAttachment(lenPtr)}`);
   B.line(`${belowLen} = icmp ult ${host.sizeType} ${offset}, ${len}`);
-  const stateLabel = B.newLabel("local.array.state"),
-    valueLabel = B.newLabel("local.array.value");
+  const stateLabel = B.newLabel("local.array.state");
   B.condBr(belowLen, stateLabel, no);
   B.startBlock(stateLabel);
   const statesPtr = B.tmp(),

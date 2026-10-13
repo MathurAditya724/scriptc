@@ -178,6 +178,7 @@ export function streamTypedRefCommitAdapter(
       { name: "cap", index: 2, type: host.sizeType },
       { name: "data", index: SCR_ARR_FIELD.data, type: "ptr" },
       { name: "present", index: SCR_ARR_FIELD.present, type: "ptr" },
+      { name: "filled", index: SCR_ARR_FIELD.filled, type: "i32" },
       { name: "ext", index: SCR_ARR_FIELD.ext, type: "ptr" },
     ];
     for (const member of storageMembers) {

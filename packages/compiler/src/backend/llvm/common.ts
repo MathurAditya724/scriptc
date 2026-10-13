@@ -10,17 +10,19 @@ import type {
 import type { LlvmEmitterContext } from "./expr-context.js";
 
 /** Field numbers of %ScrArr, which mirrors scr_runtime.h's ScrArr field for
- * field (its static assertions pin `cyc` and `data`). */
+ * field (its static assertions pin `cyc`, `filled` and `data`). */
 export const SCR_ARR_FIELD = {
   rc: 0,
   len: 1,
   cap: 2,
   elem: 3,
   cyc: 4,
-  ops: 5,
-  data: 6,
-  present: 7,
-  ext: 8,
+  spare: 5,
+  filled: 6,
+  ops: 7,
+  data: 8,
+  present: 9,
+  ext: 10,
 } as const;
 
 /** Lines that decide whether the double `index` is an integer in
