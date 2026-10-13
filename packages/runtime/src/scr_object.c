@@ -87,9 +87,9 @@ void scr_record_key_miss(ScrStr *k) {
 
 #ifdef SCR_RC_AUDIT
 static SCR_TL long scr_live_objects = 0;
-/* ProgramLifetime instances (@scriptc/types) this thread created: never
- * freed by design, and neither is anything they hold (see the exit audit in
- * scr_console.c). */
+/* ProgramLifetime instances (@scriptc/types) this thread created and no
+ * released lifetime region freed (scr_region.c): never freed by design, and
+ * neither is anything they hold (see the exit audit in scr_console.c). */
 static SCR_TL long scr_lifetime_objects = 0;
 long scr_obj_live_count(void) { return scr_live_objects; }
 long scr_obj_lifetime_count(void) { return scr_lifetime_objects; }
@@ -101,6 +101,7 @@ void scr_obj_lifetime_note(const void *obj) {
   scr_lifetime_objects++;
   scr_lsan_immortal(obj);
 }
+void scr_obj_lifetime_forget(long n) { scr_lifetime_objects -= n; }
 #else
 #undef scr_obj_alloc_note
 #undef scr_obj_free_note
