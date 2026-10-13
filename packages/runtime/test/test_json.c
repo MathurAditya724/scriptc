@@ -149,6 +149,114 @@ static void live_array_ref_tests(void) {
   scr_arr_release(arr);
 }
 
+/* Live record capsules with bound field hooks answer reads, presence and
+ * key walks from the native record; once a write creates the cached view,
+ * every query goes through that view (which may hold added keys). */
+typedef struct LiveRecord {
+  size_t rc;
+  double x;
+  ScrStr *label; /* NULL: the optional field is absent */
+} LiveRecord;
+static size_t live_record_materializations;
+static void *live_record_retain(void *value) { ((LiveRecord *)value)->rc++; return value; }
+static void live_record_release(void *value) {
+  LiveRecord *rec = value;
+  if (--rec->rc) return;
+  if (rec->label) scr_str_release(rec->label);
+  free(rec);
+}
+static ScrDyn *live_record_materialize(void *value) {
+  live_record_materializations++;
+  LiveRecord *rec = value;
+  ScrDyn *view = scr_dyn_new_obj();
+  scr_dyn_obj_set(view, "x", 1, scr_dyn_new_num(rec->x));
+  if (rec->label) scr_dyn_obj_set(view, "label", 5, scr_dyn_new_str(rec->label));
+  return view;
+}
+static bool live_record_has(void *value, size_t index) {
+  return index == 0 || ((LiveRecord *)value)->label != NULL;
+}
+static ScrDyn *live_record_get(void *value, size_t index) {
+  LiveRecord *rec = value;
+  return index == 0 ? scr_dyn_new_num(rec->x) : scr_dyn_new_str(rec->label);
+}
+
+static bool dyn_keys_are(const ScrDyn *keys, const char *const *want, size_t n) {
+  if (!keys || keys->kind != SCR_DYN_ARR || keys->v.arr.len != n) return false;
+  for (size_t i = 0; i < n; i++) {
+    const ScrDyn *key = keys->v.arr.items[i];
+    if (key->kind != SCR_DYN_STR || !str_is(key->v.str, want[i])) return false;
+  }
+  return true;
+}
+
+static void live_record_ref_tests(void) {
+  ScrStr *x = S("x"), *label = S("label"), *extra = S("extra"), *missing = S("missing");
+  ScrStr *names[] = { x, label };
+  const ScrDynTypedRecordOps ops = { 2, names, live_record_has, live_record_get };
+  LiveRecord *rec = calloc(1, sizeof *rec);
+  rec->rc = 1;
+  rec->x = 3;
+  ScrDyn *capsule = scr_dyn_new_typed_ref(rec, live_record_retain, live_record_release,
+      "record:t", 8, live_record_materialize, NULL);
+  scr_dyn_typed_ref_bind_record(capsule, &ops);
+  live_record_materializations = 0;
+
+  ScrDyn *got = scr_dyn_typed_ref_key_get(capsule, x);
+  check(got && got->kind == SCR_DYN_NUM && got->v.num == 3, "live record field");
+  scr_dyn_release(got);
+  check(!scr_dyn_typed_ref_key_get(capsule, label), "absent optional field needs the view");
+  check(!scr_dyn_typed_ref_key_get(capsule, missing), "unknown name needs the view");
+  check(scr_dyn_has_key(capsule, x) && scr_dyn_has_own(capsule, x), "live record own presence");
+  check(!scr_dyn_has_own(capsule, label) && !scr_dyn_has_own(capsule, missing),
+      "live record own absence");
+  check(scr_dyn_ref_typeof_is(capsule, "object") && !scr_dyn_ref_is_array(capsule),
+      "live record is a plain object");
+  const char *const only_x[] = { "x" };
+  ScrDyn *keys = scr_dyn_for_in_keys(capsule);
+  check(dyn_keys_are(keys, only_x, 1), "for-in skips the absent field");
+  scr_dyn_release(keys);
+  rec->label = S("p");
+  const char *const both[] = { "x", "label" };
+  keys = scr_dyn_obj_keys(capsule);
+  check(dyn_keys_are(keys, both, 2), "keys follow the live record");
+  scr_dyn_release(keys);
+  ScrDyn *entries = scr_dyn_obj_entries(capsule);
+  check(entries && entries->v.arr.len == 2 &&
+      entries->v.arr.items[1]->v.arr.items[1]->kind == SCR_DYN_STR &&
+      str_is(entries->v.arr.items[1]->v.arr.items[1]->v.str, "p"), "entries read live fields");
+  scr_dyn_release(entries);
+  ScrDyn *copy = scr_dyn_new_obj();
+  ScrDyn *copied = scr_dyn_copy_data_properties(copy, capsule);
+  check(copied == copy && copy->v.obj.len == 2, "spread copies present fields");
+  scr_dyn_release(copied);
+  scr_dyn_release(copy);
+  ScrDyn *excluded = scr_dyn_new_arr();
+  scr_dyn_arr_push(excluded, scr_dyn_new_str(x));
+  ScrDyn *rest = scr_dyn_object_rest(capsule, excluded);
+  check(rest && rest->v.obj.len == 1 && scr_dyn_obj_get(rest, "label", 5), "rest skips excluded fields");
+  scr_dyn_release(rest);
+  scr_dyn_release(excluded);
+  check(live_record_materializations == 0, "live record reads never materialize");
+
+  ScrDyn *value = scr_dyn_new_num(1);
+  scr_dyn_key_set(capsule, extra, value);
+  scr_dyn_release(value);
+  check(live_record_materializations == 1, "an added key creates the view");
+  const char *const with_extra[] = { "x", "label", "extra" };
+  keys = scr_dyn_for_in_keys(capsule);
+  check(dyn_keys_are(keys, with_extra, 3), "the view keeps the added key");
+  scr_dyn_release(keys);
+  got = scr_dyn_typed_ref_key_get(capsule, x);
+  check(!got, "a viewed record reads through the view");
+  check(scr_dyn_has_own(capsule, extra), "presence reads the view");
+  check(!scr_exc_pending(), "live record queries raise nothing");
+
+  scr_str_release(x); scr_str_release(label); scr_str_release(extra); scr_str_release(missing);
+  scr_dyn_release(capsule);
+  live_record_release(rec);
+}
+
 /* Parse `text`, expect success, return the checked-dynamic tree (+1). */
 static ScrDyn *parse_ok(const char *text, const char *name) {
   ScrStr *t = S(text);
@@ -639,6 +747,7 @@ int main(void) {
   json_callback_tests();
   typed_view_failure_tests();
   live_array_ref_tests();
+  live_record_ref_tests();
 
   printf("%d/%d checks passed\n", checks - failures, checks);
   return failures == 0 ? 0 : 1;

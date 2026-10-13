@@ -4478,6 +4478,22 @@ typedef struct ScrDynTypedArrayOps {
   bool (*set)(void *arr, double index, const ScrDyn *value);
 } ScrDynTypedArrayOps;
 
+/* Field access for a live typed reference to a declared-field record,
+ * emitted per record shape by the compiler. `names` lists the fields in
+ * the order the record's snapshot defines them; the compiler emits these
+ * hooks only for shapes whose names are all ordinary (no array-index
+ * spellings, no `__proto__`), so that order is also JS own-key order.
+ *   has: whether field `index` is an own property (an absent optional
+ *        field is not);
+ *   get: +1 dyn view of field `index`, built exactly as the snapshot
+ *        builds it. Callers check `has` first. */
+typedef struct ScrDynTypedRecordOps {
+  size_t count;
+  ScrStr *const *names; /* immortal field-name strings */
+  bool (*has)(void *rec, size_t index);
+  ScrDyn *(*get)(void *rec, size_t index);
+} ScrDynTypedRecordOps;
+
 struct ScrDyn {
   size_t rc; /* SIZE_MAX = immortal (unused for dyn; kept per convention) */
   ScrDynKind kind;
@@ -4542,7 +4558,9 @@ struct ScrDyn {
       ScrDyn *(*materialize)(void *);
       void (*commit)(void *, const ScrDyn *);
       /* Live native arrays: per-element access that bypasses the whole-array
-       * snapshot (scr_dyn_typed_ref_bind_array). NULL for other referents. */
+       * snapshot (scr_dyn_typed_ref_bind_array). Declared-field records
+       * keep their ScrDynTypedRecordOps here instead, flagged by `record`
+       * (scr_dyn_typed_ref_bind_record). NULL for other referents. */
       const ScrDynTypedArrayOps *array;
       /* Both caches belong to this capsule. ReadableStream canonicalizes
        * capsules for repeated source references, so the refreshed dyn view
@@ -4551,9 +4569,10 @@ struct ScrDyn {
       ScrDyn *materialized;
       ScrDynTypedCast *casts;
       /* One word keeps this, the largest payload, at its previous size. */
-      uint32_t type_key_len : 30;
+      uint32_t type_key_len : 29;
       uint32_t traced : 1; /* native referent has a cycle header */
       uint32_t observed : 1; /* native release reports this identity's disposal */
+      uint32_t record : 1; /* `array` holds ScrDynTypedRecordOps */
     } typed_ref;
     /* SCR_DYN_PROMISE: the retained promise. The boundary contract: it
      * settles with a dyn payload (SCR_EXC_REF ScrDyn fulfillment or a
@@ -4582,6 +4601,12 @@ static inline ScrDyn *scr_dyn_retain(ScrDyn *d) {
 }
 
 void scr_dyn_release(ScrDyn *d); /* releases the tree recursively; NULL-tolerant */
+
+/* The element hooks of a live array capsule, or NULL (including for record
+ * capsules, which keep their field hooks in the same slot). */
+static inline const ScrDynTypedArrayOps *scr_dyn_typed_ref_array_ops(const ScrDyn *d) {
+  return d->v.typed_ref.record ? NULL : d->v.typed_ref.array;
+}
 
 /* RFC 8259 parse of a UTF-8 string. Borrows text; returns +1, or throws a
  * catchable Node-flavored SyntaxError string and returns NULL (callers are
@@ -4819,6 +4844,12 @@ void scr_dyn_typed_ref_commit(ScrDyn *d);
  * reads, `length`, in-range writes, `in`, own-property probes, and array
  * iteration then touch one element instead of rebuilding the snapshot. */
 void scr_dyn_typed_ref_bind_array(ScrDyn *d, const ScrDynTypedArrayOps *ops);
+/* Attach per-field access to a live record capsule (idempotent). While the
+ * capsule has no cached checked view (nothing has added properties or
+ * changed its prototype), keyed reads of declared fields, `in`/hasOwn,
+ * for-in, Object.keys/values/entries, typeof and Array.isArray answer from
+ * the native record, creating only the field values they return. */
+void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
 /* Fast keyed read on a live array capsule: +1 value for `length` and for
  * present or explicitly-undefined elements; NULL when the answer needs the
  * snapshot (holes, out-of-range, non-index names, or no bound ops). */
