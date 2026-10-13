@@ -73,6 +73,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { compileLibrary } from "@scriptc/compiler";
 
+import { nmDefined } from "./nm-defined.js";
 const repoRoot = join(import.meta.dirname, "../..");
 const fixtureRoot = join(repoRoot, "tests/library-mode");
 const platformTest = process.env["SCRIPTC_PORTABLE_ONLY"] === "1" ? test.skip : test;
@@ -170,9 +171,7 @@ function nmSymbols(archive: string): { defined: Set<string>; undef: Set<string> 
     }
     return set;
   };
-  const defined = parse(
-    execFileSync("nm", ["-g", "--defined-only", archive], { encoding: "utf8" }),
-  );
+  const defined = parse(nmDefined(archive));
   const undef = parse(execFileSync("nm", ["-u", archive], { encoding: "utf8" }));
   return { defined, undef };
 }
