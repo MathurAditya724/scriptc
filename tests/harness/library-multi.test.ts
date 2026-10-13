@@ -128,6 +128,7 @@ import {
   loadLibraryProfile,
 } from "@scriptc/compiler";
 
+import { nmDefined } from "./nm-defined.js";
 const repoRoot = join(import.meta.dirname, "../..");
 const fixtureDir = join(repoRoot, "tests/library-mode/multi");
 const localizationTest =
@@ -209,7 +210,7 @@ function nmSymbols(archive: string): { defined: Set<string>; undef: Set<string> 
     }
     return set;
   };
-  const defined = parse(execFileSync(nmTool!, ["-gU", archive], { encoding: "utf8" }));
+  const defined = parse(nmDefined(archive, nmTool!));
   const undef = parse(execFileSync(nmTool!, ["-u", archive], { encoding: "utf8" }));
   return { defined, undef };
 }

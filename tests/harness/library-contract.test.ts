@@ -30,6 +30,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { compileLibrary, validateSidecar, wyhash64, type SidecarDoc } from "@scriptc/compiler";
 
+import { nmDefined as nmDefinedText } from "./nm-defined.js";
 const repoRoot = join(import.meta.dirname, "../..");
 const fixtureRoot = join(repoRoot, "tests/library-mode");
 /* Suite-flavor segment: the plain and SCRIPTC_SAN=1 suites may run
@@ -124,7 +125,7 @@ async function buildContract(
 }
 
 function nmDefined(archive: string, prefix: string): string[] {
-  const out = execFileSync("nm", ["-gU", archive], { encoding: "utf8" });
+  const out = nmDefinedText(archive);
   const set = new Set<string>();
   for (const line of out.split("\n")) {
     const sym = line.trim().split(/\s+/).pop();
