@@ -50,7 +50,7 @@ console.log(JSON.stringify(view));
 
 // A cycle through the native graph is a TypeError, as in Node.
 const child: Branch = { id: 11, leaves: [], tags: [] };
-const root: Branch = { id: 12, leaves: [], tags: [], parent: child };
+const root: Branch = { id: 12, leaves: [], parent: child, tags: [] };
 child.parent = root;
 try {
   JSON.stringify(root as unknown);
