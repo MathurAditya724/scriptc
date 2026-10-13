@@ -2369,6 +2369,91 @@ ScrPromise *scr_sc_json(ScrStream *s) { return scr_sc_consume(s, SCR_SC_JSON); }
 ScrPromise *scr_sc_buffer(ScrStream *s) { return scr_sc_consume(s, SCR_SC_BUFFER); }
 ScrPromise *scr_sc_array_buffer(ScrStream *s) { return scr_sc_consume(s, SCR_SC_ARRAY_BUFFER); }
 
+/* ── node:console Console instances over writable streams ─────────────
+ * Node's kWriteToConsole: with ignoreErrors (the default) one shared noop
+ * 'error' listener brackets the write when the stream has none, and the
+ * write's completion handler re-arms it for the write's own error before
+ * that error is emitted (the handler's tick precedes the emit), so a
+ * failing console stream never crashes the program; synchronous throws
+ * out of the write are discarded. Without ignoreErrors it is a plain
+ * write. */
+
+static SCR_TL ScrClosure *scr_console_noop;
+
+static void scr_console_noop_fn(ScrClosure *cb) { (void)cb; }
+
+static void scr_console_noop_cleanup(void) {
+  scr_closure_release(scr_console_noop);
+  scr_console_noop = NULL;
+}
+
+static ScrClosure *scr_console_noop_get(void) {
+  if (!scr_console_noop) {
+    scr_console_noop = scr_closure_new((void *)&scr_console_noop_fn, 0);
+    scr_atexit(scr_console_noop_cleanup);
+  }
+  return scr_console_noop;
+}
+
+/* createWriteErrorHandler: the write failed and its error is still to be
+ * emitted with no listener to receive it — park the noop for it. */
+static void scr_console_on_written(ScrClosure *cb) {
+  ScrStream *s = scr_box_get_ref(cb->caps[0]); /* +1 */
+  ScrStreamState *st = s->st;
+  if (st->errored != NULL && !st->error_emitted) {
+    ScrStr *name = scr_str_new("error", 5);
+    if (scr_emitter_listener_count((ScrEmitter *)s, name) == 0) {
+      scr_emitter_release(scr_emitter_on((ScrEmitter *)s, name,
+                                         scr_closure_retain(scr_console_noop_get()),
+                                         scr_ee_inv_fixed0, true, false));
+    }
+    scr_str_release(name);
+  }
+  scr_stream_release(s);
+}
+
+static void scr_console_stream_write(ScrConsoleInst *inst, int which, ScrStr *line) {
+  ScrStream *s = inst->stream[which];
+  if (!inst->ignore_errors) {
+    scr_stream_write_str(s, line, NULL);
+    return;
+  }
+  ScrStr *name = scr_str_new("error", 5);
+  ScrClosure *noop = scr_console_noop_get();
+  if (scr_emitter_listener_count((ScrEmitter *)s, name) == 0) {
+    scr_emitter_release(scr_emitter_on((ScrEmitter *)s, name, scr_closure_retain(noop),
+                                       scr_ee_inv_fixed0, true, false));
+  }
+  if (!scr_exc_pending()) scr_stream_write_str(s, line, scr_closure_retain(inst->on_written[which]));
+  if (scr_exc_pending()) scr_exc_clear();
+  scr_emitter_release(scr_emitter_off((ScrEmitter *)s, name, noop));
+  if (scr_exc_pending()) scr_exc_clear();
+  scr_str_release(name);
+}
+
+static void scr_console_stream_drop(ScrConsoleInst *inst) {
+  for (int i = 0; i < 2; i++) {
+    if (inst->stream[i]) scr_stream_release(inst->stream[i]);
+    if (inst->on_written[i]) scr_closure_release(inst->on_written[i]);
+    inst->stream[i] = NULL;
+    inst->on_written[i] = NULL;
+  }
+}
+
+void scr_console_bind(ScrDyn *console, double which, ScrStream *stream) {
+  ScrConsoleInst *inst = console->v.handle.ptr;
+  int i = which != 0 ? 1 : 0;
+  if (inst->stream[i]) scr_stream_release(inst->stream[i]);
+  if (inst->on_written[i]) scr_closure_release(inst->on_written[i]);
+  inst->stream[i] = scr_stream_retain(stream);
+  ScrClosure *cb = scr_closure_new((void *)&scr_console_on_written, 1);
+  cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, NULL);
+  scr_box_set_ref(cb->caps[0], scr_stream_retain(stream));
+  inst->on_written[i] = cb;
+  inst->stream_write = &scr_console_stream_write;
+  inst->stream_drop = &scr_console_stream_drop;
+}
+
 /* ── the readable surface ─────────────────────────────────────────────── */
 
 bool scr_stream_push(ScrStream *s, ScrBytes *chunk) {

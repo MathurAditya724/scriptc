@@ -176,8 +176,8 @@
       "apiEntries": 24,
       "static": {
         "supported": 0,
-        "partial": 6,
-        "refused": 1,
+        "partial": 7,
+        "refused": 0,
         "not-implemented": 17,
         "by-design": 0,
         "unreviewed": 0,
@@ -18656,6 +18656,8 @@
           "tests/corpus/1460-console-error-warn.ts",
           "tests/corpus/2440-console-inspect-args.ts",
           "tests/corpus/2631-create-require/main.ts",
+          "tests/corpus/4900-console-instances.ts",
+          "tests/corpus/4901-console-instance-errors.ts",
           "tests/corpus/console-native-value.js",
           "tests/harness/npm-static.test.ts"
         ]
@@ -18772,8 +18774,12 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.console.Console"
+        "status": "partial",
+        "evidence": "compiler-feature:console.Console",
+        "tests": [
+          "tests/corpus/4900-console-instances.ts",
+          "tests/corpus/4901-console-instance-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },

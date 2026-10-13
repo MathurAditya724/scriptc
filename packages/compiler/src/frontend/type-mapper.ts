@@ -2046,6 +2046,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return DYN;
   }
+  // The stdlib Console interface (the global console and node:console
+  // Console instances) is a native handle carried by the checked-dynamic
+  // representation and consumed by the console method lowerings.
+  if (
+    psym?.name === "Console" &&
+    checker
+      .declarationsOf(psym)
+      .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
+  ) {
+    return DYN;
+  }
   // ReadonlyMap/ReadonlySet are the SAME runtime values as Map/Set — the
   // readonly-ness is a checker-only view (no mutating members on the
   // interface), so both map to the identical IR kinds and the read-side
