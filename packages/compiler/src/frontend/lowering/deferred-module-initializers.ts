@@ -1,6 +1,6 @@
 import * as ts from "../ts7/adapter.js";
 import { everyStmtList } from "../../ir/traverse.js";
-import type { IrFunction, IrStmt, IrType } from "../../ir/ir.js";
+import type { IrExpr, IrFunction, IrStmt, IrType } from "../../ir/ir.js";
 import { locOf } from "../program.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import type { Lowerer } from "./lowerer.js";
@@ -164,7 +164,7 @@ export class DeferredModuleInitializers {
         stmt: () => true,
         expr: (expr) => {
           demandType(expr.type);
-          if (expr.kind === "varRef" && this.pending.has(expr.localId)) demanded.add(expr.localId);
+          if (readsBinding(expr) && this.pending.has(expr.localId)) demanded.add(expr.localId);
           if (expr.kind === "call") {
             const owner = classHelpers.get(expr.callee);
             if (owner) {
@@ -186,7 +186,7 @@ export class DeferredModuleInitializers {
         stmt: () => true,
         expr: (expr) => {
           demandType(expr.type);
-          if (expr.kind === "varRef" && this.pending.has(expr.localId)) demanded.add(expr.localId);
+          if (readsBinding(expr) && this.pending.has(expr.localId)) demanded.add(expr.localId);
           if (expr.kind === "call") {
             const owner = classHelpers.get(expr.callee);
             if (owner) {
@@ -239,6 +239,12 @@ export class DeferredModuleInitializers {
     }
     return demanded.size !== 0;
   }
+}
+
+/** A read of a binding's current value: a plain read, or an update
+ * (`n++`, `--n`) that reads before it writes. */
+function readsBinding(expr: IrExpr): expr is IrExpr & { kind: "varRef" | "incDec" } {
+  return expr.kind === "varRef" || expr.kind === "incDec";
 }
 
 function registryInitializer(

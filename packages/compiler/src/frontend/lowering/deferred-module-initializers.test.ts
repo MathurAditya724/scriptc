@@ -138,3 +138,33 @@ test("fills every empty copy with the exact file and span while preserving popul
   expect(populated.body).toEqual([value(1)]);
   for (const untouched of [otherFile, otherStart, otherEnd]) expect(untouched.body).toEqual([]);
 });
+
+test("an update of the binding demands its initializer", () => {
+  const { initializers, pending, lowerer } = fixture();
+  const updated = block(loc),
+    written = block({ ...loc, start: 2, end: 3 });
+  const update = (id: string, prefix: boolean): IrStmt => ({
+    kind: "exprStmt",
+    expr: { kind: "incDec", op: "+", prefix, localId: id, type: F64, loc },
+    loc,
+  });
+  const functions = [
+    fn("init", [updated, written]),
+    fn("use", [
+      update("updated", false),
+      {
+        kind: "assign",
+        localId: "written",
+        value: { kind: "numLit", value: 1, type: F64, loc },
+        loc,
+      },
+    ]),
+  ];
+  pending.set("updated", [{ loc, lower: () => [value(2)] }]);
+  pending.set("written", [{ loc: written.loc, lower: () => [value(3)] }]);
+  expect(initializers.process(lowerer, functions)).toBe(true);
+  expect(updated.body).toEqual([value(2)]);
+  // A plain write never observes the initial value.
+  expect(written.body).toEqual([]);
+  expect(pending.has("written")).toBe(true);
+});
