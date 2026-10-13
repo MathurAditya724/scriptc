@@ -21,12 +21,14 @@ import {
 import {
   bitwiseIdentityOperand,
   integerArithmeticRange,
+  isBitwiseOp,
   withinInt32,
   withinUint32,
 } from "../../ir/integer-ranges.js";
 import { emitArrayValues } from "./expr-containers.js";
 import { emitCheckedRemainder, emitSignedIntegerRemainder } from "./integer-remainder.js";
 import { emitDenseArrayGet, emitDenseArrayState } from "./dense-array-access.js";
+import { emitWrappingSum, markWrappingOperands } from "./wrapping-sums.js";
 
 export function emitLiteralExpr(
   host: LlvmEmitterContext,
@@ -174,6 +176,9 @@ export function emitOperatorExpr(
         (e.op === "===" || e.op === "!==") &&
         e.left.type.kind !== "bool" &&
         host.llType(e.left.type) === "ptr";
+      // A sum that only feeds the conversion of a bitwise operator can be
+      // computed in 32 bits (emitWrappingSum).
+      if (isBitwiseOp(e.op)) markWrappingOperands(e.left, e.right);
       const operands = identity
         ? emitBorrowedInputs(host, [e.left, e.right])
         : [host.emitExpr(e.left), host.emitExpr(e.right)];
@@ -258,7 +263,9 @@ export function emitOperatorExpr(
             B.line(
               `${result} = ${e.op === "+" ? "add" : e.op === "-" ? "sub" : "mul"} nsw i64 ${left}, ${right}`,
             );
-            return integerNumber(host, result, range, e.type);
+            const number = integerNumber(host, result, range, e.type);
+            const uint32 = emitWrappingSum(host, e, l, r, li, ri);
+            return uint32 === undefined ? number : { ...number, uint32 };
           }
           if (e.op === "%" && li.range.min >= 0 && ri.range.min > 0) {
             const result = B.tmp();
@@ -291,8 +298,11 @@ export function emitOperatorExpr(
           const checked = emitCheckedRemainder(host, l, r, li, ri);
           if (checked) return checked;
         }
-        if (arith[e.op] !== undefined) B.line(`${t} = ${arith[e.op]} double ${l.name}, ${r.name}`);
-        else B.line(`${t} = fcmp ${cmp[e.op]} double ${l.name}, ${r.name}`);
+        if (arith[e.op] !== undefined) {
+          B.line(`${t} = ${arith[e.op]} double ${l.name}, ${r.name}`);
+          const uint32 = emitWrappingSum(host, e, l, r, li, ri);
+          if (uint32 !== undefined) return { name: t, type: e.type, uint32 };
+        } else B.line(`${t} = fcmp ${cmp[e.op]} double ${l.name}, ${r.name}`);
       } else if (bit[e.op] !== undefined) {
         if (e.left.type.kind !== "f64" || e.right.type.kind !== "f64") {
           throw new LlvmUnsupportedError(
@@ -339,6 +349,7 @@ export function emitOperatorExpr(
       return { name: t, type: e.type };
     }
     case "unary": {
+      if (e.op === "~") markWrappingOperands(e.operand);
       const v = host.emitExpr(e.operand);
       const t = B.tmp();
       if (e.op === "-") B.line(`${t} = fneg double ${v.name}`);

@@ -1,5 +1,14 @@
 import { expect, test } from "vitest";
-import { BOOL, F64, STRING, VOID, type IrExpr, type IrModule, type IrStmt } from "../../ir/ir.js";
+import {
+  BOOL,
+  BYTES_U8,
+  F64,
+  STRING,
+  VOID,
+  type IrExpr,
+  type IrModule,
+  type IrStmt,
+} from "../../ir/ir.js";
 import { emitLlvmModule } from "./emitter.js";
 
 const loc = { file: "bitwise-emission.ts", start: 0, end: 0 };
@@ -189,4 +198,106 @@ test("identity bitwise forms over a proven int32 return the operand's number", (
   // Unproven operands keep the full ToInt32; other operators still compute.
   expect(body("unknown_or")).toContain("uint32.coerce.slow");
   expect(body("length_and")).toMatch(/ = and i32 .*, 255$/m);
+});
+
+test("sums that only feed a bitwise conversion of int32 operands add in 32 bits", () => {
+  const ref = (localId: string, type = F64): IrExpr => ({ kind: "varRef", localId, type, loc });
+  const length: IrExpr = {
+    kind: "strIntrinsic",
+    method: "length",
+    receiver: ref("text", STRING),
+    args: [],
+    type: F64,
+    loc,
+  };
+  const read = (localId: string): IrExpr => ({
+    kind: "bytesIntrinsic",
+    method: "get",
+    receiver: ref(localId, localId === "floats" ? { kind: "bytes", elem: "f64" } : BYTES_U8),
+    args: [ref("x")],
+    type: F64,
+    loc,
+    invalidNaN: true,
+  });
+  const bin = (op: "+" | "-" | "*" | "|" | ">>>", left: IrExpr, right: IrExpr): IrExpr => ({
+    kind: "bin",
+    op,
+    left,
+    right,
+    type: F64,
+    loc,
+  });
+  const zero: IrExpr = { kind: "numLit", value: 0, type: F64, loc };
+  const params = [
+    { name: "text", localId: "text", type: STRING },
+    { name: "x", localId: "x", type: F64 },
+    { name: "bytes", localId: "bytes", type: BYTES_U8 },
+    { name: "floats", localId: "floats", type: { kind: "bytes", elem: "f64" } as const },
+  ];
+  const returning = (name: string, value: IrExpr) => ({
+    name,
+    params,
+    returnType: F64,
+    locals: params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+    loc,
+    body: [{ kind: "return" as const, loc, value }],
+  });
+  const mod = fixture();
+  mod.functions = [
+    { name: "__main", params: [], returnType: VOID, locals: [], body: [], loc },
+    returning("proven_add", bin("|", bin("+", length, length), zero)),
+    returning("proven_sub", bin(">>>", bin("-", zero, bin("+", length, length)), zero)),
+    returning("read_add", bin("|", bin("+", length, read("bytes")), zero)),
+    returning(
+      "read_chain",
+      bin("|", bin("-", bin("+", read("bytes"), length), read("bytes")), zero),
+    ),
+    returning(
+      "code_add",
+      bin(
+        "|",
+        bin("+", length, {
+          kind: "strIntrinsic",
+          method: "charCodeAt",
+          receiver: ref("text", STRING),
+          args: [ref("x")],
+          type: F64,
+          loc,
+        }),
+        zero,
+      ),
+    ),
+    returning("unknown_add", bin("|", bin("+", length, ref("x")), zero)),
+    returning("float_read_add", bin("|", bin("+", length, read("floats")), zero)),
+    returning("product", bin("|", bin("*", length, length), zero)),
+    returning("number_add", bin("+", length, read("bytes"))),
+  ];
+  const llvm = emitLlvmModule(mod);
+  const body = (name: string): string =>
+    new RegExp(`^define internal [^\\n]*@sc_[bf]+_${name}\\([^]*?^}`, "m").exec(llvm)![0];
+  // Wrapping 32-bit arithmetic, never `nsw`: the exact sum may leave int32.
+  expect(body("proven_add")).toMatch(/ = add i32 /);
+  expect(body("proven_sub")).toMatch(/ = sub i32 /);
+  for (const name of ["proven_add", "proven_sub", "read_add", "read_chain", "code_add"]) {
+    expect(body(name), name).not.toMatch(/ = (add|sub) nsw i32 /);
+    expect(body(name), name).not.toContain("uint32.coerce");
+  }
+  // A NaN-coded read converts to 0 through the sum: the result selects 0
+  // unless every NaN-coded operand is ordered.
+  expect(body("read_add")).toMatch(/ = fcmp ord double .*, 0\.0$/m);
+  expect(body("read_add")).toMatch(/ = add i32 /);
+  expect(body("read_add")).toMatch(/ = select i1 .*, i32 .*, i32 0$/m);
+  expect(body("read_chain")).toMatch(/ = and i1 /);
+  expect(body("read_chain")).toMatch(/ = sub i32 /);
+  // A code unit without an integer view converts once, behind the same test.
+  expect(body("code_add")).toMatch(/ = fcmp ord double .*, 0\.0$/m);
+  expect(body("code_add")).toMatch(/ = fptosi double .* to i32$/m);
+  expect(body("code_add")).toMatch(/ = select i1 .*, i32 .*, i32 0$/m);
+  // Unproven, fractional-capable and multiplied operands keep the double
+  // arithmetic and the full ToInt32; a sum used as a number adds nothing.
+  for (const name of ["unknown_add", "float_read_add", "product"]) {
+    expect(body(name), name).toContain("uint32.coerce.slow");
+    expect(body(name), name).not.toMatch(/ = (add|mul) i32 /);
+  }
+  expect(body("number_add")).not.toMatch(/ = add i32 |fcmp ord/);
 });
