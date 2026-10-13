@@ -8056,6 +8056,36 @@ void scr_console_error(size_t n, const ScrLogArg *args);
  * runtime that does not understand them. */
 void scr_console_log_parts(size_t n, const ScrLogArg *args);
 void scr_console_error_parts(size_t n, const ScrLogArg *args);
+/* A Console instance's line on fd 1 or 2, without the global console's
+ * group indentation. */
+void scr_console_write_fd(int fd, size_t n, const ScrLogArg *args);
+/* The global console's line rewrite while a group is open (scr_console.c;
+ * installed by scr_console_group): the indented heap copy of a rendered
+ * line, its length in *used. */
+extern SCR_TL char *(*scr_console_indenter)(const char *line, size_t *used);
+
+/* The global console's remaining members (scr_console_native.c). Arguments
+ * are borrowed; string results are +1. */
+ScrStr *scr_console_label(ScrDyn *label);
+void scr_console_count(ScrStr *label);
+ScrStr *scr_console_count_reset(ScrDyn *label);
+ScrStr *scr_console_time(ScrStr *label);
+ScrStr *scr_console_time_end(ScrStr *label);
+ScrStr *scr_console_time_log(ScrStr *label);
+void scr_console_group(double delta);
+void scr_console_clear(void);
+void scr_console_table(ScrDyn *data, ScrDyn *properties);
+ScrStr *scr_console_dir_dyn(ScrDyn *value, double depth);
+/* console.table's cell rendering (scr_inspect.c): Node's _inspect — depth
+ * 0 (-1 for objects with more than two keys), maxArrayLength 3, breakLength
+ * Infinity. +1. */
+ScrStr *scr_insp_table_cell(ScrDyn *value);
+/* Node's getStringWidth over UTF-8 text (the non-ICU tables). */
+size_t scr_insp_display_width(const char *data, size_t len);
+/* process.emitWarning(message) with the default Warning type, emitted on
+ * the next tick like Node's; an empty message emits nothing
+ * (scr_async_dyn.c). Borrows. */
+void scr_process_emit_warning_text(ScrStr *message);
 
 bool scr_fetch_web_is(const ScrDyn *value, const ScrStr *name);
 bool scr_fetch_stream_is(const ScrDyn *value);

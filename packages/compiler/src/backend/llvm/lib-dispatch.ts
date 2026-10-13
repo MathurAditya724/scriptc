@@ -382,6 +382,10 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "strdec":
       return host.emitIoLibCall(e);
     case "console":
+      // The tail of a console lowering whose effects sit in its
+      // statements: nothing runs.
+      if (e.fn === "console.noop") return { name: "", type: e.type };
+      return host.emitGenericLibCall(e);
     case "weakMap":
     case "weakSet":
     case "ffi":

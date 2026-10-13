@@ -86,12 +86,14 @@ declare namespace NodeJS {
  * util.inspect rendering — so the parameters are unknown[], like stock
  * lib's console; values inspect cannot render statically (functions inside
  * composites, class hierarchies, `any`) fence per argument with a hint.
+ * assert, count/countReset, dir/dirxml, group/groupCollapsed/groupEnd,
+ * table, time/timeEnd/timeLog, clear, and the inspector-only
+ * profile/profileEnd/timeStamp lower on the global console.
  *
- * The REMAINING stock console members are declared too — not because they
- * lower (none do), but so a program that typechecks under its own tsc
- * reaches the per-site SC2020 fence naming the member and the supported
- * surface, instead of dying on a fallback-manufactured type error its own
- * tsc cannot reproduce. */
+ * trace is declared too — not because it lowers, but so a program that
+ * typechecks under its own tsc reaches the per-site SC2020 fence naming
+ * the member and the supported surface, instead of dying on a
+ * fallback-manufactured type error its own tsc cannot reproduce. */
 declare const console: {
   log(...args: unknown[]): void;
   info(...args: unknown[]): void;
@@ -112,13 +114,15 @@ declare const console: {
   timeEnd(label?: string): void;
   timeLog(label?: string, ...data: unknown[]): void;
   timeStamp(label?: string): void;
+  profile(label?: string): void;
+  profileEnd(label?: string): void;
   trace(...data: unknown[]): void;
   Console: typeof import("node:console").Console;
 };
 
 // node:console exports the global instance's bound methods and the Console
 // constructor: instances over process.stdout/process.stderr or node:stream
-// writables lower their log/info/debug/error/warn members; the remaining
+// writables lower their log/info/debug/error/warn members; their remaining
 // methods are declared so unsupported uses reach named fences.
 type ScriptcConsoleMethods = typeof console;
 declare module "node:console" {
@@ -145,6 +149,8 @@ declare module "node:console" {
   export const timeEnd: ScriptcConsoleMethods["timeEnd"];
   export const timeLog: ScriptcConsoleMethods["timeLog"];
   export const timeStamp: ScriptcConsoleMethods["timeStamp"];
+  export const profile: ScriptcConsoleMethods["profile"];
+  export const profileEnd: ScriptcConsoleMethods["profileEnd"];
   export const trace: ScriptcConsoleMethods["trace"];
   const defaultConsole: ScriptcConsoleMethods & { Console: typeof Console };
   export default defaultConsole;

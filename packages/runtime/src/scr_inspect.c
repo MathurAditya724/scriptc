@@ -241,6 +241,7 @@ static SCR_TL InspFrame *g_frames;
 static SCR_TL size_t g_nframes;
 static SCR_TL size_t g_frames_cap;
 static SCR_TL size_t g_indent;       /* ctx.indentationLvl */
+static SCR_TL bool g_no_break;       /* breakLength: Infinity (console.table cells) */
 static SCR_TL double g_cur_depth;    /* ctx.currentDepth (last-entered composite) */
 
 static InspFrame *insp_top(void) { return &g_frames[g_nframes - 1]; }
@@ -586,7 +587,7 @@ ScrStr *scr_insp_str(ScrStr *s) {
   if (surrogate_tail_len) ib_bytes(&val, surrogate_tail, surrogate_tail_len);
   size_t vlen = val.len;
   const char *v = val.data ? val.data : "";
-  if (units > 16 && units > 80 - g_indent - 4 && memchr(v, '\n', vlen) != NULL) {
+  if (!g_no_break && units > 16 && units > 80 - g_indent - 4 && memchr(v, '\n', vlen) != NULL) {
     /* split after each newline; quote each chunk; join with ` +\n<indent+2>` */
     size_t chunk_start = 0;
     bool first = true;
@@ -1043,4 +1044,119 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
 ScrStr *scr_insp_dyn_s(ScrDyn *d, double depth) {
   if (d->kind == SCR_DYN_STR) return scr_str_retain(d->v.str);
   return scr_insp_dyn(d, 0, depth);
+}
+
+/* ── console.table cells ─────────────────────────────────────────────── */
+
+size_t scr_insp_display_width(const char *data, size_t len) { return insp_width(data, len); }
+
+static void insp_cell_join(InspBuf *b, ScrStr **items, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    if (i) ib_cstr(b, ", ");
+    ib_str(b, items[i]);
+    scr_str_release(items[i]);
+  }
+}
+
+static ScrStr *insp_table_cell(ScrDyn *v) {
+  switch (v->kind) {
+    case SCR_DYN_PROXY:
+      return insp_table_cell(v->v.proxy.target);
+    case SCR_DYN_TYPED_REF: {
+      ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
+      ScrStr *out = insp_table_cell(materialized);
+      scr_dyn_release(materialized);
+      return out;
+    }
+    case SCR_DYN_OBJ: {
+      if (scr_dyn_obj_get(v, "%error", 6) != NULL) {
+        static const char message[] = "console.table cells holding Error values have no lowering";
+        scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+        return scr_str_new("", 0);
+      }
+      const char *base = v->null_proto ? "[Object: null prototype]" : "Object";
+      size_t n = 0;
+      for (size_t i = 0; i < v->v.obj.len; i++) {
+        ScrDynEntry *ent = &v->v.obj.entries[i];
+        if (!ent->enumerable) continue;
+        if (ent->accessor) {
+          static const char message[] = "console.table cells holding accessor properties have no lowering";
+          scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+          return scr_str_new("", 0);
+        }
+        n++;
+      }
+      InspBuf out = {0};
+      if (n > 2) {
+        /* depth -1: the object itself is past the depth limit. */
+        if (v->null_proto) ib_cstr(&out, base);
+        else ib_cstr(&out, "[Object]");
+        return ib_take(&out);
+      }
+      if (v->null_proto) {
+        ib_cstr(&out, base);
+        ib_char(&out, ' ');
+      }
+      if (n == 0) {
+        ib_cstr(&out, "{}");
+        return ib_take(&out);
+      }
+      ScrStr *items[2];
+      size_t count = 0;
+      for (size_t i = 0; i < v->v.obj.len; i++) {
+        ScrDynEntry *ent = &v->v.obj.entries[i];
+        if (!ent->enumerable) continue;
+        ScrStr *val = scr_insp_dyn(ent->value, 1, 0);
+        InspBuf eb = {0};
+        insp_key_into(&eb, ent->key, ent->key_len);
+        ib_cstr(&eb, ": ");
+        ib_str(&eb, val);
+        scr_str_release(val);
+        items[count++] = ib_take(&eb);
+      }
+      ib_cstr(&out, "{ ");
+      insp_cell_join(&out, items, n);
+      ib_cstr(&out, " }");
+      return ib_take(&out);
+    }
+    case SCR_DYN_ARR:
+    case SCR_DYN_BYTES: {
+      bool bytes = v->kind == SCR_DYN_BYTES;
+      if (bytes && v->buffer) return scr_insp_buffer(v->v.bytes);
+      size_t len = bytes ? v->v.bytes->len : v->v.arr.len;
+      InspBuf out = {0};
+      if (bytes) {
+        char prefix[48];
+        int pn = snprintf(prefix, sizeof prefix, "%s(%zu) ", scr_bytes_elem_name(v->v.bytes->elem), len);
+        ib_bytes(&out, prefix, (size_t)pn);
+      }
+      if (len == 0) {
+        ib_cstr(&out, "[]");
+        return ib_take(&out);
+      }
+      /* maxArrayLength 3; the elements sit past depth 0. */
+      size_t shown = len < 3 ? len : 3;
+      ScrStr *items[4];
+      for (size_t i = 0; i < shown; i++) {
+        items[i] = bytes ? scr_insp_f64(scr_bytes_get(v->v.bytes, (double)i))
+                         : scr_insp_dyn(v->v.arr.items[i], 1, 0);
+      }
+      size_t n = shown;
+      if (len > shown) items[n++] = scr_insp_more_items((double)(len - shown));
+      ib_cstr(&out, "[ ");
+      insp_cell_join(&out, items, n);
+      ib_cstr(&out, " ]");
+      return ib_take(&out);
+    }
+    default:
+      return scr_insp_dyn(v, 0, 0);
+  }
+}
+
+ScrStr *scr_insp_table_cell(ScrDyn *value) {
+  bool saved = g_no_break;
+  g_no_break = true;
+  ScrStr *out = insp_table_cell(value);
+  g_no_break = saved;
+  return out;
 }
