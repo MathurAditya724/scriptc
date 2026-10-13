@@ -86,6 +86,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values.strip ||
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
+      values["program-lifetime"] !== undefined ||
       (values["npm-static"] ?? []).length > 0 ||
       values["provenance-sources"] ||
       externalTypeArgs.length > 0 ||
@@ -151,11 +152,12 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values.ffi !== undefined ||
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
+      values["program-lifetime"] !== undefined ||
       (values["npm-static"] ?? []).length > 0 ||
       externalTypeArgs.length > 0
     ) {
       fail(
-        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--windows-subsystem/--detached-exit/--npm-static/--ffi/--external-types: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, and external type mappings belong to coverage",
+        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--windows-subsystem/--detached-exit/--program-lifetime/--npm-static/--ffi/--external-types: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI and ProgramLifetime belong to executable builds, and external type mappings belong to coverage",
       );
     }
     const profilePath = resolve(profileArg);
@@ -197,6 +199,13 @@ async function main(args: string[], host: CliHost): Promise<number> {
   }
   if (command === "coverage" && values.strip) {
     fail(`--strip is a build/run option\n\n${USAGE}`);
+  }
+  const programLifetime = values["program-lifetime"];
+  if (programLifetime !== undefined && programLifetime !== "on" && programLifetime !== "off") {
+    fail(`unknown --program-lifetime "${programLifetime}" (supported: on, off)\n\n${USAGE}`);
+  }
+  if (command === "coverage" && programLifetime !== undefined) {
+    fail(`--program-lifetime is a build/run option\n\n${USAGE}`);
   }
   if (command === "coverage" && values["detached-exit"]) {
     fail(`--detached-exit is a build/run option\n\n${USAGE}`);
@@ -383,6 +392,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(values.strip ? { strip: true } : {}),
       ...(windowsSubsystem !== undefined ? { windowsSubsystem } : {}),
       ...(values["detached-exit"] ? { detachedExit: true } : {}),
+      ...(programLifetime === "off" ? { programLifetime: false } : {}),
       ...(npmStatic !== undefined ? { npmStatic } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(printNativeLinkInfo ? { nativeLinkInfo: true } : {}),

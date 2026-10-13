@@ -118,6 +118,9 @@ Verifies and loads the installed precompiled runtime objects and vendored librar
   <dt><code>--detached-exit</code></dt>
   <dd>On Linux, when the program calls <code>process.exit()</code>, hand the release of its memory to a helper process so the parent sees the exit sooner. The kernel otherwise frees the whole address space before the exit is reported, which takes tens of milliseconds per gigabyte. Opt in only where the trade-offs are acceptable: for up to about 100 ms after the exit, the helper keeps the executable mapped (overwriting the binary in place fails with "text file busy"), its memory stays charged to the cgroup, and the teardown CPU time no longer appears in the parent's resource usage. Valid only for executable builds; it has no effect on other platforms.</dd>
 
+  <dt><code>--program-lifetime &lt;on|off&gt;</code></dt>
+  <dd>Select how classes declared <code>implements ProgramLifetime</code> are compiled. <code>on</code> is the default: their instances are never freed and take no reference counts. <code>off</code> compiles them as ordinary reference-counted classes, so the instances a program drops are freed. Use <code>off</code> for long-running processes that replace their program state, such as watch modes and servers. The contract is checked the same way in both modes. Not valid with <code>--lib</code>. See <a href="/docs/contracts#freeing-program-lifetime-instances">Contracts</a>.</dd>
+
   <dt><code>--npm-static &lt;pkg[,pkg…]|auto&gt;</code></dt>
   <dd>Name npm packages to compile even if they don't ship their own type declarations (repeatable). <code>auto</code> uses the default automatic selection. Packages that can't compile produce diagnostics. See <a href="/docs/dependencies#explicit-package-selection">npm Dependencies</a>.</dd>
 

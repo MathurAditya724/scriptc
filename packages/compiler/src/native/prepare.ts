@@ -10,7 +10,7 @@ import type {
 import { emitLlvmModule } from "../backend/llvm/emitter.js";
 import { executableLinkFeatures } from "../backend/executable-features.js";
 import type { NativeLinkFeatures } from "../backend/native-link-info-core.js";
-import { prepareExecutableModule } from "../executable/prepare.js";
+import { applyProgramLifetimeOption, prepareExecutableModule } from "../executable/prepare.js";
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
 import {
@@ -201,6 +201,7 @@ function preparedFromIr(
   const mod = deserializeModuleBytes(readFileSync(path));
   if (resolve(mod.sourceFile) !== resolve(entry))
     throw new Error(`${BOOTSTRAP_IR_INPUT} was lowered from a different entry`);
+  applyProgramLifetimeOption(mod, options);
   return { ok: true, mod, sourceTexts: new Map(), warnings: [] };
 }
 

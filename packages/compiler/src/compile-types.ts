@@ -35,6 +35,10 @@ export interface CompileBaseOptions {
    * executable mapped and the memory charged for up to ~100 ms after exit.
    * Executables only; no effect on other platforms. */
   detachedExit?: boolean;
+  /** `false` compiles classes declared `implements ProgramLifetime` as
+   * ordinary reference-counted, cycle-collected classes, so their instances
+   * are freed. The contract is still checked. Default true. */
+  programLifetime?: boolean;
 
   /** Eligible packages compile automatically. Explicit names override automatic selection heuristics. */
   npmStatic?: readonly string[] | "auto";

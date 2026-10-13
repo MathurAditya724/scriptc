@@ -1017,6 +1017,7 @@ async function compileTracked(
       ...(opts.strip ? { strip: true as const } : {}),
       ...(opts.windowsSubsystem === "gui" ? { windowsSubsystem: "gui" as const } : {}),
       ...(opts.detachedExit === true ? { detachedExit: true as const } : {}),
+      ...(opts.programLifetime === false ? { programLifetime: false as const } : {}),
       npmStatic: opts.npmStatic ?? null,
       ffiProfile:
         opts.ffiProfilePath === undefined || ffiProfileBytes === null

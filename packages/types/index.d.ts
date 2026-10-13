@@ -63,5 +63,7 @@ export interface AcyclicObject {}
  * tables, interned types): discarded instances are never reclaimed. scriptc
  * accepts it only on the root class of a hierarchy, outside library builds.
  * Instances can be published to other threads (`@scriptc/threads`) like any
- * other class instance. */
+ * other class instance. `scriptc build --program-lifetime=off` compiles the
+ * marked classes as ordinary reference-counted classes for one build, for
+ * long-running processes that replace their program state. */
 export interface ProgramLifetime {}

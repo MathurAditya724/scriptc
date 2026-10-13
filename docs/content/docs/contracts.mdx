@@ -262,7 +262,7 @@ $ scriptc build graph.ts
 
 ## ProgramLifetime
 
-`ProgramLifetime` marks a class whose instances a program keeps until it exits, such as the nodes of a syntax tree, the symbols of a symbol table or interned types. scriptc then never reference counts, collects or frees instances of the class and of its subclasses: they are never freed, every retain and release on them compiles to nothing, and the cycle collector neither walks them nor needs to trace the objects that point to them. Node.js behavior is unchanged; only memory use differs, because an instance the program drops is never reclaimed.
+`ProgramLifetime` marks a class whose instances a program keeps until it exits, such as the nodes of a syntax tree, the symbols of a symbol table or interned types. By default, scriptc then never reference counts, collects or frees instances of the class and of its subclasses: they are never freed, every retain and release on them compiles to nothing, and the cycle collector neither walks them nor needs to trace the objects that point to them. Node.js behavior is unchanged; only memory use differs, because an instance the program drops is never reclaimed.
 
 ```ts:tree.ts
 import type { ProgramLifetime } from "@scriptc/types";
@@ -290,6 +290,17 @@ A class can be both `ProgramLifetime` and `Acyclic`. `Acyclic` is still checked 
 Instances can be published to other threads with `@scriptc/threads` like other class instances: `publish()` makes them immutable and shares them by reference, writes to a published instance throw the same `TypeError` as under Node.js, and instances that were not published stay writable and are cloned by `postMessage` and `workerData`.
 
 Static code has no `WeakRef` or `FinalizationRegistry`, and a `WeakMap` or `WeakSet` entry whose key is never freed is never observable as removed, so nothing else can tell the difference.
+
+### Freeing program-lifetime instances
+
+`scriptc build --program-lifetime=off` compiles a program with the promise turned off for that build. Classes declared `ProgramLifetime` then compile like other classes: their instances are reference counted, collected when they form cycles and freed when the program drops them. The contract is still checked with the same diagnostics, so a program that builds in one mode builds in the other, and it behaves the same in both.
+
+Use it for long-running processes that replace their program state, such as a watch mode that rebuilds its syntax trees on every change or a server that loads a new program per request. With the default `on`, each replaced generation stays in memory until the process exits. One-shot runs, such as a compiler invoked once per build, keep the default.
+
+```console
+$ scriptc build compiler.ts -o compiler
+$ scriptc build compiler.ts --program-lifetime=off -o compiler-watch
+```
 
 ## Diagnostics
 

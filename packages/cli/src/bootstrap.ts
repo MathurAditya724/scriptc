@@ -79,6 +79,9 @@ async function tryFastPath(): Promise<number | null> {
     optimization !== "speed"
   )
     return null;
+  const programLifetime = values["program-lifetime"];
+  if (programLifetime !== undefined && programLifetime !== "on" && programLifetime !== "off")
+    return null;
   const npmRaw = (values["npm-static"] ?? [])
     .flatMap((value) => value.split(","))
     .map((value) => value.trim())
@@ -126,6 +129,7 @@ async function tryFastPath(): Promise<number | null> {
     ...(optimization === "dev" || optimization === "speed" ? { optimization } : {}),
     ...(values.strip ? { strip: true as const } : {}),
     ...(values["detached-exit"] ? { detachedExit: true as const } : {}),
+    ...(programLifetime === "off" ? { programLifetime: false as const } : {}),
     npmStatic,
     ffiProfile: ffiPath === null ? null : { path: ffiPath, bytes: ffiBytes! },
     target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${process.arch}:${
@@ -184,6 +188,7 @@ async function coverageFastPath(
     values.emit !== undefined ||
     values.strip ||
     values["detached-exit"] ||
+    values["program-lifetime"] !== undefined ||
     values.lib ||
     values.profile !== undefined ||
     values.ffi !== undefined ||

@@ -29,6 +29,20 @@ export interface PreparedExecutableModule {
   warnings: ScrDiagnostic[];
 }
 
+/** With `programLifetime: false`, ProgramLifetime classes compile like any
+ * other class: the checked roots (IrContracts.programLifetime) are dropped,
+ * so the backend and the cycle analysis count, collect and free their
+ * instances. The contract's diagnostics are unchanged. */
+export function applyProgramLifetimeOption(
+  mod: IrModule,
+  opts: Pick<CompileRequestOptions, "programLifetime">,
+): void {
+  if (opts.programLifetime !== false || mod.contracts?.programLifetime === undefined) return;
+  const { programLifetime: _dropped, ...rest } = mod.contracts;
+  if (Object.keys(rest).length === 0) delete mod.contracts;
+  else mod.contracts = rest;
+}
+
 /** Release the parser/checker before native object generation begins. */
 export function prepareExecutableModule(
   entryPath: string,
@@ -108,6 +122,7 @@ export function prepareExecutableModule(
       if (checked.diagnostics.length > 0) return fail(checked.diagnostics);
       if (checked.contracts) lowered.module.contracts = checked.contracts;
     }
+    applyProgramLifetimeOption(lowered.module, opts);
   } finally {
     fe.dispose();
     timing("frontend-dispose");

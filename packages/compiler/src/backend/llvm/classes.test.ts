@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import { F64, STRING, VOID, type IrModule } from "../../ir/ir.js";
 import { buildClassGraph, classMembershipIntervals, emitClassMembershipHelper } from "./classes.js";
 import { emitLlvmModule } from "./emitter.js";
+import { applyProgramLifetimeOption } from "../../executable/prepare.js";
 import {
   mangleClassNew,
   mangleClassReleaseDirect,
@@ -86,10 +87,10 @@ test("releases split into an inlinable fast path and an out-of-line remainder", 
   expect(slow).toContain("getelementptr inbounds %ScrVt, ptr %vt, i64 0, i32 2");
 });
 
-test("ProgramLifetime hierarchies are never freed and take no reference counts", () => {
+function programLifetimeModule(): IrModule {
   const kids = { kind: "array" as const, elem: { kind: "object" as const, className: "Node" } };
   const owners = { kind: "array" as const, elem: { kind: "object" as const, className: "Owner" } };
-  const mod: IrModule = {
+  return {
     irVersion: 16,
     sourceFile: loc.file,
     entry: "main",
@@ -111,9 +112,16 @@ test("ProgramLifetime hierarchies are never freed and take no reference counts",
     ],
     contracts: { programLifetime: ["Node"] },
   };
+}
+
+function definition(llvm: string, name: string): string {
+  return new RegExp(`^define internal [a-z]+ @${name}\\([^]*?^}`, "m").exec(llvm)?.[0] ?? "";
+}
+
+test("ProgramLifetime hierarchies are never freed and take no reference counts", () => {
+  const mod = programLifetimeModule();
   const llvm = emitLlvmModule(mod, { pointerBits: 64 });
-  const body = (name: string): string =>
-    new RegExp(`^define internal [a-z]+ @${name}\\([^]*?^}`, "m").exec(llvm)?.[0] ?? "";
+  const body = (name: string): string => definition(llvm, name);
   for (const cls of ["Node", "Leaf"]) {
     // Retain and release are empty, so every inlined call site folds away.
     expect(body(mangleClassRetain(cls)), cls).toMatch(/entry:\n {2}ret ptr %o\n}/);
@@ -135,6 +143,37 @@ test("ProgramLifetime hierarchies are never freed and take no reference counts",
   expect(body(mangleClassNew("Owner"))).toContain("store i64 1, ptr %o");
   expect(body(mangleClassNew("Owner"))).toContain("scr_cyc_alloc");
   expect(body(mangleClassRelease("Owner"))).toContain("load i16, ptr %bufp");
+});
+
+test("programLifetime: false compiles ProgramLifetime hierarchies as counted, collected classes", () => {
+  const mod = programLifetimeModule();
+  applyProgramLifetimeOption(mod, { programLifetime: false });
+  expect(mod.contracts).toBeUndefined();
+  const llvm = emitLlvmModule(mod, { pointerBits: 64 });
+  const body = (name: string): string => definition(llvm, name);
+  for (const cls of ["Node", "Leaf"]) {
+    // Retain and release count, and release can hand the object to the
+    // collector (Node lies on a cycle through its mutable `kids` array).
+    expect(body(mangleClassRetain(cls)), cls).toContain("add i64 %rc, 1");
+    expect(body(mangleClassRelease(cls)), cls).not.toMatch(/entry:\n {2}ret void\n}/);
+    expect(body(mangleClassRelease(cls)), cls).toContain("load i16, ptr %bufp");
+    // new: a count of 1 and a collector header, never the immortal count.
+    const nw = body(mangleClassNew(cls));
+    expect(nw, cls).toContain("store i64 1, ptr %o");
+    expect(nw, cls).not.toContain("-9223372036854775808");
+    expect(nw, cls).toContain("scr_cyc_alloc");
+    expect(llvm, cls).toContain(`@${mangleClassTrace(cls)}.cyctype`);
+    expect(nw, cls).not.toContain("scr_obj_lifetime_note");
+  }
+  // The option leaves every other recorded contract in place.
+  const other = programLifetimeModule();
+  other.contracts = { programLifetime: ["Node"], noThrow: ["main"] };
+  applyProgramLifetimeOption(other, { programLifetime: false });
+  expect(other.contracts).toEqual({ noThrow: ["main"] });
+  // The default keeps the roots.
+  const kept = programLifetimeModule();
+  applyProgramLifetimeOption(kept, {});
+  expect(kept.contracts).toEqual({ programLifetime: ["Node"] });
 });
 
 test("published ProgramLifetime instances use the published mark every other object uses", () => {
