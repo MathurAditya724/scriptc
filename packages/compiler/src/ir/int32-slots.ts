@@ -7,8 +7,9 @@ import {
   type IntegerRanges,
   type IntegerSlotFacts,
 } from "./integer-ranges.js";
+import { exprFunctionReference, moduleFunctionReferences } from "./function-references.js";
 import { findInitializerBindings, withInitializerBindings } from "./initializer-bindings.js";
-import { everyExprChild, everyStmtChild, everyTypeChild } from "./traverse.js";
+import { everyExprChild, everyStmtChild, everyStmtList, everyTypeChild } from "./traverse.js";
 
 /** Whole-program int32 specialization of numeric storage.
  *
@@ -265,18 +266,6 @@ const DYN_READ_ONLY = new Set<string>([
   "text.decodeStream",
   "worker.new",
 ]);
-/** IR metadata keys whose strings never name a function. */
-const NON_REFERENCE_KEYS = new Set([
-  "loc",
-  "source",
-  "name",
-  "sourceName",
-  "jsName",
-  "localId",
-  "type",
-  "returnType",
-]);
-
 function walkFunction(
   fn: IrFunction,
   visit: { expr?: (e: IrExpr) => void; stmt?: (s: IrStmt) => void },
@@ -480,36 +469,8 @@ export function functionCallFacts(
   virtualTargets: Set<string>;
   runtimeVirtual: (name: string) => boolean;
 } {
-  const functions = new Map(mod.functions.map((fn) => [fn.name, fn]));
-  const escaped = new Set<string>();
+  const escaped = new Set<string>(moduleFunctionReferences(mod));
   const virtualTargets = new Set<string>();
-  const seenObjects = new Set<object>();
-  const scan = (
-    value: unknown,
-    key: string | null,
-    parent: Record<string, unknown> | null,
-  ): void => {
-    if (typeof value === "string") {
-      if (functions.has(value)) {
-        const direct =
-          key === "callee" && parent?.kind === "call"
-            ? true
-            : key === "value" && parent?.kind === "strLit";
-        if (!direct) escaped.add(value);
-      }
-      return;
-    }
-    if (value === null || typeof value !== "object" || seenObjects.has(value)) return;
-    seenObjects.add(value);
-    if (Array.isArray(value)) {
-      for (const item of value) scan(item, null, null);
-      return;
-    }
-    const record = value as Record<string, unknown>;
-    for (const [k, v] of Object.entries(record)) if (!NON_REFERENCE_KEYS.has(k)) scan(v, k, record);
-  };
-  scan(mod, null, null);
-  if (typeof mod.entry === "string") escaped.add(mod.entry);
   // Virtual dispatch: a `virtualCall` can reach the method's implementation
   // in any class of the receiver's subtree or the one it inherits. Classes
   // under a runtime-provided root keep every method escaped: the runtime
@@ -525,6 +486,8 @@ export function functionCallFacts(
   for (const fn of mod.functions)
     walkFunction(fn, {
       expr: (e) => {
+        const referenced = exprFunctionReference(e);
+        if (referenced !== undefined) escaped.add(referenced);
         if (e.kind !== "virtualCall") return;
         for (const name of subtree(e.className)) virtualTargets.add(`%${name}.${e.method}`);
         for (let c = classes.get(e.className); c; c = c.base ? classes.get(c.base) : undefined)
@@ -825,13 +788,47 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
           queue.push(fnName);
         }
   };
+  const candidateArgs = (callee: IrFunction | undefined, args: number, offset: number): boolean => {
+    if (!callee) return false;
+    for (let i = 0; i < args; i++) {
+      const param = callee.params[i + offset];
+      if (param && slots.hasParam(callee.name, param.localId)) return true;
+    }
+    return false;
+  };
+  const hasCandidateWrite = (fn: IrFunction): boolean => {
+    const box = (localId: string): boolean => slots.hasBox(slots.boxGroup(fn.name, localId));
+    const returns = slots.hasReturn(fn.name);
+    return !everyStmtList(fn.body, {
+      stmt: (s) => {
+        if (s.kind === "assign") return !box(s.localId);
+        if (s.kind === "varDecl") return s.init === null || !box(s.localId);
+        if (s.kind === "fieldSet") {
+          const family = slots.family(s.className, s.field);
+          return !family || !slots.hasFamily(family);
+        }
+        return !(s.kind === "return" && returns);
+      },
+      expr: (e) => {
+        if (e.kind === "call") return !candidateArgs(functions.get(e.callee), e.args.length, 0);
+        if (e.kind === "new")
+          return !candidateArgs(functions.get(`%${e.className}.constructor`), e.args.length, 1);
+        if (e.kind === "assignExpr") return !box(e.localId);
+        return true;
+      },
+    });
+  };
   const provenByFunction = new Map<string, IrExpr[]>();
   while (queue.length) {
     const fn = functions.get(queue.pop()!)!;
     queued.delete(fn.name);
     const params = slots.facts(fn.name).params;
     if (params) for (const id of params.keys()) reads(`param:${fn.name}\0${id}`, fn.name);
-    const ranges: IntegerRanges = analyzeIntegerRanges(numeric(fn), slots.facts(fn.name));
+    // Range facts are consulted only at writes into candidate slots; slots
+    // are only ever dropped, so a body without such a write needs none.
+    const ranges: IntegerRanges = hasCandidateWrite(fn)
+      ? analyzeIntegerRanges(numeric(fn), slots.facts(fn.name))
+      : new Map();
     const proven: IrExpr[] = [];
     const int32 = (e: IrExpr): boolean => withinInt32(ranges.get(e));
     const args = (callee: IrFunction | undefined, list: IrExpr[], offset: number): void => {
