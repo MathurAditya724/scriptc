@@ -288,6 +288,21 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // cpuUsage(prev)'s field validation: negative/non-finite prev fields
   // throw Node's ERR_INVALID_ARG_VALUE RangeError, catchably.
   "process.cpuPrevValidate",
+  // An unreadable resident set throws Node's uv_resident_set_memory
+  // error; the Windows credential members throw the missing-member
+  // TypeError.
+  "process.memoryUsageTake",
+  "process.rss",
+  "process.geteuid",
+  "process.getegid",
+  "process.getgroups",
+  // perf_hooks user timing: Node's argument validation, the unset-mark
+  // SyntaxError DOMException, and the detail's DataCloneError.
+  "perf.mark",
+  "perf.measure",
+  "perf.entries",
+  "perf.clearMarks",
+  "perf.clearMeasures",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",

@@ -63,6 +63,8 @@ static void scr_process_mask_init(void);
 #include <iphlpapi.h> /* GetAdaptersAddresses (os.networkInterfaces) */
 #include <windows.h>
 #include <winioctl.h> /* FSCTL_GET_REPARSE_POINT */
+#define PSAPI_VERSION 2 /* K32GetProcessMemoryInfo, in kernel32 */
+#include <psapi.h>
 #include <lmcons.h>  /* UNLEN for GetUserNameA */
 #include "scr_win_stats.h"
 
@@ -127,6 +129,7 @@ static ScrStr *scr_fs_win_utf8(const WCHAR *text, size_t length) {
 #endif
 #if defined(__linux__)
 #include <sched.h> /* sched_getaffinity, CPU_COUNT (os.availableParallelism) */
+#include <sys/prctl.h> /* PR_SET_NAME (process.title) */
 #elif defined(__APPLE__)
 #include <sys/sysctl.h> /* sysctlbyname (os.availableParallelism) */
 #endif
@@ -152,6 +155,9 @@ static SCR_TL char **scr_lib_argv_owned = NULL;
 static SCR_TL char *scr_lib_argv_utf8 = NULL;
 #endif
 static SCR_TL bool scr_lib_has_fork = false;
+#if !defined(_WIN32) && !defined(__wasi__) && !defined(SCR_LIB)
+static void scr_title_init(int argc, char **argv);
+#endif
 static SCR_TL double scr_lib_fork_target_id = -1;
 static SCR_TL uintptr_t scr_lib_fork_read_handle = 0;
 static SCR_TL uintptr_t scr_lib_fork_write_handle = 0;
@@ -365,6 +371,12 @@ void scr_lib_init(int argc, char **argv) {
       scr_lib_argv = scr_lib_argv_owned;
     }
   }
+#if !defined(_WIN32) && !defined(__wasi__)
+#ifdef SCR_WORKERS
+  if (scr_context_is_main())
+#endif
+    scr_title_init(argc, argv);
+#endif
   scr_atexit(scr_lib_cleanup);
 }
 #endif /* !SCR_LIB */
@@ -2433,6 +2445,324 @@ double scr_available_memory(void) {
   return 0;
 #endif
 }
+
+/* ── process.memoryUsage / ppid / title / argv0 / release ─────────────── */
+
+/* uv_resident_set_memory: /proc/self/stat's rss pages on Linux, the task's
+ * resident size on Darwin, the working set on Windows. False when the
+ * platform has no answer or the read failed. */
+static bool scr_resident_set(double *out) {
+#if defined(__linux__)
+  char buf[1024];
+  if (!scr_uv_slurp("/proc/self/stat", buf, sizeof buf)) return false;
+  const char *s = strrchr(buf, ')');
+  if (s == NULL) return false;
+  for (int i = 1; i <= 22; i++) {
+    s = strchr(s + 1, ' ');
+    if (s == NULL) return false;
+  }
+  errno = 0;
+  long pages = strtol(s, NULL, 10);
+  if (pages < 0 || errno != 0) return false;
+  *out = (double)pages * (double)getpagesize();
+  return true;
+#elif defined(__APPLE__)
+  mach_task_basic_info_data_t info;
+  mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+  if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count) != KERN_SUCCESS)
+    return false;
+  *out = (double)info.resident_size;
+  return true;
+#elif defined(_WIN32)
+  PROCESS_MEMORY_COUNTERS pmc;
+  if (!K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc)) return false;
+  *out = (double)pmc.WorkingSetSize;
+  return true;
+#else
+  return false;
+#endif
+}
+
+static SCR_TL double scr_memory_usage_sample[5];
+
+double scr_process_rss(void) {
+  double rss = 0;
+  if (!scr_resident_set(&rss)) scr_fs_throw(EINVAL, "uv_resident_set_memory", NULL);
+  return rss;
+}
+
+void scr_process_memory_usage_take(void) {
+  double rss = 0;
+  if (!scr_resident_set(&rss)) {
+    scr_fs_throw(EINVAL, "uv_resident_set_memory", NULL);
+    return;
+  }
+  double total = 0, used = 0;
+  scr_heap_stats(&total, &used);
+  scr_memory_usage_sample[0] = rss;
+  scr_memory_usage_sample[1] = total;
+  scr_memory_usage_sample[2] = used;
+  scr_memory_usage_sample[3] = 0;
+  scr_memory_usage_sample[4] = 0;
+}
+
+double scr_process_memory_usage_field(double k) {
+  return k >= 0 && k < 5 ? scr_memory_usage_sample[(int)k] : 0;
+}
+
+/* uv_os_getppid: getppid(2); on Windows the basic-information record's
+ * parent id, -1 when it cannot be read. */
+double scr_process_ppid(void) {
+#if defined(_WIN32)
+  typedef struct {
+    LONG exit_status;
+    PVOID peb;
+    ULONG_PTR affinity;
+    LONG priority;
+    ULONG_PTR pid;
+    ULONG_PTR parent;
+  } ScrBasicInfo;
+  typedef LONG(WINAPI * QueryFn)(HANDLE, int, PVOID, ULONG, PULONG);
+  HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+  QueryFn query = ntdll ? (QueryFn)(void *)GetProcAddress(ntdll, "NtQueryInformationProcess") : NULL;
+  ScrBasicInfo info;
+  if (query == NULL || query(GetCurrentProcess(), 0, &info, sizeof info, NULL) < 0) return -1;
+  return (double)info.parent;
+#elif defined(__wasi__)
+  return 0;
+#else
+  return (double)getppid();
+#endif
+}
+
+/* process.title, libuv's model. On POSIX (unix/proctitle.c) the title
+ * starts as argv[0]; a set writes into the memory that held the original
+ * arguments, truncated to that area, so ps shows the new name. The
+ * arguments move to a heap copy first, which process.argv and argv0 keep
+ * reading. On Windows the title is the console title (win/util.c): read
+ * from the console until set, and a set that the console refuses leaves
+ * the title unchanged. Without arguments (library sessions) or a console,
+ * the title reads "node", Node's default. The title is process-wide. */
+#if defined(_WIN32)
+static SRWLOCK scr_title_lock = SRWLOCK_INIT;
+#define SCR_TITLE_LOCK() AcquireSRWLockExclusive(&scr_title_lock)
+#define SCR_TITLE_UNLOCK() ReleaseSRWLockExclusive(&scr_title_lock)
+static char *scr_title_text; /* the last title set, UTF-8 */
+#elif !defined(__wasi__)
+static pthread_mutex_t scr_title_lock = PTHREAD_MUTEX_INITIALIZER;
+#define SCR_TITLE_LOCK() pthread_mutex_lock(&scr_title_lock)
+#define SCR_TITLE_UNLOCK() pthread_mutex_unlock(&scr_title_lock)
+static char *scr_title_area;   /* argv[0]'s original storage */
+static size_t scr_title_cap;   /* bytes of the original argument area */
+static size_t scr_title_len;
+static char **scr_title_argv;  /* the original pointer table */
+static char **scr_title_owned; /* the main thread's shifted copy, if any */
+static int scr_title_argc;
+static char *scr_title_moved;  /* heap copy of the arguments, once moved */
+#endif
+
+#if !defined(_WIN32) && !defined(__wasi__)
+#ifndef SCR_LIB
+static void scr_title_init(int argc, char **argv) {
+  if (argc <= 0 || scr_title_area != NULL) return;
+  size_t last = strlen(argv[argc - 1]) + 1;
+  scr_title_area = argv[0];
+  scr_title_len = strlen(argv[0]);
+  scr_title_cap = (size_t)(argv[argc - 1] + last - argv[0]);
+  scr_title_argv = argv;
+  scr_title_argc = argc;
+  scr_title_owned = scr_lib_argv_owned;
+}
+#endif
+
+/* Moves every argument string out of the area (lock held). The pointer
+ * tables are updated in place, so every later argument read sees the
+ * copies. */
+static void scr_title_move_args(void) {
+  if (scr_title_moved) return;
+  size_t size = 0;
+  for (int i = 0; i < scr_title_argc; i++) size += strlen(scr_title_argv[i]) + 1;
+  char *copy = malloc(size);
+  if (!copy) scr_trap("scriptc: out of memory\n");
+  char *next = copy;
+  const char *lo = scr_title_area, *hi = scr_title_area + scr_title_cap;
+  for (int i = 0; i < scr_title_argc; i++) {
+    char *old = scr_title_argv[i];
+    size_t n = strlen(old) + 1;
+    memcpy(next, old, n);
+    if (scr_title_owned) {
+      for (int j = 0; scr_title_owned[j]; j++)
+        if (scr_title_owned[j] == old) scr_title_owned[j] = next;
+    }
+    if (old >= lo && old < hi) scr_title_argv[i] = next;
+    next += n;
+  }
+  scr_title_moved = copy;
+}
+#endif
+
+ScrStr *scr_process_title(void) {
+#if defined(_WIN32)
+  ScrStr *out = NULL;
+  SCR_TITLE_LOCK();
+  if (scr_title_text) out = scr_str_new(scr_title_text, strlen(scr_title_text));
+  SCR_TITLE_UNLOCK();
+  if (out) return out;
+  WCHAR *wide = malloc(8192 * sizeof(WCHAR));
+  if (!wide) scr_trap("scriptc: out of memory\n");
+  DWORD n = GetConsoleTitleW(wide, 8192);
+  if (n != 0) out = scr_fs_win_utf8(wide, n);
+  free(wide);
+  return out ? out : scr_str_new("node", 4);
+#elif defined(__wasi__)
+  return scr_str_new("node", 4);
+#else
+  SCR_TITLE_LOCK();
+  ScrStr *out = scr_title_area ? scr_str_new(scr_title_area, scr_title_len) : scr_str_new("node", 4);
+  SCR_TITLE_UNLOCK();
+  return out;
+#endif
+}
+
+void scr_process_set_title(const ScrStr *title) {
+  /* Node passes the title through Utf8Value: lone surrogates become
+   * U+FFFD, and the C string ends at the first NUL. */
+  ScrStr *text = scr_str_to_well_formed((ScrStr *)title);
+  size_t len = strnlen(text->data, text->len);
+#if defined(_WIN32)
+  int units = MultiByteToWideChar(CP_UTF8, 0, text->data, (int)len, NULL, 0);
+  WCHAR *wide = calloc((size_t)units + 1, sizeof(WCHAR));
+  char *copy = malloc(len + 1);
+  if (!wide || !copy) scr_trap("scriptc: out of memory\n");
+  if (units) MultiByteToWideChar(CP_UTF8, 0, text->data, (int)len, wide, units);
+  if (units >= 8192) wide[8191] = L'\0';
+  memcpy(copy, text->data, len);
+  copy[len] = '\0';
+  if (SetConsoleTitleW(wide)) {
+    SCR_TITLE_LOCK();
+    free(scr_title_text);
+    scr_title_text = copy;
+    copy = NULL;
+    SCR_TITLE_UNLOCK();
+  }
+  free(copy);
+  free(wide);
+#elif !defined(__wasi__)
+  SCR_TITLE_LOCK();
+  if (scr_title_area) {
+    scr_title_move_args();
+    if (len >= scr_title_cap) len = scr_title_cap ? scr_title_cap - 1 : 0;
+    memcpy(scr_title_area, text->data, len);
+    memset(scr_title_area + len, 0, scr_title_cap - len);
+    scr_title_len = len;
+#if defined(__linux__)
+    prctl(PR_SET_NAME, scr_title_area);
+#elif defined(__APPLE__)
+    pthread_setname_np(scr_title_area);
+#endif
+  }
+  SCR_TITLE_UNLOCK();
+#else
+  (void)len;
+#endif
+  scr_str_release(text);
+}
+
+ScrStr *scr_process_argv0(void) {
+  if (scr_lib_arg_count() < 1) return scr_str_new("", 0);
+  const char *a = scr_lib_arg(0);
+  return scr_str_new(a, strlen(a));
+}
+
+static SCR_TL ScrDyn *scr_release_object;
+
+static void scr_release_object_cleanup(void) {
+  scr_dyn_release(scr_release_object);
+  scr_release_object = NULL;
+}
+
+/* node_metadata.cc's release record for the compatibility target: an LTS
+ * line, the release download URLs, and on Windows the import library. */
+ScrDyn *scr_process_release(void) {
+  if (!scr_release_object) {
+#define SCR_RELEASE_PREFIX "https://nodejs.org/download/release/v" SCR_NODE_COMPAT_VERSION "/"
+#define SCR_RELEASE_FILE SCR_RELEASE_PREFIX "node-v" SCR_NODE_COMPAT_VERSION
+    static const char *const fields[][2] = {
+        {"name", "node"},
+        {"lts", "Krypton"},
+        {"sourceUrl", SCR_RELEASE_FILE ".tar.gz"},
+        {"headersUrl", SCR_RELEASE_FILE "-headers.tar.gz"},
+    };
+    scr_release_object = scr_dyn_new_obj();
+    for (size_t i = 0; i < sizeof fields / sizeof fields[0]; i++) {
+      ScrStr *value = scr_str_new(fields[i][1], strlen(fields[i][1]));
+      scr_dyn_obj_set(scr_release_object, fields[i][0], strlen(fields[i][0]), scr_dyn_new_str(value));
+      scr_str_release(value);
+    }
+#ifdef _WIN32
+    ScrStr *arch = scr_process_arch();
+    char lib[160];
+    int n = snprintf(lib, sizeof lib, SCR_RELEASE_PREFIX "win-%.*s/node.lib", (int)arch->len, arch->data);
+    scr_str_release(arch);
+    ScrStr *value = scr_str_new(lib, (size_t)n);
+    scr_dyn_obj_set(scr_release_object, "libUrl", 6, scr_dyn_new_str(value));
+    scr_str_release(value);
+#endif
+#undef SCR_RELEASE_FILE
+#undef SCR_RELEASE_PREFIX
+    for (size_t i = 0; i < scr_release_object->v.obj.len; i++) {
+      scr_release_object->v.obj.entries[i].writable = false;
+      scr_release_object->v.obj.entries[i].configurable = false;
+    }
+    scr_atexit(&scr_release_object_cleanup);
+  }
+  return scr_dyn_retain(scr_release_object);
+}
+
+#if defined(_WIN32) || defined(__wasi__)
+double scr_process_geteuid(void) {
+  scr_throw_error_msg(SCR_ERR_TYPE, "process.geteuid is not a function", 33);
+  return 0;
+}
+
+double scr_process_getegid(void) {
+  scr_throw_error_msg(SCR_ERR_TYPE, "process.getegid is not a function", 33);
+  return 0;
+}
+
+ScrArr *scr_process_getgroups(void) {
+  scr_throw_error_msg(SCR_ERR_TYPE, "process.getgroups is not a function", 35);
+  return scr_arr_new(SCR_ELEM_F64, 0);
+}
+#else
+double scr_process_geteuid(void) { return (double)geteuid(); }
+
+double scr_process_getegid(void) { return (double)getegid(); }
+
+/* node_credentials.cc GetGroups: the supplementary groups, then the
+ * effective gid when the list lacks it. */
+ScrArr *scr_process_getgroups(void) {
+  int n = getgroups(0, NULL);
+  gid_t *groups = n > 0 ? malloc((size_t)n * sizeof *groups) : NULL;
+  if (n > 0 && !groups) scr_trap("scriptc: out of memory\n");
+  if (n < 0 || (n > 0 && (n = getgroups(n, groups)) < 0)) {
+    int e = errno;
+    free(groups);
+    scr_fs_throw(e, "getgroups", NULL);
+    return scr_arr_new(SCR_ELEM_F64, 0);
+  }
+  gid_t egid = getegid();
+  bool has = false;
+  ScrArr *out = scr_arr_new(SCR_ELEM_F64, (size_t)n + 1);
+  for (int i = 0; i < n; i++) {
+    has = has || groups[i] == egid;
+    scr_arr_push_f64(out, (double)groups[i]);
+  }
+  if (!has) scr_arr_push_f64(out, (double)egid);
+  free(groups);
+  return out;
+}
+#endif
 
 /* process._exiting — true once the exit sequence began (set above and by
  * scr_run_exit_listeners in scr_events.c; the flag lives HERE so reading

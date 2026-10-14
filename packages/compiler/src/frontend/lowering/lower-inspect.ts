@@ -27,6 +27,7 @@ import type { ClassInfo } from "./lower-classes.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { symbolFieldDisplayName } from "./symbol-fields.js";
 import { lowerSystemErrorMap } from "./lower-system-errors.js";
+import { isPerfEntryType, perfEntryJson } from "./builtins/performance.js";
 
 /* ── IR construction shorthand ───────────────────────────────────────── */
 function concatAll(parts: IrExpr[], loc: SrcLoc): IrExpr {
@@ -638,6 +639,66 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
         type,
         loc,
       });
+      if (isPerfEntryType(lowerer, t)) {
+        // PerformanceEntry's custom inspect: `[PerformanceMark]` past the
+        // depth budget, otherwise the class name and a nested inspect of
+        // toJSON() one level shallower, in its own context.
+        const className: IrExpr = {
+          kind: "ternary",
+          cond: {
+            kind: "strEq",
+            negated: false,
+            left: get("entryType", STRING),
+            right: strLit("mark", loc),
+            type: BOOL,
+            loc,
+          },
+          then: strLit("PerformanceMark", loc),
+          else_: strLit("PerformanceMeasure", loc),
+          type: STRING,
+          loc,
+        };
+        const json = perfEntryJson(lowerer, v(), t, loc);
+        const dLess1: IrExpr = {
+          kind: "bin",
+          op: "-",
+          left: d(),
+          right: numLit(1, loc),
+          type: F64,
+          loc,
+        };
+        locals.push({ id: "in.0", name: "inner", type: STRING, mutable: false });
+        body = [
+          {
+            kind: "if",
+            cond: { kind: "bin", op: ">", left: r(), right: d(), type: BOOL, loc },
+            then: [ret(concatAll([strLit("[", loc), className, strLit("]", loc)], loc))],
+            else_: null,
+            loc,
+          },
+          exprStmt({
+            kind: "libCall",
+            fn: "insp.nestedBegin",
+            args: [],
+            type: { kind: "void" },
+            loc,
+          }),
+          {
+            kind: "varDecl",
+            localId: "in.0",
+            init: inspectExpr(lowerer, json.type, json, numLit(0, loc), dLess1, loc),
+            loc,
+          },
+          ret({
+            kind: "libCall",
+            fn: "insp.nestedEnd",
+            args: [className, varRef("in.0", STRING, loc)],
+            type: STRING,
+            loc,
+          }),
+        ];
+        break;
+      }
       if (shape.tuple) {
         // Tuples ARE arrays to Node: bracket form, array-extras grouping.
         if (shape.fields.length === 0) {

@@ -2007,6 +2007,48 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     fns: ["perf.now"],
     note: "the global performance object and the performance.now.bind(performance) function value reach the same clock",
   },
+  {
+    id: "node-builtin.perf_hooks.performance.mark",
+    kind: "node-builtin",
+    name: "perf_hooks.performance.mark",
+    fns: [
+      "perf.mark",
+      "perf.entryName",
+      "perf.entryType",
+      "perf.entryStart",
+      "perf.entryDuration",
+      "perf.entryDetail",
+      "perf.entryKeep",
+      "perf.entryRef",
+    ],
+    note: "records a mark in the thread's performance timeline at the live clock or the given startTime",
+  },
+  {
+    id: "node-builtin.perf_hooks.performance.measure",
+    kind: "node-builtin",
+    name: "perf_hooks.performance.measure",
+    fns: ["perf.measure"],
+    note: "the mark-name, timestamp, and options forms are one surface",
+  },
+  {
+    id: "node-builtin.perf_hooks.performance.getEntries",
+    kind: "node-builtin",
+    name: "perf_hooks.performance.getEntries",
+    fns: ["perf.entries"],
+    note: "getEntries, getEntriesByName, and getEntriesByType read the same timeline",
+  },
+  {
+    id: "node-builtin.perf_hooks.performance.clearMarks",
+    kind: "node-builtin",
+    name: "perf_hooks.performance.clearMarks",
+    fns: ["perf.clearMarks"],
+  },
+  {
+    id: "node-builtin.perf_hooks.performance.clearMeasures",
+    kind: "node-builtin",
+    name: "perf_hooks.performance.clearMeasures",
+    fns: ["perf.clearMeasures"],
+  },
   // ── the process global's ambient reads and authority calls
   // (lowerProcessProperty/lowerProcessMethodCall — process is a
   // provenance-checked global here, not an importable module).
@@ -2045,6 +2087,13 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     note: "shared version dictionary containing node and openssl; other components are absent unless defined by the program",
   },
   {
+    id: "node-builtin.process.release",
+    kind: "node-builtin",
+    name: "process.release",
+    fns: ["process.release"],
+    note: "the compatibility target's release metadata as one stable read-only object",
+  },
+  {
     id: "node-builtin.process.cwd",
     kind: "node-builtin",
     name: "process.cwd",
@@ -2075,6 +2124,43 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     fns: ["process.getgid"],
   },
   {
+    id: "node-builtin.process.geteuid",
+    kind: "node-builtin",
+    name: "process.geteuid",
+    fns: ["process.geteuid"],
+  },
+  {
+    id: "node-builtin.process.getegid",
+    kind: "node-builtin",
+    name: "process.getegid",
+    fns: ["process.getegid"],
+  },
+  {
+    id: "node-builtin.process.getgroups",
+    kind: "node-builtin",
+    name: "process.getgroups",
+    fns: ["process.getgroups"],
+  },
+  {
+    id: "node-builtin.process.ppid",
+    kind: "node-builtin",
+    name: "process.ppid",
+    fns: ["process.ppid"],
+  },
+  {
+    id: "node-builtin.process.title",
+    kind: "node-builtin",
+    name: "process.title",
+    fns: ["process.title", "process.setTitle"],
+    note: "reads and writes of the process title are one surface",
+  },
+  {
+    id: "node-builtin.process.argv0",
+    kind: "node-builtin",
+    name: "process.argv0",
+    fns: ["process.argv0"],
+  },
+  {
     id: "node-builtin.process.execPath",
     kind: "node-builtin",
     name: "process.execPath",
@@ -2097,6 +2183,13 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     kind: "node-builtin",
     name: "process.constrainedMemory",
     fns: ["process.constrainedMemory"],
+  },
+  {
+    id: "node-builtin.process.memoryUsage",
+    kind: "node-builtin",
+    name: "process.memoryUsage",
+    fns: ["process.memoryUsageTake", "process.memoryUsageField", "process.rss"],
+    note: "the record and memoryUsage.rss() read live memory state; external and arrayBuffers are 0",
   },
   {
     id: "node-builtin.process.resourceUsage",

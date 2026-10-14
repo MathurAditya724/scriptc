@@ -2,7 +2,7 @@
  * typechecks (that is @types/node's job) and must FAIL COMPILATION with
  * the SC2020-family fence naming @types/node instead of a raw TS error
  * or a binary that runs with the wrong behavior. */
-console.log(process.memoryUsage()); // uptime/cpuUsage/resourceUsage lower now; the V8-heap report does not
+console.log(process.hasUncaughtExceptionCaptureCallback()); // the process introspection statics lower now; the capture-callback probe does not
 console.log(Buffer.poolSize);
 /* setInterval lowers, and under @types/node its Timeout RETURN now maps
  * to the numeric handle — holding one and unref()/ref()/hasRef()/refresh()

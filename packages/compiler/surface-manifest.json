@@ -1733,6 +1733,39 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.perf_hooks.performance.clearMarks",
+      "kind": "node-builtin",
+      "name": "perf_hooks.performance.clearMarks",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.perf_hooks.performance.clearMeasures",
+      "kind": "node-builtin",
+      "name": "perf_hooks.performance.clearMeasures",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.perf_hooks.performance.getEntries",
+      "kind": "node-builtin",
+      "name": "perf_hooks.performance.getEntries",
+      "status": "static",
+      "note": "getEntries, getEntriesByName, and getEntriesByType read the same timeline"
+    },
+    {
+      "id": "node-builtin.perf_hooks.performance.mark",
+      "kind": "node-builtin",
+      "name": "perf_hooks.performance.mark",
+      "status": "static",
+      "note": "records a mark in the thread's performance timeline at the live clock or the given startTime"
+    },
+    {
+      "id": "node-builtin.perf_hooks.performance.measure",
+      "kind": "node-builtin",
+      "name": "perf_hooks.performance.measure",
+      "status": "static",
+      "note": "the mark-name, timestamp, and options forms are one surface"
+    },
+    {
       "id": "node-builtin.perf_hooks.performance.now",
       "kind": "node-builtin",
       "name": "perf_hooks.performance.now",
@@ -1750,6 +1783,12 @@
       "id": "node-builtin.process.argv",
       "kind": "node-builtin",
       "name": "process.argv",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.process.argv0",
+      "kind": "node-builtin",
+      "name": "process.argv0",
       "status": "static"
     },
     {
@@ -1825,9 +1864,27 @@
       "note": "native path and os export subsets plus current-thread worker_threads metadata; other modules and exports throw SC2020"
     },
     {
+      "id": "node-builtin.process.getegid",
+      "kind": "node-builtin",
+      "name": "process.getegid",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.process.geteuid",
+      "kind": "node-builtin",
+      "name": "process.geteuid",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.process.getgid",
       "kind": "node-builtin",
       "name": "process.getgid",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.process.getgroups",
+      "kind": "node-builtin",
+      "name": "process.getgroups",
       "status": "static"
     },
     {
@@ -1864,10 +1921,30 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.process.memoryUsage",
+      "kind": "node-builtin",
+      "name": "process.memoryUsage",
+      "status": "static",
+      "note": "the record and memoryUsage.rss() read live memory state; external and arrayBuffers are 0"
+    },
+    {
       "id": "node-builtin.process.pid",
       "kind": "node-builtin",
       "name": "process.pid",
       "status": "static"
+    },
+    {
+      "id": "node-builtin.process.ppid",
+      "kind": "node-builtin",
+      "name": "process.ppid",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.process.release",
+      "kind": "node-builtin",
+      "name": "process.release",
+      "status": "static",
+      "note": "the compatibility target's release metadata as one stable read-only object"
     },
     {
       "id": "node-builtin.process.resourceUsage",
@@ -1889,6 +1966,13 @@
       "name": "process.threadCpuUsage",
       "status": "static",
       "note": "the plain-sample and previous-value diff forms are one surface"
+    },
+    {
+      "id": "node-builtin.process.title",
+      "kind": "node-builtin",
+      "name": "process.title",
+      "status": "static",
+      "note": "reads and writes of the process title are one surface"
     },
     {
       "id": "node-builtin.process.umask",

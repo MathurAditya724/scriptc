@@ -218,6 +218,7 @@ import { lowerUrlAssignment } from "./builtins/url.js";
 import { jsBindingHasOpenWrites } from "./lower-stmts.js";
 import { checkedClassInstanceOf } from "./class-construction.js";
 import { lowerModuleNamespaceElement } from "./module-namespace-elements.js";
+import { isPerfEntryType, perfEntryTag } from "./builtins/performance.js";
 
 /** An assignable `obj.field` target — a class field, a record field, or a
  * class ACCESSOR property (reads become getter calls, writes setter calls;
@@ -8358,6 +8359,7 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
     // prints its elements like an array (not lowered — fenced) — every
     // other record is Object.prototype.toString's constant.
     const shape = lowerer.shapes.get(e.type.shapeId);
+    if (isPerfEntryType(lowerer, e.type)) return perfEntryTag(lowerer, e, e.type, e.loc);
     if (shape && !shape.tuple && !shape.fields.some((f) => f.name === "toString")) {
       return { kind: "toString", operand: e, type: STRING, loc: e.loc };
     }

@@ -503,6 +503,9 @@ export async function compileCInternal(
     ...(opts.dynAsync || opts.dynInvoke || opts.workers || opts.dc || opts.fileHandle || nativeFetch
       ? [rt(join(rtDir, "scr_async_dyn.c"))]
       : []),
+    // The performance timeline (every perf_hooks user-timing call selects
+    // dynAsync, whose unit carries the timeline's buffer warning).
+    ...(opts.dynAsync ? [rt(join(rtDir, "scr_perf.c"))] : []),
     // The zlib UNIT (scr_zlib.c) gates on zlib.* IR use; the LINK (system
     // libz on the default host-clang build, vendored objects on Zig builds)
     // also serves the native fetch's gzip decoder — spread exactly once.

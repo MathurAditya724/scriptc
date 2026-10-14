@@ -23,7 +23,11 @@ import { PoisonError, neverTaintedJsType } from "../lowerer.js";
 import type { Lowerer } from "../lowerer.js";
 import { lowerIndexMergeHelper } from "../containers/indexed-objects.js";
 import type { IndexMergeContributor } from "../containers/indexed-objects.js";
-import { isGenericCallableMemberType, jsOpenObjectType } from "../../type-mapper.js";
+import {
+  PERF_ENTRY_MARKER,
+  isGenericCallableMemberType,
+  jsOpenObjectType,
+} from "../../type-mapper.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceSymbolFieldCopy } from "../symbol-fields.js";
@@ -450,6 +454,13 @@ function fenceAccessorSpreadSource(
   prop: ts.Node,
   srcShape: IrRecordShape | undefined,
 ): void {
+  if (srcShape && srcShape.fields.some((f) => f.name === PERF_ENTRY_MARKER)) {
+    lowerer.unsupported(
+      "SC1090",
+      prop,
+      "object spread over performance entries (Node keeps their fields as prototype getters, so own-key walks see none; read the fields or call toJSON())",
+    );
+  }
   if (srcShape && shapeHasAccessorSlots(srcShape)) {
     lowerer.unsupported(
       "SC1090",

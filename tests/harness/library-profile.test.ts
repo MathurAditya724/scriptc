@@ -515,9 +515,17 @@ describe("library profile fences", () => {
     expect(processIds).toContain("node-builtin.process.cpuUsage");
     expect(processIds).toContain("node-builtin.process.isTTY");
     expect(r.profile.fences[1]!.surfaces.every((s) => s.detector !== undefined)).toBe(true);
+    // The user-timing timeline reads the same clock (mark() and measure()
+    // default to performance.now()), so it joins the perf_hooks family.
     expect(r.profile.fences[2]!.surfaces.map((s) => s.id)).toEqual([
+      "node-builtin.perf_hooks.performance.clearMarks",
+      "node-builtin.perf_hooks.performance.clearMeasures",
+      "node-builtin.perf_hooks.performance.getEntries",
+      "node-builtin.perf_hooks.performance.mark",
+      "node-builtin.perf_hooks.performance.measure",
       "node-builtin.perf_hooks.performance.now",
     ]);
+    expect(r.profile.fences[2]!.surfaces.every((s) => s.detector !== undefined)).toBe(true);
   });
 
   test("Date getTime and valueOf fences keep distinct IR witnesses", () => {

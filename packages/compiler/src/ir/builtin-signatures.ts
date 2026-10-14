@@ -302,6 +302,34 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "process.uptime": { argTypes: [], result: F64 },
   /** perf_hooks performance.now(): fractional ms since process start. */
   "perf.now": { argTypes: [], result: F64 },
+  /** perf_hooks user timing over the thread's performance timeline. The
+   * producing calls take the call's whole argument vector as one dyn
+   * array (Node's validation and errors run in the runtime, MAY THROW):
+   * mark/measure answer 1, entries(args, which) the entry count of
+   * getEntries (0), getEntriesByName (1) or getEntriesByType (2). The
+   * entryName/Type/Start/Duration/Detail accessors read entry i of that
+   * answer; the frontend builds a new entry's record from them and hands
+   * it to entryKeep (a typed reference capsule), and the getters read the
+   * kept records back through entryRef, so entries keep their identity. */
+  "perf.mark": { argTypes: [DYN], result: F64 },
+  "perf.measure": { argTypes: [DYN], result: F64 },
+  "perf.entries": { argTypes: [DYN, F64], result: F64 },
+  "perf.clearMarks": { argTypes: [DYN], result: VOID },
+  "perf.clearMeasures": { argTypes: [DYN], result: VOID },
+  "perf.entryName": { argTypes: [F64], result: STRING },
+  "perf.entryType": { argTypes: [F64], result: STRING },
+  "perf.entryStart": { argTypes: [F64], result: F64 },
+  "perf.entryDuration": { argTypes: [F64], result: F64 },
+  "perf.entryDetail": { argTypes: [F64], result: DYN },
+  "perf.entryKeep": { argTypes: [DYN], result: VOID },
+  "perf.entryRef": { argTypes: [F64], result: DYN },
+  /** process.memoryUsage(): memoryUsageTake samples the resident set and
+   * the runtime heap once (MAY THROW Node's uv_resident_set_memory error)
+   * and memoryUsageField(k) reads that sample (0 rss, 1 heapTotal, 2
+   * heapUsed, 3 external, 4 arrayBuffers). rss is memoryUsage.rss(). */
+  "process.memoryUsageTake": { argTypes: [], result: VOID },
+  "process.memoryUsageField": { argTypes: [F64], result: F64 },
+  "process.rss": { argTypes: [], result: F64 },
   "process.availableMemory": { argTypes: [], result: F64 },
   "process.constrainedMemory": { argTypes: [], result: F64 },
   "process.cpuUser": { argTypes: [], result: F64 },
@@ -2475,6 +2503,24 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.generatorThis": { argTypes: [], result: DYN },
   "process.getuid": { argTypes: [], result: F64 },
   "process.getgid": { argTypes: [], result: F64 },
+  /** geteuid(2) / getegid(2) / getgroups(2) (the effective gid appended
+   * when the list lacks it, like Node). Windows has no such members: the
+   * calls throw the TypeError a missing member does (MAY THROW). */
+  "process.geteuid": { argTypes: [], result: F64 },
+  "process.getegid": { argTypes: [], result: F64 },
+  "process.getgroups": { argTypes: [], result: arrayOf(F64) },
+  /** process.ppid: the parent's pid at the read. Never throws. */
+  "process.ppid": { argTypes: [], result: F64 },
+  /** process.title: libuv's process title (argv[0] until set); setTitle
+   * writes it (truncated to the original argument area on POSIX, the
+   * console title on Windows). Never throw. */
+  "process.title": { argTypes: [], result: STRING },
+  "process.setTitle": { argTypes: [STRING], result: VOID },
+  /** process.argv0: the original argv[0]. Never throws. */
+  "process.argv0": { argTypes: [], result: STRING },
+  /** process.release: the compatibility target's stable release object
+   * (name, lts, sourceUrl, headersUrl, and libUrl on Windows). +1. */
+  "process.release": { argTypes: [], result: DYN },
   /** process.execPath: the compiled binary's own resolved absolute path
    * (one interned string, +1 per read) — the honest answer where Node's
    * is the node executable's (SEMANTICS.md divergence 12). Never throws. */
@@ -3228,6 +3274,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "insp.key": { argTypes: [STRING], result: STRING },
   "insp.moreItems": { argTypes: [F64], result: STRING },
   "insp.end": { argTypes: [STRING, STRING, STRING, F64, BOOL, BOOL], result: STRING },
+  /** A nested inspect inside a custom rendering (PerformanceEntry's
+   * `${name} ${inspect(toJSON)}`): nestedBegin starts a fresh inspect
+   * context, nestedEnd(prefix, inner) restores the caller's and answers
+   * `prefix inner` re-indented at the caller's level (+1). */
+  "insp.nestedBegin": { argTypes: [], result: VOID },
+  "insp.nestedEnd": { argTypes: [STRING, STRING], result: STRING },
   /** node:string_decoder's utf8 StringDecoder (scr_string.c): the decoder
    * value is a one-field record whose f64 PACKS the pending partial
    * sequence (count + up to 3 raw bytes — Node buffers at most 3 for

@@ -3596,6 +3596,29 @@ double scr_process_uptime(void);
 /* perf_hooks performance.now(): fractional ms since process start (the
  * uptime anchor — Node's timeOrigin for a compiled program). */
 double scr_perf_now(void);
+/* perf_hooks user timing (scr_perf.c): mark, measure, the getEntries
+ * family and the clears take the call's dyn argument vector (borrowed)
+ * and apply Node's validation and errors. mark and measure answer 1 and
+ * the getters the entry count; the answered entries stay readable through
+ * the scr_perf_entry_* accessors (index into the answer) until the next
+ * timeline call. which: 0 getEntries, 1 getEntriesByName, 2
+ * getEntriesByType. Accessor results are +1. */
+double scr_perf_mark(ScrDyn *args);
+double scr_perf_measure(ScrDyn *args);
+double scr_perf_entries(ScrDyn *args, double which);
+void scr_perf_clear_marks(ScrDyn *args);
+void scr_perf_clear_measures(ScrDyn *args);
+ScrStr *scr_perf_entry_name(double i);
+ScrStr *scr_perf_entry_type(double i);
+double scr_perf_entry_start(double i);
+double scr_perf_entry_duration(double i);
+ScrDyn *scr_perf_entry_detail(double i);
+/* The entry objects themselves: entry_keep stores the program's object
+ * for the last mark or measure (borrowed, retained), entry_ref answers
+ * entry i's stored object (+1), so the getters return the same objects
+ * mark() and measure() did. */
+void scr_perf_entry_keep(ScrDyn *ref);
+ScrDyn *scr_perf_entry_ref(double i);
 uint64_t scr_hrtime_ns(void);
 ScrDyn *scr_process_hrtime_value(void);
 double scr_cpu_user(void);
@@ -3610,6 +3633,39 @@ void scr_cpu_prev_validate(double user, double system);
 double scr_process_rusage(double idx);
 double scr_available_memory(void);
 double scr_constrained_memory(void);
+/* process.memoryUsage(): take samples rss and the runtime heap once;
+ * field(k) reads that sample (k: 0 rss, 1 heapTotal, 2 heapUsed,
+ * 3 external, 4 arrayBuffers). heapTotal is the bytes the runtime heap
+ * holds from the system, heapUsed the bytes in live allocations, and
+ * external/arrayBuffers are 0 (byte storage lives in the same heap).
+ * memoryUsage.rss() is the resident set alone. An unreadable resident
+ * set throws Node's uv_resident_set_memory error. */
+void scr_process_memory_usage_take(void);
+double scr_process_memory_usage_field(double k);
+double scr_process_rss(void);
+/* The runtime heap's footprint (scr_alloc.c): bytes held from the system
+ * and bytes in live allocations, for the calling thread's allocator plus
+ * the system allocator where it reports them. */
+void scr_heap_stats(double *total, double *used);
+/* process.ppid: the parent's pid at the time of the read. */
+double scr_process_ppid(void);
+/* process.title: libuv's process title — argv[0] until set; a set
+ * truncates to the original argument area (POSIX) and becomes the name
+ * ps shows, or the console title (Windows). "node" without arguments
+ * (library sessions). +1 / borrowed. */
+ScrStr *scr_process_title(void);
+void scr_process_set_title(const ScrStr *title);
+/* process.argv0: the original argv[0] the binary was started with. +1. */
+ScrStr *scr_process_argv0(void);
+/* process.release: the stable { name, lts, sourceUrl, headersUrl[,
+ * libUrl] } object of the compatibility target's release. +1. */
+ScrDyn *scr_process_release(void);
+/* geteuid(2) / getegid(2) / getgroups(2) (with the effective gid added
+ * when missing, like Node). Windows has no such members: the calls throw
+ * the TypeError Node's missing member does. */
+double scr_process_geteuid(void);
+double scr_process_getegid(void);
+ScrArr *scr_process_getgroups(void);
 ScrArr *scr_active_resources(void);
 /* chdir(2) — throws Node's fs-shaped error on failure (syscall "chdir"). */
 void scr_process_chdir(ScrStr *dir);
@@ -7284,6 +7340,12 @@ ScrStr *scr_insp_more_items(double remaining); /* "... N more items" */
 ScrStr *scr_insp_key(ScrStr *k); /* bare-or-quoted property-name ladder; +1 */
 ScrStr *scr_insp_end(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurse,
                      bool array_extras, bool trailing_more);
+/* A nested util.inspect inside a custom rendering (PerformanceEntry's):
+ * begin sets a fresh inspect context aside the caller's; end restores it
+ * and answers `prefix inner` with inner's newlines re-indented at the
+ * caller's level (+1; borrows both). */
+void scr_insp_nested_begin(void);
+ScrStr *scr_insp_nested_end(ScrStr *prefix, ScrStr *inner);
 
 /* The buf.read* / buf.write* numeric families on u8 bytes, Node-exact:
  * boundsError's ladder (non-integer offset → 'It must be an integer', a
