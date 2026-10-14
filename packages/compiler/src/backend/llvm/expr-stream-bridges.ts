@@ -166,6 +166,7 @@ export function streamTypedRefCommitAdapter(
     const commit = `${snapshot}_commit`;
     const check = host.dyn.dynCheckHelper(t);
     host.declare(`declare void @scr_arr_release(ptr)`);
+    host.declare(`declare void @scr_arr_outline(ptr)`);
     const lines = [
       `define internal void @${commit}(ptr %target, ptr %d) ${FN_ATTRS} { ; commit live stream element ${typeKey(t)}`,
       `entry:`,
@@ -173,6 +174,9 @@ export function streamTypedRefCommitAdapter(
       `  %missing = icmp eq ptr %next, null`,
       `  br i1 %missing, label %done, label %swap`,
       `swap:`,
+      // Inline slots live in each header's block; move them out first.
+      `  call void @scr_arr_outline(ptr %target)`,
+      `  call void @scr_arr_outline(ptr %next)`,
     ];
     const storageMembers = [
       { name: "len", index: 1, type: host.sizeType },

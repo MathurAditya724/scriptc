@@ -74,7 +74,7 @@ void scr_init(void);
 /* Program objects emitted by the bundled LLVM helper reference this symbol.
  * Its versioned spelling makes a mismatched manual runtime link fail before
  * the program can start. */
-void scr_runtime_abi_v18(void);
+void scr_runtime_abi_v19(void);
 void scr_runtime_workers_v8(void);
 
 /* ── the trap funnel (scr_console.c; scr_library.c under -DSCR_LIB) ──────
@@ -1829,6 +1829,12 @@ ScrArr *scr_arr_new(ScrElemKind elem, size_t initial_cap); /* returns +1 */
  * header (the array then allocates with the collector header — see the
  * struct comment). Returns +1. */
 ScrArr *scr_arr_new_ops(const ScrArrOps *ops, size_t initial_cap);
+/* An empty array expected to receive a few elements: its first slots live
+ * in the array's own block (one allocation; the block of a plain empty
+ * array plus five 8-byte slots). Otherwise exactly scr_arr_new(elem, 0) and
+ * scr_arr_new_ops(ops, 0). Returns +1. */
+ScrArr *scr_arr_new_small(ScrElemKind elem);
+ScrArr *scr_arr_new_ops_small(const ScrArrOps *ops);
 
 static inline ScrArr *scr_arr_retain(ScrArr *a) {
   if (a->rc != SIZE_MAX) {
@@ -1844,6 +1850,10 @@ void scr_arr_release(ScrArr *a);
 void scr_arr_copy_metadata(ScrArr *a, struct ScrDyn *target);
 /* The array's out-of-line storage, allocated (zeroed) on first use. */
 ScrArrExt *scr_arr_ext(ScrArr *a);
+/* Moves inline dense slots (kept in the header block of a small array) to
+ * their own allocation, so the storage pointers may be swapped with another
+ * array's. No-op for other arrays. */
+void scr_arr_outline(ScrArr *a);
 /* Swaps the sparse slots and numeric properties of two arrays; each keeps
  * its own match metadata (refresh of a cached typed view, llvm/dyn.ts). */
 void scr_arr_swap_indexed_ext(ScrArr *a, ScrArr *b);

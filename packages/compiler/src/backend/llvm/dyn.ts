@@ -1183,6 +1183,13 @@ export class LlDyn {
           const lCache = B.newLabel("dc.tr.put");
           B.condBr(hasCached, lRefresh, lCache);
           B.startBlock(lRefresh);
+          if (t.kind !== "record") {
+            // Inline slots live in each header's block; move them out
+            // before the storage pointers change hands.
+            host.declare("declare void @scr_arr_outline(ptr)");
+            B.line(`call void @scr_arr_outline(ptr ${cached})`);
+            B.line(`call void @scr_arr_outline(ptr ${checked})`);
+          }
           const members =
             t.kind === "record"
               ? [
