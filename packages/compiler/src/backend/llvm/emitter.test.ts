@@ -392,6 +392,26 @@ test("class brand probes borrow a local only across an inert literal key", () =>
   expect(computed).toContain("call ptr @scr_dyn_retain_v(");
 });
 
+test("class brand probes compare the program's key constant before the key text", () => {
+  const dyn: IrType = { kind: "dyn" };
+  const key: IrExpr = { kind: "strLit", value: "object:Example", type: STRING, loc: receiverLoc };
+  const probe = (fn: "dyn.typedRefIs" | "dyn.typedRefKeyIs"): IrExpr => ({
+    kind: "libCall",
+    fn,
+    args: [ref(dyn), key],
+    type: BOOL,
+    loc: receiverLoc,
+  });
+  const named = work(probe("dyn.typedRefIs"), dyn);
+  expect(named).toContain("; ->v.typed_ref.type_key");
+  expect(named).toContain("@scr_dyn_typed_ref_is_key");
+  // The key-pointer test answers false for capsules boxed elsewhere.
+  const exact = work(probe("dyn.typedRefKeyIs"), dyn);
+  expect(exact).toContain("; ->v.typed_ref.type_key");
+  expect(exact).not.toContain("@scr_dyn_typed_ref_is_key");
+  expect(exact).not.toContain("call ptr @scr_dyn_retain_v(");
+});
+
 test("capture projections borrow their payload but retain escaping results and TDZ reads", () => {
   const llvm = work(text(child(narrow(ref(union)))), union, true);
   expect(llvm).not.toContain("call ptr @scr_box_get_ref");
