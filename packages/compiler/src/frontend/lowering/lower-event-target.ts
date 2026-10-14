@@ -344,42 +344,86 @@ export function lowerEventObjectProperty(
   return typedResult(lowerer, expr, value);
 }
 
+/** Whether `target` is `returnValue` or `cancelBubble` (the two writable
+ * accessors) on a typed receiver of an Event subclass. */
+export function isEventWritableAccessor(
+  lowerer: Lowerer,
+  target: ts.PropertyAccessExpression,
+): boolean {
+  const name = target.name.text;
+  if (name !== "returnValue" && name !== "cancelBubble") return false;
+  if (target.questionDotToken) return false;
+  const recvT = lowerer.mapTypeOf(lowerer.typeOf(target.expression));
+  if (recvT?.kind !== "object") return false;
+  return eventTargetRootOf(lowerer.classes.get(recvT.className)) === "event";
+}
+
+/** The event.set write of an Event subclass's writable accessor. */
+export function eventAccessorWrite(
+  receiver: IrExpr,
+  name: string,
+  value: IrExpr,
+  lowerer: Lowerer,
+  loc: SrcLoc,
+): IrStmt {
+  return {
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "event.set",
+      args: [receiver, strLit(name, loc), lowerer.coerceToExpected(value, DYN)],
+      type: VOID,
+      loc,
+    },
+    loc,
+  };
+}
+
+/** The event.get read of an Event subclass's writable accessor, typed as
+ * the accessor's boolean. */
+export function eventAccessorRead(
+  receiver: IrExpr,
+  name: string,
+  lowerer: Lowerer,
+  loc: SrcLoc,
+): IrExpr {
+  return lowerer.coerceToExpected(
+    { kind: "libCall", fn: "event.get", args: [receiver, strLit(name, loc)], type: DYN, loc },
+    BOOL,
+  );
+}
+
 /** `event.returnValue = v` / `event.cancelBubble = v` on a typed receiver
- * (the two writable accessors), or null when the target is not one. */
+ * of an Event subclass, in statement or value position, or null when the
+ * target is not one. The receiver evaluates before the value, and the
+ * expression's value is the assigned one, whatever the setter does. */
 export function lowerEventObjectPropertyWrite(
   lowerer: Lowerer,
   target: ts.PropertyAccessExpression,
   value: ts.Expression,
 ): IrExpr | null {
-  const name = target.name.text;
-  if (name !== "returnValue" && name !== "cancelBubble") return null;
-  const recvT = lowerer.mapTypeOf(lowerer.typeOf(target.expression));
-  if (recvT?.kind !== "object") return null;
-  if (eventTargetRootOf(lowerer.classes.get(recvT.className)) !== "event") return null;
+  if (!isEventWritableAccessor(lowerer, target)) return null;
   const loc = locOf(target);
   const receiver = lowerer.lowerExpr(target.expression);
-  const assigned = lowerer.lowerExprExpecting(value, DYN);
-  // The assignment's value is the assigned one, whatever the setter does.
-  const local = lowerer.declareHiddenLocal("%eventAssigned", DYN);
-  const ref: IrExpr = { kind: "varRef", localId: local.id, type: DYN, loc };
+  const receiverLocal = lowerer.declareHiddenLocal("%eventReceiver", receiver.type);
+  const receiverRef: IrExpr = {
+    kind: "varRef",
+    localId: receiverLocal.id,
+    type: receiver.type,
+    loc,
+  };
+  const assigned = lowerer.lowerExpr(value);
+  const local = lowerer.declareHiddenLocal("%eventAssigned", assigned.type);
+  const ref: IrExpr = { kind: "varRef", localId: local.id, type: assigned.type, loc };
   return {
     kind: "seqExpr",
     stmts: [
+      { kind: "varDecl", localId: receiverLocal.id, init: receiver, loc },
       { kind: "varDecl", localId: local.id, init: assigned, loc },
-      {
-        kind: "exprStmt",
-        expr: {
-          kind: "libCall",
-          fn: "event.set",
-          args: [receiver, strLit(name, loc), ref],
-          type: VOID,
-          loc,
-        },
-        loc,
-      },
+      eventAccessorWrite(receiverRef, target.name.text, ref, lowerer, loc),
     ],
     result: ref,
-    type: DYN,
+    type: assigned.type,
     loc,
   };
 }

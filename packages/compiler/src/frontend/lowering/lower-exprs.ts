@@ -1,5 +1,5 @@
 import { generatorDrain } from "./iterator-adapters.js";
-import { lowerEventObjectProperty } from "./lower-event-target.js";
+import { lowerEventObjectProperty, lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerEventStaticProperty } from "./builtins/numbers.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
@@ -9305,6 +9305,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     }
     if (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left)) {
       fenceNodeModuleMutation(lowerer, expr.left, "assignment");
+    }
+    // The writable Event accessors on Event subclass instances, in value
+    // position (`const r = (event.returnValue = false)`).
+    if (op === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(expr.left)) {
+      const eventWrite = lowerEventObjectPropertyWrite(lowerer, expr.left, expr.right);
+      if (eventWrite) return eventWrite;
     }
     // `x = e` in EXPRESSION position (`while ((idx = s.indexOf("\n")) !== -1)`,
     // `f(x = v)`): evaluate e once, write the binding, yield the assigned

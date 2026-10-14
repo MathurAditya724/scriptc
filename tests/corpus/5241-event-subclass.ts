@@ -38,6 +38,37 @@ const third = new Ping(3, true);
 third.returnValue = false;
 console.log(third.defaultPrevented, third.returnValue);
 
+// An assignment to a writable accessor in value position yields the
+// assigned value; the receiver evaluates before the value.
+const order: string[] = [];
+const fourth = new Ping(5, true);
+const pick = (): Ping => {
+  order.push("receiver");
+  return fourth;
+};
+const flag = (value: boolean): boolean => {
+  order.push("value");
+  return value;
+};
+const assigned = (pick().returnValue = flag(false));
+console.log(assigned, fourth.defaultPrevented, fourth.returnValue, order.join(" "));
+const show = (value: boolean): string => `shown ${value}`;
+console.log(show((fourth.cancelBubble = true)), fourth.cancelBubble);
+const fifth = new Ping(6, true);
+let chained: boolean;
+chained = fifth.returnValue = false;
+console.log(chained, fifth.defaultPrevented);
+// returnValue = true after preventDefault keeps the event canceled; the
+// expression still yields true.
+console.log((fifth.returnValue = true), fifth.returnValue);
+// The short-circuit forms read the accessor and write only when selected.
+const sixth = new Ping(7, true);
+console.log((sixth.returnValue &&= false), sixth.defaultPrevented);
+console.log((sixth.returnValue ||= true), sixth.returnValue);
+console.log((sixth.returnValue ??= true), sixth.cancelBubble);
+console.log((sixth.cancelBubble ||= true), sixth.cancelBubble);
+console.log((sixth.cancelBubble &&= false), sixth.cancelBubble);
+
 // stopImmediatePropagation skips the remaining listeners.
 const quiet = new EventTarget();
 quiet.addEventListener("ping", (event: Event) => {

@@ -18,6 +18,11 @@ import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-value
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
 import { globalSymbolKey } from "./global-symbols.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
+import {
+  eventAccessorRead,
+  eventAccessorWrite,
+  isEventWritableAccessor,
+} from "../lower-event-target.js";
 
 /** Element kinds whose present values are never null or undefined. */
 const NON_NULLISH_ELEMENTS: ReadonlySet<IrType["kind"]> = new Set([
@@ -80,6 +85,14 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
         expr: { kind: "libCall", fn: "dyn.globalSymbolSet", args: [key, value], type: VOID, loc },
         loc,
       });
+    } else if (ts.isPropertyAccessExpression(target) && isEventWritableAccessor(lowerer, target)) {
+      // returnValue/cancelBubble on an Event subclass instance: the
+      // accessors read and write the event.
+      const receiver = save(lowerer.lowerExpr(target.expression), "%shortCircuitReceiver");
+      const name = target.name.text;
+      storage = BOOL;
+      read = eventAccessorRead(receiver, name, lowerer, loc);
+      write = (value) => eventAccessorWrite(receiver, name, value, lowerer, loc);
     } else if (ts.isPropertyAccessExpression(target)) {
       const probed = tryLowerExpression(lowerer, target.expression);
       if (probed?.type.kind === "dyn") {

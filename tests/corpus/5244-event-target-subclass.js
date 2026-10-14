@@ -61,6 +61,10 @@ const plainTarget = new EventTarget();
 console.log(typeof plainEvent.preventDefault, plainEvent.preventDefault === job.preventDefault);
 console.log(plainTarget.addEventListener === queue.addEventListener, typeof plainTarget.dispatchEvent);
 
+// Writable accessors assigned in value position.
+const held = new Job("held", 0);
+console.log((held.returnValue = false), held.defaultPrevented, (held.cancelBubble ||= true), held.cancelBubble);
+
 // A class instance listener: its handleEvent method runs with the instance
 // as `this`, and an own property replacing it is what later dispatches call.
 class Handler {
