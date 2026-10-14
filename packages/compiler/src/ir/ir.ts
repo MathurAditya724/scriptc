@@ -2064,6 +2064,19 @@ export type IrBytesIntrinsicMethod =
   /** In-place overlapping copy, [target, start, end] relative indices;
    * returns the receiver (+1). */
   | "copyWithin"
+  /** In-place numeric sort, [order]: a numeric literal 0 for the default
+   * TypedArray order (NaN last, -0 before +0), or 1 / -1 for a recognized
+   * ascending / descending numeric comparator. Returns true when sorted;
+   * a comparator order answers false, having written nothing, for a NaN
+   * or -0 float element, and the caller sorts through the comparator.
+   * Runs no script code. */
+  | "sortNumeric"
+  /** In-place comparator sort, [comparator]: a `(number, number) =>
+   * number` function of at most two parameters, called with the comparison
+   * schedule of Node's typed-array sort over a snapshot that is written
+   * back after the last comparison. Returns void; a comparator exception
+   * propagates and leaves the receiver unwritten. */
+  | "sortCompare"
   /** Fresh Uint8Array copying methods. `with` takes [index, value] and
    * throws a catchable RangeError for an invalid relative index. */
   | "toReversed"
@@ -2146,6 +2159,7 @@ export type IrBytesIntrinsicMethod =
 /** The bytesIntrinsic methods that can raise a catchable error — backends'
  * may-throw analyses seed on these exactly like MAY_THROW_LIB_FNS. */
 export const MAY_THROW_BYTES_METHODS: ReadonlySet<IrBytesIntrinsicMethod> = new Set([
+  "sortCompare",
   "toStringVar",
   "with",
   "setFrom",

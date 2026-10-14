@@ -89,8 +89,10 @@ test("sort helpers give every IR site its own node", () => {
     buildArraySortFn("%arr.sort.6", F64, 2, false, null, loc, true, { order: -1, key: false }),
     buildArraySortFn("%arr.toSorted.7", ROW, 2, true, null, loc, true, { order: 1, key: true }),
     buildSortKeyFn("%arr.sortKey.8", ROW, field(varRef("a.0", ROW, loc)), loc),
-    buildBytesSortFn("%bytes.sort.4", 2, true, loc),
-    buildBytesSortFn("%bytes.sort.5", 0, false, loc),
+    buildBytesSortFn("%bytes.sort.4", { kind: "bytes", elem: "u8" }, 2, true, true, null, loc),
+    buildBytesSortFn("%bytes.sort.5", { kind: "bytes", elem: "u8" }, 0, false, true, null, loc),
+    buildBytesSortFn("%bytes.sort.9", { kind: "bytes", elem: "f64" }, 2, true, false, -1, loc),
+    buildBytesSortFn("%bytes.sort.10", { kind: "bytes", elem: "i16" }, 0, false, false, null, loc),
   ];
   for (const fn of helpers) expect(repeatedNodes(fn), fn.name).toBe(0);
 });

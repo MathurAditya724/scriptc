@@ -479,7 +479,15 @@ export class ReferenceWrites {
         if (!this.jsonInert(e.value.type)) sink.all();
         return;
       case "bytesNew":
+        return;
       case "bytesIntrinsic":
+        // The typed-array comparator sort orders a private snapshot.
+        if (e.method === "sortCompare") {
+          const targets = fn !== null && e.args[0] ? this.callTargets.of(e.args[0], fn) : null;
+          if (targets === null) {
+            if (!sink.call(ANY_FUNCTION, false)) sink.all();
+          } else for (const t of targets) if (!sink.call(t, false)) sink.all();
+        }
         return;
       case "strIntrinsic":
         if (!borrowsStringInputs(e.method)) sink.all();

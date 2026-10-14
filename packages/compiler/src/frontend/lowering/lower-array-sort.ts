@@ -1,6 +1,5 @@
 import {
   BOOL,
-  BYTES_U8,
   F64,
   type IrExpr,
   type IrFunction,
@@ -376,6 +375,17 @@ export function recognizeKeyComparator(fn: IrFunction): SortKeyOrder | null {
   return null;
 }
 
+/** The key order of a comparator closure: a zero-capture closure (not a
+ * signature adapter) over a lifted function recognizeKeyComparator accepts. */
+export function closureKeyOrder(
+  liftedFns: readonly IrFunction[],
+  closure: IrExpr,
+): SortKeyOrder | null {
+  if (closure.kind !== "closure" || closure.captures.length > 0 || closure.adapts) return null;
+  const fn = liftedFns.find((lifted) => lifted.name === closure.fnName);
+  return fn ? recognizeKeyComparator(fn) : null;
+}
+
 function sameKeyRead(left: SortKeyRead | null, right: SortKeyRead | null): boolean {
   if (left === null || right === null) return left === right;
   if (left.kind === "recordGet" && right.kind === "recordGet")
@@ -550,76 +560,51 @@ export function buildArraySortFn(
   };
 }
 
-/** A byte's complete value domain is small enough for stable default ordering
- * without comparisons. Counts use numbers so large inputs cannot wrap. */
-function countBytes(b: SortIr, a: SortLocal, src: SortLocal, n: SortLocal): IrStmt[] {
-  const counts = b.local("counts", arrayOf(F64));
-  const value = b.local("value"),
-    index = b.local("index"),
-    end = b.local("end");
-  const zero = b.num(0),
-    one = b.num(1);
-  return [
-    b.bind(src, b.allocate(BYTES_U8, n)),
-    b.bind(counts, b.allocate(counts.type, b.num(256))),
-    b.loop(value, zero, b.num(256), [b.set(counts, value, zero)]),
-    b.loop(index, zero, n, [
-      b.bind(value, b.at(a, index)),
-      b.set(counts, value, b.add(b.at(counts, value), one)),
-    ]),
-    b.bind(index, zero),
-    b.loop(value, zero, b.num(256), [
-      b.bind(end, b.add(index, b.at(counts, value))),
-      b.while(b.lt(index, end), [b.set(src, index, value), b.step(index)]),
-    ]),
-  ];
-}
-
+/** Typed-array `sort` and `toSorted`. `toSorted` orders a private copy;
+ * `sort` orders the receiver and returns it. Without a comparator, and for a
+ * recognized numeric comparator's `order`, the runtime sorts the elements by
+ * value (sortNumeric). Other comparators, and a recognized one the runtime
+ * refuses (a NaN or -0 element), take the runtime comparator sort
+ * (sortCompare). */
 export function buildBytesSortFn(
   name: string,
+  type: IrType & { kind: "bytes" },
   arity: number,
   hasComparator: boolean,
+  copyFirst: boolean,
+  order: 1 | -1 | null,
   loc: SrcLoc,
 ): IrFunction {
   const b = new SortIr(loc);
-  const a = b.local("a", BYTES_U8),
-    src = b.local("src", BYTES_U8),
-    n = b.local("n");
+  const a = b.local("a", type),
+    src = b.local("src", type);
   const fnT = funcOf([F64, F64].slice(0, arity), F64);
   const f = hasComparator ? b.local("f", fnT) : null;
-  const body: IrStmt[] = [b.bind(n, b.length(a))];
-  if (f !== null) {
-    body.push(
-      b.bind(src, {
-        kind: "bytesIntrinsic",
-        method: "slice",
-        receiver: a,
-        args: [],
-        type: BYTES_U8,
-        loc,
-      }),
-    );
-    body.push(
-      ...stableSort(b, src, n, (left, right) => ({
-        kind: "bin",
-        op: ">",
-        left: { kind: "callValue", callee: f, args: [left, right].slice(0, arity), type: F64, loc },
-        right: b.num(0),
-        type: BOOL,
-        loc,
-      })),
-    );
-  } else {
-    body.push(...countBytes(b, a, src, n));
-  }
-  body.push({ kind: "return", value: src, loc });
+  const target = copyFirst ? src : a;
+  const intrinsic = (method: "sortNumeric" | "sortCompare", arg: IrExpr): IrExpr => ({
+    kind: "bytesIntrinsic",
+    method,
+    receiver: target,
+    args: [arg],
+    type: method === "sortNumeric" ? BOOL : VOID,
+    loc,
+  });
+  const body: IrStmt[] = copyFirst
+    ? [b.bind(src, { kind: "bytesIntrinsic", method: "slice", receiver: a, args: [], type, loc })]
+    : [];
+  const compare: IrStmt[] =
+    f === null ? [] : [{ kind: "exprStmt", expr: intrinsic("sortCompare", f), loc }];
+  if (f === null) body.push({ kind: "exprStmt", expr: intrinsic("sortNumeric", b.num(0)), loc });
+  else if (order === null) body.push(...compare);
+  else body.push(b.branch(b.not(intrinsic("sortNumeric", b.num(order))), compare));
+  body.push({ kind: "return", value: target, loc });
   return {
     name,
     params: [
-      { localId: a.localId, name: "a", type: BYTES_U8 },
+      { localId: a.localId, name: "a", type },
       ...(f === null ? [] : [{ localId: f.localId, name: "f", type: fnT }]),
     ],
-    returnType: BYTES_U8,
+    returnType: type,
     locals: b.locals,
     body: distinctNodes(body),
     loc,
