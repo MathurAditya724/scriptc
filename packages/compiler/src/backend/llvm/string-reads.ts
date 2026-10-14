@@ -21,15 +21,13 @@ import { exactIndexLines } from "./common.js";
 
 export const STRING_UTF16_LEN_DECL = "declare double @scr_str_utf16_len(ptr)";
 export const STRING_CHAR_CODE_AT_DECL = "declare double @scr_str_char_code_at(ptr, double)";
-/** The runtime fallbacks are cold: both common cases read inline, so a
- * loop keeps its values in registers around the calls. They read only the
- * receiver and write only runtime-private caches (index entries, unit
- * arrays) and the proven-ASCII bit, a hint that is safe to read stale. A
- * string's content changes only through runtime calls that write memory
- * (in-place append), which these attributes leave ordered. */
-const LENGTH_CALL_ATTRS = "cold nocallback nounwind willreturn memory(argmem: read)";
-const READ_CALL_ATTRS =
-  "cold nocallback nounwind willreturn memory(argmem: read, inaccessiblemem: readwrite)";
+/** The runtime fallbacks are cold: both common cases read inline. They
+ * carry no
+ * memory restriction: a fallback can evict an index entry, which resets
+ * the published scan receiver (@scr_str_scan, read inline below) and frees
+ * its unit array, so every scan read after the call must reload. */
+const LENGTH_CALL_ATTRS = "cold nocallback nounwind willreturn";
+const READ_CALL_ATTRS = "cold nocallback nounwind willreturn";
 /** Requests the integer-index helper below; an LLVM comment line among the
  * declarations, so it never declares anything itself. */
 export const STRING_CHAR_CODE_AT_INT_MARKER = "; uses @sc_str_char_code_at_int";
