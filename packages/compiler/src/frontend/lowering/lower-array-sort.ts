@@ -297,6 +297,114 @@ function stableSort(b: SortIr, src: SortLocal, n: IrExpr, greater: Greater): IrS
   ];
 }
 
+type SortKeyRead = IrExpr & { kind: "recordGet" | "fieldGet" };
+
+/** A comparator that orders by one number: the elements themselves or one
+ * field of each, ascending or descending. */
+export interface SortKeyOrder {
+  /** 1 for ascending, -1 for descending. */
+  order: 1 | -1;
+  /** The field read over the comparator's first parameter, or null when
+   * the elements are the numbers. */
+  read: SortKeyRead | null;
+}
+
+/** Recognizes the lifted body of a capture-free numeric comparator:
+ * `(a, b) => a - b`, `b - a`, `a < b ? -1 : a > b ? 1 : 0` (either test
+ * first, either sign), or any of them over one number field of both
+ * parameters (`a.k - b.k`). Such a comparator runs no user code, cannot
+ * throw, and is consistent over numbers other than NaN, so the runtime may
+ * order the elements by their keys without calling it. */
+export function recognizeKeyComparator(fn: IrFunction): SortKeyOrder | null {
+  if (fn.params.length !== 2 || fn.async || fn.generator || (fn.captures?.length ?? 0) > 0)
+    return null;
+  const [first, second] = fn.params;
+  const ret = fn.body.length === 1 ? fn.body[0]! : null;
+  if (ret?.kind !== "return" || !ret.value) return null;
+  let read: SortKeyRead | null | undefined;
+  // Which parameter an operand reads; every operand must read the same key.
+  const operand = (e: IrExpr): 0 | 1 | null => {
+    if (e.type.kind !== "f64") return null;
+    let ref: IrExpr = e;
+    let field: SortKeyRead | null = null;
+    if (e.kind === "recordGet" || e.kind === "fieldGet") {
+      field = e;
+      ref = e.obj;
+    }
+    if (ref.kind !== "varRef") return null;
+    const param = ref.localId === first!.localId ? 0 : ref.localId === second!.localId ? 1 : null;
+    if (param === null) return null;
+    if (read === undefined) read = field;
+    else if (!sameKeyRead(read, field)) return null;
+    return param;
+  };
+  // `x < y` or `x > y` over both parameters, as the first one's relation.
+  const relation = (e: IrExpr): "lt" | "gt" | null => {
+    if (e.kind !== "bin" || (e.op !== "<" && e.op !== ">")) return null;
+    const left = operand(e.left),
+      right = operand(e.right);
+    if (left === null || right === null || left === right) return null;
+    return (e.op === "<") === (left === 0) ? "lt" : "gt";
+  };
+  const sign = (e: IrExpr): number | null =>
+    e.kind === "numLit" && (e.value === 1 || e.value === -1 || e.value === 0) ? e.value : null;
+  const value = ret.value;
+  if (value.kind === "bin" && value.op === "-") {
+    const left = operand(value.left),
+      right = operand(value.right);
+    if (left === null || right === null || left === right) return null;
+    return { order: left === 0 ? 1 : -1, read: read ?? null };
+  }
+  if (value.kind === "ternary" && value.else_.kind === "ternary") {
+    const outer = relation(value.cond),
+      inner = relation(value.else_.cond);
+    const outerSign = sign(value.then),
+      innerSign = sign(value.else_.then);
+    if (
+      outer === null ||
+      inner === null ||
+      outer === inner ||
+      outerSign === null ||
+      outerSign === 0 ||
+      innerSign !== -outerSign ||
+      sign(value.else_.else_) !== 0
+    )
+      return null;
+    // Ascending answers negative when the first parameter is less.
+    return { order: (outer === "lt") === outerSign < 0 ? 1 : -1, read: read ?? null };
+  }
+  return null;
+}
+
+function sameKeyRead(left: SortKeyRead | null, right: SortKeyRead | null): boolean {
+  if (left === null || right === null) return left === right;
+  if (left.kind === "recordGet" && right.kind === "recordGet")
+    return left.shapeId === right.shapeId && left.field === right.field;
+  if (left.kind === "fieldGet" && right.kind === "fieldGet")
+    return left.className === right.className && left.field === right.field;
+  return false;
+}
+
+/** The key reader of a recognized field comparator: `(x) => x.k`, the same
+ * field read as the comparator's. */
+export function buildSortKeyFn(
+  name: string,
+  elem: IrType,
+  read: SortKeyRead,
+  loc: SrcLoc,
+): IrFunction {
+  const b = new SortIr(loc);
+  const x = b.local("x", elem);
+  return {
+    name,
+    params: [{ localId: x.localId, name: "x", type: elem }],
+    returnType: F64,
+    locals: b.locals,
+    body: [{ kind: "return", value: { ...read, obj: x, loc }, loc }],
+    loc,
+  };
+}
+
 export function buildArraySortFn(
   name: string,
   elem: IrType,
@@ -305,12 +413,18 @@ export function buildArraySortFn(
   undefinedTag: number | null,
   loc: SrcLoc,
   native = false,
+  keyed: { order: 1 | -1; key: boolean } | null = null,
 ): IrFunction {
   const b = new SortIr(loc);
   const arrT = arrayOf(elem),
     fnT = funcOf([elem, elem].slice(0, arity), F64);
   const a = b.local("a", arrT),
     f = b.local("f", fnT);
+  const keyT = funcOf([elem], F64);
+  const key = keyed?.key ? b.local("key", keyT) : null;
+  // A recognized comparator lets the runtime order by keys; it still
+  // receives the comparator for inputs whose keys it does not order.
+  const keyArgs: IrExpr[] = keyed ? [b.num(keyed.order), ...(key ? [key] : [])] : [];
   const src = b.local("src", arrT);
   const n = b.local("n"),
     valueCount = b.local("valueCount"),
@@ -361,7 +475,7 @@ export function buildArraySortFn(
         kind: "arrIntrinsic",
         method: "sortDense",
         receiver,
-        args: [f, { kind: "boolLit", value: copyFirst, type: BOOL, loc }],
+        args: [f, { kind: "boolLit", value: copyFirst, type: BOOL, loc }, ...keyArgs],
         type: BOOL,
         loc,
       },
@@ -399,7 +513,7 @@ export function buildArraySortFn(
               kind: "arrIntrinsic" as const,
               method: "sortValues" as const,
               receiver: src,
-              args: [valueCount, f],
+              args: [valueCount, f, ...keyArgs],
               type: VOID,
               loc,
             },
@@ -427,6 +541,7 @@ export function buildArraySortFn(
     params: [
       { localId: a.localId, name: "a", type: arrT },
       { localId: f.localId, name: "f", type: fnT },
+      ...(key ? [{ localId: key.localId, name: "key", type: keyT }] : []),
     ],
     returnType: arrT,
     locals: b.locals,

@@ -26,7 +26,12 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { buildArraySortFn } from "../lower-array-sort.js";
+import {
+  type SortKeyOrder,
+  buildArraySortFn,
+  buildSortKeyFn,
+  recognizeKeyComparator,
+} from "../lower-array-sort.js";
 import {
   arrayIndexPresent,
   arrayValueRead,
@@ -2098,7 +2103,8 @@ export function lowerArraySortCall(
     elem,
     elem.kind === "union" ? lowerer.unions.get(elem.unionId)?.arms : undefined,
   );
-  const key = `${method}:${typeKey(elem)}:${arity}${native ? ":native" : ""}`;
+  const keyed = native ? recognizedSortKey(lowerer, fnArg, elem) : null;
+  const key = `${method}:${typeKey(elem)}:${arity}${native ? ":native" : ""}${keyed ? `:keyed${keyed.order}${keyed.read ? ":field" : ""}` : ""}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
     helper = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
@@ -2113,10 +2119,43 @@ export function lowerArraySortCall(
         undefinedTag >= 0 ? undefinedTag : null,
         loc,
         native,
+        keyed && { order: keyed.order, key: keyed.read !== null },
       ),
     );
   }
-  return { kind: "call", callee: helper, args: [receiver, fnArg], type: arrT, loc };
+  const args = [receiver, fnArg];
+  if (keyed?.read) args.push(sortKeyReader(lowerer, elem, keyed.read, loc));
+  return { kind: "call", callee: helper, args, type: arrT, loc };
+}
+
+/** The key order of a capture-free comparator closure the runtime can sort
+ * by without calling it: over number elements, or over one number field
+ * of record or class elements. */
+function recognizedSortKey(lowerer: Lowerer, fnArg: IrExpr, elem: IrType): SortKeyOrder | null {
+  if (fnArg.kind !== "closure" || fnArg.captures.length > 0 || fnArg.adapts) return null;
+  const fn = lowerer.liftedFns.find((lifted) => lifted.name === fnArg.fnName);
+  const keyed = fn ? recognizeKeyComparator(fn) : null;
+  if (!keyed) return null;
+  if (keyed.read === null) return elem.kind === "f64" ? keyed : null;
+  return elem.kind === "record" || elem.kind === "object" ? keyed : null;
+}
+
+/** A zero-capture closure over the shared `(x) => x.field` key reader. */
+function sortKeyReader(
+  lowerer: Lowerer,
+  elem: IrType,
+  read: NonNullable<SortKeyOrder["read"]>,
+  loc: SrcLoc,
+): IrExpr {
+  const owner = read.kind === "recordGet" ? read.shapeId : read.className;
+  const cacheKey = `sortKey:${typeKey(elem)}:${read.kind}:${owner}:${read.field}`;
+  let reader = lowerer.arrHofHelpers.get(cacheKey);
+  if (!reader) {
+    reader = `%arr.sortKey.${lowerer.arrHofHelpers.size}`;
+    lowerer.arrHofHelpers.set(cacheKey, reader);
+    lowerer.liftedFns.push(buildSortKeyFn(reader, elem, read, loc));
+  }
+  return { kind: "closure", fnName: reader, captures: [], type: funcOf([elem], F64), loc };
 }
 
 /** `d.filter(pred)` on a dyn receiver: the receiver must BE a dyn array

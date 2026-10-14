@@ -2020,14 +2020,21 @@ ScrArr *scr_arr_sort_primitive(ScrArr *a, bool copy);
  * move without reference-count traffic; a pending exception from `f` stops
  * the sort and leaves the snapshot unchanged. */
 struct ScrClosure;
-void scr_arr_sort_values(ScrArr *a, double count, struct ScrClosure *f, uint32_t arity);
+/* A nonzero `order` says `f` orders number keys ascending (1) or descending
+ * (-1) without side effects: f64 elements are their own keys, and reference
+ * elements read theirs through the borrowed `key` closure (element ->
+ * number). Keys that are all numbers other than NaN and -0 then sort without
+ * calling `f`, with the same stable result. */
+void scr_arr_sort_values(ScrArr *a, double count, struct ScrClosure *f, uint32_t arity,
+                         int32_t order, struct ScrClosure *key);
 /* Comparator sort of a dense array in place: `a.sort(f)`, or with `owned`
  * the private copy of `a.toSorted(f)`. Returns false without calling `f`
  * when `a` has holes, storage-level undefined or a sparse tail, or is
  * published; the caller then sorts a compacted snapshot. Otherwise sorts
  * and returns true; a pending exception from `f` leaves a shared `a`
  * unwritten (an owned copy then holds a permutation of its values). */
-bool scr_arr_sort_dense(ScrArr *a, struct ScrClosure *f, uint32_t arity, bool owned);
+bool scr_arr_sort_dense(ScrArr *a, struct ScrClosure *f, uint32_t arity, bool owned,
+                        int32_t order, struct ScrClosure *key);
 
 /* pop traps on an empty array; _ref transfers ownership out (+1 to the
  * caller, no release). */
