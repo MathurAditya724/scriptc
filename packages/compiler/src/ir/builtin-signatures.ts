@@ -406,6 +406,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "path.win32Parse": { argTypes: [STRING], result: arrayOf(STRING) },
   "path.format": { argTypes: [STRING, STRING, STRING, STRING, STRING], result: STRING },
   "path.win32Format": { argTypes: [STRING, STRING, STRING, STRING, STRING], result: STRING },
+  /** path.matchesGlob(path, pattern): Node's matchGlobPattern over its
+   * bundled minimatch (scr_glob.c). Both families match case-insensitively
+   * on macOS and Windows hosts like Node's; win32 also accepts either
+   * separator. Throws TypeError for a pattern over 64 Ki code units,
+   * RangeError for a brace sequence too long to expand, and SyntaxError
+   * when a segment's regex is invalid under the u flag. */
+  "path.matchesGlob": { argTypes: [STRING, STRING], result: BOOL },
+  "path.win32MatchesGlob": { argTypes: [STRING, STRING], result: BOOL },
   /** node:os: homedir is $HOME else getpwuid(3); tmpdir is Node's env
    * cascade ($TMPDIR/$TMP/$TEMP else /tmp, one trailing slash trimmed).
    * os.platform() lowers to process.platform — one implementation. */

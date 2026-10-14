@@ -463,6 +463,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayProtoCall",
   "process.chdir",
   "os.getPriority",
+  // Pattern length TypeError, brace-sequence RangeError, and the
+  // SyntaxError of a segment regex invalid under the u flag.
+  "path.matchesGlob",
+  "path.win32MatchesGlob",
   "process.umask",
   "process.loadEnvFile",
   "fs.realpathSync",
