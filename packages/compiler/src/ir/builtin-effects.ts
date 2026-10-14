@@ -397,6 +397,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // the dyn Object walks throw on null/undefined receivers
   "dyn.objKeys",
   "dyn.forInKeys",
+  "dyn.forInKeyStrings",
+  "dyn.objKeyStrings",
   "dyn.hasOwn",
   "dyn.propertyIsEnumerable",
   "dyn.assign",

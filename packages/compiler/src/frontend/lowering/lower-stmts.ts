@@ -9558,17 +9558,35 @@ function lowerForIn(lowerer: Lowerer, stmt: ts.ForInStatement): IrStmt {
     const recv = lowerer.declareHiddenLocal("%indyn", DYN);
     const ref: IrExpr = { kind: "varRef", localId: recv.id, type: DYN, loc };
     const keys: IrExpr = {
-      kind: "dynCheck",
-      value: { kind: "libCall", fn: "dyn.forInKeys", args: [ref], type: DYN, loc },
+      kind: "libCall",
+      fn: "dyn.forInKeyStrings",
+      args: [ref],
       type: arrayOf(STRING),
       loc,
     };
-    const loop = lowerForInOverKeys(lowerer, stmt, keys, labels, (key) =>
-      classForInHasKey(lowerer, ref, key, loc),
-    );
+    // A stable snapshot (a typed record's fields) needs no live presence
+    // test per visit.
+    const stable = lowerer.declareHiddenLocal("%instable", BOOL);
+    const loop = lowerForInOverKeys(lowerer, stmt, keys, labels, (key) => ({
+      kind: "ternary",
+      cond: { kind: "varRef", localId: stable.id, type: BOOL, loc },
+      then: { kind: "boolLit", value: true, type: BOOL, loc },
+      else_: classForInHasKey(lowerer, ref, key, loc),
+      type: BOOL,
+      loc,
+    }));
     return {
       kind: "block",
-      body: [{ kind: "varDecl", localId: recv.id, init: receiver, loc }, loop],
+      body: [
+        { kind: "varDecl", localId: recv.id, init: receiver, loc },
+        {
+          kind: "varDecl",
+          localId: stable.id,
+          init: { kind: "libCall", fn: "dyn.forInStable", args: [ref], type: BOOL, loc },
+          loc,
+        },
+        loop,
+      ],
       loc,
     };
   }

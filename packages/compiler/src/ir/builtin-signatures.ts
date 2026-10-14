@@ -2668,6 +2668,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * ("Cannot convert undefined or null to object"). */
   "dyn.objKeys": { argTypes: [DYN], result: DYN },
   "dyn.forInKeys": { argTypes: [DYN], result: DYN },
+  "dyn.forInKeyStrings": { argTypes: [DYN], result: arrayOf(STRING) },
+  "dyn.forInStable": { argTypes: [DYN], result: BOOL },
+  "dyn.objKeyStrings": { argTypes: [DYN], result: arrayOf(STRING) },
   "dyn.hasOwn": { argTypes: [DYN, STRING], result: BOOL },
   "dyn.propertyIsEnumerable": { argTypes: [DYN, STRING], result: BOOL },
   "dyn.assign": { argTypes: [DYN, DYN], result: DYN },

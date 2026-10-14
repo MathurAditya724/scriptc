@@ -1244,7 +1244,8 @@ function liveRecordOps(
     `}`,
     ``,
     `@${names} = internal constant [${fields.length} x ptr] [${literals.join(", ")}]`,
-    `@${ops} = internal constant { ${host.sizeType}, ptr, ptr, ptr } { ${host.sizeType} ${fields.length}, ptr @${names}, ptr @${has}, ptr @${get} }`,
+    // Mutable: the runtime fills the trailing key-array slot on first use.
+    `@${ops} = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr } { ${host.sizeType} ${fields.length}, ptr @${names}, ptr @${has}, ptr @${get}, i8 ${optional.length === 0 ? 1 : 0}, ptr null }`,
     ``,
   );
 }
