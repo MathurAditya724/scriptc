@@ -74,7 +74,7 @@ void scr_init(void);
 /* Program objects emitted by the bundled LLVM helper reference this symbol.
  * Its versioned spelling makes a mismatched manual runtime link fail before
  * the program can start. */
-void scr_runtime_abi_v19(void);
+void scr_runtime_abi_v20(void);
 void scr_runtime_workers_v8(void);
 
 /* ── the trap funnel (scr_console.c; scr_library.c under -DSCR_LIB) ──────
@@ -393,10 +393,11 @@ char **scr_worker_argv(void);
  * Reference counting alone cannot free cycles, so every object that can
  * participate in one — capture boxes, heap closures, unions, promises, and
  * compiler-emitted class/record shapes with cycle-capable fields — is
- * allocated with a hidden header directly BEFORE the object: a trace
- * function (enumerates the object's cycle-capable children), a teardown
- * function (frees the object WITHOUT releasing traced children), and the
- * trial-deletion bookkeeping (color + candidate-root buffer state). Types
+ * allocated with a hidden 8-byte header directly BEFORE the object: the
+ * registry id of its type's descriptor (a trace function enumerating the
+ * object's cycle-capable children, and a teardown function freeing the
+ * object WITHOUT releasing traced children) and the trial-deletion
+ * bookkeeping (color, generation and candidate-root buffer state). Types
  * that can never be in a cycle — strings above all, plus arrays of scalar/
  * string/bytes elements, dyn trees, and shapes whose fields are all acyclic
  * — keep the lean 1-word `rc` header and pay nothing. Arrays and maps are
@@ -448,9 +449,11 @@ enum { SCR_CYC_BLACK = 0, SCR_CYC_GRAY = 1, SCR_CYC_WHITE = 2, SCR_CYC_DOOMED = 
 enum { SCR_CYC_NURSERY = 0, SCR_CYC_MATURE = 1, SCR_CYC_OLD = 2, SCR_CYC_NGENS = 3 };
 
 /* A headered type's collector entry points, shared by all its objects: the
- * header names one constant descriptor instead of carrying both function
- * pointers, which keeps the header at 16 bytes. Emitted shapes define one
- * per traced type (llvm/shapes.ts); runtime families use SCR_CYC_TYPE. */
+ * header names its descriptor by a registry id (`id`, assigned on the type's
+ * first allocation) instead of carrying a pointer, which keeps the header at
+ * 8 bytes. Emitted shapes define one per traced type (llvm/shapes.ts);
+ * runtime families define their own. Descriptors are writable (the id) and
+ * must outlive every object of the type. */
 typedef struct ScrCycType {
   ScrTraceFn trace;
   ScrCycFreeFn free_fn;
@@ -462,6 +465,9 @@ typedef struct ScrCycType {
    * share an index (separately emitted code in one process) are merely
    * judged together. */
   uint32_t kind;
+  /* Registry id (scr_cyc_types), 0 until scr_cyc_register assigns it.
+   * Emitted allocation paths read it and take the slow path while it is 0. */
+  uint32_t id;
 } ScrCycType;
 /* Runtime families' kinds. Emitted descriptors count from
  * SCR_CYC_KIND_EMITTED (llvm/alloc.ts FIRST_EMITTED_CYC_KIND). */
@@ -484,46 +490,68 @@ enum {
   SCR_CYC_KIND_WORKER_VIEW,
   SCR_CYC_KIND_EMITTED = 32
 };
-#define SCR_CYC_TYPE(name, trace_fn, free) static const ScrCycType name = { (trace_fn), (free), 0 }
-
+/* Eight bytes in front of the object: the descriptor's registry id, the
+ * collector color (SCR_CYC_*) and generation (SCR_CYC_NURSERY..SCR_CYC_OLD,
+ * the walk filter), and `buf`: SCR_CYC_BUFFERED_BIT while the object sits in
+ * its generation's candidate buffer, with its position there below it (O(1)
+ * removal when rc hits 0). */
 typedef struct ScrCycHdr {
-#if UINTPTR_MAX == UINT32_MAX
-  /* calloc aligns the block for doubles; keep the payload aligned too.
-   * Padding BEFORE the descriptor keeps every object-relative offset of the
-   * fields below identical to 64-bit targets. */
-  uint32_t payload_alignment;
-#endif
-  const ScrCycType *type; /* trace and teardown */
-  uint8_t color;          /* SCR_CYC_* */
-  uint8_t gen;            /* SCR_CYC_NURSERY..SCR_CYC_OLD (the walk filter) */
-  uint16_t buffered;      /* 1 = sitting in its generation's candidate buffer */
-  uint32_t buf_index;     /* position there (O(1) removal when rc hits 0) */
+  uint16_t id;
+  uint8_t color;
+  uint8_t gen;
+  uint32_t buf;
 } ScrCycHdr;
+#define SCR_CYC_BUFFERED_BIT 0x80000000u
 
-/* This layout is an ABI, not an implementation detail. Every emitted release
- * of a headered object (llvm/shapes.ts cycleRootLines, used by the record,
- * class and inline RC helpers) mirrors scr_cyc_on_release's early return:
- * it reads `buffered` as an i16 at obj-6 (the backend's cycleBufferedOffset)
- * and calls scr_cyc_on_release only when it is 0; the emitted inline free
- * reads the generation as an i8 at obj-7. Hence the assertions. */
-_Static_assert(sizeof(ScrCycHdr) == 16, "LLVM backend expects a 16-byte cycle header");
-_Static_assert(sizeof(ScrCycHdr) - offsetof(ScrCycHdr, buffered) == 6 &&
-                   sizeof(((ScrCycHdr *)0)->buffered) == 2,
-               "the emitted release fast path reads `buffered` as an i16 at obj-6");
-_Static_assert(sizeof(ScrCycHdr) - offsetof(ScrCycHdr, gen) == 7,
-               "LLVM backend's inline free reads the generation as an i8 at obj-7");
-_Static_assert(sizeof(ScrCycHdr) - offsetof(ScrCycHdr, type) == 16 ||
-                   UINTPTR_MAX == UINT32_MAX,
-               "LLVM backend stores the descriptor at the block start on 64-bit targets");
+/* This layout is an ABI, not an implementation detail. The emitted
+ * allocation stores the id and zeroes the rest; every emitted release of a
+ * headered object (llvm/shapes.ts cycleRootLines, used by the record, class
+ * and inline RC helpers) mirrors scr_cyc_on_release's early return by
+ * testing the sign of `buf` as an i32 at obj-4, and the emitted inline free
+ * reads the generation as an i8 at obj-5. Hence the assertions. */
+_Static_assert(sizeof(ScrCycHdr) == 8, "LLVM backend expects an 8-byte cycle header");
+_Static_assert(offsetof(ScrCycHdr, id) == 0 && sizeof(((ScrCycHdr *)0)->id) == 2,
+               "the emitted allocation stores the registry id as an i16 at the block start");
+_Static_assert(sizeof(ScrCycHdr) - offsetof(ScrCycHdr, buf) == 4,
+               "the emitted release fast path tests `buf` as an i32 at obj-4");
+_Static_assert(sizeof(ScrCycHdr) - offsetof(ScrCycHdr, gen) == 5,
+               "LLVM backend's inline free reads the generation as an i8 at obj-5");
 _Static_assert(sizeof(ScrCycHdr) % _Alignof(double) == 0,
                "cycle-headered payloads must preserve double alignment");
 
 static inline ScrCycHdr *scr_cyc_hdr(void *obj) { return (ScrCycHdr *)obj - 1; }
 
+/* Registry of descriptors by id (copies, so a header reaches its entry
+ * points in one step); ids are assigned on first allocation and shared by
+ * every thread. */
+#define SCR_CYC_MAX_TYPES ((uint32_t)1 << 15)
+extern ScrCycType scr_cyc_types[SCR_CYC_MAX_TYPES];
+uint32_t scr_cyc_register(ScrCycType *type);
+static inline uint32_t scr_cyc_type_id(ScrCycType *type) {
+  return type->id ? type->id : scr_cyc_register(type);
+}
+
+static inline const ScrCycType *scr_cyc_type(const ScrCycHdr *h) { return &scr_cyc_types[h->id]; }
+static inline unsigned scr_cyc_color(const ScrCycHdr *h) { return h->color; }
+static inline void scr_cyc_set_color(ScrCycHdr *h, unsigned color) { h->color = (uint8_t)color; }
+static inline unsigned scr_cyc_gen(const ScrCycHdr *h) { return h->gen; }
+static inline void scr_cyc_set_gen(ScrCycHdr *h, unsigned gen) { h->gen = (uint8_t)gen; }
+static inline bool scr_cyc_is_buffered(const ScrCycHdr *h) {
+  return (h->buf & SCR_CYC_BUFFERED_BIT) != 0;
+}
+static inline uint32_t scr_cyc_buf_index(const ScrCycHdr *h) {
+  return h->buf & ~SCR_CYC_BUFFERED_BIT;
+}
+/* Buffered at position `index` of its generation's buffer, or not at all. */
+static inline void scr_cyc_set_buffered(ScrCycHdr *h, uint32_t index) {
+  h->buf = SCR_CYC_BUFFERED_BIT | index;
+}
+static inline void scr_cyc_clear_buffered(ScrCycHdr *h) { h->buf = 0; }
+
 /* Zeroed allocation with a cycle header in front; returns the OBJECT
  * pointer (header at scr_cyc_hdr). `type` must outlive the object (a
  * static descriptor). Aborts on OOM. */
-void *scr_cyc_alloc(size_t size, const ScrCycType *type);
+void *scr_cyc_alloc(size_t size, ScrCycType *type);
 void scr_cyc_free(void *obj); /* frees the block, header included */
 
 /* ── small-object allocator (scr_alloc.c) ───────────────────────────────
@@ -714,26 +742,27 @@ static inline void scr_mem_free(void *p) { free(p); }
  * sites (union boxes, arrays, boxes, closures, maps, dyn nodes). With a
  * constant size the size class and the zeroing fold at compile time. The
  * live count is exported for these and for the emitted inline paths
- * (llvm/alloc.ts), which do the same three things: header words, live
- * count, block. Every other header word starts zero (SCR_CYC_BLACK,
- * SCR_CYC_NURSERY, unbuffered). */
+ * (llvm/alloc.ts), which do the same three things: header (the registry
+ * id; the rest starts zero: SCR_CYC_BLACK, SCR_CYC_NURSERY, unbuffered),
+ * live count, block. */
 #ifndef SCR_WORKERS
 extern SCR_TL size_t scr_cyc_live;
 extern SCR_TL size_t scr_cyc_old_freed;
 extern SCR_TL void (*scr_weak_dispose_hook)(void *);
 #endif
-static inline void *scr_cyc_alloc_inline(size_t size, const ScrCycType *type) {
+static inline void *scr_cyc_alloc_inline(size_t size, ScrCycType *type) {
   if (size > SIZE_MAX - sizeof(ScrCycHdr)) scr_trap("scriptc: out of memory\n");
+  uint32_t id = scr_cyc_type_id(type);
   ScrCycHdr *h = (ScrCycHdr *)scr_mem_calloc(sizeof(ScrCycHdr) + size);
   if (!h) scr_trap("scriptc: out of memory\n");
-  h->type = type;
+  h->id = (uint16_t)id;
   scr_cyc_live++;
   return h + 1;
 }
 static inline void scr_cyc_free_inline(void *obj) {
   if (scr_weak_dispose_hook) scr_weak_dispose_hook(obj);
   scr_cyc_live--;
-  if (scr_cyc_hdr(obj)->gen == SCR_CYC_OLD) scr_cyc_old_freed++;
+  if (scr_cyc_gen(scr_cyc_hdr(obj)) == SCR_CYC_OLD) scr_cyc_old_freed++;
   scr_mem_free(scr_cyc_hdr(obj));
 }
 _Static_assert(SCR_CYC_NURSERY == 0, "zeroed cycle headers start in the nursery");
@@ -761,10 +790,10 @@ void scr_cyc_on_dead(void *obj);
  * object, and the death of an object that was never buffered, need no call.
  * Most releases of long-lived containers take the first early return. */
 static inline void scr_cyc_released(void *obj) {
-  if (!scr_cyc_hdr(obj)->buffered) scr_cyc_on_release(obj);
+  if (!scr_cyc_is_buffered(scr_cyc_hdr(obj))) scr_cyc_on_release(obj);
 }
 static inline void scr_cyc_dead(void *obj) {
-  if (scr_cyc_hdr(obj)->buffered) scr_cyc_on_dead(obj);
+  if (scr_cyc_is_buffered(scr_cyc_hdr(obj))) scr_cyc_on_dead(obj);
 }
 
 /* Full sweep: trial-deletion passes over EVERY generation, to a fixpoint.

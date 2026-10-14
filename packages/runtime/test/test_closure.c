@@ -95,20 +95,20 @@ int main(void) {
                                    &scr_str_release_v, NULL);
   scr_union_retain(su);
   scr_union_release(su);
-  CHECK(!scr_cyc_hdr(su)->buffered);
+  CHECK(!scr_cyc_is_buffered(scr_cyc_hdr(su)));
   scr_union_release(su);
   CHECK(scr_str_live_count() == 0);
   ScrUnion *fu = scr_union_new_f64(1, 2.5);
   scr_union_retain(fu);
   scr_union_release(fu);
-  CHECK(!scr_cyc_hdr(fu)->buffered);
+  CHECK(!scr_cyc_is_buffered(scr_cyc_hdr(fu)));
   scr_union_release(fu);
   ScrUnion *cu = scr_union_new_ref(0, scr_closure_new((void *)&dummy_fn, 0),
                                    &scr_closure_retain_v, &scr_closure_release_v,
                                    &scr_closure_trace_v);
   scr_union_retain(cu);
   scr_union_release(cu);
-  CHECK(scr_cyc_hdr(cu)->buffered);
+  CHECK(scr_cyc_is_buffered(scr_cyc_hdr(cu)));
   scr_union_release(cu); /* dies while buffered: leaves the buffer, frees */
   CHECK(scr_closure_live_count() == 0);
 

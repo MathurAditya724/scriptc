@@ -52,7 +52,7 @@ try {
       return `@native_literal_${index}`;
     },
     sizeType: request.bits === 32 ? "i32" : "i64",
-    cycleBufferedOffset: 6,
+    cycleBufOffset: 4,
     // Collector statistics indices, numbered as LlEmitter numbers them.
     nextCycKind: () => FIRST_EMITTED_CYC_KIND + cycKinds++,
     tracedShapes: traced.shapes,

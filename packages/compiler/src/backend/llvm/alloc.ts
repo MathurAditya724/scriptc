@@ -117,11 +117,16 @@ const SA_BUMP = 280;
 const SA_LIM = 536;
 const SA_STEP_SHIFT = 4; // 16-byte classes
 const SA_MAX = 512;
-/** sizeof(ScrCycHdr); on 64-bit targets the type descriptor is its first
- * word, and every other header word starts zero. */
-const CYC_HDR = 16;
-/** ScrCycHdr.gen, an i8 at this header offset (scr_runtime.h asserts it). */
-const CYC_GEN = 9;
+/** sizeof(ScrCycHdr): the descriptor's i16 registry id, i8 color and
+ * generation, and an i32 `buf` whose sign bit marks a buffered candidate
+ * (scr_runtime.h asserts the offsets). */
+export const CYC_HDR = 8;
+/** ScrCycHdr.gen, an i8 at this header offset. */
+const CYC_GEN = 3;
+/** ScrCycHdr.buf, an i32 at this header offset. */
+export const CYC_BUF = 4;
+/** The emitted descriptor `{ trace, free_fn, kind, id }` (ScrCycType). */
+const CYC_TYPE = "{ ptr, ptr, i32, i32 }";
 
 function declareState(host: AllocHost): void {
   if (host.threadLocalAlloc !== true) host.declare(`@scr_sa = external global ${SA_TYPE}`);
@@ -144,12 +149,13 @@ export interface CycHeader {
 export const FIRST_EMITTED_CYC_KIND = 32;
 
 /** The definition of a shape's ScrCycType descriptor `{ trace, free_fn,
- * kind }`, referenced by every header of that shape. `kind` indexes the
- * collector's per-type statistics (scr_runtime.h); emitted shapes number
- * themselves from FIRST_EMITTED_CYC_KIND (ShapeHost.nextCycKind) and 0
- * keeps none. */
+ * kind, id }`, named by every header of that shape through its registry
+ * id. `kind` indexes the collector's per-type statistics (scr_runtime.h);
+ * emitted shapes number themselves from FIRST_EMITTED_CYC_KIND
+ * (ShapeHost.nextCycKind) and 0 keeps none. The runtime assigns `id` on the
+ * first allocation, so the descriptor is writable. */
 export function cycTypeDescriptor(name: string, trace: string, free: string, kind = 0): string {
-  return `${name} = internal constant { ptr, ptr, i32 } { ptr ${trace}, ptr ${free}, i32 ${kind} }`;
+  return `${name} = internal global ${CYC_TYPE} { ptr ${trace}, ptr ${free}, i32 ${kind}, i32 0 }`;
 }
 
 /**
@@ -203,11 +209,21 @@ function allocLines(
   }
   declareState(host);
   // Bytes of the block that the fast path itself stores after the clear:
-  // the header's descriptor word, or the object's leading words.
-  const keep = cyc ? 8 : stored;
+  // the header, or the object's leading words.
+  const keep = cyc ? CYC_HDR : stored;
+  // A type's first object registers its descriptor on the slow path.
+  const registered = cyc
+    ? [
+        `  %sa.tidp = getelementptr inbounds ${CYC_TYPE}, ptr ${cyc.type}, i32 0, i32 3`,
+        `  %sa.tid = load i32, ptr %sa.tidp`,
+        `  %sa.reg = icmp ne i32 %sa.tid, 0`,
+        `  %sa.fits0 = icmp ule i64 %sa.n, ${SA_MAX}`,
+        `  %sa.small = and i1 %sa.reg, %sa.fits0`,
+      ]
+    : [`  %sa.small = icmp ule i64 %sa.n, ${SA_MAX}`];
   const lines = [
     `  %sa.n = add i64 ${size}, ${cyc ? CYC_HDR : 0}`,
-    `  %sa.small = icmp ule i64 %sa.n, ${SA_MAX}`,
+    ...registered,
     `  br i1 %sa.small, label %sa.class, label %sa.slow`,
     `sa.class:`,
     `  %sa.nm1 = sub i64 %sa.n, 1`,
@@ -253,7 +269,12 @@ function allocLines(
     lines.push(
       `sa.fast:`,
       `  %sa.blk = phi ptr [ %sa.b, %sa.pop ], [ %sa.p, %sa.carve ]`,
-      `  store ptr ${cyc.type}, ptr %sa.blk ; ScrCycHdr.type`,
+      `  %sa.id = trunc i32 %sa.tid to i16`,
+      `  store i16 %sa.id, ptr %sa.blk ; ScrCycHdr.id`,
+      `  %sa.cgp = getelementptr inbounds i8, ptr %sa.blk, i64 2`,
+      `  store i16 0, ptr %sa.cgp ; ScrCycHdr.color, gen`,
+      `  %sa.bufp = getelementptr inbounds i8, ptr %sa.blk, i64 ${CYC_BUF}`,
+      `  store i32 0, ptr %sa.bufp ; ScrCycHdr.buf`,
       `  %sa.live = load i64, ptr @scr_cyc_live`,
       `  %sa.live1 = add i64 %sa.live, 1`,
       `  store i64 %sa.live1, ptr @scr_cyc_live`,
@@ -339,7 +360,7 @@ function freeLines(host: AllocHost, cyc: boolean): string[] {
       `  store i64 %sf.live1, ptr @scr_cyc_live`,
       `  %sf.blk = getelementptr inbounds i8, ptr %o, i64 -${CYC_HDR}`,
       `  %sf.genp = getelementptr inbounds i8, ptr %sf.blk, i64 ${CYC_GEN}`,
-      `  %sf.gen = load i8, ptr %sf.genp`,
+      `  %sf.gen = load i8, ptr %sf.genp ; ScrCycHdr.gen`,
       `  %sf.old = icmp eq i8 %sf.gen, 2`,
       `  br i1 %sf.old, label %sf.oldcount, label %sf.accounted`,
       `sf.oldcount:`,

@@ -286,7 +286,7 @@ static void checked_leaf_cycles(void) {
       ScrStr *text = scr_str_new("survives either edge", 20);
       ScrDyn *leaf = scr_dyn_new_str(text);
       scr_str_release(text);
-      scr_cyc_hdr(leaf)->gen = gen;
+      scr_cyc_set_gen(scr_cyc_hdr(leaf), gen);
       ScrDyn *first = scr_dyn_new_obj(), *second = scr_dyn_new_obj();
       ScrDyn *array = scr_dyn_new_arr();
       ScrClosure *closure = scr_closure_new(NULL, 1);
