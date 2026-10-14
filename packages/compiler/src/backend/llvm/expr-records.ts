@@ -373,8 +373,8 @@ export function keyedRecordReadInto(
       const ln = B.newLabel("rkg.n");
       B.condBr(hit, lh, ln);
       B.startBlock(lh);
-      const { ptr, type } = host.recordFieldPtr(objName, shapeId, f.name);
-      const v = host.loadRecordField(ptr, type);
+      const { ptr, type, inline } = host.recordFieldPtr(objName, shapeId, f.name);
+      const v = host.loadRecordField(ptr, type, inline);
       if (type.kind === "dyn") {
         host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
         const r = B.tmp();
@@ -492,8 +492,12 @@ export function keyedRecordReadInto(
     const ln = B.newLabel("rkg.n");
     B.condBr(hit, lh, ln);
     B.startBlock(lh);
-    const { ptr, type } = host.recordFieldPtr(objName, shapeId, f.name);
-    B.line(`store ${ty} ${surface(type, host.loadRecordField(ptr, type), false)}, ptr ${slot}`);
+    const { ptr, type, inline } = host.recordFieldPtr(objName, shapeId, f.name);
+    // An inline union field surfaces through a fresh heap box.
+    const value = inline
+      ? surface(type, host.inlineFieldUnion(ptr, type), true)
+      : surface(type, host.loadRecordField(ptr, type, false), false);
+    B.line(`store ${ty} ${value}, ptr ${slot}`);
     B.br(join);
     B.startBlock(ln);
   }

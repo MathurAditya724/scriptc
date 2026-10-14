@@ -8,6 +8,8 @@ import {
 } from "./record-results.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { mangleClassStruct, mangleRecordStruct } from "../mangle.js";
+import { undefinedArmTag } from "../../ir/analysis.js";
+import { classFieldIndex } from "./classes.js";
 import type { CallLifetimes } from "./call-lifetimes.js";
 import { emitCallExpr, emitConstruction } from "./expr-calls.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
@@ -27,7 +29,7 @@ export function canStackObject(host: LlvmEmitterContext, e: IrExpr): e is StackO
   if (e.kind === "recordLit") {
     if (e.type.kind !== "record") return false;
     const shape = host.recordsById.get(e.type.shapeId);
-    return scalarRecordShape(shape) && completeRecordLiteral(e, shape);
+    return scalarRecordShape(shape, host.inlineUnions) && completeRecordLiteral(e, shape);
   }
   if (e.kind !== "new") return false;
   const meta = host.classMeta.get(e.className);
@@ -38,6 +40,7 @@ export function canStackObject(host: LlvmEmitterContext, e: IrExpr): e is StackO
       host.fnByName.get(`%${e.className}.constructor`),
       meta.hierarchy,
       host.programLifetime.has(e.className),
+      host.inlineUnions,
     )
   );
 }
@@ -139,10 +142,21 @@ export function emitStackObject(
   // Literals store every field; constructors that store every field
   // before reading one need no zeroed storage either.
   if (type.kind === "object") {
-    const cls = host.classMeta.get(type.className)!.def;
+    const meta = host.classMeta.get(type.className)!;
     const ctor = host.fnByName.get(`%${type.className}.constructor`)!;
-    if (!constructorInitializesFields(cls, ctor))
+    if (!constructorInitializesFields(meta.def, ctor)) {
       B.line(`store ${struct} zeroinitializer, ptr ${slot}`);
+      // Inline union fields start undefined, as the class's `new` sets them.
+      for (const field of meta.def.fields) {
+        const tag = undefinedArmTag(field.type, host.unionsById);
+        if (tag < 0 || !host.inlineUnions.classField(type.className, field.name)) continue;
+        const p = B.tmp();
+        B.line(
+          `${p} = getelementptr inbounds ${struct}, ptr ${slot}, i64 0, i32 ${classFieldIndex(meta, field.name).index}, i32 0`,
+        );
+        B.line(`store i32 ${tag}, ptr ${p}`);
+      }
+    }
   }
   B.line(`store ${host.sizeType} -1, ptr ${slot}`);
   if (e.kind === "call") {

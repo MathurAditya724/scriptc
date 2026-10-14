@@ -22,6 +22,7 @@ import {
   FN_ATTRS,
   elemAccess,
   llFieldType,
+  loadStructField,
   releaseSym,
   traceArg,
   vAdapters,
@@ -30,6 +31,7 @@ import {
 import type { LlvmEmitterContext, LlStreamTypedRefAdapter } from "./expr-context.js";
 import type { NullableRefField } from "./nullable-fields.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
+import { inlineUnionCopyLines } from "./inline-unions.js";
 
 /** An owned (+1) union value for a nullable-pointer class field slot `p`
  * (the unit arm's immortal instance, or a fresh box around a retained
@@ -263,7 +265,8 @@ export function streamTypedRefCommitAdapter(
       const after = `f${index}_after`;
       const { index: fieldIndex } = classFieldIndex(meta, field.name);
       const int32 = host.int32Slots.isField(t.className, field.name);
-      const fieldTy = int32 ? "i32" : llFieldType(field.type);
+      const inline = host.inlineUnions.classField(t.className, field.name);
+      const fieldTy = int32 ? "i32" : llFieldType(field.type, inline);
       const checkTy = host.llType(field.type);
       const symbolGlobal = symbols.get(field.name);
       if (symbolGlobal) {
@@ -358,6 +361,16 @@ export function streamTypedRefCommitAdapter(
           `  store ptr %f${index}_new, ptr %f${index}_ptr`,
           `  call void @scr_union_release(ptr %${next})`,
           `  call void ${rc.release}(ptr %f${index}_old)`,
+          `  br label %${after}`,
+          `${after}:`,
+        );
+        continue;
+      }
+      if (inline) {
+        // The slot copies the checked union's bits; this code releases the box.
+        lines.push(
+          ...inlineUnionCopyLines(`%${next}`, `%f${index}_ptr`, `%f${index}_in`),
+          `  call void ${releaseSym(host.shapeHost, field.type)}(ptr %${next})`,
           `  br label %${after}`,
           `${after}:`,
         );
@@ -486,7 +499,7 @@ export function streamTypedRefCommitAdapter(
   const members = [
     ...shape.fields.map((field, index) => ({
       index: index + 1,
-      type: llFieldType(field.type),
+      type: llFieldType(field.type, host.inlineUnions.record(field.type)),
       name: field.name,
     })),
     ...(shape.indexValue
@@ -805,8 +818,10 @@ export function streamTypedRefMaterializeAdapter(
         const raw = B.tmp();
         B.line(`${raw} = load i32, ptr ${fieldPtr}`);
         B.line(`${fieldValue} = sitofp i32 ${raw} to double`);
-      } else B.line(`${fieldValue} = load ${llFieldType(field.type)}, ptr ${fieldPtr}`);
-      if (llFieldType(field.type) === "i8") {
+      } else if (host.inlineUnions.classField(t.className, field.name))
+        fieldValue = loadStructField(B, host.sizeType, fieldPtr, field.type, true);
+      else B.line(`${fieldValue} = load ${llFieldType(field.type, false)}, ptr ${fieldPtr}`);
+      if (llFieldType(field.type, false) === "i8") {
         const boolValue = B.tmp();
         B.line(`${boolValue} = trunc i8 ${fieldValue} to i1`);
         fieldValue = boolValue;
@@ -835,11 +850,13 @@ export function streamTypedRefMaterializeAdapter(
       B.line(
         `${fieldPtr} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 ${index}`,
       );
+      const inline = host.inlineUnions.classField(t.className, field.name);
       if (host.int32Slots.isField(t.className, field.name)) {
         const raw = B.tmp();
         B.line(`${raw} = load i32, ptr ${fieldPtr}`);
         B.line(`${fieldValue} = sitofp i32 ${raw} to double`);
-      } else B.line(`${fieldValue} = load ${llFieldType(field.type)}, ptr ${fieldPtr}`);
+      } else if (inline) fieldValue = loadStructField(B, host.sizeType, fieldPtr, field.type, true);
+      else B.line(`${fieldValue} = load ${llFieldType(field.type, false)}, ptr ${fieldPtr}`);
       B.line(`${rawKey} = load ptr, ptr @${mangleGlobal(symbol.globalId)}`);
       const key = host.streamTypedRefBoxValue(B, SYMBOL_T, rawKey);
       const afterSymbol =
@@ -858,7 +875,7 @@ export function streamTypedRefMaterializeAdapter(
         B.condBr(initialized, present, afterSymbol);
         B.startBlock(present);
       }
-      if (llFieldType(field.type) === "i8") {
+      if (llFieldType(field.type, false) === "i8") {
         const boolValue = B.tmp();
         B.line(`${boolValue} = trunc i8 ${fieldValue} to i1`);
         fieldValue = boolValue;
@@ -924,16 +941,16 @@ export function streamTypedRefMaterializeAdapter(
       for (const field of fields) {
         const index = shape.fields.indexOf(field) + 1;
         const fieldPtr = B.tmp();
-        let fieldValue = B.tmp();
         B.line(
           `${fieldPtr} = getelementptr inbounds %${mangleRecordStruct(t.shapeId)}, ptr %p, i64 0, i32 ${index}`,
         );
-        B.line(`${fieldValue} = load ${llFieldType(field.type)}, ptr ${fieldPtr}`);
-        if (llFieldType(field.type) === "i8") {
-          const boolValue = B.tmp();
-          B.line(`${boolValue} = trunc i8 ${fieldValue} to i1`);
-          fieldValue = boolValue;
-        }
+        const fieldValue = loadStructField(
+          B,
+          host.sizeType,
+          fieldPtr,
+          field.type,
+          host.inlineUnions.record(field.type),
+        );
         const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
         B.line(`call void @scr_dyn_arr_push(ptr ${out}, ptr ${boxed})`);
       }
@@ -958,16 +975,16 @@ export function streamTypedRefMaterializeAdapter(
       for (const field of fields) {
         const index = shape.fields.indexOf(field) + 1;
         const fieldPtr = B.tmp();
-        let fieldValue = B.tmp();
         B.line(
           `${fieldPtr} = getelementptr inbounds %${mangleRecordStruct(t.shapeId)}, ptr %p, i64 0, i32 ${index}`,
         );
-        B.line(`${fieldValue} = load ${llFieldType(field.type)}, ptr ${fieldPtr}`);
-        if (llFieldType(field.type) === "i8") {
-          const boolValue = B.tmp();
-          B.line(`${boolValue} = trunc i8 ${fieldValue} to i1`);
-          fieldValue = boolValue;
-        }
+        const fieldValue = loadStructField(
+          B,
+          host.sizeType,
+          fieldPtr,
+          field.type,
+          host.inlineUnions.record(field.type),
+        );
         // An ABSENT optional field contributes no key.
         const undefinedTag = undefinedArmTag(field.type, host.unionsById);
         let skip: string | null = null;
@@ -1176,15 +1193,14 @@ function liveRecordOps(
   const loadField = (B: BlockBuilder, field: IrRecordShape["fields"][number]): string => {
     const index = shape.fields.indexOf(field) + 1;
     const fieldPtr = B.tmp();
-    let fieldValue = B.tmp();
     B.line(`${fieldPtr} = getelementptr inbounds %${struct}, ptr %p, i64 0, i32 ${index}`);
-    B.line(`${fieldValue} = load ${llFieldType(field.type)}, ptr ${fieldPtr}`);
-    if (llFieldType(field.type) === "i8") {
-      const boolValue = B.tmp();
-      B.line(`${boolValue} = trunc i8 ${fieldValue} to i1`);
-      fieldValue = boolValue;
-    }
-    return fieldValue;
+    return loadStructField(
+      B,
+      host.sizeType,
+      fieldPtr,
+      field.type,
+      host.inlineUnions.record(field.type),
+    );
   };
 
   const H = new BlockBuilder();

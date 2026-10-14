@@ -627,3 +627,66 @@ test("stores into nullable-pointer class fields project the stored union", () =>
   fn.body = [store("Node", "next", ref("value")), ret(ref("value"))];
   expect(analyzeCallLifetimes(functions, nullable).parameters.get(fn.name)?.has(1)).toBeFalsy();
 });
+
+test("stores into inline union fields project the stored union and keep the object", () => {
+  const pair: IrType = { kind: "record", shapeId: "pair" };
+  const inline = {
+    record: (shapeId: string, field: string) => shapeId === "pair" && field === "v",
+    classField: () => false,
+  };
+  const fn: IrFunction = {
+    name: "fill",
+    loc,
+    returnType: F64,
+    params: [
+      { localId: "value", name: "value", type: optional },
+      { localId: "p", name: "p", type: pair },
+    ],
+    locals: [local("value"), local("p", pair)],
+    body: [
+      {
+        kind: "recordSet",
+        obj: ref("p", pair),
+        shapeId: "pair",
+        field: "v",
+        value: ref("value"),
+        loc,
+      },
+      ret(num()),
+    ],
+  };
+  const functions = new Map([[fn.name, fn]]);
+  // An ordinary union field stores the box itself, and the store mutates p.
+  expect(analyzeCallLifetimes(functions).parameters.get(fn.name)).toBeUndefined();
+  // An inline field copies the bits: both the value and the record are only
+  // projected.
+  expect(
+    analyzeCallLifetimes(functions, undefined, undefined, undefined, inline).parameters.get(
+      fn.name,
+    ),
+  ).toEqual(new Set([0, 1]));
+  // A record literal field copies the bits too.
+  fn.params = [{ localId: "value", name: "value", type: optional }];
+  fn.locals = [local("value")];
+  fn.body = [
+    {
+      kind: "exprStmt",
+      expr: {
+        kind: "recordGet",
+        obj: { kind: "recordLit", fields: [{ name: "v", value: ref("value") }], type: pair, loc },
+        shapeId: "pair",
+        field: "v",
+        type: optional,
+        loc,
+      },
+      loc,
+    },
+    ret(num()),
+  ];
+  expect(analyzeCallLifetimes(functions).parameters.get(fn.name)?.has(0)).toBeFalsy();
+  expect(
+    analyzeCallLifetimes(functions, undefined, undefined, undefined, inline).parameters.get(
+      fn.name,
+    ),
+  ).toEqual(new Set([0]));
+});

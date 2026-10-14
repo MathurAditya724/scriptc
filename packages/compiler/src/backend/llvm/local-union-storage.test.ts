@@ -96,6 +96,7 @@ function facts(mod: IrModule) {
     unions,
     receiverUnions: unions,
     nullableField: () => false,
+    inlineField: () => false,
     arrayRead: () => false,
     scalarCall: () => false,
   });

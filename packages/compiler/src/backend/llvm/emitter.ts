@@ -144,6 +144,14 @@ import {
 import { BlockBuilder } from "./blocks.js";
 import { NullableRefFields, type NullableRefField } from "./nullable-fields.js";
 import {
+  InlineUnionFields,
+  loadInlineUnion,
+  presentBits,
+  stackUnionBox,
+  storeInlineUnion,
+  unionBoxBits,
+} from "./inline-unions.js";
+import {
   emitLocalArrayRead,
   emitProjectedArrayRead,
   emitBorrowedArrayRead,
@@ -594,6 +602,8 @@ export class LlEmitter {
   private readonly unitInstances = new Map<string, string>();
   /** unionId → symbol of the union's immortal ABSENT field-slot instance. */
   private readonly absentInstances = new Map<string, string>();
+  /** The zeroed box an inline store reads for a NULL union dummy. */
+  private needsUnionNone = false;
   /** unionId → symbol of a flag set once a checked-dynamic cast caches one
    * of the union's boxes. A cached box is refreshed in place, possibly with
    * a tag that another union numbers apart, so it is never shared. */
@@ -765,6 +775,7 @@ export class LlEmitter {
   readonly dynPromiseAdapters = new Map<string, string>();
   readonly unionsById = new Map<string, IrUnionDef>();
   readonly nullableFields: NullableRefFields;
+  readonly inlineUnions: InlineUnionFields;
   /** Unions whose values are nullable arm pointers (nullable-unions.ts). */
   readonly nullableUnions: NullableUnions;
   /** The union table without nullable unions: the stack-box analyses. */
@@ -1012,6 +1023,8 @@ export class LlEmitter {
     this.immortalValues.add("null");
     this.immortalValues.add(NULLABLE_NULL);
     this.nullableFields = new NullableRefFields(mod.classes ?? [], this.boxedUnionsById);
+    this.inlineUnions = new InlineUnionFields(this.boxedUnionsById, mod.classes ?? []);
+    for (const r of mod.records ?? []) this.recordsById.set(r.id, r);
     // Optional array reads also cover nullable unions: emitLocalArrayRead
     // then yields the (borrowed or owned) element pointer, not a stack box.
     // Arrays of such a union are read the same way.
@@ -1022,6 +1035,7 @@ export class LlEmitter {
       unions: this.boxedUnionsById,
       receiverUnions: this.unionsById,
       nullableField: (e) => this.nullableFieldGet(e) !== null,
+      inlineField: (e) => this.inlineFieldGet(e),
       arrayRead: (e) => this.optionalArrayReads.get(e) !== null,
       scalarCall: (e) => this.scalarResultCall(e),
     };
@@ -1085,13 +1099,16 @@ export class LlEmitter {
       (className, field) => this.nullableFields.get(className, field) !== null,
       walkParameters,
       new Set([...this.int32Abis].filter(([, abi]) => abi.union).map(([name]) => name)),
+      {
+        record: (shapeId, field) => this.recordFieldInline(shapeId, field),
+        classField: (className, field) => this.inlineUnions.classField(className, field),
+      },
     );
     this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes);
     this.stackCallbacks = new StackCallbacks(this.fnByName);
     this.receiverReaders = new AmbientReceiverReaders(this.fnByName);
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
     this.lazyCaptures = new LazyCaptures(this.fnByName);
-    for (const r of mod.records ?? []) this.recordsById.set(r.id, r);
     const traced = computeTraced(mod);
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
@@ -1101,6 +1118,8 @@ export class LlEmitter {
       tracedShapes: this.tracedShapes,
       tracedUnions: this.tracedUnions,
       nullableUnions: this.nullableUnions,
+      inlineUnions: this.inlineUnions,
+      unionNoneRef: () => this.unionNoneRef(),
       recordsById: this.recordsById,
       recordCloneShapes: this.recordCloneShapes,
       objectAudit: options.objectAudit !== false,
@@ -2162,6 +2181,11 @@ export class LlEmitter {
       );
     }
     if (this.absentInstances.size > 0) out.push(``);
+    if (this.needsUnionNone)
+      out.push(
+        `@sc_union_none = internal constant %ScrUnion zeroinitializer ; NULL union dummy read by inline stores`,
+        ``,
+      );
     if (this.nullableUnions.usesNullSentinel) {
       // `null` in every `C | null | undefined` union (NULL is undefined):
       // one module-scope immortal object like the ABSENT sentinel.
@@ -4017,8 +4041,13 @@ export class LlEmitter {
    * holding the ABSENT state surfaces as the ordinary undefined arm, so
    * absence never travels beyond its slot (a later `{ f: r.f }` is an
    * explicit, present property). */
-  loadRecordField(ptr: string, t: IrType): string {
-    const v = this.loadField(ptr, t);
+  loadRecordField(ptr: string, t: IrType, inline: boolean): string {
+    if (inline) {
+      const { tag, bits } = loadInlineUnion(this.B, ptr);
+      const present = presentBits(this.B, tag, bits, undefinedArmTag(t, this.unionsById));
+      return stackUnionBox(this.B, this.sizeType, tag, present);
+    }
+    const v = this.loadField(ptr, t, false);
     if (t.kind !== "union" || undefinedArmTag(t, this.unionsById) < 0) return v;
     const absent = this.fieldAbsentTest(v, t.unionId);
     const unit = this.unitInstanceRef(t.unionId, undefinedArmTag(t, this.unionsById));
@@ -4873,7 +4902,11 @@ export class LlEmitter {
    * 1 on hierarchy members, then the flattened field list. Runtime error
    * classes GEP through %ScrError (their structs live in the runtime; the
    * def's [name, message, %code, %cause] order matches the layout). */
-  classFieldPtr(objName: string, className: string, field: string): { ptr: string; type: IrType } {
+  classFieldPtr(
+    objName: string,
+    className: string,
+    field: string,
+  ): { ptr: string; type: IrType; inline: boolean } {
     const meta = this.classMetaOf(className);
     const { index, type } = classFieldIndex(meta, field);
     const p = this.B.tmp();
@@ -4881,7 +4914,7 @@ export class LlEmitter {
       `${p} = getelementptr inbounds %${classStructSym(className)}, ptr ${objName}, i64 0, i32 ${index}`,
     );
     this.markFieldPointer(p, field);
-    return { ptr: p, type };
+    return { ptr: p, type, inline: this.inlineUnions.classField(className, field) };
   }
 
   /** `o->vt->pre` — the dynamic class's preorder number (borrowed object;
@@ -4938,7 +4971,10 @@ export class LlEmitter {
         if (index < 0)
           throw new InternalCompilerError(`llvm emitter bug: missing union field ${field}`);
         layout = "record:";
-        for (let i = 0; i <= index; i++) layout += `${llFieldType(shape.fields[i]!.type)};`;
+        for (let i = 0; i <= index; i++) {
+          const type = shape.fields[i]!.type;
+          layout += `${llFieldType(type, this.inlineUnions.record(type))};`;
+        }
       }
       const group = groups.get(layout);
       if (group) group.push(tag);
@@ -4949,8 +4985,19 @@ export class LlEmitter {
     return result;
   }
 
-  /** The field-slot pointer of a record member (rc header at index 0). */
-  recordFieldPtr(objName: string, shapeId: string, field: string): { ptr: string; type: IrType } {
+  /** The zeroed `%ScrUnion` constant (inline-unions.ts unionBoxBits). */
+  unionNoneRef(): string {
+    this.needsUnionNone = true;
+    return "@sc_union_none";
+  }
+
+  /** The field-slot pointer of a record member (rc header at index 0).
+   * `inline`: the slot stores a scalar union's tag and bits. */
+  recordFieldPtr(
+    objName: string,
+    shapeId: string,
+    field: string,
+  ): { ptr: string; type: IrType; inline: boolean } {
     const shape = this.recordShape(shapeId);
     const idx = shape.fields.findIndex((f) => f.name === field);
     if (idx < 0)
@@ -4961,7 +5008,8 @@ export class LlEmitter {
     this.B.line(
       `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + 1}`,
     );
-    return { ptr: p, type: shape.fields[idx]!.type };
+    const type = shape.fields[idx]!.type;
+    return { ptr: p, type, inline: this.inlineUnions.record(type) };
   }
 
   /** The overflow map's slot pointer on an index-signature shape. */
@@ -4978,10 +5026,16 @@ export class LlEmitter {
     return v;
   }
 
-  /** Loads a record field (i8-stored bools trunc to i1). */
-  loadField(ptr: string, t: IrType): string {
+  /** Loads a record field (i8-stored bools trunc to i1). An inline union
+   * field answers a private stack box with the slot's own bits, ABSENT
+   * included: it may only be borrowed. */
+  loadField(ptr: string, t: IrType, inline: boolean): string {
     const B = this.B;
-    const fieldTy = llFieldType(t);
+    if (inline) {
+      const { tag, bits } = loadInlineUnion(B, ptr);
+      return stackUnionBox(B, this.sizeType, tag, bits);
+    }
+    const fieldTy = llFieldType(t, false);
     const raw = B.tmp();
     B.line(`${raw} = load ${fieldTy}, ptr ${ptr}${this.fieldAliasAttachment(ptr)}`);
     if (fieldTy !== "i8") return raw;
@@ -4990,10 +5044,49 @@ export class LlEmitter {
     return b;
   }
 
-  /** Stores a record field (i1 zext to the i8 storage). */
-  storeField(ptr: string, t: IrType, value: string): void {
+  /** A record field of this shape stores its scalar union inline. */
+  recordFieldInline(shapeId: string, field: string): boolean {
+    const type = this.recordShape(shapeId).fields.find((f) => f.name === field)?.type;
+    return type !== undefined && this.inlineUnions.record(type);
+  }
+
+  /** The value a field store writes: an inline union slot copies the tag
+   * and bits of a borrowed projection, so no box is built for it. */
+  emitFieldValue(value: IrExpr, inline: boolean): LlValue {
+    return inline ? this.emitUnionProjection(value) : this.emitExpr(value);
+  }
+
+  /** Overwrites a field with `v` (from emitFieldValue). A reference moves
+   * in, and the old value is released AFTER the field is overwritten. */
+  replaceField(ptr: string, type: IrType, inline: boolean, v: LlValue): void {
+    if (!inline && isRefCounted(type)) {
+      this.moveTemp(v);
+      const old = this.B.tmp();
+      this.B.line(`${old} = load ptr, ptr ${ptr}`);
+      this.storeField(ptr, type, v.name, false);
+      this.releaseValue(old, type);
+      return;
+    }
+    this.storeField(ptr, type, v.name, inline);
+  }
+
+  /** Stores `v` (from emitFieldValue) into a fresh field slot. */
+  initField(ptr: string, type: IrType, inline: boolean, v: LlValue): void {
+    if (!inline && isRefCounted(type)) this.moveTemp(v);
+    this.storeField(ptr, type, v.name, inline);
+  }
+
+  /** Stores a record field (i1 zext to the i8 storage). An inline union
+   * field copies the tag and bits of the union value, which its owner
+   * keeps. */
+  storeField(ptr: string, t: IrType, value: string, inline: boolean): void {
     const B = this.B;
-    const fieldTy = llFieldType(t);
+    if (inline) {
+      const { tag, bits } = unionBoxBits(B, value, this.unionNoneRef());
+      storeInlineUnion(B, ptr, tag, bits);
+      return;
+    }
+    const fieldTy = llFieldType(t, false);
     if (fieldTy !== "i8") {
       B.line(`store ${fieldTy} ${value}, ptr ${ptr}${this.fieldAliasAttachment(ptr)}`);
       return;
@@ -5936,12 +6029,26 @@ export class LlEmitter {
    * exception dummy (tag -1) answers NULL. */
   boxScalarUnion(pair: string, type: IrType): string {
     const B = this.B;
-    const unionId = type.kind === "union" ? type.unionId : "";
-    const arms = this.unionsById.get(unionId)!.arms;
     const tag = B.tmp(),
       bits = B.tmp();
     B.line(`${tag} = extractvalue ${SCALAR_UNION_RESULT} ${pair}, 0`);
     B.line(`${bits} = extractvalue ${SCALAR_UNION_RESULT} ${pair}, 1`);
+    return this.boxScalarUnionBits(tag, bits, type);
+  }
+
+  /** A fresh heap box (+1) for an inline union field's value; the ABSENT
+   * state reads as the undefined arm. */
+  inlineFieldUnion(ptr: string, type: IrType): string {
+    const { tag, bits } = loadInlineUnion(this.B, ptr);
+    return this.boxScalarUnionBits(tag, bits, type);
+  }
+
+  /** boxScalarUnion over a separate tag and payload bits. Unit arms answer
+   * their immortal instances whatever the bits. */
+  boxScalarUnionBits(tag: string, bits: string, type: IrType): string {
+    const B = this.B;
+    const unionId = type.kind === "union" ? type.unionId : "";
+    const arms = this.unionsById.get(unionId)!.arms;
     const join = B.newLabel("union.box.join"),
       none = B.newLabel("union.box.none");
     const labels = arms.map(() => B.newLabel("union.box.arm"));
@@ -6052,6 +6159,8 @@ export class LlEmitter {
    * Other writable bindings need an owned snapshot. */
   canBorrowCallArgument(value: IrExpr): boolean {
     if (value.kind === "strLit") return true;
+    // An inline union field has no box to lend.
+    if (this.inlineFieldGet(value)) return false;
     // Class casts reinterpret the same pointer (prefix layouts).
     if (
       (value.kind === "upcast" || value.kind === "downcast") &&
@@ -6814,23 +6923,20 @@ export class LlEmitter {
           break;
         }
         const obj = this.emitStableReceiver(s.obj, [s.value]);
-        const v = this.emitExpr(s.value);
+        const v = this.emitFieldValue(
+          s.value,
+          s.kind === "recordSet"
+            ? this.recordFieldInline(s.shapeId, s.field)
+            : this.inlineUnions.classField(s.className, s.field),
+        );
         if (s.kind === "fieldSet") this.emitStoreGuard(obj.name, s);
         else if (this.publishedTypes?.recordGuarded(s.shapeId) === true)
           this.emitPublishedFieldGuard(obj.name, null, s.field);
-        const { ptr, type } =
+        const { ptr, type, inline } =
           s.kind === "fieldSet"
             ? this.classFieldPtr(obj.name, s.className, s.field)
             : this.recordFieldPtr(obj.name, s.shapeId, s.field);
-        if (isRefCounted(type)) {
-          this.moveTemp(v);
-          const old = B.tmp();
-          B.line(`${old} = load ptr, ptr ${ptr}`);
-          this.storeField(ptr, type, v.name);
-          this.releaseValue(old, type);
-        } else {
-          this.storeField(ptr, type, v.name);
-        }
+        this.replaceField(ptr, type, inline, v);
         if (
           s.kind === "fieldSet" &&
           s.field === "name" &&
@@ -6940,14 +7046,18 @@ export class LlEmitter {
             const lw = B.newLabel("rks.w");
             B.condBr(pend, join, lw);
             B.startBlock(lw);
-            const { ptr, type } = this.recordFieldPtr(obj.name, s.shapeId, f.name);
-            if (isRefCounted(type)) {
+            const { ptr, type, inline } = this.recordFieldPtr(obj.name, s.shapeId, f.name);
+            if (inline) {
+              // The slot copies the checked value's bits; nv is released below.
+              this.storeField(ptr, type, nv, true);
+              this.releaseValue(nv, type);
+            } else if (isRefCounted(type)) {
               const old = B.tmp();
               B.line(`${old} = load ptr, ptr ${ptr}`);
-              this.storeField(ptr, type, nv);
+              this.storeField(ptr, type, nv, false);
               this.releaseValue(old, type);
             } else {
-              this.storeField(ptr, type, nv);
+              this.storeField(ptr, type, nv, false);
             }
             B.br(join);
             B.startBlock(ln);
@@ -6971,14 +7081,18 @@ export class LlEmitter {
           const ln = B.newLabel("rks.n");
           B.condBr(hit, lh, ln);
           B.startBlock(lh);
-          const { ptr, type } = this.recordFieldPtr(obj.name, s.shapeId, f.name);
-          if (isRefCounted(type)) {
+          const { ptr, type, inline } = this.recordFieldPtr(obj.name, s.shapeId, f.name);
+          if (inline) {
+            // The write owns the moved-in value; the slot copies its bits.
+            this.storeField(ptr, type, v.name, true);
+            this.releaseValue(v.name, type);
+          } else if (isRefCounted(type)) {
             const old = B.tmp();
             B.line(`${old} = load ptr, ptr ${ptr}`);
-            this.storeField(ptr, type, v.name);
+            this.storeField(ptr, type, v.name, false);
             this.releaseValue(old, type);
           } else {
-            this.storeField(ptr, type, v.name);
+            this.storeField(ptr, type, v.name, false);
           }
           B.br(join);
           B.startBlock(ln);
@@ -8299,6 +8413,7 @@ export class LlEmitter {
       tracedShapes: this.tracedShapes,
       unionsById: this.unionsById,
       recordsById: this.recordsById,
+      inlineUnions: this.inlineUnions,
       nullableArm: (t) => this.nullableUnions.of(t)?.arm ?? null,
       classInfo: (className) => {
         const meta = this.classMetaOf(className);
@@ -8308,11 +8423,18 @@ export class LlEmitter {
           pre: meta.pre,
           post: meta.post,
           runtimeRooted: meta.root.def.runtime === true,
-          fields: meta.def.fields.map((f) => ({
-            name: f.name,
-            index: classFieldIndex(meta, f.name).index,
-            type: this.nullableFields.storageType(className, f.name, f.type),
-          })),
+          // Inline scalar-union fields are plain bits: nothing to push.
+          fields: meta.def.fields.flatMap((f) =>
+            this.inlineUnions.classField(className, f.name)
+              ? []
+              : [
+                  {
+                    name: f.name,
+                    index: classFieldIndex(meta, f.name).index,
+                    type: this.nullableFields.storageType(className, f.name, f.type),
+                  },
+                ],
+          ),
         };
       },
       classesInInterval: (pre, post) =>
@@ -8555,12 +8677,13 @@ export class LlEmitter {
     if (e.kind === "recordGet" || e.kind === "fieldGet") {
       const receiver = this.emitReadReceiver(e.obj);
       if (e.kind === "recordGet") {
-        const { ptr, type } = this.recordFieldPtr(receiver.name, e.shapeId, e.field);
-        return { name: this.loadRecordField(ptr, type), type: e.type };
+        // An inline union field answers a private stack box.
+        const { ptr, type, inline } = this.recordFieldPtr(receiver.name, e.shapeId, e.field);
+        return { name: this.loadRecordField(ptr, type, inline), type: e.type };
       }
-      const { ptr, type } = this.classFieldPtr(receiver.name, e.className, e.field);
+      const { ptr, type, inline } = this.classFieldPtr(receiver.name, e.className, e.field);
       if (this.int32Slots.isField(e.className, e.field)) return this.loadInt32Field(ptr, e.type);
-      return { name: this.loadField(ptr, type), type: e.type };
+      return { name: this.loadField(ptr, type, inline), type: e.type };
     }
     if (e.kind === "ternary" && this.canBorrowReceiver(e.then) && this.canBorrowReceiver(e.else_)) {
       // Checked projections lower to a ternary with an always-throwing
@@ -8629,8 +8752,16 @@ export class LlEmitter {
       matchMapRead(e, this.boxedUnionsById) !== null ||
       this.optionalArrayReads.get(e) !== null ||
       isScalarOptionalSource(e, this.unionSources) ||
-      this.scalarResultCall(e)
+      this.scalarResultCall(e) ||
+      this.inlineFieldGet(e)
     );
+  }
+
+  /** A read of a record or class field that stores its scalar union
+   * inline. */
+  inlineFieldGet(e: IrExpr): boolean {
+    if (e.kind === "recordGet") return this.recordFieldInline(e.shapeId, e.field);
+    return e.kind === "fieldGet" && this.inlineUnions.classField(e.className, e.field);
   }
 
   /** The nullable-pointer representation behind a union-typed class field
@@ -8807,9 +8938,11 @@ export class LlEmitter {
       case "downcast":
       case "upcast":
         return this.canBorrowReceiver(e.value);
+      // An inline union field has no box to lend: projections read it
+      // through emitReadReceiver's private stack box.
       case "fieldGet":
       case "recordGet":
-        return this.canBorrowReceiver(e.obj);
+        return !this.inlineFieldGet(e) && this.canBorrowReceiver(e.obj);
       case "ternary":
         return this.canBorrowReceiver(e.then) && this.canBorrowReceiver(e.else_);
       case "seqExpr": {

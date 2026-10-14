@@ -2,6 +2,13 @@ import { typedRefConstructor } from "./shapes.js";
 import { bindLiveArrayOps } from "./expr-stream-bridges.js";
 import { BYTES_ELEM_NUM, SCR_ARR_FIELD, f64Lit } from "./common.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
+import {
+  INLINE_UNION_FIELD,
+  loadInlineUnion,
+  stackUnionBox,
+  storeInlineUnion,
+  unionBoxBits,
+} from "./inline-unions.js";
 import { InternalCompilerError } from "../../errors.js";
 /* ScrDyn helpers for the LLVM backend: per-type match predicates
  * (dynMatchHelper), checked builders (dynCheckHelper), static→dyn
@@ -1230,7 +1237,7 @@ export class LlDyn {
               ? [
                   ...shape!.fields.map((field, index) => ({
                     index: index + 1,
-                    type: llFieldType(field.type),
+                    type: llFieldType(field.type, host.inlineUnions.record(field.type)),
                     name: field.name,
                   })),
                   ...(shape!.indexValue
@@ -1519,19 +1526,29 @@ export class LlDyn {
           B.line(`${ip} = getelementptr inbounds %ScrDynPath, ptr ${pathSlot}, i64 0, i32 2`);
           B.line(`store ${host.sizeType} 0, ptr ${ip}`);
         };
+        // An inline union field copies the checked box's bits; the caller
+        // releases the box afterwards.
         const storeInto = (fieldName: string, ft: IrType, value: string): void => {
           const idx = fieldIndex.get(fieldName)!;
           const p = B.tmp();
           B.line(
             `${p} = getelementptr inbounds %${struct}, ptr %r0, i64 0, i32 ${idx} ; .${llvmCommentText(fieldName)}`,
           );
-          if (llFieldType(ft) === "i8") {
+          const fieldTy = llFieldType(ft, host.inlineUnions.record(ft));
+          if (fieldTy === INLINE_UNION_FIELD) {
+            const { tag, bits } = unionBoxBits(B, value, host.unionNoneRef());
+            storeInlineUnion(B, p, tag, bits);
+          } else if (fieldTy === "i8") {
             const z = B.tmp();
             B.line(`${z} = zext i1 ${value} to i8`);
             B.line(`store i8 ${z}, ptr ${p}`);
           } else {
-            B.line(`store ${llFieldType(ft)} ${value}, ptr ${p}`);
+            B.line(`store ${fieldTy} ${value}, ptr ${p}`);
           }
+        };
+        const releaseInline = (ft: IrType, value: string): void => {
+          if (host.inlineUnions.record(ft))
+            B.line(`call void ${releaseSym(host, ft)}(ptr ${value})`);
         };
         // Tuple targets: a JSON ARRAY of exactly the arity.
         if (shape.tuple) {
@@ -1558,6 +1575,7 @@ export class LlDyn {
               `${v} = call ${this.valTy(f.type)} @${this.dynCheckHelper(f.type, preserveRefs)}(ptr ${e}, ptr ${pathSlot})`,
             );
             storeInto(f.name, f.type, v);
+            releaseInline(f.type, v);
             this.pendingBail(B, "dct", releaseR, "ptr null");
           });
           B.terminate(`ret ptr %r0`);
@@ -1617,11 +1635,20 @@ export class LlDyn {
           );
           B.line(`call void @scr_dyn_release(ptr ${m})`);
           storeInto(f.name, f.type, value);
-          this.pendingBail(B, "dcr", releaseR, "ptr null");
+          this.pendingBail(
+            B,
+            "dcr",
+            () => {
+              releaseInline(f.type, value);
+              releaseR();
+            },
+            "ptr null",
+          );
           if (f.type.kind === "union") {
             const stored = this.presenceOf(B, "%d", f.name, f.type, value);
             if (stored !== value) storeInto(f.name, f.type, stored);
           }
+          releaseInline(f.type, value);
         }
         // Index-signature shapes CAPTURE undeclared keys into the
         // overflow map.
@@ -2192,9 +2219,14 @@ export class LlDyn {
           B.line(
             `${p} = getelementptr inbounds %${struct}, ptr %v, i64 0, i32 ${fieldIndex.get(fname)!} ; .${llvmCommentText(fname)}`,
           );
+          // An inline union field lends a private stack box (ABSENT kept).
+          if (host.inlineUnions.record(ft)) {
+            const { tag, bits } = loadInlineUnion(B, p);
+            return stackUnionBox(B, host.sizeType, tag, bits);
+          }
           const raw = B.tmp();
-          B.line(`${raw} = load ${llFieldType(ft)}, ptr ${p}`);
-          if (llFieldType(ft) !== "i8") return raw;
+          B.line(`${raw} = load ${llFieldType(ft, false)}, ptr ${p}`);
+          if (llFieldType(ft, false) !== "i8") return raw;
           const b = B.tmp();
           B.line(`${b} = trunc i8 ${raw} to i1`);
           return b;

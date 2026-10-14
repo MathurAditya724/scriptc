@@ -6,6 +6,7 @@ import { FN_ATTRS, llFieldType, releaseSym, retainSym, traceArg, vAdapters } fro
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
 import { unionPeekLines, unionTagLines } from "./union-repr.js";
+import { inlineUnionCopyLines } from "./inline-unions.js";
 
 /** Text-template union construction around an owned (+1) reference payload:
  * a fresh box, or the payload itself for a nullable union. */
@@ -410,7 +411,13 @@ export function genResultThunkFor(
     `join:`,
     `  %v = load ptr, ptr %vslot`,
     `  %vp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${valueIdx + 1}`,
-    `  store ptr %v, ptr %vp`,
+    // An inline value field copies the box's bits and drops the box.
+    ...(host.inlineUnions.record(valueT)
+      ? [
+          ...inlineUnionCopyLines("%v", "%vp", "%vi"),
+          `  call void ${releaseSym(host.shapeHost, valueT)}(ptr %v)`,
+        ]
+      : [`  store ptr %v, ptr %vp`]),
     `  ret ptr %r`,
     `}`,
     ``,
@@ -1050,7 +1057,13 @@ export function settledStoreFor(
       `  store ptr ${host.internLiteral(status)}, ptr %${prefix}sp`,
       ...valueLines,
       `  %${prefix}vp = getelementptr inbounds ${struct}, ptr %${prefix}r, i64 0, i32 ${fieldIndex(arm.arm, field)}`,
-      `  store ${llFieldType(fieldT)} %${prefix}v, ptr %${prefix}vp`,
+      // An inline union field copies the payload box's bits.
+      ...(host.inlineUnions.record(fieldT)
+        ? [
+            ...inlineUnionCopyLines(`%${prefix}v`, `%${prefix}vp`, `%${prefix}vi`),
+            `  call void ${releaseSym(host.shapeHost, fieldT)}(ptr %${prefix}v)`,
+          ]
+        : [`  store ${llFieldType(fieldT, false)} %${prefix}v, ptr %${prefix}vp`]),
       ...unionWrapRefLines(host, to.unionId, arm.tag, arm.arm, `%${prefix}r`, `%${prefix}u`),
       `  call void @scr_arr_set_ref(ptr %a, double %i, ptr %${prefix}u)`,
       `  ret void`,

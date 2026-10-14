@@ -11,6 +11,7 @@ import {
   vAdapters,
 } from "./shapes.js";
 import { NullableUnions } from "./nullable-unions.js";
+import { InlineUnionFields } from "./inline-unions.js";
 
 function declarationHost(
   pointerBits: 32 | 64 = 64,
@@ -32,6 +33,8 @@ function declarationHost(
       functions: [],
       entry: "main",
     }),
+    inlineUnions: new InlineUnionFields(new Map()),
+    unionNoneRef: () => "@sc_union_none",
     recordsById: new Map(),
     recordCloneShapes: new Set(),
     rcHelpers: inlineRc ? new Set() : null,

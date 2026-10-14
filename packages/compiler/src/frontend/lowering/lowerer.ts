@@ -2108,6 +2108,10 @@ export class Lowerer {
       shape.indexValue,
       shape.declaredOrder,
     );
+    // The widened shape keeps the fields this one already widened.
+    for (const f of shape.fields)
+      if (this.isRuntimeOptionalField(type.shapeId, f.name))
+        this.runtimeOptionalFields.add(this.runtimeOptionalFieldKey(shapeId, f.name));
     this.runtimeOptionalFields.add(this.runtimeOptionalFieldKey(shapeId, field));
     return { kind: "record", shapeId };
   }

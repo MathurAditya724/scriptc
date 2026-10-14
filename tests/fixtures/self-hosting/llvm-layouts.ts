@@ -13,6 +13,7 @@ import { undefinedArmTag } from "../../../packages/compiler/src/ir/analysis.js";
 import { analyzeInt32Slots } from "../../../packages/compiler/src/ir/int32-slots.js";
 import { analyzeCallLifetimes } from "../../../packages/compiler/src/backend/llvm/call-lifetimes.js";
 import { NullableRefFields } from "../../../packages/compiler/src/backend/llvm/nullable-fields.js";
+import { InlineUnionFields } from "../../../packages/compiler/src/backend/llvm/inline-unions.js";
 import { VirtualBorrows } from "../../../packages/compiler/src/backend/llvm/virtual-borrows.js";
 import { f64Lit } from "../../../packages/compiler/src/backend/llvm/common.js";
 import { mangleClassObj } from "../../../packages/compiler/src/backend/mangle.js";
@@ -41,6 +42,9 @@ try {
   const traced = computeTraced(mod);
   const nullableUnions = new NullableUnions(mod);
   const unionsById = new Map((mod.unions ?? []).map((union) => [union.id, union]));
+  // Mirrors the emitter: scalar-union fields store their tag and bits inline.
+  const inlineUnions = new InlineUnionFields(nullableUnions.boxedUnions(unionsById), mod.classes ?? []);
+  let needsUnionNone = false;
   let virtualBorrows: VirtualBorrows | undefined;
   const host: ClassHost & WalkerHost = {
     declare: (decl) => { declarations.add(decl); },
@@ -62,6 +66,8 @@ try {
     inlineAlloc: request.bits === 64,
     unionsById,
     nullableUnions,
+    inlineUnions,
+    unionNoneRef: () => { needsUnionNone = true; return "@sc_union_none"; },
     recordCloneShapes: new Set(request.clones),
     rcHelpers: null,
     unitInstanceRef: (union, tag) => {
@@ -90,7 +96,20 @@ try {
   const functions = new Map(mod.functions.map((fn) => [fn.name, fn]));
   const graph = buildClassGraph(mod, functions);
   const nullableFields = new NullableRefFields(mod.classes ?? [], nullableUnions.boxedUnions(unionsById));
-  const lifetimes = analyzeCallLifetimes(functions, (className, field) => nullableFields.get(className, field) !== null);
+  const records = new Map((mod.records ?? []).map((record) => [record.id, record]));
+  const lifetimes = analyzeCallLifetimes(
+    functions,
+    (className, field) => nullableFields.get(className, field) !== null,
+    new Map(),
+    new Set(),
+    {
+      record: (shapeId, field) => {
+        const type = records.get(shapeId)?.fields.find((f) => f.name === field)?.type;
+        return type !== undefined && inlineUnions.record(type);
+      },
+      classField: (className, field) => inlineUnions.classField(className, field),
+    },
+  );
   virtualBorrows = new VirtualBorrows(mod, graph, functions, lifetimes.borrowed);
   const classObjects = new Map(request.classObjects.map((name) => [name, { nameSym: `@name_${mangleClassObj(name)}` }]));
   const typeName = (type: IrType): string => type.kind === "void" ? "void" : type.kind === "f64" || type.kind === "date" ? "double" : type.kind === "bool" ? "i1" : "ptr";
@@ -128,7 +147,7 @@ try {
     blocks.line("unreachable text must be dropped");
   });
   blocks.terminate("ret void");
-  console.log(JSON.stringify({ layouts, classes, declarations: [...declarations], strings, literals, units, needsOom, needsBadTag, helpers, walkers: walkers.defs, bindings, debug: debug.render(), block: blocks.render() }));
+  console.log(JSON.stringify({ layouts, classes, declarations: [...declarations], strings, literals, units, needsOom, needsBadTag, needsUnionNone, helpers, walkers: walkers.defs, bindings, debug: debug.render(), block: blocks.render() }));
 } catch (error) {
   if (error instanceof Error) console.log(error.name + ": " + error.message);
   else console.log("unexpected thrown value");

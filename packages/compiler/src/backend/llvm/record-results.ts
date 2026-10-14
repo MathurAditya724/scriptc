@@ -11,6 +11,7 @@ import {
 } from "../../ir/ir.js";
 import { dynamicFieldStores } from "../../ir/int32-slots.js";
 import { everyExpr, everyStmtList, transformStmtList } from "../../ir/traverse.js";
+import { InlineUnionFields } from "./inline-unions.js";
 
 /** Prefix of a function's result-slot entry: `%into.<name>(...params, dst)`
  * writes the function's fresh result object into `dst` and returns nothing. */
@@ -20,13 +21,21 @@ export function resultEntryName(name: string): string {
   return `${RESULT_ENTRY_PREFIX}${name}`;
 }
 
-function scalarFields(fields: readonly { type: IrType }[]): boolean {
-  return fields.every((field) => field.type.kind === "f64" || field.type.kind === "bool");
-}
-
-/** A plain record shape whose fields are numbers and booleans. */
-export function scalarRecordShape(shape: IrRecordShape | undefined): boolean {
-  return shape !== undefined && !shape.indexValue && !shape.tuple && scalarFields(shape.fields);
+/** A plain record shape whose fields are numbers, booleans and inline
+ * scalar unions (inline-unions.ts): its fields own nothing. */
+export function scalarRecordShape(
+  shape: IrRecordShape | undefined,
+  inline: InlineUnionFields,
+): boolean {
+  return (
+    shape !== undefined &&
+    !shape.indexValue &&
+    !shape.tuple &&
+    shape.fields.every(
+      (field) =>
+        field.type.kind === "f64" || field.type.kind === "bool" || inline.record(field.type),
+    )
+  );
 }
 
 /** A literal that stores every field of its shape, none of them through
@@ -40,13 +49,15 @@ export function completeRecordLiteral(
   return shape.fields.every((field) => names.has(field.name));
 }
 
-/** A standalone class with scalar fields whose constructor never lets
- * `this` escape: its instance can be built in caller-provided storage. */
+/** A standalone class whose fields are numbers, booleans and inline scalar
+ * unions, and whose constructor never lets `this` escape: its instance can
+ * be built in caller-provided storage. */
 export function scalarStandaloneClass(
   cls: IrClassDef | undefined,
   ctor: IrFunction | undefined,
   isBase: boolean,
   programLifetime: boolean,
+  inline: InlineUnionFields,
 ): boolean {
   if (
     !cls ||
@@ -60,7 +71,12 @@ export function scalarStandaloneClass(
     (cls.symbolFields?.length ?? 0) > 0 ||
     ctor.async ||
     ctor.generator ||
-    !scalarFields(cls.fields)
+    !cls.fields.every(
+      (field) =>
+        field.type.kind === "f64" ||
+        field.type.kind === "bool" ||
+        inline.classField(cls.name, field.name),
+    )
   )
     return false;
   const self = ctor.params[0]?.localId;
@@ -101,6 +117,12 @@ export function constructorInitializesFields(cls: IrClassDef, ctor: IrFunction):
  * result is proven to be consumed by projections, passing frame storage. */
 export function addRecordResultEntries(mod: IrModule): IrModule {
   const shapes = new Map((mod.records ?? []).map((shape) => [shape.id, shape]));
+  // Scalar unions are always tagged boxes, so the full union table decides
+  // inline fields exactly as the emitter's boxed table does.
+  const inline = new InlineUnionFields(
+    new Map((mod.unions ?? []).map((def) => [def.id, def])),
+    mod.classes ?? [],
+  );
   const classes = new Map((mod.classes ?? []).map((cls) => [cls.name, cls]));
   const bases = new Set((mod.classes ?? []).flatMap((cls) => (cls.base ? [cls.base] : [])));
   const lifetime = new Set(mod.contracts?.programLifetime ?? []);
@@ -111,6 +133,7 @@ export function addRecordResultEntries(mod: IrModule): IrModule {
       functions.get(`%${name}.constructor`),
       bases.has(name),
       lifetime.has(name),
+      inline,
     );
   // Shapes no store can change after construction: no record field write
   // in the program, no dynamic store that can name a field, and no native
@@ -234,7 +257,7 @@ export function addRecordResultEntries(mod: IrModule): IrModule {
       return false;
     const ret = fn.returnType;
     return (
-      (ret.kind === "record" && scalarRecordShape(shapes.get(ret.shapeId))) ||
+      (ret.kind === "record" && scalarRecordShape(shapes.get(ret.shapeId), inline)) ||
       (ret.kind === "object" && stackClass(ret.className))
     );
   });

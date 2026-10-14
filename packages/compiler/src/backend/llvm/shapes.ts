@@ -27,8 +27,15 @@ import {
   mangleRecordTrace,
 } from "../mangle.js";
 import { cycTypeDescriptor, emitObjectAlloc, emitObjectFree } from "./alloc.js";
+import type { BlockBuilder } from "./blocks.js";
 import { SCR_ARR_FIELD, llvmCommentText } from "./common.js";
 import type { NullableUnions } from "./nullable-unions.js";
+import {
+  INLINE_UNION_FIELD,
+  loadInlineUnion,
+  stackUnionBox,
+  type InlineUnionFields,
+} from "./inline-unions.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
 /** What the tables need from the emitter: the extern-declaration ledger
@@ -46,6 +53,11 @@ export interface ShapeHost {
   /** Unions represented as a nullable arm pointer (nullable-unions.ts):
    * their RC and trace entry points are the arm's NULL-tolerant ones. */
   readonly nullableUnions: NullableUnions;
+  /** Record and class fields that store a scalar union's tag and bits
+   * inline (inline-unions.ts): they own nothing. */
+  readonly inlineUnions: InlineUnionFields;
+  /** The zeroed `%ScrUnion` an inline store reads for a NULL dummy. */
+  unionNoneRef(): string;
   readonly recordsById: Map<string, IrRecordShape>;
   readonly recordCloneShapes: ReadonlySet<string>;
   /** The program constructs lifetime regions: the ProgramLifetime classes
@@ -682,8 +694,13 @@ export function boxAccess(t: IrType): "f64" | "bool" | "ref" {
 /* ── record shapes ────────────────────────────────────────────────────── */
 
 /** A record field's in-struct LLVM type. bool fields store as i8 (the C
- * _Bool layout); loads/stores convert at the access site. */
-export function llFieldType(t: IrType): "double" | "i8" | "ptr" {
+ * _Bool layout); loads/stores convert at the access site. An `inline`
+ * scalar-union field stores its tag and bits (inline-unions.ts). */
+export function llFieldType(
+  t: IrType,
+  inline: boolean,
+): "double" | "i8" | "ptr" | typeof INLINE_UNION_FIELD {
+  if (inline) return INLINE_UNION_FIELD;
   if (POINTER_KINDS.has(t.kind)) return "ptr";
   switch (t.kind) {
     case "f64":
@@ -695,6 +712,29 @@ export function llFieldType(t: IrType): "double" | "i8" | "ptr" {
     default:
       throw new LlvmUnsupportedError(`type:${t.kind}`);
   }
+}
+
+/** Loads a struct field slot for helper code: i8 bools truncate to i1, and
+ * an inline union field lends a private stack box with the slot's own
+ * bits (ABSENT included). */
+export function loadStructField(
+  B: BlockBuilder,
+  sizeType: "i32" | "i64",
+  ptr: string,
+  t: IrType,
+  inline: boolean,
+): string {
+  if (inline) {
+    const { tag, bits } = loadInlineUnion(B, ptr);
+    return stackUnionBox(B, sizeType, tag, bits);
+  }
+  const fieldTy = llFieldType(t, false);
+  const raw = B.tmp();
+  B.line(`${raw} = load ${fieldTy}, ptr ${ptr}`);
+  if (fieldTy !== "i8") return raw;
+  const b = B.tmp();
+  B.line(`${b} = trunc i8 ${raw} to i1`);
+  return b;
 }
 
 /* ── maps and sets ────────────────────────────────────────────────────── */
@@ -741,12 +781,18 @@ export function mapValKindNum(value: IrType): number {
   return value.kind === "f64" ? 0 : value.kind === "bool" ? 1 : 2;
 }
 
-/** The RC-relevant members of a shape: every field, plus the overflow map
- * on index-signature shapes (one more map-typed member). `index` is the
- * member's field position in the emitted struct type (rc header at 0). */
-export function rcMembers(shape: IrRecordShape): { index: number; type: IrType; name: string }[] {
+/** The RC-relevant members of a shape: every field except inline scalar
+ * unions, plus the overflow map on index-signature shapes (one more
+ * map-typed member). `index` is the member's field position in the
+ * emitted struct type (rc header at 0). */
+export function rcMembers(
+  shape: IrRecordShape,
+  inline: InlineUnionFields,
+): { index: number; type: IrType; name: string }[] {
   return [
-    ...shape.fields.map((f, i) => ({ index: i + 1, type: f.type, name: f.name })),
+    ...shape.fields.flatMap((f, i) =>
+      inline.record(f.type) ? [] : [{ index: i + 1, type: f.type, name: f.name }],
+    ),
     ...(shape.indexValue
       ? [
           {
@@ -1135,7 +1181,7 @@ export function emitRecordShapes(
 
   for (const shape of records) {
     const struct = mangleRecordStruct(shape.id);
-    const fieldTys = shape.fields.map((f) => llFieldType(f.type));
+    const fieldTys = shape.fields.map((f) => llFieldType(f.type, host.inlineUnions.record(f.type)));
     if (shape.indexValue) fieldTys.push("ptr"); // the overflow ScrMap *
     typeDefs.push(
       `%${struct} = type { ${host.sizeType}${fieldTys.length ? ", " + fieldTys.join(", ") : ""} } ` +
@@ -1149,7 +1195,7 @@ export function emitRecordShapes(
   const candidates: [string, DirectDestroy][] = [];
   const memberTypes: IrType[] = [];
   for (const shape of records) {
-    const members = rcMembers(shape);
+    const members = rcMembers(shape, host.inlineUnions);
     for (const m of members) memberTypes.push(m.type);
     if (!members.some((m) => isRefCounted(m.type) && needsBoundedRelease(m.type))) continue;
     const release = mangleRecordRelease(shape.id);
@@ -1167,7 +1213,7 @@ export function emitRecordShapes(
   for (const shape of records) {
     const struct = mangleRecordStruct(shape.id);
     const traced = host.tracedShapes.has(`record:${shape.id}`);
-    const members = rcMembers(shape);
+    const members = rcMembers(shape, host.inlineUnions);
     const refMembers = members.filter((m) => isRefCounted(m.type));
     const sizeOf = `ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 1) to ${host.sizeType})`;
 
@@ -1263,13 +1309,15 @@ export function emitRecordShapes(
       let i = 0;
       for (const field of shape.fields) {
         const index = i + 1;
-        const fieldTy = llFieldType(field.type);
+        const inline = host.inlineUnions.record(field.type);
+        const fieldTy = llFieldType(field.type, inline);
         clone.push(
           `  %sp${i} = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${index}`,
           `  %sv${i} = load ${fieldTy}, ptr %sp${i}`,
         );
-        const stored = isRefCounted(field.type) ? `%sr${i}` : `%sv${i}`;
-        if (isRefCounted(field.type)) {
+        const owned = isRefCounted(field.type) && !inline;
+        const stored = owned ? `%sr${i}` : `%sv${i}`;
+        if (owned) {
           clone.push(`  ${stored} = call ptr ${retainSym(host, field.type)}(ptr %sv${i})`);
         }
         clone.push(

@@ -136,6 +136,8 @@ export function emitCallExpr(
             if (host.stackObjects && canStackObject(host, a)) return emitStackObject(host, a);
             if (host.nullableFieldGet(a))
               return { name: host.emitOwnedNullableStack(a).box, type: a.type };
+            // An inline union field read copies its tag and bits.
+            if (host.inlineFieldGet(a)) return host.emitReadReceiver(a);
           }
           if (inputs[index]) return host.emitReadReceiver(a);
         }
@@ -1249,7 +1251,8 @@ export function emitConstruction(
     // The borrowed constructor body, like a direct call: this frame
     // owns the new object across the call, borrowed arguments stay
     // owned by a call frame, and projection-only parameters (stores
-    // into nullable-pointer fields, tests) receive private stack boxes.
+    // into nullable-pointer or inline union fields, tests) receive
+    // private stack boxes.
     const projected = host.callLifetimes.parameters.get(ctorName);
     const inputs = borrowableInputs(
       host,
@@ -1264,6 +1267,9 @@ export function emitConstruction(
           return emitStackUnion(host, a).value;
         if (projected?.has(i + 1) && host.nullableFieldGet(a))
           return { name: host.emitOwnedNullableStack(a).box, type: a.type };
+        // A scalar union owns nothing: its stack box is an independent copy.
+        if (projected?.has(i + 1) && host.inlineUnions.record(a.type) && host.isStackUnionSource(a))
+          return host.emitReadReceiver(a);
         if (inputs[i]) return host.emitReadReceiver(a);
       }
       return host.emitExpr(a);
