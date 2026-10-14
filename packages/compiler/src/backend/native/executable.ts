@@ -479,7 +479,18 @@ export async function compileCInternal(
     // musl deliberately has no libc-identification predefine; resolveCc's
     // SCR_MUSL flag and this target-selected TU travel together.
     ...(isMuslTarget(driver) ? [rt(join(rtDir, "scr_musl.c"))] : []),
-    ...(regex ? ["-I", vendorEngineDir(), rt(join(rtDir, "scr_regex.c")), ...lreObjects] : []),
+    // scr_glob.c (path.matchesGlob) compiles its segments through the
+    // regex unit, so it rides the same switch; section GC drops it from
+    // binaries that never match a glob.
+    ...(regex
+      ? [
+          "-I",
+          vendorEngineDir(),
+          rt(join(rtDir, "scr_regex.c")),
+          rt(join(rtDir, "scr_glob.c")),
+          ...lreObjects,
+        ]
+      : []),
     ...(opts.assert || regex || opts.symbol ? [rt(join(rtDir, "scr_assert.c"))] : []),
     ...(opts.inspect
       ? [rt(join(rtDir, "scr_inspect.c")), rt(join(rtDir, "scr_console_native.c"))]

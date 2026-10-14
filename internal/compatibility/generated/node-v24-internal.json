@@ -536,9 +536,9 @@
       "apiEntries": 17,
       "static": {
         "supported": 0,
-        "partial": 16,
+        "partial": 17,
         "refused": 0,
-        "not-implemented": 1,
+        "not-implemented": 0,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -69616,12 +69616,17 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "packages/runtime/test/glob.test.ts",
           "packages/runtime/test/path.test.ts",
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
           "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/5145-path-matches-glob-basics.ts",
+          "tests/corpus/5146-path-matches-glob-braces.ts",
+          "tests/corpus/5147-path-matches-glob-extglob.ts",
+          "tests/corpus/5148-path-matches-glob-classes.ts",
           "tests/corpus/957-builtins-namespace.ts"
         ]
       },
@@ -69785,8 +69790,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:path"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.path.matchesGlob",
+        "tests": [
+          "tests/corpus/5145-path-matches-glob-basics.ts",
+          "tests/corpus/5146-path-matches-glob-braces.ts",
+          "tests/corpus/5147-path-matches-glob-extglob.ts",
+          "tests/corpus/5148-path-matches-glob-classes.ts",
+          "packages/runtime/test/glob.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },

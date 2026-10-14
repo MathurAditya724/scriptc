@@ -14,6 +14,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `word-graph` | cpu | string-keyed Map/Set, BFS |
 | `alloc-trees` | cpu | allocation-heavy trees, immutable object-spread updates |
 | `numeric-kernels` | cpu | sieve, hashing, `number[][]` matmul, `Float64Array` |
+| `value-objects` | cpu | small immutable records and class instances: vector helpers, method chains, particle updates |
 | `validate-errors` | cpu | throw/catch on a fraction of inputs, small call chains |
 | `csv-numbers` | cpu | `split`, `Number`, `parseInt`, `toFixed` |
 | `log-lines` | cpu | 200k immediate `console.log`/`process.stdout.write` lines into the runner's pipe |

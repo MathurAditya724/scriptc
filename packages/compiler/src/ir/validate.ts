@@ -2334,9 +2334,15 @@ function validateFunction(
                                                   : e.method === "shift"
                                                     ? { argTypes: [], result: e.type } // union-checked below
                                                     : e.method === "sortValues"
-                                                      ? { argTypes: [F64, null], result: VOID }
+                                                      ? {
+                                                          argTypes: [F64, null, F64, null],
+                                                          result: VOID,
+                                                        }
                                                       : e.method === "sortDense"
-                                                        ? { argTypes: [null, BOOL], result: BOOL }
+                                                        ? {
+                                                            argTypes: [null, BOOL, F64, null],
+                                                            result: BOOL,
+                                                          }
                                                         : { argTypes: [], result: F64 }; // length
         if (
           (e.method === "sortPrimitive" || e.method === "toSortedPrimitive") &&
@@ -2361,6 +2367,29 @@ function validateFunction(
             err(`arrIntrinsic ${e.method} comparator must be (elem, elem) => number`, e.loc);
           if (e.method === "sortDense" && e.args[1]?.kind !== "boolLit")
             err("arrIntrinsic sortDense owned flag must be a boolean literal", e.loc);
+          // A recognized comparator's key order: [order] for numbers,
+          // [order, key reader] for record and class elements.
+          const order = e.args[2];
+          if (order) {
+            if (order.kind !== "numLit" || (order.value !== 1 && order.value !== -1))
+              err(`arrIntrinsic ${e.method} key order must be the literal 1 or -1`, e.loc);
+            const key = e.args[3]?.type;
+            if (
+              elem.kind === "f64"
+                ? key !== undefined
+                : elem.kind !== "record" && elem.kind !== "object"
+            )
+              err(`arrIntrinsic ${e.method} key order on ${elem.kind} elements`, e.loc);
+            if (
+              elem.kind !== "f64" &&
+              (!key ||
+                key.kind !== "func" ||
+                key.params.length !== 1 ||
+                !typeEquals(key.params[0]!, elem) ||
+                key.ret.kind !== "f64")
+            )
+              err(`arrIntrinsic ${e.method} key reader must be (elem) => number`, e.loc);
+          }
         }
         if (e.method === "getNumber" && elem.kind !== "f64") {
           err(`arrIntrinsic getNumber requires f64 elements, got ${elem.kind}`, e.loc);
@@ -2420,7 +2449,14 @@ function validateFunction(
         // slice's indices and splice's count are optional (omitted args
         // omitted from the IR — backends fill the defaults); everything
         // else is exact.
-        const minArgs = e.method === "slice" ? 0 : e.method === "splice" ? 1 : sig.argTypes.length;
+        const minArgs =
+          e.method === "slice"
+            ? 0
+            : e.method === "splice"
+              ? 1
+              : e.method === "sortValues" || e.method === "sortDense"
+                ? 2
+                : sig.argTypes.length;
         if (e.args.length < minArgs || e.args.length > sig.argTypes.length) {
           err(
             `arrIntrinsic ${e.method}: ${e.args.length} args, expected ${sig.argTypes.length}`,

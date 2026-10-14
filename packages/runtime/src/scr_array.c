@@ -887,7 +887,7 @@ static ScrArr *scr_arr_make_ops(const ScrArrOps *ops, size_t initial_cap, bool s
       small ? scr_arr_small_cap(SCR_ARR_INLINE_OFFSET + (cyc ? sizeof(ScrCycHdr) : 0), false) : 0;
   size_t size = inline_cap ? SCR_ARR_INLINE_OFFSET + inline_cap * SCR_ARR_SLOT_BYTES : sizeof(ScrArr);
   if (cyc) {
-    static const ScrCycType cyc_type = { &scr_arr_trace_v, &scr_arr_gc_free, SCR_CYC_KIND_ARRAY };
+    static ScrCycType cyc_type = { &scr_arr_trace_v, &scr_arr_gc_free, SCR_CYC_KIND_ARRAY };
     a = scr_cyc_alloc_inline(size, &cyc_type);
   } else {
     a = scr_mem_alloc(size);
@@ -2371,6 +2371,8 @@ typedef struct {
   uint32_t arity;
   bool numbers;
   bool borrowing; /* enter through f->fn_borrowed, lending the slots */
+  int32_t order;  /* 1 or -1: f orders number keys ascending or descending */
+  ScrClosure *key; /* the key reader of reference elements under `order` */
 } ScrSortCompare;
 
 static void *scr_sort_retain_str(void *p) { return scr_str_retain((ScrStr *)p); }
@@ -2431,8 +2433,12 @@ static bool scr_sort_greater(const ScrSortCompare *c, uint64_t left, uint64_t ri
 #define SCR_SORT_PREFETCH(c, buf, index, limit) \
   SCR_SORT_PREFETCH_AT(c, buf, (index) + SCR_SORT_PREFETCH_DISTANCE, limit)
 
-static ScrSortCompare scr_sort_compare_for(const ScrArr *a, ScrClosure *f, uint32_t arity) {
-  ScrSortCompare c = {f, NULL, arity, a->elem == SCR_ELEM_F64, false};
+static ScrSortCompare scr_sort_compare_for(const ScrArr *a, ScrClosure *f, uint32_t arity,
+                                           int32_t order, ScrClosure *key) {
+  ScrSortCompare c = {f, NULL, arity, a->elem == SCR_ELEM_F64, false, order, key};
+  if (order != 0 && (arity != 2 || (order != 1 && order != -1) ||
+                     (c.numbers ? key != NULL : a->elem != SCR_ELEM_REF || key == NULL)))
+    scr_trap("scriptc: invalid keyed sort\n");
   if (!c.numbers) {
     c.borrowing = f->fn_borrowed != NULL;
     if (a->elem == SCR_ELEM_STR) c.retain = scr_sort_retain_str;
@@ -2443,6 +2449,380 @@ static ScrSortCompare scr_sort_compare_for(const ScrArr *a, ScrClosure *f, uint3
   }
   return c;
 }
+
+/* ── keyed sort for recognized numeric comparators ───────────────────── */
+
+/* `a - b`, `b - a`, `a.k - b.k` and the three-way ternaries order numbers
+ * other than NaN consistently, call no user code and treat only equal
+ * numbers as equal, except that -0 equals 0. When no key is NaN or -0, a
+ * stable sort by key therefore produces exactly the comparator sort's
+ * permutation. Keys map to unsigned integers in the same order (descending
+ * order complements them). A first scan reads every key without storing
+ * it: ordered input stays as it is, strictly descending input reverses,
+ * a short tail after ascending reference keys is placed by binary search,
+ * and input of a few ascending runs merges them. Anything else takes an
+ * LSD radix sort, stable by construction, which skips the digit positions
+ * every key shares, so small integers take about half the passes. */
+
+typedef struct {
+  uint64_t key;
+  uint64_t slot;
+} ScrSortItem;
+
+#define SCR_SORT_SIGN (UINT64_C(1) << 63)
+/* Inputs of at most this many ascending runs merge instead. */
+#ifndef SCR_SORT_KEYED_RUNS
+#define SCR_SORT_KEYED_RUNS 16
+#endif
+/* Below this length, binary insertion beats the radix passes' setup. */
+#ifndef SCR_SORT_KEYED_INSERTION
+#define SCR_SORT_KEYED_INSERTION 48
+#endif
+
+/* The order-preserving unsigned key of a number, false for NaN and -0. */
+static bool scr_sort_key_encode(double value, uint64_t flip, uint64_t *key) {
+  uint64_t bits;
+  memcpy(&bits, &value, sizeof bits);
+  if (value != value || bits == SCR_SORT_SIGN) return false;
+  *key = ((bits & SCR_SORT_SIGN) ? ~bits : bits | SCR_SORT_SIGN) ^ flip;
+  return true;
+}
+
+static uint64_t scr_sort_key_decode(uint64_t key, uint64_t flip) {
+  key ^= flip;
+  return (key & SCR_SORT_SIGN) ? key & ~SCR_SORT_SIGN : ~key;
+}
+
+/* Longer inputs sort by 11-bit digits (six passes) rather than bytes: the
+ * larger count tables then pay for themselves. */
+#ifndef SCR_SORT_WIDE_DIGITS
+#define SCR_SORT_WIDE_DIGITS ((size_t)1 << 17)
+#endif
+
+/* What the first scan learned about the keys it read. */
+typedef struct {
+  size_t scanned; /* keys read: all n unless the input has many runs */
+  size_t head;    /* the length of the first ascending run */
+  size_t runs;    /* ascending runs among them */
+  bool descending; /* strictly */
+  bool valid;      /* no NaN or -0 among them */
+} ScrSortScan;
+
+#define SCR_SORT_SCAN(scan, n, READ)                                                \
+  do {                                                                              \
+    uint64_t previous_ = 0;                                                         \
+    (scan).runs = 1;                                                                \
+    (scan).head = (n);                                                              \
+    (scan).descending = true;                                                       \
+    (scan).valid = true;                                                            \
+    size_t i_ = 0;                                                                  \
+    for (; i_ < (n); i_++) {                                                        \
+      uint64_t key_;                                                                \
+      if (!scr_sort_key_encode(READ(i_), flip, &key_)) {                            \
+        (scan).valid = false;                                                       \
+        break;                                                                      \
+      }                                                                             \
+      if (i_) {                                                                     \
+        if (previous_ > key_ && (scan).runs == 1) (scan).head = i_;                 \
+        (scan).runs += previous_ > key_;                                            \
+        (scan).descending &= previous_ > key_;                                      \
+        if ((scan).runs > SCR_SORT_KEYED_RUNS && !(scan).descending) {              \
+          i_++;                                                                     \
+          break;                                                                    \
+        }                                                                           \
+      }                                                                             \
+      previous_ = key_;                                                             \
+    }                                                                               \
+    (scan).scanned = i_;                                                            \
+  } while (0)
+
+/* Binary insertion of buf[end..limit) into the sorted buf[start..end),
+ * after equal keys; leaves `end` at `limit`. */
+#define SCR_SORT_INSERT_UNTIL(T, KEY, buf, start, end, limit)                        \
+  do {                                                                               \
+    for (; (end) < (limit); (end)++) {                                               \
+      T pivot_ = (buf)[end];                                                         \
+      uint64_t pk_ = KEY(pivot_);                                                    \
+      size_t low_ = (start), high_ = (end);                                          \
+      while (low_ < high_) {                                                         \
+        size_t center_ = low_ + (high_ - low_) / 2;                                  \
+        if (KEY((buf)[center_]) > pk_) high_ = center_;                              \
+        else low_ = center_ + 1;                                                     \
+      }                                                                              \
+      memmove((buf) + low_ + 1, (buf) + low_, ((end) - low_) * sizeof(T));           \
+      (buf)[low_] = pivot_;                                                          \
+    }                                                                                \
+  } while (0)
+
+/* Merges runs src[i..mid) and src[j..hi) of very different lengths into
+ * dst[k..): each record of the shorter run finds its place in the longer one
+ * by binary search (after equal keys of the left run, before equal keys of
+ * the right one), and the records between move as blocks. Leaves the
+ * indices at the ends of both runs. */
+#define SCR_SORT_BLOCK_MERGE(T, KEY, src, dst, i, j, k, mid, hi)                    \
+  do {                                                                               \
+    bool short_right_ = (hi) - (j) <= (mid) - (i);                                   \
+    size_t *at_ = short_right_ ? &(i) : &(j), *by_ = short_right_ ? &(j) : &(i);    \
+    size_t at_end_ = short_right_ ? (mid) : (hi), by_end_ = short_right_ ? (hi) : (mid); \
+    for (; *by_ < by_end_; (*by_)++) {                                               \
+      uint64_t key_ = KEY((src)[*by_]);                                              \
+      size_t low_ = *at_, high_ = at_end_;                                           \
+      while (low_ < high_) {                                                         \
+        size_t center_ = low_ + (high_ - low_) / 2;                                  \
+        uint64_t probe_ = KEY((src)[center_]);                                       \
+        if (short_right_ ? probe_ > key_ : probe_ >= key_) high_ = center_;          \
+        else low_ = center_ + 1;                                                     \
+      }                                                                              \
+      memcpy((dst) + (k), (src) + *at_, (low_ - *at_) * sizeof(T));                  \
+      (k) += low_ - *at_;                                                            \
+      *at_ = low_;                                                                   \
+      (dst)[(k)++] = (src)[*by_];                                                    \
+    }                                                                                \
+  } while (0)
+
+/* LSD radix passes over BITS-bit digits from `src` into `dst`, swapping the
+ * two after each pass; positions where every key has the same digit are
+ * skipped. */
+#define SCR_SORT_RADIX_PASSES(T, KEY, src, dst, n, BITS)                             \
+  do {                                                                               \
+    enum { digits_ = (64 + (BITS) - 1) / (BITS), radix_ = 1 << (BITS) };             \
+    size_t(*counts_)[radix_] = calloc(digits_, sizeof(*counts_));                    \
+    if (!counts_) scr_arr_oom();                                                     \
+    for (size_t i_ = 0; i_ < (n); i_++) {                                            \
+      uint64_t k_ = KEY((src)[i_]);                                                  \
+      for (unsigned d_ = 0; d_ < digits_; d_++)                                      \
+        counts_[d_][(k_ >> ((BITS) * d_)) & (radix_ - 1)]++;                         \
+    }                                                                                \
+    uint64_t first_ = KEY((src)[0]);                                                 \
+    for (unsigned d_ = 0; d_ < digits_; d_++) {                                      \
+      size_t *count_ = counts_[d_];                                                  \
+      unsigned shift_ = (BITS) * d_;                                                 \
+      if (count_[(first_ >> shift_) & (radix_ - 1)] == (n)) continue;                \
+      size_t at_ = 0;                                                                \
+      for (unsigned b_ = 0; b_ < radix_; b_++) {                                     \
+        size_t c_ = count_[b_];                                                      \
+        count_[b_] = at_;                                                            \
+        at_ += c_;                                                                   \
+      }                                                                              \
+      for (size_t i_ = 0; i_ < (n); i_++)                                            \
+        (dst)[count_[(KEY((src)[i_]) >> shift_) & (radix_ - 1)]++] = (src)[i_];      \
+      T *swap_ = (src);                                                              \
+      (src) = (dst);                                                                 \
+      (dst) = swap_;                                                                 \
+    }                                                                                \
+    free(counts_);                                                                   \
+  } while (0)
+
+/* Stable sort of `n` records of type T keyed by KEY(record), between `buf`
+ * and `tmp` (which may be NULL when `n` is at most the insertion length);
+ * leaves the sorted records in *out. */
+#define SCR_SORT_KEYED_RECORDS(T, KEY, buf, tmp, n, few_runs, out)                   \
+  do {                                                                               \
+    T *src_ = (buf), *dst_ = (tmp);                                                  \
+    if (few_runs) {                                                                  \
+      /* Runs grow to 16 records by insertion, as in the comparator sort; a  \
+       * run starting inside an ascending run extends to that run's end, so  \
+       * there are at most twice as many as ascending runs. */               \
+      size_t starts_[2 * SCR_SORT_KEYED_RUNS + 1], count_ = 0;                       \
+      for (size_t start_ = 0; start_ < (n);) {                                       \
+        starts_[count_++] = start_;                                                  \
+        size_t end_ = start_ + 1;                                                    \
+        while (end_ < (n) && KEY(src_[end_ - 1]) <= KEY(src_[end_])) end_++;         \
+        size_t limit_ = start_ + 16 < (n) ? start_ + 16 : (n);                       \
+        SCR_SORT_INSERT_UNTIL(T, KEY, src_, start_, end_, limit_);                   \
+        start_ = end_;                                                               \
+      }                                                                              \
+      starts_[count_] = (n);                                                         \
+      while (count_ > 1) {                                                           \
+        size_t next_ = 0;                                                            \
+        for (size_t r_ = 0; r_ < count_; r_ += 2) {                                  \
+          size_t lo_ = starts_[r_], mid_ = starts_[r_ + 1];                          \
+          size_t hi_ = r_ + 2 <= count_ ? starts_[r_ + 2] : mid_;                    \
+          size_t i_ = lo_, j_ = mid_, k_ = lo_;                                      \
+          if ((hi_ - mid_) * 8 <= mid_ - lo_ || (mid_ - lo_) * 8 <= hi_ - mid_)      \
+            SCR_SORT_BLOCK_MERGE(T, KEY, src_, dst_, i_, j_, k_, mid_, hi_);         \
+          while (i_ < mid_ && j_ < hi_)                                              \
+            dst_[k_++] = KEY(src_[j_]) < KEY(src_[i_]) ? src_[j_++] : src_[i_++];    \
+          memcpy(dst_ + k_, src_ + i_, (mid_ - i_) * sizeof(T));                     \
+          k_ += mid_ - i_;                                                           \
+          memcpy(dst_ + k_, src_ + j_, (hi_ - j_) * sizeof(T));                      \
+          starts_[next_++] = lo_;                                                    \
+        }                                                                            \
+        starts_[next_] = (n);                                                        \
+        count_ = next_;                                                              \
+        T *swap_ = src_;                                                             \
+        src_ = dst_;                                                                 \
+        dst_ = swap_;                                                                \
+      }                                                                              \
+    } else if ((n) <= SCR_SORT_KEYED_INSERTION) {                                    \
+      size_t end_ = 1;                                                               \
+      SCR_SORT_INSERT_UNTIL(T, KEY, src_, 0, end_, (n));                             \
+    } else if ((n) > SCR_SORT_WIDE_DIGITS) {                                         \
+      SCR_SORT_RADIX_PASSES(T, KEY, src_, dst_, n, 11);                              \
+    } else {                                                                         \
+      SCR_SORT_RADIX_PASSES(T, KEY, src_, dst_, n, 8);                               \
+    }                                                                                \
+    *(out) = src_;                                                                   \
+  } while (0)
+
+#define SCR_SORT_SELF_KEY(x) (x)
+#define SCR_SORT_ITEM_KEY(x) ((x).key)
+
+static void scr_sort_reverse_slots(uint64_t *values, size_t n) {
+  for (size_t left = 0, right = n - 1; left < right; left++, right--) {
+    uint64_t v = values[left];
+    values[left] = values[right];
+    values[right] = v;
+  }
+}
+
+/* Sorts number slots in place as their keys. Equal keys are equal numbers,
+ * so the order among them needs no tracking. */
+static bool scr_sort_keyed_numbers(uint64_t *values, size_t n, uint64_t flip) {
+  ScrSortScan scan;
+#define SCR_SORT_NUMBER_AT(i) scr_slot_to_f64(values[i])
+  SCR_SORT_SCAN(scan, n, SCR_SORT_NUMBER_AT);
+  if (!scan.valid) return false;
+  bool complete = scan.scanned == n;
+  if (complete && scan.runs == 1) return true;
+  if (complete && scan.descending) {
+    scr_sort_reverse_slots(values, n);
+    return true;
+  }
+  uint64_t key;
+  for (size_t i = scan.scanned; i < n; i++)
+    if (!scr_sort_key_encode(SCR_SORT_NUMBER_AT(i), flip, &key)) return false;
+#undef SCR_SORT_NUMBER_AT
+  for (size_t i = 0; i < n; i++) {
+    scr_sort_key_encode(scr_slot_to_f64(values[i]), flip, &key);
+    values[i] = key;
+  }
+  bool few_runs = complete && scan.runs <= SCR_SORT_KEYED_RUNS;
+  uint64_t *tmp = NULL, *sorted = values;
+  if (few_runs || n > SCR_SORT_KEYED_INSERTION) {
+    tmp = malloc(n * sizeof(*tmp));
+    if (!tmp) scr_arr_oom();
+  }
+  SCR_SORT_KEYED_RECORDS(uint64_t, SCR_SORT_SELF_KEY, values, tmp, n, few_runs, &sorted);
+  for (size_t i = 0; i < n; i++) values[i] = scr_sort_key_decode(sorted[i], flip);
+  free(tmp);
+  return true;
+}
+
+/* A reference element's key through the borrowed reader closure. */
+static double scr_sort_read_key(const ScrSortCompare *c, uint64_t slot) {
+  ScrClosure *reader = c->key;
+  void *x = scr_slot_to_ptr(slot);
+  if (reader->fn_borrowed)
+    return ((double (*)(ScrClosure *, void *))reader->fn_borrowed)(reader, x);
+  return ((double (*)(ScrClosure *, void *))reader->fn)(reader, x ? c->retain(x) : x);
+}
+
+/* Ascending keys followed by a short tail (values pushed onto a sorted
+ * array): sorts the tail alone, finds where each of its slots belongs in
+ * the head by binary search, then moves the head's slots as blocks, without
+ * a buffer for the whole input. Every key is read before any slot moves. */
+static bool scr_sort_keyed_tail(uint64_t *values, size_t n, size_t head, const ScrSortCompare *c,
+                                uint64_t flip) {
+  size_t tail = n - head;
+  ScrSortItem *items = malloc(tail * 2 * sizeof(*items));
+  if (!items) scr_arr_oom();
+  for (size_t i = 0; i < tail; i++) {
+    if (!scr_sort_key_encode(scr_sort_read_key(c, values[head + i]), flip, &items[i].key)) {
+      free(items);
+      return false;
+    }
+    items[i].slot = values[head + i];
+  }
+  ScrSortItem *sorted = items;
+  SCR_SORT_KEYED_RECORDS(ScrSortItem, SCR_SORT_ITEM_KEY, items, items + tail, tail, false,
+                         &sorted);
+  /* Each tail slot follows the head's slots with keys up to its own. The
+   * places only grow, so each search starts at the previous one. */
+  size_t *places = malloc(tail * sizeof(*places));
+  if (!places) scr_arr_oom();
+  for (size_t i = 0, low = 0; i < tail; i++) {
+    size_t high = head;
+    while (low < high) {
+      size_t center = low + (high - low) / 2;
+      uint64_t key;
+      scr_sort_key_encode(scr_sort_read_key(c, values[center]), flip, &key);
+      if (key > sorted[i].key) high = center;
+      else low = center + 1;
+    }
+    places[i] = low;
+  }
+  for (size_t i = tail, end = head; i-- > 0;) {
+    memmove(values + places[i] + i + 1, values + places[i], (end - places[i]) * sizeof(*values));
+    values[places[i] + i] = sorted[i].slot;
+    end = places[i];
+  }
+  free(places);
+  free(items);
+  return true;
+}
+
+/* Sorts reference slots by the keys their reader returns. The reader is a
+ * plain field read; the slots move only after every key has been read. */
+static bool scr_sort_keyed_refs(uint64_t *values, size_t n, const ScrSortCompare *c,
+                                uint64_t flip) {
+  ScrSortScan scan;
+#define SCR_SORT_REF_AT(i) scr_sort_read_key(c, values[i])
+  SCR_SORT_SCAN(scan, n, SCR_SORT_REF_AT);
+#undef SCR_SORT_REF_AT
+  if (!scan.valid) return false;
+  bool complete = scan.scanned == n;
+  if (complete && scan.runs == 1) return true;
+  if (complete && scan.descending) {
+    /* Strictly descending keys reverse without reordering ties. */
+    scr_sort_reverse_slots(values, n);
+    return true;
+  }
+  /* The scan has read and checked the head's keys; the tail's are checked
+   * as they are read again. */
+  if (scan.head < n && scan.head >= n - n / 8)
+    return scr_sort_keyed_tail(values, n, scan.head, c, flip);
+  ScrSortItem *items = malloc(n * sizeof(*items));
+  if (!items) scr_arr_oom();
+  for (size_t i = 0; i < n; i++) {
+    if (!scr_sort_key_encode(scr_sort_read_key(c, values[i]), flip, &items[i].key)) {
+      free(items);
+      return false;
+    }
+    items[i].slot = values[i];
+  }
+  bool few_runs = complete && scan.runs <= SCR_SORT_KEYED_RUNS;
+  ScrSortItem *tmp = NULL, *sorted = items;
+  if (few_runs || n > SCR_SORT_KEYED_INSERTION) {
+    tmp = malloc(n * sizeof(*tmp));
+    if (!tmp) scr_arr_oom();
+  }
+  SCR_SORT_KEYED_RECORDS(ScrSortItem, SCR_SORT_ITEM_KEY, items, tmp, n, few_runs, &sorted);
+  for (size_t i = 0; i < n; i++) values[i] = sorted[i].slot;
+  free(items);
+  free(tmp);
+  return true;
+}
+
+/* Orders `n >= 2` slots by key when the comparator allows it. Returns false,
+ * leaving the slots as they were, when a key is NaN or -0: the comparator
+ * sort then runs instead. */
+static bool scr_sort_keyed(uint64_t *values, size_t n, const ScrSortCompare *c) {
+  uint64_t flip = c->order < 0 ? ~UINT64_C(0) : 0;
+  if (c->numbers) return scr_sort_keyed_numbers(values, n, flip);
+  scr_dyn_this_push_dyn(NULL);
+  bool sorted = scr_sort_keyed_refs(values, n, c, flip);
+  scr_dyn_this_pop();
+  return sorted;
+}
+
+#undef SCR_SORT_SELF_KEY
+#undef SCR_SORT_ITEM_KEY
+#undef SCR_SORT_KEYED_RECORDS
+#undef SCR_SORT_RADIX_PASSES
+#undef SCR_SORT_BLOCK_MERGE
+#undef SCR_SORT_INSERT_UNTIL
+#undef SCR_SORT_SCAN
 
 /* The stable natural merge sort of the compiler's IR helper, in place over
  * `n >= 2` slots: strictly descending runs reverse, short runs grow to 16
@@ -2581,19 +2961,20 @@ done:
  * keeps owning every element and stays untouched while user code runs, so
  * the cycle collector and a throwing comparator both see the original
  * snapshot; the sorted permutation is published only after success. */
-void scr_arr_sort_values(ScrArr *a, double count, ScrClosure *f, uint32_t arity) {
+void scr_arr_sort_values(ScrArr *a, double count, ScrClosure *f, uint32_t arity,
+                         int32_t order, ScrClosure *key) {
   size_t n = (size_t)count;
   if (n < 2) return;
   if (n > a->len || n > SIZE_MAX / 2 / sizeof(uint64_t))
     scr_trap("scriptc: invalid comparator sort snapshot\n");
-  ScrSortCompare c = scr_sort_compare_for(a, f, arity);
+  ScrSortCompare c = scr_sort_compare_for(a, f, arity, order, key);
   uint64_t *src = malloc(n * sizeof(*src));
   if (!src) scr_arr_oom();
   for (size_t i = 0; i < n; i++) {
     if (scr_arr_state_at(a, i, &src[i]) != SCR_ARR_VALUE)
       scr_trap("scriptc: invalid comparator sort snapshot\n");
   }
-  bool sorted = scr_sort_slots(src, n, &c, true);
+  bool sorted = (order != 0 && scr_sort_keyed(src, n, &c)) || scr_sort_slots(src, n, &c, true);
   /* A permutation of the same owned slots: no reference count changes. */
   for (size_t i = 0; sorted && i < n; i++) {
     if (i < a->cap) {
@@ -2633,15 +3014,19 @@ static bool scr_arr_dense_values(const ScrArr *a) {
  * indices below the snapshot length are still dense storage, else through
  * the general element write, which fills holes, regrows a truncated array
  * and keeps appended indices. A comparator exception leaves `a` as the
- * comparator left it. */
-bool scr_arr_sort_dense(ScrArr *a, ScrClosure *f, uint32_t arity, bool owned) {
+ * comparator left it. A keyed sort calls no user code, so it permutes the
+ * slots of `a` in place. */
+bool scr_arr_sort_dense(ScrArr *a, ScrClosure *f, uint32_t arity, bool owned, int32_t order,
+                        ScrClosure *key) {
   if (a->rc == SIZE_MAX || !scr_arr_dense_values(a)) return false;
   size_t n = a->len;
   if (n < 2) return true;
   if (n > SIZE_MAX / 2 / sizeof(uint64_t)) scr_arr_oom();
-  ScrSortCompare c = scr_sort_compare_for(a, f, arity);
+  ScrSortCompare c = scr_sort_compare_for(a, f, arity, order, key);
   /* Nothing else can reach a private copy: its own storage is sorted, and
-   * the same owned slots only permute. */
+   * the same owned slots only permute. A keyed sort runs no user code, so
+   * it permutes a shared array's slots in place too. */
+  if (order != 0 && scr_sort_keyed(a->data, n, &c)) return true;
   if (owned) {
     scr_sort_slots(a->data, n, &c, false);
     return true;

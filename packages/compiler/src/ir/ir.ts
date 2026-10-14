@@ -1829,7 +1829,13 @@ export type IrArrIntrinsicMethod =
    * arguments are [value count, comparator]. Every slot below the count is
    * a value of an `isSortValuesElement` type; the comparator is invoked
    * with exactly its declared arity. Returns void; comparator exceptions
-   * propagate and leave the snapshot unchanged. */
+   * propagate and leave the snapshot unchanged. Optional trailing
+   * arguments [order, key] describe a comparator that orders numbers
+   * ascending (order 1) or descending (-1), a numeric literal: the runtime
+   * may then sort by key without calling it. Number elements are their own
+   * keys; record and class elements pass the capture-free key reader
+   * `(elem) => number` both comparator operands apply. Keys the runtime
+   * does not order directly (NaN, -0) still sort through the comparator. */
   | "sortValues"
   /** Internal stable comparator sort of a dense array in place: arguments
    * are [comparator, owned]. Returns false, without calling the comparator,
@@ -1837,7 +1843,8 @@ export type IrArrIntrinsicMethod =
    * is published; the caller then sorts a compacted snapshot. Otherwise the
    * receiver's values are sorted outside it and written back only after
    * success, as the spec's sort writes them, and it returns true. `owned`
-   * (a boolean literal) marks a private copy no user code can reach. */
+   * (a boolean literal) marks a private copy no user code can reach.
+   * Optional trailing arguments [order, key] as for sortValues. */
   | "sortDense"
   | "length"
   /** Internal ToNumber(a[index]) for f64-backed arrays: one numeric index,

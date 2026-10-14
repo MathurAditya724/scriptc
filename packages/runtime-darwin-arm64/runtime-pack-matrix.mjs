@@ -57,6 +57,7 @@ const optional = [
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
   ["scr_regex.c", "regex"],
+  ["scr_glob.c", "regex"],
   ["scr_assert.c", any("assert", "regex", "symbol")],
   ["scr_inspect.c", "inspect"],
   ["scr_console_native.c", "inspect"],

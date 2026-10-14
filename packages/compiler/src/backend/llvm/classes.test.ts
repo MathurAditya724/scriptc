@@ -79,7 +79,7 @@ test("releases split into an inlinable fast path and an out-of-line remainder", 
   // takes the possible-root step without loading the vtable.
   const fast = body(mangleClassRelease("Node"));
   expect(fast).toContain("%shared = icmp ult i64 %rcm2, -3");
-  expect(fast).toContain("load i16, ptr %bufp");
+  expect(fast).toContain("load i32, ptr %bufp");
   expect(fast).toContain(`call void @${mangleClassRelease("Node")}_slow(ptr %o)`);
   expect(fast).not.toContain("%ScrVt");
   // Only the last reference dispatches, from a noinline remainder.
@@ -136,7 +136,7 @@ test("ProgramLifetime hierarchies are never freed and take no reference counts",
   // The mortal Owner keeps its header, counts and possible-root step.
   expect(body(mangleClassNew("Owner"))).toContain("store i64 1, ptr %o");
   expect(body(mangleClassNew("Owner"))).toContain("scr_cyc_alloc");
-  expect(body(mangleClassRelease("Owner"))).toContain("load i16, ptr %bufp");
+  expect(body(mangleClassRelease("Owner"))).toContain("load i32, ptr %bufp");
 });
 
 test("published ProgramLifetime instances use the published mark every other object uses", () => {

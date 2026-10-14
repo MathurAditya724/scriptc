@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 40,
-        "verify-gap": 2354,
-        "audit-partial": 794,
+        "verify-gap": 2353,
+        "audit-partial": 795,
         "classify": 2,
         "implement": 80
       }
@@ -49144,12 +49144,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:path",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.path.matchesGlob",
+          "tests": [
+            "tests/corpus/5145-path-matches-glob-basics.ts",
+            "tests/corpus/5146-path-matches-glob-braces.ts",
+            "tests/corpus/5147-path-matches-glob-extglob.ts",
+            "tests/corpus/5148-path-matches-glob-classes.ts",
+            "packages/runtime/test/glob.test.ts"
+          ]
         }
       }
     },

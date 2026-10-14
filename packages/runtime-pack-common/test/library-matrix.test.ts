@@ -40,6 +40,7 @@ test("library pack modes preserve pure runtime features and exclude ambient even
         expect(sources).not.toContain(source);
       for (const source of [
         "scr_regex.c",
+        "scr_glob.c",
         "scr_assert.c",
         "scr_events_emitter.c",
         "scr_zlib.c",

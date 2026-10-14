@@ -480,6 +480,18 @@ export function emitStrIntrinsic(
   }
 }
 
+/** The `i32 order, ptr key` arguments of the runtime comparator sorts:
+ * 0 and null unless the comparator orders by a number key. */
+function emitSortKeyArgs(
+  host: LlvmEmitterContext,
+  order: IrExpr | undefined,
+  key: IrExpr | undefined,
+): string {
+  const direction = order?.kind === "numLit" ? order.value : 0;
+  const reader = key ? emitBorrowedInput(host, key).name : "null";
+  return `i32 ${direction}, ptr ${reader}`;
+}
+
 export function emitStableReceiver(
   host: LlvmEmitterContext,
   receiver: IrExpr,
@@ -767,9 +779,10 @@ export function emitArrIntrinsic(
       const comparator = emitBorrowedInput(host, e.args[1]!);
       const cmp = e.args[1]!.type;
       const arity = cmp.kind === "func" ? cmp.params.length : 0;
-      host.declare(`declare void @scr_arr_sort_values(ptr, double, ptr, i32)`);
+      const keyed = emitSortKeyArgs(host, e.args[2], e.args[3]);
+      host.declare(`declare void @scr_arr_sort_values(ptr, double, ptr, i32, i32, ptr)`);
       B.line(
-        `call void @scr_arr_sort_values(ptr ${r.name}, double ${count.name}, ptr ${comparator.name}, i32 ${arity})`,
+        `call void @scr_arr_sort_values(ptr ${r.name}, double ${count.name}, ptr ${comparator.name}, i32 ${arity}, ${keyed})`,
       );
       host.emitPendingCheck();
       return { name: "", type: e.type };
@@ -781,10 +794,11 @@ export function emitArrIntrinsic(
       const owned = e.args[1]!.kind === "boolLit" && e.args[1]!.value;
       const cmp = e.args[0]!.type;
       const arity = cmp.kind === "func" ? cmp.params.length : 0;
-      host.declare(`declare zeroext i1 @scr_arr_sort_dense(ptr, ptr, i32, i1 zeroext)`);
+      const keyed = emitSortKeyArgs(host, e.args[2], e.args[3]);
+      host.declare(`declare zeroext i1 @scr_arr_sort_dense(ptr, ptr, i32, i1 zeroext, i32, ptr)`);
       const handled = B.tmp();
       B.line(
-        `${handled} = call zeroext i1 @scr_arr_sort_dense(ptr ${r.name}, ptr ${comparator.name}, i32 ${arity}, i1 ${owned ? 1 : 0})`,
+        `${handled} = call zeroext i1 @scr_arr_sort_dense(ptr ${r.name}, ptr ${comparator.name}, i32 ${arity}, i1 ${owned ? 1 : 0}, ${keyed})`,
       );
       host.emitPendingCheck();
       return { name: handled, type: e.type };

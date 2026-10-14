@@ -318,7 +318,7 @@ static void scr_promise_gcfree(void *o) {
 }
 
 ScrPromise *scr_promise_new(void) {
-  static const ScrCycType cyc_type = { &scr_promise_trace, &scr_promise_gcfree, SCR_CYC_KIND_PROMISE };
+  static ScrCycType cyc_type = { &scr_promise_trace, &scr_promise_gcfree, SCR_CYC_KIND_PROMISE };
   ScrPromise *p = scr_cyc_alloc(sizeof *p, &cyc_type);
   p->rc = 1;
 #ifdef SCR_RC_AUDIT

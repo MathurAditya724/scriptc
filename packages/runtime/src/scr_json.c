@@ -817,8 +817,8 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
     *list = (ScrDyn *)d->v.str; /* freelist link */
     scr_dyn_free_count--;
     ScrCycHdr *header = scr_cyc_hdr(d);
-    header->color = SCR_CYC_BLACK;
-    header->gen = SCR_CYC_NURSERY;
+    scr_cyc_set_color(header, SCR_CYC_BLACK);
+    scr_cyc_set_gen(header, SCR_CYC_NURSERY);
     d->rc = 1;
     d->kind = kind;
     d->buffer = false;
@@ -850,7 +850,7 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
     return d;
   }
 #endif
-  static const ScrCycType cyc_type = { &scr_dyn_trace_v, &scr_dyn_gcfree, SCR_CYC_KIND_DYN };
+  static ScrCycType cyc_type = { &scr_dyn_trace_v, &scr_dyn_gcfree, SCR_CYC_KIND_DYN };
   ScrDyn *fresh = scr_cyc_alloc_inline(sizeof *fresh, &cyc_type);
   if (!fresh) scr_json_oom();
   fresh->rc = 1;
@@ -3303,6 +3303,10 @@ typedef struct {
   void *ptr;            /* handle entry (borrowed); NULL when dv or undefined */
   ScrDynHandleTag tag;
   ScrDyn *dv;           /* dyn entry (+1); NULL for handle/undefined entries */
+  /* A deferred typed-ref entry (scr_dyn_this_push_typed): the borrowed
+   * instance in `ptr` boxes with this recipe on the first read, and dv
+   * caches the box. */
+  const ScrDynTypedRefRecipe *recipe;
 } ScrDynThisEnt;
 
 static SCR_TL ScrDynThisEnt *scr_dyn_this_stack;
@@ -3334,6 +3338,7 @@ void scr_dyn_this_push(void *h, ScrDynHandleTag tag) {
   e->ptr = h;
   e->tag = tag;
   e->dv = NULL;
+  e->recipe = NULL;
 }
 
 void scr_dyn_this_push_dyn(const ScrDyn *v) {
@@ -3341,6 +3346,15 @@ void scr_dyn_this_push_dyn(const ScrDyn *v) {
   e->ptr = NULL;
   e->tag = 0;
   e->dv = v ? scr_dyn_retain((ScrDyn *)v) : NULL;
+  e->recipe = NULL;
+}
+
+void scr_dyn_this_push_typed(void *ptr, const ScrDynTypedRefRecipe *recipe) {
+  ScrDynThisEnt *e = scr_dyn_this_grow();
+  e->ptr = ptr;
+  e->tag = 0;
+  e->dv = NULL;
+  e->recipe = recipe;
 }
 
 void scr_dyn_this_pop(void) {
@@ -3354,6 +3368,23 @@ void scr_dyn_this_pop(void) {
 ScrDyn *scr_dyn_this_get(void) {
   if (scr_dyn_this_n > 0) {
     ScrDynThisEnt *e = &scr_dyn_this_stack[scr_dyn_this_n - 1];
+    if (!e->dv && e->recipe) {
+      const ScrDynTypedRefRecipe *r = e->recipe;
+      e->dv = r->kind == 2
+          ? scr_dyn_new_typed_ref_traced(e->ptr, r->retain, r->release, r->type_key,
+                                         r->type_key_len, r->materialize, r->commit)
+          : r->kind == 1
+              ? scr_dyn_new_typed_ref_observed(e->ptr, r->retain, r->release, r->type_key,
+                                               r->type_key_len, r->materialize, r->commit)
+              : scr_dyn_new_typed_ref(e->ptr, r->retain, r->release, r->type_key,
+                                      r->type_key_len, r->materialize, r->commit);
+      if (r->view == 1)
+        scr_dyn_typed_ref_bind_array(e->dv, (const ScrDynTypedArrayOps *)r->ops);
+      else if (r->view == 2)
+        scr_dyn_typed_ref_bind_record(e->dv, (const ScrDynTypedRecordOps *)r->ops);
+      else if (r->view == 3)
+        scr_dyn_typed_ref_bind_class(e->dv, (const ScrDynTypedClassOps *)r->ops);
+    }
     if (e->dv) return scr_dyn_retain(e->dv);
     /* An uninstalled tag never binds: a unit that fires without its dyn
      * half (no boxes can exist there) keeps the undefined answer. */
@@ -9959,7 +9990,7 @@ static void scr_weak_remove_impl(ScrWeakEntry *entry, bool collected) {
 }
 
 static void scr_weak_remove(ScrWeakEntry *entry) {
-  scr_weak_remove_impl(entry, scr_cyc_hdr(entry->owner)->color == SCR_CYC_DOOMED);
+  scr_weak_remove_impl(entry, scr_cyc_color(scr_cyc_hdr(entry->owner)) == SCR_CYC_DOOMED);
 }
 
 static void scr_weak_map_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
@@ -10159,7 +10190,7 @@ static ScrDyn *scr_weak_collection_new(ScrDyn *seed, bool is_set) {
   ScrDynHandleTag tag = is_set ? SCR_DYNH_WEAK_SET : SCR_DYNH_WEAK_MAP;
   scr_weak_dispose_hook = &scr_weak_disposed;
   scr_dyn_handle_install(tag, is_set ? &set_ops : &map_ops);
-  static const ScrCycType cyc_type = { &scr_weak_map_trace, &scr_weak_map_gcfree, SCR_CYC_KIND_WEAK_MAP };
+  static ScrCycType cyc_type = { &scr_weak_map_trace, &scr_weak_map_gcfree, SCR_CYC_KIND_WEAK_MAP };
   ScrWeakMap *map = scr_cyc_alloc(sizeof *map, &cyc_type);
   if (!map) scr_json_oom();
   map->rc = 1;

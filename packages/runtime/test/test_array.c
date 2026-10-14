@@ -388,7 +388,7 @@ static void mock_cyc_release(void *p) {
 }
 
 static MockRec *mock_cyc_new(int value) {
-  static const ScrCycType cyc_type = { &mock_trace, &mock_gcfree, 0 };
+  static ScrCycType cyc_type = { &mock_trace, &mock_gcfree, 0 };
   MockRec *r = scr_cyc_alloc(sizeof *r, &cyc_type);
   r->rc = 1;
   r->value = value;
@@ -1029,7 +1029,7 @@ static void test_comparator_sort(void) {
   const size_t n = sizeof(input) / sizeof(*input);
   for (size_t i = 0; i < n; i++) scr_arr_push_f64(nums, input[i]);
   scr_arr_push_f64(nums, -1); /* beyond the sorted count */
-  scr_arr_sort_values(nums, (double)n, &floor_fn, 2);
+  scr_arr_sort_values(nums, (double)n, &floor_fn, 2, 0, NULL);
   bool ordered = true;
   for (size_t i = 1; i < n; i++) {
     double a = scr_arr_get_f64(nums, (double)(i - 1)), b = scr_arr_get_f64(nums, (double)i);
@@ -1043,13 +1043,13 @@ static void test_comparator_sort(void) {
   ScrArr *few = scr_arr_new(SCR_ELEM_F64, 0);
   for (int i = 0; i < 5; i++) scr_arr_push_f64(few, 5 - i);
   sort_calls = 0;
-  scr_arr_sort_values(few, 5, &nan_fn, 0);
+  scr_arr_sort_values(few, 5, &nan_fn, 0, 0, NULL);
   check(sort_calls > 0 && scr_arr_get_f64(few, 0) == 5 && scr_arr_get_f64(few, 4) == 1,
         "a NaN comparator result keeps the input order");
-  scr_arr_sort_values(few, 5, &one_fn, 1);
+  scr_arr_sort_values(few, 5, &one_fn, 1, 0, NULL);
   check_f64(scr_arr_len(few), 5, "a one-parameter comparator sort keeps every element");
   sort_calls = 0;
-  scr_arr_sort_values(few, 1, &nan_fn, 0);
+  scr_arr_sort_values(few, 1, &nan_fn, 0, 0, NULL);
   check(sort_calls == 0, "a single value needs no comparator call");
   scr_arr_release(few);
   scr_arr_release(nums);
@@ -1068,7 +1068,7 @@ static void test_comparator_sort(void) {
   }
   sort_calls = 0;
   sort_throw_at = 7;
-  scr_arr_sort_values(words, (double)word_count, &length_fn, 2);
+  scr_arr_sort_values(words, (double)word_count, &length_fn, 2, 0, NULL);
   check(scr_exc_pending(), "a throwing comparator leaves the exception pending");
   scr_exc_clear();
   check(sort_calls == 7, "the sort stops at the first comparator exception");
@@ -1077,7 +1077,7 @@ static void test_comparator_sort(void) {
     if (scr_arr_peek_ref(words, (double)i) != originals[i]) unchanged = false;
   check(unchanged, "a comparator exception leaves the snapshot unchanged");
   sort_throw_at = -1;
-  scr_arr_sort_values(words, (double)word_count, &length_fn, 2);
+  scr_arr_sort_values(words, (double)word_count, &length_fn, 2, 0, NULL);
   check(!scr_exc_pending(), "a successful comparator sort leaves no exception");
   bool stable = true;
   size_t last_index = 0, last_len = 0;
@@ -1102,7 +1102,7 @@ static void test_comparator_sort(void) {
   const size_t big = ((size_t)1 << 20) + 300;
   ScrArr *wide = scr_arr_new(SCR_ELEM_F64, 0);
   for (size_t i = 0; i < big; i++) scr_arr_push_f64(wide, (double)(big - i) + 0.5);
-  scr_arr_sort_values(wide, (double)big, &floor_fn, 2);
+  scr_arr_sort_values(wide, (double)big, &floor_fn, 2, 0, NULL);
   bool wide_ordered = true;
   for (size_t i = 0; i < big; i++)
     if (scr_arr_get_f64(wide, (double)i) != (double)(i + 1) + 0.5) wide_ordered = false;
@@ -1147,7 +1147,7 @@ static void test_dense_comparator_sort(void) {
   dense_target = nums;
   sort_calls = 0;
   sort_throw_at = -1;
-  check(scr_arr_sort_dense(nums, &observe_fn, 2, false), "a dense number array sorts in place");
+  check(scr_arr_sort_dense(nums, &observe_fn, 2, false, 0, NULL), "a dense number array sorts in place");
   check(sort_throw_at == -1, "the comparator sees the unsorted receiver");
   bool ordered = true;
   for (size_t i = 1; i < 101; i++)
@@ -1158,21 +1158,21 @@ static void test_dense_comparator_sort(void) {
   scr_arr_push_f64(holes, 3);
   scr_arr_set_f64(holes, 2, 1);
   sort_calls = 0;
-  check(!scr_arr_sort_dense(holes, &floor_fn, 2, false) && sort_calls == 0,
+  check(!scr_arr_sort_dense(holes, &floor_fn, 2, false, 0, NULL) && sort_calls == 0,
         "an array with holes takes the snapshot path without comparator calls");
   ScrArr *undef = scr_arr_new(SCR_ELEM_F64, 0);
   scr_arr_push_f64(undef, 3);
   scr_arr_set_undefined(undef, 1);
   scr_arr_push_f64(undef, 1);
-  check(!scr_arr_sort_dense(undef, &floor_fn, 2, true) && sort_calls == 0,
+  check(!scr_arr_sort_dense(undef, &floor_fn, 2, true, 0, NULL) && sort_calls == 0,
         "storage-level undefined takes the snapshot path");
   ScrArr *one = scr_arr_new(SCR_ELEM_F64, 0);
   scr_arr_push_f64(one, 5);
-  check(scr_arr_sort_dense(one, &floor_fn, 2, false) && sort_calls == 0,
+  check(scr_arr_sort_dense(one, &floor_fn, 2, false, 0, NULL) && sort_calls == 0,
         "a single value needs no comparator call");
   size_t rc = one->rc;
   one->rc = SIZE_MAX; /* as publication marks it */
-  check(!scr_arr_sort_dense(one, &floor_fn, 2, false), "a published array takes the general path");
+  check(!scr_arr_sort_dense(one, &floor_fn, 2, false, 0, NULL), "a published array takes the general path");
   one->rc = rc;
   scr_arr_release(one);
   scr_arr_release(undef);
@@ -1193,7 +1193,7 @@ static void test_dense_comparator_sort(void) {
       sort_calls = 0;
       sort_throw_at = at;
       dense_edit_at = -1;
-      check(scr_arr_sort_dense(words, &length_fn, 2, owned) && scr_exc_pending(),
+      check(scr_arr_sort_dense(words, &length_fn, 2, owned, 0, NULL) && scr_exc_pending(),
             "a throwing comparator leaves the exception pending");
       scr_exc_clear();
       check(sort_calls == at && scr_arr_len(words) == count,
@@ -1225,7 +1225,7 @@ static void test_dense_comparator_sort(void) {
   sort_calls = 0;
   sort_throw_at = -1;
   dense_edit_at = 3;
-  check(scr_arr_sort_dense(words, &length_fn, 2, false) && !scr_exc_pending(),
+  check(scr_arr_sort_dense(words, &length_fn, 2, false, 0, NULL) && !scr_exc_pending(),
         "a comparator that truncates the receiver still completes");
   dense_edit_at = -1;
   bool lengths = scr_arr_len(words) == count;
@@ -1539,6 +1539,173 @@ static void test_inline_slots(void) {
 #endif
 }
 
+/* Keyed sorts for recognized numeric comparators: the same stable result as
+ * the comparator sort, without comparator calls unless a key is NaN or -0. */
+static double keyed_ascending(ScrClosure *self, double a, double b) {
+  (void)self;
+  sort_calls++;
+  return a - b;
+}
+
+static double keyed_descending(ScrClosure *self, double a, double b) {
+  (void)self;
+  sort_calls++;
+  return b - a;
+}
+
+static double keyed_rec_ascending(ScrClosure *self, void *a, void *b) {
+  (void)self;
+  sort_calls++;
+  double d = (double)((MockRec *)a)->value - (double)((MockRec *)b)->value;
+  mock_release(a);
+  mock_release(b);
+  return d;
+}
+
+static double keyed_rec_descending(ScrClosure *self, void *a, void *b) {
+  (void)self;
+  sort_calls++;
+  double d = (double)((MockRec *)b)->value - (double)((MockRec *)a)->value;
+  mock_release(a);
+  mock_release(b);
+  return d;
+}
+
+/* Reads value 0 as -0, which the comparator also treats as equal to 0. A
+ * first scan reads keys without storing them, so a key may be read twice,
+ * and placing a short tail reads head keys again in binary searches. */
+static long key_reads = 0;
+static double keyed_rec_key(ScrClosure *self, void *a) {
+  (void)self;
+  key_reads++;
+  int value = ((MockRec *)a)->value;
+  mock_release(a);
+  return value == 0 ? -0.0 : (double)value;
+}
+
+static uint32_t keyed_seed = 7;
+static uint32_t keyed_random(void) {
+  keyed_seed = keyed_seed * 1103515245u + 12345u;
+  return keyed_seed >> 8;
+}
+
+static void keyed_fill(ScrArr *a, ScrArr *b, size_t n, int shape) {
+  for (size_t i = 0; i < n; i++) {
+    double v;
+    if (shape == 0) v = (double)(keyed_random() % 64) - 32; /* small integers with ties */
+    else if (shape == 1) v = ((double)keyed_random() - 4e6) / 977.0 * 1e10; /* wide doubles */
+    else if (shape == 2) v = (double)i; /* presorted */
+    else if (shape == 3) v = (double)(n - i) * 0.25; /* strictly reversed */
+    else if (shape == 4) v = (double)((i % (n / 3 + 1)) / 2); /* three runs with ties */
+    else if (shape == 5) v = i + 3 < n ? (double)i : (double)(keyed_random() % 64); /* sorted, then appended */
+    else v = i < 3 ? (double)(keyed_random() % 64) : (double)(i / 2); /* a few, then sorted */
+    if (shape == 1 && i == 3) v = INFINITY;
+    if (shape == 1 && i == 5) v = -INFINITY;
+    scr_arr_push_f64(a, v);
+    scr_arr_push_f64(b, v);
+  }
+}
+
+static bool keyed_same_numbers(ScrArr *a, ScrArr *b) {
+  if (scr_arr_len(a) != scr_arr_len(b)) return false;
+  for (size_t i = 0; i < (size_t)scr_arr_len(a); i++) {
+    double x = scr_arr_get_f64(a, (double)i), y = scr_arr_get_f64(b, (double)i);
+    if (memcmp(&x, &y, sizeof x) != 0) return false;
+  }
+  return true;
+}
+
+static void test_keyed_sort(void) {
+  ScrClosure ascending = {SIZE_MAX, (void *)keyed_ascending, 0, NULL, 0};
+  ScrClosure descending = {SIZE_MAX, (void *)keyed_descending, 0, NULL, 0};
+  const size_t sizes[] = {2, 5, 40, 49, 1000, 70000, 140000}; /* the last takes 11-bit digits */
+  const size_t size_count = sizeof(sizes) / sizeof(*sizes);
+  bool same = true, uncalled = true;
+  for (size_t s = 0; s < size_count; s++) {
+    for (int shape = 0; shape < 7; shape++) {
+      for (int order = -1; order <= 1; order += 2) {
+        ScrClosure *cmp = order > 0 ? &ascending : &descending;
+        for (int path = 0; path < 3; path++) {
+          ScrArr *expected = scr_arr_new(SCR_ELEM_F64, 0);
+          ScrArr *actual = scr_arr_new(SCR_ELEM_F64, 0);
+          keyed_fill(expected, actual, sizes[s], shape);
+          scr_arr_sort_values(expected, (double)sizes[s], cmp, 2, 0, NULL);
+          sort_calls = 0;
+          if (path == 0) scr_arr_sort_values(actual, (double)sizes[s], cmp, 2, order, NULL);
+          else scr_arr_sort_dense(actual, cmp, 2, path == 2, order, NULL);
+          uncalled &= sort_calls == 0;
+          same &= keyed_same_numbers(expected, actual);
+          scr_arr_release(expected);
+          scr_arr_release(actual);
+        }
+      }
+    }
+  }
+  check(same, "keyed number sorts match the comparator sort");
+  check(uncalled, "keyed number sorts call no comparator");
+
+  const double specials[] = {NAN, -0.0};
+  for (size_t k = 0; k < 2; k++) {
+    ScrArr *expected = scr_arr_new(SCR_ELEM_F64, 0);
+    ScrArr *actual = scr_arr_new(SCR_ELEM_F64, 0);
+    keyed_fill(expected, actual, 300, 0);
+    scr_arr_set_f64(expected, 150, specials[k]);
+    scr_arr_set_f64(actual, 150, specials[k]);
+    scr_arr_sort_values(expected, 300, &ascending, 2, 0, NULL);
+    sort_calls = 0;
+    scr_arr_sort_dense(actual, &ascending, 2, true, 1, NULL);
+    check(sort_calls > 0 && keyed_same_numbers(expected, actual),
+          k == 0 ? "a NaN key sorts through the comparator" : "a -0 key sorts through the comparator");
+    scr_arr_release(expected);
+    scr_arr_release(actual);
+  }
+
+  ScrClosure rec_ascending = {SIZE_MAX, (void *)keyed_rec_ascending, 0, NULL, 0};
+  ScrClosure rec_descending = {SIZE_MAX, (void *)keyed_rec_descending, 0, NULL, 0};
+  ScrClosure rec_key = {SIZE_MAX, (void *)keyed_rec_key, 0, NULL, 0};
+  long live0 = mock_live;
+  bool identical = true, direct = true, fallback = true;
+  for (size_t s = 0; s < size_count; s++) {
+    for (int order = -1; order <= 1; order += 2) {
+      ScrClosure *cmp = order > 0 ? &rec_ascending : &rec_descending;
+      for (int variant = 0; variant < 8; variant++) {
+        /* Random keys, three ascending runs, ascending keys with a few or an
+         * eighth appended, each without and with a -0 key. */
+        bool zero = variant & 1, runs = variant / 2 == 1, appended = variant / 2 >= 2;
+        size_t tail = variant / 2 == 3 ? sizes[s] / 8 : 4;
+        size_t n = sizes[s];
+        ScrArr *expected = scr_arr_new_ops(&mock_ops, 0);
+        ScrArr *actual = scr_arr_new_ops(&mock_ops, 0);
+        for (size_t i = 0; i < n; i++) {
+          int value = runs       ? (int)((i % (n / 3 + 1)) * 40 / (n / 3 + 1)) + 1
+                      : appended ? (i + tail < n ? (int)(i * 40 / n) + 1 : (int)(keyed_random() % 45))
+                                 : (int)(keyed_random() % 50) - 25;
+          if (value == 0) value = 25;
+          if (zero && i == n / 2) value = 0;
+          MockRec *r = mock_new(value);
+          scr_arr_push_ref(expected, r);
+          scr_arr_push_ref(actual, mock_retain(r));
+        }
+        scr_arr_sort_values(expected, (double)n, cmp, 2, 0, NULL);
+        sort_calls = 0;
+        key_reads = 0;
+        if (s % 2) scr_arr_sort_values(actual, (double)n, cmp, 2, order, &rec_key);
+        else scr_arr_sort_dense(actual, cmp, 2, s % 4 == 2, order, &rec_key);
+        for (size_t i = 0; i < n; i++)
+          identical &= scr_arr_peek_ref(expected, (double)i) == scr_arr_peek_ref(actual, (double)i);
+        if (zero) fallback &= sort_calls > 0;
+        else direct &= sort_calls == 0 && key_reads <= 2 * (long)n + (long)tail * 64;
+        scr_arr_release(expected);
+        scr_arr_release(actual);
+      }
+    }
+  }
+  check(identical, "keyed record sorts keep the comparator sort's stable permutation");
+  check(direct, "keyed record sorts read keys a bounded number of times and call no comparator");
+  check(fallback, "a -0 record key sorts through the comparator");
+  check(mock_live == live0, "keyed record sorts balance every key read");
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) {
     ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
@@ -1563,6 +1730,7 @@ int main(int argc, char **argv) {
 
   test_primitive_sort();
   test_comparator_sort();
+  test_keyed_sort();
   test_dense_comparator_sort();
   test_f64_basics();
   test_numeric_read();

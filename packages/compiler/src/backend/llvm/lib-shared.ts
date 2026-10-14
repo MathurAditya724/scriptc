@@ -154,6 +154,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "path.win32Parse": "scr_path_win32_parse",
   "path.format": "scr_path_format",
   "path.win32Format": "scr_path_win32_format",
+  "path.matchesGlob": "scr_path_matches_glob",
+  "path.win32MatchesGlob": "scr_path_win32_matches_glob",
   "path.win32IsAbsolute": "scr_path_win32_is_absolute",
   "path.win32Relative": "scr_path_win32_relative",
   "path.win32ToNamespacedPath": "scr_path_win32_to_namespaced_path",

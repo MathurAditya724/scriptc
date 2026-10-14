@@ -63,7 +63,7 @@ static Node *make_ring(size_t count) {
   Node **nodes = calloc(count, sizeof(*nodes));
   if (!nodes) scr_trap("cycle test: out of memory\n");
   for (size_t i = 0; i < count; i++) {
-    static const ScrCycType cyc_type = { &node_trace, &node_free, 0 };
+    static ScrCycType cyc_type = { &node_trace, &node_free, 0 };
     nodes[i] = scr_cyc_alloc(sizeof(*nodes[i]), &cyc_type);
     nodes[i]->rc = 1; /* the ring edge that will point at this node */
   }
@@ -119,7 +119,7 @@ static void check_age_reset_when_last_mature_root_dies(void) {
   ring = make_ring(32);
   ring->rc++;
   release_live(ring);
-  static const ScrCycType cyc_type = { &node_trace, &node_free, 0 };
+  static ScrCycType cyc_type = { &node_trace, &node_free, 0 };
   leaf = scr_cyc_alloc(sizeof(*leaf), &cyc_type);
   leaf->rc = 1;
   leaf->rc++; /* temporary release makes it a nursery candidate */
@@ -155,7 +155,7 @@ static void check_dead_backlog_rearms_release_trigger(void) {
   Node *leaves[BACKLOG];
 
   for (size_t i = 0; i < BACKLOG; i++) {
-    static const ScrCycType cyc_type = { &node_trace, &node_free, 0 };
+    static ScrCycType cyc_type = { &node_trace, &node_free, 0 };
     leaves[i] = scr_cyc_alloc(sizeof(*leaves[i]), &cyc_type);
     leaves[i]->rc = 2; /* external owner plus a temporary reference */
     release_live(leaves[i]);
@@ -183,7 +183,7 @@ static void check_dead_backlog_rearms_release_trigger(void) {
 }
 
 static Node *make_leaf(void) {
-  static const ScrCycType cyc_type = { &node_trace, &node_free, 0 };
+  static ScrCycType cyc_type = { &node_trace, &node_free, 0 };
   Node *leaf = scr_cyc_alloc(sizeof(*leaf), &cyc_type);
   leaf->rc = 1;
   return leaf;
@@ -267,7 +267,7 @@ static void age_to_old(Node *node) {
     read_live(node);
     scr_collect_cycles();
   }
-  check(scr_cyc_hdr(node)->gen == SCR_CYC_OLD, "survivor did not reach the old generation");
+  check(scr_cyc_gen(scr_cyc_hdr(node)) == SCR_CYC_OLD, "survivor did not reach the old generation");
 }
 
 /* Fresh live leaves, each released once so the release path keeps running
@@ -328,7 +328,7 @@ static void check_older_rings_into_old(void) {
   }
   scr_cyc_collect_scheduled(); /* every ring survives at least one pass */
   for (size_t i = 0; i < RINGS; i++) {
-    check(scr_cyc_hdr(rings[i])->gen != SCR_CYC_NURSERY, "ring was not promoted");
+    check(scr_cyc_gen(scr_cyc_hdr(rings[i])) != SCR_CYC_NURSERY, "ring was not promoted");
     release_live(rings[i]);
   }
   size_t grown = grow_until(keep, LIMIT, before + RINGS * RING);
@@ -435,8 +435,8 @@ static size_t grow_dead_cycle_until_full_pass(size_t old_garbage, bool mixed) {
     age_to_old(tie);
     garbage = make_ring(old_garbage);
     read_live(garbage); /* a release-triggered pass may promote it at once */
-    if (scr_cyc_hdr(garbage)->gen == SCR_CYC_NURSERY) scr_collect_cycles();
-    check(scr_cyc_hdr(garbage)->gen == SCR_CYC_MATURE, "survivor did not reach the mature generation");
+    if (scr_cyc_gen(scr_cyc_hdr(garbage)) == SCR_CYC_NURSERY) scr_collect_cycles();
+    check(scr_cyc_gen(scr_cyc_hdr(garbage)) == SCR_CYC_MATURE, "survivor did not reach the mature generation");
     tie->other = garbage;
     garbage->rc++;
     garbage->other = tie;
@@ -648,7 +648,7 @@ static void check_deep_cross_generation_chain(void) {
   size_t before = freed;
   Node *chain = NULL;
   for (size_t i = 0; i < DEPTH; i++) {
-    static const ScrCycType cyc_type = { &node_trace, &node_free, 0 };
+    static ScrCycType cyc_type = { &node_trace, &node_free, 0 };
     Node *node = scr_cyc_alloc(sizeof(*node), &cyc_type);
     node->rc = 1;
     node->next = chain;
@@ -719,7 +719,7 @@ static void bypass_free(void *obj) {
   bypass_freed++;
   node_free(obj);
 }
-static const ScrCycType bypass_type = { &bypass_trace, &bypass_free, 7 };
+static ScrCycType bypass_type = { &bypass_trace, &bypass_free, 7 };
 
 static Node *make_bypass_node(void) {
   Node *node = scr_cyc_alloc(sizeof(*node), &bypass_type);
@@ -818,7 +818,7 @@ static void mature_kind_free(void *obj) {
   mature_kind_freed++;
   node_free(obj);
 }
-static const ScrCycType mature_kind_type = { &node_trace, &mature_kind_free, 8 };
+static ScrCycType mature_kind_type = { &node_trace, &mature_kind_free, 8 };
 
 static Node *make_mature_kind_node(void) {
   Node *node = scr_cyc_alloc(sizeof(*node), &mature_kind_type);
@@ -834,7 +834,7 @@ static size_t probe_old_on_release(Node **owned, size_t probe) {
   for (size_t i = 0; i < probe; i++) {
     owned[i] = make_mature_kind_node();
     read_live(owned[i]);
-    old += scr_cyc_hdr(owned[i])->gen == SCR_CYC_OLD;
+    old += scr_cyc_gen(scr_cyc_hdr(owned[i])) == SCR_CYC_OLD;
   }
   return old;
 }
@@ -855,7 +855,7 @@ static void check_mature_bypass(void) {
    * at that level: none dies. */
   scr_collect_cycles();
   for (size_t i = 0; i < nlive; i++) {
-    scr_cyc_hdr(live[i])->gen = SCR_CYC_MATURE;
+    scr_cyc_set_gen(scr_cyc_hdr(live[i]), SCR_CYC_MATURE);
     read_live(live[i]);
   }
   scr_cyc_pass_at(SCR_CYC_MATURE);
@@ -924,7 +924,7 @@ static void paired_free(void *obj) {
   paired_freed++;
   node_free(obj);
 }
-static const ScrCycType paired_type = { &paired_trace, &paired_free, 10 };
+static ScrCycType paired_type = { &paired_trace, &paired_free, 10 };
 
 static void check_probe_sees_candidate_rings(void) {
   /* Both members of a ring must be buffered before a pass walks either: with
@@ -978,7 +978,7 @@ static void check_probe_sees_candidate_rings(void) {
 /* A nursery pass re-buffers its survivors past the mature level when
  * their type bypasses it, even if the type's nursery candidates are
  * walked (here half of them die young, in rings). */
-static const ScrCycType young_dying_type = { &node_trace, &node_free, 9 };
+static ScrCycType young_dying_type = { &node_trace, &node_free, 9 };
 
 static void check_rebuffer_past_mature(void) {
   enum { BATCH = 1024, ROUNDS = 24, PROBE = 1024 };
@@ -1011,7 +1011,7 @@ static void check_rebuffer_past_mature(void) {
   }
   scr_cyc_pass_at(SCR_CYC_NURSERY);
   size_t old = 0;
-  for (size_t i = nlive - PROBE; i < nlive; i++) old += scr_cyc_hdr(live[i])->gen == SCR_CYC_OLD;
+  for (size_t i = nlive - PROBE; i < nlive; i++) old += scr_cyc_gen(scr_cyc_hdr(live[i])) == SCR_CYC_OLD;
   check(old >= PROBE / 2, "nursery survivors were re-buffered into a level their type bypasses");
   for (size_t i = 0; i < nlive; i++) {
     live[i]->rc = 0;

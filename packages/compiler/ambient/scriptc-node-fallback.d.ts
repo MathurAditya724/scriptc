@@ -1600,6 +1600,9 @@ declare module "path" {
   export function isAbsolute(path: string): boolean;
   export function relative(from: string, to: string): string;
   export function toNamespacedPath(path: string): string;
+  /* matchesGlob() is Node's glob matcher: brace expansion, extglobs, POSIX
+   * classes and the ** and dot rules. */
+  export function matchesGlob(path: string, pattern: string): boolean;
   /* parse() splits a path into its root, directory, base, extension and
    * name; format() joins those fields back (Node's `||` defaults). */
   export interface ParsedPath {
@@ -1643,6 +1646,7 @@ declare module "path/posix" {
   export function isAbsolute(path: string): boolean;
   export function relative(from: string, to: string): string;
   export function toNamespacedPath(path: string): string;
+  export function matchesGlob(path: string, pattern: string): boolean;
   export function parse(path: string): import("path").ParsedPath;
   export function format(pathObject: import("path").FormatInputPathObject): string;
   export const sep: "/";
@@ -1661,6 +1665,7 @@ declare module "path/win32" {
   export function isAbsolute(path: string): boolean;
   export function relative(from: string, to: string): string;
   export function toNamespacedPath(path: string): string;
+  export function matchesGlob(path: string, pattern: string): boolean;
   export function parse(path: string): import("path").ParsedPath;
   export function format(pathObject: import("path").FormatInputPathObject): string;
   export const sep: "\\";

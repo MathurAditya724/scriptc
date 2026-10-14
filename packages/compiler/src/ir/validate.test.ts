@@ -14,6 +14,7 @@ import {
   mapOf,
   setOf,
   type IrExpr,
+  type IrFunction,
   type IrModule,
   type IrType,
   type IrUnionDef,
@@ -1913,6 +1914,79 @@ test("runtime comparator sort validates element kinds and the comparator shape",
       }),
       "owned flag must be a boolean literal",
     ],
+  ] as const) {
+    expect(validateModule(mod).some((error) => error.message.includes(message))).toBe(true);
+  }
+});
+
+test("runtime comparator sort validates a recognized comparator's key order", () => {
+  const row: IrType = { kind: "record", shapeId: "r0" };
+  const closure = (fnName: string, params: IrType[], ret: IrType = F64): IrExpr => ({
+    kind: "closure",
+    fnName,
+    captures: [],
+    type: funcOf(params, ret),
+    loc,
+  });
+  const order = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+  const keyedModule = (elem: IrType, keyArgs: IrExpr[], dense = false): IrModule => {
+    const receiver: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(elem), loc };
+    const cmp = closure("cmp", [elem, elem]);
+    const mod = numericReadModule(
+      dense
+        ? {
+            method: "sortDense",
+            receiver,
+            args: [cmp, { kind: "boolLit", value: false, type: BOOL, loc }, ...keyArgs],
+            type: BOOL,
+          }
+        : { method: "sortValues", receiver, args: [order(0), cmp, ...keyArgs], type: VOID },
+    );
+    mod.records = [{ id: "r0", fields: [{ name: "k", type: F64 }] }];
+    const fn = (name: string, params: IrType[], ret: IrType): IrFunction => ({
+      name,
+      params: params.map((type, index) => ({ localId: `p${index}`, name: `p${index}`, type })),
+      locals: params.map((type, index) => ({
+        id: `p${index}`,
+        name: `p${index}`,
+        type,
+        mutable: false,
+      })),
+      returnType: ret,
+      body: [
+        {
+          kind: "return",
+          value:
+            ret.kind === "f64"
+              ? { kind: "numLit", value: 0, type: F64, loc }
+              : { kind: "strLit", value: "", type: STRING, loc },
+          loc,
+        },
+      ],
+      loc,
+    });
+    mod.functions.push(
+      fn("cmp", [elem, elem], F64),
+      fn("key", [row], F64),
+      fn("text", [row], STRING),
+    );
+    return mod;
+  };
+  for (const mod of [
+    keyedModule(F64, [order(1)]),
+    keyedModule(F64, [order(-1)], true),
+    keyedModule(row, [order(1), closure("key", [row])]),
+    keyedModule(row, [order(-1), closure("key", [row])], true),
+  ]) {
+    expect(validateModule(mod)).toEqual([]);
+    expect(deserializeModule(serializeModule(mod))).toEqual(mod);
+  }
+  for (const [mod, message] of [
+    [keyedModule(F64, [order(2)]), "key order must be the literal 1 or -1"],
+    [keyedModule(F64, [order(1), closure("key", [row])]), "key order on f64"],
+    [keyedModule(STRING, [order(1)], true), "key order on string"],
+    [keyedModule(row, [order(1)]), "key reader must be (elem) => number"],
+    [keyedModule(row, [order(1), closure("text", [row], STRING)]), "key reader must be"],
   ] as const) {
     expect(validateModule(mod).some((error) => error.message.includes(message))).toBe(true);
   }

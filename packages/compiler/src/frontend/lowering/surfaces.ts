@@ -918,6 +918,12 @@ const PATH_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     result: STRING,
     valueParams: [{ mode: "required", type: STRING }],
   },
+  matchesGlob: {
+    fn: "path.matchesGlob",
+    params: [STRING, STRING],
+    result: BOOL,
+    valueParams: exactValueParams(STRING, STRING),
+  },
   // Special-cased (lowerPathParseCall / lowerPathFormatCall): the
   // ParsedPath record and the pathObject argument follow the call site's
   // mapped shapes.
@@ -991,6 +997,12 @@ const PATH_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     params: [STRING],
     result: STRING,
     valueParams: [{ mode: "required", type: STRING }],
+  },
+  matchesGlob: {
+    fn: "path.win32MatchesGlob",
+    params: [STRING, STRING],
+    result: BOOL,
+    valueParams: exactValueParams(STRING, STRING),
   },
   // Special-cased (lowerPathParseCall / lowerPathFormatCall): the
   // ParsedPath record and the pathObject argument follow the call site's
