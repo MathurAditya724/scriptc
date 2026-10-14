@@ -18,6 +18,7 @@ import {
 } from "../../../ir/ir.js";
 import { PERF_ENTRY_FIELDS, PERF_ENTRY_MARKER, perfEntryJsonShape } from "../../type-mapper.js";
 import { builtinImportOf } from "./module-bindings.js";
+import { checkedIterableSpread } from "../checked-iterable-spread.js";
 
 /** True for any spelling of node:perf_hooks' `performance` object — the
  * named import binding, a namespace/default-import member, the require
@@ -234,6 +235,63 @@ function perfEntryRecord(
   };
 }
 
+/** The call's arguments as one dyn array, in source order. Spread
+ * arguments expand with JavaScript's iterable semantics (strings into
+ * characters, Sets, generators and other iterators through the iterator
+ * protocol), and a non-iterable spread throws V8's TypeError, so the
+ * runtime always receives an array. */
+function lowerPerfArguments(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  if (!call.arguments.some(ts.isSpreadElement)) {
+    return {
+      kind: "dynArrLit",
+      elems: call.arguments.map((a) => lowerer.lowerExprExpecting(a, DYN)),
+      type: DYN,
+      loc,
+    };
+  }
+  const pack = lowerer.declareHiddenLocal("%perfArgs", DYN);
+  const ref = (): IrExpr => ({ kind: "varRef", localId: pack.id, type: DYN, loc });
+  const stmts: IrStmt[] = [
+    {
+      kind: "varDecl",
+      localId: pack.id,
+      init: { kind: "dynArrLit", elems: [], type: DYN, loc },
+      loc,
+    },
+  ];
+  for (const arg of call.arguments) {
+    if (!ts.isSpreadElement(arg)) {
+      const value = lowerer.lowerExprExpecting(arg, DYN);
+      stmts.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "dyn.packPush",
+          args: [ref(), value],
+          type: VOID,
+          loc: value.loc,
+        },
+        loc: value.loc,
+      });
+      continue;
+    }
+    const spelling = arg.expression.getText();
+    const items = checkedIterableSpread(lowerer, lowerer.lowerExpr(arg.expression), spelling, loc);
+    stmts.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "dyn.packPushSpread",
+        args: [ref(), items, { kind: "strLit", value: spelling, type: STRING, loc }],
+        type: VOID,
+        loc,
+      },
+      loc,
+    });
+  }
+  return { kind: "seqExpr", stmts, result: ref(), type: DYN, loc };
+}
+
 /** performance.mark/measure, getEntries/getEntriesByName/getEntriesByType
  * and clearMarks/clearMeasures. The arguments cross as one dyn vector so
  * the runtime applies Node's validation in Node's order; the producing
@@ -246,28 +304,7 @@ function lowerPerfTimelineCall(
   timeline: { fn: IrLibFn; which?: number },
   loc: SrcLoc,
 ): IrExpr {
-  // A single spread of an untyped array passes that array as the
-  // argument vector (the process.emitWarning precedent).
-  const only = call.arguments.length === 1 ? call.arguments[0]! : undefined;
-  const spread = only && ts.isSpreadElement(only) ? lowerer.lowerExpr(only.expression) : null;
-  const args: IrExpr =
-    spread?.type.kind === "dyn"
-      ? spread
-      : {
-          kind: "dynArrLit",
-          elems: call.arguments.map((a) => {
-            if (ts.isSpreadElement(a)) {
-              lowerer.noLowering(
-                `performance.${member} with spread arguments`,
-                a,
-                "spread an untyped array as the only argument, or write the arguments positionally",
-              );
-            }
-            return lowerer.lowerExprExpecting(a, DYN);
-          }),
-          type: DYN,
-          loc,
-        };
+  const args = lowerPerfArguments(lowerer, call, loc);
   if (timeline.fn === "perf.clearMarks" || timeline.fn === "perf.clearMeasures") {
     return { kind: "libCall", fn: timeline.fn, args: [args], type: VOID, loc };
   }

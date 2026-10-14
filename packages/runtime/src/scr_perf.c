@@ -124,6 +124,17 @@ static void scr_perf_push(ScrPerfBuffer *b, ScrPerfEntry entry) {
   }
 }
 
+/* The entry points take their arguments as one dyn array. Anything else
+ * throws a TypeError before the vector is read. */
+static bool scr_perf_args_ok(const ScrDyn *args, const char *what) {
+  if (args && args->kind == SCR_DYN_ARR) return true;
+  char message[96];
+  snprintf(message, sizeof message, "performance.%s received a non-array argument list", what);
+  scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+  return false;
+}
+
+/* Argument i of a vector that passed scr_perf_args_ok. */
 static ScrDyn *scr_perf_arg(const ScrDyn *args, size_t i) {
   return i < args->v.arr.len ? args->v.arr.items[i] : scr_dyn_undefined();
 }
@@ -232,6 +243,7 @@ static bool scr_perf_get_mark(const ScrDyn *value, double *out) {
 }
 
 double scr_perf_mark(ScrDyn *args) {
+  if (!scr_perf_args_ok(args, "mark")) return 0;
   if (args->v.arr.len == 0) {
     scr_perf_missing("name");
     return 0;
@@ -286,6 +298,7 @@ double scr_perf_mark(ScrDyn *args) {
 }
 
 double scr_perf_measure(ScrDyn *args) {
+  if (!scr_perf_args_ok(args, "measure")) return 0;
   if (args->v.arr.len == 0) {
     scr_perf_missing("name");
     return 0;
@@ -397,6 +410,11 @@ static void scr_perf_view_add(const ScrPerfBuffer *b, const ScrStr *name) {
 /* which: 0 getEntries(), 1 getEntriesByName(name[, type]),
  * 2 getEntriesByType(type). Answers the entry count. */
 double scr_perf_entries(ScrDyn *args, double which) {
+  if (!scr_perf_args_ok(args, which == 0   ? "getEntries"
+                              : which == 1 ? "getEntriesByName"
+                                           : "getEntriesByType")) {
+    return 0;
+  }
   ScrStr *name = NULL, *type = NULL;
   if (which == 1) {
     if (args->v.arr.len == 0) {
@@ -451,6 +469,7 @@ static void scr_perf_buffer_drop(ScrPerfBuffer *b, const ScrStr *name) {
 
 /* clearMarks([name]) / clearMeasures([name]). */
 static void scr_perf_clear(ScrDyn *args, bool measures) {
+  if (!scr_perf_args_ok(args, measures ? "clearMeasures" : "clearMarks")) return;
   scr_perf_view_len = 0;
   scr_perf_last = NULL;
   ScrDyn *arg = scr_perf_arg(args, 0);
