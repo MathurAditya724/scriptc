@@ -73,6 +73,10 @@ function eligible(local: IrLocal): boolean {
  * extracts and retains the payload, so the stored union is only projected. */
 export type NullableFieldTest = (className: string, field: string) => boolean;
 
+function scalarValue(value: IrExpr): boolean {
+  return value.type.kind === "f64" || value.type.kind === "bool";
+}
+
 function collectUses(
   fn: IrFunction,
   nullableField: NullableFieldTest,
@@ -84,6 +88,7 @@ function collectUses(
     declarations: new Map(),
     forwards: new Map(),
   };
+  const aliases: { alias: string; source: string }[] = [];
   const stringInput = (value: IrExpr): boolean => {
     if (value.kind === "varRef" && value.type.kind === "string") return true;
     return expr(value);
@@ -171,6 +176,15 @@ function collectUses(
         break;
       case "varDecl":
         uses.declarations.set(node.localId, (uses.declarations.get(node.localId) ?? 0) + 1);
+        // A receiver temporary (`%compoundReceiver = this`) projects its
+        // source as long as the temporary itself is only projected.
+        if (
+          node.init?.kind === "varRef" &&
+          (node.init.type.kind === "object" || node.init.type.kind === "record")
+        ) {
+          aliases.push({ alias: node.localId, source: node.init.localId });
+          return true;
+        }
         break;
       case "fieldSet":
         if (
@@ -179,6 +193,12 @@ function collectUses(
           nullableField(node.className, node.field)
         )
           return expr(node.obj);
+        if (node.obj.kind === "varRef" && scalarValue(node.value)) return expr(node.value);
+        break;
+      case "recordSet":
+        // A number or boolean stored through the binding leaves the object
+        // where it is; the write itself stays visible to effect proofs.
+        if (node.obj.kind === "varRef" && scalarValue(node.value)) return expr(node.value);
         break;
       case "assign":
         uses.written.add(node.localId);
@@ -205,6 +225,29 @@ function collectUses(
     return everyStmtChild(node, expr, (node) => stmt(node, inExpression));
   }
   fn.body.forEach((node) => stmt(node, false));
+  // An alias of a rebound source would keep the old object; chains of
+  // aliases settle to a fixpoint.
+  const locals = new Map(fn.locals.map((local) => [local.id, local]));
+  for (let changed = aliases.length > 0; changed;) {
+    changed = false;
+    for (const { alias, source } of aliases) {
+      const local = locals.get(alias);
+      if (
+        !uses.invalid.has(source) &&
+        (!local ||
+          local.boxed ||
+          local.tdz ||
+          uses.invalid.has(alias) ||
+          uses.written.has(alias) ||
+          uses.written.has(source) ||
+          uses.declarations.get(alias) !== 1 ||
+          uses.forwards.has(alias))
+      ) {
+        uses.invalid.add(source);
+        changed = true;
+      }
+    }
+  }
   for (const capture of [...(fn.captures ?? []), ...(fn.classCaptures ?? [])]) {
     uses.invalid.add(capture.localId);
     uses.written.add(capture.localId);
