@@ -327,18 +327,23 @@ export function emitDynamicExpr(
             throw new LlvmUnsupportedError(`unionDisc:${arm.kind}`, e.loc);
           }
           const payload = host.unionPeek(u.name, def.id);
-          const { ptr, type } =
+          const { ptr, type, inline } =
             arm.kind === "object"
               ? host.classFieldPtr(payload, arm.className, e.field)
               : host.recordFieldPtr(payload, arm.shapeId, e.field);
           const nullable =
             arm.kind === "object" ? host.nullableFields.get(arm.className, e.field) : null;
+          if (inline) {
+            B.line(`store ${ty} ${host.inlineFieldUnion(ptr, type)}, ptr ${slot}`);
+            B.br(join);
+            return;
+          }
           const v =
             arm.kind === "object"
               ? host.int32Slots.isField(arm.className, e.field)
                 ? host.loadInt32Field(ptr, e.type).name
-                : host.loadField(ptr, type)
-              : host.loadRecordField(ptr, type);
+                : host.loadField(ptr, type, false)
+              : host.loadRecordField(ptr, type, false);
           const value = nullable
             ? host.nullableToOwnedUnion(v, nullable)
             : isRefCounted(e.type)
@@ -443,10 +448,20 @@ export function emitDynamicExpr(
         const declared =
           literal !== null ? shape.fields.find((f) => f.name === literal) : undefined;
         if (declared) {
-          const { ptr, type: ft } = host.recordFieldPtr(payload, arm.shapeId, declared.name);
-          const v = host.loadRecordField(ptr, ft);
+          const {
+            ptr,
+            type: ft,
+            inline,
+          } = host.recordFieldPtr(payload, arm.shapeId, declared.name);
+          const v = host.loadRecordField(ptr, ft, inline);
           if (typeEquals(ft, e.type)) {
-            B.line(`store ${ty} ${isRefCounted(ft) ? host.retainValue(v, ft) : v}, ptr ${slot}`);
+            // An inline union field's stack box is copied into a heap box.
+            const owned = inline
+              ? host.inlineFieldUnion(ptr, ft)
+              : isRefCounted(ft)
+                ? host.retainValue(v, ft)
+                : v;
+            B.line(`store ${ty} ${owned}, ptr ${slot}`);
             B.br(join);
             return;
           }

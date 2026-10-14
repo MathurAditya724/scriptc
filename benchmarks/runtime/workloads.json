@@ -78,6 +78,13 @@
       ]
     },
     {
+      "name": "optional-fields",
+      "entry": "workloads/optional-fields.ts",
+      "args": [
+        "10"
+      ]
+    },
+    {
       "name": "validate-errors",
       "entry": "workloads/validate-errors.ts",
       "args": [

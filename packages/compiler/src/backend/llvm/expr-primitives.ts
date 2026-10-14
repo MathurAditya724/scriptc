@@ -935,23 +935,25 @@ export function emitRecordExpr(
   switch (e.kind) {
     case "fieldGet": {
       const obj = host.emitReadReceiver(e.obj);
-      const { ptr, type } = host.classFieldPtr(obj.name, e.className, e.field);
+      const { ptr, type, inline } = host.classFieldPtr(obj.name, e.className, e.field);
       if (host.int32Slots.isField(e.className, e.field)) return host.loadInt32Field(ptr, e.type);
+      if (inline) return host.own({ name: host.inlineFieldUnion(ptr, type), type: e.type });
       const nullable = host.nullableFieldGet(e);
       if (nullable) {
         const p = B.tmp();
         B.line(`${p} = load ptr, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
         return host.own({ name: host.nullableToOwnedUnion(p, nullable), type: e.type });
       }
-      const v = host.loadField(ptr, type);
+      const v = host.loadField(ptr, type, false);
       if (isRefCounted(e.type))
         return host.own({ name: host.retainValue(v, e.type), type: e.type });
       return { name: v, type: e.type };
     }
     case "recordGet": {
       const obj = host.emitReadReceiver(e.obj);
-      const { ptr, type } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
-      const v = host.loadRecordField(ptr, type);
+      const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
+      if (inline) return host.own({ name: host.inlineFieldUnion(ptr, type), type: e.type });
+      const v = host.loadRecordField(ptr, type, false);
       if (isRefCounted(e.type))
         return host.own({ name: host.retainValue(v, e.type), type: e.type });
       return { name: v, type: e.type };
@@ -980,17 +982,9 @@ export function emitRecordExpr(
       B.line(`${rec} = call ptr @${mangleRecordClone(e.type.shapeId)}(ptr ${source.name})`);
       const out = host.own({ name: rec, type: e.type });
       for (const f of e.overrides) {
-        const v = host.emitExpr(f.value);
-        const { ptr, type } = host.recordFieldPtr(rec, e.type.shapeId, f.name);
-        if (isRefCounted(type)) {
-          host.moveTemp(v);
-          const old = B.tmp();
-          B.line(`${old} = load ptr, ptr ${ptr}`);
-          host.storeField(ptr, type, v.name);
-          host.releaseValue(old, type);
-        } else {
-          host.storeField(ptr, type, v.name);
-        }
+        const v = host.emitFieldValue(f.value, host.recordFieldInline(e.type.shapeId, f.name));
+        const { ptr, type, inline } = host.recordFieldPtr(rec, e.type.shapeId, f.name);
+        host.replaceField(ptr, type, inline, v);
       }
       return out;
     }
@@ -1000,10 +994,10 @@ export function emitRecordExpr(
       // Own-property presence: only an undefined-armed union slot can
       // lack its property, by holding the ABSENT state.
       const obj = host.emitReadReceiver(e.obj);
-      const { ptr, type } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
+      const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
       if (type.kind !== "union" || undefinedArmTag(type, host.unionsById) < 0)
         return { name: "true", type: e.type };
-      const v = host.loadField(ptr, type);
+      const v = host.loadField(ptr, type, inline);
       const absent = host.fieldAbsentTest(v, type.unionId);
       const t = B.tmp();
       B.line(`${t} = xor i1 ${absent}, true`);
@@ -1050,7 +1044,10 @@ export function emitRecordLitFields(
   const B = host.B;
   const shapeId = (e.type as IrType & { kind: "record" }).shapeId;
   for (const f of e.fields) {
-    const v = host.emitExpr(f.value);
+    const v = host.emitFieldValue(
+      f.value,
+      f.overflow !== true && host.recordFieldInline(shapeId, f.name),
+    );
     if (f.overflow) {
       const lit = host.internLiteral(f.name);
       const acc = v.type.kind === "f64" ? "f64" : v.type.kind === "bool" ? "bool" : "ref";
@@ -1063,8 +1060,7 @@ export function emitRecordLitFields(
       );
       continue;
     }
-    if (isRefCounted(v.type)) host.moveTemp(v);
-    const { ptr, type } = host.recordFieldPtr(rec, shapeId, f.name);
-    host.storeField(ptr, type, v.name);
+    const { ptr, type, inline } = host.recordFieldPtr(rec, shapeId, f.name);
+    host.initField(ptr, type, inline, v);
   }
 }

@@ -20,7 +20,13 @@ import { jsonObjectKeyLabel } from "../json-literal.js";
 import { mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import { llvmCommentText } from "./common.js";
-import { llFieldType, releaseSym, traceAdapter, type ShapeHost } from "./shapes.js";
+import {
+  llFieldType,
+  loadStructField,
+  releaseSym,
+  traceAdapter,
+  type ShapeHost,
+} from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
@@ -203,7 +209,9 @@ export class LlWalkers {
     B.line(
       `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${recName}, i64 0, i32 ${index}`,
     );
-    const fieldTy = llFieldType(t);
+    // An inline union field lends a private stack box (ABSENT kept).
+    if (this.host.inlineUnions.record(t)) return loadStructField(B, this.S, p, t, true);
+    const fieldTy = llFieldType(t, false);
     const raw = B.tmp();
     B.line(`${raw} = load ${fieldTy}, ptr ${p}`);
     if (t.kind === "union" && this.host.nullableUnions.has(t.unionId)) {

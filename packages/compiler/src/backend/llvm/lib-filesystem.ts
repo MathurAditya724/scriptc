@@ -161,8 +161,8 @@ function emitObjEntryPairs(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   B.line(`${item} = load ptr, ptr ${valuePtr} ; +1, moves into the row`);
   const row = B.tmp();
   B.line(`${row} = call ptr @${mangleRecordNew(rowT.shapeId)}()`);
-  host.storeField(host.recordFieldPtr(row, rowT.shapeId, "0").ptr, STRING, key);
-  host.storeField(host.recordFieldPtr(row, rowT.shapeId, "1").ptr, DYN, item);
+  host.storeField(host.recordFieldPtr(row, rowT.shapeId, "0").ptr, STRING, key, false);
+  host.storeField(host.recordFieldPtr(row, rowT.shapeId, "1").ptr, DYN, item, false);
   host.arrPush(arr, "ref", row); // push takes ownership of the row
   const next = B.tmp();
   B.line(`${next} = add ${size} ${i}, 1`);
@@ -301,7 +301,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.line(`${rec} = call ptr @${mangleRecordNew(inner.shapeId)}()`);
     const countField =
       e.fn === "fileHandle.read" || e.fn === "fileHandle.readv" ? "bytesRead" : "bytesWritten";
-    host.storeField(host.recordFieldPtr(rec, inner.shapeId, countField).ptr, F64, count);
+    host.storeField(host.recordFieldPtr(rec, inner.shapeId, countField).ptr, F64, count, false);
     const payload = host.retainValue(args[1]!.name, e.args[1]!.type);
     B.line(
       `store ptr ${payload}, ptr ${host.recordFieldPtr(rec, inner.shapeId, vector ? "buffers" : "buffer").ptr}`,
@@ -428,7 +428,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.line(`${row} = call ptr @${mangleRecordNew(recT.shapeId)}()`);
     const dt = B.tmp();
     B.line(`${dt} = call double @scr_fs_scandir_type(ptr ${snap}, ${host.sizeType} ${i})`);
-    host.storeField(host.recordFieldPtr(row, recT.shapeId, "%dtype").ptr, F64, dt);
+    host.storeField(host.recordFieldPtr(row, recT.shapeId, "%dtype").ptr, F64, dt, false);
     const nm = B.tmp();
     B.line(`${nm} = call ptr @scr_fs_scandir_name(ptr ${snap}, ${host.sizeType} ${i}) ; +1`);
     B.line(`store ptr ${nm}, ptr ${host.recordFieldPtr(row, recT.shapeId, "name").ptr}`);
@@ -615,6 +615,7 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         host.recordFieldPtr(r, t.shapeId, "internal").ptr,
         { kind: "bool" },
         internal,
+        false,
       );
       const cs = B.tmp();
       B.line(
@@ -643,15 +644,19 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       if (v6) {
         const sc = B.tmp();
         B.line(`${sc} = call double @scr_os_ifaddrs_scopeid(ptr ${snap}, ${host.sizeType} ${i})`);
-        host.storeField(host.recordFieldPtr(r, t.shapeId, "scopeid").ptr, F64, sc);
+        host.storeField(host.recordFieldPtr(r, t.shapeId, "scopeid").ptr, F64, sc, false);
       } else {
         const st = shape.fields.find((f) => f.name === "scopeid")?.type;
         if (st?.kind !== "union")
           throw new InternalCompilerError("llvm emitter bug: networkInterfaces IPv4 scopeid type");
         // IPv4 entries have no scopeid property at all (immortal: no
         // retain owed).
-        B.line(
-          `store ptr ${host.absentInstanceRef(st.unionId)}, ptr ${host.recordFieldPtr(r, t.shapeId, "scopeid").ptr}`,
+        const scopeid = host.recordFieldPtr(r, t.shapeId, "scopeid");
+        host.storeField(
+          scopeid.ptr,
+          scopeid.type,
+          host.absentInstanceRef(st.unionId),
+          scopeid.inline,
         );
       }
       const rc = vAdapters(host.shapeHost, t);

@@ -91,6 +91,22 @@ export function emissionCases(): EmissionCase[] {
     "@scr_rt_free",
   ]);
 
+  // Scalar-union fields store their tag and bits inline: the record holds
+  // no union box, so its teardown releases only the string.
+  const inline = emissionModule();
+  inline.records = [
+    {
+      id: "sparse",
+      fields: [
+        { name: "label", type: STRING },
+        { name: "value", type: { kind: "union", unionId: "maybe" } },
+      ],
+    },
+  ];
+  inline.unions = [{ id: "maybe", arms: [F64, UNDEFINED_T] }];
+  // (The size_t header width varies; the inline pair does not.)
+  add("inline scalar-union record field", inline, ["ptr, { i32, ", "@scr_str_release"]);
+
   const refs = emissionModule();
   refs.records = [
     {

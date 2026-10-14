@@ -77,10 +77,21 @@ function scalarValue(value: IrExpr): boolean {
   return value.type.kind === "f64" || value.type.kind === "bool";
 }
 
+/** Record and class fields that store a scalar union's tag and bits inline
+ * (inline-unions.ts): a store copies the bits, so the stored union is only
+ * projected, and like a number it leaves the object where it is. */
+export interface InlineFieldTest {
+  record(shapeId: string, field: string): boolean;
+  classField(className: string, field: string): boolean;
+}
+
+const NO_INLINE_FIELDS: InlineFieldTest = { record: () => false, classField: () => false };
+
 function collectUses(
   fn: IrFunction,
   nullableField: NullableFieldTest,
   registerReturn: boolean,
+  inlineField: InlineFieldTest,
 ): Uses {
   const uses: Uses = {
     invalid: new Set(),
@@ -92,6 +103,15 @@ function collectUses(
   const stringInput = (value: IrExpr): boolean => {
     if (value.kind === "varRef" && value.type.kind === "string") return true;
     return expr(value);
+  };
+  // A store through the binding (`obj.f = value`): numbers, booleans and
+  // inline unions leave the object where it is, the write itself staying
+  // visible to effect proofs, and an inline union local is only projected.
+  const fieldStore = (obj: IrExpr, value: IrExpr, inline: boolean): boolean | null => {
+    const projectedValue = inline && value.kind === "varRef";
+    if (obj.kind === "varRef" && (inline || scalarValue(value)))
+      return projectedValue || expr(value);
+    return projectedValue ? expr(obj) : null;
   };
   function expr(node: IrExpr): boolean {
     switch (node.kind) {
@@ -135,6 +155,16 @@ function collectUses(
       case "recordGet":
         if (node.obj.kind === "varRef") return true;
         break;
+      case "recordLit":
+        if (node.type.kind !== "record") break;
+        for (const field of node.fields)
+          if (
+            field.overflow ||
+            field.value.kind !== "varRef" ||
+            !inlineField.record(node.type.shapeId, field.name)
+          )
+            expr(field.value);
+        return true;
       case "callValue":
         if (node.callee.kind !== "varRef") expr(node.callee);
         if (node.receiver) expr(node.receiver);
@@ -186,20 +216,30 @@ function collectUses(
           return true;
         }
         break;
-      case "fieldSet":
+      case "fieldSet": {
         if (
           node.value.kind === "varRef" &&
           node.value.type.kind === "union" &&
           nullableField(node.className, node.field)
         )
           return expr(node.obj);
-        if (node.obj.kind === "varRef" && scalarValue(node.value)) return expr(node.value);
+        const stored = fieldStore(
+          node.obj,
+          node.value,
+          inlineField.classField(node.className, node.field),
+        );
+        if (stored !== null) return stored;
         break;
-      case "recordSet":
-        // A number or boolean stored through the binding leaves the object
-        // where it is; the write itself stays visible to effect proofs.
-        if (node.obj.kind === "varRef" && scalarValue(node.value)) return expr(node.value);
+      }
+      case "recordSet": {
+        const stored = fieldStore(
+          node.obj,
+          node.value,
+          inlineField.record(node.shapeId, node.field),
+        );
+        if (stored !== null) return stored;
         break;
+      }
       case "assign":
         uses.written.add(node.localId);
         // Sequence expressions can rebind a previous call argument before
@@ -274,6 +314,7 @@ export function analyzeCallLifetimes(
   /** Functions returning a scalar union as tag and payload bits
    * (Int32Abi.union): `return x` only projects `x`. */
   registerReturns: ReadonlySet<string> = new Set(),
+  inlineField: InlineFieldTest = NO_INLINE_FIELDS,
 ): CallLifetimes {
   const usesByFunction = new Map<string, Uses>();
   const lazyCaptures = new LazyCaptures(functions);
@@ -288,7 +329,7 @@ export function analyzeCallLifetimes(
   };
   for (const fn of functions.values()) {
     if (fn.async || fn.generator) continue;
-    const uses = collectUses(fn, nullableField, registerReturns.has(fn.name));
+    const uses = collectUses(fn, nullableField, registerReturns.has(fn.name), inlineField);
     usesByFunction.set(fn.name, uses);
     // Class-capturing bodies get only local facts (computed below from
     // their uses; class captures are already invalid). Binding and

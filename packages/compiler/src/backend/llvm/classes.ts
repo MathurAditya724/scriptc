@@ -360,6 +360,16 @@ function undefFieldInits(
     // A nullable-pointer field's zeroed slot already is its unit arm.
     if (nullable?.get(meta.def.name, f.name)) return;
     const { index } = classFieldIndex(meta, f.name);
+    if (f.type.kind === "union" && host.inlineUnions.classField(meta.def.name, f.name)) {
+      // An inline field starts at the undefined arm's tag with zero bits.
+      const tag = undefinedArmTag(f.type, host.unionsById);
+      if (tag < 0) return;
+      out.push(
+        `  %uf${i} = getelementptr inbounds %${mangleClassStruct(meta.def.name)}, ptr %o, i64 0, i32 ${index}, i32 0`,
+        `  store i32 ${tag}, ptr %uf${i} ; ${llvmCommentText(f.name)} starts undefined`,
+      );
+      return;
+    }
     if (f.type.kind === "dyn") {
       host.declare("declare ptr @scr_dyn_undefined()");
       out.push(
@@ -406,7 +416,9 @@ export function emitClassShapes(
     const meta = metaMap.get(cls.name)!;
     // Whole-program int32 fields (int32-slots.ts) store the exact i32.
     const fieldTys = cls.fields.map((f) =>
-      int32?.isField(cls.name, f.name) ? "i32" : llFieldType(f.type),
+      int32?.isField(cls.name, f.name)
+        ? "i32"
+        : llFieldType(f.type, host.inlineUnions.classField(cls.name, f.name)),
     );
     // Emitter subclasses embed ScrEmitter's remaining prefix (the registry
     // and display-name slots) between the vtable word and the field list;
@@ -471,11 +483,16 @@ export function emitClassShapes(
   // their dynamic class. Only classes that some class holds are.
   const storedFieldType = (cls: IrClassDef, f: IrClassDef["fields"][number]): IrType =>
     nullable?.storageType(cls.name, f.name, f.type) ?? f.type;
+  // Inline scalar-union fields own nothing: no teardown, trace or release.
+  const ownedFields = (cls: IrClassDef): { field: IrClassDef["fields"][number]; i: number }[] =>
+    cls.fields.flatMap((field, i) =>
+      host.inlineUnions.classField(cls.name, field.name) ? [] : [{ field, i }],
+    );
   const candidates: [string, DirectDestroy][] = [];
   const fieldTypes: IrType[] = [];
   for (const cls of emitted) {
     const meta = metaMap.get(cls.name)!;
-    const types = cls.fields.map((f) => storedFieldType(cls, f));
+    const types = ownedFields(cls).map(({ field }) => storedFieldType(cls, field));
     for (const t of types) fieldTypes.push(t);
     if (programLifetimeClass(host, meta)) continue;
     if (meta.hierarchy && (meta.children.length !== 0 || meta.root.def.runtime === true)) continue;
@@ -505,9 +522,9 @@ export function emitClassShapes(
     // class field holds the instance pointer (NULL for the unit arm), and
     // every class retain/release/visit entry point is NULL-tolerant.
     const indexedFields = [
-      ...cls.fields.map((f, i) => ({
-        name: f.name,
-        type: storedFieldType(cls, f),
+      ...ownedFields(cls).map(({ field, i }) => ({
+        name: field.name,
+        type: storedFieldType(cls, field),
         index: fieldIndex(i),
       })),
     ];

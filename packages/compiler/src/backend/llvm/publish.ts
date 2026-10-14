@@ -25,6 +25,7 @@ import type { IrClassDef, IrRecordShape, IrType, IrUnionDef, SrcLoc } from "../.
 import { mapOf, STRING, typeKey } from "../../ir/ir.js";
 import { mangleClassStruct, mangleRecordStruct } from "../mangle.js";
 import { FN_ATTRS } from "./shapes.js";
+import type { InlineUnionFields } from "./inline-unions.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
 export interface PublishHost {
@@ -35,6 +36,9 @@ export interface PublishHost {
   readonly tracedShapes: ReadonlySet<string>;
   readonly unionsById: ReadonlyMap<string, IrUnionDef>;
   readonly recordsById: ReadonlyMap<string, IrRecordShape>;
+  /** Record fields that store a scalar union inline: plain bits, nothing
+   * to push. */
+  readonly inlineUnions: InlineUnionFields;
   /** The nullable-pointer representation of a union, when it has one. */
   nullableArm(t: IrType): IrType | null;
   /** Class layout: hierarchy membership, preorder interval, field slots
@@ -235,7 +239,11 @@ export class PublishWalkers {
         if (!shape)
           throw new LlvmUnsupportedError(`publish of an unknown record ${t.shapeId}`, loc);
         const members = [
-          ...shape.fields.map((f, i) => ({ name: f.name, index: i + 1, type: f.type })),
+          ...shape.fields.flatMap((f, i) =>
+            this.host.inlineUnions.record(f.type)
+              ? []
+              : [{ name: f.name, index: i + 1, type: f.type }],
+          ),
           ...(shape.indexValue
             ? [
                 {

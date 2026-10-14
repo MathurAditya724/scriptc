@@ -82,13 +82,20 @@ export class LifetimeRegions {
     return meta !== undefined && this.lifetime(meta);
   }
 
+  /** The reference-holding fields; inline scalar unions own nothing. */
   private classFields(def: IrClassDef, meta: LlClassMeta): Field[] {
     const base = meta.hierarchy ? 2 : 1;
-    return def.fields.map((f, i) => ({
-      name: f.name,
-      type: this.nullable?.storageType(def.name, f.name, f.type) ?? f.type,
-      index: base + i,
-    }));
+    return def.fields.flatMap((f, i) =>
+      this.host.inlineUnions.classField(def.name, f.name)
+        ? []
+        : [
+            {
+              name: f.name,
+              type: this.nullable?.storageType(def.name, f.name, f.type) ?? f.type,
+              index: base + i,
+            },
+          ],
+    );
   }
 
   /** Can a value of type `t` hold (or own something that holds) a
@@ -138,7 +145,7 @@ export class LifetimeRegions {
       for (const shape of this.mod.records ?? [])
         set(
           `record:${shape.id}`,
-          rcMembers(shape).some((m) => this.reaches(m.type)),
+          rcMembers(shape, this.host.inlineUnions).some((m) => this.reaches(m.type)),
         );
       for (const c of classes) {
         const meta = this.metaMap.get(c.name)!;
@@ -395,7 +402,7 @@ export class LifetimeRegions {
         ...this.reportBody(
           `define internal void ${walk}(ptr %o, ptr %w) ${FN_ATTRS} { ; region walk record ${shape.id}`,
           mangleRecordStruct(shape.id),
-          rcMembers(shape),
+          rcMembers(shape, this.host.inlineUnions),
         ),
       );
       rows.push(`{ ptr, ptr } { ptr @${mangleRecordRelease(shape.id)}, ptr ${walk} }`);

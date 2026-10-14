@@ -44,6 +44,8 @@ export interface UnionSources {
   receiverUnions: ReadonlyMap<string, IrUnionDef>;
   /** Nullable-pointer field reads (copied with their own owner). */
   nullableField: CopiedUnionSource;
+  /** Inline scalar-union field reads (copied bits, nothing owned). */
+  inlineField: CopiedUnionSource;
   /** Optional array element reads (OptionalArrayReads). */
   arrayRead: CopiedUnionSource;
   /** Direct calls returning a scalar union in registers (Int32Abi.union). */
@@ -108,6 +110,7 @@ function supportedSource(expr: IrExpr, type: IrType, sources: UnionSources): boo
     canStackUnion(expr, sources.unions) ||
     matchMapRead(expr, sources.unions) !== null ||
     sources.nullableField(expr) ||
+    sources.inlineField(expr) ||
     isUnionCopy(expr, type) ||
     isScalarOptionalSource(expr, sources) ||
     sources.scalarCall(expr)
@@ -230,6 +233,9 @@ export function storeLocalUnion(
     expr.kind === "arrIntrinsic"
   ) {
     // Scalar optional sources and register results: a private stack box.
+    source = host.emitReadReceiver(expr).name;
+  } else if (host.inlineFieldGet(expr)) {
+    // A private stack copy of the slot's tag and bits; nothing is owned.
     source = host.emitReadReceiver(expr).name;
   } else if (host.nullableFieldGet(expr) !== null) {
     const copied = host.emitOwnedNullableStack(expr);
