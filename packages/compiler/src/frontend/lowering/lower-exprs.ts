@@ -1,4 +1,5 @@
 import { generatorDrain } from "./iterator-adapters.js";
+import { lowerEventObjectProperty } from "./lower-event-target.js";
 import { lowerEventStaticProperty } from "./builtins/numbers.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
@@ -2158,6 +2159,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       // the inner access maps no type of its own.
       lowerStreamStateProperty(lowerer, expr) ??
       lowerStreamObjectProperty(lowerer, expr) ??
+      lowerEventObjectProperty(lowerer, expr) ??
       lowerer.lowerUnionProperty(expr) ??
       lowerer.lowerFieldRead(expr);
     // A union-typed field read narrows like an identifier when the

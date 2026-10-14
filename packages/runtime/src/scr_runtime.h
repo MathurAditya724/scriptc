@@ -5340,6 +5340,11 @@ bool scr_dyn_typed_ref_is_key(const ScrDyn *d, const ScrStr *type_key);
 void *scr_dyn_typed_ref_unbox(const ScrDyn *d); /* +1 */
 ScrDyn *scr_dyn_class_view_unavailable(void *ptr);
 ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d); /* +1 */
+/* What string conversion renders for a capsule (+1): its materialized
+ * view, or, for an EventTarget or Event subclass without its own
+ * toString, the "[object EventTarget]" / "[object Event]" string of its
+ * inherited @@toStringTag. */
+ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d);
 void scr_dyn_typed_ref_commit(ScrDyn *d);
 /* Attach per-element access to a live array capsule (idempotent). Indexed
  * reads, `length`, in-range writes, `in`, own-property probes, and array
@@ -5663,6 +5668,11 @@ typedef struct ScrEventTargetCore {
   ScrEtRoot *roots;        /* per event type, in first-add order */
   ScrEtHandler *handlers;  /* event-handler attributes (`onabort`) */
   ScrEtHook *hooks;        /* options.signal removal hooks aimed here (weak) */
+  /* A compiled subclass instance's own capsule (+1), kept from its first
+   * method call so every later `this` and event target is the same value.
+   * The instance holds the core, so this is a cycle the collector reclaims
+   * through the scr_event_target_state_* helpers. NULL otherwise. */
+  ScrDyn *self;
   double max_listeners;    /* 0 = no leak warning (AbortSignal) */
   bool warned;
   const char *cls;         /* the warning's target name ("EventTarget") */
@@ -5711,8 +5721,90 @@ bool scr_event_is(const ScrDyn *v, double kind);
  * signal's core and aborted flag, or NULL for a non-signal value.
  * Installed by the AbortSignal unit; NULL when no signal can exist. */
 extern SCR_TL ScrEventTargetCore *(*scr_et_signal_core_fn)(const ScrDyn *d, bool *aborted);
+/* The compiled `listener.handleEvent` read (dyn → dyn; the runtime keeps a
+ * reference), installed by %main when a program class declares
+ * handleEvent: dispatch reads a capsule listener's handleEvent through it,
+ * which reaches the class's compiled methods. Without it a capsule's own
+ * view answers. */
+void scr_event_handle_event_reader(ScrDyn *reader);
 /* events.addAbortListener(signal, listener): +1 disposable, or NULL. */
 ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener);
+
+/* Compiled subclasses (`class Bus extends EventTarget`, `class Ping
+ * extends Event`): an instance lays out like a compiler-emitted hierarchy
+ * class (rc, vt, then this prefix, then the subclass fields — the
+ * ScrEmitter arrangement). super() creates the engine state behind the
+ * prefix pointer; `cls` is the concrete class's name, stamped by the
+ * emitted allocation (the leak warning and util.inspect print it). The
+ * instances' checked-dynamic capsules carry the RC adapters below, which
+ * is how the engine recognizes them: a target's capsule is the `this` of
+ * its listeners and the events' target, and an event's capsule is what
+ * its listeners receive. */
+typedef struct ScrEventTargetObj {
+  size_t rc;
+  const ScrVt *vt;
+  ScrEventTargetCore *core; /* NULL until super() */
+  const char *cls;
+} ScrEventTargetObj;
+
+typedef struct ScrEventObj {
+  size_t rc;
+  const ScrVt *vt;
+  ScrEvent *ev; /* NULL until super() */
+  const char *cls;
+} ScrEventObj;
+
+void *scr_event_target_obj_retain_v(void *o);
+void scr_event_target_obj_release_v(void *o); /* dispatches through vt */
+void *scr_event_obj_retain_v(void *o);
+void scr_event_obj_release_v(void *o);
+void *scr_event_target_obj_retain(void *o);
+void scr_event_target_obj_release(void *o);
+void *scr_event_obj_retain(void *o);
+void scr_event_obj_release(void *o);
+/* super() / super(type, options): `args` is the argument vector as one
+ * dyn array (borrowed); a bad type or options value leaves Node's
+ * exception pending. */
+void scr_event_target_obj_init(void *obj);
+void scr_event_obj_init(void *obj, ScrDyn *args);
+void scr_event_obj_init_type(void *obj, ScrStr *type); /* super(type), type borrowed */
+/* The emitted teardown's and collector's prefix helpers (NULL-tolerant):
+ * trace visits the listener values, `on<type>` handlers and the cached
+ * capsule of a target, and the target and detail of an event; gcfree
+ * frees the state without releasing those traced edges. */
+void scr_event_target_state_drop(ScrEventTargetCore *core);
+void scr_event_target_state_trace(ScrEventTargetCore *core, ScrTraceVisit visit, void *ctx);
+void scr_event_target_state_gcfree(ScrEventTargetCore *core);
+void scr_event_state_drop(ScrEvent *ev);
+void scr_event_state_trace(ScrEvent *ev, ScrTraceVisit visit, void *ctx);
+void scr_event_state_gcfree(ScrEvent *ev);
+/* The inherited members on typed receivers: `method`/`key` name an
+ * EventTarget or Event member, `args` is the argument vector as one dyn
+ * array, `self` the target's own capsule (borrowed). +1 results, or NULL
+ * with the exception pending. */
+ScrDyn *scr_event_target_obj_call(void *obj, ScrDyn *self, ScrStr *method, ScrDyn *args);
+/* dispatchEvent(event): the bool result, false with the exception pending. */
+bool scr_event_target_obj_dispatch(void *obj, ScrDyn *self, ScrDyn *event);
+ScrDyn *scr_event_obj_call(void *obj, ScrStr *method, ScrDyn *args);
+ScrDyn *scr_event_obj_get(void *obj, ScrStr *key);
+void scr_event_obj_set(void *obj, ScrStr *key, ScrDyn *value);
+
+/* The same members through a capsule (property reads and writes, method
+ * calls, util.inspect, string conversion), installed by the EventTarget
+ * unit with its first value and NULL before. get answers +1 or NULL (not
+ * an inherited member); set and invoke answer whether they handled the
+ * member. */
+typedef struct ScrEventRefHooks {
+  ScrDyn *(*get)(const ScrDyn *d, const ScrStr *key);
+  bool (*set)(ScrDyn *d, const ScrStr *key, const ScrDyn *value);
+  bool (*invoke)(ScrDyn *d, const char *method, ScrDyn *const *args, size_t argc,
+                 const char *what, ScrDyn **out);
+  ScrDyn *(*inspect_view)(const ScrDyn *d, const char **cls);
+  /* Object.prototype.toString's answer with the inherited @@toStringTag
+   * ("[object EventTarget]", "[object Event]"), or NULL. */
+  const char *(*string_tag)(const ScrDyn *d);
+} ScrEventRefHooks;
+extern SCR_TL const ScrEventRefHooks *scr_event_ref_hooks;
 
 ScrDyn *scr_intl_segmenter_new(void);
 ScrStr *scr_process_builtin_id(ScrDyn *id, ScrArr *known);

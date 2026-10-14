@@ -1078,6 +1078,23 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     }
 
     case SCR_DYN_TYPED_REF: {
+      const char *cls = NULL;
+      ScrDyn *view = scr_event_ref_hooks ? scr_event_ref_hooks->inspect_view(d, &cls) : NULL;
+      if (view) {
+        /* The handle rule above: the class name past the depth limit. */
+        if (recurse > depth) {
+          scr_dyn_release(view);
+          return scr_str_new(cls, strlen(cls));
+        }
+        ScrStr *body = scr_insp_dyn(view, recurse, depth);
+        scr_dyn_release(view);
+        InspBuf out = {0};
+        ib_cstr(&out, cls);
+        ib_char(&out, ' ');
+        ib_bytes(&out, body->data, body->len);
+        scr_str_release(body);
+        return ib_take(&out);
+      }
       ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
       ScrStr *out = scr_insp_dyn(materialized, recurse, depth);
       scr_dyn_release(materialized);

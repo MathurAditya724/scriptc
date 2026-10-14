@@ -2517,8 +2517,25 @@ ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index) {
   return NULL;
 }
 
+SCR_TL const ScrEventRefHooks *scr_event_ref_hooks = NULL;
+
+ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
+  ScrDyn *view = scr_dyn_typed_ref_materialize(d);
+  const char *tag = scr_event_ref_hooks ? scr_event_ref_hooks->string_tag(d) : NULL;
+  if (!tag || view->kind != SCR_DYN_OBJ || scr_dyn_property_owner(view, "toString", 8)) return view;
+  scr_dyn_release(view);
+  ScrStr *text = scr_str_new(tag, strlen(tag));
+  ScrDyn *out = scr_dyn_new_str(text);
+  scr_str_release(text);
+  return out;
+}
+
 ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key) {
   if (d->v.typed_ref.record) return scr_typed_ref_record_get(d, key);
+  if (scr_event_ref_hooks) {
+    ScrDyn *inherited = scr_event_ref_hooks->get(d, key);
+    if (inherited) return inherited;
+  }
   if (!scr_dyn_typed_ref_array_ops(d)) return NULL;
   if (scr_typed_ref_is_length(key)) return scr_dyn_new_num((double)((ScrArr *)d->v.typed_ref.ptr)->len);
   size_t index;
@@ -5239,7 +5256,7 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
   }
 
   case SCR_DYN_TYPED_REF: {
-    ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
+    ScrDyn *materialized = scr_dyn_typed_ref_string_view(d);
     ScrStr *s = scr_dyn_to_string(materialized, enc);
     scr_dyn_release(materialized);
     return s;
@@ -5355,7 +5372,7 @@ ScrStr *scr_dyn_string_coerce_js(const ScrDyn *d) {
     return NULL;
   }
   if (d->kind == SCR_DYN_TYPED_REF) {
-    ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
+    ScrDyn *materialized = scr_dyn_typed_ref_string_view(d);
     ScrStr *out = scr_dyn_string_coerce_js(materialized);
     scr_dyn_release(materialized);
     return out;
@@ -6016,6 +6033,7 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   if (recv->kind == SCR_DYN_PROXY) { scr_dyn_proxy_set(recv, key, value); return; }
   if (recv->kind == SCR_DYN_TYPED_REF) {
     if (scr_typed_ref_array_set(recv, key, value)) return;
+    if (scr_event_ref_hooks && scr_event_ref_hooks->set(recv, key, value)) return;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(recv);
     scr_dyn_key_set(materialized, key, value);
     if (!scr_exc_pending()) scr_dyn_typed_ref_commit(recv);

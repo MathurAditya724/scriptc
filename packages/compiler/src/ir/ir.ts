@@ -486,6 +486,8 @@ export function runtimeRcStem(t: IrType): string | null {
     if (RUNTIME_ERROR_CLASSES.has(t.className)) return "scr_error";
     if (t.className === RUNTIME_EMITTER_CLASS) return "scr_emitter";
     if (RUNTIME_STREAM_CLASSES.has(t.className)) return "scr_stream";
+    if (t.className === RUNTIME_EVENT_TARGET_CLASS) return "scr_event_target_obj";
+    if (t.className === RUNTIME_EVENT_CLASS) return "scr_event_obj";
     return null;
   }
   const stem = RUNTIME_RC_STEMS[t.kind];
@@ -1411,6 +1413,19 @@ export const RUNTIME_STREAM_CLASSES: ReadonlyMap<
   ["%Transform", { lib: "Transform", base: "%Duplex", sides: "rw" }],
   ["%PassThrough", { lib: "PassThrough", base: "%Transform", sides: "rw" }],
 ]);
+
+/** The runtime-provided EventTarget and Event bases of compiled
+ * subclasses (`class Bus extends EventTarget`, `class Ping extends
+ * Event`; scr_event_target.c, link-gated with the rest of the EventTarget
+ * surface). Plain `new EventTarget()` / `new Event()` values stay
+ * checked-dynamic handles; these classes exist only as roots of program
+ * hierarchies. Like the emitter, backends emit no struct/RC/vtable for
+ * them: subclass structs embed the runtime prefix (the engine-state
+ * pointer created by super() and the display-name slot stamped by the
+ * emitted allocation), and the instances' checked-dynamic capsules use
+ * the runtime RC adapters, which is how the engine recognizes them. */
+export const RUNTIME_EVENT_TARGET_CLASS = "%EventTarget";
+export const RUNTIME_EVENT_CLASS = "%Event";
 
 export interface IrRecordShape {
   /** Frontend-assigned shape id (`r0`, `r1`, ...). */

@@ -355,6 +355,9 @@ void scr_et_core_init(ScrEventTargetCore *core, double max_listeners, const char
 
 void scr_et_core_drop(ScrEventTargetCore *core) {
   scr_et_core_untrack(core);
+  /* Released last: it may hold the instance that owns this core. */
+  ScrDyn *self = core->self;
+  core->self = NULL;
   ScrEtRoot *roots = core->roots;
   ScrEtHandler *handlers = core->handlers;
   core->roots = NULL;
@@ -390,6 +393,7 @@ void scr_et_core_drop(ScrEventTargetCore *core) {
     }
     handlers = next;
   }
+  scr_dyn_release(self);
 }
 
 /* Appends a listener node to the type's list (Node's addEventListener
@@ -680,6 +684,15 @@ static void scr_et_reject_through_catch(ScrCaught *caught /* moves */) {
 
 /* Calls one listener with `this` = the target (functions) or the listener
  * object (handleEvent). */
+static SCR_TL ScrDyn *scr_et_handle_event_reader;
+
+void scr_event_handle_event_reader(ScrDyn *reader) {
+  ScrDyn *old = scr_et_handle_event_reader;
+  scr_et_handle_event_reader = scr_dyn_retain(reader);
+  scr_dyn_release(old);
+  scr_et_register_teardown();
+}
+
 static void scr_et_invoke(ScrEtListener *l, ScrDyn *self, ScrDyn *event) {
   if (l->native) {
     l->native(l->ctx, self, event);
@@ -710,7 +723,11 @@ static void scr_et_invoke(ScrEtListener *l, ScrDyn *self, ScrDyn *event) {
   ScrDyn *handle = NULL;
   if (current->kind == SCR_DYN_OBJ || current->kind == SCR_DYN_PROXY ||
       current->kind == SCR_DYN_TYPED_REF) {
-    if (current->kind == SCR_DYN_TYPED_REF) {
+    if (current->kind == SCR_DYN_TYPED_REF && scr_et_handle_event_reader) {
+      /* A class instance's handleEvent is a compiled method. */
+      ScrDyn *reader_args[1] = {current};
+      handle = scr_dyn_call(scr_et_handle_event_reader, reader_args, 1, "handleEvent");
+    } else if (current->kind == SCR_DYN_TYPED_REF) {
       ScrDyn *view = scr_dyn_typed_ref_materialize(current);
       handle = view ? scr_dyn_obj_read(view, "handleEvent", 11) : NULL;
       scr_dyn_release(view);
@@ -764,12 +781,15 @@ static void scr_et_invoke(ScrEtListener *l, ScrDyn *self, ScrDyn *event) {
 
 /* ── dispatch (kHybridDispatch) ────────────────────────────────────── */
 
+static ScrEventObj *scr_event_obj_of(const ScrDyn *d);
+
 static ScrEvent *scr_event_of(const ScrDyn *d) {
   if (d && d->kind == SCR_DYN_HANDLE &&
       (d->v.handle.tag == SCR_DYNH_EVENT || d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT)) {
     return (ScrEvent *)d->v.handle.ptr;
   }
-  return NULL;
+  ScrEventObj *obj = scr_event_obj_of(d);
+  return obj ? obj->ev : NULL;
 }
 
 static void scr_event_set_target(ScrEvent *ev, ScrDyn *target) {
@@ -958,6 +978,83 @@ static bool scr_et_key(const char *key, size_t len, const char *want) {
   return strlen(want) == len && memcmp(key, want, len) == 0;
 }
 
+/* ── method values ──────────────────────────────────────────────────
+ * A member read as a value (`event.preventDefault`, `target[name]`) is
+ * the prototype's function: it runs the member on its `this`, and any
+ * other receiver throws Node's ERR_INVALID_THIS. One function per member,
+ * so repeated reads compare equal. */
+static const char *const scr_et_method_names[] = {
+    "addEventListener", "removeEventListener",      "dispatchEvent", "preventDefault",
+    "stopPropagation",  "stopImmediatePropagation", "composedPath",  "initEvent",
+};
+static const uint32_t scr_et_method_lengths[] = {2, 2, 1, 0, 0, 0, 0, 1};
+enum { SCR_ET_TARGET_METHODS = 3, SCR_ET_METHODS = 8 };
+static SCR_TL ScrDyn *scr_et_method_values[SCR_ET_METHODS];
+
+static ScrEventTargetObj *scr_event_target_obj_of(const ScrDyn *d);
+
+typedef struct ScrEventTarget {
+  size_t rc;
+  ScrEventTargetCore core;
+} ScrEventTarget;
+
+static bool scr_et_target_method(ScrEventTargetCore *core, ScrDyn *self, const char *method,
+                                 ScrDyn *const *args, size_t argc, ScrDyn **out);
+static ScrDyn *scr_event_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
+                                size_t argc, const char *what);
+
+/* The listener core of an EventTarget value: a plain target, an
+ * AbortSignal, or a subclass instance; NULL for anything else. */
+static ScrEventTargetCore *scr_et_core_of(const ScrDyn *d) {
+  ScrEventTargetObj *obj = scr_event_target_obj_of(d);
+  if (obj) return obj->core;
+  if (d->kind == SCR_DYN_HANDLE && d->v.handle.tag == SCR_DYNH_EVENT_TARGET)
+    return &((ScrEventTarget *)d->v.handle.ptr)->core;
+  bool aborted;
+  return scr_et_signal_core_fn ? scr_et_signal_core_fn(d, &aborted) : NULL;
+}
+
+static ScrDyn *scr_et_method_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  size_t index = (size_t)scr_box_get_f64(clo->caps[0]);
+  const char *method = scr_et_method_names[index];
+  ScrDyn *self = scr_dyn_this_get();
+  bool target = index < SCR_ET_TARGET_METHODS;
+  ScrEventTargetCore *core = target ? scr_et_core_of(self) : NULL;
+  ScrEvent *ev = target ? NULL : scr_event_of(self);
+  if (!core && !ev) {
+    scr_dyn_release(self);
+    char message[64];
+    snprintf(message, sizeof message, "Value of \"this\" must be of type %s",
+             target ? "EventTarget" : "Event");
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, strlen(message), "ERR_INVALID_THIS");
+    return NULL;
+  }
+  ScrDyn *out = NULL;
+  if (core) scr_et_target_method(core, self, method, args, argc, &out);
+  else out = scr_event_invoke(ev, self, method, args, argc, method);
+  scr_dyn_release(self);
+  return out;
+}
+
+/* The function of member `key` (+1), or NULL when `key` names none. */
+static ScrDyn *scr_et_method_value(const char *key, size_t len, bool target) {
+  size_t from = target ? 0 : SCR_ET_TARGET_METHODS;
+  size_t to = target ? SCR_ET_TARGET_METHODS : SCR_ET_METHODS;
+  for (size_t i = from; i < to; i++) {
+    const char *name = scr_et_method_names[i];
+    if (strlen(name) != len || memcmp(name, key, len) != 0) continue;
+    if (!scr_et_method_values[i]) {
+      ScrClosure *clo = scr_closure_new(NULL, 1);
+      clo->caps[0] = scr_box_new(SCR_BOX_F64);
+      scr_box_set_f64(clo->caps[0], (double)i);
+      scr_et_method_values[i] =
+          scr_dyn_new_func(clo, scr_et_method_call, scr_et_method_lengths[i], "", name);
+    }
+    return scr_dyn_retain(scr_et_method_values[i]);
+  }
+  return NULL;
+}
+
 static ScrDyn *scr_event_target_value(const ScrEvent *ev) {
   return ev->target ? scr_dyn_retain(ev->target) : scr_dyn_new_null();
 }
@@ -982,7 +1079,7 @@ static ScrDyn *scr_event_get(void *ptr, const char *key, size_t len) {
   if (scr_et_key(key, len, "isTrusted")) return scr_dyn_new_bool(ev->trusted);
   if (ev->custom && scr_et_key(key, len, "detail"))
     return ev->detail ? scr_dyn_retain(ev->detail) : scr_dyn_new_null();
-  return NULL;
+  return scr_et_method_value(key, len, false);
 }
 
 static bool scr_event_set(void *ptr, const char *key, size_t len, const ScrDyn *value) {
@@ -1002,6 +1099,15 @@ static void scr_et_not_function(const char *what) {
   char message[256];
   snprintf(message, sizeof message, "%s is not a function", what);
   scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+}
+
+static bool scr_event_method_is(const char *method) {
+  static const char *const names[] = {"preventDefault", "stopPropagation",
+                                      "stopImmediatePropagation", "composedPath", "initEvent"};
+  for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+    if (strcmp(method, names[i]) == 0) return true;
+  }
+  return false;
 }
 
 static ScrDyn *scr_event_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
@@ -1078,11 +1184,6 @@ static const ScrDynHandleOps scr_custom_event_ops = {
 
 /* ── EventTarget handles ───────────────────────────────────────────── */
 
-typedef struct ScrEventTarget {
-  size_t rc;
-  ScrEventTargetCore core;
-} ScrEventTarget;
-
 static void *scr_event_target_retain_v(void *p) {
   ((ScrEventTarget *)p)->rc++;
   return p;
@@ -1095,23 +1196,33 @@ static void scr_event_target_release_v(void *p) {
   free(t);
 }
 
+/* The EventTarget methods over a core; false when `method` is not one. */
+static bool scr_et_target_method(ScrEventTargetCore *core, ScrDyn *self, const char *method,
+                                 ScrDyn *const *args, size_t argc, ScrDyn **out) {
+  if (strcmp(method, "addEventListener") == 0) {
+    *out = scr_et_add_listener(core, args, argc);
+  } else if (strcmp(method, "removeEventListener") == 0) {
+    *out = scr_et_remove_listener(core, args, argc);
+  } else if (strcmp(method, "dispatchEvent") == 0) {
+    *out = scr_et_dispatch_event(core, self, args, argc);
+  } else {
+    return false;
+  }
+  return true;
+}
+
 static ScrDyn *scr_event_target_invoke(void *ptr, ScrDyn *self, const char *method,
                                        ScrDyn *const *args, size_t argc, const char *what) {
   ScrEventTarget *t = ptr;
-  if (strcmp(method, "addEventListener") == 0) return scr_et_add_listener(&t->core, args, argc);
-  if (strcmp(method, "removeEventListener") == 0)
-    return scr_et_remove_listener(&t->core, args, argc);
-  if (strcmp(method, "dispatchEvent") == 0)
-    return scr_et_dispatch_event(&t->core, self, args, argc);
+  ScrDyn *out;
+  if (scr_et_target_method(&t->core, self, method, args, argc, &out)) return out;
   scr_et_not_function(what);
   return NULL;
 }
 
 static ScrDyn *scr_event_target_get(void *ptr, const char *key, size_t len) {
   (void)ptr;
-  (void)key;
-  (void)len;
-  return NULL;
+  return scr_et_method_value(key, len, true);
 }
 
 static bool scr_event_target_set(void *ptr, const char *key, size_t len, const ScrDyn *value) {
@@ -1137,6 +1248,245 @@ static const ScrDynHandleOps scr_event_target_ops = {
     .inspect_view = scr_event_target_inspect_view,
 };
 
+/* ── compiled subclasses (`class Bus extends EventTarget`) ─────────────
+ * Instances are compiler-emitted hierarchy objects whose prefix points at
+ * the engine state (scr_runtime.h). Their checked-dynamic capsules carry
+ * the RC adapters below, so a capsule's release adapter identifies the
+ * family: such a capsule is a target's `self`, the event a listener
+ * receives, and what event.target answers. */
+
+void *scr_event_target_obj_retain_v(void *o) {
+  ScrEventTargetObj *t = o;
+  if (t && t->rc != SIZE_MAX) t->rc++;
+  return o;
+}
+
+void scr_event_target_obj_release_v(void *o) {
+  ScrEventTargetObj *t = o;
+  if (!t || t->rc == SIZE_MAX) return;
+  t->vt->release(t); /* the dynamic class's teardown */
+}
+
+void *scr_event_obj_retain_v(void *o) {
+  ScrEventObj *e = o;
+  if (e && e->rc != SIZE_MAX) e->rc++;
+  return o;
+}
+
+void scr_event_obj_release_v(void *o) {
+  ScrEventObj *e = o;
+  if (!e || e->rc == SIZE_MAX) return;
+  e->vt->release(e);
+}
+
+void *scr_event_target_obj_retain(void *o) { return scr_event_target_obj_retain_v(o); }
+void scr_event_target_obj_release(void *o) { scr_event_target_obj_release_v(o); }
+void *scr_event_obj_retain(void *o) { return scr_event_obj_retain_v(o); }
+void scr_event_obj_release(void *o) { scr_event_obj_release_v(o); }
+
+static ScrEventTargetObj *scr_event_target_obj_of(const ScrDyn *d) {
+  return d && d->kind == SCR_DYN_TYPED_REF &&
+                 d->v.typed_ref.release == &scr_event_target_obj_release_v
+             ? (ScrEventTargetObj *)d->v.typed_ref.ptr
+             : NULL;
+}
+
+static ScrEventObj *scr_event_obj_of(const ScrDyn *d) {
+  return d && d->kind == SCR_DYN_TYPED_REF && d->v.typed_ref.release == &scr_event_obj_release_v
+             ? (ScrEventObj *)d->v.typed_ref.ptr
+             : NULL;
+}
+
+static void scr_et_install(void);
+static ScrEvent *scr_event_construct(ScrDyn *args, bool custom);
+
+void scr_event_target_obj_init(void *obj) {
+  scr_et_install();
+  ScrEventTargetObj *t = obj;
+  t->core = scr_et_calloc(sizeof *t->core);
+  scr_et_core_init(t->core, 10, t->cls);
+}
+
+/* The instance's rc reached zero, so its cached capsule (which holds the
+ * instance) is already gone. */
+void scr_event_target_state_drop(ScrEventTargetCore *core) {
+  if (!core) return;
+  scr_et_core_drop(core);
+  free(core);
+}
+
+void scr_event_target_state_trace(ScrEventTargetCore *core, ScrTraceVisit visit, void *ctx) {
+  if (!core) return;
+  if (core->self) visit(core->self, ctx);
+  for (ScrEtRoot *root = core->roots; root; root = root->map_next) {
+    for (ScrEtListener *l = root->head; l; l = l->next) {
+      if (l->listener) visit(l->listener, ctx);
+    }
+  }
+  for (ScrEtHandler *h = core->handlers; h; h = h->next) {
+    if (h->handler) visit(h->handler, ctx);
+  }
+}
+
+/* The collector's teardown: the traced values are the collector's to
+ * account, so they leave the state unreleased; the rest drops as usual. */
+void scr_event_target_state_gcfree(ScrEventTargetCore *core) {
+  if (!core) return;
+  core->self = NULL;
+  for (ScrEtRoot *root = core->roots; root; root = root->map_next) {
+    for (ScrEtListener *l = root->head; l; l = l->next) l->listener = NULL;
+  }
+  for (ScrEtHandler *h = core->handlers; h; h = h->next) h->handler = NULL;
+  scr_et_core_drop(core);
+  free(core);
+}
+
+/* The first method call through a capsule of the instance keeps it. */
+static void scr_et_keep_self(ScrEventTargetObj *t, ScrDyn *self) {
+  if (!t->core->self && self && scr_event_target_obj_of(self) == t)
+    t->core->self = scr_dyn_retain(self);
+}
+
+void scr_event_obj_init(void *obj, ScrDyn *args) {
+  ScrEventObj *e = obj;
+  e->ev = scr_event_construct(args, false);
+}
+
+/* super(type) with a string: nothing to validate or convert. */
+void scr_event_obj_init_type(void *obj, ScrStr *type) {
+  scr_et_install();
+  ScrEventObj *e = obj;
+  e->ev = scr_event_alloc(scr_str_retain(type), false);
+}
+
+void scr_event_state_drop(ScrEvent *ev) {
+  if (ev) scr_event_release_v(ev);
+}
+
+void scr_event_state_trace(ScrEvent *ev, ScrTraceVisit visit, void *ctx) {
+  if (!ev) return;
+  if (ev->target) visit(ev->target, ctx);
+  if (ev->detail) visit(ev->detail, ctx);
+}
+
+void scr_event_state_gcfree(ScrEvent *ev) {
+  if (!ev) return;
+  ev->target = NULL;
+  ev->detail = NULL;
+  scr_event_release_v(ev);
+}
+
+/* The typed-receiver entry points: `method` is the member's name literal
+ * (string data is NUL-terminated), `args` the argument vector as one dyn
+ * array. */
+ScrDyn *scr_event_target_obj_call(void *obj, ScrDyn *self, ScrStr *method, ScrDyn *args) {
+  ScrEventTargetObj *t = obj;
+  scr_et_keep_self(t, self);
+  ScrDyn *out = NULL;
+  scr_et_target_method(t->core, self, method->data, args->v.arr.items, args->v.arr.len, &out);
+  return out;
+}
+
+/* dispatchEvent(event) on a typed receiver: the result as a bool (false
+ * with the exception pending). */
+bool scr_event_target_obj_dispatch(void *obj, ScrDyn *self, ScrDyn *event) {
+  ScrEventTargetObj *t = obj;
+  scr_et_keep_self(t, self);
+  ScrDyn *args[1] = {event};
+  ScrDyn *out = scr_et_dispatch_event(t->core, self, args, 1);
+  if (!out) return false;
+  bool accepted = out->v.b;
+  scr_dyn_release(out);
+  return accepted;
+}
+
+ScrDyn *scr_event_obj_get(void *obj, ScrStr *key) {
+  ScrEventObj *e = obj;
+  ScrDyn *value = scr_event_get(e->ev, key->data, key->len);
+  return value ? value : scr_dyn_retain(scr_dyn_undefined());
+}
+
+void scr_event_obj_set(void *obj, ScrStr *key, ScrDyn *value) {
+  ScrEventObj *e = obj;
+  scr_event_set(e->ev, key->data, key->len, value);
+}
+
+ScrDyn *scr_event_obj_call(void *obj, ScrStr *method, ScrDyn *args) {
+  ScrEventObj *e = obj;
+  return scr_event_invoke(e->ev, NULL, method->data, args->v.arr.items, args->v.arr.len,
+                          method->data);
+}
+
+/* Checked-dynamic access to the inherited members (the handle ops' twins
+ * over the capsule; members of the subclass itself answer through the
+ * capsule's ordinary view). */
+static ScrDyn *scr_event_ref_get(const ScrDyn *d, const ScrStr *key) {
+  if (scr_event_target_obj_of(d)) return scr_et_method_value(key->data, key->len, true);
+  ScrEventObj *e = scr_event_obj_of(d);
+  return e && e->ev ? scr_event_get(e->ev, key->data, key->len) : NULL;
+}
+
+static bool scr_event_ref_set(ScrDyn *d, const ScrStr *key, const ScrDyn *value) {
+  ScrEventTargetObj *t = scr_event_target_obj_of(d);
+  ScrEventObj *e = scr_event_obj_of(d);
+  if (!t && !(e && e->ev)) return false;
+  if (e && scr_event_set(e->ev, key->data, key->len, value)) return true;
+  /* The other inherited members are getters and prototype methods; a
+   * write would shadow them with an own property the engine never
+   * reads. */
+  ScrDyn *inherited = t ? scr_et_method_value(key->data, key->len, true)
+                        : scr_event_get(e->ev, key->data, key->len);
+  if (!inherited) return false;
+  scr_dyn_release(inherited);
+  char message[128];
+  snprintf(message, sizeof message,
+           "writing the inherited member '%.*s' through an untyped value is not supported",
+           (int)key->len, key->data);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "SC2020");
+  return true;
+}
+
+static bool scr_event_ref_invoke(ScrDyn *d, const char *method, ScrDyn *const *args, size_t argc,
+                                 const char *what, ScrDyn **out) {
+  ScrEventTargetObj *t = scr_event_target_obj_of(d);
+  if (t) {
+    if (!t->core) return false;
+    scr_et_keep_self(t, d);
+    return scr_et_target_method(t->core, d, method, args, argc, out);
+  }
+  ScrEventObj *e = scr_event_obj_of(d);
+  if (!e || !e->ev || !scr_event_method_is(method)) return false;
+  *out = scr_event_invoke(e->ev, d, method, args, argc, what);
+  return true;
+}
+
+/* Node's [kInspect] on the subclass: the constructor's name, then the
+ * Event view (an empty object for targets). */
+static ScrDyn *scr_event_ref_inspect_view(const ScrDyn *d, const char **cls) {
+  ScrEventTargetObj *t = scr_event_target_obj_of(d);
+  if (t) {
+    *cls = t->cls;
+    return scr_dyn_new_obj();
+  }
+  ScrEventObj *e = scr_event_obj_of(d);
+  if (!e || !e->ev) return NULL;
+  *cls = e->cls;
+  return scr_event_inspect_view(e->ev);
+}
+
+static const char *scr_event_ref_string_tag(const ScrDyn *d) {
+  if (scr_event_target_obj_of(d)) return "[object EventTarget]";
+  return scr_event_obj_of(d) ? "[object Event]" : NULL;
+}
+
+static const ScrEventRefHooks scr_event_obj_ref_hooks = {
+    .get = scr_event_ref_get,
+    .set = scr_event_ref_set,
+    .invoke = scr_event_ref_invoke,
+    .inspect_view = scr_event_ref_inspect_view,
+    .string_tag = scr_event_ref_string_tag,
+};
+
 static void scr_et_install(void) {
   static SCR_TL bool installed;
   if (installed) return;
@@ -1144,12 +1494,19 @@ static void scr_et_install(void) {
   scr_dyn_handle_install(SCR_DYNH_EVENT, &scr_event_ops);
   scr_dyn_handle_install(SCR_DYNH_CUSTOM_EVENT, &scr_custom_event_ops);
   scr_dyn_handle_install(SCR_DYNH_EVENT_TARGET, &scr_event_target_ops);
+  scr_event_ref_hooks = &scr_event_obj_ref_hooks;
   scr_et_register_teardown();
 }
 
 static void scr_et_teardown(void) {
   while (scr_et_live_cores) scr_et_core_drop(scr_et_live_cores);
   while (scr_et_live_events) scr_event_drop_refs(scr_et_live_events);
+  for (size_t i = 0; i < SCR_ET_METHODS; i++) {
+    scr_dyn_release(scr_et_method_values[i]);
+    scr_et_method_values[i] = NULL;
+  }
+  scr_dyn_release(scr_et_handle_event_reader);
+  scr_et_handle_event_reader = NULL;
 }
 
 ScrDyn *scr_event_target_new(void) {
@@ -1236,6 +1593,11 @@ ScrDyn *scr_custom_event_new(ScrDyn *args) {
 }
 
 bool scr_event_is(const ScrDyn *v, double kind) {
+  if (v->kind == SCR_DYN_TYPED_REF) {
+    /* Compiled subclasses extend Event or EventTarget (never CustomEvent). */
+    if (kind == 0) return scr_event_obj_of(v) != NULL;
+    return kind == 2 && scr_event_target_obj_of(v) != NULL;
+  }
   if (v->kind != SCR_DYN_HANDLE) return false;
   ScrDynHandleTag tag = v->v.handle.tag;
   if (kind == 0) return tag == SCR_DYNH_EVENT || tag == SCR_DYNH_CUSTOM_EVENT;

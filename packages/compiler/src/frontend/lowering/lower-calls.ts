@@ -134,6 +134,7 @@ import {
 } from "./lower-classes.js";
 import { classCallbackCall, isClassCallback } from "./class-callbacks.js";
 import { emitterRooted, lowerEmitterMethodCall } from "./lower-event-emitter.js";
+import { eventTargetApiMethod, lowerEventTargetMethodCall } from "./lower-event-target.js";
 import {
   lowerConsoleInstanceCall,
   lowerConsoleMethodCall,
@@ -8498,6 +8499,11 @@ export function lowerObjectMethodCall(
   // these names are fenced at collection, so `found` never shadows).
   if (info && !found && EMITTER_API_MEMBERS.has(access.name.text) && emitterRooted(lowerer, info)) {
     return lowerEmitterMethodCall(lowerer, call, access, info);
+  }
+  // The inherited EventTarget/Event methods of a class rooted at those
+  // runtime bases (subclass members with these names are fenced).
+  if (info && !found && eventTargetApiMethod(info, access.name.text)) {
+    return lowerEventTargetMethodCall(lowerer, call, access, info, lowerReceiver());
   }
   // GENERIC methods (own type parameters) never enter the methods table:
   // they monomorphize per call site and dispatch statically

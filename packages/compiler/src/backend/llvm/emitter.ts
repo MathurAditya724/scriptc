@@ -36,6 +36,8 @@ import {
   isUnitType,
   POINTER_KINDS,
   RUNTIME_EMITTER_CLASS,
+  RUNTIME_EVENT_CLASS,
+  RUNTIME_EVENT_TARGET_CLASS,
   RUNTIME_ERROR_CLASSES,
   RUNTIME_STREAM_CLASSES,
   typeEquals,
@@ -1152,6 +1154,7 @@ export class LlEmitter {
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),
       isErrorClass: (name) => this.classMeta.get(name)?.root.def.name === "%Error",
+      classRootOf: (name) => this.classMeta.get(name)?.root.def.name,
       classSubtypes: (name) => {
         const target = this.classMetaOf(name);
         const intervals = classMembershipIntervals(this.classMeta, target.def.name);
@@ -1185,14 +1188,17 @@ export class LlEmitter {
       if (g.tdz) this.tdzGlobals.set(g.id, g.name);
     }
     this.stableGlobals = stableGlobals(mod);
-    // Runtime error, EventEmitter, and stream classes have known layouts.
-    // Subclasses embed the ScrEmitter/ScrStream prefixes from classes.ts.
+    // Runtime error, EventEmitter, stream, EventTarget and Event classes
+    // have known layouts. Subclasses embed the runtime prefixes from
+    // classes.ts.
     const classes = mod.classes ?? [];
     for (const cls of classes) {
       if (
         cls.runtime &&
         !RUNTIME_ERROR_CLASSES.has(cls.name) &&
         cls.name !== RUNTIME_EMITTER_CLASS &&
+        cls.name !== RUNTIME_EVENT_TARGET_CLASS &&
+        cls.name !== RUNTIME_EVENT_CLASS &&
         !RUNTIME_STREAM_CLASSES.has(cls.name)
       ) {
         throw new LlvmUnsupportedError(`classDef:${cls.name}`, cls.loc);
@@ -2052,6 +2058,13 @@ export class LlEmitter {
       // The runtime stream layout { rc, vt, reg, cls, st } — one struct
       // for all five stream classes; stream subclasses embed it.
       `%ScrStream = type { ${this.sizeType}, ptr, ptr, ptr, ptr }`,
+      // The EventTarget and Event subclass prefixes { rc, vt, state, cls }.
+      ...(this.classMeta.has(RUNTIME_EVENT_TARGET_CLASS)
+        ? [`%ScrEventTargetObj = type { ${this.sizeType}, ptr, ptr, ptr }`]
+        : []),
+      ...(this.classMeta.has(RUNTIME_EVENT_CLASS)
+        ? [`%ScrEventObj = type { ${this.sizeType}, ptr, ptr, ptr }`]
+        : []),
       // The catch-binding snapshot box { rc, kind, f64, b, payload,
       // retain_fn, release_fn, trace_fn } — caughtTest kind reads and
       // caughtNarrow payload extraction GEP through it (offsets match

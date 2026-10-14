@@ -830,6 +830,9 @@ static ScrDyn *scr_dyn_invoke_impl(
     bool handled = false;
     ScrDyn *fast = dyn_live_array_method(recv, method, args, argc, what, &handled);
     if (handled) return fast;
+    if (scr_event_ref_hooks &&
+        scr_event_ref_hooks->invoke(recv, method, args, argc, what, &fast))
+      return fast;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(recv);
     if (scr_exc_pending()) {
       scr_dyn_release(materialized);

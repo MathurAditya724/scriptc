@@ -89,6 +89,14 @@ import {
   streamCtorShape,
 } from "./lower-stream.js";
 import {
+  builtinEventTargetBaseOf,
+  eventTargetApiMembers,
+  eventTargetApiMethod,
+  eventTargetRootOf,
+  eventTargetSuperCall,
+  lowerEventTargetMethodCall,
+} from "./lower-event-target.js";
+import {
   emitOverrideShapeReason,
   emitSpecSuperForward,
   emitterRooted,
@@ -466,6 +474,12 @@ export interface ClassInfo {
    * the base chain. The value names which SIDES the class carries. User
    * `extends` of these classes is fenced at the declaration (phase 1). */
   builtinStream?: "r" | "w" | "rw";
+  /** Runtime-provided EventTarget ("target") or Event ("event") base of
+   * compiled subclasses (lower-event-target.ts): no bodies lower, super()
+   * becomes an event.* libCall, and the inherited members lower through
+   * lower-event-target.ts over any class rooted here. Subclass structs
+   * embed the runtime prefix. */
+  builtinEventTarget?: "target" | "event";
   /** The synthetic LifetimeRegion class (@scriptc/experimental,
    * lifetime-regions.ts): its constructor is synthesized with the class,
    * and its methods lower at their call sites. */
@@ -2005,6 +2019,7 @@ export function collectClassShapeInner(
         lowerer.builtinErrorInfoOf(symbol) ??
         lowerer.builtinEmitterInfoOf(symbol) ??
         builtinStreamInfoOf(lowerer, symbol) ??
+        builtinEventTargetBaseOf(lowerer, t.expression) ??
         // A const BINDING holding exactly one class (`const B = Animal`,
         // `const B = class {…}`): the base is that class — extends
         // through the alias is the declaration story (a general class
@@ -2064,7 +2079,11 @@ export function collectClassShapeInner(
     }
     if (lowerer.collectingExprClasses.has(decl)) {
       for (let parent = base; parent; parent = parent.base) {
-        if (parent.builtinEmitter || parent.builtinStream !== undefined) {
+        if (
+          parent.builtinEmitter ||
+          parent.builtinStream !== undefined ||
+          parent.builtinEventTarget !== undefined
+        ) {
           lowerer.unsupported(
             "SC1090",
             decl,
@@ -2458,6 +2477,21 @@ export function collectClassShapeInner(
           "SC1090",
           memberName,
           `overriding the EventEmitter member '${memberName.text}' (the runtime owns the emitter surface)`,
+        );
+      }
+      // The inherited EventTarget/Event members read the engine's own
+      // state: dispatch never calls a subclass override, and the engine
+      // never reads an own field that shadows an accessor (`type`).
+      if (
+        memberName &&
+        ts.isIdentifier(memberName) &&
+        !(ts.getCombinedModifierFlags(member as ts.Declaration) & ts.ModifierFlags.Static) &&
+        eventTargetApiMembers(base)?.has(memberName.text)
+      ) {
+        lowerer.unsupported(
+          "SC1090",
+          memberName,
+          `overriding the ${eventTargetRootOf(base) === "target" ? "EventTarget" : "Event"} member '${memberName.text}' (the runtime owns the inherited surface)`,
         );
       }
       // The stream surface is likewise runtime-provided on stream-rooted
@@ -4789,6 +4823,7 @@ export function classValueRef(lowerer: Lowerer, info: ClassInfo, blame: ts.Node)
   if (
     lowerer.inheritsBuiltinEmitterCtor(info) ||
     inheritsBuiltinStreamCtor(lowerer, info) ||
+    eventTargetRootOf(info) !== null ||
     (() => {
       for (let c = info.base; c; c = c.base)
         if (c.builtinEmitter || c.builtinStream !== undefined) return true;
@@ -7631,6 +7666,7 @@ export function superCallStmt(
       loc,
     };
   }
+  if (base.builtinEventTarget) return eventTargetSuperCall(lowerer, base, thisRef, args, loc);
   if (base.builtinStream) {
     // The SYNTHESIZED constructor of a ctor-less stream subclass:
     // super() with default options (underscore methods still bind; a
@@ -7709,6 +7745,20 @@ export function lowerSuperMethodCall(
     if (EMITTER_API_MEMBERS.has(access.name.text) && emitterRooted(lowerer, cls.base)) {
       const viaEmitter = lowerEmitterSuperCall(lowerer, call, access, cls);
       if (viaEmitter) return viaEmitter;
+    }
+    // `super.dispatchEvent(e)`, `super.preventDefault()`: the inherited
+    // runtime members over this method's own `this` (subclasses cannot
+    // override them, so the static answer is the runtime's).
+    if (eventTargetApiMethod(cls.base, access.name.text)) {
+      const thisL = lowerer.resolveThis();
+      if (!thisL) lowerer.unsupported("SC1080", access);
+      const thisRef: IrExpr = {
+        kind: "varRef",
+        localId: thisL.id,
+        type: thisL.type,
+        loc: locOf(call),
+      };
+      return lowerEventTargetMethodCall(lowerer, call, access, cls.base, thisRef);
     }
     lowerer.unsupported(
       "SC1090",

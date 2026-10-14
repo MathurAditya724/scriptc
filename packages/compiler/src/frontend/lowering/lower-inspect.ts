@@ -26,6 +26,7 @@ import {
 import type { ClassInfo } from "./lower-classes.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { symbolFieldDisplayName } from "./symbol-fields.js";
+import { eventTargetRootOf } from "./lower-event-target.js";
 import { lowerSystemErrorMap } from "./lower-system-errors.js";
 import { isPerfEntryType, perfEntryJson } from "./builtins/performance.js";
 
@@ -201,6 +202,9 @@ function inspectSupport(
     case "object": {
       const info = lowerer.classes.get(t.className);
       if (!info) return `class '${t.className}' has no inspect lowering`;
+      // EventTarget and Event subclasses render through Node's inspectors
+      // for those classes (the runtime's capsule view).
+      if (eventTargetRootOf(info) !== null) return null;
       if (isErrorClass(lowerer, t.className)) {
         return errorRenderable(info)
           ? null
@@ -288,6 +292,15 @@ export function inspectExpr(
     case "dyn":
       return { kind: "libCall", fn: "insp.dyn", args: [value, recurse, depth], type: STRING, loc };
     case "object":
+      if (eventTargetRootOf(lowerer.classes.get(t.className)) !== null) {
+        return {
+          kind: "libCall",
+          fn: "insp.dyn",
+          args: [lowerer.coerceToExpected(value, DYN), recurse, depth],
+          type: STRING,
+          loc,
+        };
+      }
       if (isErrorClass(lowerer, t.className)) {
         return {
           kind: "libCall",

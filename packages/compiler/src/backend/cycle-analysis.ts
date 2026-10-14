@@ -1,9 +1,12 @@
 import type { IrModule, IrType } from "../ir/ir.js";
 import {
+  DYN,
   DYN_CLASS_PROPERTIES,
   funcOf,
   mapOf,
   RUNTIME_EMITTER_CLASS,
+  RUNTIME_EVENT_CLASS,
+  RUNTIME_EVENT_TARGET_CLASS,
   STRING,
   VOID,
 } from "../ir/ir.js";
@@ -126,6 +129,11 @@ function analyzeCycles(
         ...c.fields,
         ...(c.name === RUNTIME_EMITTER_CLASS
           ? [{ name: "<listeners>", type: funcOf([], VOID) }]
+          : []),
+        // The EventTarget state owns listener values and the target's own
+        // capsule; an Event owns its target and detail.
+        ...(c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS
+          ? [{ name: "<engine>", type: DYN }]
           : []),
         ...(c.localCaptures !== undefined
           ? [{ name: "<class>", type: { kind: "classval" as const, className: c.name } }]
