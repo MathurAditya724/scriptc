@@ -48,6 +48,7 @@ import {
   shapeHasAccessorSlots,
   typeEquals,
 } from "../../ir/ir.js";
+import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
 import { isGenericCallableMemberType, typeKey } from "../type-mapper.js";
 import { dynFallbackType, jsFuncNameOf, newFnCtx, staticImportNamespaceType } from "./lowerer.js";
@@ -3317,6 +3318,13 @@ function lowerDynReceiverMethodCall(
         .some((decl) => ts.isPropertyDeclaration(decl) || ts.isPropertySignature(decl))
     );
   })();
+  // Protocol methods keep their static signature: instances of the
+  // implementing classes call the native method.
+  const protocolCall =
+    !callbackProperty && lowerer.classImplementedProtocol(recvTs)
+      ? lowerProtocolMethodCall(lowerer, call, access, recv)
+      : null;
+  if (protocolCall) return protocolCall;
   const dispatched = callbackProperty
     ? null
     : lowerDynDispatchMethodCall(lowerer, call, access, recv, arrayReceiver);

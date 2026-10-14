@@ -1,7 +1,16 @@
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
-import { type IrExpr, type IrType, isRefCounted, isUnitType, typeEquals } from "../../ir/ir.js";
+import {
+  type IrExpr,
+  type IrType,
+  isDynTypedRefType,
+  isRefCounted,
+  isUnitType,
+  typeEquals,
+  typeKey,
+} from "../../ir/ir.js";
+import { DYN_KIND } from "./dyn.js";
 import { stringParts } from "./string-construction.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { mangleRecordNew } from "../mangle.js";
@@ -366,6 +375,7 @@ export function emitSerializationExpr(
       }
       const dynV = emitBorrowedInput(host, e.value);
       const helper = host.dyn.dynCheckHelper(e.type, e.preserveRefs);
+      if (isDynTypedRefType(e.type)) return emitClassCheck(host, e.type, dynV.name, helper);
       const ty = host.llType(e.type);
       const t = B.tmp();
       B.line(
@@ -381,6 +391,62 @@ export function emitSerializationExpr(
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** A checked class value: a capsule this program boxed from exactly the
+ * class yields its instance (+1) inline; any other value takes the
+ * checking helper, which may throw. */
+function emitClassCheck(
+  host: LlvmEmitterContext,
+  type: IrType & { kind: "object" },
+  value: string,
+  helper: string,
+): LlValue {
+  const B = host.B;
+  const slot = B.slot();
+  B.entryAllocas.push(`${slot} = alloca ptr`);
+  const present = B.tmp(),
+    typed = B.tmp(),
+    keySlot = B.tmp(),
+    keyPtr = B.tmp(),
+    same = B.tmp();
+  const inspect = B.newLabel("dc.inspect");
+  const capsule = B.newLabel("dc.capsule");
+  const exact = B.newLabel("dc.exact");
+  const checked = B.newLabel("dc.checked");
+  const done = B.newLabel("dc.done");
+  B.line(`${present} = icmp ne ptr ${value}, null`);
+  B.condBr(present, inspect, checked);
+  B.startBlock(inspect);
+  B.line(`${typed} = icmp eq i32 ${host.dynKind(value)}, ${DYN_KIND.TYPED_REF}`);
+  B.condBr(typed, capsule, checked);
+  B.startBlock(capsule);
+  B.line(
+    `${keySlot} = getelementptr inbounds i8, ptr ${value}, i64 ${host.abiOffset(40, 28)} ; ->v.typed_ref.type_key`,
+  );
+  B.line(`${keyPtr} = load ptr, ptr ${keySlot}`);
+  B.line(`${same} = icmp eq ptr ${keyPtr}, ${host.cstr(typeKey(type))}`);
+  B.condBr(same, exact, checked);
+  B.startBlock(exact);
+  const objectSlot = B.tmp(),
+    object = B.tmp(),
+    retained = B.tmp();
+  B.line(`${objectSlot} = getelementptr inbounds i8, ptr ${value}, i64 16 ; ->v.typed_ref.ptr`);
+  B.line(`${object} = load ptr, ptr ${objectSlot}`);
+  B.line(`${retained} = call ptr ${vAdapters(host.shapeHost, type).retain}(ptr ${object})`);
+  B.line(`store ptr ${retained}, ptr ${slot}`);
+  B.br(done);
+  B.startBlock(checked);
+  const result = B.tmp();
+  B.line(`${result} = call ptr @${helper}(ptr ${value}, ptr null)`);
+  B.line(`store ptr ${result}, ptr ${slot}`);
+  // A throwing check returns null, so the unwind has nothing to release.
+  host.emitPendingCheck();
+  B.br(done);
+  B.startBlock(done);
+  const out = B.tmp();
+  B.line(`${out} = load ptr, ptr ${slot}`);
+  return host.own({ name: out, type });
 }
 
 export function emitAsyncExpr(

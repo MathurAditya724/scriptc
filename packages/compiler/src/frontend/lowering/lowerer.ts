@@ -92,6 +92,7 @@ import {
 import type { FrontendServices } from "../services.js";
 import { InternalCompilerError } from "../../errors.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
+import { type ProtocolDispatch } from "./class-protocol-dispatch.js";
 import { ClassDynamicDispatch, trackClassFieldCreation } from "./class-dynamic-dispatch.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
@@ -2282,6 +2283,11 @@ export class Lowerer {
   /** Named method slots observed before class collection need a callable
    * ABI and shared prototype descriptors instead of call-site specialization. */
   readonly prototypeMethodAccesses = new Map<string, ts.Node>();
+  /** Typed calls through class-backed protocols, by signature; class
+   * dynamic dispatch adds their native arms (class-protocol-dispatch.ts). */
+  readonly protocolDispatches = new Map<string, ProtocolDispatch>();
+  /** Bindings no other function assigns (class-protocol-dispatch.ts). */
+  readonly protocolOwnedBindings = new Map<ts.Symbol, boolean>();
   /** Field names whose complete source census stores only lexical arrows. */
   readonly receiverFreeCallbackFields = new Set<string>();
   /** Inferred JS methods participating in an override chain keep a vtable

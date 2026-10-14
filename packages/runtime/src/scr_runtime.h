@@ -4923,6 +4923,10 @@ struct ScrDyn {
   struct ScrDyn *symbol_properties;
   struct ScrDyn *symbol_keys;
 };
+/* Compiled class dispatch reads a capsule's instance and key in place. */
+_Static_assert(offsetof(ScrDyn, v.typed_ref.ptr) == 16, "typed_ref.ptr offset");
+_Static_assert(offsetof(ScrDyn, v.typed_ref.type_key) == 16 + 3 * sizeof(void *),
+               "typed_ref.type_key offset");
 
 static inline ScrDyn *scr_dyn_retain(ScrDyn *d) {
   if (d->rc != SIZE_MAX) {

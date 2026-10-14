@@ -113,12 +113,14 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitPendingCheck();
     return output;
   }
-  if (e.fn === "dyn.typedRefIs") {
+  if (e.fn === "dyn.typedRefIs" || e.fn === "dyn.typedRefKeyIs") {
+    const literal = e.args[1]!.kind === "strLit" ? e.args[1]!.value : null;
+    if (e.fn === "dyn.typedRefKeyIs" && literal === null)
+      throw new InternalCompilerError("llvm emitter bug: dyn.typedRefKeyIs needs a literal key");
     // A literal brand cannot replace the receiver while being evaluated.
     // Generated class dispatch uses these probes repeatedly on one local.
-    const value =
-      e.args[1]!.kind === "strLit" ? host.emitReadReceiver(e.args[0]!) : host.emitExpr(e.args[0]!);
-    const key = host.emitExpr(e.args[1]!);
+    const value = literal !== null ? host.emitReadReceiver(e.args[0]!) : host.emitExpr(e.args[0]!);
+    const key = e.fn === "dyn.typedRefIs" ? host.emitExpr(e.args[1]!) : null;
     // Expose the capsule tag to LLVM so class dispatch can skip the whole
     // chain of brand comparisons for ordinary checked-dynamic values.
     // Keep the runtime's null handling and evaluate both operands once.
@@ -137,13 +139,36 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${typed} = icmp eq i32 ${kind}, ${DYN_KIND.TYPED_REF}`);
     B.condBr(typed, capsule, done);
     B.startBlock(capsule);
-    host.declare("declare zeroext i1 @scr_dyn_typed_ref_is_key(ptr, ptr) memory(read)");
-    const matches = B.tmp();
-    B.line(
-      `${matches} = call zeroext i1 @scr_dyn_typed_ref_is_key(ptr ${value.name}, ptr ${key.name})`,
-    );
-    B.line(`store i1 ${matches}, ptr ${slot}`);
-    B.br(done);
+    // Capsules boxed by this program share its key constant, so a pointer
+    // match answers without comparing names.
+    if (literal !== null) {
+      const keySlot = B.tmp(),
+        keyPtr = B.tmp(),
+        same = B.tmp();
+      B.line(
+        `${keySlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(40, 28)} ; ->v.typed_ref.type_key`,
+      );
+      B.line(`${keyPtr} = load ptr, ptr ${keySlot}`);
+      B.line(`${same} = icmp eq ptr ${keyPtr}, ${host.cstr(literal)}`);
+      if (e.fn === "dyn.typedRefKeyIs") {
+        B.line(`store i1 ${same}, ptr ${slot}`);
+        B.br(done);
+      } else {
+        const compare = B.newLabel("brand.compare");
+        B.line(`store i1 true, ptr ${slot}`);
+        B.condBr(same, done, compare);
+        B.startBlock(compare);
+      }
+    }
+    if (e.fn === "dyn.typedRefIs") {
+      host.declare("declare zeroext i1 @scr_dyn_typed_ref_is_key(ptr, ptr) memory(read)");
+      const matches = B.tmp();
+      B.line(
+        `${matches} = call zeroext i1 @scr_dyn_typed_ref_is_key(ptr ${value.name}, ptr ${key!.name})`,
+      );
+      B.line(`store i1 ${matches}, ptr ${slot}`);
+      B.br(done);
+    }
     B.startBlock(done);
     const result = B.tmp();
     B.line(`${result} = load i1, ptr ${slot}`);
