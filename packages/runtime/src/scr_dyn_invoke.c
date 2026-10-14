@@ -1017,6 +1017,7 @@ static ScrDyn *scr_dyn_invoke_impl(
           for (size_t i = splice_start; i < len - splice_removed + inserted; i++) {
             size_t source = i < splice_start + inserted ? i : i + splice_removed - inserted;
             ScrDyn *replacement = i < splice_start + inserted ? args[i - splice_start + 2] : recv->v.arr.items[source];
+            if (i < splice_start + inserted) scr_dyn_region_store(recv, replacement);
             ScrDyn *old = recv->v.arr.items[i];
             recv->v.arr.items[i] = scr_dyn_retain(replacement);
             scr_dyn_release(old);
@@ -1080,7 +1081,10 @@ static ScrDyn *scr_dyn_invoke_impl(
        * abandon retained argument references. */
       for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(recv, scr_dyn_retain(scr_dyn_undefined()));
       memmove(recv->v.arr.items + argc, recv->v.arr.items, len * sizeof(ScrDyn *));
-      for (size_t i = 0; i < argc; i++) recv->v.arr.items[i] = scr_dyn_retain(args[i]);
+      for (size_t i = 0; i < argc; i++) {
+        scr_dyn_region_store(recv, args[i]);
+        recv->v.arr.items[i] = scr_dyn_retain(args[i]);
+      }
       return scr_dyn_new_num((double)recv->v.arr.len);
     }
     if (dyn_name_is(method, "splice")) {
@@ -1106,8 +1110,10 @@ static ScrDyn *scr_dyn_invoke_impl(
       memmove(recv->v.arr.items + start + inserted,
               recv->v.arr.items + start + removed,
               (len - start - removed) * sizeof(ScrDyn *));
-      for (size_t i = 0; i < inserted; i++)
+      for (size_t i = 0; i < inserted; i++) {
+        scr_dyn_region_store(recv, args[i + 2]);
         recv->v.arr.items[start + i] = scr_dyn_retain(args[i + 2]);
+      }
       recv->v.arr.len = next_len;
       return out;
     }
@@ -1300,6 +1306,7 @@ static ScrDyn *scr_dyn_invoke_impl(
         return NULL;
       }
       ScrDyn *fill = argc ? args[0] : scr_dyn_undefined();
+      if (start < end) scr_dyn_region_store(recv, fill);
       for (size_t i = start; i < end; i++) {
         if (recv->non_extensible && !scr_dyn_arr_has_index(recv, i)) {
           static const char message[] = "Cannot add property, object is not extensible";

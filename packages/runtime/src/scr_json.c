@@ -830,6 +830,34 @@ static void scr_typed_ref_exit(void) {
 
 static void scr_dyn_gcfree(void *ptr);
 
+/* Intact parse regions (scr_runtime.h, ScrDynRegion). */
+static ScrDynRegion *scr_dyn_region_new(void) {
+  ScrDynRegion *region = malloc(sizeof *region);
+  if (!region) scr_json_oom();
+  region->refs = 1;
+  region->intact = true;
+  return region;
+}
+
+static void scr_dyn_region_unref(ScrDynRegion *region) {
+  if (region && --region->refs == 0) free(region);
+}
+
+/* Tag a container the parser has just completed. Its members were stored
+ * while it had no region, so construction never trips the barrier. */
+static void scr_dyn_region_join(ScrDyn *d, ScrDynRegion *region) {
+  if (!region || (d->kind != SCR_DYN_ARR && d->kind != SCR_DYN_OBJ)) return;
+  region->refs++;
+  if (d->kind == SCR_DYN_ARR) d->v.arr.region = region;
+  else d->v.obj.region = region;
+}
+
+static void scr_dyn_region_leave(ScrDyn *d) {
+  ScrDynRegion **slot = d->kind == SCR_DYN_ARR ? &d->v.arr.region : &d->v.obj.region;
+  scr_dyn_region_unref(*slot);
+  *slot = NULL;
+}
+
 static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
 #ifndef SCR_RC_AUDIT
   ScrDyn **list = kind == SCR_DYN_ARR   ? &scr_dyn_free_arr
@@ -857,8 +885,10 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
       d->v.arr.sealed = false;
       d->v.arr.frozen = false;
       d->v.arr.presence = NULL;
+      d->v.arr.region = NULL;
     } else if (kind == SCR_DYN_OBJ) {
       d->v.obj.len = 0; /* cap/entries preserved */
+      d->v.obj.region = NULL;
       if (d->v.obj.cap <= SCR_DYN_KEY_CACHE_SLOTS) {
         for (size_t i = 0; i < d->v.obj.cap; i++) {
           ScrDynEntry *entry = &d->v.obj.entries[i];
@@ -912,6 +942,7 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
     free(d->v.obj.index);
     d->v.obj.index = NULL;
   }
+  if (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ) scr_dyn_region_leave(d);
   if (!collected) scr_dyn_release(d->prototype);
   if (!collected) scr_dyn_release(d->symbol_properties);
   if (!collected) scr_dyn_release(d->symbol_keys);
@@ -1031,10 +1062,16 @@ void scr_dyn_release_survivor(ScrDyn *d) {
 void scr_dyn_release(ScrDyn *d) {
   if (!d || d->rc == SIZE_MAX) return;
   if (--d->rc != 0) {
+    /* A container of an intact parse region cannot lie on a cycle
+     * (ScrDynRegion). */
+    if (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ) {
+      ScrDynRegion *region = d->kind == SCR_DYN_ARR ? d->v.arr.region : d->v.obj.region;
+      if (!region || !region->intact) scr_cyc_released(d);
+      return;
+    }
     /* A capsule without a snapshot, casts or a traced referent has no
      * outgoing edge, so it cannot be part of a cycle until it gains one. */
-    if (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ || d->kind == SCR_DYN_FUNC ||
-        d->kind == SCR_DYN_PROXY ||
+    if (d->kind == SCR_DYN_FUNC || d->kind == SCR_DYN_PROXY ||
         (d->kind == SCR_DYN_TYPED_REF &&
          (d->v.typed_ref.materialized || d->v.typed_ref.casts || d->v.typed_ref.traced ||
           d->prototype || d->symbol_properties || d->symbol_keys)) ||
@@ -1193,6 +1230,7 @@ bool scr_dyn_field_eq_bool(const ScrDyn *d, const ScrStr *key, bool value) {
 /* Public: the compiler-emitted static→dyn converters push through this
  * too. Ownership of the item moves in. */
 void scr_dyn_arr_push(ScrDyn *arr, ScrDyn *item) {
+  scr_dyn_region_store(arr, item);
   if (arr->v.arr.len == arr->v.arr.cap) {
     size_t cap = arr->v.arr.cap ? arr->v.arr.cap * 2 : 4;
     ScrDyn **items = scr_mem_realloc(arr->v.arr.items, cap * sizeof *items);
@@ -1423,6 +1461,7 @@ ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key) {
  * original spelling/storage and insertion position; the later value wins.
  * A recycled entry can reuse equal key bytes without a malloc/free pair. */
 static void scr_dyn_obj_put(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value) {
+  scr_dyn_region_store(obj, value);
   /* Construction usually appends an absent name. Avoid a read hint that
    * repeats comparisons on compact objects; wide objects use their index. */
   ScrDynEntry *existing = obj->v.obj.index ? scr_dyn_find_entry(obj, key, key_len)
@@ -1730,6 +1769,7 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
     return NULL;
   }
   ScrDyn *replacement = prototype->kind == SCR_DYN_NULL ? NULL : scr_dyn_retain(prototype);
+  scr_dyn_region_store(object, replacement ? replacement : scr_dyn_undefined());
   scr_dyn_release(object->prototype);
   object->prototype = replacement;
   object->null_proto = replacement ? false : true;
@@ -3824,6 +3864,8 @@ void scr_dyn_symbol_init_own(ScrDyn *object, ScrDyn *key, const ScrStr *storage,
 }
 
 static void scr_dyn_symbol_table(ScrDyn *receiver) {
+  /* The tables are separate nodes that later hold arbitrary values. */
+  scr_dyn_region_store(receiver, NULL);
   if (!receiver->symbol_properties) receiver->symbol_properties = scr_dyn_new_obj_null_proto();
   if (!receiver->symbol_keys) receiver->symbol_keys = scr_dyn_new_arr();
   receiver->symbol_properties->non_extensible = receiver->non_extensible;
@@ -4521,6 +4563,9 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
 
 
   if (scr_exc_pending()) return NULL;
+  /* Values, accessors and array property tables: any of them may close a
+   * cycle, and definitions are rare enough to invalidate conservatively. */
+  scr_dyn_region_store(target, NULL);
   if (target->kind == SCR_DYN_FUNC) {
     if (scr_dyn_class_reflection_fence(target)) return NULL;
     ScrStr *name = scr_dyn_property_key(key);
@@ -6299,13 +6344,17 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       while (recv->v.arr.len <= idx) {
         scr_dyn_arr_push_hole(recv);
       }
+      scr_dyn_region_store(recv, value);
       ScrDyn *old = recv->v.arr.items[idx];
       recv->v.arr.items[idx] = scr_dyn_retain(value);
       if (recv->v.arr.presence) recv->v.arr.presence[idx] = 1;
       scr_dyn_release(old);
       return;
     }
-    if (!recv->v.arr.properties) recv->v.arr.properties = scr_dyn_new_obj();
+    if (!recv->v.arr.properties) {
+      scr_dyn_region_store(recv, NULL); /* a table that later holds anything */
+      recv->v.arr.properties = scr_dyn_new_obj();
+    }
     recv->v.arr.properties->non_extensible = recv->non_extensible;
     scr_dyn_key_set(recv->v.arr.properties, key, value);
     return;
@@ -6836,6 +6885,7 @@ typedef struct {
   size_t pos;
   int depth;
   bool quiet; /* schema fast path: report failure without throwing */
+  ScrDynRegion *region; /* tags completed containers (ScrDynRegion); may be NULL */
 } ScrJsonP;
 
 static void scr_json_throw(const ScrJsonP *p, const char *msg) {
@@ -7293,6 +7343,7 @@ static ScrDyn *scr_json_value(ScrJsonP *p) {
     }
     ScrDyn *d = c == '{' ? scr_json_object(p) : scr_json_array(p);
     p->depth--;
+    if (d) scr_dyn_region_join(d, p->region);
     return d;
   }
   if (c == '"') {
@@ -7326,7 +7377,10 @@ ScrDyn *scr_json_parse(ScrStr *text) {
     scr_json_throw(&p, "Unexpected end of JSON input");
     return NULL;
   }
+  /* Documents with a container start intact (ScrDynRegion). */
+  if (p.s[p.pos] == '{' || p.s[p.pos] == '[') p.region = scr_dyn_region_new();
   ScrDyn *d = scr_json_value(&p);
+  scr_dyn_region_unref(p.region); /* the parser's own reference */
   if (!d) return NULL;
   scr_json_ws(&p);
   if (p.pos < p.len) {
@@ -7831,6 +7885,7 @@ static ScrDyn *scr_json_revive(ScrDyn *holder, const ScrStr *key,
       }
       while (value->v.arr.len <= i) scr_dyn_arr_push(value, scr_dyn_retain(scr_dyn_undefined()));
       ScrDyn *old = value->v.arr.items[i];
+      if (replacement != old) scr_dyn_region_store(value, replacement);
       value->v.arr.items[i] = replacement;
       scr_dyn_release(old);
     }
@@ -7847,6 +7902,7 @@ static ScrDyn *scr_json_revive(ScrDyn *holder, const ScrStr *key,
         ScrDynEntry *entry = scr_dyn_entry(value, name);
         if (entry) {
           ScrDyn *old = entry->value;
+          if (replacement != old) scr_dyn_region_store(value, replacement);
           entry->value = replacement;
           scr_dyn_release(old);
         } else {
@@ -8727,6 +8783,7 @@ bool scr_dyn_reflect_define(ScrDyn *receiver, ScrDyn *raw_key, ScrDyn *value) {
     ok = scr_dyn_reflect_define(table, key, value);
     scr_dyn_release(table);
   } else {
+    scr_dyn_region_store(receiver, value);
     ScrDyn *symbols = key->kind == SCR_DYN_SYMBOL ? scr_dyn_symbol_receiver(receiver) : NULL;
     ScrDynEntry *entry = key->kind == SCR_DYN_SYMBOL ? (symbols ? scr_dyn_symbol_entry(symbols, key, true) : NULL)
       : receiver->kind == SCR_DYN_OBJ ? scr_dyn_entry(receiver, key->v.str)
