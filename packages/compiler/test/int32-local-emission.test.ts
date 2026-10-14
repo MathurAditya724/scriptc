@@ -81,7 +81,13 @@ function contract(seed: Int32, steps: Int32): Int32 {
 function fibo(n: number): number {
   return n < 2 ? n : fibo(n - 1) + fibo(n - 2);
 }
+function modular(times: number): number {
+  let v = 7;
+  for (let i = 0; i < times; i++) v = (v * 31 + 3) % 1000003;
+  return v;
+}
 const bytes = new Uint8Array([1, 2, 3, 250]);
+console.log(modular(100));
 console.log(rsync(bytes), mix("abcd"), counters(), unsigned(new Uint32Array([4294967295, 7])));
 console.log(fraction(5), mixed(3), captured(["ab", "c"]), capturedParam(3)());
 console.log([...frames(["ab", "cd"])].join(" "), contract(7, 20), fibo(10));
@@ -189,6 +195,16 @@ test("int32-closed locals are stored as i32 and keep doubles only for floating c
       expect(unsigned).toMatch(/alloca i32 ; acc\n/);
       expect(carriers(unsigned)).toEqual([]);
       expect(unsigned).toMatch(/ = uitofp i32 %\w+ to double\n\s+ret double/);
+
+      // A remainder of exact non-negative arithmetic closes the local in a
+      // non-negative int32: 32-bit multiply, add and remainder, no checked
+      // floating remainder.
+      const modular = body(ll, "modular");
+      expect(modular).toMatch(/alloca i32 ; v\n/);
+      expect(carriers(modular)).toEqual([]);
+      expect(loopOf(modular)).toMatch(/ = mul nsw i32 /);
+      expect(loopOf(modular)).toMatch(/ = urem i32 /);
+      expect(modular).not.toContain("frem");
 
       // Locals that leave int32, or hold both int32 and uint32 values.
       expect(body(ll, "fraction")).toMatch(/alloca double ; h\n/);

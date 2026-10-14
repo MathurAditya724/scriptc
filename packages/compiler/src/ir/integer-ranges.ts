@@ -12,6 +12,9 @@ export interface IntegerRange {
 export type IntegerRanges = ReadonlyMap<IrExpr, IntegerRange | null>;
 const SIGNED: IntegerRange = { min: -2147483648, max: 2147483647 };
 const UNSIGNED: IntegerRange = { min: 0, max: 4294967295 };
+/** Int32 and uint32 at once: the bound under which `%` (modeled only for
+ * non-negative dividends) can close a loop-carried local. */
+const NON_NEGATIVE: IntegerRange = { min: 0, max: 2147483647 };
 const EXACT_LIMIT = 2 ** 53;
 /** The most UTF-16 code units a runtime string holds: SCR_STR_MAX_CAP
  * (scr_runtime.h) caps a string's UTF-8 bytes, and a UTF-16 length never
@@ -211,11 +214,13 @@ export interface IntegerSlotFacts {
  * but argument expressions can; unknown evaluation forms invalidate all
  * syntactically written slots before their children are inspected. Loops
  * discard loop-carried facts and retain only invariant or induction facts,
- * except closed locals: a local whose region-entry value is an int32 (a
- * uint32) and whose every write inside the region is one by construction
- * (bitwise results, `>>>` results for uint32, literals and slots in range,
- * other such locals) remains a full int32 (uint32) range across the region. Suspensions and captured bindings
- * deliberately remain outside the proof. */
+ * except closed locals: a local whose region-entry value is inside a fixed
+ * bound (int32, uint32 or non-negative int32) and whose every write inside
+ * the region evaluates inside it, assuming every such local is (bitwise
+ * results, exact `+ - * %` over in-range operands such as
+ * `v = (v * 31 + n) % 1000003`, literals and slots in range), keeps the
+ * range those writes and its entry value span across the region.
+ * Suspensions and captured bindings deliberately remain outside the proof. */
 export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {}): IntegerRanges {
   const ranges = new Map<IrExpr, IntegerRange | null>();
   if (fn.async || fn.generator) return ranges;
@@ -280,22 +285,34 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
   }
   let functionWrites: Map<string, (IrExpr | null)[]> | null = null;
 
-  /** Locals that hold an int32 or a uint32 everywhere inside and after a
-   * region whose control flow this analysis does not follow, with that
-   * range. A candidate either enters with a fact inside the range or is
+  /** Locals that hold an exact integer inside a fixed bound (int32, uint32
+   * or non-negative int32) everywhere inside and after a region whose
+   * control flow this analysis does not follow, with a range inside that
+   * bound. A candidate either enters with a fact inside the bound or is
    * declared inside the region and written only there (definite assignment:
-   * every read follows one of those writes). For each range, the greatest
-   * fixpoint keeps candidates whose every write lands in it by construction
-   * given the other candidates; the two closures are independent, so a local
-   * written both ways (`x | 0` and `x >>> 0`) closes under neither. */
-  function closedLocals(nodes: (IrExpr | IrStmt)[], entry: Facts): Map<string, IntegerRange> {
+   * every read follows one of those writes). For each bound, the greatest
+   * fixpoint keeps candidates whose every write evaluates inside it, by the
+   * same interval rules as `expr` (exact safe integers, never -0), while the
+   * candidates are assumed inside it; the closures are independent, so a
+   * local written both ways (`x | 0` and `x >>> 0`) closes under neither
+   * int32 nor uint32. `invariant` holds ranges of locals that hold at every
+   * read inside the region (an induction counter the body never writes).
+   *
+   * The closed range then narrows to the entry fact joined with the writes'
+   * values under the bound: by induction over the region's execution every
+   * candidate stays inside its narrowed range (itself inside the bound), so
+   * each write evaluates inside the hull the bound proved for it. */
+  function closedLocals(
+    nodes: (IrExpr | IrStmt)[],
+    entry: Facts,
+    invariant: ReadonlyMap<string, IntegerRange> = new Map(),
+  ): Map<string, IntegerRange> {
     const { values, declared } = regionWrites(nodes);
     const result = new Map<string, IntegerRange>();
     if (values.size === 0) return result;
     const within = (bound: IntegerRange, range: IntegerRange | null | undefined): boolean =>
       !!range && range.min >= bound.min && range.max <= bound.max;
-    const closure = (bound: IntegerRange): Set<string> => {
-      const signed = bound === SIGNED;
+    const closure = (bound: IntegerRange): Map<string, IntegerRange> => {
       const closed = new Set<string>();
       for (const [id, list] of values) {
         if (within(bound, entry.get(id))) closed.add(id);
@@ -304,62 +321,109 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
           if (functionWrites.get(id)?.length === list.length) closed.add(id);
         }
       }
-      const member = (e: IrExpr): boolean => {
-        if (e.type.kind !== "f64") return false;
+      // The values an expression can produce while every closed candidate
+      // holds a value inside `bound`, or null.
+      const value = (e: IrExpr): IntegerRange | null => {
+        if (e.type.kind !== "f64") return null;
         switch (e.kind) {
           case "numLit":
-            return (
-              Number.isInteger(e.value) &&
-              within(bound, { min: e.value, max: e.value }) &&
-              !Object.is(e.value, -0)
-            );
-          case "bin":
-            return signed
-              ? e.op === "&" || e.op === "|" || e.op === "^" || e.op === "<<" || e.op === ">>"
-              : e.op === ">>>";
-          case "unary":
-            return signed && e.op === "~";
-          case "libCall":
-            return (signed && e.fn === "math.imul") || e.fn === "math.clz32";
-          case "ternary":
-            return member(e.then) && member(e.else_);
-          case "logical":
-            return member(e.left) && member(e.right);
+            return Number.isSafeInteger(e.value) && !Object.is(e.value, -0)
+              ? { min: e.value, max: e.value }
+              : null;
+          case "bin": {
+            const left = value(e.left),
+              right = value(e.right);
+            if (isBitwiseOp(e.op))
+              return bitwiseRange(e.op, operandView(e.left, left), operandView(e.right, right));
+            return left && right ? integerArithmeticRange(e.op, left, right) : null;
+          }
+          case "unary": {
+            const operand = value(e.operand);
+            if (e.op === "~") {
+              const bits = int32View(operandView(e.operand, operand));
+              return { min: -bits.max - 1, max: -bits.min - 1 };
+            }
+            // -x is -0 for x = 0.
+            return e.op === "-" && operand && (operand.max < 0 || operand.min > 0)
+              ? { min: -operand.max, max: -operand.min }
+              : null;
+          }
+          case "libCall": {
+            if (e.fn === "math.imul") return SIGNED;
+            if (e.fn === "math.clz32") return { min: 0, max: 32 };
+            if ((e.fn === "math.min" || e.fn === "math.max") && e.args.length > 0) {
+              const args = e.args.map(value);
+              if (args.some((a) => a === null)) return null;
+              const known = args as IntegerRange[];
+              const mins = known.map((a) => a.min),
+                maxes = known.map((a) => a.max);
+              return e.fn === "math.min"
+                ? { min: Math.min(...mins), max: Math.min(...maxes) }
+                : { min: Math.max(...mins), max: Math.max(...maxes) };
+            }
+            return null;
+          }
+          case "ternary": {
+            const yes = value(e.then),
+              no = value(e.else_);
+            return yes && no ? union(yes, no) : null;
+          }
+          case "logical": {
+            const left = value(e.left),
+              right = value(e.right);
+            return left && right ? union(left, right) : null;
+          }
           case "assignExpr":
-            return member(e.value);
+            return value(e.value);
           case "seqExpr":
-            return member(e.result);
-          case "varRef":
-            return (
-              closed.has(e.localId) ||
-              (!values.has(e.localId) && within(bound, entry.get(e.localId))) ||
-              within(bound, boxedRange(e.localId))
-            );
+            return value(e.result);
+          case "varRef": {
+            const known = invariant.get(e.localId);
+            if (known) return known;
+            if (closed.has(e.localId)) return bound;
+            if (!values.has(e.localId) && entry.has(e.localId)) return entry.get(e.localId)!;
+            return boxedRange(e.localId);
+          }
           case "fieldGet":
           case "call":
-            return within(bound, slotRange(e));
+            return slotRange(e);
           default:
-            return false;
+            return null;
         }
       };
+      const hulls = new Map<string, IntegerRange>();
       for (let changed = true; changed;) {
         changed = false;
-        for (const id of closed)
-          if (values.get(id)!.some((value) => value === null || !member(value))) {
+        for (const id of closed) {
+          let hull: IntegerRange | null = entry.get(id) ?? null;
+          for (const write of values.get(id)!) {
+            const range = write && value(write);
+            if (!within(bound, range)) {
+              hull = null;
+              break;
+            }
+            hull = hull ? union(hull, range!) : range;
+          }
+          if (hull) hulls.set(id, hull);
+          else {
             closed.delete(id);
             changed = true;
           }
+        }
       }
-      return closed;
+      return new Map([...closed].map((id) => [id, hulls.get(id)!]));
     };
-    const int32 = closure(SIGNED),
-      uint32 = closure(UNSIGNED);
+    const closures = [closure(SIGNED), closure(UNSIGNED), closure(NON_NEGATIVE)];
     for (const id of entry.keys()) {
-      const signed = int32.has(id),
-        unsigned = uint32.has(id);
-      if (signed && unsigned) result.set(id, { min: 0, max: SIGNED.max });
-      else if (signed) result.set(id, SIGNED);
-      else if (unsigned) result.set(id, UNSIGNED);
+      let range: IntegerRange | null = null;
+      for (const closed of closures) {
+        const hull = closed.get(id);
+        if (hull)
+          range = range
+            ? { min: Math.max(range.min, hull.min), max: Math.min(range.max, hull.max) }
+            : hull;
+      }
+      if (range) result.set(id, range);
     }
     return result;
   }
@@ -403,8 +467,13 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
   /** Invalidate the region's writes, keeping int32- and uint32-closed
    * locals at their closed range. `entry` is the state before any of the
    * region's writes can run. */
-  function havoc(facts: Facts, nodes: (IrExpr | IrStmt)[], entry: Facts): void {
-    const closed = closedLocals(nodes, entry);
+  function havoc(
+    facts: Facts,
+    nodes: (IrExpr | IrStmt)[],
+    entry: Facts,
+    invariant?: ReadonlyMap<string, IntegerRange>,
+  ): void {
+    const closed = closedLocals(nodes, entry, invariant);
     invalidate(facts, nodes);
     for (const [id, range] of closed) facts.set(id, range);
   }
@@ -723,10 +792,27 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
           const counter = induction(s, facts);
           const bounded = boundedIntegerLoopFacts(s, loopLocals, facts);
           const loop = new Map(facts);
+          // Only the update writes the counter, so its header range holds at
+          // every read in the condition, the body and the update.
+          const invariant = new Map<string, IntegerRange>();
+          if (counter) invariant.set(counter.id, counter.range);
+          if (s.init?.kind === "varDecl") {
+            const id = s.init.localId,
+              range = bounded.get(id),
+              other = invariant.get(id);
+            if (range)
+              invariant.set(
+                id,
+                other
+                  ? { min: Math.max(range.min, other.min), max: Math.min(range.max, other.max) }
+                  : range,
+              );
+          }
           havoc(
             loop,
             [...s.body, ...(s.cond ? [s.cond] : []), ...(s.update ? [s.update] : [])],
             loop,
+            invariant,
           );
           if (counter) loop.set(counter.id, counter.range);
           for (const [id, range] of bounded) loop.set(id, range);

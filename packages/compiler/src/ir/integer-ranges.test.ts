@@ -19,6 +19,13 @@ const bin = (op: Extract<IrExpr, { kind: "bin" }>["op"], left: IrExpr, right: Ir
   right,
   type: F64,
 });
+const unaryMinus = (operand: IrExpr): IrExpr => ({
+  loc,
+  kind: "unary",
+  op: "-",
+  operand,
+  type: F64,
+});
 const assign = (value: IrExpr): IrStmt => ({ loc, kind: "assign", localId: "x", value });
 const fn = (body: IrStmt[], boxed = false): IrFunction => ({
   loc,
@@ -239,12 +246,13 @@ test("labeled exits and do-while conditions cannot lend facts to skipped paths",
       },
     ]),
   );
-  // The break skips `x = 1`; both writes are non-negative int32 literals,
-  // so the join keeps only the closed range (int32 and uint32 at once),
-  // never the skipped path's fact.
-  expect(ranges.get(afterBlock)).toEqual(INT32_AND_UINT32);
-  // Likewise the condition's `x = 0` does not reach the first iteration.
-  expect(ranges.get(firstBody)).toEqual(INT32_AND_UINT32);
+  // The break skips `x = 1`; both writes are literals, so the join keeps
+  // only the closed range of the entry value and the block's write, never
+  // the skipped path's fact (`x === 1`).
+  expect(ranges.get(afterBlock)).toEqual({ min: 1, max: 100 });
+  // Likewise the condition's `x = 0` does not reach the first iteration:
+  // the body sees the entry range joined with that write.
+  expect(ranges.get(firstBody)).toEqual({ min: 0, max: 100 });
 });
 
 test("unit induction is exact but loop-carried assignments remain unknown", () => {
@@ -380,8 +388,11 @@ test("int32-closed locals keep the int32 range across loops and switches", () =>
   const closedRanges = analyzeIntegerRanges(closed.f);
   expect(closedRanges.get(closed.inside)).toEqual(INT32);
   expect(closedRanges.get(closed.after)).toEqual(INT32);
-  const unsigned = loop(bin(">>>", ref(), num(0)));
+  const unsigned = loop(bin(">>>", ref("unknown"), num(0)));
   expect(analyzeIntegerRanges(unsigned.f).get(unsigned.after)).toEqual(UINT32);
+  // `x >>> 0` of a local that only ever holds non-negative int32s is one.
+  const identity = loop(bin(">>>", ref(), num(0)));
+  expect(analyzeIntegerRanges(identity.f).get(identity.after)).toEqual(INT32_AND_UINT32);
   for (const write of [bin("+", ref(), num(1)), bin("/", ref(), num(2))]) {
     const open = loop(write);
     expect(analyzeIntegerRanges(open.f).get(open.after), write.kind).toBeNull();
@@ -466,6 +477,87 @@ test("uint32-closed locals keep the uint32 range across loop back edges", () => 
     const result = loop(start, write ? [write] : []);
     expect(result.ranges.get(result.inside)).toBeNull();
     expect(result.ranges.get(result.after)).toBeNull();
+  }
+});
+
+test("arithmetic-closed loop-carried locals keep exact ranges across back edges", () => {
+  // n = unknown & 3; v = start;
+  // for (let i = 0; i < 100000; i++) { v = write(v); observe(v) } observe(v)
+  const set = (localId: string, value: IrExpr): IrStmt => ({ loc, kind: "assign", localId, value });
+  const loop = (start: IrExpr, write: (v: IrExpr) => IrExpr) => {
+    const inside = ref("v"),
+      after = ref("v"),
+      value = write(ref("v"));
+    const f = fn([
+      set("n", bin("&", ref("unknown"), num(3))),
+      set("v", start),
+      {
+        loc,
+        kind: "for",
+        init: { loc, kind: "varDecl", localId: "i", init: num(0) },
+        cond: condition("<", ref("i"), num(100000)),
+        update: set("i", bin("+", ref("i"), num(1))),
+        body: [observe(inside), set("v", value)],
+      },
+      observe(after),
+    ]);
+    for (const id of ["v", "i", "n"]) f.locals.push({ id, name: id, type: F64, mutable: true });
+    const ranges = analyzeIntegerRanges(f);
+    return { inside: ranges.get(inside), after: ranges.get(after), value: ranges.get(value) };
+  };
+  const M = 1000003;
+  // The 41-closures kernel: the dividend is a non-negative exact integer.
+  const hash = loop(num(7), (v) => bin("%", bin("+", bin("*", v, num(31)), ref("n")), num(M)));
+  expect(hash).toEqual({
+    inside: { min: 0, max: M - 1 },
+    after: { min: 0, max: M - 1 },
+    value: { min: 0, max: M - 1 },
+  });
+  // The counter's header range holds at every read in the body.
+  const counted = loop(num(0), (v) => bin("%", bin("+", bin("*", v, num(31)), ref("i")), num(M)));
+  expect(counted.inside).toEqual({ min: 0, max: M - 1 });
+  // A wrap counter, and a product that crosses 2^31 but stays exact.
+  expect(loop(num(0), (v) => bin("%", bin("+", v, num(1)), num(10))).after).toEqual({
+    min: 0,
+    max: 9,
+  });
+  const wide = loop(num(1), (v) =>
+    bin("%", bin("+", bin("*", v, num(31)), ref("n")), num(2 ** 31)),
+  );
+  expect(wide.after).toEqual({ min: 0, max: 2 ** 31 - 1 });
+  // Unary minus of a value that cannot be zero stays exact, also into
+  // negative ranges (closed under int32 rather than the non-negative bound).
+  expect(
+    loop(num(1), (v) => unaryMinus(unaryMinus(bin("+", bin("%", v, num(7)), num(1))))).after,
+  ).toEqual({ min: 1, max: 7 });
+  expect(loop(num(-1), (v) => unaryMinus(bin("+", bin("&", v, num(7)), num(1)))).after).toEqual({
+    min: -8,
+    max: -1,
+  });
+  // Writes that could leave the bound, produce -0, NaN, a fraction or an
+  // inexact product, and entries outside it, leave the local unknown.
+  const open: [string, IrExpr, (v: IrExpr) => IrExpr][] = [
+    [
+      "negative dividend (-0)",
+      num(7),
+      (v) => bin("%", bin("-", bin("*", v, num(31)), ref("n")), num(M)),
+    ],
+    ["growth", num(7), (v) => bin("+", bin("*", v, num(31)), ref("n"))],
+    ["unknown divisor", num(7), (v) => bin("%", v, ref("unknown"))],
+    ["zero divisor (NaN)", num(7), (v) => bin("%", v, num(0))],
+    ["fraction divisor", num(7), (v) => bin("%", v, num(2.5))],
+    ["negated remainder (-0)", num(7), (v) => unaryMinus(bin("%", v, num(7)))],
+    ["inexact product", num(7), (v) => bin("%", bin("*", v, num(2 ** 30)), num(M))],
+    ["negative entry", num(-1), (v) => bin("%", bin("+", bin("*", v, num(31)), ref("n")), num(M))],
+    ["fraction entry", num(0.5), (v) => bin("%", bin("+", v, num(1)), num(10))],
+    ["unknown entry", ref("unknown"), (v) => bin("%", bin("+", v, num(1)), num(10))],
+    ["infinite entry", num(Infinity), (v) => bin("%", bin("+", v, num(1)), num(10))],
+    ["division", num(7), (v) => bin("%", bin("/", v, num(2)), num(10))],
+  ];
+  for (const [label, start, write] of open) {
+    const result = loop(start, write);
+    expect(result.inside, label).toBeNull();
+    expect(result.after, label).toBeNull();
   }
 });
 
