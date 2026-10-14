@@ -54,12 +54,12 @@ for (const backend of ["llvm"] as const) {
         semanticSurrogateBoundary: nativeSemanticSurrogates,
         ...nativeFacts
       } = JSON.parse(native);
-      // The native runtime's documented UTF-16 limit must surface as an
-      // explicit AST refusal; replacing a checker name would be corruption.
+      // Lone surrogates in names survive the native client's AST and
+      // checker round trips, as they do under Node.
       expect(oracleSurrogates).toBe("preserved");
-      expect(nativeSurrogates).toBe("refused");
+      expect(nativeSurrogates).toBe("preserved");
       expect(oracleSemanticSurrogates).toBe("preserved");
-      expect(nativeSemanticSurrogates).toBe("refused");
+      expect(nativeSemanticSurrogates).toBe("preserved");
       expect(nativeFacts).toEqual(oracleFacts);
       expect(nativeFacts).toEqual({
         typeText: "42",
