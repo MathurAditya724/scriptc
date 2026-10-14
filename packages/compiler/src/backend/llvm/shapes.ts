@@ -39,8 +39,8 @@ export interface ShapeHost {
   needOom(): void;
   /** The target C ABI's `size_t` / refcount integer type. */
   readonly sizeType: "i32" | "i64";
-  /** Byte offset from an object pointer back to ScrCycHdr.buffered. */
-  readonly cycleBufferedOffset: number;
+  /** Byte offset from an object pointer back to ScrCycHdr.buf. */
+  readonly cycleBufOffset: number;
   readonly tracedShapes: Set<string>;
   readonly tracedUnions: Set<string>;
   /** Unions represented as a nullable arm pointer (nullable-unions.ts):
@@ -866,9 +866,9 @@ export function directChildReleaseLines(
   if (target.traced) {
     host.declare(`declare void @scr_cyc_on_dead(ptr)`);
     lines.push(
-      `  %${tag}.bufp = getelementptr i8, ptr ${value}, ${S} -${host.cycleBufferedOffset}`,
-      `  %${tag}.buf = load i16, ptr %${tag}.bufp`,
-      `  %${tag}.queued = icmp ne i16 %${tag}.buf, 0`,
+      `  %${tag}.bufp = getelementptr i8, ptr ${value}, ${S} -${host.cycleBufOffset}`,
+      `  %${tag}.buf = load i32, ptr %${tag}.bufp`,
+      `  %${tag}.queued = icmp slt i32 %${tag}.buf, 0`,
       `  br i1 %${tag}.queued, label %${tag}.unbuffer, label %${tag}.teardown`,
       `${tag}.unbuffer:`,
       `  call void @scr_cyc_on_dead(ptr ${value})`,
@@ -1052,9 +1052,9 @@ export function releaseFastPath(
 }
 
 /** The possible-cycle-root step of a release that left a headered object
- * alive: scr_cyc_on_release with its early return inlined. Read `buffered`
- * (the i16 at obj-6; nonzero for a queued candidate or a
- * tenured object) and call the runtime only to enqueue a new candidate.
+ * alive: scr_cyc_on_release with its early return inlined. Test the sign
+ * of `buf` (the i32 at obj-4; negative for a queued candidate or a tenured
+ * object) and call the runtime only to enqueue a new candidate.
  * Every emitted release of a headered object shares this sequence
  * (scr_runtime.h asserts the offset); it ends by branching to `done`. */
 /** One traced field of an emitted trace function: load the slot and visit
@@ -1084,9 +1084,9 @@ export function cycleRootLines(host: ShapeHost, done: string): string[] {
   const S = host.sizeType;
   host.declare(`declare void @scr_cyc_on_release(ptr)`);
   return [
-    `  %bufp = getelementptr i8, ptr %o, ${S} -${host.cycleBufferedOffset}`,
-    `  %buf = load i16, ptr %bufp`,
-    `  %queued = icmp ne i16 %buf, 0`,
+    `  %bufp = getelementptr i8, ptr %o, ${S} -${host.cycleBufOffset}`,
+    `  %buf = load i32, ptr %bufp`,
+    `  %queued = icmp slt i32 %buf, 0`,
     `  br i1 %queued, label %${done}, label %enqueue`,
     `enqueue:`,
     `  call void @scr_cyc_on_release(ptr %o) ; buffer the candidate; may collect`,
@@ -1102,9 +1102,9 @@ export function cycleDeadLines(host: ShapeHost, next: string): string[] {
   const S = host.sizeType;
   host.declare(`declare void @scr_cyc_on_dead(ptr)`);
   return [
-    `  %dbufp = getelementptr i8, ptr %o, ${S} -${host.cycleBufferedOffset}`,
-    `  %dbuf = load i16, ptr %dbufp`,
-    `  %dqueued = icmp ne i16 %dbuf, 0`,
+    `  %dbufp = getelementptr i8, ptr %o, ${S} -${host.cycleBufOffset}`,
+    `  %dbuf = load i32, ptr %dbufp`,
+    `  %dqueued = icmp slt i32 %dbuf, 0`,
     `  br i1 %dqueued, label %unbuffer, label %${next}`,
     `unbuffer:`,
     `  call void @scr_cyc_on_dead(ptr %o)`,

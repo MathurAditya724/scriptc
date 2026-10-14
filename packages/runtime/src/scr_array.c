@@ -887,7 +887,7 @@ static ScrArr *scr_arr_make_ops(const ScrArrOps *ops, size_t initial_cap, bool s
       small ? scr_arr_small_cap(SCR_ARR_INLINE_OFFSET + (cyc ? sizeof(ScrCycHdr) : 0), false) : 0;
   size_t size = inline_cap ? SCR_ARR_INLINE_OFFSET + inline_cap * SCR_ARR_SLOT_BYTES : sizeof(ScrArr);
   if (cyc) {
-    static const ScrCycType cyc_type = { &scr_arr_trace_v, &scr_arr_gc_free, SCR_CYC_KIND_ARRAY };
+    static ScrCycType cyc_type = { &scr_arr_trace_v, &scr_arr_gc_free, SCR_CYC_KIND_ARRAY };
     a = scr_cyc_alloc_inline(size, &cyc_type);
   } else {
     a = scr_mem_alloc(size);

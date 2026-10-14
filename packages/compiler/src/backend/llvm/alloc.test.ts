@@ -85,7 +85,17 @@ describe("emitted object allocation", () => {
 
     const cyc = emitObjectAlloc(h, "40", { type: "@ty" });
     expectSingleDefinitions(cyc);
-    expect(cyc).toContain("  %sa.n = add i64 40, 16");
+    expect(cyc).toContain("  %sa.n = add i64 40, 8");
+    // The 8-byte header: the descriptor's i16 registry id, then zero color,
+    // generation and buffer state; an unregistered descriptor (id 0) takes
+    // the slow path.
+    expect(cyc).toContain(
+      "  %sa.tidp = getelementptr inbounds { ptr, ptr, i32, i32 }, ptr @ty, i32 0, i32 3",
+    );
+    expect(cyc).toContain("  %sa.tid = load atomic i32, ptr %sa.tidp acquire, align 4");
+    expect(cyc).toContain("  %sa.small = and i1 %sa.reg, %sa.fits0");
+    expect(cyc).toContain("  store i16 %sa.id, ptr %sa.blk ; ScrCycHdr.id");
+    expect(cyc).toContain("  store i32 0, ptr %sa.bufp ; ScrCycHdr.buf");
     expect(cyc).toContain("  %sa.s = call ptr @scr_cyc_alloc(i64 40, ptr @ty)");
     expect(cyc).toContain("  store i64 %sa.live1, ptr @scr_cyc_live");
     expect(h.decls).toContain(
@@ -104,6 +114,12 @@ describe("emitted object allocation", () => {
       expect(sys).toContain(`  call void @scr_rt_free(ptr ${blk})`);
       expect(lines).toContain("  call void %sf.hook(ptr %o)");
       expect(lines.some((l) => l.includes("@scr_cyc_live"))).toBe(cyc);
+      if (cyc) {
+        // The generation is the i8 at obj-5.
+        expect(lines).toContain("  %sf.blk = getelementptr inbounds i8, ptr %o, i64 -8");
+        expect(lines).toContain("  %sf.genp = getelementptr inbounds i8, ptr %sf.blk, i64 3");
+        expect(lines).toContain("  %sf.old = icmp eq i8 %sf.gen, 2");
+      }
       expect(lines.at(-1)).toBe("sf.done:");
     }
   });

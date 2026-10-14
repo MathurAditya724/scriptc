@@ -23,7 +23,7 @@ function declarationHost(
     },
     needOom() {},
     sizeType: pointerBits === 32 ? "i32" : "i64",
-    cycleBufferedOffset: 6,
+    cycleBufOffset: 4,
     tracedShapes: new Set(),
     tracedUnions: new Set(),
     nullableUnions: new NullableUnions({
@@ -148,10 +148,11 @@ describe("LLVM runtime RC symbols", () => {
     expect(fn("sc_rc_release_map")).toContain("%ScrMapRc, ptr %o, i32 0, i32 8");
     expect(fn("sc_rc_release_map")).toContain("br i1 %headered, label %slow, label %dec");
     expect(fn("sc_rc_release_map")).not.toContain("store i32 1");
-    // Unions: no color store, only the i16 `buffered` read at obj-6.
+    // Unions: no color store, only the sign of the i32 `buf` at obj-4.
     expect(fn("sc_rc_release_union")).not.toContain("store i32");
-    expect(fn("sc_rc_release_union")).toContain("getelementptr i8, ptr %o, i64 -6");
-    expect(fn("sc_rc_release_union")).toContain("load i16, ptr %bufp");
+    expect(fn("sc_rc_release_union")).toContain("getelementptr i8, ptr %o, i64 -4");
+    expect(fn("sc_rc_release_union")).toContain("load i32, ptr %bufp");
+    expect(fn("sc_rc_release_union")).toContain("icmp slt i32 %buf, 0");
     expect(fn("sc_rc_release_union")).toContain("call void @scr_cyc_on_release(ptr %o)");
     // Promises tolerate NULL and always carry a header.
     expect(fn("sc_rc_retain_promise")).toContain("icmp eq ptr %o, null");
@@ -163,7 +164,7 @@ describe("LLVM runtime RC symbols", () => {
     releaseSym(host, { kind: "union", unionId: "u0" } as never);
     const ir = emitInlineRcHelpers(host).join("\n");
     expect(ir).toContain("load i32, ptr %o");
-    expect(ir).toContain("getelementptr i8, ptr %o, i32 -6");
+    expect(ir).toContain("getelementptr i8, ptr %o, i32 -4");
   });
 });
 
@@ -182,7 +183,7 @@ describe("emitted object releases", () => {
     const start = defs.indexOf("root:");
     const root = defs.slice(start, defs.indexOf("done:", start));
     expect(root).not.toContain("store i32");
-    expect(root).toContain("getelementptr i8, ptr %o, i64 -6");
+    expect(root).toContain("getelementptr i8, ptr %o, i64 -4");
     expect(root).toContain("br i1 %queued, label %done, label %enqueue");
     expect(root.indexOf("enqueue:")).toBeLessThan(
       root.indexOf("call void @scr_cyc_on_release(ptr %o)"),

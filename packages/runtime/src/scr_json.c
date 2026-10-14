@@ -817,8 +817,8 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
     *list = (ScrDyn *)d->v.str; /* freelist link */
     scr_dyn_free_count--;
     ScrCycHdr *header = scr_cyc_hdr(d);
-    header->color = SCR_CYC_BLACK;
-    header->gen = SCR_CYC_NURSERY;
+    scr_cyc_set_color(header, SCR_CYC_BLACK);
+    scr_cyc_set_gen(header, SCR_CYC_NURSERY);
     d->rc = 1;
     d->kind = kind;
     d->buffer = false;
@@ -850,7 +850,7 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
     return d;
   }
 #endif
-  static const ScrCycType cyc_type = { &scr_dyn_trace_v, &scr_dyn_gcfree, SCR_CYC_KIND_DYN };
+  static ScrCycType cyc_type = { &scr_dyn_trace_v, &scr_dyn_gcfree, SCR_CYC_KIND_DYN };
   ScrDyn *fresh = scr_cyc_alloc_inline(sizeof *fresh, &cyc_type);
   if (!fresh) scr_json_oom();
   fresh->rc = 1;
@@ -9957,7 +9957,7 @@ static void scr_weak_remove_impl(ScrWeakEntry *entry, bool collected) {
 }
 
 static void scr_weak_remove(ScrWeakEntry *entry) {
-  scr_weak_remove_impl(entry, scr_cyc_hdr(entry->owner)->color == SCR_CYC_DOOMED);
+  scr_weak_remove_impl(entry, scr_cyc_color(scr_cyc_hdr(entry->owner)) == SCR_CYC_DOOMED);
 }
 
 static void scr_weak_map_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
@@ -10157,7 +10157,7 @@ static ScrDyn *scr_weak_collection_new(ScrDyn *seed, bool is_set) {
   ScrDynHandleTag tag = is_set ? SCR_DYNH_WEAK_SET : SCR_DYNH_WEAK_MAP;
   scr_weak_dispose_hook = &scr_weak_disposed;
   scr_dyn_handle_install(tag, is_set ? &set_ops : &map_ops);
-  static const ScrCycType cyc_type = { &scr_weak_map_trace, &scr_weak_map_gcfree, SCR_CYC_KIND_WEAK_MAP };
+  static ScrCycType cyc_type = { &scr_weak_map_trace, &scr_weak_map_gcfree, SCR_CYC_KIND_WEAK_MAP };
   ScrWeakMap *map = scr_cyc_alloc(sizeof *map, &cyc_type);
   if (!map) scr_json_oom();
   map->rc = 1;

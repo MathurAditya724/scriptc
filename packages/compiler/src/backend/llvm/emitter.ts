@@ -1,6 +1,6 @@
 import { emitLlvmLayouts } from "./layouts.js";
 import { compileRegexMatcher, type RegexMatcherCode } from "./regex-matchers.js";
-import { FIRST_EMITTED_CYC_KIND, inlineAllocSupported } from "./alloc.js";
+import { CYC_BUF, CYC_HDR, FIRST_EMITTED_CYC_KIND, inlineAllocSupported } from "./alloc.js";
 import { hasLoneSurrogate, llvmBytes as llBytes, wtf8Bytes } from "../literals.js";
 import { InternalCompilerError } from "../../errors.js";
 import { createHash } from "node:crypto";
@@ -550,7 +550,7 @@ export class LlEmitter {
   private debugScope: string | null = null;
   readonly sizeType: "i32" | "i64";
   readonly ffiExtendNarrowIntegers: boolean;
-  readonly cycleBufferedOffset: number;
+  readonly cycleBufOffset: number;
   /** Emitted ScrCycType descriptors so far (their collector statistics
    * indices; see ShapeHost.nextCycKind). */
   private cycKinds = 0;
@@ -976,10 +976,8 @@ export class LlEmitter {
     this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     this.detachedExit = options.detachedExit === true;
     this.rcHelpers = options.inlineRc === true ? new Set() : null;
-    // ScrCycHdr.buffered sits 6 bytes behind every object. The wasm32
-    // header pads before its descriptor so its payload remains
-    // double-aligned without changing this ABI offset.
-    this.cycleBufferedOffset = 6;
+    // ScrCycHdr.buf sits 4 bytes behind every object on every target.
+    this.cycleBufOffset = CYC_HDR - CYC_BUF;
     this.ffiCallbackAdapters = allocateFfiCallbackAdapters(mod.ffiImports ?? []);
     this.ffiHasRetainedCallback = hasRetainedFfiCallback(mod.ffiImports ?? []);
     this.ffiHasForeignCallback = hasForeignFfiCallback(mod.ffiImports ?? []);
@@ -1097,7 +1095,7 @@ export class LlEmitter {
     this.tracedUnions = traced.unions;
     this.shapeHost = {
       sizeType: this.sizeType,
-      cycleBufferedOffset: this.cycleBufferedOffset,
+      cycleBufOffset: this.cycleBufOffset,
       tracedShapes: this.tracedShapes,
       tracedUnions: this.tracedUnions,
       nullableUnions: this.nullableUnions,

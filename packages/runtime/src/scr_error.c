@@ -204,9 +204,9 @@ static ScrError *scr_error_alloc(int kind) {
   size_t size = kind == SCR_ERR_DOMEX       ? sizeof(ScrDomException)
                 : kind == SCR_ERR_AGGREGATE ? sizeof(ScrAggregateError)
                                             : sizeof(ScrError);
-  static const ScrCycType error_type = { &scr_error_trace, &scr_error_gcfree, SCR_CYC_KIND_ERROR };
-  static const ScrCycType domex_type = { &scr_error_trace, &scr_domex_gcfree, SCR_CYC_KIND_DOMEXCEPTION };
-  static const ScrCycType aggregate_type = { &scr_error_trace, &scr_aggregate_gcfree, SCR_CYC_KIND_ERROR };
+  static ScrCycType error_type = { &scr_error_trace, &scr_error_gcfree, SCR_CYC_KIND_ERROR };
+  static ScrCycType domex_type = { &scr_error_trace, &scr_domex_gcfree, SCR_CYC_KIND_DOMEXCEPTION };
+  static ScrCycType aggregate_type = { &scr_error_trace, &scr_aggregate_gcfree, SCR_CYC_KIND_ERROR };
   ScrError *e;
   if (scr_error_traced) {
     e = scr_cyc_alloc(size, kind == SCR_ERR_DOMEX       ? &domex_type
