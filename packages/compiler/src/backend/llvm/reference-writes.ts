@@ -431,14 +431,17 @@ export class ReferenceWrites {
       }
       case "arrIntrinsic":
         if (!PRESERVING_ARRAY_METHODS.has(e.method)) {
-          // The comparator sort orders a private snapshot.
+          // The comparator sort orders a private snapshot. It may call the
+          // comparator and a key reader.
           if (e.method === "sortValues" || e.method === "sortDense") {
             const comparator = e.args[e.method === "sortValues" ? 1 : 0];
-            const targets =
-              fn !== null && comparator !== undefined ? this.callTargets.of(comparator, fn) : null;
-            if (targets === null) {
-              if (!sink.call(ANY_FUNCTION, false)) sink.all();
-            } else for (const t of targets) if (!sink.call(t, false)) sink.all();
+            for (const callee of e.args[3] ? [comparator, e.args[3]] : [comparator]) {
+              const targets =
+                fn !== null && callee !== undefined ? this.callTargets.of(callee, fn) : null;
+              if (targets === null) {
+                if (!sink.call(ANY_FUNCTION, false)) sink.all();
+              } else for (const t of targets) if (!sink.call(t, false)) sink.all();
+            }
           }
           sink.add(ARRAY_KEY);
         }
