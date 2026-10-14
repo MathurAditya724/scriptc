@@ -10,6 +10,7 @@ import type { IrLibFn } from "./builtin-signatures.js";
 export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "console.write",
   "console.label",
+  "console.countReset",
   "console.table",
   "console.dirDyn",
   "worker.new",
