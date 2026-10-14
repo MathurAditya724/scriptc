@@ -189,14 +189,21 @@ function statePointer(
   return statePtr;
 }
 
+/** The dense slot type: boolean arrays store one byte per element, every
+ * other element kind an 8-byte slot. */
+function slotType(acc: ArrayAccess): "i8" | "i64" {
+  return acc === "bool" ? "i8" : "i64";
+}
+
 function valuePointer(
   host: LlvmEmitterContext,
   guard: Pick<DenseGuard, "offset" | "data">,
+  acc: ArrayAccess,
 ): string {
   const B = host.B;
   const valuePtr = B.tmp();
   B.line(
-    `${valuePtr} = getelementptr inbounds i64, ptr ${guard.data}, ${host.sizeType} ${guard.offset}`,
+    `${valuePtr} = getelementptr inbounds ${slotType(acc)}, ptr ${guard.data}, ${host.sizeType} ${guard.offset}`,
   );
   host.markMemoryPointer(valuePtr, "array:elements");
   return valuePtr;
@@ -244,7 +251,7 @@ export function emitDenseArrayGet(
   B.line(`${present} = icmp eq i8 ${state}, ${SCR_ARR_VALUE}`);
   B.condBr(present, valueLabel, slow);
   B.startBlock(valueLabel);
-  const ptr = valuePointer(host, guard);
+  const ptr = valuePointer(host, guard, acc);
   let fast: string;
   let fastLabel = valueLabel;
   if (acc === "f64") {
@@ -253,8 +260,8 @@ export function emitDenseArrayGet(
   } else if (acc === "bool") {
     const raw = B.tmp();
     fast = B.tmp();
-    B.line(`${raw} = load i64, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
-    B.line(`${fast} = icmp ne i64 ${raw}, 0`);
+    B.line(`${raw} = load i8, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
+    B.line(`${fast} = icmp ne i8 ${raw}, 0`);
   } else {
     const raw = B.tmp(),
       nonnull = B.tmp();
@@ -373,14 +380,14 @@ export function emitDenseArraySet(
       B.line(`store double ${value}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
     } else if (acc === "bool") {
       const bits = B.tmp();
-      B.line(`${bits} = zext i1 ${value} to i64`);
-      B.line(`store i64 ${bits}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+      B.line(`${bits} = zext i1 ${value} to i8`);
+      B.line(`store i8 ${bits}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
     } else {
       B.line(`store ptr ${value}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
     }
   };
   const statePtr = statePointer(host, guard);
-  const valuePtr = valuePointer(host, guard);
+  const valuePtr = valuePointer(host, guard, acc);
   let oldState: string | null = null;
   let old: string | null = null;
   if (acc === "ref") {
@@ -444,7 +451,7 @@ export function emitDenseArraySet(
   // Below the bound the slot holds a present value: replace it, leaving
   // the state alone, and release a replaced reference after the store.
   B.startBlock(filledLabel);
-  const filledValuePtr = valuePointer(host, guard);
+  const filledValuePtr = valuePointer(host, guard, acc);
   let filledOld: string | null = null;
   if (acc === "ref") {
     filledOld = B.tmp();
@@ -504,13 +511,13 @@ export function emitDenseArrayPush(
   B.line(`${data} = load ptr, ptr ${dataPtr}${host.fieldAliasAttachment(dataPtr)}`);
   B.line(`${states} = load ptr, ptr ${statesPtr}${host.fieldAliasAttachment(statesPtr)}`);
   const statePtr = statePointer(host, { offset: len, states });
-  const valuePtr = valuePointer(host, { offset: len, data });
+  const valuePtr = valuePointer(host, { offset: len, data }, acc);
   if (acc === "f64") {
     B.line(`store double ${value}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
   } else if (acc === "bool") {
     const bits = B.tmp();
-    B.line(`${bits} = zext i1 ${value} to i64`);
-    B.line(`store i64 ${bits}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+    B.line(`${bits} = zext i1 ${value} to i8`);
+    B.line(`store i8 ${bits}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
   } else {
     B.line(`store ptr ${value}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
   }
