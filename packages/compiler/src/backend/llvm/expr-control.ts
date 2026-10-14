@@ -193,81 +193,14 @@ export function emitControlExpr(
         return host.own({ name: t, type: e.type });
       }
 
-      if (e.receiver.type.kind !== "union")
-        throw new LlvmUnsupportedError(`optChain:${e.receiver.type.kind}`, e.loc);
-      const def = host.unionsById.get(e.receiver.type.unionId);
-      if (!def)
-        throw new InternalCompilerError(
-          `llvm emitter bug: optChain of unknown union ${e.receiver.type.unionId}`,
-        );
-      const unitTags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
-      const narrowIdx = def.arms.findIndex((a) => !isUnitType(a));
-      if (unitTags.length === 0 || narrowIdx < 0)
-        throw new InternalCompilerError("llvm emitter bug: optChain union arms");
-      const multiple = def.arms.length - unitTags.length > 1;
-      const narrowed = multiple ? e.receiver.type : def.arms[narrowIdx]!;
-      // `owner.field?.member`: a receiver projected from a borrowable owner
-      // needs no reference of its own while the body cannot remove an edge
-      // (so nothing can overwrite the projection before the body finishes).
-      const borrowReceiver =
-        !multiple &&
-        isRefCounted(narrowed) &&
-        host.canBorrowReceiver(e.receiver) &&
-        host.referenceEffects.preserves(e.body);
-      // An optional array read of a nullable-pointer union is the element
-      // pointer itself, read inline and owned by the statement frame until
-      // the body finishes; the bind slot borrows it like an emitExpr value.
-      const nullableRead =
-        !borrowReceiver &&
-        !multiple &&
-        host.nullableUnions.has(def.id) &&
-        host.optionalArrayReads.get(e.receiver) !== null;
-      // A single present arm is only tested and extracted (+1) before the
-      // body runs, so a fresh receiver box can stay on the stack.
-      const stacked =
-        !borrowReceiver && !nullableRead && !multiple && host.canStackReceiver(e.receiver);
-      let r: LlValue;
-      const nullableField = borrowReceiver ? host.nullableFieldGet(e.receiver) : null;
-      if (nullableField !== null && e.receiver.kind === "fieldGet") {
-        // A nullable-pointer field stores no union: test and peek the
-        // pointer itself, through a private stack box when the union's own
-        // representation is boxed (emitUnionProjection's form).
-        const owner = host.emitReadReceiver(e.receiver.obj);
-        const { ptr } = host.classFieldPtr(owner.name, e.receiver.className, e.receiver.field);
-        const p = B.tmp();
-        B.line(`${p} = load ptr, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
-        r = {
-          name: host.nullableUnions.get(def.id) ? p : host.stackNullableBox(p, nullableField),
-          type: e.receiver.type,
-        };
-      } else if (borrowReceiver || stacked || nullableRead) r = host.emitReadReceiver(e.receiver);
-      else r = host.emitExpr(e.receiver);
-      // The bind slot borrows a ref payload whenever something else keeps it
-      // alive until the body finishes: the borrowed projection above, or the
-      // receiver value the statement frame owns (emitExpr). Stack receivers
-      // may borrow their payload from a container, so they keep their +1.
-      const borrowBind = !multiple && !stacked && isRefCounted(narrowed);
-      const bind = B.slot();
-      B.entryAllocas.push(`${bind} = alloca ${host.llType(narrowed)}`);
-      B.line(
-        `store ${host.llType(narrowed)} ${host.llType(narrowed) === "ptr" ? "null" : host.llType(narrowed) === "double" ? f64Lit(0) : "false"}, ptr ${bind}`,
-      );
-      if (!borrowBind) host.ownSlot(bind, narrowed);
-      const isUnit = host.tagInSet(r.name, def.id, unitTags);
-      const extract = (): string =>
-        multiple
-          ? host.retainValue(r.name, narrowed)
-          : borrowBind
-            ? host.unionPeek(r.name, def.id)
-            : host.unionExtract(r.name, def.id, narrowed);
+      const { isUnit, bindPresent } = emitOptionalChainReceiver(host, e);
       if (e.type.kind === "void") {
         // Statement form (cb?.()): no result value at all.
         const lb = B.newLabel("oc.b");
         const lj = B.newLabel("oc.j");
         B.condBr(isUnit, lj, lb);
         B.startBlock(lb);
-        B.line(`store ${host.llType(narrowed)} ${extract()}, ptr ${bind}`);
-        host.chainSlots.set(e.id, { name: bind, type: narrowed, slot: true });
+        bindPresent();
         host.frames.push([]);
         host.emitExpr(e.body);
         host.releaseFrame(host.frames.pop()!);
@@ -296,8 +229,7 @@ export function emitControlExpr(
         B.line(`store ptr ${ur}, ptr ${slotD}`);
         B.br(lj);
         B.startBlock(lb);
-        B.line(`store ${host.llType(narrowed)} ${extract()}, ptr ${bind}`);
-        host.chainSlots.set(e.id, { name: bind, type: narrowed, slot: true });
+        bindPresent();
         host.emitBranchInto(slotD, e.body);
         host.chainSlots.delete(e.id);
         B.br(lj);
@@ -324,8 +256,7 @@ export function emitControlExpr(
       B.line(`store ptr ${host.unitInstanceRef(e.type.unionId, undefTag)}, ptr ${slot}`);
       B.br(lj);
       B.startBlock(lb);
-      B.line(`store ${host.llType(narrowed)} ${extract()}, ptr ${bind}`);
-      host.chainSlots.set(e.id, { name: bind, type: narrowed, slot: true });
+      bindPresent();
       host.emitBranchInto(slot, e.body);
       host.chainSlots.delete(e.id);
       B.br(lj);
@@ -349,6 +280,34 @@ export function emitControlExpr(
       // arm (+1 for ref kinds), falsy releases and runs the default.
       if (e.left.type.kind !== "union")
         throw new InternalCompilerError("llvm emitter bug: orDefault left is not a union");
+      if (
+        e.retag === undefined &&
+        !host.nullableUnions.has(e.left.type.unionId) &&
+        host.isStackUnionSource(e.left)
+      ) {
+        // A stack box (`arr[i] || d`): test truthiness and extract the
+        // payload (+1). The box is never retained or released.
+        const l = host.emitUnionProjection(e.left);
+        const ty = host.llType(e.type);
+        const slot = B.slot();
+        B.entryAllocas.push(`${slot} = alloca ${ty}`);
+        const lt = B.newLabel("ord.t"),
+          lf = B.newLabel("ord.f"),
+          lj = B.newLabel("ord.j");
+        B.condBr(host.truthy(l), lt, lf);
+        B.startBlock(lt);
+        B.line(
+          `store ${ty} ${host.unionExtract(l.name, e.left.type.unionId, e.type)}, ptr ${slot}`,
+        );
+        B.br(lj);
+        B.startBlock(lf);
+        host.emitBranchInto(slot, e.right);
+        B.br(lj);
+        B.startBlock(lj);
+        const t = B.tmp();
+        B.line(`${t} = load ${ty}, ptr ${slot}`);
+        return host.own({ name: t, type: e.type });
+      }
       const l = host.emitExpr(e.left);
       host.moveTemp(l);
       const ty = host.llType(e.type);
@@ -500,6 +459,91 @@ export function emitControlExpr(
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** The receiver half of a union-receiver `a?.b`. The receiver evaluates
+ * once; `isUnit` tests its unit arms, and `bindPresent` fills the chain's
+ * bind slot with the narrowed payload for the body to read through
+ * chainRecv. The caller deletes the chain slot after the body. */
+export function emitOptionalChainReceiver(
+  host: LlvmEmitterContext,
+  e: ExprOf<"optChain">,
+): { isUnit: string; bindPresent: () => void } {
+  const B = host.B;
+  if (e.receiver.type.kind !== "union")
+    throw new LlvmUnsupportedError(`optChain:${e.receiver.type.kind}`, e.loc);
+  const def = host.unionsById.get(e.receiver.type.unionId);
+  if (!def)
+    throw new InternalCompilerError(
+      `llvm emitter bug: optChain of unknown union ${e.receiver.type.unionId}`,
+    );
+  const unitTags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
+  const narrowIdx = def.arms.findIndex((a) => !isUnitType(a));
+  if (unitTags.length === 0 || narrowIdx < 0)
+    throw new InternalCompilerError("llvm emitter bug: optChain union arms");
+  const multiple = def.arms.length - unitTags.length > 1;
+  const narrowed = multiple ? e.receiver.type : def.arms[narrowIdx]!;
+  // `owner.field?.member`: a receiver projected from a borrowable owner
+  // needs no reference of its own while the body cannot remove an edge
+  // (so nothing can overwrite the projection before the body finishes).
+  const borrowReceiver =
+    !multiple &&
+    isRefCounted(narrowed) &&
+    host.canBorrowReceiver(e.receiver) &&
+    host.referenceEffects.preserves(e.body);
+  // An optional array read of a nullable-pointer union is the element
+  // pointer itself, read inline and owned by the statement frame until
+  // the body finishes; the bind slot borrows it like an emitExpr value.
+  const nullableRead =
+    !borrowReceiver &&
+    !multiple &&
+    host.nullableUnions.has(def.id) &&
+    host.optionalArrayReads.get(e.receiver) !== null;
+  // A single present arm is only tested and extracted (+1) before the
+  // body runs, so a fresh receiver box can stay on the stack.
+  const stacked =
+    !borrowReceiver && !nullableRead && !multiple && host.canStackReceiver(e.receiver);
+  let r: LlValue;
+  const nullableField = borrowReceiver ? host.nullableFieldGet(e.receiver) : null;
+  if (nullableField !== null && e.receiver.kind === "fieldGet") {
+    // A nullable-pointer field stores no union: test and peek the
+    // pointer itself, through a private stack box when the union's own
+    // representation is boxed (emitUnionProjection's form).
+    const owner = host.emitReadReceiver(e.receiver.obj);
+    const { ptr } = host.classFieldPtr(owner.name, e.receiver.className, e.receiver.field);
+    const p = B.tmp();
+    B.line(`${p} = load ptr, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
+    r = {
+      name: host.nullableUnions.get(def.id) ? p : host.stackNullableBox(p, nullableField),
+      type: e.receiver.type,
+    };
+  } else if (borrowReceiver || stacked || nullableRead) r = host.emitReadReceiver(e.receiver);
+  else r = host.emitExpr(e.receiver);
+  // The bind slot borrows a ref payload whenever something else keeps it
+  // alive until the body finishes: the borrowed projection above, or the
+  // receiver value the statement frame owns (emitExpr). Stack receivers
+  // may borrow their payload from a container, so they keep their +1.
+  const borrowBind = !multiple && !stacked && isRefCounted(narrowed);
+  const bind = B.slot();
+  B.entryAllocas.push(`${bind} = alloca ${host.llType(narrowed)}`);
+  B.line(
+    `store ${host.llType(narrowed)} ${host.llType(narrowed) === "ptr" ? "null" : host.llType(narrowed) === "double" ? f64Lit(0) : "false"}, ptr ${bind}`,
+  );
+  if (!borrowBind) host.ownSlot(bind, narrowed);
+  const isUnit = host.tagInSet(r.name, def.id, unitTags);
+  const extract = (): string =>
+    multiple
+      ? host.retainValue(r.name, narrowed)
+      : borrowBind
+        ? host.unionPeek(r.name, def.id)
+        : host.unionExtract(r.name, def.id, narrowed);
+  return {
+    isUnit,
+    bindPresent: () => {
+      B.line(`store ${host.llType(narrowed)} ${extract()}, ptr ${bind}`);
+      host.chainSlots.set(e.id, { name: bind, type: narrowed, slot: true });
+    },
+  };
 }
 
 /** `a?.b ?? d` narrowed to the chain body's present arm. The body wraps a

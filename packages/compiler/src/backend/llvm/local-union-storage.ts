@@ -1,5 +1,7 @@
+import { undefinedArmTag } from "../../ir/analysis.js";
 import {
   isRefCounted,
+  isUnitType,
   type IrExpr,
   type IrFunction,
   type IrType,
@@ -7,7 +9,10 @@ import {
 } from "../../ir/ir.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import type { CallLifetimes } from "./call-lifetimes.js";
-import type { LlvmEmitterContext } from "./expr-context.js";
+import { emitArrIntrinsic } from "./expr-containers.js";
+import { emitOptionalChainReceiver } from "./expr-control.js";
+import type { ExprOf, LlValue, LlvmEmitterContext } from "./expr-context.js";
+import { emitLocalArrayRead } from "./local-array-reads.js";
 import { emitStackMapRead, matchMapRead } from "./map-read-lifetimes.js";
 import { canStackUnion, emitStackUnion } from "./stack-unions.js";
 
@@ -31,22 +36,81 @@ function isUnionCopy(expr: IrExpr, type: IrType): boolean {
   );
 }
 
-function supportedSource(
-  expr: IrExpr,
-  type: IrType,
-  unions: ReadonlyMap<string, IrUnionDef>,
-  nullableField: CopiedUnionSource,
-): boolean {
+/** The union sources a binding or projection can snapshot. */
+export interface UnionSources {
+  /** The tagged-box unions a stack box can hold. */
+  unions: ReadonlyMap<string, IrUnionDef>;
+  /** Every union, including nullable-pointer receivers of `a?.b`. */
+  receiverUnions: ReadonlyMap<string, IrUnionDef>;
+  /** Nullable-pointer field reads (copied with their own owner). */
+  nullableField: CopiedUnionSource;
+  /** Optional array element reads (OptionalArrayReads). */
+  arrayRead: CopiedUnionSource;
+  /** Direct calls returning a scalar union in registers (Int32Abi.union). */
+  scalarCall: CopiedUnionSource;
+}
+
+/** Every arm is a number, a boolean or a unit value: the box owns nothing,
+ * so its tag and payload bits are the whole value. */
+function isScalarUnion(type: IrType, unions: ReadonlyMap<string, IrUnionDef>): boolean {
+  if (type.kind !== "union") return false;
+  const arms = unions.get(type.unionId)?.arms;
+  return (
+    arms !== undefined &&
+    arms.every((arm) => arm.kind === "f64" || arm.kind === "bool" || isUnitType(arm))
+  );
+}
+
+function sameUnion(expr: IrExpr, type: IrType): boolean {
+  return expr.type.kind === "union" && type.kind === "union" && expr.type.unionId === type.unionId;
+}
+
+/** `a?.b`, pass-through `a ?? b`, `c ? a : b` and `pop()`/`shift()` of
+ * number or boolean elements, as a scalar union built from other sources
+ * in a private stack box. Ownerless payloads make every snapshot a copy of
+ * bits, so no heap box is needed while consumers only project. */
+export function isScalarOptionalSource(expr: IrExpr, sources: UnionSources): boolean {
+  if (!isScalarUnion(expr.type, sources.unions)) return false;
+  if (expr.kind === "arrIntrinsic")
+    return (
+      (expr.method === "pop" || expr.method === "shift") &&
+      expr.receiver.type.kind === "array" &&
+      (expr.receiver.type.elem.kind === "f64" || expr.receiver.type.elem.kind === "bool")
+    );
+  if (expr.kind === "optChain") {
+    if (expr.receiver.type.kind !== "union") return false;
+    const arms = sources.receiverUnions.get(expr.receiver.type.unionId)?.arms;
+    return (
+      arms !== undefined &&
+      arms.filter((arm) => !isUnitType(arm)).length === 1 &&
+      undefinedArmTag(expr.type, sources.unions) >= 0 &&
+      supportedSource(expr.body, expr.type, sources)
+    );
+  }
   if (expr.kind === "ternary")
     return (
-      supportedSource(expr.then, type, unions, nullableField) &&
-      supportedSource(expr.else_, type, unions, nullableField)
+      supportedSource(expr.then, expr.type, sources) &&
+      supportedSource(expr.else_, expr.type, sources)
     );
   return (
-    canStackUnion(expr, unions) ||
-    matchMapRead(expr, unions) !== null ||
-    nullableField(expr) ||
-    isUnionCopy(expr, type)
+    expr.kind === "nullish" &&
+    supportedSource(expr.left, expr.type, sources) &&
+    supportedSource(expr.right, expr.type, sources)
+  );
+}
+
+function supportedSource(expr: IrExpr, type: IrType, sources: UnionSources): boolean {
+  if (!sameUnion(expr, type)) return false;
+  if (sources.arrayRead(expr)) return true;
+  if (expr.kind === "ternary")
+    return supportedSource(expr.then, type, sources) && supportedSource(expr.else_, type, sources);
+  return (
+    canStackUnion(expr, sources.unions) ||
+    matchMapRead(expr, sources.unions) !== null ||
+    sources.nullableField(expr) ||
+    isUnionCopy(expr, type) ||
+    isScalarOptionalSource(expr, sources) ||
+    sources.scalarCall(expr)
   );
 }
 
@@ -57,9 +121,9 @@ function supportedSource(
 export function findLocalUnionStorage(
   fn: IrFunction,
   lifetimes: CallLifetimes,
-  unions: ReadonlyMap<string, IrUnionDef>,
-  nullableField: CopiedUnionSource = () => false,
+  sources: UnionSources,
 ): Map<string, LocalUnionStorageProof> {
+  const unions = sources.unions;
   const types = new Map(fn.locals.map((local) => [local.id, local.type]));
   const result = new Map<string, LocalUnionStorageProof>();
   const safe = lifetimes.projectedLocals.get(fn.name);
@@ -77,8 +141,7 @@ export function findLocalUnionStorage(
       if (stmt.kind === "varDecl" || stmt.kind === "assign") {
         const value = stmt.kind === "varDecl" ? stmt.init : stmt.value;
         const type = types.get(stmt.localId);
-        if (!value || !type || !supportedSource(value, type, unions, nullableField))
-          result.delete(stmt.localId);
+        if (!value || !type || !supportedSource(value, type, sources)) result.delete(stmt.localId);
       }
       return true;
     },
@@ -122,7 +185,8 @@ export function storeLocalUnion(
   expr: IrExpr,
 ): void {
   const B = host.B;
-  if (expr.kind === "ternary") {
+  const read = host.optionalArrayReads.get(expr);
+  if (expr.kind === "ternary" && read === null) {
     const cond = host.emitExpr(expr.cond);
     const yes = B.newLabel("union.then"),
       no = B.newLabel("union.else"),
@@ -147,7 +211,27 @@ export function storeLocalUnion(
   // boxed union table), and every source has the binding's own union.
   const unionId = expr.type.kind === "union" ? expr.type.unionId : "";
   host.requireBoxedUnion(unionId);
-  if (host.nullableFieldGet(expr) !== null) {
+  if (read) {
+    // The snapshot owns its reference element, if any; a missing element
+    // leaves a NULL owner.
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca ptr`);
+    const owned = emitLocalArrayRead(host, { ...read, borrow: false }, slot);
+    source = B.tmp();
+    B.line(`${source} = load ptr, ptr ${slot}`);
+    if (owned) {
+      owner = B.tmp();
+      B.line(`${owner} = load ptr, ptr ${owned.slot}`);
+    }
+  } else if (
+    expr.kind === "optChain" ||
+    expr.kind === "nullish" ||
+    expr.kind === "call" ||
+    expr.kind === "arrIntrinsic"
+  ) {
+    // Scalar optional sources and register results: a private stack box.
+    source = host.emitReadReceiver(expr).name;
+  } else if (host.nullableFieldGet(expr) !== null) {
     const copied = host.emitOwnedNullableStack(expr);
     source = copied.box;
     owner = copied.owner.name;
@@ -206,4 +290,52 @@ export function storeLocalUnion(
     B.line(`store ptr ${owner}, ptr ${storage.owner}`);
     host.releaseValue(old, storage.ownerType);
   }
+}
+
+/** Build a scalar optional source (isScalarOptionalSource) in a fresh
+ * stack box. Operands evaluate in source order; a binding being assigned
+ * is only overwritten after the whole value is known. */
+export function emitScalarOptional(
+  host: LlvmEmitterContext,
+  expr: ExprOf<"optChain" | "nullish" | "ternary" | "arrIntrinsic">,
+): LlValue {
+  const B = host.B;
+  const storage = allocateLocalUnion(host, { ownerType: null });
+  if (expr.kind === "arrIntrinsic") return emitArrIntrinsic(host, expr, storage);
+  if (expr.kind === "ternary") {
+    storeLocalUnion(host, storage, expr);
+    return { name: storage.box, type: expr.type };
+  }
+  const join = B.newLabel("optional.join");
+  if (expr.kind === "optChain") {
+    const { isUnit, bindPresent } = emitOptionalChainReceiver(host, expr);
+    const missing = B.newLabel("optional.missing"),
+      present = B.newLabel("optional.present");
+    B.condBr(isUnit, missing, present);
+    B.startBlock(missing);
+    B.line(`store i32 ${undefinedArmTag(expr.type, host.unionsById)}, ptr ${storage.tag}`);
+    B.line(`store i64 0, ptr ${storage.payload}`);
+    B.br(join);
+    B.startBlock(present);
+    bindPresent();
+    host.frames.push([]);
+    storeLocalUnion(host, storage, expr.body);
+    host.releaseFrame(host.frames.pop()!);
+    host.chainSlots.delete(expr.id);
+    B.br(join);
+  } else {
+    storeLocalUnion(host, storage, expr.left);
+    const unionId = expr.type.kind === "union" ? expr.type.unionId : "";
+    const arms = host.unionsById.get(unionId)!.arms;
+    const unitTags = arms.flatMap((arm, tag) => (isUnitType(arm) ? [tag] : []));
+    const fallback = B.newLabel("optional.default");
+    B.condBr(host.tagInSet(storage.box, unionId, unitTags), fallback, join);
+    B.startBlock(fallback);
+    host.frames.push([]);
+    storeLocalUnion(host, storage, expr.right);
+    host.releaseFrame(host.frames.pop()!);
+    B.br(join);
+  }
+  B.startBlock(join);
+  return { name: storage.box, type: expr.type };
 }
