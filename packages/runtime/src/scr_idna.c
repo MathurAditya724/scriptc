@@ -2,10 +2,10 @@
  * url.parse() hostnames (ToASCII), url.domainToASCII()/domainToUnicode()
  * and url.format()'s unicode option: nontransitional mapping, NFC, label
  * validity (leading combining marks, ContextJ, and the RFC 5893 bidi rule),
- * and Punycode. Behavior follows Node 24's implementation exactly, including
- * its validity-data snapshot and the shortcuts its label checks take; the
- * differential corpus and test/idna-cases.txt (Node's own answers) are the
- * oracle.
+ * and Punycode. It matches Node 24's implementation, including its
+ * validity-data snapshot and the shortcuts its label checks take; the
+ * differential corpus and test/url-legacy-cases.txt (generated from Node)
+ * are the oracle.
  *
  * Code points travel as UTF-32 buffers. Input bytes must be well-formed
  * UTF-8: lone surrogates and malformed sequences fail ToASCII, as they do

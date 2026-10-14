@@ -66,6 +66,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "util.toUSVString": "scr_util_to_usv_string",
   "util.isDeepStrictEqual": "scr_util_is_deep_strict_equal",
   "util.styleText": "scr_util_style_text",
+  "util.inherits": "scr_util_inherits",
+  "util.deprecate": "scr_util_deprecate",
+  "util.callbackify": "scr_util_callbackify",
+  "util.debuglog": "scr_util_debuglog",
   "util.typeIs": "scr_dyn_util_type_is",
   "util.typeValue": "scr_dyn_util_type_value",
   "math.maxArr": "scr_math_max_arr",
@@ -672,6 +676,11 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fetch.responseNew": "scr_fetch_response_new",
   "fetch.input": "scr_fetch_input",
   "abort.controllerNew": "scr_fetch_abort_controller_new",
+  "event.targetNew": "scr_event_target_new",
+  "event.new": "scr_event_new",
+  "event.customNew": "scr_custom_event_new",
+  "event.is": "scr_event_is",
+  "events.addAbortListener": "scr_events_add_abort_listener",
   "abort.timeout": "scr_fetch_abort_timeout",
   "abort.now": "scr_fetch_abort_now",
   "abort.any": "scr_fetch_abort_any",
@@ -802,6 +811,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "emitter.getMax": "scr_emitter_get_max",
   "emitter.setDefaultMax": "scr_emitter_set_default_max",
   "emitter.getDefaultMax": "scr_emitter_get_default_max",
+  "emitter.errorMonitor": "scr_emitter_error_monitor",
   // node:stream (scr_stream.c): receivers borrowed, chunks borrowed,
   // chaining forms answer the receiver +1. The throwing members
   // (listeners and option callbacks run synchronously inside) ride the
@@ -1027,6 +1037,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.offWarning": "scr_process_off_warning",
   "process.emitWarning": "scr_process_emit_warning",
   "process.emitWarningText": "scr_process_emit_warning_text",
+  "process.deprecationFlag": "scr_process_deprecation_flag",
+  "process.setDeprecationFlag": "scr_process_set_deprecation_flag",
   "process.onUncaughtException": "scr_process_on_uncaught_exception",
   "process.offUncaughtException": "scr_process_off_uncaught_exception",
   "process.onUnhandledRejection": "scr_process_on_unhandled_rejection",
@@ -1117,11 +1129,16 @@ export const LIB_FN_SYMS: Record<string, string> = {
 };
 
 export const USES_TIMERS_LIB_FNS = new Set<string>([
+  "process.emitWarning",
   "process.emitWarningText",
   // The legacy url entries queue DEP0169/DEP0170 on the next tick.
   "url.legacyParse",
   "url.legacyFormat",
   "url.legacyResolve",
+  // The wrappers schedule warnings and callbacks on the tick queue.
+  "util.deprecate",
+  "util.callbackify",
+  "util.debuglog",
   "worker.new",
   "worker.parentPort",
   "process.stdio",
@@ -1131,6 +1148,12 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "fetch.requestNew",
   "fetch.abortTimeout",
   "abort.timeout",
+  // EventTarget listeners report their exceptions from a nextTick.
+  "event.targetNew",
+  "abort.controllerNew",
+  "abort.any",
+  "fetch.abortControllerNew",
+  "fetch.abortAny",
   "fetch.streamNew",
   "fetch.streamFrom",
   "readable.new",

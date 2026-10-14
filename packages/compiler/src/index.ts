@@ -507,6 +507,7 @@ async function compileExecutableNative(
     textDecoderLegacy: features.textDecoderLegacy,
     fileHandle: features.fileHandle,
     fetch: features.fetch,
+    ...(features.eventTarget ? { eventTarget: true } : {}),
     zlib: features.zlib,
     assert: features.assert,
     inspect: features.inspect,

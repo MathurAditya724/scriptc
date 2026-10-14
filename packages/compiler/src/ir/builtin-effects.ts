@@ -88,6 +88,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fetch.abortAny",
   "abort.timeout",
   "abort.any",
+  "event.new",
+  "event.customNew",
+  "events.addAbortListener",
   "fetch.streamNew",
   "fetch.streamFrom",
   "num.toFixed",
@@ -280,6 +283,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.kill",
   "process.killNum",
   "process.setExitCode",
+  // Node's argument grammar throws ERR_INVALID_ARG_TYPE at the call.
+  "process.emitWarning",
   // cpuUsage(prev)'s field validation: negative/non-finite prev fields
   // throw Node's ERR_INVALID_ARG_VALUE RangeError, catchably.
   "process.cpuPrevValidate",
@@ -369,6 +374,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.isDeepStrictEqual",
   "util.styleText",
   "util.toUSVString",
+  "util.inherits",
+  "util.deprecate",
+  "util.callbackify",
+  "util.debuglog",
   // The URI codecs throw the spec's URIError: decoding on bad hex/invalid
   // UTF-8 octets, encoding (and querystring.escape) on a lone surrogate.
   "str.decodeUriComponent",
@@ -399,6 +408,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.forInKeys",
   "dyn.forInKeyStrings",
   "dyn.objKeyStrings",
+  "dyn.objEntryPairs",
   "dyn.hasOwn",
   "dyn.propertyIsEnumerable",
   "dyn.assign",

@@ -1771,7 +1771,7 @@ export function lowerStaticAbortSignalListenerCall(
   const receiverTs = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(access.expression));
   const symbol = receiverTs.getAliasSymbol() ?? receiverTs.getSymbol();
   if (
-    symbol?.name !== "AbortSignal" ||
+    (symbol?.name !== "AbortSignal" && symbol?.name !== "EventTarget") ||
     !lowerer.checker
       .declarationsOf(symbol)
       .some((d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()))
@@ -1801,6 +1801,40 @@ export function lowerStaticAbortSignalListenerCall(
       loc,
     }),
   );
+}
+
+/** `new EventTarget()`, `new Event(type, options?)` and `new
+ * CustomEvent(type, options?)`: native handles built from the checked
+ * argument vector (Node validates it in the constructor). */
+export function lowerEventTargetNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
+  const name = stdlibGlobalNameOf(lowerer, expr.expression);
+  if (name !== "EventTarget" && name !== "Event" && name !== "CustomEvent") return null;
+  const args = expr.arguments ?? [];
+  if (args.some(ts.isSpreadElement)) return null;
+  const loc = locOf(expr);
+  const values = args.map((arg) =>
+    ts.isObjectLiteralExpression(arg)
+      ? lowerDynObjectLiteral(lowerer, arg)
+      : lowerer.lowerExprExpecting(arg, DYN),
+  );
+  if (name === "EventTarget") {
+    const result: IrExpr = { kind: "libCall", fn: "event.targetNew", args: [], type: DYN, loc };
+    if (values.length === 0) return result;
+    return {
+      kind: "seqExpr",
+      stmts: values.map((value): IrStmt => ({ kind: "exprStmt", expr: value, loc: value.loc })),
+      result,
+      type: DYN,
+      loc,
+    };
+  }
+  return {
+    kind: "libCall",
+    fn: name === "Event" ? "event.new" : "event.customNew",
+    args: [{ kind: "dynArrLit", elems: values, type: DYN, loc }],
+    type: DYN,
+    loc,
+  };
 }
 
 export function lowerAbortControllerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {

@@ -596,11 +596,11 @@ ScrDyn *scr_await_dyn_value_settled(ScrDyn *value) {
 
 /* ── process warnings (emitWarning + the 'warning' event) ─────────────
  * Gated with the rest of this TU (a deprecation-emitting unit's gate
- * must imply the dynAsync link). Listeners are dyn functions; emission
- * is SYNCHRONOUS at the
- * call (Node defers a tick through nextTick — the MaxListenersExceeded
- * precedent, SEMANTICS.md 138) and the default stderr report always
- * prints (Node's own bootstrap listener; a compiled binary has no
+ * must imply the dynAsync link). Listeners are dyn functions; the
+ * warning is built at the call and emitted on the next tick, as Node's
+ * emitWarning does (scr_warning_emit_deferred). The default stderr report
+ * prints for every warning except deprecations under process.noDeprecation
+ * (Node's own bootstrap listener; a compiled binary has no
  * --no-warnings). The warning VALUE is the dyn error encoding built over
  * an ScrError (identity-cached, so a listener comparing two deliveries
  * of one warning sees one object); a string `detail` joins the dyn node
@@ -621,6 +621,7 @@ void scr_process_on_warning(ScrDyn *fn) {
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg, strlen(msg), "ERR_INVALID_ARG_TYPE");
     return;
   }
+  scr_warning_emit_hook = scr_emit_warning;
   if (scr_nwarn == scr_warn_cap) {
     scr_warn_cap = scr_warn_cap ? scr_warn_cap * 2 : 4;
     scr_warn_listeners = realloc(scr_warn_listeners, scr_warn_cap * sizeof *scr_warn_listeners);
@@ -648,14 +649,71 @@ void scr_process_off_warning(ScrDyn *fn) {
   }
 }
 
+/* process.noDeprecation (0) and process.throwDeprecation (1): ordinary
+ * writable process properties, undefined until the program assigns them.
+ * A compiled binary takes no Node command-line flags, so only those
+ * assignments set them. */
+static SCR_TL ScrDyn *scr_deprecation_flags[2] = {NULL, NULL};
+static SCR_TL bool scr_deprecation_flags_registered = false;
+
+static void scr_deprecation_flags_teardown(void) {
+  for (size_t i = 0; i < 2; i++) {
+    scr_dyn_release(scr_deprecation_flags[i]);
+    scr_deprecation_flags[i] = NULL;
+  }
+}
+
+ScrDyn *scr_process_deprecation_flag(double which) {
+  ScrDyn *value = scr_deprecation_flags[which != 0];
+  return scr_dyn_retain(value ? value : scr_dyn_undefined());
+}
+
+void scr_process_set_deprecation_flag(double which, ScrDyn *value) {
+  if (!scr_deprecation_flags_registered) {
+    scr_deprecation_flags_registered = true;
+    scr_atexit(scr_deprecation_flags_teardown);
+  }
+  size_t slot = which != 0;
+  ScrDyn *previous = scr_deprecation_flags[slot];
+  scr_deprecation_flags[slot] = scr_dyn_retain(value);
+  scr_dyn_release(previous);
+}
+
+bool scr_process_deprecation_flag_on(int which) {
+  const ScrDyn *value = scr_deprecation_flags[which != 0];
+  return value != NULL && scr_dyn_truthy(value);
+}
+
+/* The warning's name as warning.toString() reads it: the own property, or
+ * the Error class name an emitted Error instance inherits. +1 or NULL. */
+static ScrStr *scr_warning_name(const ScrDyn *w) {
+  const ScrDyn *en = scr_dyn_obj_get(w, "name", 4);
+  if (en) return en->kind == SCR_DYN_STR ? scr_str_retain(en->v.str) : NULL;
+  ScrError *e = scr_errdyn_err_of(w);
+  if (!e) return NULL;
+  ScrStr *name = e->name ? scr_str_retain(e->name) : scr_error_default_name(e);
+  scr_error_release(e);
+  return name;
+}
+
+static bool scr_warning_is_deprecation(const ScrDyn *w) {
+  ScrStr *name = scr_warning_name(w);
+  bool deprecation = name && name->len == 18 && memcmp(name->data, "DeprecationWarning", 18) == 0;
+  scr_str_release(name);
+  return deprecation;
+}
+
 /* The default stderr report + dispatch over a built warning dyn node.
  * Borrowed. A listener throw propagates (the dc publish stance). */
 static void scr_warning_dispatch(ScrDyn *w) {
   /* "(node:pid) [CODE] Name: message" + "\n<detail>" — Node's
    * onWarning report, written as ONE console.error line (so the global
    * console's group indentation applies to each of its lines). Node
-   * registers that listener at startup, so it runs before the program's. */
-  const ScrDyn *en = scr_dyn_obj_get(w, "name", 4);
+   * registers that listener at startup, so it runs before the program's,
+   * and skips deprecations while process.noDeprecation is set. */
+  bool deprecation = scr_warning_is_deprecation(w);
+  if (deprecation && scr_process_deprecation_flag_on(0)) goto listeners;
+  ScrStr *name = scr_warning_name(w);
   const ScrDyn *em = scr_dyn_obj_get(w, "message", 7);
   const ScrDyn *ec = scr_dyn_obj_get(w, "code", 4);
   const ScrDyn *ed = scr_dyn_obj_get(w, "detail", 6);
@@ -669,21 +727,20 @@ static void scr_warning_dispatch(ScrDyn *w) {
     scr_jb_put_str(&report, ec->v.str);
     scr_jb_puts(&report, "] ");
   }
-  if (en && en->kind == SCR_DYN_STR) scr_jb_put_str(&report, en->v.str);
+  if (name) scr_jb_put_str(&report, name);
   else scr_jb_puts(&report, "Warning");
+  scr_str_release(name);
   scr_jb_puts(&report, ": ");
   if (em && em->kind == SCR_DYN_STR) scr_jb_put_str(&report, em->v.str);
   if (ed && ed->kind == SCR_DYN_STR) {
     scr_jb_puts(&report, "\n");
     scr_jb_put_str(&report, ed->v.str);
   }
-  /* Node's one-time trace hint, after the first report (a deprecation's
-   * names the deprecation flag). */
+  /* Node's one-time trace hint, after the first report; deprecations
+   * name their own trace flag. */
   static SCR_TL bool hinted = false;
   if (!hinted) {
     hinted = true;
-    bool deprecation = en && en->kind == SCR_DYN_STR && en->v.str->len == 18 &&
-                       memcmp(en->v.str->data, "DeprecationWarning", 18) == 0;
     scr_jb_puts(&report, deprecation
                              ? "\n(Use `node --trace-deprecation ...` to show where the warning was created)"
                              : "\n(Use `node --trace-warnings ...` to show where the warning was created)");
@@ -692,6 +749,7 @@ static void scr_warning_dispatch(ScrDyn *w) {
   line.v.s = scr_jb_finish(&report);
   scr_console_error(1, &line);
   scr_str_release(line.v.s);
+listeners:
   for (size_t i = 0; i < scr_nwarn; i++) {
     ScrDyn *r = scr_dyn_call(scr_warn_listeners[i], &w, 1, "listener");
     if (r == NULL) return; /* pending exception propagates */
@@ -699,36 +757,72 @@ static void scr_warning_dispatch(ScrDyn *w) {
   }
 }
 
-/* A warning built from C parts (the runtime deprecation sites): name
- * defaults to "Warning"; code/detail optional. Borrows message. */
-void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
+/* A string warning with a type and an optional code, as
+ * process.emitWarning(message, type, code) builds it. Borrows; +1. */
+ScrDyn *scr_warning_new(ScrStr *message, const char *type, const ScrStr *code) {
   ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
   scr_str_release(e->name);
-  e->name = scr_str_new(name ? name : "Warning", strlen(name ? name : "Warning"));
+  e->name = scr_str_new(type, strlen(type));
   e->name_present = true;
-  if (code) e->code = scr_str_new(code, strlen(code));
+  if (code) e->code = scr_str_retain((ScrStr *)code);
   ScrDyn *w = scr_dyn_from_error(e);
   scr_error_release(e);
+  return w;
+}
+
+/* A warning built from C parts (the runtime deprecation sites): name
+ * defaults to "Warning"; code/detail optional. Reported synchronously.
+ * Borrows message. */
+void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
+  ScrStr *code_text = code ? scr_str_new(code, strlen(code)) : NULL;
+  ScrDyn *w = scr_warning_new(message, name ? name : "Warning", code_text);
+  scr_str_release(code_text);
   scr_warning_dispatch(w);
   scr_dyn_release(w);
 }
 
-/* Deferred warnings: the console members' and the runtime deprecation
- * sites'. Node's emitWarning emits on process.nextTick, so these queue in
- * order and each rides one raw tick on the shared tick queue; any left at
- * exit are dropped with it. name and code are static text (NULL: the
- * defaults). */
-typedef struct {
-  ScrStr *message;
-  const char *name;
-  const char *code;
-} ScrDeferredWarning;
-static SCR_TL ScrDeferredWarning *scr_warn_texts = NULL;
+/* Node's emitWarning tail for runtime-built warnings: deprecations are
+ * dropped while process.noDeprecation is set and thrown from their own
+ * tick while process.throwDeprecation is set; every other warning reaches
+ * the report and the 'warning' listeners on the next tick. */
+static void scr_warning_tick(ScrClosure *c) {
+  ScrDyn *w = scr_box_get_ref(c->caps[0]);
+  scr_warning_dispatch(w);
+  scr_dyn_release(w);
+}
+
+static void scr_warning_throw_tick(ScrClosure *c) {
+  ScrDyn *w = scr_box_get_ref(c->caps[0]);
+  scr_throw_ref(w, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+}
+
+static void scr_warning_defer(ScrDyn *w, void (*fire)(ScrClosure *)) {
+  ScrClosure *c = scr_closure_new((void *)fire, 1);
+  c->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(c->caps[0], scr_dyn_retain(w));
+  scr_next_tick(c);
+}
+
+void scr_warning_emit_deferred(ScrDyn *w) {
+  if (scr_warning_is_deprecation(w)) {
+    if (scr_process_deprecation_flag_on(0)) return;
+    if (scr_process_deprecation_flag_on(1)) {
+      scr_warning_defer(w, scr_warning_throw_tick);
+      return;
+    }
+  }
+  scr_warning_defer(w, scr_warning_tick);
+}
+
+/* The console members' warnings. Node's emitWarning emits on
+ * process.nextTick, so these queue in order and each rides one raw tick
+ * on the shared tick queue; any left at exit are dropped with it. */
+static SCR_TL ScrStr **scr_warn_texts = NULL;
 static SCR_TL size_t scr_warn_texts_head = 0, scr_warn_texts_len = 0, scr_warn_texts_cap = 0;
 static SCR_TL bool scr_warn_texts_registered = false;
 
 static void scr_warn_texts_teardown(void) {
-  for (size_t i = scr_warn_texts_head; i < scr_warn_texts_len; i++) scr_str_release(scr_warn_texts[i].message);
+  for (size_t i = scr_warn_texts_head; i < scr_warn_texts_len; i++) scr_str_release(scr_warn_texts[i]);
   free(scr_warn_texts);
   scr_warn_texts = NULL;
   scr_warn_texts_head = scr_warn_texts_len = scr_warn_texts_cap = 0;
@@ -736,20 +830,21 @@ static void scr_warn_texts_teardown(void) {
 
 static void scr_warn_text_tick(void) {
   if (scr_warn_texts_head == scr_warn_texts_len) return;
-  ScrDeferredWarning warning = scr_warn_texts[scr_warn_texts_head++];
+  ScrStr *message = scr_warn_texts[scr_warn_texts_head++];
   if (scr_warn_texts_head == scr_warn_texts_len) scr_warn_texts_head = scr_warn_texts_len = 0;
-  scr_emit_warning(warning.name, warning.code, warning.message);
-  scr_str_release(warning.message);
+  scr_emit_warning(NULL, NULL, message);
+  scr_str_release(message);
 }
 
-void scr_emit_warning_deferred(const char *name, const char *code, ScrStr *message) {
+void scr_process_emit_warning_text(ScrStr *message) {
+  if (message->len == 0) return;
   if (!scr_warn_texts_registered) {
     scr_warn_texts_registered = true;
     scr_atexit(scr_warn_texts_teardown);
   }
   if (scr_warn_texts_len == scr_warn_texts_cap) {
     size_t cap = scr_warn_texts_cap ? scr_warn_texts_cap * 2 : 4;
-    ScrDeferredWarning *grown = realloc(scr_warn_texts, cap * sizeof *grown);
+    ScrStr **grown = realloc(scr_warn_texts, cap * sizeof *grown);
     if (!grown) {
       fputs("scriptc: out of memory\n", stderr);
       abort();
@@ -757,14 +852,8 @@ void scr_emit_warning_deferred(const char *name, const char *code, ScrStr *messa
     scr_warn_texts = grown;
     scr_warn_texts_cap = cap;
   }
-  scr_warn_texts[scr_warn_texts_len++] =
-      (ScrDeferredWarning){.message = scr_str_retain(message), .name = name, .code = code};
+  scr_warn_texts[scr_warn_texts_len++] = scr_str_retain(message);
   scr_next_tick_raw(scr_warn_text_tick);
-}
-
-void scr_process_emit_warning_text(ScrStr *message) {
-  if (message->len == 0) return;
-  scr_emit_warning_deferred(NULL, NULL, message);
 }
 
 static void scr_warn_bad_arg(const char *arg, const char *want) {
@@ -777,7 +866,8 @@ static void scr_warn_bad_arg(const char *arg, const char *want) {
  * values: (warning: string | Error), then for string warnings a type
  * string / ctor function / options object ({type, code, detail}) second
  * and a code string / ctor function third. Wrong kinds throw Node's
- * ERR_INVALID_ARG_TYPE TypeErrors; non-string details are ignored. */
+ * ERR_INVALID_ARG_TYPE TypeErrors at the call; non-string details are
+ * ignored. The warning itself is emitted on the next tick. */
 void scr_process_emit_warning(ScrDyn *args) {
   size_t argc = args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
   ScrDyn *const *items = args->kind == SCR_DYN_ARR ? args->v.arr.items : NULL;
@@ -785,7 +875,7 @@ void scr_process_emit_warning(ScrDyn *args) {
   /* An Error-encoded warning: type/code arguments are ignored (Node). */
   if (warning != NULL && warning->kind == SCR_DYN_OBJ &&
       scr_dyn_obj_get(warning, "%error", 6) != NULL) {
-    scr_warning_dispatch(warning);
+    scr_warning_emit_deferred(warning);
     return;
   }
   if (warning == NULL || warning->kind != SCR_DYN_STR) {
@@ -840,7 +930,7 @@ void scr_process_emit_warning(ScrDyn *args) {
   if (detail) {
     scr_dyn_obj_set(w, "detail", 6, scr_dyn_new_str((ScrStr *)detail)); /* retains */
   }
-  scr_warning_dispatch(w);
+  scr_warning_emit_deferred(w);
   scr_dyn_release(w);
 }
 

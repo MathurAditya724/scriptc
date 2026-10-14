@@ -1,10 +1,49 @@
 import * as ts from "../ts7/adapter.js";
-import type { IrExpr, SrcLoc } from "../../ir/ir.js";
+import { dynUndefinedExpr } from "../../ir/build.js";
+import { DYN, type IrExpr, type SrcLoc } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerTimersMemberCall } from "./lower-timers.js";
 import { lowerStreamModuleCall } from "./lower-stream.js";
 import { lowerNodeModuleCall } from "./builtins/module-resolution.js";
 import { builtinModuleFnOf, builtinFenceHintOf } from "./surfaces.js";
+
+/** `events.addAbortListener(signal, listener)`: the runtime registers the
+ * once/resist-stop-propagation abort listener (or queues the call for an
+ * aborted signal) and answers the disposer; the Disposable is a fresh
+ * object carrying it under Symbol.dispose. */
+export function lowerAddAbortListener(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr {
+  const args = expr.arguments;
+  if (args.length > 2 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`addAbortListener with this argument list`, expr);
+  }
+  const values = [0, 1].map((i) =>
+    args[i] ? lowerer.lowerExprExpecting(args[i]!, DYN) : dynUndefinedExpr(loc),
+  );
+  const key: IrExpr = {
+    kind: "dynFrom",
+    value: {
+      kind: "libCall",
+      fn: "sym.wellKnown",
+      args: [{ kind: "strLit", value: "dispose", type: { kind: "string" }, loc }],
+      type: { kind: "symbol" },
+      loc,
+    },
+    type: DYN,
+    loc,
+  };
+  const dispose: IrExpr = {
+    kind: "libCall",
+    fn: "events.addAbortListener",
+    args: values,
+    type: DYN,
+    loc,
+  };
+  return { kind: "dynObjLit", fields: [{ key, value: dispose }], type: DYN, loc };
+}
 
 /** Named imports, namespace members and callable aliases share validation
  * and dispatch. Resolve diagnostic provenance only if no handler accepts. */
@@ -17,6 +56,9 @@ export function lowerBuiltinCall(
 ): IrExpr {
   if (bi.module === "child_process" && bi.member === "execFile") {
     return lowerer.lowerExecFileCall(expr, loc);
+  }
+  if (bi.module === "events" && bi.member === "addAbortListener") {
+    return lowerAddAbortListener(lowerer, expr, loc);
   }
   if (bi.module === "timers") {
     const timersServed = lowerTimersMemberCall(lowerer, expr, bi.member, loc);

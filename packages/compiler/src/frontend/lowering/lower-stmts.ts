@@ -6336,6 +6336,24 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
             loc,
           };
         }
+        if (!expr.left.questionDotToken) {
+          const flag = lowerer.stdlibGlobalMember(expr.left, "process");
+          if (flag === "noDeprecation" || flag === "throwDeprecation") {
+            const loc = locOf(expr);
+            const value = lowerer.lowerExprExpecting(expr.right, DYN);
+            return {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "process.setDeprecationFlag",
+                args: [numLit(flag === "noDeprecation" ? 0 : 1, loc), value],
+                type: VOID,
+                loc,
+              },
+              loc,
+            };
+          }
+        }
         // `r._read = fn` / `w._write = fn` (and the other underscore
         // methods) on a runtime-stream-rooted receiver: Node's
         // own-property shadow of the prototype method — the runtime

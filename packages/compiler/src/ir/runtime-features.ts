@@ -9,6 +9,7 @@ export interface RuntimeFeatures {
   legacyTextDecoder: boolean;
   fileHandle: boolean;
   fetch: boolean;
+  eventTarget: boolean;
   processEvents: boolean;
   emitter: boolean;
   stream: boolean;
@@ -53,7 +54,13 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.offWarning",
   "process.emitWarning",
   "process.emitWarningText",
+  "process.deprecationFlag",
+  "process.setDeprecationFlag",
   "util.styleText",
+  "util.inherits",
+  "util.deprecate",
+  "util.callbackify",
+  "util.debuglog",
   "als.new",
   "als.get",
   "als.run",
@@ -73,6 +80,13 @@ const LEGACY_URL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "url.domainToUnicode",
 ]);
 
+const UTIL_CALLABLE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "util.inherits",
+  "util.deprecate",
+  "util.callbackify",
+  "util.debuglog",
+]);
+
 /** Inspect types and expressions together in one traversal. This is a fresh
  * snapshot: callers may mutate an IR module between compilation passes. */
 export function moduleRuntimeFeatures(mod: IrModule): RuntimeFeatures {
@@ -86,6 +100,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     legacyTextDecoder: false,
     fileHandle: false,
     fetch: false,
+    eventTarget: false,
     processEvents: false,
     emitter:
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
@@ -134,6 +149,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       )
         features.legacyTextDecoder = true;
       if (fn.startsWith("fetch.")) features.fetch = true;
+      if (fn.startsWith("event.") || fn === "events.addAbortListener") features.eventTarget = true;
       if (PROCESS_EVENT_LIB_FNS.has(fn)) features.processEvents = true;
       if (fn.startsWith("emitter.")) features.emitter = true;
       if (
@@ -216,6 +232,14 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       if (fn === "util.parseArgs" || fn === "util.isDeepStrictEqual" || fn === "util.styleText")
         features.parseArgs = true;
       if (fn === "util.styleText") features.processEvents = true;
+      // scr_util_callable.c: dyn wrappers over the descriptor, inspect,
+      // regex (NODE_DEBUG matching) and terminal-color units.
+      if (UTIL_CALLABLE_LIB_FNS.has(fn)) {
+        features.parseArgs = true;
+        features.inspect = true;
+        features.dynInvoke = true;
+        features.regex = true;
+      }
       if (fn.startsWith("fs.watch") || fn.startsWith("watcher.")) features.fsWatch = true;
       if (fn.startsWith("test.")) features.nodeTest = true;
       if (fn.startsWith("dgram.") || fn.startsWith("dns.")) features.dgram = true;

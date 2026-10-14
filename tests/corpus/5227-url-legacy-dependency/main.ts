@@ -1,7 +1,7 @@
 // The legacy url API called from a dependency under node_modules: Node's
 // isInsideNodeModules rule skips url.parse()'s DEP0169 warning for those
 // call sites (url.format() of a string and url.resolve() included), so
-// stderr stays empty and is compared exactly. The program's own
+// stderr stays empty and is compared. The program's own
 // url.format() of an object and url.domainToASCII() never warn either.
 import { domainToASCII, format } from "node:url";
 import { canonical, describe, joinLink, parseLink } from "legacy-links";

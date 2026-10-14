@@ -1,8 +1,8 @@
 /* node:url's legacy API — url.parse(), url.format() and url.resolve() —
- * plus url.domainToASCII()/domainToUnicode(): a quirk-faithful port of
- * Node 24's lib/url.js (Url.prototype.parse/format/resolveObject) and the
- * WHATWG host parser behind the domain functions. The differential corpus
- * is the oracle.
+ * plus url.domainToASCII()/domainToUnicode(): a port of Node 24's
+ * lib/url.js (Url.prototype.parse/format/resolveObject), edge cases
+ * included, and of the WHATWG host parser behind the domain functions.
+ * The differential corpus is the oracle.
  *
  * url.parse() answers a checked-dynamic Url instance: an ordinary object
  * with Node's twelve own properties in Node's order (null where Node leaves
@@ -157,6 +157,17 @@ static void lu_copy(LegacyUrl *dst, const LegacyUrl *src) {
 static SCR_TL bool lu_parse_warned = false;
 static SCR_TL bool lu_port_warned = false;
 
+/* process.emitWarning(message, 'DeprecationWarning', code): reported on
+ * the next tick, dropped under process.noDeprecation, and thrown from its
+ * own tick under process.throwDeprecation. Borrows message. */
+static void lu_deprecate(const char *code, ScrStr *message) {
+  ScrStr *code_text = lu_cstr(code);
+  ScrDyn *warning = scr_warning_new(message, "DeprecationWarning", code_text);
+  scr_str_release(code_text);
+  scr_warning_emit_deferred(warning);
+  scr_dyn_release(warning);
+}
+
 static void lu_warn_parse(bool warn) {
   if (!warn || lu_parse_warned) return;
   lu_parse_warned = true;
@@ -164,7 +175,7 @@ static void lu_warn_parse(bool warn) {
       "`url.parse()` behavior is not standardized and prone to errors that have security "
       "implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` "
       "vulnerabilities.");
-  scr_emit_warning_deferred("DeprecationWarning", "DEP0169", message);
+  lu_deprecate("DEP0169", message);
   scr_str_release(message);
 }
 
@@ -548,7 +559,7 @@ static bool lu_parse(LegacyUrl *self, const ScrStr *url, bool parse_query, bool 
           scr_jb_put_str(&detail, url);
           scr_jb_puts(&detail, " is invalid. Future versions of Node.js will throw an error.");
           ScrStr *message = scr_jb_finish(&detail);
-          scr_emit_warning_deferred("DeprecationWarning", "DEP0170", message);
+          lu_deprecate("DEP0170", message);
           scr_str_release(message);
         }
         ScrJsonBuf moved;

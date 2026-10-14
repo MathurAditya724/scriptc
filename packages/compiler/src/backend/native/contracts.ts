@@ -107,6 +107,11 @@ export interface CcOptions {
    * reactions, AsyncLocalStorage, the unhandledRejection/warning
    * process events. */
   dynAsync?: boolean;
+  /** The program constructs EventTarget/Event/CustomEvent values or
+   * calls events.addAbortListener (the event.* libCalls), or uses the
+   * native fetch AbortSignal built on the same engine: compiles
+   * scr_event_target.c. */
+  eventTarget?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep

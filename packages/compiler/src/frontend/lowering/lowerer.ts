@@ -443,6 +443,7 @@ import {
   refuseUnsupportedApi,
   stdlibGlobalFnOf,
   lowerAbortControllerNew,
+  lowerEventTargetNew,
   lowerDynamicImportCall,
   lowerFetchCall,
   lowerFetchElementMethodCall,
@@ -10672,6 +10673,7 @@ export class Lowerer {
     const builtin =
       lowerLifetimeRegionNew(this, expr) ??
       lowerAbortControllerNew(this, expr) ??
+      lowerEventTargetNew(this, expr) ??
       lowerFetchWebNew(this, expr) ??
       lowerResponseNew(this, expr) ??
       lowerStaticReadableStreamNew(this, expr) ??

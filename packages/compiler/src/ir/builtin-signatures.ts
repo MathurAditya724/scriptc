@@ -64,6 +64,16 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fetch.responseNew": { argTypes: [DYN, DYN], result: DYN },
   "fetch.input": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "abort.controllerNew": { argTypes: [], result: DYN },
+  /** EventTarget / Event / CustomEvent construction (scr_event_target.c):
+   * the Event constructors take the argument vector as one dyn array and
+   * throw Node's validation errors; `event.is` is `v instanceof Event`
+   * (kind 0), `CustomEvent` (1), `EventTarget` (2). addAbortListener
+   * answers the disposer (the Disposable's [Symbol.dispose]). */
+  "event.targetNew": { argTypes: [], result: DYN },
+  "event.new": { argTypes: [DYN], result: DYN },
+  "event.customNew": { argTypes: [DYN], result: DYN },
+  "event.is": { argTypes: [DYN, F64], result: BOOL },
+  "events.addAbortListener": { argTypes: [DYN, DYN], result: DYN },
   "abort.timeout": { argTypes: [DYN], result: DYN },
   "abort.now": { argTypes: [DYN], result: DYN },
   "abort.any": { argTypes: [DYN], result: DYN },
@@ -846,6 +856,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "util.toUSVString": { argTypes: [DYN], result: STRING },
   "util.isDeepStrictEqual": { argTypes: [DYN, DYN, DYN], result: BOOL },
   "util.styleText": { argTypes: [DYN, DYN, DYN], result: STRING },
+  /** util.inherits/deprecate/callbackify/debuglog over checked-dynamic
+   * arguments (scr_util_callable.c). The function results are native dyn
+   * wrappers; call sites with a static function type check them back. */
+  "util.inherits": { argTypes: [DYN, DYN], result: VOID },
+  "util.deprecate": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+  "util.callbackify": { argTypes: [DYN], result: DYN },
+  "util.debuglog": { argTypes: [DYN, DYN], result: DYN },
   "util.typeIs": { argTypes: [DYN, STRING], result: BOOL },
   "util.typeValue": { argTypes: [DYN, STRING], result: DYN },
   /** fs.statSync → a Stats value (may throw, like the other sync fs
@@ -2721,6 +2738,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.forInKeyStrings": { argTypes: [DYN], result: arrayOf(STRING) },
   "dyn.forInStable": { argTypes: [DYN], result: BOOL },
   "dyn.objKeyStrings": { argTypes: [DYN], result: arrayOf(STRING) },
+  /** Object.entries as a native [string, any][] (VOID: the tuple row's
+   * shape is program-dependent; the validator checks it). */
+  "dyn.objEntryPairs": { argTypes: [DYN], result: VOID },
   "dyn.hasOwn": { argTypes: [DYN, STRING], result: BOOL },
   "dyn.propertyIsEnumerable": { argTypes: [DYN, STRING], result: BOOL },
   "dyn.assign": { argTypes: [DYN, DYN], result: DYN },
@@ -2877,6 +2897,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "emitter.getMax": { argTypes: [null], result: F64 },
   "emitter.setDefaultMax": { argTypes: [F64], result: VOID },
   "emitter.getDefaultMax": { argTypes: [], result: F64 },
+  /** The events.errorMonitor event key: an immortal string the runtime
+   * registry matches by identity, so no string event name reaches it. */
+  "emitter.errorMonitor": { argTypes: [], result: STRING },
   // node:stream: receivers are stream-hierarchy objects and several
   // results are program-dependent (the receiver's class, unions) — the
   // libCall case owns those checks. The constructors and a few methods
@@ -3319,11 +3342,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * Node's payload. */
   "process.onRejectionHandled": { argTypes: [DYN, BOOL], result: VOID },
   "process.offRejectionHandled": { argTypes: [DYN], result: VOID },
-  /** process warnings (scr_lib.c): onWarning/offWarning register dyn
-   * listeners; emitWarning applies Node's full argument grammar over the
-   * call's dyn argument vector (ERR_INVALID_ARG_TYPE TypeErrors — MAY
-   * THROW; a listener throw propagates too) and always prints Node's
-   * stderr report. Emission is synchronous (SEMANTICS.md). */
+  /** process warnings (scr_async_dyn.c): onWarning/offWarning register
+   * dyn listeners; emitWarning applies Node's full argument grammar over
+   * the call's dyn argument vector (ERR_INVALID_ARG_TYPE TypeErrors — MAY
+   * THROW) and emits on the next tick, like Node: Node's stderr report,
+   * then the listeners. */
   "process.onWarning": { argTypes: [DYN], result: VOID },
   "process.offWarning": { argTypes: [DYN], result: VOID },
   "process.emitWarning": { argTypes: [DYN], result: VOID },
@@ -3331,6 +3354,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * members' warnings), emitted on the next tick as Node's emitWarning
    * does (so the loop runs); an empty message emits nothing. */
   "process.emitWarningText": { argTypes: [STRING], result: VOID },
+  /** process.noDeprecation (0) / process.throwDeprecation (1): the stored
+   * value (undefined until assigned) and its assignment. util.deprecate's
+   * warnings and DeprecationWarning emissions read their truthiness. */
+  "process.deprecationFlag": { argTypes: [F64], result: DYN },
+  "process.setDeprecationFlag": { argTypes: [F64, DYN], result: VOID },
   /** AsyncLocalStorage (node:async_hooks — scr_async.c): stores are f64
    * handles; contexts are immutable fiber-carried snapshots (spawned
    * fibers inherit the spawner's — Node's init-time capture). run/exit

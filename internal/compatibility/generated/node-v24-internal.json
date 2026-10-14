@@ -310,10 +310,10 @@
       "entries": 84,
       "apiEntries": 78,
       "static": {
-        "supported": 0,
-        "partial": 22,
+        "supported": 18,
+        "partial": 34,
         "refused": 0,
-        "not-implemented": 56,
+        "not-implemented": 26,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -581,9 +581,9 @@
       "apiEntries": 119,
       "static": {
         "supported": 0,
-        "partial": 36,
+        "partial": 41,
         "refused": 0,
-        "not-implemented": 83,
+        "not-implemented": 78,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -836,9 +836,9 @@
       "apiEntries": 105,
       "static": {
         "supported": 0,
-        "partial": 47,
+        "partial": 53,
         "refused": 0,
-        "not-implemented": 58,
+        "not-implemented": 52,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -24086,7 +24086,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:deprecations"
+        "evidence": "compiler-feature:deprecations.util.debug"
       },
       "anchorSource": "exact"
     },
@@ -40015,7 +40015,16 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5131-event-target-listener-errors.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5134-events-error-monitor.ts",
+          "tests/corpus/5135-event-target-warnings.js",
+          "tests/corpus/5136-events-error-monitor-string-name.ts",
+          "tests/corpus/5137-events-error-monitor-computed-name.js",
+          "tests/corpus/5138-events-error-monitor-shared-listener.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -40153,8 +40162,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.EventTarget",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5131-event-target-listener-errors.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5135-event-target-warnings.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40176,8 +40192,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.EventTarget",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5131-event-target-listener-errors.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5135-event-target-warnings.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40245,8 +40268,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.EventTarget",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5131-event-target-listener-errors.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5135-event-target-warnings.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40268,8 +40298,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.Event",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40291,8 +40325,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.event.composedPath",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40314,8 +40353,13 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.event.initEvent",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40337,8 +40381,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.event.preventDefault",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40360,8 +40409,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.event.stopImmediatePropagation",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40383,8 +40437,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.event.stopPropagation",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40406,8 +40465,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.bubbles",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -40429,8 +40493,13 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.cancelBubble",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -40452,8 +40521,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.cancelable",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -40475,8 +40549,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.composed",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -40498,8 +40577,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.currentTarget",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -40521,8 +40605,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.defaultPrevented",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -40544,8 +40633,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.eventPhase",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -40567,8 +40661,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.isTrusted",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -40590,8 +40689,13 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.returnValue",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -40613,8 +40717,13 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.srcElement",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -40636,8 +40745,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.target",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -40659,8 +40773,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.timeStamp",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -40682,8 +40801,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.type",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -40705,8 +40829,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.EventTarget",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5131-event-target-listener-errors.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5135-event-target-warnings.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40728,8 +40859,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.eventTarget.addEventListener",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5131-event-target-listener-errors.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5135-event-target-warnings.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40751,8 +40889,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.eventTarget.dispatchEvent",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5131-event-target-listener-errors.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5135-event-target-warnings.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40774,8 +40919,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.eventTarget.removeEventListener",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5131-event-target-listener-errors.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5135-event-target-warnings.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40797,8 +40949,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.CustomEvent",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40820,8 +40976,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.detail",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -41916,8 +42076,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.events.addAbortListener",
+        "tests": [
+          "tests/corpus/5133-abort-signal-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -41962,8 +42125,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.events.errorMonitor",
+        "tests": [
+          "tests/corpus/5134-events-error-monitor.ts",
+          "tests/corpus/5136-events-error-monitor-string-name.ts",
+          "tests/corpus/5137-events-error-monitor-computed-name.js",
+          "tests/corpus/5138-events-error-monitor-shared-listener.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -72631,12 +72800,16 @@
         "tests": [
           "packages/compiler/test/process-builtin-values.test.ts",
           "tests/corpus/1443-signal-handlers.ts",
+          "tests/corpus/2215-process-emit-warning-exit.cjs",
           "tests/corpus/2314-process-introspection.ts",
           "tests/corpus/2941-process-exit-code.ts",
           "tests/corpus/2942-process-exit-code-override.ts",
           "tests/corpus/2943-process-exit-code-invalid.ts",
           "tests/corpus/2944-process-exit-code-wrap.ts",
           "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/5188-util-deprecate-flags.cjs",
+          "tests/corpus/5189-util-deprecate.ts",
+          "tests/corpus/5194-process-emit-warning-tick.cjs",
           "tests/corpus/990-process-basics.ts",
           "tests/corpus/node24-env-files-errors.ts",
           "tests/corpus/node24-env-files.ts",
@@ -72655,6 +72828,7 @@
           "tests/corpus/stdio-write-errors.mjs",
           "tests/corpus/stdio-write-overrides.mjs",
           "tests/fixtures/node-types/env-files.ts",
+          "tests/fixtures/node-types/util-callables.ts",
           "tests/harness/event-loop.test.ts",
           "tests/harness/project-config.test.ts"
         ]
@@ -72917,8 +73091,13 @@
       "anchor": "event-warning",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.'warning'",
+        "tests": [
+          "tests/corpus/2215-process-emit-warning-exit.cjs",
+          "tests/corpus/5194-process-emit-warning-tick.cjs",
+          "tests/corpus/5188-util-deprecate-flags.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -73196,8 +73375,13 @@
       "anchor": "processemitwarningwarning-options",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.process.emitWarning",
+        "tests": [
+          "tests/corpus/2215-process-emit-warning-exit.cjs",
+          "tests/corpus/5194-process-emit-warning-tick.cjs",
+          "tests/corpus/5188-util-deprecate-flags.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -73214,8 +73398,13 @@
       "anchor": "processemitwarningwarning-type-code-ctor",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.process.emitWarning",
+        "tests": [
+          "tests/corpus/2215-process-emit-warning-exit.cjs",
+          "tests/corpus/5194-process-emit-warning-tick.cjs",
+          "tests/corpus/5188-util-deprecate-flags.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -74569,8 +74758,13 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.noDeprecation",
+        "tests": [
+          "tests/corpus/5188-util-deprecate-flags.cjs",
+          "tests/corpus/5189-util-deprecate.ts",
+          "tests/fixtures/node-types/util-callables.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -75064,8 +75258,13 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.throwDeprecation",
+        "tests": [
+          "tests/corpus/5188-util-deprecate-flags.cjs",
+          "tests/corpus/5189-util-deprecate.ts",
+          "tests/fixtures/node-types/util-callables.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -92603,6 +92802,15 @@
           "tests/corpus/2678-util-parseargs.ts",
           "tests/corpus/2912-promisify-fs-readfile.ts",
           "tests/corpus/3133-text-decoder-streaming.ts",
+          "tests/corpus/5185-util-inherits.cjs",
+          "tests/corpus/5186-util-inherits.ts",
+          "tests/corpus/5187-util-deprecate.cjs",
+          "tests/corpus/5188-util-deprecate-flags.cjs",
+          "tests/corpus/5189-util-deprecate.ts",
+          "tests/corpus/5190-util-callbackify.cjs",
+          "tests/corpus/5191-util-callbackify.ts",
+          "tests/corpus/5192-util-debuglog.cjs",
+          "tests/corpus/5193-util-debuglog.ts",
           "tests/corpus/node24-deep-equality-properties.js",
           "tests/corpus/node24-deep-equality.cjs",
           "tests/corpus/node24-deep-equality.ts",
@@ -92634,6 +92842,7 @@
           "tests/fixtures/node-types/text-codecs.mts",
           "tests/fixtures/node-types/text-encoding.ts",
           "tests/fixtures/node-types/text-utilities.ts",
+          "tests/fixtures/node-types/util-callables.ts",
           "tests/fixtures/node-types/util-types.ts",
           "tests/harness/project-config.test.ts"
         ]
@@ -93440,8 +93649,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.util.callbackify",
+        "tests": [
+          "tests/corpus/5190-util-callbackify.cjs",
+          "tests/corpus/5191-util-callbackify.ts",
+          "tests/fixtures/node-types/util-callables.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93486,8 +93700,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.util.debuglog",
+        "tests": [
+          "tests/corpus/5192-util-debuglog.cjs",
+          "tests/corpus/5193-util-debuglog.ts",
+          "tests/fixtures/node-types/util-callables.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93509,8 +93728,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.debuglog",
+        "tests": [
+          "tests/corpus/5192-util-debuglog.cjs",
+          "tests/corpus/5193-util-debuglog.ts",
+          "tests/fixtures/node-types/util-callables.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93532,8 +93756,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.util.debug",
+        "tests": [
+          "tests/corpus/5192-util-debuglog.cjs",
+          "tests/corpus/5193-util-debuglog.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93555,8 +93783,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.util.deprecate",
+        "tests": [
+          "tests/corpus/5187-util-deprecate.cjs",
+          "tests/corpus/5188-util-deprecate-flags.cjs",
+          "tests/corpus/5189-util-deprecate.ts",
+          "tests/fixtures/node-types/util-callables.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93780,8 +94014,13 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.util.inherits",
+        "tests": [
+          "tests/corpus/5185-util-inherits.cjs",
+          "tests/corpus/5186-util-inherits.ts",
+          "tests/fixtures/node-types/util-callables.ts"
+        ]
       },
       "anchorSource": "exact"
     },

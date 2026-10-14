@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "compilerVersion": "0.3.1",
+  "compilerVersion": "0.3.2",
   "coverage": [
     "Entries are projected mechanically from the compiler's own decision tables: the diagnostics registry, the unsupported-syntax dispatch tables, the stdlib and node-builtin lowering tables, and the supported-builtin-module list. Nothing is hand-maintained; the manifest regenerates byte-identically from the source tree at this version.",
     "Absence from this manifest means 'not projected', never 'unsupported'. Surfaces lowered through dedicated code paths rather than tables are not yet projected: console, JSON, Promise/async and the timer surface, the net/http/tls/https/dgram/dns/assert/test/stream/readline module member surfaces, template literals, the regex slice, global functions (parseInt, parseFloat, isNaN, isFinite), and the process surface outside its ambient slice.",
@@ -2154,6 +2154,30 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.util.callbackify",
+      "kind": "node-builtin",
+      "name": "util.callbackify",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.debug",
+      "kind": "node-builtin",
+      "name": "util.debug",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.debuglog",
+      "kind": "node-builtin",
+      "name": "util.debuglog",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.deprecate",
+      "kind": "node-builtin",
+      "name": "util.deprecate",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.getSystemErrorMap",
       "kind": "node-builtin",
       "name": "util.getSystemErrorMap",
@@ -2169,6 +2193,12 @@
       "id": "node-builtin.util.getSystemErrorName",
       "kind": "node-builtin",
       "name": "util.getSystemErrorName",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.inherits",
+      "kind": "node-builtin",
+      "name": "util.inherits",
       "status": "static"
     },
     {

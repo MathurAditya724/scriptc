@@ -1142,6 +1142,16 @@ void scr_dyn_arr_push(ScrDyn *arr, ScrDyn *item) {
   arr->v.arr.items[arr->v.arr.len++] = item; /* ownership moves in */
 }
 
+/* Room for `cap` items in a fresh dyn array, so a walk that knows its
+ * length pushes without regrowing. */
+static void scr_dyn_arr_reserve(ScrDyn *arr, size_t cap) {
+  if (cap <= arr->v.arr.cap || arr->v.arr.presence) return;
+  ScrDyn **items = scr_mem_realloc(arr->v.arr.items, cap * sizeof *items);
+  if (!items) scr_json_oom();
+  arr->v.arr.items = items;
+  arr->v.arr.cap = cap;
+}
+
 bool scr_dyn_arr_has_index(const ScrDyn *arr, size_t index) {
   return index < arr->v.arr.len && (!arr->v.arr.presence || arr->v.arr.presence[index]);
 }
@@ -2973,7 +2983,16 @@ const char *scr_dyn_specific_type(const ScrDyn *cb, char *detail, size_t cap) {
   switch (cb->kind) {
   case SCR_DYN_NULL: d = "null"; break;
   case SCR_DYN_UNDEF: d = "undefined"; break;
-  case SCR_DYN_OBJ: d = "an instance of Object"; break;
+  case SCR_DYN_OBJ:
+    if (cb->null_proto) {
+      /* No constructor name: Node renders inspect(value, { depth: -1 }). */
+      bool keys = false;
+      for (size_t i = 0; i < cb->v.obj.len && !keys; i++) keys = cb->v.obj.entries[i].enumerable;
+      d = keys ? "[Object: null prototype]" : "[Object: null prototype] {}";
+    } else {
+      d = "an instance of Object";
+    }
+    break;
   case SCR_DYN_ARR: d = "an instance of Array"; break;
   case SCR_DYN_BYTES:
     snprintf(detail, cap, "an instance of %s", cb->buffer ? "Buffer" : cb->v.bytes->is_data_view ? "DataView" : scr_bytes_elem_name(cb->v.bytes->elem));
@@ -4587,7 +4606,8 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   case SCR_DYN_OBJ: tag = "[object Object]"; break;
   case SCR_DYN_HANDLE:
     if ((d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
-         d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER ||
+         d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_EVENT_TARGET ||
+        d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER ||
         d->v.handle.tag == SCR_DYNH_WEAK_MAP || d->v.handle.tag == SCR_DYNH_WEAK_SET ||
         d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP || d->v.handle.tag == SCR_DYNH_REGEXP ||
         d->v.handle.tag == SCR_DYNH_DATE) {
@@ -5124,7 +5144,8 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
       return out;
     }
     if ((d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
-         d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP) {
+         d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_EVENT_TARGET ||
+        d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP) {
       ScrJsonBuf b;
       scr_jb_init(&b);
       scr_jb_puts(&b, "[object ");
@@ -8150,9 +8171,11 @@ static ScrDyn *scr_dyn_objwalk_key(const char *key, size_t key_len) {
   return d;
 }
 
-ScrDyn *scr_dyn_obj_own_keys(const ScrDyn *v) {
+/* A plain object's entry positions in JS own-key order: integer-like keys
+ * ascending, then the rest in insertion order. NULL when that order is
+ * insertion order (no integer-like key); the caller frees the array. */
+static size_t *scr_dyn_obj_key_order(const ScrDyn *v) {
   size_t n = v->v.obj.len;
-  ScrDyn *keys = scr_dyn_new_arr();
   ScrKeyIndex *indices = NULL;
   size_t count = 0;
   for (size_t i = 0; i < n; i++) {
@@ -8166,18 +8189,38 @@ ScrDyn *scr_dyn_obj_own_keys(const ScrDyn *v) {
     }
     indices[count++] = (ScrKeyIndex){index, i};
   }
+  if (!count) return NULL;
   scr_key_index_sort(indices, count);
-  for (size_t i = 0; i < count; i++) {
-    const ScrDynEntry *entry = &v->v.obj.entries[indices[i].entry];
-    scr_dyn_arr_push(keys, scr_dyn_objwalk_key(entry->key, entry->key_len));
-  }
+  size_t *order = malloc(n * sizeof *order);
+  if (!order) scr_json_oom();
+  for (size_t i = 0; i < count; i++) order[i] = indices[i].entry;
   free(indices);
   for (size_t i = 0; i < n; i++) {
     const ScrDynEntry *entry = &v->v.obj.entries[i];
     uint32_t index;
-    if (!scr_key_array_index(entry->key, entry->key_len, &index))
-      scr_dyn_arr_push(keys, scr_dyn_objwalk_key(entry->key, entry->key_len));
+    if (!scr_key_array_index(entry->key, entry->key_len, &index)) order[count++] = i;
   }
+  return order;
+}
+
+/* Whether every own property of a plain object is a data property, so a
+ * walk over its values runs no user code and the object cannot change
+ * under it. */
+static bool scr_dyn_obj_data_only(const ScrDyn *v) {
+  for (size_t i = 0; i < v->v.obj.len; i++)
+    if (v->v.obj.entries[i].accessor) return false;
+  return true;
+}
+
+ScrDyn *scr_dyn_obj_own_keys(const ScrDyn *v) {
+  size_t *order = scr_dyn_obj_key_order(v);
+  ScrDyn *keys = scr_dyn_new_arr();
+  scr_dyn_arr_reserve(keys, v->v.obj.len);
+  for (size_t i = 0; i < v->v.obj.len; i++) {
+    const ScrDynEntry *entry = &v->v.obj.entries[order ? order[i] : i];
+    scr_dyn_arr_push(keys, scr_dyn_objwalk_key(entry->key, entry->key_len));
+  }
+  free(order);
   return keys;
 }
 
@@ -8343,6 +8386,21 @@ static bool scr_dyn_objwalk_entry(ScrDyn *out, const ScrDyn *object,
   return true;
 }
 
+/* A plain object's walk read straight from its entries: keys need no
+ * reads, and data properties are read without a lookup per key. */
+static ScrDyn *scr_dyn_obj_data_walk(const ScrDyn *v, ScrObjWalk mode) {
+  size_t *order = scr_dyn_obj_key_order(v);
+  ScrDyn *out = scr_dyn_new_arr();
+  scr_dyn_arr_reserve(out, v->v.obj.len);
+  for (size_t i = 0; i < v->v.obj.len; i++) {
+    const ScrDynEntry *entry = &v->v.obj.entries[order ? order[i] : i];
+    if (entry->enumerable)
+      scr_dyn_objwalk_push(out, mode, entry->key, entry->key_len, entry->value);
+  }
+  free(order);
+  return out;
+}
+
 static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
   if (scr_dyn_class_reflection_fence(v)) return NULL;
   if (v->kind == SCR_DYN_PROXY) {
@@ -8352,6 +8410,9 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
     if (trap) {
       ScrDyn *args[] = { v->v.proxy.target };
       raw = scr_dyn_proxy_call(v, trap, args, 1);
+    } else if (v->v.proxy.target->kind != SCR_DYN_OBJ) {
+      /* Native record and function targets list their own property names. */
+      raw = scr_dyn_get_own_property_names(v->v.proxy.target);
     } else {
       /* [[OwnPropertyKeys]] includes non-enumerable properties too. Use
        * the shared numeric/insertion ordering over a names-only table. */
@@ -8397,8 +8458,9 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
       scr_dyn_arr_push(keys, scr_dyn_retain(key));
     }
     scr_dyn_release(raw);
-    for (size_t i = 0; i < v->v.proxy.target->v.obj.len; i++) {
-      const ScrDynEntry *entry = &v->v.proxy.target->v.obj.entries[i];
+    const ScrDyn *target = v->v.proxy.target;
+    for (size_t i = 0; target->kind == SCR_DYN_OBJ && i < target->v.obj.len; i++) {
+      const ScrDynEntry *entry = &target->v.obj.entries[i];
       if (entry->configurable) continue;
       bool found = false;
       for (size_t j = 0; j < keys->v.arr.len; j++) {
@@ -8438,6 +8500,8 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
     return NULL;
   }
 
+  if (v->kind == SCR_DYN_OBJ && (mode == SCR_OBJWALK_KEYS || scr_dyn_obj_data_only(v)))
+    return scr_dyn_obj_data_walk(v, mode);
   ScrDyn *out = scr_dyn_new_arr();
   if (v->kind == SCR_DYN_OBJ || v->kind == SCR_DYN_FUNC) {
     ScrDyn *table = v->kind == SCR_DYN_FUNC ? scr_dyn_fn_properties(v) : scr_dyn_retain((ScrDyn *)v);
@@ -8522,9 +8586,10 @@ ScrDyn *scr_dyn_obj_keys(const ScrDyn *v) { return scr_dyn_objwalk(v, SCR_OBJWAL
 static ScrDyn *scr_typed_ref_record_walk(const ScrDyn *d, const ScrDynTypedRecordOps *ops,
                                          int mode) {
   ScrDyn *out = scr_dyn_new_arr();
+  scr_dyn_arr_reserve(out, ops->count);
   void *rec = d->v.typed_ref.ptr;
   for (size_t i = 0; i < ops->count; i++) {
-    if (!ops->has(rec, i)) continue;
+    if (!ops->fixed && !ops->has(rec, i)) continue;
     ScrStr *name = ops->names[i];
     if (mode == SCR_OBJWALK_KEYS) {
       scr_dyn_arr_push(out, scr_dyn_new_str(name));
@@ -8658,34 +8723,13 @@ static ScrArr *scr_dyn_own_key_strs(const ScrDyn *v, bool shared) {
     return out;
   }
   if (v->kind != SCR_DYN_OBJ) return NULL;
-  size_t n = v->v.obj.len;
-  ScrArr *out = scr_arr_new(SCR_ELEM_STR, n);
-  ScrKeyIndex *indices = NULL;
-  size_t count = 0;
-  for (size_t i = 0; i < n; i++) {
-    const ScrDynEntry *entry = &v->v.obj.entries[i];
-    uint32_t index;
-    if (!entry->enumerable || !scr_key_array_index(entry->key, entry->key_len, &index)) continue;
-    if (!indices) {
-      indices = malloc(n * sizeof *indices);
-      if (!indices) scr_json_oom();
-    }
-    indices[count++] = (ScrKeyIndex){index, i};
+  size_t *order = scr_dyn_obj_key_order(v);
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, v->v.obj.len);
+  for (size_t i = 0; i < v->v.obj.len; i++) {
+    const ScrDynEntry *entry = &v->v.obj.entries[order ? order[i] : i];
+    if (entry->enumerable) scr_arr_push_ref(out, scr_str_new(entry->key, entry->key_len));
   }
-  if (count) {
-    scr_key_index_sort(indices, count);
-    for (size_t i = 0; i < count; i++) {
-      const ScrDynEntry *entry = &v->v.obj.entries[indices[i].entry];
-      scr_arr_push_ref(out, scr_str_new(entry->key, entry->key_len));
-    }
-  }
-  free(indices);
-  for (size_t i = 0; i < n; i++) {
-    const ScrDynEntry *entry = &v->v.obj.entries[i];
-    uint32_t index;
-    if (entry->enumerable && !scr_key_array_index(entry->key, entry->key_len, &index))
-      scr_arr_push_ref(out, scr_str_new(entry->key, entry->key_len));
-  }
+  free(order);
   return out;
 }
 
@@ -8721,6 +8765,58 @@ ScrArr *scr_dyn_obj_key_strs(const ScrDyn *v) {
   if (own) return own;
   return scr_dyn_key_strs_from(scr_dyn_obj_keys(v));
 }
+
+static ScrDynEntryPairs *scr_dyn_entry_pairs_new(size_t cap) {
+  if (cap > (SIZE_MAX - sizeof(ScrDynEntryPairs)) / sizeof(ScrDynEntryPair)) scr_json_oom();
+  ScrDynEntryPairs *out = malloc(sizeof *out + cap * sizeof out->pairs[0]);
+  if (!out) scr_json_oom();
+  out->count = 0;
+  return out;
+}
+
+/* Object.entries' pairs for a native [string, any][] (see the header):
+ * a typed record's present fields, a plain data object's enumerable own
+ * entries in own-key order, or the dyn walk's pairs for every other
+ * value. */
+ScrDynEntryPairs *scr_dyn_obj_entry_pairs(const ScrDyn *v) {
+  if (scr_dyn_class_reflection_fence(v)) return NULL;
+  if (v->kind == SCR_DYN_TYPED_REF) {
+    const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
+    if (record) {
+      void *rec = v->v.typed_ref.ptr;
+      ScrDynEntryPairs *out = scr_dyn_entry_pairs_new(record->count);
+      for (size_t i = 0; i < record->count; i++) {
+        if (!record->fixed && !record->has(rec, i)) continue;
+        out->pairs[out->count++] =
+          (ScrDynEntryPair){scr_str_retain(record->names[i]), record->get(rec, i)};
+      }
+      return out;
+    }
+  } else if (v->kind == SCR_DYN_OBJ && scr_dyn_obj_data_only(v)) {
+    size_t *order = scr_dyn_obj_key_order(v);
+    ScrDynEntryPairs *out = scr_dyn_entry_pairs_new(v->v.obj.len);
+    for (size_t i = 0; i < v->v.obj.len; i++) {
+      const ScrDynEntry *entry = &v->v.obj.entries[order ? order[i] : i];
+      if (!entry->enumerable) continue;
+      out->pairs[out->count++] = (ScrDynEntryPair){scr_str_new(entry->key, entry->key_len),
+                                                   scr_dyn_retain(entry->value)};
+    }
+    free(order);
+    return out;
+  }
+  ScrDyn *entries = scr_dyn_obj_entries(v);
+  if (!entries) return NULL;
+  ScrDynEntryPairs *out = scr_dyn_entry_pairs_new(entries->v.arr.len);
+  for (size_t i = 0; i < entries->v.arr.len; i++) {
+    ScrDyn *const *pair = entries->v.arr.items[i]->v.arr.items;
+    out->pairs[out->count++] =
+      (ScrDynEntryPair){scr_str_retain(pair[0]->v.str), scr_dyn_retain(pair[1])};
+  }
+  scr_dyn_release(entries);
+  return out;
+}
+
+void scr_dyn_entry_pairs_free(ScrDynEntryPairs *pairs) { free(pairs); }
 
 /* One source's own enumerable members onto an OBJ target. OBJ sources
  * snapshot their keys, then check attributes and read values in order so

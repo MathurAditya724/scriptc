@@ -4027,6 +4027,25 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "dyn.objEntryPairs") {
+      // Result: the native [string, any][] the backend assembles from the
+      // runtime's owned pair snapshot.
+      const shape =
+        e.type.kind === "array" && e.type.elem.kind === "record"
+          ? records.get(e.type.elem.shapeId)
+          : undefined;
+      const field = (name: string): IrType | undefined =>
+        shape?.fields.find((f) => f.name === name)?.type;
+      const ok =
+        shape !== undefined &&
+        shape.tuple === true &&
+        shape.indexValue === undefined &&
+        shape.fields.length === 2 &&
+        field("0")?.kind === "string" &&
+        field("1")?.kind === "dyn";
+      if (!ok) err(`libCall dyn.objEntryPairs must return a [string, any] tuple array`, e.loc);
+      return true;
+    }
     if (e.fn === "fetch.streamFrom") {
       const t = e.args[0]?.type;
       const ok =
@@ -5289,6 +5308,7 @@ function validateFunction(
       e.fn !== "emitter.setDefaultMax" &&
       e.fn !== "emitter.setDefaultMaxChk" &&
       e.fn !== "emitter.getDefaultMax" &&
+      e.fn !== "emitter.errorMonitor" &&
       e.fn !== "emitter.checkListener"
     ) {
       // Receiver: an emitter-hierarchy object (the %EventEmitter class

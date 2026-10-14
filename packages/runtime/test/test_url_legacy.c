@@ -17,11 +17,13 @@ long scr_str_live_count(void); /* provided by scr_string.c */
 
 /* Warnings are not part of the answers (DEP0169 is off: warn = false;
  * DEP0170 still fires); the deprecation unit stays out. */
-void scr_emit_warning_deferred(const char *name, const char *code, ScrStr *message) {
-  (void)name;
-  (void)code;
+ScrDyn *scr_warning_new(ScrStr *message, const char *type, const ScrStr *code) {
   (void)message;
+  (void)type;
+  (void)code;
+  return scr_dyn_new_null();
 }
+void scr_warning_emit_deferred(ScrDyn *warning) { (void)warning; }
 
 static int hex_val(char c) {
   if (c >= '0' && c <= '9') return c - '0';

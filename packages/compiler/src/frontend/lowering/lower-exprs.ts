@@ -1,4 +1,5 @@
 import { generatorDrain } from "./iterator-adapters.js";
+import { lowerEventStaticProperty } from "./builtins/numbers.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
@@ -2148,6 +2149,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       lowerer.lowerJsonProperty(expr) ??
       lowerer.lowerErrorCodeProperty(expr) ??
       lowerer.lowerNumberStaticProperty(expr) ??
+      lowerEventStaticProperty(lowerer, expr) ??
       lowerer.lowerMathProperty(expr) ??
       lowerer.lowerIntrinsicProperty(expr) ??
       // The _readableState/_writableState scalar READS (the suite's
@@ -11684,6 +11686,16 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   if (lowerer.isStdlibGlobal(expr.right, "DataView")) {
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
     return { kind: "libCall", fn: "dyn.dataViewIs", args: [value], type: BOOL, loc };
+  }
+  {
+    const eventKind = ["Event", "CustomEvent", "EventTarget"].findIndex((name) =>
+      lowerer.isStdlibGlobal(expr.right, name),
+    );
+    if (eventKind >= 0) {
+      const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
+      const kind: IrExpr = { kind: "numLit", value: eventKind, type: F64, loc };
+      return { kind: "libCall", fn: "event.is", args: [value, kind], type: BOOL, loc };
+    }
   }
   if (lowerer.isStdlibGlobal(expr.right, "SharedArrayBuffer")) {
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);

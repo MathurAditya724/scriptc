@@ -6426,6 +6426,17 @@ function objectIsDisjointFalse(left: IrExpr, right: IrExpr, loc: SrcLoc): IrExpr
   return { kind: "seqExpr", stmts, result: answer, type: BOOL, loc };
 }
 
+/** A native [string, any][]: the result Object.entries builds directly
+ * from a checked-dynamic value's pairs (dyn.objEntryPairs). */
+function isDynEntryPairsType(lowerer: Lowerer, t: IrType): boolean {
+  if (t.kind !== "array" || t.elem.kind !== "record") return false;
+  const shape = lowerer.shapes.get(t.elem.shapeId);
+  if (!shape?.tuple || shape.indexValue || shape.fields.length !== 2) return false;
+  const field = (name: string): IrType | undefined =>
+    shape.fields.find((f) => f.name === name)?.type;
+  return field("0")?.kind === "string" && field("1")?.kind === "dyn";
+}
+
 function lowerObjectStaticCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -7388,19 +7399,28 @@ function lowerObjectStaticCall(
             : "dyn.objEntries";
       let v = lowerer.lowerExpr(argNode);
       if (v.type.kind !== "dyn") v = { kind: "dynFrom", value: v, type: DYN, loc: locOf(call) };
-      // In TypeScript the keys come back as a native string[]: the checker
-      // keeps every later write to the array a string. JavaScript may store
-      // anything into it, so it keeps the checked-dynamic array.
-      const keysT =
-        member === "keys" && !isJsSourceFile(call.getSourceFile())
+      // In TypeScript the keys come back as a native string[] and the
+      // entries as a native [string, any][]: the checker keeps every later
+      // write to the arrays well typed. JavaScript may store anything into
+      // them, so it keeps the checked-dynamic arrays.
+      const resultT =
+        member !== "values" && !isJsSourceFile(call.getSourceFile())
           ? lowerer.mapTypeOf(lowerer.typeOf(call))
           : null;
-      if (keysT?.kind === "array" && keysT.elem.kind === "string")
+      if (member === "keys" && resultT?.kind === "array" && resultT.elem.kind === "string")
         return {
           kind: "libCall",
           fn: "dyn.objKeyStrings",
           args: [v],
-          type: keysT,
+          type: resultT,
+          loc: locOf(call),
+        };
+      if (member === "entries" && resultT && isDynEntryPairsType(lowerer, resultT))
+        return {
+          kind: "libCall",
+          fn: "dyn.objEntryPairs",
+          args: [v],
+          type: resultT,
           loc: locOf(call),
         };
       return { kind: "libCall", fn, args: [v], type: DYN, loc: locOf(call) };
@@ -7879,7 +7899,13 @@ export function lowerRecordFieldCall(
   if (callee.type.kind === "record") callee = lowerer.hybridCallUnwrap(callee);
   // Inferred JavaScript option records can retain checked callables in
   // fields even when the checker only describes those members as any.
-  if (callee.type.kind === "dyn" && isJsSourceFile(call.getSourceFile())) {
+  // TypeScript reaches here for callable library types that are checked
+  // values (util.DebugLogger).
+  if (
+    callee.type.kind === "dyn" &&
+    (isJsSourceFile(call.getSourceFile()) ||
+      lowerer.checker.getCallSignatures(lowerer.typeOf(access)).length > 0)
+  ) {
     const receiver =
       target && receiverLocal ? lowerer.coerceToExpected(target.obj, DYN) : undefined;
     const spread = call.arguments.some(ts.isSpreadElement)

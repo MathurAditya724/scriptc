@@ -127,7 +127,12 @@ export const FETCH_AMBIENT_TYPES = [
   "ResponseInit",
   "RequestInit",
   "Event",
+  "CustomEvent",
   "EventTarget",
+  "AddEventListenerOptions",
+  "EventListenerOptions",
+  "EventInit",
+  "CustomEventInit",
   "AbortController",
   "AbortSignal",
   "Headers",
@@ -139,9 +144,13 @@ export const FETCH_AMBIENT_TYPES = [
   "ReadableStreamReadDoneResult",
 ] as const;
 
-/** node:util.parseArgs's public and @types/node helper type names. Values
+/** node:util.parseArgs's public and @types/node helper type names, plus
+ * util.debuglog's DebugLogger (a native function value with an `enabled`
+ * accessor) and the DebugLoggerFunction its callback receives. Values
  * behind this surface use the checked-dynamic tree; see mapTypeInner. */
 const PARSE_ARGS_DYN_TYPES = new Set([
+  "DebugLogger",
+  "DebugLoggerFunction",
   "ParseArgsConfig",
   "ParseArgsOptionDescriptor",
   "ParseArgsOptionsConfig",
@@ -2149,9 +2158,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   }
   // The stdlib Console interface (the global console and node:console
   // Console instances) is a native handle carried by the checked-dynamic
-  // representation and consumed by the console method lowerings.
+  // representation and consumed by the console method lowerings. The
+  // stdlib Disposable (events.addAbortListener's result) is a checked
+  // object carrying its Symbol.dispose method.
   if (
-    psym?.name === "Console" &&
+    (psym?.name === "Console" || psym?.name === "Disposable") &&
     checker
       .declarationsOf(psym)
       .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))

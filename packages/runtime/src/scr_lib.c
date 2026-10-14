@@ -738,10 +738,41 @@ ScrStr *scr_env_get(const ScrStr *name) {
 #endif
 }
 
+/* util.debuglog matches sections against NODE_DEBUG as the process
+ * started, so the first write to that variable records the value it
+ * replaces. */
+static SCR_TL bool scr_node_debug_captured = false;
+static SCR_TL char *scr_node_debug_value = NULL;
+
+static void scr_node_debug_teardown(void) {
+  free(scr_node_debug_value);
+  scr_node_debug_value = NULL;
+}
+
+const char *scr_node_debug_initial(void) {
+  if (!scr_node_debug_captured) {
+    scr_node_debug_captured = true;
+    const char *value = scr_getenv("NODE_DEBUG");
+    if (value) {
+      size_t len = strlen(value);
+      scr_node_debug_value = malloc(len + 1);
+      if (!scr_node_debug_value) scr_trap("scriptc: out of memory\n");
+      memcpy(scr_node_debug_value, value, len + 1);
+      scr_atexit(scr_node_debug_teardown);
+    }
+  }
+  return scr_node_debug_value;
+}
+
+static void scr_node_debug_capture(const ScrStr *name) {
+  if (name->len == 10 && memcmp(name->data, "NODE_DEBUG", 10) == 0) (void)scr_node_debug_initial();
+}
+
 /* process.env.NAME = v — setenv(3): later scr_env_get reads and spawned
  * children (posix_spawn inherits environ) observe the write, like Node.
  * Both args borrowed (NUL-terminated ScrStr data); setenv copies. */
 void scr_env_set(const ScrStr *name, const ScrStr *value) {
+  scr_node_debug_capture(name);
   /* The environment holds UTF-8: a lone surrogate is stored as U+FFFD. */
   char *name_owned, *value_owned;
   const char *k = scr_str_utf8(name, &name_owned), *v = scr_str_utf8(value, &value_owned);
@@ -765,6 +796,7 @@ done:
 /* `delete process.env.NAME` — unsetenv(3): later reads answer absent and
  * spawned children lose the variable, like Node. Borrowed. */
 void scr_env_unset(const ScrStr *name) {
+  scr_node_debug_capture(name);
 #ifdef SCR_WORKERS
   if (scr_context_env_set(name->data, NULL)) return;
 #endif
@@ -1892,6 +1924,7 @@ void scr_os_ifaddrs_free(ScrIfaddrs *s) {
 /* The events-unit hooks (scr_events.c fills them at install; NULL in
  * event-free binaries and in the standalone runtime C tests). */
 SCR_TL void (*scr_process_exit_hook)(double code) = NULL;
+SCR_TL void (*scr_warning_emit_hook)(const char *name, const char *code, ScrStr *message) = NULL;
 SCR_TL void (*scr_stdin_destroy_hook)(void) = NULL;
 
 void scr_process_set_exit_code(double code) {
