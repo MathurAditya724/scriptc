@@ -1783,7 +1783,7 @@ function scalarizeRecordTemporaries(lowerer: Lowerer, fn: Omit<IrFunction, "name
     e.kind === "recordLit" &&
     e.type.kind === "record" &&
     e.type.shapeId === shapeId &&
-    e.fields.every((f) => !f.overflow && !f.drop);
+    e.fields.every((f) => !f.overflow);
   const expr = (e: IrExpr): boolean => {
     if (e.kind === "recordGet" && e.obj.kind === "varRef" && candidates.has(e.obj.localId))
       return true;

@@ -41,6 +41,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "timers.immediatePromise",
   "crypto.native",
   "dyn.promiseAll",
+  "dyn.promiseAllSettled",
+  "dyn.promiseAny",
   "process.onUncaughtException",
   "process.offUncaughtException",
   "process.onUnhandledRejection",
@@ -237,6 +239,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
           break;
         case "awaitExpr":
           if (node.type.kind === "dyn") features.dynAsync = true;
+          break;
+        case "intrinsic":
+          // Rejection reasons cross as dyn values (allSettled's records,
+          // any's AggregateError list).
+          if (node.name === "promise.allSettled" || node.name === "promise.any")
+            features.dynAsync = true;
           break;
         case "dynFrom": {
           const boxed = node.value.type;

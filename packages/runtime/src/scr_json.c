@@ -4730,8 +4730,10 @@ ScrStr *scr_dyn_format_j(const ScrDyn *d) {
  * suite's shape). The cache retains both sides for the process (like the
  * dc registry; released atexit before the RC audit) and the node
  * SNAPSHOTS name/message/code at first crossing — a later mutation of the
- * error is invisible through it (SEMANTICS.md). Linear scan: error
- * crossings are test/reporting paths, not hot loops. */
+ * error is invisible through it (SEMANTICS.md). Two pointer-keyed hash
+ * indexes find an entry by either side: Promise.allSettled and
+ * Promise.any cross every rejection reason. Both sides are unique per
+ * entry (an error boxes once; an alien view enters once). */
 typedef struct {
   ScrError *err; /* retained (pins the address — no pointer reuse) */
   ScrDyn *dyn;   /* retained */
@@ -4740,6 +4742,76 @@ typedef struct {
 static SCR_TL ScrErrDynEnt *scr_errdyn_cache = NULL;
 static SCR_TL size_t scr_errdyn_n = 0, scr_errdyn_cap = 0;
 static SCR_TL bool scr_errdyn_teardown_registered = false;
+/* Open-addressed indexes holding entry index + 1 (0 = empty slot). */
+static SCR_TL size_t *scr_errdyn_by_err = NULL, *scr_errdyn_by_dyn = NULL;
+static SCR_TL size_t scr_errdyn_slots = 0; /* a power of two */
+
+static size_t scr_errdyn_hash(const void *p) {
+  size_t x = (size_t)(uintptr_t)p >> 4;
+  x ^= x >> 16;
+  x *= 0x45d9f3bu;
+  x ^= x >> 16;
+  return x;
+}
+
+static void scr_errdyn_index_put(size_t *table, const void *key, size_t index, bool by_err) {
+  size_t mask = scr_errdyn_slots - 1;
+  for (size_t at = scr_errdyn_hash(key) & mask;; at = (at + 1) & mask) {
+    if (table[at] == 0) {
+      table[at] = index + 1;
+      return;
+    }
+    const ScrErrDynEnt *ent = &scr_errdyn_cache[table[at] - 1];
+    if ((by_err ? (const void *)ent->err : (const void *)ent->dyn) == key) return;
+  }
+}
+
+/* The entry index for an error (by_err) or a view, or SIZE_MAX. */
+static size_t scr_errdyn_find(const void *key, bool by_err) {
+  if (scr_errdyn_slots == 0) return SIZE_MAX;
+  const size_t *table = by_err ? scr_errdyn_by_err : scr_errdyn_by_dyn;
+  size_t mask = scr_errdyn_slots - 1;
+  for (size_t at = scr_errdyn_hash(key) & mask; table[at] != 0; at = (at + 1) & mask) {
+    const ScrErrDynEnt *ent = &scr_errdyn_cache[table[at] - 1];
+    if ((by_err ? (const void *)ent->err : (const void *)ent->dyn) == key) return table[at] - 1;
+  }
+  return SIZE_MAX;
+}
+
+static void scr_errdyn_teardown(void);
+
+/* Appends an entry (both sides retained) and indexes it. */
+static void scr_errdyn_append(ScrError *e, ScrDyn *d) {
+  if (scr_errdyn_n == scr_errdyn_cap) {
+    scr_errdyn_cap = scr_errdyn_cap ? scr_errdyn_cap * 2 : 8;
+    scr_errdyn_cache = realloc(scr_errdyn_cache, scr_errdyn_cap * sizeof *scr_errdyn_cache);
+    if (!scr_errdyn_cache) {
+      scr_trap("scriptc: out of memory\n");
+    }
+  }
+  if (!scr_errdyn_teardown_registered) {
+    scr_errdyn_teardown_registered = true;
+    scr_atexit(scr_errdyn_teardown);
+  }
+  scr_errdyn_cache[scr_errdyn_n].err = scr_error_retain(e);
+  scr_errdyn_cache[scr_errdyn_n].dyn = scr_dyn_retain(d);
+  scr_errdyn_n++;
+  if (scr_errdyn_n * 2 > scr_errdyn_slots) {
+    free(scr_errdyn_by_err);
+    free(scr_errdyn_by_dyn);
+    scr_errdyn_slots = scr_errdyn_slots ? scr_errdyn_slots * 2 : 16;
+    scr_errdyn_by_err = calloc(scr_errdyn_slots, sizeof *scr_errdyn_by_err);
+    scr_errdyn_by_dyn = calloc(scr_errdyn_slots, sizeof *scr_errdyn_by_dyn);
+    if (!scr_errdyn_by_err || !scr_errdyn_by_dyn) scr_trap("scriptc: out of memory\n");
+    for (size_t i = 0; i < scr_errdyn_n; i++) {
+      scr_errdyn_index_put(scr_errdyn_by_err, scr_errdyn_cache[i].err, i, true);
+      scr_errdyn_index_put(scr_errdyn_by_dyn, scr_errdyn_cache[i].dyn, i, false);
+    }
+  } else {
+    scr_errdyn_index_put(scr_errdyn_by_err, e, scr_errdyn_n - 1, true);
+    scr_errdyn_index_put(scr_errdyn_by_dyn, d, scr_errdyn_n - 1, false);
+  }
+}
 
 typedef struct {
   const ScrVt *vt;
@@ -4772,6 +4844,10 @@ static void scr_errdyn_teardown(void) {
   free(scr_errdyn_cache);
   scr_errdyn_cache = NULL;
   scr_errdyn_n = scr_errdyn_cap = 0;
+  free(scr_errdyn_by_err);
+  free(scr_errdyn_by_dyn);
+  scr_errdyn_by_err = scr_errdyn_by_dyn = NULL;
+  scr_errdyn_slots = 0;
 }
 
 ScrDyn *scr_error_dyn_fields(const ScrError *e) {
@@ -4817,13 +4893,18 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
       scr_dyn_obj_set(d, "cause", 5, scr_domex_cause((ScrError *)e));
     }
   }
+  /* AggregateError's own non-enumerable `errors` list, shared with the
+   * typed read so both spellings answer the same array. */
+  if (e->vt == &scr_error_vts[SCR_ERR_AGGREGATE]) {
+    scr_dyn_obj_set(d, "errors", 6, scr_aggregate_errors((ScrError *)e));
+    d->v.obj.entries[d->v.obj.len - 1].enumerable = false;
+  }
   return d;
 }
 
 ScrDyn *scr_dyn_from_error(const ScrError *e) {
-  for (size_t i = 0; i < scr_errdyn_n; i++) {
-    if (scr_errdyn_cache[i].err == e) return scr_dyn_retain(scr_errdyn_cache[i].dyn);
-  }
+  size_t hit = scr_errdyn_find(e, true);
+  if (hit != SIZE_MAX) return scr_dyn_retain(scr_errdyn_cache[hit].dyn);
   ScrDyn *d = NULL;
   for (size_t i = 0; i < scr_error_dyn_type_count; i++) {
     if (scr_error_dyn_types[i].vt == e->vt) {
@@ -4832,20 +4913,7 @@ ScrDyn *scr_dyn_from_error(const ScrError *e) {
     }
   }
   if (!d) d = scr_error_dyn_fields(e);
-  if (scr_errdyn_n == scr_errdyn_cap) {
-    scr_errdyn_cap = scr_errdyn_cap ? scr_errdyn_cap * 2 : 8;
-    scr_errdyn_cache = realloc(scr_errdyn_cache, scr_errdyn_cap * sizeof *scr_errdyn_cache);
-    if (!scr_errdyn_cache) {
-      scr_trap("scriptc: out of memory\n");
-    }
-  }
-  if (!scr_errdyn_teardown_registered) {
-    scr_errdyn_teardown_registered = true;
-    scr_atexit(scr_errdyn_teardown);
-  }
-  scr_errdyn_cache[scr_errdyn_n].err = scr_error_retain((ScrError *)e);
-  scr_errdyn_cache[scr_errdyn_n].dyn = scr_dyn_retain(d);
-  scr_errdyn_n++;
+  scr_errdyn_append((ScrError *)e, d);
   return d;
 }
 
@@ -4949,28 +5017,11 @@ ScrError *scr_error_from_dyn(const ScrDyn *d) {
  * stays private here). Reverse lookup answers +1 or NULL; put retains
  * both sides for the process. */
 ScrError *scr_errdyn_err_of(const ScrDyn *d) {
-  for (size_t i = 0; i < scr_errdyn_n; i++) {
-    if (scr_errdyn_cache[i].dyn == d) return scr_error_retain(scr_errdyn_cache[i].err);
-  }
-  return NULL;
+  size_t hit = scr_errdyn_find(d, false);
+  return hit == SIZE_MAX ? NULL : scr_error_retain(scr_errdyn_cache[hit].err);
 }
 
-void scr_errdyn_put(ScrError *e, ScrDyn *d) {
-  if (scr_errdyn_n == scr_errdyn_cap) {
-    scr_errdyn_cap = scr_errdyn_cap ? scr_errdyn_cap * 2 : 8;
-    scr_errdyn_cache = realloc(scr_errdyn_cache, scr_errdyn_cap * sizeof *scr_errdyn_cache);
-    if (!scr_errdyn_cache) {
-      scr_trap("scriptc: out of memory\n");
-    }
-  }
-  if (!scr_errdyn_teardown_registered) {
-    scr_errdyn_teardown_registered = true;
-    scr_atexit(scr_errdyn_teardown);
-  }
-  scr_errdyn_cache[scr_errdyn_n].err = scr_error_retain(e);
-  scr_errdyn_cache[scr_errdyn_n].dyn = scr_dyn_retain(d);
-  scr_errdyn_n++;
-}
+void scr_errdyn_put(ScrError *e, ScrDyn *d) { scr_errdyn_append(e, d); }
 
 /* Error.cause has one live value even when the Error already crossed a
  * checked-value boundary. Reflective data-property edits update its slot. */
@@ -4978,24 +5029,23 @@ static void scr_error_sync_cause(ScrDyn *view, const ScrStr *key) {
   bool cause = key->len == 5 && memcmp(key->data, "cause", 5) == 0;
   bool stack = key->len == 5 && memcmp(key->data, "stack", 5) == 0;
   if (!cause && !stack) return;
+  size_t hit = scr_errdyn_find(view, false);
+  if (hit == SIZE_MAX) return;
   ScrDynEntry *entry = scr_dyn_entry(view, key);
-  for (size_t i = 0; i < scr_errdyn_n; i++) {
-    if (scr_errdyn_cache[i].dyn != view) continue;
-    ScrError *e = scr_errdyn_cache[i].err;
-    if (stack) {
-      if (entry && entry->value->kind == SCR_DYN_STR) {
-        scr_str_release(e->stack);
-        e->stack = scr_str_retain(entry->value->v.str);
-      }
-      continue;
+  ScrError *e = scr_errdyn_cache[hit].err;
+  if (stack) {
+    if (entry && entry->value->kind == SCR_DYN_STR) {
+      scr_str_release(e->stack);
+      e->stack = scr_str_retain(entry->value->v.str);
     }
-    if (e->vt == &scr_error_vts[SCR_ERR_DOMEX]) continue;
-    ScrDyn *replacement = entry ? scr_dyn_retain(entry->value) : NULL;
-    scr_error_install_cause_drop(&scr_error_cause_drop_impl);
-    scr_dyn_release(e->error_cause);
-    e->error_cause = replacement;
-    e->cause_enumerable = entry && entry->enumerable;
+    return;
   }
+  if (e->vt == &scr_error_vts[SCR_ERR_DOMEX]) return;
+  ScrDyn *replacement = entry ? scr_dyn_retain(entry->value) : NULL;
+  scr_error_install_cause_drop(&scr_error_cause_drop_impl);
+  scr_dyn_release(e->error_cause);
+  e->error_cause = replacement;
+  e->cause_enumerable = entry && entry->enumerable;
 }
 
 /* Receiver-kind-dispatched toString() on a checked-dynamic value (the
@@ -7756,15 +7806,11 @@ ScrDyn *scr_structured_clone_missing(void) {
 }
 
 bool scr_dyn_err_instanceof(const ScrDyn *d, double kind) {
-
-  for (size_t i = 0; i < scr_errdyn_n; i++) {
-    if (scr_errdyn_cache[i].dyn == d) {
-      const ScrVt *vt = scr_errdyn_cache[i].err->vt;
-      int k = (int)kind;
-      return scr_error_vts[k].pre <= vt->pre && vt->pre <= scr_error_vts[k].post;
-    }
-  }
-  return false;
+  size_t hit = scr_errdyn_find(d, false);
+  if (hit == SIZE_MAX) return false;
+  const ScrVt *vt = scr_errdyn_cache[hit].err->vt;
+  int k = (int)kind;
+  return scr_error_vts[k].pre <= vt->pre && vt->pre <= scr_error_vts[k].post;
 }
 
 static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_t key_len, const ScrDyn *receiver) {
@@ -7808,19 +7854,17 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
         "[builtin Error]", "[builtin TypeError]",
         "[builtin RangeError]", "[builtin SyntaxError]",
         NULL, "[builtin ReferenceError]", "[builtin EvalError]", "[builtin URIError]",
+        "[builtin AggregateError]",
     };
-    for (size_t i = 0; i < scr_errdyn_n; i++) {
-      if (scr_errdyn_cache[i].dyn != d) continue;
-      const ScrVt *vt = scr_errdyn_cache[i].err->vt;
-      for (size_t kind = 0; kind < sizeof tokens / sizeof tokens[0]; kind++) {
-        if (!tokens[kind]) continue;
-        if (vt != &scr_error_vts[kind]) continue;
-        ScrStr *token = scr_str_new(tokens[kind], strlen(tokens[kind]));
-        ScrDyn *result = scr_dyn_new_str(token);
-        scr_str_release(token);
-        return result;
-      }
-      break;
+    size_t hit = scr_errdyn_find(d, false);
+    const ScrVt *vt = hit == SIZE_MAX ? NULL : scr_errdyn_cache[hit].err->vt;
+    for (size_t kind = 0; vt && kind < sizeof tokens / sizeof tokens[0]; kind++) {
+      if (!tokens[kind]) continue;
+      if (vt != &scr_error_vts[kind]) continue;
+      ScrStr *token = scr_str_new(tokens[kind], strlen(tokens[kind]));
+      ScrDyn *result = scr_dyn_new_str(token);
+      scr_str_release(token);
+      return result;
     }
   }
   return scr_dyn_retain(scr_dyn_undefined());
@@ -9045,9 +9089,9 @@ ScrError *scr_error_new_options(int kind, const ScrDyn *message, const ScrDyn *o
 }
 
 ScrDyn *scr_error_cause(ScrError *e) {
-  for (size_t i = 0; i < scr_errdyn_n; i++) {
-    if (scr_errdyn_cache[i].err != e) continue;
-    ScrDyn *value = scr_errdyn_cache[i].dyn;
+  size_t hit = scr_errdyn_find(e, true);
+  if (hit != SIZE_MAX) {
+    ScrDyn *value = scr_errdyn_cache[hit].dyn;
     if (value->kind == SCR_DYN_TYPED_REF) {
       ScrDyn *view = scr_dyn_typed_ref_materialize(value);
       ScrDyn *cause = scr_dyn_obj_read(view, "cause", 5);
@@ -9060,10 +9104,10 @@ ScrDyn *scr_error_cause(ScrError *e) {
 }
 
 void scr_error_set_cause(ScrError *e, ScrDyn *value) {
-  for (size_t i = 0; i < scr_errdyn_n; i++) {
-    if (scr_errdyn_cache[i].err != e) continue;
+  size_t hit = scr_errdyn_find(e, true);
+  if (hit != SIZE_MAX) {
     ScrStr *key = scr_str_new("cause", 5);
-    scr_dyn_key_set(scr_errdyn_cache[i].dyn, key, value);
+    scr_dyn_key_set(scr_errdyn_cache[hit].dyn, key, value);
     scr_str_release(key);
     return;
   }
@@ -9080,16 +9124,52 @@ void scr_error_define_cause(ScrError *e, ScrDyn *value) {
 }
 
 void scr_error_delete_cause(ScrError *e) {
-  for (size_t i = 0; i < scr_errdyn_n; i++) {
-    if (scr_errdyn_cache[i].err != e) continue;
+  size_t hit = scr_errdyn_find(e, true);
+  if (hit != SIZE_MAX) {
     ScrStr *key = scr_str_new("cause", 5);
-    scr_dyn_key_delete(scr_errdyn_cache[i].dyn, key, true);
+    scr_dyn_key_delete(scr_errdyn_cache[hit].dyn, key, true);
     scr_str_release(key);
     return;
   }
   scr_dyn_release(e->error_cause);
   e->error_cause = NULL;
   e->cause_enumerable = false;
+}
+
+static void scr_aggregate_errors_drop_impl(void *obj) {
+  ScrAggregateError *a = (ScrAggregateError *)obj;
+  scr_dyn_release(a->errors);
+  a->errors = NULL;
+}
+
+ScrError *scr_aggregate_new(const ScrDyn *message, const ScrDyn *options) {
+  ScrError *e = scr_aggregate_alloc();
+  scr_error_init_options(e, SCR_ERR_AGGREGATE, message, options);
+  if (scr_exc_pending()) {
+    scr_error_release(e);
+    return NULL;
+  }
+  return e;
+}
+
+void scr_aggregate_set_errors(ScrError *e, ScrDyn *errors) {
+  ScrAggregateError *a = (ScrAggregateError *)e;
+  scr_aggregate_install_errors_drop(&scr_aggregate_errors_drop_impl);
+  ScrDyn *replacement = scr_dyn_retain(errors);
+  scr_dyn_release(a->errors);
+  a->errors = replacement;
+}
+
+/* An AggregateError minted by a runtime throw path carries no list until
+ * the first read, which makes the empty one its identity. */
+ScrDyn *scr_aggregate_errors(ScrError *e) {
+  ScrAggregateError *a = (ScrAggregateError *)e;
+  if (a->errors == NULL) {
+    ScrDyn *empty = scr_dyn_new_arr();
+    scr_aggregate_set_errors(e, empty);
+    scr_dyn_release(empty);
+  }
+  return scr_dyn_retain(a->errors);
 }
 
 static void scr_domex_cause_drop_impl(void *obj) {

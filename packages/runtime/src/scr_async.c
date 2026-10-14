@@ -230,7 +230,9 @@ typedef struct ScrAllState {
   size_t rc;
   size_t remaining;
   ScrArr *values;
-  void (*store)(ScrArr *a, double i, ScrPromise *src);
+  ScrAllStore store;
+  int mode;        /* SCR_COMBINE_* */
+  ScrAnyFail fail; /* Promise.any's exhaustion (rejects the result) */
 } ScrAllState;
 
 static void scr_promise_all_state_release(ScrAllState *st) {
@@ -611,8 +613,8 @@ struct ScrFiber {
   /* Promise.all / Promise.race reaction jobs (cb_job set): stackless
    * READY-queue envelopes carrying the settled entry (owned) and its
    * callback waiter (which owns its destination and countdown state). A
-   * Promise.all batch job (cb.job_at == SCR_CB_BATCH) carries the first
-   * rejected entry, or none. */
+   * combinator batch job (cb.job_at == SCR_CB_BATCH) carries the batch's
+   * first deciding entry, or none. */
   bool cb_job;
   ScrPromise *cb_src;
   struct ScrPromiseCbWaiter cb;
@@ -1386,16 +1388,27 @@ void scr_promise_adapt_copy(ScrPromise *dst, ScrPromise *src) {
   scr_promise_settle_from(dst, src);
 }
 
-/* One Promise.all entry's reaction job: a fulfillment stores its payload into
- * the values array at the entry's INPUT index (input order regardless of
- * settlement order) and the LAST missing fulfillment fulfills the result
- * with the array (void-element all fulfills void); a rejection copies raw
- * into the result — the first job to run wins through the destination's
- * own pending check, and later ones still count as HANDLED on their
- * entries (marked at the subscription), exactly Node's
- * subscribe-to-everything behavior. */
+/* One combinator entry's reaction job. An entry DECIDES the result when
+ * its settlement alone settles it — a Promise.all rejection, a
+ * Promise.any fulfillment — and copies raw into the result (the first job
+ * to run wins through the destination's own pending check; the entries
+ * stay HANDLED from the subscription, exactly Node's subscribe-to-
+ * everything behavior). Every other settlement stores through the mode's
+ * helper at the entry's INPUT index (input order regardless of
+ * settlement order: all's values, allSettled's records, any's reasons)
+ * and counts down; the last one finishes the result — all/allSettled
+ * fulfill with the array (void-element all fulfills void), any rejects
+ * through its fail hook. */
+static bool scr_promise_all_decides(const ScrAllState *st, const ScrPromise *src) {
+  if (st->mode == SCR_COMBINE_ALL) return src->state == SCR_PROM_REJECTED;
+  if (st->mode == SCR_COMBINE_ANY) return src->state == SCR_PROM_FULFILLED;
+  return false;
+}
+
 static void scr_promise_all_fulfill(ScrAllState *st, ScrPromise *result) {
-  if (st->values) {
+  if (st->mode == SCR_COMBINE_ANY) {
+    st->fail(result, st->values);
+  } else if (st->values) {
     scr_promise_fulfill_ref(result, scr_arr_retain(st->values), scr_arr_retain_v,
                              scr_arr_release_v, st->values->cyc ? scr_arr_trace_v : NULL);
   } else {
@@ -1403,18 +1416,18 @@ static void scr_promise_all_fulfill(ScrAllState *st, ScrPromise *result) {
   }
 }
 
-static void scr_promise_all_count(ScrAllState *st, ScrPromise *result, size_t fulfilled) {
-  st->remaining -= fulfilled;
+static void scr_promise_all_count(ScrAllState *st, ScrPromise *result, size_t counted) {
+  st->remaining -= counted;
   if (st->remaining == 0 && result->state == SCR_PROM_PENDING) scr_promise_all_fulfill(st, result);
 }
 
 static void scr_promise_all_settle(ScrAllState *st, ScrPromise *result, size_t idx,
                                     ScrPromise *src) {
-  if (src->state == SCR_PROM_FULFILLED) {
+  if (scr_promise_all_decides(st, src)) {
+    scr_promise_settle_from(result, src);
+  } else {
     if (st->store) st->store(st->values, (double)idx, src);
     scr_promise_all_count(st, result, 1);
-  } else {
-    scr_promise_settle_from(result, src);
   }
 }
 
@@ -1548,24 +1561,28 @@ void scr_promise_race_add(ScrPromise *race, ScrPromise *in,
       (struct ScrPromiseCbWaiter){ adapt, scr_promise_retain(race), NULL, 0, SCR_CB_SYNC };
 }
 
-/* ── Promise.all ──────────────────────────────────────────────────────
- * BORROWS the entries array `ps` and the pre-capacity values array
- * `values` (NULL for void elements), retains what it keeps, and returns
- * the result promise +1. `values` arrives EMPTY with cap >= ps->len (the
- * emitted construction passes the length) and is pre-sized here: every
- * slot's zero bits are the per-kind placeholder (0.0 / false / NULL),
- * legal to overwrite through the store helpers and to release. Every
- * entry subscribes a countdown reaction job (Node's `then` on each entry):
- * it runs one microtask turn after the entry settles, or after this call
- * for an entry already settled, so the last fulfillment's job fulfills
- * the result and the first rejection's job rejects it. Every entry is
- * marked handled at the subscription. The empty array fulfills
- * immediately (awaiters take the settled-await microtask hop, like Node's
- * one-tick resolve). */
-ScrPromise *scr_promise_all(ScrArr *ps, ScrArr *values,
-                             void (*store)(ScrArr *a, double i, ScrPromise *src)) {
-  size_t n = ps->len;
-  ScrPromise *result = scr_promise_new();
+/* ── Promise.all / allSettled / any ───────────────────────────────────
+ * The builder takes the entries in input order. Every entry subscribes a
+ * countdown reaction job (Node's `then` on each entry): it runs one
+ * microtask turn after the entry settles, or after its add for an entry
+ * already settled, and every entry is marked handled at the subscription.
+ * The jobs of entries already settled would run back to back with nothing
+ * in between, so they run as one batch job: non-deciding settlements
+ * store now (the array is unobservable until the result settles) and
+ * count down in the job; the batch's first deciding entry in input order
+ * settles the result there. A caller that queues other jobs between
+ * entries flushes the batch first, so the queue keeps Node's order.
+ * `values` arrives EMPTY with cap >= n (the emitted construction passes
+ * the length) and is pre-sized here: every slot's zero bits are the
+ * per-kind placeholder (0.0 / false / NULL), legal to overwrite through
+ * the store helpers and to release. The empty input finishes immediately
+ * (awaiters take the settled-await microtask hop, like Node's one-tick
+ * resolve). */
+__attribute__((always_inline)) static inline void scr_combine_begin(ScrCombine *c, int mode,
+                                                                    size_t n, ScrArr *values,
+                                                                    ScrAllStore store,
+                                                                    ScrAnyFail fail) {
+  c->result = scr_promise_new();
   if (values && n > 0) {
     /* Pre-size as holes. Promise settlement writes the present slots through
      * the normal setters; this also remains safe when n is sparse-sized and
@@ -1578,44 +1595,96 @@ ScrPromise *scr_promise_all(ScrArr *ps, ScrArr *values,
   st->remaining = n;
   st->values = values ? scr_arr_retain(values) : NULL;
   st->store = store;
-  /* The jobs of entries already settled would run back to back with
-   * nothing in between, so they run as one batch job: fulfillments store
-   * their values now (the array is unobservable until the result
-   * fulfills) and count down in the job; the first rejected entry in input
-   * order rejects the result there. */
-  size_t fulfilled = 0;
-  ScrPromise *rejected = NULL;
+  st->mode = mode;
+  st->fail = fail;
+  c->st = st;
+  c->next = 0;
+  c->batched = 0;
+  c->decided = NULL;
+  c->open = false;
+}
+
+__attribute__((always_inline)) static inline void scr_combine_add(ScrCombine *c,
+                                                                  ScrPromise *in) {
+  ScrAllState *st = c->st;
+  size_t i = c->next++;
+  if (in->state == SCR_PROM_PENDING) {
+    st->rc++;
+    scr_promise_cb_subscribe(
+        in, (struct ScrPromiseCbWaiter){ NULL, scr_promise_retain(c->result), st, i, 0 });
+    return;
+  }
+  scr_prom_observe(in);
+  c->open = true;
+  if (scr_promise_all_decides(st, in)) {
+    if (c->decided == NULL) c->decided = scr_promise_retain(in);
+  } else {
+    if (st->store) st->store(st->values, (double)i, in);
+    c->batched++;
+  }
+}
+
+__attribute__((always_inline)) static inline void scr_combine_flush(ScrCombine *c) {
+  if (!c->open) return;
+  ScrFiber *job = scr_mem_calloc(sizeof *job);
+  if (!job) scr_oom();
+  c->st->rc++;
+  job->cb_job = true;
+  job->cb_src = c->decided; /* the reference moves in */
+  job->cb = (struct ScrPromiseCbWaiter){ NULL, scr_promise_retain(c->result), c->st, c->batched,
+                                         SCR_CB_BATCH };
+  scr_ready_push(job);
+  c->decided = NULL;
+  c->batched = 0;
+  c->open = false;
+}
+
+__attribute__((always_inline)) static inline ScrPromise *scr_combine_end(ScrCombine *c) {
+  scr_combine_flush(c);
+  /* The empty input. */
+  if (c->next == 0) scr_promise_all_fulfill(c->st, c->result);
+  scr_promise_all_state_release(c->st);
+  return c->result;
+}
+
+/* The builder for callers in other units (the dyn combinators). */
+void scr_promise_combine_begin(ScrCombine *c, int mode, size_t n, ScrArr *values,
+                               ScrAllStore store, ScrAnyFail fail) {
+  scr_combine_begin(c, mode, n, values, store, fail);
+}
+void scr_promise_combine_add(ScrCombine *c, ScrPromise *in) { scr_combine_add(c, in); }
+void scr_promise_combine_flush(ScrCombine *c) { scr_combine_flush(c); }
+ScrPromise *scr_promise_combine_end(ScrCombine *c) { return scr_combine_end(c); }
+
+/* One specialization per mode for the compiled Promise<T>[] combinators. */
+__attribute__((always_inline)) static inline ScrPromise *
+scr_promise_combine_array(int mode, ScrArr *ps, ScrArr *values, ScrAllStore store,
+                          ScrAnyFail fail) {
+  size_t n = ps->len;
+  ScrCombine c;
+  scr_combine_begin(&c, mode, n, values, store, fail);
   for (size_t i = 0; i < n; i++) {
     ScrPromise *in = (ScrPromise *)scr_arr_get_ref(ps, (double)i); /* +1 */
-    if (in->state == SCR_PROM_PENDING) {
-      st->rc++;
-      scr_promise_cb_subscribe(
-          in, (struct ScrPromiseCbWaiter){ NULL, scr_promise_retain(result), st, i, 0 });
-    } else {
-      scr_prom_observe(in);
-      if (in->state == SCR_PROM_FULFILLED) {
-        if (st->store) st->store(st->values, (double)i, in);
-        fulfilled++;
-      } else if (rejected == NULL) {
-        rejected = scr_promise_retain(in);
-      }
-    }
+    scr_combine_add(&c, in);
     scr_promise_release(in);
   }
-  if (fulfilled > 0 || rejected != NULL) {
-    ScrFiber *job = scr_mem_calloc(sizeof *job);
-    if (!job) scr_oom();
-    st->rc++;
-    job->cb_job = true;
-    job->cb_src = rejected; /* the reference moves in */
-    job->cb = (struct ScrPromiseCbWaiter){ NULL, scr_promise_retain(result), st, fulfilled,
-                                           SCR_CB_BATCH };
-    scr_ready_push(job);
-  }
-  /* The empty array. */
-  if (n == 0) scr_promise_all_fulfill(st, result);
-  scr_promise_all_state_release(st);
-  return result;
+  return scr_combine_end(&c);
+}
+
+/* Promise.all: BORROWS the entries array `ps` and the pre-capacity values
+ * array `values` (NULL for void elements), retains what it keeps, and
+ * returns the result promise +1. */
+ScrPromise *scr_promise_all(ScrArr *ps, ScrArr *values,
+                             void (*store)(ScrArr *a, double i, ScrPromise *src)) {
+  return scr_promise_combine_array(SCR_COMBINE_ALL, ps, values, store, NULL);
+}
+
+ScrPromise *scr_promise_all_settled(ScrArr *ps, ScrArr *values, ScrAllStore store) {
+  return scr_promise_combine_array(SCR_COMBINE_ALL_SETTLED, ps, values, store, NULL);
+}
+
+ScrPromise *scr_promise_any(ScrArr *ps, ScrArr *errors, ScrAllStore store, ScrAnyFail fail) {
+  return scr_promise_combine_array(SCR_COMBINE_ANY, ps, errors, store, fail);
 }
 
 /* Per-element-kind store helpers for the emitted Promise.all: write the
@@ -1648,6 +1717,7 @@ ScrStr *scr_promise_payload_str(ScrPromise *p) {
  * fulfilled). */
 static bool scr_await_settled(ScrPromise *p); /* defined with the await family */
 int scr_promise_payload_kind(const ScrPromise *p) { return (int)p->payload_kind; }
+bool scr_promise_is_rejected(const ScrPromise *p) { return p->state == SCR_PROM_REJECTED; }
 bool scr_promise_payload_is_dyn(const ScrPromise *p) { return p->retain_fn == scr_dyn_retain_v; }
 double scr_promise_payload_num(const ScrPromise *p) { return p->f64; }
 bool scr_promise_payload_flag(const ScrPromise *p) { return p->b; }

@@ -877,9 +877,10 @@ export function lowerArrayFromCall(
   // type argument — the pMap results-array idiom): a length-n array of
   // ABSENT slots, filled by index before any read. Union elements with
   // an undefined arm hold the interned undefined (JS-exact); other
-  // refcounted elements hold NULL and must be assigned before they are
-  // read (SEMANTICS.md 46). Scalar elements have no absent value that
-  // isn't a LIE on read (0 where Node says undefined) — fenced.
+  // refcounted elements — record unions like PromiseSettledResult among
+  // them — hold NULL and must be assigned before they are read
+  // (SEMANTICS.md 46). Scalar elements have no absent value that isn't a
+  // LIE on read (0 where Node says undefined) — fenced.
   if (
     args.length === 1 &&
     ts.isObjectLiteralExpression(args[0]!) &&
@@ -892,7 +893,10 @@ export function lowerArrayFromCall(
       if (arrT?.kind !== "array") lowerer.badType(call, lowerer.typeOf(call));
       const elem = arrT.elem;
       const absent =
-        elem.kind === "union" ? lowerer.wrappedUndefined(elem, loc) !== null : isRefCounted(elem);
+        elem.kind === "union"
+          ? lowerer.wrappedUndefined(elem, loc) !== null ||
+            (lowerer.unions.get(elem.unionId)?.arms ?? []).every((arm) => arm.kind === "record")
+          : isRefCounted(elem);
       if (!absent) {
         lowerer.noLowering(
           `mapper-less Array.from({ length: n }) with '${lowerer.fmt(elem)}' elements`,

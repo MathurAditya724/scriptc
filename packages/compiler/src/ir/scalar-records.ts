@@ -86,7 +86,6 @@ function producer(fn: IrFunction, shapes: ReadonlyMap<string, IrRecordShape>): P
         value.fields.length === shape.fields.length &&
         value.fields.every(
           (f) =>
-            !f.drop &&
             !f.overflow &&
             f.value.type.kind === "f64" &&
             scalarTemporaries(f.value) &&

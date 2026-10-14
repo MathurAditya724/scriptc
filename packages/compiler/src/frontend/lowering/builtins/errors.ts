@@ -51,6 +51,28 @@ export function lowerErrorCodeProperty(
       };
     }
   }
+  // %AggregateError's `errors` list lives in the runtime slot beyond the
+  // ScrError prefix; the read answers the same dyn array every time.
+  if (
+    recvT.className === "%AggregateError" &&
+    expr.name.text === "errors" &&
+    lowerer.isStdlibMember(expr)
+  ) {
+    const receiver = lowerer.lowerExpr(expr.expression);
+    const loc = locOf(expr);
+    // A narrowed checked-dynamic receiver reads its error view's property.
+    if (receiver.type.kind === "dyn") {
+      const key: IrExpr = { kind: "strLit", value: "errors", type: STRING, loc };
+      return { kind: "dynKeyGet", value: receiver, key, type: DYN, loc };
+    }
+    return {
+      kind: "libCall",
+      fn: "error.aggregateErrors",
+      args: [receiver],
+      type: DYN,
+      loc: locOf(expr),
+    };
+  }
   const systemField = ["errno", "syscall", "path", "dest"].includes(expr.name.text);
   if (
     !systemField &&

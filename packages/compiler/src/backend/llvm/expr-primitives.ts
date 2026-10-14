@@ -967,13 +967,6 @@ export function emitRecordExpr(
       B.line(`${rec} = call ptr @${mangleRecordNew(shapeId)}()`);
       const out = host.own({ name: rec, type: e.type });
       for (const f of e.fields) {
-        if (f.drop) {
-          // A mapping-dropped field: the initializer runs in its source-
-          // order slot — effects included — and the result (if any)
-          // releases with the statement frame instead of storing.
-          host.emitExpr(f.value);
-          continue;
-        }
         const v = host.emitExpr(f.value);
         if (f.overflow) {
           const lit = host.internLiteral(f.name);

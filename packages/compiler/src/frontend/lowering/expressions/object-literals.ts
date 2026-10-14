@@ -37,32 +37,6 @@ import { runtimeOptionalStorageOperand } from "../lower-exprs.js";
  * smuggle a wider/narrower literal past tsc's freshness check), which the
  * exact-shape checks below reject with SC2002. Fields lower IN SOURCE
  * ORDER: JS evaluates property values in source order. */
-/** The dropped-field names of the PromiseSettledResult honest subset
- * (SEMANTICS.md 46): when the literal's target type is (a union
- * containing) the lib's PromiseFulfilledResult / PromiseRejectedResult,
- * the record mapping kept only `status` — `value` and `reason` evaluate
- * for effect and are not stored. Null for every other target. */
-function settledDropNames(lowerer: Lowerer, tsType: ts.Type): Set<string> | null {
-  let names: Set<string> | null = null;
-  const parts: readonly ts.Type[] = tsType.isUnionType() ? ts.constituentTypes(tsType) : [tsType];
-  for (const part of parts) {
-    const sym = part.getSymbol();
-    if (
-      !sym ||
-      !lowerer.checker
-        .declarationsOf(sym)
-        .some((d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()))
-    ) {
-      continue;
-    }
-    if (sym.name === "PromiseFulfilledResult" || sym.name === "PromiseRejectedResult") {
-      if (names === null) names = new Set();
-      names.add(sym.name === "PromiseFulfilledResult" ? "value" : "reason");
-    }
-  }
-  return names;
-}
-
 /** `{ [KEY]: v }` where KEY is a compile-time-known string or number:
  * the key folds into an ordinary (spelled) property name — the record
  * shape is exactly what tsc computed for the literal (the late-bound
@@ -1493,7 +1467,7 @@ export function lowerObjectLiteral(
     throw new PoisonError();
   };
 
-  const fields: { name: string; value: IrExpr; overflow?: true; drop?: true }[] = [];
+  const fields: { name: string; value: IrExpr; overflow?: true }[] = [];
   const spreadStmts: IrStmt[] = [];
   const hasSpread = expr.properties.some(ts.isSpreadAssignment);
   const captured = new Set<IrExpr>();
@@ -1581,11 +1555,6 @@ export function lowerObjectLiteral(
     if (hasSpread) {
       for (let i = 0; i < fields.length; i++) {
         const field = fields[i]!;
-        if (field.drop) {
-          spreadStmts.push({ kind: "exprStmt", expr: field.value, loc: field.value.loc });
-          fields.splice(i--, 1);
-          continue;
-        }
         field.value = captureField(field.value);
       }
     }
@@ -1901,7 +1870,7 @@ export function lowerObjectLiteral(
             thenVal = lowerer.applyWidthLift(lift, fRead(), targetType, locOf(prop));
             if (canBeAbsent) cond = fieldPresent();
           }
-          const at = fields.findIndex((x) => x.name === f.name && !x.drop);
+          const at = fields.findIndex((x) => x.name === f.name);
           const elseVal =
             at >= 0 ? fields[at]!.value : lowerer.absentFieldValue(targetType, locOf(prop));
           if (!elseVal) {
@@ -2143,10 +2112,7 @@ export function lowerObjectLiteral(
     let fieldType = fieldTypes.get(name);
     // An undeclared name against an index-signature shape is an OVERFLOW
     // entry (tsc typechecked it against the signature's value type);
-    // against a plain shape it is the width mismatch it always was —
-    // EXCEPT the PromiseSettledResult honest subset's dropped fields
-    // (value/reason — SEMANTICS.md 46): those evaluate for effect in
-    // their source-order slot and store nothing.
+    // against a plain shape it is the width mismatch it always was.
     // A GENERIC-callable member (a generic method `m<T>(x: T) {...}` or a
     // generic arrow/function-expression property): excluded from the
     // record shape (isGenericCallableMemberType — no single closure slot
@@ -2177,30 +2143,6 @@ export function lowerObjectLiteral(
       }
     }
     if (!fieldType && !shape.indexValue) {
-      if (settledDropNames(lowerer, tsType)?.has(name)) {
-        // Identifier and shorthand initializers are effect-free reads —
-        // skipped outright. The caught `reason` MUST skip: lowering the
-        // read would hit the catch-binding narrowness fence, and the
-        // snapshot it names needs no evaluation.
-        if (ts.isPropertyAssignment(prop) && !ts.isIdentifier(prop.initializer)) {
-          const v = lowerer.lowerExpr(prop.initializer);
-          // Effect-free lowerings (literals, plain reads) drop at
-          // compile time; anything else — the awaited mapper — runs
-          // (and may throw into the enclosing catch) with its result
-          // released by the statement frame.
-          if (
-            v.kind !== "unitLit" &&
-            v.kind !== "numLit" &&
-            v.kind !== "strLit" &&
-            v.kind !== "boolLit" &&
-            v.kind !== "varRef" &&
-            v.kind !== "closure"
-          ) {
-            fields.push({ name, value: v, drop: true });
-          }
-        }
-        continue;
-      }
       shapeMismatch(prop);
     }
 
@@ -2988,6 +2930,8 @@ export function lowerShorthandValue(
     const stored = runtimeOptionalStorageOperand(lowerer, propName);
     if (stored) return stored;
     const local = lowerer.resolveKey(symbol, propName);
+    // A catch binding reads like the long form `{ reason: reason }`.
+    if (local?.type.kind === "caught") return lowerer.caughtRead(propName, local, loc);
     if (local) {
       return lowerer.maybeNarrow(
         { kind: "varRef", localId: local.id, type: local.type, loc },

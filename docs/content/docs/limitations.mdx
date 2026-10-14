@@ -44,6 +44,8 @@ const jobs: Promise<number>[] = [work(1), work(2), work(3)];
 const results = await Promise.all(jobs); // number[]
 ```
 
+`Promise.allSettled` and `Promise.any` take the same `Promise<T>[]` input and return `PromiseSettledResult<T>[]` and `T`.
+
 ### Builtin APIs
 
 A declaration in the standard library does not guarantee that an API compiles. Unsupported declared APIs produce `SC2020`, with alternatives where available. Check the [Node.js compatibility reference](/compatibility) for API-level support.

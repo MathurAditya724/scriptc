@@ -2,7 +2,7 @@
 import { InternalCompilerError } from "../../errors.js";
 import { type IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/ir.js";
 import { mangleGenResThunk, mangleRecordNew, mangleRecordStruct } from "../mangle.js";
-import { FN_ATTRS, releaseSym, retainSym, traceArg, vAdapters } from "./shapes.js";
+import { FN_ATTRS, llFieldType, releaseSym, retainSym, traceArg, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
 import { unionPeekLines, unionTagLines } from "./union-repr.js";
@@ -990,6 +990,107 @@ export function closeOverrideWrapFor(
       : [`  call void %fn(ptr %inner, ptr ${host.unitInstanceRef(cbUnion.unionId, undefTag)})`]),
     `  call void @scr_closure_release(ptr %inner)`,
     `  ret void`,
+    `}`,
+    ``,
+  );
+  return sym;
+}
+
+/** The Promise.allSettled store adapter for one (entry inner type →
+ * PromiseSettledResult union) pair: builds the settled entry's
+ * { status, value } or { status, reason } record (the reason as a dyn
+ * value), wraps it in its union arm, and stores it at the entry's input
+ * index (scr_promise_all_settled's ScrAllStore). */
+export function settledStoreFor(
+  host: LlvmEmitterContext,
+  from: IrType,
+  to: IrType & { kind: "union" },
+): string {
+  const key = `settled:${typeKey(from)}=>${typeKey(to)}`;
+  let sym = host.resolveThunks.get(key);
+  if (sym) return sym;
+  sym = `sc_settled_${host.resolveThunks.size}`;
+  host.resolveThunks.set(key, sym);
+  const def = host.unionsById.get(to.unionId);
+  if (!def) throw new InternalCompilerError("llvm emitter bug: settled store to an unknown union");
+  const armOf = (field: string): { tag: number; arm: IrType & { kind: "record" } } => {
+    const tag = def.arms.findIndex(
+      (arm) =>
+        arm.kind === "record" &&
+        host.recordsById.get(arm.shapeId)?.fields.some((f) => f.name === field) === true,
+    );
+    const arm = def.arms[tag];
+    if (arm?.kind !== "record")
+      throw new InternalCompilerError(`llvm emitter bug: settled union lacks its '${field}' arm`);
+    return { tag, arm };
+  };
+  const fieldIndex = (arm: IrType & { kind: "record" }, field: string): number =>
+    host.recordsById.get(arm.shapeId)!.fields.findIndex((f) => f.name === field) + 1;
+  const fulfilled = armOf("value");
+  const rejected = armOf("reason");
+  const valueT = host.recordsById
+    .get(fulfilled.arm.shapeId)!
+    .fields.find((f) => f.name === "value")!.type;
+  host.declare(`declare zeroext i1 @scr_promise_is_rejected(ptr)`);
+  host.declare(`declare ptr @scr_promise_reason_dyn(ptr)`);
+  host.declare(`declare void @scr_arr_set_ref(ptr, double, ptr)`);
+  // One record per branch: status (an immortal literal), then the payload.
+  const recordLines = (
+    prefix: string,
+    arm: { tag: number; arm: IrType & { kind: "record" } },
+    status: string,
+    field: string,
+    fieldT: IrType,
+    valueLines: string[],
+  ): string[] => {
+    const struct = `%${mangleRecordStruct(arm.arm.shapeId)}`;
+    return [
+      `  %${prefix}r = call ptr @${mangleRecordNew(arm.arm.shapeId)}()`,
+      `  %${prefix}sp = getelementptr inbounds ${struct}, ptr %${prefix}r, i64 0, i32 ${fieldIndex(arm.arm, "status")}`,
+      `  store ptr ${host.internLiteral(status)}, ptr %${prefix}sp`,
+      ...valueLines,
+      `  %${prefix}vp = getelementptr inbounds ${struct}, ptr %${prefix}r, i64 0, i32 ${fieldIndex(arm.arm, field)}`,
+      `  store ${llFieldType(fieldT)} %${prefix}v, ptr %${prefix}vp`,
+      ...unionWrapRefLines(host, to.unionId, arm.tag, arm.arm, `%${prefix}r`, `%${prefix}u`),
+      `  call void @scr_arr_set_ref(ptr %a, double %i, ptr %${prefix}u)`,
+      `  ret void`,
+    ];
+  };
+  let valueLines: string[];
+  if (from.kind === "void") {
+    host.declare(`declare ptr @scr_dyn_undefined()`);
+    host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+    valueLines = [
+      `  %fx = call ptr @scr_dyn_undefined()`,
+      `  %fv = call ptr @scr_dyn_retain_v(ptr %fx)`,
+    ];
+  } else if (from.kind === "f64") {
+    host.declare(`declare double @scr_promise_payload_f64(ptr)`);
+    valueLines = [`  %fv = call double @scr_promise_payload_f64(ptr %src)`];
+  } else if (from.kind === "bool") {
+    host.declare(`declare zeroext i1 @scr_promise_payload_bool(ptr)`);
+    valueLines = [
+      `  %fb = call zeroext i1 @scr_promise_payload_bool(ptr %src)`,
+      `  %fv = zext i1 %fb to i8`,
+    ];
+  } else if (from.kind === "string") {
+    host.declare(`declare ptr @scr_promise_payload_str(ptr)`);
+    valueLines = [`  %fv = call ptr @scr_promise_payload_str(ptr %src)`];
+  } else {
+    host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
+    valueLines = [`  %fv = call ptr @scr_promise_payload_ref(ptr %src)`];
+  }
+  host.resolveThunkDefs.push(
+    `define internal void @${sym}(ptr %a, double %i, ptr %src) ${FN_ATTRS} { ; settled ${key}`,
+    `entry:`,
+    `  %rej = call zeroext i1 @scr_promise_is_rejected(ptr %src)`,
+    `  br i1 %rej, label %rejected, label %fulfilled`,
+    `fulfilled:`,
+    ...recordLines("f", fulfilled, "fulfilled", "value", valueT, valueLines),
+    `rejected:`,
+    ...recordLines("r", rejected, "rejected", "reason", { kind: "dyn" }, [
+      `  %rv = call ptr @scr_promise_reason_dyn(ptr %src)`,
+    ]),
     `}`,
     ``,
   );

@@ -1,4 +1,5 @@
-import { dynUndefinedExpr, nodeThrowExpr } from "../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
+import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { collectClassMethodMutations } from "./class-method-mutations.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Class lowering: shape collection over the single-inheritance graph
@@ -1838,7 +1839,11 @@ export function collectClassShapeInner(
           lowerer.isStdlibGlobal(t.expression.expression, "globalThis")
             ? lowerer.builtinErrorInfoOf(resolved)
             : null;
-        if (globalError && globalError.def.name !== "%DOMException") {
+        if (
+          globalError &&
+          globalError.def.name !== "%DOMException" &&
+          globalError.def.name !== "%AggregateError"
+        ) {
           if (t.typeArguments) lowerer.unsupported("SC1090", t, "extending generic classes");
           base = globalError;
           continue;
@@ -1984,6 +1989,15 @@ export function collectClassShapeInner(
           "SC1090",
           t,
           "extending DOMException (its runtime layout carries hidden slots a subclass would overlap — extend Error and set name/code yourself)",
+        );
+      }
+      // `extends AggregateError`: the errors list is the same kind of
+      // hidden runtime slot.
+      if (lowerer.builtinErrorInfoOf(symbol)?.def.name === "%AggregateError") {
+        lowerer.unsupported(
+          "SC1090",
+          t,
+          "extending AggregateError (its runtime layout carries a hidden errors slot a subclass would overlap — extend Error and keep the list in a field)",
         );
       }
       const named =
@@ -7881,6 +7895,66 @@ function inheritsBuiltinStreamCtor(lowerer: Lowerer, info: ClassInfo): boolean {
 /** Preserve argument evaluation order and option presence through builtin
  * and inherited Error constructors. Checked-dynamic conversion retains
  * Error identity and distinguishes a missing cause from undefined. */
+/** `new AggregateError(errors, message, options)` in the spec's order:
+ * the message and cause install first, then `errors` iterates (a
+ * non-iterable throws out of the constructor). */
+function aggregateErrorConstructor(lowerer: Lowerer, loc: SrcLoc): string {
+  const name = "%aggregate.new";
+  if (lowerer.liftedFns.some((fn) => fn.name === name)) return name;
+  const type: IrType = { kind: "object", className: "%AggregateError" };
+  const context = newFnCtx(false, null, null, type);
+  lowerer.fnStack.push(context);
+  try {
+    const params = ["errors", "message", "options"].map((id) => ({
+      localId: id,
+      name: id,
+      type: DYN,
+    }));
+    const error = varRef("error", type, loc);
+    const list = checkedIterableSpread(lowerer, varRef("errors", DYN, loc), "", loc);
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: type,
+      locals: [
+        ...params.map((p) => ({ id: p.localId, name: p.name, type: DYN, mutable: false })),
+        { id: "error", name: "error", type, mutable: false },
+        ...context.locals,
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "error",
+          init: {
+            kind: "libCall",
+            fn: "error.newAggregate",
+            args: [varRef("message", DYN, loc), varRef("options", DYN, loc)],
+            type,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "error.aggregateSetErrors",
+            args: [error, list],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+        { kind: "return", value: error, loc },
+      ],
+      loc,
+    });
+  } finally {
+    lowerer.fnStack.pop();
+  }
+  return name;
+}
+
 export function errorConstructorArgs(
   lowerer: Lowerer,
   args: readonly ts.Expression[],
@@ -8325,6 +8399,20 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         fn: "error.newDom",
         args: [msgArg, nameArg],
         type: { kind: "object", className: "%DOMException" },
+        loc,
+      };
+    }
+    if (errInfo && errInfo.def.name === "%AggregateError") {
+      const args = expr.arguments ?? [];
+      if (args.length > 3 || args.some(ts.isSpreadElement)) {
+        lowerer.noLowering(`new AggregateError with this argument list`, expr);
+      }
+      const errors = args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynUndefinedExpr(loc);
+      return {
+        kind: "call",
+        callee: aggregateErrorConstructor(lowerer, loc),
+        args: [errors, ...lowerer.errorConstructorArgs(args.slice(1), loc, expr)],
+        type: { kind: "object", className: "%AggregateError" },
         loc,
       };
     }

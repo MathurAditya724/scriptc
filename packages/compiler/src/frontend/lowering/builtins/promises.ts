@@ -1,4 +1,5 @@
 import { checkedPromiseAll } from "../checked-promise-all.js";
+import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
@@ -211,12 +212,43 @@ export function lowerPromiseStaticCall(
     return { kind: "intrinsic", name: "promise.all", args: [entries], type: resultT, loc };
   }
   if (member === "allSettled" || member === "any") {
-    lowerer.noLowering(
-      `Promise.${member}`,
-      call,
-      "await each element in a loop (Promise.all compiles over a Promise<T>[] array, " +
-        "Promise.race over an array literal)",
-    );
+    const argNode = call.arguments.length === 1 ? call.arguments[0]! : null;
+    if (!argNode || ts.isSpreadElement(argNode)) {
+      lowerer.noLowering(
+        `Promise.${member} with this argument shape`,
+        call,
+        `one iterable of promises is the supported form: Promise.${member}(ps)`,
+      );
+    }
+    if (isJsSourceFile(call.getSourceFile())) {
+      // JavaScript entries are checked-dynamic: any iterable, thenables
+      // and plain values included, exactly like Promise.all.
+      if (ts.isArrayLiteralExpression(argNode) && !argNode.elements.some(ts.isSpreadElement)) {
+        const elems = argNode.elements.map((el) => lowerer.lowerExpr(el));
+        if (elems.every((entry) => lowerer.dynConvertible(entry.type))) {
+          const entries: IrExpr = {
+            kind: "arrayLit",
+            elems: elems.map((entry) => lowerer.coerceToExpected(entry, DYN)),
+            type: arrayOf(DYN),
+            loc,
+          };
+          return checkedPromiseAll(lowerer, entries, loc, member);
+        }
+      } else {
+        const entries = lowerer.lowerExpr(argNode);
+        // A typed promise array keeps its typed lowering.
+        if (entries.type.kind === "array" && entries.type.elem.kind === "promise")
+          return lowerTypedSettledCombinator(lowerer, call, argNode, member, entries);
+        if (entries.type.kind === "dyn" || lowerer.dynConvertible(entries.type))
+          return checkedPromiseAll(lowerer, entries, loc, member);
+      }
+      lowerer.noLowering(
+        `Promise.${member} over this argument shape`,
+        argNode,
+        "the entries must be representable as checked-dynamic values",
+      );
+    }
+    return lowerTypedSettledCombinator(lowerer, call, argNode, member);
   }
   // Promise.withResolvers<T>(): the executor pieces without an
   // executor — a pending promise plus its runtime resolve/reject
@@ -397,4 +429,117 @@ export function lowerPromiseStaticCall(
     return { kind: "intrinsic", name: "promise.resolve", args: [value], type: resultT, loc };
   }
   return null; // reject lands on lowerPromiseRejectCall / the member fence
+}
+
+/** The entries of a typed Promise.allSettled / Promise.any: ONE promise
+ * type, as an expression of type Promise<T>[] or a uniform array literal
+ * (the Promise.all bound — a heterogeneous literal is a tuple). */
+function typedPromiseEntries(
+  lowerer: Lowerer,
+  argNode: ts.Expression,
+  member: string,
+  lowered: IrExpr | undefined,
+): IrExpr {
+  const loc = locOf(argNode);
+  let entries: IrExpr;
+  if (lowered) {
+    entries = lowered;
+  } else if (
+    ts.isArrayLiteralExpression(argNode) &&
+    !argNode.elements.some(ts.isSpreadElement) &&
+    argNode.elements.length > 0
+  ) {
+    const elems = argNode.elements.map((el) => lowerer.lowerExpr(el));
+    const first = elems[0]!.type;
+    if (
+      first.kind !== "promise" ||
+      !elems.every((e) => e.type.kind === "promise" && typeEquals(e.type, first))
+    ) {
+      lowerer.noLowering(
+        `Promise.${member} over this argument shape`,
+        argNode,
+        `the entries must share ONE promise type — Promise.${member}([p, q]) lowers when p and q are the same Promise<T>`,
+      );
+    }
+    entries = { kind: "arrayLit", elems, type: arrayOf(first), loc };
+  } else {
+    entries = lowerer.lowerExpr(argNode);
+  }
+  if (entries.type.kind !== "array" || entries.type.elem.kind !== "promise") {
+    lowerer.noLowering(
+      `Promise.${member} over this argument shape`,
+      argNode,
+      "an array of promises (Promise<T>[]) is the supported form",
+    );
+  }
+  return entries;
+}
+
+/** allSettled's result type. A uniform array literal lands on the tuple
+ * overload ({ [P in keyof T]: PromiseSettledResult<...> }), whose
+ * elements share one type: the result is that element's array. */
+function settledResultType(lowerer: Lowerer, call: ts.CallExpression): IrType | null {
+  const callT = lowerer.typeOf(call);
+  const awaited = lowerer.checker.getTypeArguments(callT as ts.TypeReference)[0];
+  if (awaited && lowerer.checker.isTupleType(awaited)) {
+    const elems = lowerer.checker.getTypeArguments(awaited as ts.TypeReference);
+    const elem = elems[0] ? lowerer.mapTypeOf(elems[0]) : null;
+    if (!elem || !elems.every((e) => typeEquals(lowerer.mapTypeOf(e) ?? VOID, elem))) return null;
+    return { kind: "promise", inner: arrayOf(elem) };
+  }
+  return lowerer.mapTypeOf(callT);
+}
+
+/** `Promise.allSettled(ps)` / `Promise.any(ps)` over ONE promise type:
+ * the runtime countdown combinator Promise.all rides, with Node's
+ * per-entry reaction jobs. allSettled's result is the checker's
+ * Promise<PromiseSettledResult<T>[]> — the { status, value } / { status,
+ * reason } record union; any's is the entries' own Promise<T>. */
+function lowerTypedSettledCombinator(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  argNode: ts.Expression,
+  member: "allSettled" | "any",
+  lowered?: IrExpr,
+): IrExpr {
+  const loc = locOf(call);
+  const entries = typedPromiseEntries(lowerer, argNode, member, lowered);
+  const entryT = entries.type.kind === "array" ? entries.type.elem : VOID;
+  if (entryT.kind !== "promise")
+    throw new InternalCompilerError("typedPromiseEntries admits only promise arrays");
+  if (member === "any") {
+    const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (resultT?.kind !== "promise" || !typeEquals(resultT, entryT)) {
+      lowerer.noLowering(
+        "Promise.any with this combined result type",
+        call,
+        "the entries must share ONE promise type — annotate the array (const ps: Promise<T>[] = [...])",
+      );
+    }
+    return { kind: "intrinsic", name: "promise.any", args: [entries], type: entryT, loc };
+  }
+  const resultT = settledResultType(lowerer, call);
+  const valueT = entryT.inner.kind === "void" ? DYN : entryT.inner;
+  const arms =
+    resultT?.kind === "promise" &&
+    resultT.inner.kind === "array" &&
+    resultT.inner.elem.kind === "union"
+      ? (lowerer.unions.get(resultT.inner.elem.unionId)?.arms ?? [])
+      : [];
+  const fieldsOf = (arm: IrType) =>
+    arm.kind === "record" ? (lowerer.shapes.get(arm.shapeId)?.fields ?? []) : [];
+  const fulfilled = arms.find((arm) => fieldsOf(arm).some((f) => f.name === "value"));
+  if (
+    resultT?.kind !== "promise" ||
+    arms.length !== 2 ||
+    fulfilled === undefined ||
+    !typeEquals(fieldsOf(fulfilled).find((f) => f.name === "value")!.type, valueT)
+  ) {
+    lowerer.noLowering(
+      "Promise.allSettled with this combined result type",
+      call,
+      "the entries must share ONE promise type — annotate the array (const ps: Promise<T>[] = [...])",
+    );
+  }
+  return { kind: "intrinsic", name: "promise.allSettled", args: [entries], type: resultT, loc };
 }
