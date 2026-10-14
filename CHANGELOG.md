@@ -6,6 +6,39 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.3.2
+
+### Features
+
+- **`Promise.allSettled` and `Promise.any`** are supported in typed and JavaScript code, with Node's microtask order, `AggregateError`, and `PromiseSettledResult` records. JavaScript combinators adopt thenables.
+- **`yield*` delegates to arrays, strings, Sets and Maps,** forwards typed `next` values, `return()` and `throw()`, and a finished generator's `.value` reads as `undefined`.
+- **The global console is complete:** `assert`, `count`/`countReset`, `dir`/`dirxml`, `group*`, `table`, `time`/`timeLog`/`timeEnd`, `clear` and `profile`/`timeStamp` print Node's output.
+- **`node:os` is complete,** and `path.parse`, `path.format` and `path.matchesGlob` are supported for the posix and win32 families.
+- **`util.inherits`, `util.deprecate`, `util.callbackify` and `util.debuglog`** follow Node 24, including `NODE_DEBUG`, `process.noDeprecation` and `process.throwDeprecation`.
+- **`LifetimeRegion` in `@scriptc/experimental`** frees `ProgramLifetime` instances one generation at a time. A watch-style compiler benchmark stays at 190 MB after 10 builds.
+
+### Performance
+
+- **Short-lived number records and objects live in the function's frame.** Records and small class instances with number and boolean fields that are only read, updated by their own methods, or returned unchanged are not heap-allocated, including results of functions that return a fresh object.
+- **Maybe-missing number reads stay unboxed,** and directly called functions returning `number | undefined` return the tag and payload in registers.
+- **Arrays and objects use less memory.** `boolean[]` stores one byte per element, small appended arrays keep their first elements in the array's own block, and cycle-capable objects carry an 8-byte header instead of 16 bytes.
+- **Sorting with a recognized numeric comparator sorts by key** without calling the comparator, for `number[]` and arrays of records or class instances.
+- **Regex `replace`, `match` and capture reads are faster.** Compiled matchers write replacements directly, and captures that are only compared or converted to numbers are not copied into strings.
+- **`for...in`, `Object.keys` and `Object.entries` over values typed `unknown` or `any`** build native arrays from the record layout or the object's own keys.
+- **Calls through function-typed class fields** box the receiver only when the callee reads `this`.
+- **Indexed non-ASCII string scans, `split("")`, template literals and `join` are faster.**
+
+### Fixes
+
+- **Strings keep lone UTF-16 surrogates.** Strings are stored as canonical WTF-8, so lone surrogates survive literals, `split("")`, `charAt`, `slice`, `fromCharCode` and `JSON.parse`, and output streams write them as U+FFFD as Node does.
+- **A `var` read before its first store reads `undefined`,** and classes used before their declaration runs throw a `ReferenceError`.
+- **Reflection over typed values seen as `unknown` matches Node:** `in` sees prototype members, `for...in` walks class instances, typed records work as prototypes, and `JSON.stringify` accepts array replacers.
+- **Microtask and event order match Node** for `Promise.all`, `Promise.race`, async generator returns, and fork IPC `exit`, `disconnect` and `close` events.
+- **Module initializers that only `++` or `--` a binding run.**
+- **Native program objects use runtime ABI v20.** Array and object layouts changed, so external object consumers must link the matching v0.3.2 runtime pack; the versioned marker rejects incompatible runtime objects at link time.
+
+<!-- release:end -->
+
 ## 0.3.1
 
 ### Features
@@ -32,8 +65,6 @@ All notable changes to scriptc will be documented in this file.
 - **`return p` in an async function takes Node's microtask turns,** and a rejection of the returned promise reaches the caller instead of the function's own `catch`.
 - **Core dumps leave out the allocator's untouched reservation,** so crashing programs no longer write gigabytes of empty memory, and glibc's heap is left to the huge-page policy.
 - **Native program objects use runtime ABI v17.** Array, closure and regex layouts changed, so external object consumers must link the matching v0.3.1 runtime pack; the versioned marker rejects incompatible runtime objects at link time.
-
-<!-- release:end -->
 
 ## 0.3.0
 
