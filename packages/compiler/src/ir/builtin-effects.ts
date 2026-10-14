@@ -322,6 +322,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.classInherit",
   "dyn.classSuper",
   "dyn.hasKey",
+  "dyn.in",
   "child.kill",
   // The caller's lookup runs synchronously inside the connect call — a
   // throw there propagates like Node's.

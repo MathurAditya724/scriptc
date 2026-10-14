@@ -310,8 +310,10 @@ export function classPropertiesHelper(lowerer: Lowerer, loc: SrcLoc, readOnly = 
   return helper;
 }
 
-/** A for-in presence recheck needs only the live property table, avoiding
- * value conversion or a dispatch branch for every possible member name. */
+/** A for-in presence recheck asks the live property table first, avoiding
+ * value conversion or a dispatch branch for every possible member name.
+ * Declared fields of a compiled class live in its native layout rather
+ * than that table, so a miss rechecks the instance itself. */
 export function classForInHasKey(
   lowerer: Lowerer,
   value: IrExpr,
@@ -335,18 +337,31 @@ export function classForInHasKey(
         {
           kind: "return",
           value: {
-            kind: "libCall",
-            fn: "dyn.hasKey",
-            args: [
-              {
-                kind: "call",
-                callee: classPropertiesHelper(lowerer, loc).name,
-                args: [varRef("value", DYN, loc)],
-                type: DYN,
-                loc,
-              },
-              varRef("key", STRING, loc),
-            ],
+            kind: "logical",
+            op: "||",
+            left: {
+              kind: "libCall",
+              fn: "dyn.hasKey",
+              args: [
+                {
+                  kind: "call",
+                  callee: classPropertiesHelper(lowerer, loc).name,
+                  args: [varRef("value", DYN, loc)],
+                  type: DYN,
+                  loc,
+                },
+                varRef("key", STRING, loc),
+              ],
+              type: BOOL,
+              loc,
+            },
+            right: {
+              kind: "libCall",
+              fn: "dyn.hasKey",
+              args: [varRef("value", DYN, loc), varRef("key", STRING, loc)],
+              type: BOOL,
+              loc,
+            },
             type: BOOL,
             loc,
           },
@@ -1530,7 +1545,7 @@ export class ClassDynamicDispatch {
                       ...computedProbe,
                       fn:
                         probe === "in"
-                          ? "dyn.hasKey"
+                          ? "dyn.in"
                           : probe === "own"
                             ? "dyn.hasOwn"
                             : "dyn.propertyIsEnumerable",

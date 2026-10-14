@@ -149,6 +149,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * own-member presence, ARR answers 'length'/a valid index — exactly
    * the literal-key dynHasKey path. Proxy has traps may throw. */
   "dyn.hasKey": { argTypes: [DYN, STRING], result: BOOL },
+  /** The `in` operator with a runtime string key: dyn.hasKey plus the
+   * members inherited from builtin and compiled class prototypes. */
+  "dyn.in": { argTypes: [DYN, STRING], result: BOOL },
   "dyn.freeze": { argTypes: [DYN], result: DYN },
   "dyn.isFrozen": { argTypes: [DYN], result: BOOL },
   "dyn.nativeSetNew": { argTypes: [DYN], result: DYN },

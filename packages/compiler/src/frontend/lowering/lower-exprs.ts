@@ -12233,11 +12233,28 @@ function lowerPrivateIn(
   );
 }
 
+/** The string keys every record inherits from Object.prototype. */
+const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
+  "constructor",
+  "__defineGetter__",
+  "__defineSetter__",
+  "hasOwnProperty",
+  "__lookupGetter__",
+  "__lookupSetter__",
+  "isPrototypeOf",
+  "propertyIsEnumerable",
+  "toString",
+  "valueOf",
+  "__proto__",
+  "toLocaleString",
+]);
+
 /** `"key" in v` — the key-presence test. Three lowered receivers:
  * process.env (getenv(3) presence — Node-exact, an empty value still
  * counts as present), and monomorphic record shapes, where the answer is
  * type-directed: a declared non-optional field is a compile-time `true`,
- * a missing field (no index signature) a compile-time `false` — both
+ * a missing field (no index signature) a compile-time `false` unless
+ * Object.prototype has it — both
  * folds limited to side-effect-free receivers, the lowerInstanceOf rule —
  * and an OPTIONAL field (undefined-armed union) is a runtime presence
  * test on the slot: an omitted or deleted property is absent, while a
@@ -12511,7 +12528,13 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
         break;
       }
       const f = shape.fields.find((x) => x.name === key);
-      if (f && f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0) {
+      const inherited = OBJECT_PROTOTYPE_KEYS.has(key);
+      if (
+        f &&
+        !inherited &&
+        f.type.kind === "union" &&
+        lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0
+      ) {
         staticAnswers = false; // an optional slot: presence is per-value
         break;
       }
@@ -12519,7 +12542,7 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
       // true without invoking the getter) — either slot present makes
       // the name a member.
       const acc = shape.fields.some((x) => x.name === `%get:${key}` || x.name === `%set:${key}`);
-      answers.push({ tag, has: f !== undefined || acc });
+      answers.push({ tag, has: f !== undefined || acc || inherited });
     }
     if (staticAnswers) {
       const pureRecv =
@@ -12592,7 +12615,11 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
   if (!shape) throw new InternalCompilerError(`lowerer bug: unknown shape ${recv.type.shapeId}`);
   const field = shape.fields.find((f) => f.name === key);
   if (field) {
-    if (field.type.kind === "union" && lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0) {
+    if (
+      !OBJECT_PROTOTYPE_KEYS.has(key) &&
+      field.type.kind === "union" &&
+      lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0
+    ) {
       // Optional slot: the key is present unless the field is absent
       // (omitted or deleted); an explicit undefined is present.
       return lowerer.recordFieldPresent(recv, recv.type.shapeId, key, loc);
@@ -12632,7 +12659,9 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
       "statically-decided 'in' on computed receivers (bind the value to a variable first)",
     );
   }
-  if (shape.indexValue) {
+  // Records are ordinary objects: Object.prototype's members are in them.
+  const inherited = OBJECT_PROTOTYPE_KEYS.has(key);
+  if (shape.indexValue && !inherited) {
     lowerer.unsupported(
       "SC1090",
       expr,
@@ -12645,7 +12674,7 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
     recv.kind === "fieldGet" ||
     pureRecvNode
   ) {
-    return { kind: "boolLit", value: false, type: BOOL, loc };
+    return { kind: "boolLit", value: inherited, type: BOOL, loc };
   }
   lowerer.unsupported(
     "SC1090",
@@ -12704,9 +12733,35 @@ function lowerRuntimeKeyIn(
     // Overflow keys answer through the map's hashed presence probe (a
     // stored undefined value is still present), not a scan over a fresh
     // key snapshot, which made `k in dict` loops quadratic.
-    body.push(
-      ret({ kind: "recordOvfHas", obj: r, shapeId: recvT.shapeId, key: k, type: BOOL, loc }),
-    );
+    const ovfHas: IrExpr = {
+      kind: "recordOvfHas",
+      obj: r,
+      shapeId: recvT.shapeId,
+      key: k,
+      type: BOOL,
+      loc,
+    };
+    // A miss in the record's own keys still finds Object.prototype's.
+    let inherited: IrExpr = ovfHas;
+    for (const name of OBJECT_PROTOTYPE_KEYS) {
+      if (shape.fields.some((f) => f.name === name)) continue;
+      inherited = {
+        kind: "logical",
+        op: "||",
+        left: inherited,
+        right: {
+          kind: "strEq",
+          negated: false,
+          left: k,
+          right: { kind: "strLit", value: name, type: STRING, loc },
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      };
+    }
+    body.push(ret(inherited));
     lowerer.liftedFns.push({
       name: helper,
       params: [
