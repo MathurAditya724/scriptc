@@ -1607,7 +1607,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // changing this public representation. This is dynFallbackType's JS stance promoted into
     // the mapping itself; construction sites build dynArrLit (the checked-dynamic tree
     // array literal) and typed sources convert per element at the slot.
-    if (elem.kind === "dyn") return DYN;
+    // Arrays of class-backed protocol values are the exception: each
+    // element is one checked-dynamic value (a class capsule or an object),
+    // so a native array of them keeps every element's identity and passes
+    // method calls a receiver they can dispatch.
+    if (elem.kind === "dyn") return ctx.classImplementedProtocol?.(elemTs) ? arrayOf(DYN) : DYN;
     // The shared predicate is the runtime/backend storage contract. In
     // particular, valid standalone values such as Date and opaque
     // handles do not automatically have an array element representation.

@@ -280,6 +280,35 @@ function lowerArrayJoinSeparator(
  * direct call of a synthetic loop function (see lowerArrayHofCall and
  * friends). Null when this isn't an ambient array method call. tsc has
  * already checked arity and argument types against ambient/scriptc.d.ts. */
+/** Methods with native lowerings for arrays of checked-dynamic elements. */
+const DYN_ELEMENT_METHODS = new Set([
+  "copyWithin",
+  "every",
+  "fill",
+  "filter",
+  "findIndex",
+  "findLastIndex",
+  "flatMap",
+  "forEach",
+  "join",
+  "map",
+  "pop",
+  "push",
+  "reduce",
+  "reduceRight",
+  "reverse",
+  "shift",
+  "slice",
+  "some",
+  "sort",
+  "splice",
+  "toReversed",
+  "toSorted",
+  "toSpliced",
+  "unshift",
+  "with",
+]);
+
 export function lowerArrayMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -398,6 +427,18 @@ export function lowerArrayMethodCall(
     if (receiver.type.kind === "array" && !typeEquals(receiverIr, receiver.type)) {
       receiverIr = receiver.type;
       elem = receiver.type.elem;
+    }
+    // Arrays of checked-dynamic elements (arrays of class-backed protocol
+    // values) lower natively for the methods below. Other methods run on the
+    // array's live checked-dynamic view, which shares its storage.
+    if (elem.kind === "dyn" && !DYN_ELEMENT_METHODS.has(name)) {
+      const view = lowerer.coerceInto(access.expression, receiver, DYN);
+      const dispatched = lowerDynDispatchMethodCall(lowerer, call, access, view, true);
+      if (!dispatched) return null;
+      const result = lowerer.mapTypeOf(lowerer.typeOf(call));
+      return result && result.kind !== "void" && result.kind !== "dyn"
+        ? lowerer.coerceInto(call, dispatched, result)
+        : dispatched;
     }
   }
   if (name === "sort" || name === "toSorted") {

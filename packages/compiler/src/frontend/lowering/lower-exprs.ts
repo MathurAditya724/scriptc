@@ -1,3 +1,4 @@
+import { lowerProtocolPropertyRead } from "./class-protocol-dispatch.js";
 import { generatorDrain } from "./iterator-adapters.js";
 import { lowerEventStaticProperty } from "./builtins/numbers.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
@@ -2126,6 +2127,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     {
       const tm = lowerCjsExportTableThisMember(lowerer, expr);
       if (tm) return tm;
+    }
+    // Property signatures of class-backed protocols read implementing
+    // classes' fields directly.
+    if (!hasOptionalChainGuard(expr.expression)) {
+      const typed = lowerProtocolPropertyRead(lowerer, expr);
+      if (typed) return typed;
     }
     const handled =
       lowerer.lowerProcessEnvGet(expr) ??

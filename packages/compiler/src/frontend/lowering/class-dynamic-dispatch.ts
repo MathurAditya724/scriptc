@@ -63,7 +63,7 @@ import { CaughtValueDispatch } from "./caught-value-dispatch.js";
 import { refreshDescriptorGuards } from "./class-descriptors.js";
 import { ClassConstructionDispatch } from "./class-construction.js";
 import { emitterRooted } from "./lower-event-emitter.js";
-import { protocolArm } from "./class-protocol-dispatch.js";
+import { protocolArm, protocolFieldArm } from "./class-protocol-dispatch.js";
 
 const STREAM_METHODS = new Set([
   "on",
@@ -2258,15 +2258,17 @@ export class ClassDynamicDispatch {
       for (const plan of this.propertyReceivers(lowerer)) {
         if (
           plan.info !== plan.capsule ||
-          !candidates(dispatch.method).includes(plan.info) ||
-          dispatch.classes.has(plan.key)
+          dispatch.classes.has(plan.key) ||
+          (!dispatch.field && !candidates(dispatch.method).includes(plan.info))
         )
           continue;
         dispatch.classes.add(plan.key);
         const loc = dispatch.fn.loc;
         const type: IrType = { kind: "object", className: plan.info.def.name };
         const receiver: IrExpr = { kind: "dynCheck", value: varRef("p.0", DYN, loc), type, loc };
-        const arm = protocolArm(lowerer, dispatch, plan.info, receiver, this.asyncFree);
+        const arm = dispatch.field
+          ? protocolFieldArm(lowerer, dispatch, plan.info, receiver)
+          : protocolArm(lowerer, dispatch, plan.info, receiver, this.asyncFree);
         if (!arm) continue;
         const condition = (): IrExpr => ({
           kind: "libCall",
