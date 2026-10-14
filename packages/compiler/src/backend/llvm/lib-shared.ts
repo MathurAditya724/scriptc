@@ -592,6 +592,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.seenPush": "scr_insp_seen_push",
   "insp.refWrap": "scr_insp_ref_wrap",
   "insp.circular": "scr_insp_circular",
+  // Undeclared source properties kept beside a checked record (scr_json.c).
+  "record.sourceHas": "scr_record_source_has",
   // WHATWG URL + URLSearchParams (scr_url.c / scr_url_params.c):
   // constructions +1; url.new, the fileURLToPath pair, the win32
   // pathToFileURL flavor, and sp.fromPairs throw catchably (may-throw).

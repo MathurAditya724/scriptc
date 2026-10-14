@@ -110,6 +110,7 @@ import {
   perfEntryTag,
 } from "./builtins/performance.js";
 import { lowerProcStreamMethodCall } from "./builtins/process.js";
+import { recordMayKeepSource, throughRecordSource } from "./record-sources.js";
 import { lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
@@ -7584,11 +7585,33 @@ function lowerObjectStaticCall(
     member === "entries" && consumesEntryPairs(call)
       ? runtimeOptionalEntriesType(lowerer, argIr, checkedT)
       : checkedT;
-  const receiver = objectEnumerationReceiver(lowerer, lowerer.lowerExpr(argNode), argIr, loc);
+  const enumerated = objectEnumerationReceiver(lowerer, lowerer.lowerExpr(argNode), argIr, loc);
+  // A record that kept undeclared properties of its checked source answers
+  // from its live checked view (values checked into the static result).
+  const recordT = argIr;
+  const sourced = (staticAnswer: (record: IrExpr) => IrExpr): IrExpr =>
+    recordMayKeepSource(lowerer, recordT)
+      ? throughRecordSource(lowerer, enumerated, loc, staticAnswer, (view, type) =>
+          member === "keys"
+            ? { kind: "libCall", fn: "dyn.objKeyStrings", args: [view], type, loc }
+            : {
+                kind: "dynCheck",
+                value: {
+                  kind: "libCall",
+                  fn: member === "values" ? "dyn.objValues" : "dyn.objEntries",
+                  args: [view],
+                  type: DYN,
+                  loc,
+                },
+                type,
+                loc,
+              },
+        )
+      : staticAnswer(enumerated);
   if (member === "keys") {
     // The keys walk is shared with for-in (which iterates exactly the
     // keys Object.keys answers — one construction, one intern key).
-    return recordKeysArrayCall(lowerer, receiver, argIr, shape, loc);
+    return sourced((receiver) => recordKeysArrayCall(lowerer, receiver, argIr, shape, loc));
   }
 
   // The result-element type each field's value flows into: string for
@@ -7808,7 +7831,8 @@ function lowerObjectStaticCall(
     lowerer.shapeOrderHelperFinalizers.push(finalize);
     lowerer.liftedFns.push(fn);
   }
-  return { kind: "call", callee: helper, args: [receiver], type: resultT, loc };
+  const callee = helper;
+  return sourced((receiver) => ({ kind: "call", callee, args: [receiver], type: resultT, loc }));
 }
 
 /** An entries array consumed pair by pair right where it is built: a

@@ -28,6 +28,7 @@ import {
   traceAdapter,
   type ShapeHost,
 } from "./shapes.js";
+import { recordMayKeepSource, recordSourceFieldOrder } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
@@ -53,6 +54,7 @@ const FN_ATTRS = "#0";
 
 export class LlWalkers {
   private readonly jsonWriters = new Map<string, string>();
+  private readonly recordFieldWriters = new Map<string, string>();
   private readonly unionJoinFns = new Map<string, string>();
   /** Emitted function definitions, in interning order. */
   readonly defs: string[] = [];
@@ -286,6 +288,7 @@ export class LlWalkers {
         `llvm emitter bug: jsonStringify of unknown shape ${shapeId}`,
       );
     const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+    if (recordMayKeepSource(shape)) this.emitRecordSourceWriter(B, shapeId);
     // CYCLE-CAPABLE shapes bracket the walk with the circular-detection
     // stack; edge labels stamp before members whose walk can re-enter —
     // walkers.ts's contract, ported.
@@ -379,6 +382,124 @@ export class LlWalkers {
     }
     this.putc(B, "%b", "125"); // '}'
     if (cyclic) this.jbLeave(B);
+  }
+
+  /** A record that kept the undeclared properties of its checked source
+   * (scr_record_source_note) serializes in the source's own-key order: the
+   * runtime walks the kept keys, writing declared fields through the
+   * shape's field writer and the others through the dyn writer, which may
+   * throw (a BigInt added through an untyped reference) — the stringify
+   * site checks pending. */
+  private emitRecordSourceWriter(B: BlockBuilder, shapeId: string): void {
+    const host = this.host;
+    host.declare(`declare zeroext i1 @scr_record_source_has(ptr)`);
+    const has = B.tmp();
+    B.line(`${has} = call zeroext i1 @scr_record_source_has(ptr %v)`);
+    const lSource = B.newLabel("jw.source");
+    const lNative = B.newLabel("jw.native");
+    B.condBr(has, lSource, lNative);
+    B.startBlock(lSource);
+    const cyclic = traceAdapter(host, { kind: "record", shapeId }) !== null;
+    if (cyclic) this.jbEnter(B, false);
+    host.declare(`declare void @scr_jb_put_record_source(ptr, ptr, ptr)`);
+    B.line(
+      `call void @scr_jb_put_record_source(ptr %b, ptr %v, ptr @${this.recordFieldWriter(shapeId)})`,
+    );
+    if (cyclic) this.jbLeave(B);
+    B.terminate("ret void");
+    B.startBlock(lNative);
+  }
+
+  /** `sc_jwf_<n>(ptr b, ptr v, size index, i1 first) -> i1`: writes the
+   * separator, key and value of the field at `index` in the shape's
+   * declaration order (record-sources.ts) and answers true, or writes
+   * nothing and answers false for an absent or undefined-valued optional
+   * field and for internal '%'-fields. */
+  private recordFieldWriter(shapeId: string): string {
+    const existing = this.recordFieldWriters.get(shapeId);
+    if (existing) return existing;
+    const shape = this.host.recordsById.get(shapeId);
+    if (!shape)
+      throw new InternalCompilerError(`llvm emitter bug: field writer of unknown shape ${shapeId}`);
+    const name = `sc_jwf_${this.recordFieldWriters.size}`;
+    this.recordFieldWriters.set(shapeId, name);
+    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+    const byName = new Map(shape.fields.map((f) => [f.name, f]));
+    const cyclic = traceAdapter(this.host, { kind: "record", shapeId }) !== null;
+    const order = recordSourceFieldOrder(shape);
+    const B = new BlockBuilder();
+    const lSkip = B.newLabel("jwf.skip");
+    const labels = order.map(() => B.newLabel("jwf.field"));
+    B.terminate(
+      `switch ${this.S} %i, label %${lSkip} [${order.map((_, i) => ` ${this.S} ${i}, label %${labels[i]}`).join("")} ]`,
+    );
+    order.forEach((fieldName, i) => {
+      B.startBlock(labels[i]!);
+      const f = byName.get(fieldName)!;
+      if (fieldName.startsWith("%")) {
+        B.terminate("ret i1 false");
+        return;
+      }
+      const v = this.loadField(B, "%v", shapeId, fieldIndex.get(fieldName)!, f.type);
+      const utag = undefinedArmTag(f.type, this.host.unionsById);
+      if (utag >= 0 && f.type.kind === "union") {
+        const tag = this.unionTag(B, v, f.type.unionId);
+        const isUndefined = B.tmp();
+        B.line(`${isUndefined} = icmp eq i32 ${tag}, ${utag}`);
+        const lWrite = B.newLabel("jwf.write");
+        B.condBr(isUndefined, lSkip, lWrite);
+        B.startBlock(lWrite);
+      }
+      const lComma = B.newLabel("jwf.comma");
+      const lKey = B.newLabel("jwf.key");
+      B.condBr("%first", lKey, lComma);
+      B.startBlock(lComma);
+      this.putc(B, "%b", "44"); // ','
+      B.br(lKey);
+      B.startBlock(lKey);
+      this.puts(B, "%b", jsonObjectKeyLabel(fieldName));
+      if (cyclic && traceAdapter(this.host, f.type) !== null) this.jbEdgeProp(B, fieldName);
+      B.line(
+        `call void @${this.jsonWriteHelper(f.type)}(ptr %b, ${this.valTy(f.type)} ${v}) ; ${llvmCommentText(fieldName)}`,
+      );
+      B.terminate("ret i1 true");
+    });
+    B.startBlock(lSkip);
+    B.terminate("ret i1 false");
+    this.defs.push(
+      `define internal zeroext i1 @${name}(ptr %b, ptr %v, ${this.S} %i, i1 zeroext %first) ${FN_ATTRS} { ; kept-source fields of ${shapeId}`,
+      B.render(),
+      `}`,
+      ``,
+    );
+    return name;
+  }
+
+  /** Whether the walker for `t` can leave an exception pending: cyclic
+   * values, and records serialized through a kept checked source. */
+  jsonWriteMayThrow(t: IrType, seen = new Set<string>()): boolean {
+    if (traceAdapter(this.host, t) !== null) return true;
+    switch (t.kind) {
+      case "array":
+        return this.jsonWriteMayThrow(t.elem, seen);
+      case "union":
+        return (this.host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
+          this.jsonWriteMayThrow(arm, seen),
+        );
+      case "record": {
+        if (seen.has(t.shapeId)) return false;
+        seen.add(t.shapeId);
+        const shape = this.host.recordsById.get(t.shapeId);
+        if (!shape) return false;
+        if (recordMayKeepSource(shape)) return true;
+        return (
+          shape.fields.some((f) => this.jsonWriteMayThrow(f.type, seen)) ||
+          (shape.indexValue !== undefined && this.jsonWriteMayThrow(shape.indexValue, seen))
+        );
+      }
+      default:
+        return false;
+    }
   }
 
   /** Overflow entries follow the declared fields, in JS OWN-KEY order

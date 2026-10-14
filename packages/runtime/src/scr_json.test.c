@@ -412,6 +412,7 @@ static void test_item_release(void *ptr) {
   scr_str_release(item->sku);
   scr_arr_release(item->tags);
   test_items_live--;
+  scr_weak_dispose(item); /* emitted record frees notify the dispose hook */
   free(item);
 }
 
@@ -465,6 +466,7 @@ static void test_pair_release(void *ptr) {
   TestPair *pair = ptr;
   if (!pair || --pair->rc) return;
   test_pairs_live--;
+  scr_weak_dispose(pair); /* emitted record frees notify the dispose hook */
   free(pair);
 }
 static const ScrJsonSchemaField test_pair_fields[] = {
@@ -487,6 +489,7 @@ static void json_schema_special_names(void) {
   test_pair_release(pair);
   pair = pair_parse("{\"c\\\\d\":4,\"a\\u0022b\":3}");
   assert(pair && pair->quoted == 3 && pair->slashed == 4);
+  assert(scr_record_source_has(pair)); /* members out of declaration order */
   test_pair_release(pair);
   /* Raw bytes equal to a name are not that name: the key ends at the
    * quote, and a lone backslash starts an escape. */
@@ -514,9 +517,23 @@ static void json_schema_parse(void) {
   TestItem *second = scr_arr_get_ref(list, 1);
   assert(second->qty == 0 && signbit(second->qty) && second->ok == 0 && second->tags->len == 0);
   assert(str_is(second->sku, "\xF0\x9F\x98\x80"));
+  /* The undeclared key and the reordered members stay beside the record in
+   * source order; the record in declaration order keeps nothing. */
+  assert(!scr_record_source_has(first));
+  assert(scr_record_source_has(second));
+  const ScrDyn *view = scr_record_source_view(second);
+  static const char *const order[] = {"tags", "ok", "extra", "qty", "sku"};
+  assert(view->kind == SCR_DYN_OBJ && view->v.obj.len == 5);
+  for (size_t i = 0; i < 5; i++) {
+    assert(view->v.obj.entries[i].key_len == strlen(order[i]));
+    assert(memcmp(view->v.obj.entries[i].key, order[i], strlen(order[i])) == 0);
+  }
+  assert(scr_dyn_obj_get(view, "extra", 5)->kind == SCR_DYN_OBJ);
   test_item_release(second);
+  assert(scr_record_source_has(second)); /* the list still holds it */
   scr_arr_release(list);
   assert(test_items_live == 0);
+  assert(!scr_record_source_has(second)); /* released with the record */
 
   list = schema_parse("[]");
   assert(list && list->len == 0);
@@ -554,7 +571,7 @@ static void json_schema_parse(void) {
   }
 
   /* Nesting beyond the checked parser's limit declines (it reports the
-   * RangeError); nesting within it is skipped. */
+   * RangeError); nesting within it is kept beside the record. */
   for (int depth = 999; depth <= 1001; depth++) {
     char text[2200];
     size_t n = 0;

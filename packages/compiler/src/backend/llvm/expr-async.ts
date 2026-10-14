@@ -14,7 +14,7 @@ import { DYN_KIND } from "./dyn.js";
 import { stringParts } from "./string-construction.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { mangleRecordNew } from "../mangle.js";
-import { arrNewCall, traceAdapter, traceArg, vAdapters } from "./shapes.js";
+import { arrNewCall, traceArg, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { settledStoreFor } from "./expr-callbacks.js";
@@ -334,10 +334,12 @@ export function emitSerializationExpr(
         B.line(`${t} = call ptr @scr_jb_finish(ptr ${buf})`);
         compact = host.own({ name: t, type: e.type });
         // A cycle-capable root can throw the circular-structure
-        // TypeError mid-walk: finish still runs (frees the buffer, the
-        // partial string joins the frame and releases on unwind), then
-        // the pending check unwinds — the runtime ABI’s contract exactly.
-        if (traceAdapter(host.shapeHost, e.value.type) !== null) host.emitPendingCheck();
+        // TypeError mid-walk, and a record serialized through its kept
+        // checked source can throw from the dyn walker: finish still runs
+        // (frees the buffer, the partial string joins the frame and
+        // releases on unwind), then the pending check unwinds — the
+        // runtime ABI’s contract exactly.
+        if (host.walkers.jsonWriteMayThrow(e.value.type)) host.emitPendingCheck();
       }
       // A pretty-print form (`stringify(v, null, 2)`): the frontend
       // resolved the space to a compile-time indent string (Node's

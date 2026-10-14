@@ -1164,6 +1164,21 @@ console.log("unreachable", uncaught);
     expect(r.stderr).toContain("Uncaught TypeError: expected number at $, got string");
   });
 
+  test("Object.values over undeclared source keys checks them into the static result", async () => {
+    // The record keeps the parsed object's undeclared keys, so Object.values
+    // answers all four values in source order; the static `number[]` result
+    // cannot hold the string, so the conversion throws instead of dropping it.
+    const r = await compileAndRun(
+      "record-source-values",
+      `const rows: { score: number }[] = JSON.parse('[{"id":1,"score":2},{"id":0,"name":"n","score":3}]');
+console.log(Object.values(rows[0]!).join(","), Object.entries(rows[0]!).length);
+try { console.log(Object.values(rows[1]!)); } catch (e) { console.log((e as Error).message); }
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("1,2 2\nexpected number at $[1], got string\n");
+  });
+
   test("a checked value RC-balances through catch-and-continue", async () => {
     // The sanitizer lane audits releases while checked values unwind.
     const r = await compileAndRun(

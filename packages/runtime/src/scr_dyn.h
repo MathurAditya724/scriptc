@@ -632,6 +632,17 @@ void scr_dyn_typed_ref_bind_array(ScrDyn *d, const ScrDynTypedArrayOps *ops);
  * for-in, Object.keys/values/entries, typeof and Array.isArray answer from
  * the native record, creating only the field values they return. */
 void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
+/* Undeclared properties of checked records (scr_json.c). The checked
+ * record builder notes its source object; a record whose source had own
+ * properties the shape does not declare keeps them, in own-key order, in a
+ * retained view released with the record. Its capsules adopt that view, and
+ * the typed serializers consult `has` to serialize through the capsule.
+ * `apply` consumes a fresh copying snapshot and returns it merged (+1). */
+void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *names,
+                            const size_t *lens, size_t count);
+bool scr_record_source_has(const void *rec);
+ScrDyn *scr_record_source_view(const void *rec);
+ScrDyn *scr_record_source_apply(ScrDyn *snapshot, const void *rec);
 /* Attach the prototype member names of a class instance capsule
  * (idempotent), so `in` sees its methods and accessors. */
 void scr_dyn_typed_ref_bind_class(ScrDyn *d, const ScrDynTypedClassOps *ops);

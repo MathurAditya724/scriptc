@@ -2239,6 +2239,271 @@ ScrDyn *scr_dyn_new_buffer(const ScrBytes *b) {
   return d;
 }
 
+/* ── Undeclared properties of checked records ──────────────────────────
+ * A checked conversion from an ordinary object into a closed record layout
+ * stores only the declared fields natively. In Node the other own
+ * properties stay on the same object, where JSON.stringify, untyped reads,
+ * Object.keys and util.inspect still observe them in insertion order. When
+ * the source carries undeclared keys, the conversion keeps a shallow copy of
+ * the source's own properties here, keyed by the native record and released
+ * when the record is freed (the native dispose hook). The copy fixes the
+ * own-key order; declared keys hold placeholders, because the record stays
+ * the source of truth for their values. It is also the record's checked
+ * view: every capsule for the record adopts it, so properties written
+ * through untyped references persist after the capsule is gone, and the
+ * typed serializers of such a record go through its capsule. */
+typedef struct {
+  void *rec;
+  ScrDyn *view;
+  /* The shape's declared names in declaration order, as static strided
+   * tables: the compiler's name/length arrays, or a JSON schema's fields. */
+  const char *names;
+  const char *lens;
+  size_t name_stride, len_stride, count;
+} ScrRecordSource;
+static SCR_TL ScrRecordSource *scr_record_sources;
+static SCR_TL size_t scr_record_source_capacity, scr_record_source_count;
+static SCR_TL bool scr_weak_observing;
+
+static size_t scr_record_source_bucket(const void *rec) {
+  uintptr_t hash = (uintptr_t)rec >> 4;
+  hash ^= hash >> 17;
+  hash *= (uintptr_t)0x9e3779b1u;
+  hash ^= hash >> 13;
+  return hash & (scr_record_source_capacity - 1);
+}
+
+static ScrRecordSource *scr_record_source_find(const void *rec) {
+  if (!scr_record_source_count) return NULL;
+  size_t mask = scr_record_source_capacity - 1;
+  for (size_t slot = scr_record_source_bucket(rec); scr_record_sources[slot].rec;
+       slot = (slot + 1) & mask) {
+    if (scr_record_sources[slot].rec == rec) return &scr_record_sources[slot];
+  }
+  return NULL;
+}
+
+/* The retained view of a record with undeclared keys (borrowed), or NULL. */
+ScrDyn *scr_record_source_view(const void *rec) {
+  ScrRecordSource *entry = scr_record_source_find(rec);
+  return entry ? entry->view : NULL;
+}
+
+bool scr_record_source_has(const void *rec) {
+  return scr_record_source_count && scr_record_source_find(rec) != NULL;
+}
+
+static void scr_weak_disposed(void *key);
+static void scr_record_source_disposed(void *rec) {
+  ScrRecordSource *found = scr_record_source_find(rec);
+  if (!found) return;
+  ScrDyn *view = found->view;
+  size_t mask = scr_record_source_capacity - 1;
+  size_t hole = (size_t)(found - scr_record_sources);
+  /* Backward-shift deletion, as in the typed-reference table. */
+  for (size_t slot = (hole + 1) & mask; scr_record_sources[slot].rec; slot = (slot + 1) & mask) {
+    size_t home = scr_record_source_bucket(scr_record_sources[slot].rec);
+    if (((slot - home) & mask) >= ((slot - hole) & mask)) {
+      scr_record_sources[hole] = scr_record_sources[slot];
+      hole = slot;
+    }
+  }
+  scr_record_sources[hole] = (ScrRecordSource){ 0 };
+  scr_record_source_count--;
+  /* The table no longer refers to the view, so a nested disposal that
+   * re-enters this hook sees a consistent table. */
+  scr_dyn_release(view);
+}
+
+/* The single native dispose hook serves weak collections and the table
+ * above; each observer runs only while it has entries to forget. */
+static void scr_dispose_observers(void *object) {
+  if (scr_weak_observing) scr_weak_disposed(object);
+  if (scr_record_source_count) scr_record_source_disposed(object);
+}
+
+static void scr_record_source_reserve(void) {
+  if (scr_record_source_capacity && scr_record_source_count < scr_record_source_capacity / 2) return;
+  size_t old_capacity = scr_record_source_capacity;
+  ScrRecordSource *old = scr_record_sources;
+  scr_record_source_capacity = old_capacity ? old_capacity * 2 : 256;
+  scr_record_sources = calloc(scr_record_source_capacity, sizeof *scr_record_sources);
+  if (!scr_record_sources) scr_json_oom();
+  for (size_t i = 0; i < old_capacity; i++) {
+    if (!old[i].rec) continue;
+    size_t slot = scr_record_source_bucket(old[i].rec);
+    while (scr_record_sources[slot].rec) slot = (slot + 1) & (scr_record_source_capacity - 1);
+    scr_record_sources[slot] = old[i];
+  }
+  free(old);
+}
+
+/* The key's position in the shape's declaration order, or count. */
+static size_t scr_record_source_index(const ScrRecordSource *source, const char *key,
+                                      size_t key_len) {
+  for (size_t i = 0; i < source->count; i++) {
+    size_t len;
+    memcpy(&len, source->lens + i * source->len_stride, sizeof len);
+    if (len != key_len) continue;
+    const char *name;
+    memcpy(&name, source->names + i * source->name_stride, sizeof name);
+    if (memcmp(name, key, key_len) == 0) return i;
+  }
+  return source->count;
+}
+
+static bool scr_record_source_declared(const ScrRecordSource *source, const char *key,
+                                       size_t key_len) {
+  return scr_record_source_index(source, key, key_len) < source->count;
+}
+
+/* Inserts (or replaces) an entry; the table takes the entry's view. */
+static void scr_record_source_put(const ScrRecordSource *entry) {
+  ScrRecordSource *existing = scr_record_source_find(entry->rec);
+  if (existing) {
+    ScrDyn *old = existing->view;
+    *existing = *entry;
+    scr_dyn_release(old);
+    return;
+  }
+  scr_record_source_reserve();
+  size_t slot = scr_record_source_bucket(entry->rec);
+  while (scr_record_sources[slot].rec) slot = (slot + 1) & (scr_record_source_capacity - 1);
+  scr_record_sources[slot] = *entry;
+  scr_record_source_count++;
+  scr_weak_dispose_hook = &scr_dispose_observers;
+}
+
+/* Called by the checked record builder after it filled `rec` from `src`;
+ * `names` lists the shape's fields in declaration order. Keeps nothing
+ * unless the source has an own property the shape does not declare, or
+ * holds the declared ones in another order than the record serializes
+ * them. Borrows both. */
+void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *names,
+                            const size_t *lens, size_t count) {
+  if (!rec || !src || src->kind != SCR_DYN_OBJ || src->v.obj.source_identity) return;
+  ScrRecordSource probe = { rec, NULL, (const char *)names, (const char *)lens,
+                            sizeof *names, sizeof *lens, count };
+  bool keep = false;
+  size_t next = 0;
+  for (size_t i = 0; i < src->v.obj.len && !keep; i++) {
+    const ScrDynEntry *entry = &src->v.obj.entries[i];
+    size_t index = scr_record_source_index(&probe, entry->key, entry->key_len);
+    keep = index == count || index < next;
+    next = index + 1;
+  }
+  if (!keep) return;
+  ScrDyn *view = scr_dyn_new_obj();
+  for (size_t i = 0; i < src->v.obj.len; i++) {
+    const ScrDynEntry *entry = &src->v.obj.entries[i];
+    if (scr_record_source_declared(&probe, entry->key, entry->key_len)) {
+      scr_dyn_obj_set(view, entry->key, entry->key_len, scr_dyn_retain(scr_dyn_undefined()));
+    } else if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable) {
+      scr_dyn_obj_set(view, entry->key, entry->key_len, scr_dyn_retain(entry->value));
+    } else {
+      ScrStr *name = scr_str_new(entry->key, entry->key_len);
+      ScrDyn *key = scr_dyn_new_str(name);
+      ScrDyn *descriptor = scr_dyn_own_descriptor(src, name);
+      ScrDyn *defined = descriptor ? scr_dyn_define_property(view, key, descriptor) : NULL;
+      scr_dyn_release(defined);
+      scr_dyn_release(descriptor);
+      scr_dyn_release(key);
+      scr_str_release(name);
+    }
+  }
+  probe.view = view;
+  scr_record_source_put(&probe);
+}
+
+/* Refreshes a retained record view: the view's own-key order, declared
+ * values from the native snapshot (a declared key the record no longer has
+ * drops), every other property as the view holds it, then declared fields
+ * the view had not seen yet. Returns a fresh object (+1). */
+static ScrDyn *scr_record_source_merge(const ScrRecordSource *source, const ScrDyn *cached,
+                                       const ScrDyn *fresh) {
+  ScrDyn *out = scr_dyn_new_obj();
+  for (size_t i = 0; i < cached->v.obj.len; i++) {
+    const ScrDynEntry *entry = &cached->v.obj.entries[i];
+    ScrDyn *value = scr_dyn_obj_get(fresh, entry->key, entry->key_len);
+    if (value) {
+      scr_dyn_obj_set(out, entry->key, entry->key_len, scr_dyn_retain(value));
+      continue;
+    }
+    if (scr_record_source_declared(source, entry->key, entry->key_len)) continue;
+    if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable) {
+      scr_dyn_obj_set(out, entry->key, entry->key_len, scr_dyn_retain(entry->value));
+      continue;
+    }
+    ScrStr *name = scr_str_new(entry->key, entry->key_len);
+    ScrDyn *key = scr_dyn_new_str(name);
+    ScrDyn *descriptor = scr_dyn_own_descriptor(cached, name);
+    ScrDyn *defined = descriptor ? scr_dyn_define_property(out, key, descriptor) : NULL;
+    scr_dyn_release(defined);
+    scr_dyn_release(descriptor);
+    scr_dyn_release(key);
+    scr_str_release(name);
+  }
+  for (size_t i = 0; i < fresh->v.obj.len; i++) {
+    const ScrDynEntry *entry = &fresh->v.obj.entries[i];
+    if (scr_dyn_obj_get(out, entry->key, entry->key_len)) continue;
+    scr_dyn_obj_set(out, entry->key, entry->key_len, scr_dyn_retain(entry->value));
+  }
+  return out;
+}
+
+/* A fresh, unshared record→dyn snapshot from the copying converter:
+ * consumes it and returns the snapshot merged through the record's
+ * retained view (+1), or the snapshot itself when there is none. */
+ScrDyn *scr_record_source_apply(ScrDyn *snapshot, const void *rec) {
+  ScrRecordSource *source = scr_record_source_find(rec);
+  if (!source || !snapshot || snapshot->kind != SCR_DYN_OBJ) return snapshot;
+  ScrDyn *merged = scr_record_source_merge(source, source->view, snapshot);
+  scr_dyn_release(snapshot);
+  return merged;
+}
+
+/* JSON for a record that kept a source: the view's own-key order, declared
+ * fields through the compiled writer (`field` writes the separator, key
+ * and value of field `index` unless the record lacks it, and answers
+ * whether it wrote), every other enumerable property through the dyn
+ * writer with JSON.stringify's member rules, then declared fields the view
+ * had not seen. May leave an exception pending (a BigInt property). */
+void scr_jb_put_record_source(ScrJsonBuf *b, void *rec,
+                              bool (*field)(ScrJsonBuf *, void *, size_t, bool)) {
+  ScrRecordSource *source = scr_record_source_find(rec);
+  scr_jb_putc(b, '{');
+  bool first = true;
+  if (source) {
+    size_t count = source->count;
+    bool small[64] = { false };
+    bool *seen = count <= 64 ? small : calloc(count, sizeof *seen);
+    if (!seen) scr_json_oom();
+    const ScrDyn *view = source->view;
+    for (size_t i = 0; i < view->v.obj.len && !scr_exc_pending(); i++) {
+      const ScrDynEntry *entry = &view->v.obj.entries[i];
+      size_t index = scr_record_source_index(source, entry->key, entry->key_len);
+      if (index < count) {
+        if (!seen[index] && field(b, rec, index, first)) first = false;
+        seen[index] = true;
+        continue;
+      }
+      if (!entry->enumerable || entry->accessor) continue;
+      ScrDynKind kind = entry->value->kind;
+      if (kind == SCR_DYN_UNDEF || kind == SCR_DYN_FUNC || kind == SCR_DYN_SYMBOL) continue;
+      if (!first) scr_jb_putc(b, ',');
+      first = false;
+      scr_jb_put_json_span(b, entry->key, entry->key_len);
+      scr_jb_putc(b, ':');
+      scr_jb_put_dyn(b, entry->value);
+    }
+    for (size_t index = 0; index < count && !scr_exc_pending(); index++) {
+      if (!seen[index] && field(b, rec, index, first)) first = false;
+    }
+    if (seen != small) free(seen);
+  }
+  scr_jb_putc(b, '}');
+}
+
 /* The flags are written with the rest of the capsule: setting a flag bit
  * afterwards is a byte store that the next read of the flag word (the
  * live-view bind right after construction) cannot forward from. */
@@ -2269,6 +2534,13 @@ static ScrDyn *scr_dyn_typed_ref_new(
   d->v.typed_ref.commit = commit;
   d->v.typed_ref.array = NULL;
   d->v.typed_ref.materialized = NULL;
+  /* A record with undeclared properties starts from its retained view
+   * (refreshed on first use), which also keeps the declared-field fast
+   * paths off for it. */
+  if (scr_record_source_count && type_key_len >= 7 && memcmp(type_key, "record:", 7) == 0) {
+    ScrDyn *view = scr_record_source_view(ptr);
+    if (view) d->v.typed_ref.materialized = scr_dyn_retain(view);
+  }
   d->v.typed_ref.casts = NULL;
   d->v.typed_ref.traced = traced;
   d->v.typed_ref.observed = observed;
@@ -2386,9 +2658,16 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
     /* Record layouts cannot store properties added through a checked
      * view. Keep those descriptors in the view across native refreshes. */
     ScrDyn *cached = capsule->v.typed_ref.materialized;
-    if (fresh->kind == SCR_DYN_OBJ && cached->kind == SCR_DYN_OBJ &&
-        capsule->v.typed_ref.type_key_len >= 7 &&
-        memcmp(capsule->v.typed_ref.type_key, "record:", 7) == 0) {
+    bool record_view = fresh->kind == SCR_DYN_OBJ && cached->kind == SCR_DYN_OBJ &&
+                       capsule->v.typed_ref.type_key_len >= 7 &&
+                       memcmp(capsule->v.typed_ref.type_key, "record:", 7) == 0;
+    ScrRecordSource *source = record_view ? scr_record_source_find(capsule->v.typed_ref.ptr) : NULL;
+    if (source) {
+      /* Undeclared source properties keep their own-key position. */
+      ScrDyn *ordered = scr_record_source_merge(source, cached, fresh);
+      scr_dyn_release(fresh);
+      fresh = ordered;
+    } else if (record_view) {
       for (size_t i = 0; i < cached->v.obj.len; i++) {
         ScrDynEntry *entry = &cached->v.obj.entries[i];
         if (scr_dyn_obj_get(fresh, entry->key, entry->key_len)) continue;
@@ -7345,9 +7624,11 @@ ScrDyn *scr_json_parse(ScrStr *text) {
  * layout the compiler describes in a ScrJsonSchema. It accepts only input
  * for which the checked-dynamic route (scr_json_parse + the generated
  * dynCheck builder) would succeed with the same value: every declared key
- * present exactly once with a value of its declared kind, undeclared keys
- * syntactically valid and ignored. Anything else — a syntax error, a kind
- * mismatch, a missing or repeated declared key, excessive nesting —
+ * present exactly once with a value of its declared kind; undeclared keys,
+ * or declared keys out of declaration order, are kept beside the record in
+ * source order (scr_record_source_note's contract). Anything else — a
+ * syntax error, a kind mismatch, a missing or repeated key, excessive
+ * nesting —
  * releases the partial value and returns NULL WITHOUT throwing; the
  * compiler-emitted caller then reruns the checked-dynamic route, which
  * produces the exact SyntaxError/TypeError/RangeError. JSON.parse without
@@ -7490,6 +7771,105 @@ static inline size_t scr_jschema_key_direct(const ScrJsonP *p, const ScrJsonSche
   return (special & high & bytes) ? 0 : len + 2;
 }
 
+/* A record's own-key view, started at the first member that leaves the
+ * layout's declaration order: placeholders for the declared members read so
+ * far, which arrived in that order. */
+static ScrDyn *scr_jschema_view(const ScrJsonSchema *s, uint64_t seen) {
+  ScrDyn *view = scr_dyn_new_obj();
+  for (size_t i = 0; i < s->nfields; i++) {
+    if (!(seen & ((uint64_t)1 << i))) continue;
+    scr_dyn_obj_set(view, s->fields[i].name, s->fields[i].name_len,
+                    scr_dyn_retain(scr_dyn_undefined()));
+  }
+  return view;
+}
+
+/* The rest of a record whose source the record keeps (scr_record_source_note's
+ * contract): entered at the member after `key` when that member is undeclared
+ * (idx == nfields) or arrives before the previous match. Declared values still
+ * parse into the layout; the view holds the source's own keys in order, with
+ * placeholders for the declared ones. Takes `rec` and `decoded`. */
+static __attribute__((noinline, cold)) bool scr_jschema_record_kept(
+    ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *out, char *rec, uint64_t seen,
+    size_t guess, size_t idx, const char *key, size_t key_len, ScrStr *decoded) {
+  const size_t n = s->nfields;
+  const uint64_t all = n == 64 ? ~(uint64_t)0 : (((uint64_t)1 << n) - 1);
+  ScrDyn *view = scr_jschema_view(s, seen);
+  for (;;) {
+    scr_json_ws(p);
+    if (p->pos >= p->len || p->s[p->pos] != ':') goto fail;
+    p->pos++;
+    if (idx < n) {
+      const ScrJsonSchemaField *f = &s->fields[idx];
+      uint64_t bit = (uint64_t)1 << idx;
+      if (seen & bit) goto fail; /* duplicate: last-wins stays on the checked route */
+      seen |= bit;
+      guess = idx + 1;
+      ScrJsonSlot v;
+      if (!scr_jschema_member(p, f->type, &v)) goto fail;
+      char *slot = rec + f->offset;
+      switch (f->type->kind) {
+      case SCR_JSCHEMA_F64: memcpy(slot, &v.f, sizeof v.f); break;
+      case SCR_JSCHEMA_BOOL: *(uint8_t *)slot = v.b ? 1 : 0; break;
+      default: memcpy(slot, &v.ptr, sizeof v.ptr); break; /* zeroed slot; moves in */
+      }
+      scr_dyn_obj_set(view, key, key_len, scr_dyn_retain(scr_dyn_undefined()));
+    } else {
+      /* A repeated undeclared key stays on the checked route too. */
+      if (scr_dyn_obj_get(view, key, key_len)) goto fail;
+      /* Validate quietly first: the dyn parser throws past the depth cap. */
+      scr_json_ws(p);
+      size_t start = p->pos;
+      int depth = p->depth;
+      if (!scr_jschema_skip(p)) goto fail;
+      p->pos = start;
+      p->depth = depth;
+      ScrDyn *value = scr_json_value(p);
+      if (!value) goto fail;
+      scr_dyn_obj_set(view, key, key_len, value);
+    }
+    scr_str_release(decoded);
+    decoded = NULL;
+    scr_json_ws(p);
+    if (p->pos >= p->len) goto fail;
+    if (p->s[p->pos] == '}') {
+      p->pos++;
+      break;
+    }
+    if (p->s[p->pos] != ',') goto fail;
+    p->pos++;
+    scr_json_ws(p);
+    if (p->pos >= p->len || p->s[p->pos] != '"') goto fail;
+    int r = scr_json_string_span(p, &key, &key_len);
+    if (r < 0) goto fail;
+    if (r == 0) {
+      decoded = scr_json_string_slow(p, key_len);
+      if (!decoded) goto fail;
+      key = decoded->data;
+      key_len = decoded->len;
+    }
+    idx = n;
+    for (size_t i = 0; i < n; i++) {
+      if (s->fields[i].name_len == key_len && scr_key_equal(s->fields[i].name, key, key_len)) {
+        idx = i;
+        break;
+      }
+    }
+  }
+  if (seen != all) goto fail;
+  ScrRecordSource entry = { rec, view, (const char *)&s->fields[0].name,
+                            (const char *)&s->fields[0].name_len, sizeof *s->fields,
+                            sizeof *s->fields, n };
+  scr_record_source_put(&entry);
+  out->ptr = rec;
+  return true;
+fail:
+  scr_str_release(decoded);
+  scr_dyn_release(view);
+  s->release(rec);
+  return false;
+}
+
 static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *out) {
   p->pos++; /* '{' */
   char *rec = s->rec_new();
@@ -7530,14 +7910,16 @@ static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot 
           break;
         }
       }
+      /* An undeclared member, or one before the previous match, keeps the
+       * source beside the record: the rest of the object parses there. */
+      if (idx == n || idx + 1 < guess)
+        return scr_jschema_record_kept(p, s, out, rec, seen, guess, idx, key, key_len, decoded);
       scr_str_release(decoded);
     }
     scr_json_ws(p);
     if (p->pos >= p->len || p->s[p->pos] != ':') goto fail;
     p->pos++;
-    if (idx == n) {
-      if (!scr_jschema_skip(p)) goto fail;
-    } else {
+    {
       const ScrJsonSchemaField *f = &s->fields[idx];
       uint64_t bit = (uint64_t)1 << idx;
       if (seen & bit) goto fail; /* duplicate: last-wins stays on the checked route */
@@ -11012,7 +11394,8 @@ static ScrDyn *scr_weak_collection_new(ScrDyn *seed, bool is_set) {
     &scr_weak_map_get, &scr_weak_map_write, NULL, NULL,
   };
   ScrDynHandleTag tag = is_set ? SCR_DYNH_WEAK_SET : SCR_DYNH_WEAK_MAP;
-  scr_weak_dispose_hook = &scr_weak_disposed;
+  scr_weak_observing = true;
+  scr_weak_dispose_hook = &scr_dispose_observers;
   scr_dyn_handle_install(tag, is_set ? &set_ops : &map_ops);
   static ScrCycType cyc_type = { &scr_weak_map_trace, &scr_weak_map_gcfree, SCR_CYC_KIND_WEAK_MAP };
   ScrWeakMap *map = scr_cyc_alloc(sizeof *map, &cyc_type);
