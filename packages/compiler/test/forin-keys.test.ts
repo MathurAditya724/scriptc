@@ -55,3 +55,21 @@ console.log(keysOf(JSON.parse('{"a":1}')).length);
   expect(js).not.toContain("@scr_dyn_obj_key_strs(");
   expect(js).toContain("call ptr @scr_dyn_obj_keys(");
 });
+
+test("Object.entries of an unknown value is a native [string, any][] in TypeScript only", async () => {
+  const source = `
+function entriesOf(o) {
+  return Object.entries(o);
+}
+console.log(entriesOf(JSON.parse('{"a":1}')).length);
+`;
+  const ts = await emit(
+    source.replace("(o)", "(o: unknown)").replace("entries(o)", "entries(o as object)"),
+  );
+  expect(ts).toContain("call ptr @scr_dyn_obj_entry_pairs(");
+  expect(ts).toContain("call void @scr_dyn_entry_pairs_free(");
+  expect(ts).not.toContain("@scr_dyn_obj_entries(");
+  const js = await emit(source, "main.js");
+  expect(js).not.toContain("@scr_dyn_obj_entry_pairs(");
+  expect(js).toContain("call ptr @scr_dyn_obj_entries(");
+});
