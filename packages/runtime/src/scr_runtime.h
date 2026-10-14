@@ -5605,7 +5605,7 @@ static inline ScrRgnChunk *scr_rgn_chunk_of(const void *obj) {
 
 /* 1 once any thread has created a region (never reset); emitted retains
  * and releases count nothing while it is 0. */
-extern _Atomic(uint8_t) scr_region_counting;
+extern _Atomic uint8_t scr_region_counting;
 
 /* The allocation slow path: a zeroed instance of `cls` in the current
  * region. Refills `cursor`. */

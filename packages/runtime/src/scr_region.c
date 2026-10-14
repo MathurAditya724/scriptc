@@ -198,7 +198,7 @@ static void *scr_rgn_grow(void *p, size_t *cap, size_t size, size_t first) {
   return q;
 }
 
-_Atomic(uint8_t) scr_region_counting = 0;
+_Atomic uint8_t scr_region_counting = 0;
 
 /* The owner word of the calling thread's freeable chunks: worker
  * executables compare it with the thread's own &scr_thread_hot. */
