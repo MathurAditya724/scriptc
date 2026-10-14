@@ -667,7 +667,6 @@ ScrUrl *scr_url_new(ScrStr *input) {
   u->query = query;
   u->fragment = fragment;
   u->has_authority = has_authority;
-  u->host_path_escape = false;
   u->sp_cache = NULL;
   u->sp_reload = NULL;
   return u;
@@ -827,7 +826,7 @@ ScrStr *scr_url_pathname(ScrUrl *u) { return scr_str_retain(u->path); }
  * normalized form findRoute-style authority compares want (lowercased
  * host, no default :443/:80). */
 ScrStr *scr_url_host(ScrUrl *u) {
-  if (u->port->len == 0 && !u->host_path_escape) return scr_str_retain(u->host);
+  if (u->port->len == 0) return scr_str_retain(u->host);
   UrlBuf b;
   ub_init(&b);
   ub_append(&b, u->host->data, u->host->len);
@@ -835,7 +834,6 @@ ScrStr *scr_url_host(ScrUrl *u) {
     ub_push(&b, ':');
     ub_append(&b, u->port->data, u->port->len);
   }
-  if (u->host_path_escape) ub_append(&b, "/.", 2);
   return ub_take(&b);
 }
 
@@ -913,7 +911,7 @@ ScrStr *scr_url_href(ScrUrl *u) {
   }
   /* A host-less hierarchical path starting with // must not serialize
    * as an authority (the URL Standard's /. escape). */
-  if (u->host_path_escape || (!u->has_authority && u->path->len >= 2 && !memcmp(u->path->data, "//", 2))) ub_append(&b, "/.", 2);
+  if (!u->has_authority && u->path->len >= 2 && !memcmp(u->path->data, "//", 2)) ub_append(&b, "/.", 2);
   ub_append(&b, u->path->data, u->path->len);
   ub_append(&b, u->query->data, u->query->len);
   ub_append(&b, u->fragment->data, u->fragment->len);
@@ -946,7 +944,6 @@ static void url_copy_fields(ScrUrl *u, ScrUrl *next) {
   scr_str_release(u->query); u->query = scr_str_retain(next->query);
   scr_str_release(u->fragment); u->fragment = scr_str_retain(next->fragment);
   u->has_authority = next->has_authority;
-  u->host_path_escape = next->host_path_escape;
 }
 
 static bool url_file(ScrUrl *u) {
@@ -999,9 +996,9 @@ static bool url_set_protocol(ScrUrl *u, const char *raw, size_t len) {
   if (is_special_scheme(u->scheme->data, u->scheme->len) != special ||
       (file && (u->userinfo->len || u->port->len)) || (url_file(u) && !u->host->len)) {
     scr_str_release(scheme);
-    /* Ada reports a successful unchanged URL for non-special targets,
-     * so these writes still replace the pre-conversion snapshot in Node. */
-    return !special;
+    /* Ada reports these state-override rejections as failed writes, so the
+     * live URL keeps its pre-conversion snapshot in Node. */
+    return false;
   }
   scr_str_release(u->scheme);
   u->scheme = scheme;
@@ -1057,10 +1054,7 @@ static bool url_set_host(ScrUrl *u, const char *raw, size_t len, bool hostname) 
   scr_str_release(u->host);
   u->host = host;
   if (host->len || escaped_path) u->has_authority = true;
-  if (colon) {
-    u->host_path_escape = escaped_path;
-    if (end + 1 < len) url_set_port(u, raw + end + 1, len - end - 1, false);
-  }
+  if (colon && end + 1 < len) url_set_port(u, raw + end + 1, len - end - 1, false);
   return true;
 }
 
@@ -1148,8 +1142,8 @@ bool scr_url_set_component(ScrUrl *u, ScrStr *field, ScrStr *value) {
   }
   if (field->len == 4 && !memcmp(field->data, "href", 4)) return url_apply_component(u, field, value);
   /* Node's binding reparses the captured href before applying an override.
-   * This matters after protocol writes to file://localhost and for the
-   * host-to-port serialization escape. Ignored overrides retain the live URL. */
+   * This matters after protocol writes to file://localhost, which the
+   * reparse turns into an empty host. Ignored overrides retain the live URL. */
   ScrStr *href = scr_url_href(u);
   ScrUrl *next = scr_url_new(href);
   scr_str_release(href);
@@ -1342,7 +1336,6 @@ static ScrUrl *scr_url_new_file(ScrStr *host, ScrStr *encoded_path) {
   u->query = scr_str_new("", 0);
   u->fragment = scr_str_new("", 0);
   u->has_authority = true;
-  u->host_path_escape = false;
   u->sp_cache = NULL;
   u->sp_reload = NULL;
   return u;
@@ -1701,8 +1694,10 @@ ScrSearchParams *scr_dyn_native_search_params_check(const ScrDyn *value, const S
   return scr_sp_retain(value->v.handle.ptr);
 }
 
+/* new URLSearchParams(init): only undefined is the empty init; null takes
+ * the string branch like any other primitive ("null" parses as one key). */
 ScrSearchParams *scr_sp_new_checked(const ScrDyn *value) {
-  if (!value || value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) return scr_sp_new();
+  if (!value || value->kind == SCR_DYN_UNDEF) return scr_sp_new();
   if (scr_dyn_native_search_params_is(value)) return scr_sp_copy(value->v.handle.ptr);
   if (value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_ARR || value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *iterator = scr_dyn_iterator_optional(value);

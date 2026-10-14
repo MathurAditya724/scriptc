@@ -808,6 +808,21 @@ static void scr_dgram_read(ScrDgramSocket *s) {
 
 void scr_dns_lookup(ScrStr *hostname, double family, ScrClosure *cb, ScrDnsLookupFn fn) {
   (void)family; /* the frontend pinned 4; AF_INET below IS that pin */
+  if (memchr(hostname->data, '\0', hostname->len) != NULL) {
+    /* validateStringWithoutNullBytes: a synchronous ERR_INVALID_ARG_VALUE
+     * TypeError before any lookup runs; the callback never fires. */
+    scr_closure_release(cb);
+    ScrStr *shown = scr_str_inspect_quoted(hostname, true);
+    ScrJsonBuf msg;
+    scr_jb_init(&msg);
+    scr_jb_puts(&msg, "The argument 'hostname' must be a string without null bytes. Received ");
+    scr_jb_put_str(&msg, shown);
+    scr_str_release(shown);
+    ScrStr *text = scr_jb_finish(&msg);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
+    scr_str_release(text);
+    return;
+  }
 #ifdef _WIN32
   /* getaddrinfo needs winsock started (WSANOTINITIALISED otherwise); the
    * poller owns WSAStartup on this arm, so a lookup-only program rides

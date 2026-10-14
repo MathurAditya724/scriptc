@@ -1173,7 +1173,7 @@ ScrBytes *scr_tls_pem_from_dyn(const ScrDyn *v, const char *what) {
  * that changes Node-observable behavior must work or fence instead of
  * being dropped without an error. Undocumented keys drop, exactly Node. */
 static const char *const SCR_TLS_SRV_FENCED_OPTIONS[] = {
-  "ALPNProtocols", "ALPNCallback", "allowHalfOpen", "ciphers",
+  "ALPNProtocols", "ALPNCallback", "allowHalfOpen", "certificateCompression", "ciphers",
   "clientCertEngine", "crl", "dhparam", "ecdhCurve", "enableTrace",
   "handshakeTimeout", "highWaterMark", "honorCipherOrder", "keepAlive",
   "keepAliveInitialDelay", "maxVersion", "minVersion", "noDelay",
@@ -1472,7 +1472,7 @@ ScrNetServer *scr_https_create_server_dyn(const ScrDyn *opts /*borrowed*/,
  * throws (the server walk's stance). */
 static const char *const SCR_TLS_CONNECT_FENCED_OPTIONS[] = {
   "ALPNProtocols", "allowHalfOpen", "autoSelectFamily",
-  "autoSelectFamilyAttemptTimeout", "cert", "checkServerIdentity",
+  "autoSelectFamilyAttemptTimeout", "cert", "certificateCompression", "checkServerIdentity",
   "ciphers", "clientCertEngine", "crl", "dhparam", "ecdhCurve",
   "enableTrace", "family", "fd", "hints", "highWaterMark",
   "honorCipherOrder", "keepAlive", "keepAliveInitialDelay", "key",
@@ -1569,12 +1569,13 @@ ScrNetSocket *scr_tls_connect_dyn(double port, ScrStr *host /*borrowed, nullable
     scr_dyn_arg_type_fail("options.port", "of type number", scr_dyn_undefined());
     ok = false;
   }
+  ScrStr *dial_host = (ScrStr *)(host != NULL && host->len > 0 ? host : opt_host);
+  if (ok && !scr_net_host_chk(dial_host)) ok = false;
   if (!ok) {
     scr_bytes_release(ca);
     scr_closure_release(cb);
     return NULL;
   }
-  ScrStr *dial_host = (ScrStr *)(host != NULL && host->len > 0 ? host : opt_host);
   /* SNI + verification see the servername when given, the host name
    * otherwise (Node's servername default). */
   ScrStr *verify_host = (ScrStr *)(servername != NULL ? servername : dial_host);

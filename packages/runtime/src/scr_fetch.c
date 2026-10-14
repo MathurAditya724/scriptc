@@ -562,7 +562,7 @@ static void sf_any_source_abort(SfSignalWatch *w, SfSignal *source) {
 ScrDyn *scr_fetch_abort_any(ScrDyn *signals) {
   if (!signals || signals->kind != SCR_DYN_ARR) {
     static const char message[] =
-        "signals can not be converted to sequence.";
+        "signals cannot be converted to sequence.";
     scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1,
                              "ERR_INVALID_ARG_TYPE");
     return NULL;
@@ -3204,26 +3204,28 @@ static bool sf_header_name_ci(
   return true;
 }
 
-static bool sf_header_value_ci(const ScrStr *value, const char *want) {
+/* Undici's connection rule: a comma list whose trimmed entries are all
+ * HTTP tokens. Answers whether one of them is "close" in *close. */
+static bool sf_connection_tokens(const ScrStr *value, bool *close) {
+  *close = false;
   size_t start = 0;
-  size_t end = value->len;
-  while (start < end &&
-         (value->data[start] == ' ' || value->data[start] == '\t')) {
-    start++;
+  for (size_t i = 0; i <= value->len; i++) {
+    if (i < value->len && value->data[i] != ',') continue;
+    size_t a = start, b = i;
+    while (a < b && (value->data[a] == ' ' || value->data[a] == '\t')) a++;
+    while (b > a && (value->data[b - 1] == ' ' || value->data[b - 1] == '\t')) b--;
+    if (!sf_header_name_ok(value->data + a, b - a)) return false;
+    if (sf_header_name_ci(value->data + a, b - a, "close")) *close = true;
+    start = i + 1;
   }
-  while (end > start &&
-         (value->data[end - 1] == ' ' || value->data[end - 1] == '\t')) {
-    end--;
-  }
-  return sf_header_name_ci(
-      value->data + start, end - start, want);
+  return true;
 }
 
 static bool sf_request_header_ok(
     const char *name, size_t name_len, const ScrStr *value) {
   if (sf_header_name_ci(name, name_len, "connection")) {
-    return sf_header_value_ci(value, "close") ||
-           sf_header_value_ci(value, "keep-alive");
+    bool close;
+    return sf_connection_tokens(value, &close);
   }
   return
       !sf_header_name_ci(name, name_len, "transfer-encoding") &&
@@ -4186,13 +4188,25 @@ static bool sf_start_hop(SfTransfer *t) {
   }
   sf_push_header_text(headers, "host", authority,
                       (size_t)authority_len);
-  if (!sf_pairs_have(t->headers, "connection")) {
-    sf_push_header_text(headers, "connection", "keep-alive", 10);
+  /* The user's connection header only chooses close over keep-alive (a
+   * "close" token); the transport writes its own value after host. */
+  bool connection_close = false;
+  for (size_t i = 0; i + 1 < user_len; i += 2) {
+    ScrStr *name = scr_arr_get_ref(t->headers, (double)i);
+    if (sf_eq_ci(name, "connection")) {
+      ScrStr *value = scr_arr_get_ref(t->headers, (double)(i + 1));
+      bool close;
+      if (sf_connection_tokens(value, &close) && close) connection_close = true;
+      scr_str_release(value);
+    }
+    scr_str_release(name);
   }
+  if (connection_close) sf_push_header_text(headers, "connection", "close", 5);
+  else sf_push_header_text(headers, "connection", "keep-alive", 10);
   for (size_t i = 0; i + 1 < user_len; i += 2) {
     ScrStr *name = scr_arr_get_ref(t->headers, (double)i);
     ScrStr *value = scr_arr_get_ref(t->headers, (double)(i + 1));
-    if (sf_eq_ci(name, "host")) {
+    if (sf_eq_ci(name, "host") || sf_eq_ci(name, "connection")) {
       scr_str_release(name);
       scr_str_release(value);
       continue;

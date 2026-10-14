@@ -1355,12 +1355,11 @@ ScrStr *scr_regex_replace_callback(ScrStr *s, ScrRegex *re, ScrDyn *callback, bo
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
- * Keep the pattern equivalent to Node v24.15.0 internal/util/inspect.js. */
-#define SCR_VT_PATTERN "[\\u001B\\u009B][[\\]()#;?]*" \
-  "(?:(?:(?:(?:;[-a-zA-Z\\d\\/\\#&.:=?%@~_]+)*" \
-  "|[a-zA-Z\\d]+(?:;[-a-zA-Z\\d\\/\\#&.:=?%@~_]*)*)?" \
-  "(?:\\u0007|\\u001B\\u005C|\\u009C))" \
-  "|(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PR-TZcf-nq-uy=><~]))"
+ * Keep the pattern equivalent to Node v24.22.0 internal/util/inspect.js. */
+#define SCR_VT_PATTERN "(?:\\u001B\\][\\s\\S]*?(?:\\u0007|\\u001B\\u005C|\\u009C))" \
+  "|[\\u001B\\u009B][[\\]()#;?]*" \
+  "(?:\\d{1,4}(?:[;:]\\d{0,4})*)?" \
+  "[\\dA-PR-TZcf-nq-uy=><~]"
 
 ScrStr *scr_util_strip_vt(const ScrDyn *input) {
   if (!input || input->kind != SCR_DYN_STR) {

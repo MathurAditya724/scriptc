@@ -326,12 +326,14 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       host.moveTemp(args[2]!);
       cb = args[2]!.name;
     }
-    host.declare(`declare ptr @scr_net_connect(double, ptr, ptr)`);
+    host.declare(`declare ptr @scr_net_connect_checked(double, ptr, ptr)`);
     const t = B.tmp();
     B.line(
-      `${t} = call ptr @scr_net_connect(double ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${cb})`,
+      `${t} = call ptr @scr_net_connect_checked(double ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${cb})`,
     );
-    return host.own({ name: t, type: e.type });
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
   }
   if (e.fn === "net.sockOnData" || e.fn === "http.reqOnData") {
     const cbT = e.args[1]!.type;
@@ -602,11 +604,13 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     );
     return { name: "", type: e.type };
   }
-  if (e.fn === "http.resOnFinish") {
+  if (e.fn === "http.resOnFinish" || e.fn === "http.resOnEndCallback") {
     const args = e.args.map((a) => host.emitExpr(a));
     host.moveTemp(args[1]!);
-    host.declare(`declare void @scr_http_res_on_finish(ptr, ptr)`);
-    B.line(`call void @scr_http_res_on_finish(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
+    const entry =
+      e.fn === "http.resOnFinish" ? "scr_http_res_on_finish" : "scr_http_res_on_end_callback";
+    host.declare(`declare void @${entry}(ptr, ptr)`);
+    B.line(`call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
     return { name: "", type: e.type };
   }
   if (e.fn === "http.resSetTimeoutCb" || e.fn === "http.reqSetTimeoutCb") {

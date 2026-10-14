@@ -207,10 +207,9 @@ static int32_t puny_adapt(int32_t d, int32_t n, bool first) {
   return k + (((PUNY_BASE - PUNY_TMIN + 1) * d) / (d + PUNY_SKEW));
 }
 
-/* Decodes the label after its "xn--" prefix. `out` may be NULL to only
- * verify. A second "xn--" prefix fails (whatwg/url#803). */
+/* Decodes the label after its "xn--" prefix into `out`. A decoded label
+ * that itself begins with "xn--" fails (whatwg/url#803). */
 static bool puny_decode(const char *p, size_t n, IdnaBuf *out) {
-  if (n >= 4 && memcmp(p, "xn--", 4) == 0) return false;
   int32_t written = 0;
   uint32_t code = 128;
   int32_t i = 0;
@@ -226,7 +225,7 @@ static bool puny_decode(const char *p, size_t n, IdnaBuf *out) {
   if (dash != n) {
     for (size_t k = 0; k < dash; k++) {
       if ((unsigned char)p[k] >= 0x80) return false;
-      if (out) ib32_push(out, (unsigned char)p[k]);
+      ib32_push(out, (unsigned char)p[k]);
       written++;
     }
     pos = dash + 1;
@@ -250,11 +249,12 @@ static bool puny_decode(const char *p, size_t n, IdnaBuf *out) {
     code += (uint32_t)(i / (written + 1));
     i %= written + 1;
     if (code < 0x80) return false;
-    if (out) ib32_insert(out, (size_t)i, code);
+    ib32_insert(out, (size_t)i, code);
     written++;
     i++;
   }
-  return true;
+  return !(out->len >= 4 && out->data[0] == 'x' && out->data[1] == 'n' && out->data[2] == '-' &&
+           out->data[3] == '-');
 }
 
 static bool puny_encode(const uint32_t *in, size_t n, ScrJsonBuf *out) {
@@ -310,7 +310,9 @@ static bool puny_encode(const uint32_t *in, size_t n, ScrJsonBuf *out) {
  * virama passes, a ZWNJ otherwise needs a left- or dual-joining character
  * somewhere before it and a right- or dual-joining one somewhere after);
  * otherwise a label holding an R, AL or AN character follows the RFC 5893
- * rule for the direction of its first character. */
+ * rule for the direction of its first character: an L label allows only
+ * L, EN, ES, CS, ET, ON, BN and NSM and ends (before trailing NSMs) in L
+ * or EN; any other label must start with R or AL. */
 static bool idna_label_valid(const uint32_t *label, size_t n) {
   if (n == 0) return true;
   if (IDNA_LOOKUP(scr_idna_marks, label[0])) return false;
@@ -345,14 +347,17 @@ static bool idna_label_valid(const uint32_t *label, size_t n) {
   }
   if (!rtl) return true;
   if (idna_bidi(label[0]) == SCR_BIDI_L) {
-    for (size_t k = 0; k < last; k++) {
+    for (size_t k = 0; k <= last; k++) {
       uint8_t d = idna_bidi(label[k]);
       if (!(d == SCR_BIDI_L || d == SCR_BIDI_EN || d == SCR_BIDI_ES || d == SCR_BIDI_CS ||
             d == SCR_BIDI_ET || d == SCR_BIDI_ON || d == SCR_BIDI_BN || d == SCR_BIDI_NSM))
         return false;
     }
-    return true;
+    uint8_t end = idna_bidi(label[last]);
+    return end == SCR_BIDI_L || end == SCR_BIDI_EN;
   }
+  uint8_t first = idna_bidi(label[0]);
+  if (first != SCR_BIDI_R && first != SCR_BIDI_AL) return false;
   bool has_an = false, has_en = false;
   for (size_t k = 0; k <= last; k++) {
     uint8_t d = idna_bidi(label[k]);
@@ -374,8 +379,9 @@ static bool idna_label_valid(const uint32_t *label, size_t n) {
 }
 
 /* An "xn--" label's Punycode must decode to a non-ASCII label that the
- * mapping and NFC leave unchanged and that passes the validity checks. */
-static bool idna_check_puny_label(const char *p, size_t n) {
+ * mapping and NFC leave unchanged and that passes the validity checks.
+ * `decoded_out` (nullable) receives the decoded code points when it passes. */
+static bool idna_check_puny_label(const char *p, size_t n, IdnaBuf *decoded_out) {
   IdnaBuf decoded = {0}, mapped = {0};
   bool ok = puny_decode(p, n, &decoded);
   if (ok) {
@@ -394,7 +400,11 @@ static bool idna_check_puny_label(const char *p, size_t n) {
          idna_label_valid(mapped.data, mapped.len);
     free(normal.data);
   }
-  free(decoded.data);
+  if (ok && decoded_out) {
+    *decoded_out = decoded;
+  } else {
+    free(decoded.data);
+  }
   free(mapped.data);
   return ok;
 }
@@ -406,35 +416,23 @@ static ScrStr *idna_fail(ScrJsonBuf *b) {
 
 /* ── ToASCII / ToUnicode ───────────────────────────────────────────── */
 
+/* Inputs longer than this many bytes fail ToASCII and pass ToUnicode
+ * through unchanged. */
+#define IDNA_MAX_INPUT_BYTES 16384u
+
 ScrStr *scr_idna_to_ascii(const char *p, size_t n) {
-  bool ascii = true;
-  for (size_t i = 0; i < n && ascii; i++) ascii = (unsigned char)p[i] < 0x80;
   ScrJsonBuf out;
   scr_jb_init(&out);
+  if (n > IDNA_MAX_INPUT_BYTES) return idna_fail(&out);
+  bool ascii = true;
+  for (size_t i = 0; i < n && ascii; i++) ascii = (unsigned char)p[i] < 0x80;
   if (ascii) {
-    /* ASCII input maps by lowercasing alone; only Punycode labels need
-     * the full check. */
-    char *lower = malloc(n ? n : 1);
-    if (!lower) scr_trap("scriptc: out of memory\n");
+    /* An ASCII domain is the input lowercased, whatever its labels hold
+     * (the URL Standard's domain to ASCII with beStrict false). */
     for (size_t i = 0; i < n; i++) {
       char c = p[i];
-      lower[i] = c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
+      scr_jb_putc(&out, c >= 'A' && c <= 'Z' ? (char)(c + 32) : c);
     }
-    for (size_t start = 0; start < n;) {
-      const char *dot = memchr(lower + start, '.', n - start);
-      size_t end = dot ? (size_t)(dot - lower) : n;
-      size_t len = end - start;
-      if (len >= 4 && memcmp(lower + start, "xn--", 4) == 0 &&
-          !idna_check_puny_label(lower + start + 4, len - 4)) {
-        free(lower);
-        return idna_fail(&out);
-      }
-      scr_jb_write_utf8(&out, lower + start, len);
-      if (!dot) break;
-      scr_jb_putc(&out, '.');
-      start = end + 1;
-    }
-    free(lower);
     return scr_jb_finish(&out);
   }
   IdnaBuf input = {0}, mapped = {0};
@@ -461,7 +459,7 @@ ScrStr *scr_idna_to_ascii(const char *p, size_t n) {
       char *bytes = malloc(len);
       if (!bytes) scr_trap("scriptc: out of memory\n");
       for (size_t k = 0; k < len; k++) bytes[k] = (char)label[k];
-      ok = idna_check_puny_label(bytes + 4, len - 4);
+      ok = idna_check_puny_label(bytes + 4, len - 4, NULL);
       if (ok) scr_jb_write_utf8(&out, bytes, len);
       free(bytes);
     } else if (label_ascii) {
@@ -480,7 +478,10 @@ ScrStr *scr_idna_to_ascii(const char *p, size_t n) {
   return ok ? scr_jb_finish(&out) : idna_fail(&out);
 }
 
+/* ToUnicode never fails: an "xn--" label decodes only when it passes the
+ * same checks ToASCII applies to it; any other label stays as given. */
 ScrStr *scr_idna_to_unicode(const char *p, size_t n) {
+  if (n > IDNA_MAX_INPUT_BYTES) return scr_str_new(p, n);
   ScrJsonBuf out;
   scr_jb_init(&out);
   for (size_t start = 0; start < n;) {
@@ -491,20 +492,18 @@ ScrStr *scr_idna_to_unicode(const char *p, size_t n) {
     bool ascii = true;
     for (size_t k = 0; k < len && ascii; k++) ascii = (unsigned char)label[k] < 0x80;
     bool decoded = false;
+    IdnaBuf cps = {0};
     if (ascii && len >= 4 && memcmp(label, "xn--", 4) == 0 &&
-        puny_decode(label + 4, len - 4, NULL)) {
-      IdnaBuf cps = {0};
-      if (puny_decode(label + 4, len - 4, &cps)) {
-        bool scalar = true;
-        for (size_t k = 0; k < cps.len && scalar; k++)
-          scalar = cps.data[k] <= 0x10FFFF && (cps.data[k] < 0xD800 || cps.data[k] >= 0xE000);
-        if (scalar) {
-          for (size_t k = 0; k < cps.len; k++) idna_put_utf8(&out, cps.data[k]);
-          decoded = true;
-        }
+        idna_check_puny_label(label + 4, len - 4, &cps)) {
+      bool scalar = true;
+      for (size_t k = 0; k < cps.len && scalar; k++)
+        scalar = cps.data[k] <= 0x10FFFF && (cps.data[k] < 0xD800 || cps.data[k] >= 0xE000);
+      if (scalar) {
+        for (size_t k = 0; k < cps.len; k++) idna_put_utf8(&out, cps.data[k]);
+        decoded = true;
       }
-      free(cps.data);
     }
+    free(cps.data);
     if (!decoded) scr_jb_write(&out, label, len);
     if (!dot) break;
     scr_jb_putc(&out, '.');

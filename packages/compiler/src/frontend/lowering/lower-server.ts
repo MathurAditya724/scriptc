@@ -1967,11 +1967,11 @@ function lowerNetSocketMethodCall(
   if (name === "write" || name === "end") {
     requireStatementPosition(lowerer, call, `socket.${name}(...)`);
     // write(chunk, encoding) — the two-argument encoding form: 'buffer'
-    // beside a string chunk is Node's stream_base typecheck ("Second
-    // argument must be a buffer", thrown synchronously on an established
-    // socket — the invalid-input probes' shape); utf8 spellings are the
-    // plain write (that IS the encoding written); a Buffer chunk ignores
-    // the encoding like Node does. Other encodings keep the fence.
+    // beside a string chunk is Writable's encoding check (a synchronous
+    // ERR_UNKNOWN_ENCODING TypeError, "Unknown encoding: buffer" — the
+    // invalid-input probes' shape); utf8 spellings are the plain write
+    // (that IS the encoding written); a Buffer chunk ignores the encoding
+    // like Node does. Other encodings keep the fence.
     if (name === "write" && args.length === 2) {
       const encT = lowerer.typeOf(args[1]!);
       const chunkT = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
@@ -1982,13 +1982,7 @@ function lowerNetSocketMethodCall(
           isJsSourceFile(call.getSourceFile())
         ) {
           lowerer.lowerExpr(args[0]!); // evaluation order (effect-free in practice)
-          return nodeThrowExpr(
-            1,
-            "ERR_INVALID_ARG_TYPE",
-            "Second argument must be a buffer",
-            VOID,
-            loc,
-          );
+          return nodeThrowExpr(1, "ERR_UNKNOWN_ENCODING", "Unknown encoding: buffer", VOID, loc);
         }
         const passthrough =
           (chunkT.kind === "string" && (encT.value === "utf8" || encT.value === "utf-8")) ||
@@ -6791,9 +6785,9 @@ function lowerHttpResMethodCall(
     }
     const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
     // end's callback forms — end(cb) / end(data, cb): the callback fires
-    // deferred once the body went out (Node's 'finish' emit), through
-    // the resOnFinish slot registered just before the end call in an
-    // interned composing helper.
+    // deferred once the body went out (just before Node's 'finish' emit),
+    // through the resOnEndCallback slot registered just before the end
+    // call in an interned composing helper.
     let cbArg: IrExpr | null = null;
     let dataNode: ts.Expression | undefined = args[0];
     if (name === "end" && args.length === 2) {
@@ -6855,7 +6849,7 @@ function lowerHttpResMethodCall(
               kind: "exprStmt",
               expr: {
                 kind: "libCall",
-                fn: "http.resOnFinish",
+                fn: "http.resOnEndCallback",
                 args: [
                   varRef(params[0]!.localId, params[0]!.type, loc),
                   varRef(params[all.length - 1]!.localId, params[all.length - 1]!.type, loc),

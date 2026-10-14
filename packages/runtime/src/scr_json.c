@@ -2625,7 +2625,7 @@ bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
 /* Node's JavaScript wrappers have names/arity; engine-native probes are
  * anonymous with length zero. Keep their native closure identity intact. */
 ScrDyn *scr_dyn_util_type_value(const ScrDyn *value, const ScrStr *probe) {
-  static const char *const named[] = { "isTypedArray", "isUint8Array", "isUint8ClampedArray", "isUint16Array", "isUint32Array",
+  static const char *const named[] = { "isDataView", "isTypedArray", "isUint8Array", "isUint8ClampedArray", "isUint16Array", "isUint32Array",
     "isInt8Array", "isInt16Array", "isInt32Array", "isFloat32Array", "isFloat64Array" };
   const char *name = "";
   if (probe->len == 17 && memcmp(probe->data, "isArrayBufferView", 17) == 0) name = "isView";
@@ -3208,6 +3208,76 @@ const char *scr_dyn_inspect_lite(const ScrDyn *v, char *buf, size_t cap) {
   case SCR_DYN_BYTES: return "<Buffer ...>";
   default: return "[object]";
   }
+}
+
+/* util.inspect's string rendering (inspect.js strEscape): single quotes
+ * unless the string contains one, then double quotes or backticks when the
+ * string has none of those; C0 controls, the active quote, backslashes,
+ * U+007F-U+009F, and unpaired surrogates are escaped. The ERR_INVALID_ARG_*
+ * messages print it truncated to 128 UTF-16 units plus "...". Lives in the
+ * dyn core so validators in optional units can render without the inspect
+ * unit. */
+ScrStr *scr_str_inspect_quoted(const ScrStr *s, bool truncate) {
+  static const char *const c0[32] = {
+    "\\x00", "\\x01", "\\x02", "\\x03", "\\x04", "\\x05", "\\x06", "\\x07",
+    "\\b",   "\\t",   "\\n",   "\\x0B", "\\f",   "\\r",   "\\x0E", "\\x0F",
+    "\\x10", "\\x11", "\\x12", "\\x13", "\\x14", "\\x15", "\\x16", "\\x17",
+    "\\x18", "\\x19", "\\x1A", "\\x1B", "\\x1C", "\\x1D", "\\x1E", "\\x1F",
+  };
+  const unsigned char *p = (const unsigned char *)s->data;
+  size_t n = s->len;
+  char quote = '\'';
+  if (memchr(p, '\'', n) != NULL) {
+    bool brace = false;
+    for (size_t i = 0; i + 1 < n && !brace; i++) brace = p[i] == '$' && p[i + 1] == '{';
+    if (memchr(p, '"', n) == NULL) quote = '"';
+    else if (memchr(p, '`', n) == NULL && !brace) quote = '`';
+  }
+  ScrJsonBuf out;
+  scr_jb_init(&out);
+  scr_jb_putc(&out, quote);
+  for (size_t i = 0; i < n;) {
+    unsigned char c = p[i];
+    char hex[8];
+    if (c < 0x20) {
+      scr_jb_puts(&out, c0[c]);
+      i++;
+    } else if (c == '\\') {
+      scr_jb_puts(&out, "\\\\");
+      i++;
+    } else if (c == '\'' && quote == '\'') {
+      scr_jb_puts(&out, "\\'");
+      i++;
+    } else if (c == 0x7f) {
+      scr_jb_puts(&out, "\\x7F");
+      i++;
+    } else if (c == 0xc2 && i + 1 < n && p[i + 1] >= 0x80 && p[i + 1] <= 0x9f) {
+      snprintf(hex, sizeof hex, "\\x%02X", p[i + 1]);
+      scr_jb_puts(&out, hex);
+      i += 2;
+    } else if (c == 0xed && i + 2 < n && p[i + 1] >= 0xa0 && p[i + 1] <= 0xbf) {
+      /* a WTF-8 surrogate code unit: paired surrogates arrive as one
+       * four-byte sequence, so this one is unpaired */
+      unsigned unit = 0xd000u | ((unsigned)(p[i + 1] & 0x3f) << 6) | (p[i + 2] & 0x3f);
+      snprintf(hex, sizeof hex, "\\u%04x", unit);
+      scr_jb_puts(&out, hex);
+      i += 3;
+    } else {
+      scr_jb_putc(&out, (char)c);
+      i++;
+    }
+  }
+  scr_jb_putc(&out, quote);
+  ScrStr *text = scr_jb_finish(&out);
+  if (truncate && scr_str_utf16_len(text) > 128) {
+    ScrStr *head = scr_str_slice(text, 0, 128);
+    ScrStr *dots = scr_str_new("...", 3);
+    scr_str_release(text);
+    text = scr_str_concat(head, dots);
+    scr_str_release(head);
+    scr_str_release(dots);
+  }
+  return text;
 }
 
 /* Node's ERR_INVALID_ARG_VALUE thrower: "The <argument|property> '<name>'
@@ -7765,7 +7835,7 @@ void scr_sc_validate_options(const ScrDyn *options) {
   if (transferView) tr = transferView;
   if (tr->kind != SCR_DYN_ARR) {
     static const char msg[] =
-        "Failed to execute 'structuredClone': transfer in Options can not be converted to sequence.";
+        "Failed to execute 'structuredClone': transfer in Options cannot be converted to sequence.";
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
     scr_dyn_release(transferView);
     return;

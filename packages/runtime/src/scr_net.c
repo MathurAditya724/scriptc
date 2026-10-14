@@ -1890,6 +1890,23 @@ static void scr_net_sock_dial_peer(ScrNetSocket *s) {
   }
 }
 
+/* lookupAndConnect's validateStringWithoutNullBytes(host, 'options.host'):
+ * a host with a null byte throws ERR_INVALID_ARG_VALUE before any lookup.
+ * False with the exception pending. */
+bool scr_net_host_chk(const ScrStr *host /*borrowed, nullable*/) {
+  if (host == NULL || memchr(host->data, '\0', host->len) == NULL) return true;
+  ScrStr *shown = scr_str_inspect_quoted(host, true);
+  ScrJsonBuf msg;
+  scr_jb_init(&msg);
+  scr_jb_puts(&msg, "The property 'options.host' must be a string without null bytes. Received ");
+  scr_jb_put_str(&msg, shown);
+  scr_str_release(shown);
+  ScrStr *text = scr_jb_finish(&msg);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
+  scr_str_release(text);
+  return false;
+}
+
 ScrNetSocket *scr_net_connect(double port, ScrStr *host /*borrowed, nullable*/,
                                ScrClosure *cb /*moves, nullable*/) {
   ScrNetSocket *s = scr_net_sock_new();
@@ -1944,7 +1961,19 @@ static bool scr_net_attempt_timeout_chk(const ScrDyn *t, const char *name) {
  * autoSelectFamily flag already takes. NULL with the throw pending. */
 ScrNetSocket *scr_net_connect_attempt(double port, ScrStr *host, const ScrDyn *t) {
   if (!scr_net_attempt_timeout_chk(t, "options.autoSelectFamilyAttemptTimeout")) return NULL;
+  if (!scr_net_host_chk(host)) return NULL;
   return scr_net_connect(port, host, NULL);
+}
+
+/* net.connect/createConnection from compiled code: the host check, then
+ * the dial. NULL with the exception pending when the host is rejected. */
+ScrNetSocket *scr_net_connect_checked(double port, ScrStr *host /*borrowed, nullable*/,
+                                       ScrClosure *cb /*moves, nullable*/) {
+  if (!scr_net_host_chk(host)) {
+    scr_closure_release(cb);
+    return NULL;
+  }
+  return scr_net_connect(port, host, cb);
 }
 
 static bool scr_net_dyn_truthy(const ScrDyn *v) {
@@ -2130,6 +2159,10 @@ static void scr_net_sock_dial_next(ScrNetSocket *s) {
 
 ScrNetSocket *scr_net_connect_lookup(double port, ScrStr *host /*borrowed*/,
                                       ScrClosure *lookup /*moves*/, void *answer_fn) {
+  if (!scr_net_host_chk(host)) {
+    scr_closure_release(lookup);
+    return NULL;
+  }
   ScrNetSocket *s = scr_net_sock_new();
   s->peer_port = (int)port;
   snprintf(s->peer_ip, sizeof s->peer_ip, "%.*s",
