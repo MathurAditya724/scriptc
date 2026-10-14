@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { NODE24_FETCH_COMPAT_PROFILE } from "../src/compat/fetch-profile.js";
 import { NODE_COMPAT_VERSION } from "../src/frontend/lowering/builtins/process.js";
+import { CRYPTO_CONSTANTS } from "../src/frontend/lowering/crypto-tables.js";
 
 const repoRoot = join(import.meta.dirname, "../../..");
 const read = (path: string): string => readFileSync(join(repoRoot, path), "utf8");
@@ -28,4 +29,17 @@ test("the Node pins agree", () => {
   expect(read("docs/src/components/node-compatibility-matrix.tsx")).toContain(
     `snapshot?.nodeVersion ?? "${pinned}"`,
   );
+});
+
+test("the crypto.constants declaration matches the baked table", () => {
+  const dts = read("packages/compiler/ambient/scriptc-node-fallback.d.ts");
+  const start = dts.indexOf("export interface CryptoConstants {");
+  const body = dts.slice(start, dts.indexOf("\n  }\n", start));
+  const declared = Object.fromEntries(
+    [...body.matchAll(/readonly (\w+): (-?\d+|"[^"]*");/g)].map(([, name, value]) => [
+      name!,
+      JSON.parse(value!) as number | string,
+    ]),
+  );
+  expect(declared).toEqual(CRYPTO_CONSTANTS);
 });
