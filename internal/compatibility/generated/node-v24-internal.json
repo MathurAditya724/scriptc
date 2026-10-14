@@ -191,9 +191,9 @@
       "apiEntries": 145,
       "static": {
         "supported": 0,
-        "partial": 22,
-        "refused": 26,
-        "not-implemented": 97,
+        "partial": 36,
+        "refused": 24,
+        "not-implemented": 85,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -19347,10 +19347,21 @@
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
           "tests/corpus/2890-crypto-static-utility.ts",
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-sha2.ts",
+          "tests/fixtures/node-types/cipher.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -19719,8 +19730,21 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.createCipheriv"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.crypto.createCipheriv",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -19742,8 +19766,21 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.createDecipheriv"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.crypto.createDecipheriv",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21434,8 +21471,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:Cipheriv",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21457,8 +21507,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:cipher.final",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21480,8 +21543,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:cipher.getAuthTag",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21503,8 +21579,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:cipher.setAAD",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21526,8 +21615,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:cipher.setAutoPadding",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21549,8 +21651,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:cipher.update",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21572,8 +21687,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:Decipheriv",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21595,8 +21723,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:decipher.final",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21618,8 +21759,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:decipher.setAAD",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21641,8 +21795,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:decipher.setAuthTag",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21664,8 +21831,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:decipher.setAutoPadding",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21687,8 +21867,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:decipher.update",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },

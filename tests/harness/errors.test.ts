@@ -789,3 +789,37 @@ console.log(\`\${register(7)}\`);
     expect(r.stderr).toBe("");
   });
 });
+
+// A cipher name Node lists in crypto.getCiphers() but the runtime does not
+// implement throws a coded SC2020 error naming the cipher when the name is
+// computed; literal names are refused at compile time (node-types-fenced).
+describe("unimplemented cipher names", () => {
+  test("a computed cipher name throws SC2020 naming the cipher", async () => {
+    const r = await compileAndRun(
+      "cipher-computed-name",
+      `import { createCipheriv } from "node:crypto";
+const mode = ["c", "c", "m"].join("");
+try {
+  createCipheriv("aes-128-" + mode, Buffer.alloc(16), Buffer.alloc(12));
+} catch (error) {
+  const e = error as Error & { code?: string };
+  console.log(e.name, e.code, e.message);
+}
+try {
+  createCipheriv("aes-128-" + mode.slice(1), Buffer.alloc(16), Buffer.alloc(12));
+} catch (error) {
+  const e = error as Error & { code?: string };
+  console.log(e.name, e.code, e.message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Error SC2020 The cipher 'aes-128-ccm' has no native implementation; the supported ciphers are " +
+        "aes-128-cbc, aes-192-cbc, aes-256-cbc, aes-128-ctr, aes-192-ctr, aes-256-ctr, aes-128-gcm, " +
+        "aes-192-gcm, aes-256-gcm and chacha20-poly1305\n" +
+        "Error ERR_CRYPTO_UNKNOWN_CIPHER Unknown cipher\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+});

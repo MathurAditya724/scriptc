@@ -88,7 +88,7 @@ import {
   lowerImportMetaResolveCall,
   lowerRequireResolveCall,
 } from "./builtins/module-resolution.js";
-import { lowerCryptoHashMethodCall } from "./builtins/crypto.js";
+import { lowerCipherMethodCall, lowerCryptoHashMethodCall } from "./builtins/crypto.js";
 import {
   lowerDirentMethodCall,
   lowerFileHandleMethodCall,
@@ -1241,6 +1241,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.lowerSearchParamsMethodCall(expr, expr.expression) ??
       lowerer.lowerStatsMethodCall(expr, expr.expression) ??
       lowerCryptoHashMethodCall(lowerer, expr, expr.expression) ??
+      lowerCipherMethodCall(lowerer, expr, expr.expression) ??
       lowerFileHandleMethodCall(lowerer, expr, expr.expression) ??
       lowerer.lowerChildMethodCall(expr, expr.expression) ??
       // Piped child-output stream receivers — on/once("data" | "end").

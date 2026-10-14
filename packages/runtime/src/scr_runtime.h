@@ -4815,6 +4815,8 @@ typedef enum {
   SCR_DYNH_CONSOLE_INSTANCE, /* node:console Console instance */
   SCR_DYNH_EVENT_TARGET,   /* ScrEventTarget — new EventTarget() */
   SCR_DYNH_CUSTOM_EVENT,   /* ScrEvent with detail — new CustomEvent() */
+  SCR_DYNH_CIPHER,           /* node:crypto Cipheriv (scr_cipher.c) */
+  SCR_DYNH_DECIPHER,         /* node:crypto Decipheriv (scr_cipher.c) */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
@@ -5699,6 +5701,11 @@ typedef struct ScrConsoleInst {
   void (*stream_drop)(struct ScrConsoleInst *); /* releases the bound streams */
 } ScrConsoleInst;
 ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors);
+/* crypto.createCipheriv (decrypt false) and crypto.createDecipheriv
+ * (decrypt true) over checked-dynamic arguments (scr_cipher.c, linked
+ * with the vendored mbedTLS archive). +1 handle, or NULL with Node's
+ * error pending. */
+ScrDyn *scr_crypto_cipher_new(bool decrypt, ScrDyn *cipher, ScrDyn *key, ScrDyn *iv, ScrDyn *options);
 void scr_console_bind(ScrDyn *console, double which, ScrStream *stream);
 void scr_console_inst_write(ScrDyn *console, ScrStr *text, bool to_stderr);
 ScrDyn *scr_process_stdio(double fd);

@@ -87,6 +87,7 @@ const OPTIONAL = [
   ["scr_test.c", "nodeTest"],
   ["scr_tls_ca.c", "tlsCaEffective"],
   ["scr_tls.c", "tlsEffective"],
+  ["scr_cipher.c", "cipher"],
   ["scr_fetch.c", "nativeFetch"],
 ];
 
@@ -116,7 +117,7 @@ export function createRuntimePackMatrix({
     { id: "quickjs", predicate: false },
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
-    { id: "mbedtls", predicate: "tlsEffective" },
+    { id: "mbedtls", predicate: any("tlsEffective", "cipher") },
   ];
   const matrix = withLibraryRuntimeFlavors(
     withWorkerRuntimeVariants({

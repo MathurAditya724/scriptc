@@ -2224,6 +2224,95 @@ declare module "crypto" {
     callback: (error: Error | null, buffer: Buffer) => void,
   ): void;
   export type BinaryLike = string | ArrayBuffer | ArrayBufferView;
+  /* Cipheriv/Decipheriv: aes-128/192/256 in cbc, ctr, and gcm modes and
+   * chacha20-poly1305. The stream.Transform members are not declared. */
+  export type CipherGCMTypes = "aes-128-gcm" | "aes-192-gcm" | "aes-256-gcm";
+  export type CipherChaCha20Poly1305Types = "chacha20-poly1305";
+  export type CipherKey = string | ArrayBuffer | ArrayBufferView;
+  export interface CipherGCMOptions {
+    authTagLength?: number;
+  }
+  export interface CipherChaCha20Poly1305Options {
+    authTagLength?: number;
+  }
+  export interface Cipheriv {
+    update(data: string | ArrayBufferView): Buffer;
+    update(data: string, inputEncoding: BufferEncoding): Buffer;
+    update(data: ArrayBufferView, inputEncoding: undefined, outputEncoding: BufferEncoding): string;
+    update(
+      data: string,
+      inputEncoding: BufferEncoding | undefined,
+      outputEncoding: BufferEncoding,
+    ): string;
+    final(): Buffer;
+    final(outputEncoding: BufferEncoding): string;
+    setAutoPadding(autoPadding?: boolean): this;
+  }
+  export interface CipherGCM extends Cipheriv {
+    setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
+    getAuthTag(): Buffer;
+  }
+  export interface CipherChaCha20Poly1305 extends Cipheriv {
+    setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
+    getAuthTag(): Buffer;
+  }
+  export interface Decipheriv {
+    update(data: ArrayBufferView): Buffer;
+    update(data: string, inputEncoding: BufferEncoding): Buffer;
+    update(data: ArrayBufferView, inputEncoding: undefined, outputEncoding: BufferEncoding): string;
+    update(
+      data: string,
+      inputEncoding: BufferEncoding | undefined,
+      outputEncoding: BufferEncoding,
+    ): string;
+    final(): Buffer;
+    final(outputEncoding: BufferEncoding): string;
+    setAutoPadding(autoPadding?: boolean): this;
+  }
+  export interface DecipherGCM extends Decipheriv {
+    setAuthTag(buffer: ArrayBufferView): this;
+    setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
+  }
+  export interface DecipherChaCha20Poly1305 extends Decipheriv {
+    setAuthTag(buffer: ArrayBufferView): this;
+    setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
+  }
+  export function createCipheriv(
+    algorithm: CipherGCMTypes,
+    key: CipherKey,
+    iv: BinaryLike,
+    options?: CipherGCMOptions,
+  ): CipherGCM;
+  export function createCipheriv(
+    algorithm: CipherChaCha20Poly1305Types,
+    key: CipherKey,
+    iv: BinaryLike,
+    options?: CipherChaCha20Poly1305Options,
+  ): CipherChaCha20Poly1305;
+  export function createCipheriv(
+    algorithm: string,
+    key: CipherKey,
+    iv: BinaryLike | null,
+    options?: { authTagLength?: number },
+  ): Cipheriv;
+  export function createDecipheriv(
+    algorithm: CipherGCMTypes,
+    key: CipherKey,
+    iv: BinaryLike,
+    options?: CipherGCMOptions,
+  ): DecipherGCM;
+  export function createDecipheriv(
+    algorithm: CipherChaCha20Poly1305Types,
+    key: CipherKey,
+    iv: BinaryLike,
+    options?: CipherChaCha20Poly1305Options,
+  ): DecipherChaCha20Poly1305;
+  export function createDecipheriv(
+    algorithm: string,
+    key: CipherKey,
+    iv: BinaryLike | null,
+    options?: { authTagLength?: number },
+  ): Decipheriv;
   export interface ScryptOptions {
     N?: number;
     r?: number;

@@ -281,6 +281,11 @@ test.skipIf(!zigOnPath())(
         options: { parseArgs: true, inspect: true, dynAsync: true, dynInvoke: true, regex: true },
         call: "scr_dyn_release(scr_util_debuglog(scr_dyn_undefined(), scr_dyn_undefined()))",
       },
+      {
+        name: "cipher",
+        options: { cipher: true, dynAsync: true, dynInvoke: true },
+        call: "scr_dyn_release(scr_crypto_cipher_new(false, scr_dyn_undefined(), scr_dyn_undefined(), scr_dyn_undefined(), scr_dyn_undefined()))",
+      },
     ];
     try {
       await withCcEnv("zigcc", "x86_64-windows-gnu", async () => {

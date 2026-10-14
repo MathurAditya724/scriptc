@@ -60,6 +60,7 @@ export async function warmNativeCaches(
         foreignFfi: false,
         nodeTest: false,
         tls: false,
+        cipher: false,
         tlsCa: false,
       },
     });

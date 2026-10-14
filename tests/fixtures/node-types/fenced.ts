@@ -75,7 +75,7 @@ http2.connect("https://localhost");
  * KDFs their family, and setFips the FIPS truth (getFips() lowers to 0). */
 import { createCipheriv, generateKeyPair, pbkdf2Sync, setFips } from "node:crypto";
 generateKeyPair("rsa", { modulusLength: 2048 }, () => {});
-createCipheriv("aes-128-cbc", Buffer.alloc(16), Buffer.alloc(16));
+createCipheriv("aes-128-ccm", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });
 pbkdf2Sync("pw", "salt", 100000, 64, "sha3-512");
 setFips(false);
 fetch("https://example.invalid/", {
@@ -94,4 +94,8 @@ void inspectReadableStream;
 import { callbackify } from "node:util";
 const callbackified = callbackify(async (n: number) => n);
 void callbackified;
+/* Cipheriv values support update(), final(), setAAD(), setAutoPadding(),
+ * getAuthTag(), and setAuthTag(); the stream.Transform members are fenced. */
+const cipherStream = createCipheriv("aes-128-cbc", Buffer.alloc(16), Buffer.alloc(16));
+cipherStream.on("data", () => {});
 // End of the declared-but-not-lowered surface.

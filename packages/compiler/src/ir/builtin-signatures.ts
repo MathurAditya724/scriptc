@@ -2211,6 +2211,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * finalizes the handle and returns either a Buffer or encoded string. */
   "crypto.native": { argTypes: [], result: DYN },
   "crypto.hashNew": { argTypes: [STRING], result: CRYPTOHASH_T },
+  /** createCipheriv (false) / createDecipheriv (true) over checked-dynamic
+   * cipher, key, iv and options arguments (scr_cipher.c): a native
+   * Cipheriv/Decipheriv handle whose methods dispatch through dynInvoke. */
+  "crypto.cipherNew": { argTypes: [BOOL, DYN, DYN, DYN, DYN], result: DYN },
   "crypto.hmacNewStr": { argTypes: [STRING, STRING], result: CRYPTOHMAC_T },
   "crypto.hmacNewBytes": { argTypes: [STRING, BYTES_U8], result: CRYPTOHMAC_T },
   "crypto.hashUpdateStr": { argTypes: [CRYPTOHASH_T, STRING], result: CRYPTOHASH_T },

@@ -115,6 +115,9 @@ export async function compileCInternal(
   const http = (opts.http ?? false) || nativeFetch;
   const tls = (opts.tls ?? false) || nativeFetch;
   const tlsCa = (opts.tlsCa ?? false) || tls;
+  // Symmetric ciphers link the same mbedTLS archive as TLS.
+  const cipher = opts.cipher ?? false;
+  const mbedtls = tls || cipher;
   const driver = resolveCc();
   const darwinDebugSymbols = needsDarwinDebugSymbols(
     targetPlatform(driver),
@@ -351,7 +354,7 @@ export async function compileCInternal(
       ? null
       : join(tmpdir(), `scriptc-vendor-${process.pid}-${Math.random().toString(36).slice(2)}`);
   const vendorCacheRoot = transientVendorRoot ?? vendorBuildCacheRoot(persistentCache?.root);
-  let tlsArchive = tls
+  let tlsArchive = mbedtls
     ? tlsArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : null;
 
@@ -374,7 +377,7 @@ export async function compileCInternal(
     // Preserve source order to avoid multiplying first-build resource
     // pressure when several large vendor sets are cold simultaneously.
 
-    if (tls) {
+    if (mbedtls) {
       const cachedArchive = tlsArchivePath(
         sanitize,
         driver,
@@ -569,7 +572,8 @@ export async function compileCInternal(
       ? [
           "-I",
           join(vendorTlsDir(), "include"),
-          rt(join(rtDir, "scr_tls.c")),
+          ...(tls ? [rt(join(rtDir, "scr_tls.c"))] : []),
+          ...(cipher ? [rt(join(rtDir, "scr_cipher.c"))] : []),
           tlsArchive,
           // mbedTLS's win32 entropy poll is BCryptGenRandom (bcrypt.h).
           // The unconditional win32 libs above do not carry it.
@@ -843,7 +847,7 @@ export async function compileCInternal(
     ...threadArgs,
     ...(opts.workers ? ["-DSCR_WORKERS"] : []),
     ...(targetPlatform(driver) === "win32" ? ["-ladvapi32", "-liphlpapi", "-lws2_32"] : []),
-    ...(tls && targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
+    ...(mbedtls && targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
     ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),
     ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
     ...driver.linkArgs,
@@ -855,7 +859,7 @@ export async function compileCInternal(
   const effectiveLinkInvocationArgs = [
     ...(separateSanitizedProgram ? cflags : programCompilerArgs),
     ...(targetPlatform(driver) === "win32" ? ["-ladvapi32", "-liphlpapi", "-lws2_32"] : []),
-    ...(tls && targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
+    ...(mbedtls && targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
     ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),
     ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
     ...driver.linkArgs,

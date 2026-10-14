@@ -37,5 +37,6 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     nodeTest: features.nodeTest,
     tls: features.tls,
     tlsCa: features.tlsCa,
+    cipher: features.cipher,
   };
 }

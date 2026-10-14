@@ -209,9 +209,9 @@
       "apiEntries": 145,
       "static": {
         "supported": 0,
-        "partial": 22,
-        "refused": 26,
-        "not-implemented": 97,
+        "partial": 36,
+        "refused": 24,
+        "not-implemented": 85,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -11505,9 +11505,9 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "detail": "Explicitly rejected by a named compiler diagnostic.",
-        "verification": "explicit-refusal"
+        "status": "partial",
+        "detail": "Supports aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305 with Node's argument, IV, tag-length, and key-length errors; other OpenSSL ciphers and KeyObject keys are refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -11528,9 +11528,9 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "detail": "Explicitly rejected by a named compiler diagnostic.",
-        "verification": "explicit-refusal"
+        "status": "partial",
+        "detail": "Supports aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305 with Node's argument, IV, tag-length, and key-length errors; other OpenSSL ciphers and KeyObject keys are refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12862,9 +12862,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers; the stream.Transform interface is refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12885,9 +12885,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers; the stream.Transform interface is refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12908,9 +12908,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers; the stream.Transform interface is refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12931,9 +12931,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers; the stream.Transform interface is refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12954,9 +12954,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers; the stream.Transform interface is refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12977,9 +12977,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers; the stream.Transform interface is refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -13000,9 +13000,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers; the stream.Transform interface is refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -13023,9 +13023,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers; the stream.Transform interface is refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -13046,9 +13046,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers; the stream.Transform interface is refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -13069,9 +13069,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers; the stream.Transform interface is refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -13092,9 +13092,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers; the stream.Transform interface is refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -13115,9 +13115,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers; the stream.Transform interface is refused.",
+        "verification": "test-backed"
       }
     },
     {
