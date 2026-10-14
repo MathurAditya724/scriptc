@@ -180,7 +180,7 @@ Callback values use checked storage. Typed records and arrays retain identity an
 
 ### Strings and sorting
 
-Strings are stored as UTF-8. Length and string methods use UTF-16 semantics, but relational comparisons such as `<` and `>` use code-point order. Operations that split a surrogate pair produce U+FFFD.
+Strings are stored as UTF-8, with lone surrogates kept as their own code units. Length and string methods use UTF-16 semantics, including for lone surrogates, but relational comparisons such as `<` and `>` use code-point order. `split` with a string separator and `replace` or `replaceAll` with a string pattern don't match a lone surrogate against half of a surrogate pair; regular-expression patterns do. Output, file contents, and other encoded text write each lone surrogate as U+FFFD, as Node does. File system paths and network host names that contain a lone surrogate reach the operating system unconverted.
 
 One-argument `localeCompare` follows Node's default root-locale collation for Latin-script text (ASCII, Latin-1 Supplement, Latin Extended-A, and combining diacritical marks): letters order before case and accents, so `"a".localeCompare("B")` is `-1`. Strings containing other characters compare by code point, which can differ from Node's ICU collation; `SC6003` reports such string literals. The locales and options arguments are unsupported.
 

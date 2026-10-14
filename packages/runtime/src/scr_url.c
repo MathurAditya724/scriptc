@@ -458,8 +458,19 @@ static bool parse_authority(const char *raw, size_t len, bool special, bool is_f
   return true;
 }
 
+/* URL inputs are USVStrings: a lone surrogate parses as U+FFFD. */
+static ScrStr *url_usv(ScrStr *input) {
+  return scr_str_has_surrogate(input) ? scr_str_to_well_formed(input) : NULL;
+}
+
 /* The full constructor-path parser. Returns NULL after throwing. */
 ScrUrl *scr_url_new(ScrStr *input) {
+  ScrStr *usv = url_usv(input);
+  if (usv) {
+    ScrUrl *u = scr_url_new(usv);
+    scr_str_release(usv);
+    return u;
+  }
   /* WHATWG pre-processing: trim leading/trailing C0-or-space, strip every
    * TAB/LF/CR. */
   size_t raw_len = input->len;
@@ -667,6 +678,12 @@ ScrUrl *scr_url_new(ScrStr *input) {
  * and canonicalization. The base is parsed even for an absolute input: an
  * invalid supplied base is a constructor error in Node. */
 ScrUrl *scr_url_new_base(ScrStr *input, ScrStr *base_input) {
+  ScrStr *usv = url_usv(input);
+  if (usv) {
+    ScrUrl *u = scr_url_new_base(usv, base_input);
+    scr_str_release(usv);
+    return u;
+  }
   ScrUrl *base = scr_url_new(base_input);
   if (!base) return NULL;
   size_t begin = 0, end = input->len;
@@ -1123,6 +1140,12 @@ static bool url_apply_component(ScrUrl *u, ScrStr *field, ScrStr *value) {
 }
 
 bool scr_url_set_component(ScrUrl *u, ScrStr *field, ScrStr *value) {
+  ScrStr *usv = url_usv(value);
+  if (usv) {
+    bool applied = scr_url_set_component(u, field, usv);
+    scr_str_release(usv);
+    return applied;
+  }
   if (field->len == 4 && !memcmp(field->data, "href", 4)) return url_apply_component(u, field, value);
   /* Node's binding reparses the captured href before applying an override.
    * This matters after protocol writes to file://localhost and for the
@@ -1383,6 +1406,12 @@ static ScrStr *scr_url_encode_file_path(const char *raw, size_t len, bool backsl
  * Throws only for the win32 UNC malformations (Node's
  * ERR_INVALID_ARG_VALUE TypeErrors). */
 static ScrUrl *scr_url_from_path_impl(ScrStr *path, bool win32) {
+  ScrStr *usv = url_usv(path);
+  if (usv) {
+    ScrUrl *u = scr_url_from_path_impl(usv, win32);
+    scr_str_release(usv);
+    return u;
+  }
   ScrStr *resolved;
   if (win32) {
     bool is_unc = path->len >= 2 && path->data[0] == '\\' && path->data[1] == '\\';

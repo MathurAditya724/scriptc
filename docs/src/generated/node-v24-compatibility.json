@@ -69542,7 +69542,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Converts native strings, primitives, and tested object conversion hooks to well-formed Unicode strings; native storage replaces unpaired surrogates at creation.",
+        "detail": "Converts native strings, primitives, and tested object conversion hooks to well-formed Unicode strings, replacing unpaired surrogates with U+FFFD.",
         "verification": "test-backed"
       }
     },

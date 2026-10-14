@@ -363,10 +363,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.isDeepStrictEqual",
   "util.styleText",
   "util.toUSVString",
-  // decodeURIComponent throws the spec's URIError on bad hex/invalid
-  // UTF-8 octets (encodeURIComponent never throws — see the IrLibFn doc).
+  // The URI codecs throw the spec's URIError: decoding on bad hex/invalid
+  // UTF-8 octets, encoding (and querystring.escape) on a lone surrogate.
   "str.decodeUriComponent",
   "str.decodeUri",
+  "str.encodeUriComponent",
+  "str.encodeUri",
+  "qs.escape",
+  "qs.stringify",
   // The base64 globals: atob/btoa throw the catchable DOMException
   // InvalidCharacterError on malformed input; the zero-argument form
   // always throws Node's TypeError [ERR_MISSING_ARGS].

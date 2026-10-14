@@ -456,8 +456,8 @@ export function emitStrIntrinsic(
       host.emitPendingCheck();
       return result;
     }
-    // The well-formedness pair: no-ops over well-formed storage
-    // (constant true / retained identity; scr_string.c).
+    // The well-formedness pair: whether the receiver holds a lone
+    // surrogate, and its U+FFFD replacement (scr_string.c).
     case "isWellFormed":
       return call("scr_str_is_well_formed", "zeroext i1 (ptr)", `ptr ${r.name}`, "i1", false);
     case "toWellFormed":

@@ -79,6 +79,32 @@ static void json_string_boundaries(void) {
     scr_exc_clear();
     scr_str_release(input);
   }
+  /* Lone surrogates escape as \udXXX at every alignment and parse back
+   * lone; U+D7FF shares their lead byte and stays raw. */
+  scr_wtf8_note();
+  static const char *const units[] = {"\xED\xA0\xBD", "\xED\xB8\x80", "\xED\x9F\xBF"};
+  static const char *const escapes[] = {"\\ud83d", "\\ude00", "\xED\x9F\xBF"};
+  for (size_t prefix = 0; prefix < 24; prefix++) {
+    for (size_t u = 0; u < 3; u++) {
+      char bytes[64];
+      memset(bytes, 'b', prefix);
+      memcpy(bytes + prefix, units[u], 3);
+      memcpy(bytes + prefix + 3, "\xC3\xA9xyz", 5);
+      ScrStr *original = scr_str_new(bytes, prefix + 8);
+      ScrJsonBuf buffer;
+      scr_jb_init(&buffer);
+      scr_jb_put_json_str(&buffer, original);
+      ScrStr *encoded = scr_jb_finish(&buffer);
+      size_t escape_len = strlen(escapes[u]);
+      assert(encoded->len == prefix + 7 + escape_len);
+      assert(memcmp(encoded->data + 1 + prefix, escapes[u], escape_len) == 0);
+      ScrDyn *parsed = scr_json_parse(encoded);
+      assert(parsed && parsed->kind == SCR_DYN_STR && scr_str_eq(original, parsed->v.str));
+      scr_dyn_release(parsed);
+      scr_str_release(encoded);
+      scr_str_release(original);
+    }
+  }
 }
 
 static void json_indent_ownership(void) {

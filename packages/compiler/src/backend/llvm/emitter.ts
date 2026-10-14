@@ -1,7 +1,7 @@
 import { emitLlvmLayouts } from "./layouts.js";
 import { compileRegexMatcher, type RegexMatcherCode } from "./regex-matchers.js";
 import { FIRST_EMITTED_CYC_KIND, inlineAllocSupported } from "./alloc.js";
-import { llvmBytes as llBytes } from "../literals.js";
+import { hasLoneSurrogate, llvmBytes as llBytes, wtf8Bytes } from "../literals.js";
 import { InternalCompilerError } from "../../errors.js";
 import { createHash } from "node:crypto";
 import {
@@ -283,7 +283,7 @@ import { isObjectArm, NULLABLE_ABSENT, NULLABLE_NULL, NullableUnions } from "./n
 import { emitNullablePresent, emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { literalCapWord, literalCapWord32 } from "./string-key-hash.js";
 import { NUMBER_MAP_ENTRY_DECL, STRING_MAP_ENTRY_DECL } from "./map-number-lookup.js";
-import { STRING_READ_HELPERS } from "./string-reads.js";
+import { STRING_READ_HELPERS, stringScanDecl } from "./string-reads.js";
 import {
   emitConcatInputs,
   emitMixedConcat,
@@ -420,7 +420,7 @@ export function emitLlvmModuleSource(
 }
 
 function llStrBytes(text: string): string {
-  return llBytes(Buffer.from(text, "utf8"));
+  return llBytes(wtf8Bytes(text));
 }
 
 const NO_BORROWED: ReadonlySet<number> = new Set();
@@ -2028,8 +2028,8 @@ export class LlEmitter {
       // Bit 31 marks all-ASCII literals (SCR_STR_ASCII_BIT) on every target.
       const capWord =
         this.sizeType === "i64"
-          ? literalCapWord(Buffer.from(text, "utf8"))
-          : literalCapWord32(Buffer.from(text, "utf8"));
+          ? literalCapWord(wtf8Bytes(text))
+          : literalCapWord32(wtf8Bytes(text));
       out.push(
         `@${lit.sym} = internal global { ${this.sizeType}, ${this.sizeType}, ${this.sizeType}, [${lit.len + 1} x i8] } ` +
           `{ ${this.sizeType} -1, ${this.sizeType} ${lit.len}, ${this.sizeType} ${capWord}, [${lit.len + 1} x i8] c"${llStrBytes(text)}" }`,
@@ -2200,6 +2200,12 @@ export class LlEmitter {
       );
     }
     if (this.streamIntervals.length > 0) out.push(``);
+    if ([...this.literals.keys(), ...this.cstrs.keys()].some(hasLoneSurrogate)) {
+      // The runtime skips surrogate work until a lone surrogate may exist
+      // (scr_wtf8_any); its own producers note one, and literals do here.
+      out.push(`declare void @scr_wtf8_note()`, ``);
+      stamps.push(`  call void @scr_wtf8_note()`);
+    }
     if (this.errorIntervals.length > 0 && this.tracedShapes.has("object:%Error")) {
       // The cycle fixpoint marked the Error hierarchy (a user subclass
       // holds cycle-capable fields — capability is hierarchy-uniform), so
@@ -2906,7 +2912,7 @@ export class LlEmitter {
       defs.push(
         ...literalEqualityDefinition(
           name,
-          Buffer.from(text, "utf8"),
+          wtf8Bytes(text),
           this.internLiteral(text),
           this.sizeType,
           FN_ATTRS,
@@ -2918,9 +2924,17 @@ export class LlEmitter {
     // of the capacity word (SCR_STR_ASCII_BIT, the low half's sign bit on
     // little-endian targets) makes UTF-16 units bytes. Unproven strings and
     // anything but an in-range index take the runtime's UTF-16 mapping.
+    // A scan's receiver reads inline too where runtime state is ordinary
+    // global storage (ScrStrScan; SCR_TL makes it thread-local otherwise).
+    const scanInline = this.mod.workers !== true && this.mod.lib?.threadInstances !== true;
+    let scanDeclared = false;
     for (const helper of STRING_READ_HELPERS) {
       if (!this.decls.has(helper.decl)) continue;
-      defs.push(...helper.define(this.sizeType, FN_ATTRS), ``);
+      if (scanInline && !scanDeclared) {
+        defs.push(stringScanDecl(this.sizeType), ``);
+        scanDeclared = true;
+      }
+      defs.push(...helper.define(this.sizeType, FN_ATTRS, scanInline), ``);
     }
     // Ordering also decides inline when the first bytes differ: byte order
     // is the plain comparison's order, and the UTF-16 order whenever both

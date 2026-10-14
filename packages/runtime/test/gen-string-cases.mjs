@@ -3,23 +3,26 @@
 //
 //   node gen-string-cases.mjs > string-cases.txt
 //
-// All strings are hex-encoded UTF-8 bytes ("-" = empty) so the file is
-// unambiguous; numeric args use String(x) (strtod-parseable, including
+// All strings are hex-encoded bytes of scriptc's string storage ("-" =
+// empty) so the file is unambiguous: UTF-8, with each lone surrogate (charAt
+// on half an astral pair, slice boundaries splitting a pair) as its 3-byte
+// WTF-8 encoding. Numeric args use String(x) (strtod-parseable, including
 // "NaN"/"Infinity"/"-Infinity"); numeric/boolean expected values are the
 // hex of String(result), which the C side reproduces via scr_f64_to_str
 // (itself fuzz-verified against Node) or "true"/"false".
-//
-// Divergence handling: scriptc stores well-formed UTF-8 and replaces the
-// lone surrogates JS produces (charAt on half an astral pair, slice
-// boundaries splitting a pair) with U+FFFD. Buffer.from(str, "utf8")
-// performs exactly that replacement, so hex-encoding the JS result through
-// Buffer *is* the documented post-processing — the divergence cases are in
-// this file with the scriptc-expected bytes, not skipped. test_string.c
-// additionally asserts a few of them by hand for explicitness.
 import { stdout } from "node:process";
 
 const hex = (str) => {
-  const b = Buffer.from(str, "utf8");
+  const parts = [];
+  for (const ch of str) {
+    const unit = ch.charCodeAt(0);
+    parts.push(
+      ch.length === 1 && unit >= 0xd800 && unit <= 0xdfff
+        ? Buffer.from([0xed, 0x80 | ((unit >> 6) & 0x3f), 0x80 | (unit & 0x3f)])
+        : Buffer.from(ch, "utf8"),
+    );
+  }
+  const b = Buffer.concat(parts);
   return b.length ? b.toString("hex") : "-";
 };
 const num = (x) => String(x); // NaN / Infinity / -Infinity / -0 -> "0": all fine
@@ -41,8 +44,8 @@ const strings = [
   "  padded  ",
   "\t\r\n x \n\r\t",
   // the full JS WhiteSpace + LineTerminator set around a payload
-  "\t\n\v\f\r          　﻿w s　﻿ \t",
-  "​", // ZERO WIDTH SPACE is NOT JS whitespace — must survive trim
+  "\t\n\v\f\r          　\uFEFFw s　\uFEFF \t",
+  "\u200B", // ZERO WIDTH SPACE is NOT JS whitespace — must survive trim
   " 　\u{1F600}　 ", // astral payload inside whitespace
   // Latin-1 / 2-byte UTF-8
   "é",
@@ -137,7 +140,7 @@ for (const s of strings) {
   // split(separator): expected is `${count}:${pieces.join("\x01")}` so
   // empty results ([] vs [""]) stay distinguishable; \x01 appears in no
   // corpus string. Lone-surrogate pieces (empty separator over astral
-  // chars) hex through Buffer.from as U+FFFD — exactly the divergence.
+  // chars) hex as their WTF-8 bytes.
   for (const sep of new Set([
     "",
     ",",
@@ -157,8 +160,8 @@ for (const s of strings) {
   }
 
   // padStart/padEnd: targets around the length, fills of 1..n units
-  // including astral fills the truncation can split (JS keeps the lone
-  // high surrogate; Buffer.from's hex makes it the U+FFFD we emit).
+  // including astral fills the truncation can split (the lone high
+  // surrogate JS keeps).
   for (const target of [NaN, -3, 0, 1, L - 1, L, L + 1, L + 3, L + 7, L + 0.5, 2 * L + 3])
     for (const fill of ["", " ", "0", "ab", "xyz", "é", "\u{1F600}", "a\u{1F600}"]) {
       emit("padStart", s, `${num(target)},${hex(fill)}`, hex(s.padStart(target, fill)));

@@ -542,8 +542,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * str.encodeUriComponent percent-encodes every byte outside the
    * unreserved component set (ALPHA/DIGIT/- _ . ! ~ * ' ( )) as uppercase
    * %XX — the spec's per-code-point UTF-8 encoding IS a byte scan here —
-   * and never throws (the spec's URIError case is an unpaired surrogate,
-   * which cannot exist in well-formed UTF-8). str.decodeUriComponent
+   * and THROWS the spec's URIError ("URI malformed") on a lone surrogate.
+   * str.decodeUriComponent
    * decodes %XX escapes bytewise (raw non-escape bytes copy through) and
    * requires the escaped bytes to form strictly valid UTF-8 (overlong
    * forms, surrogate code points, and >U+10FFFF refused, per UTF8-decode
@@ -571,7 +571,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "str.decodeUriComponent": { argTypes: [STRING], result: STRING },
   "str.decodeUri": { argTypes: [STRING], result: STRING },
   /** encodeURI: the same Encode() keeping the reserved set and '#'
-   * unescaped — total like the component encoder. Borrow; result +1. */
+   * unescaped — throwing like the component encoder. Borrow; result +1. */
   "str.encodeUri": { argTypes: [STRING], result: STRING },
   /** RegExp.escape (ES2025): per-code-point EncodeForRegExpEscape —
    * leading ASCII alphanumeric hex-escapes, syntax characters and '/'
@@ -748,9 +748,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** node:querystring (scr_qs.c — link-gated by moduleUsesQs; NOT
    * URLSearchParams: the legacy codec's escaping and '+' rules differ).
    * qs.escape is Node's qsEscape, which encodes exactly the component
-   * unreserved set — it emits the always-linked
-   * scr_str_encode_uri_component, so escape-only programs never pull the
-   * unit. qs.unescape is Node's qsUnescape: strict decodeURIComponent
+   * unreserved set — it emits the always-linked scr_qs_escape, so
+   * escape-only programs never pull the unit. qs.unescape is Node's qsUnescape: strict decodeURIComponent
    * first, the lenient legacy unescapeBuffer fallback on failure (never
    * throws). qs.parse takes (str, sep, eq, maxKeys) — the frontend
    * completes omitted/null sep/eq to "&"/"=" and the omitted maxKeys
@@ -765,7 +764,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * through) — Node's encodeStringified rules run in the runtime, so
    * arrays expand to repeated keys and null/undefined/nested objects are
    * empty values. Custom encoder/decoder options fence at compile time.
-   * All borrow; string results +1; none throw. */
+   * All borrow; string results +1; escape and stringify throw URIError
+   * [ERR_INVALID_URI] on a lone surrogate. */
   "qs.parse": { argTypes: [STRING, STRING, STRING, F64], result: VOID },
   "qs.stringify": { argTypes: [DYN, STRING, STRING], result: STRING },
   "qs.escape": { argTypes: [STRING], result: STRING },
@@ -3312,8 +3312,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * behavioral difference; ignoreBOM defaults to false). Inline calls
    * lower directly; stored decoder records dispatch by encoding id.
    * TextEncoder.encode needs no libFn: its matching forms
-   * lower to buffer.fromStr(s, "utf8") (identical bytes — ScrStr storage
-   * is well-formed UTF-8). Borrowed arg; owned (+1) string; never throws. */
+   * lower to buffer.fromStr(s, "utf8") (identical bytes — both write each
+   * lone surrogate as U+FFFD). Borrowed arg; owned (+1) string; never throws. */
   "text.decode": { argTypes: [BYTES_U8], result: STRING },
   "bytes.bufferSource": { argTypes: [DYN], result: BYTES_U8 },
   "text.decodeBufferSource": { argTypes: [DYN], result: STRING },

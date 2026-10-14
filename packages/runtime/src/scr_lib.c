@@ -742,16 +742,24 @@ ScrStr *scr_env_get(const ScrStr *name) {
  * children (posix_spawn inherits environ) observe the write, like Node.
  * Both args borrowed (NUL-terminated ScrStr data); setenv copies. */
 void scr_env_set(const ScrStr *name, const ScrStr *value) {
+  /* The environment holds UTF-8: a lone surrogate is stored as U+FFFD. */
+  char *name_owned, *value_owned;
+  const char *k = scr_str_utf8(name, &name_owned), *v = scr_str_utf8(value, &value_owned);
 #ifdef SCR_WORKERS
-  if (scr_context_env_set(name->data, value->data)) return;
+  if (scr_context_env_set(k, v)) goto done;
 #endif
 #ifdef _WIN32
   /* The WIN32 environment (see scr_env_get): an empty value stays a
    * present-but-empty variable, and children inherit the write. */
-  SetEnvironmentVariableA(name->data, value->data);
+  SetEnvironmentVariableA(k, v);
 #else
-  setenv(name->data, value->data, 1);
+  setenv(k, v, 1);
 #endif
+#ifdef SCR_WORKERS
+done:
+#endif
+  scr_str_utf8_end(name_owned);
+  scr_str_utf8_end(value_owned);
 }
 
 /* `delete process.env.NAME` — unsetenv(3): later reads answer absent and
@@ -904,7 +912,12 @@ ScrDyn *scr_util_parse_env(const ScrDyn *content) {
     scr_dyn_arg_type_fail("content", "of type string", content);
     return NULL;
   }
-  return scr_env_parse_content(content->v.str, true);
+  /* The parser works on UTF-8, as Node's does: a lone surrogate in the
+   * string arrives as U+FFFD. */
+  ScrStr *text = scr_str_to_well_formed(content->v.str);
+  ScrDyn *entries = scr_env_parse_content(text, true);
+  scr_str_release(text);
+  return entries;
 }
 
 void scr_fs_invalid_named_path(const ScrDyn *value, const ScrStr *path, const char *name) {
@@ -1305,11 +1318,11 @@ ScrStr *scr_process_cwd(void) {
  * — this synchronous runtime has no queued backpressure, so it is constantly
  * true. */
 bool scr_process_stdout_write(const ScrStr *data) {
-  return scr_stdio_write(1, data->data, data->len);
+  return scr_stdio_write_str(1, data);
 }
 
 bool scr_process_stderr_write(const ScrStr *data) {
-  return scr_stdio_write(2, data->data, data->len);
+  return scr_stdio_write_str(2, data);
 }
 
 /* The FIRST-CLASS stream write (`output.write(line)` where output is a
@@ -2885,12 +2898,16 @@ static void scr_fs_write_common(ScrStr *path, ScrStr *data, const char *mode) {
     scr_fs_throw(errno, "open", path);
     return;
   }
-  if (data->len > 0 && fwrite(data->data, 1, data->len, f) != data->len) {
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
+  if (data->len > 0 && fwrite(bytes, 1, data->len, f) != data->len) {
     int e = errno;
     fclose(f);
+    scr_str_utf8_end(owned);
     scr_fs_throw(e, "write", path);
     return;
   }
+  scr_str_utf8_end(owned);
   if (fclose(f) != 0) scr_fs_throw(errno, "close", path);
 }
 
@@ -2926,18 +2943,22 @@ void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode) {
     scr_fs_throw(errno, "open", path);
     return;
   }
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
   size_t at = 0;
   while (at < data->len) {
-    ssize_t wrote = write(fd, data->data + at, data->len - at);
+    ssize_t wrote = write(fd, bytes + at, data->len - at);
     if (wrote < 0) {
       if (errno == EINTR) continue;
       int e = errno;
       close(fd);
+      scr_str_utf8_end(owned);
       scr_fs_throw(e, "write", path);
       return;
     }
     at += (size_t)wrote;
   }
+  scr_str_utf8_end(owned);
   if (close(fd) != 0) scr_fs_throw(errno, "close", path);
 }
 
@@ -3545,7 +3566,11 @@ double scr_fs_write_sync(double fd, ScrBytes *buf, double offset, double length,
 double scr_fs_write_str_sync(double fd, ScrStr *data, double position,
                              ScrStr *encoding) {
   (void)encoding; /* frontend proves utf8; the argument still evaluates */
-  return scr_fs_write_bytes(fd, data->data, data->len, position);
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
+  double wrote = scr_fs_write_bytes(fd, bytes, data->len, position);
+  scr_str_utf8_end(owned);
+  return wrote;
 }
 
 /* fs.readSync(fd, buffer, offset, length[, position]) — the buffer form.
@@ -6050,7 +6075,11 @@ ScrCryptoHash *scr_crypto_hmac_new_str(ScrStr *alg, ScrStr *key) {
     scr_crypto_invalid_digest(alg);
     return NULL;
   }
-  return scr_crypto_hash_alloc(kind, true, (const unsigned char *)key->data, key->len);
+  char *owned;
+  const char *bytes = scr_str_utf8(key, &owned);
+  ScrCryptoHash *r = scr_crypto_hash_alloc(kind, true, (const unsigned char *)bytes, key->len);
+  scr_str_utf8_end(owned);
+  return r;
 }
 
 ScrCryptoHash *scr_crypto_hmac_new_bytes(ScrStr *alg, ScrBytes *key) {
@@ -6091,7 +6120,11 @@ static ScrCryptoHash *scr_crypto_hash_update_raw(ScrCryptoHash *hash,
 }
 
 ScrCryptoHash *scr_crypto_hash_update_str(ScrCryptoHash *hash, ScrStr *data) {
-  return scr_crypto_hash_update_raw(hash, (const unsigned char *)data->data, data->len);
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
+  ScrCryptoHash *r = scr_crypto_hash_update_raw(hash, (const unsigned char *)bytes, data->len);
+  scr_str_utf8_end(owned);
+  return r;
 }
 
 ScrCryptoHash *scr_crypto_hash_update_bytes(ScrCryptoHash *hash, ScrBytes *data) {
@@ -6163,7 +6196,11 @@ static ScrStr *scr_hash_digest_raw(const ScrStr *alg, const unsigned char *data,
 /* Strings hash their UTF-8 bytes (Node's default input encoding — ScrStr
  * storage IS utf8, so the bytes are the string's own). Borrowed; +1. */
 ScrStr *scr_crypto_hash_digest_str(ScrStr *alg, ScrStr *data, ScrStr *enc) {
-  return scr_hash_digest_raw(alg, (const unsigned char *)data->data, data->len, enc);
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
+  ScrStr *r = scr_hash_digest_raw(alg, (const unsigned char *)bytes, data->len, enc);
+  scr_str_utf8_end(owned);
+  return r;
 }
 
 ScrStr *scr_crypto_hash_digest_bytes(ScrStr *alg, ScrBytes *data, ScrStr *enc) {
@@ -6886,9 +6923,7 @@ ScrStr *scr_crypto_x509_valid_to_str(ScrStr *pem) {
 
 /* String.fromCharCode core over n UTF-16 code units read through
  * `unit(src, i)` (already ToUint16'd): combine adjacent surrogate pairs,
- * substitute U+FFFD for lone surrogates (divergence 1's storage policy —
- * Node writing a lone surrogate to stdout produces the same replacement
- * bytes), UTF-8 encode. */
+ * keep other surrogates lone, WTF-8 encode. */
 static ScrStr *scr_str_from_units(size_t n, uint32_t (*unit)(void *, size_t), void *src) {
   if (n == 1) return scr_str_from_char_code_one((double)unit(src, 0));
   char *out = malloc(n * 3 + 1); /* worst case: 3 bytes per UTF-16 unit */
@@ -6903,27 +6938,9 @@ static ScrStr *scr_str_from_units(size_t n, uint32_t (*unit)(void *, size_t), vo
       if (lo >= 0xDC00 && lo <= 0xDFFF) {
         cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
         i++;
-      } else {
-        cp = 0xFFFD;
       }
-    } else if (cp >= 0xD800 && cp <= 0xDFFF) {
-      cp = 0xFFFD;
     }
-    if (cp <= 0x7F) {
-      out[o++] = (char)cp;
-    } else if (cp <= 0x7FF) {
-      out[o++] = (char)(0xC0 | (cp >> 6));
-      out[o++] = (char)(0x80 | (cp & 0x3F));
-    } else if (cp <= 0xFFFF) {
-      out[o++] = (char)(0xE0 | (cp >> 12));
-      out[o++] = (char)(0x80 | ((cp >> 6) & 0x3F));
-      out[o++] = (char)(0x80 | (cp & 0x3F));
-    } else {
-      out[o++] = (char)(0xF0 | (cp >> 18));
-      out[o++] = (char)(0x80 | ((cp >> 12) & 0x3F));
-      out[o++] = (char)(0x80 | ((cp >> 6) & 0x3F));
-      out[o++] = (char)(0x80 | (cp & 0x3F));
-    }
+    o += scr_wtf8_put(out + o, cp);
   }
   ScrStr *s = scr_str_new(out, o);
   free(out);
@@ -6985,21 +7002,7 @@ static ScrStr *scr_str_from_points(size_t n, double (*value)(void *, size_t), vo
         i++;
       }
     }
-    if (point >= 0xd800 && point <= 0xdfff) point = 0xfffd;
-    if (point < 0x80) out[offset++] = (char)point;
-    else if (point < 0x800) {
-      out[offset++] = (char)(0xc0 | (point >> 6));
-      out[offset++] = (char)(0x80 | (point & 0x3f));
-    } else if (point < 0x10000) {
-      out[offset++] = (char)(0xe0 | (point >> 12));
-      out[offset++] = (char)(0x80 | ((point >> 6) & 0x3f));
-      out[offset++] = (char)(0x80 | (point & 0x3f));
-    } else {
-      out[offset++] = (char)(0xf0 | (point >> 18));
-      out[offset++] = (char)(0x80 | ((point >> 12) & 0x3f));
-      out[offset++] = (char)(0x80 | ((point >> 6) & 0x3f));
-      out[offset++] = (char)(0x80 | (point & 0x3f));
-    }
+    offset += scr_wtf8_put(out + offset, point);
   }
   ScrStr *result = scr_str_new(out, offset);
   free(out);

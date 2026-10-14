@@ -829,13 +829,23 @@ static void scr_arr_destroy(void *object) {
     a->ext->metadata = NULL;
   }
   if (scr_elem_is_ref(a->elem)) {
-    for (size_t i = 0, end = a->len < a->cap ? a->len : a->cap; i < end; i++) {
-      if (a->present[i] != SCR_ARR_HOLE) {
-        uint64_t old = a->data[i];
-        uint8_t state = a->present[i];
-        a->present[i] = 0;
-        a->data[i] = 0;
-        if (state == SCR_ARR_VALUE) scr_elem_release(a, old);
+    size_t end = a->len < a->cap ? a->len : a->cap;
+    if (a->elem == SCR_ELEM_STR) {
+      /* Releasing a string runs no user code, so the slots need no clearing
+       * first; immortal strings (interned characters, literals) need no call. */
+      for (size_t i = 0; i < end; i++) {
+        ScrStr *s = (ScrStr *)scr_slot_to_ptr(a->data[i]);
+        if (a->present[i] == SCR_ARR_VALUE && s && s->rc != SIZE_MAX) scr_str_release(s);
+      }
+    } else {
+      for (size_t i = 0; i < end; i++) {
+        if (a->present[i] != SCR_ARR_HOLE) {
+          uint64_t old = a->data[i];
+          uint8_t state = a->present[i];
+          a->present[i] = 0;
+          a->data[i] = 0;
+          if (state == SCR_ARR_VALUE) scr_elem_release(a, old);
+        }
       }
     }
     if (a->ext) {
@@ -2585,7 +2595,43 @@ bool scr_arr_sort_dense(ScrArr *a, ScrClosure *f, uint32_t arity, bool owned) {
   return true;
 }
 
+/* join over a hole-free string array: size the result exactly, then copy
+ * each piece without per-append capacity checks. Only a piece starting
+ * with a lone low surrogate can complete a pair across its seam. */
+static ScrStr *scr_arr_join_dense_str(const ScrArr *a, const ScrStr *sep) {
+  const size_t limit = SIZE_MAX - sizeof(ScrStr) - 1;
+  size_t n = a->len;
+  if (n > 1 && sep->len > limit / (n - 1)) scr_arr_oom();
+  size_t total = n > 1 ? (n - 1) * sep->len : 0;
+  bool ascii = n < 2 || sep->ascii, lone = scr_wtf8_any();
+  bool lead_low = lone && n > 1 && scr_wtf8_low_at(sep->data);
+  for (size_t i = 0; i < n; i++) {
+    const ScrStr *s = (const ScrStr *)scr_slot_to_ptr(a->data[i]);
+    if (!s) continue;
+    total = scr_join_size(total, s->len);
+    ascii &= s->ascii;
+    if (lone) lead_low |= scr_wtf8_low_at(s->data);
+  }
+  ScrStr *out = scr_str_alloc_raw(total, total);
+  char *w = out->data;
+  for (size_t i = 0; i < n; i++) {
+    if (i > 0) {
+      scr_copy_bytes(w, sep->data, sep->len);
+      w += sep->len;
+    }
+    const ScrStr *s = (const ScrStr *)scr_slot_to_ptr(a->data[i]);
+    if (!s) continue;
+    scr_copy_bytes(w, s->data, s->len);
+    w += s->len;
+  }
+  out->data[total] = '\0';
+  if (lead_low) scr_str_fuse_surrogates(out);
+  else if (ascii) scr_str_note_ascii(out);
+  return out;
+}
+
 ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep) {
+  if (a->elem == SCR_ELEM_STR && a->filled == a->len) return scr_arr_join_dense_str(a, sep);
   size_t cap = 64;
   /* String widths are already known. Size once to avoid growth and copying
    * even when the array holds holes, explicit undefined or sparse slots.
@@ -2602,6 +2648,10 @@ ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep) {
     }
   }
   ScrStr *out = scr_str_alloc_raw(0, cap);
+  /* Only a piece starting with a lone low surrogate can complete a pair
+   * across its seam; the finished string then needs fusing. */
+  bool lone = scr_wtf8_any();
+  bool lead_low = lone && a->len > 1 && scr_wtf8_low_at(sep->data);
   for (size_t i = 0; i < a->len; i++) {
     if (i > 0) scr_join_append(&out, sep->data, sep->len);
     uint64_t slot;
@@ -2620,7 +2670,9 @@ ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep) {
         break;
       case SCR_ELEM_STR: {
         const ScrStr *s = (const ScrStr *)scr_slot_to_ptr(slot);
-        if (s) scr_join_append(&out, s->data, s->len);
+        if (!s) break;
+        if (lone) lead_low |= scr_wtf8_low_at(s->data);
+        scr_join_append(&out, s->data, s->len);
         break;
       }
       case SCR_ELEM_ARR:
@@ -2631,6 +2683,7 @@ ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep) {
     }
   }
   out->data[out->len] = '\0';
+  if (lead_low) scr_str_fuse_surrogates(out);
   return out;
 }
 
@@ -2656,6 +2709,7 @@ ScrStr *scr_str_raw(ScrArr *raw, ScrArr *subs) {
     }
   }
   out->data[out->len] = '\0';
+  scr_str_fuse_surrogates(out); /* pieces may complete surrogate pairs */
   return out;
 }
 

@@ -2197,7 +2197,10 @@ void scr_net_lookup_answer(ScrClosure *self, bool has_err, ScrStr *msg /*borrowe
 /* ── the socket surface ──────────────────────────────────────────────── */
 
 void scr_net_sock_write_str(ScrNetSocket *s, ScrStr *data /*borrowed*/) {
-  scr_net_sock_write_raw(s, data->data, data->len);
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
+  scr_net_sock_write_raw(s, bytes, data->len);
+  scr_str_utf8_end(owned);
 }
 
 void scr_net_sock_write_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/) {
@@ -3233,7 +3236,7 @@ static ScrDyn *scr_net_dynh_sock_invoke(void *h, ScrDyn *self, const char *metho
       scr_jb_init(&b);
       scr_jb_puts(&b, "listening for '");
       if (name->kind == SCR_DYN_STR) {
-        for (size_t i = 0; i < name->v.str->len; i++) scr_jb_putc(&b, name->v.str->data[i]);
+        scr_jb_write(&b, name->v.str->data, name->v.str->len);
       }
       scr_jb_puts(&b, "' on a dynamic Socket is not supported yet");
       scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
@@ -3521,7 +3524,7 @@ static ScrDyn *scr_net_dynh_srv_invoke(void *h, ScrDyn *self, const char *method
       scr_jb_init(&b);
       scr_jb_puts(&b, "listening for '");
       if (name->kind == SCR_DYN_STR) {
-        for (size_t i = 0; i < name->v.str->len; i++) scr_jb_putc(&b, name->v.str->data[i]);
+        scr_jb_write(&b, name->v.str->data, name->v.str->len);
       }
       scr_jb_puts(&b, "' on a dynamic Server is not supported yet");
       scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));

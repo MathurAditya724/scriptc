@@ -285,7 +285,7 @@ void scr_assert_eq_f64(double a, double b, bool negated, bool deep,
   scr_assert_eq_fail(ia, la, ib, lb, 0, a == 0.0 && b == 0.0, true, deep, msg, has_msg);
 }
 
-/* The string forms: byte equality IS SameValue for well-formed UTF-8. */
+/* The string forms: byte equality IS SameValue for canonical storage. */
 void scr_assert_eq_str(ScrStr *a, ScrStr *b, bool negated, bool deep,
                        ScrStr *msg, bool has_msg) {
   bool same = a->len == b->len && memcmp(a->data, b->data, a->len) == 0;

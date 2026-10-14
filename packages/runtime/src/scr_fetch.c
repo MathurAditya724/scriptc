@@ -1462,6 +1462,7 @@ static ScrBytes *sf_chunk_bytes(const ScrDyn *chunk) {
   if (chunk && chunk->kind == SCR_DYN_STR) {
     ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)chunk->v.str->len);
     memcpy(b->data, chunk->v.str->data, chunk->v.str->len);
+    if (!chunk->v.str->ascii) scr_wtf8_to_utf8((char *)b->data, chunk->v.str->len);
     return b;
   }
   sf_type_error("ReadableStream chunks must be Uint8Array or string values");
@@ -5293,7 +5294,7 @@ static ScrDyn *sf_data_response(ScrStr *url) {
   ScrDyn *body = scr_dyn_new_bytes(bytes); scr_bytes_release(bytes);
   ScrStr *mime = meta_end == 5 ? scr_str_new("text/plain;charset=US-ASCII", 26) : scr_str_new(url->data + 5, meta_end - 5);
   if (mime->len && mime->data[0] == ';') {
-    ScrJsonBuf b; scr_jb_init(&b); scr_jb_puts(&b, "text/plain"); for (size_t i = 0; i < mime->len; i++) scr_jb_putc(&b, mime->data[i]);
+    ScrJsonBuf b; scr_jb_init(&b); scr_jb_puts(&b, "text/plain"); scr_jb_write(&b, mime->data, mime->len);
     scr_str_release(mime); mime = scr_jb_finish(&b);
   }
   ScrDyn *headers = scr_dyn_new_obj(); scr_dyn_obj_set(headers, "content-type", 12, scr_dyn_new_str(mime)); scr_str_release(mime);

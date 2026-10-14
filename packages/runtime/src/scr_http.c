@@ -771,12 +771,12 @@ void scr_http_validate_header_name(ScrStr *name /*borrowed*/, ScrStr *label /*bo
   scr_jb_init(&b);
   ScrStr *shown = label->len ? label : NULL;
   if (shown) {
-    for (size_t i = 0; i < shown->len; i++) scr_jb_putc(&b, shown->data[i]);
+    scr_jb_write(&b, shown->data, shown->len);
   } else {
     scr_jb_puts(&b, "Header name");
   }
   scr_jb_puts(&b, " must be a valid HTTP token [\"");
-  for (size_t i = 0; i < name->len; i++) scr_jb_putc(&b, name->data[i]);
+  scr_jb_write(&b, name->data, name->len);
   scr_jb_puts(&b, "\"]");
   ScrStr *msg = scr_jb_finish(&b);
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_HTTP_TOKEN");
@@ -788,7 +788,7 @@ void scr_http_validate_header_value(ScrStr *name /*borrowed*/, const ScrDyn *val
     ScrJsonBuf b;
     scr_jb_init(&b);
     scr_jb_puts(&b, "Invalid value \"undefined\" for header \"");
-    for (size_t i = 0; i < name->len; i++) scr_jb_putc(&b, name->data[i]);
+    scr_jb_write(&b, name->data, name->len);
     scr_jb_putc(&b, '"');
     ScrStr *msg = scr_jb_finish(&b);
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_HTTP_INVALID_HEADER_VALUE");
@@ -817,7 +817,7 @@ void scr_http_validate_header_value(ScrStr *name /*borrowed*/, const ScrDyn *val
   ScrJsonBuf b;
   scr_jb_init(&b);
   scr_jb_puts(&b, "Invalid character in header content [\"");
-  for (size_t i = 0; i < name->len; i++) scr_jb_putc(&b, name->data[i]);
+  scr_jb_write(&b, name->data, name->len);
   scr_jb_puts(&b, "\"]");
   ScrStr *msg = scr_jb_finish(&b);
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_CHAR");
@@ -1586,7 +1586,10 @@ void scr_http_res_write_str(ScrHttpRes *r, ScrStr *data /*borrowed*/) {
     return;
   }
   if (r->strict_content_length) r->strict_bytes_written += data->len;
-  scr_http_res_write_raw(r, data->data, data->len);
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
+  scr_http_res_write_raw(r, bytes, data->len);
+  scr_str_utf8_end(owned);
 }
 
 void scr_http_res_write_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/) {
@@ -1716,7 +1719,10 @@ static void scr_http_res_end_raw(ScrHttpRes *r, const char *data, size_t len) {
 void scr_http_res_end(ScrHttpRes *r) { scr_http_res_end_raw(r, "", 0); }
 
 void scr_http_res_end_str(ScrHttpRes *r, ScrStr *data /*borrowed*/) {
-  scr_http_res_end_raw(r, data->data, data->len);
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
+  scr_http_res_end_raw(r, bytes, data->len);
+  scr_str_utf8_end(owned);
 }
 
 void scr_http_res_end_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/) {
@@ -3643,7 +3649,10 @@ static void scr_http_client_write_raw(ScrHttpClientReq *c, const char *data, siz
 }
 
 void scr_http_client_write_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/) {
-  scr_http_client_write_raw(c, data->data, data->len);
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
+  scr_http_client_write_raw(c, bytes, data->len);
+  scr_str_utf8_end(owned);
 }
 
 void scr_http_client_write_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/) {
@@ -3700,7 +3709,10 @@ static void scr_http_client_end_raw(ScrHttpClientReq *c, const char *data, size_
 void scr_http_client_end(ScrHttpClientReq *c) { scr_http_client_end_raw(c, "", 0); }
 
 void scr_http_client_end_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/) {
-  scr_http_client_end_raw(c, data->data, data->len);
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
+  scr_http_client_end_raw(c, bytes, data->len);
+  scr_str_utf8_end(owned);
 }
 
 void scr_http_client_end_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/) {
@@ -4197,7 +4209,7 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
     ScrJsonBuf b;
     scr_jb_init(&b);
     scr_jb_puts(&b, "Method must be a valid HTTP token [\"");
-    for (size_t i = 0; i < method->len; i++) scr_jb_putc(&b, method->data[i]);
+    scr_jb_write(&b, method->data, method->len);
     scr_jb_puts(&b, "\"]");
     ScrStr *msg = scr_jb_finish(&b);
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_HTTP_TOKEN");
@@ -4684,7 +4696,7 @@ static void scr_http_dynh_event_unsupported(const char *cls, const ScrDyn *name)
   scr_jb_init(&b);
   scr_jb_puts(&b, "listening for '");
   if (name->kind == SCR_DYN_STR) {
-    for (size_t i = 0; i < name->v.str->len; i++) scr_jb_putc(&b, name->v.str->data[i]);
+    scr_jb_write(&b, name->v.str->data, name->v.str->len);
   }
   scr_jb_puts(&b, "' on a dynamic ");
   scr_jb_puts(&b, cls);
@@ -5052,7 +5064,7 @@ static ScrArr *scr_http_dynh_flat_pairs(const ScrDyn *list) {
         scr_jb_puts(&b, "Invalid value \"");
         scr_jb_puts(&b, one->kind == SCR_DYN_UNDEF ? "undefined" : "object");
         scr_jb_puts(&b, "\" for header \"");
-        for (size_t c = 0; c < k->v.str->len; c++) scr_jb_putc(&b, k->v.str->data[c]);
+        scr_jb_write(&b, k->v.str->data, k->v.str->len);
         scr_jb_putc(&b, '"');
         ScrStr *msg = scr_jb_finish(&b);
         scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_HTTP_INVALID_HEADER_VALUE");

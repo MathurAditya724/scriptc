@@ -145,7 +145,7 @@ static char *scr_pattern_cesu8(const ScrStr *src, size_t *plen) {
  * syntax characters (an escaped syntax character or '/' stands for
  * itself), no sticky anchoring, and no case folding unless it has no
  * letters. Multiline, dotAll, global and unicode do not change what such a
- * pattern matches. Every byte match of an ASCII needle in well-formed UTF-8
+ * pattern matches. Every byte match of an ASCII needle in WTF-8 storage
  * is a code-unit match at the same position. Returns an immortal string
  * owned by the matcher (freed with it), or NULL. */
 static ScrStr *scr_regex_plain_text(const ScrRegex *re) {
@@ -352,8 +352,9 @@ ScrStr *scr_regex_to_string(ScrRegex *re) {
 
 /* ── UTF-8 ⇄ UTF-16 (the exec buffer strategy) ──────────────────────── */
 
-/* Subject as freshly-malloc'd UTF-16 code units (strings are well-formed
- * UTF-8, so no validation). Unit count ≤ byte count. */
+/* Subject as freshly-malloc'd UTF-16 code units (strings are canonical
+ * WTF-8, so no validation; a lone surrogate decodes as its unit). Unit
+ * count ≤ byte count. */
 static uint16_t *scr_to_utf16(const ScrStr *s, int *plen) {
   if (s->len > (size_t)INT32_MAX - 1 || s->len > SIZE_MAX / sizeof(uint16_t))
     scr_regex_oom();
@@ -393,13 +394,14 @@ static uint16_t *scr_to_utf16(const ScrStr *s, int *plen) {
 }
 
 /* Decode one UTF-16 code point. A boundary that splits a surrogate pair
- * produces U+FFFD, as in the runtime's string slicing contract. */
+ * keeps that half as a lone surrogate, as in the runtime's string slicing
+ * contract. */
 static uint32_t scr_regex_codepoint(const uint16_t *units, int *index, int end) {
   uint32_t cp = units[(*index)++];
   if (cp >= 0xD800 && cp < 0xDC00 && *index < end &&
       units[*index] >= 0xDC00 && units[*index] < 0xE000)
     return 0x10000 + ((cp - 0xD800) << 10) + (units[(*index)++] - 0xDC00);
-  return cp >= 0xD800 && cp < 0xE000 ? 0xFFFD : cp;
+  return cp;
 }
 
 static size_t scr_regex_encode(char *out, uint32_t cp) {
@@ -413,6 +415,7 @@ static size_t scr_regex_encode(char *out, uint32_t cp) {
     return 2;
   }
   if (cp < 0x10000) {
+    if (cp >= 0xD800 && cp <= 0xDFFF) scr_wtf8_note(); /* half of a split pair */
     out[0] = (char)(0xE0 | (cp >> 12));
     out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
     out[2] = (char)(0x80 | (cp & 0x3F));
@@ -425,7 +428,9 @@ static size_t scr_regex_encode(char *out, uint32_t cp) {
   return 4;
 }
 
-static void scr_jb_put_utf16(ScrJsonBuf *b, const uint16_t *u, int start, int end) {
+/* Out of line, so one-byte subjects' span writes keep a small frame. */
+__attribute__((noinline)) static void scr_jb_put_utf16(ScrJsonBuf *b, const uint16_t *u, int start,
+                                                       int end) {
   char bytes[256];
   size_t used = 0;
   for (int i = start; i < end;) {
@@ -579,14 +584,14 @@ static void scr_regex_put_span(ScrJsonBuf *b, const ScrRegexInput *input,
   else scr_jb_write(b, (const char *)input->data + start, (size_t)(end - start));
 }
 
-static ScrStr *scr_regex_span(const ScrRegexInput *input, int start, int end) {
-  if (!input->wide)
-    return scr_str_new((const char *)input->data + start, (size_t)(end - start));
-  /* Captures have a known span: allocate its exact UTF-8 length instead
-   * of inheriting a general builder's size hint from an earlier document. */
+/* Captures have a known span: allocate its exact UTF-8 length instead of
+ * inheriting a general builder's size hint from an earlier document. Out of
+ * line, like scr_jb_put_utf16. */
+__attribute__((noinline)) static ScrStr *scr_regex_span_utf16(const uint16_t *u, int start,
+                                                              int end) {
   size_t bytes = 0;
   for (int i = start; i < end;) {
-    uint32_t cp = scr_regex_codepoint(input->utf16, &i, end);
+    uint32_t cp = scr_regex_codepoint(u, &i, end);
     size_t width = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
     if (width > SIZE_MAX - sizeof(ScrStr) - 1 - bytes) scr_regex_oom();
     bytes += width;
@@ -594,9 +599,14 @@ static ScrStr *scr_regex_span(const ScrRegexInput *input, int start, int end) {
   ScrStr *out = scr_str_alloc_raw(bytes, bytes);
   size_t offset = 0;
   for (int i = start; i < end;)
-    offset += scr_regex_encode(out->data + offset, scr_regex_codepoint(input->utf16, &i, end));
+    offset += scr_regex_encode(out->data + offset, scr_regex_codepoint(u, &i, end));
   out->data[bytes] = '\0';
   return out;
+}
+
+static ScrStr *scr_regex_span(const ScrRegexInput *input, int start, int end) {
+  if (input->wide) return scr_regex_span_utf16(input->utf16, start, end);
+  return scr_str_new((const char *)input->data + start, (size_t)(end - start));
 }
 
 /* ECMA-262 AdvanceStringIndex: past a whole surrogate pair under /u, one
@@ -1498,7 +1508,7 @@ bool scr_assert_regex_dyn_test(ScrRegex *re, ScrDyn *actual) {
   // String(symbol) accepts a direct Symbol; object conversion uses the
   // string hint, including Symbol.toPrimitive and custom Error formatters.
   ScrStr *str = actual->kind == SCR_DYN_SYMBOL
-    ? scr_dyn_string_constructor(actual) : scr_util_to_usv_string(actual);
+    ? scr_dyn_string_constructor(actual) : scr_util_to_string(actual);
   if (!str) return false;
   bool matched = scr_assert_regex_hits(re, str);
   scr_str_release(str);
@@ -1687,8 +1697,8 @@ ScrRegex *scr_regex_new(ScrStr *pattern, ScrStr *flags) {
   return re;
 }
 
-/* Decode the code point at p (well-formed UTF-8 by the string
- * invariant); *adv gets the byte length of the sequence. */
+/* Decode the code point or lone surrogate at p (canonical WTF-8 by the
+ * string invariant); *adv gets the byte length of the sequence. */
 static uint32_t scr_re_utf8_decode(const char *p, size_t *adv) {
   unsigned char c = (unsigned char)p[0];
   if (c < 0x80) { *adv = 1; return c; }
@@ -1708,9 +1718,8 @@ static uint32_t scr_re_utf8_decode(const char *p, size_t *adv) {
  * concatenation can't extend a token), SyntaxCharacters and '/' take a
  * backslash, the "other punctuators" ∪ WhiteSpace ∪ LineTerminator set
  * hex-escapes (\xNN below U+0100, \uNNNN above — lowercase hex, per
- * spec), and everything else passes through. The spec's surrogate arm is
- * unreachable over well-formed storage (SEMANTICS.md 2). Borrows s;
- * result +1. */
+ * spec), a lone surrogate \uNNNN-escapes, and everything else passes
+ * through. Borrows s; result +1. */
 static bool scr_regexp_syntax_char(uint32_t cp) {
   switch (cp) {
     case '^': case '$': case '\\': case '.': case '*': case '+': case '?':
@@ -1757,6 +1766,7 @@ static size_t scr_regexp_escape_len(uint32_t cp, bool first, size_t raw) {
   if (first && ((cp >= '0' && cp <= '9') || (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z'))) return 4;
   if (scr_regexp_syntax_char(cp) || scr_regexp_control_escape(cp) != 0) return 2;
   if (scr_regexp_hex_escaped(cp)) return cp < 0x100 ? 4 : 6;
+  if (cp >= 0xD800 && cp <= 0xDFFF) return 6; /* a lone surrogate: \uXXXX */
   return raw;
 }
 

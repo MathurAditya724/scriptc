@@ -1216,8 +1216,8 @@ double scr_strdec_next(const ScrStr *enc, double pending, const ScrBytes *chunk)
 /* decoder.end(): the buffered partial flushes — utf8's truncated sequence
  * becomes its replacement chars (the maximal-subpart rule), base64's
  * remainder encodes (padded; unpadded for base64url), utf16le's held
- * bytes decode as they stand (an odd byte drops; a held lead surrogate is
- * the documented U+FFFD divergence), and the stateless encodings flush
+ * bytes decode as they stand (an odd byte drops; a held lead surrogate
+ * stays lone), and the stateless encodings flush
  * nothing. +1. */
 ScrStr *scr_strdec_end(const ScrStr *enc, double pending) {
   uint8_t pend[3];
@@ -1299,6 +1299,7 @@ static size_t scr_bytes_put_cp(char *out, size_t o, uint32_t cp) {
     out[o++] = (char)(0xc0 | (cp >> 6));
     out[o++] = (char)(0x80 | (cp & 0x3f));
   } else if (cp <= 0xffff) {
+    if (cp >= 0xd800 && cp <= 0xdfff) scr_wtf8_note(); /* a lone UTF-16 unit */
     out[o++] = (char)(0xe0 | (cp >> 12));
     out[o++] = (char)(0x80 | ((cp >> 6) & 0x3f));
     out[o++] = (char)(0x80 | (cp & 0x3f));
@@ -1994,7 +1995,10 @@ ScrDyn *scr_text_encode_into(const ScrDyn *source, const ScrDyn *destination) {
     read += cp > 0xffff ? 2 : 1;
     written = end;
   }
-  if (written) memcpy(dest->data, text->data, written);
+  if (written) {
+    memcpy(dest->data, text->data, written);
+    if (!text->ascii) scr_wtf8_to_utf8((char *)dest->data, written);
+  }
   ScrDyn *result = scr_dyn_new_obj();
   scr_dyn_obj_set(result, "read", 4, scr_dyn_new_num((double)read));
   scr_dyn_obj_set(result, "written", 7, scr_dyn_new_num((double)written));
@@ -2172,10 +2176,8 @@ static bool scr_enc_is(const ScrStr *enc, const char *name) {
 
 /* toString("utf16le"): LE code-unit pairs (an odd tail byte drops, like
  * Node). Valid surrogate pairs combine into their code point; a LONE
- * surrogate becomes U+FFFD — Node keeps it as a lone UTF-16 unit, which
- * UTF-8 string storage cannot hold (SEMANTICS.md divergence; stdout
- * agrees byte-for-byte because Node's own write replaces it there too). */
-/* Consume one scalar, replacing an unpaired surrogate at the storage boundary. */
+ * surrogate stays a lone UTF-16 unit, as in Node. */
+/* Consume one code point or unpaired surrogate. */
 static uint32_t scr_bytes_utf16le_cp(const uint8_t *in, size_t units, size_t *u) {
   uint32_t cu = (uint32_t)in[*u * 2] | ((uint32_t)in[*u * 2 + 1] << 8);
   (*u)++;
@@ -2186,7 +2188,7 @@ static uint32_t scr_bytes_utf16le_cp(const uint8_t *in, size_t units, size_t *u)
       return 0x10000 + ((cu - 0xd800) << 10) + (lo - 0xdc00);
     }
   }
-  return cu >= 0xd800 && cu <= 0xdfff ? 0xfffd : cu;
+  return cu;
 }
 
 static ScrStr *scr_bytes_decode_utf16le(const uint8_t *in, size_t n) {
@@ -2454,9 +2456,11 @@ ScrBytes *scr_bytes_from_str(const ScrStr *s, const ScrStr *enc) {
     scr_bytes_release(narrowed);
     return b;
   }
-  /* utf8: ScrStr storage IS the bytes */
+  /* utf8: ScrStr storage IS the bytes, once lone surrogates become U+FFFD
+   * (same length) */
   ScrBytes *b = scr_bytes_conversion_storage(n);
   memcpy(b->data, in, n);
+  if (!s->ascii) scr_wtf8_to_utf8((char *)b->data, n);
   b->len = n;
   return b;
 }
@@ -2723,14 +2727,18 @@ double scr_bytes_write_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
   } else {
     budget = remaining;
   }
-  /* UTF-8 already has its final representation. Copy only the requested
-   * prefix, backing off when the destination ends inside a scalar. */
+  /* UTF-8 already has its final representation, apart from lone
+   * surrogates (U+FFFD, same length). Copy only the requested prefix,
+   * backing off when the destination ends inside a scalar. */
   if (scr_enc_is(enc, "utf8")) {
     size_t k = s->len < budget ? s->len : budget;
     if (k < s->len) {
       while (k > 0 && ((uint8_t)s->data[k] & 0xc0) == 0x80) k--;
     }
-    if (k) memcpy(b->data + o, s->data, k);
+    if (k) {
+      memcpy(b->data + o, s->data, k);
+      if (!s->ascii) scr_wtf8_to_utf8((char *)b->data + o, k);
+    }
     return (double)k;
   }
   bool utf16 = scr_enc_is(enc, "utf16le");

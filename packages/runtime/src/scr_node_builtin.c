@@ -356,10 +356,10 @@ ScrDyn *scr_process_builtin_unsupported(ScrStr *id, ScrStr *member) {
   ScrJsonBuf text;
   scr_jb_init(&text);
   scr_jb_puts(&text, "native builtin '");
-  for (size_t i = 0; i < id->len; i++) scr_jb_putc(&text, id->data[i]);
+  scr_jb_write(&text, id->data, id->len);
   if (member->len) {
     scr_jb_putc(&text, '.');
-    for (size_t i = 0; i < member->len; i++) scr_jb_putc(&text, member->data[i]);
+    scr_jb_write(&text, member->data, member->len);
   }
   scr_jb_puts(&text, "' is not supported through process.getBuiltinModule yet [SC2020]");
   ScrStr *message = scr_jb_finish(&text);

@@ -641,7 +641,10 @@ static void scr_dgram_send_raw(ScrDgramSocket *s, const char *data, size_t len, 
 }
 
 void scr_dgram_send_str(ScrDgramSocket *s, ScrStr *data, double port, ScrStr *host) {
-  scr_dgram_send_raw(s, data->data, data->len, port, host);
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
+  scr_dgram_send_raw(s, bytes, data->len, port, host);
+  scr_str_utf8_end(owned);
 }
 
 void scr_dgram_send_bytes(ScrDgramSocket *s, ScrBytes *data, double port, ScrStr *host) {
@@ -1170,7 +1173,8 @@ void scr_dgram_send_chk(ScrDgramSocket *s, const ScrDyn *buffer, const ScrDyn *a
   }
   const ScrBytes *byte_input = buffer->kind == SCR_DYN_BYTES ? buffer->v.bytes : NULL;
   SCR_BYTES_SNAPSHOT(byte_input);
-  const char *data = buffer->kind == SCR_DYN_STR ? buffer->v.str->data
+  char *owned = NULL;
+  const char *data = buffer->kind == SCR_DYN_STR ? scr_str_utf8(buffer->v.str, &owned)
                                                  : (const char *)byte_input->data;
   size_t datalen = buffer->kind == SCR_DYN_STR ? buffer->v.str->len
                                                : (size_t)scr_bytes_byte_len(buffer->v.bytes);
@@ -1181,5 +1185,6 @@ void scr_dgram_send_chk(ScrDgramSocket *s, const ScrDyn *buffer, const ScrDyn *a
   ScrStr *host = address->kind == SCR_DYN_STR ? scr_str_retain(address->v.str)
                                               : scr_str_new("127.0.0.1", 9);
   scr_dgram_send_raw(s, data, datalen, portnum, host);
+  scr_str_utf8_end(owned);
   scr_str_release(host);
 }

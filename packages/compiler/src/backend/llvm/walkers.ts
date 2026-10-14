@@ -71,10 +71,12 @@ export class LlWalkers {
     B.line(`call void @scr_jb_putc(ptr ${buf}, i8 ${byte})`);
   }
 
+  /** Fixed text and JSON tokens hold no lone surrogate, so they append
+   * without the builder's surrogate-pair seam check. */
   private puts(B: BlockBuilder, buf: string, text: string): void {
-    this.host.declare(`declare void @scr_jb_write(ptr, ptr, ${this.S})`);
+    this.host.declare(`declare void @scr_jb_write_utf8(ptr, ptr, ${this.S})`);
     B.line(
-      `call void @scr_jb_write(ptr ${buf}, ptr ${this.host.cstr(text)}, ${this.S} ${Buffer.byteLength(text, "utf8")}) ; ${JSON.stringify(text)}`,
+      `call void @scr_jb_write_utf8(ptr ${buf}, ptr ${this.host.cstr(text)}, ${this.S} ${Buffer.byteLength(text, "utf8")}) ; ${JSON.stringify(text)}`,
     );
   }
 

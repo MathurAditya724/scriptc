@@ -618,18 +618,21 @@ int main(void) {
   check(dyn_str_is(d, "\xF0\x9F\x98\x80"), "surrogate pair combines");
   scr_dyn_release(d);
 
-  /* Lone surrogates become U+FFFD (house policy: strings stay well-formed
-   * UTF-8; JS would keep the lone surrogate — documented divergence). */
+  /* Lone surrogates stay lone, as WTF-8, like JS. */
   d = parse_ok("\"x\\uD800y\"", "parse lone high surrogate");
-  check(dyn_str_is(d, "x\xEF\xBF\xBDy"), "lone high surrogate -> U+FFFD");
+  check(dyn_str_is(d, "x\xED\xA0\x80y"), "lone high surrogate kept");
   scr_dyn_release(d);
   d = parse_ok("\"\\uDC00\"", "parse lone low surrogate");
-  check(dyn_str_is(d, "\xEF\xBF\xBD"), "lone low surrogate -> U+FFFD");
+  check(dyn_str_is(d, "\xED\xB0\x80"), "lone low surrogate kept");
   scr_dyn_release(d);
-  /* High surrogate followed by a non-surrogate escape: U+FFFD, then the
-   * escape parses normally. */
+  /* High surrogate followed by a non-surrogate escape: the lone high, then
+   * the escape parses normally. */
   d = parse_ok("\"\\uD800\\u0041\"", "high surrogate then BMP escape");
-  check(dyn_str_is(d, "\xEF\xBF\xBD" "A"), "U+FFFD then A");
+  check(dyn_str_is(d, "\xED\xA0\x80" "A"), "lone high then A");
+  scr_dyn_release(d);
+  /* A raw lone high surrogate before an escaped low one forms the pair. */
+  d = parse_ok("\"\xED\xA0\xBD\\uDE00\"", "raw high then escaped low");
+  check(dyn_str_is(d, "\xF0\x9F\x98\x80"), "halves form the pair");
   scr_dyn_release(d);
 
   /* Raw UTF-8 passes through. */
