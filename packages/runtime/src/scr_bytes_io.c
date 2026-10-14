@@ -60,13 +60,22 @@ static ScrStr *scr_fs_decode_read(ScrBytes *bytes, ScrStr *encoding) {
   return text;
 }
 
+/* UTF-8 reads (the common case, and the empty name's default) skip the
+ * intermediate Buffer: the file is read into string storage and decoded in
+ * place, with the same errors and decode as the Buffer path. */
+static bool scr_fs_read_utf8(ScrStr *encoding) {
+  return encoding->len == 0 || scr_bytes_encoding_is_utf8(encoding);
+}
+
 ScrStr *scr_fs_read_file_encoded(ScrStr *path, ScrStr *encoding) {
   if (!scr_fs_read_encoding_valid(encoding)) return NULL;
+  if (scr_fs_read_utf8(encoding)) return scr_fs_read_file(path);
   return scr_fs_decode_read(scr_fs_read_file_bytes(path), encoding);
 }
 
 ScrStr *scr_fs_read_fd_encoded(double fd, ScrStr *encoding) {
   if (!scr_fs_read_encoding_valid(encoding)) return NULL;
+  if (scr_fs_read_utf8(encoding)) return scr_fs_read_fd(fd);
   return scr_fs_decode_read(scr_fs_read_fd_bytes(fd), encoding);
 }
 
