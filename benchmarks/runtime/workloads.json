@@ -71,6 +71,13 @@
       ]
     },
     {
+      "name": "value-objects",
+      "entry": "workloads/value-objects.ts",
+      "args": [
+        "2"
+      ]
+    },
+    {
       "name": "validate-errors",
       "entry": "workloads/validate-errors.ts",
       "args": [
