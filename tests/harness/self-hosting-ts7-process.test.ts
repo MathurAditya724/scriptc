@@ -117,7 +117,7 @@ for (const backend of ["llvm"] as const) {
         ...nativeFacts
       } = JSON.parse(readFileSync(report, "utf8"));
       expect([oracleAst, oracleSemantic]).toEqual(["preserved", "preserved"]);
-      expect([nativeAst, nativeSemantic]).toEqual(["refused", "refused"]);
+      expect([nativeAst, nativeSemantic]).toEqual(["preserved", "preserved"]);
       expect(nativeFacts).toEqual(oracleFacts);
     } finally {
       rmSync(dir, { recursive: true, force: true });

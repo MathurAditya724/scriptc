@@ -5,8 +5,7 @@
  * (moduleUsesQs — the scr_url_params gating precedent), so qs-free
  * programs pay zero bytes. querystring.escape never reaches this unit at
  * all: Node's qsEscape encodes exactly the component unreserved set, so
- * the frontend lowers it to the always-linked
- * scr_str_encode_uri_component.
+ * the frontend lowers it to the always-linked scr_qs_escape.
  *
  * Everything here is a quirk-faithful port of lib/querystring.js (Node is
  * the oracle): parse's interleaved sep/eq scan with its naive
@@ -435,7 +434,7 @@ void scr_qs_parse_into(ScrMap *out, const ScrStr *qs, const ScrStr *sep,
 static void qs_stringify_value(QsBuf *b, const ScrDyn *v) {
   switch (v->kind) {
     case SCR_DYN_STR: {
-      ScrStr *enc = scr_str_encode_uri_component(v->v.str);
+      ScrStr *enc = scr_qs_escape(v->v.str);
       qb_append_str(b, enc);
       scr_str_release(enc);
       return;
@@ -484,7 +483,7 @@ ScrStr *scr_qs_stringify(const ScrDyn *obj, const ScrStr *sep,
     ScrDyn *view = v->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(v) : NULL;
     if (view) v = view;
     if (scr_exc_pending()) { scr_dyn_release(view); scr_dyn_release(keys); free(fields.data); return NULL; }
-    ScrStr *ks = scr_str_encode_uri_component((ScrStr *)k);
+    ScrStr *ks = scr_qs_escape((ScrStr *)k);
     if (v->kind == SCR_DYN_ARR) {
       for (size_t j = 0; j < v->v.arr.len; j++) {
         if (fields.len) qb_append(&fields, sep_b, sep_len);
@@ -502,5 +501,9 @@ ScrStr *scr_qs_stringify(const ScrDyn *obj, const ScrStr *sep,
     scr_dyn_release(view);
   }
   scr_dyn_release(keys);
+  if (scr_exc_pending()) { /* a lone surrogate: URIError [ERR_INVALID_URI] */
+    free(fields.data);
+    return NULL;
+  }
   return qb_take(&fields);
 }

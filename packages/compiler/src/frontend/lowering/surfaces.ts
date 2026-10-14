@@ -573,8 +573,7 @@ export const STR_METHODS: Record<
   // regexIntrinsic). The optional limit is completed to 2^32-1 by the
   // lowering so the IR/runtime always see the spec's effective value.
   // Empty separator splits per UTF-16 code unit —
-  // astral halves become U+FFFD (SEMANTICS.md divergence 2, the same
-
+  // astral halves become lone surrogates.
   split: { method: "split", result: arrayOf(STRING), minArgs: 0, maxArgs: 2 },
   // Padding completes omitted lengths and fill strings in its lowering.
   padStart: { method: "padStart", result: STRING, minArgs: 0, maxArgs: 2 },
@@ -583,10 +582,8 @@ export const STR_METHODS: Record<
   toLowerCase: { method: "toLowerCase", result: STRING, minArgs: 0, maxArgs: 0 },
   toUpperCase: { method: "toUpperCase", result: STRING, minArgs: 0, maxArgs: 0 },
   normalize: { method: "normalize", result: STRING, minArgs: 0, maxArgs: 1 },
-  // The ES2024 well-formedness pair — no-ops over the runtime's
-  // well-formed storage (constant true / the identity, per spec on
-  // well-formed input; where Node would answer false the program already
-  // diverged at the string's creation, SEMANTICS.md 2).
+  // The ES2024 well-formedness pair: whether the string holds a lone
+  // surrogate, and the copy with each one replaced by U+FFFD.
   isWellFormed: { method: "isWellFormed", result: BOOL, minArgs: 0, maxArgs: 0 },
   toWellFormed: { method: "toWellFormed", result: STRING, minArgs: 0, maxArgs: 0 },
 };

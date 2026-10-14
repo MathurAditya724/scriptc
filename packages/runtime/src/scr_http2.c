@@ -1883,7 +1883,10 @@ void scr_http2_stream_respond(ScrH2Stream *st, ScrArr *pairs /*borrowed, nullabl
 }
 
 void scr_http2_stream_write_str(ScrH2Stream *st, ScrStr *data /*borrowed*/) {
-  scr_h2_stream_send(st, data->data, data->len);
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
+  scr_h2_stream_send(st, bytes, data->len);
+  scr_str_utf8_end(owned);
 }
 
 void scr_http2_stream_write_bytes(ScrH2Stream *st, ScrBytes *data /*borrowed*/) {
@@ -1899,7 +1902,10 @@ void scr_http2_stream_end(ScrH2Stream *st) {
 
 void scr_http2_stream_end_str(ScrH2Stream *st, ScrStr *data /*borrowed*/) {
   if (st->destroyed || st->want_end || scr_h2_stream_local_closed(st)) return;
-  scr_h2_buf_put(&st->wbuf, data->data, data->len);
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
+  scr_h2_buf_put(&st->wbuf, bytes, data->len);
+  scr_str_utf8_end(owned);
   st->want_end = true;
   scr_h2_stream_flush(st);
 }

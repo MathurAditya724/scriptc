@@ -181,7 +181,7 @@ void scr_init(void) {
  * the stream differs. */
 /* A real definition lets relocatable library links localize this hook;
  * a tentative common symbol stays externally visible on Mach-O. */
-SCR_TL bool (*scr_stdio_write_hook)(int fd, const void *data, size_t len) = NULL;
+SCR_TL bool (*scr_stdio_write_hook)(int fd, const void *data, size_t len, bool wide) = NULL;
 
 /* Lines up to this size render on the C stack (fiber stacks are 256 KiB). */
 #define SCR_CONSOLE_STACK_LINE 2048
@@ -264,13 +264,21 @@ static size_t scr_console_capacity(size_t n, const ScrLogArg *args) {
   return capacity;
 }
 
-static size_t scr_console_render(char *line, size_t n, const ScrLogArg *args) {
+/* *wide records a string argument that may hold a lone surrogate (only
+ * once one may exist). Glued parts of one concatenation that complete a
+ * surrogate pair across their seam render as the paired character. */
+static size_t scr_console_render(char *line, size_t n, const ScrLogArg *args, bool *wide) {
   size_t used = 0;
+  bool lone = scr_wtf8_any(), joins = false, maybe = false;
   for (size_t i = 0; i < n; i++) {
     const ScrLogArg *arg = &args[i];
     if (i && !(arg->tag & SCR_ARG_GLUE)) line[used++] = ' ';
     int kind = arg->tag & SCR_ARG_KIND;
     if (kind == SCR_ARG_STR) {
+      if (lone && !arg->v.s->ascii) {
+        maybe = true;
+        joins |= scr_wtf8_joins(line, used, arg->v.s->data, arg->v.s->len);
+      }
       memcpy(line + used, arg->v.s->data, arg->v.s->len);
       used += arg->v.s->len;
     } else if (kind == SCR_ARG_BOOL) {
@@ -288,7 +296,9 @@ static size_t scr_console_render(char *line, size_t n, const ScrLogArg *args) {
       used += scr_f64_to_str(arg->v.f, line + used);
     }
   }
+  if (joins) used = scr_wtf8_fuse(line, used);
   line[used++] = '\n';
+  *wide = maybe;
   return used;
 }
 
@@ -309,11 +319,14 @@ static void scr_console_write(int fd, size_t n, const ScrLogArg *args, bool glob
   if (!scr_stdio_write_hook && !(global && scr_console_indenter) && n == 1 &&
       (args[0].tag & SCR_ARG_KIND) == SCR_ARG_STR &&
       args[0].v.s->len >= SCR_CONSOLE_STACK_LINE) {
+    char *owned;
+    const char *bytes = scr_str_utf8(args[0].v.s, &owned);
     FILE *locked = scr_fd_stream_lock(fd);
     if (scr_stdout_pending()) fflush(stdout);
-    struct iovec iov[2] = {{(void *)args[0].v.s->data, args[0].v.s->len}, {(void *)"\n", 1}};
+    struct iovec iov[2] = {{(void *)bytes, args[0].v.s->len}, {(void *)"\n", 1}};
     (void)scr_fd_writev_all(fd, iov, 2);
     scr_fd_stream_unlock(locked);
+    scr_str_utf8_end(owned);
     return;
   }
 #endif
@@ -321,16 +334,19 @@ static void scr_console_write(int fd, size_t n, const ScrLogArg *args, bool glob
   size_t capacity = scr_console_capacity(n, args);
   char *line = capacity <= sizeof stack ? stack : malloc(capacity);
   if (!line) scr_trap("scriptc: out of memory\n");
-  size_t used = scr_console_render(line, n, args);
+  bool wide = false;
+  size_t used = scr_console_render(line, n, args, &wide);
   if (global && scr_console_indenter) {
     char *indented = scr_console_indenter(line, &used);
     if (line != stack) free(line);
     line = indented;
   }
   if (scr_stdio_write_hook) {
-    scr_stdio_write_hook(fd, line, used);
+    /* A patched write receives the JavaScript string, lone surrogates kept. */
+    scr_stdio_write_hook(fd, line, used, wide);
     if (scr_exc_pending()) scr_exc_clear();
   } else {
+    if (wide) scr_wtf8_to_utf8(line, used);
     (void)scr_stdio_write_raw(fd, line, used);
   }
   if (line != stack) free(line);
@@ -388,7 +404,23 @@ int scr_stdio_write_raw(int fd, const void *data, size_t len) {
 }
 
 bool scr_stdio_write(int fd, const void *data, size_t len) {
-  if (scr_stdio_write_hook) return scr_stdio_write_hook(fd, data, len);
+  if (scr_stdio_write_hook) return scr_stdio_write_hook(fd, data, len, false);
   (void)scr_stdio_write_raw(fd, data, len);
   return true;
+}
+
+/* A string chunk: a patched write receives the string itself; the stream
+ * receives its UTF-8, each lone surrogate as U+FFFD. */
+static __attribute__((noinline)) bool scr_stdio_write_wide(int fd, const ScrStr *s) {
+  if (scr_stdio_write_hook) return scr_stdio_write_hook(fd, s->data, s->len, true);
+  char *owned;
+  const char *bytes = scr_str_utf8(s, &owned);
+  (void)scr_stdio_write_raw(fd, bytes, s->len);
+  scr_str_utf8_end(owned);
+  return true;
+}
+
+bool scr_stdio_write_str(int fd, const ScrStr *s) {
+  if (__builtin_expect(scr_wtf8_any(), 0) && !s->ascii) return scr_stdio_write_wide(fd, s);
+  return scr_stdio_write(fd, s->data, s->len);
 }

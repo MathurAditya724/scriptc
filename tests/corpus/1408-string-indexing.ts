@@ -28,9 +28,9 @@ function bar(amplitude: number): string {
 }
 console.log("bars", bar(0) + bar(0.3) + bar(0.5) + bar(0.99) + bar(1));
 
-// Splitting an astral pair inherits divergence 2 (a lone half is U+FFFD in
-// UTF-8 storage — Node writes the same replacement byte sequence to stdout,
-// so equality against a lone-surrogate literal and the exact numeric
-// charCodeAt both stay byte-identical here).
+// Splitting an astral pair yields its lone halves, so equality against a
+// lone-surrogate literal and the exact numeric charCodeAt both match Node
+// (4990-lone-surrogates and 4991-lone-surrogate-halves cover the halves
+// themselves).
 const emoji = "\u{1f680}";
 console.log("hi", emoji[0] === "\ud83d", emoji[1] === "\ude80", emoji.charCodeAt(1));

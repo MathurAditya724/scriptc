@@ -62,7 +62,7 @@ function searches(text: string): string {
   let lines = 0;
   for (let i = text.indexOf("\n"); i >= 0; i = text.indexOf("\n", i + 1)) {
     lines++;
-    // Native strings are UTF-8: keep surrogate pairs whole (a lone surrogate would become U+FFFD).
+    // Keep surrogate pairs whole in these slices.
     let from = Math.max(0, i - 6);
     const unit = text.charCodeAt(from);
     if (unit >= 0xdc00 && unit <= 0xdfff) from--;

@@ -30,15 +30,21 @@ static void scr_oom(void) {
 #define SCR_SHORT_N 64
 static SCR_TL ScrStr *scr_short_tab[SCR_SHORT_N];
 
-static size_t scr_short_hash(const char *bytes, size_t len) {
-  size_t h = len;
-  for (size_t i = 0; i < len; i++) h = h * 31 + (unsigned char)bytes[i];
-  return h % SCR_SHORT_N;
+/* A 2..4-byte span packed into one word: its identity in the table. */
+static inline uint32_t scr_short_word(const char *bytes, size_t len) {
+  uint32_t w = (uint32_t)(unsigned char)bytes[0] | (uint32_t)(unsigned char)bytes[1] << 8;
+  if (len > 2) w |= (uint32_t)(unsigned char)bytes[2] << 16;
+  if (len > 3) w |= (uint32_t)(unsigned char)bytes[3] << 24;
+  return w;
+}
+
+static inline size_t scr_short_slot(uint32_t word, size_t len) {
+  return (size_t)(((word ^ (uint32_t)len) * UINT32_C(0x9E3779B1)) >> 26) % SCR_SHORT_N;
 }
 
 static void scr_short_forget(const ScrStr *s) {
   if (s->len < 2 || s->len > 4) return;
-  size_t h = scr_short_hash(s->data, s->len);
+  size_t h = scr_short_slot(scr_short_word(s->data, s->len), s->len);
   if (scr_short_tab[h] == s) scr_short_tab[h] = NULL;
 }
 
@@ -83,11 +89,15 @@ typedef struct ScrSidx {
   size_t indexed_cb;
   bool no_more_points;   /* metadata allocation failed/overflowed: fail open */
   bool points_complete;  /* points cover every stride of indexed prefix */
+  uint16_t *units;       /* the UTF-16 code units, once reads warrant them */
+  size_t nunits;
+  size_t reads;          /* indexed reads that missed the unit array */
 } ScrSidx;
 /* Keep short-string cursor traffic out of the sparse cache. A short-lived
  * one-byte receiver can be far more common than a large indexed one; sharing
  * the round-robin slots would otherwise rebuild a warm index every few calls.
  */
+SCR_TL ScrStrScan scr_str_scan;
 static SCR_TL ScrSidx scr_sidx_sparse_tab[SCR_SIDX_N];
 static SCR_TL ScrSidx scr_sidx_cursor_tab[SCR_SIDX_N];
 static SCR_TL unsigned scr_sidx_sparse_clock;
@@ -104,6 +114,12 @@ static void scr_sidx_clear(ScrSidx *e, unsigned *live) {
     if (live) (*live)--;
   }
   free(e->points);
+  if (e->units && scr_str_scan.units == e->units) {
+    scr_str_scan.s = NULL;
+    scr_str_scan.units = NULL;
+    scr_str_scan.n = 0;
+  }
+  free(e->units);
   memset(e, 0, sizeof(*e));
 }
 
@@ -273,6 +289,15 @@ static void scr_sidx_concat_append(const ScrStr *s, size_t oldlen) {
       if (e->s != s) continue;
       e->u16len = SCR_U16_UNKNOWN;
       if (e->indexed_cb > oldlen) e->indexed_cb = oldlen;
+      if (e->units && scr_str_scan.units == e->units) {
+        scr_str_scan.s = NULL;
+        scr_str_scan.units = NULL;
+        scr_str_scan.n = 0;
+      }
+      free(e->units); /* the units describe the old content */
+      e->units = NULL;
+      e->nunits = 0;
+      e->reads = 0;
     }
   }
 }
@@ -418,10 +443,25 @@ void scr_str_release(ScrStr *s) {
   }
 }
 
+/* a + b where a ends with a lone high surrogate and b starts with a lone
+ * low one: the two units become one 4-byte character (scr_runtime.h). */
+static __attribute__((noinline, cold)) ScrStr *scr_str_concat_joined(ScrStr *a, ScrStr *b) {
+  size_t newlen = a->len + b->len;
+  ScrStr *s = scr_str_alloc(newlen, newlen);
+  memcpy(s->data, a->data, a->len);
+  memcpy(s->data + a->len, b->data, b->len + 1);
+  scr_str_fuse_from(s, a->len - 3);
+  return s;
+}
+
 ScrStr *scr_str_concat(ScrStr *a, ScrStr *b) {
   if (a->len == 0) return scr_str_retain(b);
   if (b->len == 0) return scr_str_retain(a);
   if (a->len > SIZE_MAX - b->len - sizeof(ScrStr) - 1) scr_oom();
+  /* Only two strings that are not proven ASCII can complete a pair. */
+  if (__builtin_expect(scr_wtf8_any(), 0) && !a->ascii && !b->ascii &&
+      scr_wtf8_joins(a->data, a->len, b->data, b->len))
+    return scr_str_concat_joined(a, b);
   size_t newlen = a->len + b->len;
   /* In-place append: a is uniquely owned by the caller's borrow (rc == 1 —
    * never an interned literal, those are SIZE_MAX) and has room. Fires on
@@ -472,6 +512,33 @@ ScrStr *scr_str_concat(ScrStr *a, ScrStr *b) {
   return s;
 }
 
+/* Whether some part of a concatenation starts with a lone low surrogate,
+ * the only way a seam can complete a pair. A NULL part is a formatted
+ * number, which is ASCII. */
+static bool scr_str_parts_lead_low(ScrStr *const *parts, size_t count) {
+  bool lead_low = false;
+  for (size_t i = 0; i < count; i++) lead_low |= parts[i] && scr_wtf8_low_at(parts[i]->data);
+  return lead_low;
+}
+
+/* The first seam of a concatenation result at which a part completes a
+ * surrogate pair (scr_runtime.h), or 0 for none. The parts start at byte
+ * `at` of out; a NULL part is nums[i] formatted. */
+static size_t scr_str_first_seam(const ScrStr *out, size_t at, ScrStr *const *parts,
+                                 const double *nums, size_t count) {
+  for (size_t i = 0; i < count; i++) {
+    const ScrStr *part = parts[i];
+    if (!part) {
+      char text[32];
+      at += scr_f64_to_str(nums[i], text);
+      continue;
+    }
+    if (part->len && scr_wtf8_joins(out->data, at, part->data, part->len)) return at;
+    at += part->len;
+  }
+  return 0;
+}
+
 /* String and number operands of one concatenation, numbers formatted with
  * JavaScript's Number::toString straight into the result instead of through
  * temporary strings. parts[i] == NULL selects nums[i]. A head, when given,
@@ -479,7 +546,8 @@ ScrStr *scr_str_concat(ScrStr *a, ScrStr *b) {
  * caller's borrow is its only reference, it has room, and it is not also
  * one of the parts; otherwise copied, with geometric slack when unique. */
 #define SCR_STR_MIXED_MAX 16
-ScrStr *scr_str_concat_mixed(ScrStr *head, ScrStr *const *parts, const double *nums, size_t count) {
+static __attribute__((noinline)) ScrStr *
+scr_str_concat_mixed_bytes(ScrStr *head, ScrStr *const *parts, const double *nums, size_t count) {
   if (count > SCR_STR_MIXED_MAX) scr_trap("scriptc: internal error: too many concatenation parts\n");
   char text[SCR_STR_MIXED_MAX][32];
   size_t lens[SCR_STR_MIXED_MAX];
@@ -538,6 +606,92 @@ ScrStr *scr_str_concat_mixed(ScrStr *head, ScrStr *const *parts, const double *n
   return out;
 }
 
+/* A concatenation result that is not proven ASCII may have completed
+ * surrogate pairs at its seams (scr_runtime.h). Its parts end the result;
+ * the in-place head case drops its cached facts with the fuse. */
+static __attribute__((noinline)) void scr_str_concat_rejoin(ScrStr *out, ScrStr *const *parts,
+                                                            const double *nums, size_t count) {
+  if (!scr_str_parts_lead_low(parts, count)) return;
+  size_t extra = 0;
+  for (size_t i = 0; i < count; i++) {
+    char text[32];
+    extra += parts[i] ? parts[i]->len : scr_f64_to_str(nums[i], text);
+  }
+  size_t seam = scr_str_first_seam(out, out->len - extra, parts, nums, count);
+  if (seam) scr_str_fuse_from(out, seam - 3);
+}
+
+static __attribute__((noinline)) ScrStr *scr_str_concat_mixed_lone(ScrStr *head,
+                                                                   ScrStr *const *parts,
+                                                                   const double *nums,
+                                                                   size_t count) {
+  ScrStr *out = scr_str_concat_mixed_bytes(head, parts, nums, count);
+  if (!out->ascii) scr_str_concat_rejoin(out, parts, nums, count);
+  return out;
+}
+
+/* Until a lone surrogate may exist, this is a tail call of the byte
+ * concatenation itself. */
+/* UTF-16 units of a short span: bytes, less continuation bytes, plus one
+ * for each 4-byte lead. Lane sums use a multiply rather than popcount,
+ * which baseline x86-64 lacks. */
+static inline size_t scr_utf16_units_short(const char *data, size_t len) {
+  const uint64_t high = UINT64_C(0x8080808080808080), ones = UINT64_C(0x0101010101010101);
+  size_t units = len, i = 0;
+  for (; len - i >= 8; i += 8) {
+    uint64_t w;
+    memcpy(&w, data + i, 8);
+    uint64_t cont = (w & ~(w << 1) & high) >> 7;
+    uint64_t lead4 = (w & (w << 1) & (w << 2) & (w << 3) & high) >> 7;
+    units -= (size_t)((cont * ones) >> 56);
+    units += (size_t)((lead4 * ones) >> 56);
+  }
+  for (; i < len; i++) {
+    unsigned char c = (unsigned char)data[i];
+    units -= (c & 0xC0) == 0x80;
+    units += c >= 0xF0;
+  }
+  return units;
+}
+
+/* A fresh concatenation (no head, the template-literal shape): numbers
+ * format straight into the result, which reserves scr_f64_to_str's whole
+ * 32-byte buffer for each. */
+#define SCR_F64_TEXT_MAX 32
+static __attribute__((noinline)) ScrStr *scr_str_concat_fresh(ScrStr *const *parts,
+                                                              const double *nums, size_t count) {
+  size_t reserve = 0;
+  bool ascii = true;
+  for (size_t i = 0; i < count; i++) {
+    size_t n = parts[i] ? parts[i]->len : SCR_F64_TEXT_MAX;
+    if (n > SCR_STR_MAX_CAP - reserve) scr_oom();
+    reserve += n;
+    if (parts[i]) ascii &= parts[i]->ascii;
+  }
+  ScrStr *out = scr_str_take_spare(reserve);
+  if (!out) out = scr_str_alloc(reserve, reserve);
+  char *w = out->data;
+  for (size_t i = 0; i < count; i++) {
+    if (parts[i]) {
+      scr_copy_bytes(w, parts[i]->data, parts[i]->len);
+      w += parts[i]->len;
+    } else {
+      w += scr_f64_to_str(nums[i], w);
+    }
+  }
+  size_t len = (size_t)(w - out->data);
+  out->len = len;
+  out->data[len] = '\0';
+  out->ascii = ascii;
+  return out;
+}
+
+ScrStr *scr_str_concat_mixed(ScrStr *head, ScrStr *const *parts, const double *nums, size_t count) {
+  if (__builtin_expect(scr_wtf8_any(), 0)) return scr_str_concat_mixed_lone(head, parts, nums, count);
+  if (!head && count <= SCR_STR_MIXED_MAX) return scr_str_concat_fresh(parts, nums, count);
+  return scr_str_concat_mixed_bytes(head, parts, nums, count);
+}
+
 ScrStr *scr_str_concat_move(ScrStr *a, ScrStr *b) {
   ScrStr *r = scr_str_concat(a, b);
   scr_str_release(a);
@@ -546,7 +700,10 @@ ScrStr *scr_str_concat_move(ScrStr *a, ScrStr *b) {
 
 ScrStr *scr_str_concat_mixed_move(ScrStr *head, ScrStr *const *parts, const double *nums,
                                   size_t count) {
-  ScrStr *r = scr_str_concat_mixed(head, parts, nums, count);
+  /* A head selects the general body directly (see scr_str_concat_mixed). */
+  ScrStr *r = head && !__builtin_expect(scr_wtf8_any(), 0)
+                  ? scr_str_concat_mixed_bytes(head, parts, nums, count)
+                  : scr_str_concat_mixed(head, parts, nums, count);
   scr_str_release(head);
   return r;
 }
@@ -582,6 +739,10 @@ ScrStr *scr_str_concat_parts(ScrStr *const *parts, size_t count) {
   }
   out->data[len] = '\0';
   out->ascii = ascii;
+  if (__builtin_expect(scr_wtf8_any(), 0) && !ascii && scr_str_parts_lead_low(parts, count)) {
+    size_t seam = scr_str_first_seam(out, 0, parts, NULL, count);
+    if (seam) scr_str_fuse_from(out, seam - 3);
+  }
   return out;
 }
 
@@ -596,11 +757,52 @@ int scr_str_cmp(ScrStr *a, ScrStr *b) {
   return a->len < b->len ? -1 : (a->len > b->len ? 1 : 0);
 }
 
-/* UTF-16 ordering over well-formed UTF-8. Equal bytes can be skipped even
+static inline uint32_t scr_utf8_decode(const char *p, size_t *adv);
+
+/* UTF-16 unit order of two strings from a shared character boundary. */
+static __attribute__((noinline)) int scr_str_cmp_u16_units(const ScrStr *a, const ScrStr *b,
+                                                           size_t i) {
+  size_t ia = i, ib = i;
+  uint32_t pa = 0, pb = 0; /* a pending low surrogate */
+  for (;;) {
+    if (!pa && ia == a->len) return pb || ib < b->len ? -1 : 0;
+    if (!pb && ib == b->len) return 1;
+    uint32_t ua = pa, ub = pb;
+    size_t adv;
+    if (!ua) {
+      uint32_t cp = scr_utf8_decode(a->data + ia, &adv);
+      ia += adv;
+      if (cp >= 0x10000) {
+        ua = 0xD800 + ((cp - 0x10000) >> 10);
+        pa = 0xDC00 + ((cp - 0x10000) & 0x3FF);
+      } else {
+        ua = cp;
+      }
+    } else {
+      pa = 0;
+    }
+    if (!ub) {
+      uint32_t cp = scr_utf8_decode(b->data + ib, &adv);
+      ib += adv;
+      if (cp >= 0x10000) {
+        ub = 0xD800 + ((cp - 0x10000) >> 10);
+        pb = 0xDC00 + ((cp - 0x10000) & 0x3FF);
+      } else {
+        ub = cp;
+      }
+    } else {
+      pb = 0;
+    }
+    if (ua != ub) return ua < ub ? -1 : 1;
+  }
+}
+
+/* UTF-16 ordering over canonical WTF-8. Equal bytes can be skipped even
  * inside a multibyte character: unequal continuation bytes preserve code
- * point order. Only differing lead bytes for U+E000..U+FFFF versus a
+ * point order. Differing lead bytes for U+E000..U+FFFF versus a
  * supplementary character reverse byte order, because the latter starts
- * with a UTF-16 high surrogate below U+E000. */
+ * with a UTF-16 high surrogate below U+E000. A lone surrogate against a
+ * supplementary character compares their units. */
 int scr_str_cmp_u16(ScrStr *a, ScrStr *b) {
   if (a == b) return 0;
   size_t common = a->len < b->len ? a->len : b->len;
@@ -618,6 +820,10 @@ int scr_str_cmp_u16(ScrStr *a, ScrStr *b) {
   unsigned char right = (unsigned char)b->data[i];
   if (left >= 0xf0 && right >= 0xee && right <= 0xef) return -1;
   if (right >= 0xf0 && left >= 0xee && left <= 0xef) return 1;
+  if (__builtin_expect((left == 0xed && right >= 0xf0 && scr_wtf8_surrogate_at(a->data + i)) ||
+                           (right == 0xed && left >= 0xf0 && scr_wtf8_surrogate_at(b->data + i)),
+                       0))
+    return scr_str_cmp_u16_units(a, b, i);
   return left < right ? -1 : 1;
 }
 
@@ -650,9 +856,10 @@ static ScrStr *scr_str_from_span(const char *bytes, size_t len) {
     return (ScrStr *)&scr_ascii1[(unsigned char)bytes[0]];
   }
   if (len >= 2 && len <= 4) {
-    size_t h = scr_short_hash(bytes, len);
+    uint32_t word = scr_short_word(bytes, len);
+    size_t h = scr_short_slot(word, len);
     ScrStr *cached = scr_short_tab[h];
-    if (cached && cached->len == len && memcmp(cached->data, bytes, len) == 0)
+    if (cached && cached->len == len && scr_short_word(cached->data, len) == word)
       return scr_str_retain(cached);
     ScrStr *s = scr_str_new(bytes, len);
     scr_short_tab[h] = s;
@@ -670,11 +877,11 @@ static ScrStr *scr_str_from_span_ascii(const char *bytes, size_t len) {
 
 /* A scalar fromCharCode needs neither the variadic argument array nor an
  * encoding buffer. Reuse the same empty/ASCII/tiny-span storage policy as
- * character indexing. A lone surrogate keeps the existing U+FFFD policy. */
+ * character indexing. A surrogate unit is a lone surrogate. */
 ScrStr *scr_str_from_char_code_one(double code) {
   uint32_t cp = scr_to_uint32(code) & 0xFFFFu;
   if (cp < 0x80) return (ScrStr *)&scr_ascii1[cp];
-  if (cp >= 0xD800 && cp <= 0xDFFF) cp = 0xFFFD;
+  if (cp >= 0xD800 && cp <= 0xDFFF) scr_wtf8_note();
   char bytes[3];
   if (cp < 0x800) {
     bytes[0] = (char)(0xC0 | (cp >> 6));
@@ -687,28 +894,24 @@ ScrStr *scr_str_from_char_code_one(double code) {
   return scr_str_from_span(bytes, 3);
 }
 
-/* ── string methods: UTF-16 semantics over UTF-8 storage ──────────
- * All strings in the system are well-formed UTF-8 (the compiler replaces
- * lone surrogates in literals with U+FFFD), so the decode helpers below
- * may assume valid sequences and never validate.
+/* ── string methods: UTF-16 semantics over WTF-8 storage ──────────
+ * All strings in the system are canonical WTF-8 (scr_runtime.h): valid
+ * UTF-8 sequences plus 3-byte lone surrogates, so the decode helpers below
+ * may assume valid sequences and never validate. A lone surrogate decodes
+ * as its own code unit through the ordinary 3-byte arm.
  */
 
-/* UTF-8 encoding of U+FFFD REPLACEMENT CHARACTER — stands in for the lone
- * surrogate JS would produce when charAt/slice split an astral pair. */
-#define SCR_REPLACEMENT "\xEF\xBF\xBD"
-#define SCR_REPLACEMENT_LEN ((size_t)3)
-
-/* Byte length of the well-formed UTF-8 sequence starting at lead byte c. */
-static size_t scr_utf8_seq_len(unsigned char c) {
+/* Byte length of the WTF-8 sequence starting at lead byte c. */
+static inline size_t scr_utf8_seq_len(unsigned char c) {
   if (c < 0x80) return 1;
   if (c < 0xE0) return 2;
   if (c < 0xF0) return 3;
   return 4;
 }
 
-/* Decode the code point at p (well-formed UTF-8); *adv gets the byte
- * length of the sequence. */
-static uint32_t scr_utf8_decode(const char *p, size_t *adv) {
+/* Decode the code point (or lone surrogate) at p (canonical WTF-8); *adv
+ * gets the byte length of the sequence. */
+static inline uint32_t scr_utf8_decode(const char *p, size_t *adv) {
   unsigned char c = (unsigned char)p[0];
   if (c < 0x80) {
     *adv = 1;
@@ -730,6 +933,123 @@ static uint32_t scr_utf8_decode(const char *p, size_t *adv) {
          ((uint32_t)((unsigned char)p[2] & 0x3F) << 6) |
          ((unsigned char)p[3] & 0x3F);
 }
+
+/* ── WTF-8 lone surrogates (scr_runtime.h) ────────────────────────── */
+
+bool scr_wtf8_lone;
+
+void scr_wtf8_note(void) {
+  if (!scr_wtf8_any()) __atomic_store_n(&scr_wtf8_lone, true, __ATOMIC_RELAXED);
+}
+
+const char *scr_wtf8_find_surrogate(const char *p, size_t n) {
+  const char *end = p + n;
+  while (n >= 3) {
+    const char *hit = memchr(p, 0xED, n - 2);
+    if (!hit) return NULL;
+    if ((unsigned char)hit[1] >= 0xA0) return hit;
+    p = hit + 3; /* ED lead of a U+D000..D7FF character */
+    n = (size_t)(end - p);
+  }
+  return NULL;
+}
+
+size_t scr_wtf8_put(char *dst, uint32_t cp) {
+  if (cp < 0x80) {
+    dst[0] = (char)cp;
+    return 1;
+  }
+  if (cp < 0x800) {
+    dst[0] = (char)(0xC0 | (cp >> 6));
+    dst[1] = (char)(0x80 | (cp & 0x3F));
+    return 2;
+  }
+  if (cp < 0x10000) {
+    if (cp >= 0xD800 && cp <= 0xDFFF) scr_wtf8_note();
+    dst[0] = (char)(0xE0 | (cp >> 12));
+    dst[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    dst[2] = (char)(0x80 | (cp & 0x3F));
+    return 3;
+  }
+  dst[0] = (char)(0xF0 | (cp >> 18));
+  dst[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+  dst[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+  dst[3] = (char)(0x80 | (cp & 0x3F));
+  return 4;
+}
+
+/* The surrogate unit of the lone sequence at p. */
+static uint32_t scr_wtf8_unit(const char *p) {
+  return 0xD000u | (((uint32_t)(unsigned char)p[1] & 0x3F) << 6) |
+         ((uint32_t)(unsigned char)p[2] & 0x3F);
+}
+
+size_t scr_wtf8_fuse(char *p, size_t n) {
+  size_t r = 0, w = 0;
+  for (;;) {
+    const char *hit = scr_wtf8_find_surrogate(p + r, n - r);
+    size_t at = hit ? (size_t)(hit - p) : n;
+    if (w != r) memmove(p + w, p + r, at - r);
+    w += at - r;
+    r = at;
+    if (!hit) return w;
+    if (((unsigned char)p[r + 1] & 0xF0) == 0xA0 && n - r >= 6 &&
+        scr_wtf8_surrogate_at(p + r + 3) && (unsigned char)p[r + 4] >= 0xB0) {
+      uint32_t hi = scr_wtf8_unit(p + r), lo = scr_wtf8_unit(p + r + 3);
+      w += scr_wtf8_put(p + w, 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00));
+      r += 6;
+    } else {
+      memmove(p + w, p + r, 3);
+      w += 3;
+      r += 3;
+    }
+  }
+}
+
+void scr_str_fuse_from(ScrStr *s, size_t from) {
+  scr_short_forget(s);
+  scr_str_hash_forget(s);
+  scr_sidx_purge(s);
+  s->len = from + scr_wtf8_fuse(s->data + from, s->len - from);
+  s->data[s->len] = '\0';
+}
+
+__attribute__((noinline, cold)) void scr_str_fuse_surrogates(ScrStr *s) {
+  scr_short_forget(s);
+  scr_str_hash_forget(s);
+  scr_sidx_purge(s);
+  s->len = scr_wtf8_fuse(s->data, s->len);
+  s->data[s->len] = '\0';
+}
+
+void scr_wtf8_replace_surrogates(char *p, size_t n) {
+  const char *end = p + n;
+  for (char *hit; (hit = (char *)scr_wtf8_find_surrogate(p, (size_t)(end - p))); p = hit + 3)
+    memcpy(hit, "\xEF\xBF\xBD", 3);
+}
+
+const char *scr_str_utf8_copy(const ScrStr *s, char **owned) {
+  const char *hit = scr_wtf8_find_surrogate(s->data, s->len);
+  if (!hit) return s->data;
+  char *copy = malloc(s->len + 1);
+  if (!copy) scr_oom();
+  memcpy(copy, s->data, s->len + 1);
+  size_t at = (size_t)(hit - s->data);
+  scr_wtf8_replace_surrogates(copy + at, s->len - at);
+  *owned = copy;
+  return copy;
+}
+
+/* A one-unit string holding the lone surrogate `unit`. */
+static ScrStr *scr_str_from_unit(uint32_t unit) {
+  char bytes[3];
+  scr_wtf8_put(bytes, unit);
+  return scr_str_from_span(bytes, 3);
+}
+
+/* The high and low surrogates of the astral code point cp. */
+static inline uint32_t scr_cp_high(uint32_t cp) { return 0xD800 + ((cp - 0x10000) >> 10); }
+static inline uint32_t scr_cp_low(uint32_t cp) { return 0xDC00 + ((cp - 0x10000) & 0x3FF); }
 
 /* Number of UTF-16 code units in a valid UTF-8 span (BMP char = 1, astral
  * char = 2). Byte classification is position-independent, so sparse-index
@@ -1134,6 +1454,30 @@ static inline size_t scr_u16_to_byte_c(const ScrStr *s, ScrSidx *e, size_t u16,
 
 static __attribute__((noinline)) size_t scr_u16_to_byte_walk(const ScrStr *s, ScrSidx *e,
                                                              size_t u16, bool *mid) {
+  /* A short step forward from the hot cursor (a sequential scan of
+   * non-ASCII text) walks from the cursor itself. */
+  if (u16 >= e->cu && u16 - e->cu <= 8) {
+    size_t cu = e->cu, cb = e->cb;
+    bool m = false;
+    while (cu < u16 && cb < s->len) {
+      SCR_SIDX_STEP();
+      size_t seq = scr_utf8_seq_len((unsigned char)s->data[cb]);
+      size_t w = seq == 4 ? 2 : 1;
+      if (cu + w > u16) { /* u16 lands between the halves of an astral char */
+        m = true;
+        break;
+      }
+      cu += w;
+      cb += seq;
+    }
+    if (cu == u16 || m) {
+      e->cu = cu;
+      e->cb = cb;
+      if (cb < s->len && (unsigned char)s->data[cb] < 0x80) scr_sidx_ascii_run(s, e);
+      *mid = m;
+      return cb;
+    }
+  }
   if (u16 >= e->ascii_cu && scr_sidx_ascii_grow(s, e, e->ascii_cb + (u16 - e->ascii_cu))) {
     e->cb = e->ascii_cb + (u16 - e->ascii_cu);
     e->cu = u16;
@@ -1249,7 +1593,7 @@ static double scr_to_integer_or_infinity(double x) {
   return trunc(x);
 }
 
-/* Byte substring search (needle and hay are both well-formed UTF-8,
+/* Byte substring search (needle and hay are both canonical WTF-8,
  * so any byte-level match starts on a char boundary — UTF-8 is
  * self-synchronizing). Empty needle matches at hay. */
 static const char *scr_byte_find(const char *hay, size_t hay_len,
@@ -1306,6 +1650,97 @@ static const char *scr_byte_find(const char *hay, size_t hay_len,
   return NULL;
 }
 
+/* ── searches for a needle that can match half of a surrogate pair ─────
+ * Canonical storage makes byte matches exact for every needle except one
+ * that starts with a lone low surrogate or ends with a lone high one: JS
+ * finds those inside a haystack's surrogate pairs. Such needles search
+ * UTF-16 copies of both strings; every other needle never gets here. */
+static inline bool scr_needle_halves_pairs(const ScrStr *n) {
+  return __builtin_expect(
+      scr_wtf8_any() && !n->ascii && n->len >= 3 &&
+          (((unsigned char)n->data[0] == 0xED && (unsigned char)n->data[1] >= 0xB0) ||
+           ((unsigned char)n->data[n->len - 3] == 0xED &&
+            ((unsigned char)n->data[n->len - 2] & 0xF0) == 0xA0)),
+      0);
+}
+
+/* The UTF-16 code units of s (malloc'd); *n gets their count. */
+static uint16_t *scr_str_units(const ScrStr *s, size_t *n) {
+  uint16_t *u = malloc((s->len + 1) * sizeof *u); /* units <= bytes */
+  if (!u) scr_oom();
+  size_t k = 0;
+  for (size_t i = 0; i < s->len;) {
+    size_t adv;
+    uint32_t cp = scr_utf8_decode(s->data + i, &adv);
+    i += adv;
+    if (cp >= 0x10000) {
+      u[k++] = (uint16_t)scr_cp_high(cp);
+      u[k++] = (uint16_t)scr_cp_low(cp);
+    } else {
+      u[k++] = (uint16_t)cp;
+    }
+  }
+  *n = k;
+  return u;
+}
+
+/* Indexed reads of one non-ASCII receiver (charCodeAt/charAt scans) map
+ * UTF-16 units to bytes through the cursor and checkpoints. Once its
+ * reads would have paid for converting it (one read per 16 bytes), a
+ * receiver up to SCR_SIDX_UNITS_MAX units keeps its code units in its
+ * entry and reads become loads. The array is freed with the entry, and an
+ * append drops it (scr_sidx_concat_append). */
+#define SCR_SIDX_UNITS_MAX ((size_t)1 << 20)
+static bool scr_sidx_units(const ScrStr *s, ScrSidx *e) {
+  if (!e->units) {
+    if (++e->reads < 32 || e->reads * 16 < s->len || s->len > SCR_SIDX_UNITS_MAX) return false;
+    e->units = scr_str_units(s, &e->nunits);
+  }
+  /* Publish the scan's receiver for emitted reads (scr_runtime.h). */
+  if (scr_str_scan.s != s) {
+    scr_str_scan.s = s;
+    scr_str_scan.units = e->units;
+    scr_str_scan.n = e->nunits;
+  }
+  return true;
+}
+
+typedef enum { SCR_UNIT_FIRST, SCR_UNIT_LAST, SCR_UNIT_AT } ScrUnitSearch;
+
+/* The UTF-16 index of needle in s: the first match at or after `from`,
+ * the last one starting at or before it, or a match exactly at it; -1
+ * when there is none. `from` is already clamped to s's length. */
+static __attribute__((noinline)) double scr_str_unit_search(const ScrStr *s, const ScrStr *needle,
+                                                            size_t from, ScrUnitSearch mode) {
+  size_t hn, nn;
+  uint16_t *h = scr_str_units(s, &hn), *n = scr_str_units(needle, &nn);
+  double found = -1.0;
+  if (nn <= hn && (mode == SCR_UNIT_LAST || from <= hn - nn)) {
+    size_t last = hn - nn;
+    if (from > last) from = last;
+    if (mode == SCR_UNIT_AT) {
+      if (memcmp(h + from, n, nn * sizeof *n) == 0) found = (double)from;
+    } else if (mode == SCR_UNIT_LAST) {
+      for (size_t at = from + 1; at-- > 0;) {
+        if (memcmp(h + at, n, nn * sizeof *n) == 0) {
+          found = (double)at;
+          break;
+        }
+      }
+    } else {
+      for (size_t at = from; at <= last; at++) {
+        if (memcmp(h + at, n, nn * sizeof *n) == 0) {
+          found = (double)at;
+          break;
+        }
+      }
+    }
+  }
+  free(h);
+  free(n);
+  return found;
+}
+
 /* Search backwards from a clamped UTF-16 position. A low-surrogate position
  * maps to its scalar's first byte, so that scalar remains searchable. */
 double scr_str_last_index_of_from(ScrStr *s, ScrStr *needle, double position) {
@@ -1315,6 +1750,7 @@ double scr_str_last_index_of_from(ScrStr *s, ScrStr *needle, double position) {
                    : position <= 0 ? 0 : (size_t)trunc(position);
   if (needle->len == 0) return (double)start16;
   if (needle->len > s->len) return -1.0;
+  if (scr_needle_halves_pairs(needle)) return scr_str_unit_search(s, needle, start16, SCR_UNIT_LAST);
   bool mid;
   size_t start_byte = scr_u16_to_byte_c(s, e, start16, &mid);
   size_t max_start = s->len - needle->len;
@@ -1333,6 +1769,12 @@ double scr_str_last_index_of(ScrStr *s, ScrStr *needle) {
 
 double scr_str_utf16_len(ScrStr *s) {
   if (s->ascii) return (double)s->len;
+  /* A short receiver is counted directly: claiming an index entry for it
+   * would evict the cursor of a long receiver being scanned meanwhile. */
+  if (s->len <= 64) return (double)(int64_t)scr_utf16_units_short(s->data, s->len);
+  ScrSidx *last = scr_sidx_last; /* a scan's receiver, length known */
+  if (last && last->s == s && last->u16len != SCR_U16_UNKNOWN)
+    return (double)(int64_t)last->u16len; /* lengths fit int64_t */
   return (double)scr_sidx_len(s, scr_sidx(s));
 }
 
@@ -1342,13 +1784,31 @@ double scr_str_char_code_at(ScrStr *s, double i) {
    * integer, so trunc(i) - ascii_cu == trunc(i - ascii_cu) for i at or past
    * it; NaN and anything before the span fail the comparison. */
   ScrSidx *last = scr_sidx_last;
-  if (last && last->s == s && !s->ascii) {
-    double rel = i - (double)last->ascii_cu;
-    if (rel >= 0 && rel < (double)(last->ascii_end - last->ascii_cb)) {
-      size_t k = (size_t)rel;
-      last->cu = last->ascii_cu + k;
-      last->cb = last->ascii_cb + k;
+  if (last && last->s == s && !s->ascii && i >= 0 && i < 9007199254740992.0) {
+    /* ToIntegerOrInfinity of a nonnegative safe index is truncation, done
+     * once in the integer domain. */
+    size_t k = (size_t)(int64_t)i;
+    if (scr_sidx_units(s, last)) return k < last->nunits ? (double)last->units[k] : NAN;
+    if (k >= last->ascii_cu && k - last->ascii_cu < last->ascii_end - last->ascii_cb) {
+      last->cu = k;
+      last->cb = last->ascii_cb + (k - last->ascii_cu);
       return (double)(unsigned char)s->data[last->cb];
+    }
+    /* The unit right after the hot cursor's (a sequential scan through
+     * non-ASCII text): the low half of an astral character at the cursor,
+     * or the unit that starts the next character. */
+    if (k == last->cu + 1 && last->cb < s->len) {
+      size_t adv, seq = scr_utf8_seq_len((unsigned char)s->data[last->cb]);
+      if (seq == 4) return (double)scr_cp_low(scr_utf8_decode(s->data + last->cb, &adv));
+      size_t cb = last->cb + seq;
+      if (cb < s->len) {
+        last->cu++;
+        last->cb = cb;
+        unsigned char c = (unsigned char)s->data[cb];
+        if (c < 0x80) return (double)c;
+        uint32_t cp = scr_utf8_decode(s->data + cb, &adv);
+        return (double)(cp < 0x10000 ? cp : scr_cp_high(cp));
+      }
     }
   }
   double idx = scr_to_integer_or_infinity(i);
@@ -1358,6 +1818,7 @@ double scr_str_char_code_at(ScrStr *s, double i) {
   if (s->ascii) return (double)(unsigned char)s->data[(size_t)idx];
   ScrSidx *e = scr_sidx(s);
   if (s->ascii || e->u16len == s->len) return (double)(unsigned char)s->data[(size_t)idx];
+  if (scr_sidx_units(s, e)) return idx < (double)e->nunits ? (double)e->units[(size_t)idx] : NAN;
   bool mid;
   size_t off = scr_u16_to_byte_c(s, e, (size_t)idx, &mid);
   if (off >= s->len) return NAN; /* idx >= length */
@@ -1382,10 +1843,14 @@ double scr_str_index_of(ScrStr *s, ScrStr *needle, double fromIndex) {
    * extend only as far as needed instead of indexing an unsearched suffix. */
   if (pos >= (double)s->len) return -1.0;
   size_t start16 = pos <= 0 ? 0 : (size_t)pos;
+  if (scr_needle_halves_pairs(needle)) {
+    size_t len16 = scr_sidx_len(s, e);
+    return scr_str_unit_search(s, needle, start16 > len16 ? len16 : start16, SCR_UNIT_FIRST);
+  }
   bool mid;
   size_t start_b = scr_u16_to_byte_c(s, e, start16, &mid);
-  /* A match can't begin on a low-surrogate half (needles are well-formed),
-   * so resume at the next char boundary. */
+  /* Only the needles handled above can begin on a low-surrogate half, so
+   * resume at the next char boundary. */
   if (mid) start_b += 4;
   const char *found =
       scr_byte_find(s->data + start_b, s->len - start_b, needle->data,
@@ -1411,18 +1876,26 @@ ScrStr *scr_str_substring(ScrStr *s, double start, double end) {
 }
 
 bool scr_str_includes(ScrStr *s, ScrStr *needle) {
-  return scr_byte_find(s->data, s->len, needle->data, needle->len) != NULL;
+  if (scr_byte_find(s->data, s->len, needle->data, needle->len)) return true;
+  return scr_needle_halves_pairs(needle) &&
+         scr_str_unit_search(s, needle, 0, SCR_UNIT_FIRST) >= 0;
 }
 
+/* A needle ending in a lone high surrogate can match the first half of a
+ * receiver pair (and one starting with a lone low surrogate the second). */
 bool scr_str_starts_with(ScrStr *s, ScrStr *needle) {
-  return needle->len <= s->len &&
-         memcmp(s->data, needle->data, needle->len) == 0;
+  if (needle->len <= s->len && memcmp(s->data, needle->data, needle->len) == 0) return true;
+  return scr_needle_halves_pairs(needle) && scr_str_unit_search(s, needle, 0, SCR_UNIT_AT) >= 0;
 }
 
 bool scr_str_ends_with(ScrStr *s, ScrStr *needle) {
-  return needle->len <= s->len &&
-         memcmp(s->data + (s->len - needle->len), needle->data,
-                needle->len) == 0;
+  if (needle->len <= s->len &&
+      memcmp(s->data + (s->len - needle->len), needle->data, needle->len) == 0)
+    return true;
+  if (!scr_needle_halves_pairs(needle)) return false;
+  size_t len16 = scr_sidx_len(s, scr_sidx_for(s));
+  size_t needle16 = scr_sidx_len(needle, scr_sidx_for(needle));
+  return needle16 <= len16 && scr_str_unit_search(s, needle, len16 - needle16, SCR_UNIT_AT) >= 0;
 }
 
 static size_t scr_str_clamp_u16_position(double position, size_t len16) {
@@ -1436,6 +1909,11 @@ bool scr_str_starts_with_from(ScrStr *s, ScrStr *needle, double position) {
   if (pos <= 0) return scr_str_starts_with(s, needle);
   if (pos >= (double)s->len || needle->len > s->len) return false;
   ScrSidx *e = scr_sidx_for(s);
+  if (scr_needle_halves_pairs(needle)) {
+    size_t len16 = scr_sidx_len(s, e);
+    return pos <= (double)len16 &&
+           scr_str_unit_search(s, needle, (size_t)pos, SCR_UNIT_AT) >= 0;
+  }
   bool mid;
   size_t start_byte = scr_u16_to_byte_c(s, e, (size_t)pos, &mid);
   return !mid && needle->len <= s->len - start_byte &&
@@ -1453,6 +1931,8 @@ bool scr_str_ends_with_from(ScrStr *s, ScrStr *needle, double end_position) {
   size_t len16 = scr_sidx_len(s, e);
   size_t end16 = scr_str_clamp_u16_position(end_position, len16);
   if (needle16 > end16) return false;
+  if (scr_needle_halves_pairs(needle))
+    return scr_str_unit_search(s, needle, end16 - needle16, SCR_UNIT_AT) >= 0;
   bool start_mid, end_mid;
   size_t start_byte = scr_u16_to_byte_c(s, e, end16 - needle16, &start_mid);
   size_t end_byte = scr_u16_to_byte_c(s, e, end16, &end_mid);
@@ -1507,8 +1987,8 @@ void scr_str_slice_range(ScrStr *s, double start, double end, bool substring,
 double scr_str_slice_char_code_at(ScrStr *s, const ScrStringSlice *range, double index) {
   double unit = scr_to_integer_or_infinity(index);
   if (!(unit >= 0) || unit >= (double)range->length) return NAN;
-  if ((unit == 0 && (range->split & 1u)) ||
-      (unit == (double)(range->length - 1) && (range->split & 2u))) return 0xFFFD;
+  /* A boundary inside a pair keeps that half as a lone surrogate, which is
+   * the receiver's own code unit at the same index. */
   return scr_str_char_code_at(s, (double)range->start + unit);
 }
 
@@ -1540,19 +2020,17 @@ static ScrStr *scr_str_slice_units(ScrStr *s, ScrSidx *e,
     return result;
   }
 
-  /* Divergence: JS would emit the lone surrogate half; we emit U+FFFD. */
-  size_t total = content_len + (from_mid ? SCR_REPLACEMENT_LEN : 0) +
-                 (to_mid ? SCR_REPLACEMENT_LEN : 0);
+  /* A split pair keeps the half inside the range as a lone surrogate: the
+   * low half at the start, the high half at the end. */
+  size_t total = content_len + (from_mid ? 3 : 0) + (to_mid ? 3 : 0);
   ScrStr *r = scr_str_alloc(total, total);
-  size_t o = 0;
-  if (from_mid) {
-    memcpy(r->data + o, SCR_REPLACEMENT, SCR_REPLACEMENT_LEN);
-    o += SCR_REPLACEMENT_LEN;
-  }
+  size_t o = 0, adv;
+  if (from_mid) o += scr_wtf8_put(r->data, scr_cp_low(scr_utf8_decode(s->data + from_b, &adv)));
   memcpy(r->data + o, s->data + content_b, content_len);
   o += content_len;
-  if (to_mid) memcpy(r->data + o, SCR_REPLACEMENT, SCR_REPLACEMENT_LEN);
+  if (to_mid) scr_wtf8_put(r->data + o, scr_cp_high(scr_utf8_decode(s->data + to_b, &adv)));
   r->data[total] = '\0';
+  r->ascii = 0;
   return r;
 }
 
@@ -1584,6 +2062,7 @@ ScrStr *scr_str_repeat(ScrStr *s, double count) {
   }
   r->data[total] = '\0';
   r->ascii = s->ascii;
+  if (scr_wtf8_joins(s->data, s->len, s->data, s->len)) scr_str_fuse_surrogates(r);
   return r;
 }
 
@@ -1627,15 +2106,14 @@ ScrStr *scr_str_char_at(ScrStr *s, double i) {
   if (s->ascii || e->u16len == s->len) { /* all ASCII */
     return (ScrStr *)&scr_ascii1[(unsigned char)s->data[(size_t)idx]];
   }
+  if (scr_sidx_units(s, e))
+    return idx < (double)e->nunits ? scr_str_from_char_code_one(e->units[(size_t)idx]) : scr_str_empty();
   bool mid;
   size_t off = scr_u16_to_byte_c(s, e, (size_t)idx, &mid);
   if (off >= s->len) return scr_str_empty(); /* out of range */
   size_t adv;
   uint32_t cp = scr_utf8_decode(s->data + off, &adv);
-  if (cp >= 0x10000) {
-    /* Divergence: JS returns the lone surrogate half; we return U+FFFD. */
-    return scr_str_new(SCR_REPLACEMENT, SCR_REPLACEMENT_LEN);
-  }
+  if (cp >= 0x10000) return scr_str_from_unit(mid ? scr_cp_low(cp) : scr_cp_high(cp));
   return scr_str_from_span(s->data + off, adv);
 }
 
@@ -1664,12 +2142,6 @@ ScrStr *scr_str_trim_end(ScrStr *s) {
   }
   return scr_str_from_span(s->data, e);
 }
-
-/* Immortal U+FFFD — the divergence-2 stand-in wherever JS would produce a
- * lone surrogate (empty-separator split of an astral char, a pad fill
- * truncated mid-pair). */
-static const struct { size_t rc; size_t len; size_t cap; char data[4]; }
-    scr_lit_fffd = {SIZE_MAX, 3, SCR_STR_CAP_WORD(3, SCR_KEY_HASH32_SHORT(3, 0xEFBFBD), 0), "\xEF\xBF\xBD"};
 
 /* Split owns a fresh array and appends only present string values. Fill an
  * available dense slot directly; ordinary push handles growth and the sparse
@@ -1704,29 +2176,32 @@ static ScrStr *scr_str_split_piece(const char *bytes, size_t len, ScrStr **scrat
   return scr_str_retain(piece);
 }
 
+/* Each half of an astral character is a lone surrogate piece, encoded into
+ * the cursor (valid through the current step); `next` is the half still
+ * owed (0 once both are out). The owed half's step counts here. */
+static __attribute__((noinline)) const char *scr_str_split_unit(ScrSplitCursor *cursor,
+                                                                uint32_t unit, uint32_t next,
+                                                                size_t *len) {
+  if (!next) cursor->remaining--;
+  cursor->pending_unit = next;
+  scr_wtf8_put(cursor->unit, unit);
+  *len = 3;
+  return cursor->unit;
+}
+
 /* Both eager and loop consumers use the same boundary state machine.
  * Eager consumers select the unit/substring path once before their loop. */
-static const char *scr_str_split_span(ScrStr *s, ScrStr *sep,
-                                     ScrSplitCursor *cursor, bool units,
-                                     size_t *len) {
+static inline __attribute__((always_inline)) const char *
+scr_str_split_span(ScrStr *s, ScrStr *sep, ScrSplitCursor *cursor, bool units, size_t *len) {
   if (cursor->remaining == 0 || cursor->offset > s->len) return NULL;
   if (units) {
-    if (cursor->pending_unit) {
-      cursor->pending_unit = 0;
-      cursor->remaining--;
-      *len = 3;
-      return scr_lit_fffd.data;
-    }
+    if (cursor->pending_unit) return scr_str_split_unit(cursor, cursor->pending_unit, 0, len);
     if (cursor->offset == s->len) return NULL;
     size_t start = cursor->offset, adv;
     uint32_t cp = scr_utf8_decode(s->data + start, &adv);
     cursor->offset += adv;
     cursor->remaining--;
-    if (cp >= 0x10000) {
-      cursor->pending_unit = 1;
-      *len = 3;
-      return scr_lit_fffd.data;
-    }
+    if (cp >= 0x10000) return scr_str_split_unit(cursor, scr_cp_high(cp), scr_cp_low(cp), len);
     *len = adv;
     return s->data + start;
   }
@@ -1759,7 +2234,6 @@ ScrStr *scr_str_split_cursor_next(ScrStr *s, ScrStr *sep, ScrSplitCursor *cursor
   size_t len;
   const char *bytes = scr_str_split_span(s, sep, cursor, sep->len == 0, &len);
   if (!bytes) return NULL;
-  if (bytes == scr_lit_fffd.data) return scr_str_retain((ScrStr *)&scr_lit_fffd);
   return scr_str_split_piece(bytes, len, scratch);
 }
 
@@ -1768,13 +2242,24 @@ ScrStr *scr_str_split_cursor_next(ScrStr *s, ScrStr *sep, ScrSplitCursor *cursor
 static void scr_str_split_fill(ScrArr *out, ScrStr *s, ScrStr *sep,
                                ScrSplitCursor *cursor, bool units) {
   uint64_t slots[64];
+  if (units && s->ascii) {
+    /* Every unit of an ASCII receiver is an interned one-character string. */
+    while (cursor->remaining && cursor->offset < s->len) {
+      size_t count = 0;
+      while (count < 64 && cursor->remaining && cursor->offset < s->len) {
+        slots[count++] =
+            (uint64_t)(uintptr_t)&scr_ascii1[(unsigned char)s->data[cursor->offset++]];
+        cursor->remaining--;
+      }
+      scr_arr_push_many(out, count, slots);
+    }
+    return;
+  }
   for (;;) {
     size_t count = 0, len;
     const char *bytes;
     while (count < 64 && (bytes = scr_str_split_span(s, sep, cursor, units, &len))) {
-      ScrStr *piece = bytes == scr_lit_fffd.data
-                       ? scr_str_retain((ScrStr *)&scr_lit_fffd)
-                       : scr_str_from_span(bytes, len);
+      ScrStr *piece = scr_str_from_span(bytes, len);
       slots[count++] = (uint64_t)(uintptr_t)piece;
     }
     if (count) scr_arr_push_many(out, count, slots);
@@ -1784,7 +2269,13 @@ static void scr_str_split_fill(ScrArr *out, ScrStr *s, ScrStr *sep,
 
 ScrArr *scr_str_split_limit(ScrStr *s, ScrStr *sep, double limit_num) {
   uint32_t limit = scr_to_uint32(limit_num);
-  ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
+  /* An empty separator yields one piece per UTF-16 unit: size it once. */
+  size_t pieces = 0;
+  if (sep->len == 0) {
+    pieces = s->ascii ? s->len : scr_sidx_len(s, scr_sidx(s));
+    if (pieces > limit) pieces = limit;
+  }
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, pieces);
   ScrSplitCursor cursor;
   scr_str_split_cursor_init(&cursor, limit);
   if (sep->len == 0) scr_str_split_fill(out, s, sep, &cursor, true);
@@ -1797,9 +2288,9 @@ ScrArr *scr_str_split(ScrStr *s, ScrStr *sep) {
 }
 
 /* ── replace / replaceAll with a string search value ──────────────────
- * One forward scan over the subject bytes. A nonempty needle is well-formed
- * UTF-8, so every byte match starts on a character boundary and is exactly
- * a UTF-16 match; the substitution spans are byte ranges of the subject. */
+ * One forward scan over the subject bytes. A nonempty needle is canonical
+ * WTF-8, so every byte match starts on a character boundary and is a
+ * UTF-16 match; the substitution spans are byte ranges of the subject. */
 
 /* GetSubstitution with no captures: $$, $&, $` and $' expand. With no
  * capture groups and no named groups, $n and $<name> stay literal, as does
@@ -1862,6 +2353,9 @@ ScrStr *scr_str_replace_bytes(ScrStr *s, const char *pat, size_t plen, ScrStr *r
   cap = out->cap;
   size_t used = 0;
   const char *from = s->data;
+  /* A seam can complete a surrogate pair only where a piece starts with a
+   * lone low surrogate: the replacement, or the subject after a match. */
+  bool joins = false;
   for (;;) {
     size_t gap = hit ? (size_t)(hit - from) : (size_t)(end - from);
     size_t need = gap + (hit ? rep->len : 0);
@@ -1877,16 +2371,19 @@ ScrStr *scr_str_replace_bytes(ScrStr *s, const char *pat, size_t plen, ScrStr *r
     scr_copy_bytes(out->data + used, from, gap);
     used += gap;
     if (!hit) break;
+    if (rep->len) joins |= scr_wtf8_joins(out->data, used, rep->data, rep->len);
     scr_copy_bytes(out->data + used, rep->data, rep->len);
     used += rep->len;
     from = hit + plen;
+    joins |= (unsigned char)*from == 0xED;
     hit = all ? scr_byte_find(from, (size_t)(end - from), pat, plen) : NULL;
   }
   out->len = used;
   if (cap - used > used / 4 + 64) out = scr_str_regrow(out, used);
   out->data[used] = '\0';
   scr_str_hash_forget(out);
-  if (s->ascii && rep->ascii) scr_str_note_ascii(out);
+  if (joins && scr_wtf8_any()) scr_str_fuse_surrogates(out);
+  else if (s->ascii && rep->ascii) scr_str_note_ascii(out);
   return out;
 }
 
@@ -1945,6 +2442,8 @@ ScrStr *scr_str_replace_chars(ScrStr *s, ScrStr *chars, ScrStr *texts) {
   ScrStr *out = scr_str_alloc_raw(0, cap);
   cap = out->cap;
   size_t used = 0, from = 0;
+  /* As in scr_str_replace_bytes: a seam can complete a surrogate pair. */
+  bool joins = false;
   for (;;) {
     size_t gap = i - from;
     size_t k = i < len ? (size_t)which[(unsigned char)p[i]] - 1 : 0;
@@ -1960,16 +2459,19 @@ ScrStr *scr_str_replace_chars(ScrStr *s, ScrStr *chars, ScrStr *texts) {
     scr_copy_bytes(out->data + used, p + from, gap);
     used += gap;
     if (i == len) break;
+    if (text_len[k]) joins |= scr_wtf8_joins(out->data, used, text[k], text_len[k]);
     scr_copy_bytes(out->data + used, text[k], text_len[k]);
     used += text_len[k];
     from = i + 1;
+    joins |= (unsigned char)p[from] == 0xED;
     i = scr_replace_chars_next(p, from, len, which, chars->data, n);
   }
   out->len = used;
   if (cap - used > used / 4 + 64) out = scr_str_regrow(out, used);
   out->data[used] = '\0';
   scr_str_hash_forget(out);
-  if (ascii) scr_str_note_ascii(out);
+  if (joins && scr_wtf8_any()) scr_str_fuse_surrogates(out);
+  else if (ascii) scr_str_note_ascii(out);
   return out;
 }
 
@@ -2012,8 +2514,7 @@ ScrStr *scr_str_replace_literal(ScrStr *s, ScrStr *search, ScrStr *rep, bool all
  * filler built from whole repetitions of `fill` plus a truncated prefix.
  * A target at or below the length (or an empty fill) returns the receiver
  * unchanged. A truncation that would split an astral char in the fill
- * emits U+FFFD for the kept half (one unit, like the lone surrogate JS
- * keeps — divergence 2). Sizes beyond what malloc can satisfy abort (the
+ * keeps its high half as a lone surrogate, as JS does. Sizes beyond what malloc can satisfy abort (the
  * repeat() policy; JS's RangeError fires around 2^29 units). Borrows both;
  * returns +1. */
 static ScrStr *scr_pad_impl(ScrStr *s, double maxLength, ScrStr *fill,
@@ -2023,28 +2524,28 @@ static ScrStr *scr_pad_impl(ScrStr *s, double maxLength, ScrStr *fill,
   if (!(target > (double)len16) || fill->len == 0) return scr_str_retain(s);
   /* Reject pad sizes malloc could not satisfy before the double→size_t
    * conversion can overflow (each unit is at most 3 bytes here: BMP chars
-   * and the U+FFFD stand-in; astral chars are 4 bytes for 2 units). */
+   * and lone surrogates; astral chars are 4 bytes for 2 units). */
   if (target > (double)((SIZE_MAX - sizeof(ScrStr) - 1) / 4)) scr_oom();
   size_t pad16 = (size_t)target - len16;
   size_t fill16 = scr_sidx_len(fill, scr_sidx_for(fill));
   size_t reps = pad16 / fill16, rem16 = pad16 % fill16;
   /* The truncated prefix of fill: whole chars while they fit in rem16
-   * units; a final astral char that doesn't fit contributes U+FFFD. */
+   * units; a final astral char that doesn't fit contributes its high
+   * surrogate. */
   size_t prefix_b = 0, prefix_units = 0;
-  bool prefix_fffd = false;
+  bool prefix_half = false;
   while (prefix_units < rem16) {
     size_t seq = scr_utf8_seq_len((unsigned char)fill->data[prefix_b]);
     size_t w = seq == 4 ? 2 : 1;
     if (prefix_units + w > rem16) { /* astral char split by the truncation */
-      prefix_fffd = true;
+      prefix_half = true;
       prefix_units += 1;
       break;
     }
     prefix_b += seq;
     prefix_units += w;
   }
-  size_t pad_b = reps * fill->len + prefix_b +
-                 (prefix_fffd ? SCR_REPLACEMENT_LEN : 0);
+  size_t pad_b = reps * fill->len + prefix_b + (prefix_half ? 3 : 0);
   if (pad_b > SIZE_MAX - sizeof(ScrStr) - 1 - s->len) scr_oom();
   size_t total = s->len + pad_b;
   ScrStr *r = scr_str_alloc(total, total);
@@ -2055,12 +2556,18 @@ static ScrStr *scr_pad_impl(ScrStr *s, double maxLength, ScrStr *fill,
   }
   memcpy(w, fill->data, prefix_b);
   w += prefix_b;
-  if (prefix_fffd) {
-    memcpy(w, SCR_REPLACEMENT, SCR_REPLACEMENT_LEN);
-    w += SCR_REPLACEMENT_LEN;
+  if (prefix_half) {
+    size_t adv;
+    w += scr_wtf8_put(w, scr_cp_high(scr_utf8_decode(fill->data + prefix_b, &adv)));
   }
   memcpy(at_start ? w : r->data, s->data, s->len);
   r->data[total] = '\0';
+  /* Only a piece that starts with a lone low surrogate can complete a
+   * pair across a seam: the fill (after a fill or the receiver) or the
+   * receiver (after a fill ending in a high surrogate). */
+  if (scr_wtf8_any() &&
+      ((unsigned char)fill->data[0] == 0xED || (unsigned char)s->data[0] == 0xED))
+    scr_str_fuse_surrogates(r);
   return r;
 }
 
@@ -2381,12 +2888,11 @@ ScrStr *scr_f64_to_scrstr(double x) {
 }
 
 /* ── encodeURIComponent / encodeURI ───────────────────────────────────
- * ECMA-262 Encode() over the UTF-8 storage. The spec transcodes UTF-16
+ * ECMA-262 Encode() over the WTF-8 storage. The spec transcodes UTF-16
  * to UTF-8 and percent-encodes every byte outside the unescaped set —
- * storage here already IS well-formed UTF-8 (lone surrogates were
- * substituted with U+FFFD at their producers, SEMANTICS.md 2), so the
- * walk is byte-wise and the spec's URIError arm (unpaired surrogates)
- * is unreachable: the encoders are total. Unescaped sets are the
+ * storage without lone surrogates already IS that UTF-8, so the walk is
+ * byte-wise; a lone surrogate is the spec's URIError arm, checked once
+ * up front. Unescaped sets are the
  * spec's: uriUnescaped = ALPHA / DIGIT / -_.!~*'() for
  * encodeURIComponent; encodeURI keeps uriReserved ;/?:@&=+$, and #
  * too. Hex digits are uppercase, per spec. Borrows s; result +1. */
@@ -2408,7 +2914,17 @@ static bool scr_uri_unescaped(unsigned char c, bool keep_reserved) {
   }
 }
 
+static void scr_uri_malformed(void);
+
+/* Encode()'s URIError: an unpaired surrogate has no UTF-8 encoding. */
+static bool scr_uri_unencodable(const ScrStr *s) {
+  if (!scr_str_has_surrogate(s)) return false;
+  scr_uri_malformed();
+  return true;
+}
+
 static ScrStr *scr_encode_uri_impl(ScrStr *s, bool keep_reserved) {
+  if (scr_uri_unencodable(s)) return scr_str_empty();
   const unsigned char *b = (const unsigned char *)s->data;
   size_t n = s->len, out_len = 0;
   for (size_t i = 0; i < n; i++) out_len += scr_uri_unescaped(b[i], keep_reserved) ? 1 : 3;
@@ -2435,19 +2951,20 @@ ScrStr *scr_encode_uri_component(ScrStr *s) { return scr_encode_uri_impl(s, fals
 ScrStr *scr_encode_uri(ScrStr *s) { return scr_encode_uri_impl(s, true); }
 
 /* ── isWellFormed / toWellFormed ──────────────────────────────────────
- * Storage here IS well-formed by invariant: every producer substitutes
- * the lone surrogates JS strings could carry with U+FFFD at creation
- * (SEMANTICS.md 2), so no string this runtime can hold is ill-formed.
- * isWellFormed answers the constant the invariant guarantees and
- * toWellFormed is the identity (per spec both are no-ops on well-formed
- * input). A program whose Node run would see `false` already diverged
- * at the string's creation, not here. */
-bool scr_str_is_well_formed(ScrStr *s) {
-  (void)s;
-  return true;
-}
+ * A string is ill-formed exactly when its storage holds a lone surrogate;
+ * toWellFormed replaces each with U+FFFD, which has the same length. A
+ * proven-ASCII receiver answers without a scan. */
+bool scr_str_is_well_formed(ScrStr *s) { return !scr_str_has_surrogate(s); }
 
-ScrStr *scr_str_to_well_formed(ScrStr *s) { return scr_str_retain(s); }
+ScrStr *scr_str_to_well_formed(ScrStr *s) {
+  if (s->ascii || !scr_wtf8_any()) return scr_str_retain(s);
+  const char *hit = scr_wtf8_find_surrogate(s->data, s->len);
+  if (!hit) return scr_str_retain(s);
+  size_t at = (size_t)(hit - s->data);
+  ScrStr *r = scr_str_new(s->data, s->len);
+  scr_wtf8_replace_surrogates(r->data + at, s->len - at);
+  return r;
+}
 
 /* Immortal interned booleans (same layout trick the emitter uses for
  * string literals). */
@@ -2508,6 +3025,7 @@ static bool scr_uri_unreserved(unsigned char c) {
 }
 
 ScrStr *scr_str_encode_uri_component(ScrStr *s) {
+  if (scr_uri_unencodable(s)) return scr_str_empty();
   size_t extra = 0;
   for (size_t i = 0; i < s->len; i++) {
     if (!scr_uri_unreserved((unsigned char)s->data[i])) extra += 2;
@@ -2536,6 +3054,16 @@ ScrStr *scr_str_encode_uri_component(ScrStr *s) {
 static void scr_uri_malformed(void) {
   scr_throw_error_named(scr_str_new("URIError", 8),
                         scr_str_new("URI malformed", 13));
+}
+
+/* querystring.escape: the component encoder, whose lone-surrogate failure
+ * is Node's URIError [ERR_INVALID_URI]. */
+ScrStr *scr_qs_escape(ScrStr *s) {
+  if (scr_str_has_surrogate(s)) {
+    scr_throw_error_msg_code(SCR_ERR_URI, "URI malformed", 13, "ERR_INVALID_URI");
+    return scr_str_empty();
+  }
+  return scr_str_encode_uri_component(s);
 }
 
 /* One %XX escape's byte, or -1 (bad hex / truncated). */

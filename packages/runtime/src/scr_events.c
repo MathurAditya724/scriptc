@@ -1009,10 +1009,19 @@ static ScrDyn *scr_stdio_invoke(void *ptr, ScrDyn *self, const char *name,
   return result;
 }
 
-static bool scr_stdio_intercept(int fd, const void *data, size_t length) {
+static bool scr_stdio_intercept(int fd, const void *data, size_t length, bool wide) {
   ScrStdio *stream = &scr_stdio_streams[fd == 2 ? 2 : 1];
   if (!stream->write || scr_dyn_strict_eq(stream->write, scr_stdio_methods[STDIO_WRITE])) {
+    char *owned = NULL;
+    if (wide && scr_wtf8_find_surrogate(data, length)) {
+      owned = malloc(length ? length : 1);
+      if (!owned) scr_trap("scriptc: out of memory\n");
+      memcpy(owned, data, length);
+      scr_wtf8_to_utf8(owned, length);
+      data = owned;
+    }
     (void)scr_stdio_write_raw(fd, data, length);
+    free(owned);
     return true;
   }
   ScrStr *text = scr_str_new(data, length);

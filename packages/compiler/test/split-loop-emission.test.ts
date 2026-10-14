@@ -94,7 +94,7 @@ suspended("a,b").then(console.log);
       const llvm = emitLlvmModule(deserializeModule(serializeModule(module)), { pointerBits });
       for (const name of ["direct", "stored"]) {
         const work = body(llvm, name);
-        expect(work).toContain(`alloca { i${pointerBits}, i32, i32 }`);
+        expect(work).toContain(`alloca { i${pointerBits}, i32, i32, [4 x i8] }`);
         expect(work).toContain("@scr_str_split_cursor_next");
         expect(work).not.toContain("@scr_str_split_limit");
         expect(work).not.toContain("@scr_arr_get_ref");

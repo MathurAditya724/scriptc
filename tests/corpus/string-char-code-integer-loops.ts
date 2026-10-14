@@ -1,7 +1,7 @@
 // charCodeAt at counted-loop counters and other proven integers: in-range
 // reads, negative and past-the-end indices, non-ASCII and surrogate text,
-// and counters near the 2^31 and 2^53 bounds. (Lone surrogates are left
-// out: UTF-8 storage turns them into U+FFFD, see the limitations page.)
+// and counters near the 2^31 and 2^53 bounds. (4990-lone-surrogates covers
+// lone surrogates.)
 const texts = ["", "a", "plain ascii text", "caf\u00e9 cr\u00e8me", "emoji \ud83d\ude00 pair", "\u4e2d\u6587\u5b57"];
 
 function codes(s: string): string {

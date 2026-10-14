@@ -103,8 +103,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "math.log10": "log10",
   "math.atan2": "atan2",
   "math.pow": "scr_math_pow",
-  // decodeUriComponent is NOT here: it throws (MAY_THROW_LIB_FNS), so it
-  // refuses by name like the rest of the throwing tier.
+  // encodeURIComponent throws URIError on a lone surrogate
+  // (MAY_THROW_LIB_FNS); decodeUriComponent is with the throwing tier below.
   "str.encodeUriComponent": "scr_str_encode_uri_component",
   "error.cause": "scr_error_cause",
   "error.setCause": "scr_error_set_cause",
@@ -521,12 +521,13 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "sp.toString": "scr_sp_to_string",
   "sp.keyAt": "scr_sp_key_at",
   "sp.valAt": "scr_sp_val_at",
-  // node:querystring (scr_qs.c): unescape/stringify are plain generic
-  // calls (never throw; string results +1), and escape IS the component
-  // encoder (Node's qsEscape set equals encodeURIComponent's) so it emits
-  // the always-linked codec. qs.parse is special-cased in emitLibCall
-  // (the result dictionary's construction).
-  "qs.escape": "scr_str_encode_uri_component",
+  // node:querystring (scr_qs.c): unescape is a plain generic call (never
+  // throws; string results +1); stringify and escape throw URIError
+  // [ERR_INVALID_URI] on a lone surrogate. escape is the component encoder
+  // (Node's qsEscape set equals encodeURIComponent's) in the always-linked
+  // codec unit. qs.parse is special-cased in emitLibCall (the result
+  // dictionary's construction).
+  "qs.escape": "scr_qs_escape",
   "qs.unescape": "scr_qs_unescape",
   "qs.stringify": "scr_qs_stringify",
   // Timer handle bookkeeping (never throws; the comma-shaped chaining
@@ -1008,7 +1009,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // current fiber — USES_TIMERS_LIB_FNS marks the loop live).
   "async.hop": "scr_await_hop",
   "async.awaitDyn": "scr_await_dyn_value",
-  // encodeURI never throws; the WHATWG base64 globals throw the
+  // encodeURI throws URIError on a lone surrogate; the WHATWG base64 globals throw the
   // catchable DOMException InvalidCharacterError (may-throw), and the
   // zero-argument form always throws ERR_MISSING_ARGS.
   "str.encodeUri": "scr_encode_uri",

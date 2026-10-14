@@ -2469,6 +2469,7 @@ bool scr_stream_push_str(ScrStream *s, ScrStr *str) {
   } else {
     b = scr_bytes_new(SCR_BYTES_U8, (double)str->len);
     memcpy(b->data, str->data, str->len);
+    if (!str->ascii) scr_wtf8_to_utf8((char *)b->data, str->len);
   }
   bool ret = scr_stream_add_chunk(s, b, false);
   scr_bytes_release(b);
@@ -2543,6 +2544,7 @@ void scr_stream_unshift(ScrStream *s, ScrBytes *chunk) {
 void scr_stream_unshift_str(ScrStream *s, ScrStr *str) {
   ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)str->len);
   memcpy(b->data, str->data, str->len);
+  if (!str->ascii) scr_wtf8_to_utf8((char *)b->data, str->len);
   scr_stream_unshift(s, b);
   scr_bytes_release(b);
 }
@@ -2778,6 +2780,7 @@ bool scr_stream_write_null(ScrStream *s) {
 bool scr_stream_write_str(ScrStream *s, ScrStr *str, ScrClosure *cb) {
   ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)str->len);
   memcpy(b->data, str->data, str->len);
+  if (!str->ascii) scr_wtf8_to_utf8((char *)b->data, str->len);
   bool ret = scr_stream_write_chunk(s, b, cb);
   scr_bytes_release(b);
   return ret;
@@ -2904,6 +2907,7 @@ void scr_stream_transform_done(ScrStream *s, ScrError *err /*moves*/, ScrBytes *
     } else if (data_str) {
       ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)data_str->len);
       memcpy(b->data, data_str->data, data_str->len);
+      if (!data_str->ascii) scr_wtf8_to_utf8((char *)b->data, data_str->len);
       scr_stream_add_chunk(s, b, false);
       scr_bytes_release(b);
     }
@@ -2933,6 +2937,7 @@ void scr_stream_flush_done(ScrStream *s, ScrError *err /*moves*/, ScrBytes *data
   } else if (data_str) {
     ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)data_str->len);
     memcpy(b->data, data_str->data, data_str->len);
+    if (!data_str->ascii) scr_wtf8_to_utf8((char *)b->data, data_str->len);
     scr_stream_add_chunk(s, b, false);
     scr_bytes_release(b);
     scr_str_release(data_str);

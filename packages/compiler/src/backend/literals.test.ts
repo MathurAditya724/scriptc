@@ -1,5 +1,13 @@
 import { expect, test } from "vitest";
-import { commentText, llvmBytes, llvmQuoted, octalByte, unsignedHex } from "./literals.js";
+import {
+  commentText,
+  hasLoneSurrogate,
+  llvmBytes,
+  llvmQuoted,
+  octalByte,
+  unsignedHex,
+  wtf8Bytes,
+} from "./literals.js";
 import { f64Lit, llvmCommentText } from "./llvm/common.js";
 import { mangleFunction, mangleLocal } from "./mangle.js";
 
@@ -86,4 +94,21 @@ test("double spelling preserves every bit, including signed zero and subnormals"
     bytes.writeDoubleBE(number);
     expect(f64Lit(number)).toBe("0x" + bytes.toString("hex").toUpperCase());
   }
+});
+
+test("string storage bytes keep lone surrogates as WTF-8 and pairs as UTF-8", () => {
+  const hex = (text: string): string => Buffer.from(wtf8Bytes(text)).toString("hex");
+  expect(hex("")).toBe("");
+  expect(hex("é日😀")).toBe(Buffer.from("é日😀").toString("hex"));
+  expect(hex("\ud800")).toBe("eda080");
+  expect(hex("\udfff")).toBe("edbfbf");
+  expect(hex("a\ud83d\ude00b")).toBe("61f09f988062");
+  expect(hex("\ude00\ud83d")).toBe("edb880eda0bd");
+  expect(hex("\ud83d😀\ud7ff")).toBe("eda0bdf09f9880ed9fbf");
+  for (const text of ["\ud800", "x\udc00y", "\ud83d\ud83d", "😀\ude00"]) {
+    expect(hasLoneSurrogate(text)).toBe(true);
+    expect(wtf8Bytes(text).length).toBe(Buffer.byteLength(text, "utf8"));
+  }
+  for (const text of ["", "plain", "😀", "\ud7ff\ue000"])
+    expect(hasLoneSurrogate(text)).toBe(false);
 });

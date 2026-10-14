@@ -1961,7 +1961,7 @@ export type IrSetIntrinsicMethod =
  * regexIntrinsic): args[0] is the separator and args[1] the numeric limit
  * (an omitted source limit is completed to 2^32-1), result a fresh +1
  * string[] — the empty separator splits per UTF-16 code unit (astral
- * halves become U+FFFD, divergence 2). `padStart`/`padEnd` take (target
+ * halves become lone surrogates). `padStart`/`padEnd` take (target
  * length, fill) — the frontend completes an omitted fill to " ", Node's
  * default. `trimStart`/`trimEnd` are trim's one-sided halves. */
 export type IrStrIntrinsicMethod =
@@ -1984,9 +1984,8 @@ export type IrStrIntrinsicMethod =
   | "toLowerCase"
   | "toUpperCase"
   | "normalize"
-  // isWellFormed()/toWellFormed() — no-ops over the runtime's well-formed
-  // storage (lone surrogates became U+FFFD at their producers): constant
-  // true and the identity, per spec on well-formed input.
+  // isWellFormed()/toWellFormed(): whether the string holds a lone
+  // surrogate, and the copy with each one replaced by U+FFFD.
   | "isWellFormed"
   | "toWellFormed"
   // The string iterator's step: the full code-POINT character at a UTF-16

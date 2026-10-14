@@ -851,6 +851,8 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
   bool out_open = out_parent != NULL, err_open = err_parent != NULL;
   bool in_open = in_parent != NULL;
   size_t in_at = 0;
+  char *input_owned = NULL;
+  const char *input_bytes = in_open ? scr_str_utf8(input, &input_owned) : NULL;
   bool exited = false;
   double deadline = timeout_ms > 0 ? scr_now_ms() + timeout_ms : 0;
   for (;;) {
@@ -865,7 +867,7 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
       if (want == 0) {
         CloseHandle(in_parent);
         in_open = false;
-      } else if (WriteFile(in_parent, input->data + in_at, want, &wrote, NULL)) {
+      } else if (WriteFile(in_parent, input_bytes + in_at, want, &wrote, NULL)) {
         if (wrote > 0) {
           in_at += wrote;
           progress = true;
@@ -892,6 +894,7 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
     if (exited && !out_open && !err_open) break;
   }
   if (in_open) CloseHandle(in_parent);
+  scr_str_utf8_end(input_owned);
   (void)GetExitCodeProcess(sp.proc, &res->exit_code);
   CloseHandle(sp.proc);
 }
@@ -1907,7 +1910,11 @@ static bool scr_child_writer_write(ScrChildWriter *w, const void *data,
 }
 
 bool scr_child_writer_write_string(ScrChildWriter *w, const ScrStr *data) {
-  return scr_child_writer_write(w, data->data, data->len);
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
+  bool r = scr_child_writer_write(w, bytes, data->len);
+  scr_str_utf8_end(owned);
+  return r;
 }
 
 bool scr_child_writer_write_bytes(ScrChildWriter *w, const ScrBytes *data) {
@@ -2812,17 +2819,31 @@ ScrError *scr_spawn_res_error(ScrSpawnRes *r) {
 /* Builds a NULL-terminated argv from the command + one string[] — the
  * strings are BORROWED from their containers (alive for the whole spawn;
  * the +1 from scr_arr_get_ref is dropped immediately because the array
- * keeps its own reference). Free with free() (the vector only). */
+ * keeps its own reference). A string holding a lone surrogate is copied
+ * into the same block as UTF-8 (U+FFFD for each), as Node encodes it.
+ * Free with free() (one block). */
 char **scr_child_argv(ScrStr *cmd, ScrArr *args) {
   size_t start = scr_child_arg_start(cmd, args);
   size_t n = (size_t)scr_arr_len(args) - start;
-  char **argv = malloc((n + 2) * sizeof(char *));
-  if (!argv) scr_child_oom();
-  argv[0] = cmd->data;
+  size_t extra = scr_str_has_surrogate(cmd) ? cmd->len + 1 : 0;
   for (size_t i = 0; i < n; i++) {
     ScrStr *s = (ScrStr *)scr_arr_get_ref(args, (double)(i + start));
-    argv[i + 1] = s->data;
+    if (scr_str_has_surrogate(s)) extra += s->len + 1;
     scr_str_release(s); /* borrow: the array's reference keeps it alive */
+  }
+  char **argv = malloc((n + 2) * sizeof(char *) + extra);
+  if (!argv) scr_child_oom();
+  char *copies = (char *)(argv + n + 2);
+  for (size_t i = 0; i <= n; i++) {
+    ScrStr *s = i ? (ScrStr *)scr_arr_get_ref(args, (double)(i - 1 + start)) : scr_str_retain(cmd);
+    argv[i] = s->data;
+    if (scr_str_has_surrogate(s)) {
+      memcpy(copies, s->data, s->len + 1);
+      scr_wtf8_to_utf8(copies, s->len);
+      argv[i] = copies;
+      copies += s->len + 1;
+    }
+    scr_str_release(s);
   }
   argv[n + 1] = NULL;
   return argv;
@@ -3144,6 +3165,7 @@ static char **scr_exec_envp(ScrArr *pairs) {
     memcpy(kv, k->data, k->len);
     kv[k->len] = '=';
     memcpy(kv + k->len + 1, v->data, v->len + 1);
+    if (!k->ascii || !v->ascii) scr_wtf8_to_utf8(kv, k->len + 1 + v->len);
     envp[i] = kv;
     scr_str_release(k);
     scr_str_release(v);
@@ -3269,6 +3291,8 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
   scr_cap_init(&err);
   bool out_open = cap_out, err_open = cap_err, in_open = has_input;
   size_t in_at = 0;
+  char *input_owned = NULL;
+  const char *input = has_input ? scr_str_utf8(o->input, &input_owned) : NULL;
   bool timed_out = false;
   double deadline = o->timeout_ms > 0 ? scr_now_ms() + o->timeout_ms : 0;
   while (out_open || err_open || in_open) {
@@ -3305,7 +3329,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
           close(infd[1]);
           in_open = false; /* child closed stdin early: fine, like Node */
         } else if (fds[i].revents & POLLOUT) {
-          ssize_t wrote = write(infd[1], o->input->data + in_at, o->input->len - in_at);
+          ssize_t wrote = write(infd[1], input + in_at, o->input->len - in_at);
           if (wrote > 0) in_at += (size_t)wrote;
           else if (wrote < 0 && errno != EINTR && errno != EAGAIN) {
             close(infd[1]);
@@ -3322,6 +3346,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
   if (cap_out) close(outfd[0]);
   if (cap_err) close(errfd[0]);
   if (in_open) close(infd[1]);
+  scr_str_utf8_end(input_owned);
 
   /* Reap. A live deadline still applies here: a child that closed its
    * stdio but keeps running (the pipes-drained daemon shape) must still be
@@ -4457,7 +4482,11 @@ static bool scr_child_writer_write(ScrChildWriter *w, const void *data,
 }
 
 bool scr_child_writer_write_string(ScrChildWriter *w, const ScrStr *data) {
-  return scr_child_writer_write(w, data->data, data->len);
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
+  bool r = scr_child_writer_write(w, bytes, data->len);
+  scr_str_utf8_end(owned);
+  return r;
 }
 
 bool scr_child_writer_write_bytes(ScrChildWriter *w, const ScrBytes *data) {

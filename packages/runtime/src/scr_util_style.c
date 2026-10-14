@@ -127,7 +127,7 @@ static void util_style_invalid(const ScrDyn *key) {
  * share 22, so preserve that reset before restoring either attribute.
  * A close at the very end is kept intact, matching Node's replacement. */
 static void util_style_putn(ScrJsonBuf *buffer, const char *data, size_t length) {
-  for (size_t i = 0; i < length; i++) scr_jb_putc(buffer, data[i]);
+  scr_jb_write(buffer, data, length);
 }
 
 static ScrStr *util_style_replace(const ScrStr *text, const char *close,

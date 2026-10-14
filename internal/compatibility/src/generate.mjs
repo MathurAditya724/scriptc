@@ -618,7 +618,7 @@ function publicDetail(tier) {
       return "Removes ANSI control sequences with the Node matcher and validates common non-string argument forms.";
     }
     if (source === "compiler-feature:util.util.toUSVString") {
-      return "Converts native strings, primitives, and tested object conversion hooks to well-formed Unicode strings; native storage replaces unpaired surrogates at creation.";
+      return "Converts native strings, primitives, and tested object conversion hooks to well-formed Unicode strings, replacing unpaired surrogates with U+FFFD.";
     }
     if (source.startsWith("compiler-feature:util.util.types.")) {
       return "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.";

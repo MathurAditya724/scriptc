@@ -5,10 +5,9 @@
  * Numeric/boolean results are compared through scr_f64_to_str /
  * "true"/"false", so the expected column is always UTF-8 bytes.
  *
- * Also contains hand-written assertions for the documented divergence
- * (charAt / slice on half an astral pair -> U+FFFD instead of a lone
- * surrogate), even though the oracle covers them too via Buffer.from's
- * identical replacement behavior.
+ * Also contains hand-written assertions for lone surrogates (charAt /
+ * slice on half an astral pair keep that half), which the oracle covers
+ * too.
  *
  * Special mode: --crash-repeat / --crash-repeat-inf call
  * scr_str_repeat with an invalid count, which must leave Node's catchable
@@ -114,50 +113,69 @@ static void check_str(const char *op, const char *args, ScrStr *input,
   scr_str_release(got);
 }
 
-/* Hand-written assertions for the documented lone-surrogate divergence:
- * boundaries inside the astral pair of "a\u{1F600}b" produce U+FFFD where
- * JS would produce "\uD83D" / "\uDE00". */
-static void divergence_asserts(void) {
-  static const char FFFD[] = "\xEF\xBF\xBD";
+/* Hand-written lone-surrogate assertions: boundaries inside the astral
+ * pair of "a\u{1F600}b" keep "\uD83D" / "\uDE00" as WTF-8, and joining
+ * the halves again rebuilds the 4-byte character. */
+static void surrogate_asserts(void) {
+  static const char HIGH[] = "\xED\xA0\xBD", LOW[] = "\xED\xB8\x80";
   ScrStr *s = scr_str_new("a\xF0\x9F\x98\x80" "b", 6); /* a 😀 b */
 
-  ScrStr *hi = scr_str_char_at(s, 1); /* JS: "\uD83D" */
-  check("charAt-divergence", "1", s, hi->data, hi->len, FFFD, 3);
-  scr_str_release(hi);
+  ScrStr *hi = scr_str_char_at(s, 1); /* "\uD83D" */
+  check("charAt-surrogate", "1", s, hi->data, hi->len, HIGH, 3);
 
-  ScrStr *lo = scr_str_char_at(s, 2); /* JS: "\uDE00" */
-  check("charAt-divergence", "2", s, lo->data, lo->len, FFFD, 3);
+  ScrStr *lo = scr_str_char_at(s, 2); /* "\uDE00" */
+  check("charAt-surrogate", "2", s, lo->data, lo->len, LOW, 3);
+
+  ScrStr *pair = scr_str_concat(hi, lo);
+  check("concat-surrogates", "1,2", s, pair->data, pair->len, "\xF0\x9F\x98\x80", 4);
+  scr_str_release(pair);
+  ScrStr *parts[] = {hi, lo, lo};
+  ScrStr *joined = scr_str_concat_parts(parts, 3);
+  check("concat-parts-surrogates", "1,2,2", s, joined->data, joined->len,
+        "\xF0\x9F\x98\x80\xED\xB8\x80", 7);
+  scr_str_release(joined);
+  ScrStr *turned = scr_str_concat(lo, hi);
+  check("concat-turned", "2,1", s, turned->data, turned->len, "\xED\xB8\x80\xED\xA0\xBD", 6);
+  scr_str_release(turned);
+  scr_str_release(hi);
   scr_str_release(lo);
 
-  ScrStr *head = scr_str_slice(s, 0, 2); /* JS: "a\uD83D" */
-  check("slice-divergence", "0,2", s, head->data, head->len,
-        "a\xEF\xBF\xBD", 4);
+  ScrStr *head = scr_str_slice(s, 0, 2); /* "a\uD83D" */
+  check("slice-surrogate", "0,2", s, head->data, head->len, "a\xED\xA0\xBD", 4);
   scr_str_release(head);
 
-  ScrStr *tail = scr_str_slice(s, 2, 4); /* JS: "\uDE00b" */
-  check("slice-divergence", "2,4", s, tail->data, tail->len,
-        "\xEF\xBF\xBD" "b", 4);
+  ScrStr *tail = scr_str_slice(s, 2, 4); /* "\uDE00b" */
+  check("slice-surrogate", "2,4", s, tail->data, tail->len, "\xED\xB8\x80" "b", 4);
   scr_str_release(tail);
 
-  ScrStr *mid = scr_str_slice(s, 2, 3); /* JS: "\uDE00" */
-  check("slice-divergence", "2,3", s, mid->data, mid->len, FFFD, 3);
+  ScrStr *mid = scr_str_slice(s, 2, 3); /* "\uDE00" */
+  check("slice-surrogate", "2,3", s, mid->data, mid->len, LOW, 3);
   scr_str_release(mid);
 
   /* both boundaries split different pairs: "😀😀".slice(1,3) */
   ScrStr *two = scr_str_new("\xF0\x9F\x98\x80\xF0\x9F\x98\x80", 8);
-  ScrStr *both = scr_str_slice(two, 1, 3); /* JS: "\uDE00\uD83D" */
-  check("slice-divergence", "1,3", two, both->data, both->len,
-        "\xEF\xBF\xBD\xEF\xBF\xBD", 6);
+  ScrStr *both = scr_str_slice(two, 1, 3); /* "\uDE00\uD83D" */
+  check("slice-surrogate", "1,3", two, both->data, both->len,
+        "\xED\xB8\x80\xED\xA0\xBD", 6);
   scr_str_release(both);
 
-  /* numeric results do NOT diverge: exact surrogate values */
+  /* UTF-8 for byte sinks: U+FFFD for each lone surrogate, same length */
+  ScrStr *lone = scr_str_new("x\xED\xA0\xBDy\xED\x9F\xBF", 8);
+  char *owned;
+  const char *utf8 = scr_str_utf8(lone, &owned);
+  check("utf8-sink", "-", lone, utf8, lone->len, "x\xEF\xBF\xBDy\xED\x9F\xBF", 8);
+  scr_str_utf8_end(owned);
+  check_f64("isWellFormed", "-", lone, scr_str_is_well_formed(lone) ? 1 : 0, "0", 1);
+  scr_str_release(lone);
+
+  /* numeric results: exact surrogate values */
   check_f64("charCodeAt-surrogate", "1", s, scr_str_char_code_at(s, 1),
             "55357", 5); /* 0xD83D */
   check_f64("charCodeAt-surrogate", "2", s, scr_str_char_code_at(s, 2),
             "56832", 5); /* 0xDE00 */
 
   /* Deferred scalar slices must match materialization, including the
-   * runtime's established replacement at split astral boundaries. */
+   * lone surrogates at split astral boundaries. */
   for (size_t from = 0; from <= 5; from++) {
     for (size_t to = 0; to <= 5; to++) {
       for (unsigned substring = 0; substring < 2; substring++) {
@@ -227,7 +245,10 @@ static void split_scratch_asserts(void) {
   _Static_assert(offsetof(ScrSplitCursor, offset) == 0, "split cursor offset");
   _Static_assert(offsetof(ScrSplitCursor, remaining) == sizeof(size_t), "split cursor limit");
   _Static_assert(offsetof(ScrSplitCursor, pending_unit) == sizeof(size_t) + 4, "split cursor pending unit");
-  _Static_assert(sizeof(ScrSplitCursor) == sizeof(size_t) + 8, "split cursor storage");
+  _Static_assert(offsetof(ScrSplitCursor, unit) == sizeof(size_t) + 8, "split cursor unit");
+  _Static_assert(sizeof(ScrSplitCursor) == (sizeof(size_t) + 12 + sizeof(size_t) - 1) /
+                                               sizeof(size_t) * sizeof(size_t),
+                 "split cursor storage");
   ScrStr *input = scr_str_new("alpha,beta-long,\xE4\xBD\xA0\xE5\xA5\xBD\xE4\xB8\x96\xE7\x95\x8C,test-tail,,last", 44);
   ScrStr *separator = scr_str_new(",", 1), *scratch = NULL;
   ScrSplitCursor cursor;
@@ -502,7 +523,10 @@ static void index_activity_asserts(void) {
   ScrStr *strings[9];
   for (size_t i = 0; i < 9; i++) {
     strings[i] = scr_str_new("\xc3\xa9x", 3);
-    if (scr_str_utf16_len(strings[i]) != 2) sidx_fail("cursor activation length");
+    /* Short lengths count directly; an indexed read claims a cursor. */
+    if (scr_str_utf16_len(strings[i]) != 2 || scr_sidx_test_active() != (i < 4 ? i : 4))
+      sidx_fail("short length claimed a cursor");
+    if (scr_str_char_code_at(strings[i], 1) != 'x') sidx_fail("cursor activation read");
     if (scr_sidx_test_active() != (i < 4 ? i + 1 : 4))
       sidx_fail("cursor activation or eviction count");
   }
@@ -546,7 +570,7 @@ static void sparse_index_asserts(void) {
       sidx_fail("charCodeAt result");
 
     ScrStr *ch = scr_str_char_at(s, (double)(base + 2));
-    if (ch->len != 3 || memcmp(ch->data, "\xEF\xBF\xBD", 3) != 0)
+    if (ch->len != 3 || memcmp(ch->data, "\xED\xA0\xBD", 3) != 0)
       sidx_fail("charAt surrogate result");
     scr_str_release(ch);
 
@@ -1078,7 +1102,7 @@ int main(int argc, char **argv) {
   if (in != stdin) fclose(in);
 
   ordering_asserts();
-  divergence_asserts();
+  surrogate_asserts();
   construction_asserts();
   split_storage_asserts();
   split_scratch_asserts();

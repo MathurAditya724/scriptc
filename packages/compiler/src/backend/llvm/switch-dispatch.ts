@@ -2,6 +2,7 @@ import type { IrExpr, IrStmt } from "../../ir/ir.js";
 import { withinInt32 } from "../../ir/integer-ranges.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
+import { wtf8Bytes } from "../literals.js";
 import { littleEndianWord } from "./string-literal-equality.js";
 
 type SwitchCase = Extract<IrStmt, { kind: "switch" }>["cases"][number];
@@ -137,11 +138,11 @@ function emitStringSwitch(
       const word = B.tmp();
       B.line(`${data} = getelementptr inbounds %ScrStr, ptr ${disc.name}, i32 1`);
       B.line(`${word} = load ${type}, ptr ${data}, align 1`);
-      // Distinct texts can share bytes (lone surrogates encode as U+FFFD);
-      // the first case keeps the word, as the comparison chain would.
+      // Duplicate case texts share a word; the first case keeps it, as the
+      // comparison chain would.
       const targets = new Map<string, string>();
       for (const item of group) {
-        const value = littleEndianWord(Buffer.from(item.value, "utf8"), 0, size);
+        const value = littleEndianWord(wtf8Bytes(item.value), 0, size);
         if (!targets.has(value)) targets.set(value, item.label);
       }
       B.terminate(
@@ -159,7 +160,7 @@ function emitStringSwitch(
     B.line(`${word} = load i64, ptr ${data}, align 1`);
     const prefixes = new Map<string, { value: string; label: string }[]>();
     for (const item of group) {
-      const prefix = littleEndianWord(Buffer.from(item.value, "utf8"), 0, 8);
+      const prefix = littleEndianWord(wtf8Bytes(item.value), 0, 8);
       let same = prefixes.get(prefix);
       if (same === undefined) prefixes.set(prefix, (same = []));
       same.push(item);

@@ -5,8 +5,8 @@
  * - scr_json_parse is a full RFC 8259 recursive-descent parser: null/
  *   true/false, numbers (strtod after a strict grammar check — doubles
  *   only, like JS), strings with every escape including \uXXXX (encoded to
- *   UTF-8; surrogate pairs combine, lone surrogates become U+FFFD per house
- *   policy), arrays, objects (later duplicate keys win, like JS), and the
+ *   WTF-8; surrogate pairs combine, lone surrogates stay lone, like JS),
+ *   arrays, objects (later duplicate keys win, like JS), and the
  *   four JSON whitespace characters. Syntax errors THROW catchable
  *   SyntaxError instances (the depth cap a RangeError, like V8's) whose
  *   messages are shaped like Node's V8 texts ("Unexpected end of JSON
@@ -197,7 +197,33 @@ void scr_jb_putc(ScrJsonBuf *b, char c) {
   b->data[b->len++] = c;
 }
 
+/* A span that may start with a lone low surrogate: after a lone high one,
+ * the pair becomes one 4-byte character (canonical storage, scr_runtime.h). */
+static __attribute__((noinline, cold)) void scr_jb_write_lead_ed(ScrJsonBuf *b, const char *s,
+                                                                 size_t n) {
+  bool joins = scr_wtf8_joins(b->data, b->len, s, n);
+  scr_jb_grow(b, n);
+  memcpy(b->data + b->len, s, n);
+  if (!joins) {
+    b->len += n;
+    return;
+  }
+  size_t seam = b->len - 3;
+  b->len = seam + scr_wtf8_fuse(b->data + seam, n + 3);
+}
+
 void scr_jb_write(ScrJsonBuf *b, const char *s, size_t n) {
+  if (n == 0) return;
+  if (__builtin_expect((unsigned char)s[0] == 0xED, 0) && scr_wtf8_any()) {
+    scr_jb_write_lead_ed(b, s, n);
+    return;
+  }
+  scr_jb_grow(b, n);
+  memcpy(b->data + b->len, s, n);
+  b->len += n;
+}
+
+void scr_jb_write_utf8(ScrJsonBuf *b, const char *s, size_t n) {
   if (n == 0) return;
   scr_jb_grow(b, n);
   memcpy(b->data + b->len, s, n);
@@ -213,7 +239,7 @@ void scr_jb_puts(ScrJsonBuf *b, const char *s) { scr_jb_write(b, s, strlen(s)); 
 void scr_jb_put_number(ScrJsonBuf *b, double v) {
   char buf[32];
   size_t n = scr_f64_to_str(v, buf);
-  scr_jb_write(b, buf, n);
+  scr_jb_write_utf8(b, buf, n); /* number text is ASCII */
 }
 
 void scr_jb_put_f64(ScrJsonBuf *b, double v) {
@@ -259,13 +285,17 @@ static size_t scr_json_plain_bytes(const char *data, size_t len) {
   return i;
 }
 
-static void scr_jb_put_json_span(ScrJsonBuf *b, const char *data, size_t len) {
+/* JSON string text: the quotes (when `quoted`) around data with every
+ * escape applied. */
+static inline __attribute__((always_inline)) void scr_jb_put_json_chars(ScrJsonBuf *b,
+                                                                      const char *data,
+                                                                      size_t len, bool quoted) {
   if (len > SIZE_MAX - 2) scr_json_oom();
   size_t run = scr_json_plain_bytes(data, len);
   /* The overwhelmingly common unescaped string needs one capacity check,
    * including both quotes, and no per-byte builder calls. */
   scr_jb_grow(b, run + 2);
-  b->data[b->len++] = '"';
+  if (quoted) b->data[b->len++] = '"';
   if (run) memcpy(b->data + b->len, data, run);
   b->len += run;
   size_t i = run;
@@ -298,12 +328,45 @@ static void scr_jb_put_json_span(ScrJsonBuf *b, const char *data, size_t len) {
     b->len += run;
     i += run;
   }
-  scr_jb_grow(b, 1);
-  b->data[b->len++] = '"';
+  if (quoted) {
+    scr_jb_grow(b, 1);
+    b->data[b->len++] = '"';
+  }
+}
+
+static void scr_jb_put_json_text(ScrJsonBuf *b, const char *data, size_t len) {
+  scr_jb_put_json_chars(b, data, len, true);
+}
+
+/* Text that may hold lone surrogates: JSON.stringify writes each as a
+ * lowercase \udXXX escape. */
+static __attribute__((noinline)) void scr_jb_put_json_lone(ScrJsonBuf *b, const char *data,
+                                                           size_t len) {
+  const char *end = data + len, *hit = scr_wtf8_find_surrogate(data, len);
+  if (!hit) {
+    scr_jb_put_json_text(b, data, len);
+    return;
+  }
+  static const char hex[] = "0123456789abcdef";
+  scr_jb_putc(b, '"');
+  for (const char *p = data;; p = hit + 3, hit = scr_wtf8_find_surrogate(p, (size_t)(end - p))) {
+    scr_jb_put_json_chars(b, p, (size_t)((hit ? hit : end) - p), false);
+    if (!hit) break;
+    unsigned unit = ((unsigned char)hit[1] & 0x3Fu) << 6 | ((unsigned char)hit[2] & 0x3Fu);
+    char escaped[6] = {'\\', 'u', 'd', hex[unit >> 8], hex[(unit >> 4) & 15], hex[unit & 15]};
+    scr_jb_write(b, escaped, sizeof escaped);
+  }
+  scr_jb_putc(b, '"');
+}
+
+static void scr_jb_put_json_span(ScrJsonBuf *b, const char *data, size_t len) {
+  if (__builtin_expect(scr_wtf8_any(), 0)) scr_jb_put_json_lone(b, data, len);
+  else scr_jb_put_json_text(b, data, len);
 }
 
 void scr_jb_put_json_str(ScrJsonBuf *b, const ScrStr *s) {
-  scr_jb_put_json_span(b, s->data, s->len);
+  if (__builtin_expect(scr_wtf8_any(), 0) && !s->ascii) scr_jb_put_json_lone(b, s->data, s->len);
+  else scr_jb_put_json_chars(b, s->data, s->len, true);
 }
 
 ScrStr *scr_jb_finish(ScrJsonBuf *b) {
@@ -3308,7 +3371,7 @@ static void scr_dyn_handle_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   ScrJsonBuf b;
   scr_jb_init(&b);
   scr_jb_puts(&b, "setting '");
-  for (size_t i = 0; i < key->len; i++) scr_jb_putc(&b, key->data[i]);
+  scr_jb_write(&b, key->data, key->len);
   scr_jb_puts(&b, "' on a dynamic ");
   scr_jb_puts(&b, ops->cls);
   scr_jb_puts(&b, " is not supported yet");
@@ -5066,7 +5129,7 @@ ScrStr *scr_dyn_to_string_argument(const ScrDyn *d, const ScrDyn *argument, cons
   if (d->kind == SCR_DYN_OBJ && !scr_dyn_property_owner(d, "toString", 8) && !scr_dyn_has_object_prototype(d)) {
     ScrJsonBuf b;
     scr_jb_init(&b);
-    for (size_t i = 0; i < what->len; i++) scr_jb_putc(&b, what->data[i]);
+    scr_jb_write(&b, what->data, what->len);
     scr_jb_puts(&b, " is not a function");
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
     return scr_str_new("", 0);
@@ -5186,10 +5249,18 @@ ScrStr *scr_dyn_string_coerce_js(const ScrDyn *d) {
   return scr_dyn_string_coerce(d);
 }
 
+/* ToString, then each lone surrogate becomes U+FFFD. */
 ScrStr *scr_util_to_usv_string(const ScrDyn *input) {
+  ScrStr *text = scr_util_to_string(input);
+  if (!text) return NULL;
+  ScrStr *usv = scr_str_to_well_formed(text);
+  scr_str_release(text);
+  return usv;
+}
+
+/* ToString, preserving the object protocol. */
+ScrStr *scr_util_to_string(const ScrDyn *input) {
   const ScrDyn *value = input ? input : scr_dyn_undefined();
-  /* Native string producers already replace unpaired surrogate code units.
-   * Preserve ToString's object protocol before using that storage invariant. */
   if (scr_to_primitive_symbol && scr_iterator_object(value)) {
     ScrDyn *method = scr_dyn_reflect_get((ScrDyn *)value, scr_to_primitive_symbol, (ScrDyn *)value);
     if (!method) return NULL;
@@ -5367,7 +5438,7 @@ static ScrBigInt *scr_dyn_bigint_convert(const ScrDyn *d, bool allow_number) {
       ScrJsonBuf message;
       scr_jb_init(&message);
       scr_jb_puts(&message, "Cannot convert ");
-      for (size_t i = 0; i < text->len; i++) scr_jb_putc(&message, text->data[i]);
+      scr_jb_write(&message, text->data, text->len);
       scr_jb_puts(&message, " to a BigInt");
       scr_str_release(text);
       scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
@@ -5908,11 +5979,11 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
     scr_jb_puts(&b, "Cannot set properties of ");
     scr_jb_puts(&b, recv->kind == SCR_DYN_UNDEF ? "undefined" : "null");
     scr_jb_puts(&b, " (setting '");
-    for (size_t i = 0; i < key->len; i++) scr_jb_putc(&b, key->data[i]);
+    scr_jb_write(&b, key->data, key->len);
     scr_jb_puts(&b, "')");
   } else {
     scr_jb_puts(&b, "Cannot create property '");
-    for (size_t i = 0; i < key->len; i++) scr_jb_putc(&b, key->data[i]);
+    scr_jb_write(&b, key->data, key->len);
     scr_jb_puts(&b, "' on ");
     scr_jb_puts(&b, scr_dyn_kind_name(recv));
     /* V8 quotes the primitive's own rendering after the kind — "on number
@@ -6149,24 +6220,11 @@ static void scr_json_ws(ScrJsonP *p) {
   }
 }
 
-/* Append the UTF-8 encoding of cp (valid scalar values only — callers map
- * lone surrogates to U+FFFD first). */
+/* Append the WTF-8 encoding of a code point or lone surrogate unit; a low
+ * surrogate after a lone high one completes the pair (scr_jb_write). */
 static void scr_json_put_cp(ScrJsonBuf *b, uint32_t cp) {
-  if (cp < 0x80) {
-    scr_jb_putc(b, (char)cp);
-  } else if (cp < 0x800) {
-    scr_jb_putc(b, (char)(0xC0 | (cp >> 6)));
-    scr_jb_putc(b, (char)(0x80 | (cp & 0x3F)));
-  } else if (cp < 0x10000) {
-    scr_jb_putc(b, (char)(0xE0 | (cp >> 12)));
-    scr_jb_putc(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
-    scr_jb_putc(b, (char)(0x80 | (cp & 0x3F)));
-  } else {
-    scr_jb_putc(b, (char)(0xF0 | (cp >> 18)));
-    scr_jb_putc(b, (char)(0x80 | ((cp >> 12) & 0x3F)));
-    scr_jb_putc(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
-    scr_jb_putc(b, (char)(0x80 | (cp & 0x3F)));
-  }
+  char bytes[4];
+  scr_jb_write(b, bytes, scr_wtf8_put(bytes, cp));
 }
 
 /* Four hex digits at pos, or -1 (throws). */
@@ -6275,36 +6333,8 @@ static ScrStr *scr_json_string_slow(ScrJsonP *p, size_t prefix) {
         scr_jb_dispose(&b);
         return NULL;
       }
-      if (cp >= 0xD800 && cp <= 0xDBFF) {
-        /* High surrogate: combine with a following \uDC00-\uDFFF; a lone
-         * surrogate becomes U+FFFD (house policy: strings stay well-formed
-         * UTF-8 — JS would keep the lone surrogate; see SEMANTICS.md). */
-        if (p->len - p->pos >= 2 && p->s[p->pos] == '\\' && p->s[p->pos + 1] == 'u') {
-          size_t save = p->pos;
-          p->pos += 2;
-          int32_t lo = scr_json_hex4(p);
-          if (lo < 0) {
-            scr_jb_dispose(&b);
-            return NULL;
-          }
-          if (lo >= 0xDC00 && lo <= 0xDFFF) {
-            uint32_t combined =
-                0x10000 + (((uint32_t)cp - 0xD800) << 10) + ((uint32_t)lo - 0xDC00);
-            scr_json_put_cp(&b, combined);
-            break;
-          }
-          /* Not a low surrogate: emit U+FFFD, reparse the escape normally. */
-          p->pos = save;
-          scr_json_put_cp(&b, 0xFFFD);
-          break;
-        }
-        scr_json_put_cp(&b, 0xFFFD);
-        break;
-      }
-      if (cp >= 0xDC00 && cp <= 0xDFFF) {
-        scr_json_put_cp(&b, 0xFFFD); /* lone low surrogate */
-        break;
-      }
+      /* Each escape is one UTF-16 unit: a surrogate stays lone unless it
+       * meets its other half, which scr_json_put_cp fuses into the pair. */
       scr_json_put_cp(&b, (uint32_t)cp);
       break;
     }
@@ -8777,7 +8807,7 @@ void scr_dyn_pack_push_spread_iter(ScrDyn *pack, const ScrDyn *src) {
   case SCR_DYN_NUM: {
     scr_jb_puts(&b, "number ");
     ScrStr *s = scr_f64_to_scrstr(src->v.num);
-    for (size_t i = 0; i < s->len; i++) scr_jb_putc(&b, s->data[i]);
+    scr_jb_write(&b, s->data, s->len);
     scr_str_release(s);
     break;
   }
@@ -9200,8 +9230,8 @@ ScrStr *scr_btoa(const ScrDyn *data) {
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   ScrStr *s = scr_dyn_string_coerce(data);
   /* UTF-8 → code points, each must fit latin1 (one byte). The runtime's
-   * strings are well-formed UTF-8, so only C2/C3 leads can stay in
-   * range; every other lead byte names a code point over U+00FF. */
+   * strings are canonical WTF-8, so only C2/C3 leads can stay in range;
+   * every other lead byte names a code unit over U+00FF. */
   char *bytes = malloc(s->len ? s->len : 1);
   if (!bytes) scr_json_oom();
   size_t n = 0;
@@ -10357,7 +10387,7 @@ ScrStr *scr_dyn_to_string_method(const ScrDyn *d, const ScrStr *enc, const ScrSt
   if (d->kind == SCR_DYN_OBJ && !scr_dyn_property_owner(d, "toString", 8) && !scr_dyn_has_object_prototype(d)) {
     ScrJsonBuf b;
     scr_jb_init(&b);
-    for (size_t i = 0; i < what->len; i++) scr_jb_putc(&b, what->data[i]);
+    scr_jb_write(&b, what->data, what->len);
     scr_jb_puts(&b, " is not a function");
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
     return scr_str_new("", 0);

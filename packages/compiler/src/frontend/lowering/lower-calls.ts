@@ -850,10 +850,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // shadowing the name has a different, non-stdlib symbol. The
     // ENCODERS accept string | number | boolean — the spec ToStrings
     // first, which ensureString reproduces exactly for these types;
-    // they are total (the spec's URIError is the unpaired surrogate,
-    // which cannot exist in well-formed UTF-8). decode THROWS the
-    // spec's URIError ("URI malformed") catchably and keeps the
-    // string-only argument rule.
+    // they THROW the spec's URIError on an unpaired surrogate. decode
+    // THROWS the spec's URIError ("URI malformed") catchably and keeps
+    // the string-only argument rule.
     if (
       (expr.expression.text === "encodeURIComponent" ||
         expr.expression.text === "encodeURI" ||

@@ -137,7 +137,34 @@ static const char pairs[] =
     "60616263646566676869" "70717273747576777879"
     "80818283848586878889" "90919293949596979899";
 
+/* A nonnegative integer below 2^32, written backward from its digit count
+ * straight into buf: the common shape of counters and indices. */
+static size_t scr_u32_to_str(uint32_t v, char *buf) {
+  static const uint32_t powers[] = {1,        10,        100,        1000,   10000,
+                                    100000,   1000000,   10000000,   100000000, 1000000000};
+  /* floor(log10(v)) from the bit length, corrected by one comparison. */
+  unsigned bits = 32 - (unsigned)__builtin_clz(v | 1);
+  size_t n = (bits * 1233) >> 12;
+  n += n < 10 && v >= powers[n];
+  if (n == 0) n = 1;
+  char *end = buf + n;
+  *end = '\0';
+  while (v >= 100) {
+    uint32_t q = v / 100;
+    end -= 2;
+    memcpy(end, pairs + (v - q * 100) * 2, 2);
+    v = q;
+  }
+  if (v >= 10) memcpy(end - 2, pairs + v * 2, 2);
+  else end[-1] = (char)('0' + v);
+  return n;
+}
+
 size_t scr_f64_to_str(double x, char *buf) {
+  if (x >= 0 && x < 4294967296.0) {
+    uint32_t v = (uint32_t)x;
+    if ((double)v == x) return scr_u32_to_str(v, buf); /* 0 and -0 print "0" */
+  }
   if (isnan(x)) return (size_t)(stpcpy(buf, "NaN") - buf);
   if (x == 0) return (size_t)(stpcpy(buf, "0") - buf); /* covers -0 */
   if (isinf(x)) {
@@ -171,7 +198,7 @@ size_t scr_f64_to_str(double x, char *buf) {
         memcpy(begin, pairs + integer * 2, 2);
       }
       size_t count = (size_t)(digits + sizeof digits - begin);
-      memcpy(out, begin, count);
+      scr_copy_bytes(out, begin, count);
       out += count;
       *out = '\0';
       return (size_t)(out - buf);
@@ -202,7 +229,7 @@ size_t scr_f64_to_str(double x, char *buf) {
         integer = quotient;
       } while (integer != 0);
       size_t count = (size_t)(digits + sizeof digits - begin);
-      memcpy(out, begin, count);
+      scr_copy_bytes(out, begin, count);
       out += count;
       *out++ = '.';
       *out++ = (char)('0' + cents / 10);

@@ -124,7 +124,7 @@ export function loadSplitSnapshot(
  * of the single syntactic consumer. No cursor owns heap memory. */
 export function emitSplitCursor(host: LlvmEmitterContext, snapshot: SplitSnapshot): string {
   const cursor = host.B.slot();
-  host.B.entryAllocas.push(`${cursor} = alloca { ${host.sizeType}, i32, i32 }`);
+  host.B.entryAllocas.push(`${cursor} = alloca { ${host.sizeType}, i32, i32, [4 x i8] }`);
   host.declare("declare void @scr_str_split_cursor_init(ptr, i32)");
   host.B.line(`call void @scr_str_split_cursor_init(ptr ${cursor}, i32 ${snapshot.limit})`);
   return cursor;

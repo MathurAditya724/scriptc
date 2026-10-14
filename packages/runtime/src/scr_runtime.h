@@ -988,6 +988,80 @@ static inline ScrStr *scr_str_retain(ScrStr *s) {
 
 void scr_str_release(ScrStr *s); /* NULL-tolerant (uninitialized locals) */
 
+/* ── lone surrogates: canonical WTF-8 storage ─────────────────────────
+ * String storage is UTF-8 extended to lone UTF-16 surrogates: an unpaired
+ * surrogate is its generalized 3-byte encoding ED A0..BF 80..BF, while a
+ * high surrogate directly followed by a low one is always stored as the
+ * pair's 4-byte UTF-8 sequence. Canonical storage keeps byte equality,
+ * hashing and searching exact. Builders preserve it by fusing a trailing
+ * lone high surrogate with a leading lone low one (scr_wtf8_joins). A lone
+ * surrogate is exactly as long as U+FFFD, so byte sinks transcode to UTF-8
+ * (scr_str_utf8) without changing any length or offset. */
+
+/* Set once a lone surrogate may exist anywhere in the process: program
+ * startup stamps it when a literal holds one, and every runtime producer
+ * notes it (scr_wtf8_put, scr_wtf8_note). Until then no string can hold a
+ * lone surrogate, so builders and byte sinks skip all surrogate work. It is
+ * process-wide (strings cross threads) and never cleared. */
+extern bool scr_wtf8_lone;
+static inline bool scr_wtf8_any(void) { return __atomic_load_n(&scr_wtf8_lone, __ATOMIC_RELAXED); }
+void scr_wtf8_note(void);
+
+/* Whether p starts a lone surrogate (p[1] must be readable: string data
+ * is NUL-terminated). */
+static inline bool scr_wtf8_surrogate_at(const char *p) {
+  return (unsigned char)p[0] == 0xED && (unsigned char)p[1] >= 0xA0;
+}
+
+/* Whether p starts a lone low surrogate (p[1] readable, as above). */
+static inline bool scr_wtf8_low_at(const char *p) {
+  return (unsigned char)p[0] == 0xED && (unsigned char)p[1] >= 0xB0;
+}
+
+/* Whether appending b to a puts a lone high surrogate directly before a
+ * lone low surrogate. Tests the first byte of b before anything else, so
+ * ordinary text costs one compare. */
+static inline bool scr_wtf8_joins(const char *a, size_t alen, const char *b, size_t blen) {
+  return __builtin_expect(scr_wtf8_any() && (unsigned char)b[0] == 0xED && blen >= 3 &&
+                              (unsigned char)b[1] >= 0xB0 && alen >= 3 &&
+                              (unsigned char)a[alen - 3] == 0xED &&
+                              ((unsigned char)a[alen - 2] & 0xF0) == 0xA0,
+                          0);
+}
+
+/* The first lone surrogate in a span, or NULL. memchr-driven. */
+const char *scr_wtf8_find_surrogate(const char *p, size_t n);
+/* Fuse every adjacent lone high/low pair in place; returns the new length. */
+size_t scr_wtf8_fuse(char *p, size_t n);
+/* Restore canonical storage after a builder joined a lone high surrogate
+ * to a lone low one: fuses in place and drops cached content facts. The
+ * _from form starts at a byte offset before which storage is canonical. */
+void scr_str_fuse_surrogates(ScrStr *s);
+void scr_str_fuse_from(ScrStr *s, size_t from);
+/* Replace every lone surrogate with U+FFFD in place (same length). */
+void scr_wtf8_replace_surrogates(char *p, size_t n);
+static inline void scr_wtf8_to_utf8(char *p, size_t n) {
+  if (__builtin_expect(scr_wtf8_any(), 0)) scr_wtf8_replace_surrogates(p, n);
+}
+/* A string's bytes as well-formed UTF-8 for a byte sink: s->data itself,
+ * or (only when s holds a lone surrogate) a malloc'd NUL-terminated copy
+ * with each one replaced by U+FFFD, returned in *owned for the caller to
+ * release with scr_str_utf8_end. *owned is NULL on the fast path. */
+const char *scr_str_utf8_copy(const ScrStr *s, char **owned);
+static inline const char *scr_str_utf8(const ScrStr *s, char **owned) {
+  *owned = NULL;
+  if (s->ascii || !scr_wtf8_any()) return s->data;
+  return scr_str_utf8_copy(s, owned);
+}
+static inline void scr_str_utf8_end(char *owned) {
+  if (owned) free(owned);
+}
+static inline bool scr_str_has_surrogate(const ScrStr *s) {
+  return scr_wtf8_any() && !s->ascii && scr_wtf8_find_surrogate(s->data, s->len) != NULL;
+}
+/* Encode one UTF-16 code unit or code point as WTF-8 (1-4 bytes). */
+size_t scr_wtf8_put(char *dst, uint32_t cp);
+
 /* Borrow both args, return +1. */
 ScrStr *scr_str_concat(ScrStr *a, ScrStr *b);
 /* Borrow each part without mutation; return one independently owned result. */
@@ -1017,7 +1091,7 @@ int scr_str_cmp(ScrStr *a, ScrStr *b);
 double scr_str_locale_compare(ScrStr *a, ScrStr *b);
 
 /* ECMAScript string-list ordering: compare UTF-16 code units even though
- * ScrStr stores well-formed UTF-8. Returns <0, 0, >0. */
+ * ScrStr stores WTF-8. Returns <0, 0, >0. */
 int scr_str_cmp_u16(ScrStr *a, ScrStr *b);
 
 /* ── class objects (classes as first-class values) ────────────────────
@@ -1237,16 +1311,25 @@ SCR_COLD void scr_throw_node_coded(double kind, const ScrStr *code, const ScrStr
  * toward zero, ±Infinity kept), exactly like JS. Every function borrows its
  * ScrStr arguments; functions returning ScrStr* return a +1 reference.
  *
- * One documented divergence (JS lone surrogates are unrepresentable in
- * well-formed UTF-8): where JS would produce a *lone surrogate* — charAt on
- * half of an astral pair, or a slice boundary that splits a pair — the
- * result contains U+FFFD (EF BF BD) in its place. Numeric results
- * (charCodeAt) are NOT affected: they return the exact surrogate code unit
- * value, computed from the code point.
+ * Where JS produces a *lone surrogate* — charAt on half of an astral
+ * pair, or a slice boundary that splits a pair — the result holds that
+ * surrogate (canonical WTF-8, see above).
  */
 
 /* .length — number of UTF-16 code units (astral chars count as 2). */
 double scr_str_utf16_len(ScrStr *s);
+
+/* The receiver of an indexed scan whose UTF-16 code units the index cache
+ * holds (scr_string.c), published so emitted length and charCodeAt reads of
+ * that string are a compare and a load. Cleared whenever its entry drops
+ * the units (release, append, eviction); all fields zero otherwise. Emitted
+ * code reads it only where SCR_TL is empty. */
+typedef struct ScrStrScan {
+  const ScrStr *s;
+  const uint16_t *units;
+  size_t n;
+} ScrStrScan;
+extern SCR_TL ScrStrScan scr_str_scan;
 
 /* charCodeAt(i): the i-th UTF-16 code unit as a number; for astral chars
  * returns the high (0xD800+) or low (0xDC00+) surrogate value depending on
@@ -1282,8 +1365,7 @@ bool scr_str_ends_with_from(ScrStr *s, ScrStr *needle, double end_position);
 /* slice(start, end): UTF-16 indices, negatives count from length, clamped
  * to [0, length]; empty when start >= end. The frontend passes
  * end = Infinity for the one-argument form. Boundaries that split an astral
- * pair yield U+FFFD for the half character (divergence, see above).
- * Returns +1. */
+ * pair keep the half character as a lone surrogate. Returns +1. */
 ScrStr *scr_str_slice(ScrStr *s, double start, double end);
 /* substring: clamp-and-swap (negatives clamp to 0, start > end swaps). */
 ScrStr *scr_str_substring(ScrStr *s, double start, double end);
@@ -1317,7 +1399,7 @@ ScrStr *scr_str_to_upper(const ScrStr *s);
 ScrStr *scr_str_normalize(const ScrStr *s, const ScrStr *form);
 
 /* charAt(i): 1-code-unit string; out of range → empty string. Half of an
- * astral pair → U+FFFD (divergence, see above). Returns +1. */
+ * astral pair → that lone surrogate. Returns +1. */
 ScrStr *scr_str_char_at(ScrStr *s, double i);
 
 /* The string iterator's step (for-of over strings): the full code-POINT
@@ -1333,7 +1415,7 @@ ScrStr *scr_str_trim_end(ScrStr *s);
 /* split(separator[, limit]) with a STRING separator: limit uses ToUint32;
  * the no-limit wrapper supplies 2^32-1. Empty separator
  * splits into single UTF-16 code units (each half of an astral char is
- * U+FFFD — divergence, see above); otherwise splits on every occurrence,
+ * a lone surrogate); otherwise splits on every occurrence,
  * empty pieces kept. Borrows both; returns a +1 string[] (SCR_ELEM_STR). */
 struct ScrArr;
 /* String.prototype.replace/replaceAll with a string search value and a
@@ -1346,7 +1428,7 @@ ScrStr *scr_str_replace_literal(ScrStr *s, ScrStr *search, ScrStr *rep, bool all
  * characters; the compiler fuses chains of global one-character
  * replacements into it). Borrows all three; +1. */
 ScrStr *scr_str_replace_chars(ScrStr *s, ScrStr *chars, ScrStr *texts);
-/* The same over a nonempty well-formed UTF-8 needle (literal regex
+/* The same over a nonempty canonical WTF-8 needle (literal regex
  * patterns share it). Borrows; +1. */
 ScrStr *scr_str_replace_bytes(ScrStr *s, const char *pat, size_t plen, ScrStr *rep, bool all);
 /* First occurrence of a nonempty needle in a byte span, or NULL. */
@@ -1360,7 +1442,8 @@ struct ScrArr *scr_str_split_limit(ScrStr *s, ScrStr *sep, double limit);
 typedef struct ScrSplitCursor {
   size_t offset;
   uint32_t remaining;
-  uint32_t pending_unit;
+  uint32_t pending_unit; /* the low surrogate still owed by a split pair */
+  char unit[4];          /* the bytes of the current surrogate piece */
 } ScrSplitCursor;
 void scr_str_split_cursor_init(ScrSplitCursor *cursor, uint32_t limit);
 /* Optional scratch is a separately owned, NULL-initialized string slot.
@@ -1376,29 +1459,29 @@ ScrStr *scr_str_split_materialize(const char *bytes, size_t length, ScrStr **scr
 
 /* padStart(maxLength, fill)/padEnd — ECMA StringPad, UTF-16 unit counts.
  * Target at or below the length (or empty fill) returns the receiver
- * (retained). A truncated fill that would split an astral char emits
- * U+FFFD for the kept half. Oversized pads abort (the repeat() policy).
+ * (retained). A truncated fill that would split an astral char keeps its
+ * high half as a lone surrogate. Oversized pads abort (the repeat() policy).
  * Borrow both; return +1. */
 ScrStr *scr_str_pad_start(ScrStr *s, double maxLength, ScrStr *fill);
 ScrStr *scr_str_pad_end(ScrStr *s, double maxLength, ScrStr *fill);
 
-/* isWellFormed()/toWellFormed(): storage is well-formed by invariant
- * (lone surrogates became U+FFFD at their producers, SEMANTICS.md 2), so
- * isWellFormed is constant true and toWellFormed the identity (per spec
- * both are no-ops on well-formed input). Borrow s; toWellFormed +1. */
+/* isWellFormed()/toWellFormed(): whether s holds no lone surrogate, and
+ * s with each lone surrogate replaced by U+FFFD (s itself, retained, when
+ * it has none). Borrow s; toWellFormed +1. */
 bool scr_str_is_well_formed(ScrStr *s);
 ScrStr *scr_str_to_well_formed(ScrStr *s);
 /* Node text utilities: borrowed input, +1 result or NULL+pending. The VT
  * helper lives in the optional regex unit; USV conversion uses native strings. */
 ScrStr *scr_util_strip_vt(const struct ScrDyn *input);
 ScrStr *scr_util_to_usv_string(const struct ScrDyn *input);
+ScrStr *scr_util_to_string(const struct ScrDyn *input); /* ToString alone */
 void scr_dyn_install_to_primitive_symbol(struct ScrDyn *key);
 
 /* RegExp.escape(s) — ES2025 EncodeForRegExpEscape per code point: leading
  * ASCII alphanumeric hex-escapes, SyntaxCharacters and '/' take a
  * backslash, other punctuators/whitespace/line terminators hex-escape
- * (\xNN / \uNNNN, lowercase), the rest passes through. Total (the spec's
- * surrogate arm is unreachable over well-formed storage). Lives in
+ * (\xNN / \uNNNN, lowercase), a lone surrogate \uNNNN-escapes, the rest
+ * passes through. Total. Lives in
  * scr_regex.c (no engine needed — the placement keeps the always-linked
  * string TU out of hello-world's size class); use sites flip the regex
  * link switch (moduleUsesRegex). Borrows; +1. */
@@ -1428,10 +1511,12 @@ double scr_bytes_to_number(const char *p, size_t len);
 /* encodeURIComponent — ECMA-262 Encode with the component unreserved set
  * (ALPHA/DIGIT/- _ . ! ~ * ' ( )): every other byte of the UTF-8 string
  * percent-encodes as uppercase %XX (the spec's per-code-point UTF-8
- * encoding IS a byte scan over UTF-8 storage). Never throws — the spec's
- * URIError is the unpaired surrogate, which well-formed UTF-8 cannot
- * hold. Borrows s; result +1. */
+ * encoding IS a byte scan over UTF-8 storage). A lone surrogate throws the
+ * spec's URIError ("URI malformed"). Borrows s; result +1. */
 ScrStr *scr_str_encode_uri_component(ScrStr *s);
+/* querystring.escape: the component encoder, throwing Node's URIError
+ * [ERR_INVALID_URI] on a lone surrogate. Borrows s; result +1. */
+ScrStr *scr_qs_escape(ScrStr *s);
 
 /* decodeURIComponent — ECMA-262 Decode with the empty reserved set: %XX
  * escapes decode bytewise (raw non-escape bytes copy through) and escaped
@@ -1451,8 +1536,8 @@ ScrStr *scr_str_decode_uri_component_try(ScrStr *s);
  * scr_url_params.c precedent: pure data transforms, no loop hooks).
  * querystring.escape needs no entry here: Node's qsEscape encodes exactly
  * the component unreserved set, so the frontend lowers it to
- * scr_str_encode_uri_component (always linked; a program using only
- * escape never pulls this unit). */
+ * scr_qs_escape beside the component encoder (always linked; a program
+ * using only escape never pulls this unit). */
 
 /* querystring.unescape — Node's qsUnescape: strict decodeURIComponent
  * first, and on failure the lenient legacy unescapeBuffer(s).toString()
@@ -1519,13 +1604,13 @@ void scr_process_load_env_file(const struct ScrDyn *path);
  * key included), and everything else (null, undefined, nested objects/
  * arrays, functions) is the empty value — key and eq still emitted.
  * sep/eq fall back to "&"/"=" when empty (Node's `sep ||= '&'`). Result
- * +1; never throws. */
+ * +1; a lone surrogate throws URIError [ERR_INVALID_URI] (NULL). */
 ScrStr *scr_qs_stringify(const struct ScrDyn *obj, const ScrStr *sep,
                          const ScrStr *eq);
 
 /* encodeURI — the same ECMA-262 Encode() with the reserved set and '#'
- * kept unescaped (scr_encode_uri_impl's keep_reserved arm). Total by the
- * well-formed-UTF-8 invariant. Borrows s; result +1. */
+ * kept unescaped (scr_encode_uri_impl's keep_reserved arm). Throws the same
+ * URIError on a lone surrogate. Borrows s; result +1. */
 ScrStr *scr_encode_uri(ScrStr *s);
 /* atob/btoa — the WHATWG base64 globals (Node globals since v16). The
  * argument is a borrowed dyn value: WebIDL ToString runs here over the
@@ -3315,8 +3400,11 @@ ScrStr *scr_process_platform(void); /* +1 interned ("darwin", "linux", ...) */
 ScrStr *scr_process_cwd(void);      /* +1 fresh (getcwd) */
 
 bool scr_stdio_write(int fd, const void *data, size_t len);
+bool scr_stdio_write_str(int fd, const ScrStr *s);
 int scr_stdio_write_raw(int fd, const void *data, size_t len);
-extern SCR_TL bool (*scr_stdio_write_hook)(int fd, const void *data, size_t len);
+/* `wide` marks string bytes that may hold lone surrogates, which become
+ * U+FFFD when they reach the stream itself. */
+extern SCR_TL bool (*scr_stdio_write_hook)(int fd, const void *data, size_t len, bool wide);
 /* process.stdout/.stderr .write — raw bytes (no newline or formatting; data
  * borrowed), promptly visible and ordered with console output. Constantly
  * true (the synchronous runtime never queues backpressure). */
@@ -5441,6 +5529,9 @@ typedef struct {
 void scr_jb_init(ScrJsonBuf *b);
 /* Append a borrowed byte span verbatim, including embedded NUL bytes. */
 void scr_jb_write(ScrJsonBuf *b, const char *s, size_t n);
+/* scr_jb_write for text that holds no lone surrogate (fixed text, JSON
+ * tokens), which cannot complete a surrogate pair at the seam. */
+void scr_jb_write_utf8(ScrJsonBuf *b, const char *s, size_t n);
 /* Append one borrowed runtime string verbatim (no JSON quoting). */
 void scr_jb_put_str(ScrJsonBuf *b, const ScrStr *s);
 /* Push a container onto the circular-detection stack before serializing
@@ -5474,8 +5565,8 @@ void scr_jb_put_f64(ScrJsonBuf *b, double v);
 /* Append String(number), including NaN/Infinity, without a temporary string. */
 void scr_jb_put_number(ScrJsonBuf *b, double v);
 /* Quoted + escaped JSON string: \" \\ \n \r \t \b \f, other control chars
- * as \u00XX, everything else (UTF-8 included) verbatim — exactly the JS
- * JSON.stringify escape set for well-formed strings. */
+ * as \u00XX, lone surrogates as \udXXX, everything else (UTF-8 included)
+ * verbatim — exactly the JS JSON.stringify escape set. */
 void scr_jb_put_json_str(ScrJsonBuf *b, const ScrStr *s);
 
 /* JSON-serialize a dyn value into the buffer — the sc_jw_* walker for the
@@ -6256,9 +6347,8 @@ ScrStr *scr_bool_to_scrstr(bool b); /* interned "true"/"false" */
 
 /* ── String surface (scr_lib.c) ───────────────────────────────────────
  * fromCharCode: ONE packed f64[] of UTF-16 code units — ToUint16 each,
- * adjacent surrogate pairs combine, lone surrogates become U+FFFD
- * (divergence 1's policy). Borrowed args; the string result is +1; neither
- * throws. */
+ * adjacent surrogate pairs combine, other surrogates stay lone. Borrowed
+ * args; the string result is +1; neither throws. */
 ScrStr *scr_str_from_char_code(ScrArr *codes);
 /* Single numeric argument; avoids argument packing. Defined in scr_string.c
  * to share its character cache. Same ToUint16 and lone-surrogate behavior. */
@@ -6633,8 +6723,7 @@ void scr_bytes_set_from_dyn(ScrBytes *dst, const ScrDyn *src, double offset);
  * lowercase pairs, "base64"/"base64url" the standard/url alphabets (url
  * unpadded), "latin1" maps bytes to U+00XX, "ascii" masks to & 0x7f, and
  * "utf16le" decodes LE code units (surrogate pairs combine; a LONE
- * surrogate surfaces as U+FFFD — the documented divergence; an odd tail
- * byte drops). Aliases arrive NORMALIZED (the compiler folds "binary",
+ * surrogate stays lone; an odd tail byte drops). Aliases arrive NORMALIZED (the compiler folds "binary",
  * "ucs2", "utf-8", ...); NULL selects the default UTF-8 encoding for
  * implicit native coercions. Borrows both; +1 result. Never throws (the
  * compiler fences other encodings). */

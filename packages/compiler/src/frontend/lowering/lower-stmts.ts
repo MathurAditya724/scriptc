@@ -7994,7 +7994,7 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     if (iterable.type.kind === "string") {
       // JS's string iterator walks code POINTS, not units: each pass
       // yields the whole character (two UTF-16 units for astral chars,
-      // where charAt would truncate to U+FFFD).
+      // where charAt returns one surrogate half).
       return lowerForOfString(lowerer, stmt, iterable, labels);
     }
     if (iterable.type.kind === "map") {
@@ -8903,8 +8903,8 @@ function lowerForOfMatchAll(
 
 /** `for (const ch of s)` over a STRING: JS's string iterator, which walks
  * code POINTS — each pass binds the whole character (a two-unit string
- * for astral chars, where charAt/slice would truncate the halves to
- * U+FFFD). Desugars over the UTF-16 cursor machinery: a hidden unit
+ * for astral chars, where charAt/slice would return one surrogate half).
+ * Desugars over the UTF-16 cursor machinery: a hidden unit
  * index reads the character with the cpAt intrinsic and advances by ITS
  * length before the body runs (so `continue` never skips the advance):
  *
@@ -8912,9 +8912,8 @@ function lowerForOfMatchAll(
  *     while (%i < %s.length) { const ch = cpAt(%s, %i); %i += ch.length; <body> } }
  *
  * Strings are immutable, so the length is stable and there is no
- * iterator state to unwind on throw; lone surrogates cannot occur in
- * storage (canonicalized to U+FFFD at creation — the documented
- * divergence), so every step lands on a character start. */
+ * iterator state to unwind on throw; a lone surrogate is a one-unit
+ * character, so every step lands on a character start. */
 /** for-of over a CLASS ITERABLE (classIteratorOf's shape) — the
  * iterator protocol as ordinary method calls:
  *

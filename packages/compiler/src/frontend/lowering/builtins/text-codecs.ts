@@ -527,10 +527,9 @@ function directTextCodecCtorOf(lowerer: Lowerer, expr: ts.Expression): TextCodec
  * the owned record path above. decode is the runtime's WHATWG
  * decode for every recognized static label (with BOM handling for the
  * Unicode encodings); a zero-argument decode() is "" like the spec's.
- * encode IS Buffer.from(s, "utf8") — ScrStr
- * storage is well-formed UTF-8, so the bytes are identical (lone
- * surrogates became U+FFFD at string construction, exactly what the
- * spec's encoder emits). Null when this is neither supported form. */
+ * encode IS Buffer.from(s, "utf8") — both encode the string's UTF-8 with
+ * each lone surrogate as U+FFFD, exactly what the spec's encoder emits.
+ * Null when this is neither supported form. */
 export function lowerTextCodecCall(
   lowerer: Lowerer,
   call: ts.CallExpression,

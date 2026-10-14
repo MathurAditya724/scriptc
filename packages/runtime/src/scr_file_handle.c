@@ -381,7 +381,10 @@ static void scr_file_handle_write_all(ScrFileHandle *h, const void *data,
 }
 
 void scr_file_handle_write_file(ScrFileHandle *h, ScrStr *data) {
-  scr_file_handle_write_all(h, data->data, data->len);
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
+  scr_file_handle_write_all(h, bytes, data->len);
+  scr_str_utf8_end(owned);
 }
 
 void scr_file_handle_write_file_bytes(ScrFileHandle *h, ScrBytes *data) {

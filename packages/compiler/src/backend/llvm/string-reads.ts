@@ -9,12 +9,25 @@
  * semantics (surrogate halves, out-of-range NaN, fractional, negative and
  * NaN indices). On little-endian targets the bit is the sign bit of the
  * capacity word's low 32 bits on both i64 and i32 layouts.
+ *
+ * With `scan`, a string that is not proven ASCII is first compared with
+ * the runtime's published scan receiver (ScrStrScan, scr_runtime.h): the
+ * string an indexed scan converted to UTF-16 units, whose length and units
+ * then read inline. Only targets whose runtime state is not thread-local
+ * publish it to emitted code.
  */
 
 import { exactIndexLines } from "./common.js";
 
 export const STRING_UTF16_LEN_DECL = "declare double @scr_str_utf16_len(ptr)";
 export const STRING_CHAR_CODE_AT_DECL = "declare double @scr_str_char_code_at(ptr, double)";
+/** The runtime fallbacks are cold: both common cases read inline. They
+ * carry no
+ * memory restriction: a fallback can evict an index entry, which resets
+ * the published scan receiver (@scr_str_scan, read inline below) and frees
+ * its unit array, so every scan read after the call must reload. */
+const LENGTH_CALL_ATTRS = "cold nocallback nounwind willreturn";
+const READ_CALL_ATTRS = "cold nocallback nounwind willreturn";
 /** Requests the integer-index helper below; an LLVM comment line among the
  * declarations, so it never declares anything itself. */
 export const STRING_CHAR_CODE_AT_INT_MARKER = "; uses @sc_str_char_code_at_int";
@@ -35,39 +48,98 @@ function loadLength(sz: string): string[] {
   ];
 }
 
+/** The runtime's ScrStrScan record and the declaration naming it. */
+export function stringScanType(sz: string): string {
+  return `{ ptr, ptr, ${sz} }`;
+}
+
+export function stringScanDecl(sz: string): string {
+  return `@scr_str_scan = external global ${stringScanType(sz)}`;
+}
+
+/** The scan receiver test of `%s`: branches to `hit` with `%scan.n` (its
+ * unit count, as i64) and `%scan.units` loaded, else to `miss`. */
+function scanTest(sz: string, hit: string, miss: string): string[] {
+  const type = stringScanType(sz);
+  return [
+    `  %scan.s = load ptr, ptr @scr_str_scan`,
+    `  %scan.same = icmp eq ptr %scan.s, %s`,
+    `  br i1 %scan.same, label %scan.load, label %${miss}`,
+    `scan.load:`,
+    `  %scan.up = getelementptr inbounds ${type}, ptr @scr_str_scan, i32 0, i32 1`,
+    `  %scan.units = load ptr, ptr %scan.up`,
+    `  %scan.np = getelementptr inbounds ${type}, ptr @scr_str_scan, i32 0, i32 2`,
+    `  %scan.nw = load ${sz}, ptr %scan.np`,
+    sz === "i64" ? `  %scan.n = add i64 %scan.nw, 0` : `  %scan.n = zext ${sz} %scan.nw to i64`,
+    `  br label %${hit}`,
+  ];
+}
+
+/** Read unit `%k` (i64, below %scan.n) of the scan receiver. */
+function scanRead(): string[] {
+  return [
+    `  %scan.p = getelementptr inbounds i16, ptr %scan.units, i64 %scan.k`,
+    `  %scan.unit = load i16, ptr %scan.p`,
+    `  %scan.d = uitofp i16 %scan.unit to double`,
+    `  ret double %scan.d`,
+  ];
+}
+
 export interface StringReadHelper {
   decl: string;
-  define(sz: string, attrs: string): string[];
+  define(sz: string, attrs: string, scan: boolean): string[];
 }
 
 export const STRING_READ_HELPERS: readonly StringReadHelper[] = [
   {
     decl: STRING_UTF16_LEN_DECL,
-    define: (sz, attrs) => [
+    define: (sz, attrs, scan) => [
       `define internal double @sc_str_utf16_len(ptr %s) ${attrs} {`,
       `entry:`,
       ...asciiTest(),
-      `  br i1 %ascii, label %fast, label %slow`,
+      `  br i1 %ascii, label %fast, label %${scan ? "wide" : "slow"}`,
       `fast:`,
       ...loadLength(sz),
       `  %n = sitofp ${sz} %len to double`,
       `  ret double %n`,
+      ...(scan
+        ? [
+            `wide:`,
+            ...scanTest(sz, "scan.len", "slow"),
+            `scan.len:`,
+            `  %scan.dn = sitofp i64 %scan.n to double`,
+            `  ret double %scan.dn`,
+          ]
+        : []),
       `slow:`,
-      `  %r = call double @scr_str_utf16_len(ptr %s)`,
+      `  %r = call double @scr_str_utf16_len(ptr %s) ${LENGTH_CALL_ATTRS}`,
       `  ret double %r`,
       `}`,
     ],
   },
   {
     decl: STRING_CHAR_CODE_AT_DECL,
-    define: (sz, attrs) => {
+    define: (sz, attrs, scan) => {
       let n = 0;
       const exactIndex = exactIndexLines("%i", "%len", sz, () => `%ix${n++}`);
+      const scanIndex = exactIndexLines("%i", "%scan.n", "i64", () => `%sx${n++}`);
       return [
         `define internal double @sc_str_char_code_at(ptr %s, double %i) ${attrs} {`,
         `entry:`,
         ...asciiTest(),
-        `  br i1 %ascii, label %bounds, label %slow`,
+        `  br i1 %ascii, label %bounds, label %${scan ? "wide" : "slow"}`,
+        ...(scan
+          ? [
+              `wide:`,
+              ...scanTest(sz, "scan.bounds", "slow"),
+              `scan.bounds:`,
+              ...scanIndex.lines.map((line) => `  ${line}`),
+              `  br i1 ${scanIndex.ok}, label %scan.read, label %slow`,
+              `scan.read:`,
+              `  %scan.k = add i64 ${scanIndex.wide}, 0`,
+              ...scanRead(),
+            ]
+          : []),
         `bounds:`,
         ...loadLength(sz),
         ...exactIndex.lines.map((line) => `  ${line}`),
@@ -82,7 +154,7 @@ export const STRING_READ_HELPERS: readonly StringReadHelper[] = [
         `  %unit = uitofp i8 %byte to double`,
         `  ret double %unit`,
         `slow:`,
-        `  %r = call double @scr_str_char_code_at(ptr %s, double %i)`,
+        `  %r = call double @scr_str_char_code_at(ptr %s, double %i) ${READ_CALL_ATTRS}`,
         `  ret double %r`,
         `}`,
       ];
@@ -93,11 +165,23 @@ export const STRING_READ_HELPERS: readonly StringReadHelper[] = [
     // counter, an int32 slot or local) needs no double round trip: one
     // unsigned compare rejects negative and out-of-range indices alike.
     decl: STRING_CHAR_CODE_AT_INT_MARKER,
-    define: (sz, attrs) => [
+    define: (sz, attrs, scan) => [
       `define internal double @sc_str_char_code_at_int(ptr %s, i64 %i) ${attrs} {`,
       `entry:`,
       ...asciiTest(),
-      `  br i1 %ascii, label %bounds, label %slow`,
+      `  br i1 %ascii, label %bounds, label %${scan ? "wide" : "slow"}`,
+      ...(scan
+        ? [
+            `wide:`,
+            ...scanTest(sz, "scan.bounds", "slow"),
+            `scan.bounds:`,
+            `  %scan.ok = icmp ult i64 %i, %scan.n`,
+            `  br i1 %scan.ok, label %scan.read, label %slow`,
+            `scan.read:`,
+            `  %scan.k = add i64 %i, 0`,
+            ...scanRead(),
+          ]
+        : []),
       `bounds:`,
       ...loadLength(sz),
       ...(sz === "i64" ? [] : [`  %len64 = zext ${sz} %len to i64`]),
@@ -111,7 +195,7 @@ export const STRING_READ_HELPERS: readonly StringReadHelper[] = [
       `  ret double %unit`,
       `slow:`,
       `  %d = sitofp i64 %i to double`,
-      `  %r = call double @scr_str_char_code_at(ptr %s, double %d)`,
+      `  %r = call double @scr_str_char_code_at(ptr %s, double %d) ${READ_CALL_ATTRS}`,
       `  ret double %r`,
       `}`,
     ],

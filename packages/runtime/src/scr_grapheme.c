@@ -22,7 +22,7 @@ static unsigned scr_grapheme_property(uint32_t cp) {
   return 0;
 }
 
-/* ScrStr storage is well-formed UTF-8. Public offsets count UTF-16 units. */
+/* ScrStr storage is canonical WTF-8. Public offsets count UTF-16 units. */
 static uint32_t scr_grapheme_decode(const char *data, size_t *size) {
   const unsigned char *p = (const unsigned char *)data;
   if (p[0] < 0x80) { *size = 1; return p[0]; }

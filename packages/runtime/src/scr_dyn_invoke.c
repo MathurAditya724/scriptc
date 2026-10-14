@@ -56,18 +56,18 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d) {
   case SCR_DYN_BOOL: scr_jb_puts(b, d->v.b ? "true" : "false"); return;
   case SCR_DYN_BIGINT: {
     ScrStr *s = scr_bigint_to_string(d->v.bigint, 10);
-    for (size_t i = 0; i < s->len; i++) scr_jb_putc(b, s->data[i]);
+    scr_jb_write(b, s->data, s->len);
     scr_str_release(s);
     return;
   }
   case SCR_DYN_NUM: {
     ScrStr *s = scr_f64_to_scrstr(d->v.num);
-    for (size_t i = 0; i < s->len; i++) scr_jb_putc(b, s->data[i]);
+    scr_jb_write(b, s->data, s->len);
     scr_str_release(s);
     return;
   }
   case SCR_DYN_STR:
-    for (size_t i = 0; i < d->v.str->len; i++) scr_jb_putc(b, d->v.str->data[i]);
+    scr_jb_write(b, d->v.str->data, d->v.str->len);
     return;
   case SCR_DYN_ARR:
     for (size_t i = 0; i < d->v.arr.len; i++) {
@@ -86,9 +86,9 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d) {
       const ScrDyn *em = scr_dyn_obj_get(d, "message", 7);
       const ScrStr *ens = (en && en->kind == SCR_DYN_STR) ? en->v.str : NULL;
       const ScrStr *ems = (em && em->kind == SCR_DYN_STR) ? em->v.str : NULL;
-      if (ens) for (size_t i = 0; i < ens->len; i++) scr_jb_putc(b, ens->data[i]);
+      if (ens) scr_jb_write(b, ens->data, ens->len);
       if (ens && ens->len && ems && ems->len) scr_jb_puts(b, ": ");
-      if (ems) for (size_t i = 0; i < ems->len; i++) scr_jb_putc(b, ems->data[i]);
+      if (ems) scr_jb_write(b, ems->data, ems->len);
       return;
     }
     scr_jb_puts(b, "[object Object]");
@@ -101,14 +101,14 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d) {
       ScrStr *enc = scr_str_new("utf8", 4);
       ScrStr *txt = scr_bytes_to_str(d->v.bytes, enc);
       scr_str_release(enc);
-      for (size_t i = 0; i < txt->len; i++) scr_jb_putc(b, txt->data[i]);
+      scr_jb_write(b, txt->data, txt->len);
       scr_str_release(txt);
       return;
     }
     for (size_t i = 0; i < d->v.bytes->len; i++) {
       if (i > 0) scr_jb_putc(b, ',');
       ScrStr *n = scr_f64_to_scrstr(scr_bytes_get(d->v.bytes, (double)i));
-      for (size_t j = 0; j < n->len; j++) scr_jb_putc(b, n->data[j]);
+      scr_jb_write(b, n->data, n->len);
       scr_str_release(n);
     }
     return;
@@ -119,7 +119,7 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d) {
     return;
   case SCR_DYN_HANDLE: {
     ScrStr *s = scr_dyn_to_string(d, NULL);
-    for (size_t i = 0; i < s->len; i++) scr_jb_putc(b, s->data[i]);
+    scr_jb_write(b, s->data, s->len);
     scr_str_release(s);
     return;
   }
@@ -1199,7 +1199,7 @@ static ScrDyn *scr_dyn_invoke_impl(
         ? scr_dyn_string_coerce_js(args[0]) : scr_str_new(",", 1);
       if (!separator) { free(b.data); return NULL; }
       for (size_t i = 0; i < len; i++) {
-        if (i > 0) for (size_t j = 0; j < separator->len; j++) scr_jb_putc(&b, separator->data[j]);
+        if (i > 0) scr_jb_write(&b, separator->data, separator->len);
         ScrDyn *e = scr_dyn_arr_at(recv, (double)i);
         if (e) {
           if (e->kind != SCR_DYN_UNDEF && e->kind != SCR_DYN_NULL) scr_dyn_display_buf(&b, e);

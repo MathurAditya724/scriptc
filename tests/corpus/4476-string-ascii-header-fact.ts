@@ -6,7 +6,7 @@
 // uniquely owned ASCII string must drop it, and every index form
 // (fractional, -0, negative, NaN, infinite, out of range) keeps Node's
 // semantics on both representations, including surrogate halves. (Reads
-// never split a surrogate pair into a string: scriptc substitutes U+FFFD.)
+// never split a surrogate pair into a string; 4991 covers that.)
 
 function codes(s: string): string {
   const out: number[] = [];
