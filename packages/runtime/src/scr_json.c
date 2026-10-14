@@ -3303,6 +3303,10 @@ typedef struct {
   void *ptr;            /* handle entry (borrowed); NULL when dv or undefined */
   ScrDynHandleTag tag;
   ScrDyn *dv;           /* dyn entry (+1); NULL for handle/undefined entries */
+  /* A deferred typed-ref entry (scr_dyn_this_push_typed): the borrowed
+   * instance in `ptr` boxes with this recipe on the first read, and dv
+   * caches the box. */
+  const ScrDynTypedRefRecipe *recipe;
 } ScrDynThisEnt;
 
 static SCR_TL ScrDynThisEnt *scr_dyn_this_stack;
@@ -3334,6 +3338,7 @@ void scr_dyn_this_push(void *h, ScrDynHandleTag tag) {
   e->ptr = h;
   e->tag = tag;
   e->dv = NULL;
+  e->recipe = NULL;
 }
 
 void scr_dyn_this_push_dyn(const ScrDyn *v) {
@@ -3341,6 +3346,15 @@ void scr_dyn_this_push_dyn(const ScrDyn *v) {
   e->ptr = NULL;
   e->tag = 0;
   e->dv = v ? scr_dyn_retain((ScrDyn *)v) : NULL;
+  e->recipe = NULL;
+}
+
+void scr_dyn_this_push_typed(void *ptr, const ScrDynTypedRefRecipe *recipe) {
+  ScrDynThisEnt *e = scr_dyn_this_grow();
+  e->ptr = ptr;
+  e->tag = 0;
+  e->dv = NULL;
+  e->recipe = recipe;
 }
 
 void scr_dyn_this_pop(void) {
@@ -3354,6 +3368,17 @@ void scr_dyn_this_pop(void) {
 ScrDyn *scr_dyn_this_get(void) {
   if (scr_dyn_this_n > 0) {
     ScrDynThisEnt *e = &scr_dyn_this_stack[scr_dyn_this_n - 1];
+    if (!e->dv && e->recipe) {
+      const ScrDynTypedRefRecipe *r = e->recipe;
+      e->dv = r->kind == 2
+          ? scr_dyn_new_typed_ref_traced(e->ptr, r->retain, r->release, r->type_key,
+                                         r->type_key_len, r->materialize, r->commit)
+          : r->kind == 1
+              ? scr_dyn_new_typed_ref_observed(e->ptr, r->retain, r->release, r->type_key,
+                                               r->type_key_len, r->materialize, r->commit)
+              : scr_dyn_new_typed_ref(e->ptr, r->retain, r->release, r->type_key,
+                                      r->type_key_len, r->materialize, r->commit);
+    }
     if (e->dv) return scr_dyn_retain(e->dv);
     /* An uninstalled tag never binds: a unit that fires without its dyn
      * half (no boxes can exist there) keeps the undefined answer. */

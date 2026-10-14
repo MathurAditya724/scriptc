@@ -2,13 +2,16 @@
 import { InternalCompilerError } from "../../errors.js";
 import { newValueMayThrow } from "../../ir/analysis.js";
 import {
+  isDynTypedRefType,
   isFfiCallbackParam,
   isFfiContextParam,
   isFfiReleaseParam,
   isRefCounted,
+  typeKey,
   type IrExpr,
   type IrFunction,
 } from "../../ir/ir.js";
+import { typedRefConstructor, vAdapters } from "./shapes.js";
 import { INT32_ABI_SUFFIX, SCALAR_UNION_RESULT } from "./int32-abi.js";
 import { collectFfiRetainedOps, parseFfiCallbackKey } from "../ffi-callbacks.js";
 import {
@@ -723,7 +726,41 @@ export function emitCallExpr(
       if (e.args.length !== ft.params.length)
         throw new LlvmUnsupportedError("callValue:arity", e.loc);
       const callee = host.stackCallbacks.emit(host, e.callee) ?? emitBorrowedInput(host, e.callee);
-      const receiver = e.receiver === undefined ? null : host.emitExpr(e.receiver);
+      // A class instance bound as the callee's `this` (`h.fn(x)`) is boxed
+      // only if the callee reads it: the receiver window records the
+      // instance (owned by this frame for the whole call) with its typed-ref
+      // recipe, and dyn.this builds the box on first read.
+      const lazyReceiver =
+        e.receiver?.kind === "dynFrom" &&
+        e.receiver.value.type.kind === "object" &&
+        isDynTypedRefType(e.receiver.value.type) &&
+        !host.shapeHost.isErrorClass(e.receiver.value.type.className)
+          ? host.emitExpr(e.receiver.value)
+          : null;
+      const receiver = e.receiver === undefined || lazyReceiver ? null : host.emitExpr(e.receiver);
+      const pushReceiver = (): void => {
+        if (lazyReceiver) {
+          const t = lazyReceiver.type;
+          const key = typeKey(t);
+          let recipe = host.typedRefRecipes.get(key);
+          if (recipe === undefined) {
+            const adapter = host.liveDynRefAdapter(t);
+            const rc = vAdapters(host.shapeHost, t);
+            const ctor = typedRefConstructor(host.shapeHost, t);
+            const kind = ctor.endsWith("_traced") ? 2 : ctor.endsWith("_observed") ? 1 : 0;
+            recipe = `@sc_trr_${host.typedRefRecipes.size}`;
+            host.typedRefRecipes.set(key, recipe);
+            host.resolveThunkDefs.push(
+              `${recipe} = internal constant { ptr, ptr, ptr, ${host.sizeType}, ptr, ptr, i32 } { ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit}, i32 ${kind} }`,
+            );
+          }
+          host.declare("declare void @scr_dyn_this_push_typed(ptr, ptr)");
+          B.line(`call void @scr_dyn_this_push_typed(ptr ${lazyReceiver.name}, ptr ${recipe})`);
+          return;
+        }
+        host.declare("declare void @scr_dyn_this_push_dyn(ptr)");
+        B.line(`call void @scr_dyn_this_push_dyn(ptr ${receiver?.name ?? "null"})`);
+      };
       const knownName =
         e.callee.kind === "closure"
           ? e.callee.fnName
@@ -799,9 +836,8 @@ export function emitCallExpr(
           : args;
       const invoke = (target: string, needsReceiver: boolean, values = args): string => {
         if (needsReceiver) {
-          host.declare("declare void @scr_dyn_this_push_dyn(ptr)");
           host.declare("declare void @scr_dyn_this_pop()");
-          B.line(`call void @scr_dyn_this_push_dyn(ptr ${receiver?.name ?? "null"})`);
+          pushReceiver();
         }
         const result = e.type.kind === "void" ? "" : B.tmp();
         B.line(

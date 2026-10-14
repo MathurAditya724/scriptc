@@ -734,6 +734,8 @@ export class LlEmitter {
    * typeKey → thunk symbol. */
   readonly resolveThunks = new Map<string, string>();
   readonly resolveThunkDefs: string[] = [];
+  /** Typed-ref recipe constants by type key (lazy receivers). */
+  readonly typedRefRecipes = new Map<string, string>();
   /** ReadableStream.from adapters keep typed arrays by reference and box
    * one current element per pull. */
   readonly streamFromArrayAdapters = new Map<string, string>();
