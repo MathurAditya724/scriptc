@@ -237,9 +237,10 @@ void scr_jb_put_str(ScrJsonBuf *b, const ScrStr *s) {
 void scr_jb_puts(ScrJsonBuf *b, const char *s) { scr_jb_write(b, s, strlen(s)); }
 
 void scr_jb_put_number(ScrJsonBuf *b, double v) {
-  char buf[32];
-  size_t n = scr_f64_to_str(v, buf);
-  scr_jb_write_utf8(b, buf, n); /* number text is ASCII */
+  /* scr_f64_to_str writes at most 31 ASCII bytes and a NUL into the
+   * buffer's spare capacity; the NUL is not counted. */
+  scr_jb_grow(b, 32);
+  b->len += scr_f64_to_str(v, b->data + b->len);
 }
 
 void scr_jb_put_f64(ScrJsonBuf *b, double v) {

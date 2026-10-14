@@ -238,6 +238,8 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5317-map-iterate-while-mutating.ts",
     "5318-set-iterate-after-deletes.ts",
     "5319-map-iteration-values.ts",
+    // JSON writers read array slots as pointers.
+    "5305-json-stringify-typed-arrays.ts",
   ])("the LLVM target runs %s byte-identically to Node", async (fixture) => {
     const entry = join(repoRoot, "tests/corpus", fixture);
     const outDir = await mkdtemp("/tmp/scriptc-wasi-");

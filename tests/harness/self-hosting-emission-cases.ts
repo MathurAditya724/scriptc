@@ -369,7 +369,7 @@ export function emissionCases(): EmissionCase[] {
   add(
     "recursive JSON writers and indentation",
     writer,
-    ["@scr_jb_enter", "@scr_jb_put_f64"],
+    ["@scr_jb_enter", "@scr_jb_put_f64", "@scr_arr_dense_slots"],
     writerRequest,
   );
 

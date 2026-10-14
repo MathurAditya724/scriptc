@@ -17,6 +17,7 @@ import { InternalCompilerError } from "../../errors.js";
 import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
 import { isRefCounted, typeKey } from "../../ir/ir.js";
 import { jsonObjectKeyLabel } from "../json-literal.js";
+import { llvmBytes, wtf8Bytes } from "../literals.js";
 import { mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import { llvmCommentText } from "./common.js";
@@ -73,17 +74,61 @@ export class LlWalkers {
   /* ── the byte plumbing shared by every walker ─────────────────────────── */
 
   private putc(B: BlockBuilder, buf: string, byte: string): void {
-    this.host.declare(`declare void @scr_jb_putc(ptr, i8)`);
-    B.line(`call void @scr_jb_putc(ptr ${buf}, i8 ${byte})`);
+    this.appendBytes(B, buf, String.fromCharCode(Number(byte)), () => {
+      this.host.declare(`declare void @scr_jb_putc(ptr, i8)`);
+      B.line(`call void @scr_jb_putc(ptr ${buf}, i8 ${byte})`);
+    });
   }
 
   /** Fixed text and JSON tokens hold no lone surrogate, so they append
    * without the builder's surrogate-pair seam check. */
   private puts(B: BlockBuilder, buf: string, text: string): void {
-    this.host.declare(`declare void @scr_jb_write_utf8(ptr, ptr, ${this.S})`);
+    this.appendBytes(B, buf, text, () => {
+      this.host.declare(`declare void @scr_jb_write_utf8(ptr, ptr, ${this.S})`);
+      B.line(
+        `call void @scr_jb_write_utf8(ptr ${buf}, ptr ${this.host.cstr(text)}, ${this.S} ${Buffer.byteLength(text, "utf8")}) ; ${JSON.stringify(text)}`,
+      );
+    });
+  }
+
+  /** Appends constant text: stored inline when it fits the buffer's spare
+   * capacity, else through `grow`, the runtime append that reallocates.
+   * ScrJsonBuf starts with { char *data; size_t len; size_t cap; }; an
+   * unallocated buffer has cap 0 and always takes the runtime append. */
+  private appendBytes(B: BlockBuilder, buf: string, text: string, grow: () => void): void {
+    const bytes = wtf8Bytes(text);
+    const S = this.S;
+    const header = `{ ptr, ${S}, ${S} }`;
+    const lenp = B.tmp(),
+      len = B.tmp(),
+      capp = B.tmp(),
+      cap = B.tmp(),
+      end = B.tmp(),
+      fits = B.tmp();
+    B.line(`${lenp} = getelementptr inbounds ${header}, ptr ${buf}, i32 0, i32 1`);
+    B.line(`${len} = load ${S}, ptr ${lenp}`);
+    B.line(`${capp} = getelementptr inbounds ${header}, ptr ${buf}, i32 0, i32 2`);
+    B.line(`${cap} = load ${S}, ptr ${capp}`);
+    B.line(`${end} = add nuw ${S} ${len}, ${bytes.length}`);
+    B.line(`${fits} = icmp ule ${S} ${end}, ${cap}`);
+    const inline = B.newLabel("jb.put"),
+      slow = B.newLabel("jb.grow"),
+      done = B.newLabel("jb.done");
+    B.condBr(fits, inline, slow);
+    B.startBlock(inline);
+    const data = B.tmp(),
+      at = B.tmp();
+    B.line(`${data} = load ptr, ptr ${buf}`);
+    B.line(`${at} = getelementptr inbounds i8, ptr ${data}, ${S} ${len}`);
     B.line(
-      `call void @scr_jb_write_utf8(ptr ${buf}, ptr ${this.host.cstr(text)}, ${this.S} ${Buffer.byteLength(text, "utf8")}) ; ${JSON.stringify(text)}`,
+      `store [${bytes.length} x i8] c"${llvmBytes(bytes, false)}", ptr ${at}, align 1 ; ${JSON.stringify(text)}`,
     );
+    B.line(`store ${S} ${end}, ptr ${lenp}`);
+    B.br(done);
+    B.startBlock(slow);
+    grow();
+    B.br(done);
+    B.startBlock(done);
   }
 
   /** Appends a borrowed string, including embedded NUL bytes, in one write. */
@@ -155,12 +200,17 @@ export class LlWalkers {
         );
         break;
       case "bool": {
-        const s = B.tmp();
-        this.host.declare(`declare void @scr_jb_puts(ptr, ptr)`);
-        B.line(
-          `${s} = select i1 %v, ptr ${this.host.cstr("true")}, ptr ${this.host.cstr("false")}`,
-        );
-        B.line(`call void @scr_jb_puts(ptr %b, ptr ${s})`);
+        const yes = B.newLabel("jwb.t"),
+          no = B.newLabel("jwb.f"),
+          done = B.newLabel("jwb.d");
+        B.condBr("%v", yes, no);
+        B.startBlock(yes);
+        this.puts(B, "%b", "true");
+        B.br(done);
+        B.startBlock(no);
+        this.puts(B, "%b", "false");
+        B.br(done);
+        B.startBlock(done);
         break;
       }
       case "string":
@@ -455,6 +505,8 @@ export class LlWalkers {
     // like a cycle-capable record.
     if (cyclic) this.jbEnter(B, true);
     this.putc(B, "%b", "91"); // '['
+    const finish = B.newLabel("jwa.end");
+    if (elem.kind !== "bool") this.emitDenseArrayElements(B, elem, w, cyclic, finish);
     const len = B.tmp();
     B.line(`${len} = call double @scr_arr_len(ptr %v)`);
     B.countedLoop(len, (i) => {
@@ -506,8 +558,73 @@ export class LlWalkers {
       B.br(doneBlock);
       B.startBlock(doneBlock);
     });
+    B.br(finish);
+    B.startBlock(finish);
     this.putc(B, "%b", "93"); // ']'
     if (cyclic) this.jbLeave(B);
+  }
+
+  /** Writes the elements of an array whose indices below its length all
+   * hold values in dense storage straight from its 8-byte slots, borrowing
+   * each element (serialization runs no script code, so nothing can
+   * change the array), then branches to `finish`. Other arrays continue
+   * in the current block with the general element walk. */
+  private emitDenseArrayElements(
+    B: BlockBuilder,
+    elem: IrType,
+    w: string,
+    cyclic: boolean,
+    finish: string,
+  ): void {
+    const S = this.S;
+    this.host.declare(`declare ptr @scr_arr_dense_slots(ptr, ptr)`);
+    const lenSlot = B.slot(),
+      indexSlot = B.slot();
+    B.entryAllocas.push(`${lenSlot} = alloca ${S}`, `${indexSlot} = alloca ${S}`);
+    const slots = B.tmp(),
+      dense = B.tmp();
+    B.line(`${slots} = call ptr @scr_arr_dense_slots(ptr %v, ptr ${lenSlot})`);
+    B.line(`${dense} = icmp ne ptr ${slots}, null`);
+    const start = B.newLabel("jwd.start"),
+      general = B.newLabel("jwd.general"),
+      check = B.newLabel("jwd.c"),
+      body = B.newLabel("jwd.b");
+    B.condBr(dense, start, general);
+    B.startBlock(start);
+    const len = B.tmp();
+    B.line(`${len} = load ${S}, ptr ${lenSlot}`);
+    B.line(`store ${S} 0, ptr ${indexSlot}`);
+    B.br(check);
+    B.startBlock(check);
+    const i = B.tmp(),
+      more = B.tmp();
+    B.line(`${i} = load ${S}, ptr ${indexSlot}`);
+    B.line(`${more} = icmp ult ${S} ${i}, ${len}`);
+    B.condBr(more, body, finish);
+    B.startBlock(body);
+    const later = B.tmp(),
+      comma = B.newLabel("jwd.cm"),
+      value = B.newLabel("jwd.v");
+    B.line(`${later} = icmp ne ${S} ${i}, 0`);
+    B.condBr(later, comma, value);
+    B.startBlock(comma);
+    this.putc(B, "%b", "44"); // ','
+    B.br(value);
+    B.startBlock(value);
+    if (cyclic) this.jbEdgeIdx(B, i);
+    const at = B.tmp(),
+      raw = B.tmp(),
+      v = B.tmp();
+    B.line(`${at} = getelementptr inbounds i64, ptr ${slots}, ${S} ${i}`);
+    B.line(`${raw} = load i64, ptr ${at}`);
+    if (elem.kind === "f64") B.line(`${v} = bitcast i64 ${raw} to double`);
+    else B.line(`${v} = inttoptr i64 ${raw} to ptr`);
+    B.line(`call void @${w}(ptr %b, ${this.valTy(elem)} ${v}) ; borrowed`);
+    const next = B.tmp();
+    B.line(`${next} = add nuw ${S} ${i}, 1`);
+    B.line(`store ${S} ${next}, ptr ${indexSlot}`);
+    B.br(check);
+    B.startBlock(general);
   }
 
   private emitUnionWriter(B: BlockBuilder, unionId: string): void {
