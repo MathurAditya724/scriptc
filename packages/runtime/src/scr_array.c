@@ -812,6 +812,34 @@ ScrArr *scr_arr_new(ScrElemKind elem, size_t initial_cap) {
 
 ScrArr *scr_arr_new_small(ScrElemKind elem) { return scr_arr_make(elem, 0, true); }
 
+/* A non-cycle array whose final length the runtime knows when it builds
+ * it (regex match results): its `cap` slots and states share the header's
+ * block, so construction and teardown cost one allocation. Growth past
+ * `cap` moves the slots out like any inline array. */
+ScrArr *scr_arr_new_inline(ScrElemKind elem, size_t cap) {
+  if (cap == 0) return scr_arr_make(elem, 0, false);
+  if (cap > SCR_ARR_MAX_LENGTH) scr_arr_oom();
+  size_t unit = elem == SCR_ELEM_BOOL ? SCR_ARR_BOOL_SLOT_BYTES : SCR_ARR_SLOT_BYTES;
+  ScrArr *a = scr_mem_alloc(SCR_ARR_INLINE_OFFSET + cap * unit);
+  if (!a) scr_arr_oom();
+  a->rc = 1;
+  a->len = 0;
+  a->cap = 0;
+  a->elem = (uint8_t)elem;
+  a->cyc = 0;
+  a->spare = 0;
+  a->filled = 0;
+  a->ops = NULL;
+  a->data = NULL;
+  a->present = NULL;
+  a->ext = NULL;
+  scr_arr_use_inline(a, cap);
+#ifdef SCR_RC_AUDIT
+  scr_live_arrays++;
+#endif
+  return a;
+}
+
 void scr_arr_outline(ScrArr *a) {
   if (scr_arr_inline(a))
     scr_arr_move_inline(a, a->cap,

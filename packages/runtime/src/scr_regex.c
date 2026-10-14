@@ -687,7 +687,7 @@ static ScrArr *scr_regex_exec_core(ScrStr *s, ScrRegex *re, uint64_t mask, bool 
   if (rc == 1) {
     int count = lre_get_capture_count(bc);
     bool spans = lazy != 0 && !input.wide && (count >= 64 || ((mask | lazy) >> count) == 0);
-    out = scr_arr_new(SCR_ELEM_STR, (size_t)count + spans);
+    out = scr_arr_new_inline(SCR_ELEM_STR, (size_t)count + spans);
     if (metadata) {
       ScrDyn *props = scr_dyn_new_obj();
       scr_arr_ext(out)->metadata = props;
@@ -695,8 +695,13 @@ static ScrArr *scr_regex_exec_core(ScrStr *s, ScrRegex *re, uint64_t mask, bool 
       scr_dyn_obj_set(props, "input", 5, scr_dyn_new_str(s));
     }
     /* A fresh dense array: every slot is written directly, then the
-     * hole-free prefix is the run of materialized captures from 0. */
+     * hole-free prefix is the run of materialized captures from 0. Its
+     * storage pointers are fixed (the inline block never moves here), so
+     * they stay in registers across the slot stores. */
     size_t n = (size_t)count + spans;
+    uint64_t *data = out->data;
+    uint8_t *present = out->present;
+    size_t filled = 0;
     bool prefix = true;
     for (int k = 0; k < count; k++) {
       const uint8_t *cs = capture[2 * k], *ce = capture[2 * k + 1];
@@ -713,16 +718,17 @@ static ScrArr *scr_regex_exec_core(ScrStr *s, ScrRegex *re, uint64_t mask, bool 
         word = (uint64_t)(uintptr_t)text;
         state = SCR_ARR_VALUE;
       }
-      out->data[k] = word;
-      out->present[k] = state;
+      data[k] = word;
+      present[k] = state;
       if (state != SCR_ARR_VALUE) prefix = false;
-      if (prefix) out->filled = (uint32_t)k + 1;
+      else if (prefix) filled = (size_t)k + 1;
     }
     if (spans) {
-      out->data[count] = (uint64_t)(uintptr_t)scr_str_retain(s);
-      out->present[count] = SCR_ARR_VALUE;
-      if (prefix) out->filled = (uint32_t)n;
+      data[count] = (uint64_t)(uintptr_t)scr_str_retain(s);
+      present[count] = SCR_ARR_VALUE;
+      if (prefix) filled = n;
     }
+    out->filled = (uint32_t)filled;
     out->len = n;
   }
   scr_regex_input_dispose(&input);
