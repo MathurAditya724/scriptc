@@ -44,3 +44,12 @@ function flags(): string {
   return first + " then " + check();
 }
 console.log(flags());
+
+// An annotated arrow returning a var captured before its statement.
+function forwardCapture(): void {
+  const read = (): number => n;
+  console.log("annotated", read());
+  var n = 5;
+  console.log("annotated", read(), n);
+}
+forwardCapture();

@@ -4242,6 +4242,17 @@ export class Lowerer {
       for (const expression of returnsOf(fn)) if (mayBeOptional(expression)) found = true;
       return found;
     };
+    /** A return of a var that code can read before its first store. */
+    const returnsEarlyVar = (fn: ts.FunctionLikeDeclaration): boolean => {
+      const early = (e: ts.Expression): boolean => {
+        const read = peel(e);
+        if (!ts.isIdentifier(read)) return false;
+        const symbol = symbolOf(read);
+        return symbol !== null && this.earlyReadVars.has(symbol);
+      };
+      if (fn.body && !ts.isBlock(fn.body)) return early(fn.body as ts.Expression);
+      return returnsOf(fn).some(early);
+    };
     const jsLambdas: ts.FunctionLikeDeclaration[] = [];
     // TypeScript lambdas keep the checker's inferred return type, which
     // spells a missing read as its bare element type and `read ?? "text"`
@@ -5305,8 +5316,10 @@ export class Lowerer {
       for (const [symbol, decl] of functionDeclBySymbol)
         if (scanReturns(symbol, decl)) changed = true;
       for (const fn of tsLambdas) {
-        // An annotated return is the author's contract, as for parameters.
-        if (fn.type) continue;
+        // An annotated return is the author's contract, as for parameters,
+        // except that a var read before its first store is undefined
+        // whatever the annotation says.
+        if (fn.type && !returnsEarlyVar(fn)) continue;
         const mapped = this.mapTypeOf(this.typeOf(fn));
         if (mapped?.kind !== "func") continue;
         const previous = this.runtimeOptionalFunctionReturnType(fn, mapped.ret);

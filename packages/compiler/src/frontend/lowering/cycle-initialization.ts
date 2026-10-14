@@ -45,6 +45,11 @@ export interface CycleInitFlag {
    * static field storage (`global` is the flag itself). */
   className?: string;
   staticGlobals?: ReadonlySet<string>;
+  /** The source references to the class outside its own body. Only IR
+   * built for one of them is checked: compiler-generated dispatch (error
+   * property helpers, prototype data, reflection) also names the class
+   * and must keep working before the class statement ran. */
+  references?: readonly SrcLoc[];
 }
 
 /** Registers the initialization flags after global collection. Bindings
@@ -128,7 +133,36 @@ function registerClassInitFlag(
     cycle: false,
     className,
     staticGlobals: new Set(info.staticFields.map((f) => f.globalId)),
+    references: classReferences(lowerer, binding.symbol, binding.name),
   });
+}
+
+/** The source spans of the identifiers naming the class outside its own
+ * declaration, in every program file. */
+function classReferences(lowerer: Lowerer, symbol: ts.Symbol, name: ts.Identifier): SrcLoc[] {
+  const declaration = name.parent;
+  const out: SrcLoc[] = [];
+  for (const sf of lowerer.program.getImplementationSourceFiles()) {
+    if (sf.isDeclarationFile || !sf.text.includes(name.text)) continue;
+    ts.walkPreorder(sf, (node) => {
+      if (node === declaration) return "skip";
+      if (
+        ts.isIdentifier(node) &&
+        node.text === name.text &&
+        lowerer.checker.getSymbolAtLocation(node) === symbol
+      )
+        out.push(locOf(node));
+      return undefined;
+    });
+  }
+  return out;
+}
+
+/** Whether `loc` is the IR of a source reference to the flagged class. */
+function coversReference(flag: CycleInitFlag, loc: SrcLoc): boolean {
+  return (flag.references ?? []).some(
+    (r) => r.file === loc.file && loc.start <= r.start && r.end <= loc.end,
+  );
 }
 
 /** The class statement's static initialization, followed by the store of
@@ -296,13 +330,16 @@ function rewriteFunction(
       case "new":
       case "classRef":
       case "instanceOf":
-      case "caughtCheck":
-        return classes.get(e.className);
+      case "caughtCheck": {
+        const flag = classes.get(e.className);
+        return flag !== undefined && coversReference(flag, e.loc) ? flag : undefined;
+      }
       case "call":
         for (const [className, flag] of classes) {
           if (
-            e.callee.startsWith(`%${className}.static:`) ||
-            e.callee === `%dyn.class.instanceof:${className}`
+            (e.callee.startsWith(`%${className}.static:`) ||
+              e.callee === `%dyn.class.instanceof:${className}`) &&
+            coversReference(flag, e.loc)
           )
             return flag;
         }
@@ -347,6 +384,7 @@ function rewriteFunction(
       if (e.kind !== "varRef" && e.kind !== "incDec" && e.kind !== "assignExpr") return e;
       const flag = active.get(e.localId);
       if (flag === undefined) return e;
+      if (flag.className !== undefined && !coversReference(flag, e.loc)) return e;
       if (e.kind === "assignExpr") {
         const t = temp(e.value.type);
         const value: IrExpr = { kind: "varRef", localId: t, type: e.value.type, loc: e.loc };
@@ -365,6 +403,7 @@ function rewriteFunction(
       if (s.kind !== "assign" || s.initializes) return s;
       const flag = active.get(s.localId);
       if (flag === undefined) return s;
+      if (flag.className !== undefined && !coversReference(flag, s.loc)) return s;
       const t = temp(s.value.type);
       const write: IrStmt = {
         kind: "assign",
