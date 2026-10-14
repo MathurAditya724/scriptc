@@ -499,6 +499,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "url.fileURLToPathBuffer",
   "url.pathToFileURLChecked",
   "url.fileURLToPathStr",
+  // The legacy API: validateString/urlObject ladders, ERR_INVALID_URL,
+  // auth's URIError, and the domain pair's ERR_MISSING_ARGS.
+  "url.legacyParse",
+  "url.legacyFormat",
+  "url.legacyResolve",
+  "url.domainToASCII",
+  "url.domainToUnicode",
   // The win32-target flavor of pathToFileURL (same runtime entry point —
   // the bridge dispatches by the binary's platform): Node's win32 arm
   // raises ERR_INVALID_ARG_VALUE TypeErrors for malformed UNC inputs, so

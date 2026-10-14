@@ -1059,6 +1059,48 @@ let mapTypeDepth = 0;
  * stay fenced instead of interning a per-context-wrong shape). */
 let contextResolutions = 0;
 
+/** node:url's legacy record interfaces: url.parse()'s Url instance (and
+ * its two query-typed refinements), url.format()'s UrlObject input, and the
+ * URL form's URLFormatOptions. The values are checked-dynamic objects —
+ * Node's Url instance carries its class name and null fields, and format()
+ * reads any object's fields with JS truthiness. */
+const LEGACY_URL_TYPES = new Set([
+  "Url",
+  "UrlObject",
+  "UrlWithParsedQuery",
+  "UrlWithStringQuery",
+  "URLFormatOptions",
+]);
+
+export function isLegacyUrlType(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  const symbol = type.getAliasSymbol() ?? type.getSymbol();
+  return isLegacyUrlSymbol(symbol, ctx);
+}
+
+/** A symbol declared as one of node:url's legacy record interfaces, or as
+ * a member of one. */
+export function isLegacyUrlSymbol(
+  symbol: ts.Symbol | null | undefined,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  if (!symbol) return false;
+  for (const d of ctx.checker.declarationsOf(symbol)) {
+    if (!ctx.isStdlibFile(d.getSourceFile())) continue;
+    let family = false;
+    for (let n: ts.Node | undefined = d; n; n = n.parent) {
+      if (ts.isInterfaceDeclaration(n) && LEGACY_URL_TYPES.has(n.name.text)) family = true;
+      if (ts.isModuleDeclaration(n) && ts.isStringLiteral(n.name)) {
+        if (family && (n.name.text === "url" || n.name.text === "node:url")) return true;
+        break;
+      }
+    }
+  }
+  return false;
+}
+
 /** os.constants and its groups — @types/node's `namespace constants`
  * (errno, dlopen, priority) and SignalConstants, and the fallback's twins:
  * the runtime's checked-dynamic constants object, whose members vary by
@@ -1216,7 +1258,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "object", className: "%Error" };
   }
-  if (isOsConstantsType(type, ctx)) return DYN;
+  if (isOsConstantsType(type, ctx) || isLegacyUrlType(type, ctx)) return DYN;
   // Immutable<T> (@scriptc/types) is a deep-readonly view: the value is
   // still the T it maps.
   const immutableSource = immutableSourceType(type, ctx);

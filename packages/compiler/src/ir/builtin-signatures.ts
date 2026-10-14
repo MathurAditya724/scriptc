@@ -751,6 +751,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "url.fileURLToPathUrl": { argTypes: [URL_T], result: STRING },
   "url.fileURLToPathChecked": { argTypes: [DYN], result: STRING },
   "url.fileURLToPathOptions": { argTypes: [DYN, DYN], result: STRING },
+  /** node:url's legacy API (scr_url_legacy.c): parse(url, parseQueryString,
+   * slashesDenoteHost) answers the checked-dynamic Url instance; format
+   * takes the urlObject (a Url-shaped object, a string, or a URL) and the
+   * URL form's options; resolve takes (from, to). The trailing bool says
+   * whether the call site emits DEP0169. domainToASCII/domainToUnicode
+   * take the domain and whether it was omitted. Node's validation errors
+   * throw catchably. */
+  "url.legacyParse": { argTypes: [DYN, DYN, DYN, BOOL], result: DYN },
+  "url.legacyFormat": { argTypes: [DYN, DYN, BOOL], result: STRING },
+  "url.legacyResolve": { argTypes: [DYN, DYN, BOOL], result: STRING },
+  "url.domainToASCII": { argTypes: [DYN, BOOL], result: STRING },
+  "url.domainToUnicode": { argTypes: [DYN, BOOL], result: STRING },
   "url.fileURLToPathBuffer": { argTypes: [DYN, DYN], result: BYTES_U8 },
   "url.pathToFileURLChecked": { argTypes: [DYN, DYN], result: URL_T },
   "url.fileURLToPathStr": { argTypes: [STRING], result: STRING },

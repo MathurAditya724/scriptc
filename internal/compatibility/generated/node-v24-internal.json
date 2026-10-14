@@ -821,9 +821,9 @@
       "apiEntries": 62,
       "static": {
         "supported": 0,
-        "partial": 19,
+        "partial": 39,
         "refused": 0,
-        "not-implemented": 43,
+        "not-implemented": 23,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -26629,8 +26629,18 @@
       "anchor": "dep0170-invalid-port-when-using-urlparse",
       "nodeStability": null,
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:deprecations"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.url.parse",
+        "tests": [
+          "tests/corpus/5220-url-parse-warnings.ts",
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5227-url-legacy-dependency/main.ts",
+          "tests/corpus/5229-url-legacy-errors.cjs",
+          "packages/runtime/test/url-legacy.test.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -90908,6 +90918,17 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "packages/runtime/test/url-legacy.test.ts",
+          "tests/corpus/5220-url-parse-warnings.ts",
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/corpus/5225-url-format-whatwg.ts",
+          "tests/corpus/5226-url-resolve.ts",
+          "tests/corpus/5227-url-legacy-dependency/main.ts",
+          "tests/corpus/5228-url-domain-conversion.ts",
+          "tests/corpus/5229-url-legacy-errors.cjs",
           "tests/corpus/node24-file-url-buffer.ts",
           "tests/corpus/node24-file-url-errors.js",
           "tests/corpus/node24-file-url-options.ts",
@@ -90920,6 +90941,7 @@
           "tests/corpus/url-runtime-base.ts",
           "tests/fixtures/node-types/file-url-conversion.ts",
           "tests/fixtures/node-types/url-factories.ts",
+          "tests/fixtures/node-types/url-legacy.ts",
           "tests/fixtures/node-types/url-mutation.ts",
           "tests/harness/project-config.test.ts"
         ]
@@ -91967,8 +91989,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.url.domainToASCII",
+        "tests": [
+          "tests/corpus/5228-url-domain-conversion.ts",
+          "tests/corpus/5229-url-legacy-errors.cjs",
+          "packages/runtime/test/url-legacy.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91990,8 +92017,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.url.domainToUnicode",
+        "tests": [
+          "tests/corpus/5228-url-domain-conversion.ts",
+          "tests/corpus/5229-url-legacy-errors.cjs",
+          "packages/runtime/test/url-legacy.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92071,8 +92103,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.url.format",
+        "tests": [
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/corpus/5225-url-format-whatwg.ts",
+          "tests/corpus/5227-url-legacy-dependency/main.ts",
+          "tests/corpus/5229-url-legacy-errors.cjs",
+          "packages/runtime/test/url-legacy.test.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92169,8 +92209,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.urlObject",
+        "tests": [
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92192,8 +92239,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.urlObject.auth",
+        "tests": [
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92215,8 +92269,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.urlObject.hash",
+        "tests": [
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92238,8 +92299,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.urlObject.host",
+        "tests": [
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92261,8 +92329,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.urlObject.hostname",
+        "tests": [
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92284,8 +92359,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.urlObject.href",
+        "tests": [
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92307,8 +92389,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.urlObject.path",
+        "tests": [
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92330,8 +92419,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.urlObject.pathname",
+        "tests": [
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92353,8 +92449,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.urlObject.port",
+        "tests": [
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92376,8 +92479,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.urlObject.protocol",
+        "tests": [
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92399,8 +92509,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.urlObject.query",
+        "tests": [
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92422,8 +92539,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.urlObject.search",
+        "tests": [
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92445,8 +92569,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.urlObject.slashes",
+        "tests": [
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92468,8 +92599,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.url.format",
+        "tests": [
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/corpus/5225-url-format-whatwg.ts",
+          "tests/corpus/5227-url-legacy-dependency/main.ts",
+          "tests/corpus/5229-url-legacy-errors.cjs",
+          "packages/runtime/test/url-legacy.test.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92491,8 +92630,16 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.url.format",
+        "tests": [
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/corpus/5225-url-format-whatwg.ts",
+          "tests/corpus/5227-url-legacy-dependency/main.ts",
+          "tests/corpus/5229-url-legacy-errors.cjs",
+          "packages/runtime/test/url-legacy.test.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92514,8 +92661,18 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.url.parse",
+        "tests": [
+          "tests/corpus/5220-url-parse-warnings.ts",
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5227-url-legacy-dependency/main.ts",
+          "tests/corpus/5229-url-legacy-errors.cjs",
+          "packages/runtime/test/url-legacy.test.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92537,8 +92694,15 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.url.resolve",
+        "tests": [
+          "tests/corpus/5226-url-resolve.ts",
+          "tests/corpus/5227-url-legacy-dependency/main.ts",
+          "tests/corpus/5229-url-legacy-errors.cjs",
+          "packages/runtime/test/url-legacy.test.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
+        ]
       },
       "anchorSource": "exact"
     },

@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 40,
-        "verify-gap": 2342,
-        "audit-partial": 806,
+        "verify-gap": 2322,
+        "audit-partial": 826,
         "classify": 2,
         "implement": 80
       }
@@ -68551,12 +68551,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.url.domainToASCII",
+          "tests": [
+            "tests/corpus/5228-url-domain-conversion.ts",
+            "tests/corpus/5229-url-legacy-errors.cjs",
+            "packages/runtime/test/url-legacy.test.ts"
+          ]
         }
       }
     },
@@ -68576,12 +68580,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.url.domainToUnicode",
+          "tests": [
+            "tests/corpus/5228-url-domain-conversion.ts",
+            "tests/corpus/5229-url-legacy-errors.cjs",
+            "packages/runtime/test/url-legacy.test.ts"
+          ]
         }
       }
     },
@@ -68661,12 +68669,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.url.format",
+          "tests": [
+            "tests/corpus/5224-url-format-objects.ts",
+            "tests/corpus/5225-url-format-whatwg.ts",
+            "tests/corpus/5227-url-legacy-dependency/main.ts",
+            "tests/corpus/5229-url-legacy-errors.cjs",
+            "packages/runtime/test/url-legacy.test.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -68741,12 +68756,18 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlObject",
+          "tests": [
+            "tests/corpus/5221-url-parse-shapes.ts",
+            "tests/corpus/5222-url-parse-hosts.ts",
+            "tests/corpus/5223-url-parse-query.ts",
+            "tests/corpus/5224-url-format-objects.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -68766,12 +68787,18 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlObject.auth",
+          "tests": [
+            "tests/corpus/5221-url-parse-shapes.ts",
+            "tests/corpus/5222-url-parse-hosts.ts",
+            "tests/corpus/5223-url-parse-query.ts",
+            "tests/corpus/5224-url-format-objects.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -68791,12 +68818,18 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlObject.hash",
+          "tests": [
+            "tests/corpus/5221-url-parse-shapes.ts",
+            "tests/corpus/5222-url-parse-hosts.ts",
+            "tests/corpus/5223-url-parse-query.ts",
+            "tests/corpus/5224-url-format-objects.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -68816,12 +68849,18 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlObject.host",
+          "tests": [
+            "tests/corpus/5221-url-parse-shapes.ts",
+            "tests/corpus/5222-url-parse-hosts.ts",
+            "tests/corpus/5223-url-parse-query.ts",
+            "tests/corpus/5224-url-format-objects.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -68841,12 +68880,18 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlObject.hostname",
+          "tests": [
+            "tests/corpus/5221-url-parse-shapes.ts",
+            "tests/corpus/5222-url-parse-hosts.ts",
+            "tests/corpus/5223-url-parse-query.ts",
+            "tests/corpus/5224-url-format-objects.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -68866,12 +68911,18 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlObject.href",
+          "tests": [
+            "tests/corpus/5221-url-parse-shapes.ts",
+            "tests/corpus/5222-url-parse-hosts.ts",
+            "tests/corpus/5223-url-parse-query.ts",
+            "tests/corpus/5224-url-format-objects.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -68891,12 +68942,18 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlObject.path",
+          "tests": [
+            "tests/corpus/5221-url-parse-shapes.ts",
+            "tests/corpus/5222-url-parse-hosts.ts",
+            "tests/corpus/5223-url-parse-query.ts",
+            "tests/corpus/5224-url-format-objects.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -68916,12 +68973,18 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlObject.pathname",
+          "tests": [
+            "tests/corpus/5221-url-parse-shapes.ts",
+            "tests/corpus/5222-url-parse-hosts.ts",
+            "tests/corpus/5223-url-parse-query.ts",
+            "tests/corpus/5224-url-format-objects.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -68941,12 +69004,18 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlObject.port",
+          "tests": [
+            "tests/corpus/5221-url-parse-shapes.ts",
+            "tests/corpus/5222-url-parse-hosts.ts",
+            "tests/corpus/5223-url-parse-query.ts",
+            "tests/corpus/5224-url-format-objects.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -68966,12 +69035,18 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlObject.protocol",
+          "tests": [
+            "tests/corpus/5221-url-parse-shapes.ts",
+            "tests/corpus/5222-url-parse-hosts.ts",
+            "tests/corpus/5223-url-parse-query.ts",
+            "tests/corpus/5224-url-format-objects.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -68991,12 +69066,18 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlObject.query",
+          "tests": [
+            "tests/corpus/5221-url-parse-shapes.ts",
+            "tests/corpus/5222-url-parse-hosts.ts",
+            "tests/corpus/5223-url-parse-query.ts",
+            "tests/corpus/5224-url-format-objects.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -69016,12 +69097,18 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlObject.search",
+          "tests": [
+            "tests/corpus/5221-url-parse-shapes.ts",
+            "tests/corpus/5222-url-parse-hosts.ts",
+            "tests/corpus/5223-url-parse-query.ts",
+            "tests/corpus/5224-url-format-objects.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -69041,12 +69128,18 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlObject.slashes",
+          "tests": [
+            "tests/corpus/5221-url-parse-shapes.ts",
+            "tests/corpus/5222-url-parse-hosts.ts",
+            "tests/corpus/5223-url-parse-query.ts",
+            "tests/corpus/5224-url-format-objects.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -69066,12 +69159,19 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.url.format",
+          "tests": [
+            "tests/corpus/5224-url-format-objects.ts",
+            "tests/corpus/5225-url-format-whatwg.ts",
+            "tests/corpus/5227-url-legacy-dependency/main.ts",
+            "tests/corpus/5229-url-legacy-errors.cjs",
+            "packages/runtime/test/url-legacy.test.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -69091,12 +69191,19 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.url.format",
+          "tests": [
+            "tests/corpus/5224-url-format-objects.ts",
+            "tests/corpus/5225-url-format-whatwg.ts",
+            "tests/corpus/5227-url-legacy-dependency/main.ts",
+            "tests/corpus/5229-url-legacy-errors.cjs",
+            "packages/runtime/test/url-legacy.test.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -69116,12 +69223,21 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.url.parse",
+          "tests": [
+            "tests/corpus/5220-url-parse-warnings.ts",
+            "tests/corpus/5221-url-parse-shapes.ts",
+            "tests/corpus/5222-url-parse-hosts.ts",
+            "tests/corpus/5223-url-parse-query.ts",
+            "tests/corpus/5227-url-legacy-dependency/main.ts",
+            "tests/corpus/5229-url-legacy-errors.cjs",
+            "packages/runtime/test/url-legacy.test.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },
@@ -69141,12 +69257,18 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.url.resolve",
+          "tests": [
+            "tests/corpus/5226-url-resolve.ts",
+            "tests/corpus/5227-url-legacy-dependency/main.ts",
+            "tests/corpus/5229-url-legacy-errors.cjs",
+            "packages/runtime/test/url-legacy.test.ts",
+            "tests/fixtures/node-types/url-legacy.ts"
+          ]
         }
       }
     },

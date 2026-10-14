@@ -525,6 +525,11 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "url.fileURLToPathBuffer": "scr_url_checked_to_path_buffer",
   "url.pathToFileURLChecked": "scr_url_checked_from_path",
   "url.fileURLToPathStr": "scr_url_str_to_path",
+  "url.legacyParse": "scr_url_legacy_parse",
+  "url.legacyFormat": "scr_url_legacy_format",
+  "url.legacyResolve": "scr_url_legacy_resolve",
+  "url.domainToASCII": "scr_url_domain_to_ascii",
+  "url.domainToUnicode": "scr_url_domain_to_unicode",
   "url.pathToFileURL": "scr_url_from_path",
   "url.pathToFileURLPlatform": "scr_url_from_path_platform",
   "url.pathToFileURLWin32": "scr_url_from_path",
@@ -1126,6 +1131,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
 export const USES_TIMERS_LIB_FNS = new Set<string>([
   "process.emitWarning",
   "process.emitWarningText",
+  // The legacy url entries queue DEP0169/DEP0170 on the next tick.
+  "url.legacyParse",
+  "url.legacyFormat",
+  "url.legacyResolve",
   // The wrappers schedule warnings and callbacks on the tick queue.
   "util.deprecate",
   "util.callbackify",

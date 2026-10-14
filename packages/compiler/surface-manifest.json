@@ -2099,6 +2099,18 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.url.domainToASCII",
+      "kind": "node-builtin",
+      "name": "url.domainToASCII",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.url.domainToUnicode",
+      "kind": "node-builtin",
+      "name": "url.domainToUnicode",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.url.fileURLToPath",
       "kind": "node-builtin",
       "name": "url.fileURLToPath",
@@ -2111,9 +2123,27 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.url.format",
+      "kind": "node-builtin",
+      "name": "url.format",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.url.parse",
+      "kind": "node-builtin",
+      "name": "url.parse",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.url.pathToFileURL",
       "kind": "node-builtin",
       "name": "url.pathToFileURL",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.url.resolve",
+      "kind": "node-builtin",
+      "name": "url.resolve",
       "status": "static"
     },
     {

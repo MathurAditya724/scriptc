@@ -1455,6 +1455,16 @@ ScrStr *scr_str_trim(ScrStr *s);
 ScrStr *scr_str_to_lower(const ScrStr *s);
 ScrStr *scr_str_to_upper(const ScrStr *s);
 ScrStr *scr_str_normalize(const ScrStr *s, const ScrStr *form);
+/* NFC over a code point buffer (scr_regex.c, beside normalize): a fresh
+ * malloc'd buffer the caller frees, its length in *out_len. Borrows input. */
+uint32_t *scr_nfc_code_points(const uint32_t *input, size_t length, size_t *out_len);
+
+/* UTS #46 domain conversion (scr_idna.c — the url unit's IDNA tables; it
+ * rides the regex switch for NFC). to_ascii answers "" on failure;
+ * to_unicode decodes each valid Punycode label and never fails. Both
+ * borrow the UTF-8 span and return +1. */
+ScrStr *scr_idna_to_ascii(const char *p, size_t n);
+ScrStr *scr_idna_to_unicode(const char *p, size_t n);
 
 /* charAt(i): 1-code-unit string; out of range → empty string. Half of an
  * astral pair → that lone surrogate. Returns +1. */
@@ -1575,6 +1585,12 @@ ScrStr *scr_str_encode_uri_component(ScrStr *s);
 /* querystring.escape: the component encoder, throwing Node's URIError
  * [ERR_INVALID_URI] on a lone surrogate. Borrows s; result +1. */
 ScrStr *scr_qs_escape(ScrStr *s);
+/* lib/internal/querystring.js encodeStr over UTF-16 code units: ASCII
+ * outside `no_escape` and every non-ASCII code unit percent-encode as
+ * UTF-8, and ANY surrogate pairs with the code unit after it (Node's own
+ * rule); only a surrogate in last position throws URIError
+ * [ERR_INVALID_URI] and returns NULL. Borrows s; +1. */
+ScrStr *scr_qs_encode_str(const ScrStr *s, const signed char no_escape[128]);
 
 /* decodeURIComponent — ECMA-262 Decode with the empty reserved set: %XX
  * escapes decode bytewise (raw non-escape bytes copy through) and escaped
@@ -1627,6 +1643,10 @@ typedef struct ScrMap ScrMap; /* full definition below (C11 repeat) */
 void scr_qs_parse_into(ScrMap *out, const ScrStr *qs, const ScrStr *sep,
                        const ScrStr *eq, double max_keys, uint32_t str_tag,
                        uint32_t arr_tag);
+/* querystring.parse(qs) with the default separators and maxKeys, as a
+ * fresh checked-dynamic null-prototype object (url.parse's parsed query).
+ * Borrows qs; +1; never throws. */
+struct ScrDyn *scr_qs_parse_dyn(const ScrStr *qs);
 
 /* node:util.parseArgs — the static checked-dynamic boundary. `config` is
  * the documented JSON-safe configuration object; the returned dyn tree is
@@ -4361,6 +4381,19 @@ ScrStr *scr_url_href(ScrUrl *u);     /* +1; also toString() */
 void scr_url_set(ScrUrl *u, ScrStr *field, ScrStr *value); /* borrowed; href may throw */
 bool scr_url_set_component(ScrUrl *u, ScrStr *field, ScrStr *value); /* borrowed; false for ignored writes */
 void scr_url_set_checked(ScrUrl *u, ScrStr *field, const ScrDyn *value); /* borrowed; conversion may throw */
+/* node:url's legacy surface (scr_url_legacy.c — linked with the regex,
+ * querystring and dyn-async units). url.parse() answers a checked-dynamic
+ * Url instance; format() accepts a Url-shaped object, a string, or a
+ * native URL (with its options bag); resolve() takes two strings. `warn`
+ * emits DEP0169 once per process (false at node_modules call sites).
+ * domainToASCII/Unicode take the argument and whether it was omitted
+ * (ERR_MISSING_ARGS). All borrow; +1, or NULL with Node's error pending. */
+ScrDyn *scr_url_legacy_parse(const ScrDyn *url, const ScrDyn *parse_query, const ScrDyn *slashes,
+                             bool warn);
+ScrStr *scr_url_legacy_format(const ScrDyn *object, const ScrDyn *options, bool warn);
+ScrStr *scr_url_legacy_resolve(const ScrDyn *from, const ScrDyn *to, bool warn);
+ScrStr *scr_url_domain_to_ascii(const ScrDyn *domain, bool missing);
+ScrStr *scr_url_domain_to_unicode(const ScrDyn *domain, bool missing);
 ScrStr *scr_url_to_path(ScrUrl *u);      /* +1, or throws */
 ScrStr *scr_url_str_to_path(ScrStr *s);  /* +1, or throws */
 ScrUrl *scr_url_from_path(ScrStr *path); /* +1; throws on win32 UNC malformations only */
@@ -4865,6 +4898,12 @@ struct ScrDyn {
       void *source_identity;
       ScrDyn *(*source_access)(void *, bool materialize);
       struct ScrDynObjectIndex *index; /* optional wide-object lookup; owns no values */
+      /* On a runtime-built class prototype (e.g. url.Url.prototype): the
+       * constructor name (static text) util.inspect prints for objects
+       * inheriting from it (scr_dyn_class_name). NULL otherwise. Only
+       * prototypes that live until their thread exits set it, and they
+       * clear it before release, so freelist reuse never sees it. */
+      const char *class_name;
     } obj; /* owned */
     /* SCR_DYN_FUNC: the boxed closure (owned) + its call descriptor. `sig`
      * and `name` are static compiler-emitted literals (never freed); name
@@ -4936,6 +4975,14 @@ static inline ScrDyn *scr_dyn_retain(ScrDyn *d) {
 }
 
 void scr_dyn_release(ScrDyn *d); /* releases the tree recursively; NULL-tolerant */
+
+/* The runtime class an object inherits from (util.inspect's constructor
+ * name, found on its prototype chain), or NULL. */
+static inline const char *scr_dyn_class_name(const ScrDyn *d) {
+  for (const ScrDyn *p = d->prototype; p; p = p->prototype)
+    if (p->kind == SCR_DYN_OBJ && p->v.obj.class_name) return p->v.obj.class_name;
+  return NULL;
+}
 
 /* The element hooks of a live array capsule, or NULL (including for record
  * and class capsules, which keep their hooks in the same slot). */

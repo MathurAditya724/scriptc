@@ -389,6 +389,23 @@ test("node-types: URL factories match Node under @types/node", async () => {
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: the legacy url API matches Node under @types/node", async () => {
+  const outDir = outDirFor("node-url-legacy");
+  const entry = join(nodeTypesDir, "url-legacy.ts");
+  const result = await compile(entry, { outPath: join(outDir, "url-legacy"), outDir, sanitize });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  // The DEP0169 report names each process's own pid.
+  const withoutPid = (text: string): string => text.replace(/^\(node:\d+\) /gm, "(node:pid) ");
+  expect(withoutPid(comparableStderr(native.stderr))).toBe(withoutPid(node.stderr));
+  expect(node.stderr).toContain("[DEP0169] DeprecationWarning");
+});
+
 test("node-types: no-error assertions match Node under @types/node", async () => {
   const outDir = outDirFor("node-no-error-assertions");
   const entry = join(nodeTypesDir, "no-error-assertions.ts");

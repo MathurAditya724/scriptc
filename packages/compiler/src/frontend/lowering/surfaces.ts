@@ -1407,6 +1407,14 @@ export const BUILTIN_MODULE_FNS: Record<
         { mode: "optional", type: DYN, defaultValue: undefined },
       ],
     },
+    // The legacy API and the domain pair (lowerLegacyUrlCall): arguments
+    // cross as dyn values for Node's own validators; url.parse() answers
+    // the checked-dynamic Url instance.
+    parse: { fn: "url.legacyParse", params: [DYN, DYN, DYN], result: DYN },
+    format: { fn: "url.legacyFormat", params: [DYN, DYN], result: STRING },
+    resolve: { fn: "url.legacyResolve", params: [DYN, DYN], result: STRING },
+    domainToASCII: { fn: "url.domainToASCII", params: [DYN], result: STRING },
+    domainToUnicode: { fn: "url.domainToUnicode", params: [DYN], result: STRING },
   },
   child_process: {
     // spawnSync's and spawn's call completions are entirely special-cased
