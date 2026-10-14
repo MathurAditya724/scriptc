@@ -28,9 +28,10 @@ export function findConstantCallbacks(
           // Authored declarations, plus the frontend's synthetic array
           // HOF loops (`%arr.<method>.<n>`): those are plain direct-call
           // functions, and a literal callback gets a helper of its own.
-          (fn.ownsPrototype || fn.name.startsWith("%arr.")) &&
-          !fn.async &&
-          !fn.generator &&
+          // Generator declarations are entered through their spawn wrapper,
+          // which moves the same arguments into the generator's frame.
+          (fn.ownsPrototype || fn.name.startsWith("%arr.") || fn.generator !== undefined) &&
+          (!fn.async || fn.generator !== undefined) &&
           !fn.captures &&
           !fn.classCaptures &&
           fn.params.some((param) => param.type.kind === "func"),
@@ -197,7 +198,9 @@ export function findConstantCallbacks(
           if (
             !needed.has(param.localId) ||
             param.type.kind !== "func" ||
-            !lifetimes.borrowed.get(fn.name)?.has(index)
+            !(fn.generator !== undefined
+              ? lifetimes.generatorParameters.get(fn.name)?.has(param.localId)
+              : lifetimes.borrowed.get(fn.name)?.has(index))
           )
             return;
           let target: string | null = null;

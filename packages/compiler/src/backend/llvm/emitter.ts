@@ -5896,6 +5896,10 @@ export class LlEmitter {
         )
           this.borrowedParameters.add(fn.params[index]!.localId);
     }
+    // A generator frame owns its unchanged parameters across suspensions.
+    const generatorParameters = this.callLifetimes.generatorParameters.get(fn.name);
+    if (generatorParameters !== undefined)
+      for (const id of generatorParameters) this.borrowedParameters.add(id);
     this.captureIds = new Set(
       [...(fn.captures ?? []), ...(fn.classCaptures ?? [])].map((c) => c.localId),
     );
