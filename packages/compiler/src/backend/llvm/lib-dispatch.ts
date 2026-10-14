@@ -397,6 +397,8 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "buffer":
     case "bytes":
     case "tlsca":
+    case "event":
+    case "events":
       return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);

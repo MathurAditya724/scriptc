@@ -13,6 +13,7 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     textDecoderLegacy: features.legacyTextDecoder,
     fileHandle: features.fileHandle,
     fetch: features.fetch,
+    ...(features.eventTarget ? { eventTarget: true } : {}),
     zlib: features.zlib,
     assert: features.assert,
     inspect: features.inspect,

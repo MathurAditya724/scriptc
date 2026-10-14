@@ -3,10 +3,12 @@ import { fileURLToPath } from "node:url";
 process.env.SCRIPTC_RUNTIME_PACK_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 process.env.SCRIPTC_RUNTIME_PACK_CONFIG = JSON.stringify({
   platform: "wasi",
-  extraRuntimeSources: ["scr_abort.c"],
+  // AbortSignal is portable here and dispatches through the EventTarget unit.
+  extraRuntimeSources: ["scr_abort.c", "scr_event_target.c"],
   runtimeDefines: ["_GNU_SOURCE", "_WASI_EMULATED_SIGNAL", "_WASI_EMULATED_PROCESS_CLOCKS"],
   omitRuntimeSources: ["scr_child.c"],
   omitOptionalSources: [
+    "scr_event_target.c",
     "scr_loop_kqueue.c",
     "scr_loop_epoll.c",
     "scr_loop_wsapoll.c",

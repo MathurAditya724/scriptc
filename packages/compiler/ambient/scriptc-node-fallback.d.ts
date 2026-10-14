@@ -4532,16 +4532,20 @@ declare module "events" {
   class EventEmitter {
     constructor();
     static defaultMaxListeners: number;
-    on(eventName: string, listener: (...args: any[]) => void): this;
-    addListener(eventName: string, listener: (...args: any[]) => void): this;
-    once(eventName: string, listener: (...args: any[]) => void): this;
-    prependListener(eventName: string, listener: (...args: any[]) => void): this;
-    prependOnceListener(eventName: string, listener: (...args: any[]) => void): this;
-    off(eventName: string, listener: (...args: any[]) => void): this;
-    removeListener(eventName: string, listener: (...args: any[]) => void): this;
-    removeAllListeners(eventName?: string): this;
-    emit(eventName: string, ...args: any[]): boolean;
-    listenerCount(eventName: string, listener?: (...args: any[]) => void): number;
+    /* Listeners registered under this symbol observe 'error' emits first
+     * (an emit with no 'error' listener still throws). */
+    static readonly errorMonitor: unique symbol;
+    static addAbortListener(signal: AbortSignal, listener: (event: Event) => void): Disposable;
+    on(eventName: string | symbol, listener: (...args: any[]) => void): this;
+    addListener(eventName: string | symbol, listener: (...args: any[]) => void): this;
+    once(eventName: string | symbol, listener: (...args: any[]) => void): this;
+    prependListener(eventName: string | symbol, listener: (...args: any[]) => void): this;
+    prependOnceListener(eventName: string | symbol, listener: (...args: any[]) => void): this;
+    off(eventName: string | symbol, listener: (...args: any[]) => void): this;
+    removeListener(eventName: string | symbol, listener: (...args: any[]) => void): this;
+    removeAllListeners(eventName?: string | symbol): this;
+    emit(eventName: string | symbol, ...args: any[]): boolean;
+    listenerCount(eventName: string | symbol, listener?: (...args: any[]) => void): number;
     /* Declared as zero-parameter closures so the RESULT is statically
      * consumable (.length, indexing, identity): the lowering only admits
      * these calls for events whose argument tuple is empty — a listener

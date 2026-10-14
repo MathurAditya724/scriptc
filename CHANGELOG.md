@@ -10,6 +10,7 @@ All notable changes to scriptc will be documented in this file.
 
 ### Features
 
+- **`EventTarget`, `Event` and `CustomEvent`** are supported, with Node's dispatch order, `once`/`passive`/`signal` options and listener error reporting. `AbortSignal` uses the same implementation, and `events.errorMonitor` and `events.addAbortListener` are supported.
 - **`Promise.allSettled` and `Promise.any`** are supported in typed and JavaScript code, with Node's microtask order, `AggregateError`, and `PromiseSettledResult` records. JavaScript combinators adopt thenables.
 - **`yield*` delegates to arrays, strings, Sets and Maps,** forwards typed `next` values, `return()` and `throw()`, and a finished generator's `.value` reads as `undefined`.
 - **The global console is complete:** `assert`, `count`/`countReset`, `dir`/`dirxml`, `group*`, `table`, `time`/`timeLog`/`timeEnd`, `clear` and `profile`/`timeStamp` print Node's output.

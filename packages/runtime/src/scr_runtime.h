@@ -2920,6 +2920,10 @@ double scr_emitter_listener_count(ScrEmitter *em, ScrStr *name);
 double scr_emitter_listener_count_fn(ScrEmitter *em, ScrStr *name, ScrClosure *fn);
 double scr_emitter_listener_count_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *fn);
 ScrArr *scr_emitter_event_names(ScrEmitter *em);          /* +1 string[] */
+/* events.errorMonitor's event key (immortal). Every name parameter above
+ * accepts it; the registry matches it by identity, so no string name,
+ * whatever its bytes, reaches the errorMonitor listeners. */
+ScrStr *scr_emitter_error_monitor(void);
 /* Pre-create a name's eventNames() rank with no listener (Node's stream
  * classes pre-create their known _events keys; empty = absent for every
  * other read). The stream constructors call this. */
@@ -4694,7 +4698,7 @@ typedef enum {
   SCR_DYNH_WEB_CONTROLLER, /* native ReadableStreamDefaultController */
   SCR_DYNH_FETCH_RESPONSE, /* native static-fetch Response */
   SCR_DYNH_FETCH_HEADERS, /* native static-fetch response Headers */
-  SCR_DYNH_EVENT,          /* native static-fetch abort Event */
+  SCR_DYNH_EVENT,          /* ScrEvent — new Event() and AbortSignal's abort events */
   SCR_DYNH_ABORT_CONTROLLER, /* native static-fetch AbortController */
   SCR_DYNH_CHILD,          /* child_process.ChildProcess */
   SCR_DYNH_FILE_HANDLE,    /* fs/promises.FileHandle */
@@ -4719,6 +4723,8 @@ typedef enum {
   SCR_DYNH_MESSAGE_PORT,
   SCR_DYNH_SHARED_ARRAY_BUFFER,
   SCR_DYNH_CONSOLE_INSTANCE, /* node:console Console instance */
+  SCR_DYNH_EVENT_TARGET,   /* ScrEventTarget — new EventTarget() */
+  SCR_DYNH_CUSTOM_EVENT,   /* ScrEvent with detail — new CustomEvent() */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
@@ -5480,8 +5486,80 @@ typedef struct ScrDynHandleOps {
   ScrDyn *(*iter_pack)(void *h);
   /* A live native iterator step; index advances only when a value is emitted. */
   ScrDyn *(*iter_step)(void *h, double *index, unsigned selection);
+  /* util.inspect renders `<cls> <view>` for the dyn object this answers
+   * (+1); NULL = the class has no inspection (the loud fence). */
+  ScrDyn *(*inspect_view)(void *h);
 } ScrDynHandleOps;
 ScrDyn *scr_dyn_native_handle_iterator(ScrDyn *source, unsigned selection);
+
+/* ── EventTarget / Event / CustomEvent (scr_event_target.c) ───────────
+ * Node's internal/event_target over checked-dynamic values. A target's
+ * listeners live in a ScrEventTargetCore: per event type, a linked list
+ * in registration order whose nodes keep their `next` link after removal,
+ * so a dispatch that cached a removed node continues where Node's does.
+ * Plain `new EventTarget()` values are SCR_DYNH_EVENT_TARGET handles;
+ * AbortSignal embeds a core of its own (MaxListeners 0, the `onabort`
+ * event-handler attribute). Events are ScrEvent handles (SCR_DYNH_EVENT,
+ * SCR_DYNH_CUSTOM_EVENT for CustomEvent). Listener exceptions, and
+ * rejections of a listener's returned promise or of a handleEvent call,
+ * are reported as uncaught exceptions from a nextTick, like Node. */
+typedef struct ScrEtRoot ScrEtRoot;
+typedef struct ScrEtHandler ScrEtHandler;
+typedef struct ScrEtHook ScrEtHook;
+typedef struct ScrEventTargetCore {
+  ScrEtRoot *roots;        /* per event type, in first-add order */
+  ScrEtHandler *handlers;  /* event-handler attributes (`onabort`) */
+  ScrEtHook *hooks;        /* options.signal removal hooks aimed here (weak) */
+  double max_listeners;    /* 0 = no leak warning (AbortSignal) */
+  bool warned;
+  const char *cls;         /* the warning's target name ("EventTarget") */
+  bool tracked;            /* in the exit teardown registry */
+  struct ScrEventTargetCore *tracked_prev, *tracked_next;
+} ScrEventTargetCore;
+
+typedef struct ScrEvent {
+  size_t rc;
+  ScrStr *type;
+  ScrDyn *target;  /* +1, NULL until dispatched */
+  ScrDyn *detail;  /* CustomEvent's detail (+1); NULL for Event */
+  double time_stamp;
+  bool custom, bubbles, cancelable, composed, trusted;
+  bool default_prevented, propagation_stopped, stop, dispatching, in_passive;
+  bool tracked;
+  struct ScrEvent *tracked_prev, *tracked_next;
+} ScrEvent;
+
+void scr_et_core_init(ScrEventTargetCore *core, double max_listeners, const char *cls);
+/* Drops every listener and handler (teardown and target destruction). */
+void scr_et_core_drop(ScrEventTargetCore *core);
+/* The EventTarget methods over a core: `self` is the target's own dyn
+ * value (borrowed — `this` for listeners and the events' target), args
+ * borrowed. +1 result, or NULL with the exception pending. */
+ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc);
+ScrDyn *scr_et_remove_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc);
+ScrDyn *scr_et_dispatch_event(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *const *args, size_t argc);
+/* Dispatches an event handle (borrowed) without the argument checks. */
+void scr_et_dispatch(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *event);
+/* `on<type>` attributes (Node's defineEventHandler): get answers +1 (null
+ * when unset); set registers the wrapper listener on first assignment. */
+ScrDyn *scr_et_handler_get(ScrEventTargetCore *core, const char *type);
+void scr_et_handler_set(ScrEventTargetCore *core, const char *type, const ScrDyn *value);
+/* A trusted (isTrusted) Event handle of the given type, +1. */
+ScrDyn *scr_event_new_trusted(const char *type);
+/* new EventTarget() / new Event(type, options) / new CustomEvent(type,
+ * options): `args` is the argument vector as one dyn array (borrowed).
+ * +1 handle, or NULL with the exception pending. */
+ScrDyn *scr_event_target_new(void);
+ScrDyn *scr_event_new(ScrDyn *args);
+ScrDyn *scr_custom_event_new(ScrDyn *args);
+/* `v instanceof Event` (kind 0), `CustomEvent` (1), `EventTarget` (2). */
+bool scr_event_is(const ScrDyn *v, double kind);
+/* The AbortSignal unit's view of its handles for options.signal: the
+ * signal's core and aborted flag, or NULL for a non-signal value.
+ * Installed by the AbortSignal unit; NULL when no signal can exist. */
+extern SCR_TL ScrEventTargetCore *(*scr_et_signal_core_fn)(const ScrDyn *d, bool *aborted);
+/* events.addAbortListener(signal, listener): +1 disposable, or NULL. */
+ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener);
 
 ScrDyn *scr_intl_segmenter_new(void);
 ScrStr *scr_process_builtin_id(ScrDyn *id, ScrArr *known);
@@ -6065,6 +6143,10 @@ void scr_process_on_warning(ScrDyn *fn);
 void scr_process_off_warning(ScrDyn *fn);
 void scr_process_emit_warning(ScrDyn *args);
 void scr_emit_warning(const char *name, const char *code, ScrStr *message);
+/* scr_emit_warning once a 'warning' listener exists (scr_lib.c; set by the
+ * listener registration): units that cannot link the dyn-async unit route
+ * their warnings through it, and print the default report otherwise. */
+extern SCR_TL void (*scr_warning_emit_hook)(const char *name, const char *code, ScrStr *message);
 /* process.noDeprecation (which 0) and process.throwDeprecation (which 1):
  * the stored value (+1; undefined until assigned), the assignment
  * (borrowed), and the truthiness the warning paths test. */

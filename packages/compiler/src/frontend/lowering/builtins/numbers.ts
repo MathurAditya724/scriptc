@@ -124,3 +124,24 @@ export function lowerNumberStaticProperty(
   if (value === undefined) return null;
   return { kind: "numLit", value, type: F64, loc: locOf(expr) };
 }
+
+/** The Event phase constants (Event.NONE ... Event.BUBBLING_PHASE),
+ * which CustomEvent inherits through its constructor. */
+const EVENT_PHASES: Record<string, number | undefined> = {
+  NONE: 0,
+  CAPTURING_PHASE: 1,
+  AT_TARGET: 2,
+  BUBBLING_PHASE: 3,
+};
+
+export function lowerEventStaticProperty(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  const member =
+    lowerer.stdlibGlobalMember(expr, "Event") ?? lowerer.stdlibGlobalMember(expr, "CustomEvent");
+  if (member === null) return null;
+  const value = own(EVENT_PHASES, member);
+  if (value === undefined) return null;
+  return { kind: "numLit", value, type: F64, loc: locOf(expr) };
+}
