@@ -149,6 +149,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * own-member presence, ARR answers 'length'/a valid index — exactly
    * the literal-key dynHasKey path. Proxy has traps may throw. */
   "dyn.hasKey": { argTypes: [DYN, STRING], result: BOOL },
+  /** The `in` operator with a runtime string key: dyn.hasKey plus the
+   * members inherited from builtin and compiled class prototypes. */
+  "dyn.in": { argTypes: [DYN, STRING], result: BOOL },
   "dyn.freeze": { argTypes: [DYN], result: DYN },
   "dyn.isFrozen": { argTypes: [DYN], result: BOOL },
   "dyn.nativeSetNew": { argTypes: [DYN], result: DYN },
@@ -2503,6 +2506,32 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "console.new": { argTypes: [F64, F64, BOOL], result: DYN },
   "console.bind": { argTypes: [DYN, F64, null], result: VOID },
   "console.write": { argTypes: [DYN, STRING, BOOL], result: VOID },
+  /** The global console's remaining members (scr_console_native.c; the
+   * group indentation itself lives with the writers in scr_console.c).
+   * Arguments are borrowed; string results are owned. noop is the
+   * emitter-dropped tail of a lowering whose effects sit in statements.
+   * label is `${label}` over a defaulted label (undefined -> "default";
+   * a Symbol throws Node's TypeError). count prints "label: n".
+   * countReset answers the warning text for an unknown (or non-string)
+   * label, "" otherwise. time answers the duplicate-label warning text
+   * or ""; timeEnd/timeLog answer Node's formatted elapsed time, or ""
+   * for an unknown label (timeEnd drops the timer). group adds (+1) or
+   * removes (-1) one two-space indentation step. clear writes the
+   * cursor-home and erase-down sequences when stdout is a terminal.
+   * table renders and prints Node's table for a dyn value (undefined
+   * properties = all). dirDyn is console.dir's inspect of a dyn value
+   * (custom inspection off: a Buffer anywhere inside throws the fence). */
+  "console.noop": { argTypes: [], result: VOID },
+  "console.label": { argTypes: [DYN], result: STRING },
+  "console.count": { argTypes: [STRING], result: VOID },
+  "console.countReset": { argTypes: [DYN], result: STRING },
+  "console.time": { argTypes: [STRING], result: STRING },
+  "console.timeEnd": { argTypes: [STRING], result: STRING },
+  "console.timeLog": { argTypes: [STRING], result: STRING },
+  "console.group": { argTypes: [F64], result: VOID },
+  "console.clear": { argTypes: [], result: VOID },
+  "console.table": { argTypes: [DYN, DYN], result: VOID },
+  "console.dirDyn": { argTypes: [DYN, F64], result: STRING },
   /** A native reference to the global object; known names retain value fences. */
   "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
   // `X.name` through a class value: the arg is a program-dependent
@@ -3217,6 +3246,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "process.onWarning": { argTypes: [DYN], result: VOID },
   "process.offWarning": { argTypes: [DYN], result: VOID },
   "process.emitWarning": { argTypes: [DYN], result: VOID },
+  /** A Warning-typed process warning with this message (the console
+   * members' warnings), emitted on the next tick as Node's emitWarning
+   * does (so the loop runs); an empty message emits nothing. */
+  "process.emitWarningText": { argTypes: [STRING], result: VOID },
   /** AsyncLocalStorage (node:async_hooks — scr_async.c): stores are f64
    * handles; contexts are immutable fiber-carried snapshots (spawned
    * fibers inherit the spawner's — Node's init-time capture). run/exit

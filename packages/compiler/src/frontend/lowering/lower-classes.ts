@@ -3871,6 +3871,10 @@ export function collectClassShapeInner(
             .map((f) => ({ name: f.name, type: f.type })),
         ],
         ...(methods.size > 0 ? { methods: [...methods.keys()] } : {}),
+        ...((): { prototypeNames?: string[] } => {
+          const names = classPrototypeNames(decl);
+          return names.length > 0 ? { prototypeNames: names } : {};
+        })(),
         ...(abstractClass ? { abstract: true as const } : {}),
         ...((): { abstractMethods?: string[] } => {
           const am = [...methods.entries()].filter(([, s]) => s.abstract === true).map(([n]) => n);
@@ -6600,6 +6604,37 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
     lowerer.fnStack.pop();
     lowerer.currentClass = prevClass;
   }
+}
+
+/** The string keys a class declaration puts on its prototype: concrete
+ * instance methods and accessors with literal names. Symbol-keyed,
+ * private, static and abstract members are not prototype string keys. */
+function classPrototypeNames(decl: ts.ClassLikeDeclaration): string[] {
+  const names: string[] = [];
+  for (const member of decl.members) {
+    if (
+      !ts.isMethodDeclaration(member) &&
+      !ts.isGetAccessorDeclaration(member) &&
+      !ts.isSetAccessorDeclaration(member)
+    )
+      continue;
+    if (
+      ts
+        .getModifiers(member)
+        ?.some(
+          (m) => m.kind === ts.SyntaxKind.StaticKeyword || m.kind === ts.SyntaxKind.AbstractKeyword,
+        )
+    )
+      continue;
+    const name = member.name;
+    let text: string | null = null;
+    if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) text = name.text;
+    else if (ts.isNumericLiteral(name)) text = String(Number(name.text));
+    else if (ts.isComputedPropertyName(name) && ts.isStringLiteralLike(name.expression))
+      text = name.expression.text;
+    if (text !== null && !names.includes(text)) names.push(text);
+  }
+  return names;
 }
 
 /** The lowered method-map name of a class member: identifier text, a

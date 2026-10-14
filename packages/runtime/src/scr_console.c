@@ -302,16 +302,22 @@ static size_t scr_console_render(char *line, size_t n, const ScrLogArg *args, bo
   return used;
 }
 
+/* The global console's group indentation: console.group installs its
+ * indenting rewrite (scr_console_native.c) while a group is open, so
+ * programs without groups carry none of it. Console instances never use
+ * it. */
+SCR_TL char *(*scr_console_indenter)(const char *line, size_t *used) = NULL;
 
 /* Console methods submit one formatted chunk to their backing stream before
  * returning, as Node's console does: a caller observing a live child sees
  * this line before the next JS turn. Errors are ignored (the global Node
  * console uses ignoreErrors=true for stream writes). */
-static void scr_console_write(int fd, size_t n, const ScrLogArg *args) {
+static void scr_console_write(int fd, size_t n, const ScrLogArg *args, bool global) {
 #if SCR_STDIO_DIRECT
   /* A large single string goes out without a copy: string + newline in one
    * vectored write. */
-  if (!scr_stdio_write_hook && n == 1 && (args[0].tag & SCR_ARG_KIND) == SCR_ARG_STR &&
+  if (!scr_stdio_write_hook && !(global && scr_console_indenter) && n == 1 &&
+      (args[0].tag & SCR_ARG_KIND) == SCR_ARG_STR &&
       args[0].v.s->len >= SCR_CONSOLE_STACK_LINE) {
     char *owned;
     const char *bytes = scr_str_utf8(args[0].v.s, &owned);
@@ -330,6 +336,11 @@ static void scr_console_write(int fd, size_t n, const ScrLogArg *args) {
   if (!line) scr_trap("scriptc: out of memory\n");
   bool wide = false;
   size_t used = scr_console_render(line, n, args, &wide);
+  if (global && scr_console_indenter) {
+    char *indented = scr_console_indenter(line, &used);
+    if (line != stack) free(line);
+    line = indented;
+  }
   if (scr_stdio_write_hook) {
     /* A patched write receives the JavaScript string, lone surrogates kept. */
     scr_stdio_write_hook(fd, line, used, wide);
@@ -342,7 +353,7 @@ static void scr_console_write(int fd, size_t n, const ScrLogArg *args) {
 }
 
 void scr_console_log(size_t n, const ScrLogArg *args) {
-  scr_console_write(1, n, args);
+  scr_console_write(1, n, args, true);
 }
 
 /* console.error and console.warn. Runtime-internal stdout output that is
@@ -350,15 +361,21 @@ void scr_console_log(size_t n, const ScrLogArg *args) {
  * merged redirection (2>&1); JavaScript-visible stdout writes have already
  * been submitted. */
 void scr_console_error(size_t n, const ScrLogArg *args) {
-  scr_console_write(2, n, args);
+  scr_console_write(2, n, args, true);
 }
 
 void scr_console_log_parts(size_t n, const ScrLogArg *args) {
-  scr_console_write(1, n, args);
+  scr_console_write(1, n, args, true);
 }
 
 void scr_console_error_parts(size_t n, const ScrLogArg *args) {
-  scr_console_write(2, n, args);
+  scr_console_write(2, n, args, true);
+}
+
+/* A Console instance's line on process stdout (fd 1) or stderr (fd 2):
+ * the global console's group indentation does not apply. */
+void scr_console_write_fd(int fd, size_t n, const ScrLogArg *args) {
+  scr_console_write(fd == 2 ? 2 : 1, n, args, false);
 }
 
 /* One JavaScript-visible raw write. Node's global console and process stream

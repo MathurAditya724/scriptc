@@ -3,12 +3,14 @@ import {
   BOOL,
   F64,
   STRING,
+  UNDEFINED_T,
   VOID,
   funcOf,
   type IrExpr,
   type IrFunction,
   type IrModule,
   type IrStmt,
+  type IrType,
 } from "../../ir/ir.js";
 import { validateModule } from "../../ir/validate.js";
 import { emitLlvmModule } from "./emitter.js";
@@ -132,4 +134,97 @@ test("debug builds keep the double ABI", () => {
   });
   expect(llvm).not.toContain(".i32(");
   expect(llvm).toMatch(/define internal double @sc_f_mix\(double %p_\w+, double %p_\w+\)/);
+});
+
+const optional: IrType = { kind: "union", unionId: "optional" };
+const wrap = (value: IrExpr, tag: number): IrExpr => ({
+  kind: "unionWrap",
+  value,
+  tag,
+  unionId: "optional",
+  type: optional,
+  loc,
+});
+const missing = (): IrExpr =>
+  wrap({ kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc }, 1);
+
+function unionModule(): IrModule {
+  const positive: IrExpr = {
+    kind: "bin",
+    op: ">",
+    left: ref("n"),
+    right: num(0),
+    type: BOOL,
+    loc,
+  };
+  return {
+    irVersion: 16,
+    sourceFile: loc.file,
+    entry: "main",
+    unions: [{ id: "optional", arms: [F64, UNDEFINED_T] }],
+    functions: [
+      fn(
+        "main",
+        [],
+        [
+          stmt({
+            kind: "nullish",
+            left: call("maybe", [num(3)], optional),
+            right: num(0),
+            type: F64,
+            loc,
+          }),
+          stmt({
+            kind: "closure",
+            fnName: "maybe",
+            captures: [],
+            type: funcOf([F64], optional),
+            loc,
+          }),
+        ],
+        VOID,
+      ),
+      fn(
+        "maybe",
+        ["n"],
+        [
+          stmt(call("throws", [], VOID)),
+          ret({
+            kind: "ternary",
+            cond: positive,
+            then: wrap(ref("n"), 0),
+            else_: missing(),
+            type: optional,
+            loc,
+          }),
+        ],
+        optional,
+      ),
+      fn(
+        "throws",
+        [],
+        [{ kind: "throw", value: { kind: "strLit", value: "no", type: STRING, loc }, loc }],
+        VOID,
+      ),
+    ],
+  };
+}
+
+test("scalar union results return tag and payload bits on direct calls", () => {
+  const mod = unionModule();
+  expect(validateModule(mod)).toEqual([]);
+  const llvm = emitLlvmModule(mod);
+  const entry = define(llvm, "sc_f_maybe.i32");
+  expect(entry).toMatch(/^define internal \{ i32, i64 \} @sc_f_maybe\.i32\(double %p_\w+\)/);
+  expect(entry).toContain("ret { i32, i64 } { i32 -1, i64 0 }");
+  expect(entry).not.toContain("@scr_union_new");
+  // A projecting caller reads the pair without a heap box.
+  const main = define(llvm, "sc_f_main");
+  expect(main).toContain("call { i32, i64 } @sc_f_maybe.i32(double ");
+  expect(main).not.toContain("@scr_union_new");
+  // The closure keeps the boxed result of the ordinary symbol.
+  const wrapper = define(llvm, "sc_f_maybe");
+  expect(wrapper).toContain("define internal ptr @sc_f_maybe(double %p0)");
+  expect(wrapper).toContain("call { i32, i64 } @sc_f_maybe.i32(double %p0)");
+  expect(wrapper).toContain("call ptr @scr_union_new_f64(i32 0, double ");
 });

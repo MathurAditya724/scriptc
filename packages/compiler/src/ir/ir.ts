@@ -927,6 +927,10 @@ export interface IrModule {
   entry: string;
   /** Executable roots run in isolated native worker contexts. */
   workers?: boolean;
+  /** The program constructs LifetimeRegion (@scriptc/experimental): every
+   * ProgramLifetime instance lives in a counted region (the region.*
+   * intrinsics; backend/llvm/regions.ts). */
+  lifetimeRegions?: true;
   /** The entry module is CommonJS under Node's classification. Node runs a
    * CommonJS main synchronously and drains process.nextTick callbacks
    * before promise jobs at the first checkpoint; an ES-module main's
@@ -1314,6 +1318,10 @@ export interface IrClassDef {
    * `get:<prop>` / `set:<prop>` entries — names no user identifier can
    * spell — and behave as ordinary methods here. */
   methods?: string[];
+  /** String names of the methods and accessors this class declares on its
+   * prototype (not inherited), independent of method reachability. A
+   * reflective `in` over an instance seen as `unknown` answers them. */
+  prototypeNames?: string[];
   /** Declared `abstract class` — never instantiated (tsc rejects `new` on
    * it, including through class values), so its own vtable entries for
    * abstract slots may stay empty. */
@@ -3363,7 +3371,16 @@ export type IrExpr =
         | "module.tdzCheck"
         /* @scriptc/threads publish(value): one argument, the result is the
          * same value (and type); its graph becomes immortal and immutable. */
-        | "threads.publish";
+        | "threads.publish"
+        /* LifetimeRegion (@scriptc/experimental), in modules with
+         * lifetimeRegions: region.create () → f64, a fresh region id;
+         * region.enter (f64 id) → void makes it the thread's current
+         * region until the matching region.leave () → void; region.release
+         * (f64 id) → void condemns it. None of them throws. */
+        | "region.create"
+        | "region.enter"
+        | "region.leave"
+        | "region.release";
       args: IrExpr[];
       type: IrType;
       loc: SrcLoc;

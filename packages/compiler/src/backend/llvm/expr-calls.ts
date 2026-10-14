@@ -9,7 +9,7 @@ import {
   type IrExpr,
   type IrFunction,
 } from "../../ir/ir.js";
-import { INT32_ABI_SUFFIX } from "./int32-abi.js";
+import { INT32_ABI_SUFFIX, SCALAR_UNION_RESULT } from "./int32-abi.js";
 import { collectFfiRetainedOps, parseFfiCallbackKey } from "../ffi-callbacks.js";
 import {
   mangleAsyncAdoptCall,
@@ -30,6 +30,7 @@ import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { f64Lit, ffiNativeTypeLl, ffiNativeParamLl, ffiNativeReturnLl } from "./common.js";
 import { canStackUnion, emitStackUnion } from "./stack-unions.js";
 import { emitCallArrayRead } from "./local-array-reads.js";
+import { emitScalarOptional, isScalarOptionalSource } from "./local-union-storage.js";
 import { emitStackMapRead } from "./map-read-lifetimes.js";
 import {
   borrowableInputs,
@@ -58,6 +59,9 @@ export function emitCallExpr(
     | "virtualCall"
   >,
   awaitEntry: false | "await" | "adopt" = false,
+  /** A projection consumes a scalar union result (Int32Abi.union): answer
+   * a private stack box instead of a heap box. */
+  stackResult = false,
 ): LlValue {
   const B = host.B;
   switch (e.kind) {
@@ -111,6 +115,16 @@ export function emitCallExpr(
               return result.value;
             }
             if (canStackUnion(a, host.boxedUnionsById)) return emitStackUnion(host, a).value;
+            if (
+              (a.kind === "optChain" ||
+                a.kind === "nullish" ||
+                a.kind === "ternary" ||
+                a.kind === "arrIntrinsic") &&
+              isScalarOptionalSource(a, host.unionSources)
+            )
+              return emitScalarOptional(host, a);
+            if (a.kind === "call" && host.scalarResultCall(a))
+              return emitCallExpr(host, a, false, true);
             if (host.nullableFieldGet(a))
               return { name: host.emitOwnedNullableStack(a).box, type: a.type };
           }
@@ -164,6 +178,13 @@ export function emitCallExpr(
         return { name: "", type: e.type };
       }
       const t = B.tmp();
+      if (abi?.union) {
+        B.line(`${t} = call ${SCALAR_UNION_RESULT} ${target}(${argList})`);
+        if (host.mayThrow.has(e.callee)) host.emitPendingCheck();
+        if (borrowed) host.releaseFrame(host.frames.pop()!);
+        if (stackResult) return host.stackScalarUnion(t, e.type);
+        return host.own({ name: host.boxScalarUnion(t, e.type), type: e.type });
+      }
       if (abi?.result) {
         B.line(`${t} = call i32 ${target}(${argList})`);
         const out = host.int32Result(t, e.type);

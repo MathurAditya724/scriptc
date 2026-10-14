@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 40,
-        "verify-gap": 2414,
-        "audit-partial": 752,
+        "verify-gap": 2398,
+        "audit-partial": 768,
         "classify": 2,
         "implement": 80
       }
@@ -5822,12 +5822,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:console",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:console.profile",
+          "tests": [
+            "tests/corpus/5099-console-methods-dynamic.cjs"
+          ]
         }
       }
     },
@@ -5847,12 +5849,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:console",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:console.profileEnd",
+          "tests": [
+            "tests/corpus/5099-console-methods-dynamic.cjs"
+          ]
         }
       }
     },
@@ -5872,12 +5876,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:console",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:console.timeStamp",
+          "tests": [
+            "tests/corpus/5099-console-methods-dynamic.cjs"
+          ]
         }
       }
     },
@@ -5925,12 +5931,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:console",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:console.assert",
+          "tests": [
+            "tests/corpus/5096-console-assert-dir.ts",
+            "tests/corpus/5099-console-methods-dynamic.cjs"
+          ]
         }
       }
     },
@@ -5950,12 +5959,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:console",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:console.clear",
+          "tests": [
+            "tests/corpus/5099-console-methods-dynamic.cjs"
+          ]
         }
       }
     },
@@ -5975,12 +5986,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:console",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:console.count",
+          "tests": [
+            "tests/corpus/5095-console-count-group.ts",
+            "tests/corpus/5098-console-time-warnings.ts",
+            "tests/corpus/5099-console-methods-dynamic.cjs"
+          ]
         }
       }
     },
@@ -6000,12 +6015,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:console",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:console.countReset",
+          "tests": [
+            "tests/corpus/5095-console-count-group.ts",
+            "tests/corpus/5098-console-time-warnings.ts",
+            "tests/corpus/5099-console-methods-dynamic.cjs"
+          ]
         }
       }
     },
@@ -6056,12 +6075,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:console",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:console.dir",
+          "tests": [
+            "tests/corpus/5096-console-assert-dir.ts",
+            "tests/corpus/5099-console-methods-dynamic.cjs"
+          ]
         }
       }
     },
@@ -6081,12 +6103,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:console",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:console.dirxml",
+          "tests": [
+            "tests/corpus/5096-console-assert-dir.ts",
+            "tests/corpus/5099-console-methods-dynamic.cjs"
+          ]
         }
       }
     },
@@ -6137,12 +6162,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:console",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:console.group",
+          "tests": [
+            "tests/corpus/5095-console-count-group.ts",
+            "tests/corpus/5098-console-time-warnings.ts",
+            "tests/corpus/5099-console-methods-dynamic.cjs"
+          ]
         }
       }
     },
@@ -6162,12 +6191,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:console",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:console.groupCollapsed",
+          "tests": [
+            "tests/corpus/5095-console-count-group.ts",
+            "tests/corpus/5098-console-time-warnings.ts",
+            "tests/corpus/5099-console-methods-dynamic.cjs"
+          ]
         }
       }
     },
@@ -6187,12 +6220,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:console",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:console.groupEnd",
+          "tests": [
+            "tests/corpus/5095-console-count-group.ts",
+            "tests/corpus/5098-console-time-warnings.ts",
+            "tests/corpus/5099-console-methods-dynamic.cjs"
+          ]
         }
       }
     },
@@ -6274,12 +6311,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:console",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:console.table",
+          "tests": [
+            "tests/corpus/5097-console-table.ts",
+            "tests/corpus/5099-console-methods-dynamic.cjs"
+          ]
         }
       }
     },
@@ -6299,12 +6339,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:console",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:console.time",
+          "tests": [
+            "tests/corpus/5098-console-time-warnings.ts"
+          ]
         }
       }
     },
@@ -6324,12 +6366,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:console",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:console.timeEnd",
+          "tests": [
+            "tests/corpus/5098-console-time-warnings.ts"
+          ]
         }
       }
     },
@@ -6349,12 +6393,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:console",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:console.timeLog",
+          "tests": [
+            "tests/corpus/5098-console-time-warnings.ts"
+          ]
         }
       }
     },

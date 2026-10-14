@@ -528,9 +528,9 @@ export function emitDynamicExpr(
         type: { kind: "string" },
         loc: e.loc,
       });
-      host.declare(`declare zeroext i1 @scr_dyn_has_key(ptr, ptr)`);
+      host.declare(`declare zeroext i1 @scr_dyn_in(ptr, ptr)`);
       const raw = B.tmp();
-      B.line(`${raw} = call zeroext i1 @scr_dyn_has_key(ptr ${value.name}, ptr ${key.name})`);
+      B.line(`${raw} = call zeroext i1 @scr_dyn_in(ptr ${value.name}, ptr ${key.name})`);
       host.emitPendingCheck();
       if (!e.negated) return { name: raw, type: e.type };
       const neg = B.tmp();

@@ -82,7 +82,13 @@ import { analyzeInt32Slots, type Int32Slots } from "../../ir/int32-slots.js";
 import { analyzeFinalFields, constructorClass, type FinalFields } from "../../ir/final-fields.js";
 import { foldConstantGlobals } from "../../ir/constant-globals.js";
 import { findIntegerViews } from "./integer-views.js";
-import { findInt32Abis, INT32_ABI_SUFFIX, type Int32Abi } from "./int32-abi.js";
+import {
+  findInt32Abis,
+  INT32_ABI_SUFFIX,
+  SCALAR_UNION_DUMMY,
+  SCALAR_UNION_RESULT,
+  type Int32Abi,
+} from "./int32-abi.js";
 import { findInt32Locals, type Int32Local } from "./int32-locals.js";
 import { exactInteger, narrowInteger } from "./integer-values.js";
 import { findInitializerBindings, withInitializerBindings } from "../../ir/initializer-bindings.js";
@@ -119,10 +125,13 @@ import { analyzeCallLifetimes, type CallLifetimes } from "./call-lifetimes.js";
 import { canStackUnion, emitStackUnion, findLocalStackUnions } from "./stack-unions.js";
 import {
   allocateLocalUnion,
+  emitScalarOptional,
   findLocalUnionStorage,
+  isScalarOptionalSource,
   storeLocalUnion,
   type LocalUnionStorageProof,
   type LocalUnionStorage,
+  type UnionSources,
 } from "./local-union-storage.js";
 import { BlockBuilder } from "./blocks.js";
 import { NullableRefFields, type NullableRefField } from "./nullable-fields.js";
@@ -273,8 +282,10 @@ import {
   classEnvironmentIndex,
   classFieldIndex,
   classStructSym,
+  programLifetimeClass,
   type LlClassMeta,
 } from "./classes.js";
+import { LifetimeRegions, REGION_TYPES } from "./regions.js";
 import { LlDyn, type DynHost } from "./dyn.js";
 import { VirtualBorrows } from "./virtual-borrows.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -488,6 +499,18 @@ export class LlEmitter {
     this.fieldPointerTags.set(ptr, tag);
   }
 
+  /** The alias tag of a runtime word that emitted code reads and writes
+   * outside every field (the lifetime-region count, owner and cursors). */
+  memoryAliasAttachment(category: string): string {
+    if (this.debug !== null) return "";
+    let tag = this.fieldAliasTags.get(category);
+    if (tag === undefined) {
+      tag = 2 + this.fieldAliasTags.size * 2;
+      this.fieldAliasTags.set(category, tag);
+    }
+    return `, !tbaa !${tag}`;
+  }
+
   fieldAliasAttachment(ptr: string): string {
     const tag = this.fieldPointerTags.get(ptr);
     return tag === undefined ? "" : `, !tbaa !${tag}`;
@@ -610,6 +633,8 @@ export class LlEmitter {
    * whose bindings end with the list (emitBlock and function bodies). */
   private stmtCursor: { stmts: IrStmt[]; index: number } | null = null;
   readonly optionalArrayReads: OptionalArrayReads;
+  /** Union sources a binding or projection can hold in a stack box. */
+  readonly unionSources: UnionSources;
   readonly checkedNarrows: CheckedNarrows;
   callArrayReads = new Map<IrExpr, LocalArrayRead>();
   mapReadLifetimes: MapReadLifetimes = { locals: new Map(), arguments: new Map() };
@@ -843,6 +868,9 @@ export class LlEmitter {
   currentReturnType: IrType = VOID;
   /** The current body returns its number result as i32. */
   private currentInt32Result = false;
+  /** The function's i32 entry returns its scalar union result as tag and
+   * payload bits (Int32Abi.union). */
+  private currentUnionResult = false;
   /** Active only while emitting a body lowered with LLVM's
    * switched-coroutine intrinsics (wasm32 async bodies and generators,
    * native synchronous generators; see coroLowered). */
@@ -967,6 +995,13 @@ export class LlEmitter {
     this.optionalArrayReads = new OptionalArrayReads(this.fnByName, this.unionsById, (id) =>
       this.nullableUnions.has(id),
     );
+    this.unionSources = {
+      unions: this.boxedUnionsById,
+      receiverUnions: this.unionsById,
+      nullableField: (e) => this.nullableFieldGet(e) !== null,
+      arrayRead: (e) => this.optionalArrayReads.get(e) !== null,
+      scalarCall: (e) => this.scalarResultCall(e),
+    };
     this.checkedNarrows = new CheckedNarrows(this.fnByName);
     this.referenceEffects = new ReferenceEffects(
       this.fnByName,
@@ -1026,6 +1061,7 @@ export class LlEmitter {
       this.fnByName,
       (className, field) => this.nullableFields.get(className, field) !== null,
       walkParameters,
+      new Set([...this.int32Abis].filter(([, abi]) => abi.union).map(([name]) => name)),
     );
     this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes);
     this.stackCallbacks = new StackCallbacks(this.fnByName);
@@ -1082,6 +1118,7 @@ export class LlEmitter {
       pendingTestLines: (dest) => this.pendingTestLines(dest),
       virtualEntry: (implFn) => this.virtualEntry(implFn),
       programLifetime: this.programLifetime,
+      regionAliasTag: (word) => this.memoryAliasAttachment(`region.${word}`),
     };
     this.walkers = new LlWalkers(this.shapeHost);
     this.dyn = new LlDyn(this.shapeHost);
@@ -1119,6 +1156,23 @@ export class LlEmitter {
     // whole-program preorder numbering for instanceof over runtime and
     // compiled error objects, and the per-hierarchy virtual slot lists.
     this.classMeta = buildClassGraph(mod, this.fnByName);
+    if (mod.lifetimeRegions === true) {
+      this.regions = new LifetimeRegions(
+        this.shapeHost,
+        mod,
+        this.classMeta,
+        (meta) => programLifetimeClass(this.shapeHost, meta),
+        this.nullableFields,
+      );
+      const regions = this.regions;
+      // Member names differ from LifetimeRegions' own, which keeps the
+      // record from reading as that class's protocol.
+      this.shapeHost.regions = {
+        rcBody: (fnName, ret, comment) => regions.countBody(fnName, ret, comment),
+        newAlloc: (className, sizeOf) => regions.allocLines(className, sizeOf),
+        classDefinitions: (cls, sizeOf) => regions.classDefs(cls, sizeOf),
+      };
+    }
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
       const meta = this.classMeta.get(name);
       if (!meta) break; // hand-written IR without the builtin defs: no stamps
@@ -1872,6 +1926,7 @@ export class LlEmitter {
       ...emitClassMembershipHelper(this.classMeta, this.sizeType),
       ...(this.publishWalkersCache?.defs() ?? []),
       ...this.publishedClassNamesDefs(),
+      ...(this.regions?.moduleDefs() ?? []),
     ];
     if (this.constantNumericTables.size > 0)
       this.declare(`declare double @scr_arr_get_number(ptr, double)`);
@@ -4152,11 +4207,13 @@ export class LlEmitter {
           ? "ret void"
           : this.currentInt32Result
             ? "ret i32 0"
-            : t === "double"
-              ? `ret double ${f64Lit(0)}`
-              : t === "i1"
-                ? "ret i1 false"
-                : "ret ptr null";
+            : this.currentUnionResult
+              ? `ret ${SCALAR_UNION_DUMMY}`
+              : t === "double"
+                ? `ret double ${f64Lit(0)}`
+                : t === "i1"
+                  ? "ret i1 false"
+                  : "ret ptr null";
     }
     // Copy the entries now: later declarations extend these lexical scopes.
     // Release order and the handler are part of the shared block's identity.
@@ -5448,12 +5505,7 @@ export class LlEmitter {
       this.debug === null ? findScalarStringSlices(fn, this.callLifetimes) : new Map();
     this.mapReadLifetimes = findMapReadLifetimes(fn, this.boxedUnionsById, this.callLifetimes);
     this.localStackUnions = findLocalStackUnions(fn, this.callLifetimes, this.boxedUnionsById);
-    this.localUnionStorageProofs = findLocalUnionStorage(
-      fn,
-      this.callLifetimes,
-      this.boxedUnionsById,
-      (e) => this.nullableFieldGet(e) !== null,
-    );
+    this.localUnionStorageProofs = findLocalUnionStorage(fn, this.callLifetimes, this.unionSources);
     this.localUnionStorage = new Map();
     this.walkBorrows = this.walkBorrowsByFunction.get(fn.name) ?? new Set();
     this.integerRanges = analyzeIntegerRanges(numericFn, this.int32Slots.facts(fn.name));
@@ -5479,6 +5531,7 @@ export class LlEmitter {
     this.currentReturnType = fn.returnType;
     const int32Abi = this.int32Abis.get(fn.name);
     this.currentInt32Result = int32Abi?.result === true;
+    this.currentUnionResult = int32Abi?.union === true;
     this.currentGenerator = fn.generator ?? null;
     this.currentAsyncGenerator = fn.async === true && fn.generator !== undefined;
     this.currentBorrowedReturn = this.borrowedReturns.has(fn.name);
@@ -5748,7 +5801,11 @@ export class LlEmitter {
       });
     // Lifted functions receive their closure first (the callValue ABI).
     if (fn.captures !== undefined) params.unshift("ptr %sc_env");
-    const ret = int32Abi?.result ? "i32" : this.llType(fn.returnType);
+    const ret = int32Abi?.result
+      ? "i32"
+      : int32Abi?.union
+        ? SCALAR_UNION_RESULT
+        : this.llType(fn.returnType);
     let attrs = coro !== null ? "#1" : FN_ATTRS;
     // The shared indexed-read helper (lowerSafeIndexRead) is a dense bounds
     // test, a state test and a load behind cold runtime fallbacks, called
@@ -5785,12 +5842,103 @@ export class LlEmitter {
       } else args.push(`${type} %p${index}`);
     });
     const ret = this.llType(fn.returnType);
-    const call = `call ${abi.result ? "i32" : ret} @${symbol}${INT32_ABI_SUFFIX}(${args.join(", ")})`;
+    const entry = `@${symbol}${INT32_ABI_SUFFIX}(${args.join(", ")})`;
+    if (abi.union) {
+      // Box the register pair for every caller of the ordinary ABI.
+      const B = new BlockBuilder();
+      this.B = B;
+      for (const line of lines) B.line(line.trim());
+      const pair = B.tmp();
+      B.line(`${pair} = call ${SCALAR_UNION_RESULT} ${entry}`);
+      B.terminate(`ret ptr ${this.boxScalarUnion(pair, fn.returnType)}`);
+      return `define internal ptr @${symbol}(${params.join(", ")}) ${FN_ATTRS} {\n${B.render()}\n}`;
+    }
+    const call = `call ${abi.result ? "i32" : ret} ${entry}`;
     if (ret === "void") lines.push(`  ${call}`, "  ret void");
     else if (abi.result)
       lines.push(`  %r = ${call}`, `  %d = sitofp i32 %r to double`, `  ret double %d`);
     else lines.push(`  %r = ${call}`, `  ret ${ret} %r`);
     return `define internal ${ret} @${symbol}(${params.join(", ")}) ${FN_ATTRS} {\nentry:\n${lines.join("\n")}\n}`;
+  }
+
+  /** The SCALAR_UNION_RESULT pair of a `%ScrUnion` box of `type`. */
+  scalarUnionPair(box: string, type: IrType): string {
+    const B = this.B;
+    const unionId = type.kind === "union" ? type.unionId : "";
+    const tag = this.unionTag(box, unionId);
+    const payload = B.tmp(),
+      bits = B.tmp(),
+      partial = B.tmp(),
+      pair = B.tmp();
+    B.line(`${payload} = getelementptr inbounds %ScrUnion, ptr ${box}, i32 0, i32 5`);
+    B.line(`${bits} = load i64, ptr ${payload}`);
+    B.line(`${partial} = insertvalue ${SCALAR_UNION_RESULT} poison, i32 ${tag}, 0`);
+    B.line(`${pair} = insertvalue ${SCALAR_UNION_RESULT} ${partial}, i64 ${bits}, 1`);
+    return pair;
+  }
+
+  /** A private stack box holding a SCALAR_UNION_RESULT pair of `type`. */
+  stackScalarUnion(pair: string, type: IrType): LlValue {
+    const B = this.B;
+    const box = B.slot(),
+      tagSlot = B.slot(),
+      payloadSlot = B.slot();
+    B.entryAllocas.push(`${box} = alloca %ScrUnion`);
+    B.entryAllocas.push(`${tagSlot} = getelementptr inbounds %ScrUnion, ptr ${box}, i32 0, i32 1`);
+    B.entryAllocas.push(
+      `${payloadSlot} = getelementptr inbounds %ScrUnion, ptr ${box}, i32 0, i32 5`,
+    );
+    const tag = B.tmp(),
+      bits = B.tmp();
+    B.line(`${tag} = extractvalue ${SCALAR_UNION_RESULT} ${pair}, 0`);
+    B.line(`${bits} = extractvalue ${SCALAR_UNION_RESULT} ${pair}, 1`);
+    B.line(`store i32 ${tag}, ptr ${tagSlot}`);
+    B.line(`store i64 ${bits}, ptr ${payloadSlot}`);
+    return { name: box, type };
+  }
+
+  /** A direct call whose i32 entry returns its scalar union in registers. */
+  scalarResultCall(e: IrExpr): boolean {
+    return e.kind === "call" && this.int32Abis.get(e.callee)?.union === true;
+  }
+
+  /** A fresh heap box (+1) for a SCALAR_UNION_RESULT pair of `type`; the
+   * exception dummy (tag -1) answers NULL. */
+  boxScalarUnion(pair: string, type: IrType): string {
+    const B = this.B;
+    const unionId = type.kind === "union" ? type.unionId : "";
+    const arms = this.unionsById.get(unionId)!.arms;
+    const tag = B.tmp(),
+      bits = B.tmp();
+    B.line(`${tag} = extractvalue ${SCALAR_UNION_RESULT} ${pair}, 0`);
+    B.line(`${bits} = extractvalue ${SCALAR_UNION_RESULT} ${pair}, 1`);
+    const join = B.newLabel("union.box.join"),
+      none = B.newLabel("union.box.none");
+    const labels = arms.map(() => B.newLabel("union.box.arm"));
+    B.terminate(
+      `switch i32 ${tag}, label %${none} [ ${labels.map((label, armTag) => `i32 ${armTag}, label %${label}`).join(" ")} ]`,
+    );
+    const incoming: string[] = [];
+    arms.forEach((arm, armTag) => {
+      B.startBlock(labels[armTag]!);
+      let value: string;
+      if (isUnitType(arm)) value = this.unitInstanceRef(unionId, armTag);
+      else {
+        const payload = B.tmp();
+        if (arm.kind === "bool") B.line(`${payload} = trunc i64 ${bits} to i1`);
+        else B.line(`${payload} = bitcast i64 ${bits} to double`);
+        value = this.unionNewOwned(unionId, armTag, { name: payload, type: arm });
+      }
+      incoming.push(`[ ${value}, %${B.currentLabel()} ]`);
+      B.br(join);
+    });
+    B.startBlock(none);
+    incoming.push(`[ null, %${none} ]`);
+    B.br(join);
+    B.startBlock(join);
+    const box = B.tmp();
+    B.line(`${box} = phi ptr ${incoming.join(", ")}`);
+    return box;
   }
 
   /** The i32 bits of a number proven an int32 (a direct call's i32
@@ -7331,8 +7479,16 @@ export class LlEmitter {
           break;
         }
         let v: LlValue | null = null;
-        const moved = this.finallyStack.length === 0 ? this.movableReturn(s.value) : null;
-        if (moved !== null) {
+        const moved =
+          this.finallyStack.length === 0 && !this.currentUnionResult
+            ? this.movableReturn(s.value)
+            : null;
+        if (s.value !== null && this.currentUnionResult) {
+          // The tag and payload bits leave in registers; a heap box the
+          // value needed is released with its frame below.
+          const box = this.emitUnionProjection(s.value);
+          v = { name: this.scalarUnionPair(box.name, s.value.type), type: s.value.type };
+        } else if (moved !== null) {
           // Returning an owned local hands its reference to the caller: no
           // retain now and no release of the local below.
           const t = B.tmp();
@@ -7373,7 +7529,7 @@ export class LlEmitter {
         }
         if (this.finallyStack.length > 0) {
           let pretSlot: string | null = null;
-          if (v !== null && isRefCounted(v.type)) {
+          if (v !== null && isRefCounted(v.type) && !this.currentUnionResult) {
             pretSlot = B.slot();
             B.entryAllocas.push(`${pretSlot} = alloca ptr ; pending return (through finally)`);
             B.line(`store ptr ${v.name}, ptr ${pretSlot}`);
@@ -7409,6 +7565,7 @@ export class LlEmitter {
           } else if (v === null) B.terminate("ret void");
           else if (this.currentInt32Result)
             B.terminate(`ret i32 ${this.int32Argument(v, s.value!)}`);
+          else if (this.currentUnionResult) B.terminate(`ret ${SCALAR_UNION_RESULT} ${v.name}`);
           else B.terminate(`ret ${this.llType(s.value!.type)} ${v.name}`);
         }
         break;
@@ -8036,7 +8193,47 @@ export class LlEmitter {
 
   emitIntrinsicExpr(e: ExprOf<"intrinsic">): LlValue {
     if (e.name === "threads.publish") return this.emitPublish(e);
+    if (
+      e.name === "region.create" ||
+      e.name === "region.enter" ||
+      e.name === "region.leave" ||
+      e.name === "region.release"
+    )
+      return this.emitRegionIntrinsic(e);
     return emitIntrinsicExpr(this, e);
+  }
+
+  /** Lifetime regions in modules with lifetimeRegions (llvm/regions.ts).
+   * Created with the class graph; null elsewhere. */
+  private regions: LifetimeRegions | null = null;
+
+  /** LifetimeRegion's runtime calls: create answers the region id, enter
+   * and leave bracket run(), release condemns. */
+  private emitRegionIntrinsic(e: ExprOf<"intrinsic">): LlValue {
+    if (this.regions === null)
+      throw new InternalCompilerError(`llvm emitter bug: ${e.name} without lifetimeRegions`);
+    const args = e.args.map((a) => this.emitExpr(a));
+    if (this.B.isTerminated()) return { name: "", type: e.type };
+    switch (e.name) {
+      case "region.create": {
+        this.declare(`declare double @scr_region_create(ptr)`);
+        const id = this.B.tmp();
+        this.B.line(`${id} = call double @scr_region_create(ptr ${REGION_TYPES})`);
+        return { name: id, type: e.type };
+      }
+      case "region.enter":
+        this.declare(`declare void @scr_region_enter(double)`);
+        this.B.line(`call void @scr_region_enter(double ${args[0]!.name})`);
+        break;
+      case "region.leave":
+        this.declare(`declare void @scr_region_leave()`);
+        this.B.line(`call void @scr_region_leave()`);
+        break;
+      default:
+        this.declare(`declare void @scr_region_release(double)`);
+        this.B.line(`call void @scr_region_release(double ${args[0]!.name})`);
+    }
+    return { name: "", type: e.type };
   }
 
   private publishWalkersCache: PublishWalkers | null = null;
@@ -8342,6 +8539,17 @@ export class LlEmitter {
       B.line(`${value} = load ptr, ptr ${slot}`);
       return { name: value, type: e.type };
     }
+    // Scalar optional values and register results answer a private stack
+    // box. A ternary of borrowable arms above keeps lending its arm.
+    if (
+      (e.kind === "optChain" ||
+        e.kind === "nullish" ||
+        e.kind === "ternary" ||
+        e.kind === "arrIntrinsic") &&
+      isScalarOptionalSource(e, this.unionSources)
+    )
+      return emitScalarOptional(this, e);
+    if (e.kind === "call" && this.scalarResultCall(e)) return emitCallExpr(this, e, false, true);
     if (e.kind === "call" && this.canBorrowReceiver(e)) return emitBorrowedResultCall(this, e);
     return this.emitExpr(e);
   }
@@ -8358,7 +8566,9 @@ export class LlEmitter {
     return (
       canStackUnion(e, this.boxedUnionsById) ||
       matchMapRead(e, this.boxedUnionsById) !== null ||
-      this.optionalArrayReads.get(e) !== null
+      this.optionalArrayReads.get(e) !== null ||
+      isScalarOptionalSource(e, this.unionSources) ||
+      this.scalarResultCall(e)
     );
   }
 

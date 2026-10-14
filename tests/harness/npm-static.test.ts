@@ -511,7 +511,7 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   test.each([
     'import { Console as Logger } from "node:console"; new Logger({ stdout: process.stdout }).dir(1);',
     'import * as output from "console"; new output.Console(process.stdout).table([1, 2]);',
-    'import { table } from "node:console"; table([1, 2]);',
+    'import { trace } from "node:console"; trace("here");',
   ])("unsupported console members retain a use-site diagnostic: %s", (source) => {
     const dir = mkdtempSync(join(tmpdir(), "scriptc-console-import-"));
     try {
