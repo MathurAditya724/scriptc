@@ -124,3 +124,19 @@ void main();
   expect(definition(llvm, "sc_gs_ticks")).toContain("call ptr @scr_async_gen_new(");
   expect(llvm).not.toContain("presplitcoroutine");
 });
+
+test("yield* over a number array walks the array natively", async () => {
+  const llvm = await emit(`
+function* flat(rows: number[][]): Generator<number, void, undefined> {
+  for (const row of rows) yield* row;
+}
+let sum = 0;
+for (const x of flat([[1, 2], [3]])) sum += x;
+console.log(sum);
+`);
+  const body = definition(llvm, "sc_f_flat");
+  expect(body).toContain("@scr_coro_yield_f64(");
+  expect(body).not.toContain("@scr_dyn_iterator");
+  expect(body).not.toContain("@scr_dyn_call");
+  expect(body).not.toContain("@sc_gres_");
+});

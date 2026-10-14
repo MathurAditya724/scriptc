@@ -1616,6 +1616,7 @@ function validateFunction(
           allowed.add("return");
           allowed.add("throw");
           allowed.add("runtimeFence");
+          allowed.add("tryCatch");
         }
         if (e.diverges) {
           const last = e.stmts[e.stmts.length - 1];

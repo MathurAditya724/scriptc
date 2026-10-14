@@ -1,8 +1,24 @@
-import { dynUndefinedExpr, varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
 import * as ts from "../ts7/adapter.js";
-import { BOOL, DYN, F64, STRING, canConvertToDyn, type IrExpr, type IrStmt } from "../../ir/ir.js";
+import {
+  BOOL,
+  DYN,
+  F64,
+  STRING,
+  VOID,
+  canConvertToDyn,
+  type IrExpr,
+  type IrMapIntrinsicMethod,
+  type IrSetIntrinsicMethod,
+  type IrStmt,
+  type IrType,
+  typeEquals,
+} from "../../ir/ir.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
+import { arrayValueRead } from "./array-values.js";
+
+const NO_THROW_METHOD = "The iterator does not provide a 'throw' method.";
 
 /** The synchronous IteratorRecord protocol, including completion forwarding.
  * Native class methods enter through the checked-value dispatcher; every
@@ -203,14 +219,7 @@ export function lowerCheckedDelegation(
                       value: {
                         kind: "libCall",
                         fn: "error.new",
-                        args: [
-                          {
-                            kind: "strLit",
-                            value: "The iterator does not provide a 'throw' method.",
-                            type: STRING,
-                            loc,
-                          },
-                        ],
+                        args: [{ kind: "strLit", value: NO_THROW_METHOD, type: STRING, loc }],
                         type: { kind: "object", className: "%TypeError" },
                         loc,
                       },
@@ -235,5 +244,250 @@ export function lowerCheckedDelegation(
     expected && expected.kind !== "void"
       ? lowerer.coerceToExpected(get(step.ref, "value"), expected)
       : get(step.ref, "value");
+  return { kind: "seqExpr", stmts, result, generatorDelegate: true, type: result.type, loc };
+}
+
+/** `yield* xs` over an array, a string, a Set or a Map: the built-in
+ * iterator walked in place, with the same live view as for-of (an array
+ * re-reads its length every step, a string steps by code point, a Map
+ * yields fresh [key, value] entries). These iterators have no return() or
+ * throw() methods: a consumer's next(v) drops v, return(v) completes the
+ * outer generator at the yield, and throw(e) raises a TypeError there
+ * instead of e. The expression completes with undefined. */
+export function lowerBuiltinDelegation(
+  lowerer: Lowerer,
+  expr: ts.YieldExpression,
+  source: IrExpr,
+): IrExpr {
+  const loc = locOf(expr);
+  const gen = lowerer.ctx.generator!;
+  const sourceT = source.type;
+  const container = lowerer.declareHiddenLocal("%delegate", sourceT);
+  const cursor = lowerer.declareHiddenLocal("%delegateCursor", F64);
+  cursor.mutable = true;
+  const src = (): IrExpr => varRef(container.id, sourceT, loc);
+  const at = (): IrExpr => varRef(cursor.id, F64, loc);
+  const advance = (by: IrExpr): IrStmt => ({
+    kind: "assign",
+    localId: cursor.id,
+    value: { kind: "bin", op: "+", left: at(), right: by, type: F64, loc },
+    loc,
+  });
+  const below = (bound: IrExpr): IrExpr => ({
+    kind: "bin",
+    op: "<",
+    left: at(),
+    right: bound,
+    type: BOOL,
+    loc,
+  });
+  // One delegated step: the value converts into the outer yield channel
+  // first, so only the resumption itself is inside the try.
+  const step = (value: IrExpr): IrStmt[] => {
+    const prefix: IrStmt[] = [];
+    let yielded = value;
+    if (value.kind !== "varRef" || !typeEquals(value.type, gen.yieldT)) {
+      const local = lowerer.declareHiddenLocal("%delegateValue", gen.yieldT);
+      prefix.push({
+        kind: "varDecl",
+        localId: local.id,
+        init: lowerer.coerceInto(expr.expression!, value, gen.yieldT),
+        loc,
+      });
+      yielded = varRef(local.id, gen.yieldT, loc);
+    }
+    return [
+      ...prefix,
+      {
+        kind: "tryCatch",
+        tryBody: [
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "yieldExpr",
+              value: yielded,
+              type: gen.nextT.kind === "undefinedT" ? VOID : gen.nextT,
+              loc,
+            },
+            loc,
+          },
+        ],
+        catchBody: [
+          {
+            kind: "throw",
+            value: {
+              kind: "libCall",
+              fn: "error.new",
+              args: [{ kind: "strLit", value: NO_THROW_METHOD, type: STRING, loc }],
+              type: { kind: "object", className: "%TypeError" },
+              loc,
+            },
+            loc,
+          },
+        ],
+        catchLocalId: null,
+        finallyBody: null,
+        loc,
+      },
+    ];
+  };
+  const stmts: IrStmt[] = [
+    { kind: "varDecl", localId: container.id, init: source, loc },
+    { kind: "varDecl", localId: cursor.id, init: numLit(0, loc), loc },
+  ];
+  if (sourceT.kind === "array") {
+    // A present element converts straight from the dense read; a hole or
+    // a stored undefined takes the optional read, as Get does.
+    const read: IrExpr = {
+      kind: "ternary",
+      cond: {
+        kind: "bin",
+        op: "===",
+        left: { kind: "arrayState", arr: src(), index: at(), type: F64, loc },
+        right: numLit(1, loc),
+        type: BOOL,
+        loc,
+      },
+      then: lowerer.coerceInto(
+        expr.expression!,
+        { kind: "arrayGet", arr: src(), index: at(), type: sourceT.elem, loc },
+        gen.yieldT,
+      ),
+      else_: lowerer.coerceInto(
+        expr.expression!,
+        arrayValueRead(lowerer, src(), at(), sourceT.elem, loc),
+        gen.yieldT,
+      ),
+      type: gen.yieldT,
+      loc,
+    };
+    const element = lowerer.declareHiddenLocal("%delegateElement", read.type);
+    stmts.push({
+      kind: "while",
+      cond: below({
+        kind: "arrIntrinsic",
+        method: "length",
+        receiver: src(),
+        args: [],
+        type: F64,
+        loc,
+      }),
+      body: [
+        { kind: "varDecl", localId: element.id, init: read, loc },
+        advance(numLit(1, loc)),
+        ...step(varRef(element.id, read.type, loc)),
+      ],
+      loc,
+    });
+  } else if (sourceT.kind === "string") {
+    const ch = lowerer.declareHiddenLocal("%delegateElement", STRING);
+    const length = (receiver: IrExpr): IrExpr => ({
+      kind: "strIntrinsic",
+      method: "length",
+      receiver,
+      args: [],
+      type: F64,
+      loc,
+    });
+    stmts.push({
+      kind: "while",
+      cond: below(length(src())),
+      body: [
+        {
+          kind: "varDecl",
+          localId: ch.id,
+          init: {
+            kind: "strIntrinsic",
+            method: "cpAt",
+            receiver: src(),
+            args: [at()],
+            type: STRING,
+            loc,
+          },
+          loc,
+        },
+        advance(length(varRef(ch.id, STRING, loc))),
+        ...step(varRef(ch.id, STRING, loc)),
+      ],
+      loc,
+    });
+  } else if (sourceT.kind === "map" || sourceT.kind === "set") {
+    const iter = (method: string, args: IrExpr[], type: IrType): IrExpr =>
+      sourceT.kind === "map"
+        ? {
+            kind: "mapIntrinsic",
+            method: method as IrMapIntrinsicMethod,
+            receiver: src(),
+            args,
+            type,
+            loc,
+          }
+        : {
+            kind: "setIntrinsic",
+            method: method as IrSetIntrinsicMethod,
+            receiver: src(),
+            args,
+            type,
+            loc,
+          };
+    const keyT = sourceT.kind === "map" ? sourceT.key : sourceT.elem;
+    const index = lowerer.declareHiddenLocal("%delegateIndex", F64);
+    const key = (): IrExpr => iter("iterKey", [varRef(index.id, F64, loc)], keyT);
+    let element: IrExpr = key();
+    if (sourceT.kind === "map") {
+      const entryT: IrType = {
+        kind: "record",
+        shapeId: lowerer.shapes.intern(
+          [
+            { name: "0", type: keyT },
+            { name: "1", type: sourceT.value },
+          ],
+          true,
+        ),
+      };
+      element = {
+        kind: "recordLit",
+        fields: [
+          { name: "0", value: key() },
+          { name: "1", value: iter("iterValue", [varRef(index.id, F64, loc)], sourceT.value) },
+        ],
+        type: entryT,
+        loc,
+      };
+    }
+    const exit: IrStmt = { kind: "exprStmt", expr: iter("iterExit", [], VOID), loc };
+    stmts.push(
+      { kind: "exprStmt", expr: iter("iterEnter", [], VOID), loc },
+      {
+        kind: "tryCatch",
+        tryBody: [
+          {
+            kind: "while",
+            cond: below(iter("iterCount", [], F64)),
+            body: [
+              { kind: "varDecl", localId: index.id, init: at(), loc },
+              advance(numLit(1, loc)),
+              {
+                kind: "if",
+                cond: iter("iterLive", [varRef(index.id, F64, loc)], BOOL),
+                then: step(element),
+                else_: null,
+                loc,
+              },
+            ],
+            loc,
+          },
+        ],
+        catchBody: null,
+        catchLocalId: null,
+        finallyBody: [exit],
+        loc,
+      },
+    );
+  }
+  const expected = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const done = dynUndefinedExpr(loc);
+  const result =
+    expected && expected.kind !== "void" ? lowerer.coerceToExpected(done, expected) : done;
   return { kind: "seqExpr", stmts, result, generatorDelegate: true, type: result.type, loc };
 }
