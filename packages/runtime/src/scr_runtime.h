@@ -579,6 +579,10 @@ void scr_cyc_free(void *obj); /* frees the block, header included */
 void *scr_mem_realloc(void *p, size_t n);
 void *scr_rt_calloc(size_t n); /* emitted-code entry points */
 void scr_rt_free(void *p);
+/* Asks the allocator's pre-fault helper (scr_alloc.c) to fault the pages
+ * of [lo, hi), aligned to 256 KiB, in ahead of use; builds without the
+ * helper ignore it. */
+void scr_mem_prefault(void *lo, void *hi);
 
 #define SCR_SA_STEP 16u   /* class granularity; keeps malloc's 16-byte alignment */
 #define SCR_SA_NCLASS 32u /* classes of 16, 32, ... 512 bytes */
@@ -5655,8 +5659,9 @@ void scr_obj_lifetime_forget(long n);
  * the small-object allocator. A region owns SCR_RGN_CHUNK-aligned chunks;
  * each class packs its instances into segments of a chunk, so a region's
  * objects are enumerable without a header. Instead of a per-object count,
- * the class's retain and release adjust the chunk's first word (`count`),
- * which therefore holds the number of references to the chunk's objects.
+ * the class's retain and release adjust the chunk's first word (`count`);
+ * with the first reference each object starts with, it gives the number of
+ * references to the chunk's objects.
  *
  * release() condemns a region. A condemned region is freed only when a walk
  * of its objects, and of the ordinary objects they own, explains every
@@ -5669,10 +5674,17 @@ void scr_obj_lifetime_forget(long n);
  * Region 0 of each thread (the default) is never freed: programs that do
  * not use regions keep ProgramLifetime's behavior.
  *
+ * Only references to objects of regions that can be freed are counted:
+ * until the process creates its first region, scr_region_counting is 0 and
+ * retains and releases touch nothing, and chunks of the default regions
+ * have no owner, so references to their objects are never counted. Every
+ * reference to an object of a non-default region is created after that
+ * region exists, so its counts are exact.
+ *
  * The layouts below are an ABI with the emitted code (llvm/regions.ts):
- * the inline allocation fast path bumps the class's ScrRgnCursor and
- * increments the chunk count, and the retain/release bodies address the
- * count (and, in worker executables, the owner) at the chunk base. */
+ * the inline allocation fast path bumps the class's ScrRgnCursor, and the
+ * retain/release bodies test scr_region_counting, then the chunk's owner,
+ * then adjust its count. */
 #define SCR_RGN_CHUNK_SHIFT 21
 #define SCR_RGN_CHUNK ((size_t)1 << SCR_RGN_CHUNK_SHIFT)
 
@@ -5704,8 +5716,8 @@ typedef struct ScrRgnType {
 } ScrRgnType;
 
 typedef struct ScrRgnChunk {
-  int64_t count; /* word 0: references to this chunk's objects */
-  void *owner;   /* word 1: the owning thread (worker executables) */
+  int64_t count; /* word 0: references to this chunk's objects, less one per object */
+  void *owner;   /* word 1: the owning thread; NULL in default regions */
   struct ScrRegion *region;
   struct ScrRgnChunk *next;
   char *bump;    /* the next free segment byte */
@@ -5718,8 +5730,12 @@ static inline ScrRgnChunk *scr_rgn_chunk_of(const void *obj) {
   return (ScrRgnChunk *)((uintptr_t)obj & ~(uintptr_t)(SCR_RGN_CHUNK - 1));
 }
 
+/* 1 once any thread has created a region (never reset); emitted retains
+ * and releases count nothing while it is 0. */
+extern _Atomic uint8_t scr_region_counting;
+
 /* The allocation slow path: a zeroed instance of `cls` in the current
- * region, its first reference counted. Refills `cursor`. */
+ * region. Refills `cursor`. */
 void *scr_region_alloc(ScrRgnCursor *cursor, ScrRgnClass *cls);
 /* new LifetimeRegion(): a fresh region id (ids are never reused). `types`
  * is the program's constant type table. Retries condemned regions. */

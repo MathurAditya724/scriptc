@@ -4,11 +4,12 @@
  *
  * In such a program every ProgramLifetime instance is allocated in the
  * thread's current region: `new` bumps the class's cursor (a pair of
- * pointers the runtime refills) and increments the count word at the base
- * of the 2 MiB chunk it lands in, and the class's retain and release, which
- * ProgramLifetime otherwise leaves empty, adjust that word. Worker
- * executables count only their own chunks: a published instance other
- * threads read is never counted by them (the runtime pins its region).
+ * pointers the runtime refills), and the class's retain and release, which
+ * ProgramLifetime otherwise leaves empty, adjust the count word at the base
+ * of the 2 MiB chunk the instance lies in. They count only once the
+ * process has created a region, and only in chunks of freeable regions
+ * (see countBody), so a program that supports regions but runs without one
+ * pays a load and a branch per retain or release.
  *
  * The release walk needs three kinds of emitted code, all here:
  * - per ProgramLifetime class, a visit that reports every reference field
@@ -67,7 +68,7 @@ export class LifetimeRegions {
     this.computeReach();
   }
 
-  private tag(word: "count" | "owner" | "cursor"): string {
+  private tag(word: "count" | "owner" | "cursor" | "counting"): string {
     return this.host.regionAliasTag?.(word) ?? "";
   }
 
@@ -198,12 +199,12 @@ export class LifetimeRegions {
   }
 
   /** `new`'s allocation for a ProgramLifetime class: the zeroed instance in
-   * `%o`, its first reference counted. */
+   * `%o`. Its first reference needs no count: the runtime counts one per
+   * object a chunk holds. */
   allocLines(className: string, sizeOf: string): string[] {
     const S = this.host.sizeType;
     const cur = this.cursor(className);
     const tag = this.tag("cursor");
-    const count = this.tag("count");
     this.host.declare(`declare ptr @scr_region_alloc(ptr, ptr)`);
     this.host.declare(`declare i1 @llvm.expect.i1(i1, i1)`);
     return [
@@ -218,10 +219,6 @@ export class LifetimeRegions {
       `  br i1 %rgn.fit, label %rgn.fast, label %rgn.slow`,
       `rgn.fast:`,
       `  store ptr %rgn.np, ptr ${cur}${tag}`,
-      ...this.chunkLines("rgn", "%rgn.p"),
-      `  %rgn.c = load ${this.countType()}, ptr %rgn.cp${count}`,
-      `  %rgn.c1 = add ${this.countType()} %rgn.c, 1`,
-      `  store ${this.countType()} %rgn.c1, ptr %rgn.cp${count}`,
       `  br label %rgn.done`,
       `rgn.slow:`,
       `  %rgn.s = call ptr @scr_region_alloc(ptr ${cur}, ptr ${this.descriptor(className)})`,
@@ -232,30 +229,37 @@ export class LifetimeRegions {
   }
 
   /** The retain (`add`) or release (`sub`) body of a ProgramLifetime class:
-   * the count of the chunk holding the instance. */
+   * the count of the chunk holding the instance. Nothing is counted before
+   * the process creates its first region (scr_region_counting), and only
+   * chunks of freeable regions have an owner: the default regions' objects
+   * are never freed, so their references need no count. Worker executables
+   * count only their own chunks; a published instance other threads read
+   * is never counted by them. */
   countBody(fnName: string, ret: "ptr" | "void", comment: string): string[] {
     const count = this.tag("count");
-    const own = this.host.threadLocalAlloc === true;
+    const workers = this.host.threadLocalAlloc === true;
+    this.host.declare(`@scr_region_counting = external global i8`);
+    // Worker threads set and read the flag concurrently: an unordered
+    // atomic load, which LLVM may still hoist like a plain one.
+    const flag = workers
+      ? `load atomic i8, ptr @scr_region_counting unordered, align 1`
+      : `load i8, ptr @scr_region_counting`;
     const lines = [
       `define internal ${ret} @${fnName}(ptr %o) ${FN_ATTRS} {${comment ? ` ; ${comment} (region count)` : ""}`,
       `entry:`,
+      `  %on = ${flag}${this.tag("counting")}`,
+      `  %idle = icmp eq i8 %on, 0`,
       `  %isnull = icmp eq ptr %o, null`,
-      `  br i1 %isnull, label %done, label %chunk`,
+      `  %skip = or i1 %idle, %isnull`,
+      `  br i1 %skip, label %done, label %chunk`,
       `chunk:`,
       ...this.chunkLines("c", "%o"),
-    ];
-    if (own) {
-      // Another thread's chunk: a published instance, never counted here.
-      lines.push(
-        ...threadHotAddressLines(this.host, "%self"),
-        `  %ownp = getelementptr inbounds i8, ptr %c.cp, i64 8`,
-        `  %owner = load ptr, ptr %ownp${this.tag("owner")}`,
-        `  %mine = icmp eq ptr %owner, %self`,
-        `  br i1 %mine, label %count, label %done`,
-        `count:`,
-      );
-    }
-    lines.push(
+      ...(workers ? threadHotAddressLines(this.host, "%self") : []),
+      `  %ownp = getelementptr inbounds i8, ptr %c.cp, i64 8`,
+      `  %owner = load ptr, ptr %ownp${this.tag("owner")}`,
+      workers ? `  %mine = icmp eq ptr %owner, %self` : `  %mine = icmp ne ptr %owner, null`,
+      `  br i1 %mine, label %count, label %done`,
+      `count:`,
       `  %n = load ${this.countType()}, ptr %c.cp${count}`,
       `  %n1 = ${ret === "ptr" ? "add" : "sub"} ${this.countType()} %n, 1`,
       `  store ${this.countType()} %n1, ptr %c.cp${count}`,
@@ -263,7 +267,7 @@ export class LifetimeRegions {
       `done:`,
       ret === "ptr" ? `  ret ptr %o` : `  ret void`,
       `}`,
-    );
+    ];
     return lines;
   }
 

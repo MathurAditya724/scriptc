@@ -99,6 +99,6 @@ Each thread has its own regions and its own default region. A region belongs to 
 
 ### Cost
 
-Programs that never construct a `LifetimeRegion` compile exactly as they would without the package. In programs that do, every retain and release of a `ProgramLifetime` instance updates a count of the region chunk that holds it, and freeing a region visits each of its instances and the ordinary objects they own.
+Programs that never construct a `LifetimeRegion` compile exactly as they would without the package. In programs that do, every retain and release of a `ProgramLifetime` instance that belongs to a region updates a count of the region chunk that holds it. Instances of the default region are not counted, and until the program creates its first region, a retain or release only tests whether counting has started. Freeing a region visits each of its instances and the ordinary objects they own.
 
 `SCRIPTC_REGION_STATS=1` prints one line per release attempt, freed, `kept` (with the number of references the check could not explain) or `pinned` (published), and a summary per thread at exit.

@@ -14,6 +14,11 @@
  * Publication makes an instance immortal (rc == SIZE_MAX); the release walk
  * sees that and pins the region, which is then never freed.
  *
+ * Counting. The default regions are never freed, so references to their
+ * objects are not counted (their chunks have no owner), and until the first
+ * region exists nothing is counted at all (scr_region_counting): a program
+ * that supports regions pays for counts only once it uses one.
+ *
  * The release check. A walk visits every instance of the region (each
  * class's visit reports its reference fields) and, from there, every
  * ordinary object it can explain: classes and records through the emitted
@@ -61,6 +66,8 @@ void __lsan_unregister_root_region(const void *p, size_t size) __attribute__((we
 
 #define SCR_RGN_HDR ((size_t)64)
 #define SCR_RGN_SEG ((size_t)16384)
+#define SCR_RGN_AHEAD ((size_t)256 << 10)      /* see scr_rgn_ahead */
+#define SCR_RGN_AHEAD_START ((size_t)1 << 20)  /* see scr_rgn_ahead */
 _Static_assert(sizeof(ScrRgnChunk) <= SCR_RGN_HDR, "the chunk header fits before the first segment");
 
 /* Regions start with small pages and switch to huge pages once they span
@@ -93,6 +100,7 @@ typedef struct ScrRegion {
   ScrRgnSeg **cur; /* per class slot: the segment allocations continue in */
   size_t ncur;
   size_t bytes;
+  ScrRgnChunk *spare; /* the next chunk, mapped and faulted in ahead of use */
 } ScrRegion;
 
 typedef struct {
@@ -190,11 +198,15 @@ static void *scr_rgn_grow(void *p, size_t *cap, size_t size, size_t first) {
   return q;
 }
 
+_Atomic uint8_t scr_region_counting = 0;
+
+/* The owner word of the calling thread's freeable chunks: worker
+ * executables compare it with the thread's own &scr_thread_hot. */
 static void *scr_rgn_self(void) {
 #ifdef SCR_WORKERS
   return &scr_thread_hot;
 #else
-  return NULL;
+  return &scr_rgn;
 #endif
 }
 
@@ -243,16 +255,29 @@ static void scr_rgn_chunk_unmap(ScrRgnChunk *c) {
 #endif
 }
 
-static ScrRgnChunk *scr_rgn_chunk_new(ScrRegion *r) {
+/* Whether the region's next chunk uses huge pages. */
+static bool scr_rgn_huge(const ScrRegion *r) { return r->id == 0 || r->nchunks + 1 >= SCR_RGN_HUGE_AFTER; }
+
+/* A chunk for `r`'s next one, with its page policy. */
+static ScrRgnChunk *scr_rgn_chunk_reserve(const ScrRegion *r) {
   ScrRgnChunk *c = scr_rgn_chunk_map();
 #if SCR_RGN_MMAP && defined(MADV_HUGEPAGE)
-  if (r->id == 0 || r->nchunks + 1 >= SCR_RGN_HUGE_AFTER) (void)madvise(c, SCR_RGN_CHUNK, MADV_HUGEPAGE);
+  if (scr_rgn_huge(r)) (void)madvise(c, SCR_RGN_CHUNK, MADV_HUGEPAGE);
+#else
+  (void)r;
 #endif
+  return c;
+}
+
+static ScrRgnChunk *scr_rgn_chunk_new(ScrRegion *r) {
+  ScrRgnChunk *c = r->spare ? r->spare : scr_rgn_chunk_reserve(r);
+  r->spare = NULL;
+  if (r->bytes >= SCR_RGN_AHEAD_START) scr_mem_prefault(c, (char *)c + 2 * SCR_RGN_AHEAD);
 #ifdef SCR_LSAN_IMMORTAL
   if (__lsan_register_root_region) __lsan_register_root_region(c, SCR_RGN_CHUNK);
 #endif
   c->count = 0;
-  c->owner = scr_rgn_self();
+  c->owner = r->id == 0 ? NULL : scr_rgn_self(); /* the default region is never counted */
   c->region = r;
   c->next = r->chunks;
   c->bump = (char *)c + SCR_RGN_HDR;
@@ -260,6 +285,42 @@ static ScrRgnChunk *scr_rgn_chunk_new(ScrRegion *r) {
   r->chunks = c;
   r->nchunks++;
   return c;
+}
+
+/* Faulting ahead, like the small-object allocator's slices: first touch of
+ * a fresh page costs a fault and a page clear on the allocating thread, so
+ * the allocator's helper thread faults memory in just ahead of the bump.
+ * Nothing is faulted ahead before a region has carved SCR_RGN_AHEAD_START,
+ * so small regions commit nothing extra. Then the bump entering an
+ * SCR_RGN_AHEAD step requests the next one, a new chunk starts with its
+ * first two steps requested, and a chunk that is half carved maps the
+ * region's next chunk and has it faulted in (one huge page, or its first
+ * step), so a growing region rarely waits for the kernel. */
+static void scr_rgn_ahead(ScrRegion *r, ScrRgnChunk *c, char *from) {
+  if (r->bytes < SCR_RGN_AHEAD_START) return;
+  size_t before = (size_t)(from - (char *)c), after = (size_t)(c->bump - (char *)c);
+  if (after / SCR_RGN_AHEAD != before / SCR_RGN_AHEAD) {
+    char *lo = (char *)c + (after / SCR_RGN_AHEAD + 1) * SCR_RGN_AHEAD;
+    if (lo < (char *)c + SCR_RGN_CHUNK) scr_mem_prefault(lo, lo + SCR_RGN_AHEAD);
+  }
+  if (!r->spare && after >= SCR_RGN_CHUNK / 2 && before < SCR_RGN_CHUNK / 2) {
+    bool huge = scr_rgn_huge(r);
+    r->spare = scr_rgn_chunk_reserve(r);
+    scr_mem_prefault(r->spare, (char *)r->spare + (huge ? SCR_RGN_CHUNK : SCR_RGN_AHEAD));
+  }
+}
+
+/* A spare chunk never held objects: it goes straight back. */
+static void scr_rgn_spare_drop(ScrRegion *r) {
+  if (!r->spare) return;
+#if SCR_RGN_MMAP
+  munmap(r->spare, SCR_RGN_CHUNK);
+#elif defined(_WIN32)
+  _aligned_free(r->spare);
+#else
+  free(r->spare);
+#endif
+  r->spare = NULL;
 }
 
 /* The instance stride: the emitted fast path rounds the size the same way. */
@@ -276,6 +337,7 @@ static ScrRgnSeg *scr_rgn_seg_new(ScrRegion *r, const ScrRgnClass *cls) {
   s->start = s->end = c->bump;
   s->limit = c->bump + need;
   c->bump += need;
+  scr_rgn_ahead(r, c, s->start);
   s->cls = cls;
   s->next = r->segs;
   r->segs = s;
@@ -381,8 +443,7 @@ void *scr_region_alloc(ScrRgnCursor *cursor, ScrRgnClass *cls) {
   s->end += stride;
   cursor->bump = s->end;
   cursor->limit = s->limit;
-  scr_rgn_chunk_of(o)->count++; /* the new instance's first reference */
-  return o;
+  return o; /* its first reference is implied (scr_rgn_counted) */
 }
 
 /* ── the release walk ────────────────────────────────────────────────── */
@@ -639,9 +700,13 @@ static int64_t scr_rgn_settle(ScrRgnWalk *w, size_t *black_out) {
   return sum;
 }
 
+/* The references counted to the region's objects: the chunk counts, plus
+ * the first reference every object starts with (allocation counts nothing,
+ * so a chunk count can be negative). */
 static int64_t scr_rgn_counted(const ScrRegion *r) {
   int64_t n = 0;
   for (const ScrRgnChunk *c = r->chunks; c; c = c->next) n += c->count;
+  for (const ScrRgnSeg *s = r->segs; s; s = s->next) n += (int64_t)((size_t)(s->end - s->start) / scr_rgn_stride(s->cls));
   return n;
 }
 
@@ -654,6 +719,7 @@ static double scr_rgn_ms(uint64_t from, uint64_t to) { return (double)(to - from
     for (char *o = s->start; o < s->end; o += scr_rgn_stride(s->cls))
 
 static void scr_rgn_free_region(ScrRgnThread *t, ScrRegion *r) {
+  scr_rgn_spare_drop(r);
   for (ScrRgnChunk *c = r->chunks, *next; c; c = next) {
     next = c->next;
     scr_rgn_chunk_unmap(c);
@@ -777,6 +843,8 @@ static void scr_rgn_retry(ScrRgnThread *t) {
 double scr_region_create(const ScrRgnType *types) {
   const ScrRgnType *expected = NULL;
   atomic_compare_exchange_strong(&scr_rgn_types, &expected, types);
+  /* Counting starts before the region's first object exists. */
+  atomic_store_explicit(&scr_region_counting, 1, memory_order_relaxed);
   ScrRgnThread *t = scr_rgn_thread();
   scr_rgn_retry(t);
   uint64_t id = atomic_fetch_add_explicit(&scr_rgn_next_id, 1, memory_order_relaxed);
@@ -829,6 +897,7 @@ static void scr_rgn_thread_exit(void) {
   for (size_t i = 0; i <= t->nregions; i++) {
     ScrRegion *r = i < t->nregions ? t->regions[i] : all[0];
     if (!r) continue;
+    scr_rgn_spare_drop(r);
     for (ScrRgnSeg *s = r->segs, *next; s; s = next) {
       next = s->next;
       free(s);
