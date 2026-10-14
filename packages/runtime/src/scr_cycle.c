@@ -278,8 +278,10 @@ uint32_t scr_cyc_register(ScrCycType *type) {
   if (id) return id;
   uint32_t fresh = __atomic_fetch_add(&scr_cyc_ntypes, 1, __ATOMIC_RELAXED);
   if (fresh >= SCR_CYC_MAX_TYPES) scr_trap("scriptc: too many cycle-collected types\n");
-  scr_cyc_types[fresh] = *type;
-  scr_cyc_types[fresh].id = fresh;
+  /* Copy the fields another thread never writes; `id` may be published
+   * concurrently by a racing registration. */
+  scr_cyc_types[fresh] = (ScrCycType){
+      .trace = type->trace, .free_fn = type->free_fn, .kind = type->kind, .id = fresh};
   __atomic_thread_fence(__ATOMIC_RELEASE);
   uint32_t expected = 0;
   if (__atomic_compare_exchange_n(&type->id, &expected, fresh, false, __ATOMIC_ACQ_REL,
