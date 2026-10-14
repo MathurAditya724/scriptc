@@ -15,10 +15,32 @@ function increment(id: string, value: IrExpr): number | null {
   return value.op === "+" ? value.right.value : value.op === "-" ? -value.right.value : null;
 }
 
+/** The counter step `counter + s` (or `counter - s`) adds on each update
+ * when `s` is a binding: its operand and sign. A constant step is
+ * `increment`'s. */
+function variableIncrement(id: string, value: IrExpr): { localId: string; sign: 1 | -1 } | null {
+  if (
+    value.kind !== "bin" ||
+    value.left.kind !== "varRef" ||
+    value.left.localId !== id ||
+    value.right.kind !== "varRef" ||
+    value.right.localId === id ||
+    (value.op !== "+" && value.op !== "-")
+  )
+    return null;
+  return { localId: value.right.localId, sign: value.op === "+" ? 1 : -1 };
+}
+
 /** Bound secondary cursors by a finite ascending loop's maximum iteration
  * count. Sum all syntactic updates, including both sides of branches, so
  * filtering, breaks and continues can only reduce the budget. A nested
- * loop or opaque control region invalidates the bindings it writes. */
+ * loop or opaque control region invalidates the bindings it writes.
+ *
+ * The counter's step is a positive integer literal or a binding the loop
+ * never writes whose entry fact is a positive integer range (the sieve's
+ * `j += i`): every update then adds an exact integer in that range, so the
+ * counter climbs from its start to at most the limit plus the largest
+ * step. */
 export function boundedIntegerLoopFacts(
   loop: IrStmt & { kind: "for" },
   locals: ReadonlyMap<string, IrLocal>,
@@ -29,13 +51,14 @@ export function boundedIntegerLoopFacts(
     return result;
   const counter = loop.init.localId,
     start = initial.get(counter);
-  const step = loop.update.localId === counter ? increment(counter, loop.update.value) : null;
+  const constant = loop.update.localId === counter ? increment(counter, loop.update.value) : null;
+  const variable =
+    loop.update.localId === counter ? variableIncrement(counter, loop.update.value) : null;
   if (
     !start ||
     start.min < 0 ||
-    step === null ||
-    step <= 0 ||
-    step > 2147483647 ||
+    (constant === null && variable === null) ||
+    (constant !== null && (constant <= 0 || constant > 2147483647)) ||
     loop.cond.left.kind !== "varRef" ||
     loop.cond.left.localId !== counter ||
     (loop.cond.op !== "<" && loop.cond.op !== "<=")
@@ -97,13 +120,26 @@ export function boundedIntegerLoopFacts(
       return { min: 0, max: Number.MAX_SAFE_INTEGER };
     return null;
   }
+  let step: IntegerRange;
+  if (constant !== null) step = { min: constant, max: constant };
+  else {
+    // The step binding is read on every update; it must keep one value.
+    const operand = variable!.localId;
+    const range = stable(operand) ? initial.get(operand) : undefined;
+    if (!range) return result;
+    step =
+      variable!.sign > 0
+        ? { min: range.min, max: range.max }
+        : { min: -range.max, max: -range.min };
+    if (step.min <= 0 || step.max > 2147483647) return result;
+  }
   const limit = bound(loop.cond.right);
   if (!limit || limit.max < start.min) return result;
   const distance = limit.max - start.min;
-  const iterations = Math.floor(distance / step) + 1;
+  const iterations = Math.floor(distance / step.min) + 1;
   if (!Number.isSafeInteger(distance) || !Number.isSafeInteger(iterations)) return result;
   // Header facts also cover the failing final condition and zero iterations.
-  const maximum = Math.max(start.max, limit.max + step);
+  const maximum = Math.max(start.max, limit.max + step.max);
   if (Number.isSafeInteger(maximum)) result.set(counter, { min: start.min, max: maximum });
   for (const [id, hi] of upper) {
     const range = initial.get(id);

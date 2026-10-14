@@ -86,8 +86,13 @@ function modular(times: number): number {
   for (let i = 0; i < times; i++) v = (v * 31 + 3) % 1000003;
   return v;
 }
+function strides(marks: Uint8Array): number {
+  let count = 0;
+  for (let i = 2; i <= 1000; i++) for (let j = i * 2; j <= 1000; j += i) count += marks[j & 3];
+  return count;
+}
 const bytes = new Uint8Array([1, 2, 3, 250]);
-console.log(modular(100));
+console.log(modular(100), strides(bytes));
 console.log(rsync(bytes), mix("abcd"), counters(), unsigned(new Uint32Array([4294967295, 7])));
 console.log(fraction(5), mixed(3), captured(["ab", "c"]), capturedParam(3)());
 console.log([...frames(["ab", "cd"])].join(" "), contract(7, 20), fibo(10));
@@ -205,6 +210,11 @@ test("int32-closed locals are stored as i32 and keep doubles only for floating c
       expect(loopOf(modular)).toMatch(/ = mul nsw i32 /);
       expect(loopOf(modular)).toMatch(/ = urem i32 /);
       expect(modular).not.toContain("frem");
+
+      // A counter stepped by a loop-invariant positive int32 is one.
+      const strides = body(ll, "strides");
+      expect(strides).toMatch(/alloca i32 ; j\n/);
+      expect(strides).not.toMatch(/alloca double ; j\n/);
 
       // Locals that leave int32, or hold both int32 and uint32 values.
       expect(body(ll, "fraction")).toMatch(/alloca double ; h\n/);

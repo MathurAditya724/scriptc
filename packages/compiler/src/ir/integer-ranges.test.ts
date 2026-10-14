@@ -561,6 +561,56 @@ test("arithmetic-closed loop-carried locals keep exact ranges across back edges"
   }
 });
 
+test("a loop-invariant positive step bounds the counter of a limited loop", () => {
+  // s = (unknown & 7) + 1; for (let j = s * 2; j <= 1000; j += s) observe(j)
+  const set = (localId: string, value: IrExpr): IrStmt => ({ loc, kind: "assign", localId, value });
+  const loop = (
+    step: IrExpr,
+    update: (j: IrExpr) => IrExpr = (j) => bin("+", j, ref("s")),
+    body: IrStmt[] = [],
+  ) => {
+    const inside = ref("j"),
+      next = update(ref("j"));
+    const f = fn([
+      set("s", step),
+      {
+        loc,
+        kind: "for",
+        init: { loc, kind: "varDecl", localId: "j", init: bin("*", ref("s"), num(2)) },
+        cond: condition("<=", ref("j"), num(1000)),
+        update: set("j", next),
+        body: [observe(inside), ...body],
+      },
+    ]);
+    for (const id of ["s", "j"]) f.locals.push({ id, name: id, type: F64, mutable: true });
+    const ranges = analyzeIntegerRanges(f);
+    return { inside: ranges.get(inside), next: ranges.get(next) };
+  };
+  const positive = bin("+", bin("&", ref("unknown"), num(7)), num(1));
+  expect(loop(positive)).toEqual({ inside: { min: 2, max: 1000 }, next: { min: 3, max: 1008 } });
+  // Early exits only shorten the walk.
+  const exits: IrStmt = {
+    loc,
+    kind: "if",
+    cond: condition("===", ref("unknown"), num(0)),
+    then: [{ loc, kind: "break" }],
+    else_: [{ loc, kind: "continue" }],
+  };
+  expect(loop(positive, undefined, [exits]).inside).toEqual({ min: 2, max: 1000 });
+  // A step that can be zero, negative or a fraction, a step the body
+  // writes, and a subtracted positive step, prove nothing.
+  const open: [string, IrExpr, ((j: IrExpr) => IrExpr) | undefined, IrStmt[]][] = [
+    ["zero step", bin("&", ref("unknown"), num(7)), undefined, []],
+    ["negative step", unaryMinus(positive), undefined, []],
+    ["fraction step", num(0.5), undefined, []],
+    ["unknown step", ref("unknown"), undefined, []],
+    ["written step", positive, undefined, [set("s", num(1))]],
+    ["subtracted step", positive, (j) => bin("-", j, ref("s")), []],
+  ];
+  for (const [label, step, update, body] of open)
+    expect(loop(step, update, body).inside, label).toBeNull();
+});
+
 test("whole-program slot facts seed parameters, field reads and call results", () => {
   const field: IrExpr = {
     loc,
