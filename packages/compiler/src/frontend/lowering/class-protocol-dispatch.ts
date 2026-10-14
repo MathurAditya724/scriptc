@@ -40,8 +40,8 @@ export interface ProtocolDispatch {
   classes: Set<string>;
 }
 
-/** Arguments whose evaluation can neither throw nor change any value, so
- * the callee read may follow them. */
+/** Lowered arguments whose evaluation can neither throw nor change any
+ * value. */
 function effectFree(expr: IrExpr): boolean {
   const scalar = (value: IrExpr): boolean =>
     (value.type.kind === "f64" || value.type.kind === "bool") && effectFree(value);
@@ -59,6 +59,106 @@ function effectFree(expr: IrExpr): boolean {
     default:
       return false;
   }
+}
+
+/** The function, class field initializer or static block whose code runs
+ * `node`, or its source file. */
+function codeOwner(node: ts.Node): ts.Node {
+  let current = node.parent;
+  while (
+    current &&
+    !ts.isSourceFile(current) &&
+    !ts.isFunctionLike(current) &&
+    !ts.isClassStaticBlockDeclaration(current) &&
+    !ts.isPropertyDeclaration(current)
+  )
+    current = current.parent;
+  return current ?? node.getSourceFile();
+}
+
+/** A local variable or parameter that only its own function's code
+ * assigns. Reading a method can run a getter, which can then assign only
+ * bindings that its own body writes, so such a variable keeps its value
+ * across the read. */
+function ownedBinding(lowerer: Lowerer, id: ts.Identifier): boolean {
+  const symbol = lowerer.resolveValueSymbol(id);
+  if (!symbol) return false;
+  const cached = lowerer.protocolOwnedBindings.get(symbol);
+  if (cached !== undefined) return cached;
+  const decl = lowerer.checker.valueDeclarationOf(symbol);
+  let owned =
+    decl !== undefined &&
+    decl.getSourceFile() === id.getSourceFile() &&
+    ((ts.isVariableDeclaration(decl) && ts.isIdentifier(decl.name)) ||
+      (ts.isParameter(decl) && ts.isIdentifier(decl.name)));
+  if (owned && decl) {
+    const owner = codeOwner(decl);
+    const names = (node: ts.Node): boolean =>
+      ts.isIdentifier(node) &&
+      node.text === symbol.name &&
+      lowerer.resolveValueSymbol(node) === symbol;
+    const written = (target: ts.Node): boolean => {
+      let found = false;
+      const walk = (node: ts.Node): void => {
+        if (found) return;
+        if (names(node)) found = true;
+        else node.forEachChild(walk);
+      };
+      walk(target);
+      return found;
+    };
+    const visit = (node: ts.Node): void => {
+      if (!owned) return;
+      // Sloppy-mode `arguments` aliases parameters.
+      if (ts.isParameter(decl) && ts.isIdentifier(node) && node.text === "arguments") owned = false;
+      let target: ts.Node | null = null;
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      )
+        target = node.left;
+      else if (
+        (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+        (node.operator === ts.SyntaxKind.PlusPlusToken ||
+          node.operator === ts.SyntaxKind.MinusMinusToken)
+      )
+        target = node.operand;
+      else if (
+        (ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
+        !ts.isVariableDeclarationList(node.initializer)
+      )
+        target = node.initializer;
+      if (target && codeOwner(node) !== owner && written(target)) owned = false;
+      node.forEachChild(visit);
+    };
+    owner.forEachChild(visit);
+  }
+  lowerer.protocolOwnedBindings.set(symbol, owned);
+  return owned;
+}
+
+/** Arguments a method read cannot change: literals, and arithmetic over
+ * literals and owned bindings. The method may then be read after them. */
+function stableArgument(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (ts.isParenthesizedExpression(node)) return stableArgument(lowerer, node.expression);
+  if (ts.isIdentifier(node)) return ownedBinding(lowerer, node);
+  if (ts.isPrefixUnaryExpression(node)) return stableArgument(lowerer, node.operand);
+  if (ts.isBinaryExpression(node))
+    return (
+      (node.operatorToken.kind < ts.SyntaxKind.FirstAssignment ||
+        node.operatorToken.kind > ts.SyntaxKind.LastAssignment) &&
+      stableArgument(lowerer, node.left) &&
+      stableArgument(lowerer, node.right)
+    );
+  return (
+    ts.isNumericLiteral(node) ||
+    ts.isStringLiteral(node) ||
+    ts.isNoSubstitutionTemplateLiteral(node) ||
+    node.kind === ts.SyntaxKind.TrueKeyword ||
+    node.kind === ts.SyntaxKind.FalseKeyword ||
+    node.kind === ts.SyntaxKind.NullKeyword
+  );
 }
 
 interface ProtocolSignature {
@@ -148,7 +248,8 @@ export function lowerProtocolMethodCall(
   const args = call.arguments.map((arg, i) =>
     lowerer.coerceToExpected(lowerer.lowerExprExpecting(arg, params[i]!), params[i]!),
   );
-  const probed = !args.every(effectFree);
+  const probed =
+    !args.every(effectFree) || !call.arguments.every((arg) => stableArgument(lowerer, arg));
   const key = JSON.stringify([method, params.map(typeKey), typeKey(result), returnsVoid, probed]);
   let dispatch = lowerer.protocolDispatches.get(key);
   if (!dispatch) {

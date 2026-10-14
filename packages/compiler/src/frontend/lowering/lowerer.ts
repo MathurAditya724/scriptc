@@ -2285,6 +2285,8 @@ export class Lowerer {
   /** Typed calls through class-backed protocols, by signature; class
    * dynamic dispatch adds their native arms (class-protocol-dispatch.ts). */
   readonly protocolDispatches = new Map<string, ProtocolDispatch>();
+  /** Bindings no other function assigns (class-protocol-dispatch.ts). */
+  readonly protocolOwnedBindings = new Map<ts.Symbol, boolean>();
   /** Field names whose complete source census stores only lexical arrows. */
   readonly receiverFreeCallbackFields = new Set<string>();
   /** Inferred JS methods participating in an override chain keep a vtable

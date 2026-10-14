@@ -79,3 +79,65 @@ try {
 } catch (error) {
   console.log((error as Error).message, plain.greet("still"));
 }
+
+// A getter-backed method that assigns a variable passed as the argument:
+// the method is read first, so the argument sees the new value. This holds
+// for module variables, locals captured by the getter and parameters.
+interface Counter {
+  next(n: number): string;
+}
+let reads = 0;
+class Counting implements Counter {
+  get next(): (n: number) => string {
+    reads++;
+    return (n: number) => `next ${n}`;
+  }
+}
+class Fixed implements Counter {
+  next(n: number): string {
+    return `fixed ${n}`;
+  }
+}
+const counters: Counter[] = [new Counting(), new Fixed()];
+for (const counter of counters) console.log(counter.next(reads), counter.next(reads + 1));
+
+function captured(counter: Counter): string {
+  let local = 0;
+  class Bumping implements Counter {
+    get next(): (n: number) => string {
+      local = 10;
+      return (n: number) => `bumped ${n}`;
+    }
+  }
+  const bump: Counter = new Bumping();
+  return `${counter.next(local)} ${bump.next(local)}`;
+}
+console.log(captured(new Fixed()));
+
+function parameter(counter: Counter, start: number): string {
+  const reset = (): void => {
+    start = -1;
+  };
+  class Resetting implements Counter {
+    get next(): (n: number) => string {
+      reset();
+      return (n: number) => `reset ${n}`;
+    }
+  }
+  const resetting: Counter = new Resetting();
+  return `${counter.next(start)} ${resetting.next(start)}`;
+}
+console.log(parameter(new Fixed(), 5));
+
+// A method read that throws: the call never runs.
+class Unreadable implements Counter {
+  get next(): (n: number) => string {
+    throw new Error(`unreadable after ${reads} reads`);
+  }
+}
+const unreadable: Counter = new Unreadable();
+try {
+  console.log(unreadable.next(reads));
+} catch (error) {
+  console.log((error as Error).message, reads);
+}
