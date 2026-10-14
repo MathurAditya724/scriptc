@@ -88,6 +88,7 @@ import {
   type IntegerRanges,
 } from "../../ir/integer-ranges.js";
 import { unshareNodes } from "../../ir/unshare.js";
+import { copyStableCaptures } from "../../ir/capture-values.js";
 import { analyzeInt32Slots, dynamicFieldStores, type Int32Slots } from "../../ir/int32-slots.js";
 import { analyzeFinalFields, constructorClass, type FinalFields } from "../../ir/final-fields.js";
 import { foldConstantGlobals } from "../../ir/constant-globals.js";
@@ -464,7 +465,7 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
       ? addRecordResultEntries(
           scalarizeNumericRecords(
             specializeNumericCalls(
-              foldConstantGlobals(dropUnwrittenPropertyBags(mod)),
+              foldConstantGlobals(copyStableCaptures(dropUnwrittenPropertyBags(mod))),
               mangleFunction,
             ),
           ),
@@ -485,7 +486,7 @@ export function emitLlvmModuleSource(
       ? addRecordResultEntries(
           scalarizeNumericRecords(
             specializeNumericCalls(
-              foldConstantGlobals(dropUnwrittenPropertyBags(mod)),
+              foldConstantGlobals(copyStableCaptures(dropUnwrittenPropertyBags(mod))),
               mangleFunction,
             ),
           ),
@@ -5838,6 +5839,19 @@ export class LlEmitter {
     }
   }
 
+  /** Number locals declared as a copy of a capture or of a lazily boxed
+   * parameter, at the top of the body. */
+  private doubleCopies(fn: IrFunction): string[] {
+    const copies: string[] = [];
+    for (const s of fn.body) {
+      if (s.kind !== "varDecl") break;
+      if (s.init?.kind !== "varRef" || s.init.type.kind !== "f64") continue;
+      const source = s.init.localId;
+      if (this.captureIds.has(source) || this.lazyCaptureBoxes.has(source)) copies.push(s.localId);
+    }
+    return copies;
+  }
+
   private emitFunction(fn: IrFunction): string {
     const B = new BlockBuilder();
     this.B = B;
@@ -5960,7 +5974,9 @@ export class LlEmitter {
     this.bytesBounds = findBytesBounds(numericFn, this.integerRanges);
     // Debug builds keep every number local a double for the debugger's
     // variable view. Lazily boxed captured parameters keep their double,
-    // which the box is created from.
+    // which the box is created from, and so do plain copies of a capture or
+    // such a parameter (copyStableCaptures): the source already holds the
+    // double, which an i32 copy would convert and widen again on every call.
     // Initializer bindings proven int32 move into an i32 local of their
     // initializer: no other code observes the global, so the loop-carried
     // value never round-trips through the double slot.
@@ -5971,7 +5987,7 @@ export class LlEmitter {
             withInitializerLocals(fn, initializerLocals),
             this.integerRanges,
             this.int32Slots.facts(fn.name),
-            new Set(this.lazyCaptureBoxes.keys()),
+            new Set([...this.lazyCaptureBoxes.keys(), ...this.doubleCopies(fn)]),
           )
         : null;
     this.int32Locals = int32Locals?.locals ?? new Map();
