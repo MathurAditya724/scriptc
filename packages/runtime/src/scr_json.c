@@ -1483,7 +1483,7 @@ static const ScrDyn *scr_dyn_proto_next(const ScrDyn *object);
 
 /* A typed capsule can be a prototype when its checked view is an object. */
 static bool scr_dyn_typed_ref_prototype(const ScrDyn *value) {
-  if (value->kind != SCR_DYN_TYPED_REF) return false;
+  if (value->kind != SCR_DYN_TYPED_REF || scr_dyn_generator(value)) return false;
   const ScrDyn *view = scr_dyn_chain_link(value);
   return view && (view->kind == SCR_DYN_OBJ || view->kind == SCR_DYN_ARR);
 }
@@ -5688,7 +5688,9 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
  * Array.prototype before it for arrays) and, for a class instance seen as
  * `unknown`, its class's compiled methods and accessors. */
 bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
-  if (v->kind == SCR_DYN_TYPED_REF) {
+  /* Generator objects have no checked view; scr_dyn_has_key answers their
+   * prototype members. */
+  if (v->kind == SCR_DYN_TYPED_REF && !scr_dyn_generator(v)) {
     if (scr_typed_ref_array_has_own(v, key)) return true;
     const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
     if (record) {
@@ -8445,6 +8447,8 @@ ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v) {
     const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
     if (record) return scr_typed_ref_record_walk(v, record, SCR_OBJWALK_KEYS);
   }
+  /* Generator objects own no enumerable properties. */
+  if (scr_dyn_generator(v)) return scr_dyn_new_arr();
   if (v->kind == SCR_DYN_TYPED_REF) {
     /* Records, arrays and class instances walk their checked view, whose
      * prototype chain holds anything set through it. */
