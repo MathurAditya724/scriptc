@@ -53,9 +53,9 @@ export interface ShapeHost {
    * of being empty (llvm/regions.ts). */
   regions?: RegionHooks | null;
   /** The alias tag of a runtime word that lifetime-region code reads and
-   * writes outside every field: the chunk count, the chunk owner and the
-   * class cursors (", !tbaa !N", or "" in debug builds). */
-  regionAliasTag?(word: "count" | "owner" | "cursor"): string;
+   * writes outside every field: the chunk count, the chunk owner, the class
+   * cursors and scr_region_counting (", !tbaa !N", or "" in debug builds). */
+  regionAliasTag?(word: "count" | "owner" | "cursor" | "counting"): string;
   /** Emit the live-object audit notes (`scr_obj_alloc_note` /
    * `scr_obj_free_note`) in emitted new/free helpers. Only runtimes built
    * with SCR_RC_AUDIT (the sanitized lane) count them; release and dev

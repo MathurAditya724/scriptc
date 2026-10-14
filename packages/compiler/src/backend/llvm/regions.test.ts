@@ -108,18 +108,23 @@ test("ProgramLifetime instances live in the current region and count in their ch
   const llvm = emitLlvmModule(module(), { pointerBits: 64 });
   for (const cls of ["Node", "Leaf"]) {
     const struct = mangleClassStruct(cls);
-    // new: the cursor fast path, the chunk count of the first reference,
-    // the runtime's slow path, and the program-lifetime count publication
-    // still reads.
+    // new: the cursor fast path, the runtime's slow path, and the
+    // program-lifetime count publication still reads.
     const nw = body(llvm, mangleClassNew(cls));
     expect(nw, cls).toContain(`load ptr, ptr @${struct}.rcur`);
     expect(nw, cls).toContain(
       `call ptr @scr_region_alloc(ptr @${struct}.rcur, ptr @${struct}.rcls)`,
     );
-    expect(nw, cls).toMatch(/and i64 %rgn\.i, 2097151/);
+    // The first reference is implied: allocation leaves the chunk count alone.
+    expect(nw, cls).not.toContain("2097151");
     expect(nw, cls).toContain("store i64 -9223372036854775808, ptr %o");
     expect(nw, cls).not.toContain("scr_rt_calloc");
-    // retain/release: the chunk count, NULL-tolerant.
+    // retain/release: the chunk count, NULL-tolerant, once a region
+    // exists, and only in chunks that have an owner (freeable regions).
+    expect(body(llvm, mangleClassRetain(cls)), cls).toMatch(
+      /%on = load i8, ptr @scr_region_counting, !tbaa !\d+\n {2}%idle = icmp eq i8 %on, 0/,
+    );
+    expect(body(llvm, mangleClassRetain(cls)), cls).toContain("%mine = icmp ne ptr %owner, null");
     expect(body(llvm, mangleClassRetain(cls)), cls).toMatch(/add i64 %n, 1/);
     expect(body(llvm, mangleClassRelease(cls)), cls).toMatch(/sub i64 %n, 1/);
     expect(body(llvm, mangleClassRelease(cls)), cls).toContain("icmp eq ptr %o, null");
@@ -180,6 +185,7 @@ test("walkers cover the ordinary classes and records that can reach a region", (
 test("worker executables count only their own chunks", () => {
   const llvm = emitLlvmModule({ ...module(), workers: true }, { pointerBits: 64 });
   const retain = body(llvm, mangleClassRetain("Node"));
+  expect(retain).toContain("load atomic i8, ptr @scr_region_counting unordered, align 1");
   expect(retain).toContain("call ptr @llvm.threadlocal.address.p0(ptr @scr_thread_hot)");
   expect(retain).toMatch(/icmp eq ptr %owner, %self\n {2}br i1 %mine, label %count, label %done/);
   expect(llvm).toMatch(/@sc_o_Node\.rcur = internal thread_local(\(localexec\))? global/);

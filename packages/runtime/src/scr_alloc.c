@@ -992,3 +992,12 @@ void scr_sa_free_foreign(void *p) { free(p); }
 
 void *scr_rt_calloc(size_t n) { return scr_mem_calloc(n); }
 void scr_rt_free(void *p) { scr_mem_free(p); }
+
+void scr_mem_prefault(void *lo, void *hi) {
+#if SCR_SMALL_ALLOC && defined(SCR_SA_PREFAULT)
+  scr_sa_prefault(lo, hi);
+#else
+  (void)lo;
+  (void)hi;
+#endif
+}

@@ -38,25 +38,27 @@ typedef struct Node {
   double value;
 } Node;
 
-static void *node_retain(void *o) {
-  if (o) {
-    ScrRgnChunk *c = scr_rgn_chunk_of(o);
+/* The emitted retain and release: nothing before the first region exists,
+ * then only the calling thread's chunks of freeable regions. */
+static ScrRgnChunk *counted_chunk(void *o) {
+  if (!atomic_load_explicit(&scr_region_counting, memory_order_relaxed) || !o) return NULL;
+  ScrRgnChunk *c = scr_rgn_chunk_of(o);
 #ifdef SCR_WORKERS
-    if (c->owner == (void *)&scr_thread_hot)
+  return c->owner == (void *)&scr_thread_hot ? c : NULL;
+#else
+  return c->owner ? c : NULL;
 #endif
-      c->count++;
-  }
+}
+
+static void *node_retain(void *o) {
+  ScrRgnChunk *c = counted_chunk(o);
+  if (c) c->count++;
   return o;
 }
 
 static void node_release(void *o) {
-  if (o) {
-    ScrRgnChunk *c = scr_rgn_chunk_of(o);
-#ifdef SCR_WORKERS
-    if (c->owner == (void *)&scr_thread_hot)
-#endif
-      c->count--;
-  }
+  ScrRgnChunk *c = counted_chunk(o);
+  if (c) c->count--;
 }
 
 static const ScrArrOps node_ops = {node_retain, node_release, NULL};
@@ -130,7 +132,6 @@ static Node *node_new(double value) {
   char *p = node_cursor.bump;
   if (p && p + sizeof(Node) <= node_cursor.limit) {
     node_cursor.bump = p + sizeof(Node);
-    scr_rgn_chunk_of(p)->count++;
     n = (Node *)p;
   } else n = scr_region_alloc(&node_cursor, &node_cls);
   n->rc = (size_t)1 << (sizeof(size_t) * 8 - 1); /* programLifetimeRc */
