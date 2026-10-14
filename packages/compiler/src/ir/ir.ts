@@ -1359,6 +1359,11 @@ export const RUNTIME_ERROR_CLASSES: ReadonlyMap<
   ["%ReferenceError", { lib: "ReferenceError", kind: 5, base: "%Error" }],
   ["%EvalError", { lib: "EvalError", kind: 6, base: "%Error" }],
   ["%URIError", { lib: "URIError", kind: 7, base: "%Error" }],
+  // AggregateError — Promise.any's rejection and its own constructor. Its
+  // `errors` list lives in a runtime-side slot beyond the ScrError prefix
+  // (the DOMException arrangement), read through error.aggregateErrors, so
+  // user `extends AggregateError` is fenced too.
+  ["%AggregateError", { lib: "AggregateError", kind: 8, base: "%Error" }],
 ]);
 
 /** The runtime-provided node:events EventEmitter class (ScrEmitter /
@@ -2838,16 +2843,9 @@ export type IrExpr =
    * shape (their values have the shape's indexValue type — dyn included);
    * they insert into the overflow map in list order, interleaved with the
    * declared writes (one list keeps JS source-order evaluation). */
-  /** Entries flagged `drop` are fields the shape MAPPING dropped (the
-   * PromiseSettledResult honest subset — SEMANTICS.md 46): the value
-   * expression still evaluates in its source-order slot (the awaited
-   * mapper in `{ status: "fulfilled", value: await fn(...) }` must run and
-   * may throw), but nothing is stored — the emitter releases the result
-   * with the statement frame. Any value type is legal here, void included
-   * (an awaited Promise<void>). */
   | {
       kind: "recordLit";
-      fields: { name: string; value: IrExpr; overflow?: true; drop?: true }[];
+      fields: { name: string; value: IrExpr; overflow?: true }[];
       type: IrType;
       loc: SrcLoc;
     }
@@ -3336,6 +3334,12 @@ export type IrExpr =
    * same-type entries share the runtime's copy adapter, arm entries wrap
    * into the result union, sub-union entries re-tag arm-wise. First
    * settle wins; rejections copy raw and count handled on the entry.
+   * promise.allSettled / promise.any: ONE arg, an array of promises
+   * (Promise.all's countdown machinery). allSettled's type is a promise
+   * of the PromiseSettledResult union array — the backend's per-entry
+   * store adapter builds the fulfilled/rejected record arm; any's type is
+   * the entries' own promise type (the first fulfillment copies through;
+   * exhaustion rejects with an AggregateError of the dyn reasons).
    * promise.reject: one %Error-rooted arg (the reason — rejection
    * payloads share the thrown-Error representation), type is the
    * context-named result promise; the backend mints a fresh promise and
@@ -3358,6 +3362,8 @@ export type IrExpr =
         | "console.error"
         | "promise.race"
         | "promise.all"
+        | "promise.allSettled"
+        | "promise.any"
         | "promise.reject"
         | "promise.resolve"
         | "module.await"

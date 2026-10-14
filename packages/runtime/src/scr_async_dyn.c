@@ -784,8 +784,15 @@ void scr_process_emit_warning(ScrDyn *args) {
  * fulfillment answers the undefined value, and the defensive scalar arms
  * cover payload kinds a direct box could theoretically carry), or NULL
  * with the rejection re-thrown into the awaiter. */
+static ScrDyn *scr_dyn_promise_payload(ScrPromise *p);
+
 ScrDyn *scr_await_dyn(ScrPromise *p) {
   if (!scr_promise_await_settled(p)) return NULL;
+  return scr_dyn_promise_payload(p);
+}
+
+/* A fulfilled dyn-crossing promise's payload as a dyn value (+1). */
+static ScrDyn *scr_dyn_promise_payload(ScrPromise *p) {
   switch (scr_promise_payload_kind(p)) {
   case SCR_EXC_F64: return scr_dyn_new_num(scr_promise_payload_num(p));
   case SCR_EXC_BOOL: return scr_dyn_new_bool(scr_promise_payload_flag(p));
@@ -888,44 +895,258 @@ static void scr_dyn_all_result(ScrPromise *destination, ScrPromise *source) {
   scr_promise_fulfill_ref(destination, result, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
 }
 
-static const ScrArrOps scr_promise_arr_ops = { scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v };
 static const ScrArrOps scr_dyn_arr_ops = { scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v };
 
-ScrPromise *scr_dyn_promise_all(const ScrDyn *entries) {
-  ScrArr *promises = scr_arr_new_ops(&scr_promise_arr_ops, entries->v.arr.len);
-  ScrArr *values = scr_arr_new_ops(&scr_dyn_arr_ops, entries->v.arr.len);
-  for (size_t i = 0; i < entries->v.arr.len; i++) {
-    ScrDyn *value = entries->v.arr.items[i];
-    ScrPromise *source;
-    if (value->kind == SCR_DYN_PROMISE) source = scr_promise_retain(value->v.promise);
-    else {
-      source = scr_promise_new();
-      if (value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_FUNC || value->kind == SCR_DYN_PROXY) {
-        ScrStr *key = scr_str_new("then", 4);
-        ScrDyn *then = value->kind == SCR_DYN_PROXY ? scr_dyn_proxy_get(value, key)
-          : value->kind == SCR_DYN_FUNC ? scr_dyn_fn_get(value, "then", 4) : scr_dyn_obj_read(value, "then", 4);
-        scr_str_release(key);
-        if (then && then->kind == SCR_DYN_FUNC) {
-          static const char message[] = "Promise.all over custom thenables is not supported yet";
-          scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-        }
-        scr_dyn_release(then);
-      }
-      if (scr_exc_pending()) scr_promise_reject_pending(source);
-      else scr_promise_fulfill_ref(source, scr_dyn_retain(value), scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
-    }
-    /* scr_promise_all subscribes a reaction job to each element, even an
-     * already fulfilled plain value, preserving input order and Node's
-     * hops. */
-    scr_arr_push_ref(promises, source);
+/* ── Thenable adoption (PromiseResolve over a checked-dynamic value) ──
+ * A non-promise object whose `then` is callable resolves through
+ * NewPromiseResolveThenableJob: one microtask later `then` runs with the
+ * thenable as `this` and a fresh resolve/reject pair, the first call of
+ * which wins (a throw after it is ignored; a throw before it rejects).
+ * The resolve function follows the full resolution procedure: native
+ * promises adopt through scr_promise_resolve_dyn (its job then
+ * reaction), further thenables queue another job, everything else
+ * fulfills. */
+typedef struct {
+  size_t rc;
+  bool called;
+  ScrPromise *promise;
+  ScrDyn *reader;   /* the then reader for further thenables (+1, or NULL) */
+  ScrDyn *thenable; /* +1 until the job runs */
+  ScrDyn *then;     /* +1 until the job runs */
+} ScrDynThenState;
+
+static void *scr_dyn_then_state_retain_v(void *p) {
+  ((ScrDynThenState *)p)->rc++;
+  return p;
+}
+
+static void scr_dyn_then_state_release_v(void *p) {
+  ScrDynThenState *state = p;
+  if (--state->rc > 0) return;
+  scr_promise_release(state->promise);
+  scr_dyn_release(state->reader);
+  scr_dyn_release(state->thenable);
+  scr_dyn_release(state->then);
+  free(state);
+}
+
+static void scr_dyn_thenable_schedule(ScrPromise *target, const ScrDyn *thenable, const ScrDyn *then,
+                                      const ScrDyn *reader);
+
+/* The `then` of a resolution value: +1 when callable, NULL otherwise or
+ * when the read threw (the exception stays pending). Program class
+ * instances read through `reader`, the compiled property dispatch (no
+ * reader: their own fields only). */
+static ScrDyn *scr_dyn_then_of(const ScrDyn *value, const ScrDyn *reader) {
+  if (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_FUNC && value->kind != SCR_DYN_PROXY &&
+      value->kind != SCR_DYN_TYPED_REF)
+    return NULL;
+  ScrDyn *then = NULL;
+  if (value->kind == SCR_DYN_TYPED_REF && reader) {
+    ScrDyn *arg = (ScrDyn *)value;
+    then = scr_dyn_call(reader, &arg, 1, "then");
+  } else if (value->kind == SCR_DYN_PROXY) {
+    ScrStr *key = scr_str_new("then", 4);
+    then = scr_dyn_proxy_get(value, key);
+    scr_str_release(key);
+  } else if (value->kind == SCR_DYN_FUNC) {
+    then = scr_dyn_fn_get(value, "then", 4);
+  } else if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(value);
+    if (view) then = scr_dyn_obj_read(view, "then", 4);
+    scr_dyn_release(view);
+  } else {
+    then = scr_dyn_obj_read(value, "then", 4);
   }
-  ScrPromise *all = scr_promise_all(promises, values, scr_promise_all_store_ref);
-  ScrPromise *result = scr_promise_new();
-  scr_promise_race_add(result, all, scr_dyn_all_result);
-  scr_promise_release(all);
-  scr_arr_release(values);
-  scr_arr_release(promises);
+  if (then && then->kind == SCR_DYN_FUNC) return then;
+  scr_dyn_release(then);
+  return NULL;
+}
+
+/* Resolves `target` with `value` (borrowed). */
+static void scr_dyn_resolve_value(ScrPromise *target, ScrDyn *value, const ScrDyn *reader) {
+  if (value->kind == SCR_DYN_PROMISE) {
+    scr_promise_resolve_dyn(target, scr_dyn_retain(value));
+    return;
+  }
+  ScrDyn *then = scr_dyn_then_of(value, reader);
+  if (scr_exc_pending()) {
+    scr_promise_reject_pending(target);
+  } else if (then) {
+    scr_dyn_thenable_schedule(target, value, then, reader);
+  } else {
+    scr_promise_fulfill_ref(target, scr_dyn_retain(value), scr_dyn_retain_v, scr_dyn_release_v,
+                            scr_dyn_trace_v);
+  }
+  scr_dyn_release(then);
+}
+
+/* The job and both resolving functions share one box holding the state;
+ * box reads (scr_box_get_ref) answer +1 references. */
+static ScrDyn *scr_dyn_then_resolve_call(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  ScrDynThenState *state = scr_box_get_ref(cb->caps[0]);
+  if (!state->called) {
+    state->called = true;
+    scr_dyn_resolve_value(state->promise, argc ? args[0] : scr_dyn_undefined(), state->reader);
+  }
+  scr_dyn_then_state_release_v(state);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static ScrDyn *scr_dyn_then_reject_call(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  ScrDynThenState *state = scr_box_get_ref(cb->caps[0]);
+  if (!state->called) {
+    state->called = true;
+    scr_dyn_throw(scr_dyn_retain(argc ? args[0] : scr_dyn_undefined()));
+    scr_promise_reject_pending(state->promise);
+  }
+  scr_dyn_then_state_release_v(state);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static ScrDyn *scr_dyn_then_function(ScrBox *box, ScrDynThunk thunk) {
+  ScrClosure *closure = scr_closure_new((void *)thunk, 1);
+  closure->caps[0] = scr_box_retain(box);
+  return scr_dyn_new_func(closure, thunk, 1, "(value)", "");
+}
+
+static void scr_dyn_thenable_job(ScrClosure *job) {
+  ScrDynThenState *state = scr_box_get_ref(job->caps[0]);
+  ScrDyn *thenable = state->thenable;
+  ScrDyn *then = state->then;
+  state->thenable = state->then = NULL; /* the references move here */
+  ScrDyn *args[2] = {
+    scr_dyn_then_function(job->caps[0], scr_dyn_then_resolve_call),
+    scr_dyn_then_function(job->caps[0], scr_dyn_then_reject_call),
+  };
+  scr_dyn_this_push_dyn(thenable);
+  ScrDyn *result = scr_dyn_call(then, args, 2, "then");
+  scr_dyn_this_pop();
+  if (result) {
+    scr_dyn_release(result);
+  } else if (!state->called) {
+    state->called = true;
+    scr_promise_reject_pending(state->promise);
+  } else {
+    scr_exc_clear();
+  }
+  scr_dyn_release(args[0]);
+  scr_dyn_release(args[1]);
+  scr_dyn_release(then);
+  scr_dyn_release(thenable);
+  scr_dyn_then_state_release_v(state);
+}
+
+static void scr_dyn_thenable_schedule(ScrPromise *target, const ScrDyn *thenable, const ScrDyn *then,
+                                      const ScrDyn *reader) {
+  ScrDynThenState *state = malloc(sizeof *state);
+  if (!state) scr_ad_oom();
+  state->rc = 1;
+  state->called = false;
+  state->promise = scr_promise_retain(target);
+  state->reader = reader ? scr_dyn_retain((ScrDyn *)reader) : NULL;
+  state->thenable = scr_dyn_retain((ScrDyn *)thenable);
+  state->then = scr_dyn_retain((ScrDyn *)then);
+  ScrClosure *job = scr_closure_new((void *)&scr_dyn_thenable_job, 1);
+  job->caps[0] = scr_box_new_obj(scr_dyn_then_state_retain_v, scr_dyn_then_state_release_v, NULL);
+  scr_box_set_ref(job->caps[0], state); /* the creation reference moves in */
+  scr_queue_microtask(job);
+}
+
+/* ── Promise.all / allSettled / any over checked-dynamic entries ──────
+ * Each element goes through PromiseResolve: a native promise is itself,
+ * a thenable gets a fresh promise and its resolve job, anything else a
+ * fulfilled promise (a throwing `then` read rejects it). The element
+ * joins the combinator right after, so a thenable's job sits between
+ * the jobs of the entries around it, exactly Node's iteration. */
+static ScrPromise *scr_dyn_promise_entry(ScrCombine *c, ScrDyn *value, const ScrDyn *reader) {
+  if (value->kind == SCR_DYN_PROMISE) return scr_promise_retain(value->v.promise);
+  ScrPromise *source = scr_promise_new();
+  ScrDyn *then = scr_dyn_then_of(value, reader);
+  if (scr_exc_pending()) {
+    scr_promise_reject_pending(source);
+  } else if (then) {
+    scr_promise_combine_flush(c);
+    scr_dyn_thenable_schedule(source, value, then, reader);
+  } else {
+    scr_promise_fulfill_ref(source, scr_dyn_retain(value), scr_dyn_retain_v, scr_dyn_release_v,
+                            scr_dyn_trace_v);
+  }
+  scr_dyn_release(then);
+  return source;
+}
+
+static void scr_dyn_settled_store(ScrArr *a, double i, ScrPromise *src) {
+  ScrDyn *record = scr_dyn_new_obj();
+  bool fulfilled = !scr_promise_is_rejected(src);
+  ScrStr *status = fulfilled ? scr_str_new("fulfilled", 9) : scr_str_new("rejected", 8);
+  scr_dyn_obj_set(record, "status", 6, scr_dyn_new_str(status));
+  scr_str_release(status);
+  if (fulfilled) scr_dyn_obj_set(record, "value", 5, scr_dyn_promise_payload(src));
+  else scr_dyn_obj_set(record, "reason", 6, scr_promise_reason_dyn(src));
+  scr_arr_set_ref(a, i, record);
+}
+
+static void scr_promise_any_store(ScrArr *a, double i, ScrPromise *src) {
+  scr_arr_set_ref(a, i, scr_promise_reason_dyn(src));
+}
+
+static void scr_promise_any_fail(ScrPromise *result, ScrArr *errors) {
+  static const char message[] = "All promises were rejected";
+  ScrStr *text = scr_str_new(message, sizeof message - 1);
+  ScrDyn *m = scr_dyn_new_str(text);
+  scr_str_release(text);
+  ScrError *e = scr_aggregate_new(m, scr_dyn_undefined());
+  scr_dyn_release(m);
+  ScrDyn *list = scr_dyn_new_arr();
+  for (size_t i = 0; i < errors->len; i++) scr_dyn_arr_push(list, scr_arr_get_ref(errors, (double)i));
+  scr_aggregate_set_errors(e, list);
+  scr_dyn_release(list);
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+  scr_promise_reject_pending(result);
+}
+
+ScrPromise *scr_promise_any_typed(ScrArr *ps) {
+  ScrArr *errors = scr_arr_new_ops(&scr_dyn_arr_ops, ps->len);
+  ScrPromise *result = scr_promise_any(ps, errors, scr_promise_any_store, scr_promise_any_fail);
+  scr_arr_release(errors);
   return result;
+}
+
+static ScrPromise *scr_dyn_promise_combine(const ScrDyn *entries, const ScrDyn *reader, int mode) {
+  size_t n = entries->v.arr.len;
+  ScrArr *values = scr_arr_new_ops(&scr_dyn_arr_ops, n);
+  ScrAllStore store = mode == SCR_COMBINE_ALL           ? scr_promise_all_store_ref
+                      : mode == SCR_COMBINE_ALL_SETTLED ? scr_dyn_settled_store
+                                                        : scr_promise_any_store;
+  ScrCombine c;
+  scr_promise_combine_begin(&c, mode, n, values, store,
+                            mode == SCR_COMBINE_ANY ? scr_promise_any_fail : NULL);
+  for (size_t i = 0; i < n; i++) {
+    ScrPromise *source = scr_dyn_promise_entry(&c, entries->v.arr.items[i], reader);
+    scr_promise_combine_add(&c, source);
+    scr_promise_release(source);
+  }
+  ScrPromise *combined = scr_promise_combine_end(&c);
+  scr_arr_release(values);
+  /* any settles with an entry's own dyn value or the AggregateError. */
+  if (mode == SCR_COMBINE_ANY) return combined;
+  ScrPromise *result = scr_promise_new();
+  scr_promise_race_add(result, combined, scr_dyn_all_result);
+  scr_promise_release(combined);
+  return result;
+}
+
+ScrPromise *scr_dyn_promise_all(const ScrDyn *entries, const ScrDyn *reader) {
+  return scr_dyn_promise_combine(entries, reader, SCR_COMBINE_ALL);
+}
+
+ScrPromise *scr_dyn_promise_all_settled(const ScrDyn *entries, const ScrDyn *reader) {
+  return scr_dyn_promise_combine(entries, reader, SCR_COMBINE_ALL_SETTLED);
+}
+
+ScrPromise *scr_dyn_promise_any(const ScrDyn *entries, const ScrDyn *reader) {
+  return scr_dyn_promise_combine(entries, reader, SCR_COMBINE_ANY);
 }
 
 /* The checked native WebCrypto digest entry keeps promise and ArrayBuffer results native. */

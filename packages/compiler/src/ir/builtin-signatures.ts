@@ -175,7 +175,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.defineProperty": { argTypes: [DYN, DYN, DYN], result: DYN },
   "dyn.getOwnPropertyDescriptor": { argTypes: [DYN, DYN], result: DYN },
   "dyn.arrayProtoCall": { argTypes: [DYN, STRING, DYN], result: DYN },
-  "dyn.promiseAll": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  /** Promise.all / Promise.allSettled / Promise.any over a spread
+   * checked-dynamic array: the values, the settled-record array, or the
+   * first fulfillment (AggregateError once every entry rejects).
+   * Thenable elements adopt; the second argument reads a program class
+   * instance's `then` (the compiled property dispatch). */
+  "dyn.promiseAll": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+  "dyn.promiseAllSettled": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+  "dyn.promiseAny": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   /** Bare `typeof v` on a dyn value AS A STRING (arg: the dyn value,
    * borrowed; result: an owned string) — the dyn kind's JS answer:
    * undefined→"undefined", null/object/array/bytes→"object" (JS's oldest
@@ -2560,6 +2567,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * list throws DataCloneError, nothing static is transferable). Result
    * +1 %DOMException. */
   "error.domClone": { argTypes: [null, DYN], result: VOID },
+  /** `new AggregateError(errors, message?, options?)` (scr_json.c), in
+   * spec order: newAggregate installs the message and cause (both dyn,
+   * borrowed — the message conversion can throw) and returns an owned
+   * %AggregateError; aggregateSetErrors then stores the iterated list
+   * (borrowed receiver, the dyn array borrowed and retained).
+   * aggregateErrors reads the list (+1, the same array every read). */
+  "error.newAggregate": {
+    argTypes: [DYN, DYN],
+    result: { kind: "object", className: "%AggregateError" },
+  },
+  "error.aggregateSetErrors": { argTypes: [null, DYN], result: VOID },
+  "error.aggregateErrors": { argTypes: [null], result: DYN },
   /** `d instanceof TypeError` (and the other BUILTIN error classes) on a
    * checked-dynamic value (scr_json.c): the from_error cache holds the
    * dyn↔error identity edge, so the test resolves the runtime error and

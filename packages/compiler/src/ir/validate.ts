@@ -3078,24 +3078,10 @@ function validateFunction(
         const want = recordValidation.get(shape.id)!.initializationFields;
         const seen = new Set<string>();
         for (const f of e.fields) {
-          if (f.drop || f.overflow) checkExpr(f.value);
+          if (f.overflow) checkExpr(f.value);
           else checkSlotValue(f.value);
           if (seen.has(f.name)) err(`recordLit initializes field "${f.name}" twice`, e.loc);
           seen.add(f.name);
-          if (f.drop) {
-            // A mapping-dropped field (the PromiseSettledResult honest
-            // subset): evaluated, never stored — it must NOT name a
-            // declared field (that would silently drop a real store),
-            // and its value may be any type, void included.
-            if (f.overflow) err(`recordLit drop entry "${f.name}" flagged overflow too`, e.loc);
-            if (want.has(f.name)) {
-              err(
-                `recordLit drop entry "${f.name}" shadows a declared field of shape ${shape.id}`,
-                e.loc,
-              );
-            }
-            continue;
-          }
           if (f.overflow) {
             // Overflow entries exist only on index-signature shapes, name
             // no declared field, and carry the index-value type exactly
@@ -3116,7 +3102,7 @@ function validateFunction(
           if (!ft) err(`shape ${shape.id} has no field "${f.name}"`, e.loc);
           else expectType(f.value, ft, `recordLit field "${f.name}"`);
         }
-        if (e.fields.filter((f) => !f.overflow && !f.drop).length !== shape.fields.length) {
+        if (e.fields.filter((f) => !f.overflow).length !== shape.fields.length) {
           err(`recordLit does not initialize every field of shape ${shape.id}`, e.loc);
         }
         break;
@@ -3750,6 +3736,25 @@ function validateFunction(
       if (e.type.kind !== "promise") err("promise.all must be promise-typed", e.loc);
       else if (e.type.inner.kind !== "array" && e.type.inner.kind !== "void") {
         err("promise.all result must be a promise of an array (or void)", e.loc);
+      }
+      return;
+    }
+    if (e.name === "promise.allSettled" || e.name === "promise.any") {
+      if (e.args.length !== 1) err(`${e.name} takes exactly one argument`, e.loc);
+      for (const a of e.args) {
+        checkExpr(a);
+        if (a.type.kind !== "array" || a.type.elem.kind !== "promise") {
+          err(`${a.type.kind} argument to ${e.name} (needs an array of promises)`, a.loc);
+        } else if (e.name === "promise.any" && !typeEquals(a.type.elem, e.type)) {
+          err("promise.any result must be the entries' promise type", e.loc);
+        }
+      }
+      if (e.type.kind !== "promise") err(`${e.name} must be promise-typed`, e.loc);
+      else if (
+        e.name === "promise.allSettled" &&
+        (e.type.inner.kind !== "array" || e.type.inner.elem.kind !== "union")
+      ) {
+        err("promise.allSettled result must be a promise of a settled-record union array", e.loc);
       }
       return;
     }
@@ -4945,6 +4950,15 @@ function validateFunction(
       // Which builtin the runtime constructs is named by the result type.
       if (!isBuiltinErrorObject(e.type)) {
         err(`libCall ${e.fn} must return a builtin error class, got ${e.type.kind}`, e.loc);
+      }
+      return true;
+    }
+    if (e.fn === "error.aggregateSetErrors" || e.fn === "error.aggregateErrors") {
+      // Receiver: exactly %AggregateError (subclassing is fenced — the
+      // hidden runtime slot admits no other layout).
+      const recv = e.args[0];
+      if (!recv || recv.type.kind !== "object" || recv.type.className !== "%AggregateError") {
+        err(`libCall ${e.fn} receiver must be %AggregateError`, e.loc);
       }
       return true;
     }

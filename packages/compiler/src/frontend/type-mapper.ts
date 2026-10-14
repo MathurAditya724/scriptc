@@ -2768,13 +2768,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     }
   }
   // PromiseSettledResult<T>'s parts: the lib's PromiseFulfilledResult<T> /
-  // PromiseRejectedResult interfaces map to the documented HONEST SUBSET
-  // record { status: string }. The manual-allSettled pattern this
-  // mapping exists for (pMap) discards them. Construction literals still
-  // EVALUATE a dropped initializer for its effects — the awaited mapper —
-  // via the object-literal lowering's drop path. Both interfaces intern
-  // the SAME shape, so the settled union collapses to one record arm and
-  // status keeps its string reads/comparisons. SEMANTICS.md 46.
+  // PromiseRejectedResult interfaces map to the records { status, value }
+  // and { status, reason } (the reason is `any`, a dyn slot), interned
+  // explicitly. The settled union is a two-record union discriminated by
+  // the `status` literals, so `r.status === "fulfilled"` narrows to the
+  // arm that reads `value`.
   // net/dgram AddressInfo and dgram RemoteInfo: stdlib interfaces over
   // data properties, interned EXPLICITLY (the record path's provenance
   // fence keeps .d.ts shapes out of the structural walk — the
@@ -3135,10 +3133,43 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ]),
     };
   }
-  if (isStdlibInterface("PromiseFulfilledResult") || isStdlibInterface("PromiseRejectedResult")) {
+  if (isStdlibInterface("PromiseFulfilledResult")) {
+    const arg = checker.getTypeArguments(widened as ts.TypeReference)[0];
+    if (!arg) return null;
+    // A valueless fulfillment (Promise<void>) still has its `value`
+    // property, always undefined: a dyn slot holds it, as it holds any.
+    const mapped =
+      arg.flags &
+      (ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Never | ts.TypeFlags.Any)
+        ? DYN
+        : mapType(arg, ctx);
+    if (!mapped) return null;
+    const valueT = mapped.kind === "void" || isUnitType(mapped) ? DYN : mapped;
     return {
       kind: "record",
-      shapeId: ctx.shapes.intern([{ name: "status", type: STRING }], false, undefined, ["status"]),
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "status", type: STRING },
+          { name: "value", type: valueT },
+        ],
+        false,
+        undefined,
+        ["status", "value"],
+      ),
+    };
+  }
+  if (isStdlibInterface("PromiseRejectedResult")) {
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "reason", type: DYN },
+          { name: "status", type: STRING },
+        ],
+        false,
+        undefined,
+        ["status", "reason"],
+      ),
     };
   }
   // Function types: exactly one call signature, no generics, and every
@@ -3475,7 +3506,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       const byKey = new Map<string, IrType>();
       const recordParts: { source: ts.Type; mapped: IrType & { kind: "record" } }[] = [];
       const substitutedUnions: IrUnionDef[] = [];
-      for (const part of ts.constituentTypes(widened)) {
+      // The lib's `T extends readonly unknown[] | []` idiom (Promise.all,
+      // allSettled) maps an array input to `X[] | []`: the empty tuple is
+      // one of the array's own values.
+      const parts = ts.constituentTypes(widened);
+      const emptyTuple = (part: ts.Type): boolean =>
+        checker.isTupleType(part) &&
+        checker.getTypeArguments(part as ts.TypeReference).length === 0;
+      const hasArrayPart = parts.some((part) => checker.isArrayType(part));
+      for (const part of parts) {
+        if (hasArrayPart && emptyTuple(part)) continue;
         // TypeScript's client can retain impossible intersections in a
         // distributed union. They have no inhabitants and no runtime tag.
         if (checker.isNeverType(part)) continue;

@@ -33,7 +33,7 @@ static const char *const scr_error_names[SCR_ERR_COUNT] = {
     /* DOMException's DEFAULT name is "Error" too (WebIDL: the name
      * parameter defaults to "Error"); the class identity lives in the
      * vtable, never the name. */
-    "Error", "ReferenceError", "EvalError", "URIError"};
+    "Error", "ReferenceError", "EvalError", "URIError", "AggregateError"};
 
 void scr_error_trace(void *e, ScrTraceVisit visit, void *ctx) {
   /* name/message are strings — never collector-headered; nothing to visit. */
@@ -71,6 +71,21 @@ void scr_domex_install_cause_drop(void (*fn)(void *obj)) {
 static void scr_domex_gcfree(void *obj) {
   ScrDomException *d = (ScrDomException *)obj;
   if (d->cause != NULL && scr_domex_cause_drop != NULL) scr_domex_cause_drop(obj);
+  scr_error_gcfree(obj);
+}
+
+/* AggregateError teardown: the ScrError fields plus the owned errors
+ * list, dropped through the hook scr_json.c installs before any list can
+ * exist (the same split as the DOMException cause). */
+static SCR_TL void (*scr_aggregate_errors_drop)(void *obj) = NULL;
+
+void scr_aggregate_install_errors_drop(void (*fn)(void *obj)) {
+  scr_aggregate_errors_drop = fn;
+}
+
+static void scr_aggregate_gcfree(void *obj) {
+  ScrAggregateError *a = (ScrAggregateError *)obj;
+  if (a->errors != NULL && scr_aggregate_errors_drop != NULL) scr_aggregate_errors_drop(obj);
   scr_error_gcfree(obj);
 }
 
@@ -119,10 +134,26 @@ static void scr_domex_reld(void *obj) {
   }
 }
 
+static void scr_aggregate_destroy(void *obj) {
+  ScrAggregateError *a = (ScrAggregateError *)obj;
+  if (a->errors != NULL && scr_aggregate_errors_drop != NULL) scr_aggregate_errors_drop(obj);
+  scr_error_destroy(obj);
+}
+
+static void scr_aggregate_reld(void *obj) {
+  ScrAggregateError *a = (ScrAggregateError *)obj;
+  if (--a->base.rc == 0) {
+    if (scr_error_traced) scr_cyc_dead(a);
+    scr_rc_destroy(obj, scr_aggregate_destroy);
+  } else if (scr_error_traced) {
+    scr_cyc_released(a);
+  }
+}
+
 /* Defaults cover only the instants before main() stamps the program's real
  * preorder intervals; release is permanent. */
 SCR_TL ScrVt scr_error_vts[SCR_ERR_COUNT] = {
-    {0, 7, &scr_error_reld}, /* Error */
+    {0, 8, &scr_error_reld}, /* Error */
     {1, 1, &scr_error_reld}, /* TypeError */
     {2, 2, &scr_error_reld}, /* RangeError */
     {3, 3, &scr_error_reld}, /* SyntaxError */
@@ -130,6 +161,7 @@ SCR_TL ScrVt scr_error_vts[SCR_ERR_COUNT] = {
     {5, 5, &scr_error_reld}, /* ReferenceError */
     {6, 6, &scr_error_reld}, /* EvalError */
     {7, 7, &scr_error_reld}, /* URIError */
+    {8, 8, &scr_aggregate_reld}, /* AggregateError */
 };
 
 ScrError *scr_error_retain(ScrError *e) {
@@ -169,12 +201,17 @@ ScrTraceFn scr_error_trace_arg(void) {
  * that drops the cause); calloc/cyc_alloc zeroing covers the extra
  * slots' defaults (code 0, no cause). */
 static ScrError *scr_error_alloc(int kind) {
-  size_t size = kind == SCR_ERR_DOMEX ? sizeof(ScrDomException) : sizeof(ScrError);
+  size_t size = kind == SCR_ERR_DOMEX       ? sizeof(ScrDomException)
+                : kind == SCR_ERR_AGGREGATE ? sizeof(ScrAggregateError)
+                                            : sizeof(ScrError);
   static const ScrCycType error_type = { &scr_error_trace, &scr_error_gcfree, SCR_CYC_KIND_ERROR };
   static const ScrCycType domex_type = { &scr_error_trace, &scr_domex_gcfree, SCR_CYC_KIND_DOMEXCEPTION };
+  static const ScrCycType aggregate_type = { &scr_error_trace, &scr_aggregate_gcfree, SCR_CYC_KIND_ERROR };
   ScrError *e;
   if (scr_error_traced) {
-    e = scr_cyc_alloc(size, kind == SCR_ERR_DOMEX ? &domex_type : &error_type);
+    e = scr_cyc_alloc(size, kind == SCR_ERR_DOMEX       ? &domex_type
+                            : kind == SCR_ERR_AGGREGATE ? &aggregate_type
+                                                        : &error_type);
   } else {
     e = calloc(1, size);
     if (!e) scr_error_oom();
@@ -396,6 +433,8 @@ double scr_domex_code_of(const ScrStr *name) {
 /* The blank allocation scr_json.c's constructors fill (scr_error_alloc
  * stays private — the mode-aware sizing/teardown selection lives here). */
 ScrError *scr_domex_alloc(void) { return scr_error_alloc(SCR_ERR_DOMEX); }
+
+ScrError *scr_aggregate_alloc(void) { return scr_error_alloc(SCR_ERR_AGGREGATE); }
 
 double scr_domex_code(ScrError *e) { return ((ScrDomException *)e)->dom_code; }
 

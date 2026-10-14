@@ -621,6 +621,7 @@ const ERROR_KIND_NAMES: readonly string[] = [
   "ReferenceError",
   "EvalError",
   "URIError",
+  "AggregateError",
 ];
 
 /** A short description of a node that seeds the may-throw fixpoint. */

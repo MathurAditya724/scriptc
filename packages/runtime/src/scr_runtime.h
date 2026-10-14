@@ -1104,7 +1104,8 @@ enum {
   SCR_ERR_REFERENCE = 5,
   SCR_ERR_EVAL = 6,
   SCR_ERR_URI = 7,
-  SCR_ERR_COUNT = 8,
+  SCR_ERR_AGGREGATE = 8, /* AggregateError — ScrAggregateError, the wider layout */
+  SCR_ERR_COUNT = 9,
 };
 
 extern SCR_TL ScrVt scr_error_vts[SCR_ERR_COUNT]; /* indexed by SCR_ERR_*; main() stamps pre/post */
@@ -1164,6 +1165,27 @@ ScrError *scr_domex_clone(ScrError *e, const struct ScrDyn *options);
  * takes ownership of the message. */
 SCR_COLD void scr_throw_domex(const char *name, const char *message);
 SCR_COLD void scr_throw_domex_str(const char *name, ScrStr *message);
+
+/* AggregateError: the ScrError prefix plus the `errors` list (a dyn
+ * array; NULL until set). Like DOMException's slots it is HIDDEN from
+ * the compiler's IR field list (user `extends AggregateError` is fenced)
+ * and read through scr_aggregate_errors. The dyn half (construction from
+ * an iterable's elements, the list itself) lives in scr_json.c; the
+ * teardown drops the list through the hook it installs. */
+typedef struct ScrAggregateError {
+  ScrError base;
+  struct ScrDyn *errors;
+} ScrAggregateError;
+ScrError *scr_aggregate_alloc(void);
+void scr_aggregate_install_errors_drop(void (*fn)(void *obj));
+/* new AggregateError(errors, message?, options?) runs in spec order:
+ * scr_aggregate_new installs the message and cause (both borrowed, dyn
+ * undefined when absent; +1, NULL with an exception pending when the
+ * message conversion throws), then the caller iterates `errors` and
+ * hands the list to scr_aggregate_set_errors. */
+ScrError *scr_aggregate_new(const struct ScrDyn *message, const struct ScrDyn *options);
+void scr_aggregate_set_errors(ScrError *e, struct ScrDyn *errors); /* both borrowed */
+struct ScrDyn *scr_aggregate_errors(ScrError *e); /* +1 */
 
 /* Switch runtime-side error allocation to collector-headered (called from
  * main() when the compiler's cycle fixpoint marks the hierarchy). */
@@ -5258,7 +5280,11 @@ ScrDyn *scr_dyn_new_promise_adapting(ScrPromise *src,
                                      void (*adapt)(ScrPromise *dst, ScrPromise *src));
 /* BORROWED peek at the boxed promise; NULL when d is not a promise box. */
 ScrPromise *scr_dyn_promise_of(const ScrDyn *d);
-ScrPromise *scr_dyn_promise_all(const ScrDyn *entries);
+/* Promise.all / allSettled / any over a spread dyn array (borrowed);
+ * `reader` (borrowed) reads a program class instance's `then`. +1. */
+ScrPromise *scr_dyn_promise_all(const ScrDyn *entries, const ScrDyn *reader);
+ScrPromise *scr_dyn_promise_all_settled(const ScrDyn *entries, const ScrDyn *reader);
+ScrPromise *scr_dyn_promise_any(const ScrDyn *entries, const ScrDyn *reader);
 
 /* Native predicates for typed reference capsules and boxed errors. */
 bool scr_dyn_ref_typeof_is(const ScrDyn *d, const char *name);
@@ -5683,6 +5709,43 @@ void scr_promise_race_add(ScrPromise *race, ScrPromise *in,
  * per-element-kind payload writers the compiler picks from. */
 ScrPromise *scr_promise_all(ScrArr *ps, ScrArr *values,
                              void (*store)(ScrArr *a, double i, ScrPromise *src));
+
+/* ── Promise.allSettled / Promise.any ─────────────────────────────────
+ * The same countdown and per-entry reaction jobs as Promise.all, with
+ * the mode deciding what an entry's job does. allSettled stores EVERY
+ * settlement through `store` (the emitted or dyn settled-record builder)
+ * and fulfills with the array once every entry has settled. any settles
+ * the result from the first fulfillment (same inner type — a copy),
+ * stores each rejection reason into `errors` at its input index, and
+ * once every entry has rejected calls `fail(result, errors)`, which
+ * rejects the result (the AggregateError). The empty array fulfills /
+ * fails immediately. Both BORROW their arrays and return +1.
+ *
+ * The builder underneath (ScrCombine) takes entries one at a time, so a
+ * caller that runs other work between entries — the dyn path's
+ * thenable jobs — keeps Node's queue order: settled entries batch into
+ * one job until scr_promise_combine_flush closes the batch. */
+typedef void (*ScrAllStore)(ScrArr *a, double i, ScrPromise *src);
+typedef void (*ScrAnyFail)(ScrPromise *result, ScrArr *errors);
+enum { SCR_COMBINE_ALL = 0, SCR_COMBINE_ALL_SETTLED = 1, SCR_COMBINE_ANY = 2 };
+typedef struct ScrCombine {
+  struct ScrAllState *st;
+  ScrPromise *result;
+  size_t next;          /* input index of the next entry */
+  size_t batched;       /* settled entries counted in the open batch */
+  ScrPromise *decided;  /* the open batch's first deciding entry (+1) */
+  bool open;            /* the open batch holds at least one entry */
+} ScrCombine;
+void scr_promise_combine_begin(ScrCombine *c, int mode, size_t n, ScrArr *values,
+                               ScrAllStore store, ScrAnyFail fail);
+void scr_promise_combine_add(ScrCombine *c, ScrPromise *in); /* borrowed */
+void scr_promise_combine_flush(ScrCombine *c);
+ScrPromise *scr_promise_combine_end(ScrCombine *c); /* +1 */
+ScrPromise *scr_promise_all_settled(ScrArr *ps, ScrArr *values, ScrAllStore store);
+ScrPromise *scr_promise_any(ScrArr *ps, ScrArr *errors, ScrAllStore store, ScrAnyFail fail);
+/* The typed Promise.any entry (scr_async_dyn.c): reasons collect as dyn
+ * values and exhaustion rejects with an AggregateError. */
+ScrPromise *scr_promise_any_typed(ScrArr *ps);
 void scr_promise_all_store_f64(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_all_store_bool(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_all_store_str(ScrArr *a, double i, ScrPromise *src);
@@ -5694,6 +5757,7 @@ ScrStr *scr_promise_payload_str(ScrPromise *p); /* +1 */
 void *scr_promise_payload_ref(ScrPromise *p);   /* +1 via the stored retain */
 /* Thin payload views for the gated dyn-async TU (scr_async_dyn.c). */
 int scr_promise_payload_kind(const ScrPromise *p);   /* ScrExcKind */
+bool scr_promise_is_rejected(const ScrPromise *p);
 bool scr_promise_payload_is_dyn(const ScrPromise *p);
 double scr_promise_payload_num(const ScrPromise *p);
 bool scr_promise_payload_flag(const ScrPromise *p);

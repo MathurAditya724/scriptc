@@ -299,6 +299,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Error messages use the same coercion protocol before installing cause.
   "error.newOptions",
   "error.ctorOptions",
+  "error.newAggregate",
   "error.toString",
   "error.stack",
   "error.cause",

@@ -8,6 +8,7 @@ import { mangleRecordNew } from "../mangle.js";
 import { arrNewCall, traceAdapter, traceArg, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
+import { settledStoreFor } from "./expr-callbacks.js";
 
 export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic">): LlValue {
   const B = host.B;
@@ -94,6 +95,42 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
         host.own({ name: vals, type: e.type.inner });
         const t = B.tmp();
         B.line(`${t} = call ptr @scr_promise_all(ptr ${ps.name}, ptr ${vals}, ptr @${store})`);
+        return host.own({ name: t, type: e.type });
+      }
+      if (e.name === "promise.allSettled" || e.name === "promise.any") {
+        // Promise.all's countdown combinator in its other modes. Both
+        // BORROW the frame-owned entries (and allSettled's values array).
+        const entries = e.args[0]!;
+        if (
+          e.type.kind !== "promise" ||
+          entries.type.kind !== "array" ||
+          entries.type.elem.kind !== "promise"
+        )
+          throw new InternalCompilerError(`llvm emitter bug: ${e.name} shape`);
+        const ps = host.emitExpr(entries);
+        if (e.name === "promise.any") {
+          host.declare(`declare ptr @scr_promise_any_typed(ptr)`);
+          const t = B.tmp();
+          B.line(`${t} = call ptr @scr_promise_any_typed(ptr ${ps.name})`);
+          return host.own({ name: t, type: e.type });
+        }
+        if (e.type.inner.kind !== "array" || e.type.inner.elem.kind !== "union")
+          throw new InternalCompilerError("llvm emitter bug: promise.allSettled result");
+        const elem = e.type.inner.elem;
+        const store = settledStoreFor(host, entries.type.elem.inner, elem);
+        host.declare(`declare ptr @scr_promise_all_settled(ptr, ptr, ptr)`);
+        host.declare(`declare double @scr_arr_len(ptr)`);
+        const len = B.tmp();
+        const cap = B.tmp();
+        B.line(`${len} = call double @scr_arr_len(ptr ${ps.name})`);
+        B.line(`${cap} = fptoui double ${len} to ${host.sizeType}`);
+        const vals = B.tmp();
+        B.line(`${vals} = ${arrNewCall(host.shapeHost, elem, cap)}`);
+        host.own({ name: vals, type: e.type.inner });
+        const t = B.tmp();
+        B.line(
+          `${t} = call ptr @scr_promise_all_settled(ptr ${ps.name}, ptr ${vals}, ptr @${store})`,
+        );
         return host.own({ name: t, type: e.type });
       }
       if (e.name === "promise.reject") {

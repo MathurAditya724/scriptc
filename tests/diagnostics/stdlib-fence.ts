@@ -28,10 +28,9 @@ const wr = new WeakRef({});
 const px = new Proxy({ a: 1 }, {});
 const buf = new ArrayBuffer(8);
 const st = new Set(new Set([1, 2])); // string and array seeds lower; Set-valued seeds stay fenced
-// (new Error / TypeError / RangeError / SyntaxError now LOWER — the error
-// battery lives in the corpus; what stays fenced is the rest of the family
-// and the unlowered members of lowered error objects.)
-const agg = new AggregateError([]);
+// (new Error / TypeError / RangeError / SyntaxError / AggregateError now
+// LOWER — the error battery lives in the corpus; what stays fenced is the
+// unlowered members of lowered error objects.)
 const stack = new Error("boom").stack;
 // Unlowered members on lowered containers.
 const sinhMethod = Math.sinh; // fixed-arity Math function values now lower
