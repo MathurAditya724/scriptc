@@ -26,7 +26,6 @@ static void sf_signal_install(void);
 typedef struct SfTransfer SfTransfer;
 typedef struct SfSignal SfSignal;
 typedef struct SfSignalWatch SfSignalWatch;
-typedef struct SfEvent SfEvent;
 typedef struct SfStream SfStream;
 typedef struct SfReader SfReader;
 typedef struct SfResponse SfResponse;
@@ -53,17 +52,6 @@ struct SfTypedRef {
   SfTypedRef *next;
 };
 
-typedef struct SfAbortListener {
-  ScrDyn *listener;
-  bool capture;
-  bool once;
-  size_t id;
-  SfSignal *target;        /* weak; the target owns this listener */
-  SfSignal *option_signal; /* owned unless it is the target */
-  SfSignalWatch *signal_watch;
-  struct SfAbortListener *next;
-} SfAbortListener;
-
 struct SfSignalWatch {
   SfSignal *source; /* weak; NULL after the source fires */
   void *owner;      /* owner keeps source alive */
@@ -80,26 +68,12 @@ struct SfSignal {
   ScrDynHandleTag reason_self_tag;
   bool reason_tracked;
   SfSignal *reason_next;
-  ScrDyn *onabort;
-  size_t onabort_order;
-  SfAbortListener *listeners;
-  size_t next_listener_id;
+  ScrEventTargetCore core; /* listeners and the onabort attribute */
   SfSignalWatch *watchers;
   SfSignal **sources;
   SfSignalWatch **source_watches;
   size_t source_count;
   double timer_id;
-  bool callbacks_tracked;
-  SfSignal *callbacks_next;
-};
-
-struct SfEvent {
-  size_t rc;
-  SfSignal *target;
-  double time_stamp;
-  bool dispatching;
-  bool stop_propagation;
-  bool stop_immediate;
 };
 
 struct SfReader {
@@ -248,7 +222,6 @@ static SfTransfer *sf_live;
 /* Weak registries: owners unlink themselves on destruction. They let the
  * fetch teardown sever opaque native→dyn edges before final cycle collection,
  * including otherwise-untraceable callback/reason→handle backedges. */
-static SfSignal *sf_callback_signals;
 static SfSignal *sf_reason_signals;
 #ifndef SCR_FETCH_SIGNAL_ONLY
 static SfStream *sf_callback_streams;
@@ -340,26 +313,6 @@ static ScrDyn *sf_type_reason(const char *message, ScrError **error_out) {
 
 /* ── AbortSignal ─────────────────────────────────────────────────── */
 
-static void sf_signal_track_callbacks(SfSignal *s) {
-  if (s->callbacks_tracked) return;
-  s->callbacks_tracked = true;
-  s->callbacks_next = sf_callback_signals;
-  sf_callback_signals = s;
-}
-
-static void sf_signal_untrack_callbacks(SfSignal *s) {
-  if (!s->callbacks_tracked) return;
-  for (SfSignal **at = &sf_callback_signals; *at;
-       at = &(*at)->callbacks_next) {
-    if (*at == s) {
-      *at = s->callbacks_next;
-      break;
-    }
-  }
-  s->callbacks_tracked = false;
-  s->callbacks_next = NULL;
-}
-
 static void sf_signal_track_reason(SfSignal *s) {
   if (s->reason_tracked) return;
   s->reason_tracked = true;
@@ -414,6 +367,8 @@ static SfSignal *sf_signal_new(void) {
   SfSignal *s = calloc(1, sizeof *s);
   if (!s) sf_oom();
   s->rc = 1;
+  /* AbortSignal sets kMaxEventTargetListeners to 0: no leak warning. */
+  scr_et_core_init(&s->core, 0, "AbortSignal");
   return s;
 }
 
@@ -437,32 +392,6 @@ static void sf_watch_free(SfSignalWatch *w) {
   free(w);
 }
 
-static void sf_abort_listener_free(SfAbortListener *l) {
-  if (!l) return;
-  sf_watch_free(l->signal_watch);
-  if (l->option_signal && l->option_signal != l->target) {
-    sf_signal_release(l->option_signal);
-  }
-  scr_dyn_release(l->listener);
-  free(l);
-}
-
-static void sf_signal_drop_callbacks(SfSignal *s) {
-  SfAbortListener *listeners = s->listeners;
-  ScrDyn *onabort = s->onabort;
-  s->listeners = NULL; /* unlink before callback releases can re-enter */
-  s->onabort = NULL;
-  s->onabort_order = 0;
-  sf_signal_untrack_callbacks(s);
-  while (listeners) {
-    SfAbortListener *next = listeners->next;
-    listeners->next = NULL;
-    sf_abort_listener_free(listeners);
-    listeners = next;
-  }
-  scr_dyn_release(onabort);
-}
-
 static void sf_signal_release(SfSignal *s) {
   if (!s || --s->rc > 0) return;
   for (size_t i = 0; i < s->source_count; i++) {
@@ -471,7 +400,7 @@ static void sf_signal_release(SfSignal *s) {
   }
   free(s->source_watches);
   free(s->sources);
-  sf_signal_drop_callbacks(s);
+  scr_et_core_drop(&s->core);
   sf_signal_drop_reason(s);
   free(s);
 }
@@ -481,148 +410,6 @@ static void *sf_signal_retain_v(void *p) {
 }
 static void sf_signal_release_v(void *p) {
   sf_signal_release((SfSignal *)p);
-}
-
-static SfEvent *sf_event_new(SfSignal *target) {
-  SfEvent *event = calloc(1, sizeof *event);
-  if (!event) sf_oom();
-  event->rc = 1;
-  event->target = sf_signal_retain(target);
-  event->time_stamp = scr_perf_now();
-  event->dispatching = true;
-  return event;
-}
-
-static SfEvent *sf_event_retain(SfEvent *event) {
-  event->rc++;
-  return event;
-}
-
-static void sf_event_release(SfEvent *event) {
-  if (!event || --event->rc > 0) return;
-  sf_signal_release(event->target);
-  free(event);
-}
-
-static void *sf_event_retain_v(void *ptr) {
-  return sf_event_retain((SfEvent *)ptr);
-}
-
-static void sf_event_release_v(void *ptr) {
-  sf_event_release((SfEvent *)ptr);
-}
-
-static void *sf_listener_error_retain_v(void *ptr) {
-  return scr_caught_retain((ScrCaught *)ptr);
-}
-
-static void sf_listener_error_release_v(void *ptr) {
-  scr_caught_release((ScrCaught *)ptr);
-}
-
-static void sf_listener_error_tick(ScrClosure *cb) {
-  ScrCaught *caught = scr_box_get_ref(cb->caps[0]);
-  scr_rethrow(caught);
-  scr_caught_release(caught);
-}
-
-/*
- * EventTarget reports listener exceptions as uncaught next-tick failures;
- * dispatchEvent itself keeps running listeners and returns its boolean.
- * Queue every failure separately so an uncaughtException handler that
- * recovers from one still observes later listener failures in order.
- */
-static void sf_defer_listener_error(ScrCaught *caught) {
-  ScrClosure *cb =
-      scr_closure_new((void *)&sf_listener_error_tick, 1);
-  cb->caps[0] = scr_box_new_obj(
-      &sf_listener_error_retain_v, &sf_listener_error_release_v, NULL);
-  scr_box_set_ref(cb->caps[0], caught); /* moves */
-  scr_next_tick(cb);
-}
-
-static ScrDyn *sf_event_invoke(void *ptr, ScrDyn *self,
-                               const char *method, ScrDyn *const *args,
-                               size_t argc, const char *what) {
-  SfEvent *event = ptr;
-  (void)self;
-  (void)args;
-  (void)argc;
-  if (strcmp(method, "preventDefault") == 0) {
-    /* Abort events are not cancelable. */
-    return scr_dyn_retain(scr_dyn_undefined());
-  }
-  if (strcmp(method, "stopPropagation") == 0) {
-    event->stop_propagation = true;
-    return scr_dyn_retain(scr_dyn_undefined());
-  }
-  if (strcmp(method, "stopImmediatePropagation") == 0) {
-    event->stop_propagation = true;
-    event->stop_immediate = true;
-    return scr_dyn_retain(scr_dyn_undefined());
-  }
-  if (strcmp(method, "composedPath") == 0) {
-    ScrDyn *path = scr_dyn_new_arr();
-    if (event->dispatching) {
-      scr_dyn_arr_push(
-          path,
-          scr_dyn_new_handle(event->target, SCR_DYNH_ABORT_SIGNAL));
-    }
-    return path;
-  }
-  sf_not_function(what);
-  return NULL;
-}
-
-static ScrDyn *sf_event_get(void *ptr, const char *key, size_t len) {
-  SfEvent *event = ptr;
-  if (sf_name(key, len, "type")) {
-    ScrStr *type = scr_str_new("abort", 5);
-    ScrDyn *out = scr_dyn_new_str(type);
-    scr_str_release(type);
-    return out;
-  }
-  if (sf_name(key, len, "bubbles") ||
-      sf_name(key, len, "cancelable") ||
-      sf_name(key, len, "composed") ||
-      sf_name(key, len, "defaultPrevented")) {
-    return scr_dyn_new_bool(false);
-  }
-  if (sf_name(key, len, "eventPhase")) {
-    return scr_dyn_new_num(event->dispatching ? 2 : 0);
-  }
-  if (sf_name(key, len, "target") ||
-      sf_name(key, len, "srcElement")) {
-    return scr_dyn_new_handle(event->target, SCR_DYNH_ABORT_SIGNAL);
-  }
-  if (sf_name(key, len, "currentTarget")) {
-    return event->dispatching
-               ? scr_dyn_new_handle(event->target, SCR_DYNH_ABORT_SIGNAL)
-               : scr_dyn_new_null();
-  }
-  if (sf_name(key, len, "isTrusted")) return scr_dyn_new_bool(true);
-  if (sf_name(key, len, "timeStamp")) {
-    return scr_dyn_new_num(event->time_stamp);
-  }
-  if (sf_name(key, len, "cancelBubble")) {
-    return scr_dyn_new_bool(event->stop_propagation);
-  }
-  if (sf_name(key, len, "returnValue")) return scr_dyn_new_bool(true);
-  return NULL;
-}
-
-static bool sf_event_set(void *ptr, const char *key, size_t len,
-                         const ScrDyn *value) {
-  SfEvent *event = ptr;
-  if (sf_name(key, len, "cancelBubble")) {
-    if (scr_dyn_truthy(value)) event->stop_propagation = true;
-    return true;
-  }
-  if (sf_name(key, len, "returnValue")) {
-    /* Setting false only prevents a cancelable event's default action. */
-    return true;
-  }
-  return false;
 }
 
 static SfSignalWatch *sf_signal_watch(SfSignal *source, void *owner,
@@ -638,199 +425,12 @@ static SfSignalWatch *sf_signal_watch(SfSignal *source, void *owner,
   return w;
 }
 
-static void sf_listener_signal_abort(SfSignalWatch *w,
-                                     SfSignal *source) {
-  (void)source;
-  SfAbortListener *listener = w->owner;
-  SfSignal *target = listener->target;
-  for (SfAbortListener **at = &target->listeners; *at;
-       at = &(*at)->next) {
-    if (*at == listener) {
-      *at = listener->next;
-      sf_abort_listener_free(listener);
-      return;
-    }
-  }
-  sf_watch_free(w);
-}
-
-static void sf_signal_dispatch_listeners(SfSignal *s, ScrDyn *provided_event) {
-  SfEvent *event_state;
-  ScrDyn *event;
-  if (provided_event) {
-    event = scr_dyn_retain(provided_event);
-    event_state = (SfEvent *)provided_event->v.handle.ptr;
-    SfSignal *old_target = event_state->target;
-    event_state->target = sf_signal_retain(s);
-    sf_signal_release(old_target);
-    event_state->dispatching = true;
-  } else {
-    event_state = sf_event_new(s);
-    event = scr_dyn_new_handle(event_state, SCR_DYNH_EVENT);
-    sf_event_release(event_state);
-  }
-  /*
-   * EventTarget dispatch snapshots the handlers present at the start:
-   * additions wait for the next event, removals before a listener's turn
-   * suppress it, and a listener may remove itself safely. `onabort` occupies
-   * the position where it was first assigned, just like an event-handler
-   * attribute in the DOM. Holding raw list nodes across the user callback is
-   * not safe because removeEventListener frees those nodes.
-   */
-  size_t count = s->onabort && s->onabort->kind == SCR_DYN_FUNC ? 1 : 0;
-  for (SfAbortListener *l = s->listeners; l; l = l->next) count++;
-  typedef struct {
-    ScrDyn *listener;
-    bool once;
-    bool attribute;
-    size_t id;
-  } SfAbortDispatch;
-  SfAbortDispatch *dispatch =
-      count ? calloc(count, sizeof *dispatch) : NULL;
-  if (count && !dispatch) sf_oom();
-  size_t i = 0;
-  if (s->onabort && s->onabort->kind == SCR_DYN_FUNC) {
-    dispatch[i].listener = scr_dyn_retain(s->onabort);
-    dispatch[i].attribute = true;
-    dispatch[i].id = s->onabort_order;
-    i++;
-  }
-  for (SfAbortListener *l = s->listeners; l; l = l->next) {
-    dispatch[i].listener = scr_dyn_retain(l->listener);
-    dispatch[i].once = l->once;
-    dispatch[i].id = l->id;
-    i++;
-  }
-  for (i = 1; i < count; i++) {
-    SfAbortDispatch entry = dispatch[i];
-    size_t j = i;
-    while (j > 0 && dispatch[j - 1].id > entry.id) {
-      dispatch[j] = dispatch[j - 1];
-      j--;
-    }
-    dispatch[j] = entry;
-  }
-
-  for (i = 0; i < count && !event_state->stop_immediate; i++) {
-    if (dispatch[i].attribute) {
-      if (!s->onabort || s->onabort_order != dispatch[i].id) {
-        scr_dyn_release(dispatch[i].listener);
-        continue;
-      }
-      /*
-       * Assignment replaces the handler without moving its registration
-       * position. Invoke the current value if an earlier callback replaced
-       * it during this dispatch.
-       */
-      ScrDyn *handler = scr_dyn_retain(s->onabort);
-      ScrDyn *args[1] = {event};
-      scr_dyn_this_push(s, SCR_DYNH_ABORT_SIGNAL);
-      ScrDyn *r = scr_dyn_call(handler, args, 1, "signal.onabort");
-      scr_dyn_this_pop();
-      scr_dyn_release(r);
-      scr_dyn_release(handler);
-      scr_dyn_release(dispatch[i].listener);
-      if (scr_exc_pending()) {
-        sf_defer_listener_error(scr_exc_take());
-      }
-      if (event_state->stop_immediate) {
-        i++;
-        break;
-      }
-      continue;
-    }
-    SfAbortListener **at = &s->listeners;
-    while (*at && (*at)->id != dispatch[i].id) {
-      at = &(*at)->next;
-    }
-    if (!*at) {
-      scr_dyn_release(dispatch[i].listener);
-      continue;
-    }
-    if (dispatch[i].once) {
-      SfAbortListener *l = *at;
-      *at = l->next;
-      sf_abort_listener_free(l);
-    }
-    ScrDyn *callable = dispatch[i].listener;
-    ScrDyn *current_listener = NULL;
-    ScrDyn *owned_handle = NULL;
-    ScrDyn *this_listener = NULL;
-    if (callable->kind == SCR_DYN_OBJ) {
-      /*
-       * EventListener is a Web IDL callback interface: handleEvent is read
-       * when the callback runs, not when it is registered. Typed records
-       * normally cross into dyn as value snapshots, so explicitly refresh
-       * an identity-carrying listener from its retained source here.
-       */
-      current_listener =
-          callable->v.obj.source_identity && callable->v.obj.source_access
-              ? callable->v.obj.source_access(
-                    callable->v.obj.source_identity, true)
-              : scr_dyn_retain(callable);
-      this_listener = current_listener;
-      const ScrDyn *handle =
-          scr_dyn_obj_get(current_listener, "handleEvent", 11);
-      if (!handle) {
-        scr_dyn_release(current_listener);
-        scr_dyn_release(dispatch[i].listener);
-        continue;
-      }
-      callable = (ScrDyn *)handle;
-    } else if (callable->kind == SCR_DYN_TYPED_REF) {
-      /* A live static record must remain the EventListener receiver so
-       * handleEvent mutations commit to the original source. Arrays and
-       * byte views are valid Web IDL objects but have no handleEvent in
-       * the statically modeled surface, so dispatching them is a no-op. */
-      current_listener = scr_dyn_typed_ref_materialize(callable);
-      if (current_listener->kind != SCR_DYN_OBJ) {
-        scr_dyn_release(current_listener);
-        scr_dyn_release(dispatch[i].listener);
-        continue;
-      }
-      const ScrDyn *handle =
-          scr_dyn_obj_get(current_listener, "handleEvent", 11);
-      if (!handle) {
-        scr_dyn_release(current_listener);
-        scr_dyn_release(dispatch[i].listener);
-        continue;
-      }
-      this_listener = callable;
-      callable = (ScrDyn *)handle;
-    } else if (callable->kind != SCR_DYN_FUNC) {
-      /* Web IDL accepts every object as an EventListener. Native arrays,
-       * byte views, handles, and promises cannot carry an expando
-       * handleEvent in the static runtime, so a missing method is a no-op. */
-      scr_dyn_release(dispatch[i].listener);
-      continue;
-    }
-    ScrDyn *args[1] = {event};
-    if (this_listener) {
-      scr_dyn_this_push_dyn(this_listener);
-    } else {
-      scr_dyn_this_push(s, SCR_DYNH_ABORT_SIGNAL);
-    }
-    ScrDyn *r =
-        scr_dyn_call(callable, args, 1, "abort listener");
-    scr_dyn_this_pop();
-    scr_dyn_release(r);
-    scr_dyn_release(owned_handle);
-    scr_dyn_release(current_listener);
-    scr_dyn_release(dispatch[i].listener);
-    if (scr_exc_pending()) {
-      sf_defer_listener_error(scr_exc_take());
-    }
-    if (event_state->stop_immediate) {
-      i++;
-      break;
-    }
-  }
-  while (i < count) {
-    scr_dyn_release(dispatch[i].listener);
-    i++;
-  }
-  event_state->dispatching = false;
-  free(dispatch);
+/* runAbort: a trusted 'abort' Event through the signal's EventTarget. */
+static void sf_signal_dispatch_abort(SfSignal *s) {
+  ScrDyn *event = scr_event_new_trusted("abort");
+  ScrDyn *self = scr_dyn_new_handle(s, SCR_DYNH_ABORT_SIGNAL);
+  scr_et_dispatch(&s->core, self, event);
+  scr_dyn_release(self);
   scr_dyn_release(event);
 }
 
@@ -855,7 +455,7 @@ static void sf_signal_abort_full(SfSignal *s, ScrDyn *reason,
     w->source = NULL;
     w->fire(w, s); /* the owner may free w */
   }
-  sf_signal_dispatch_listeners(s, NULL);
+  sf_signal_dispatch_abort(s);
 }
 
 static void sf_signal_abort_default(SfSignal *s, bool timeout) {
@@ -877,6 +477,14 @@ static SfSignal *sf_signal_of(const ScrDyn *d, const char *where) {
     return NULL;
   }
   return (SfSignal *)d->v.handle.ptr;
+}
+
+/* options.signal for the EventTarget engine. */
+static ScrEventTargetCore *sf_signal_core_of(const ScrDyn *d, bool *aborted) {
+  if (!d || d->kind != SCR_DYN_HANDLE || d->v.handle.tag != SCR_DYNH_ABORT_SIGNAL) return NULL;
+  SfSignal *s = (SfSignal *)d->v.handle.ptr;
+  *aborted = s->aborted;
+  return &s->core;
 }
 
 static void sf_signal_timer_fire(ScrClosure *cb) {
@@ -1031,63 +639,6 @@ static ScrDyn *sf_abort_controller_get(
   return NULL;
 }
 
-static bool sf_signal_listener_options(
-    ScrDyn *const *args, size_t argc, bool *capture, bool *once,
-    SfSignal **option_signal) {
-  *capture = false;
-  *once = false;
-  if (option_signal) *option_signal = NULL;
-  if (argc < 3) return true;
-  if (args[2]->kind == SCR_DYN_BOOL) {
-    /* EventTarget's boolean overload is `useCapture`, never `once`. */
-    *capture = args[2]->v.b;
-    return true;
-  }
-  if (args[2]->kind != SCR_DYN_OBJ) return true;
-  const ScrDyn *capture_value =
-      scr_dyn_obj_get(args[2], "capture", 7);
-  const ScrDyn *once_value = scr_dyn_obj_get(args[2], "once", 4);
-  *capture = capture_value && scr_dyn_truthy(capture_value);
-  *once = once_value && scr_dyn_truthy(once_value);
-  if (option_signal) {
-    const ScrDyn *signal_value =
-        scr_dyn_obj_get(args[2], "signal", 6);
-    if (signal_value && signal_value->kind != SCR_DYN_UNDEF) {
-      *option_signal = sf_signal_of(
-          signal_value,
-          "AddEventListenerOptions.signal must be an AbortSignal");
-      if (!*option_signal) return false;
-    }
-  }
-  return true;
-}
-
-static bool sf_abort_listener_value(const ScrDyn *listener) {
-  /* Web IDL callback interfaces accept any object. handleEvent is looked up
-   * when the event is dispatched, where a non-callable value reports an
-   * asynchronous listener error and a missing value is a no-op. */
-  switch (listener->kind) {
-  case SCR_DYN_FUNC:
-  case SCR_DYN_OBJ:
-  case SCR_DYN_ARR:
-  case SCR_DYN_BYTES:
-  case SCR_DYN_HANDLE:
-  case SCR_DYN_PROMISE:
-    return true;
-
-  case SCR_DYN_TYPED_REF:
-    return scr_dyn_ref_typeof_is(listener, "function") ||
-           scr_dyn_ref_typeof_is(listener, "object");
-  default:
-    return false;
-  }
-}
-
-static bool sf_abort_listener_equal(
-    const ScrDyn *a, const ScrDyn *b) {
-  return scr_dyn_strict_eq(a, b) || scr_dyn_obj_same_source(a, b);
-}
-
 static ScrDyn *sf_signal_invoke(void *ptr, ScrDyn *self, const char *method,
                                 ScrDyn *const *args, size_t argc,
                                 const char *what) {
@@ -1101,113 +652,11 @@ static ScrDyn *sf_signal_invoke(void *ptr, ScrDyn *self, const char *method,
     }
     return scr_dyn_retain(scr_dyn_undefined());
   }
-  if (strcmp(method, "addEventListener") == 0) {
-    if (argc < 2) {
-      sf_type_error("AbortSignal.addEventListener requires an event name");
-      return NULL;
-    }
-    ScrStr *event_name = scr_dyn_string_coerce_js(args[0]);
-    if (!event_name) return NULL;
-    bool is_abort_event =
-        sf_name(event_name->data, event_name->len, "abort");
-    scr_str_release(event_name);
-    /* Web IDL's nullable EventListener argument: null is a no-op. */
-    if (args[1]->kind == SCR_DYN_NULL ||
-        args[1]->kind == SCR_DYN_UNDEF) {
-      return scr_dyn_retain(scr_dyn_undefined());
-    }
-    if (!sf_abort_listener_value(args[1])) {
-      sf_type_error(
-          "AbortSignal.addEventListener listener must be a function, "
-          "an object with handleEvent, or null");
-      return NULL;
-    }
-    bool capture = false;
-    bool once = false;
-    SfSignal *option_signal = NULL;
-    if (!sf_signal_listener_options(
-            args, argc, &capture, &once, &option_signal)) {
-      return NULL;
-    }
-    /* AbortSignal is an EventTarget: listeners for other event names are
-     * valid registrations even though this target only dispatches abort. */
-    if (!is_abort_event) {
-      return scr_dyn_retain(scr_dyn_undefined());
-    }
-    if (option_signal && option_signal->aborted) {
-      return scr_dyn_retain(scr_dyn_undefined());
-    }
-    SfAbortListener **tail = &s->listeners;
-    while (*tail) {
-      if ((*tail)->capture == capture &&
-          sf_abort_listener_equal((*tail)->listener, args[1])) {
-        return scr_dyn_retain(scr_dyn_undefined());
-      }
-      tail = &(*tail)->next;
-    }
-    SfAbortListener *l = calloc(1, sizeof *l);
-    if (!l) sf_oom();
-    l->listener = scr_dyn_retain(args[1]);
-    l->capture = capture;
-    l->once = once;
-    l->id = ++s->next_listener_id;
-    l->target = s;
-    l->option_signal =
-        option_signal && option_signal != s
-            ? sf_signal_retain(option_signal)
-            : option_signal;
-    *tail = l;
-    if (option_signal) {
-      l->signal_watch =
-          sf_signal_watch(option_signal, l, &sf_listener_signal_abort);
-    }
-    sf_signal_track_callbacks(s);
-    return scr_dyn_retain(scr_dyn_undefined());
-  }
-  if (strcmp(method, "removeEventListener") == 0) {
-    if (argc < 2) {
-      sf_type_error(
-          "AbortSignal.removeEventListener requires an event name and listener");
-      return NULL;
-    }
-    ScrStr *event_name = scr_dyn_string_coerce_js(args[0]);
-    if (!event_name) return NULL;
-    bool is_abort_event =
-        sf_name(event_name->data, event_name->len, "abort");
-    scr_str_release(event_name);
-    if (is_abort_event) {
-      bool capture = false;
-      bool once = false;
-      (void)sf_signal_listener_options(
-          args, argc, &capture, &once, NULL);
-      (void)once;
-      for (SfAbortListener **at = &s->listeners; *at; at = &(*at)->next) {
-        if ((*at)->capture == capture &&
-            sf_abort_listener_equal((*at)->listener, args[1])) {
-          SfAbortListener *l = *at;
-          *at = l->next;
-          sf_abort_listener_free(l);
-          break;
-        }
-      }
-    }
-    return scr_dyn_retain(scr_dyn_undefined());
-  }
-  if (strcmp(method, "dispatchEvent") == 0) {
-    if (argc != 1 || args[0]->kind != SCR_DYN_HANDLE ||
-        args[0]->v.handle.tag != SCR_DYNH_EVENT) {
-      sf_type_error("AbortSignal.dispatchEvent requires an Event");
-      return NULL;
-    }
-    SfEvent *event = (SfEvent *)args[0]->v.handle.ptr;
-    if (event->dispatching) {
-      sf_type_error("The event is already being dispatched");
-      return NULL;
-    }
-    sf_signal_dispatch_listeners(s, args[0]);
-    if (scr_exc_pending()) return NULL;
-    return scr_dyn_new_bool(true);
-  }
+  if (strcmp(method, "addEventListener") == 0) return scr_et_add_listener(&s->core, args, argc);
+  if (strcmp(method, "removeEventListener") == 0)
+    return scr_et_remove_listener(&s->core, args, argc);
+  if (strcmp(method, "dispatchEvent") == 0)
+    return scr_et_dispatch_event(&s->core, self, args, argc);
   (void)self;
   sf_not_function(what);
   return NULL;
@@ -1220,9 +669,7 @@ static ScrDyn *sf_signal_get(void *ptr, const char *key, size_t len) {
     return s->aborted ? sf_signal_reason_ref(s)
                       : scr_dyn_retain(scr_dyn_undefined());
   }
-  if (sf_name(key, len, "onabort")) {
-    return s->onabort ? scr_dyn_retain(s->onabort) : scr_dyn_new_null();
-  }
+  if (sf_name(key, len, "onabort")) return scr_et_handler_get(&s->core, "abort");
   return NULL;
 }
 
@@ -1230,19 +677,7 @@ static bool sf_signal_set(void *ptr, const char *key, size_t len,
                           const ScrDyn *value) {
   SfSignal *s = ptr;
   if (!sf_name(key, len, "onabort")) return false;
-  bool had_handler = s->onabort && s->onabort->kind == SCR_DYN_FUNC;
-  scr_dyn_release(s->onabort);
-  if (value->kind != SCR_DYN_NULL && value->kind != SCR_DYN_UNDEF) {
-    s->onabort = scr_dyn_retain((ScrDyn *)value);
-  } else {
-    s->onabort = NULL;
-  }
-  if (value->kind == SCR_DYN_FUNC) {
-    if (!had_handler) s->onabort_order = ++s->next_listener_id;
-    sf_signal_track_callbacks(s);
-  } else {
-    s->onabort_order = 0;
-  }
+  scr_et_handler_set(&s->core, "abort", value);
   return true;
 }
 
@@ -5627,9 +5062,6 @@ static const ScrDynHandleOps sf_response_ops = {
 static const ScrDynHandleOps sf_headers_ops = {
     "Headers", &sf_headers_retain_v, &sf_headers_release_v,
     &sf_headers_invoke, &sf_headers_get, &sf_no_set, NULL};
-static const ScrDynHandleOps sf_event_ops = {
-    "Event", &sf_event_retain_v, &sf_event_release_v,
-    &sf_event_invoke, &sf_event_get, &sf_event_set, NULL};
 
 static void sf_teardown(void) {
   while (sf_live) {
@@ -5646,9 +5078,6 @@ static void sf_teardown(void) {
    */
   while (sf_callback_streams) {
     sf_stream_drop_source_callbacks(sf_callback_streams, true);
-  }
-  while (sf_callback_signals) {
-    sf_signal_drop_callbacks(sf_callback_signals);
   }
   while (sf_reason_signals) {
     sf_signal_drop_reason(sf_reason_signals);
@@ -5673,7 +5102,7 @@ void scr_fetch_install(void) {
   scr_dyn_handle_install(SCR_DYNH_FETCH_REQUEST, &sf_request_ops);
   scr_dyn_handle_install(SCR_DYNH_FETCH_RESPONSE, &sf_response_ops);
   scr_dyn_handle_install(SCR_DYNH_FETCH_HEADERS, &sf_headers_ops);
-  scr_dyn_handle_install(SCR_DYNH_EVENT, &sf_event_ops);
+  scr_et_signal_core_fn = sf_signal_core_of;
   scr_atexit(sf_teardown);
 }
 
@@ -5689,11 +5118,7 @@ static const ScrDynHandleOps sf_signal_ops = {
 static const ScrDynHandleOps sf_abort_controller_ops = {
   "AbortController", &sf_signal_retain_v, &sf_signal_release_v,
   &sf_abort_controller_invoke, &sf_abort_controller_get, &sf_no_set, NULL };
-static const ScrDynHandleOps sf_event_ops = {
-  "Event", &sf_event_retain_v, &sf_event_release_v,
-  &sf_event_invoke, &sf_event_get, &sf_event_set, NULL };
 static void sf_signal_teardown(void) {
-  while (sf_callback_signals) sf_signal_drop_callbacks(sf_callback_signals);
   while (sf_reason_signals) sf_signal_drop_reason(sf_reason_signals);
 }
 static void sf_signal_install(void) {
@@ -5702,7 +5127,7 @@ static void sf_signal_install(void) {
   installed = true;
   scr_dyn_handle_install(SCR_DYNH_ABORT_SIGNAL, &sf_signal_ops);
   scr_dyn_handle_install(SCR_DYNH_ABORT_CONTROLLER, &sf_abort_controller_ops);
-  scr_dyn_handle_install(SCR_DYNH_EVENT, &sf_event_ops);
+  scr_et_signal_core_fn = sf_signal_core_of;
   scr_atexit(sf_signal_teardown);
 }
 

@@ -73,6 +73,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
             systemLibraries: [],
             features: {
               workers: false,
+              eventTarget: false,
               regex: true,
               copying: false,
               textDecoderLegacy: false,

@@ -671,6 +671,11 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fetch.responseNew": "scr_fetch_response_new",
   "fetch.input": "scr_fetch_input",
   "abort.controllerNew": "scr_fetch_abort_controller_new",
+  "event.targetNew": "scr_event_target_new",
+  "event.new": "scr_event_new",
+  "event.customNew": "scr_custom_event_new",
+  "event.is": "scr_event_is",
+  "events.addAbortListener": "scr_events_add_abort_listener",
   "abort.timeout": "scr_fetch_abort_timeout",
   "abort.now": "scr_fetch_abort_now",
   "abort.any": "scr_fetch_abort_any",
@@ -801,6 +806,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "emitter.getMax": "scr_emitter_get_max",
   "emitter.setDefaultMax": "scr_emitter_set_default_max",
   "emitter.getDefaultMax": "scr_emitter_get_default_max",
+  "emitter.errorMonitor": "scr_emitter_error_monitor",
   // node:stream (scr_stream.c): receivers borrowed, chunks borrowed,
   // chaining forms answer the receiver +1. The throwing members
   // (listeners and option callbacks run synchronously inside) ride the
@@ -1133,6 +1139,12 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "fetch.requestNew",
   "fetch.abortTimeout",
   "abort.timeout",
+  // EventTarget listeners report their exceptions from a nextTick.
+  "event.targetNew",
+  "abort.controllerNew",
+  "abort.any",
+  "fetch.abortControllerNew",
+  "fetch.abortAny",
   "fetch.streamNew",
   "fetch.streamFrom",
   "readable.new",

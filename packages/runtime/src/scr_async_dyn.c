@@ -621,6 +621,7 @@ void scr_process_on_warning(ScrDyn *fn) {
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg, strlen(msg), "ERR_INVALID_ARG_TYPE");
     return;
   }
+  scr_warning_emit_hook = scr_emit_warning;
   if (scr_nwarn == scr_warn_cap) {
     scr_warn_cap = scr_warn_cap ? scr_warn_cap * 2 : 4;
     scr_warn_listeners = realloc(scr_warn_listeners, scr_warn_cap * sizeof *scr_warn_listeners);

@@ -5308,6 +5308,7 @@ function validateFunction(
       e.fn !== "emitter.setDefaultMax" &&
       e.fn !== "emitter.setDefaultMaxChk" &&
       e.fn !== "emitter.getDefaultMax" &&
+      e.fn !== "emitter.errorMonitor" &&
       e.fn !== "emitter.checkListener"
     ) {
       // Receiver: an emitter-hierarchy object (the %EventEmitter class

@@ -9,6 +9,7 @@ export interface RuntimeFeatures {
   legacyTextDecoder: boolean;
   fileHandle: boolean;
   fetch: boolean;
+  eventTarget: boolean;
   processEvents: boolean;
   emitter: boolean;
   stream: boolean;
@@ -91,6 +92,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     legacyTextDecoder: false,
     fileHandle: false,
     fetch: false,
+    eventTarget: false,
     processEvents: false,
     emitter:
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
@@ -139,6 +141,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       )
         features.legacyTextDecoder = true;
       if (fn.startsWith("fetch.")) features.fetch = true;
+      if (fn.startsWith("event.") || fn === "events.addAbortListener") features.eventTarget = true;
       if (PROCESS_EVENT_LIB_FNS.has(fn)) features.processEvents = true;
       if (fn.startsWith("emitter.")) features.emitter = true;
       if (

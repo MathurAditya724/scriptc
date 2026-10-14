@@ -3,21 +3,21 @@
   "nodeVersion": "24.15.0",
   "nodeCommit": "848430679556aed0bd073f2bc263331ad84fa119",
   "summary": {
-    "taskCount": 3288,
-    "tierItemCount": 3288,
+    "taskCount": 3270,
+    "tierItemCount": 3270,
     "tiers": {
       "static": {
         "replace-refusal": 40,
-        "verify-gap": 2372,
-        "audit-partial": 794,
+        "verify-gap": 2342,
+        "audit-partial": 806,
         "classify": 2,
         "implement": 80
       }
     },
     "priorities": {
-      "high": 2239,
+      "high": 2225,
       "normal": 673,
-      "low": 376
+      "low": 372
     }
   },
   "tasks": [
@@ -22999,12 +22999,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:events.EventTarget",
+          "tests": [
+            "tests/corpus/5130-event-target-dispatch.js",
+            "tests/corpus/5131-event-target-listener-errors.js",
+            "tests/corpus/5132-event-target-typed.ts",
+            "tests/corpus/5133-abort-signal-event-target.ts",
+            "tests/corpus/5135-event-target-warnings.js"
+          ]
         }
       }
     },
@@ -23024,12 +23030,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:events.EventTarget",
+          "tests": [
+            "tests/corpus/5130-event-target-dispatch.js",
+            "tests/corpus/5131-event-target-listener-errors.js",
+            "tests/corpus/5132-event-target-typed.ts",
+            "tests/corpus/5133-abort-signal-event-target.ts",
+            "tests/corpus/5135-event-target-warnings.js"
+          ]
         }
       }
     },
@@ -23074,12 +23086,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:events.EventTarget",
+          "tests": [
+            "tests/corpus/5130-event-target-dispatch.js",
+            "tests/corpus/5131-event-target-listener-errors.js",
+            "tests/corpus/5132-event-target-typed.ts",
+            "tests/corpus/5133-abort-signal-event-target.ts",
+            "tests/corpus/5135-event-target-warnings.js"
+          ]
         }
       }
     },
@@ -23099,462 +23117,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:e5c069095e5c",
-      "chapter": "events",
-      "label": "event.composedPath()",
-      "signature": "`event.composedPath()`",
-      "apiSymbol": "event.composedPath",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#eventcomposedpath",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:85436cb5ea2b",
-      "chapter": "events",
-      "label": "event.initEvent(type[, bubbles[, cancelable]])",
-      "signature": "`event.initEvent(type[, bubbles[, cancelable]])`",
-      "apiSymbol": "event.initEvent",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#eventiniteventtype-bubbles-cancelable",
-      "nodeStability": {
-        "index": "3",
-        "level": 3,
-        "text": "Legacy: The WHATWG spec considers it deprecated and users shouldn't use it at all.",
-        "inherited": false
-      },
-      "priority": "low",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:5848ab30b2e5",
-      "chapter": "events",
-      "label": "event.preventDefault()",
-      "signature": "`event.preventDefault()`",
-      "apiSymbol": "event.preventDefault",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#eventpreventdefault",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:c16743d778c4",
-      "chapter": "events",
-      "label": "event.stopImmediatePropagation()",
-      "signature": "`event.stopImmediatePropagation()`",
-      "apiSymbol": "event.stopImmediatePropagation",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#eventstopimmediatepropagation",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:9bab844aa1c2",
-      "chapter": "events",
-      "label": "event.stopPropagation()",
-      "signature": "`event.stopPropagation()`",
-      "apiSymbol": "event.stopPropagation",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#eventstoppropagation",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:abe0ea02a52c",
-      "chapter": "events",
-      "label": "bubbles",
-      "signature": "`bubbles` Type: {boolean} Always returns `false`.",
-      "apiSymbol": "bubbles",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#class-event",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:44e2dc361428",
-      "chapter": "events",
-      "label": "cancelBubble",
-      "signature": "`cancelBubble` Type: {boolean}",
-      "apiSymbol": "cancelBubble",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#class-event",
-      "nodeStability": {
-        "index": "3",
-        "level": 3,
-        "text": "Legacy: Use [`event.stopPropagation()`][] instead.",
-        "inherited": false
-      },
-      "priority": "low",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:51ee094d86d3",
-      "chapter": "events",
-      "label": "cancelable",
-      "signature": "`cancelable` Type: {boolean} True if the event was created with the `cancelable` option.",
-      "apiSymbol": "cancelable",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#class-event",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:369be877d737",
-      "chapter": "events",
-      "label": "composed",
-      "signature": "`composed` Type: {boolean} Always returns `false`.",
-      "apiSymbol": "composed",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#class-event",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:4e0c88e53f49",
-      "chapter": "events",
-      "label": "currentTarget",
-      "signature": "`currentTarget` Type: {EventTarget} The `EventTarget` dispatching the event.",
-      "apiSymbol": "currentTarget",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#class-event",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:1e8421d3cc04",
-      "chapter": "events",
-      "label": "defaultPrevented",
-      "signature": "`defaultPrevented` Type: {boolean}",
-      "apiSymbol": "defaultPrevented",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#class-event",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:602700d21dcf",
-      "chapter": "events",
-      "label": "eventPhase",
-      "signature": "`eventPhase` Type: {number} Returns `0` while an event is not being dispatched, `2` while it is being dispatched.",
-      "apiSymbol": "eventPhase",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#class-event",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:4e83ca3c5e4c",
-      "chapter": "events",
-      "label": "isTrusted",
-      "signature": "`isTrusted` Type: {boolean}",
-      "apiSymbol": "isTrusted",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#class-event",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:100e8d286de2",
-      "chapter": "events",
-      "label": "returnValue",
-      "signature": "`returnValue` Type: {boolean} True if the event has not been canceled.",
-      "apiSymbol": "returnValue",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#class-event",
-      "nodeStability": {
-        "index": "3",
-        "level": 3,
-        "text": "Legacy: Use [`event.defaultPrevented`][] instead.",
-        "inherited": false
-      },
-      "priority": "low",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:3d3da3858847",
-      "chapter": "events",
-      "label": "srcElement",
-      "signature": "`srcElement` Type: {EventTarget} The `EventTarget` dispatching the event.",
-      "apiSymbol": "srcElement",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#class-event",
-      "nodeStability": {
-        "index": "3",
-        "level": 3,
-        "text": "Legacy: Use [`event.target`][] instead.",
-        "inherited": false
-      },
-      "priority": "low",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:fdfee26f8c22",
-      "chapter": "events",
-      "label": "target",
-      "signature": "`target` Type: {EventTarget} The `EventTarget` dispatching the event.",
-      "apiSymbol": "target",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#class-event",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:051e03ef86de",
-      "chapter": "events",
-      "label": "timeStamp",
-      "signature": "`timeStamp` Type: {number}",
-      "apiSymbol": "timeStamp",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#class-event",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "events:88b512802b39",
-      "chapter": "events",
-      "label": "type",
-      "signature": "`type` Type: {string}",
-      "apiSymbol": "type",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/events.html#class-event",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:events.Event",
+          "tests": [
+            "tests/corpus/5130-event-target-dispatch.js",
+            "tests/corpus/5132-event-target-typed.ts"
+          ]
         }
       }
     },
@@ -23574,12 +23145,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:events.EventTarget",
+          "tests": [
+            "tests/corpus/5130-event-target-dispatch.js",
+            "tests/corpus/5131-event-target-listener-errors.js",
+            "tests/corpus/5132-event-target-typed.ts",
+            "tests/corpus/5133-abort-signal-event-target.ts",
+            "tests/corpus/5135-event-target-warnings.js"
+          ]
         }
       }
     },
@@ -23599,12 +23176,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:events.eventTarget.addEventListener",
+          "tests": [
+            "tests/corpus/5130-event-target-dispatch.js",
+            "tests/corpus/5131-event-target-listener-errors.js",
+            "tests/corpus/5132-event-target-typed.ts",
+            "tests/corpus/5133-abort-signal-event-target.ts",
+            "tests/corpus/5135-event-target-warnings.js"
+          ]
         }
       }
     },
@@ -23624,12 +23207,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:events.eventTarget.dispatchEvent",
+          "tests": [
+            "tests/corpus/5130-event-target-dispatch.js",
+            "tests/corpus/5131-event-target-listener-errors.js",
+            "tests/corpus/5132-event-target-typed.ts",
+            "tests/corpus/5133-abort-signal-event-target.ts",
+            "tests/corpus/5135-event-target-warnings.js"
+          ]
         }
       }
     },
@@ -23649,12 +23238,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:events.eventTarget.removeEventListener",
+          "tests": [
+            "tests/corpus/5130-event-target-dispatch.js",
+            "tests/corpus/5131-event-target-listener-errors.js",
+            "tests/corpus/5132-event-target-typed.ts",
+            "tests/corpus/5133-abort-signal-event-target.ts",
+            "tests/corpus/5135-event-target-warnings.js"
+          ]
         }
       }
     },
@@ -23674,12 +23269,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:events.CustomEvent",
+          "tests": [
+            "tests/corpus/5130-event-target-dispatch.js",
+            "tests/corpus/5132-event-target-typed.ts"
+          ]
         }
       }
     },
@@ -23699,12 +23297,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:events.detail",
+          "tests": [
+            "tests/corpus/5130-event-target-dispatch.js",
+            "tests/corpus/5132-event-target-typed.ts"
+          ]
         }
       }
     },
@@ -24837,12 +24438,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:events.events.addAbortListener",
+          "tests": [
+            "tests/corpus/5133-abort-signal-event-target.ts"
+          ]
         }
       }
     },
@@ -24887,12 +24490,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:events.events.errorMonitor",
+          "tests": [
+            "tests/corpus/5134-events-error-monitor.ts",
+            "tests/corpus/5136-events-error-monitor-string-name.ts",
+            "tests/corpus/5137-events-error-monitor-computed-name.js",
+            "tests/corpus/5138-events-error-monitor-shared-listener.ts"
+          ]
         }
       }
     },

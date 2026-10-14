@@ -142,6 +142,7 @@ export function moduleLibAsyncSurface(mod: IrModule): { surface: string; loc: Sr
     [features.stream, "the node:stream surface"],
     [features.tls, "the node:tls surface"],
     [features.fetch, "fetch"],
+    [features.eventTarget, "the EventTarget surface"],
     [features.nodeTest, "the node:test surface"],
     [features.dynAsync, "the checked-dynamic async surface"],
     [features.dc, "the diagnostics_channel surface"],

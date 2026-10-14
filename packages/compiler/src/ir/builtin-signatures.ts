@@ -64,6 +64,16 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fetch.responseNew": { argTypes: [DYN, DYN], result: DYN },
   "fetch.input": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "abort.controllerNew": { argTypes: [], result: DYN },
+  /** EventTarget / Event / CustomEvent construction (scr_event_target.c):
+   * the Event constructors take the argument vector as one dyn array and
+   * throw Node's validation errors; `event.is` is `v instanceof Event`
+   * (kind 0), `CustomEvent` (1), `EventTarget` (2). addAbortListener
+   * answers the disposer (the Disposable's [Symbol.dispose]). */
+  "event.targetNew": { argTypes: [], result: DYN },
+  "event.new": { argTypes: [DYN], result: DYN },
+  "event.customNew": { argTypes: [DYN], result: DYN },
+  "event.is": { argTypes: [DYN, F64], result: BOOL },
+  "events.addAbortListener": { argTypes: [DYN, DYN], result: DYN },
   "abort.timeout": { argTypes: [DYN], result: DYN },
   "abort.now": { argTypes: [DYN], result: DYN },
   "abort.any": { argTypes: [DYN], result: DYN },
@@ -2875,6 +2885,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "emitter.getMax": { argTypes: [null], result: F64 },
   "emitter.setDefaultMax": { argTypes: [F64], result: VOID },
   "emitter.getDefaultMax": { argTypes: [], result: F64 },
+  /** The events.errorMonitor event key: an immortal string the runtime
+   * registry matches by identity, so no string event name reaches it. */
+  "emitter.errorMonitor": { argTypes: [], result: STRING },
   // node:stream: receivers are stream-hierarchy objects and several
   // results are program-dependent (the receiver's class, unions) — the
   // libCall case owns those checks. The constructors and a few methods

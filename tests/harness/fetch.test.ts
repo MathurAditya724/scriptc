@@ -74,14 +74,10 @@ async function runBinary(
   env?: NodeJS.ProcessEnv,
   timeout = 30_000,
 ): Promise<RunResult> {
-  // These fixtures intentionally exercise missing listeners, and some JS
-  // entries rely on Node's module detection. Neither warning is program output.
+  // Some JS entries rely on Node's module detection; that warning is not
+  // program output.
   if (cmd === "node") {
-    args = [
-      "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
-      "--disable-warning=AddEventListenerArgumentTypeWarning",
-      ...args,
-    ];
+    args = ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", ...args];
   }
   try {
     const { stdout, stderr } = await execFileAsync(cmd, args, {
@@ -98,13 +94,15 @@ async function runBinary(
   }
 }
 
-// Keep sanitizer infrastructure noise separate from program stderr.
+// Keep sanitizer infrastructure noise separate from program stderr; the
+// process warnings carry each process's own pid.
 function expectCleanStderr(native: RunResult, node: RunResult): void {
   if (node.exitCode !== 0) return;
+  const pid = (text: string): string => text.replace(/^\(node:\d+\) /gm, "(node:PID) ");
   const stderr = native.stderr
     .toString("utf8")
     .replace(/^==\d+==WARNING: ASan doesn't fully support makecontext\/swapcontext.*\n/gm, "");
-  expect(stderr).toBe(node.stderr.toString("utf8"));
+  expect(pid(stderr)).toBe(pid(node.stderr.toString("utf8")));
 }
 
 async function build(entry: string, flavor = ""): Promise<string> {

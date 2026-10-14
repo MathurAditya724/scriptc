@@ -54,6 +54,7 @@ export interface EarlyExecutableNativeFeatures {
   textDecoderLegacy: boolean;
   fileHandle: boolean;
   fetch: boolean;
+  eventTarget?: boolean;
   zlib: boolean;
   assert: boolean;
   inspect: boolean;

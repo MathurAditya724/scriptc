@@ -967,6 +967,21 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
           d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER) {
         return scr_insp_array_buffer(d->v.handle.ptr, scr_dyn_handle_cls(d), recurse, depth);
       }
+      const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(d);
+      if (ops->inspect_view) {
+        /* Node's custom inspectors answer the bare class name beyond the
+         * depth limit (`depth < 0`). */
+        if (recurse > depth) return scr_str_new(ops->cls, strlen(ops->cls));
+        ScrDyn *view = ops->inspect_view(d->v.handle.ptr);
+        ScrStr *body = scr_insp_dyn(view, recurse, depth);
+        scr_dyn_release(view);
+        InspBuf out = {0};
+        ib_cstr(&out, ops->cls);
+        ib_char(&out, ' ');
+        ib_bytes(&out, body->data, body->len);
+        scr_str_release(body);
+        return ib_take(&out);
+      }
       /* Node prints the class's full property dump (ServerResponse {
        * ... }) — internals we do not model. Fence loudly instead of a
        * silent-wrong shape (SEMANTICS.md). */
