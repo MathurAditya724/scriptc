@@ -465,6 +465,10 @@ export interface ClassInfo {
    * the base chain. The value names which SIDES the class carries. User
    * `extends` of these classes is fenced at the declaration (phase 1). */
   builtinStream?: "r" | "w" | "rw";
+  /** The synthetic LifetimeRegion class (@scriptc/experimental,
+   * lifetime-regions.ts): its constructor is synthesized with the class,
+   * and its methods lower at their call sites. */
+  lifetimeRegion?: true;
   /** This class's own `emit` override in the FORWARDING SHAPE (the one
    * EventEmitter member a subclass may re-declare): never in `methods` —
    * emit calls keep routing through the emitter spoke, which lowers the

@@ -30,6 +30,7 @@ for (const pkg of [
   "runtime-ios-simulator-arm64",
   "runtime-android-arm64",
   "compiler",
+  "experimental",
   "threads",
   "types",
   "cli-darwin-arm64",

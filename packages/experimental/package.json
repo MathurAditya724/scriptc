@@ -1,0 +1,29 @@
+{
+  "name": "@scriptc/experimental",
+  "version": "0.3.1",
+  "description": "Experimental scriptc APIs, with Node.js implementations: lifetime regions for ProgramLifetime objects",
+  "license": "Apache-2.0",
+  "homepage": "https://scriptc.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vercel-labs/scriptc.git",
+    "directory": "packages/experimental"
+  },
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

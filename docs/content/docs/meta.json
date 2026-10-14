@@ -12,6 +12,7 @@
     "ffi",
     "threads",
     "contracts",
+    "experimental",
     "native-objects",
     "---Reference---",
     "cli",

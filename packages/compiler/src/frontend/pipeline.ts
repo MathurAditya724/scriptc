@@ -28,6 +28,7 @@ import type { FrontendServices } from "./services.js";
 import { isImportDeclaration, isExportDeclaration, isStringLiteral } from "./ts7/adapter.js";
 import { CONTRACT_TYPES_MODULE } from "./contract-types.js";
 import { THREADS_MODULE } from "./threads-import.js";
+import { EXPERIMENTAL_MODULE } from "./experimental-import.js";
 
 export interface ProgramLoadOptions {
   npmStatic?: readonly string[];
@@ -116,9 +117,11 @@ function detectAutoPackages(
     for (const { spec, loc } of edges) {
       if (load.externalTypes?.has(spec)) continue;
       // scriptc's own packages are not npm dependencies: contract types are
-      // declarations only, and @scriptc/threads exports lower to intrinsics
-      // at their use sites (threads-import.ts), typed by its declarations.
-      if (spec === CONTRACT_TYPES_MODULE || spec === THREADS_MODULE) continue;
+      // declarations only, and @scriptc/threads and @scriptc/experimental
+      // exports lower at their use sites (threads-import.ts,
+      // experimental-import.ts), typed by their declarations.
+      if (spec === CONTRACT_TYPES_MODULE || spec === THREADS_MODULE || spec === EXPERIMENTAL_MODULE)
+        continue;
       // Attested entries already resolve to program sources, so the
       // published package's declaration eligibility does not apply.
       if (provenanceEntryFor(spec) !== null) continue;

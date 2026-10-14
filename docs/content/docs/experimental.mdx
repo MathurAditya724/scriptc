@@ -1,0 +1,104 @@
+---
+title: "Experimental APIs"
+---
+
+The `@scriptc/experimental` package holds APIs that are still being designed. Each export has a Node.js implementation, so a program that uses them runs unchanged under Node.js, and scriptc compiles them into the program. Their behavior may change between releases.
+
+Add `@scriptc/experimental` to your project's dependencies.
+
+## LifetimeRegion
+
+Instances of [`ProgramLifetime`](/docs/contracts#programlifetime) classes are never freed, which suits a program that builds one syntax tree or symbol table and exits. A long-running program, such as a compiler in watch mode, builds a new generation of these objects on every rebuild. A `LifetimeRegion` lets it free each generation once it is no longer needed.
+
+```ts:rebuild.ts
+import type { ProgramLifetime } from "@scriptc/types";
+import { LifetimeRegion } from "@scriptc/experimental";
+
+class SyntaxNode implements ProgramLifetime {
+  readonly children: SyntaxNode[] = [];
+  parent: SyntaxNode | undefined = undefined;
+}
+
+function parse(depth: number): SyntaxNode {
+  const node = new SyntaxNode();
+  for (let i = 0; depth > 0 && i < 4; i++) {
+    const child = parse(depth - 1);
+    child.parent = node;
+    node.children.push(child);
+  }
+  return node;
+}
+
+function count(node: SyntaxNode): number {
+  return node.children.reduce((sum, child) => sum + count(child), 1);
+}
+
+let previous: LifetimeRegion | undefined;
+for (let build = 1; build <= 3; build++) {
+  const region = new LifetimeRegion();
+  const tree = region.run(() => parse(8));
+  console.log(`build ${build}: ${count(tree)} nodes`);
+  // The previous build's tree is no longer referenced.
+  previous?.release();
+  previous = region;
+}
+```
+
+Under Node.js, `run` calls its callback and `release` does nothing:
+
+```console
+$ node rebuild.ts
+build 1: 87381 nodes
+build 2: 87381 nodes
+build 3: 87381 nodes
+```
+
+The scriptc executable prints the same. With `SCRIPTC_REGION_STATS=1` it also reports each region it frees:
+
+```console
+$ scriptc build rebuild.ts -o rebuild >/dev/null
+$ SCRIPTC_REGION_STATS=1 ./rebuild
+build 1: 87381 nodes
+build 2: 87381 nodes
+scriptc region 1: freed 87381 objects, 87381 owned objects, 2 chunks (4.0 MiB); cycles 0.0 ms, walk 14.9 ms, free 2.6 ms
+build 3: 87381 nodes
+scriptc region 2: freed 87381 objects, 87381 owned objects, 2 chunks (4.0 MiB); cycles 0.0 ms, walk 8.9 ms, free 2.4 ms
+scriptc regions: 3 created, 2 released, 2 freed, 0 pinned, 0 kept
+```
+
+### API
+
+<dl>
+  <dt><code>new LifetimeRegion()</code></dt>
+  <dd>Creates a region. Creating a region also retries the released regions that could not be freed yet.</dd>
+  <dt><code>region.run(fn)</code></dt>
+  <dd>Calls <code>fn</code> with the region as the current region and returns its result. <code>ProgramLifetime</code> instances created during the call belong to the region. Calls nest: a <code>run</code> inside the callback makes another region current until it returns, and the previous region is current again however the callback finishes, including when it throws.</dd>
+  <dt><code>region.release()</code></dt>
+  <dd>Requests that the region be freed. scriptc frees it as soon as nothing outside the region refers to any of its instances, which may be at once, at a later release or region creation, or never. A region is never freed while a <code>run</code> call on it is active. After <code>release()</code>, <code>run</code> still calls its callback, and the instances it creates belong to the default region.</dd>
+</dl>
+
+`ProgramLifetime` instances created outside every `run` call belong to the default region, which is never freed. Ordinary objects (instances of classes without the contract, arrays, maps, closures) are reference counted as always; a region frees the ones that only its instances refer to.
+
+### When a region is freed
+
+When a region is released, scriptc checks that every reference to its instances comes from the region itself: from its own instances, or from ordinary objects that only the region refers to. It then frees the instances and those ordinary objects together, and removes the `WeakMap` and `WeakSet` entries keyed by the freed instances.
+
+A released region stays allocated, and its instances stay usable, while anything else refers to one of them:
+
+- a variable, a module variable, or a local of a function that is still running;
+- an ordinary object that something outside the region refers to, including an array, `Map` or `Set` element and a closure's captured variable;
+- an instance of another region, until that region is freed;
+- an instance of the default region, which is never freed;
+- a promise, generator or `Error` that holds an instance, until it is no longer referenced.
+
+Work that resumes after an `await` inside the callback runs outside the region, so the instances it creates belong to the default region and keep the instances they refer to allocated.
+
+### Threads
+
+Each thread has its own regions and its own default region. A region belongs to the thread that created it: on another thread, `run` makes that thread's default region current and `release` does nothing. A region that holds an instance published with [`@scriptc/threads`](/docs/threads) is never freed, because other threads may refer to it.
+
+### Cost
+
+Programs that never construct a `LifetimeRegion` compile exactly as they would without the package. In programs that do, every retain and release of a `ProgramLifetime` instance updates a count of the region chunk that holds it, and freeing a region visits each of its instances and the ordinary objects they own.
+
+`SCRIPTC_REGION_STATS=1` prints one line per release attempt, freed, `kept` (with the number of references the check could not explain) or `pinned` (published), and a summary per thread at exit.

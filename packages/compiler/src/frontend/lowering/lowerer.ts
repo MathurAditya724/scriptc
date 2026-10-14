@@ -1,4 +1,10 @@
 import {
+  lifetimeRegionType,
+  lowerLifetimeRegionCall,
+  lowerLifetimeRegionNew,
+} from "./lifetime-regions.js";
+import { isExperimentalDeclarationFile } from "../experimental-import.js";
+import {
   checkCycleBindingAccesses,
   refuseUncheckedCycleReads,
   type CycleInitFlag,
@@ -2332,6 +2338,12 @@ export class Lowerer {
   readonly workerTargets: readonly ts.SourceFile[];
   readonly workerTargetIdByPath = new Map<string, number>();
   usesWorkers = false;
+  /** The program constructs a LifetimeRegion (lifetime-regions.ts). */
+  usesLifetimeRegions = false;
+  /** Per-directory answers of experimental-import.ts's declaration-file test. */
+  readonly experimentalFiles = new Map<string, boolean>();
+  /** Interned LifetimeRegion.run helpers, by callback type key. */
+  readonly regionRunHelpers = new Map<string, string>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -2677,6 +2689,10 @@ export class Lowerer {
       // fileTag is filled just below; the hook is only ever CALLED during
       // lowering, long after the constructor completes.
       isProgramFile: (sf) => this.fileTag.has(sf),
+      lifetimeRegionClass: (decl) =>
+        isExperimentalDeclarationFile(decl.getSourceFile(), this.experimentalFiles)
+          ? lifetimeRegionType(this)
+          : null,
       moduleNamespaceId: (type) => this.moduleNamespaceIdOfType(type),
     };
     // Modules reachable only through literal import() joined
@@ -5813,6 +5829,7 @@ export class Lowerer {
             globals: this.globalsList,
             entry: ENTRY_NAME,
             ...(this.usesWorkers ? { workers: true } : {}),
+            ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
             ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };
@@ -6010,6 +6027,7 @@ export class Lowerer {
     }
     for (const info of this.classes.values()) {
       if (info.builtinError) continue; // runtime-provided; nothing lowers
+      if (info.lifetimeRegion) continue; // synthesized with the class
       // Generic-class INSTANTIATIONS (and mixin instantiations) are
       // demand-driven, not units: their members lower unconditionally in
       // the instance drain below — the generic-fn instance rule.
@@ -10370,6 +10388,7 @@ export class Lowerer {
     // promise-returning ambient global, and `import` is a keyword callee no
     // identifier path matches.
     return (
+      lowerLifetimeRegionCall(this, expr) ??
       lowerFfiCall(this, expr) ??
       lowerFetchCall(this, expr) ??
       lowerStaticFetchCompanionCall(this, expr) ??
@@ -10590,6 +10609,7 @@ export class Lowerer {
 
   lowerNew(expr: ts.NewExpression): IrExpr {
     const builtin =
+      lowerLifetimeRegionNew(this, expr) ??
       lowerAbortControllerNew(this, expr) ??
       lowerFetchWebNew(this, expr) ??
       lowerResponseNew(this, expr) ??
