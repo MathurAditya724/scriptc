@@ -503,6 +503,9 @@ function llStrBytes(text: string): string {
 }
 
 const NO_BORROWED: ReadonlySet<number> = new Set();
+/** ScrExcKind tags of a generator slot holding a number or a boolean. */
+const SCR_EXC_F64 = 1;
+const SCR_EXC_BOOL = 2;
 
 /** Whether any node of `e` names the local (reads, writes, declarations,
  * captures). */
@@ -990,7 +993,14 @@ export class LlEmitter {
     finalLabel: string;
     cleanupLabel: string;
     suspendLabel: string;
+    /** The generator's OUT slot (%ScrGenSlot) for a native body whose
+     * yield channel is a number or boolean, which its yields store into
+     * inline (see emitGenSlotStore); null otherwise. */
+    out: string | null;
   } | null = null;
+  /** Inline generator slot accesses need the %ScrGenHead/%ScrGenSlot
+   * mirrors in the module header. */
+  usesGenSlots = false;
   /** The generator channels of the function being emitted (null outside
    * generator bodies): yieldExpr emission reads them, and emitTryCatch's
    * catch prologue emits the GENRET sentinel re-unwind exactly here. */
@@ -2201,6 +2211,15 @@ export class LlEmitter {
       `%ScrDynPath = type { ptr, ptr, ${this.sizeType} }`,
       `%ScrIslandModule = type { ptr, ptr, ${this.sizeType}, ${this.sizeType}, i32, ptr, ${this.sizeType}, ${this.sizeType} }`,
       `%ScrIslandEdge = type { ptr, ptr, ptr, i32 }`,
+      // A generator's prefix { rc, receiver, fiber, state, out } and its
+      // value slot { kind, f64, b, payload, release_fn } (scr_async.c pins
+      // both): number and boolean yields and drives address OUT directly.
+      ...(this.usesGenSlots
+        ? [
+            `%ScrGenSlot = type { i32, double, i8, ptr, ptr }`,
+            `%ScrGenHead = type { ${this.sizeType}, ptr, ptr, i32, %ScrGenSlot }`,
+          ]
+        : []),
     ];
     for (const line of shapes.typeDefs) out.push(line);
     for (const line of classShapes.typeDefs) out.push(line);
@@ -5756,6 +5775,60 @@ export class LlEmitter {
     this.emitCoroSuspendPrepared();
   }
 
+  /** A native generator's OUT slot (scr_async.c's ScrGen.out, mirrored by
+   * %ScrGenHead and %ScrGenSlot { kind, f64, b, payload, release_fn }). */
+  genOutSlot(gen: string): string {
+    this.usesGenSlots = true;
+    const slot = this.B.tmp();
+    this.B.line(`${slot} = getelementptr inbounds %ScrGenHead, ptr ${gen}, i32 0, i32 4`);
+    return slot;
+  }
+
+  /** A yield on a number or boolean channel: scr_gen_slot_f64/bool inline.
+   * Such a body's OUT never holds a reference at a yield (only its final
+   * completion can park one), so the slot needs no release first. */
+  emitGenSlotStore(slot: string, kind: "f64" | "bool", value: string): void {
+    const B = this.B;
+    const field = B.tmp();
+    if (kind === "f64") {
+      B.line(`store i32 ${SCR_EXC_F64}, ptr ${slot}`);
+      B.line(`${field} = getelementptr inbounds %ScrGenSlot, ptr ${slot}, i32 0, i32 1`);
+      B.line(`store double ${value}, ptr ${field}`);
+    } else {
+      const byte = B.tmp();
+      B.line(`store i32 ${SCR_EXC_BOOL}, ptr ${slot}`);
+      B.line(`${field} = getelementptr inbounds %ScrGenSlot, ptr ${slot}, i32 0, i32 2`);
+      B.line(`${byte} = zext i1 ${value} to i8`);
+      B.line(`store i8 ${byte}, ptr ${field}`);
+    }
+  }
+
+  /** scr_gen_take_out_f64/bool inline: the slot's value when it holds that
+   * kind (otherwise 0 or false), leaving the slot empty. */
+  emitGenSlotTake(slot: string, kind: "f64" | "bool"): string {
+    const B = this.B;
+    const tag = B.tmp(),
+      matches = B.tmp(),
+      field = B.tmp(),
+      raw = B.tmp(),
+      out = B.tmp();
+    B.line(`${tag} = load i32, ptr ${slot}`);
+    B.line(`${matches} = icmp eq i32 ${tag}, ${kind === "f64" ? SCR_EXC_F64 : SCR_EXC_BOOL}`);
+    if (kind === "f64") {
+      B.line(`${field} = getelementptr inbounds %ScrGenSlot, ptr ${slot}, i32 0, i32 1`);
+      B.line(`${raw} = load double, ptr ${field}`);
+      B.line(`${out} = select i1 ${matches}, double ${raw}, double 0.0`);
+    } else {
+      const bit = B.tmp();
+      B.line(`${field} = getelementptr inbounds %ScrGenSlot, ptr ${slot}, i32 0, i32 2`);
+      B.line(`${raw} = load i8, ptr ${field}`);
+      B.line(`${bit} = trunc i8 ${raw} to i1`);
+      B.line(`${out} = select i1 ${matches}, i1 ${bit}, i1 false`);
+    }
+    B.line(`store i32 0, ptr ${slot}`);
+    return out;
+  }
+
   /** Suspend after a target-specific runtime helper already queued the
    * continuation (used by module awaits, which skip the hop when settled). */
   emitCoroSuspendPrepared(): void {
@@ -6033,6 +6106,20 @@ export class LlEmitter {
       B.line(`${handle} = call ptr @llvm.coro.begin(token ${id}, ptr ${mem})`);
       B.line(`call void @${started}(ptr ${handle})`);
       B.line(`${self} = call ptr @scr_fiber_self()`);
+      // A native synchronous body owns its generator for the whole run (the
+      // ScrGen owns the frame), so its OUT slot address is fixed.
+      let out: string | null = null;
+      const yieldKind = fn.generator?.yieldT.kind;
+      if (
+        !this.wasi &&
+        fn.async !== true &&
+        (yieldKind === "f64" || yieldKind === "date" || yieldKind === "bool")
+      ) {
+        this.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
+        const gen = B.tmp();
+        B.line(`${gen} = call ptr @scr_gen_of_fiber(ptr ${self})`);
+        out = this.genOutSlot(gen);
+      }
       this.currentCoro = {
         kind: fn.generator !== undefined ? "generator" : "async",
         id,
@@ -6041,6 +6128,7 @@ export class LlEmitter {
         finalLabel: B.newLabel("coro.final"),
         cleanupLabel: B.newLabel("coro.cleanup"),
         suspendLabel: B.newLabel("coro.suspend"),
+        out,
       };
     }
 

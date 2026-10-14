@@ -4653,6 +4653,26 @@ struct ScrGen {
 #endif
 };
 
+/* The LLVM emitter stores number and boolean yields into OUT and takes
+ * them back out inline, through %ScrGenHead { rc, receiver, fiber, state,
+ * out } and %ScrGenSlot { kind, f64, b, payload, release_fn }. */
+struct ScrGenHeadMirror {
+  size_t rc;
+  ScrDyn *receiver;
+  ScrFiber *fiber;
+  int state;
+  ScrGenSlot out;
+};
+_Static_assert(offsetof(ScrGen, fiber) == offsetof(struct ScrGenHeadMirror, fiber) &&
+                   offsetof(ScrGen, state) == offsetof(struct ScrGenHeadMirror, state) &&
+                   offsetof(ScrGen, out) == offsetof(struct ScrGenHeadMirror, out),
+               "the LLVM emitter's %ScrGenHead");
+_Static_assert(offsetof(ScrGenSlot, kind) == 0 && sizeof(ScrExcKind) == 4 &&
+                   offsetof(ScrGenSlot, f64) == 8 && offsetof(ScrGenSlot, b) == 16 &&
+                   sizeof(bool) == 1 && SCR_EXC_NONE == 0 && SCR_EXC_F64 == 1 &&
+                   SCR_EXC_BOOL == 2,
+               "the LLVM emitter's %ScrGenSlot and its number/boolean tags");
+
 static ScrGen *scr_gen_new_common(void (*entry)(ScrFiber *, void *), void *argpack,
                                   void (*drop_args)(void *),
                                   void (*settle_async)(ScrGen *, ScrPromise *),

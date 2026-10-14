@@ -492,7 +492,8 @@ export function emitAsyncExpr(
       if (yt.kind === "f64" || yt.kind === "date") {
         if (host.currentCoro !== null) {
           const coro = host.currentCoro;
-          if (host.wasi) {
+          if (coro.out !== null) host.emitGenSlotStore(coro.out, "f64", v.name);
+          else if (host.wasi) {
             host.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
             host.declare(`declare void @scr_gen_out_f64(ptr, double)`);
             const g = B.tmp();
@@ -509,7 +510,8 @@ export function emitAsyncExpr(
       } else if (yt.kind === "bool") {
         if (host.currentCoro !== null) {
           const coro = host.currentCoro;
-          if (host.wasi) {
+          if (coro.out !== null) host.emitGenSlotStore(coro.out, "bool", v.name);
+          else if (host.wasi) {
             host.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
             host.declare(`declare void @scr_gen_out_bool(ptr, i1 zeroext)`);
             const g = B.tmp();
@@ -697,6 +699,10 @@ export function emitAsyncExpr(
           throw new InternalCompilerError(`llvm emitter bug: genResume ${e.mode} on async`);
         const gb = emitBorrowedInput(host, e.gen);
         if (e.mode === "value") {
+          if (!host.wasi && (e.type.kind === "f64" || e.type.kind === "date"))
+            return { name: host.emitGenSlotTake(host.genOutSlot(gb.name), "f64"), type: e.type };
+          if (!host.wasi && e.type.kind === "bool")
+            return { name: host.emitGenSlotTake(host.genOutSlot(gb.name), "bool"), type: e.type };
           const t = B.tmp();
           if (e.type.kind === "f64" || e.type.kind === "date") {
             host.declare(`declare double @scr_gen_take_out_f64(ptr)`);
