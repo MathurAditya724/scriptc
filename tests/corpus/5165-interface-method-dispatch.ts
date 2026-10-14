@@ -1,6 +1,6 @@
 // Method calls through interface-typed receivers whose implementations are
 // program classes: number, string and boolean arguments and results, void
-// methods (including implementations that return a value anyway), methods
+// methods (including implementations that return a value), methods
 // that read and write `this`, thrown errors, and object-literal
 // implementations of the same interface.
 interface Shape {
