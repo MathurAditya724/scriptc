@@ -21,6 +21,7 @@ export const SUPPORTED_BUILTIN_MODULES = [
   "string_decoder",
   "querystring",
   "readline",
+  "readline/promises",
   "http2",
   "assert",
   "assert/strict",

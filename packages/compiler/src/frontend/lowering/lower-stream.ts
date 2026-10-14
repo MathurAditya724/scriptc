@@ -37,6 +37,7 @@ import { newFnCtx, own } from "./lowerer.js";
 import { appendImplicitUndefinedReturn } from "./function-returns.js";
 import { bufEncoding, knownBufEncoding } from "./containers/bytes.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import { sideEffectFreeOptionValue } from "./surfaces.js";
 import {
   BOOL,
   DYN,
@@ -59,6 +60,29 @@ import {
 } from "../../ir/ir.js";
 
 const BYTES = BYTES_U8;
+
+/** An expression that only reads bindings and properties (no calls,
+ * assignments or construction): reading it a step later observes the
+ * same values. */
+function pureRead(node: ts.Expression): boolean {
+  if (
+    ts.isParenthesizedExpression(node) ||
+    ts.isNonNullExpression(node) ||
+    ts.isAsExpression(node)
+  ) {
+    return pureRead(node.expression);
+  }
+  if (ts.isIdentifier(node) || node.kind === ts.SyntaxKind.ThisKeyword) return true;
+  if (ts.isPropertyAccessExpression(node)) return pureRead(node.expression);
+  if (ts.isElementAccessExpression(node)) {
+    return (
+      (ts.isStringLiteral(node.argumentExpression) ||
+        ts.isNumericLiteral(node.argumentExpression)) &&
+      pureRead(node.expression)
+    );
+  }
+  return false;
+}
 
 /** The stream sides of a receiver class: the nearest stream-class
  * ancestor's, or null off the stream hierarchy. */
@@ -334,6 +358,10 @@ interface StreamOptions {
    * as a follow-up readable.pushEncoding — push(string) decodes through
    * it (Node's Buffer.from(chunk, state.defaultEncoding)). */
   pushEncoding: string | null;
+  /** The `signal` option's value: applied with stream.addAbortSignal
+   * right after construction (Node's constructors call addAbortSignal
+   * once the state exists), or null when absent. */
+  signal: IrExpr | null;
   /** Present callbacks in canonical order with their flag bits. */
   flags: number;
   cbs: IrExpr[];
@@ -559,6 +587,7 @@ function parseStreamOptions(
     encoding: null,
     badEncoding: null,
     pushEncoding: null,
+    signal: null,
     flags: 0,
     cbs: [],
   };
@@ -633,6 +662,11 @@ function parseStreamOptions(
         return declared ?? funcOf([], VOID);
       });
       present.set(name, lowerStreamCallback(lowerer, name, fnNode, thisType, tuple));
+      continue;
+    }
+    // `{ signal }` shorthand: the binding is the value.
+    if (name === "signal" && ts.isShorthandPropertyAssignment(prop)) {
+      if (ts.isIdentifier(prop.name)) out.signal = lowerer.lowerExprExpecting(prop.name, DYN);
       continue;
     }
     // Scalar options.
@@ -729,13 +763,22 @@ function parseStreamOptions(
           "utf8 (the default) is the supported write-side string encoding",
         );
         break;
-      case "signal":
-        lowerer.noLowering(
-          `the ${ctorName} option 'signal'`,
-          prop,
-          "AbortSignal-driven destruction is not lowered yet",
-        );
+      case "signal": {
+        // `if (options.signal) addAbortSignal(options.signal, this)`:
+        // applied over the fresh stream, so the value is read after the
+        // constructor — only values whose evaluation has no effects.
+        if (value.kind === ts.SyntaxKind.NullKeyword) break;
+        if (ts.isIdentifier(value) && value.text === "undefined") break;
+        if (!sideEffectFreeOptionValue(value) && !pureRead(value)) {
+          lowerer.noLowering(
+            `the ${ctorName} option 'signal' with this value`,
+            prop,
+            "pass a variable or property read (const signal = controller.signal) — the signal is read after construction",
+          );
+        }
+        out.signal = lowerer.lowerExprExpecting(value, DYN);
         break;
+      }
       case "captureRejections": {
         // `false` is the default — admit the literal; the rejection-
         // capturing mode has no lowering (async listeners' promises are
@@ -824,6 +867,7 @@ function streamCtorArgs(
   encoding: string | null;
   badEncoding: string | null;
   pushEncoding: string | null;
+  signal: IrExpr | null;
 } {
   const shape = streamCtorShape(cls);
   const o = parseStreamOptions(
@@ -852,6 +896,7 @@ function streamCtorArgs(
     encoding: o.encoding,
     badEncoding: o.badEncoding,
     pushEncoding: o.pushEncoding,
+    signal: o.signal,
   };
 }
 
@@ -907,13 +952,23 @@ export function lowerStreamNew(lowerer: Lowerer, expr: ts.NewExpression, info: C
       loc,
     };
   }
-  if (parsed.encoding === null) return built;
-  // { encoding }: chain a setEncoding over the fresh stream (the operand
-  // temp releases with the frame; setEncoding answers the receiver +1).
+  if (parsed.encoding !== null) {
+    // { encoding }: chain a setEncoding over the fresh stream (the operand
+    // temp releases with the frame; setEncoding answers the receiver +1).
+    built = {
+      kind: "libCall",
+      fn: "readable.setEncoding",
+      args: [built, strLit(parsed.encoding, loc)],
+      type: thisType,
+      loc,
+    };
+  }
+  if (parsed.signal === null) return built;
+  // { signal }: addAbortSignal over the fresh stream (answers it +1).
   return {
     kind: "libCall",
-    fn: "readable.setEncoding",
-    args: [built, strLit(parsed.encoding, loc)],
+    fn: "stream.addAbortSignal",
+    args: [built, parsed.signal],
     type: thisType,
     loc,
   };
@@ -1178,6 +1233,19 @@ export function lowerStreamSuperCall(
       loc,
     });
   }
+  if (parsed.signal !== null) {
+    out.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "stream.addAbortSignal",
+        args: [thisRef(), parsed.signal],
+        type: thisType,
+        loc,
+      },
+      loc,
+    });
+  }
   return out;
 }
 
@@ -1423,7 +1491,7 @@ const PIPELINE_STAGE_EXPECTED =
 function lowerStreamArg(
   lowerer: Lowerer,
   node: ts.Expression,
-  what: "finished" | "pipeline",
+  what: "finished" | "pipeline" | "addAbortSignal",
 ): IrExpr {
   const v = lowerer.lowerExpr(node);
   const info = v.type.kind === "object" ? lowerer.classes.get(v.type.className) : undefined;
@@ -1563,6 +1631,113 @@ function lowerEosCallback(
   );
 }
 
+/** finished()'s options literal: readable/writable/error (and cleanup
+ * for the promise form) as boolean literals, signal as any expression.
+ * readable/writable answer -1 when absent (Node's default: whether the
+ * stream has that side). */
+function eosOptions(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  promiseForm: boolean,
+): { readable: number; writable: number; error: boolean; cleanup: boolean; signal: IrExpr | null } {
+  const out = {
+    readable: -1,
+    writable: -1,
+    error: true,
+    cleanup: false,
+    signal: null as IrExpr | null,
+  };
+  if (!ts.isObjectLiteralExpression(node)) {
+    lowerer.noLowering(
+      "finished options that are not an object literal",
+      node,
+      "write the options inline: finished(stream, { readable, writable, error, signal })",
+    );
+  }
+  const literal = (p: ts.PropertyAssignment, key: string): boolean => {
+    if (p.initializer.kind === ts.SyntaxKind.TrueKeyword) return true;
+    if (p.initializer.kind === ts.SyntaxKind.FalseKeyword) return false;
+    lowerer.noLowering(
+      `the finished option '${key}' with a non-literal value`,
+      p.initializer,
+      "pass true or false",
+    );
+  };
+  for (const p of node.properties) {
+    const key =
+      (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && ts.isIdentifier(p.name)
+        ? p.name.text
+        : null;
+    if (key === "signal") {
+      out.signal = ts.isShorthandPropertyAssignment(p)
+        ? lowerer.lowerExprExpecting(p.name as ts.Identifier, DYN)
+        : lowerer.lowerExprExpecting((p as ts.PropertyAssignment).initializer, DYN);
+      continue;
+    }
+    if (key !== null && ts.isPropertyAssignment(p)) {
+      if (key === "readable") out.readable = literal(p, key) ? 1 : 0;
+      else if (key === "writable") out.writable = literal(p, key) ? 1 : 0;
+      else if (key === "error") out.error = literal(p, key);
+      else if (key === "cleanup" && promiseForm) out.cleanup = literal(p, key);
+      else {
+        lowerer.noLowering(
+          `the finished option '${key}'`,
+          p,
+          promiseForm
+            ? "readable, writable, error, cleanup and signal are the supported options"
+            : "readable, writable, error and signal are the supported options",
+        );
+      }
+      continue;
+    }
+    lowerer.noLowering(
+      "finished options with this member",
+      p,
+      "write each option as a plain property",
+    );
+  }
+  return out;
+}
+
+/** pipeline()'s trailing options literal (the promise form): signal as
+ * any expression, end as a boolean literal. */
+function pipelineOptions(
+  lowerer: Lowerer,
+  node: ts.ObjectLiteralExpression,
+): { end: boolean; signal: IrExpr | null } {
+  const out = { end: true, signal: null as IrExpr | null };
+  for (const p of node.properties) {
+    const key =
+      (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && ts.isIdentifier(p.name)
+        ? p.name.text
+        : null;
+    if (key === "signal") {
+      out.signal = ts.isShorthandPropertyAssignment(p)
+        ? lowerer.lowerExprExpecting(p.name as ts.Identifier, DYN)
+        : lowerer.lowerExprExpecting((p as ts.PropertyAssignment).initializer, DYN);
+      continue;
+    }
+    if (key === "end" && ts.isPropertyAssignment(p)) {
+      if (p.initializer.kind === ts.SyntaxKind.TrueKeyword) continue;
+      if (p.initializer.kind === ts.SyntaxKind.FalseKeyword) {
+        out.end = false;
+        continue;
+      }
+      lowerer.noLowering(
+        "the pipeline option 'end' with a non-literal value",
+        p.initializer,
+        "pass true or false",
+      );
+    }
+    lowerer.noLowering(
+      key === null ? "pipeline options with this member" : `the pipeline option '${key}'`,
+      p,
+      "signal and end are the supported pipeline options",
+    );
+  }
+  return out;
+}
+
 /** `finished(...)` / `pipeline(...)` / `getDefaultHighWaterMark(...)`
  * imported from node:stream (named imports, destructured requires, and
  * namespace-member calls all land here). Null for members this spoke
@@ -1580,13 +1755,11 @@ export function lowerStreamModuleCall(
     // ERR_STREAM_PREMATURE_CLOSE — the callback form's status, boxed
     // through the promise instead). The options argument has no lowering.
     if (bi.member === "finished") {
-      if (args.length !== 1) {
+      if (args.length !== 1 && args.length !== 2) {
         lowerer.noLowering(
           `stream/promises.finished with ${args.length} arguments`,
           call,
-          args.length === 2
-            ? "the options argument has no lowering yet — the one-argument form is supported"
-            : "the supported form is finished(stream)",
+          "the supported forms are finished(stream) and finished(stream, options)",
         );
       }
       let recv: IrExpr;
@@ -1595,6 +1768,24 @@ export function lowerStreamModuleCall(
       } catch (e) {
         if (e instanceof StreamArgTypeThrow) return e.expr;
         throw e;
+      }
+      const optsNode = args[1];
+      if (optsNode !== undefined && optsNode.kind !== ts.SyntaxKind.NullKeyword) {
+        const o = eosOptions(lowerer, optsNode, true);
+        const head: IrExpr[] = [
+          recv,
+          numLit(o.readable, loc),
+          numLit(o.writable, loc),
+          boolLit(o.error, loc),
+          boolLit(o.cleanup, loc),
+        ];
+        return {
+          kind: "libCall",
+          fn: o.signal ? "sp.finishedOptsSignal" : "sp.finishedOpts",
+          args: o.signal ? [...head, o.signal] : head,
+          type: { kind: "promise", inner: VOID },
+          loc,
+        };
       }
       return {
         kind: "libCall",
@@ -1616,12 +1807,28 @@ export function lowerStreamModuleCall(
           "the supported form is pipeline(source, ...streams)",
         );
       }
+      const lastArg = args[args.length - 1]!;
+      const opts =
+        ts.isObjectLiteralExpression(lastArg) && args.length >= 3
+          ? pipelineOptions(lowerer, lastArg)
+          : null;
+      const stageArgs = opts ? args.slice(0, -1) : args;
       let streams: IrExpr[];
       try {
-        streams = args.map((a) => lowerStreamArg(lowerer, a, "pipeline"));
+        streams = stageArgs.map((a) => lowerStreamArg(lowerer, a, "pipeline"));
       } catch (e) {
         if (e instanceof StreamArgTypeThrow) return e.expr;
         throw e;
+      }
+      if (opts) {
+        const head = [numLit(streams.length, loc), ...streams, boolLit(opts.end, loc)];
+        return {
+          kind: "libCall",
+          fn: opts.signal ? "sp.pipelineOptsSignal" : "sp.pipelineOpts",
+          args: opts.signal ? [...head, opts.signal] : head,
+          type: { kind: "promise", inner: VOID },
+          loc,
+        };
       }
       return {
         kind: "libCall",
@@ -1703,14 +1910,39 @@ export function lowerStreamModuleCall(
     );
   }
 
-  if (bi.member === "finished") {
+  if (bi.member === "addAbortSignal") {
+    // addAbortSignal(signal, stream) → the stream: destroyed with an
+    // AbortError when the signal aborts (now, if it already has).
     if (args.length !== 2) {
+      lowerer.noLowering(
+        `addAbortSignal with ${args.length} arguments`,
+        call,
+        "the supported form is addAbortSignal(signal, stream)",
+      );
+    }
+    const signal = lowerer.lowerExprExpecting(args[0]!, DYN);
+    let stream: IrExpr;
+    try {
+      stream = lowerStreamArg(lowerer, args[1]!, "addAbortSignal");
+    } catch (e) {
+      if (e instanceof StreamArgTypeThrow) return e.expr;
+      throw e;
+    }
+    return {
+      kind: "libCall",
+      fn: "stream.addAbortSignalFn",
+      args: [signal, stream],
+      type: stream.type,
+      loc,
+    };
+  }
+
+  if (bi.member === "finished") {
+    if (args.length !== 2 && args.length !== 3) {
       lowerer.noLowering(
         `finished with ${args.length} arguments`,
         call,
-        args.length === 3
-          ? "the options argument has no lowering yet — the two-argument form is supported"
-          : "the supported form is finished(stream, callback)",
+        "the supported forms are finished(stream, callback) and finished(stream, options, callback)",
       );
     }
     let recv: IrExpr;
@@ -1720,7 +1952,24 @@ export function lowerStreamModuleCall(
       if (e instanceof StreamArgTypeThrow) return e.expr;
       throw e;
     }
-    const { cb, dyn } = lowerEosCallback(lowerer, "finished", args[1]!, recv.type);
+    if (args.length === 3 && args[1]!.kind !== ts.SyntaxKind.NullKeyword) {
+      const o = eosOptions(lowerer, args[1]!, false);
+      const { cb } = lowerEosCallback(lowerer, "finished", args[2]!, recv.type);
+      const head: IrExpr[] = [
+        recv,
+        numLit(o.readable, loc),
+        numLit(o.writable, loc),
+        boolLit(o.error, loc),
+      ];
+      return {
+        kind: "libCall",
+        fn: o.signal ? "stream.finishedOptsSignal" : "stream.finishedOpts",
+        args: o.signal ? [...head, o.signal, cb] : [...head, cb],
+        type: funcOf([], VOID),
+        loc,
+      };
+    }
+    const { cb, dyn } = lowerEosCallback(lowerer, "finished", args[args.length - 1]!, recv.type);
     return {
       kind: "libCall",
       fn: dyn ? "stream.finishedDyn" : "stream.finished",

@@ -3022,6 +3022,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * propagates the first error by destroying the rest, calls cb after the
    * last 'close'; answers the destination +1. The Dyn twins take the
    * callback as a checked-dynamic VALUE (mustCall wrappers). */
+  /** stream.addAbortSignal: [stream, signal] — the constructors' signal
+   * option, chained over the fresh stream (falsy signals are ignored);
+   * stream.addAbortSignalFn: [signal, stream] — addAbortSignal(signal,
+   * stream). Both answer the stream (+1) and throw ERR_INVALID_ARG_TYPE
+   * for a value that is not an AbortSignal; they link the event-target
+   * unit (addAbortListener). */
+  "stream.addAbortSignal": { argTypes: [null, DYN], result: VOID },
+  "stream.addAbortSignalFn": { argTypes: [DYN, null], result: VOID },
   "stream.finished": { argTypes: [null, null], result: VOID },
   "stream.finishedDyn": { argTypes: [null, DYN], result: VOID },
   "stream.pipeline": { argTypes: [F64], result: VOID },
@@ -3032,6 +3040,25 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * chaining/destroyer semantics settling a void promise (fulfilled on a
    * clean finish, rejected with the finish status otherwise). */
   "sp.finished": { argTypes: [null], result: { kind: "promise", inner: VOID } },
+  /** The options forms: finished(s, { readable, writable, error, cleanup,
+   * signal }) as [s, readable, writable, error, cleanup, signal?] —
+   * readable/writable -1 (absent), 0 or 1 — and pipeline(...streams,
+   * { signal, end }) as [count, s1..sn, end, signal?]. The Signal forms
+   * link the event-target unit (addAbortListener). The callback form
+   * stream.finishedOpts: [s, readable, writable, error, signal?, cb] →
+   * the cleanup closure. */
+  "sp.finishedOpts": {
+    argTypes: [null, F64, F64, BOOL, BOOL],
+    result: { kind: "promise", inner: VOID },
+  },
+  "sp.finishedOptsSignal": {
+    argTypes: [null, F64, F64, BOOL, BOOL, DYN],
+    result: { kind: "promise", inner: VOID },
+  },
+  "sp.pipelineOpts": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
+  "sp.pipelineOptsSignal": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
+  "stream.finishedOpts": { argTypes: [null, F64, F64, BOOL, null], result: VOID },
+  "stream.finishedOptsSignal": { argTypes: [null, F64, F64, BOOL, DYN, null], result: VOID },
   "sp.pipeline": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
   /** node:stream/consumers — the promise consumers over the readable
    * machinery: (s) → a pending promise settled at the terminal point
@@ -3297,27 +3324,46 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "strdec.next": { argTypes: [STRING, F64, BYTES_U8], result: F64 },
   "strdec.end": { argTypes: [STRING, F64], result: STRING },
   // node:readline: the interface handle is f64; the callbacks' func types
-  // are program-dependent (zero-param or (answer: string) — the emitter
-  // picks the adapter), so those slots are null like child.onExit's.
-  /** node:readline's question/close slice (scr_readline.c, linked under
-   * the events gate — these fns imply moduleUsesProcessEvents). The
-   * interface value is an f64 handle (the Timeout-id precedent).
-   * rl.create: [] → f64 — createInterface({ input: process.stdin,
-   * output: process.stdout }), registering the unit's shared stdin
-   * consumer (an OPEN interface keeps the loop alive until close/EOF,
-   * Node's semantics). rl.question: [handle, query, cb] — writes the
-   * query to stdout (Node writes under pipes too) and delivers the next
-   * line's text through a backend-picked adapter (zero-param or
-   * (answer: string)); THROWS Node's "readline was closed" on a closed
-   * interface (may-throw). rl.close: [handle] — fires 'close' listeners
-   * SYNCHRONOUSLY (Node's inline emit) and detaches the consumer (the
-   * loop stops waiting on fd 0). rl.onClose: [handle, cb] — a zero-arg
-   * listener (moves); stdin EOF closes every open interface with the
-   * buffered partial line DISCARDED, like Node. */
-  "rl.create": { argTypes: [], result: F64 },
+  // are program-dependent (the emitter picks the adapter by parameter
+  // count), so those slots are null like child.onExit's.
+  /** node:readline and node:readline/promises (scr_readline.c, linked
+   * under the events gate — these fns imply moduleUsesProcessEvents; a
+   * stream input or output adds scr_stream.c's bridge). The interface
+   * value is an f64 handle (the Timeout-id precedent); an open interface
+   * on stdin keeps the loop alive until close/EOF.
+   * rl.create: [mode, input?, output?, crlfDelay, prompt?] → f64, mode
+   * bits 1 stream input, 2 stream output, 4 stdout output, 16 prompt
+   * (lowerReadlineCreateCall); rl.createSignal: the same plus the
+   * trailing AbortSignal (mode bit 8), which links the event-target unit
+   * for addAbortListener. rl.question: [handle, query, cb] — the callback
+   * form; THROWS ERR_USE_AFTER_CLOSE on a closed interface (may-throw).
+   * rl.questionAsync(Signal): [handle, query, signal?] → promise<string>,
+   * rejecting instead of throwing. rl.close/pause/resume/prompt:
+   * [handle] (pause/resume/prompt throw ERR_USE_AFTER_CLOSE when
+   * closed); rl.setPrompt/getPrompt; rl.write: [handle, data] (throws
+   * when closed). rl.on: [handle, event, cb, once] — the event number
+   * (0 'line', 1 'close', 2 'pause', 3 'resume', 4 'error') and the
+   * listener (moves). rl.iterOpen/iterNext/iterReturn: the async
+   * iterator — iterNext answers promise<dyn> of the line or undefined. */
+  "rl.create": { argTypes: [F64], result: F64 },
+  "rl.createSignal": { argTypes: [F64], result: F64 },
   "rl.question": { argTypes: [F64, STRING, null], result: VOID },
+  "rl.questionAsync": { argTypes: [F64, STRING], result: { kind: "promise", inner: STRING } },
+  "rl.questionAsyncSignal": {
+    argTypes: [F64, STRING, DYN],
+    result: { kind: "promise", inner: STRING },
+  },
   "rl.close": { argTypes: [F64], result: VOID },
-  "rl.onClose": { argTypes: [F64, null], result: VOID },
+  "rl.pause": { argTypes: [F64], result: VOID },
+  "rl.resume": { argTypes: [F64], result: VOID },
+  "rl.prompt": { argTypes: [F64], result: VOID },
+  "rl.setPrompt": { argTypes: [F64, STRING], result: VOID },
+  "rl.getPrompt": { argTypes: [F64], result: STRING },
+  "rl.write": { argTypes: [F64, STRING], result: VOID },
+  "rl.on": { argTypes: [F64, F64, null, BOOL], result: VOID },
+  "rl.iterOpen": { argTypes: [F64], result: VOID },
+  "rl.iterNext": { argTypes: [F64], result: { kind: "promise", inner: DYN } },
+  "rl.iterReturn": { argTypes: [F64], result: VOID },
   /** node:timers/promises — the promisified pair (scr_async.c, beside
    * the timer heap they ride): tp.setTimeout: [ms] → a pending void
    * promise a one-shot heap timer fulfills (the loop's timer phase, FIFO

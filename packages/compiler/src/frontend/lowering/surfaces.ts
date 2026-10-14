@@ -1621,6 +1621,11 @@ export const BUILTIN_MODULE_FNS: Record<
   readline: {
     createInterface: { fn: "rl.create", params: [], result: F64 },
   },
+  // node:readline/promises: the same Interface with the promise question
+  // (lowerReadlineMethodCall tells the forms apart by the call's result).
+  "readline/promises": {
+    createInterface: { fn: "rl.create", params: [], result: F64 },
+  },
   // node:net and node:http lower ENTIRELY through the server spoke
   // (lower-server.ts — every call shape is special-cased: closures, the
   // optional connect host, writeHead's literal headers); the member list

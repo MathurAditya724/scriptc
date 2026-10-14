@@ -2046,6 +2046,19 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.readline.promises",
+      "kind": "node-builtin",
+      "name": "readline/promises",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.readline.promises.createInterface",
+      "kind": "node-builtin",
+      "name": "readline/promises.createInterface",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.stream",
       "kind": "node-builtin",
       "name": "stream",

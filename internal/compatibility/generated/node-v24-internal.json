@@ -626,9 +626,9 @@
       "apiEntries": 43,
       "static": {
         "supported": 0,
-        "partial": 4,
+        "partial": 21,
         "refused": 0,
-        "not-implemented": 39,
+        "not-implemented": 22,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -701,9 +701,9 @@
       "apiEntries": 137,
       "static": {
         "supported": 0,
-        "partial": 36,
+        "partial": 38,
         "refused": 0,
-        "not-implemented": 101,
+        "not-implemented": 99,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -76089,7 +76089,11 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1475-readline-closed-stdin.ts",
-          "tests/corpus/2844-node-disposable-resources.ts"
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5298-readline-abort.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -76135,8 +76139,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.readlinePromises.Interface",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5298-readline-abort.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76158,8 +76168,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.rl.question",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5298-readline-abort.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76342,8 +76358,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.readlinePromises.createInterface",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5298-readline-abort.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76411,8 +76433,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.readline.Interface",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76434,8 +76462,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.rl.question",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5298-readline-abort.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76673,7 +76707,10 @@
         "status": "partial",
         "evidence": "compiler-feature:readline.rl",
         "tests": [
-          "tests/corpus/2844-node-disposable-resources.ts"
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76696,8 +76733,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.rl.pause",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76719,8 +76762,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.rl.prompt",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76742,8 +76791,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.rl.resume",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76765,8 +76820,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.rl.setPrompt",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76788,8 +76849,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.rl.getPrompt",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76811,8 +76878,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.rl.write",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76834,8 +76907,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.rl",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76926,8 +77005,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.'close'",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76949,8 +77034,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.'error'",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76972,8 +77063,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.'line'",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77018,8 +77115,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.'pause'",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77041,8 +77144,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.'resume'",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -79835,7 +79944,11 @@
           "tests/corpus/2893-child-stdin-duplex.ts",
           "tests/corpus/2894-child-stdin-backpressure.ts",
           "tests/corpus/2895-child-stdin-write-after-end.ts",
-          "tests/corpus/2897-child-stdin-destroy.ts"
+          "tests/corpus/2897-child-stdin-destroy.ts",
+          "tests/corpus/5300-stream-add-abort-signal.ts",
+          "tests/corpus/5301-stream-add-abort-signal-errors.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -79955,7 +80068,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -79983,7 +80098,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -80011,7 +80128,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -80062,7 +80181,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -80090,7 +80211,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -80118,7 +80241,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -80440,8 +80565,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.stream.addAbortSignal",
+        "tests": [
+          "tests/corpus/5300-stream-add-abort-signal.ts",
+          "tests/corpus/5301-stream-add-abort-signal-errors.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -80468,7 +80597,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -80519,7 +80650,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -80547,7 +80680,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -80598,7 +80733,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -80626,7 +80763,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -80654,7 +80793,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -80976,8 +81117,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.stream.addAbortSignal",
+        "tests": [
+          "tests/corpus/5300-stream-add-abort-signal.ts",
+          "tests/corpus/5301-stream-add-abort-signal-errors.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81004,7 +81149,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -81101,7 +81248,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -81155,7 +81304,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -81183,7 +81334,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -81211,7 +81364,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -81262,7 +81417,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -81826,7 +81983,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -81854,7 +82013,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -81882,7 +82043,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -81910,7 +82073,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -81938,7 +82103,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -81966,7 +82133,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -81994,7 +82163,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -82022,7 +82193,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -82050,7 +82223,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83397,7 +83572,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83655,7 +83832,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -83683,7 +83862,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs"
+          "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/5302-stream-promises-options.ts",
+          "tests/corpus/5303-stream-finished-callback-opts.cjs"
         ]
       },
       "anchorSource": "ancestor"
