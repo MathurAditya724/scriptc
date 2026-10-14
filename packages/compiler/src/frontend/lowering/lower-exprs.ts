@@ -135,6 +135,7 @@ import {
 import { expandoMemberRead, expandoWritableTarget } from "./lower-expando.js";
 import { lowerSocketInstanceOf, lowerTlsRootCertificates } from "./lower-server.js";
 import {
+  type ClassInfo,
   findGenericMethodOn,
   lowerStaticFieldRead,
   staticFieldWriteTarget,
@@ -11855,7 +11856,12 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         left.kind === "varRef" &&
         (ts.isIdentifier(expr.right) || expr.right.kind === ts.SyntaxKind.ThisKeyword)
       ) {
-        return { kind: "boolLit", value, type: BOOL, loc };
+        return readsClassAfter(lowerer, targetInfo, expr.right, [], {
+          kind: "boolLit",
+          value,
+          type: BOOL,
+          loc,
+        });
       }
       lowerer.unsupported(
         "SC1090",
@@ -12030,13 +12036,12 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     }
   }
   if (left.type.kind !== "object") {
-    return {
-      kind: "seqExpr",
-      stmts: [{ kind: "exprStmt", expr: left, loc }],
-      result: { kind: "boolLit", value: false, type: BOOL, loc },
+    return readsClassAfter(lowerer, target, expr.right, [{ kind: "exprStmt", expr: left, loc }], {
+      kind: "boolLit",
+      value: false,
       type: BOOL,
       loc,
-    };
+    });
   }
   const lhsInfo = lowerer.classes.get(left.type.className);
   if (!lhsInfo)
@@ -12048,13 +12053,42 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     left.type.className === target.def.name ||
     lowerer.isSubclassOf(left.type.className, target.def.name);
   if (left.kind === "varRef") {
-    return { kind: "boolLit", value, type: BOOL, loc };
+    return readsClassAfter(lowerer, target, expr.right, [], {
+      kind: "boolLit",
+      value,
+      type: BOOL,
+      loc,
+    });
   }
   lowerer.unsupported(
     "SC1090",
     expr,
     "statically-decided 'instanceof' on computed operands (bind the value to a variable first)",
   );
+}
+
+/** A statically decided `instanceof` still reads its class after the left
+ * operand: a class with an initialization flag throws there before its
+ * declaration ran. */
+function readsClassAfter(
+  lowerer: Lowerer,
+  target: ClassInfo,
+  right: ts.Expression,
+  stmts: IrStmt[],
+  result: IrExpr,
+): IrExpr {
+  if (!lowerer.classInitFlags.has(target.def.name)) {
+    if (stmts.length === 0) return result;
+    return { kind: "seqExpr", stmts, result, type: result.type, loc: result.loc };
+  }
+  const read = lowerer.lowerExpr(right);
+  return {
+    kind: "seqExpr",
+    stmts: [...stmts, { kind: "exprStmt", expr: read, loc: locOf(right) }],
+    result,
+    type: result.type,
+    loc: result.loc,
+  };
 }
 
 /** `#name in obj` — the ergonomic brand check. In this closed world a

@@ -295,7 +295,10 @@ export function withCycleInitFlags(
  * only the statements up to the one that sets the flag (earlier reads
  * there come from inlined callback bodies; tsc rejects direct ones). Reads
  * check before reading; writes check after evaluating the assigned value,
- * as PutValue does. The declaration's own store is never checked. */
+ * as PutValue does. A class is read where its reference evaluates: before
+ * the arguments of `new K(...)` and `K.m(...)` and the value stored by
+ * `K.x = v`, but after the left operand of `x instanceof K`. The
+ * declaration's own store is never checked. */
 export function checkCycleBindingAccesses(lowerer: Lowerer, mod: IrModule): void {
   if (lowerer.cycleInitFlags.size === 0 && lowerer.classInitFlags.size === 0) return;
   const fileOfInit = new Map<string, ts.SourceFile>();
@@ -373,19 +376,48 @@ function rewriteFunction(
   const wrap = {
     expr: (e: IrExpr): IrExpr => {
       const classFlag = classFlagOf(e);
-      if (classFlag !== undefined)
+      if (classFlag !== undefined) {
+        // `x instanceof K` evaluates x before it reads K; `new K(...)` and
+        // `K.m(...)` read K before their arguments.
+        const left =
+          e.kind === "instanceOf" || e.kind === "caughtCheck"
+            ? e.value
+            : e.kind === "call" && e.callee.startsWith("%dyn.class.instanceof:")
+              ? e.args[0]
+              : undefined;
+        if (left === undefined || left.kind === "varRef")
+          return {
+            kind: "seqExpr",
+            stmts: [check(classFlag, e.loc)],
+            result: e,
+            type: e.type,
+            loc: e.loc,
+          };
+        const t = temp(left.type);
+        const value: IrExpr = { kind: "varRef", localId: t, type: left.type, loc: left.loc };
+        const test: IrExpr =
+          e.kind === "call"
+            ? { ...e, args: [value, ...e.args.slice(1)] }
+            : e.kind === "instanceOf" || e.kind === "caughtCheck"
+              ? { ...e, value }
+              : e;
         return {
           kind: "seqExpr",
-          stmts: [check(classFlag, e.loc)],
-          result: e,
+          stmts: [
+            { kind: "varDecl", localId: t, init: left, loc: left.loc },
+            check(classFlag, e.loc),
+          ],
+          result: test,
           type: e.type,
           loc: e.loc,
         };
+      }
       if (e.kind !== "varRef" && e.kind !== "incDec" && e.kind !== "assignExpr") return e;
       const flag = active.get(e.localId);
       if (flag === undefined) return e;
       if (flag.className !== undefined && !coversReference(flag, e.loc)) return e;
-      if (e.kind === "assignExpr") {
+      // `K.x = v` reads K before it evaluates v.
+      if (e.kind === "assignExpr" && flag.className === undefined) {
         const t = temp(e.value.type);
         const value: IrExpr = { kind: "varRef", localId: t, type: e.value.type, loc: e.loc };
         const write: IrExpr = { ...e, value };
@@ -404,6 +436,9 @@ function rewriteFunction(
       const flag = active.get(s.localId);
       if (flag === undefined) return s;
       if (flag.className !== undefined && !coversReference(flag, s.loc)) return s;
+      // `K.x = v` reads K before it evaluates v.
+      if (flag.className !== undefined)
+        return { kind: "block", body: [check(flag, s.loc), s], loc: s.loc };
       const t = temp(s.value.type);
       const write: IrStmt = {
         kind: "assign",
