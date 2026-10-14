@@ -9684,14 +9684,23 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           DYN_HANDLE_KINDS.has(reference.kind)) &&
         lowerer.dynConvertible(reference)
       ) {
+        // Records, arrays and byte views compare by the capsule identity
+        // their dyn reads produce, including when they arrive through a
+        // union (an optional array field read from a typed record).
+        const liveArm = (type: IrType): boolean => {
+          if (type.kind === "array" || type.kind === "bytes") return true;
+          const shape = type.kind === "record" ? lowerer.shapes.get(type.shapeId) : undefined;
+          return !!shape && (shape.fields.length > 0 || shape.indexValue !== undefined);
+        };
         const boxed: IrExpr = {
           kind: "dynFrom",
           value: scalarSide,
           type: DYN,
           loc: scalarSide.loc,
           ...(reference.kind === "record" ||
-          reference.kind === "array" ||
-          reference.kind === "bytes"
+          liveArm(reference) ||
+          (reference.kind === "union" &&
+            (lowerer.unions.get(reference.unionId)?.arms.some(liveArm) ?? false))
             ? { liveRef: true as const }
             : {}),
         };
