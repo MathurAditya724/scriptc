@@ -114,7 +114,9 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       if (
         fn === "regexp.escape" ||
         fn === "dyn.nativeRegexIs" ||
-        fn === "util.stripVTControlCharacters"
+        fn === "util.stripVTControlCharacters" ||
+        fn === "path.matchesGlob" ||
+        fn === "path.win32MatchesGlob"
       )
         features.regex = true;
       if (

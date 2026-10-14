@@ -1497,6 +1497,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.path.matchesGlob",
+      "kind": "node-builtin",
+      "name": "path.matchesGlob",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.path.normalize",
       "kind": "node-builtin",
       "name": "path.normalize",
@@ -1556,6 +1562,12 @@
       "id": "node-builtin.path.posix.join",
       "kind": "node-builtin",
       "name": "path/posix.join",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.path.posix.matchesGlob",
+      "kind": "node-builtin",
+      "name": "path/posix.matchesGlob",
       "status": "static"
     },
     {
@@ -1668,6 +1680,12 @@
       "id": "node-builtin.path.win32.join",
       "kind": "node-builtin",
       "name": "path/win32.join",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.path.win32.matchesGlob",
+      "kind": "node-builtin",
+      "name": "path/win32.matchesGlob",
       "status": "static"
     },
     {

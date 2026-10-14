@@ -4206,6 +4206,15 @@ ScrArr *scr_path_win32_parse(ScrStr *path);
 ScrStr *scr_path_format(ScrStr *root, ScrStr *dir, ScrStr *base, ScrStr *name, ScrStr *ext);
 ScrStr *scr_path_win32_format(ScrStr *root, ScrStr *dir, ScrStr *base, ScrStr *name,
                               ScrStr *ext);
+/* path.matchesGlob (scr_glob.c): Node 24's minimatch with matchGlobPattern's
+ * options, case-insensitive on macOS and Windows hosts like Node. Borrows
+ * both; a brace sequence over 2^32 - 1 elements throws Node's RangeError, a
+ * pattern over 65536 units its TypeError, and a segment regex invalid under
+ * the u flag its SyntaxError. scr_glob_match is the same with the family
+ * and case mode explicit (the oracle tests use it). */
+bool scr_path_matches_glob(ScrStr *path, ScrStr *pattern);
+bool scr_path_win32_matches_glob(ScrStr *path, ScrStr *pattern);
+bool scr_glob_match(ScrStr *path, ScrStr *pattern, bool windows, bool nocase);
 
 /* fs.openSync(path, flags) → the raw fd as f64 (Node's string flag
  * grammar; unknown flags throw Node's ERR_INVALID_ARG_VALUE TypeError
