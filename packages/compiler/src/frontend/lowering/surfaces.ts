@@ -1483,6 +1483,53 @@ export const BUILTIN_MODULE_FNS: Record<
       result: STRING,
       valueParams: exactValueParams(DYN),
     },
+    // The function helpers take checked-dynamic arguments and answer native
+    // dyn functions, which a static function slot checks when it receives
+    // one (lowerUtilCallableCall in the util spoke).
+    inherits: {
+      fn: "util.inherits",
+      params: [DYN, DYN],
+      result: VOID,
+      valueParams: [
+        { mode: "required", type: DYN },
+        { mode: "required", type: DYN },
+      ],
+    },
+    deprecate: {
+      fn: "util.deprecate",
+      params: [DYN, DYN, DYN, DYN],
+      result: DYN,
+      valueParams: [
+        { mode: "required", type: DYN },
+        { mode: "required", type: DYN },
+        { mode: "optional", type: DYN, defaultValue: undefined },
+        { mode: "optional", type: DYN, defaultValue: undefined },
+      ],
+    },
+    callbackify: {
+      fn: "util.callbackify",
+      params: [DYN],
+      result: DYN,
+      valueParams: [{ mode: "required", type: DYN }],
+    },
+    debuglog: {
+      fn: "util.debuglog",
+      params: [DYN, DYN],
+      result: DYN,
+      valueParams: [
+        { mode: "required", type: DYN },
+        { mode: "optional", type: DYN, defaultValue: undefined },
+      ],
+    },
+    debug: {
+      fn: "util.debuglog",
+      params: [DYN, DYN],
+      result: DYN,
+      valueParams: [
+        { mode: "required", type: DYN },
+        { mode: "optional", type: DYN, defaultValue: undefined },
+      ],
+    },
   },
   // The util/types spoke supplies the probe name to the shared brand check.
   "util/types": {

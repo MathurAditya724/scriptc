@@ -235,6 +235,10 @@ declare var process: {
   env: { [name: string]: string | undefined };
   /** Numeric writes set the status returned by ordinary program exit. */
   exitCode?: number;
+  /* Silence and throw DeprecationWarnings (util.deprecate,
+   * process.emitWarning); undefined until assigned. */
+  noDeprecation?: boolean;
+  throwDeprecation?: boolean;
   /* `never`, like @types/node: code behind an early-exit guard narrows
    * (`if (!x) process.exit(1)` proves x afterwards) — typed `void` the
    * guard narrows nothing and correct programs fail preflight. The
@@ -2455,6 +2459,60 @@ declare module "util" {
     options?: { validateStream?: boolean; stream?: unknown },
   ): string;
   export function parseEnv(content: string): { [key: string]: string | undefined };
+  export function inherits(constructor: unknown, superConstructor: unknown): void;
+  export interface DeprecateOptions {
+    modifyPrototype?: boolean;
+  }
+  export function deprecate<T extends Function>(
+    fn: T,
+    msg: string,
+    code?: string,
+    options?: DeprecateOptions,
+  ): T;
+  /* The callback receives null on success and the rejection reason
+   * otherwise (falsy reasons arrive as ERR_FALSY_VALUE_REJECTION). */
+  export function callbackify(
+    fn: () => Promise<void>,
+  ): (callback: (err: NodeJS.ErrnoException | null) => void) => void;
+  export function callbackify<TResult>(
+    fn: () => Promise<TResult>,
+  ): (callback: (err: NodeJS.ErrnoException | null, result: TResult) => void) => void;
+  export function callbackify<T1>(
+    fn: (arg1: T1) => Promise<void>,
+  ): (arg1: T1, callback: (err: NodeJS.ErrnoException | null) => void) => void;
+  export function callbackify<T1, TResult>(
+    fn: (arg1: T1) => Promise<TResult>,
+  ): (arg1: T1, callback: (err: NodeJS.ErrnoException | null, result: TResult) => void) => void;
+  export function callbackify<T1, T2>(
+    fn: (arg1: T1, arg2: T2) => Promise<void>,
+  ): (arg1: T1, arg2: T2, callback: (err: NodeJS.ErrnoException | null) => void) => void;
+  export function callbackify<T1, T2, TResult>(
+    fn: (arg1: T1, arg2: T2) => Promise<TResult>,
+  ): (
+    arg1: T1,
+    arg2: T2,
+    callback: (err: NodeJS.ErrnoException | null, result: TResult) => void,
+  ) => void;
+  export function callbackify<T1, T2, T3>(
+    fn: (arg1: T1, arg2: T2, arg3: T3) => Promise<void>,
+  ): (arg1: T1, arg2: T2, arg3: T3, callback: (err: NodeJS.ErrnoException | null) => void) => void;
+  export function callbackify<T1, T2, T3, TResult>(
+    fn: (arg1: T1, arg2: T2, arg3: T3) => Promise<TResult>,
+  ): (
+    arg1: T1,
+    arg2: T2,
+    arg3: T3,
+    callback: (err: NodeJS.ErrnoException | null, result: TResult) => void,
+  ) => void;
+  export type DebugLoggerFunction = (msg: string, ...param: unknown[]) => void;
+  export interface DebugLogger extends DebugLoggerFunction {
+    enabled: boolean;
+  }
+  export function debuglog(
+    section: string,
+    callback?: (fn: DebugLoggerFunction) => void,
+  ): DebugLogger;
+  export { debuglog as debug };
   export type TextEncoder = globalThis.TextEncoder;
   export type TextDecoder = globalThis.TextDecoder;
   export var TextEncoder: typeof globalThis.TextEncoder;

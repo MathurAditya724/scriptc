@@ -2973,7 +2973,16 @@ const char *scr_dyn_specific_type(const ScrDyn *cb, char *detail, size_t cap) {
   switch (cb->kind) {
   case SCR_DYN_NULL: d = "null"; break;
   case SCR_DYN_UNDEF: d = "undefined"; break;
-  case SCR_DYN_OBJ: d = "an instance of Object"; break;
+  case SCR_DYN_OBJ:
+    if (cb->null_proto) {
+      /* No constructor name: Node renders inspect(value, { depth: -1 }). */
+      bool keys = false;
+      for (size_t i = 0; i < cb->v.obj.len && !keys; i++) keys = cb->v.obj.entries[i].enumerable;
+      d = keys ? "[Object: null prototype]" : "[Object: null prototype] {}";
+    } else {
+      d = "an instance of Object";
+    }
+    break;
   case SCR_DYN_ARR: d = "an instance of Array"; break;
   case SCR_DYN_BYTES:
     snprintf(detail, cap, "an instance of %s", cb->buffer ? "Buffer" : cb->v.bytes->is_data_view ? "DataView" : scr_bytes_elem_name(cb->v.bytes->elem));

@@ -530,6 +530,9 @@ export async function compileCInternal(
     ...(opts.parseArgs && opts.inspect && opts.dynAsync
       ? [rt(join(rtDir, "scr_util_style.c"))]
       : []),
+    ...(opts.parseArgs && opts.inspect && opts.dynAsync && opts.dynInvoke && regex
+      ? [rt(join(rtDir, "scr_util_callable.c"))]
+      : []),
     ...(opts.stream ? [rt(join(rtDir, "scr_stream.c"))] : []),
     // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,
     // epoll on Linux, WSAPoll on Windows — each TU is empty off its

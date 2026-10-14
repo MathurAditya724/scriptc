@@ -7879,7 +7879,13 @@ export function lowerRecordFieldCall(
   if (callee.type.kind === "record") callee = lowerer.hybridCallUnwrap(callee);
   // Inferred JavaScript option records can retain checked callables in
   // fields even when the checker only describes those members as any.
-  if (callee.type.kind === "dyn" && isJsSourceFile(call.getSourceFile())) {
+  // TypeScript reaches here for callable library types that are checked
+  // values (util.DebugLogger).
+  if (
+    callee.type.kind === "dyn" &&
+    (isJsSourceFile(call.getSourceFile()) ||
+      lowerer.checker.getCallSignatures(lowerer.typeOf(access)).length > 0)
+  ) {
     const receiver =
       target && receiverLocal ? lowerer.coerceToExpected(target.obj, DYN) : undefined;
     const spread = call.arguments.some(ts.isSpreadElement)

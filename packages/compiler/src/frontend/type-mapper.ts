@@ -139,9 +139,13 @@ export const FETCH_AMBIENT_TYPES = [
   "ReadableStreamReadDoneResult",
 ] as const;
 
-/** node:util.parseArgs's public and @types/node helper type names. Values
+/** node:util.parseArgs's public and @types/node helper type names, plus
+ * util.debuglog's DebugLogger (a native function value with an `enabled`
+ * accessor) and the DebugLoggerFunction its callback receives. Values
  * behind this surface use the checked-dynamic tree; see mapTypeInner. */
 const PARSE_ARGS_DYN_TYPES = new Set([
+  "DebugLogger",
+  "DebugLoggerFunction",
   "ParseArgsConfig",
   "ParseArgsOptionDescriptor",
   "ParseArgsOptionsConfig",
