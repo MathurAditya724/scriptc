@@ -164,6 +164,18 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         features.legacyTextDecoder = true;
       if (fn.startsWith("fetch.")) features.fetch = true;
       if (fn.startsWith("event.") || fn === "events.addAbortListener") features.eventTarget = true;
+      // Signal-taking readline entry points call addAbortListener.
+      if (
+        fn === "rl.createSignal" ||
+        fn === "rl.questionAsyncSignal" ||
+        fn === "stream.addAbortSignal" ||
+        fn === "stream.addAbortSignalFn" ||
+        fn === "sp.finishedOptsSignal" ||
+        fn === "sp.pipelineOptsSignal" ||
+        fn === "stream.finishedOptsSignal"
+      ) {
+        features.eventTarget = true;
+      }
       if (PROCESS_EVENT_LIB_FNS.has(fn)) features.processEvents = true;
       if (fn.startsWith("emitter.")) features.emitter = true;
       if (
@@ -180,7 +192,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn === "stream.errored" ||
         fn === "sp.finished" ||
         fn === "sp.pipeline" ||
-        fn === "console.bind"
+        fn === "console.bind" ||
+        fn === "stream.addAbortSignal" ||
+        fn === "stream.addAbortSignalFn" ||
+        fn.startsWith("sp.finishedOpts") ||
+        fn.startsWith("sp.pipelineOpts") ||
+        fn.startsWith("stream.finishedOpts")
       )
         features.stream = true;
       if (fn.startsWith("zlib.")) features.zlib = true;
@@ -426,9 +443,21 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // node:readline rides the stdin unit (scr_readline.c links beside
   // scr_events.c under the same gate).
   "rl.create",
+  "rl.createSignal",
   "rl.question",
+  "rl.questionAsync",
+  "rl.questionAsyncSignal",
   "rl.close",
-  "rl.onClose",
+  "rl.pause",
+  "rl.resume",
+  "rl.prompt",
+  "rl.setPrompt",
+  "rl.getPrompt",
+  "rl.write",
+  "rl.on",
+  "rl.iterOpen",
+  "rl.iterNext",
+  "rl.iterReturn",
 ]);
 
 /** True when the module uses the process-events surface — the link switch

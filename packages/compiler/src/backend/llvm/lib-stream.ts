@@ -13,6 +13,29 @@ const STREAM_CANONICAL_CBS: Record<string, ("r" | "w" | "f" | "d" | "t" | "l")[]
 
 export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
+  if (e.fn === "stream.addAbortSignal" || e.fn === "stream.addAbortSignalFn") {
+    // stream.addAbortSignal: [stream, signal] — the constructors' signal
+    // option chained over the fresh stream (a falsy signal is ignored);
+    // stream.addAbortSignalFn: [signal, stream] — the module function, in
+    // source order. Both answer the stream +1, or NULL with
+    // ERR_INVALID_ARG_TYPE pending; addAbortListener comes from the
+    // event-target unit the call links.
+    host.usesTimers = true;
+    const option = e.fn === "stream.addAbortSignal";
+    const first = host.emitExpr(e.args[0]!);
+    const second = host.emitExpr(e.args[1]!);
+    const stream = option ? first : second;
+    const signal = option ? second : first;
+    host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+    host.declare(`declare ptr @scr_stream_add_abort_signal(ptr, ptr, i1, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_stream_add_abort_signal(ptr ${stream.name}, ptr ${signal.name}, i1 ${option}, ptr @scr_events_add_abort_listener)`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
   if (e.fn === "stream.onData") {
     // The callback MOVES into the stream's listener registry; the
     // adapter is per callback shape — runtime-provided for the
@@ -496,6 +519,95 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     const t = B.tmp();
     host.declare(`declare ptr @scr_sp_pipeline(double, ptr)`);
     B.line(`${t} = call ptr @scr_sp_pipeline(double ${f64Lit(n)}, ptr ${arr})`);
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "sp.pipelineOpts" || e.fn === "sp.pipelineOptsSignal") {
+    // pipeline(count, s1..sn, end[, signal]) settling a void promise.
+    const countArg = e.args[0]!;
+    if (countArg.kind !== "numLit")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} count not a literal`);
+    const n = countArg.value;
+    const args = e.args.map((a) => host.emitExpr(a));
+    const arr = B.slot();
+    B.entryAllocas.push(`${arr} = alloca [${n} x ptr]`);
+    for (let i = 0; i < n; i++) {
+      const p = B.tmp();
+      B.line(`${p} = getelementptr inbounds [${n} x ptr], ptr ${arr}, i64 0, i64 ${i}`);
+      B.line(`store ptr ${args[1 + i]!.name}, ptr ${p}`);
+    }
+    const end = args[1 + n]!.name;
+    let signal = "null";
+    let add = "null";
+    if (e.fn === "sp.pipelineOptsSignal") {
+      signal = args[2 + n]!.name;
+      host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+      add = "@scr_events_add_abort_listener";
+    }
+    const t = B.tmp();
+    host.declare(`declare ptr @scr_sp_pipeline_opts(double, ptr, i1, ptr, ptr)`);
+    B.line(
+      `${t} = call ptr @scr_sp_pipeline_opts(double ${f64Lit(n)}, ptr ${arr}, i1 ${end}, ptr ${signal}, ptr ${add})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "sp.finishedOpts" || e.fn === "sp.finishedOptsSignal") {
+    // finished(s, options) → a pending void promise (+1).
+    const args = e.args.map((a) => host.emitExpr(a));
+    let signal = "null";
+    let add = "null";
+    if (e.fn === "sp.finishedOptsSignal") {
+      signal = args[5]!.name;
+      host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+      add = "@scr_events_add_abort_listener";
+    }
+    const t = B.tmp();
+    host.declare(`declare ptr @scr_sp_finished_opts(ptr, double, double, i1, i1, ptr, ptr)`);
+    B.line(
+      `${t} = call ptr @scr_sp_finished_opts(ptr ${args[0]!.name}, double ${args[1]!.name}, double ${args[2]!.name}, i1 ${args[3]!.name}, i1 ${args[4]!.name}, ptr ${signal}, ptr ${add})`,
+    );
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "stream.finishedOpts" || e.fn === "stream.finishedOptsSignal") {
+    // finished(s, options, cb) → the +1 cleanup closure; typed callbacks
+    // ride the "e" thunk, checked-dynamic ones the runtime's own.
+    const args = e.args.map((a) => host.emitExpr(a));
+    const cbIdx = e.args.length - 1;
+    let signal = "null";
+    let add = "null";
+    if (e.fn === "stream.finishedOptsSignal") {
+      signal = args[4]!.name;
+      host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+      add = "@scr_events_add_abort_listener";
+    }
+    const head = `ptr ${args[0]!.name}`;
+    const flags = `double ${args[1]!.name}, double ${args[2]!.name}, i1 ${args[3]!.name}, ptr ${signal}, ptr ${add}`;
+    const t = B.tmp();
+    const cbT = e.args[cbIdx]!.type;
+    if (cbT.kind === "dyn") {
+      host.declare(
+        `declare ptr @scr_stream_finished_opts_dyn(ptr, ptr, double, double, i1, ptr, ptr)`,
+      );
+      B.line(
+        `${t} = call ptr @scr_stream_finished_opts_dyn(${head}, ptr ${args[cbIdx]!.name}, ${flags})`,
+      );
+    } else {
+      if (cbT.kind !== "func")
+        throw new InternalCompilerError(
+          "llvm emitter bug: stream.finishedOpts callback not a func",
+        );
+      host.moveTemp(args[cbIdx]!);
+      const thunk = host.streamCbThunkFor("e", cbT);
+      host.declare(
+        `declare ptr @scr_stream_finished_opts(ptr, ptr, ptr, double, double, i1, ptr, ptr)`,
+      );
+      B.line(
+        `${t} = call ptr @scr_stream_finished_opts(${head}, ptr ${args[cbIdx]!.name}, ptr @${thunk}, ${flags})`,
+      );
+    }
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
     return out;

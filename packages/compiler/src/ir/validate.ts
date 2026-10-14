@@ -3960,11 +3960,15 @@ function validateFunction(
       e.fn === "stream.pipeline" ||
       e.fn === "stream.pipelineDyn" ||
       e.fn === "sp.pipeline" ||
+      e.fn === "sp.pipelineOpts" ||
+      e.fn === "sp.pipelineOptsSignal" ||
       e.fn === "writable.write" ||
       e.fn === "writable.writeStr" ||
       e.fn === "writable.writeU" ||
       e.fn === "writable.end" ||
-      e.fn === "readable.unpipe";
+      e.fn === "readable.unpipe" ||
+      e.fn === "rl.create" ||
+      e.fn === "rl.createSignal";
     if (variadic ? e.args.length < sig.argTypes.length : e.args.length !== sig.argTypes.length) {
       err(`libCall ${e.fn}: ${e.args.length} args, expected ${sig.argTypes.length}`, e.loc);
     }
@@ -5163,7 +5167,11 @@ function validateFunction(
       e.fn === "stream.finished" ||
       e.fn === "stream.finishedDyn" ||
       e.fn === "stream.pipeline" ||
-      e.fn === "stream.pipelineDyn"
+      e.fn === "stream.pipelineDyn" ||
+      e.fn === "stream.addAbortSignal" ||
+      e.fn === "stream.addAbortSignalFn" ||
+      e.fn === "stream.finishedOpts" ||
+      e.fn === "stream.finishedOptsSignal"
     ) {
       // Receiver/result: stream-hierarchy objects (a class whose base
       // chain reaches a runtime stream class). Constructors have no
@@ -5179,6 +5187,15 @@ function validateFunction(
         }
         return false;
       };
+      if (e.fn === "stream.addAbortSignal" || e.fn === "stream.addAbortSignalFn") {
+        // [stream, signal] (the option) or [signal, stream] (the module
+        // function): the result is the stream argument's type.
+        const s = e.args[e.fn === "stream.addAbortSignal" ? 0 : 1];
+        if (!isStreamObject(s?.type) || !typeEquals(e.type, s!.type)) {
+          err(`libCall ${e.fn} must take and return a stream-hierarchy object`, e.loc);
+        }
+        return true;
+      }
       if (e.fn.endsWith(".new")) {
         if (!isStreamObject(e.type)) {
           err(`libCall ${e.fn} must return a stream class, got ${e.type.kind}`, e.loc);
@@ -5208,6 +5225,20 @@ function validateFunction(
           }
         }
         if (e.type.kind !== "void") err(`libCall ${e.fn} must be void`, e.loc);
+        return true;
+      }
+      if (e.fn === "stream.finishedOpts" || e.fn === "stream.finishedOptsSignal") {
+        // (recv, readable, writable, error[, signal], cb) → the cleanup
+        // closure; the callback is a func or a checked-dynamic value.
+        if (!isStreamObject(e.args[0]?.type)) {
+          err(`libCall ${e.fn} receiver must be a stream-hierarchy object`, e.loc);
+        }
+        const cbK = e.args[e.args.length - 1]?.type.kind;
+        if (cbK !== "func" && cbK !== "dyn")
+          err(`libCall ${e.fn} callback must be a func or dyn`, e.loc);
+        if (e.type.kind !== "func") {
+          err(`libCall ${e.fn} must return the cleanup closure, got ${e.type.kind}`, e.loc);
+        }
         return true;
       }
       if (e.fn === "stream.finished" || e.fn === "stream.finishedDyn") {

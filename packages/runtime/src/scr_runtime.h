@@ -2992,6 +2992,10 @@ extern SCR_TL void (*scr_emitter_on_hook)(ScrEmitter *em, ScrStr *name);
  * are called by compiler-emitted completion-callback closures. */
 typedef struct ScrStreamState ScrStreamState;
 typedef struct ScrBytes ScrBytes; /* full definition below (C11 repeat) */
+/* events.addAbortListener (scr_events_add_abort_listener): passed to the
+ * signal-taking stream and readline entry points by programs that link
+ * the event-target unit. */
+typedef ScrDyn *(*ScrAbortAddFn)(ScrDyn *signal, ScrDyn *listener);
 
 typedef struct ScrStream {
   size_t rc;
@@ -3227,6 +3231,30 @@ ScrStream *scr_stream_destroy(ScrStream *s, ScrError *err); /* recv +1 */
  * the iterator's internal error consumer suppresses an unhandled crash when
  * no user error listener exists. Receiver +1. */
 ScrStream *scr_stream_iterator_close(ScrStream *s);
+/* stream.addAbortSignal(signal, s) and the constructors' signal option
+ * (from_option: a falsy signal is ignored). Borrows; answers s +1, or
+ * NULL with ERR_INVALID_ARG_TYPE pending. */
+ScrStream *scr_stream_add_abort_signal(ScrStream *s, ScrDyn *signal, bool from_option,
+                                       ScrAbortAddFn add);
+/* finished(s, options[, cb]) — Node's eos with its listeners and state
+ * predicates: readable/writable are -1 (the default), 0 or 1; on_error is
+ * options.error !== false; signal is NULL or borrowed (ERR_INVALID_ARG_TYPE
+ * pending and NULL answered for a non-signal). The callback forms answer
+ * the +1 cleanup closure (cb moves; the typed form takes its invoke
+ * adapter); the promise form rejects instead of throwing. */
+ScrClosure *scr_stream_finished_opts(ScrStream *s, ScrClosure *cb, ScrStreamErrInv inv,
+                                     double readable, double writable, bool on_error,
+                                     ScrDyn *signal, ScrAbortAddFn add);
+ScrClosure *scr_stream_finished_opts_dyn(ScrStream *s, ScrDyn *cb, double readable,
+                                         double writable, bool on_error, ScrDyn *signal,
+                                         ScrAbortAddFn add);
+ScrPromise *scr_sp_finished_opts(ScrStream *s, double readable, double writable, bool on_error,
+                                 bool cleanup, ScrDyn *signal, ScrAbortAddFn add);
+/* stream/promises pipeline(...streams, { signal, end }): end false leaves
+ * the destination open; a non-signal value rejects with
+ * ERR_INVALID_ARG_TYPE. Streams borrowed. */
+ScrPromise *scr_sp_pipeline_opts(double n, ScrStream **streams, bool end, ScrDyn *signal,
+                                 ScrAbortAddFn add);
 double scr_stream_prop(ScrStream *s, const char *name);
 ScrError *scr_stream_errored(ScrStream *s); /* +1 or NULL */
 
@@ -6494,22 +6522,59 @@ bool scr_stdin_pending(void);
 void scr_stdin_remove_data(ScrClosure *cb);
 bool scr_stdin_ended(void);
 
-/* ── node:readline (scr_readline.c, linked under the events gate) ──────
- * The question/close slice, Node's semantics pinned under pipes (the file
- * header has the full model): create answers the f64 interface handle;
- * question writes the query to stdout and delivers the next line's text
- * through the adapter (fn(cb, +1 answer)) — throwing Node's
- * "readline was closed" on a closed interface (may-throw); close fires
- * the 'close' listeners SYNCHRONOUSLY (Node's inline emit) and detaches
- * the stdin consumer; onClose registers a zero-arg listener (moves).
- * Answer adapters: thunk0 ignores the line, thunk_str passes it. */
-double scr_rl_create(void);
-void scr_rl_question(double id, const ScrStr *query, ScrClosure *cb /*moves*/,
+/* ── node:readline and node:readline/promises (scr_readline.c, linked
+ * under the events gate) ─────────────────────────────────────────────
+ * The non-terminal Interface (the file header has the model). Interfaces
+ * are f64 handles. A stream input or output goes through ScrRlIo, which
+ * scr_stream.c provides (scr_stream_rl_open), so stdin-only programs
+ * never link the stream unit; the stream side feeds input through
+ * scr_rl_input_*. Signal-taking entry points get addAbortListener as
+ * `add` (scr_events_add_abort_listener), passed only by programs that
+ * link the event-target unit. Listener event numbers: 0 'line',
+ * 1 'close', 2 'pause', 3 'resume', 4 'error'. */
+typedef struct ScrRlIo {
+  void (*pause)(void *s);
+  void (*resume)(void *s);
+  void (*detach)(void *s, double id); /* removes the interface's input listeners */
+  void (*write)(void *s, ScrStr *text); /* borrows text */
+  void (*release)(void *s);
+} ScrRlIo;
+double scr_rl_open(const ScrRlIo *io, void *in /*+1 or NULL: stdin*/, void *out /*+1 or NULL*/,
+                   bool out_stdout, double crlf_delay, ScrStr *prompt, ScrDyn *signal,
+                   ScrAbortAddFn add);
+void scr_rl_input_bytes(double id, ScrBytes *chunk);
+void scr_rl_input_str(double id, ScrStr *chunk);
+void scr_rl_input_end(double id);
+void scr_rl_input_error(double id, ScrError *err);
+/* question: throws ERR_USE_AFTER_CLOSE on a closed interface (may-throw);
+ * fn(cb, +1 answer). The promise form never throws. */
+void scr_rl_question(double id, ScrStr *query, ScrClosure *cb /*moves*/,
                       void (*fn)(ScrClosure *, ScrStr *));
+ScrPromise *scr_rl_question_promise(double id, ScrStr *query, ScrDyn *signal, ScrAbortAddFn add);
 void scr_rl_close(double id);
-void scr_rl_on_close(double id, ScrClosure *cb /*moves*/);
+void scr_rl_pause(double id);  /* may throw ERR_USE_AFTER_CLOSE */
+void scr_rl_resume(double id); /* may throw ERR_USE_AFTER_CLOSE */
+void scr_rl_prompt(double id); /* may throw ERR_USE_AFTER_CLOSE */
+void scr_rl_set_prompt(double id, ScrStr *prompt);
+ScrStr *scr_rl_get_prompt(double id); /* +1 */
+void scr_rl_write(double id, ScrStr *data); /* may throw ERR_USE_AFTER_CLOSE */
+void scr_rl_on(double id, double ev, ScrClosure *cb /*moves*/, void *fn, bool once);
+void scr_rl_iter_open(double id);
+ScrPromise *scr_rl_iter_next(double id); /* +1 promise<dyn>: the line, or undefined */
+void scr_rl_iter_return(double id);
+/* Listener adapters: line/answer (fn(cb, +1 text)) and error listeners. */
 void scr_rl_answer_thunk0(ScrClosure *cb, ScrStr *answer);
 void scr_rl_answer_thunk_str(ScrClosure *cb, ScrStr *answer);
+void scr_rl_error_thunk(ScrClosure *cb, ScrError *err);
+void scr_rl_error_thunk0(ScrClosure *cb, ScrError *err);
+void scr_rl_answer_thunk_dyn(ScrClosure *cb, ScrStr *answer);
+void scr_rl_error_thunk_dyn(ScrClosure *cb, ScrError *err);
+/* createInterface with a stream input and/or output (scr_stream.c): in is
+ * the input stream or NULL for process.stdin; out the output stream or
+ * NULL (out_stdout picks process.stdout). Both borrowed, like prompt
+ * (NULL: the default "> "). */
+double scr_stream_rl_open(ScrStream *in, ScrStream *out, bool out_stdout, double crlf_delay,
+                          ScrStr *prompt, ScrDyn *signal, ScrAbortAddFn add);
 void scr_stdin_data_thunk0(ScrClosure *cb, ScrBytes *chunk);
 void scr_stdin_data_thunk_bytes(ScrClosure *cb, ScrBytes *chunk);
 /* The loop-side registration (scr_async.c, always linked) and the
