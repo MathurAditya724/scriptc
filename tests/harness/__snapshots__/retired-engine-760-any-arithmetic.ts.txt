@@ -1,4 +1,4 @@
-retired-engine-760-any-arithmetic.ts:8:67 - error SC1043: comparing non-number, non-string values are not supported yet
+retired-engine-760-any-arithmetic.ts:8:67 - error SC1043: '-' operations on untyped values are not supported yet
 
   7 | const coerced: any = "10";
   8 | console.log(`${coerced * 2}`, `${coerced + 5}`, `${+coerced}`, `${-coerced}`);

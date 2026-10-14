@@ -1131,6 +1131,39 @@ console.log(has(eng));
     expect(r.stdout).toBe("true\n");
   });
 
+  test("compound assignment of an untyped string into a number throws like the expanded form", async () => {
+    // Node turns `n += "x"` into the string "1x"; a `number` local cannot
+    // hold it, so the compound form takes the same checked conversion as
+    // `n = n + value` and leaves the local unchanged.
+    const r = await compileAndRun(
+      "compound-any-string",
+      `const d: any = JSON.parse('{"s":"x"}');
+let expanded: number = 1;
+try { expanded = expanded + d.s; } catch (e) { console.log("expanded", (e as Error).message, expanded); }
+let compound: number = 1;
+try { compound += d.s; } catch (e) { console.log("compound", (e as Error).message, compound); }
+const field = { n: 1 };
+try { field.n += d.s; } catch (e) { console.log("field", (e as Error).message, field.n); }
+const items: number[] = [1];
+try { items[0] += d.s; } catch (e) { console.log("element", (e as Error).message, items[0]); }
+let uncaught: number = 1;
+uncaught += d.s;
+console.log("unreachable", uncaught);
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe(
+      [
+        "expanded expected number at $, got string 1",
+        "compound expected number at $, got string 1",
+        "field expected number at $, got string 1",
+        "element expected number at $, got string 1",
+        "",
+      ].join("\n"),
+    );
+    expect(r.stderr).toContain("Uncaught TypeError: expected number at $, got string");
+  });
+
   test("a checked value RC-balances through catch-and-continue", async () => {
     // The sanitizer lane audits releases while checked values unwind.
     const r = await compileAndRun(
