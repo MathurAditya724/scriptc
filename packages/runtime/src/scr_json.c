@@ -8022,28 +8022,65 @@ static bool scr_json_plain_value(const ScrDyn *value) {
   }
 }
 
+/* A container member whose SerializeJSONProperty step is a plain read with
+ * nothing to convert: arrays are never asked for toJSON here, and an object
+ * without a prototype of its own and without an own `toJSON` name resolves
+ * it to undefined (Object.prototype's members cannot be changed). */
+static bool scr_json_plain_child(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_ARR) return true;
+  if (value->kind != SCR_DYN_OBJ || value->prototype || value == scr_builtin_object_prototype) return false;
+  for (size_t i = 0; i < value->v.obj.len; i++) {
+    const ScrDynEntry *entry = &value->v.obj.entries[i];
+    if (entry->key_len == 6 && memcmp(entry->key, "toJSON", 6) == 0) return false;
+  }
+  return true;
+}
+
 /* Prove the whole immediate container before writing any of it. Without a
  * replacer or executable children, entries cannot change and borrowed names
  * need neither a key snapshot nor repeated lookups. Numeric property names
  * keep the ordinary sorted-key walk; sparse/accessor arrays keep Get. This
- * proof is repeated per call, so later mutations never leave a stale fact. */
-static bool scr_json_plain_container(const ScrDyn *value) {
+ * proof is repeated per call, so later mutations never leave a stale fact.
+ *
+ * Container members are admitted only inside an intact parse region
+ * (ScrDynRegion): everything such a container reaches was built by the
+ * parser and holds JSON values only — no functions, accessors, prototypes
+ * or capsules — so writing a member subtree runs no program code that could
+ * mutate this container mid-walk, and no cycle passes through it (the
+ * circular-structure check has nothing to find). Each member container is
+ * still written through scr_json_replaced_write, which proves it afresh.
+ * Returns 0 (not plain), 1 (plain values only) or 2 (with container
+ * members). */
+static int scr_json_plain_container(const ScrDyn *value) {
+  const ScrDynRegion *region = scr_dyn_region_of(value);
+  bool nested_ok = region && region->intact;
+  bool nested = false;
   if (value->kind == SCR_DYN_ARR) {
-    if (value->v.arr.presence || value->v.arr.properties) return false;
-    for (size_t i = 0; i < value->v.arr.len; i++)
-      if (!scr_json_plain_value(value->v.arr.items[i])) return false;
-    return true;
+    if (value->v.arr.presence || value->v.arr.properties) return 0;
+    for (size_t i = 0; i < value->v.arr.len; i++) {
+      const ScrDyn *item = value->v.arr.items[i];
+      if (scr_json_plain_value(item)) continue;
+      if (!nested_ok || !scr_json_plain_child(item)) return 0;
+      nested = true;
+    }
+    return nested ? 2 : 1;
   }
-  if (value->kind != SCR_DYN_OBJ) return false;
+  if (value->kind != SCR_DYN_OBJ) return 0;
   for (size_t i = 0; i < value->v.obj.len; i++) {
     const ScrDynEntry *entry = &value->v.obj.entries[i];
     if (!entry->enumerable) continue;
     double index;
-    if (entry->accessor || !scr_json_plain_value(entry->value) ||
-        scr_dyn_key_is_index(entry->key, entry->key_len, &index)) return false;
+    if (entry->accessor || scr_dyn_key_is_index(entry->key, entry->key_len, &index)) return 0;
+    if (scr_json_plain_value(entry->value)) continue;
+    if (!nested_ok || !scr_json_plain_child(entry->value)) return 0;
+    nested = true;
   }
-  return true;
+  return nested ? 2 : 1;
 }
+
+static bool scr_json_replaced_write(ScrJsonBuf *buffer, const ScrDyn *value,
+                                   const ScrDyn *replacer, const ScrDyn *properties,
+                                   const ScrStr *gap, size_t depth);
 
 static bool scr_json_plain_write(ScrJsonBuf *buffer, const ScrDyn *value,
                                  const ScrStr *gap, size_t depth) {
@@ -8067,7 +8104,10 @@ static bool scr_json_plain_write(ScrJsonBuf *buffer, const ScrDyn *value,
       if (gap->len) scr_jb_putc(buffer, ' ');
     }
     if (omitted) scr_jb_puts(buffer, "null");
-    else scr_dyn_json_write(buffer, child);
+    else if (child->kind == SCR_DYN_ARR || child->kind == SCR_DYN_OBJ) {
+      /* Only an intact region admits these (scr_json_plain_container). */
+      if (!scr_json_replaced_write(buffer, child, scr_dyn_undefined(), NULL, gap, depth + 1)) return false;
+    } else scr_dyn_json_write(buffer, child);
   }
   if (!first) scr_json_gap(buffer, gap, depth);
   scr_jb_putc(buffer, array ? ']' : '}');
