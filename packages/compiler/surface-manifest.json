@@ -2124,6 +2124,30 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.util.callbackify",
+      "kind": "node-builtin",
+      "name": "util.callbackify",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.debug",
+      "kind": "node-builtin",
+      "name": "util.debug",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.debuglog",
+      "kind": "node-builtin",
+      "name": "util.debuglog",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.deprecate",
+      "kind": "node-builtin",
+      "name": "util.deprecate",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.getSystemErrorMap",
       "kind": "node-builtin",
       "name": "util.getSystemErrorMap",
@@ -2139,6 +2163,12 @@
       "id": "node-builtin.util.getSystemErrorName",
       "kind": "node-builtin",
       "name": "util.getSystemErrorName",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.inherits",
+      "kind": "node-builtin",
+      "name": "util.inherits",
       "status": "static"
     },
     {

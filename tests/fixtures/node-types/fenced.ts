@@ -89,4 +89,9 @@ async function inspectReadableStream(url: string): Promise<void> {
   const bracketTee = body["tee"];
 }
 void inspectReadableStream;
+/* The one- and zero-argument util.callbackify overloads type the
+ * callback's error as non-null, but Node calls back with null. */
+import { callbackify } from "node:util";
+const callbackified = callbackify(async (n: number) => n);
+void callbackified;
 // End of the declared-but-not-lowered surface.
