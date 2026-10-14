@@ -33,6 +33,7 @@
     "scriptc": "tsx packages/cli/src/main.ts"
   },
   "devDependencies": {
+    "@scriptc/experimental": "workspace:*",
     "@scriptc/threads": "workspace:*",
     "@scriptc/types": "workspace:*",
     "@types/node": "^24.0.0",

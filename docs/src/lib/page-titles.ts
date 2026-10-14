@@ -9,6 +9,7 @@ export const PAGE_TITLES: Record<string, string> = {
   "native-objects": "Native Program Objects",
   threads: "Sharing Data Between Workers",
   contracts: "Contract Types",
+  experimental: "Experimental APIs",
   wasm: "WebAssembly Modules",
   platforms: "Platform Support",
   compatibility: "Node.js 24 Compatibility",

@@ -1,4 +1,5 @@
 import { THREADS_MODULE } from "../threads-import.js";
+import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { everyStmtList, everyTypeChild } from "../../ir/traverse.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -571,9 +572,10 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
         if (dep !== null && entryPackageFile(dep.fileName) && lowerer.fileTag.has(dep)) continue;
       }
       if (!npm && !relIsJs) continue;
-      // scriptc's own @scriptc/threads: its exports lower to intrinsics at
-      // their use sites (threads-import.ts); its Node.js body never runs.
-      if (npm?.packageName === THREADS_MODULE) continue;
+      // scriptc's own @scriptc/threads and @scriptc/experimental: their
+      // exports lower at their use sites (threads-import.ts,
+      // experimental-import.ts); their Node.js bodies never run.
+      if (npm?.packageName === THREADS_MODULE || npm?.packageName === EXPERIMENTAL_MODULE) continue;
       // An edge Node's RUNTIME resolution refuses at startup (types
       // resolved, but the exports target ships no JS — the types-only
       // package shape): preflight registered Node's startup crash for

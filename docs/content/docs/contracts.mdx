@@ -291,6 +291,10 @@ Instances can be published to other threads with `@scriptc/threads` like other c
 
 Static code has no `WeakRef` or `FinalizationRegistry`, and a `WeakMap` or `WeakSet` entry whose key is never freed is never observable as removed, so nothing else can tell the difference.
 
+### Lifetime regions
+
+A long-running program, such as a compiler in watch mode, can free program-lifetime instances one generation at a time with `LifetimeRegion` from [`@scriptc/experimental`](/docs/experimental). Instances created while `region.run(fn)` runs belong to the region. After `region.release()`, scriptc frees them together once nothing outside the region refers to any of them, and removes the `WeakMap` and `WeakSet` entries they are keys of. Instances created outside every region are never freed, as described above.
+
 ## Diagnostics
 
 Each failed contract names the declaration and the reason:
