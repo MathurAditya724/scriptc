@@ -30,7 +30,13 @@ import {
   mangleWrapper,
   mangleVtStruct,
 } from "../mangle.js";
-import { classMembershipIntervals, classEnvironmentIndex, classStructSym } from "./classes.js";
+import {
+  classMembershipIntervals,
+  classEnvironmentIndex,
+  classStructSym,
+  vtEntriesFor,
+  type LlClassMeta,
+} from "./classes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { f64Lit, ffiNativeTypeLl, ffiNativeParamLl, ffiNativeReturnLl } from "./common.js";
@@ -1179,6 +1185,52 @@ export function emitCallExpr(
       const argList = args
         .map((a, i) => `${host.llType(slot.fn.params[i]!.type)} ${a.name}`)
         .join(", ");
+      const guarded = guardedVirtualTargets(host, e, meta, slotIdx);
+      if (guarded !== null) {
+        // A closed implementation set (devirtualize.ts): test the loaded
+        // slot against each implementation but the last and call the match
+        // directly, so LLVM can inline the bodies. The vtable stores those
+        // very entry points, so the calls are identical.
+        const ret = host.llType(e.type);
+        const done = B.newLabel("vcall.done");
+        const incoming: string[] = [];
+        guarded.forEach((callee, index) => {
+          const last = index === guarded.length - 1;
+          let next = "";
+          if (!last) {
+            const hit = B.tmp(),
+              direct = B.newLabel("vcall.direct");
+            next = B.newLabel("vcall.next");
+            B.line(`${hit} = icmp eq ptr ${fn}, @${callee}`);
+            B.condBr(hit, direct, next);
+            B.startBlock(direct);
+          }
+          if (e.type.kind === "void") B.line(`call void @${callee}(${argList})`);
+          else {
+            const r = B.tmp();
+            B.line(`${r} = call ${ret} @${callee}(${argList})`);
+            incoming.push(`[ ${r}, %${B.currentLabel()} ]`);
+          }
+          B.br(done);
+          if (!last) B.startBlock(next);
+        });
+        B.startBlock(done);
+        if (e.type.kind === "void") {
+          if (host.mayThrowMethods.has(e.method)) host.emitPendingCheck();
+          if (borrowed.size > 0) host.releaseFrame(host.frames.pop()!);
+          return { name: "", type: e.type };
+        }
+        const t = B.tmp();
+        B.line(`${t} = phi ${ret} ${incoming.join(", ")}`);
+        const out = host.own({ name: t, type: e.type });
+        if (host.mayThrowMethods.has(e.method)) host.emitPendingCheck();
+        if (borrowed.size > 0) {
+          host.moveTemp(out);
+          host.releaseFrame(host.frames.pop()!);
+          return host.own(out);
+        }
+        return out;
+      }
       if (e.type.kind === "void") {
         B.line(`call void ${fn}(${argList})`);
         if (host.mayThrowMethods.has(e.method)) host.emitPendingCheck();
@@ -1202,6 +1254,34 @@ export function emitCallExpr(
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** The vtable entry symbols of a closed virtual call's implementations
+ * (ExprOf<"virtualCall">.targets), or null to keep the indirect call. Every
+ * target must be an implementation some emitted vtable of the static
+ * class's subtree stores in this slot; anything else (a pruned body, a
+ * runtime class in the subtree) keeps the vtable dispatch. */
+function guardedVirtualTargets(
+  host: LlvmEmitterContext,
+  e: ExprOf<"virtualCall">,
+  meta: LlClassMeta,
+  slotIdx: number,
+): string[] | null {
+  if (e.targets === undefined || e.targets.length < 2) return null;
+  const stored = new Set<string>();
+  for (const other of host.classMeta.values()) {
+    if (other.root !== meta.root || other.pre < meta.pre || other.pre > meta.post) continue;
+    if (other.def.runtime === true) return null;
+    const impl = vtEntriesFor(other)[slotIdx]?.impl;
+    if (impl) stored.add(impl.def.name);
+  }
+  const symbols: string[] = [];
+  for (const target of e.targets) {
+    if (!stored.has(target)) return null;
+    const implFn = `%${target}.${e.method}`;
+    symbols.push(host.virtualEntry(implFn));
+  }
+  return symbols;
 }
 
 /** A constructor call's arguments after the receiver, i32 where the

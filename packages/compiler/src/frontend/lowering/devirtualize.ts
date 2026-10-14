@@ -6,6 +6,10 @@ import type { Lowerer } from "./lowerer.js";
 
 type VirtualCall = IrExpr & { kind: "virtualCall" };
 
+/** The most implementations a closed virtual call tests one by one before
+ * it keeps the vtable's indirect call. */
+const MAX_GUARDED_TARGETS = 4;
+
 export interface DevirtualizeFacts {
   /** Bodies the reachability worklist retained. */
   reachable: ReadonlySet<string>;
@@ -100,18 +104,25 @@ class ConstructedClasses {
     )
       return this.direct(e, info, nearest.declarer);
     if (this.open(info)) return e;
-    let target: ClassInfo | null = null;
+    const targets: ClassInfo[] = [];
     for (const candidate of this.descendants(info)) {
       if (!this.mayInstantiate(candidate)) continue;
       const found = lowerer.findMethodOn(candidate, e.method);
       if (!found || found.sig.abstract === true) return e;
-      if (target !== null && target !== found.declarer) return e;
-      target = found.declarer;
+      if (runtimeProvided(candidate) || runtimeProvided(found.declarer)) return e;
+      if (!targets.includes(found.declarer)) targets.push(found.declarer);
     }
-    if (target === null || runtimeProvided(target)) return e;
-    const callee = `%${target.def.name}.${e.method}`;
-    if (!this.facts.reachable.has(callee) || !this.lowered.has(callee)) return e;
-    return this.direct(e, info, target);
+    if (targets.length === 0) return e;
+    for (const target of targets) {
+      const callee = `%${target.def.name}.${e.method}`;
+      if (!this.facts.reachable.has(callee) || !this.lowered.has(callee)) return e;
+    }
+    if (targets.length === 1) return this.direct(e, info, targets[0]!);
+    // A small closed set: the backend tests the loaded slot against each
+    // implementation and calls it directly (no indirect fallback; every
+    // instance that can reach this site resolves to one of them).
+    if (targets.length > MAX_GUARDED_TARGETS) return e;
+    return { ...e, targets: targets.map((t) => t.def.name) };
   }
 
   private direct(e: VirtualCall, info: ClassInfo, target: ClassInfo): IrExpr {

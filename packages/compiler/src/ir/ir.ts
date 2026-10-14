@@ -2930,7 +2930,14 @@ export type IrExpr =
    * root-most declaring class. Monomorphic calls (no override reachable
    * from the static class) stay ordinary `call` nodes — whole-program
    * devirtualization is the frontend's job. Ownership follows `call`:
-   * callees own their params, callers pass +1. */
+   * callees own their params, callers pass +1.
+   *
+   * `targets`, when present, is the closed set of classes whose OWN
+   * declaration of `method` can run here: the frontend enumerated every
+   * class that may be instantiated below `className` (devirtualize.ts) and
+   * found a few distinct implementations. The backend then compares the
+   * loaded slot against those implementations and calls them directly
+   * (inlinable), with no indirect fallback. */
   | {
       kind: "virtualCall";
       className: string;
@@ -2938,6 +2945,7 @@ export type IrExpr =
       args: IrExpr[];
       type: IrType;
       loc: SrcLoc;
+      targets?: string[];
     }
   /** Field read `obj.f`. Refcounted fields come out retained (+1). */
   | { kind: "fieldGet"; obj: IrExpr; className: string; field: string; type: IrType; loc: SrcLoc }
