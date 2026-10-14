@@ -7,9 +7,10 @@
  *
  *   - an `id` names exactly one manifest entry; a `prefix` fences every
  *     entry it string-prefixes. An id or prefix matching NOTHING refuses
- *     loudly at load (ratified): fences pin to a compiler release's
- *     manifest, and a silently-inert fence is a footgun, so there is no
- *     forward-compatible acceptance of unknown selectors.
+ *     at load with SC4001 (ratified): fences pin to a compiler release's
+ *     manifest, and an inert fence that reports nothing would mislead the
+ *     author, so there is no forward-compatible acceptance of unknown
+ *     selectors.
  *   - a fenced entry the static tier refuses anyway (status not "static")
  *     needs no new machinery: the surface's own refusal fires, and the
  *     fence's teaching rides it as the attributed note (spec §1: "changes
@@ -284,7 +285,7 @@ function classifySurface(entry: SurfaceManifestEntry, tax: FenceTaxonomy): Surfa
  * release's surface manifest. Every failure returns the exact-path detail
  * the loader wraps as SC4001. Selector strictness is RATIFIED: an id or
  * prefix matching nothing refuses; a covered static entry no detector can
- * police refuses (loudly, never silently inert). Compile-time-folded
+ * police refuses instead of staying inert. Compile-time-folded
  * constants refuse as `id` fences (the message says why) and are exempt
  * under a `prefix` — the family sweep stays usable, and the fold means
  * there is genuinely nothing at runtime to deny. */

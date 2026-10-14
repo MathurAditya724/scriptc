@@ -63,6 +63,7 @@ import { CaughtValueDispatch } from "./caught-value-dispatch.js";
 import { refreshDescriptorGuards } from "./class-descriptors.js";
 import { ClassConstructionDispatch } from "./class-construction.js";
 import { emitterRooted } from "./lower-event-emitter.js";
+import { protocolArm } from "./class-protocol-dispatch.js";
 
 const STREAM_METHODS = new Set([
   "on",
@@ -580,6 +581,8 @@ export class ClassDynamicDispatch {
     initialize: Extract<IrStmt, { kind: "fieldSet" }>;
   }[] = [];
   private readonly generated = new Set<IrFunction>();
+  /** Protocol dispatch helpers and callee reads whose receivers normalize. */
+  private readonly protocols: IrFunction[] = [];
   private constructDispatch: IrFunction | null = null;
   private readonly constructors = new Map<string, ClassInfo>();
   private readonly constructed = new Set<string>();
@@ -2245,6 +2248,49 @@ export class ClassDynamicDispatch {
         changed = true;
       }
     }
+    for (const dispatch of lowerer.protocolDispatches.values()) {
+      if (!this.generated.has(dispatch.fn)) {
+        this.generated.add(dispatch.fn);
+        this.protocols.push(dispatch.fn, ...(dispatch.probe ? [dispatch.probe] : []));
+      }
+      // Normalized receivers name their exact class, so one key pointer
+      // test selects an arm; any other capsule takes the fallback.
+      for (const plan of this.propertyReceivers(lowerer)) {
+        if (
+          plan.info !== plan.capsule ||
+          !candidates(dispatch.method).includes(plan.info) ||
+          dispatch.classes.has(plan.key)
+        )
+          continue;
+        dispatch.classes.add(plan.key);
+        const loc = dispatch.fn.loc;
+        const type: IrType = { kind: "object", className: plan.info.def.name };
+        const receiver: IrExpr = { kind: "dynCheck", value: varRef("p.0", DYN, loc), type, loc };
+        const arm = protocolArm(lowerer, dispatch, plan.info, receiver, this.asyncFree);
+        if (!arm) continue;
+        const condition = (): IrExpr => ({
+          kind: "libCall",
+          fn: "dyn.typedRefKeyIs",
+          args: [
+            varRef("p.0", DYN, loc),
+            { kind: "strLit", value: typeKey(type), type: STRING, loc },
+          ],
+          type: BOOL,
+          loc,
+        });
+        dispatch.fn.body.unshift({ kind: "if", cond: condition(), then: arm, else_: null, loc });
+        // The method of a native arm is never an own property, so reading
+        // it ahead of the arguments observes nothing.
+        dispatch.probe?.body.unshift({
+          kind: "if",
+          cond: condition(),
+          then: [{ kind: "return", value: dynUndefinedExpr(loc), loc }],
+          else_: null,
+          loc,
+        });
+        changed = true;
+      }
+    }
     for (const dispatch of this.properties.values()) {
       if (!dispatch.write)
         for (const name of this.boxedConstructors) {
@@ -3020,6 +3066,7 @@ export class ClassDynamicDispatch {
       ...[...this.properties.values()].map((dispatch) => dispatch.fn),
       ...[...this.computed.values()].map((dispatch) => dispatch.fn),
       ...[...this.dispatches.values()].flatMap((dispatch) => [dispatch.fn, dispatch.callback]),
+      ...this.protocols,
     ];
   }
 

@@ -162,7 +162,7 @@ export function computeMayThrow(
           break;
         case "dynCall":
         // Prototype dispatch throws the same family (not-a-function,
-        // cannot-read, the loud unimplemented fence, callback throws).
+        // cannot-read, the "not supported yet" Error, callback throws).
         case "dynInvoke":
           // Calling a dyn value throws catchably: the not-a-function
           // TypeError, the boxed thunk's per-argument checks, and
@@ -173,8 +173,8 @@ export function computeMayThrow(
         case "dynHasKey":
           // The keyed read throws JS's TypeError on an undefined/null
           // receiver (the `?.` form answers undefined instead), and
-          // HANDLE receivers can throw the loud unmodeled-property
-          // ladder; Proxy get/has traps can throw too.
+          // HANDLE receivers can throw the unmodeled-property
+          // "not supported yet" Error; Proxy get/has traps can throw too.
           f.throws = true;
           break;
         case "dynDestrCheck":
@@ -809,7 +809,12 @@ const BOUNDED_KINDS: ReadonlySet<string> = new Set([
 ]);
 
 /** Typed-array reads that run no script code. */
-const BOUNDED_BYTES_METHODS: ReadonlySet<string> = new Set(["get", "length", "subarray"]);
+const BOUNDED_BYTES_METHODS: ReadonlySet<string> = new Set([
+  "get",
+  "length",
+  "subarray",
+  "sortNumeric",
+]);
 
 /** Array methods that can call back into scriptc code (a comparator, or
  * element string conversion). */

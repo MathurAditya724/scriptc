@@ -2493,6 +2493,11 @@ static uint64_t scr_sort_key_decode(uint64_t key, uint64_t flip) {
   return (key & SCR_SORT_SIGN) ? key & ~SCR_SORT_SIGN : ~key;
 }
 
+/* From this length, 2-byte typed-array elements take a counting sort. */
+#ifndef SCR_BYTES_COUNT_SORT
+#define SCR_BYTES_COUNT_SORT 4096
+#endif
+
 /* Longer inputs sort by 11-bit digits (six passes) rather than bytes: the
  * larger count tables then pay for themselves. */
 #ifndef SCR_SORT_WIDE_DIGITS
@@ -2580,12 +2585,12 @@ typedef struct {
     }                                                                                \
   } while (0)
 
-/* LSD radix passes over BITS-bit digits from `src` into `dst`, swapping the
- * two after each pass; positions where every key has the same digit are
- * skipped. */
-#define SCR_SORT_RADIX_PASSES(T, KEY, src, dst, n, BITS)                             \
+/* LSD radix passes over BITS-bit digits of KEY_BITS-bit keys from `src` into
+ * `dst`, swapping the two after each pass; positions where every key has
+ * the same digit are skipped. */
+#define SCR_SORT_RADIX_PASSES(T, KEY, KEY_BITS, src, dst, n, BITS)                   \
   do {                                                                               \
-    enum { digits_ = (64 + (BITS) - 1) / (BITS), radix_ = 1 << (BITS) };             \
+    enum { digits_ = ((KEY_BITS) + (BITS) - 1) / (BITS), radix_ = 1 << (BITS) };     \
     size_t(*counts_)[radix_] = calloc(digits_, sizeof(*counts_));                    \
     if (!counts_) scr_arr_oom();                                                     \
     for (size_t i_ = 0; i_ < (n); i_++) {                                            \
@@ -2616,7 +2621,7 @@ typedef struct {
 /* Stable sort of `n` records of type T keyed by KEY(record), between `buf`
  * and `tmp` (which may be NULL when `n` is at most the insertion length);
  * leaves the sorted records in *out. */
-#define SCR_SORT_KEYED_RECORDS(T, KEY, buf, tmp, n, few_runs, out)                   \
+#define SCR_SORT_KEYED_RECORDS(T, KEY, KEY_BITS, buf, tmp, n, few_runs, out)         \
   do {                                                                               \
     T *src_ = (buf), *dst_ = (tmp);                                                  \
     if (few_runs) {                                                                  \
@@ -2658,9 +2663,9 @@ typedef struct {
       size_t end_ = 1;                                                               \
       SCR_SORT_INSERT_UNTIL(T, KEY, src_, 0, end_, (n));                             \
     } else if ((n) > SCR_SORT_WIDE_DIGITS) {                                         \
-      SCR_SORT_RADIX_PASSES(T, KEY, src_, dst_, n, 11);                              \
+      SCR_SORT_RADIX_PASSES(T, KEY, KEY_BITS, src_, dst_, n, 11);                    \
     } else {                                                                         \
-      SCR_SORT_RADIX_PASSES(T, KEY, src_, dst_, n, 8);                               \
+      SCR_SORT_RADIX_PASSES(T, KEY, KEY_BITS, src_, dst_, n, 8);                     \
     }                                                                                \
     *(out) = src_;                                                                   \
   } while (0)
@@ -2703,7 +2708,7 @@ static bool scr_sort_keyed_numbers(uint64_t *values, size_t n, uint64_t flip) {
     tmp = malloc(n * sizeof(*tmp));
     if (!tmp) scr_arr_oom();
   }
-  SCR_SORT_KEYED_RECORDS(uint64_t, SCR_SORT_SELF_KEY, values, tmp, n, few_runs, &sorted);
+  SCR_SORT_KEYED_RECORDS(uint64_t, SCR_SORT_SELF_KEY, 64, values, tmp, n, few_runs, &sorted);
   for (size_t i = 0; i < n; i++) values[i] = scr_sort_key_decode(sorted[i], flip);
   free(tmp);
   return true;
@@ -2735,7 +2740,7 @@ static bool scr_sort_keyed_tail(uint64_t *values, size_t n, size_t head, const S
     items[i].slot = values[head + i];
   }
   ScrSortItem *sorted = items;
-  SCR_SORT_KEYED_RECORDS(ScrSortItem, SCR_SORT_ITEM_KEY, items, items + tail, tail, false,
+  SCR_SORT_KEYED_RECORDS(ScrSortItem, SCR_SORT_ITEM_KEY, 64, items, items + tail, tail, false,
                          &sorted);
   /* Each tail slot follows the head's slots with keys up to its own. The
    * places only grow, so each search starts at the previous one. */
@@ -2797,7 +2802,7 @@ static bool scr_sort_keyed_refs(uint64_t *values, size_t n, const ScrSortCompare
     tmp = malloc(n * sizeof(*tmp));
     if (!tmp) scr_arr_oom();
   }
-  SCR_SORT_KEYED_RECORDS(ScrSortItem, SCR_SORT_ITEM_KEY, items, tmp, n, few_runs, &sorted);
+  SCR_SORT_KEYED_RECORDS(ScrSortItem, SCR_SORT_ITEM_KEY, 64, items, tmp, n, few_runs, &sorted);
   for (size_t i = 0; i < n; i++) values[i] = sorted[i].slot;
   free(items);
   free(tmp);
@@ -2814,6 +2819,393 @@ static bool scr_sort_keyed(uint64_t *values, size_t n, const ScrSortCompare *c) 
   bool sorted = scr_sort_keyed_refs(values, n, c, flip);
   scr_dyn_this_pop();
   return sorted;
+}
+
+/* ── typed-array numeric sort ─────────────────────────────────────────── */
+
+/* The order-preserving unsigned key of any non-NaN number, -0 below +0. */
+static uint64_t scr_sort_float_key(double value) {
+  uint64_t bits;
+  memcpy(&bits, &value, sizeof bits);
+  return (bits & SCR_SORT_SIGN) ? ~bits : bits | SCR_SORT_SIGN;
+}
+
+static double scr_sort_float_value(uint64_t key) {
+  uint64_t bits = (key & SCR_SORT_SIGN) ? key & ~SCR_SORT_SIGN : ~key;
+  double value;
+  memcpy(&value, &bits, sizeof value);
+  return value;
+}
+
+/* Element `i` of `b` as a number; views may be unaligned. */
+static double scr_bytes_sort_load(const ScrBytes *b, size_t i) {
+  const uint8_t *at = b->data + i * scr_bytes_elem_size(b->elem);
+  switch (b->elem) {
+  case SCR_BYTES_U8:
+  case SCR_BYTES_U8C: return *at;
+  case SCR_BYTES_I8: return (int8_t)*at;
+  case SCR_BYTES_U16: {
+    uint16_t v;
+    memcpy(&v, at, sizeof v);
+    return v;
+  }
+  case SCR_BYTES_I16: {
+    int16_t v;
+    memcpy(&v, at, sizeof v);
+    return v;
+  }
+  case SCR_BYTES_U32: {
+    uint32_t v;
+    memcpy(&v, at, sizeof v);
+    return v;
+  }
+  case SCR_BYTES_I32: {
+    int32_t v;
+    memcpy(&v, at, sizeof v);
+    return v;
+  }
+  case SCR_BYTES_F32: {
+    float v;
+    memcpy(&v, at, sizeof v);
+    return v;
+  }
+  default: {
+    double v;
+    memcpy(&v, at, sizeof v);
+    return v;
+  }
+  }
+}
+
+/* Stores a number read from an element of the same kind back into `b`. */
+static void scr_bytes_sort_store(ScrBytes *b, size_t i, double value) {
+  uint8_t *at = b->data + i * scr_bytes_elem_size(b->elem);
+  switch (b->elem) {
+  case SCR_BYTES_U8:
+  case SCR_BYTES_U8C: *at = (uint8_t)value; break;
+  case SCR_BYTES_I8: *at = (uint8_t)(int8_t)value; break;
+  case SCR_BYTES_U16: {
+    uint16_t v = (uint16_t)value;
+    memcpy(at, &v, sizeof v);
+    break;
+  }
+  case SCR_BYTES_I16: {
+    int16_t v = (int16_t)value;
+    memcpy(at, &v, sizeof v);
+    break;
+  }
+  case SCR_BYTES_U32: {
+    uint32_t v = (uint32_t)value;
+    memcpy(at, &v, sizeof v);
+    break;
+  }
+  case SCR_BYTES_I32: {
+    int32_t v = (int32_t)value;
+    memcpy(at, &v, sizeof v);
+    break;
+  }
+  case SCR_BYTES_F32: {
+    float v = (float)value;
+    memcpy(at, &v, sizeof v);
+    break;
+  }
+  default: memcpy(at, &value, sizeof value); break;
+  }
+}
+
+/* A counting sort of 1- and 2-byte integer elements: every value of the
+ * element domain is a bucket, so the elements are read once and written
+ * once in bucket order. */
+static void scr_bytes_count_sort(ScrBytes *b, bool descending) {
+  size_t n = b->len, width = scr_bytes_elem_size(b->elem);
+  bool sign = b->elem == SCR_BYTES_I8 || b->elem == SCR_BYTES_I16;
+  size_t domain = width == 1 ? 256 : 65536, bias = sign ? domain / 2 : 0;
+  size_t *counts = calloc(domain, sizeof(*counts));
+  if (!counts) scr_arr_oom();
+  uint8_t *data = b->data;
+  if (width == 1) {
+    for (size_t i = 0; i < n; i++) counts[(uint8_t)(data[i] + bias)]++;
+  } else {
+    for (size_t i = 0; i < n; i++) {
+      uint16_t v;
+      memcpy(&v, data + i * 2, 2);
+      counts[(uint16_t)(v + bias)]++;
+    }
+  }
+  size_t at = 0;
+  for (size_t step = 0; step < domain; step++) {
+    size_t bucket = descending ? domain - 1 - step : step;
+    uint16_t v = (uint16_t)(bucket - bias);
+    size_t end = at + counts[bucket];
+    if (width == 1) {
+      memset(data + at, (uint8_t)v, end - at);
+    } else {
+      for (size_t i = at; i < end; i++) memcpy(data + i * 2, &v, 2);
+    }
+    at = end;
+  }
+  free(counts);
+}
+
+/* The typed-array key sort over KT keys of KEY_BITS bits at `keys` (which
+ * may alias the elements: each key is written at or before the element it
+ * replaces). READ(i, &key) answers 0 for a number, 1 for NaN, 2 for a key
+ * the order refuses; WRITE(i, key) stores an element. NaNs keep their
+ * order and stored payloads after the numbers. */
+#define SCR_BYTES_SORT_KEYS(KT, KEY_BITS, keys, READ, WRITE)                         \
+  do {                                                                               \
+    size_t kept_ = 0, runs_ = 1, nans_ = 0, nan_cap_ = 0;                            \
+    uint64_t *nan_bits_ = NULL;                                                      \
+    bool ascending_ = true, descending_ = true;                                      \
+    for (size_t i_ = 0; i_ < n; i_++) {                                              \
+      KT key_;                                                                       \
+      if (READ(i_, &key_)) {                                                         \
+        if (nans_ == nan_cap_) {                                                     \
+          nan_cap_ = nan_cap_ ? nan_cap_ * 2 : 8;                                    \
+          nan_bits_ = realloc(nan_bits_, nan_cap_ * sizeof(*nan_bits_));             \
+          if (!nan_bits_) scr_arr_oom();                                             \
+        }                                                                            \
+        nan_bits_[nans_] = 0;                                                        \
+        memcpy(&nan_bits_[nans_++], data + i_ * width, width);                       \
+        continue;                                                                    \
+      }                                                                              \
+      if (kept_) {                                                                   \
+        KT previous_ = (keys)[kept_ - 1];                                            \
+        ascending_ &= previous_ <= key_;                                             \
+        descending_ &= previous_ > key_;                                             \
+        runs_ += previous_ > key_;                                                   \
+      }                                                                              \
+      (keys)[kept_++] = key_;                                                        \
+    }                                                                                \
+    KT *sorted_ = (keys), *tmp_ = NULL;                                              \
+    if (ascending_) {                                                                \
+    } else if (descending_) {                                                        \
+      for (size_t l_ = 0, r_ = kept_ - 1; l_ < r_; l_++, r_--) {                     \
+        KT swap_ = (keys)[l_];                                                       \
+        (keys)[l_] = (keys)[r_];                                                     \
+        (keys)[r_] = swap_;                                                          \
+      }                                                                              \
+    } else {                                                                         \
+      bool few_runs_ = runs_ <= SCR_SORT_KEYED_RUNS;                                 \
+      if (few_runs_ || kept_ > SCR_SORT_KEYED_INSERTION) {                           \
+        tmp_ = malloc(kept_ * sizeof(*tmp_));                                        \
+        if (!tmp_) scr_arr_oom();                                                    \
+      }                                                                              \
+      SCR_SORT_KEYED_RECORDS(KT, SCR_SORT_SELF_KEY, KEY_BITS, (keys), tmp_, kept_,   \
+                             few_runs_, &sorted_);                                   \
+    }                                                                                \
+    for (size_t i_ = 0; i_ < kept_; i_++) WRITE(i_, sorted_[i_]);                    \
+    for (size_t i_ = 0; i_ < nans_; i_++)                                            \
+      memcpy(data + (kept_ + i_) * width, &nan_bits_[i_], width);                    \
+    free(nan_bits_);                                                                 \
+    free(tmp_);                                                                      \
+  } while (0)
+
+#define SCR_SORT_SIGN32 (UINT32_C(1) << 31)
+
+/* Float keys refuse NaN and -0 under a comparator order; flip complements
+ * every key of a descending order. */
+static int scr_bytes_f32_key(const uint8_t *at, int32_t order, uint32_t *key) {
+  float v;
+  uint32_t bits;
+  memcpy(&v, at, sizeof v);
+  memcpy(&bits, at, sizeof bits);
+  if (v != v) return order ? 2 : 1;
+  if (order && bits == SCR_SORT_SIGN32) return 2;
+  *key = ((bits & SCR_SORT_SIGN32) ? ~bits : bits | SCR_SORT_SIGN32) ^ (order < 0 ? ~UINT32_C(0) : 0);
+  return 0;
+}
+
+static int scr_bytes_f64_key(const uint8_t *at, int32_t order, uint64_t *key) {
+  double v;
+  uint64_t bits;
+  memcpy(&v, at, sizeof v);
+  memcpy(&bits, at, sizeof bits);
+  if (v != v) return order ? 2 : 1;
+  if (order && bits == SCR_SORT_SIGN) return 2;
+  *key = scr_sort_float_key(v) ^ (order < 0 ? ~UINT64_C(0) : 0);
+  return 0;
+}
+
+/* 2- and 4-byte integer elements as 32-bit keys: signed kinds flip the
+ * sign bit after sign extension, so key order is value order. */
+static inline int scr_bytes_int_key(ScrBytesElem elem, const uint8_t *data, size_t i,
+                                    uint32_t flip, uint32_t *key) {
+  uint32_t v;
+  switch (elem) {
+  case SCR_BYTES_U16: {
+    uint16_t x;
+    memcpy(&x, data + i * 2, 2);
+    v = x;
+    break;
+  }
+  case SCR_BYTES_I16: {
+    int16_t x;
+    memcpy(&x, data + i * 2, 2);
+    v = (uint32_t)(int32_t)x ^ SCR_SORT_SIGN32;
+    break;
+  }
+  case SCR_BYTES_I32: {
+    memcpy(&v, data + i * 4, 4);
+    v ^= SCR_SORT_SIGN32;
+    break;
+  }
+  default: memcpy(&v, data + i * 4, 4); break;
+  }
+  *key = v ^ flip;
+  return 0;
+}
+
+static inline void scr_bytes_int_store(ScrBytesElem elem, uint8_t *data, size_t i, uint32_t flip,
+                                       uint32_t key) {
+  uint32_t v = key ^ flip;
+  if (elem == SCR_BYTES_I16 || elem == SCR_BYTES_I32) v ^= SCR_SORT_SIGN32;
+  if (elem == SCR_BYTES_U16 || elem == SCR_BYTES_I16) {
+    uint16_t x = (uint16_t)v;
+    memcpy(data + i * 2, &x, 2);
+  } else {
+    memcpy(data + i * 4, &v, 4);
+  }
+}
+
+/* Whether a comparator order refuses this array (a float NaN or -0). */
+static bool scr_bytes_sort_refused(const ScrBytes *b, int32_t order) {
+  if (order == 0) return false;
+  const uint8_t *data = b->data;
+  for (size_t i = 0; i < b->len; i++) {
+    if (b->elem == SCR_BYTES_F32) {
+      uint32_t key;
+      if (scr_bytes_f32_key(data + i * 4, order, &key)) return true;
+    } else if (b->elem == SCR_BYTES_F64) {
+      uint64_t key;
+      if (scr_bytes_f64_key(data + i * 8, order, &key)) return true;
+    }
+  }
+  return false;
+}
+
+/* Sorts a typed array's elements in place. Order 0 is the default
+ * TypedArray order: ascending numbers, -0 before +0, then every NaN in its
+ * original order with its stored bits. Order 1 or -1 is a recognized
+ * comparator's (a - b, b - a, ...): it returns false, having written
+ * nothing, when a float element is NaN or -0, and the caller then sorts
+ * through the comparator. Equal keys are identical elements, so only the
+ * keys need sorting. Runs no script code. */
+bool scr_bytes_sort_numeric(ScrBytes *b, int32_t order) {
+  size_t n = b->len;
+  if (n < 2) return true;
+  if (order < -1 || order > 1) scr_trap("scriptc: invalid typed array sort order\n");
+  SCR_SHARED_GUARD(b, NULL);
+  size_t width = scr_bytes_elem_size(b->elem);
+  uint8_t *data = b->data;
+  /* Integer elements have no NaN or -0: every order is a value order. */
+  if (width == 1 || (width == 2 && n >= SCR_BYTES_COUNT_SORT)) {
+    scr_bytes_count_sort(b, order < 0);
+    return true;
+  }
+  if (scr_bytes_sort_refused(b, order)) return false;
+  uint32_t flip32 = order < 0 ? ~UINT32_C(0) : 0;
+  uint64_t flip64 = order < 0 ? ~UINT64_C(0) : 0;
+  if (n > SIZE_MAX / 2 / sizeof(uint64_t)) scr_arr_oom();
+  if (b->elem == SCR_BYTES_F64) {
+    /* Float64Array storage is 8-byte aligned (views start at multiples of
+     * the element size), so the elements become their own keys. */
+    uint64_t *keys = ((uintptr_t)data & 7) == 0 ? (uint64_t *)(void *)data : NULL;
+    uint64_t *owned = keys ? NULL : malloc(n * sizeof(*owned));
+    if (!keys && !owned) scr_arr_oom();
+#define SCR_BYTES_F64_READ(i, key) scr_bytes_f64_key(data + (i) * 8, order, (key))
+#define SCR_BYTES_F64_WRITE(i, key)                                                  \
+  do {                                                                               \
+    double v_ = scr_sort_float_value((key) ^ flip64);                                \
+    memcpy(data + (i) * 8, &v_, 8);                                                  \
+  } while (0)
+    SCR_BYTES_SORT_KEYS(uint64_t, 64, keys ? keys : owned, SCR_BYTES_F64_READ, SCR_BYTES_F64_WRITE);
+#undef SCR_BYTES_F64_READ
+#undef SCR_BYTES_F64_WRITE
+    free(owned);
+    return true;
+  }
+  uint32_t *keys = malloc(n * sizeof(*keys));
+  if (!keys) scr_arr_oom();
+#define SCR_BYTES_KEYS32(NAME)                                                       \
+  SCR_BYTES_SORT_KEYS(uint32_t, 32, keys, SCR_BYTES_READ32_##NAME, SCR_BYTES_WRITE32_##NAME)
+#define SCR_BYTES_READ32_INT(i, key) scr_bytes_int_key(b->elem, data, (i), flip32, (key))
+#define SCR_BYTES_WRITE32_INT(i, key) scr_bytes_int_store(b->elem, data, (i), flip32, (key))
+#define SCR_BYTES_READ32_F32(i, key) scr_bytes_f32_key(data + (i) * 4, order, (key))
+#define SCR_BYTES_WRITE32_F32(i, key)                                                \
+  do {                                                                               \
+    uint32_t k_ = (key) ^ flip32;                                                    \
+    uint32_t bits_ = (k_ & SCR_SORT_SIGN32) ? k_ & ~SCR_SORT_SIGN32 : ~k_;           \
+    memcpy(data + (i) * 4, &bits_, 4);                                               \
+  } while (0)
+  if (b->elem == SCR_BYTES_F32) SCR_BYTES_KEYS32(F32);
+  else SCR_BYTES_KEYS32(INT);
+#undef SCR_BYTES_KEYS32
+#undef SCR_BYTES_READ32_INT
+#undef SCR_BYTES_WRITE32_INT
+#undef SCR_BYTES_READ32_F32
+#undef SCR_BYTES_WRITE32_F32
+  free(keys);
+  return true;
+}
+
+/* Node's typed-array comparator sort: a top-down merge sort
+ * between two snapshots of the elements, splitting at the midpoint and
+ * taking the left element unless the comparator answers more than 0 (NaN
+ * counts as 0). Matching its comparison schedule gives Node's result even
+ * for comparators that are not consistent. Returns false when a comparator
+ * throws. */
+static bool scr_bytes_merge_sort(uint64_t *source, size_t from, size_t to, uint64_t *target,
+                                 const ScrSortCompare *c) {
+  size_t middle = from + ((to - from) >> 1);
+  if (middle - from > 1 && !scr_bytes_merge_sort(target, from, middle, source, c)) return false;
+  if (to - middle > 1 && !scr_bytes_merge_sort(target, middle, to, source, c)) return false;
+  size_t left = from, right = middle;
+  bool failed = false;
+  for (size_t k = from; k < to; k++) {
+    if (left < middle && right >= to) {
+      target[k] = source[left++];
+    } else if (left < middle) {
+      if (scr_sort_greater(c, source[left], source[right], &failed)) {
+        target[k] = source[right++];
+      } else {
+        if (failed) return false;
+        target[k] = source[left++];
+      }
+    } else {
+      target[k] = source[right++];
+    }
+  }
+  return true;
+}
+
+/* Sorts a typed array through comparator `f` (of `arity` number
+ * parameters) as TypedArray.prototype.sort does: the elements are read
+ * once, sorted outside the array, and written back after the last
+ * comparison, so the comparator sees the array unchanged and its writes to
+ * it are overwritten. A comparator exception stays pending and leaves the
+ * array as the comparator left it. */
+void scr_bytes_sort_compare(ScrBytes *b, ScrClosure *f, uint32_t arity) {
+  size_t n = b->len;
+  if (n < 2) return;
+  if (arity > 2) scr_trap("scriptc: invalid typed array comparator\n");
+  if (n > SIZE_MAX / 2 / sizeof(uint64_t)) scr_arr_oom();
+  uint64_t *work1 = malloc(n * sizeof(*work1)), *work2 = malloc(n * sizeof(*work2));
+  if (!work1 || !work2) scr_arr_oom();
+  {
+    SCR_SHARED_GUARD(b, NULL);
+    for (size_t i = 0; i < n; i++) work1[i] = work2[i] = scr_slot_from_f64(scr_bytes_sort_load(b, i));
+  }
+  ScrSortCompare c = {f, NULL, arity, true, false, 0, NULL};
+  scr_dyn_this_push_dyn(NULL);
+  bool sorted = scr_bytes_merge_sort(work2, 0, n, work1, &c);
+  scr_dyn_this_pop();
+  if (sorted) {
+    SCR_SHARED_GUARD(b, NULL);
+    for (size_t i = 0; i < n; i++) scr_bytes_sort_store(b, i, scr_slot_to_f64(work1[i]));
+  }
+  free(work1);
+  free(work2);
 }
 
 #undef SCR_SORT_SELF_KEY

@@ -97,7 +97,7 @@ export const NARROW_FIRST =
  *     per-key fences);
  *   - keys Node DOCUMENTS for the API but this compiler cannot honor
  *     fence BY NAME at the use site — an option that changes
- *     Node-observable behavior must work or fence, never silently drop;
+ *     Node-observable behavior must work or fence instead of dropping;
  *   - undocumented keys DROP exactly as Node drops them, provided the
  *     value expression is side-effect-free (an effectful initializer
  *     fences: Node would have evaluated it, so skipping it would be
@@ -543,7 +543,7 @@ export const COMPOUND_ASSIGN_OPS: Partial<Record<ts.SyntaxKind, CompoundOp>> = {
  * smuggle itself in by name. `minArgs`/`maxArgs` pin the LOWERED call
  * forms: the lib declares wider signatures (optional position/fromIndex
  * parameters) that typecheck but have no lowering — those forms are fenced
- * per site instead of silently dropping arguments. */
+ * per site instead of dropping arguments without a diagnostic. */
 export const STR_METHODS: Record<
   string,
   { method: IrStrIntrinsicMethod; result: IrType; minArgs: number; maxArgs: number }
@@ -931,7 +931,7 @@ const PATH_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
   format: { fn: "path.format", params: [], result: STRING },
 };
 
-/** The win32 twins (scr_path.c's Node-v24 path.win32 port, byte-for-byte):
+/** The win32 twins (scr_path.c's exact port of Node-v24 path.win32):
  * "path/win32" everywhere, and the bare-module table when the build
  * TARGETS win32 — Node on Windows is path.win32. */
 const PATH_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
@@ -1019,8 +1019,8 @@ export const BUILTIN_MODULE_FNS: Record<
     readFileSync: { fn: "fs.readFileSync", params: [STRING, STRING], result: STRING },
     // The exact-API subset is first-class. A fixed native ABI is not enough:
     // rows whose Node function has behavior-bearing trailing options remain
-    // call-only, or function-width adaptation could silently discard those
-    // options before entering the fixed runtime call.
+    // call-only, or function-width adaptation could discard those options
+    // without a diagnostic before entering the fixed runtime call.
     writeFileSync: { fn: "fs.writeFileSync", params: [STRING, STRING], result: VOID },
     appendFileSync: { fn: "fs.appendFileSync", params: [STRING, STRING], result: VOID },
     existsSync: {
@@ -1407,6 +1407,14 @@ export const BUILTIN_MODULE_FNS: Record<
         { mode: "optional", type: DYN, defaultValue: undefined },
       ],
     },
+    // The legacy API and the domain pair (lowerLegacyUrlCall): arguments
+    // cross as dyn values for Node's own validators; url.parse() answers
+    // the checked-dynamic Url instance.
+    parse: { fn: "url.legacyParse", params: [DYN, DYN, DYN], result: DYN },
+    format: { fn: "url.legacyFormat", params: [DYN, DYN], result: STRING },
+    resolve: { fn: "url.legacyResolve", params: [DYN, DYN], result: STRING },
+    domainToASCII: { fn: "url.domainToASCII", params: [DYN], result: STRING },
+    domainToUnicode: { fn: "url.domainToUnicode", params: [DYN], result: STRING },
   },
   child_process: {
     // spawnSync's and spawn's call completions are entirely special-cased
@@ -2665,8 +2673,8 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
  * accessed member is stdlib-declared, the use is standard-library surface
  * with no lowering — report SC2020 naming `<container>.<member>` (the
  * receiver's global name when it IS a stdlib global like Math or Promise,
- * its widened type text otherwise). Returns silently for non-stdlib
- * members so the caller's generic rejection applies. */
+ * its widened type text otherwise). Returns without reporting for
+ * non-stdlib members so the caller's generic rejection applies. */
 export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExpression): void {
   const sym = lowerer.checker.getSymbolAtLocation(access.name);
   if (!sym || !lowerer.isStdlibSymbol(sym)) return;

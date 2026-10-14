@@ -412,7 +412,8 @@ export function recordToClassPlan(
   const props = info.paramProps ?? [];
   if (props.length !== info.ctorParams.length) return null;
   // Every layout field must come from a parameter property (no declared
-  // fields with initializers the projection would silently prefer).
+  // fields with initializers the projection would prefer without a
+  // diagnostic).
   if (info.def.fields.length !== props.length) return null;
   const key = `cls:${fromId}:${className}`;
   if (lowerer.coercions.planning.has(key)) return [];

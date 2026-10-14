@@ -460,8 +460,8 @@ class Projector {
   private synthCounter = 0;
   /** The profile's declared integer slots (ask 4), by slot path; entries
    * move to `intConsumed` as the projection spells them — a declared path
-   * the projection never touches refuses (a typo'd path would silently
-   * drop an ABI obligation). */
+   * the projection never touches refuses (a typo'd path would otherwise
+   * drop an ABI obligation without a diagnostic). */
   private readonly intDeclared = new Map<string, "i64" | "u64">();
   readonly intConsumed = new Map<string, "i64" | "u64">();
   /** The record-field slots' resolution facts for the inference: the
@@ -659,7 +659,7 @@ class Projector {
 
   /** A declared slot path that the whole projection never spelled: the
    * path names nothing (or names a slot outside the schema's integer
-   * grammar), and silently ignoring it would drop an ABI obligation. */
+   * grammar), and ignoring it without a diagnostic would drop an ABI obligation. */
   checkIntConsumed(): void {
     for (const [slot, cls] of this.intDeclared) {
       if (!this.intConsumed.has(slot)) {

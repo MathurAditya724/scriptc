@@ -19,7 +19,7 @@
  *   inbound trap the host-contract edge: an inbound i64/u64 past
  *                ±(2^53 − 1) cannot ride f64 exactly, so the wrapper
  *                delivers the structured SC4012 trap (profile teaching +
- *                remediation riding it) instead of silently rounding;
+ *                remediation riding it) instead of rounding;
  *                in-range extremes convert exactly.
  *   sidecar      sidecar-declared slots (msg arms, record fields, helper
  *                params/returns): integer_slots emitted as the resolved
@@ -502,7 +502,7 @@ describe.each(EMISSIONS)("ask-4 corpus, %s emission", (emission) => {
       expect(run.status).toBe(0);
       // The structured SC4012 message: the profile's teaching as the
       // text, the code, the trapping export's symbol, the remediation —
-      // and the host survives (nothing was silently rounded).
+      // and the host survives (no value was rounded).
       expect(run.stdout).toBe(
         `sink[1]:
 text=[this core's integer channel carries at most 2^53 - 1]

@@ -939,8 +939,8 @@ function streamMethodWrapper(
   const found = lowerer.findMethodOn(info, methodName);
   if (!found) {
     // A DESCENDANT-only declaration (the base chain never declares it):
-    // this constructor cannot see it, and silently binding nothing would
-    // diverge from Node (which dispatches through the prototype chain).
+    // this constructor cannot see it, and binding nothing without a
+    // diagnostic would diverge from Node (which dispatches through the prototype chain).
     if (lowerer.overrideBelow(info, methodName)) {
       lowerer.noLowering(
         `a subclass of ${info.def.name.replace(/^%/, "")} declaring '${methodName}' below a base whose constructor cannot see it`,

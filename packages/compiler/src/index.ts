@@ -1295,7 +1295,7 @@ async function compileTracked(
  * profile-declared C-ABI symbols — no main, no event loop, no signal
  * handlers, traps to the host's registered sink. The profile pins the
  * emission; there is no fallback concept on this path (an out-of-tier
- * program under emission "llvm" is SC3001, fail-loudly). */
+ * program under emission "llvm" reports SC3001). */
 
 function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNativeFeatures {
   const features = moduleRuntimeFeatures(mod);

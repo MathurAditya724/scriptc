@@ -181,7 +181,7 @@ function resolveLibrarySection(
       if (e.params.includes("i64") || e.params.includes("u64")) {
         // The sibling host-contract trap for inbound declared-integer
         // parameters (ask 4): a value past ±(2^53−1) cannot ride f64
-        // exactly, and silent rounding is a coercion the author never
+        // exactly, and implicit rounding is a coercion the author never
         // wrote. Same code (SC4012 — one host-contract story), same
         // assembly-once discipline.
         resolvedExport.inboundIntTrap = assembleTrapTeaching(

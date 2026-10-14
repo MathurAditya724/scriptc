@@ -159,7 +159,7 @@ typedef struct ScrBytes ScrBytes;
  * program TU's overlay table declares one (the whole fourth field is
  * absent otherwise). A message that already begins with the marker — a
  * facade-authored structured throw, or the wrapper's compile-time-
- * assembled SC4012 contract trap — passes through byte-for-byte. */
+ * assembled SC4012 contract trap — passes through unchanged. */
 typedef void (*ScrLibSinkFn)(void *ctx, const uint8_t *msg, size_t msg_len,
                               uint64_t address);
 void scr_library_set_sink(ScrLibSinkFn fn, void *ctx); /* latest wins */
@@ -247,7 +247,7 @@ void scr_library_register_reset(void (*fn)(void));
  * routes the text through the trap funnel. No-op when nothing is pending.
  * The ratified verbatim rule: a thrown message that ALREADY begins with the
  * structured marker 0x01 (a thrown string, or an Error whose .message
- * starts with it) is delivered byte-for-byte — no "Uncaught " prefix, no
+ * starts with it) is delivered unchanged — no "Uncaught " prefix, no
  * added newline — which is how facade-authored structured teachings ride
  * the throw channel to the sink. Defined in scr_exception.c (it owns the
  * cell). */
@@ -281,8 +281,8 @@ ScrStr *scr_library_str_in(const uint8_t *p, size_t len);   /* +1 */
 ScrBytes *scr_library_bytes_in(const uint8_t *p, size_t len, const char *trap_msg); /* +1, u8 */
 /* The inbound declared-integer edge (ask 4's i64/u64 parameter classes):
  * exact conversion for |v| <= 2^53-1, the host-contract trap (same
- * assembled SC4012 message shape as the bytes trap) past it — silent
- * rounding is a coercion the author never wrote. */
+ * assembled SC4012 message shape as the bytes trap) past it — rounding
+ * without a diagnostic is a coercion the author never wrote. */
 double scr_library_i64_in(int64_t v, const char *trap_msg);
 double scr_library_u64_in(uint64_t v, const char *trap_msg);
 void scr_library_str_out(ScrStr *s, const uint8_t **out, size_t *out_len);
@@ -1455,6 +1455,16 @@ ScrStr *scr_str_trim(ScrStr *s);
 ScrStr *scr_str_to_lower(const ScrStr *s);
 ScrStr *scr_str_to_upper(const ScrStr *s);
 ScrStr *scr_str_normalize(const ScrStr *s, const ScrStr *form);
+/* NFC over a code point buffer (scr_regex.c, beside normalize): a fresh
+ * malloc'd buffer the caller frees, its length in *out_len. Borrows input. */
+uint32_t *scr_nfc_code_points(const uint32_t *input, size_t length, size_t *out_len);
+
+/* UTS #46 domain conversion (scr_idna.c — the url unit's IDNA tables; it
+ * rides the regex switch for NFC). to_ascii answers "" on failure;
+ * to_unicode decodes each valid Punycode label and never fails. Both
+ * borrow the UTF-8 span and return +1. */
+ScrStr *scr_idna_to_ascii(const char *p, size_t n);
+ScrStr *scr_idna_to_unicode(const char *p, size_t n);
 
 /* charAt(i): 1-code-unit string; out of range → empty string. Half of an
  * astral pair → that lone surrogate. Returns +1. */
@@ -1575,6 +1585,12 @@ ScrStr *scr_str_encode_uri_component(ScrStr *s);
 /* querystring.escape: the component encoder, throwing Node's URIError
  * [ERR_INVALID_URI] on a lone surrogate. Borrows s; result +1. */
 ScrStr *scr_qs_escape(ScrStr *s);
+/* lib/internal/querystring.js encodeStr over UTF-16 code units: ASCII
+ * outside `no_escape` and every non-ASCII code unit percent-encode as
+ * UTF-8, and ANY surrogate pairs with the code unit after it (Node's own
+ * rule); only a surrogate in last position throws URIError
+ * [ERR_INVALID_URI] and returns NULL. Borrows s; +1. */
+ScrStr *scr_qs_encode_str(const ScrStr *s, const signed char no_escape[128]);
 
 /* decodeURIComponent — ECMA-262 Decode with the empty reserved set: %XX
  * escapes decode bytewise (raw non-escape bytes copy through) and escaped
@@ -1627,6 +1643,10 @@ typedef struct ScrMap ScrMap; /* full definition below (C11 repeat) */
 void scr_qs_parse_into(ScrMap *out, const ScrStr *qs, const ScrStr *sep,
                        const ScrStr *eq, double max_keys, uint32_t str_tag,
                        uint32_t arr_tag);
+/* querystring.parse(qs) with the default separators and maxKeys, as a
+ * fresh checked-dynamic null-prototype object (url.parse's parsed query).
+ * Borrows qs; +1; never throws. */
+struct ScrDyn *scr_qs_parse_dyn(const ScrStr *qs);
 
 /* node:util.parseArgs — the static checked-dynamic boundary. `config` is
  * the documented JSON-safe configuration object; the returned dyn tree is
@@ -3051,7 +3071,7 @@ void scr_stream_init_passthrough(ScrStream *s, double rhwm, double whwm, bool au
  * construction — `super(options)` forwarding a JS-lane parameter, `new
  * Readable(dynVar)`): the option walk runs at runtime with Node's own
  * reading rules (unknown keys ignored; consumed-but-unlowered options
- * throw the loud unsupported Error — MAY THROW, NULL result / no init
+ * throw the "not supported yet" Error — MAY THROW, NULL result / no init
  * with the exception pending). opts is BORROWED; the fallback closures
  * (a subclass's overridden underscore-method wrappers, shadowed by
  * options callbacks per Node's instance-property rule) MOVE. */
@@ -4293,7 +4313,7 @@ ScrStr *scr_path_relative(ScrStr *from, ScrStr *to);
 /* posix.toNamespacedPath — the identity (Node: "Non-op on posix
  * systems"). +1 via retain. */
 ScrStr *scr_path_to_namespaced_path(ScrStr *path);
-/* path.win32.* — Node v24's win32 implementation ported byte-for-byte
+/* path.win32.* — Node v24's win32 implementation ported exactly
  * (backslash output, both slashes on input, UNC/device/drive-letter
  * roots, the reserved device names, the CVE-2024-36139 normalize
  * hardening); join/resolve keep the packed-string[] ABI. On win32
@@ -4417,6 +4437,19 @@ ScrStr *scr_url_href(ScrUrl *u);     /* +1; also toString() */
 void scr_url_set(ScrUrl *u, ScrStr *field, ScrStr *value); /* borrowed; href may throw */
 bool scr_url_set_component(ScrUrl *u, ScrStr *field, ScrStr *value); /* borrowed; false for ignored writes */
 void scr_url_set_checked(ScrUrl *u, ScrStr *field, const ScrDyn *value); /* borrowed; conversion may throw */
+/* node:url's legacy surface (scr_url_legacy.c — linked with the regex,
+ * querystring and dyn-async units). url.parse() answers a checked-dynamic
+ * Url instance; format() accepts a Url-shaped object, a string, or a
+ * native URL (with its options bag); resolve() takes two strings. `warn`
+ * emits DEP0169 once per process (false at node_modules call sites).
+ * domainToASCII/Unicode take the argument and whether it was omitted
+ * (ERR_MISSING_ARGS). All borrow; +1, or NULL with Node's error pending. */
+ScrDyn *scr_url_legacy_parse(const ScrDyn *url, const ScrDyn *parse_query, const ScrDyn *slashes,
+                             bool warn);
+ScrStr *scr_url_legacy_format(const ScrDyn *object, const ScrDyn *options, bool warn);
+ScrStr *scr_url_legacy_resolve(const ScrDyn *from, const ScrDyn *to, bool warn);
+ScrStr *scr_url_domain_to_ascii(const ScrDyn *domain, bool missing);
+ScrStr *scr_url_domain_to_unicode(const ScrDyn *domain, bool missing);
 ScrStr *scr_url_to_path(ScrUrl *u);      /* +1, or throws */
 ScrStr *scr_url_str_to_path(ScrStr *s);  /* +1, or throws */
 ScrUrl *scr_url_from_path(ScrStr *path); /* +1; throws on win32 UNC malformations only */
@@ -4435,7 +4468,7 @@ ScrUrl *scr_url_from_path_w32(ScrStr *path); /* +1, or throws */
  * (scr_url_search_params — cached on the URL so every read answers the
  * same identity, and every list mutation re-serializes into the URL's
  * query: href reflects immediately; an emptied list drops the '?').
- * Parsing/serialization match Node byte-for-byte: '+' is space, %XX
+ * Parsing/serialization match Node exactly: '+' is space, %XX
  * decodes (malformed escapes verbatim, decoded bytes UTF-8-scrubbed to
  * U+FFFD), serialization keeps [A-Za-z0-9*\-._], space → '+', uppercase
  * %XX otherwise. sort() is stable, by UTF-16 code units. Only
@@ -4697,11 +4730,12 @@ typedef enum {
    * property reads/writes with static equivalents dispatch through a
    * per-tag ops table (scr_dyn_handle_install — scr_http.c/scr_net.c
    * register at main(), the vtable-stamp story) onto the SAME entry
-   * points the static lowerings use; unknown members meet the loud
-   * "not supported yet" ladder, never a silent wrong answer. typeof
+   * points the static lowerings use; unknown members throw the
+   * "not supported yet" Error instead of returning a wrong result. typeof
    * answers "object", truthiness is true, String() renders
    * "[object Object]" (Object.prototype.toString — Node's answer for
-   * these classes), JSON serialization and util.inspect fence loudly. */
+   * these classes), JSON serialization and util.inspect throw the
+   * "not supported yet" Error. */
   SCR_DYN_HANDLE,
   /* A PROMISE value. Never produced by the parser — it enters the checked-dynamic tree
    * through the compiler's static→dyn converters (a promise flowing into
@@ -4717,10 +4751,10 @@ typedef enum {
    * adapter — SEMANTICS.md). typeof answers "object", truthiness is
    * true, String() renders "[object Promise]" (Object.prototype.toString
    * — promises have no own toString), JSON serialization writes {} (no
-   * own enumerable properties, exactly Node), and util.inspect fences
-   * loudly. The dyn→promise edge is NOT visible to the cycle collector
-   * (the dyn→closure stance): a cycle THROUGH a dyn-boxed promise is
-   * merely never collected. */
+   * own enumerable properties, exactly Node), and util.inspect throws
+   * the "not supported yet" Error. The dyn→promise edge is NOT visible to
+   * the cycle collector (the dyn→closure stance): a cycle THROUGH a
+   * dyn-boxed promise is merely never collected. */
   SCR_DYN_PROMISE,
   /* A compiler-owned typed reference. Program class instances use this for
    * ordinary `unknown` storage; native Web streams also use it when their
@@ -4921,6 +4955,12 @@ struct ScrDyn {
       void *source_identity;
       ScrDyn *(*source_access)(void *, bool materialize);
       struct ScrDynObjectIndex *index; /* optional wide-object lookup; owns no values */
+      /* On a runtime-built class prototype (e.g. url.Url.prototype): the
+       * constructor name (static text) util.inspect prints for objects
+       * inheriting from it (scr_dyn_class_name). NULL otherwise. Only
+       * prototypes that live until their thread exits set it, and they
+       * clear it before release, so freelist reuse never sees it. */
+      const char *class_name;
     } obj; /* owned */
     /* SCR_DYN_FUNC: the boxed closure (owned) + its call descriptor. `sig`
      * and `name` are static compiler-emitted literals (never freed); name
@@ -4979,6 +5019,10 @@ struct ScrDyn {
   struct ScrDyn *symbol_properties;
   struct ScrDyn *symbol_keys;
 };
+/* Compiled class dispatch reads a capsule's instance and key in place. */
+_Static_assert(offsetof(ScrDyn, v.typed_ref.ptr) == 16, "typed_ref.ptr offset");
+_Static_assert(offsetof(ScrDyn, v.typed_ref.type_key) == 16 + 3 * sizeof(void *),
+               "typed_ref.type_key offset");
 
 static inline ScrDyn *scr_dyn_retain(ScrDyn *d) {
   if (d->rc != SIZE_MAX) {
@@ -4988,6 +5032,14 @@ static inline ScrDyn *scr_dyn_retain(ScrDyn *d) {
 }
 
 void scr_dyn_release(ScrDyn *d); /* releases the tree recursively; NULL-tolerant */
+
+/* The runtime class an object inherits from (util.inspect's constructor
+ * name, found on its prototype chain), or NULL. */
+static inline const char *scr_dyn_class_name(const ScrDyn *d) {
+  for (const ScrDyn *p = d->prototype; p; p = p->prototype)
+    if (p->kind == SCR_DYN_OBJ && p->v.obj.class_name) return p->v.obj.class_name;
+  return NULL;
+}
 
 /* The element hooks of a live array capsule, or NULL (including for record
  * and class capsules, which keep their hooks in the same slot). */
@@ -5433,7 +5485,7 @@ bool scr_dyn_strict_eq(const ScrDyn *a, const ScrDyn *b);
 /* Prototype-method dispatch on a dyn receiver (`recv.m(...)` where `m` is
  * a name a dyn-representable prototype declares — push/slice/forEach/
  * apply/...): implemented (kind, name) pairs run JS-exact semantics; a
- * real-but-unimplemented method throws a LOUD "not supported yet" Error;
+ * real-but-unimplemented method throws a "not supported yet" Error;
  * a name the kind's prototype lacks throws Node's "<what> is not a
  * function"; OBJ receivers call the own member. recv/args borrowed,
  * result owned (+1). MAY THROW (NULL with the exception pending). */
@@ -5448,7 +5500,7 @@ ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len);
 /* Object.defineProperties over dyn values (targets: OBJ and FUNC): each
  * descriptor's `value` becomes an own data property. OBJ targets preserve
  * writable/enumerable/configurable; FUNC targets still use plain properties.
- * get/set throw the loud unsupported Error.
+ * get/set throw the "not supported yet" Error.
  * Returns the target (+1, JS's return), or NULL with a pending catchable
  * TypeError (non-object target/descriptor — Node's messages). */
 ScrDyn *scr_dyn_define_props(ScrDyn *target, ScrDyn *descs);
@@ -5516,26 +5568,27 @@ typedef struct ScrDynHandleOps {
    * onto the static lowering's entry point with per-arg checks per the
    * static signature. `self` is the receiving box (`return this` methods
    * answer it +1). Result owned (+1) or NULL with the exception pending.
-   * Real-but-unimplemented members throw the loud "not supported yet"
-   * ladder; names the class's surface never had throw Node's
+   * Real-but-unimplemented members throw the "not supported yet"
+   * Error; names the class's surface never had throw Node's
    * "<what> is not a function". */
   ScrDyn *(*invoke)(void *h, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc, const char *what);
   /* Property READ with a static equivalent (req.url, res.statusCode):
    * +1 boxed value; NULL = no such modeled property (the caller answers
    * the undefined singleton — the checked-dynamic tree's own-property stance); may throw
-   * the loud ladder for real-but-unmodeled names (NULL + pending). */
+   * the "not supported yet" Error for real-but-unmodeled names (NULL +
+   * pending). */
   ScrDyn *(*get)(void *h, const char *key, size_t key_len);
   /* Property WRITE with a static equivalent (res.statusCode = 200):
    * true = handled (value borrowed); false = not a modeled property (the
-   * caller throws the loud ladder — Node would take an expando, but a
-   * silent per-box expando would break handle identity). May throw its
+   * caller throws the "not supported yet" Error — Node would take an
+   * expando, but a per-box expando would break handle identity). May throw its
    * own catchable error (returns true with the exception pending). */
   bool (*set)(void *h, const char *key, size_t key_len, const ScrDyn *value);
   /* Cross-unit pipe DESTINATION hook (`socket.pipe(res)` — the source's
    * unit cannot name the destination's entry points without breaking
    * link gating): the destination accepts a source handle box, or
-   * answers false for a pairing it does not model (the caller's loud
-   * fence). NULL when the tag accepts no pipes. */
+   * answers false for a pairing it does not model (the caller throws the
+   * "not supported yet" Error). NULL when the tag accepts no pipes. */
   bool (*pipe_from)(void *dst, const ScrDyn *src);
   /* Immutable native iterables may drain into a fresh array. Mutable or
    * effectful iterators need a separate step/close protocol. NULL = not iterable. */
@@ -5543,7 +5596,8 @@ typedef struct ScrDynHandleOps {
   /* A live native iterator step; index advances only when a value is emitted. */
   ScrDyn *(*iter_step)(void *h, double *index, unsigned selection);
   /* util.inspect renders `<cls> <view>` for the dyn object this answers
-   * (+1); NULL = the class has no inspection (the loud fence). */
+   * (+1); NULL = the class has no inspection, and util.inspect throws the
+   * "not supported yet" Error. */
   ScrDyn *(*inspect_view)(void *h);
 } ScrDynHandleOps;
 ScrDyn *scr_dyn_native_handle_iterator(ScrDyn *source, unsigned selection);
@@ -5672,7 +5726,7 @@ void *scr_dyn_handle_unbox(const ScrDyn *d, ScrDynHandleTag tag, const ScrDynPat
 /* Keyed read on a HANDLE box (the emitted sc_dyn_key_get's arm): the
  * tag's modeled properties answer boxed values; everything else answers
  * the undefined singleton (the checked-dynamic tree's own-property stance — SEMANTICS.md)
- * unless the ops fence it loudly. +1, or NULL with a pending exception. */
+ * unless the ops throw "not supported yet" for it. +1, or NULL with a pending exception. */
 ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k);
 
 /* ── promises in the checked-dynamic tree (SCR_DYN_PROMISE) ────────────────────────────
@@ -5719,7 +5773,7 @@ bool scr_dyn_is_nullish(const ScrDyn *d);
  * made during the window (where Node would re-bind undefined) and does
  * NOT survive a resumed async body — both are documented divergences;
  * the payoff is that test/common's mustCall wrapper (`return
- * fn.apply(this, arguments)`) forwards the receiver for free. */
+ * fn.apply(this, arguments)`) forwards the receiver without extra code. */
 void scr_dyn_this_push(void *h, ScrDynHandleTag tag); /* h BORROWED (the firing site holds it); NULL binds undefined */
 void scr_dyn_this_push_dyn(const ScrDyn *v);          /* retained for the window */
 /* A class's typed-ref construction recipe, emitted once per class as a
@@ -5756,7 +5810,8 @@ ScrDyn *scr_dyn_new_chunk(const ScrBytes *b);
 
 /* util.format's %j over a dyn value: the JSON.stringify text (+1),
  * "undefined" when the root drops (undefined/function), or NULL with a
- * pending exception (a runtime handle inside the tree fences loudly). */
+ * pending exception (a runtime handle inside the tree throws the "not
+ * supported yet" Error). */
 ScrStr *scr_dyn_format_j(const ScrDyn *d);
 /* Node's ERR_INVALID_ARG_TYPE listener gate over a dyn value — shared by
  * the emitter unit's checked-dynamic registrations and the handle
@@ -7062,6 +7117,15 @@ ScrBytes *scr_bytes_copy_within(ScrBytes *b, double target, double start, double
  * kind and return a fresh +1 owner. with() raises Node's catchable
  * "Invalid typed array index" RangeError for an invalid relative index. */
 ScrBytes *scr_bytes_to_reversed(const ScrBytes *b); /* +1 */
+/* In-place numeric sort of a typed array: order 0 is the default
+ * TypedArray order (NaN last, -0 before +0); 1 or -1 is a recognized
+ * numeric comparator's, refused (false, nothing written) when a float
+ * element is NaN or -0. Runs no script code. */
+bool scr_bytes_sort_numeric(ScrBytes *b, int32_t order);
+/* Comparator sort of a typed array with the comparison schedule Node
+ * uses; `f` is a borrowed closure of `arity` (0..2) number parameters.
+ * A comparator exception stays pending and nothing is written back. */
+void scr_bytes_sort_compare(ScrBytes *b, struct ScrClosure *f, uint32_t arity);
 ScrBytes *scr_bytes_with(const ScrBytes *b, double index, double value); /* +1 */
 
 /* Numeric typed-array iteration drained into number[], and Uint8Array.join.
@@ -7150,7 +7214,7 @@ bool scr_bytes_is_encoding(const ScrStr *s);
  * count of PRESENT index args (defaults skip validation like Node);
  * their ladders and fill/write's mirror validateOffset ('an integer',
  * then '>= 0 && <= max' — Node spells '&&' here) and copy's C++ ladder
- * (fractionals truncate silently; targetStart/sourceEnd check only
+ * (fractionals truncate without an error; targetStart/sourceEnd check only
  * >= 0). indexOf coerces byteOffset (NaN = search everything) and steps
  * by `align` (2 for utf16le needles — matches land on even offsets).
  * fill repeats the pattern over [offset, end) and answers the RECEIVER
@@ -7439,7 +7503,8 @@ bool scr_net_server_settled(ScrNetServer *s); /* 'close' already emitted */
  * at scr_http_dyn_install, and the netServer handle ops route
  * on('request', ...) (and future http events) through it — link gating
  * keeps scr_net.c from naming http entry points. Returns false for an
- * event the http layer does not model (the caller fences loudly). */
+ * event the http layer does not model (the caller throws the "not
+ * supported yet" Error). */
 void scr_net_set_dynh_http_on(bool (*fn)(ScrNetServer *, const char *, const ScrDyn *, bool));
 void scr_net_sock_set_native_reader(ScrNetSocket *s, ScrNetNativeDataFn data, ScrNetNativeEventFn eof, ScrNetNativeEventFn closed, void *ctx, void (*ctx_free)(void *));
 void scr_net_sock_set_native_idle_checker(ScrNetSocket *s, bool (*fn)(void *));
@@ -7449,7 +7514,8 @@ void scr_net_sock_clear_native_reader(ScrNetSocket *s);
  * layer's receiver for server-level fires ('request': this === server). */
 ScrNetServer *scr_net_sock_server(ScrNetSocket *s);
 /* socket.setEncoding(enc): utf8 flips 'data' delivery to strings (the
- * chunk-encoding window); real-but-unsupported encodings fence loudly;
+ * chunk-encoding window); real-but-unsupported encodings throw the "not
+ * supported yet" Error;
  * unknown names throw Node's ERR_UNKNOWN_ENCODING. May throw. */
 void scr_net_sock_set_encoding(ScrNetSocket *s, ScrStr *enc /*borrowed*/);
 bool scr_net_sock_destroyed(ScrNetSocket *s); /* socket.destroyed */
@@ -7634,14 +7700,14 @@ long scr_net_live_count(void);
  * writes buffer until the handshake establishes, and readiness events
  * drive `handshake` until it answers done (1) or failed (-1 — the
  * transport reports the failure itself via scr_net_sock_transport_error
- * first, Node-shaped message or NULL for the server's silent
- * tlsClientError default). `on_established` (nullable) lets a protocol
- * layer attach AFTER the handshake (the https parser); `pending` answers
- * whether decrypted bytes sit buffered inside the transport (the sweep
- * drains them — the poller can't see bytes that already left the kernel);
- * `shutdown_write` sends the close_notify before the FIN. The ops table
- * is static storage in the transport unit; tctx is freed via `free`
- * when the socket handle dies. */
+ * first, Node-shaped message or NULL for the server's tlsClientError
+ * default, which tears down without an 'error' event). `on_established`
+ * (nullable) lets a protocol layer attach AFTER the handshake (the https
+ * parser); `pending` answers whether decrypted bytes sit buffered inside
+ * the transport (the sweep drains them — the poller can't see bytes that
+ * already left the kernel); `shutdown_write` sends the close_notify
+ * before the FIN. The ops table is static storage in the transport unit;
+ * tctx is freed via `free` when the socket handle dies. */
 typedef struct ScrNetTransportOps {
   ssize_t (*xread)(void *tctx, char *buf, size_t n);
   ssize_t (*xwrite)(void *tctx, const char *buf, size_t n);
@@ -7669,8 +7735,8 @@ void scr_net_sock_transport_resume(ScrNetSocket *s);
  * pre-parse handing the consumed ClientHello back to the TLS bio. */
 void scr_net_sock_replay(ScrNetSocket *s, const char *data, size_t len);
 /* Transport-level failure: msg (borrowed, Node's message shape) defers
- * 'error' + teardown to the sweep; NULL tears down silently — Node's
- * default for an unhandled server-side handshake failure. */
+ * 'error' + teardown to the sweep; NULL tears down without an 'error'
+ * event, Node's default for an unhandled server-side handshake failure. */
 void scr_net_sock_transport_error(ScrNetSocket *s, const char *msg);
 /* Defer the server's 'connection' listeners to handshake completion —
  * tls.createServer's handler is the 'secureConnection' event, fired with
@@ -7765,7 +7831,7 @@ void scr_tls_h2_client_wrap(ScrNetSocket *sock, ScrStr *host /*borrowed*/, bool 
  * the name first and replays the hello bytes into the bio), invokes the
  * JS callback with (servername, answer-closure), and resumes the
  * handshake when scr_tls_sni_answer arrives: has_err tears the socket
- * down silently (Node's 'tlsClientError' default), a ctx serves its
+ * down without an 'error' event (Node's 'tlsClientError' default), a ctx serves its
  * cert/key via mbedtls_ssl_set_hs_own_cert, NULL serves the default
  * pair. `answer_fn` is the emitted per-shape thunk that decodes the
  * callback's program-interned unions down to this call — it becomes the
@@ -8132,7 +8198,7 @@ ScrHttpClientReq *scr_http_request_url(ScrStr *url /*borrowed*/, ScrStr *method 
                                         ScrHttpRespFn fn); /* +1 */
 /* Its parse half, shared with scr_tls.c's https spelling: the scheme is
  * checked against `secure` (the calling module), so a mismatch is Node's
- * ERR_INVALID_PROTOCOL rather than a silent upgrade. false = the
+ * ERR_INVALID_PROTOCOL rather than an implicit scheme switch. false = the
  * exception is pending and no out-parameter was written. */
 bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure, ScrStr **host_out /*+1*/,
                          double *port_out, ScrStr **path_out /*+1*/);

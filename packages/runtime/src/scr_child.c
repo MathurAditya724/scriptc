@@ -180,7 +180,7 @@ static int scr_win_uv_errno(const char *name) {
 
 /* Quotes one argument into `target` (caller sized it: 2*len + 2 worst
  * case); returns the next write position. The three tiers and the
- * reverse-scan escape are libuv's, byte-for-byte — Windows Node builds
+ * reverse-scan escape are ported exactly from libuv — Windows Node builds
  * its child command lines with this exact function, so matching it IS
  * the parity story (CommandLineToArgvW round-trips every case). */
 static WCHAR *scr_quote_cmd_arg(const WCHAR *source, WCHAR *target) {

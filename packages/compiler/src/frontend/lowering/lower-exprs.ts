@@ -157,6 +157,7 @@ import { mixinFnOfCallee } from "./lower-mixins.js";
 import {
   isConstAssertionTypeNode,
   isGenericCallableMemberType,
+  isLegacyUrlSymbol,
   isOsConstantsType,
   isParseArgsDynTypeName,
   underConstAssertion,
@@ -2113,7 +2114,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // attached this name to it (`exports.<name> =` nowhere in the
     // file), the honest answer is undefined. tsc types the read off the
     // REPLACEMENT (its CJS model is identity-blind), which is exactly
-    // the silent divergence this lowering closes. Reads in modules with
+    // the undiagnosed divergence this lowering closes. Reads in modules with
     // real `exports.<name> =` attachments keep their fences.
     {
       const ex = lowerReplacedExportsRead(lowerer, expr);
@@ -2437,7 +2438,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       isParseArgsDynProperty(lowerer, expr) ||
       isStatFsDynProperty(lowerer, expr) ||
       segmentDataProperty ||
-      osConstants
+      osConstants ||
+      isLegacyUrlSymbol(lowerer.checker.getSymbolAtLocation(expr.name), lowerer)
     ) {
       const recv = lowerer.lowerExpr(expr.expression);
       if (recv.type.kind === "dyn") {
@@ -8519,7 +8521,24 @@ export function lowerAsExpression(
         );
       }
       const boxed = lowerer.coerceInto(expr, inner, DYN);
-      return boxed.kind === "dynFrom" ? { ...boxed, liveRef: true } : boxed;
+      // Only references box live; a scalar or unit source (`value as
+      // unknown as View`) is an ordinary snapshot.
+      const seen = new Set<string>();
+      const live = (type: IrType): boolean => {
+        if (
+          type.kind === "record" ||
+          type.kind === "array" ||
+          type.kind === "bytes" ||
+          isDynTypedRefType(type)
+        )
+          return true;
+        if (type.kind !== "union" || seen.has(type.unionId)) return false;
+        seen.add(type.unionId);
+        return lowerer.unions.get(type.unionId)?.arms.some(live) ?? false;
+      };
+      return boxed.kind === "dynFrom" && live(boxed.value.type)
+        ? { ...boxed, liveRef: true }
+        : boxed;
     }
     // Collection assertions are interface views only: their backing
     // value must already have the same native key/element/value layout.
@@ -9967,8 +9986,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
   // the checker typed the binding as `string`. An optional string is not
   // itself a string operand for `+`: `undefined + 1` and
   // `undefined + undefined` are NaN, while a present string concatenates.
-  // Keep this predicate exact so a nullable string does not silently take
-  // the string path either.
+  // Keep this predicate exact so a nullable string does not take the
+  // string path either.
   const optionalStringType = (type: IrType): boolean => {
     if (type.kind !== "union") return false;
     const arms = lowerer.unions.get(type.unionId)?.arms;
@@ -12202,7 +12221,7 @@ function lowerPrivateIn(
   // A GENERIC family: JS has ONE runtime class and ONE brand for every
   // instantiation, while these layouts mint one class per instantiation
   // — a cross-instantiation check would answer false where Node says
-  // true, so the family fences rather than silently splitting the brand.
+  // true, so the family reports SC1090 instead of splitting the brand.
   if (info.generic || info.genericInstance) {
     lowerer.unsupported(
       "SC1090",
@@ -14904,8 +14923,8 @@ function lowerFieldCompoundValue(
   // accounting; dot spelling only — symbol-keyed element targets are
   // static fields): read the member (dynKeyGet), VALIDATE it as a
   // number (dynCheck — a non-number member throws the catchable
-  // TypeError where JS would ToNumber-coerce; loud, never a silent
-  // NaN — SEMANTICS.md), combine, write back (dyn.keySet). The
+  // TypeError where JS would ToNumber-coerce; it throws instead of
+  // producing NaN — SEMANTICS.md), combine, write back (dyn.keySet). The
   // receiver and member read are saved before evaluating the RHS.
   if (ts.isPropertyAccessExpression(access)) {
     let probed = tryLowerExpression(lowerer, access.expression);

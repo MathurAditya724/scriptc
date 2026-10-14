@@ -52,7 +52,7 @@ struct ScrStats {
 };
 
 #ifdef _WIN32
-/* Keep the FILETIME conversion byte-for-byte with scr_lib.c's path-stat arm:
+/* Keep the FILETIME conversion identical to scr_lib.c's path-stat arm:
  * libuv splits the 100ns count into Unix seconds and nanoseconds before Node
  * combines it into the public millisecond value. */
 static double scr_file_handle_filetime_ms(FILETIME ft) {

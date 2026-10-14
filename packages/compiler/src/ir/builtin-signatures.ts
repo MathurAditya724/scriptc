@@ -109,8 +109,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * "Cannot set properties of undefined (setting 'k')"; every other kind
    * throws Node's STRICT-mode "Cannot create property 'k' on <kind>" —
    * primitives quoting their rendering, V8's "on number '5'"
-   * (sloppy mode would silently ignore — suite tests are 'use strict';
-   * SEMANTICS.md notes the sloppy divergence: loud, never silent). Void
+   * (sloppy mode would ignore the write — suite tests are 'use strict';
+   * SEMANTICS.md notes the sloppy divergence: the write throws). Void
    * result; in the may-throw seed set. */
   "dyn.keySet": { argTypes: [DYN, STRING, DYN], result: VOID },
   "dyn.keySetComputed": { argTypes: [DYN, DYN, DYN], result: VOID },
@@ -128,6 +128,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.globalSymbolDelete": { argTypes: [SYMBOL_T], result: VOID },
   /** Exact native class capsule identity, without materializing its fields. */
   "dyn.typedRefIs": { argTypes: [DYN, STRING], result: BOOL },
+  /** A capsule boxed by this program from exactly this class: one key
+   * pointer test, false for equal keys boxed elsewhere. Guards fast paths
+   * whose fallback handles every other value. The key is a literal. */
+  "dyn.typedRefKeyIs": { argTypes: [DYN, STRING], result: BOOL },
   "dyn.classIs": { argTypes: [DYN, STRING], result: BOOL },
   /** Destructuring pack over a dyn source — `const [a, b] = d`, a
    * destructured dyn callback param (args: the source and the STATIC
@@ -182,7 +186,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * Value descriptors become own properties on OBJ and FUNC targets;
    * OBJ targets preserve data attributes. get/set
    * descriptors and non-object targets/descriptors throw catchably
-   * (Node's TypeError texts; accessors the loud unsupported Error). In
+   * (Node's TypeError texts; accessors the "not supported yet" Error). In
    * the may-throw seed set. */
   "dyn.defineProps": { argTypes: [DYN, DYN], result: DYN },
   "dyn.defineProperty": { argTypes: [DYN, DYN, DYN], result: DYN },
@@ -343,8 +347,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "timers.immediateRef": { argTypes: [F64], result: F64 },
   "timers.immediateHasRef": { argTypes: [F64], result: BOOL },
   /** The tolerated non-handle clear (`clearTimeout(null)`,
-   * `clearInterval({})`, zero-argument forms): Node silently ignores
-   * anything that is not a live handle — a VOID no-op the emitter drops
+   * `clearInterval({})`, zero-argument forms): Node ignores anything
+   * that is not a live handle without an error — a VOID no-op the emitter drops
    * (only syntactically side-effect-free arguments take this path). */
   "timers.clearNoop": { argTypes: [], result: VOID },
   // Signal listeners are zero-param (the ambient shape); exit/stdin
@@ -389,7 +393,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fs.readFileSyncBuf": { argTypes: [STRING], result: BYTES_U8 },
   /** readFileSync(path, enc) with a RUNTIME encoding (an untyped JS
    * parameter): undefined/null answer Buffers, utf8 a string, other real
-   * encodings fence loudly, unknown names throw ERR_UNKNOWN_ENCODING. */
+   * encodings throw the "not supported yet" Error, unknown names throw
+   * ERR_UNKNOWN_ENCODING. */
   "fs.readFileSyncDyn": { argTypes: [STRING, DYN], result: DYN },
   "fs.writeFileSync": { argTypes: [STRING, STRING], result: VOID },
   "fs.appendFileSync": { argTypes: [STRING, STRING], result: VOID },
@@ -410,7 +415,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fs.readdirTypesSync": { argTypes: [STRING], result: VOID },
   /** node:path (scr_path.c ports BOTH of Node's implementations
    * function-by-function): the `path.*` family is posix, the
-   * `path.win32*` family is Node v24's path.win32 byte-for-byte — the
+   * `path.win32*` family is Node v24's path.win32 ported exactly — the
    * frontend binds the bare module to the TARGET platform's family
    * (Node on Windows IS path.win32) and the path.posix / path.win32
    * namespaces to their own family everywhere. join and resolve take ONE
@@ -775,6 +780,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "url.fileURLToPathUrl": { argTypes: [URL_T], result: STRING },
   "url.fileURLToPathChecked": { argTypes: [DYN], result: STRING },
   "url.fileURLToPathOptions": { argTypes: [DYN, DYN], result: STRING },
+  /** node:url's legacy API (scr_url_legacy.c): parse(url, parseQueryString,
+   * slashesDenoteHost) answers the checked-dynamic Url instance; format
+   * takes the urlObject (a Url-shaped object, a string, or a URL) and the
+   * URL form's options; resolve takes (from, to). The trailing bool says
+   * whether the call site emits DEP0169. domainToASCII/domainToUnicode
+   * take the domain and whether it was omitted. Node's validation errors
+   * throw catchably. */
+  "url.legacyParse": { argTypes: [DYN, DYN, DYN, BOOL], result: DYN },
+  "url.legacyFormat": { argTypes: [DYN, DYN, BOOL], result: STRING },
+  "url.legacyResolve": { argTypes: [DYN, DYN, BOOL], result: STRING },
+  "url.domainToASCII": { argTypes: [DYN, BOOL], result: STRING },
+  "url.domainToUnicode": { argTypes: [DYN, BOOL], result: STRING },
   "url.fileURLToPathBuffer": { argTypes: [DYN, DYN], result: BYTES_U8 },
   "url.pathToFileURLChecked": { argTypes: [DYN, DYN], result: URL_T },
   "url.fileURLToPathStr": { argTypes: [STRING], result: STRING },
@@ -1483,11 +1500,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   },
   "http.resWriteHeadPairs": { argTypes: [HTTPRES_T, F64, arrayOf(STRING)], result: VOID },
   /** writeHead(status, headers) with a checked-dynamic headers value —
-   * the runtime OBJ walk (string/number values; loud fences otherwise;
-   * may throw). */
+   * the runtime OBJ walk (string/number values; other values throw
+   * Node's invalid-argument TypeError; may throw). */
   "http.resWriteHeadDyn": { argTypes: [HTTPRES_T, F64, DYN], result: VOID },
   "net.sockSetTimeout": { argTypes: [NETSOCKET_T, F64], result: VOID },
-  /** setEncoding('utf8') — 'data' delivers strings inside the chunk-encoding window; other real encodings fence loudly, unknown names throw ERR_UNKNOWN_ENCODING (may throw). */
+  /** setEncoding('utf8') — 'data' delivers strings inside the chunk-encoding window; other real encodings throw the "not supported yet" Error, unknown names throw ERR_UNKNOWN_ENCODING (may throw). */
   "net.sockSetEncoding": { argTypes: [NETSOCKET_T, STRING], result: VOID },
   "http.reqSetEncoding": { argTypes: [HTTPREQ_T, STRING], result: VOID },
   "net.sockOnTimeout": {
@@ -1714,7 +1731,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * for the server_name extension BEFORE the TLS handshake begins, calls
    * the callback with (servername, answer-closure), and resumes the
    * handshake when the answer arrives — cb(err) tears the socket down
-   * silently (Node's 'tlsClientError' default), cb(null, ctx) serves
+   * without an error event (Node's 'tlsClientError' default), cb(null, ctx) serves
    * ctx's cert/key, cb(null, undefined) serves the default pair. */
   "http2.createSecureServerSni": { argTypes: [null, null, null, BOOL], result: NETSERVER_T },
   // The ALPN=h2 server (createSecureServer without allowHTTP1): the real
@@ -3146,7 +3163,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * the rendering enumerable) or the custom message.
    * assert.throwsRegex: (regex, error, msg, hasMsg) — the
    * assert.throws(fn, /re/) check over String(error), Node's
-   * regex-mismatch message. assert.regexErrTest: doesNotReject's silent
+   * regex-mismatch message. assert.regexErrTest: doesNotReject's
    * regex predicate over String(error) (never throws).
    * assert.unwantedRejection: (error, msg, hasMsg) — doesNotReject's
    * "Got unwanted rejection" throw.
@@ -3232,7 +3249,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "insp.f64": { argTypes: [F64], result: STRING },
   /** util.format %j over a checked-dynamic argument: the runtime dyn
    * walk (JS-exact stringify; root undefined/function prints
-   * "undefined"; a handle in the tree throws the loud fence). */
+   * "undefined"; a handle in the tree throws the "not supported yet"
+   * Error). */
   "insp.jsonDyn": { argTypes: [DYN], result: STRING },
   "insp.str": { argTypes: [STRING], result: STRING },
   "insp.regex": { argTypes: [REGEX], result: STRING },

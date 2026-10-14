@@ -546,8 +546,8 @@ static void scr_stream_emit_data(ScrStream *s, void *chunk) {
     if (dst->st->destroyed) {
       /* Node's pipe cleanup: a destroyed destination unhooks (the
        * onerror/onclose → unpipe path) and pauses the source — writing
-       * after destroy would drop the error silently and spin an infinite
-       * synchronous flow over an endless source. */
+       * after destroy would drop the error without reporting it and spin
+       * an infinite synchronous flow over an endless source. */
       scr_stream_release(scr_stream_unpipe(s, dst));
       if (scr_exc_pending()) return;
       continue; /* the pipes array shifted down over i */
@@ -1537,8 +1537,8 @@ void scr_stream_set_flush(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamPlain
  * callback as a callable dyn over the *_done glue). Options that Node's
  * base WOULD consume but have no lowering here (objectMode truthy,
  * decodeStrings:false, non-utf8 defaultEncoding, signal, construct,
- * writev, and read/write/final on the transformish bases) throw the loud
- * unsupported Error — the compile-time fence's runtime twin. */
+ * writev, and read/write/final on the transformish bases) throw the
+ * "not supported yet" Error — the compile-time fence's runtime twin. */
 
 /* The boxed dyn callable (+1 — scr_box_get_ref retains; callers release
  * after the call). */

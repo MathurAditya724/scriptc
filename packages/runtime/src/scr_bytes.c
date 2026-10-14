@@ -5,7 +5,7 @@
  * slice() copies. Coercions are JS-exact
  * (ToUint8/ToUint32 modular truncation, double→float rounding); the
  * encoding conversions (utf8 with WHATWG replacement, hex, base64) match
- * Node byte-for-byte — the differential corpus holds them to it. */
+ * Node's output exactly — the differential corpus holds them to it. */
 #include "scr_runtime.h"
 #include "scr_numeric.h"
 #include "scr_text_decoder_labels.h"
@@ -2662,7 +2662,7 @@ ScrBytes *scr_bytes_fill_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
 }
 
 /* src.copy(dst, targetStart?, sourceStart?, sourceEnd?): Node's C++-side
- * ladder — fractional indices TRUNCATE silently, targetStart/sourceEnd
+ * ladder — fractional indices TRUNCATE without an error, targetStart/sourceEnd
  * check only >= 0 (past-the-end clamps to nothing), sourceStart is
  * bounded by the source length. Returns the byte count copied. */
 double scr_bytes_copy_into(const ScrBytes *src, ScrBytes *dst, double nargs,
@@ -2946,7 +2946,7 @@ ScrBytes *scr_bytes_concat(const ScrArr *list) {
 
 /* ── the buf.read* / buf.write* numeric families (Node's exact bounds
  * discipline; the error ladders below mirror lib/internal/buffer.js's
- * boundsError/checkInt/checkBounds byte-for-byte — pinned by corpus
+ * boundsError/checkInt/checkBounds exactly — pinned by corpus
  * 1660 against the live Node oracle) ───────────────────────────────── */
 
 /* ERR_OUT_OF_RANGE's "Received" rendering: integers with |v| > 2^32 get

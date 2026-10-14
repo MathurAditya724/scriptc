@@ -363,7 +363,8 @@ function planToEsmInterop(sf: ts.SourceFile, filePath: string, host: CjsRewriteH
     // Binding safety: the erased binding must be declared exactly once and
     // never written — the `.default` mapping below matches receivers by
     // NAME (syntactic, like the rest of this file), so a shadow or a
-    // reassignment would silently change what a padded access reads.
+    // reassignment would change what a padded access reads without a
+    // diagnostic.
     const declCount = new Map<string, number>();
     const bump = (name: string): void => {
       if (bindings.has(name)) declCount.set(name, (declCount.get(name) ?? 0) + 1);
@@ -635,8 +636,8 @@ export function rewriteBundlerCjsSyntax(
         neutralize.push({ start: stmt.getStart(sf), end: stmt.getEnd() });
         sawBundleShape = true;
       }
-      // unchaseable descriptor: LEAVE the statement (its runtime fence is
-      // loud where an undefined-valued entry would be a silent lie); the
+      // unchaseable descriptor: LEAVE the statement (its runtime fence
+      // throws where an undefined-valued entry would be a wrong result); the
       // name still types through the any-fallback below.
       continue;
     }

@@ -481,7 +481,7 @@ All notable changes to scriptc will be documented in this file.
 - **Foreign-thread native callbacks are marshalled to the event loop.** FFI format 5 adds `invoke: "foreign"` for retained, context-bearing, `void` callbacks. Thread-safe generated trampolines copy scalar/string/byte arguments into plain staging memory, wake the process loop, and return immediately; the loop delivers one callback per turn on the script thread with ref'd registration liveness, concurrent-producer FIFO safety, explicit release, throw propagation, and clean shutdown across both backends.
 - **Native callbacks can be retained and explicitly released.** FFI format 4 adds `lifetime: "retained"` registrations and paired `release` descriptors that reuse the original function-pointer trampoline. Registrations pin captured closures until the same function value is released, count duplicate registrations, support multiple context-bearing registrations and raw single-slot replacement, defer callback throws through later FFI pump calls, and clean up live registrations at process exit across both backends.
 - **Native callbacks copy in strings and byte spans.** FFI format 3 adds callback-only `cstring` parameters plus length-delimited `string` and `bytes` parameters. Trampolines in both backends copy native memory into owned scriptc values, decode malformed UTF-8 with U+FFFD replacement, preserve embedded NUL bytes in spans, and trap precise invalid null pointers before invoking the closure.
-- **`Array.prototype.filter` accepts JavaScript-truthy predicate results.** Static predicates may return strings, numbers, references, or supported unions and now keep elements according to JavaScript's `ToBoolean` rules instead of requiring a boolean result. Checked-dynamic calls without a predicate reach the runtime's callback error, while predicates whose return value was erased to `void` refuse rather than silently producing the wrong array.
+- **`Array.prototype.filter` accepts JavaScript-truthy predicate results.** Static predicates may return strings, numbers, references, or supported unions and now keep elements according to JavaScript's `ToBoolean` rules instead of requiring a boolean result. Checked-dynamic calls without a predicate reach the runtime's callback error, while predicates whose return value was erased to `void` refuse rather than producing the wrong array.
 
 ### Performance
 
@@ -527,7 +527,7 @@ All notable changes to scriptc will be documented in this file.
 ### Features
 
 - **Library archives support independent instances in one process.** `abi.localize_runtime` combines an archive's reached program, runtime, and vendor objects and hides every definition except its profile-declared ABI, so archives with distinct symbol prefixes link together without collisions or shared mutable runtime state. Each instance owns its allocator, collector, result arena, and panic sink, and a trap poisons only the instance that raised it. Localization is available for host-native Darwin and Linux builds and refuses cross-target builds before emission.
-- **One library archive can serve an independent instance per embedder thread.** `abi.instance_per_thread` moves mutable program and runtime state into thread-local storage while keeping immutable interned data shared, preserving the existing entry family with the calling thread as the instance selector. Each thread initializes and owns its instance for its lifetime, including its collector, result arena, panic sink, and poison state. Thread instancing composes with runtime localization, remains opt-in, and leaves classic archives byte-for-byte unchanged.
+- **One library archive can serve an independent instance per embedder thread.** `abi.instance_per_thread` moves mutable program and runtime state into thread-local storage while keeping immutable interned data shared, preserving the existing entry family with the calling thread as the instance selector. Each thread initializes and owns its instance for its lifetime, including its collector, result arena, panic sink, and poison state. Thread instancing composes with runtime localization, remains opt-in, and leaves classic archives unchanged.
 
 ## 0.0.26
 
@@ -600,7 +600,7 @@ All notable changes to scriptc will be documented in this file.
 
 ### Fixes
 
-- **Library integer slots compose with optional numbers.** A declared `number | null` or optional-number slot projects as `optional<i64>` and proves only its present numeric values across records, tagged-message payloads, and helper parameters/returns. When two sidecar paths collapse to the same structurally interned record field, the build now refuses with both paths instead of silently overwriting one proof obligation.
+- **Library integer slots compose with optional numbers.** A declared `number | null` or optional-number slot projects as `optional<i64>` and proves only its present numeric values across records, tagged-message payloads, and helper parameters/returns. When two sidecar paths collapse to the same structurally interned record field, the build now refuses with both paths instead of overwriting one proof obligation without a diagnostic.
 
 ## 0.0.18
 
@@ -640,7 +640,7 @@ All notable changes to scriptc will be documented in this file.
 ### Fixes
 
 - **Clients resolve hostnames.** The http, https, TLS and HTTP/2 clients resolved nothing before dialing, so a request to any name came back ENOTFOUND and only literal addresses worked. Only the dial takes the resolved address — the original name stays on the request, which is what the Host header carries and what SNI and certificate verification see. `net.connect(port, hostname)` still refuses to resolve: Node's async lookup semantics on that surface are their own piece of work.
-- **The URL-string form of the http and https clients compiles**, along with the URL-object form, which reads as its href through the same parse. The declarations only described the options record, so `http.get("http://host/path")` — the first thing a client written from scratch reaches for — was a type error rather than a request. An unparsable input is the WHATWG `Invalid URL` TypeError and a scheme that is not the calling module's is `ERR_INVALID_PROTOCOL`, both catchable, both matching Node instead of silently upgrading the dial. Both rows run on the LLVM backend, as do the TLS CA-store entries, which moves the CA-store corpus off the C lane with identical output.
+- **The URL-string form of the http and https clients compiles**, along with the URL-object form, which reads as its href through the same parse. The declarations only described the options record, so `http.get("http://host/path")` — the first thing a client written from scratch reaches for — was a type error rather than a request. An unparsable input is the WHATWG `Invalid URL` TypeError and a scheme that is not the calling module's is `ERR_INVALID_PROTOCOL`, both catchable, both matching Node instead of upgrading the dial to another scheme. Both rows run on the LLVM backend, as do the TLS CA-store entries, which moves the CA-store corpus off the C lane with identical output.
 - **`scriptc -v` prints the version** instead of crashing on an attempt to read `-v` as an entry file, and an unknown flag or a missing flag value prints one line naming what was wrong followed by usage, in place of a Node stack trace.
 
 ## 0.0.13
@@ -656,8 +656,8 @@ All notable changes to scriptc will be documented in this file.
 ### Fixes
 
 - `process.env.PORT || 3000` compiled and then threw at runtime. tsc builds a logical operator's result by dropping the left's falsy arms, so coercing the left into that result before the truthiness test retagged an arm the test was about to rule out; `||` now tests the left in its own type and retags only on the truthy branch, where those arms are gone. The left still evaluates exactly once and the right stays lazy.
-- Windows library archives carried undefined references no embedder link could resolve — the win32 libc shim unit now joins the archive for windows triples. Host archives are unchanged byte-for-byte.
-- Bytes written to a socket whose dial had not started — the agent's `maxSockets` queue, or a caller lookup still in flight — were silently dropped, hanging the exchange. They buffer and flush at establishment.
+- Windows library archives carried undefined references no embedder link could resolve — the win32 libc shim unit now joins the archive for windows triples. Host archives are unchanged.
+- Bytes written to a socket whose dial had not started — the agent's `maxSockets` queue, or a caller lookup still in flight — were dropped without an error, hanging the exchange. They buffer and flush at establishment.
 - The CA-store surfaces demote the determinism attestation and can now be denied by a profile: three rows, one per Node spelling, since denying a read of the trust anchors is a different decision from denying their replacement.
 
 ## 0.0.12
@@ -689,7 +689,7 @@ All notable changes to scriptc will be documented in this file.
 ### Fixes
 
 - The two 0.0.10 crash classes are fixed and its seven behavior regressions restored: collect-phase probes recover from rejected constructs instead of crashing, and the no-storage binding families claim statement declarators only.
-- `Buffer.slice`/`subarray` and `TypedArray.subarray` are true aliasing views — mutating through a view silently computed wrong bytes before.
+- `Buffer.slice`/`subarray` and `TypedArray.subarray` are true aliasing views — mutating through a view previously computed wrong bytes.
 - Math.trunc and Math.ceil compile statically.
 
 
@@ -697,7 +697,7 @@ All notable changes to scriptc will be documented in this file.
 
 ### Features
 
-- **Engine-held values flow through dynamic code**: values born in the embedded engine now cross into `unknown`/`object`-typed slots and back — `typeof`, strict equality, `String()`, keyed reads and writes, calls, and method dispatch route through the engine (its own prototypes run, JS-exact), with reference-preserving identity on the round trip. Unions like `string | object` compile wholesale into the checked-dynamic representation, and nullish coalescing and optional chains work on every dynamic value. Operations not yet routed fail loudly by name — the boundary's silent wrong answers (`typeof` misreporting, phantom `.length`) are gone.
+- **Engine-held values flow through dynamic code**: values born in the embedded engine now cross into `unknown`/`object`-typed slots and back — `typeof`, strict equality, `String()`, keyed reads and writes, calls, and method dispatch route through the engine (its own prototypes run, JS-exact), with reference-preserving identity on the round trip. Unions like `string | object` compile wholesale into the checked-dynamic representation, and nullish coalescing and optional chains work on every dynamic value. Operations not yet routed throw an error that names them, and the boundary's previous wrong answers (`typeof` misreporting, phantom `.length`) are fixed.
 - **`Object.create(null)`, array `entries()`/`keys()`, and variadic `Object.assign`**: real null-prototype dictionaries with Node's inspect/`toString`/comparison behavior (the dynamic tier delegates to the engine's own `Object.create` for live prototypes); live index-walking pair iterators; `Object.assign(target, ...sources)` with JavaScript's exact evaluation order and V8's position-dependent error texts.
 - **Erased ambient declarations behave like Node**: chains rooted in `declare`d values compile and throw the catchable `ReferenceError` Node produces at first touch; never-read unmappable bindings vanish; nullish-cast bindings answer Node's exact `TypeError` on member access; assertion-shaped generic signatures monomorphize per call.
 - **Misuse of fs, net, dgram, tls, and stream APIs throws Node's validation ladders**: argument checks run in Node's order with `ERR_*` codes and message-exact texts; `fs.exists` is genuinely async (including its no-error-argument wart), and `mkdtempSync` and `lchmod` are real.
@@ -706,7 +706,7 @@ All notable changes to scriptc will be documented in this file.
 
 ### Fixes
 
-- Mixed engine-vs-native `deepStrictEqual` comparisons fence loudly instead of fabricating a failure result.
+- Mixed engine-vs-native `deepStrictEqual` comparisons are refused with an error instead of fabricating a failure result.
 - The LLVM code generator marshals dynamic values in `jsMarshal` positions identically to the C backend (a latent gap).
 - Concurrent plain and sanitized test-suite runs no longer race each other's scratch directories (a test-infrastructure fix).
 
@@ -824,7 +824,7 @@ All notable changes to scriptc will be documented in this file.
 ### Features
 
 - **The CLI**: `scriptc build` compiles a TypeScript or JavaScript entry point into a self-contained native executable, `scriptc run` builds and runs it in one step, and `scriptc coverage` reports statement by statement what compiles statically and which specific constructs block, each with a diagnostic code.
-- **The static tier**: programs compile to native code with no JavaScript engine in the binary. Type checking is the real TypeScript compiler; what compiles behaves byte-for-byte like Node, enforced by a differential test corpus.
-- **`--dynamic`**: an embedded JavaScript engine (quickjs-ng) executes what cannot compile statically. Values crossing back into static code are validated at runtime, so a mismatched type throws a catchable `TypeError`. Static remains the default; a binary never silently grows an engine.
+- **The static tier**: programs compile to native code with no JavaScript engine in the binary. Type checking is the real TypeScript compiler; what compiles produces the same output as Node, enforced by a differential test corpus.
+- **`--dynamic`**: an embedded JavaScript engine (quickjs-ng) executes what cannot compile statically. Values crossing back into static code are validated at runtime, so a mismatched type throws a catchable `TypeError`. Static remains the default; a binary includes the engine only when `--dynamic` is passed.
 - **npm dependencies** (with `--dynamic`): packages resolve with Node's own resolution algorithm, typecheck against their shipped `.d.ts`, and their JavaScript is embedded into the binary at build time. Binaries never read `node_modules` at runtime.
 - **Platforms**: macOS arm64 is the primary platform; Linux and Windows binaries build by cross-compilation, each verified by its own differential test lane.

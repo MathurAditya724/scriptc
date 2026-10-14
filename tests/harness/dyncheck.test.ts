@@ -3,9 +3,9 @@
  *
  * The testing split for the dynamic boundary:
  * - tests/corpus/1000..1007 cover VALID casts differentially (Node and the
- *   native binary agree byte-for-byte — under Node a valid `as` is a no-op).
+ *   native binary produce identical output — under Node a valid `as` is a no-op).
  * - A LYING cast cannot be tested differentially: Node never checks an `as`
- *   (it silently proceeds on mismatched data), while scriptc THROWS — the
+ *   (it proceeds on mismatched data without an error), while scriptc THROWS — the
  *   headline documented divergence (SEMANTICS.md). So mismatch programs are
  *   compiled and run here with scriptc ALONE: assert exit code 1 and that
  *   stderr carries the TypeError with the offending PATH.
@@ -577,7 +577,7 @@ console.log(recovered, p.host);
    * end-to-end) are corpus-tested differentially (1650-1654). What CANNOT
    * be tested against Node lives here: JS never checks an `as`, and where
    * Node would coerce a mismatched argument, scriptc throws (SEMANTICS.md
-   * 117 — loud, never silently wrong). */
+   * 117 — it throws instead of returning a wrong result). */
 
   test("casting a non-function dyn value to a function type throws with the kind", async () => {
     const r = await compileAndRun(
@@ -677,11 +677,11 @@ console.log(total);
     expect(r.stdout).toBe("5050\n");
   });
 
-  test("a lying `any` into a typed slot throws catchably where Node proceeds silently", async () => {
+  test("a lying `any` into a typed slot throws catchably where Node proceeds without an error", async () => {
     // The static-any lane's exit stance (the checked cast's rule applied
     // to implicit any→typed flows): Node assigns the mismatched value and
-    // carries on; scriptc throws the catchable TypeError. Loud, never a
-    // silent wrong answer — the divergence is deliberate and documented.
+    // carries on; scriptc throws the catchable TypeError instead of
+    // returning a wrong result — the divergence is deliberate and documented.
     const r = await compileAndRun(
       "any-lying-exit",
       `const a: any = "not a number";
@@ -828,7 +828,7 @@ describe(`native-handle boundary fences (scriptc-only${sanitize ? ", sanitized" 
   // Handles cross the checked-dynamic boundary as SCR_DYN_HANDLE boxes;
   // the SUCCESS surface is corpus-tested differentially (1795-1798).
   // These pin the honesty ladder — texts Node never prints, because
-  // under Node the members exist (the loud fence IS the divergence).
+  // under Node the members exist (the 'not supported yet' Error IS the divergence).
 
   const serverPreamble = `'use strict';
 const http = require('http');
@@ -845,7 +845,7 @@ server.listen(0, '127.0.0.1', wrap(function() {
 }));
 `;
 
-  test("a real-but-unmodeled member on a dyn handle throws the loud ladder", async () => {
+  test("a real-but-unmodeled member on a dyn handle throws the 'not supported yet' Error", async () => {
     // writeContinue stays unmodeled (cork/uncork/flushHeaders graduated
     // to real dispatches — the ladder's exemplar moves with the surface).
     const r = await compileAndRun(
@@ -864,7 +864,7 @@ server.listen(0, '127.0.0.1', wrap(function() {
     );
   });
 
-  test("an expando write on a dyn handle throws the loud ladder (identity would break)", async () => {
+  test("an expando write on a dyn handle throws the 'not supported yet' Error (identity would break)", async () => {
     const r = await compileAndRun(
       "handle-expando-write",
       serverPreamble +
@@ -881,7 +881,7 @@ server.listen(0, '127.0.0.1', wrap(function() {
     );
   });
 
-  test("an unmodeled event registration on a dyn handle throws the loud ladder", async () => {
+  test("an unmodeled event registration on a dyn handle throws the 'not supported yet' Error", async () => {
     const r = await compileAndRun(
       "handle-unmodeled-event",
       serverPreamble +

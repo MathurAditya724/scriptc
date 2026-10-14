@@ -246,7 +246,7 @@ export interface LibArchiveOptions {
    * Undefined references (the target C/math runtime and system APIs, plus
    * sanitizer ABI in instrumented builds) keep their global binding. Windows
    * embedders additionally link advapi32, iphlpapi, and ws2_32. Omitted = the
-   * classic archive, byte-for-byte. Admitted for darwin/linux/win32 native
+   * classic archive, unchanged. Admitted for darwin/linux/win32 native
    * hosts, linux/android/windows cross triples from any host, and macos/ios
    * cross triples from a darwin host (compileLibrary owns the refusal
    * fence). */
@@ -257,7 +257,7 @@ export interface LibArchiveOptions {
    * scr_runtime.h) to match the program TU's thread-local globals — one
    * complete instance per embedder thread. The define rides cflags, so
    * every cache tier keys it automatically; omitted = the classic
-   * archive, byte-for-byte. */
+   * archive, unchanged. */
   threadInstances?: boolean;
   /** IR-detected link gates (the compileC precedent, refusal-narrowed). */
   dynInvoke?: boolean;

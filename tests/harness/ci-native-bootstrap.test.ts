@@ -140,7 +140,7 @@ test("invalid bootstrap phase selection fails before any contracts can be skippe
   }
 });
 
-test("a missing phase callback fails instead of silently passing its contracts", async () => {
+test("a missing phase callback fails instead of passing its contracts", async () => {
   await expect(
     runNativeBootstrapChecks(nativeBootstrapPlan({ phase: "rebuild" }), {
       commands: async () => {},

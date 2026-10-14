@@ -43,7 +43,7 @@ for (const options of [
   });
 }
 
-test("compression-level support does not silently accept decompression options", () => {
+test("compression-level support reports SC2020 for decompression options", () => {
   const diags = diagnostics(`
     import { inflateRawSync } from "node:zlib";
     console.log(inflateRawSync(Buffer.from([3, 0]), { windowBits: 15 }).length);

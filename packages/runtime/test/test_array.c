@@ -1706,6 +1706,131 @@ static void test_keyed_sort(void) {
   check(mock_live == live0, "keyed record sorts balance every key read");
 }
 
+/* Typed-array sorts: the default numeric order and recognized comparator
+ * orders against the comparator sort, which follows Node's merge schedule. */
+static double typed_mod_ascending(ScrClosure *self, double a, double b) {
+  (void)self;
+  sort_calls++;
+  return fmod(fabs(a), 7) - fmod(fabs(b), 7);
+}
+
+static double typed_default_order(ScrClosure *self, double a, double b) {
+  (void)self;
+  /* The default TypedArray order: numbers ascending, -0 before 0, NaN last. */
+  if (a != a) return b != b ? 0 : 1;
+  if (b != b) return -1;
+  if (a < b) return -1;
+  if (a > b) return 1;
+  if (a == 0 && signbit(a) != signbit(b)) return signbit(a) ? -1 : 1;
+  return 0;
+}
+
+static double typed_throwing(ScrClosure *self, double a, double b) {
+  (void)self;
+  if (++sort_calls == sort_throw_at) scr_throw_f64(5);
+  return a - b;
+}
+
+static bool typed_same(const ScrBytes *a, const ScrBytes *b) {
+  return a->len == b->len && memcmp(a->data, b->data, a->len * scr_bytes_elem_size(a->elem)) == 0;
+}
+
+static double typed_value(ScrBytesElem elem, size_t i, int shape) {
+  double r = (double)keyed_random();
+  if (shape == 1) return (double)i; /* presorted */
+  if (shape == 2) return (double)(1000 - i % 1000); /* descending runs */
+  switch (elem) {
+  case SCR_BYTES_U8:
+  case SCR_BYTES_U8C: return fmod(r, 256);
+  case SCR_BYTES_I8: return fmod(r, 256) - 128;
+  case SCR_BYTES_U16: return fmod(r, 65536);
+  case SCR_BYTES_I16: return fmod(r, 65536) - 32768;
+  case SCR_BYTES_U32: return r * 256;
+  case SCR_BYTES_I32: return r * 256 - 2147483648.0;
+  default: return (r - 8e6) / 3.0;
+  }
+}
+
+static void test_typed_sort(void) {
+  const ScrBytesElem elems[] = {SCR_BYTES_U8,  SCR_BYTES_U8C, SCR_BYTES_I8,
+                                SCR_BYTES_U16, SCR_BYTES_I16, SCR_BYTES_U32,
+                                SCR_BYTES_I32, SCR_BYTES_F32, SCR_BYTES_F64};
+  const size_t sizes[] = {0, 1, 2, 7, 48, 49, 1000, 150000};
+  ScrClosure natural = {SIZE_MAX, (void *)typed_default_order, 0, NULL, 0};
+  ScrClosure ascending = {SIZE_MAX, (void *)keyed_ascending, 0, NULL, 0};
+  ScrClosure descending = {SIZE_MAX, (void *)keyed_descending, 0, NULL, 0};
+  ScrClosure by_mod = {SIZE_MAX, (void *)typed_mod_ascending, 0, NULL, 0};
+  bool numeric = true, keyed = true, compared = true;
+  for (size_t e = 0; e < sizeof(elems) / sizeof(*elems); e++) {
+    for (size_t s = 0; s < sizeof(sizes) / sizeof(*sizes); s++) {
+      for (int shape = 0; shape < 3; shape++) {
+        size_t n = sizes[s];
+        ScrBytes *base = scr_bytes_new(elems[e], (double)n);
+        for (size_t i = 0; i < n; i++) scr_bytes_set(base, (double)i, typed_value(elems[e], i, shape));
+        bool floats = elems[e] == SCR_BYTES_F32 || elems[e] == SCR_BYTES_F64;
+        if (floats && n > 6 && shape == 0) {
+          scr_bytes_set(base, 1, NAN);
+          scr_bytes_set(base, 3, -0.0);
+          scr_bytes_set(base, 5, 0.0);
+        }
+        ScrBytes *expected = scr_bytes_copy(base), *actual = scr_bytes_copy(base);
+        scr_bytes_sort_compare(expected, &natural, 2);
+        numeric &= scr_bytes_sort_numeric(actual, 0) && typed_same(expected, actual);
+        scr_bytes_release(expected);
+        scr_bytes_release(actual);
+        for (int order = -1; order <= 1; order += 2) {
+          expected = scr_bytes_copy(base);
+          actual = scr_bytes_copy(base);
+          ScrClosure *cmp = order > 0 ? &ascending : &descending;
+          scr_bytes_sort_compare(expected, cmp, 2);
+          sort_calls = 0;
+          bool handled = scr_bytes_sort_numeric(actual, order);
+          /* NaN and -0 refuse the comparator order and leave the elements. */
+          bool special = floats && n > 6 && shape == 0;
+          keyed &= sort_calls == 0 && handled == !special;
+          keyed &= handled ? typed_same(expected, actual) : typed_same(base, actual);
+          scr_bytes_release(expected);
+          scr_bytes_release(actual);
+        }
+        if (n <= 1000) {
+          /* The comparator sort is stable for a consistent comparator. */
+          actual = scr_bytes_copy(base);
+          scr_bytes_sort_compare(actual, &by_mod, 2);
+          for (size_t i = 1; i < n; i++) {
+            double a = fmod(fabs(scr_bytes_get(actual, (double)(i - 1))), 7);
+            double b = fmod(fabs(scr_bytes_get(actual, (double)i)), 7);
+            if (a == a && b == b && a > b) compared = false;
+          }
+          scr_bytes_release(actual);
+        }
+        scr_bytes_release(base);
+      }
+    }
+  }
+  check(numeric, "typed default sorts match the default order's comparator sort");
+  check(keyed, "typed keyed sorts match their comparators and refuse NaN and -0");
+  check(compared, "typed comparator sorts order by the comparator");
+
+  /* Node's merge schedule: three elements compare (b, c) first, then a. */
+  ScrBytes *three = scr_bytes_new(SCR_BYTES_F64, 3);
+  scr_bytes_set(three, 0, 3);
+  scr_bytes_set(three, 1, 1);
+  scr_bytes_set(three, 2, 2);
+  ScrClosure throwing = {SIZE_MAX, (void *)typed_throwing, 0, NULL, 0};
+  sort_calls = 0;
+  sort_throw_at = 2;
+  scr_bytes_sort_compare(three, &throwing, 2);
+  check(scr_exc_pending(), "a throwing typed comparator leaves the exception pending");
+  scr_exc_clear();
+  check(sort_calls == 2 && scr_bytes_get(three, 0) == 3 && scr_bytes_get(three, 2) == 2,
+        "a typed comparator exception leaves the elements unwritten");
+  sort_throw_at = -1;
+  scr_bytes_sort_compare(three, &throwing, 2);
+  check(!scr_exc_pending() && scr_bytes_get(three, 0) == 1 && scr_bytes_get(three, 2) == 3,
+        "a typed comparator sort writes the sorted values back");
+  scr_bytes_release(three);
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) {
     ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
@@ -1731,6 +1856,7 @@ int main(int argc, char **argv) {
   test_primitive_sort();
   test_comparator_sort();
   test_keyed_sort();
+  test_typed_sort();
   test_dense_comparator_sort();
   test_f64_basics();
   test_numeric_read();

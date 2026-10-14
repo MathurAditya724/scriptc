@@ -648,6 +648,29 @@ export function emitBytesIntrinsic(
       );
     case "toReversed":
       return call("scr_bytes_to_reversed", "ptr (ptr)", `ptr ${r.name}`, true, false);
+    case "sortCompare": {
+      // The runtime invokes the borrowed comparator with the callValue ABI
+      // and stops at the first pending exception.
+      const cmp = e.args[0]!.type;
+      const arity = cmp.kind === "func" ? cmp.params.length : 0;
+      return call(
+        "scr_bytes_sort_compare",
+        "void (ptr, ptr, i32)",
+        `ptr ${r.name}, ptr ${args[0]!.name}, i32 ${arity}`,
+        false,
+        true,
+      );
+    }
+    case "sortNumeric": {
+      const order = e.args[0]?.kind === "numLit" ? e.args[0].value : 0;
+      return call(
+        "scr_bytes_sort_numeric",
+        "zeroext i1 (ptr, i32)",
+        `ptr ${r.name}, i32 ${order}`,
+        false,
+        false,
+      );
+    }
     case "copyWithin":
       return call(
         "scr_bytes_copy_within",

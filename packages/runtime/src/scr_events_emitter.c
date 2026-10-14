@@ -380,7 +380,7 @@ static void scr_ee_warn_maybe(ScrEmitter *em, ScrEeBucket *b) {
   double max = reg->max >= 0 ? reg->max : scr_emitter_default_max;
   if (b->warned || max <= 0 || (double)b->n <= max) return;
   b->warned = true;
-  /* Node's message byte for byte — except the pid, which is OURS (it can
+  /* Node's exact message, except the pid, which is OURS (it can
    * never match another process's), and the synchronous timing (Node
    * defers the print by a tick). SEMANTICS.md documents both. */
   fprintf(stderr,

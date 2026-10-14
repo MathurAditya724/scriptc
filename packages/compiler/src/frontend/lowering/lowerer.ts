@@ -92,6 +92,7 @@ import {
 import type { FrontendServices } from "../services.js";
 import { InternalCompilerError } from "../../errors.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
+import { type ProtocolDispatch } from "./class-protocol-dispatch.js";
 import { ClassDynamicDispatch, trackClassFieldCreation } from "./class-dynamic-dispatch.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
@@ -1109,8 +1110,8 @@ export function neverTaintedJsType(lowerer: Lowerer, node: ts.Node, t: ts.Type):
  * per-statement runtime fence would have thrown (message + "[code at
  * file:line]"), rendered eagerly so the runtime can throw it verbatim
  * (scr_throw_lowering_fence). The diagnostic joins the runtime-fence
- * ledger exactly like a deferred statement fence — nothing silently
- * drops off the coverage report. */
+ * ledger exactly like a deferred statement fence, so every fence appears
+ * on the coverage report. */
 export function ladderFenceExpr(
   lowerer: Lowerer,
   surface: string,
@@ -2193,8 +2194,9 @@ export class Lowerer {
    * runtime closure pointer: a coercion adapter allocates a different
    * closure at the registration and release sites, so lowerFfiCall must
    * refuse these forms at compile time (SC5003). Any new closure-minting
-   * adapter helper MUST add its name here, or the identity guard silently
-   * reopens and the mismatch surfaces as a runtime release trap instead. */
+   * adapter helper MUST add its name here, or the identity guard reopens
+   * without a diagnostic and the mismatch surfaces as a runtime release
+   * trap instead. */
   readonly freshClosureAdapters = new Set<string>();
   /** Symbols bound by `const process = globalThis.process` (and the other
    * stdlib-global snapshot spellings): pure alias plumbing — receiver
@@ -2282,6 +2284,11 @@ export class Lowerer {
   /** Named method slots observed before class collection need a callable
    * ABI and shared prototype descriptors instead of call-site specialization. */
   readonly prototypeMethodAccesses = new Map<string, ts.Node>();
+  /** Typed calls through class-backed protocols, by signature; class
+   * dynamic dispatch adds their native arms (class-protocol-dispatch.ts). */
+  readonly protocolDispatches = new Map<string, ProtocolDispatch>();
+  /** Bindings no other function assigns (class-protocol-dispatch.ts). */
+  readonly protocolOwnedBindings = new Map<ts.Symbol, boolean>();
   /** Field names whose complete source census stores only lexical arrows. */
   readonly receiverFreeCallbackFields = new Set<string>();
   /** Inferred JS methods participating in an override chain keep a vtable
@@ -6575,7 +6582,7 @@ export class Lowerer {
       : diag;
     const pending = this.pendingFlushes.get(diag);
     // Deferred collection: the wrapper decides whether these ever report
-    // (a reference flushes them; unreferenced declarations stay silent in
+    // (a reference flushes them; unreferenced declarations report nothing in
     // builds and report under coverage's unreached group).
     if (this.diagSink) {
       if (pending && d !== diag) this.pendingFlushes.set(d, pending);
@@ -8454,6 +8461,8 @@ export class Lowerer {
           builtinOption("RequestInit") ||
           builtinOption("ErrorOptions") ||
           builtinOption("SpawnOptions") ||
+          builtinOption("UrlObject") ||
+          builtinOption("URLFormatOptions") ||
           !this.mapTypeOf(this.typeOf(x))
         ) {
           return lowerDynObjectLiteral(this, x);
@@ -9979,7 +9988,7 @@ export class Lowerer {
    * lowered — set by lowerLabeled around lowering the labeled construct,
    * consumed exactly once by the construct's own lowering (takeLabels).
    * A lowering that never consumes them signals lowerLabeled to fence:
-   * silently dropping a label would compile `break lbl` wrong. */
+   * dropping a label without a diagnostic would compile `break lbl` wrong. */
   pendingLabels: string[] | null = null;
 
   takeLabels(): string[] | undefined {

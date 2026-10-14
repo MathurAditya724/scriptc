@@ -43,7 +43,7 @@ function concatAll(parts: IrExpr[], loc: SrcLoc): IrExpr {
 
 /** strEscape's quote ladder over a COMPILE-TIME string (record field
  * names, format-string chunks never pass through here — only keys).
- * Mirrors scr_inspect.c's insp_quote_into byte-for-byte. */
+ * Mirrors scr_inspect.c's insp_quote_into exactly. */
 function inspectQuote(s: string): string {
   const hasSingle = s.includes("'");
   const quote = !hasSingle
@@ -1292,7 +1292,7 @@ export function lowerConsoleInspectArg(
   if (t.kind === "undefinedT" || t.kind === "nullT") {
     // The baked text ("undefined"/"null"): the operand is a literal or a
     // pure read, so dropping its evaluation loses nothing. Effectful
-    // unit-typed operands keep a fence — a silent skip is banned.
+    // unit-typed operands report SC1090 instead of being skipped.
     if (value.kind !== "unitLit" && !isSafeToRepeat(value)) {
       lowerer.unsupported(
         "SC1090",
@@ -1782,7 +1782,8 @@ export function lowerFormatCall(
         // context.actual)` — test/common's exit report): VALIDATE it as a
         // number (dynCheck) and format. A non-number dyn value throws the
         // catchable TypeError where Node would print its ToNumber (NaN
-        // for objects) — loud, never a silent wrong answer (SEMANTICS.md).
+        // for objects) — it throws instead of returning a wrong result
+        // (SEMANTICS.md).
         if (value.type.kind === "dyn") {
           return {
             kind: "libCall",
@@ -1844,7 +1845,8 @@ export function lowerFormatCall(
         // A checked-dynamic argument (`console.error('headers: %j',
         // headers)` — the suite's http logging idiom): the runtime dyn
         // walk stringifies JS-exactly (root undefined/function prints
-        // "undefined"; a handle in the tree throws the loud fence).
+        // "undefined"; a handle in the tree throws the "not supported yet"
+        // Error).
         if (value.type.kind === "dyn") {
           return { kind: "libCall", fn: "insp.jsonDyn", args: [value], type: STRING, loc };
         }
@@ -2258,7 +2260,7 @@ function lowerParseArgsCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcL
  * mustNotCall — `callSite.scriptName`:`callSite.lineNumber` in the
  * failure text — read a printable value instead of throwing). Argument
  * forms and TypeScript keep the SC2020 fence: a typed consumer asserting
- * real frames must fail loudly at compile time, not read placeholders. */
+ * real frames must fail at compile time instead of reading placeholders. */
 function lowerGetCallSitesCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,

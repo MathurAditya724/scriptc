@@ -860,7 +860,7 @@ exec "$SCRIPTC_TEST_REAL_AR" "$@" "$SCRIPTC_TEST_AR_EXTRA"
 
       // The wrapper executable/version and every scriptc-owned input remain
       // unchanged. Only the mutable object it injects into `ar rcs` changes.
-      // A complete archive hit would silently retain the first definition.
+      // A complete archive hit would retain the first definition without an error.
       await buildHelper(2);
       await compileLibArchive({
         cPath,

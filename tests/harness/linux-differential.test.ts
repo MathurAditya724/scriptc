@@ -53,7 +53,7 @@ function wantsTscDecorators(file: string): boolean {
 
 /** The file the Node oracle executes: the program itself, or (decorator
  * programs) its deterministic ES2022 downlevel — differential.test.ts's
- * nodeOracleFile, byte for byte the same transform and cache key. */
+ * nodeOracleFile, with the identical transform and cache key. */
 function nodeOracleFile(file: string): string {
   if (!wantsTscDecorators(file)) return file;
   const src = readFileSync(file, "utf8");
@@ -478,7 +478,7 @@ async function crossCompileFetchFixture(entry: string): Promise<string> {
 
 describe.skipIf(!enabled)(`linux differential (${target})`, () => {
   beforeAll(async () => {
-    // Fail loudly, not skip: SCRIPTC_LINUX=1 promises a Linux verdict.
+    // Fail instead of skipping: SCRIPTC_LINUX=1 promises a Linux verdict.
     await execFileAsync("zig", ["version"]).catch(() => {
       throw new Error(
         "SCRIPTC_LINUX=1 needs zig on PATH (zigup) — the lane cross-compiles with `zig cc`.",
@@ -602,7 +602,8 @@ describe.skipIf(!enabled)(`linux differential (${target})`, () => {
     let proxyBase = "";
     /** The poisoned proxy env every fetch child inherits (fetch.test.ts's
      * stance: both fetches must IGNORE it without the opt-in — any that
-     * consulted it would fail loudly against the refused port). */
+     * consulted it would fail with a connection error against the refused
+     * port). */
     const poison = (): Record<string, string> => ({
       http_proxy: refused,
       https_proxy: refused,

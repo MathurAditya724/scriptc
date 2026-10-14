@@ -131,7 +131,7 @@ export function objectIterOverIndexShape(
   // JS lists integer-like OWN keys first regardless of where they live;
   // the declared-then-overflow order can only honor that when no
   // DECLARED field name is integer-like (the overflow walk handles its
-  // own). Shapes that mix one in keep a fence, not a silent reorder.
+  // own). Shapes that mix one in keep a fence instead of reordering keys.
   const arrayIndexRe = /^(0|[1-9][0-9]{0,9})$/;
   if (shape.fields.some((f) => arrayIndexRe.test(f.name) && Number(f.name) <= 4294967294)) {
     lowerer.unsupported(

@@ -34,6 +34,7 @@ function context() {
     liftedFns,
     diags: [],
     prototypeMethodAccesses: new Map(),
+    protocolDispatches: new Map(),
     classMethodValueSelections: new Map(),
     isSubclassOf: () => false,
   } as unknown as Lowerer;

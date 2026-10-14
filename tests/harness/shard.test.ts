@@ -44,7 +44,7 @@ describe("parseShardSpec", () => {
     expect(parseShardSpec("10/12")).toEqual({ index: 10, count: 12 });
   });
 
-  test("rejects malformed and out-of-range specs loudly", () => {
+  test("throws on malformed and out-of-range specs", () => {
     for (const bad of ["0/3", "4/3", "1/0", "1-3", "a/b", "1/3 ", "-1/3", "1/", "/3"]) {
       expect(() => parseShardSpec(bad), bad).toThrow();
     }
@@ -177,7 +177,7 @@ describe("balancedShardSelect", () => {
     expect(parts.flat().sort()).toEqual(keys.sort());
   });
 
-  test("ambiguous keys and invalid costs cannot silently drop fixtures", () => {
+  test("ambiguous keys and invalid costs throw instead of dropping fixtures", () => {
     const spec = { index: 1, count: 2 };
     expect(() =>
       balancedShardSelect(

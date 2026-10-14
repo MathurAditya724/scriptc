@@ -4,7 +4,7 @@
  * argv[1], runs each win32 path operation, and asserts byte equality
  * against what Node's own path.win32 produced. chdir("/") first: the
  * cwd-consulting functions (resolve/relative/toNamespacedPath) were
- * generated under the same cwd, so their results compare byte-for-byte.
+ * generated under the same cwd, so their results must be identical.
  *
  * Exit 0 = all pass; prints each mismatch (capped) and exits 1 otherwise.
  */

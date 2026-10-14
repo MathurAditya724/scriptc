@@ -30,7 +30,7 @@ import {
   type SortKeyOrder,
   buildArraySortFn,
   buildSortKeyFn,
-  recognizeKeyComparator,
+  closureKeyOrder,
 } from "../lower-array-sort.js";
 import {
   arrayIndexPresent,
@@ -264,7 +264,7 @@ function filterPredicateOk(lowerer: Lowerer, ret: IrType): boolean {
   // function sit in a void-returning slot (`const p: (n: number) => void =
   // (n) => n`), so the predicate's real answer can be truthy while the
   // compiled ABI has already discarded it. Treating void as constantly
-  // falsy would silently answer [] where Node answers [1]. Fenced until
+  // falsy would answer [] where Node answers [1]. Fenced until
   // the returned value can be preserved through the void ABI.
   // A checked-dynamic value retains its runtime kind, so scr_dyn_truthy can
 
@@ -1801,7 +1801,7 @@ export function lowerArrayReduceCall(
  *
  * reduce walks 0→n-1, reduceRight n-1→0; the seed without an initial
  * value is a[0] / a[n-1] and the loop starts one past it. The empty-array
- * TypeError message is Node's, byte for byte. */
+ * TypeError message is Node's exact message. */
 function reduceHelper(
   lowerer: Lowerer,
   method: "reduce" | "reduceRight",
@@ -2132,9 +2132,7 @@ export function lowerArraySortCall(
  * by without calling it: over number elements, or over one number field
  * of record or class elements. */
 function recognizedSortKey(lowerer: Lowerer, fnArg: IrExpr, elem: IrType): SortKeyOrder | null {
-  if (fnArg.kind !== "closure" || fnArg.captures.length > 0 || fnArg.adapts) return null;
-  const fn = lowerer.liftedFns.find((lifted) => lifted.name === fnArg.fnName);
-  const keyed = fn ? recognizeKeyComparator(fn) : null;
+  const keyed = closureKeyOrder(lowerer.liftedFns, fnArg);
   if (!keyed) return null;
   if (keyed.read === null) return elem.kind === "f64" ? keyed : null;
   return elem.kind === "record" || elem.kind === "object" ? keyed : null;

@@ -110,7 +110,7 @@ const ENUMS: [name: string, keys: string[]][] = [
 ];
 
 /* The survey's MISSING list that stays outside the adapter — the adapter
- * must NOT grow look-alikes silently. Source parsing/transpilation remains
+ * must NOT grow look-alikes without updating this list. Source parsing/transpilation remains
  * in the allowlisted TypeScript 5 islands; resolution and config parsing use
  * scriptc's resolver and the TypeScript 7 host instead. */
 const DEFERRED = [

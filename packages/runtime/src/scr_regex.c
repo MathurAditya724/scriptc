@@ -1394,7 +1394,7 @@ ScrStr *scr_util_strip_vt(const ScrDyn *input) {
 ScrStr *scr_regex_replace_all(ScrStr *s, ScrRegex *re, ScrStr *rep) {
   if (!(lre_get_flags(scr_regex_bc(re)) & LRE_FLAG_GLOBAL)) {
     /* Node's exact TypeError — a real instance now: catch bindings narrow
-     * it and e.message carries V8's text byte-for-byte. */
+     * it and e.message carries V8's exact text. */
     static const char msg[] =
         "String.prototype.replaceAll called with a non-global RegExp argument";
     scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
@@ -1663,6 +1663,15 @@ ScrStr *scr_str_normalize(const ScrStr *s, const ScrStr *form) {
   for (int i = 0; i < count; i++) scr_case_put_cp(&buffer, output[i]);
   free(output);
   return scr_jb_finish(&buffer);
+}
+
+uint32_t *scr_nfc_code_points(const uint32_t *input, size_t length, size_t *out_len) {
+  if (length > INT32_MAX) scr_regex_oom();
+  uint32_t *output = NULL;
+  int count = unicode_normalize(&output, input, (int)length, UNICODE_NFC, NULL, scr_normalize_realloc);
+  if (count < 0) scr_regex_oom();
+  *out_len = (size_t)count;
+  return output;
 }
 
 /* ── assert.match / assert.doesNotMatch ──────────────────────────────────

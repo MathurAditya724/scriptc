@@ -14,7 +14,7 @@ export type { IrLibFn } from "./builtin-signatures.js";
  * - The type union is deliberately written for extension (`dyn` shipped
  *   with JSON, `promise` with async). All switches over IrType/IrExpr/
  *   IrStmt must have exhaustive `never` default arms so adding a member
- *   turns into compile errors, not silent misbehavior.
+ *   turns into compile errors at every switch that does not handle it.
  */
 
 /** Byte-offset span in the original source file. */
@@ -140,7 +140,8 @@ export type IrType =
    * elements (SCR_ELEM_REF identity semantics, the child precedent), and
    * Set elements (identity hashing, SCR_MAP_KEY_REF — the netServer
    * precedent); fenced out of map keys/values and JSON (JSON.stringify
-   * drops symbols in Node — silent divergence banned, reject instead).
+   * drops symbols in Node — rejected instead of diverging without a
+   * diagnostic).
    * Property KEYS stay frontend-fenced: static record/class shapes have
    * no symbol-keyed storage. */
   | { kind: "symbol" }
@@ -1230,7 +1231,7 @@ export interface IrLibSection {
   /** The host-callback registration symbol; present exactly when
    * `callbacks` is (the profile pairs them — SC4001 otherwise). Both
    * fields stay ABSENT on callback-free profiles so their serialized IR
-   * and emitted TU are unchanged byte-for-byte. */
+   * and emitted TU stay identical. */
   callbackRegisterSymbol?: string;
   /** The resolved host-callback channels, slot-ordered. */
   callbacks?: IrLibCallback[];
@@ -1774,9 +1775,10 @@ export type IrStmt =
    * construct has no static lowering, and JS carries no annotations to
    * change that — so the fence fires when the statement RUNS instead of
    * failing the build (the JS-input design: inference gaps land where
-   * `any` lands — honest fences, never silent misbehavior). Executing it
-   * throws a catchable Error whose message names the construct and whose
-   * `code` carries the SC diagnostic code; unwinds exactly like `throw`.
+   * `any` lands — a runtime fence instead of undiagnosed misbehavior).
+   * Executing it throws a catchable Error whose message names the construct
+   * and whose `code` carries the SC diagnostic code; unwinds exactly like
+   * `throw`.
    * TypeScript sources produce it only as the tsc-unreachable fallthrough
    * trap (appendImplicitUndefinedReturn's SC9002) — their construct fences
    * stay compile errors. */
@@ -2064,6 +2066,19 @@ export type IrBytesIntrinsicMethod =
   /** In-place overlapping copy, [target, start, end] relative indices;
    * returns the receiver (+1). */
   | "copyWithin"
+  /** In-place numeric sort, [order]: a numeric literal 0 for the default
+   * TypedArray order (NaN last, -0 before +0), or 1 / -1 for a recognized
+   * ascending / descending numeric comparator. Returns true when sorted;
+   * a comparator order answers false, having written nothing, for a NaN
+   * or -0 float element, and the caller sorts through the comparator.
+   * Runs no script code. */
+  | "sortNumeric"
+  /** In-place comparator sort, [comparator]: a `(number, number) =>
+   * number` function of at most two parameters, called with the comparison
+   * schedule of Node's typed-array sort over a snapshot that is written
+   * back after the last comparison. Returns void; a comparator exception
+   * propagates and leaves the receiver unwritten. */
+  | "sortCompare"
   /** Fresh Uint8Array copying methods. `with` takes [index, value] and
    * throws a catchable RangeError for an invalid relative index. */
   | "toReversed"
@@ -2146,6 +2161,7 @@ export type IrBytesIntrinsicMethod =
 /** The bytesIntrinsic methods that can raise a catchable error — backends'
  * may-throw analyses seed on these exactly like MAY_THROW_LIB_FNS. */
 export const MAY_THROW_BYTES_METHODS: ReadonlySet<IrBytesIntrinsicMethod> = new Set([
+  "sortCompare",
   "toStringVar",
   "with",
   "setFrom",
@@ -2314,8 +2330,8 @@ export type IrExpr =
    * 0)`. f64 fields compute in place (JS-exact); fieldDyn marks a
    * CHECKED-DYNAMIC field (a JS implicit-any ctor assignment): the number
    * validates OUT of the box (dynCheck's catchable TypeError on
-   * non-numbers — the documented dyn arithmetic stance, never a silent
-   * ToNumber), computes, and boxes back into the slot (old box released
+   * non-numbers — the documented dyn arithmetic stance, instead of an
+   * implicit ToNumber), computes, and boxes back into the slot (old box released
    * after the unlink, like fieldSet). Type is always f64. */
   | {
       kind: "fieldIncDec";
@@ -2977,10 +2993,10 @@ export type IrExpr =
   /** Prototype-method DISPATCH on a dyn receiver — `recv.m(...)` where `m`
    * is a name a dyn-representable prototype declares (Array/String/
    * Function shared names: push, slice, join, forEach, map, apply, ...),
-   * so a stored-member read would silently mis-answer real methods. The
+   * so a stored-member read would return wrong results for real methods. The
    * runtime (scr_dyn_invoke) dispatches on the receiver's KIND:
    * implemented (kind, name) pairs run JS-exact semantics; a real-but-
-   * unimplemented method throws a LOUD "not supported yet" Error; a name
+   * unimplemented method throws a "not supported yet" Error; a name
    * the kind's prototype lacks throws Node's catchable "<calleeName> is
    * not a function"; OBJ receivers call the own member (own properties
    * shadow prototypes in JS too); undefined/null receivers throw Node's
@@ -3431,7 +3447,7 @@ export type IrExpr =
    * type must be JSON-safe (f64/string/bool/record/array/union of those,
    * recursively — validated), and backends emit one serializer per type used
    * in stringify position (interned, like the array-HOF desugars) instead of
-   * walking any runtime tag. Output is Node-compatible byte-for-byte with
+   * walking any runtime tag. Output is identical to Node's with
    * ONE documented divergence: record fields serialize in canonical (sorted)
    * order, not insertion order (SEMANTICS.md). NaN/±Infinity stringify as
    * `null` and -0 as `0`, exactly like JS; a record field holding the
@@ -3642,7 +3658,8 @@ function isJsonSafeAt(
     // sp.toString() instead.
     case "searchParams":
     // Symbols are DROPPED by Node's stringify (undefined at the top level,
-    // omitted as object values) — silent divergence banned; rejected.
+    // omitted as object values) — rejected instead of diverging without a
+    // diagnostic.
     case "symbol":
     case "caught":
     case "promise":

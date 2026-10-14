@@ -90,8 +90,8 @@
  *                        iOS 15.0 LC_BUILD_VERSION floor; simulator probes
  *                        EXECUTE on a booted simulator (simctl spawn) —
  *                        the M2 two-instance acceptance run and the M6
- *                        four-thread instancing run, byte-for-byte against
- *                        the desktop expectations; device-arch archives
+ *                        four-thread instancing run, compared exactly
+ *                        against the desktop expectations; device-arch archives
  *                        are build+link verified (no device to execute)
  *   M14 Android          SCRIPTC_ANDROID=1 (an NDK plus adb/emulator):
  *                        localized a/b archives build per emission with
@@ -99,7 +99,7 @@
  *                        NDK's API-26 clang, and EXECUTE on an emulator
  *                        (a running device is reused; otherwise a headless
  *                        arm64 AVD is created and booted) — the M2 and M6
- *                        acceptance runs, byte-for-byte
+ *                        acceptance runs, compared exactly
  *
  * Windows hosts run M1/M2/M6/M7 natively through the same gates as darwin
  * and linux: probes compile with `zig cc` (the box's toolchain), archives

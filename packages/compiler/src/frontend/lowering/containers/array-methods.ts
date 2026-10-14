@@ -611,7 +611,7 @@ export function lowerArrayMethodCall(
 
   // The lib declares wider call forms than the lowered surface — the
   // predicate/mapping HOFs take a thisArg. Each unlowered form is fenced
-  // per site (SC2020), never silently truncated to the supported
+  // per site (SC2020) instead of being truncated to the supported
   // arguments. push/unshift lower every declared form (variadic, 0 args
   // included — Node returns the unchanged length); reduce/reduceRight
   // lower both declared forms (with and without an initial value).
@@ -987,7 +987,7 @@ export function lowerArrayMethodCall(
     // Array#toString. UNIONS of the convertible kinds join too —
     // undefined/null arms print EMPTY per Array.prototype.join (the
     // `.filter(Boolean)` idiom keeps its checker type `(string |
-    // undefined)[]`, and JS joins the units silently) — via a per-union
+    // undefined)[]`, and JS joins the units without an error) — via a per-union
     // interned walker in the backend.
     const joinableUnion =
       elem.kind === "union" &&

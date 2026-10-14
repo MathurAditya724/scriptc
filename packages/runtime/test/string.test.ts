@@ -61,14 +61,14 @@ beforeAll(async () => {
 // ASCII, Latin-1, CJK, astral, and combining-mark strings, including the
 // documented lone-surrogate → U+FFFD divergence.
 //
-// On macOS every committed case matches byte-for-byte. On Linux (glibc,
+// On macOS every committed case matches exactly. On Linux (glibc,
 // measured on the sandbox-suite lane's AL2023 clang 15) exactly two
 // parseInt cases — giant base-36 inputs whose magnitude assembly rides
 // libm — land one ulp away from V8's correctly-rounded conversion.
 // scr_number.c is pinned and shared across every consumer, so the
 // divergence is documented HERE as an allowlist keyed by exact input and
 // exact divergent output: a third value, a new failing case, or a future
-// conversion fix all fail loudly.
+// conversion fix all make the test fail.
 const LINUX_PARSEINT_ULP: ReadonlyMap<string, string> = new Map([
   [
     // parseInt("9007199254740993", 36): Node 1.9896986116031812e+24,

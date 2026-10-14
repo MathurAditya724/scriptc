@@ -1,7 +1,7 @@
 /* Surface @types/node DECLARES but scriptc does not lower. Every use
  * typechecks (that is @types/node's job) and must FAIL COMPILATION with
- * the SC2020-family fence naming @types/node — never a raw TS error,
- * never a silently broken binary. */
+ * the SC2020-family fence naming @types/node instead of a raw TS error
+ * or a binary that runs with the wrong behavior. */
 console.log(process.hasUncaughtExceptionCaptureCallback()); // the process introspection statics lower now; the capture-callback probe does not
 console.log(Buffer.poolSize);
 /* setInterval lowers, and under @types/node its Timeout RETURN now maps

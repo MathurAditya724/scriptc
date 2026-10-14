@@ -48,8 +48,8 @@
  * WRAPPED: the TLS hook installs the transport first and attaches the
  * http parser from on_established, so the parser only ever sees
  * plaintext. Handshake failures on the server side tear the socket down
- * SILENTLY — Node's default for 'tlsClientError' with no listener, which
- * is what portless observes (it registers none).
+ * without an error event — Node's default for 'tlsClientError' with no
+ * listener, which is what portless observes (it registers none).
  *
  * Client: https.request is scr_http_request_ex with a wrap hook that
  * installs a client transport on the freshly dialed socket; the request
@@ -107,8 +107,9 @@ static void scr_tls_oom(void) {
  * winsock handles), and failures land their WSA code in errno TRANSLATED
  * to the POSIX constant the call sites test. WSAECONNABORTED joins the
  * reset arm deliberately: at the TLS layer both spell "the peer died",
- * and the reset arms (CONN_RESET → silent server teardown / the client's
- * socket-hang-up classification) are Node's rendering for each. Winsock
+ * and the reset arms (CONN_RESET → server teardown without an error
+ * event / the client's socket-hang-up classification) are Node's
+ * rendering for each. Winsock
  * is already started whenever this unit runs — every TLS socket is an
  * ScrNetSocket, and scr_net.c initializes the poller (WSAStartup) before
  * any socket exists. */
@@ -781,7 +782,7 @@ static int scr_tls_sni_collect(ScrTlsSock *t) {
         scr_net_sock_transport_error(t->sock, NULL);
         return -1;
       }
-      if (n == 0) { /* the peer died mid-hello: silent server-side teardown */
+      if (n == 0) { /* the peer died mid-hello: server-side teardown without an error event */
         scr_net_sock_transport_error(t->sock, NULL);
         return -1;
       }
@@ -805,8 +806,8 @@ void scr_tls_sni_answer(ScrClosure *self, bool has_err, ScrSecureCtx *ctx /*move
   }
   t->sni_state = SCR_SNI_DONE;
   if (has_err) {
-    /* Node destroys the socket ('tlsClientError'; silent with no
-     * listener — what portless observes). */
+    /* Node destroys the socket ('tlsClientError'; nothing is reported with
+     * no listener — what portless observes). */
     scr_secure_ctx_release(ctx);
     free(t->hello);
     t->hello = NULL;
@@ -841,7 +842,8 @@ static int scr_tls_handshake(void *tctx) {
   if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) return 0;
   if (t->srv != NULL) {
     /* Node's server default: 'tlsClientError' with no listener destroys
-     * the socket silently — exactly what portless (no listener) sees. */
+     * the socket without an error event — exactly what portless (no
+     * listener) sees. */
     scr_net_sock_transport_error(t->sock, NULL);
     return -1;
   }
@@ -850,8 +852,8 @@ static int scr_tls_handshake(void *tctx) {
     scr_tls_verify_msg(t, msg, sizeof msg);
   } else if (r == MBEDTLS_ERR_SSL_CONN_EOF || r == MBEDTLS_ERR_NET_CONN_RESET) {
     /* the peer died mid-handshake: the http layer's own premature-close
-     * shape ('socket hang up') is Node's message — teardown silently at
-     * this level and let the closed hook classify it */
+     * shape ('socket hang up') is Node's message — tear down without an error
+     * at this level and let the closed hook classify it */
     scr_net_sock_transport_error(t->sock, NULL);
     return -1;
   } else {
@@ -1168,8 +1170,8 @@ ScrBytes *scr_tls_pem_from_dyn(const ScrDyn *v, const char *what) {
 /* The tls/https createServer documented keys OUTSIDE the implemented set
  * (cert/key/ca/requestCert/rejectUnauthorized/SNICallback walk their own
  * arms below): present-with-a-value throws the runtime fence — an option
- * that changes Node-observable behavior must work or fence, never
- * silently drop. Undocumented keys drop, exactly Node. */
+ * that changes Node-observable behavior must work or fence instead of
+ * being dropped without an error. Undocumented keys drop, exactly Node. */
 static const char *const SCR_TLS_SRV_FENCED_OPTIONS[] = {
   "ALPNProtocols", "ALPNCallback", "allowHalfOpen", "ciphers",
   "clientCertEngine", "crl", "dhparam", "ecdhCurve", "enableTrace",

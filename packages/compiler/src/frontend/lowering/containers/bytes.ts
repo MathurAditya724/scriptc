@@ -4,6 +4,7 @@ import * as ts from "../../ts7/adapter.js";
 import {
   BIGINT_T,
   BOOL,
+  BYTES_ELEMENT_NAME,
   BYTES_U8,
   DYN,
   F64,
@@ -18,12 +19,13 @@ import {
   VOID,
   arrayOf,
   bytesOf,
+  funcOf,
   typeEquals,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
 import { newFnCtx, own } from "../lowerer.js";
-import { buildBytesSortFn } from "../lower-array-sort.js";
+import { buildBytesSortFn, closureKeyOrder } from "../lower-array-sort.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import { lowerDynObjectLiteral } from "../expressions/object-literals.js";
 import {
@@ -34,34 +36,48 @@ import {
 import { lowerCheckedArrayFrom } from "./array-construction.js";
 import { lowerToNumberArgument } from "../lower-exprs.js";
 
-/** Uint8Array.prototype.toSorted. The receiver/comparator expressions are
- * evaluated before entering the helper; the helper snapshots with
- * TypedArray.prototype.slice before its first comparison, then performs
- * the same stable merge walk as Array.toSorted. Uint8Array's default
- * comparator is numeric ascending, so its comparator-less form needs no
- * string-conversion machinery. */
-function lowerBytesToSortedCall(
+/** TypedArray.prototype.sort and toSorted. The receiver and comparator
+ * expressions are evaluated before entering the helper (buildBytesSortFn).
+ * The default order is numeric, so the comparator-less form sorts by value
+ * in the runtime, as does a recognized numeric comparator. */
+function lowerBytesSortCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
   bytesT: IrType & { kind: "bytes" },
 ): IrExpr {
   const loc = locOf(call);
+  const method = access.name.text;
+  const copyFirst = method === "toSorted";
   if (call.arguments.length > 1 || call.arguments.some(ts.isSpreadElement)) {
-    lowerer.noLowering(`.toSorted with ${call.arguments.length} arguments on Uint8Array`, call);
+    lowerer.noLowering(
+      `.${method} with ${call.arguments.length} arguments on ${BYTES_ELEMENT_NAME[bytesT.elem]}`,
+      call,
+    );
   }
   const receiver = lowerer.lowerExprExpecting(access.expression, bytesT);
   const undefinedArg = call.arguments[0]
     ? lowerStaticallyUndefinedArgument(lowerer, call.arguments[0])
     : null;
-  if (call.arguments.length === 0 || undefinedArg) {
-    const key = "bytes.toSorted:u8:default";
-    let helper = lowerer.arrHofHelpers.get(key);
+  const helperFor = (
+    key: string,
+    arity: number,
+    hasComparator: boolean,
+    order: 1 | -1 | null,
+  ): string => {
+    const cacheKey = `bytes.${method}:${bytesT.elem}:${key}`;
+    let helper = lowerer.arrHofHelpers.get(cacheKey);
     if (!helper) {
-      helper = `%bytes.toSorted.${lowerer.arrHofHelpers.size}`;
-      lowerer.arrHofHelpers.set(key, helper);
-      lowerer.liftedFns.push(buildBytesSortFn(helper, 0, false, loc));
+      helper = `%bytes.${method}.${lowerer.arrHofHelpers.size}`;
+      lowerer.arrHofHelpers.set(cacheKey, helper);
+      lowerer.liftedFns.push(
+        buildBytesSortFn(helper, bytesT, arity, hasComparator, copyFirst, order, loc),
+      );
     }
+    return helper;
+  };
+  if (call.arguments.length === 0 || undefinedArg) {
+    const helper = helperFor("default", 0, false, null);
     if (!undefinedArg || isSafeToDiscard(undefinedArg)) {
       return { kind: "call", callee: helper, args: [receiver], type: bytesT, loc };
     }
@@ -93,7 +109,24 @@ function lowerBytesToSortedCall(
     };
   }
   const argNode = call.arguments[0]!;
-  const fnArg = lowerer.lowerExpr(argNode);
+  let fnArg = lowerer.lowerExpr(argNode);
+  // As for Array sort: adapt a comparator over checked values to the
+  // element ABI; arithmetic on inferred JS values still yields a number.
+  if (
+    fnArg.type.kind === "func" &&
+    fnArg.type.params.length <= 2 &&
+    fnArg.type.params.every((param) => lowerer.coercibleValue(F64, param))
+  ) {
+    const result =
+      fnArg.type.ret.kind === "dyn" && isJsSourceFile(argNode.getSourceFile())
+        ? F64
+        : fnArg.type.ret;
+    const expected = funcOf(
+      fnArg.type.params.map(() => F64),
+      result,
+    );
+    if (!typeEquals(fnArg.type, expected)) fnArg = lowerer.coerceToExpected(fnArg, expected);
+  }
   if (
     fnArg.type.kind !== "func" ||
     fnArg.type.params.length > 2 ||
@@ -103,13 +136,9 @@ function lowerBytesToSortedCall(
     lowerer.badType(argNode, lowerer.typeOf(argNode));
   }
   const arity = fnArg.type.params.length;
-  const key = `bytes.toSorted:u8:${arity}`;
-  let helper = lowerer.arrHofHelpers.get(key);
-  if (!helper) {
-    helper = `%bytes.toSorted.${lowerer.arrHofHelpers.size}`;
-    lowerer.arrHofHelpers.set(key, helper);
-    lowerer.liftedFns.push(buildBytesSortFn(helper, arity, true, loc));
-  }
+  const keyed = closureKeyOrder(lowerer.liftedFns, fnArg);
+  const order = keyed !== null && keyed.read === null ? keyed.order : null;
+  const helper = helperFor(`${arity}${order === null ? "" : `:keyed${order}`}`, arity, true, order);
   return {
     kind: "call",
     callee: helper,
@@ -428,8 +457,8 @@ export function lowerBytesMethodCall(
         loc,
       };
   }
-  if (receiverIr.elem === "u8" && name === "toSorted") {
-    return lowerBytesToSortedCall(lowerer, call, access, receiverIr);
+  if (name === "sort" || name === "toSorted") {
+    return lowerBytesSortCall(lowerer, call, access, receiverIr);
   }
   if (name === "toReversed") {
     if (nArgs !== 0) {

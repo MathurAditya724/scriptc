@@ -31,7 +31,7 @@ function packageJson(path: string): Record<string, unknown> | null {
 /** sideEffects patterns use package-relative POSIX paths. A pattern with no
  * slash matches a basename at any depth, as in bundler package metadata. */
 function sideEffectPattern(pattern: string): RegExp {
-  // Unrecognized glob syntax must retain the module rather than silently
+  // Unrecognized glob syntax must retain the module rather than
   // treating a possible side-effect match as a literal path.
   if (/[[\]\\!@+()]/.test(pattern)) throw new Error("unsupported sideEffects glob");
   pattern = pattern.replace(/^\.\//, "");

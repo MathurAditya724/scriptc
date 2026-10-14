@@ -439,7 +439,7 @@ export function completeArgs(
     // reads, closures — the recordLit drop-field list) drop at compile
     // time, JS-exact; an EFFECTFUL surplus (a call, an await, an
     // assignment) has no evaluation slot in an expression-position
-    // completion, so it fences by name rather than silently not running.
+    // completion, so it fences by name rather than being skipped without a diagnostic.
     for (let i = positional.length; i < sources.length; i++) {
       const a = sources[i]!;
       if (isIr(a)) continue; // pre-lowered leading values are effect-free

@@ -1024,7 +1024,7 @@ void scr_dgram_install(void) {
 
 /* ── the send argument-validation ladder (checked-dynamic lane) ─────────
  * Node's Socket.prototype.send signature shuffle and validation order
- * over dyn arguments, byte-for-byte: the connected/unconnected split
+ * over dyn arguments, ported exactly: the connected/unconnected split
  * decides whether (a1, a2) are an offset/length slice or the port/address
  * pair; sliceBuffer validates the buffer's type and bounds
  * (ERR_BUFFER_OUT_OF_BOUNDS); list payloads validate per element with the
@@ -1167,7 +1167,7 @@ void scr_dgram_send_chk(ScrDgramSocket *s, const ScrDyn *buffer, const ScrDyn *a
   }
   if (callback->kind == SCR_DYN_FUNC || buffer->kind == SCR_DYN_ARR) {
     /* completion callbacks and list concatenation have no lowering yet —
-     * refuse loudly after the full validation ladder, never drop */
+     * throw the SC2020 fence text after the full validation ladder */
     scr_throw_lowering_fence(fence);
     return;
   }

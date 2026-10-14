@@ -3056,12 +3056,92 @@ static void scr_uri_malformed(void) {
                         scr_str_new("URI malformed", 13));
 }
 
-/* querystring.escape: the component encoder, whose lone-surrogate failure
- * is Node's URIError [ERR_INVALID_URI]. */
+ScrStr *scr_qs_encode_str(const ScrStr *s, const signed char no_escape[128]) {
+  static const char hex[] = "0123456789ABCDEF";
+  /* UTF-16 code units: each 4-byte sequence is a surrogate pair. */
+  uint16_t *units = malloc((s->len ? s->len : 1) * sizeof *units);
+  if (!units) scr_trap("scriptc: out of memory\n");
+  size_t n = 0;
+  for (size_t i = 0; i < s->len;) {
+    unsigned char c = (unsigned char)s->data[i];
+    uint32_t cp;
+    size_t len = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+    if (len > s->len - i) len = s->len - i;
+    if (len == 1) cp = c;
+    else if (len == 2) cp = ((uint32_t)(c & 0x1F) << 6) | ((unsigned char)s->data[i + 1] & 0x3F);
+    else if (len == 3)
+      cp = ((uint32_t)(c & 0x0F) << 12) | ((uint32_t)((unsigned char)s->data[i + 1] & 0x3F) << 6) |
+           ((unsigned char)s->data[i + 2] & 0x3F);
+    else
+      cp = ((uint32_t)(c & 0x07) << 18) | ((uint32_t)((unsigned char)s->data[i + 1] & 0x3F) << 12) |
+           ((uint32_t)((unsigned char)s->data[i + 2] & 0x3F) << 6) | ((unsigned char)s->data[i + 3] & 0x3F);
+    i += len;
+    if (cp >= 0x10000) {
+      units[n++] = (uint16_t)(0xD800 + ((cp - 0x10000) >> 10));
+      units[n++] = (uint16_t)(0xDC00 + ((cp - 0x10000) & 0x3FF));
+    } else {
+      units[n++] = (uint16_t)cp;
+    }
+  }
+  ScrJsonBuf out;
+  scr_jb_init(&out);
+  char esc[12];
+  for (size_t i = 0; i < n; i++) {
+    uint32_t c = units[i];
+    size_t k = 0;
+    if (c < 0x80) {
+      if (no_escape[c] == 1) {
+        scr_jb_putc(&out, (char)c);
+        continue;
+      }
+      esc[k++] = '%', esc[k++] = hex[c >> 4], esc[k++] = hex[c & 0xF];
+    } else {
+      uint8_t bytes[4];
+      size_t nb;
+      if (c < 0x800) {
+        bytes[0] = (uint8_t)(0xC0 | (c >> 6)), bytes[1] = (uint8_t)(0x80 | (c & 0x3F));
+        nb = 2;
+      } else if (c < 0xD800 || c >= 0xE000) {
+        bytes[0] = (uint8_t)(0xE0 | (c >> 12)), bytes[1] = (uint8_t)(0x80 | ((c >> 6) & 0x3F));
+        bytes[2] = (uint8_t)(0x80 | (c & 0x3F));
+        nb = 3;
+      } else {
+        if (++i >= n) {
+          free(units);
+          scr_str_release(scr_jb_finish(&out));
+          scr_throw_error_msg_code(SCR_ERR_URI, "URI malformed", 13, "ERR_INVALID_URI");
+          return NULL;
+        }
+        c = 0x10000 + (((c & 0x3FF) << 10) | (units[i] & 0x3FF));
+        bytes[0] = (uint8_t)(0xF0 | (c >> 18)), bytes[1] = (uint8_t)(0x80 | ((c >> 12) & 0x3F));
+        bytes[2] = (uint8_t)(0x80 | ((c >> 6) & 0x3F)), bytes[3] = (uint8_t)(0x80 | (c & 0x3F));
+        nb = 4;
+      }
+      for (size_t b = 0; b < nb; b++) esc[k++] = '%', esc[k++] = hex[bytes[b] >> 4], esc[k++] = hex[bytes[b] & 0xF];
+    }
+    scr_jb_write_utf8(&out, esc, k);
+  }
+  free(units);
+  return scr_jb_finish(&out);
+}
+
+/* querystring.escape: the component encoder, with Node's encodeStr
+ * surrogate handling when the string holds a lone surrogate. */
 ScrStr *scr_qs_escape(ScrStr *s) {
   if (scr_str_has_surrogate(s)) {
-    scr_throw_error_msg_code(SCR_ERR_URI, "URI malformed", 13, "ERR_INVALID_URI");
-    return scr_str_empty();
+    /* lib/querystring.js noEscape: the component unreserved set. */
+    static const signed char unreserved[128] = {
+        ['!'] = 1, ['\''] = 1, ['('] = 1, [')'] = 1, ['*'] = 1, ['-'] = 1, ['.'] = 1, ['_'] = 1, ['~'] = 1,
+        ['0'] = 1, ['1'] = 1, ['2'] = 1, ['3'] = 1, ['4'] = 1, ['5'] = 1, ['6'] = 1, ['7'] = 1, ['8'] = 1,
+        ['9'] = 1, ['A'] = 1, ['B'] = 1, ['C'] = 1, ['D'] = 1, ['E'] = 1, ['F'] = 1, ['G'] = 1, ['H'] = 1,
+        ['I'] = 1, ['J'] = 1, ['K'] = 1, ['L'] = 1, ['M'] = 1, ['N'] = 1, ['O'] = 1, ['P'] = 1, ['Q'] = 1,
+        ['R'] = 1, ['S'] = 1, ['T'] = 1, ['U'] = 1, ['V'] = 1, ['W'] = 1, ['X'] = 1, ['Y'] = 1, ['Z'] = 1,
+        ['a'] = 1, ['b'] = 1, ['c'] = 1, ['d'] = 1, ['e'] = 1, ['f'] = 1, ['g'] = 1, ['h'] = 1, ['i'] = 1,
+        ['j'] = 1, ['k'] = 1, ['l'] = 1, ['m'] = 1, ['n'] = 1, ['o'] = 1, ['p'] = 1, ['q'] = 1, ['r'] = 1,
+        ['s'] = 1, ['t'] = 1, ['u'] = 1, ['v'] = 1, ['w'] = 1, ['x'] = 1, ['y'] = 1, ['z'] = 1,
+    };
+    ScrStr *out = scr_qs_encode_str(s, unreserved);
+    return out ? out : scr_str_empty();
   }
   return scr_str_encode_uri_component(s);
 }

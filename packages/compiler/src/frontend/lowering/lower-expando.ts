@@ -21,7 +21,7 @@
  *   a later write's value);
  * - writes to the READ-ONLY function members (`length`, `name`,
  *   `caller`, `arguments`) fence: strict-mode JS (every module) throws
- *   TypeError there, and a global slot would silently succeed. WRITABLE
+ *   TypeError there, and a global slot write would succeed. WRITABLE
  *   Function.prototype members (`apply`, `call`, `bind`, `toString`)
  *   shadow through an own property in JS and lower like any other member
  *   — reads route to the registry, so the shadowed value is what reads
@@ -64,7 +64,7 @@ function memberOf(
 
 /** Function members JS refuses to assign in strict mode (every module is
  * strict): non-writable own properties of functions plus the poisoned
- * caller/arguments pair. A global slot would silently succeed where Node
+ * caller/arguments pair. A global slot write would succeed where Node
  * throws TypeError, so writes fence by name. */
 const READONLY_FN_MEMBERS = new Set(["length", "name", "caller", "arguments", "prototype"]);
 

@@ -277,7 +277,7 @@ export const TIMER_MODULE_MEMBERS: ReadonlySet<string> = new Set([
 
 /** Node tolerates clearTimeout/clearInterval/clearImmediate of anything
  * that is not a live handle — null, undefined, plain objects, or no
- * argument at all are silent no-ops. The SYNTACTICALLY side-effect-free
+ * argument at all are no-ops without an error. The SYNTACTICALLY side-effect-free
  * spellings of those (the shapes Node's own tests use) lower to the
  * dropped VOID no-op; an expression that must evaluate keeps the typed
  * path. Null when the argument might be a real handle. */

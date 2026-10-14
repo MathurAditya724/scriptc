@@ -509,6 +509,40 @@ export class LlDyn {
     B.startBlock(lk);
   }
 
+  /** A capsule boxed from this class by this program carries the class's
+   * key constant itself: return its instance (+1) without comparing names
+   * or calling the capsule's retain adapter. Other values continue. */
+  private exactClassCapsule(B: BlockBuilder, t: IrType & { kind: "object" }): void {
+    const key = typeKey(t);
+    const present = B.tmp();
+    const inspect = B.newLabel("dc.exact.inspect");
+    const capsule = B.newLabel("dc.exact.capsule");
+    const hit = B.newLabel("dc.exact.hit");
+    const miss = B.newLabel("dc.exact.miss");
+    B.line(`${present} = icmp ne ptr %d, null`);
+    B.condBr(present, inspect, miss);
+    B.startBlock(inspect);
+    const typed = B.tmp();
+    B.line(`${typed} = icmp eq i32 ${this.kindOf(B, "%d")}, ${DYN_KIND.TYPED_REF}`);
+    B.condBr(typed, capsule, miss);
+    B.startBlock(capsule);
+    const keySlot = B.tmp(),
+      keyPtr = B.tmp(),
+      same = B.tmp();
+    B.line(
+      `${keySlot} = getelementptr inbounds i8, ptr %d, i64 ${this.abiOffset(40, 28)} ; ->v.typed_ref.type_key`,
+    );
+    B.line(`${keyPtr} = load ptr, ptr ${keySlot}`);
+    B.line(`${same} = icmp eq ptr ${keyPtr}, ${this.host.cstr(key)}`);
+    B.condBr(same, hit, miss);
+    B.startBlock(hit);
+    const object = this.payloadOf(B, "%d", "ptr");
+    const retained = B.tmp();
+    B.line(`${retained} = call ptr ${vAdapters(this.host, t).retain}(ptr ${object})`);
+    B.terminate(`ret ptr ${retained}`);
+    B.startBlock(miss);
+  }
+
   /* ── dynMatchHelper (walkers.ts, ported) ──────────────────────── */
 
   /** Native subclass capsules also satisfy a checked base-class slot.
@@ -1101,6 +1135,7 @@ export class LlDyn {
         B.terminate(`ret ptr ${error}`);
         B.startBlock(next);
       }
+      if (isDynTypedRefType(t)) this.exactClassCapsule(B, t);
       const matched = this.typedRefMatches(B, t);
       const lRef = B.newLabel("dc.tr");
       const lNext = B.newLabel("dc.nt");

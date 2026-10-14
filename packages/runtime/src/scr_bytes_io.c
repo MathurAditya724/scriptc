@@ -991,7 +991,7 @@ bool scr_process_stderr_write_bytes(const ScrBytes *b, const ScrStr *encoding) {
 /* Buffer.from over checked-native input. Strings use the existing codec;
  * bytes, arrays and data-only array-like/Buffer-JSON objects always COPY.
  * A dyn is not an arbitrary JS object: opaque references and custom input
- * valueOf hooks keep a loud refusal rather than silently skipping hooks. */
+ * valueOf hooks throw the 'not supported yet' Error rather than skipping hooks. */
 static ScrBytes *scr_buffer_from_refusal(const char *detail) {
   char msg[192];
   int n = snprintf(msg, sizeof msg, "Buffer.from %s is not supported yet", detail);

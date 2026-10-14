@@ -5,7 +5,7 @@
  "diags": [
   {
    "code": "SC0002",
-   "message": "this project's tsconfig disables strictNullChecks, which scriptc requires (null and undefined are modeled as distinct static types; without the knob every type silently includes them)",
+   "message": "this project's tsconfig disables strictNullChecks, which scriptc requires (null and undefined are modeled as distinct static types; without the knob every type implicitly includes them)",
    "loc": {
     "file": "<repo>/tests/fixtures/strictness/null-floor/tsconfig.json",
     "start": 0,

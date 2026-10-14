@@ -343,7 +343,7 @@ export async function compileCInternal(
   );
   // Mutable include/SDK/config inputs can change behind a stable environment
   // spelling. The complete/runtime cache is disabled below; vendor objects
-  // must follow the same rule instead of silently surviving in the user cache.
+  // must follow the same rule instead of persisting in the user cache.
   // A private root gives this invocation the usual vendor build recipe
   // without publishing or reusing those prerequisites.
   const transientVendorRoot =
@@ -480,14 +480,16 @@ export async function compileCInternal(
     // SCR_MUSL flag and this target-selected TU travel together.
     ...(isMuslTarget(driver) ? [rt(join(rtDir, "scr_musl.c"))] : []),
     // scr_glob.c (path.matchesGlob) compiles its segments through the
-    // regex unit, so it rides the same switch; section GC drops it from
-    // binaries that never match a glob.
+    // regex unit and scr_idna.c (node:url's IDNA) normalizes through it,
+    // so both ride the same switch; section GC drops them from binaries
+    // that never use them.
     ...(regex
       ? [
           "-I",
           vendorEngineDir(),
           rt(join(rtDir, "scr_regex.c")),
           rt(join(rtDir, "scr_glob.c")),
+          rt(join(rtDir, "scr_idna.c")),
           ...lreObjects,
         ]
       : []),
@@ -529,6 +531,9 @@ export async function compileCInternal(
     ...(opts.symbol ? [rt(join(rtDir, "scr_symbol.c"))] : []),
     ...(opts.assert && opts.bigint ? [rt(join(rtDir, "scr_bigint_assert.c"))] : []),
     ...(opts.qs ? [rt(join(rtDir, "scr_qs.c"))] : []),
+    // The legacy url unit references the regex, querystring and dyn-async
+    // units; the url.parse family's IR sets all three.
+    ...(regex && opts.qs && opts.dynAsync ? [rt(join(rtDir, "scr_url_legacy.c"))] : []),
     ...(opts.parseArgs ? [rt(join(rtDir, "scr_util.c"))] : []),
     ...(opts.parseArgs && opts.symbol ? [rt(join(rtDir, "scr_util_compare.c"))] : []),
     ...(opts.parseArgs && opts.inspect && opts.dynAsync
