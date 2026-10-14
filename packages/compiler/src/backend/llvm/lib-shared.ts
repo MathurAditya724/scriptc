@@ -78,6 +78,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "num.parseFloat": "scr_parse_float",
   "str.localeCompare": "scr_str_locale_compare",
   "str.replaceLiteral": "scr_str_replace_literal",
+  "str.replaceChars": "scr_str_replace_chars",
   "num.fromString": "scr_string_to_number",
   "math.round": "scr_math_round",
   "math.sin": "sin",
@@ -1060,6 +1061,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "regex.resetLastIndex": "scr_regex_reset_last_index",
   "regex.newChecked": "scr_regex_new_checked",
   "regex.replaceCallback": "scr_regex_replace_callback",
+  "regex.groupEquals": "scr_regex_group_eq",
+  "regex.groupNumber": "scr_regex_group_number",
+  "regex.groupParseInt": "scr_regex_group_parse_int",
   // queueMicrotask's checked-dynamic form (borrowed dyn; a non-function
   // throws synchronously), the minted setImmediate value, and the
   // timers/promises immediate — all mark the loop live.

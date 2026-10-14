@@ -2198,6 +2198,15 @@ export type IrRegexIntrinsicMethod =
    * carries no index/input properties; the match, lastIndex transitions
    * and null result are exec's. */
   | "execGroups"
+  /** execGroups whose args[2] (a numeric literal, a subset of args[1])
+   * marks the captures read only through the regex.groupEquals/
+   * groupNumber/groupParseInt libCalls; the runtime may keep those as
+   * spans of the subject rather than strings. */
+  | "execSpans"
+  /** `s.match(re)` read like an execGroups result: a global regex answers
+   * match's whole-match array; otherwise execSpans with args[1], args[2]
+   * (args[2] is 0 until regex span folding marks lazy captures). */
+  | "matchGroups"
   | "lastIndex"
   /** `s.matchAll(re)` — every match as its honest string[] slice (match's
    * rule), drained EAGERLY into a fresh string[][]: the lazy iterator is

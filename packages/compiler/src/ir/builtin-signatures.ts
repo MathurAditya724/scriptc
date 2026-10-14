@@ -527,6 +527,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * Latin-script text (scr_str_locale_compare). Never throws. */
   "str.localeCompare": { argTypes: [STRING, STRING], result: F64 },
   "str.replaceLiteral": { argTypes: [STRING, STRING, STRING, BOOL], result: STRING },
+  // (subject, characters, NUL-separated replacement texts): the fused
+  // chain of global one-character replacements.
+  "str.replaceChars": { argTypes: [STRING, STRING, STRING], result: STRING },
   /* ToNumber(string) — ECMA-262 7.1.4.1 StringToNumber (scr_string.c):
    * trim the JS StrWhiteSpace set, empty/whitespace-only → +0, then the
    * whole span must be one StrNumericLiteral — signed decimal (Infinity
@@ -2707,6 +2710,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "regex.resetLastIndex": { argTypes: [REGEX, F64], result: VOID },
   "regex.newChecked": { argTypes: [DYN, DYN], result: REGEX },
   "regex.replaceCallback": { argTypes: [STRING, REGEX, DYN, BOOL], result: STRING },
+  // Reads of capture args[1] of an execSpans/matchGroups result:
+  // `capture === args[2]`, Number(capture) and parseInt(capture,
+  // args[2]). Borrowed; never throw.
+  "regex.groupEquals": { argTypes: [arrayOf(STRING), F64, STRING], result: BOOL },
+  "regex.groupNumber": { argTypes: [arrayOf(STRING), F64], result: F64 },
+  "regex.groupParseInt": { argTypes: [arrayOf(STRING), F64, F64], result: F64 },
   // node:events EventEmitter: receivers are emitter-hierarchy objects and
   // the chaining forms (on/off/removeAll/setMax) return the receiver's
   // own class — program-dependent object types, checked in the libCall

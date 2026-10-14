@@ -24,6 +24,8 @@ export function preservesRegexInputs(method: string): boolean {
     case "test":
     case "exec":
     case "execGroups":
+    case "execSpans":
+    case "matchGroups":
     case "match":
     case "search":
     case "matchAll":

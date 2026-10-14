@@ -134,6 +134,8 @@ function directRegexOperandMethod(method: string): boolean {
   switch (method) {
     case "exec":
     case "execGroups":
+    case "execSpans":
+    case "matchGroups":
     case "match":
     case "search":
     case "matchAll":
@@ -237,7 +239,9 @@ export function emitRegexIntrinsic(
     }
     case "match":
     case "exec":
-    case "execGroups": {
+    case "execGroups":
+    case "execSpans":
+    case "matchGroups": {
       // +1 string[] or NULL from the runtime; the `string[] | null`
       // union wraps type-directedly, the envGet convention.
       if (e.type.kind !== "union")
@@ -254,6 +258,13 @@ export function emitRegexIntrinsic(
         host.declare(`declare ptr @scr_regex_exec_groups(ptr, ptr, double)`);
         B.line(
           `${raw} = call ptr @scr_regex_exec_groups(ptr ${r.name}, ptr ${args[0]!.name}, double ${args[1]!.name})`,
+        );
+      } else if (e.method === "execSpans" || e.method === "matchGroups") {
+        // args[1] selects the read captures, args[2] the lazily read ones.
+        const symbol = e.method === "execSpans" ? "scr_regex_exec_spans" : "scr_regex_match_groups";
+        host.declare(`declare ptr @${symbol}(ptr, ptr, double, double)`);
+        B.line(
+          `${raw} = call ptr @${symbol}(ptr ${r.name}, ptr ${args[0]!.name}, double ${args[1]!.name}, double ${args[2]!.name})`,
         );
       } else {
         const symbol = e.method === "exec" ? "scr_regex_exec" : "scr_regex_match";
