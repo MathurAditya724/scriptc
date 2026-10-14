@@ -11,6 +11,7 @@ import {
   type IrExpr,
   type IrFunction,
 } from "../../ir/ir.js";
+import { liveRefView } from "./expr-stream-bridges.js";
 import { typedRefConstructor, vAdapters } from "./shapes.js";
 import { INT32_ABI_SUFFIX, SCALAR_UNION_RESULT } from "./int32-abi.js";
 import { collectFfiRetainedOps, parseFfiCallbackKey } from "../ffi-callbacks.js";
@@ -748,10 +749,13 @@ export function emitCallExpr(
             const rc = vAdapters(host.shapeHost, t);
             const ctor = typedRefConstructor(host.shapeHost, t);
             const kind = ctor.endsWith("_traced") ? 2 : ctor.endsWith("_observed") ? 1 : 0;
+            // The box binds the same live view eager boxing attaches, so
+            // `in`, for-in and Object.keys see the class members.
+            const view = liveRefView(adapter);
             recipe = `@sc_trr_${host.typedRefRecipes.size}`;
             host.typedRefRecipes.set(key, recipe);
             host.resolveThunkDefs.push(
-              `${recipe} = internal constant { ptr, ptr, ptr, ${host.sizeType}, ptr, ptr, i32 } { ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit}, i32 ${kind} }`,
+              `${recipe} = internal constant { ptr, ptr, ptr, ${host.sizeType}, ptr, ptr, i32, i32, ptr } { ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit}, i32 ${kind}, i32 ${view?.code ?? 0}, ptr ${view?.ops ?? "null"} }`,
             );
           }
           host.declare("declare void @scr_dyn_this_push_typed(ptr, ptr)");

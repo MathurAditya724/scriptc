@@ -71,3 +71,36 @@ const pair = [new Counter("x"), new Counter("y")];
 pair[0]!.step = pair[1]!.step;
 for (let i = 0; i < 1000; i++) total += pair[i % 2]!.step(1);
 console.log(total, pair[0]!.count, pair[1]!.count);
+
+// Dynamic views of the bound receiver: `in` sees the prototype members of
+// the instance's own class (subclasses included), and for-in and
+// Object.keys list its own fields.
+class Shape {
+  w = 2;
+  h = 3;
+  area(): number {
+    return this.w * this.h;
+  }
+  probe: (this: Shape) => string;
+  constructor() {
+    this.probe = function (this: Shape): string {
+      const keys: string[] = [];
+      for (const k in this) keys.push(k);
+      return `${"area" in this} ${"constructor" in this} ${"missing" in this} ${Object.keys(this).join(",")} ${keys.join(",")}`;
+    };
+  }
+}
+class Square extends Shape {
+  side(): number {
+    return this.w;
+  }
+}
+const shape = new Shape();
+const square = new Square();
+console.log(shape.probe(), "|", square.probe());
+const members = function (this: Shape): string {
+  return `${"side" in this} ${"area" in this} ${this.area()}`;
+};
+shape.probe = members;
+square.probe = members;
+console.log(shape.probe(), "|", square.probe());

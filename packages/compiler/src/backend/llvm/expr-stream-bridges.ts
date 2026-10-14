@@ -1319,23 +1319,31 @@ function liveClassOps(host: LlvmEmitterContext, snapshot: string, meta: LlClassM
   );
 }
 
+/** The live view a capsule of this adapter binds: the runtime bind call
+ * and its ops constant, with the view code a deferred receiver recipe
+ * records (1 array, 2 record, 3 class). */
+export function liveRefView(
+  adapter: LlStreamTypedRefAdapter,
+): { bind: string; ops: string; code: 1 | 2 | 3 } | null {
+  if (adapter.classOps !== undefined)
+    return { bind: "scr_dyn_typed_ref_bind_class", ops: adapter.classOps, code: 3 };
+  if (adapter.recordOps !== undefined)
+    return { bind: "scr_dyn_typed_ref_bind_record", ops: adapter.recordOps, code: 2 };
+  if (adapter.arrayOps !== undefined)
+    return { bind: "scr_dyn_typed_ref_bind_array", ops: adapter.arrayOps, code: 1 };
+  return null;
+}
+
 /** Attach the element or field hooks right after a live capsule is built. */
 export function bindLiveArrayOps(
   host: ShapeHost,
   adapter: LlStreamTypedRefAdapter,
   capsule: string,
 ): string[] {
-  if (adapter.classOps !== undefined) {
-    host.declare(`declare void @scr_dyn_typed_ref_bind_class(ptr, ptr)`);
-    return [`call void @scr_dyn_typed_ref_bind_class(ptr ${capsule}, ptr ${adapter.classOps})`];
-  }
-  if (adapter.recordOps !== undefined) {
-    host.declare(`declare void @scr_dyn_typed_ref_bind_record(ptr, ptr)`);
-    return [`call void @scr_dyn_typed_ref_bind_record(ptr ${capsule}, ptr ${adapter.recordOps})`];
-  }
-  if (adapter.arrayOps === undefined) return [];
-  host.declare(`declare void @scr_dyn_typed_ref_bind_array(ptr, ptr)`);
-  return [`call void @scr_dyn_typed_ref_bind_array(ptr ${capsule}, ptr ${adapter.arrayOps})`];
+  const view = liveRefView(adapter);
+  if (view === null) return [];
+  host.declare(`declare void @${view.bind}(ptr, ptr)`);
+  return [`call void @${view.bind}(ptr ${capsule}, ptr ${view.ops})`];
 }
 
 export function streamFromArrayAdapter(

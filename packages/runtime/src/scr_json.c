@@ -3378,6 +3378,12 @@ ScrDyn *scr_dyn_this_get(void) {
                                                r->type_key_len, r->materialize, r->commit)
               : scr_dyn_new_typed_ref(e->ptr, r->retain, r->release, r->type_key,
                                       r->type_key_len, r->materialize, r->commit);
+      if (r->view == 1)
+        scr_dyn_typed_ref_bind_array(e->dv, (const ScrDynTypedArrayOps *)r->ops);
+      else if (r->view == 2)
+        scr_dyn_typed_ref_bind_record(e->dv, (const ScrDynTypedRecordOps *)r->ops);
+      else if (r->view == 3)
+        scr_dyn_typed_ref_bind_class(e->dv, (const ScrDynTypedClassOps *)r->ops);
     }
     if (e->dv) return scr_dyn_retain(e->dv);
     /* An uninstalled tag never binds: a unit that fires without its dyn
