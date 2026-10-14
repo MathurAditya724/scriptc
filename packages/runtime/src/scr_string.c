@@ -2343,38 +2343,135 @@ ScrStr *scr_str_replace_bytes(ScrStr *s, const char *pat, size_t plen, ScrStr *r
     scr_jb_write(&b, from, (size_t)(end - from));
     return scr_jb_finish(&b);
   }
-  /* A plain replacement: count, size the result once, then copy. */
-  size_t count = 1;
-  if (all) {
-    for (const char *p = scr_byte_find(hit + plen, (size_t)(end - hit - plen), pat, plen); p;
-         p = scr_byte_find(p + plen, (size_t)(end - p - plen), pat, plen))
-      count++;
-  }
-  size_t kept = s->len - count * plen;
-  if (rep->len && count > (SCR_STR_MAX_CAP - kept) / rep->len) scr_oom();
-  size_t total = kept + count * rep->len;
-  ScrStr *out = scr_str_alloc_raw(total, total);
-  char *w = out->data;
+  /* A plain replacement: one pass into a block with room for a few
+   * growing hits; a longer result grows geometrically, and a result well
+   * below its block is trimmed. */
+  size_t grow = rep->len > plen ? rep->len - plen : 0;
+  size_t cap = s->len + (grow < 64 ? 4 * grow : grow) + 16;
+  if (cap > SCR_STR_MAX_CAP) cap = SCR_STR_MAX_CAP;
+  ScrStr *out = scr_str_alloc_raw(0, cap);
+  cap = out->cap;
+  size_t used = 0;
   const char *from = s->data;
   /* A seam can complete a surrogate pair only where a piece starts with a
    * lone low surrogate: the replacement, or the subject after a match. */
   bool joins = false;
-  for (size_t k = 0; k < count; k++) {
-    size_t gap = (size_t)(hit - from);
-    memcpy(w, from, gap);
-    w += gap;
-    if (rep->len) joins |= scr_wtf8_joins(out->data, (size_t)(w - out->data), rep->data, rep->len);
-    memcpy(w, rep->data, rep->len);
-    w += rep->len;
+  for (;;) {
+    size_t gap = hit ? (size_t)(hit - from) : (size_t)(end - from);
+    size_t need = gap + (hit ? rep->len : 0);
+    if (need > cap - used) {
+      if (need > SCR_STR_MAX_CAP - used) scr_oom();
+      size_t want = cap * 2 < used + need + (size_t)(end - from) ? used + need + (size_t)(end - from)
+                                                                 : cap * 2;
+      if (want > SCR_STR_MAX_CAP) want = SCR_STR_MAX_CAP;
+      out->len = used;
+      out = scr_str_regrow(out, want);
+      cap = want;
+    }
+    scr_copy_bytes(out->data + used, from, gap);
+    used += gap;
+    if (!hit) break;
+    if (rep->len) joins |= scr_wtf8_joins(out->data, used, rep->data, rep->len);
+    scr_copy_bytes(out->data + used, rep->data, rep->len);
+    used += rep->len;
     from = hit + plen;
     joins |= (unsigned char)*from == 0xED;
-    if (k + 1 < count) hit = scr_byte_find(from, (size_t)(end - from), pat, plen);
+    hit = all ? scr_byte_find(from, (size_t)(end - from), pat, plen) : NULL;
   }
-  memcpy(w, from, (size_t)(end - from));
-  out->data[total] = '\0';
+  out->len = used;
+  if (cap - used > used / 4 + 64) out = scr_str_regrow(out, used);
+  out->data[used] = '\0';
   scr_str_hash_forget(out);
   if (joins && scr_wtf8_any()) scr_str_fuse_surrogates(out);
   else if (s->ascii && rep->ascii) scr_str_note_ascii(out);
+  return out;
+}
+
+/* The first byte at or after `i` that is one of the replaced characters
+ * (`which` maps them to k + 1), or len. Up to eight characters are tested
+ * eight bytes at a time. */
+static size_t scr_replace_chars_next(const char *p, size_t i, size_t len, const uint8_t *which,
+                                     const char *chars, size_t n) {
+  if (n <= 8) {
+    const uint64_t ones = UINT64_C(0x0101010101010101);
+    const uint64_t highs = UINT64_C(0x8080808080808080);
+    for (; len - i >= 8; i += 8) {
+      uint64_t w;
+      memcpy(&w, p + i, 8);
+      uint64_t hit = 0;
+      for (size_t k = 0; k < n; k++) {
+        uint64_t x = w ^ (ones * (unsigned char)chars[k]);
+        hit |= (x - ones) & ~x & highs;
+      }
+      if (hit) break;
+    }
+  }
+  for (; i < len; i++) {
+    unsigned char c = (unsigned char)p[i];
+    if (c < 0x80 && which[c]) return i;
+  }
+  return len;
+}
+
+ScrStr *scr_str_replace_chars(ScrStr *s, ScrStr *chars, ScrStr *texts) {
+  enum { MAX = 16 };
+  size_t n = chars->len < MAX ? chars->len : MAX;
+  uint8_t which[128] = { 0 };
+  const char *text[MAX];
+  size_t text_len[MAX];
+  size_t grow = 0;
+  bool ascii = s->ascii;
+  const char *t = texts->data, *t_end = texts->data + texts->len;
+  for (size_t k = 0; k < n; k++) {
+    const char *stop = memchr(t, '\0', (size_t)(t_end - t));
+    if (!stop) stop = t_end;
+    text[k] = t;
+    text_len[k] = (size_t)(stop - t);
+    if (text_len[k] > grow) grow = text_len[k];
+    if (ascii && !scr_bytes_all_ascii(t, text_len[k])) ascii = false;
+    which[(unsigned char)chars->data[k] & 0x7F] = (uint8_t)(k + 1);
+    t = stop < t_end ? stop + 1 : t_end;
+  }
+  const char *p = s->data;
+  size_t len = s->len;
+  size_t i = scr_replace_chars_next(p, 0, len, which, chars->data, n);
+  if (i == len) return scr_str_retain(s);
+  grow = grow > 1 ? grow - 1 : 0;
+  size_t cap = len + (grow < 64 ? 4 * grow : grow) + 16;
+  if (cap > SCR_STR_MAX_CAP) cap = SCR_STR_MAX_CAP;
+  ScrStr *out = scr_str_alloc_raw(0, cap);
+  cap = out->cap;
+  size_t used = 0, from = 0;
+  /* As in scr_str_replace_bytes: a seam can complete a surrogate pair. */
+  bool joins = false;
+  for (;;) {
+    size_t gap = i - from;
+    size_t k = i < len ? (size_t)which[(unsigned char)p[i]] - 1 : 0;
+    size_t need = gap + (i < len ? text_len[k] : 0);
+    if (need > cap - used) {
+      if (need > SCR_STR_MAX_CAP - used) scr_oom();
+      size_t want = cap * 2 < used + need + (len - from) ? used + need + (len - from) : cap * 2;
+      if (want > SCR_STR_MAX_CAP) want = SCR_STR_MAX_CAP;
+      out->len = used;
+      out = scr_str_regrow(out, want);
+      cap = want;
+    }
+    scr_copy_bytes(out->data + used, p + from, gap);
+    used += gap;
+    if (i == len) break;
+    if (text_len[k]) joins |= scr_wtf8_joins(out->data, used, text[k], text_len[k]);
+    scr_copy_bytes(out->data + used, text[k], text_len[k]);
+    used += text_len[k];
+    from = i + 1;
+    joins |= (unsigned char)p[from] == 0xED;
+    i = scr_replace_chars_next(p, from, len, which, chars->data, n);
+  }
+  out->len = used;
+  if (cap - used > used / 4 + 64) out = scr_str_regrow(out, used);
+  out->data[used] = '\0';
+  scr_str_hash_forget(out);
+  if (joins && scr_wtf8_any()) scr_str_fuse_surrogates(out);
+  else if (ascii) scr_str_note_ascii(out);
   return out;
 }
 
@@ -2602,9 +2699,12 @@ static double scr_digits_to_double(const char *p, size_t n, int radix) {
 }
 
 double scr_parse_int(ScrStr *s, double radix) {
+  return scr_parse_int_bytes(s->data, s->len, radix);
+}
+
+double scr_parse_int_bytes(const char *p, size_t n, double radix) {
   double r32 = scr_to_int32_d(radix);
-  const char *p = s->data;
-  size_t n = s->len, i = 0;
+  size_t i = 0;
   while (i < n) {
     unsigned char c = (unsigned char)p[i];
     if (c > 0x20 && c < 0x80) break; /* ASCII non-whitespace */
@@ -2718,8 +2818,11 @@ double scr_parse_float(ScrStr *s) {
  * Node-exact for giant hex, Infinity overflow included: power-of-two
  * radixes take the exact path, never V8's approximate chunk loop). */
 double scr_string_to_number(ScrStr *s) {
-  const char *p = s->data;
-  size_t b = 0, e = s->len;
+  return scr_bytes_to_number(s->data, s->len);
+}
+
+double scr_bytes_to_number(const char *p, size_t len) {
+  size_t b = 0, e = len;
   while (b < e) {
     unsigned char c = (unsigned char)p[b];
     if (c > 0x20 && c < 0x80) break; /* ASCII non-whitespace */

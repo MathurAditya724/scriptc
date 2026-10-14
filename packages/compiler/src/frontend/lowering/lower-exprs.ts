@@ -3,6 +3,7 @@ import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.j
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { threadsImportOf } from "../threads-import.js";
+import { experimentalImportOf, lifetimeRegionMemberOf } from "../experimental-import.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 import { SYMBOL_T } from "../../ir/ir.js";
@@ -1107,6 +1108,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           expr,
           "call publish(value) directly",
         );
+      if (experimentalImportOf(lowerer.program, expr) === "LifetimeRegion")
+        lowerer.noLowering(
+          "LifetimeRegion (@scriptc/experimental) as a value",
+          expr,
+          "construct regions with new LifetimeRegion()",
+        );
     }
     {
       const bi = lowerer.builtinImportOf(expr);
@@ -1708,6 +1715,15 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (ts.isConditionalExpression(expr)) return lowerTernary(lowerer, expr);
 
   if (ts.isPropertyAccessExpression(expr)) {
+    {
+      const member = lifetimeRegionMemberOf(lowerer.program, expr, lowerer.experimentalFiles);
+      if (member !== null)
+        lowerer.noLowering(
+          `LifetimeRegion.${member} (@scriptc/experimental) as a value`,
+          expr,
+          `call region.${member}(${member === "run" ? "fn" : ""}) directly`,
+        );
+    }
     // Expando statics may still be absent even when JS inference sees
     // the eventual assignment's scalar type. Preserve the checked value.
     const staticField = lowerStaticFieldRead(lowerer, expr);

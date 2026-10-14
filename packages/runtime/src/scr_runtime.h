@@ -1423,6 +1423,11 @@ struct ScrArr;
  * every other '$' spelling stays literal). An empty search value matches
  * at 0, or at every UTF-16 position under replaceAll. Borrows; +1. */
 ScrStr *scr_str_replace_literal(ScrStr *s, ScrStr *search, ScrStr *rep, bool all);
+/* Every occurrence of the ASCII byte chars[k] replaced by the k-th
+ * NUL-separated text of `texts`, in one pass (at most 16 distinct
+ * characters; the compiler fuses chains of global one-character
+ * replacements into it). Borrows all three; +1. */
+ScrStr *scr_str_replace_chars(ScrStr *s, ScrStr *chars, ScrStr *texts);
 /* The same over a nonempty canonical WTF-8 needle (literal regex
  * patterns share it). Borrows; +1. */
 ScrStr *scr_str_replace_bytes(ScrStr *s, const char *pat, size_t plen, ScrStr *rep, bool all);
@@ -1487,6 +1492,8 @@ ScrStr *scr_regexp_escape(ScrStr *s);
  * longest digit prefix, exact value correctly rounded (overflow →
  * ±Infinity). The frontend completes an omitted radix to 0. Borrows s. */
 double scr_parse_int(ScrStr *s, double radix);
+/* parseInt over a borrowed UTF-8 byte span. */
+double scr_parse_int_bytes(const char *p, size_t n, double radix);
 double scr_parse_float(ScrStr *s);
 
 /* ToNumber(string) — ECMA-262 7.1.4.1 StringToNumber exactly: trim
@@ -1498,6 +1505,8 @@ double scr_parse_float(ScrStr *s);
  * a sign on those is NaN, per grammar). Any trailing garbage → NaN.
  * Borrows s; never throws. */
 double scr_string_to_number(ScrStr *s);
+/* StringToNumber over a borrowed UTF-8 byte span. */
+double scr_bytes_to_number(const char *p, size_t len);
 
 /* encodeURIComponent — ECMA-262 Encode with the component unreserved set
  * (ALPHA/DIGIT/- _ . ! ~ * ' ( )): every other byte of the UTF-8 string
@@ -2062,6 +2071,18 @@ ScrArr *scr_regex_exec(ScrStr *s, ScrRegex *re);
  * rest, and the index/input properties, are left out. Same lastIndex
  * transitions and NULL result as scr_regex_exec. Borrows both; +1 or NULL. */
 ScrArr *scr_regex_exec_groups(ScrStr *s, ScrRegex *re, double mask);
+/* scr_regex_exec_groups whose captures in `lazy` (a subset of `mask`) are
+ * read only through scr_regex_group_eq/_number/_parse_int: they may stay
+ * spans of the subject instead of strings. */
+ScrArr *scr_regex_exec_spans(ScrStr *s, ScrRegex *re, double mask, double lazy);
+/* s.match(re) read only through constant indices and null tests: a global
+ * regex answers scr_regex_match; otherwise scr_regex_exec_spans. */
+ScrArr *scr_regex_match_groups(ScrStr *s, ScrRegex *re, double mask, double lazy);
+/* Reads of a lazy capture k of such a result (borrowed): `capture === lit`,
+ * Number(capture) and parseInt(capture, radix). */
+bool scr_regex_group_eq(ScrArr *m, double k, ScrStr *lit);
+double scr_regex_group_number(ScrArr *m, double k);
+double scr_regex_group_parse_int(ScrArr *m, double k, double radix);
 /* s.search(re): the first match's UTF-16 index, or -1 — a fresh exec from
  * position 0 (Symbol.search never touches lastIndex, so no flag fence:
  * /g is irrelevant, /y anchors at 0). Borrows both; never throws. */

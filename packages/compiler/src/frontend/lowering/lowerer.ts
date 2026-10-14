@@ -1,4 +1,10 @@
 import {
+  lifetimeRegionType,
+  lowerLifetimeRegionCall,
+  lowerLifetimeRegionNew,
+} from "./lifetime-regions.js";
+import { isExperimentalDeclarationFile } from "../experimental-import.js";
+import {
   checkCycleBindingAccesses,
   refuseUncheckedCycleReads,
   type CycleInitFlag,
@@ -62,6 +68,7 @@ import {
   utilTypesModuleValue,
 } from "./lower-builtin-values.js";
 import { devirtualizeVirtualCalls } from "./devirtualize.js";
+import { foldRegexSpanReads } from "./regex-span-reads.js";
 import { RuntimeOptionalProvenance } from "./runtime-optional-provenance.js";
 import { presentAtUse, reassignedBindings } from "./runtime-optional-guards.js";
 import { NarrowingStability } from "./narrowing-stability.js";
@@ -1756,6 +1763,9 @@ export class Lowerer {
    * prepass. This includes explicit annotations: unchecked TS annotations do
    * not prove that an array property read produced a value. */
   readonly runtimeOptionalBindingTypes = new Map<ts.Symbol, IrType>();
+  /** Set when a match result lowers to execGroups/matchGroups, the inputs
+   * of regex span folding. */
+  regexGroupResults = false;
   /** Bindings that receive an unchecked indexed read (or a value derived
    * from one) through an initializer or assignment. The checker narrows a
    * declared optional binding to that read's bare type, so presence tests
@@ -2338,6 +2348,12 @@ export class Lowerer {
   readonly workerTargets: readonly ts.SourceFile[];
   readonly workerTargetIdByPath = new Map<string, number>();
   usesWorkers = false;
+  /** The program constructs a LifetimeRegion (lifetime-regions.ts). */
+  usesLifetimeRegions = false;
+  /** Per-directory answers of experimental-import.ts's declaration-file test. */
+  readonly experimentalFiles = new Map<string, boolean>();
+  /** Interned LifetimeRegion.run helpers, by callback type key. */
+  readonly regionRunHelpers = new Map<string, string>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -2683,6 +2699,10 @@ export class Lowerer {
       // fileTag is filled just below; the hook is only ever CALLED during
       // lowering, long after the constructor completes.
       isProgramFile: (sf) => this.fileTag.has(sf),
+      lifetimeRegionClass: (decl) =>
+        isExperimentalDeclarationFile(decl.getSourceFile(), this.experimentalFiles)
+          ? lifetimeRegionType(this)
+          : null,
       moduleNamespaceId: (type) => this.moduleNamespaceIdOfType(type),
     };
     // Modules reachable only through literal import() joined
@@ -5819,6 +5839,7 @@ export class Lowerer {
             globals: this.globalsList,
             entry: ENTRY_NAME,
             ...(this.usesWorkers ? { workers: true } : {}),
+            ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
             ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };
@@ -6016,6 +6037,7 @@ export class Lowerer {
     }
     for (const info of this.classes.values()) {
       if (info.builtinError) continue; // runtime-provided; nothing lowers
+      if (info.lifetimeRegion) continue; // synthesized with the class
       // Generic-class INSTANTIATIONS (and mixin instantiations) are
       // demand-driven, not units: their members lower unconditionally in
       // the instance drain below — the generic-fn instance rule.
@@ -6348,6 +6370,7 @@ export class Lowerer {
       ...this.liftedFns,
       ...this.implicitFns,
     ];
+    if (this.regexGroupResults) for (const fn of functions) foldRegexSpanReads(this, fn);
     // The worklist can leave a virtual site with a single implementation.
     // Devirtualize after construction/override reachability has settled.
     devirtualizeVirtualCalls(this, functions, {
@@ -10376,6 +10399,7 @@ export class Lowerer {
     // promise-returning ambient global, and `import` is a keyword callee no
     // identifier path matches.
     return (
+      lowerLifetimeRegionCall(this, expr) ??
       lowerFfiCall(this, expr) ??
       lowerFetchCall(this, expr) ??
       lowerStaticFetchCompanionCall(this, expr) ??
@@ -10596,6 +10620,7 @@ export class Lowerer {
 
   lowerNew(expr: ts.NewExpression): IrExpr {
     const builtin =
+      lowerLifetimeRegionNew(this, expr) ??
       lowerAbortControllerNew(this, expr) ??
       lowerFetchWebNew(this, expr) ??
       lowerResponseNew(this, expr) ??

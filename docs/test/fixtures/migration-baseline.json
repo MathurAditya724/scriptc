@@ -258,6 +258,32 @@
     ]
   },
   {
+    "href": "/docs/experimental",
+    "title": "Experimental APIs",
+    "headings": [
+      {
+        "text": "LifetimeRegion",
+        "id": "lifetimeregion"
+      },
+      {
+        "text": "API",
+        "id": "api"
+      },
+      {
+        "text": "When a region is freed",
+        "id": "when-a-region-is-freed"
+      },
+      {
+        "text": "Threads",
+        "id": "threads"
+      },
+      {
+        "text": "Cost",
+        "id": "cost"
+      }
+    ]
+  },
+  {
     "legacy": "/wasm",
     "href": "/docs/wasm",
     "title": "WebAssembly Modules",

@@ -972,6 +972,9 @@ export interface TypeMapperCtx {
   isProgramFile: (sf: ts.SourceFile) => boolean;
 
   moduleNamespaceId?: (type: ts.Type) => string | null;
+  /** The LifetimeRegion instance type (@scriptc/experimental), when `decl`
+   * is that package's class declaration (lowering/lifetime-regions.ts). */
+  lifetimeRegionClass?: (decl: ts.ClassDeclaration) => IrType | null;
 }
 /** A generator type's normalized value channels (Generator<T, TReturn,
  * TNext> and the IteratorResult alias share this):
@@ -1398,6 +1401,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         return { kind: "union", unionId: unions.intern(arms) };
       }
       return hasStr ? STRING : F64;
+    }
+  }
+  // @scriptc/experimental's LifetimeRegion: a synthetic program class,
+  // provenance-checked by the package's declaration file.
+  {
+    const regionSym = widened.getSymbol();
+    if (regionSym?.name === "LifetimeRegion") {
+      for (const d of checker.declarationsOf(regionSym)) {
+        if (!ts.isClassDeclaration(d)) continue;
+        const region = ctx.lifetimeRegionClass?.(d);
+        if (region) return region;
+      }
     }
   }
   // Declaration-only package types have no compiled implementation.
