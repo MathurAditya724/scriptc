@@ -273,8 +273,10 @@ import {
   classEnvironmentIndex,
   classFieldIndex,
   classStructSym,
+  programLifetimeClass,
   type LlClassMeta,
 } from "./classes.js";
+import { LifetimeRegions, REGION_TYPES } from "./regions.js";
 import { LlDyn, type DynHost } from "./dyn.js";
 import { VirtualBorrows } from "./virtual-borrows.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -486,6 +488,18 @@ export class LlEmitter {
       this.fieldAliasTags.set(field, tag);
     }
     this.fieldPointerTags.set(ptr, tag);
+  }
+
+  /** The alias tag of a runtime word that emitted code reads and writes
+   * outside every field (the lifetime-region count, owner and cursors). */
+  memoryAliasAttachment(category: string): string {
+    if (this.debug !== null) return "";
+    let tag = this.fieldAliasTags.get(category);
+    if (tag === undefined) {
+      tag = 2 + this.fieldAliasTags.size * 2;
+      this.fieldAliasTags.set(category, tag);
+    }
+    return `, !tbaa !${tag}`;
   }
 
   fieldAliasAttachment(ptr: string): string {
@@ -1082,6 +1096,7 @@ export class LlEmitter {
       pendingTestLines: (dest) => this.pendingTestLines(dest),
       virtualEntry: (implFn) => this.virtualEntry(implFn),
       programLifetime: this.programLifetime,
+      regionAliasTag: (word) => this.memoryAliasAttachment(`region.${word}`),
     };
     this.walkers = new LlWalkers(this.shapeHost);
     this.dyn = new LlDyn(this.shapeHost);
@@ -1119,6 +1134,23 @@ export class LlEmitter {
     // whole-program preorder numbering for instanceof over runtime and
     // compiled error objects, and the per-hierarchy virtual slot lists.
     this.classMeta = buildClassGraph(mod, this.fnByName);
+    if (mod.lifetimeRegions === true) {
+      this.regions = new LifetimeRegions(
+        this.shapeHost,
+        mod,
+        this.classMeta,
+        (meta) => programLifetimeClass(this.shapeHost, meta),
+        this.nullableFields,
+      );
+      const regions = this.regions;
+      // Member names differ from LifetimeRegions' own, which keeps the
+      // record from reading as that class's protocol.
+      this.shapeHost.regions = {
+        rcBody: (fnName, ret, comment) => regions.countBody(fnName, ret, comment),
+        newAlloc: (className, sizeOf) => regions.allocLines(className, sizeOf),
+        classDefinitions: (cls, sizeOf) => regions.classDefs(cls, sizeOf),
+      };
+    }
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
       const meta = this.classMeta.get(name);
       if (!meta) break; // hand-written IR without the builtin defs: no stamps
@@ -1872,6 +1904,7 @@ export class LlEmitter {
       ...emitClassMembershipHelper(this.classMeta, this.sizeType),
       ...(this.publishWalkersCache?.defs() ?? []),
       ...this.publishedClassNamesDefs(),
+      ...(this.regions?.moduleDefs() ?? []),
     ];
     if (this.constantNumericTables.size > 0)
       this.declare(`declare double @scr_arr_get_number(ptr, double)`);
@@ -8022,7 +8055,47 @@ export class LlEmitter {
 
   emitIntrinsicExpr(e: ExprOf<"intrinsic">): LlValue {
     if (e.name === "threads.publish") return this.emitPublish(e);
+    if (
+      e.name === "region.create" ||
+      e.name === "region.enter" ||
+      e.name === "region.leave" ||
+      e.name === "region.release"
+    )
+      return this.emitRegionIntrinsic(e);
     return emitIntrinsicExpr(this, e);
+  }
+
+  /** Lifetime regions in modules with lifetimeRegions (llvm/regions.ts).
+   * Created with the class graph; null elsewhere. */
+  private regions: LifetimeRegions | null = null;
+
+  /** LifetimeRegion's runtime calls: create answers the region id, enter
+   * and leave bracket run(), release condemns. */
+  private emitRegionIntrinsic(e: ExprOf<"intrinsic">): LlValue {
+    if (this.regions === null)
+      throw new InternalCompilerError(`llvm emitter bug: ${e.name} without lifetimeRegions`);
+    const args = e.args.map((a) => this.emitExpr(a));
+    if (this.B.isTerminated()) return { name: "", type: e.type };
+    switch (e.name) {
+      case "region.create": {
+        this.declare(`declare double @scr_region_create(ptr)`);
+        const id = this.B.tmp();
+        this.B.line(`${id} = call double @scr_region_create(ptr ${REGION_TYPES})`);
+        return { name: id, type: e.type };
+      }
+      case "region.enter":
+        this.declare(`declare void @scr_region_enter(double)`);
+        this.B.line(`call void @scr_region_enter(double ${args[0]!.name})`);
+        break;
+      case "region.leave":
+        this.declare(`declare void @scr_region_leave()`);
+        this.B.line(`call void @scr_region_leave()`);
+        break;
+      default:
+        this.declare(`declare void @scr_region_release(double)`);
+        this.B.line(`call void @scr_region_release(double ${args[0]!.name})`);
+    }
+    return { name: "", type: e.type };
   }
 
   private publishWalkersCache: PublishWalkers | null = null;
