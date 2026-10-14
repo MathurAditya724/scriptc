@@ -809,7 +809,12 @@ const BOUNDED_KINDS: ReadonlySet<string> = new Set([
 ]);
 
 /** Typed-array reads that run no script code. */
-const BOUNDED_BYTES_METHODS: ReadonlySet<string> = new Set(["get", "length", "subarray"]);
+const BOUNDED_BYTES_METHODS: ReadonlySet<string> = new Set([
+  "get",
+  "length",
+  "subarray",
+  "sortNumeric",
+]);
 
 /** Array methods that can call back into scriptc code (a comparator, or
  * element string conversion). */

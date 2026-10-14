@@ -1919,6 +1919,67 @@ test("runtime comparator sort validates element kinds and the comparator shape",
   }
 });
 
+test("typed-array sorts validate their order literal and comparator", () => {
+  const f64s: IrType = { kind: "bytes", elem: "f64" };
+  const order = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+  const closure = (params: IrType[], ret: IrType = F64): IrExpr => ({
+    kind: "closure",
+    fnName: "cmp",
+    captures: [],
+    type: funcOf(params, ret),
+    loc,
+  });
+  const sortModule = (method: "sortNumeric" | "sortCompare", arg: IrExpr): IrModule => {
+    const params = arg.type.kind === "func" ? arg.type.params : [];
+    const mod = numericReadModule();
+    mod.functions[0]!.body = [
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "bytesIntrinsic",
+          method,
+          receiver: { kind: "bytesNew", source: order(4), type: f64s, loc },
+          args: [arg],
+          type: method === "sortNumeric" ? BOOL : VOID,
+          loc,
+        },
+        loc,
+      },
+    ];
+    mod.functions.push({
+      name: "cmp",
+      params: params.map((type, index) => ({ localId: `p${index}`, name: `p${index}`, type })),
+      locals: params.map((type, index) => ({
+        id: `p${index}`,
+        name: `p${index}`,
+        type,
+        mutable: false,
+      })),
+      returnType: F64,
+      body: [{ kind: "return", value: order(0), loc }],
+      loc,
+    });
+    return mod;
+  };
+  for (const mod of [
+    sortModule("sortNumeric", order(0)),
+    sortModule("sortNumeric", order(-1)),
+    sortModule("sortCompare", closure([F64, F64])),
+    sortModule("sortCompare", closure([])),
+  ]) {
+    expect(validateModule(mod)).toEqual([]);
+    expect(deserializeModule(serializeModule(mod))).toEqual(mod);
+  }
+  for (const [mod, message] of [
+    [sortModule("sortNumeric", order(2)), "order must be the literal 0, 1 or -1"],
+    [sortModule("sortCompare", closure([F64, F64, F64])), "comparator must be"],
+    [sortModule("sortCompare", closure([STRING, STRING])), "comparator must be"],
+    [sortModule("sortCompare", closure([F64, F64], STRING)), "comparator must be"],
+  ] as const) {
+    expect(validateModule(mod).some((error) => error.message.includes(message))).toBe(true);
+  }
+});
+
 test("runtime comparator sort validates a recognized comparator's key order", () => {
   const row: IrType = { kind: "record", shapeId: "r0" };
   const closure = (fnName: string, params: IrType[], ret: IrType = F64): IrExpr => ({

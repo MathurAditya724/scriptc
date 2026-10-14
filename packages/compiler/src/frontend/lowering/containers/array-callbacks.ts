@@ -30,7 +30,7 @@ import {
   type SortKeyOrder,
   buildArraySortFn,
   buildSortKeyFn,
-  recognizeKeyComparator,
+  closureKeyOrder,
 } from "../lower-array-sort.js";
 import {
   arrayIndexPresent,
@@ -2132,9 +2132,7 @@ export function lowerArraySortCall(
  * by without calling it: over number elements, or over one number field
  * of record or class elements. */
 function recognizedSortKey(lowerer: Lowerer, fnArg: IrExpr, elem: IrType): SortKeyOrder | null {
-  if (fnArg.kind !== "closure" || fnArg.captures.length > 0 || fnArg.adapts) return null;
-  const fn = lowerer.liftedFns.find((lifted) => lifted.name === fnArg.fnName);
-  const keyed = fn ? recognizeKeyComparator(fn) : null;
+  const keyed = closureKeyOrder(lowerer.liftedFns, fnArg);
   if (!keyed) return null;
   if (keyed.read === null) return elem.kind === "f64" ? keyed : null;
   return elem.kind === "record" || elem.kind === "object" ? keyed : null;

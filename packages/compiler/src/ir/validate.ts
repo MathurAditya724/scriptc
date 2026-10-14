@@ -2175,6 +2175,8 @@ function validateFunction(
           buffer: { argTypes: [], minArgs: 0, result: DYN },
           setFromDyn: { argTypes: [DYN, F64], minArgs: 1, result: VOID },
           copyWithin: { argTypes: [F64, F64, F64], minArgs: 3, result: bytesOf(recv.elem) },
+          sortNumeric: { argTypes: [F64], minArgs: 1, result: BOOL },
+          sortCompare: { argTypes: e.args[0] ? [e.args[0].type] : [], minArgs: 1, result: VOID },
           equals: { argTypes: [BYTES_U8], minArgs: 1, result: BOOL },
           compareBuf: { argTypes: [BYTES_U8, F64, F64, F64, F64], minArgs: 1, result: F64 },
           // [needle, align, byteOffset?] — an OMITTED byteOffset is Node's
@@ -2265,6 +2267,23 @@ function validateFunction(
           const want = sig.argTypes[i];
           if (want) expectType(a, want, `bytesIntrinsic ${e.method} arg ${i}`);
         });
+        const order = e.args[0];
+        if (
+          e.method === "sortNumeric" &&
+          (order?.kind !== "numLit" ||
+            (order.value !== 0 && order.value !== 1 && order.value !== -1))
+        )
+          err("bytesIntrinsic sortNumeric order must be the literal 0, 1 or -1", e.loc);
+        const comparator = e.args[0]?.type;
+        if (
+          e.method === "sortCompare" &&
+          (e.args.length !== 1 ||
+            comparator?.kind !== "func" ||
+            comparator.params.length > 2 ||
+            !comparator.params.every((param) => param.kind === "f64") ||
+            comparator.ret.kind !== "f64")
+        )
+          err("bytesIntrinsic sortCompare comparator must be (number, number) => number", e.loc);
         if (!typeEquals(e.type, sig.result)) {
           err(
             `bytesIntrinsic ${e.method} result must be ${sig.result.kind}, got ${e.type.kind}`,

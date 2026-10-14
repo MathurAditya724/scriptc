@@ -7010,6 +7010,15 @@ ScrBytes *scr_bytes_copy_within(ScrBytes *b, double target, double start, double
  * kind and return a fresh +1 owner. with() raises Node's catchable
  * "Invalid typed array index" RangeError for an invalid relative index. */
 ScrBytes *scr_bytes_to_reversed(const ScrBytes *b); /* +1 */
+/* In-place numeric sort of a typed array: order 0 is the default
+ * TypedArray order (NaN last, -0 before +0); 1 or -1 is a recognized
+ * numeric comparator's, refused (false, nothing written) when a float
+ * element is NaN or -0. Runs no script code. */
+bool scr_bytes_sort_numeric(ScrBytes *b, int32_t order);
+/* Comparator sort of a typed array with the comparison schedule Node
+ * uses; `f` is a borrowed closure of `arity` (0..2) number parameters.
+ * A comparator exception stays pending and nothing is written back. */
+void scr_bytes_sort_compare(ScrBytes *b, struct ScrClosure *f, uint32_t arity);
 ScrBytes *scr_bytes_with(const ScrBytes *b, double index, double value); /* +1 */
 
 /* Numeric typed-array iteration drained into number[], and Uint8Array.join.
