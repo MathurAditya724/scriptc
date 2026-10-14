@@ -399,6 +399,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.forInKeys",
   "dyn.forInKeyStrings",
   "dyn.objKeyStrings",
+  "dyn.objEntryPairs",
   "dyn.hasOwn",
   "dyn.propertyIsEnumerable",
   "dyn.assign",

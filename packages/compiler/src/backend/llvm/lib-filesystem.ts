@@ -106,7 +106,71 @@ export function emitDynamicLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitAlwaysPendingUnwind();
     return out;
   }
+  if (e.fn === "dyn.objEntryPairs") return emitObjEntryPairs(host, e);
   return host.emitGenericLibCall(e);
+}
+
+/** Object.entries over a checked-dynamic value as a native [string, any][]:
+ * the runtime snapshots the owned (key, value) pairs in Node's order, and
+ * each pair's references move into a fresh tuple row. */
+function emitObjEntryPairs(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
+  const B = host.B;
+  if (e.type.kind !== "array" || e.type.elem.kind !== "record")
+    throw new InternalCompilerError(
+      "llvm emitter bug: dyn.objEntryPairs result is not a tuple array",
+    );
+  const rowT = e.type.elem;
+  const size = host.sizeType;
+  const value = host.emitExpr(e.args[0]!);
+  host.declare(`declare ptr @scr_dyn_obj_entry_pairs(ptr)`);
+  host.declare(`declare void @scr_dyn_entry_pairs_free(ptr)`);
+  const snap = B.tmp();
+  B.line(`${snap} = call ptr @scr_dyn_obj_entry_pairs(ptr ${value.name})`);
+  host.emitPendingCheck();
+  const pairsT = `{ ${size}, [0 x { ptr, ptr }] }`;
+  const count = B.tmp();
+  B.line(`${count} = load ${size}, ptr ${snap}`);
+  const arr = B.tmp();
+  B.line(`${arr} = ${arrNewCall(host.shapeHost, rowT, count)}`);
+  const out = host.own({ name: arr, type: e.type });
+  const iSlot = B.slot();
+  B.entryAllocas.push(`${iSlot} = alloca ${size}`);
+  B.line(`store ${size} 0, ptr ${iSlot}`);
+  const lc = B.newLabel("entries.c");
+  const lb = B.newLabel("entries.b");
+  const le = B.newLabel("entries.e");
+  B.br(lc);
+  B.startBlock(lc);
+  const i = B.tmp();
+  const more = B.tmp();
+  B.line(`${i} = load ${size}, ptr ${iSlot}`);
+  B.line(`${more} = icmp ult ${size} ${i}, ${count}`);
+  B.condBr(more, lb, le);
+  B.startBlock(lb);
+  const keyPtr = B.tmp();
+  const valuePtr = B.tmp();
+  const key = B.tmp();
+  const item = B.tmp();
+  B.line(
+    `${keyPtr} = getelementptr inbounds ${pairsT}, ptr ${snap}, i64 0, i32 1, ${size} ${i}, i32 0`,
+  );
+  B.line(
+    `${valuePtr} = getelementptr inbounds ${pairsT}, ptr ${snap}, i64 0, i32 1, ${size} ${i}, i32 1`,
+  );
+  B.line(`${key} = load ptr, ptr ${keyPtr} ; +1, moves into the row`);
+  B.line(`${item} = load ptr, ptr ${valuePtr} ; +1, moves into the row`);
+  const row = B.tmp();
+  B.line(`${row} = call ptr @${mangleRecordNew(rowT.shapeId)}()`);
+  host.storeField(host.recordFieldPtr(row, rowT.shapeId, "0").ptr, STRING, key);
+  host.storeField(host.recordFieldPtr(row, rowT.shapeId, "1").ptr, DYN, item);
+  host.arrPush(arr, "ref", row); // push takes ownership of the row
+  const next = B.tmp();
+  B.line(`${next} = add ${size} ${i}, 1`);
+  B.line(`store ${size} ${next}, ptr ${iSlot}`);
+  B.br(lc);
+  B.startBlock(le);
+  B.line(`call void @scr_dyn_entry_pairs_free(ptr ${snap})`);
+  return out;
 }
 
 export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {

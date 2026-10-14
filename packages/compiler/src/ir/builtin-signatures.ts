@@ -2709,6 +2709,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.forInKeyStrings": { argTypes: [DYN], result: arrayOf(STRING) },
   "dyn.forInStable": { argTypes: [DYN], result: BOOL },
   "dyn.objKeyStrings": { argTypes: [DYN], result: arrayOf(STRING) },
+  /** Object.entries as a native [string, any][] (VOID: the tuple row's
+   * shape is program-dependent; the validator checks it). */
+  "dyn.objEntryPairs": { argTypes: [DYN], result: VOID },
   "dyn.hasOwn": { argTypes: [DYN, STRING], result: BOOL },
   "dyn.propertyIsEnumerable": { argTypes: [DYN, STRING], result: BOOL },
   "dyn.assign": { argTypes: [DYN, DYN], result: DYN },

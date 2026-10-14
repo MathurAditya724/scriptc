@@ -4990,6 +4990,19 @@ ScrArr *scr_dyn_for_in_key_strs(const ScrDyn *v);
 bool scr_dyn_for_in_stable(const ScrDyn *v);
 /* Object.keys as a native string[] (+1); NULL with an exception pending. */
 ScrArr *scr_dyn_obj_key_strs(const ScrDyn *v);
+/* Object.entries as owned (key, value) pairs: compiled code moves each
+ * pair into a native [string, any] row, then frees the snapshot with
+ * scr_dyn_entry_pairs_free. NULL with an exception pending. */
+typedef struct {
+  ScrStr *key;
+  ScrDyn *value;
+} ScrDynEntryPair;
+typedef struct {
+  size_t count;
+  ScrDynEntryPair pairs[];
+} ScrDynEntryPairs;
+ScrDynEntryPairs *scr_dyn_obj_entry_pairs(const ScrDyn *v);
+void scr_dyn_entry_pairs_free(ScrDynEntryPairs *pairs);
 /* Snapshot all own string keys of a SCR_DYN_OBJ in JS order. Returns +1. */
 ScrDyn *scr_dyn_obj_own_keys(const ScrDyn *v);
 ScrDyn *scr_dyn_own_keys(const ScrDyn *value);
