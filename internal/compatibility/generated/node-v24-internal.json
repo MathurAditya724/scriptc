@@ -521,9 +521,9 @@
       "apiEntries": 24,
       "static": {
         "supported": 0,
-        "partial": 11,
+        "partial": 23,
         "refused": 0,
-        "not-implemented": 13,
+        "not-implemented": 1,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -536,9 +536,9 @@
       "apiEntries": 17,
       "static": {
         "supported": 0,
-        "partial": 14,
+        "partial": 16,
         "refused": 0,
-        "not-implemented": 3,
+        "not-implemented": 1,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -68631,7 +68631,9 @@
         "tests": [
           "tests/corpus/1480-os-network-interfaces.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/4598-os-available-parallelism.ts"
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/5141-os-constants.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -68864,8 +68866,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:os"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.os.arch",
+        "tests": [
+          "tests/corpus/5140-os-host-facts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -68887,8 +68892,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:os"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.os.cpus",
+        "tests": [
+          "tests/corpus/5140-os-host-facts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -68910,8 +68918,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:os"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.os.endianness",
+        "tests": [
+          "tests/corpus/5140-os-host-facts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -68933,8 +68944,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:os"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.os.freemem",
+        "tests": [
+          "tests/corpus/5140-os-host-facts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -68956,8 +68970,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:os"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.os.getPriority",
+        "tests": [
+          "tests/corpus/5140-os-host-facts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -69006,8 +69023,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:os"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.os.hostname",
+        "tests": [
+          "tests/corpus/5140-os-host-facts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -69029,8 +69049,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:os"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.os.loadavg",
+        "tests": [
+          "tests/corpus/5140-os-host-facts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -69052,8 +69075,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:os"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.os.machine",
+        "tests": [
+          "tests/corpus/5140-os-host-facts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -69260,8 +69286,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:os"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.os.uptime",
+        "tests": [
+          "tests/corpus/5140-os-host-facts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -69310,8 +69339,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:os"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.os.version",
+        "tests": [
+          "tests/corpus/5140-os-host-facts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -69360,8 +69392,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:os"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.os.constants",
+        "tests": [
+          "tests/corpus/5141-os-constants.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -69383,8 +69418,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:os"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.os.devNull",
+        "tests": [
+          "tests/corpus/5140-os-host-facts.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -69409,10 +69447,12 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "packages/runtime/test/path.test.ts",
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/5142-path-parse-format.ts",
           "tests/corpus/957-builtins-namespace.ts"
         ]
       },
@@ -69549,8 +69589,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:path"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.path.format",
+        "tests": [
+          "tests/corpus/5142-path-parse-format.ts",
+          "packages/runtime/test/path.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -69685,8 +69729,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:path"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.path.parse",
+        "tests": [
+          "tests/corpus/5142-path-parse-format.ts",
+          "packages/runtime/test/path.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },

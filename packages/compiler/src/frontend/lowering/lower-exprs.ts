@@ -155,6 +155,7 @@ import { mixinFnOfCallee } from "./lower-mixins.js";
 import {
   isConstAssertionTypeNode,
   isGenericCallableMemberType,
+  isOsConstantsType,
   isParseArgsDynTypeName,
   underConstAssertion,
   unitOnlyUnion,
@@ -1134,6 +1135,9 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         }
         if (bi.module === "http" && bi.member === "STATUS_CODES") {
           return { kind: "libCall", fn: "http.statusCodes", args: [], type: DYN, loc };
+        }
+        if (bi.module === "os" && bi.member === "constants") {
+          return { kind: "libCall", fn: "os.constants", args: [], type: DYN, loc };
         }
         // tls.rootCertificates: a runtime-valued module constant (the
         // cached bundled-CA array) — the one member read that lowers
@@ -2419,10 +2423,15 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       segmentDataSymbol?.name === "SegmentData" &&
       lowerer.isStdlibSymbol(segmentDataSymbol) &&
       ["segment", "index", "input", "isWordLike"].includes(expr.name.text);
+    // os.constants members vary by platform (the declared groups list
+    // every platform's names): a number member reads as `number |
+    // undefined`, like an array element, and a group stays checked.
+    const osConstants = isOsConstantsType(lowerer.typeOf(expr.expression), lowerer);
     if (
       isParseArgsDynProperty(lowerer, expr) ||
       isStatFsDynProperty(lowerer, expr) ||
-      segmentDataProperty
+      segmentDataProperty ||
+      osConstants
     ) {
       const recv = lowerer.lowerExpr(expr.expression);
       if (recv.type.kind === "dyn") {
@@ -2433,17 +2442,20 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           loc: locOf(expr.name),
         };
         const opt = hasOptionalChainGuard(expr.expression);
-        return lowerer.maybeNarrow(
-          {
-            kind: "dynKeyGet",
-            key,
-            ...(opt ? { optional: true as const } : {}),
-            value: recv,
-            type: DYN,
-            loc,
-          },
-          expr,
-        );
+        const read: IrExpr = {
+          kind: "dynKeyGet",
+          key,
+          ...(opt ? { optional: true as const } : {}),
+          value: recv,
+          type: DYN,
+          loc,
+        };
+        if (osConstants) {
+          return lowerer.mapTypeOf(lowerer.typeOf(expr))?.kind === "f64"
+            ? lowerer.coerceToExpected(read, lowerer.withUndefinedArm(F64))
+            : read;
+        }
+        return lowerer.maybeNarrow(read, expr);
       }
     }
     // A member read through a NULLISH generic binding (`const i: I<A &

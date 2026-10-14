@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 40,
-        "verify-gap": 2398,
-        "audit-partial": 768,
+        "verify-gap": 2384,
+        "audit-partial": 782,
         "classify": 2,
         "implement": 80
       }
@@ -48814,12 +48814,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.os.arch",
+          "tests": [
+            "tests/corpus/5140-os-host-facts.ts"
+          ]
         }
       }
     },
@@ -48839,12 +48841,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.os.cpus",
+          "tests": [
+            "tests/corpus/5140-os-host-facts.ts"
+          ]
         }
       }
     },
@@ -48864,12 +48868,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.os.endianness",
+          "tests": [
+            "tests/corpus/5140-os-host-facts.ts"
+          ]
         }
       }
     },
@@ -48889,12 +48895,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.os.freemem",
+          "tests": [
+            "tests/corpus/5140-os-host-facts.ts"
+          ]
         }
       }
     },
@@ -48914,12 +48922,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.os.getPriority",
+          "tests": [
+            "tests/corpus/5140-os-host-facts.ts"
+          ]
         }
       }
     },
@@ -48967,12 +48977,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.os.hostname",
+          "tests": [
+            "tests/corpus/5140-os-host-facts.ts"
+          ]
         }
       }
     },
@@ -48992,12 +49004,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.os.loadavg",
+          "tests": [
+            "tests/corpus/5140-os-host-facts.ts"
+          ]
         }
       }
     },
@@ -49017,12 +49031,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.os.machine",
+          "tests": [
+            "tests/corpus/5140-os-host-facts.ts"
+          ]
         }
       }
     },
@@ -49235,12 +49251,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.os.uptime",
+          "tests": [
+            "tests/corpus/5140-os-host-facts.ts"
+          ]
         }
       }
     },
@@ -49288,12 +49306,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.os.version",
+          "tests": [
+            "tests/corpus/5140-os-host-facts.ts"
+          ]
         }
       }
     },
@@ -49341,12 +49361,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.os.constants",
+          "tests": [
+            "tests/corpus/5141-os-constants.ts"
+          ]
         }
       }
     },
@@ -49366,12 +49388,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.os.devNull",
+          "tests": [
+            "tests/corpus/5140-os-host-facts.ts"
+          ]
         }
       }
     },
@@ -49484,12 +49508,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:path",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.path.format",
+          "tests": [
+            "tests/corpus/5142-path-parse-format.ts",
+            "packages/runtime/test/path.test.ts"
+          ]
         }
       }
     },
@@ -49627,12 +49654,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:path",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.path.parse",
+          "tests": [
+            "tests/corpus/5142-path-parse-format.ts",
+            "packages/runtime/test/path.test.ts"
+          ]
         }
       }
     },

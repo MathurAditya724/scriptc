@@ -33,7 +33,14 @@ import { lowerProcessLoadEnvFile } from "./environment.js";
 import { lowerFsWatchCall, lowerFsReaddirTypesCall } from "./filesystem.js";
 import { lowerZlibModuleCall } from "./compression.js";
 import { lowerForkCall } from "./child-process.js";
-import { lowerOsNetworkInterfacesCall, lowerOsUserInfoCall } from "./operating-system.js";
+import {
+  lowerOsCpusCall,
+  lowerOsGetPriorityCall,
+  lowerOsNetworkInterfacesCall,
+  lowerOsUserInfoCall,
+  lowerPathFormatCall,
+  lowerPathParseCall,
+} from "./operating-system.js";
 import { lowerQuerystringParseCall, lowerQuerystringStringifyCall } from "./querystring.js";
 
 export function lowerBuiltinModuleCall(
@@ -127,6 +134,24 @@ export function lowerBuiltinModuleCall(
   }
   if (bi.module === "os" && bi.member === "userInfo") {
     return lowerOsUserInfoCall(lowerer, expr, loc);
+  }
+  if (bi.module === "os" && bi.member === "cpus") {
+    return lowerOsCpusCall(lowerer, expr, loc);
+  }
+  if (bi.module === "os" && bi.member === "getPriority") {
+    return lowerOsGetPriorityCall(lowerer, expr, loc);
+  }
+  // path.parse/path.format: the bare module is the TARGET platform's
+  // family, the namespaces their own.
+  if (
+    (bi.module === "path" || bi.module === "path/posix" || bi.module === "path/win32") &&
+    (bi.member === "parse" || bi.member === "format")
+  ) {
+    const win32 =
+      bi.module === "path/win32" || (bi.module === "path" && lowerer.targetPlatform === "win32");
+    return bi.member === "parse"
+      ? lowerPathParseCall(lowerer, expr, win32, loc)
+      : lowerPathFormatCall(lowerer, expr, win32, loc);
   }
   // node:querystring — parse/stringify are entirely special-cased (the
   // sep/eq/options completions, parse's call-site-shaped dictionary

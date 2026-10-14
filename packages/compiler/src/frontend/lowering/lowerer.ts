@@ -207,6 +207,7 @@ import {
   describeRecordMemberBlocker,
   formatIrType,
   FETCH_AMBIENT_TYPES,
+  isOsConstantsSymbol,
   isUnitOnlyTsType,
   isWorkerHandleType,
   jsOpenObjectType,
@@ -3977,6 +3978,8 @@ export class Lowerer {
       if (isIndexedRead(e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOptionalProcessStreamProperty(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isSettledIteratorValueRead(this, e)) return true;
+      if (ts.isPropertyAccessExpression(e) && isOsConstantsSymbol(symbolOf(e.expression), this))
+        return true;
       if (ts.isCallExpression(e) && this.runtimeOptionalReduceTypes.has(e)) return true;
       if (
         ts.isCallExpression(e) &&
@@ -10937,6 +10940,10 @@ export class Lowerer {
     }
     if (bi.module === "http" && bi.member === "STATUS_CODES") {
       return { kind: "libCall", fn: "http.statusCodes", args: [], type: DYN, loc };
+    }
+    // os.constants: the runtime's null-prototype constants object.
+    if (bi.module === "os" && bi.member === "constants") {
+      return { kind: "libCall", fn: "os.constants", args: [], type: DYN, loc };
     }
     // tls.rootCertificates through the namespace: the same runtime-valued
     // constant the named-import read lowers to.

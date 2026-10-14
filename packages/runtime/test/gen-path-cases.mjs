@@ -218,6 +218,32 @@ for (const p of paths) {
   emit("isAbsolute", [p], String(win32.isAbsolute(p)));
   emit("toNamespacedPath", [p], win32.toNamespacedPath(p));
   emit("resolve1", [p], win32.resolve(p));
+  // parse's five fields joined by U+0001, and format over them.
+  const parsed = win32.parse(p);
+  const fields = [parsed.root, parsed.dir, parsed.base, parsed.ext, parsed.name];
+  emit("parse", [p], fields.join("\u0001"));
+  emit(
+    "format",
+    [parsed.root, parsed.dir, parsed.base, parsed.name, parsed.ext],
+    win32.format(parsed),
+  );
+}
+
+// ── format's `||` defaults over field subsets ────────────────────────
+for (const root of ["", "C:\\", "\\"]) {
+  for (const dir of ["", "C:\\", "d", "C:\\d"]) {
+    for (const base of ["", "b.x"]) {
+      for (const name of ["", "n"]) {
+        for (const ext of ["", "e", ".e"]) {
+          emit(
+            "format",
+            [root, dir, base, name, ext],
+            win32.format({ root, dir, base, name, ext }),
+          );
+        }
+      }
+    }
+  }
 }
 
 // ── basename with a suffix ───────────────────────────────────────────

@@ -1319,15 +1319,77 @@
       "note": "constant value read"
     },
     {
+      "id": "node-builtin.os.arch",
+      "kind": "node-builtin",
+      "name": "os.arch",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.os.availableParallelism",
       "kind": "node-builtin",
       "name": "os.availableParallelism",
       "status": "static"
     },
     {
+      "id": "node-builtin.os.constants",
+      "kind": "node-builtin",
+      "name": "os.constants",
+      "status": "static",
+      "note": "the platform's dlopen, errno, signals and priority groups; members a platform lacks read as undefined"
+    },
+    {
+      "id": "node-builtin.os.cpus",
+      "kind": "node-builtin",
+      "name": "os.cpus",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.os.devNull",
+      "kind": "node-builtin",
+      "name": "os.devNull",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.os.endianness",
+      "kind": "node-builtin",
+      "name": "os.endianness",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.os.freemem",
+      "kind": "node-builtin",
+      "name": "os.freemem",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.os.getPriority",
+      "kind": "node-builtin",
+      "name": "os.getPriority",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.os.homedir",
       "kind": "node-builtin",
       "name": "os.homedir",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.os.hostname",
+      "kind": "node-builtin",
+      "name": "os.hostname",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.os.loadavg",
+      "kind": "node-builtin",
+      "name": "os.loadavg",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.os.machine",
+      "kind": "node-builtin",
+      "name": "os.machine",
       "status": "static"
     },
     {
@@ -1367,9 +1429,21 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.os.uptime",
+      "kind": "node-builtin",
+      "name": "os.uptime",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.os.userInfo",
       "kind": "node-builtin",
       "name": "os.userInfo",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.os.version",
+      "kind": "node-builtin",
+      "name": "os.version",
       "status": "static"
     },
     {
@@ -1405,6 +1479,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.path.format",
+      "kind": "node-builtin",
+      "name": "path.format",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.path.isAbsolute",
       "kind": "node-builtin",
       "name": "path.isAbsolute",
@@ -1420,6 +1500,12 @@
       "id": "node-builtin.path.normalize",
       "kind": "node-builtin",
       "name": "path.normalize",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.path.parse",
+      "kind": "node-builtin",
+      "name": "path.parse",
       "status": "static"
     },
     {
@@ -1455,6 +1541,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.path.posix.format",
+      "kind": "node-builtin",
+      "name": "path/posix.format",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.path.posix.isAbsolute",
       "kind": "node-builtin",
       "name": "path/posix.isAbsolute",
@@ -1470,6 +1562,12 @@
       "id": "node-builtin.path.posix.normalize",
       "kind": "node-builtin",
       "name": "path/posix.normalize",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.path.posix.parse",
+      "kind": "node-builtin",
+      "name": "path/posix.parse",
       "status": "static"
     },
     {
@@ -1555,6 +1653,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.path.win32.format",
+      "kind": "node-builtin",
+      "name": "path/win32.format",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.path.win32.isAbsolute",
       "kind": "node-builtin",
       "name": "path/win32.isAbsolute",
@@ -1570,6 +1674,12 @@
       "id": "node-builtin.path.win32.normalize",
       "kind": "node-builtin",
       "name": "path/win32.normalize",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.path.win32.parse",
+      "kind": "node-builtin",
+      "name": "path/win32.parse",
       "status": "static"
     },
     {

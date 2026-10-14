@@ -79,7 +79,7 @@ hello, world
 
 Without `-o`, the module is written to `.scriptc/hello.wasm`. `scriptc run` runs it with Node.js's WASI implementation, so it needs Node.js 24 or later on your `PATH`. It passes through stdio and environment variables, makes the current directory available as `/`, and maps the host's temporary directory to `/tmp`. You can run a built module in any other WASI Preview 1 runtime too.
 
-WASI modules support the same language features as native executables, including async functions, promises, generators, timers, stdin and readline, and filesystem callbacks and promises. WASI Preview 1 has no sockets, process spawning, signals, network interfaces, or file watching, so networking and `fetch`, child processes, signal APIs, `os.networkInterfaces()`, and `fs.watch` fail the build with `SC3002`. `--sanitize` and native FFI aren't available for WASI.
+WASI modules support the same language features as native executables, including async functions, promises, generators, timers, stdin and readline, and filesystem callbacks and promises. WASI Preview 1 has no sockets, process spawning, signals, network interfaces, or file watching, so networking and `fetch`, child processes, signal APIs, `os.networkInterfaces()`, the `os` host facts without a WASI equivalent (`cpus()`, `hostname()`, `freemem()`, `loadavg()`, `uptime()`, `getPriority()`), and `fs.watch` fail the build with `SC3002`. `--sanitize` and native FFI aren't available for WASI.
 
 To build a module that a web or native application calls into, see [WebAssembly Modules](/docs/wasm).
 

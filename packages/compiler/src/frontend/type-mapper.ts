@@ -1050,6 +1050,49 @@ let mapTypeDepth = 0;
  * stay fenced instead of interning a per-context-wrong shape). */
 let contextResolutions = 0;
 
+/** os.constants and its groups — @types/node's `namespace constants`
+ * (errno, dlopen, priority) and SignalConstants, and the fallback's twins:
+ * the runtime's checked-dynamic constants object, whose members vary by
+ * platform. */
+export function isOsConstantsType(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  return (
+    isOsConstantsSymbol(type.getAliasSymbol(), ctx, true) ||
+    isOsConstantsSymbol(type.getSymbol(), ctx, true)
+  );
+}
+
+/** A symbol declared as os.constants or one of its groups (a namespace, or
+ * with `types`, the SignalConstants alias; without it, the `signals`
+ * constant). The binding-symbol form needs no type query. */
+export function isOsConstantsSymbol(
+  symbol: ts.Symbol | null | undefined,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+  types = false,
+): boolean {
+  if (!symbol) return false;
+  for (const d of ctx.checker.declarationsOf(symbol)) {
+    const alias = types && ts.isTypeAliasDeclaration(d) && d.name.text === "SignalConstants";
+    const signals =
+      !types && ts.isVariableDeclaration(d) && ts.isIdentifier(d.name) && d.name.text === "signals";
+    if (!(alias || signals || ts.isModuleDeclaration(d)) || !ctx.isStdlibFile(d.getSourceFile()))
+      continue;
+    let inConstants = ts.isModuleDeclaration(d) && d.name.text === "constants";
+    for (let n: ts.Node | undefined = d.parent; n; n = n.parent) {
+      if (!ts.isModuleDeclaration(n)) continue;
+      if (ts.isStringLiteral(n.name)) {
+        if ((n.name.text === "os" || n.name.text === "node:os") && (alias || inConstants))
+          return true;
+        break;
+      }
+      if (n.name.text === "constants") inConstants = true;
+    }
+  }
+  return false;
+}
+
 /** worker_threads' Worker and MessagePort: owned runtime handles that keep
  * their live object representation (DYN) wherever they are stored. */
 function isWorkerHandleSymbol(
@@ -1164,6 +1207,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "object", className: "%Error" };
   }
+  if (isOsConstantsType(type, ctx)) return DYN;
   // Immutable<T> (@scriptc/types) is a deep-readonly view: the value is
   // still the T it maps.
   const immutableSource = immutableSourceType(type, ctx);
@@ -2989,6 +3033,66 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // string arm. Key order is Node's runtime insertion order (node_os.cc
   // builds uid, gid, username, homedir, shell), so Object.keys over the
   // record answers exactly Node.
+  // os.CpuInfo (os.cpus()'s element), path.ParsedPath (path.parse()'s
+  // result) and path.FormatInputPathObject (path.format()'s argument):
+  // stdlib data interfaces interned explicitly, the AddressInfo pattern.
+  // Key order is Node's own (lib/os.js builds { model, speed, times:
+  // { user, nice, sys, idle, irq } }; path.parse builds { root, dir, base,
+  // ext, name }).
+  const cpuTimes = (): IrType => ({
+    kind: "record",
+    shapeId: ctx.shapes.intern(
+      ["idle", "irq", "nice", "sys", "user"].map((name) => ({ name, type: F64 })),
+      false,
+      undefined,
+      ["user", "nice", "sys", "idle", "irq"],
+    ),
+  });
+  if (
+    psym &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          ts.isTypeLiteralNode(d) &&
+          ts.isPropertySignature(d.parent) &&
+          ts.isIdentifier(d.parent.name) &&
+          d.parent.name.text === "times" &&
+          ts.isInterfaceDeclaration(d.parent.parent) &&
+          d.parent.parent.name.text === "CpuInfo" &&
+          ctx.isStdlibFile(d.getSourceFile()),
+      )
+  )
+    return cpuTimes();
+  if (isStdlibInterface("CpuInfo")) {
+    const times = cpuTimes();
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "model", type: STRING },
+          { name: "speed", type: F64 },
+          { name: "times", type: times },
+        ],
+        false,
+        undefined,
+        ["model", "speed", "times"],
+      ),
+    };
+  }
+  if (isStdlibInterface("ParsedPath") || isStdlibInterface("FormatInputPathObject")) {
+    const field = psym!.name === "ParsedPath" ? STRING : withUndefinedArm(STRING, ctx.unions);
+    if (!field) return null;
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        ["base", "dir", "ext", "name", "root"].map((name) => ({ name, type: field })),
+        false,
+        undefined,
+        ["root", "dir", "base", "ext", "name"],
+      ),
+    };
+  }
   if (isStdlibInterface("UserInfo")) {
     const args = checker.getTypeArguments(widened as ts.TypeReference);
     if (args.length > 1) return null;

@@ -157,6 +157,22 @@ int main(int argc, char **argv) {
       scr_arr_release(pack);
     } else if (strcmp(op, "relative") == 0) {
       result = scr_path_win32_relative(args[0], args[1]);
+    } else if (strcmp(op, "parse") == 0) {
+      /* The five fields joined by U+0001, like the generator. */
+      ScrArr *parts = scr_path_win32_parse(args[0]);
+      char joined[MAX_FIELD];
+      size_t used = 0;
+      for (size_t k = 0; k < parts->len; k++) {
+        ScrStr *part = scr_arr_get_ref(parts, (double)k);
+        if (k > 0) joined[used++] = '\x01';
+        memcpy(joined + used, part->data, part->len);
+        used += part->len;
+        scr_str_release(part);
+      }
+      scr_arr_release(parts);
+      check(op, args, nargs, joined, used, expbuf, explen);
+    } else if (strcmp(op, "format") == 0) {
+      result = scr_path_win32_format(args[0], args[1], args[2], args[3], args[4]);
     } else {
       fprintf(stderr, "unknown op: %s\n", op);
       return 2;

@@ -918,6 +918,11 @@ const PATH_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     result: STRING,
     valueParams: [{ mode: "required", type: STRING }],
   },
+  // Special-cased (lowerPathParseCall / lowerPathFormatCall): the
+  // ParsedPath record and the pathObject argument follow the call site's
+  // mapped shapes.
+  parse: { fn: "path.parse", params: [STRING], result: VOID },
+  format: { fn: "path.format", params: [], result: STRING },
 };
 
 /** The win32 twins (scr_path.c's Node-v24 path.win32 port, byte-for-byte):
@@ -987,6 +992,11 @@ const PATH_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     result: STRING,
     valueParams: [{ mode: "required", type: STRING }],
   },
+  // Special-cased (lowerPathParseCall / lowerPathFormatCall): the
+  // ParsedPath record and the pathObject argument follow the call site's
+  // mapped shapes.
+  parse: { fn: "path.win32Parse", params: [STRING], result: VOID },
+  format: { fn: "path.win32Format", params: [], result: STRING },
 };
 
 export const BUILTIN_MODULE_FNS: Record<
@@ -1270,6 +1280,28 @@ export const BUILTIN_MODULE_FNS: Record<
       result: F64,
       valueParams: [],
     },
+    // os.arch() IS process.arch, like platform().
+    arch: { fn: "process.arch", params: [], result: STRING, valueParams: [] },
+    hostname: { fn: "os.hostname", params: [], result: STRING, valueParams: [] },
+    // uv_os_uname's machine and version fields, read once at module load
+    // in Node (they never change while a process runs).
+    machine: { fn: "os.machine", params: [], result: STRING, valueParams: [] },
+    version: { fn: "os.version", params: [], result: STRING, valueParams: [] },
+    endianness: { fn: "os.endianness", params: [], result: STRING, valueParams: [] },
+    freemem: { fn: "os.freemem", params: [], result: F64, valueParams: [] },
+    uptime: { fn: "os.uptime", params: [], result: F64, valueParams: [] },
+    loadavg: { fn: "os.loadavg", params: [], result: arrayOf(F64), valueParams: [] },
+    // An omitted (or undefined) pid is 0, the current process
+    // (lowerOsGetPriorityCall completes it).
+    getPriority: {
+      fn: "os.getPriority",
+      params: [F64],
+      result: F64,
+      valueParams: [{ mode: "optional", type: F64, defaultValue: 0 }],
+    },
+    // Special-cased (lowerOsCpusCall): the call site's CpuInfo[] assembles
+    // from one uv_cpu_info snapshot.
+    cpus: { fn: "os.cpusTake", params: [], result: VOID },
     // Entirely special-cased (lowerOsNetworkInterfacesCall): the result is
     // the call site's mapped Dict<NetworkInterfaceInfo[]> shape, verified
     // structurally there — this entry only routes the dispatch.
@@ -1613,7 +1645,7 @@ export const BUILTIN_MODULE_CONSTS: Record<
   path: { sep: "/", delimiter: ":" },
   "path/posix": { sep: "/", delimiter: ":" },
   "path/win32": { sep: "\\", delimiter: ";" },
-  os: { EOL: "\n" },
+  os: { EOL: "\n", devNull: "/dev/null" },
   worker_threads: { isMainThread: true, threadId: 0 },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
 };
@@ -1692,6 +1724,8 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
   os: {
     // lowerOsUserInfoCall assembles the record from scalar libCalls.
     userInfo: ["os.userHomedir", "os.userShell"],
+    // lowerOsCpusCall reads the cpusTake snapshot through its accessors.
+    cpus: ["os.cpusModel", "os.cpusField"],
   },
 };
 
@@ -2106,6 +2140,15 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     fns: ["tlsca.set"],
     note: "replaces the default set and the client trust anchors for the rest of the process",
   },
+  // os.constants is a VALUE read (lowerNamespaceBuiltinProperty and the
+  // named-import path): the platform's null-prototype constants object.
+  {
+    id: "node-builtin.os.constants",
+    kind: "node-builtin",
+    name: "os.constants",
+    fns: ["os.constants"],
+    note: "the platform's dlopen, errno, signals and priority groups; members a platform lacks read as undefined",
+  },
 ];
 
 /** The win32-target overrides of the bare modules' constants: path's
@@ -2116,7 +2159,7 @@ const WIN32_TARGET_CONSTS: Record<
   Record<string, string | number | boolean | undefined> | undefined
 > = {
   path: BUILTIN_MODULE_CONSTS["path/win32"],
-  os: { EOL: "\r\n" },
+  os: { EOL: "\r\n", devNull: "\\\\.\\nul" },
 };
 
 /** BUILTIN_MODULE_FNS with the platform-conditional modules bound per
