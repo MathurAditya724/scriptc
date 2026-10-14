@@ -648,33 +648,49 @@ void scr_process_off_warning(ScrDyn *fn) {
   }
 }
 
-/* Dispatch + the default stderr report over a built warning dyn node.
+/* The default stderr report + dispatch over a built warning dyn node.
  * Borrowed. A listener throw propagates (the dc publish stance). */
 static void scr_warning_dispatch(ScrDyn *w) {
-  for (size_t i = 0; i < scr_nwarn; i++) {
-    ScrDyn *r = scr_dyn_call(scr_warn_listeners[i], &w, 1, "listener");
-    if (r == NULL) return; /* pending exception propagates */
-    scr_dyn_release(r);
-  }
   /* "(node:pid) [CODE] Name: message" + "\n<detail>" — Node's
-   * onWarning report. */
+   * onWarning report, written as ONE console.error line (so the global
+   * console's group indentation applies to each of its lines). Node
+   * registers that listener at startup, so it runs before the program's. */
   const ScrDyn *en = scr_dyn_obj_get(w, "name", 4);
   const ScrDyn *em = scr_dyn_obj_get(w, "message", 7);
   const ScrDyn *ec = scr_dyn_obj_get(w, "code", 4);
   const ScrDyn *ed = scr_dyn_obj_get(w, "detail", 6);
-  fflush(stdout);
-  fprintf(stderr, "(node:%ld) ", SCR_WARN_PID());
-  if (ec && ec->kind == SCR_DYN_STR) fprintf(stderr, "[%s] ", ec->v.str->data);
-  fprintf(stderr, "%s: %s",
-          (en && en->kind == SCR_DYN_STR) ? en->v.str->data : "Warning",
-          (em && em->kind == SCR_DYN_STR) ? em->v.str->data : "");
-  if (ed && ed->kind == SCR_DYN_STR) fprintf(stderr, "\n%s", ed->v.str->data);
-  fputc('\n', stderr);
+  ScrJsonBuf report;
+  scr_jb_init(&report);
+  char pid[32];
+  snprintf(pid, sizeof pid, "(node:%ld) ", SCR_WARN_PID());
+  scr_jb_puts(&report, pid);
+  if (ec && ec->kind == SCR_DYN_STR) {
+    scr_jb_puts(&report, "[");
+    scr_jb_put_str(&report, ec->v.str);
+    scr_jb_puts(&report, "] ");
+  }
+  if (en && en->kind == SCR_DYN_STR) scr_jb_put_str(&report, en->v.str);
+  else scr_jb_puts(&report, "Warning");
+  scr_jb_puts(&report, ": ");
+  if (em && em->kind == SCR_DYN_STR) scr_jb_put_str(&report, em->v.str);
+  if (ed && ed->kind == SCR_DYN_STR) {
+    scr_jb_puts(&report, "\n");
+    scr_jb_put_str(&report, ed->v.str);
+  }
   /* Node's one-time trace hint, after the first report. */
   static SCR_TL bool hinted = false;
   if (!hinted) {
     hinted = true;
-    fputs("(Use `node --trace-warnings ...` to show where the warning was created)\n", stderr);
+    scr_jb_puts(&report, "\n(Use `node --trace-warnings ...` to show where the warning was created)");
+  }
+  ScrLogArg line = {.tag = SCR_ARG_STR};
+  line.v.s = scr_jb_finish(&report);
+  scr_console_error(1, &line);
+  scr_str_release(line.v.s);
+  for (size_t i = 0; i < scr_nwarn; i++) {
+    ScrDyn *r = scr_dyn_call(scr_warn_listeners[i], &w, 1, "listener");
+    if (r == NULL) return; /* pending exception propagates */
+    scr_dyn_release(r);
   }
 }
 
@@ -690,6 +706,48 @@ void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
   scr_error_release(e);
   scr_warning_dispatch(w);
   scr_dyn_release(w);
+}
+
+/* The console members' warnings. Node's emitWarning emits on
+ * process.nextTick, so these queue in order and each rides one raw tick
+ * on the shared tick queue; any left at exit are dropped with it. */
+static SCR_TL ScrStr **scr_warn_texts = NULL;
+static SCR_TL size_t scr_warn_texts_head = 0, scr_warn_texts_len = 0, scr_warn_texts_cap = 0;
+static SCR_TL bool scr_warn_texts_registered = false;
+
+static void scr_warn_texts_teardown(void) {
+  for (size_t i = scr_warn_texts_head; i < scr_warn_texts_len; i++) scr_str_release(scr_warn_texts[i]);
+  free(scr_warn_texts);
+  scr_warn_texts = NULL;
+  scr_warn_texts_head = scr_warn_texts_len = scr_warn_texts_cap = 0;
+}
+
+static void scr_warn_text_tick(void) {
+  if (scr_warn_texts_head == scr_warn_texts_len) return;
+  ScrStr *message = scr_warn_texts[scr_warn_texts_head++];
+  if (scr_warn_texts_head == scr_warn_texts_len) scr_warn_texts_head = scr_warn_texts_len = 0;
+  scr_emit_warning(NULL, NULL, message);
+  scr_str_release(message);
+}
+
+void scr_process_emit_warning_text(ScrStr *message) {
+  if (message->len == 0) return;
+  if (!scr_warn_texts_registered) {
+    scr_warn_texts_registered = true;
+    scr_atexit(scr_warn_texts_teardown);
+  }
+  if (scr_warn_texts_len == scr_warn_texts_cap) {
+    size_t cap = scr_warn_texts_cap ? scr_warn_texts_cap * 2 : 4;
+    ScrStr **grown = realloc(scr_warn_texts, cap * sizeof *grown);
+    if (!grown) {
+      fputs("scriptc: out of memory\n", stderr);
+      abort();
+    }
+    scr_warn_texts = grown;
+    scr_warn_texts_cap = cap;
+  }
+  scr_warn_texts[scr_warn_texts_len++] = scr_str_retain(message);
+  scr_next_tick_raw(scr_warn_text_tick);
 }
 
 static void scr_warn_bad_arg(const char *arg, const char *want) {

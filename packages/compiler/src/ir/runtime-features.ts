@@ -50,6 +50,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.onWarning",
   "process.offWarning",
   "process.emitWarning",
+  "process.emitWarningText",
   "util.styleText",
   "als.new",
   "als.get",

@@ -128,8 +128,11 @@ import {
 } from "./lower-classes.js";
 import { classCallbackCall, isClassCallback } from "./class-callbacks.js";
 import { emitterRooted, lowerEmitterMethodCall } from "./lower-event-emitter.js";
-import { lowerConsoleInspectArg, lowerFormatCall } from "./lower-inspect.js";
-import { lowerConsoleInstanceCall } from "./lower-console.js";
+import {
+  lowerConsoleInstanceCall,
+  lowerConsoleMethodCall,
+  lowerConsoleOutput,
+} from "./lower-console.js";
 import {
   STREAM_API_MEMBERS,
   lowerStreamMethodCall,
@@ -353,7 +356,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   }
 
   const consoleMember = lowerer.consoleCallMember(expr);
-  if (consoleMember !== null) {
+  const consoleMethod = consoleMember === null ? lowerer.consoleMethodMember(expr) : null;
+  if (consoleMember !== null || consoleMethod !== null) {
     // A namespace returned by user code must evaluate before the log
     // arguments. Only the global and literal builtin require plumbing
     // have no receiver evaluation to preserve.
@@ -370,126 +374,25 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       created?.spec !== "console"
         ? lowerer.lowerExpr(access.expression)
         : null;
-    const withReceiver = (result: IrExpr): IrExpr =>
-      receiver === null
-        ? result
-        : {
-            kind: "seqExpr",
-            stmts: [{ kind: "exprStmt", expr: receiver, loc }],
-            result,
-            type: result.type,
+    const result =
+      consoleMember !== null
+        ? lowerConsoleOutput(
+            lowerer,
+            expr,
+            consoleMember === "log" || consoleMember === "info" || consoleMember === "debug",
+            `console.${consoleMember}`,
             loc,
-          };
-    // console.log/info/debug write stdout; console.error and console.warn
-    // are one stream in Node (warn IS error, info and debug ARE log) and
-    // write stderr with the exact same formatting. Node's formatter is
-    // formatWithOptions: string arguments print verbatim, numbers and
-    // booleans directly, and EVERYTHING else through util.inspect at the
-    // rest-args depth 2 — which the static inspect machinery renders
-    // here (arrays, records, unions, Maps/Sets, undefined/null, ...);
-    // shapes inspect cannot render keep honest per-argument fences.
-    const surface = `console.${consoleMember}`;
-    const stdoutMember =
-      consoleMember === "log" || consoleMember === "info" || consoleMember === "debug";
-    // A LITERAL format string with %-specifiers and further arguments
-    // (`console.log('Mismatched %s function calls. Expected %s, actual
-    // %d.', name, seg, n)` — test/common's exit report): Node's console
-    // formatter IS util.format — route through the format lowering and
-    // print its one string. Specifier-free first strings keep the
-    // plain space-joined path below (identical output, cheaper).
-    if (
-      expr.arguments.length > 1 &&
-      expr.arguments[0] !== undefined &&
-      (ts.isStringLiteral(expr.arguments[0]) ||
-        ts.isNoSubstitutionTemplateLiteral(expr.arguments[0])) &&
-      /%[sdifjoOc%]/.test(expr.arguments[0].text)
-    ) {
-      const formatted = lowerFormatCall(lowerer, expr, loc, false);
-      return withReceiver({
-        kind: "intrinsic",
-        name: stdoutMember ? "console.log" : "console.error",
-        args: [formatted],
-        type: VOID,
-        loc,
-      });
-    }
-    const args = expr.arguments.map((a) => {
-      const lowered = lowerer.lowerExpr(a);
-
-      // Checked-dynamic values carry their own shape, so the runtime
-      // renders them exactly like Node's console formatter renders a
-      // non-format argument: strings VERBATIM, everything else through
-      // inspect at the rest-args depth 2 (formatWithOptions) — scalar
-      // kinds byte-exactly, boxed functions as [Function: name] /
-      // [Function (anonymous)], composites through the dyn walk
-      // (insp.dyn). Never throws — Node's console.log never does.
-      if (lowered.type.kind === "dyn") {
-        return {
-          kind: "libCall",
-          fn: "insp.dynS",
-          args: [lowered, { kind: "numLit", value: 2, type: F64, loc }],
-          type: STRING,
-          loc,
-        } satisfies IrExpr;
-      }
-      // A function VALUE prints Node's [Function: name] form by boxing
-      // across the checked-dynamic boundary (the box carries the
-      // best-effort reference-site name — the documented naming stance)
-      // and rendering through the same dyn arm.
-      if (
-        lowered.type.kind === "func" &&
-        canBoxFuncIntoDyn(
-          lowered.type,
-          (id) => lowerer.shapes.get(id),
-          (id) => lowerer.unions.get(id),
-        )
-      ) {
-        const name = jsFuncNameOf(a);
-        const boxed: IrExpr = {
-          kind: "dynFrom",
-          value: lowered,
-          type: DYN,
-          ...(name !== null ? { fnName: name } : {}),
+          )
+        : lowerConsoleMethodCall(lowerer, expr, consoleMethod!, loc);
+    return receiver === null
+      ? result
+      : {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+          result,
+          type: result.type,
           loc,
         };
-        return {
-          kind: "libCall",
-          fn: "insp.dynS",
-          args: [boxed, { kind: "numLit", value: 2, type: F64, loc }],
-          type: STRING,
-          loc,
-        } satisfies IrExpr;
-      }
-      // number/string/boolean ride the ScrLogArg protocol directly (the
-      // runtime formats them Node-exactly — including -0).
-      if (
-        lowered.type.kind === "f64" ||
-        lowered.type.kind === "string" ||
-        lowered.type.kind === "bool"
-      ) {
-        return lowered;
-      }
-      // Everything else renders through the static inspect machinery at
-      // the rest-args depth 2 (formatWithOptions): arrays, records,
-      // unions (a string arm prints VERBATIM — the console.log vs
-      // inspect distinction, per arm), Maps/Sets, plain undefined/null,
-      // regexes, symbols, error values, Buffers. Shapes inspect cannot
-      // render fence honestly with the reason.
-      return lowerConsoleInspectArg(
-        lowerer,
-        a,
-        lowerer.deferredFieldSlot(lowered) ?? lowered,
-        surface,
-        loc,
-      );
-    });
-    return withReceiver({
-      kind: "intrinsic",
-      name: stdoutMember ? "console.log" : "console.error",
-      args,
-      type: VOID,
-      loc,
-    });
   }
 
   const consoleInstanceCall = lowerConsoleInstanceCall(lowerer, expr, loc);

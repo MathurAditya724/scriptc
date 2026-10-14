@@ -173,6 +173,16 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "console.new": "scr_console_new",
   "console.bind": "scr_console_bind",
   "console.write": "scr_console_inst_write",
+  "console.label": "scr_console_label",
+  "console.count": "scr_console_count",
+  "console.countReset": "scr_console_count_reset",
+  "console.time": "scr_console_time",
+  "console.timeEnd": "scr_console_time_end",
+  "console.timeLog": "scr_console_time_log",
+  "console.group": "scr_console_group",
+  "console.clear": "scr_console_clear",
+  "console.table": "scr_console_table",
+  "console.dirDyn": "scr_console_dir_dyn",
   "global.native": "scr_global_native",
   "process.builtinModule": "scr_process_builtin_module",
   "process.builtinUnsupported": "scr_process_builtin_unsupported",
@@ -985,6 +995,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.onWarning": "scr_process_on_warning",
   "process.offWarning": "scr_process_off_warning",
   "process.emitWarning": "scr_process_emit_warning",
+  "process.emitWarningText": "scr_process_emit_warning_text",
   "process.onUncaughtException": "scr_process_on_uncaught_exception",
   "process.offUncaughtException": "scr_process_off_uncaught_exception",
   "process.onUnhandledRejection": "scr_process_on_unhandled_rejection",
@@ -1069,6 +1080,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
 };
 
 export const USES_TIMERS_LIB_FNS = new Set<string>([
+  "process.emitWarningText",
   "worker.new",
   "worker.parentPort",
   "process.stdio",

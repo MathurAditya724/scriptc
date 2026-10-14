@@ -2561,9 +2561,11 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
       "the stdout/stderr stream objects have no lowering";
   } else if (container === "console") {
     hint =
-      "console.log/info/debug (stdout) and console.error/warn (stderr) are the supported " +
-      "console surface (arguments render with Node's console semantics: strings verbatim, " +
-      "everything else through the static util.inspect)";
+      "console.log/info/debug (stdout), console.error/warn (stderr), assert, count, " +
+      "countReset, dir, dirxml, group, groupCollapsed, groupEnd, table, time, timeEnd, " +
+      "timeLog, clear, profile, profileEnd, and timeStamp are the supported console surface " +
+      "(arguments render with Node's console semantics: strings verbatim, everything else " +
+      "through the static util.inspect)";
   } else if (container === "TextEncoder") {
     hint =
       "TextEncoder instances can be stored, passed, and captured; encode(), encodeInto(string, Uint8Array), and encoding compile";

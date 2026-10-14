@@ -176,9 +176,9 @@
       "apiEntries": 24,
       "static": {
         "supported": 0,
-        "partial": 7,
+        "partial": 23,
         "refused": 0,
-        "not-implemented": 17,
+        "not-implemented": 1,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -18658,6 +18658,11 @@
           "tests/corpus/2631-create-require/main.ts",
           "tests/corpus/4900-console-instances.ts",
           "tests/corpus/4901-console-instance-errors.ts",
+          "tests/corpus/5095-console-count-group.ts",
+          "tests/corpus/5096-console-assert-dir.ts",
+          "tests/corpus/5097-console-table.ts",
+          "tests/corpus/5098-console-time-warnings.ts",
+          "tests/corpus/5099-console-methods-dynamic.cjs",
           "tests/corpus/console-native-value.js",
           "tests/harness/npm-static.test.ts"
         ]
@@ -18705,8 +18710,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:console"
+        "status": "partial",
+        "evidence": "compiler-dedicated:console.profile",
+        "tests": [
+          "tests/corpus/5099-console-methods-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -18728,8 +18736,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:console"
+        "status": "partial",
+        "evidence": "compiler-dedicated:console.profileEnd",
+        "tests": [
+          "tests/corpus/5099-console-methods-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -18751,8 +18762,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:console"
+        "status": "partial",
+        "evidence": "compiler-dedicated:console.timeStamp",
+        "tests": [
+          "tests/corpus/5099-console-methods-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -18801,8 +18815,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:console"
+        "status": "partial",
+        "evidence": "compiler-dedicated:console.assert",
+        "tests": [
+          "tests/corpus/5096-console-assert-dir.ts",
+          "tests/corpus/5099-console-methods-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -18824,8 +18842,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:console"
+        "status": "partial",
+        "evidence": "compiler-dedicated:console.clear",
+        "tests": [
+          "tests/corpus/5099-console-methods-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -18847,8 +18868,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:console"
+        "status": "partial",
+        "evidence": "compiler-dedicated:console.count",
+        "tests": [
+          "tests/corpus/5095-console-count-group.ts",
+          "tests/corpus/5098-console-time-warnings.ts",
+          "tests/corpus/5099-console-methods-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -18870,8 +18896,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:console"
+        "status": "partial",
+        "evidence": "compiler-dedicated:console.countReset",
+        "tests": [
+          "tests/corpus/5095-console-count-group.ts",
+          "tests/corpus/5098-console-time-warnings.ts",
+          "tests/corpus/5099-console-methods-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -18923,8 +18954,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:console"
+        "status": "partial",
+        "evidence": "compiler-dedicated:console.dir",
+        "tests": [
+          "tests/corpus/5096-console-assert-dir.ts",
+          "tests/corpus/5099-console-methods-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -18946,8 +18981,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:console"
+        "status": "partial",
+        "evidence": "compiler-dedicated:console.dirxml",
+        "tests": [
+          "tests/corpus/5096-console-assert-dir.ts",
+          "tests/corpus/5099-console-methods-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -18999,8 +19038,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:console"
+        "status": "partial",
+        "evidence": "compiler-dedicated:console.group",
+        "tests": [
+          "tests/corpus/5095-console-count-group.ts",
+          "tests/corpus/5098-console-time-warnings.ts",
+          "tests/corpus/5099-console-methods-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -19022,8 +19066,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:console"
+        "status": "partial",
+        "evidence": "compiler-dedicated:console.groupCollapsed",
+        "tests": [
+          "tests/corpus/5095-console-count-group.ts",
+          "tests/corpus/5098-console-time-warnings.ts",
+          "tests/corpus/5099-console-methods-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -19045,8 +19094,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:console"
+        "status": "partial",
+        "evidence": "compiler-dedicated:console.groupEnd",
+        "tests": [
+          "tests/corpus/5095-console-count-group.ts",
+          "tests/corpus/5098-console-time-warnings.ts",
+          "tests/corpus/5099-console-methods-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -19128,8 +19182,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:console"
+        "status": "partial",
+        "evidence": "compiler-dedicated:console.table",
+        "tests": [
+          "tests/corpus/5097-console-table.ts",
+          "tests/corpus/5099-console-methods-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -19151,8 +19209,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:console"
+        "status": "partial",
+        "evidence": "compiler-dedicated:console.time",
+        "tests": [
+          "tests/corpus/5098-console-time-warnings.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -19174,8 +19235,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:console"
+        "status": "partial",
+        "evidence": "compiler-dedicated:console.timeEnd",
+        "tests": [
+          "tests/corpus/5098-console-time-warnings.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -19197,8 +19261,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:console"
+        "status": "partial",
+        "evidence": "compiler-dedicated:console.timeLog",
+        "tests": [
+          "tests/corpus/5098-console-time-warnings.ts"
+        ]
       },
       "anchorSource": "exact"
     },

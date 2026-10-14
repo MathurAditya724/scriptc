@@ -403,7 +403,13 @@ import {
   lowerProcessOptionalMethodCall,
   lowerProcessStreamProperty,
 } from "./builtins/process.js";
-import { isConsoleLog, consoleCallMember } from "./builtins/console.js";
+import {
+  type ConsoleMethodMember,
+  type ConsoleOutputMember,
+  consoleCallMember,
+  consoleMethodMember,
+  isConsoleLog,
+} from "./builtins/console.js";
 import { lowerConsoleNew } from "./lower-console.js";
 import { lowerNumberStaticCall, lowerNumberStaticProperty } from "./builtins/numbers.js";
 import { lowerDateCall } from "./builtins/dates.js";
@@ -10671,8 +10677,12 @@ export class Lowerer {
     return isConsoleLog(this, call);
   }
 
-  consoleCallMember(call: ts.CallExpression): "log" | "info" | "debug" | "error" | "warn" | null {
+  consoleCallMember(call: ts.CallExpression): ConsoleOutputMember | null {
     return consoleCallMember(this, call);
+  }
+
+  consoleMethodMember(call: ts.CallExpression): ConsoleMethodMember | null {
+    return consoleMethodMember(this, call);
   }
 
   /* ── standard library (process + node:fs) ─────────────────────────── */
