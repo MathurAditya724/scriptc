@@ -875,7 +875,7 @@ ScrStr *scr_url_legacy_format(const ScrDyn *object, const ScrDyn *options, bool 
 
 /* Node's Url.prototype holds five enumerable methods (for...in visits
  * them); format() runs here, and the record-mutating and resolving
- * methods fence loudly. */
+ * methods throw an unsupported-operation error. */
 static ScrDyn *lu_proto_format(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)closure;
   (void)args;
