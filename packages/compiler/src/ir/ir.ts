@@ -1937,6 +1937,9 @@ export type IrMapIntrinsicMethod =
   | "size"
   | "clear"
   | "iterCount"
+  /** The first live index, or iterCount when none is live
+   * (scr_map_iter_start). for-of starts its index there. */
+  | "iterStart"
   | "iterLive"
   | "iterKey"
   | "iterValue"
@@ -1956,6 +1959,7 @@ export type IrSetIntrinsicMethod =
   | "size"
   | "clear"
   | "iterCount"
+  | "iterStart"
   | "iterLive"
   | "iterKey"
   | "iterEnter"

@@ -28,7 +28,7 @@ import { arrayValueRead, arrayValueType } from "../array-values.js";
  *
  *   %m = <iterable>; %m.iterEnter();
  *   try {
- *     for (%i = 0; %i < %m.iterCount; %i++) {
+ *     for (%i = %m.iterStart; %i < %m.iterCount; %i++) {
  *       if (%m.iterLive(%i)) { <bindings>; <body> }
  *     }
  *   } catch (%c) { %m.iterExit(); rethrow %c; }
@@ -680,9 +680,13 @@ function lowerForOfMapOrSet(
     }
     const body = lowerer.inCtl("loop", () => lowerer.lowerScopedBlock(stmt.statement));
     const exitStmt = (): IrStmt => ({ kind: "exprStmt", expr: iter("iterExit", [], VOID), loc });
+    // iterStart is the first live index: a map that removes its oldest
+    // entries skips its deleted prefix once (the walk would skip those
+    // entries anyway), so a body that breaks after the first live entry
+    // does not walk it again on every loop.
     const loop: IrStmt = {
       kind: "for",
-      init: { kind: "varDecl", localId: i.id, init: numLit(0, loc), loc },
+      init: { kind: "varDecl", localId: i.id, init: iter("iterStart", [], F64), loc },
       cond: {
         kind: "bin",
         op: "<",

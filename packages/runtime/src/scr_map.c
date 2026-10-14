@@ -580,6 +580,7 @@ static void scr_map_compact(ScrMap *m, bool reindex) {
   }
   m->nentries = w;
   m->filter = filter;
+  m->head = 0;
   if (m->nbuckets > 0) {
     size_t want = 16;
     while (want < 2 * (w + 1)) want *= 2;
@@ -812,11 +813,13 @@ void scr_map_clear(ScrMap *m) {
   }
   m->nlive = 0;
   m->filter = 0;
+  m->head = walked;
   if (m->iter_depth == 0) {
     /* Full reset; an active iteration instead keeps the (now all-dead)
      * entries so its indices stay stable — entries added by the callback
      * after the clear append past them and ARE visited (Node-exact). */
     m->nentries = 0;
+    m->head = 0;
     if (m->ecap > SCR_MAP_CLEAR_KEEP && m->ecap / 8 > walked) {
       scr_mem_free(m->entries);
       m->entries = NULL;
@@ -1265,6 +1268,23 @@ double scr_map_iter_count(const ScrMap *m) { return (double)m->nentries; }
 bool scr_map_iter_live(const ScrMap *m, double i) {
   if (!(i >= 0) || i >= (double)m->nentries) return false;
   return m->entries[(size_t)i].hash;
+}
+
+/* A walk that starts at or below head moves head to the live entry it
+ * finds, so the deleted prefix is walked once however many iterations
+ * start there. A published map is read by other threads and keeps its
+ * header unchanged. */
+double scr_map_iter_skip(ScrMap *m, double i) {
+  if (!(i < (double)m->nentries)) return i;
+  bool from_head = !(i > (double)m->head);
+  size_t e = from_head ? m->head : (size_t)i;
+  while (e < m->nentries && !m->entries[e].hash) e++;
+  if (from_head && m->rc != SIZE_MAX) m->head = e;
+  return e == (size_t)i ? i : (double)e;
+}
+
+double scr_map_iter_start(ScrMap *m) {
+  return scr_map_iter_skip(m, 0);
 }
 
 static const ScrMapEntry *scr_map_iter_at(const ScrMap *m, double i) {

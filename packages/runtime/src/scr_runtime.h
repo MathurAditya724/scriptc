@@ -2310,6 +2310,12 @@ typedef struct ScrMap {
    * always the entries array's. */
   uint32_t *dense;
   size_t ndense;
+  /* Every entry below this index is a tombstone. A walk that starts at or
+   * below it advances it to the first live entry (scr_map_iter_skip);
+   * compaction and clear reset it. A map that deletes from the front (a
+   * queue, an LRU cache) then finds its first live entry without walking
+   * the whole deleted prefix again. */
+  size_t head;
 } ScrMap;
 /* The LLVM backend's inline retain/release read both trace slots through
  * its %ScrMapRc prefix type (fields 5 and 8), mirroring scr_map_retain and
@@ -2327,6 +2333,11 @@ _Static_assert(offsetof(ScrMap, filter) ==
                "%ScrMapIx field 11 is ScrMap.filter, directly after nlive");
 _Static_assert(offsetof(ScrMap, nlive) == sizeof(size_t) + 2 * sizeof(uint32_t) + 6 * sizeof(void *) + sizeof(size_t),
                "%ScrMapIx field 10 is ScrMap.nlive");
+/* The inline iteration steps (sc_map_iter_entry) read the entry count as
+ * %ScrMapIx field 9 and test each entry's hash, the third field. */
+_Static_assert(offsetof(ScrMap, nentries) + sizeof(size_t) == offsetof(ScrMap, nlive),
+               "%ScrMapIx field 9 is ScrMap.nentries, directly before nlive");
+_Static_assert(offsetof(ScrMapEntry, hash) == 16, "inline iteration reads ScrMapEntry.hash at byte 16");
 _Static_assert(offsetof(ScrMap, entries) == offsetof(ScrMap, filter) + sizeof(uint64_t) + sizeof(size_t),
                "inline number-key lookups read ScrMap.entries as %ScrMapIx field 13");
 _Static_assert(offsetof(ScrMap, dense) == offsetof(ScrMap, entries) + 6 * sizeof(void *),
@@ -2437,6 +2448,10 @@ void *scr_map_get_ref_ref(const ScrMap *m, const void *key);
  * guards with iter_live first — reaching one is a compiler bug). */
 double scr_map_iter_count(const ScrMap *m); /* entries incl. tombstones */
 bool scr_map_iter_live(const ScrMap *m, double i);
+/* The first live index at or after i, or iter_count when none is left.
+ * iter_start is the first live index of the map (for-of starts there). */
+double scr_map_iter_skip(ScrMap *m, double i);
+double scr_map_iter_start(ScrMap *m);
 double scr_map_iter_key_f64(const ScrMap *m, double i);
 bool scr_map_iter_key_bool(const ScrMap *m, double i);
 ScrStr *scr_map_iter_key_str(const ScrMap *m, double i); /* +1 */

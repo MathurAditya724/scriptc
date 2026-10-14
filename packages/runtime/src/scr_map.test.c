@@ -59,7 +59,21 @@ static double odd_key(void) {
   return r == 8 ? NAN : odd[r];
 }
 
+/* Every entry below head is a tombstone, and scr_map_iter_skip answers the
+ * first live index at or after each index (the entry count when none is
+ * left). */
+static void check_skip(ScrMap *map) {
+  size_t count = (size_t)scr_map_iter_count(map);
+  for (size_t i = 0; i < map->head && i < count; i++) assert(!scr_map_iter_live(map, (double)i));
+  double next_live = (double)count;
+  for (size_t i = count + 1; i-- > 0;) {
+    if (i < count && scr_map_iter_live(map, (double)i)) next_live = (double)i;
+    assert(scr_map_iter_skip(map, (double)i) == next_live);
+  }
+}
+
 static void check_same(const ScrMap *map, const Model *model) {
+  check_skip((ScrMap *)map);
   assert((size_t)scr_map_size(map) == model->n);
   size_t j = 0;
   size_t count = (size_t)scr_map_iter_count(map);
@@ -466,8 +480,57 @@ static void fuzz_drain(unsigned flavor) {
   scr_map_release(map);
 }
 
+/* A queue that deletes its oldest entry: each walk from the start finds the
+ * first live entry, inside and outside an iteration and after clear(). */
+static void front_deletes(void) {
+  ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  double oldest = 0, next_key = 0;
+  for (int round = 0; round < 3000; round++) {
+    for (int j = 0; j < 3; j++) scr_map_set_f64_f64(map, next_key * 7, next_key), next_key++;
+    for (int j = 0; j < 2; j++) assert(scr_map_delete_f64(map, oldest * 7)), oldest++;
+    double first = scr_map_iter_skip(map, 0);
+    assert(scr_map_iter_live(map, first) && scr_map_iter_key_f64(map, first) == oldest * 7);
+    if (round % 97 == 0) check_skip(map);
+  }
+  scr_map_iter_enter(map);
+  for (int j = 0; j < 100; j++) assert(scr_map_delete_f64(map, oldest * 7)), oldest++;
+  check_skip(map);
+  assert(scr_map_iter_key_f64(map, scr_map_iter_skip(map, 0)) == oldest * 7);
+  scr_map_clear(map); /* inside the iteration: the entries stay, all dead */
+  check_skip(map);
+  assert(scr_map_iter_skip(map, 0) == scr_map_iter_count(map));
+  scr_map_set_f64_f64(map, -1, 1);
+  assert(scr_map_iter_key_f64(map, scr_map_iter_skip(map, 0)) == -1);
+  scr_map_iter_exit(map);
+  scr_map_clear(map);
+  assert(map->head == 0 && scr_map_iter_count(map) == 0 && scr_map_iter_skip(map, 0) == 0);
+  scr_map_release(map);
+
+  ScrMap *names = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  char text[32];
+  for (int i = 0; i < 500; i++) {
+    snprintf(text, sizeof text, "key%d", i);
+    ScrStr *key = scr_str_new(text, strlen(text));
+    scr_map_set_str_f64(names, key, i);
+    scr_str_release(key);
+  }
+  for (int i = 0; i < 400; i++) {
+    snprintf(text, sizeof text, "key%d", i);
+    ScrStr *key = scr_str_new(text, strlen(text));
+    assert(scr_map_delete_str(names, key));
+    scr_str_release(key);
+    if (i % 50 == 0) check_skip(names);
+  }
+  check_skip(names);
+  ScrStr *first = scr_map_iter_key_str(names, scr_map_iter_skip(names, 0));
+  assert(first->len == 6 && memcmp(first->data, "key400", 6) == 0);
+  scr_str_release(first);
+  scr_map_release(names);
+}
+
 int main(void) {
   modes();
+  front_deletes();
   iterate_while_mutating();
   for (unsigned flavor = 0; flavor < 5; flavor++) fuzz(flavor);
   clear_cost_numbers(0);

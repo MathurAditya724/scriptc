@@ -27,6 +27,10 @@ import {
   entryStringKey,
 } from "./map-read-lifetimes.js";
 import {
+  emitMapIterCount,
+  emitMapIterEntry,
+  emitMapIterSlot,
+  emitMapIterStart,
   emitNumberMapGetRef,
   emitNumberMapGetScalar,
   emitNumberMapHas,
@@ -1325,23 +1329,30 @@ export function emitMapLikeIntrinsic(
       host.declare(`declare void @scr_map_clear(ptr)`);
       B.line(`call void @scr_map_clear(ptr ${r.name})`);
       return { name: "", type: e.type };
-    case "iterCount": {
-      host.declare(`declare double @scr_map_iter_count(ptr)`);
-      const t = B.tmp();
-      B.line(`${t} = call double @scr_map_iter_count(ptr ${r.name})`);
-      return { name: t, type: e.type };
-    }
+    case "iterCount":
+      return { name: emitMapIterCount(host, r.name), type: e.type };
+    case "iterStart":
+      return { name: emitMapIterStart(host, r.name), type: e.type };
     case "iterLive": {
       const i = host.emitExpr(e.args[0]!);
-      host.declare(`declare zeroext i1 @scr_map_iter_live(ptr, double)`);
+      const entry = emitMapIterEntry(host, r.name, i.name);
       const t = B.tmp();
-      B.line(`${t} = call zeroext i1 @scr_map_iter_live(ptr ${r.name}, double ${i.name})`);
+      B.line(`${t} = icmp ne ptr ${entry}, null`);
       return { name: t, type: e.type };
     }
     case "iterKey": {
       // String/ref keys come back +1 (own registers the owned temp).
       const i = host.emitExpr(e.args[0]!);
-      const retTy = kAcc === "f64" ? "double" : kAcc === "bool" ? "zeroext i1" : "ptr";
+      if (kAcc !== "ref") {
+        const retTy = kAcc === "f64" ? "double" : kAcc === "bool" ? "zeroext i1" : "ptr";
+        const symbol = `scr_map_iter_key_${kAcc}`;
+        const t = emitMapIterSlot(host, r.name, i.name, 0, kAcc === "str" ? "ref" : kAcc, key, {
+          decl: `declare ${retTy} @${symbol}(ptr, double)`,
+          symbol,
+        });
+        return host.own({ name: t, type: e.type });
+      }
+      const retTy = "ptr";
       host.declare(`declare ${retTy} @scr_map_iter_key_${kAcc}(ptr, double)`);
       const t = B.tmp();
       B.line(`${t} = call ${retTy} @scr_map_iter_key_${kAcc}(ptr ${r.name}, double ${i.name})`);
@@ -1352,11 +1363,11 @@ export function emitMapLikeIntrinsic(
       const vAcc = elemAccess(receiverType.value);
       const i = host.emitExpr(e.args[0]!);
       const retTy = vAcc === "f64" ? "double" : vAcc === "bool" ? "i1" : "ptr";
-      host.declare(
-        `declare ${vAcc === "bool" ? "zeroext i1" : retTy} @scr_map_iter_val_${vAcc}(ptr, double)`,
-      );
-      const t = B.tmp();
-      B.line(`${t} = call ${retTy} @scr_map_iter_val_${vAcc}(ptr ${r.name}, double ${i.name})`);
+      const symbol = `scr_map_iter_val_${vAcc}`;
+      const t = emitMapIterSlot(host, r.name, i.name, 1, vAcc, receiverType.value, {
+        decl: `declare ${vAcc === "bool" ? "zeroext i1" : retTy} @${symbol}(ptr, double)`,
+        symbol,
+      });
       return host.own({ name: t, type: e.type });
     }
     case "iterEnter":

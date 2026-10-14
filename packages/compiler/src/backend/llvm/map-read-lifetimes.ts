@@ -39,6 +39,7 @@ export function borrowsMapReadInputs(expr: IrExpr): boolean {
     case "has":
     case "size":
     case "iterCount":
+    case "iterStart":
     case "iterLive":
     case "iterKey":
     case "iterValue":
