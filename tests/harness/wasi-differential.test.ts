@@ -233,6 +233,11 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "4905-bigint-fixed-width-fusion.ts",
     "4906-bigint-small-value-trees.ts",
     "4907-bigint-random-trees.ts",
+    // Map/Set iteration reads ScrMap through size_t-width fields.
+    "5315-map-iterate-after-front-deletes.ts",
+    "5317-map-iterate-while-mutating.ts",
+    "5318-set-iterate-after-deletes.ts",
+    "5319-map-iteration-values.ts",
   ])("the LLVM target runs %s byte-identically to Node", async (fixture) => {
     const entry = join(repoRoot, "tests/corpus", fixture);
     const outDir = await mkdtemp("/tmp/scriptc-wasi-");

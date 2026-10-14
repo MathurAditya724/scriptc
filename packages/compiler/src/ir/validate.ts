@@ -2601,7 +2601,7 @@ function validateFunction(
                         ? { argTypes: [F64], result: key }
                         : e.method === "iterValue"
                           ? { argTypes: [F64], result: value }
-                          : { argTypes: [], result: F64 }; // size / iterCount
+                          : { argTypes: [], result: F64 }; // size / iterCount / iterStart
         if (e.args.length !== sig.argTypes.length) {
           err(
             `mapIntrinsic ${e.method}: ${e.args.length} args, expected ${sig.argTypes.length}`,
@@ -2660,7 +2660,7 @@ function validateFunction(
                       ? { argTypes: [F64], result: elem }
                       : e.method === "toArray"
                         ? { argTypes: [], result: arrayOf(elem) }
-                        : { argTypes: [], result: F64 }; // size / iterCount
+                        : { argTypes: [], result: F64 }; // size / iterCount / iterStart
         if (e.args.length !== sig.argTypes.length) {
           err(
             `setIntrinsic ${e.method}: ${e.args.length} args, expected ${sig.argTypes.length}`,

@@ -3711,7 +3711,7 @@ static ScrDyn *scr_native_iterator_value(ScrNativeIterator *iterator, bool *done
   if (scr_exc_pending()) { scr_dyn_release(view); scr_dyn_release(source); return NULL; }
   ScrDyn *items = view ? view : source;
   ScrMap *map = source && (iterator->kind == 2 || iterator->kind == 3) ? source->v.handle.ptr : NULL;
-  if (map) while (iterator->index < scr_map_iter_count(map) && !scr_map_iter_live(map, iterator->index)) iterator->index++;
+  if (map) iterator->index = scr_map_iter_skip(map, iterator->index);
   double length = !items ? 0 : iterator->array_like ? iterator->limit : map ? scr_map_iter_count(map) : items->kind == SCR_DYN_ARR ? (double)items->v.arr.len
     : items->kind == SCR_DYN_BYTES ? (double)items->v.bytes->len : scr_str_utf16_len(items->v.str);
   bool done = !source || iterator->index >= length;
