@@ -393,9 +393,11 @@ _Static_assert(sizeof(((ScrDyn *)0)->v.arr) <= sizeof(((ScrDyn *)0)->v.typed_ref
  * first store into any of its containers that could close a cycle.
  *
  * Invariant: while a region is intact, every outgoing edge of each of its
- * containers is an edge the parser created, and each such edge leads to a
- * node the parser created later in the same region (a container of the
- * region, or a primitive). Following edges therefore strictly increases
+ * containers is an edge the parser created or a store of a primitive, and
+ * each parser edge leads to a node the parser created later in the same
+ * region (a container of the region, or a primitive). Containers have no
+ * prototype, accessors, symbol or named-array tables, and every property
+ * is enumerable. Following edges therefore strictly increases
  * creation order, so no node of an intact region lies on a cycle — whatever
  * points INTO the region from outside, including containers of other
  * regions. Releases of intact containers skip candidate buffering.
@@ -418,10 +420,11 @@ _Static_assert(sizeof(((ScrDyn *)0)->v.arr) <= sizeof(((ScrDyn *)0)->v.typed_ref
  * Writers call scr_dyn_region_store(container, value) where they store a
  * reference into an existing array or object (items, entries, accessors,
  * prototype, named array properties, symbol tables). Removals, permutations
- * of a container's own items, and stores of primitives or immortal values
- * (which reach no mortal node) keep the region intact. Published graphs are
- * immortal and frozen, so their releases never get here and they are never
- * written. Regions are per thread like the nodes that point at them. */
+ * of a container's own items, and stores of JSON primitives or undefined
+ * keep the region intact; accessor and property definitions never do.
+ * Published graphs are immortal and frozen, so their releases never get
+ * here and they are never written. Regions are per thread like the nodes
+ * that point at them. */
 typedef struct ScrDynRegion {
   size_t refs; /* containers tagged with it, plus the parser while it runs */
   bool intact;
@@ -431,10 +434,14 @@ static inline ScrDynRegion *scr_dyn_region_of(const ScrDyn *d) {
   return d->kind == SCR_DYN_ARR ? d->v.arr.region : d->kind == SCR_DYN_OBJ ? d->v.obj.region : NULL;
 }
 
-/* A value that can be stored without closing a cycle: no outgoing dyn
- * edges (primitive kinds), or immortal (it reaches only immortal nodes). */
+/* A value that can be stored without closing a cycle or changing what the
+ * region holds: the JSON primitive kinds and undefined. Everything an
+ * intact container reaches is therefore a container of its region or one
+ * of these, which JSON.stringify relies on (scr_json_plain_container).
+ * Immortal containers (published graphs) are not inert: they may hold
+ * functions, accessors or prototypes. */
 static inline bool scr_dyn_region_inert(const ScrDyn *value) {
-  return value && (value->rc == SIZE_MAX || value->kind <= SCR_DYN_STR || value->kind == SCR_DYN_UNDEF);
+  return value && (value->kind <= SCR_DYN_STR || value->kind == SCR_DYN_UNDEF);
 }
 
 /* Write barrier: `value` (NULL when unknown) is about to be stored into
