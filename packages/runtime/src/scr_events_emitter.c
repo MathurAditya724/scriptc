@@ -154,16 +154,48 @@ static void scr_ee_observe(ScrEmitter *em, const ScrStr *name, bool present) {
   if (reg->observe) reg->observe(reg->observer_context, name, present);
 }
 
+/* events.errorMonitor's registry key. Node keys it by a symbol, so no
+ * string event name can reach its listeners: the registry matches this
+ * object by identity and never by bytes. The bytes are String(symbol),
+ * which the leak warning prints. */
+static const struct {
+  size_t rc;
+  size_t len;
+  size_t cap;
+  char data[sizeof "Symbol(events.errorMonitor)"];
+} scr_ee_error_monitor_lit = {SIZE_MAX, sizeof "Symbol(events.errorMonitor)" - 1,
+                              SCR_STR_CAP_WORD(sizeof "Symbol(events.errorMonitor)" - 1, 0, 1),
+                              "Symbol(events.errorMonitor)"};
+#define SCR_EE_ERROR_MONITOR ((ScrStr *)&scr_ee_error_monitor_lit)
+
+ScrStr *scr_emitter_error_monitor(void) { return SCR_EE_ERROR_MONITOR; }
+
+static bool scr_ee_is_error_monitor(const ScrStr *name) { return name == SCR_EE_ERROR_MONITOR; }
+
+/* The bucket of a STRING event name (the errorMonitor bucket never
+ * matches). */
 static ScrEeBucket *scr_ee_bucket_find(ScrEeReg *reg, const char *name, size_t len) {
   if (!reg) return NULL;
   for (ScrEeBucket *b = reg->head; b; b = b->next) {
-    if (b->name->len == len && memcmp(b->name->data, name, len) == 0) return b;
+    if (b->name->len == len && !scr_ee_is_error_monitor(b->name) &&
+        memcmp(b->name->data, name, len) == 0)
+      return b;
+  }
+  return NULL;
+}
+
+/* The bucket of a registry key: a string name or the errorMonitor key. */
+static ScrEeBucket *scr_ee_bucket_of(ScrEeReg *reg, const ScrStr *name) {
+  if (!scr_ee_is_error_monitor(name)) return scr_ee_bucket_find(reg, name->data, name->len);
+  if (!reg) return NULL;
+  for (ScrEeBucket *b = reg->head; b; b = b->next) {
+    if (b->name == name) return b;
   }
   return NULL;
 }
 
 static ScrEeBucket *scr_ee_bucket_ensure(ScrEeReg *reg, ScrStr *name) {
-  ScrEeBucket *b = scr_ee_bucket_find(reg, name->data, name->len);
+  ScrEeBucket *b = scr_ee_bucket_of(reg, name);
   if (b) return b;
   b = calloc(1, sizeof *b);
   if (!b) scr_ee_oom();
@@ -319,19 +351,6 @@ void scr_emitter_release_v(void *em) { scr_emitter_release(em); }
 
 static bool scr_ee_emit_va(ScrEmitter *em, ScrStr *name, ...);
 
-/* Fires a meta event with the affected event's NAME as the argument
- * (listeners are fenced to arity <= 1, so the listener-function argument
- * Node passes second is never read). */
-/* events.errorMonitor's registry key (a symbol in Node; the compiler
- * spells it with a leading NUL no admitted literal name carries). */
-static const char scr_ee_error_monitor[] = "\0events.errorMonitor";
-#define SCR_EE_ERROR_MONITOR_LEN (sizeof scr_ee_error_monitor - 1)
-
-static bool scr_ee_is_error_monitor(const ScrStr *name) {
-  return name->len == SCR_EE_ERROR_MONITOR_LEN &&
-         memcmp(name->data, scr_ee_error_monitor, SCR_EE_ERROR_MONITOR_LEN) == 0;
-}
-
 static void scr_ee_symbol_name_fence(const char *what) {
   char message[160];
   snprintf(message, sizeof message, "%s with an events.errorMonitor listener is not supported yet",
@@ -339,6 +358,9 @@ static void scr_ee_symbol_name_fence(const char *what) {
   scr_throw_error(SCR_ERR_ERROR, scr_str_new(message, strlen(message)));
 }
 
+/* Fires a meta event with the affected event's NAME as the argument
+ * (listeners are fenced to arity <= 1, so the listener-function argument
+ * Node passes second is never read). */
 static void scr_ee_emit_meta(ScrEmitter *em, const char *meta, ScrStr *name) {
   if (!scr_ee_has(em->reg, meta)) return;
   /* Node passes the symbol itself, which the string tuple cannot carry. */
@@ -511,7 +533,7 @@ static void scr_ee_remove_at(ScrEmitter *em, ScrEeBucket *b, size_t i) {
 /* removeListener/off: the LAST matching occurrence leaves (Node searches
  * from the end). cb is borrowed. Returns em +1. */
 ScrEmitter *scr_emitter_off(ScrEmitter *em, ScrStr *name, ScrClosure *cb) {
-  ScrEeBucket *b = em->reg ? scr_ee_bucket_find(em->reg, name->data, name->len) : NULL;
+  ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
   if (b) {
     for (size_t i = b->n; i-- > 0;) {
       if (scr_closure_identity_equal(scr_ee_entry_fn(b->ls[i]), cb)) {
@@ -578,7 +600,7 @@ static void scr_ee_remove_all_named(ScrEmitter *em, ScrEeBucket *b, bool meta) {
   }
   for (size_t i = n; i-- > 0;) {
     ScrEeEntry *e = snap[i];
-    ScrEeBucket *live = scr_ee_bucket_find(em->reg, name->data, name->len);
+    ScrEeBucket *live = scr_ee_bucket_of(em->reg, name);
     if (live) {
       for (size_t j = live->n; j-- > 0;) {
         if (live->ls[j] == e) {
@@ -598,7 +620,7 @@ ScrEmitter *scr_emitter_remove_all(ScrEmitter *em, ScrStr *name, bool all) {
   if (!reg) return scr_emitter_retain(em);
   bool meta = scr_ee_has(reg, "removeListener");
   if (!all) {
-    ScrEeBucket *b = scr_ee_bucket_find(reg, name->data, name->len);
+    ScrEeBucket *b = scr_ee_bucket_of(reg, name);
     /* A rank-holding empty bucket is Node's `events[type] === undefined`:
      * the named form no-ops there (the rank survives). A POPULATED name
      * deletes its key even in shape mode — but through the meta path each
@@ -659,12 +681,9 @@ static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
 /* emit('error', ...) first emits the same arguments to errorMonitor. */
 static void scr_ee_emit_error_monitor(ScrEmitter *em, va_list *ap_template,
                                       ScrDyn *const *flex_args, size_t flex_argc) {
-  ScrEeBucket *b =
-      em->reg ? scr_ee_bucket_find(em->reg, scr_ee_error_monitor, SCR_EE_ERROR_MONITOR_LEN) : NULL;
+  ScrEeBucket *b = scr_ee_bucket_of(em->reg, SCR_EE_ERROR_MONITOR);
   if (!b || b->n == 0) return;
-  ScrStr *monitor = scr_str_new(scr_ee_error_monitor, SCR_EE_ERROR_MONITOR_LEN);
-  scr_ee_emit_core(em, monitor, ap_template, flex_args, flex_argc);
-  scr_str_release(monitor);
+  scr_ee_emit_core(em, SCR_EE_ERROR_MONITOR, ap_template, flex_args, flex_argc);
 }
 
 static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
@@ -673,7 +692,7 @@ static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
     scr_ee_emit_error_monitor(em, ap_template, flex_args, flex_argc);
     if (scr_exc_pending()) return true;
   }
-  ScrEeBucket *b = em->reg ? scr_ee_bucket_find(em->reg, name->data, name->len) : NULL;
+  ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
   if (!b || b->n == 0) return false;
   size_t n = b->n;
   ScrEeEntry **snap = malloc(n * sizeof *snap);
@@ -697,7 +716,7 @@ static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
       /* Remove from the live list first (the wrapper's own removal). The
        * bucket may have been dropped/recreated by earlier listeners —
        * re-find it and match by entry identity. */
-      ScrEeBucket *live = scr_ee_bucket_find(em->reg, name->data, name->len);
+      ScrEeBucket *live = scr_ee_bucket_of(em->reg, name);
       if (live) {
         for (size_t j = 0; j < live->n; j++) {
           if (live->ls[j] == e) {
@@ -799,13 +818,13 @@ bool scr_emitter_has(ScrEmitter *em, const char *name) {
 }
 
 double scr_emitter_listener_count(ScrEmitter *em, ScrStr *name) {
-  ScrEeBucket *b = em->reg ? scr_ee_bucket_find(em->reg, name->data, name->len) : NULL;
+  ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
   return b ? (double)b->n : 0;
 }
 
 /* listenerCount(name, fn): entries matching fn by identity. */
 double scr_emitter_listener_count_fn(ScrEmitter *em, ScrStr *name, ScrClosure *fn) {
-  ScrEeBucket *b = em->reg ? scr_ee_bucket_find(em->reg, name->data, name->len) : NULL;
+  ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
   if (!b) return 0;
   size_t count = 0;
   for (size_t i = 0; i < b->n; i++) {
@@ -854,7 +873,7 @@ static const ScrArrOps scr_ee_closure_arr_ops = { &scr_closure_retain_v, &scr_cl
 
 ScrArr *scr_emitter_listeners(ScrEmitter *em, ScrStr *name) {
   ScrArr *out = scr_arr_new_ops(&scr_ee_closure_arr_ops, 0);
-  ScrEeBucket *b = em->reg ? scr_ee_bucket_find(em->reg, name->data, name->len) : NULL;
+  ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
   if (b) {
     for (size_t i = 0; i < b->n; i++) {
       scr_arr_push_ref(out, scr_closure_retain(scr_ee_entry_fn(b->ls[i])));

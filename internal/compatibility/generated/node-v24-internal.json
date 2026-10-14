@@ -40011,7 +40011,10 @@
           "tests/corpus/5132-event-target-typed.ts",
           "tests/corpus/5133-abort-signal-event-target.ts",
           "tests/corpus/5134-events-error-monitor.ts",
-          "tests/corpus/5135-event-target-warnings.js"
+          "tests/corpus/5135-event-target-warnings.js",
+          "tests/corpus/5136-events-error-monitor-string-name.ts",
+          "tests/corpus/5137-events-error-monitor-computed-name.js",
+          "tests/corpus/5138-events-error-monitor-shared-listener.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -42115,7 +42118,10 @@
         "status": "partial",
         "evidence": "compiler-feature:events.events.errorMonitor",
         "tests": [
-          "tests/corpus/5134-events-error-monitor.ts"
+          "tests/corpus/5134-events-error-monitor.ts",
+          "tests/corpus/5136-events-error-monitor-string-name.ts",
+          "tests/corpus/5137-events-error-monitor-computed-name.js",
+          "tests/corpus/5138-events-error-monitor-shared-listener.ts"
         ]
       },
       "anchorSource": "exact"

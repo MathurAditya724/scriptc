@@ -24496,7 +24496,10 @@
           "confidence": "high",
           "source": "compiler-feature:events.events.errorMonitor",
           "tests": [
-            "tests/corpus/5134-events-error-monitor.ts"
+            "tests/corpus/5134-events-error-monitor.ts",
+            "tests/corpus/5136-events-error-monitor-string-name.ts",
+            "tests/corpus/5137-events-error-monitor-computed-name.js",
+            "tests/corpus/5138-events-error-monitor-shared-listener.ts"
           ]
         }
       }

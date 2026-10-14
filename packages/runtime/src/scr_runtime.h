@@ -2870,6 +2870,10 @@ double scr_emitter_listener_count(ScrEmitter *em, ScrStr *name);
 double scr_emitter_listener_count_fn(ScrEmitter *em, ScrStr *name, ScrClosure *fn);
 double scr_emitter_listener_count_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *fn);
 ScrArr *scr_emitter_event_names(ScrEmitter *em);          /* +1 string[] */
+/* events.errorMonitor's event key (immortal). Every name parameter above
+ * accepts it; the registry matches it by identity, so no string name,
+ * whatever its bytes, reaches the errorMonitor listeners. */
+ScrStr *scr_emitter_error_monitor(void);
 /* Pre-create a name's eventNames() rank with no listener (Node's stream
  * classes pre-create their known _events keys; empty = absent for every
  * other read). The stream constructors call this. */

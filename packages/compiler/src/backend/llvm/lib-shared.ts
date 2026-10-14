@@ -800,6 +800,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "emitter.getMax": "scr_emitter_get_max",
   "emitter.setDefaultMax": "scr_emitter_set_default_max",
   "emitter.getDefaultMax": "scr_emitter_get_default_max",
+  "emitter.errorMonitor": "scr_emitter_error_monitor",
   // node:stream (scr_stream.c): receivers borrowed, chunks borrowed,
   // chaining forms answer the receiver +1. The throwing members
   // (listeners and option callbacks run synchronously inside) ride the
@@ -1125,6 +1126,12 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "fetch.requestNew",
   "fetch.abortTimeout",
   "abort.timeout",
+  // EventTarget listeners report their exceptions from a nextTick.
+  "event.targetNew",
+  "abort.controllerNew",
+  "abort.any",
+  "fetch.abortControllerNew",
+  "fetch.abortAny",
   "fetch.streamNew",
   "fetch.streamFrom",
   "readable.new",

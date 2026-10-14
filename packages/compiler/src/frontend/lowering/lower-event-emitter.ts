@@ -302,7 +302,7 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
       const literal = isErrorMonitorRef(lowerer, arg0)
         ? ERROR_MONITOR_EVENT
         : nameT.isStringLiteralType()
-          ? nameT.value
+          ? literalEventKey(nameT.value)
           : null;
       if (literal === null) {
         const pattern = computedEventPatternOf(lowerer, arg0);
@@ -377,10 +377,32 @@ function computedPatternsOverlap(left: ComputedEventPattern, right: ComputedEven
   );
 }
 
-/** The registry name of `events.errorMonitor`: a symbol in Node, so no
- * string event can collide with it (the NUL never appears in a literal
- * name the lowering admits as the same key — see literalEventName). */
+/** The compile-time key of `events.errorMonitor`. Node keys it by a
+ * symbol, so no string event name may share it: literal names are keyed
+ * through literalEventKey, which never yields this key, and the runtime
+ * receives the emitter.errorMonitor key object (matched by identity)
+ * instead of any string. */
 export const ERROR_MONITOR_EVENT = "\u0000events.errorMonitor";
+
+/** A string event name's compile-time key: the name itself, with one more
+ * leading NUL when it already starts with one, so a key of one NUL and
+ * then a non-NUL (ERROR_MONITOR_EVENT) belongs to no string. */
+function literalEventKey(name: string): string {
+  return name.startsWith("\u0000") ? `\u0000${name}` : name;
+}
+
+/** The string name of a key that is not ERROR_MONITOR_EVENT. */
+function eventKeyName(key: string): string {
+  return key.startsWith("\u0000") ? key.slice(1) : key;
+}
+
+/** The runtime event-name argument for a compile-time key. */
+function eventNameExpr(key: string, loc: SrcLoc): IrExpr {
+  if (key === ERROR_MONITOR_EVENT) {
+    return { kind: "libCall", fn: "emitter.errorMonitor", args: [], type: STRING, loc };
+  }
+  return strLit(eventKeyName(key), loc);
+}
 
 /** `errorMonitor` / `EventEmitter.errorMonitor` / `events.errorMonitor`:
  * the events module's unique symbol, by declaration provenance. */
@@ -418,25 +440,16 @@ function isErrorMonitorRef(lowerer: Lowerer, arg: ts.Expression): boolean {
   return property !== undefined && isMonitorType(lowerer.checker.getTypeOfSymbol(property));
 }
 
-/** A compile-time event name: a string-literal TYPE (const bindings and
- * literal unions of one member count — the staticHeaderKeyOf stance) or
- * the errorMonitor symbol. */
+/** A compile-time event key (literalEventKey): a string-literal TYPE
+ * (const bindings and literal unions of one member count — the
+ * staticHeaderKeyOf stance) or the errorMonitor symbol. */
 function literalEventName(lowerer: Lowerer, arg: ts.Expression): string | null {
   if (isErrorMonitorRef(lowerer, arg)) return ERROR_MONITOR_EVENT;
   const t = lowerer.typeOf(arg);
-  if (!t.isStringLiteralType()) return null;
-  // A string spelling of the reserved key stays a separate event in Node.
-  if (t.value === ERROR_MONITOR_EVENT) {
-    lowerer.noLowering(
-      "an event name spelling the errorMonitor key",
-      arg,
-      "the runtime reserves this name for events.errorMonitor",
-    );
-  }
-  return t.value;
+  return t.isStringLiteralType() ? literalEventKey(t.value) : null;
 }
 
-/** The compile-time name for a literal-only operation, or a pointed fence. */
+/** The compile-time key for a literal-only operation, or a pointed fence. */
 function eventNameOf(lowerer: Lowerer, member: string, arg: ts.Expression): string {
   const name = literalEventName(lowerer, arg);
   if (name !== null) return name;
@@ -522,7 +535,11 @@ function computedEventPatternOf(
   return prefix || suffix ? { prefix, suffix, listener: false } : null;
 }
 
-function patternMatchesName(pattern: ComputedEventPattern, name: string): boolean {
+/** Whether a computed name could equal the event keyed `key` (never the
+ * errorMonitor key: computed names are strings). */
+function patternMatchesName(pattern: ComputedEventPattern, key: string): boolean {
+  if (key === ERROR_MONITOR_EVENT) return false;
+  const name = eventKeyName(key);
   return name.startsWith(pattern.prefix) && name.endsWith(pattern.suffix);
 }
 
@@ -899,8 +916,8 @@ function lowerDynListenerCall(
     kind: "call",
     callee: helper,
     args: registering
-      ? [receiver, strLit(name, loc), cbDyn, boolLit(once, loc), boolLit(prepend, loc)]
-      : [receiver, strLit(name, loc), cbDyn],
+      ? [receiver, eventNameExpr(name, loc), cbDyn, boolLit(once, loc), boolLit(prepend, loc)]
+      : [receiver, eventNameExpr(name, loc), cbDyn],
     type: recvT,
     loc,
   };
@@ -1174,7 +1191,7 @@ export function lowerEmitterMethodCall(
       return lowerFlexListenerCall(
         lowerer,
         member,
-        strLit(name, loc),
+        eventNameExpr(name, loc),
         lowerReceiver(),
         args[1]!,
         registering,
@@ -1247,7 +1264,7 @@ export function lowerEmitterMethodCall(
         return {
           kind: "libCall",
           fn: "emitter.off",
-          args: [receiver, strLit(name, loc), cb],
+          args: [receiver, eventNameExpr(name, loc), cb],
           type: receiver.type,
           loc,
         };
@@ -1255,7 +1272,7 @@ export function lowerEmitterMethodCall(
       return {
         kind: "libCall",
         fn: "emitter.onData",
-        args: [receiver, strLit(name, loc), cb, boolLit(once, loc), boolLit(prepend, loc)],
+        args: [receiver, eventNameExpr(name, loc), cb, boolLit(once, loc), boolLit(prepend, loc)],
         type: receiver.type,
         loc,
       };
@@ -1286,8 +1303,8 @@ export function lowerEmitterMethodCall(
       kind: "libCall",
       fn: registering ? "emitter.on" : "emitter.off",
       args: registering
-        ? [receiver, strLit(name, loc), cb, boolLit(once, loc), boolLit(prepend, loc)]
-        : [receiver, strLit(name, loc), cb],
+        ? [receiver, eventNameExpr(name, loc), cb, boolLit(once, loc), boolLit(prepend, loc)]
+        : [receiver, eventNameExpr(name, loc), cb],
       type: receiver.type,
       loc,
     };
@@ -1338,7 +1355,7 @@ export function lowerEmitterMethodCall(
         computedPatterns(lowerer).some((pattern) => patternMatchesName(pattern, name)))
     )
       return lowerFlexEmit(
-        strLit(name, loc),
+        eventNameExpr(name, loc),
         flexibleJsEvent(name, table.get(name)) ? "variable-arity" : "computed-name",
       );
     const receiver = lowerReceiver();
@@ -1403,7 +1420,7 @@ export function lowerEmitterMethodCall(
       return {
         kind: "libCall",
         fn: "emitter.emitData",
-        args: [receiver, strLit(name, loc), chunk],
+        args: [receiver, eventNameExpr(name, loc), chunk],
         type: BOOL,
         loc,
       };
@@ -1432,7 +1449,7 @@ export function lowerEmitterMethodCall(
     const name = all
       ? strLit("", loc)
       : isErrorMonitorRef(lowerer, args[0]!)
-        ? strLit(ERROR_MONITOR_EVENT, loc)
+        ? eventNameExpr(ERROR_MONITOR_EVENT, loc)
         : lowerer.lowerExprExpecting(args[0]!, STRING);
     if (name.type.kind !== "string") {
       lowerer.noLowering(
@@ -1455,7 +1472,7 @@ export function lowerEmitterMethodCall(
     }
     const receiver = lowerReceiver();
     const name = isErrorMonitorRef(lowerer, args[0]!)
-      ? strLit(ERROR_MONITOR_EVENT, loc)
+      ? eventNameExpr(ERROR_MONITOR_EVENT, loc)
       : lowerer.lowerExprExpecting(args[0]!, STRING);
     if (name.type.kind !== "string") {
       lowerer.noLowering(`listenerCount with a '${lowerer.fmt(name.type)}' event name`, args[0]!);
@@ -1520,7 +1537,7 @@ export function lowerEmitterMethodCall(
     return {
       kind: "libCall",
       fn: "emitter.listeners",
-      args: [receiver, strLit(name, loc)],
+      args: [receiver, eventNameExpr(name, loc)],
       type: arrayOf({ kind: "func", params: tuple, ret: { kind: "void" } }),
       loc,
     };
@@ -1889,7 +1906,7 @@ export function lowerEmitOverrideSpec(lowerer: Lowerer, req: EmitSpecRequest): I
       true,
     );
     const prologue: IrStmt[] = [
-      { kind: "varDecl", localId: eventLocal.id, init: strLit(event, loc), loc },
+      { kind: "varDecl", localId: eventLocal.id, init: eventNameExpr(event, loc), loc },
     ];
     lowerer.emitSpecCtx = {
       info,
@@ -1962,7 +1979,7 @@ export function emitSpecSuperForward(
     return {
       kind: "libCall",
       fn: "emitter.emitError",
-      args: [thisRef, strLit(ctx.event, loc), payload[0]!],
+      args: [thisRef, eventNameExpr(ctx.event, loc), payload[0]!],
       type: BOOL,
       loc,
     };
@@ -1970,7 +1987,7 @@ export function emitSpecSuperForward(
   return {
     kind: "libCall",
     fn: "emitter.emit",
-    args: [thisRef, strLit(ctx.event, loc), ...payload],
+    args: [thisRef, eventNameExpr(ctx.event, loc), ...payload],
     type: BOOL,
     loc,
   };
@@ -2014,14 +2031,14 @@ function emitDispatchExpr(
       ? {
           kind: "libCall",
           fn: "emitter.emitError",
-          args: [recv, strLit(name, loc), args[0]!],
+          args: [recv, eventNameExpr(name, loc), args[0]!],
           type: BOOL,
           loc,
         }
       : {
           kind: "libCall",
           fn: "emitter.emit",
-          args: [recv, strLit(name, loc), ...args],
+          args: [recv, eventNameExpr(name, loc), ...args],
           type: BOOL,
           loc,
         };

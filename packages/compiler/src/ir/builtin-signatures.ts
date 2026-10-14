@@ -2867,6 +2867,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "emitter.getMax": { argTypes: [null], result: F64 },
   "emitter.setDefaultMax": { argTypes: [F64], result: VOID },
   "emitter.getDefaultMax": { argTypes: [], result: F64 },
+  /** The events.errorMonitor event key: an immortal string the runtime
+   * registry matches by identity, so no string event name reaches it. */
+  "emitter.errorMonitor": { argTypes: [], result: STRING },
   // node:stream: receivers are stream-hierarchy objects and several
   // results are program-dependent (the receiver's class, unions) — the
   // libCall case owns those checks. The constructors and a few methods
