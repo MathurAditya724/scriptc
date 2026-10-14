@@ -322,8 +322,30 @@ static bool scr_ee_emit_va(ScrEmitter *em, ScrStr *name, ...);
 /* Fires a meta event with the affected event's NAME as the argument
  * (listeners are fenced to arity <= 1, so the listener-function argument
  * Node passes second is never read). */
+/* events.errorMonitor's registry key (a symbol in Node; the compiler
+ * spells it with a leading NUL no admitted literal name carries). */
+static const char scr_ee_error_monitor[] = "\0events.errorMonitor";
+#define SCR_EE_ERROR_MONITOR_LEN (sizeof scr_ee_error_monitor - 1)
+
+static bool scr_ee_is_error_monitor(const ScrStr *name) {
+  return name->len == SCR_EE_ERROR_MONITOR_LEN &&
+         memcmp(name->data, scr_ee_error_monitor, SCR_EE_ERROR_MONITOR_LEN) == 0;
+}
+
+static void scr_ee_symbol_name_fence(const char *what) {
+  char message[160];
+  snprintf(message, sizeof message, "%s with an events.errorMonitor listener is not supported yet",
+           what);
+  scr_throw_error(SCR_ERR_ERROR, scr_str_new(message, strlen(message)));
+}
+
 static void scr_ee_emit_meta(ScrEmitter *em, const char *meta, ScrStr *name) {
   if (!scr_ee_has(em->reg, meta)) return;
+  /* Node passes the symbol itself, which the string tuple cannot carry. */
+  if (scr_ee_is_error_monitor(name)) {
+    scr_ee_symbol_name_fence(meta);
+    return;
+  }
   ScrStr *m = scr_str_new(meta, strlen(meta));
   scr_ee_emit_va(em, m, name);
   scr_str_release(m);
@@ -632,7 +654,25 @@ ScrEmitter *scr_emitter_remove_all(ScrEmitter *em, ScrStr *name, bool all) {
  * listener throw stops the pass (the exception stays pending for the
  * caller). Returns whether the bucket had listeners. */
 static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
+                             ScrDyn *const *flex_args, size_t flex_argc);
+
+/* emit('error', ...) first emits the same arguments to errorMonitor. */
+static void scr_ee_emit_error_monitor(ScrEmitter *em, va_list *ap_template,
+                                      ScrDyn *const *flex_args, size_t flex_argc) {
+  ScrEeBucket *b =
+      em->reg ? scr_ee_bucket_find(em->reg, scr_ee_error_monitor, SCR_EE_ERROR_MONITOR_LEN) : NULL;
+  if (!b || b->n == 0) return;
+  ScrStr *monitor = scr_str_new(scr_ee_error_monitor, SCR_EE_ERROR_MONITOR_LEN);
+  scr_ee_emit_core(em, monitor, ap_template, flex_args, flex_argc);
+  scr_str_release(monitor);
+}
+
+static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
                              ScrDyn *const *flex_args, size_t flex_argc) {
+  if (name->len == 5 && memcmp(name->data, "error", 5) == 0) {
+    scr_ee_emit_error_monitor(em, ap_template, flex_args, flex_argc);
+    if (scr_exc_pending()) return true;
+  }
   ScrEeBucket *b = em->reg ? scr_ee_bucket_find(em->reg, name->data, name->len) : NULL;
   if (!b || b->n == 0) return false;
   size_t n = b->n;
@@ -719,6 +759,8 @@ bool scr_emitter_emit_flex(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, si
  * errors. Keep this separate from the statically typed Error ABI above. */
 bool scr_emitter_emit_error_flex(ScrEmitter *em, ScrDyn *error) {
   if (!scr_ee_has(em->reg, "error")) {
+    scr_ee_emit_error_monitor(em, NULL, &error, 1);
+    if (scr_exc_pending()) return false;
     scr_dyn_throw(scr_dyn_retain(error));
     return false;
   }
@@ -731,8 +773,17 @@ bool scr_emitter_emit_error_flex(ScrEmitter *em, ScrDyn *error) {
 /* emit('error', err) — Node's special event: with no 'error' listener the
  * payload THROWS (catchable; uncaught exits 1 with the error report).
  * err is borrowed; the throw takes its own +1. */
+static void scr_ee_emit_error_monitor_va(ScrEmitter *em, ...) {
+  va_list ap;
+  va_start(ap, em);
+  scr_ee_emit_error_monitor(em, &ap, NULL, 0);
+  va_end(ap);
+}
+
 bool scr_emitter_emit_error(ScrEmitter *em, ScrStr *name, ScrError *err) {
   if (!scr_ee_has(em->reg, "error")) {
+    scr_ee_emit_error_monitor_va(em, err);
+    if (scr_exc_pending()) return false;
     scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
                   scr_error_trace_arg());
     return false;
@@ -781,7 +832,14 @@ ScrArr *scr_emitter_event_names(ScrEmitter *em) {
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
   if (em->reg) {
     for (ScrEeBucket *b = em->reg->head; b; b = b->next) {
-      if (b->n > 0) scr_arr_push_ref(out, scr_str_retain(b->name));
+      if (b->n == 0) continue;
+      /* Node lists the errorMonitor symbol, which a string[] cannot hold. */
+      if (scr_ee_is_error_monitor(b->name)) {
+        scr_arr_release(out);
+        scr_ee_symbol_name_fence("eventNames()");
+        return scr_arr_new(SCR_ELEM_STR, 0);
+      }
+      scr_arr_push_ref(out, scr_str_retain(b->name));
     }
   }
   return out;

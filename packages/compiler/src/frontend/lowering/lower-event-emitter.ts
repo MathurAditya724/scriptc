@@ -70,6 +70,7 @@ import {
 import { STREAM_FORCED_EVENT_NAMES, streamForcedTuple, streamSidesOf } from "./lower-stream.js";
 import { boolLit, strLit, varRef } from "../../ir/build.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import { lowerAddAbortListener } from "./builtin-calls.js";
 
 /** True when the class descends from (or is) the runtime emitter. */
 export function emitterRooted(lowerer: Lowerer, info: ClassInfo | undefined | null): boolean {
@@ -185,14 +186,17 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
       );
     return sig;
   };
-  // The two forced tuples (see the header comment).
-  table.set("error", {
-    tuple: [{ kind: "object", className: "%Error" }],
-    fromEmit: true,
-    conflict: null,
-    dynListener: false,
-    hasListener: false,
-  });
+  // The forced tuples (see the header comment); errorMonitor listeners
+  // receive the 'error' payload.
+  for (const name of ["error", ERROR_MONITOR_EVENT]) {
+    table.set(name, {
+      tuple: [{ kind: "object", className: "%Error" }],
+      fromEmit: true,
+      conflict: null,
+      dynListener: false,
+      hasListener: false,
+    });
+  }
   table.set("newListener", {
     tuple: [STRING],
     fromEmit: true,
@@ -295,7 +299,12 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
       }
       const info = scannedEmitterInfo(lowerer, recvT);
       if (!info) return;
-      if (!nameT.isStringLiteralType()) {
+      const literal = isErrorMonitorRef(lowerer, arg0)
+        ? ERROR_MONITOR_EVENT
+        : nameT.isStringLiteralType()
+          ? nameT.value
+          : null;
+      if (literal === null) {
         const pattern = computedEventPatternOf(lowerer, arg0);
         if (
           pattern &&
@@ -306,8 +315,8 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
         }
         return;
       }
-      const name = nameT.value;
-      if (META_EVENTS.has(name) || name === "error") return; // forced tuples
+      const name = literal;
+      if (META_EVENTS.has(name) || name === "error" || name === ERROR_MONITOR_EVENT) return; // forced tuples
       // Stream receivers' runtime-emitted events carry PER-BASE forced
       // tuples (lower-stream.ts) — their sites never join the program-
       // global table, so a stream's 'data' cannot collide with a user
@@ -368,12 +377,69 @@ function computedPatternsOverlap(left: ComputedEventPattern, right: ComputedEven
   );
 }
 
-/** The compile-time name for a literal-only operation, or a pointed fence
- * (string-literal TYPE, so const bindings and literal unions of one
- * member count — the staticHeaderKeyOf stance). */
-function eventNameOf(lowerer: Lowerer, member: string, arg: ts.Expression): string {
+/** The registry name of `events.errorMonitor`: a symbol in Node, so no
+ * string event can collide with it (the NUL never appears in a literal
+ * name the lowering admits as the same key — see literalEventName). */
+export const ERROR_MONITOR_EVENT = "\u0000events.errorMonitor";
+
+/** `errorMonitor` / `EventEmitter.errorMonitor` / `events.errorMonitor`:
+ * the events module's unique symbol, by declaration provenance. */
+function isErrorMonitorRef(lowerer: Lowerer, arg: ts.Expression): boolean {
+  const isMonitorType = (t: ts.Type): boolean => {
+    if (!(t.flags & ts.TypeFlags.UniqueESSymbol)) return false;
+    const symbol = t.getSymbol();
+    return symbol?.name === "errorMonitor" && lowerer.isStdlibSymbol(symbol);
+  };
+  // The unique symbol TYPE names its declaration through any alias.
+  if (isMonitorType(lowerer.typeOf(arg))) return true;
+  // A const destructuring (`const { errorMonitor } = events`) widens the
+  // binding's type in JavaScript; its source property still names it.
+  if (!ts.isIdentifier(arg)) return false;
+  const symbol = lowerer.resolveValueSymbol(arg);
+  const declaration = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+  if (!declaration || !ts.isBindingElement(declaration)) return false;
+  const pattern = declaration.parent;
+  const variable = pattern?.parent;
+  if (
+    !pattern ||
+    !variable ||
+    !ts.isObjectBindingPattern(pattern) ||
+    !ts.isVariableDeclaration(variable) ||
+    !variable.initializer ||
+    !(ts.getCombinedNodeFlags(variable) & ts.NodeFlags.Const)
+  )
+    return false;
+  const key = declaration.propertyName ?? declaration.name;
+  if (!ts.isIdentifier(key)) return false;
+  const property = lowerer.checker.getPropertyOfType(
+    lowerer.typeOf(variable.initializer),
+    key.text,
+  );
+  return property !== undefined && isMonitorType(lowerer.checker.getTypeOfSymbol(property));
+}
+
+/** A compile-time event name: a string-literal TYPE (const bindings and
+ * literal unions of one member count — the staticHeaderKeyOf stance) or
+ * the errorMonitor symbol. */
+function literalEventName(lowerer: Lowerer, arg: ts.Expression): string | null {
+  if (isErrorMonitorRef(lowerer, arg)) return ERROR_MONITOR_EVENT;
   const t = lowerer.typeOf(arg);
-  if (t.isStringLiteralType()) return t.value;
+  if (!t.isStringLiteralType()) return null;
+  // A string spelling of the reserved key stays a separate event in Node.
+  if (t.value === ERROR_MONITOR_EVENT) {
+    lowerer.noLowering(
+      "an event name spelling the errorMonitor key",
+      arg,
+      "the runtime reserves this name for events.errorMonitor",
+    );
+  }
+  return t.value;
+}
+
+/** The compile-time name for a literal-only operation, or a pointed fence. */
+function eventNameOf(lowerer: Lowerer, member: string, arg: ts.Expression): string {
+  const name = literalEventName(lowerer, arg);
+  if (name !== null) return name;
   lowerer.noLowering(
     `${member} with a non-literal event name`,
     arg,
@@ -987,6 +1053,7 @@ export function lowerEmitterMethodCall(
     superRecv === undefined &&
     lowerer.checker.getConstructSignatures(lowerer.typeOf(access.expression)).length > 0
   ) {
+    if (member === "addAbortListener") return lowerAddAbortListener(lowerer, call, loc);
     if (member === "setMaxListeners" && args.length === 1) {
       if (lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind !== "f64") {
         // Node's runtime ladder over the dyn value ("setMaxListeners" is
@@ -1080,7 +1147,7 @@ export function lowerEmitterMethodCall(
       );
     }
     const registering = REGISTER_MEMBERS.has(member);
-    if (!lowerer.typeOf(args[0]!).isStringLiteralType()) {
+    if (literalEventName(lowerer, args[0]!) === null) {
       computedEventPattern(lowerer, info, member, args[0]!);
       const receiver = lowerReceiver();
       const name = lowerer.lowerExprExpecting(args[0]!, STRING);
@@ -1230,8 +1297,7 @@ export function lowerEmitterMethodCall(
     if (args.length === 0) {
       lowerer.noLowering("emit without an event name", call);
     }
-    const nameType = lowerer.typeOf(args[0]!);
-    if (!nameType.isStringLiteralType()) {
+    if (literalEventName(lowerer, args[0]!) === null) {
       const pattern = computedEventPatternOf(lowerer, args[0]!);
       const mayBeObserved =
         pattern === null ||
@@ -1363,7 +1429,11 @@ export function lowerEmitterMethodCall(
     }
     const all = args.length === 0;
     const receiver = lowerReceiver();
-    const name = all ? strLit("", loc) : lowerer.lowerExprExpecting(args[0]!, STRING);
+    const name = all
+      ? strLit("", loc)
+      : isErrorMonitorRef(lowerer, args[0]!)
+        ? strLit(ERROR_MONITOR_EVENT, loc)
+        : lowerer.lowerExprExpecting(args[0]!, STRING);
     if (name.type.kind !== "string") {
       lowerer.noLowering(
         `removeAllListeners with a '${lowerer.fmt(name.type)}' event name`,
@@ -1384,7 +1454,9 @@ export function lowerEmitterMethodCall(
       lowerer.noLowering(`listenerCount with ${args.length} arguments`, call);
     }
     const receiver = lowerReceiver();
-    const name = lowerer.lowerExprExpecting(args[0]!, STRING);
+    const name = isErrorMonitorRef(lowerer, args[0]!)
+      ? strLit(ERROR_MONITOR_EVENT, loc)
+      : lowerer.lowerExprExpecting(args[0]!, STRING);
     if (name.type.kind !== "string") {
       lowerer.noLowering(`listenerCount with a '${lowerer.fmt(name.type)}' event name`, args[0]!);
     }
