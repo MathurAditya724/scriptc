@@ -2,7 +2,7 @@
  * Containers store erased adapters; shape helpers retain, release and trace
  * their fields. Every allocation has a size_t reference count at offset zero
  * and participates in the runtime allocation audit. */
-import type { IrModule, IrRecordShape, IrType } from "../../ir/ir.js";
+import type { IrClassDef, IrModule, IrRecordShape, IrType } from "../../ir/ir.js";
 import {
   isIdentityCollectionKey,
   isRefCounted,
@@ -48,6 +48,14 @@ export interface ShapeHost {
   readonly nullableUnions: NullableUnions;
   readonly recordsById: Map<string, IrRecordShape>;
   readonly recordCloneShapes: ReadonlySet<string>;
+  /** The program constructs lifetime regions: the ProgramLifetime classes
+   * allocate in regions and count references in their region chunk instead
+   * of being empty (llvm/regions.ts). */
+  regions?: RegionHooks | null;
+  /** The alias tag of a runtime word that lifetime-region code reads and
+   * writes outside every field: the chunk count, the chunk owner and the
+   * class cursors (", !tbaa !N", or "" in debug builds). */
+  regionAliasTag?(word: "count" | "owner" | "cursor"): string;
   /** Emit the live-object audit notes (`scr_obj_alloc_note` /
    * `scr_obj_free_note`) in emitted new/free helpers. Only runtimes built
    * with SCR_RC_AUDIT (the sanitized lane) count them; release and dev
@@ -68,6 +76,15 @@ export interface ShapeHost {
    * in emission order.
    * Absent: every descriptor gets 0, which keeps no statistics. */
   nextCycKind?(): number;
+}
+
+/** What class emission asks of lifetime regions (LifetimeRegions in
+ * llvm/regions.ts): the retain and release bodies, the allocation lines of
+ * `new` (the instance in `%o`), and a class's region definitions. */
+export interface RegionHooks {
+  rcBody(fnName: string, ret: "ptr" | "void", comment: string): string[];
+  newAlloc(className: string, sizeOf: string): string[];
+  classDefinitions(cls: IrClassDef, sizeOf: string): string[];
 }
 
 /** Every emitted function/helper carries #0 = { sanitize_address } — see
@@ -712,7 +729,7 @@ export function mapValKindNum(value: IrType): number {
 /** The RC-relevant members of a shape: every field, plus the overflow map
  * on index-signature shapes (one more map-typed member). `index` is the
  * member's field position in the emitted struct type (rc header at 0). */
-function rcMembers(shape: IrRecordShape): { index: number; type: IrType; name: string }[] {
+export function rcMembers(shape: IrRecordShape): { index: number; type: IrType; name: string }[] {
   return [
     ...shape.fields.map((f, i) => ({ index: i + 1, type: f.type, name: f.name })),
     ...(shape.indexValue
@@ -737,7 +754,7 @@ export function retainBody(
   immortal = false,
 ): string[] {
   const S = host.sizeType;
-  if (immortal) return immortalRcBody(fnName, "ptr", comment);
+  if (immortal) return immortalRcBody(host, fnName, "ptr", comment);
   return [
     `define internal ptr @${fnName}(ptr %o) ${FN_ATTRS} {${comment ? ` ; ${comment}` : ""}`,
     `entry:`,
@@ -760,8 +777,16 @@ export function retainBody(
 /** The retain or release entry point of a class whose every instance lives
  * until the process exits (no collector header; see classes.ts
  * programLifetimeClass and programLifetimeRc): nothing to count, so every
- * inlined call site folds away. */
-function immortalRcBody(fnName: string, ret: "ptr" | "void", comment: string): string[] {
+ * inlined call site folds away. Programs with lifetime regions count the
+ * references in the instance's region chunk instead (llvm/regions.ts). */
+function immortalRcBody(
+  host: ShapeHost,
+  fnName: string,
+  ret: "ptr" | "void",
+  comment: string,
+): string[] {
+  const regions: RegionHooks | null = host.regions ?? null;
+  if (regions !== null) return regions.rcBody(fnName, ret, comment);
   return [
     `define internal ${ret} @${fnName}(ptr %o) ${FN_ATTRS} {${comment ? ` ; ${comment} (immortal)` : ""}`,
     `entry:`,
@@ -981,7 +1006,7 @@ export function releaseFastPath(
   immortal = false,
 ): string[] {
   const S = host.sizeType;
-  if (immortal) return immortalRcBody(fnName, "void", comment);
+  if (immortal) return immortalRcBody(host, fnName, "void", comment);
   return [
     `define internal void @${fnName}(ptr %o) ${FN_ATTRS} {${comment ? ` ; ${comment} (fast path)` : ""}`,
     `entry:`,

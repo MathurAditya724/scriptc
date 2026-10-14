@@ -40,6 +40,7 @@ import {
   directDestroyTarget,
   usedDirectTargets,
   type DirectDestroy,
+  type RegionHooks,
   llFieldType,
   releaseBody,
   releaseFastPath,
@@ -683,15 +684,22 @@ export function emitClassShapes(
       );
     // A program-lifetime instance is never freed: no collector header
     // (nothing walks or frees it) and the program-lifetime count, which
-    // publication turns into SIZE_MAX (programLifetimeRc).
-    nw.push(
-      ...emitObjectAlloc(
-        host,
-        sizeOf,
-        traced && !lifetime ? { type: cycType } : null,
-        meta.hierarchy ? 16 : 8,
-      ),
-    );
+    // publication turns into SIZE_MAX (programLifetimeRc). Programs with
+    // lifetime regions allocate it in the current region, which frees it
+    // with the region (llvm/regions.ts).
+    const regions: RegionHooks | null = lifetime ? (host.regions ?? null) : null;
+    if (regions !== null) {
+      nw.push(...regions.newAlloc(cls.name, sizeOf));
+      defs.push(...regions.classDefinitions(cls, sizeOf));
+    } else
+      nw.push(
+        ...emitObjectAlloc(
+          host,
+          sizeOf,
+          traced && !lifetime ? { type: cycType } : null,
+          meta.hierarchy ? 16 : 8,
+        ),
+      );
     nw.push(`  store ${host.sizeType} ${lifetime ? programLifetimeRc(host.sizeType) : 1}, ptr %o`);
     if (lifetime && audit) {
       // --sanitize builds: the RC audit skips its leak report when the

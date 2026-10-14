@@ -131,6 +131,8 @@ export function validateModule(mod: IrModule): IrValidationError[] {
   const moduleLoc: SrcLoc = { file: mod.sourceFile, start: 0, end: 0 };
   if (mod.workers !== undefined && typeof mod.workers !== "boolean")
     errors.push({ message: "worker execution mode must be a boolean", loc: moduleLoc });
+  if (mod.lifetimeRegions !== undefined && mod.lifetimeRegions !== true)
+    errors.push({ message: "lifetimeRegions must be true when present", loc: moduleLoc });
   if (mod.workers && mod.lib !== undefined)
     errors.push({
       message: "worker execution requires a native static executable",
@@ -975,6 +977,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       classValidation,
       errors,
       mod.workers === true,
+      mod.lifetimeRegions === true,
     );
   }
   return errors;
@@ -992,6 +995,7 @@ function validateFunction(
   classValidation: ClassValidation,
   errors: IrValidationError[],
   workers: boolean,
+  lifetimeRegions: boolean,
 ): void {
   const locals = new Map(fn.locals.map((l) => [l.id, l]));
   const err = (message: string, loc: SrcLoc) =>
@@ -3714,6 +3718,24 @@ function validateFunction(
       checkExpr(flag);
       if (flag.type.kind !== "bool") err("module.tdzCheck flag must be bool", e.loc);
       if (e.type.kind !== "void") err("module.tdzCheck must be void", e.loc);
+      return;
+    }
+    if (
+      e.name === "region.create" ||
+      e.name === "region.enter" ||
+      e.name === "region.leave" ||
+      e.name === "region.release"
+    ) {
+      if (!lifetimeRegions) err(`${e.name} outside a lifetimeRegions module`, e.loc);
+      const takesId = e.name === "region.enter" || e.name === "region.release";
+      if (e.args.length !== (takesId ? 1 : 0))
+        err(`${e.name} takes ${takesId ? "one region id" : "no arguments"}`, e.loc);
+      for (const a of e.args) {
+        checkExpr(a);
+        if (a.type.kind !== "f64") err(`${e.name} id must be f64`, e.loc);
+      }
+      if (e.type.kind !== (e.name === "region.create" ? "f64" : "void"))
+        err(`${e.name} has type ${e.name === "region.create" ? "f64" : "void"}`, e.loc);
       return;
     }
     if (e.name === "threads.publish") {

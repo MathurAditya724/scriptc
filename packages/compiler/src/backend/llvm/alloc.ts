@@ -79,6 +79,15 @@ function threadLocalState(host: AllocHost, prefix: string, lines: string[]): str
   return [...preamble, ...text.split("\n")];
 }
 
+/** Worker executables: the calling script thread's ScrThreadHot block into
+ * `dest`. Its address also identifies the thread (the owner word of a
+ * lifetime-region chunk; llvm/regions.ts). */
+export function threadHotAddressLines(host: AllocHost, dest: string): string[] {
+  host.declare(`@scr_thread_hot = external thread_local global ${THREAD_HOT_TYPE}`);
+  host.declare(`declare nonnull ptr @llvm.threadlocal.address.p0(ptr nonnull)`);
+  return [`  ${dest} = call ptr @llvm.threadlocal.address.p0(ptr @scr_thread_hot)`];
+}
+
 const ALLOC_NOTE = `  call void @scr_obj_alloc_note()`;
 const FREE_NOTE = `  call void @scr_obj_free_note()`;
 
