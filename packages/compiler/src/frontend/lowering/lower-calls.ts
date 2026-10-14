@@ -9066,10 +9066,26 @@ export function lowerStaticNumberGlobal(
                       type: BOOL,
                       loc,
                     },
+                    // parseInt(undefined, radix) parses the text
+                    // "undefined" (a number from radix 31 up).
                     then: [
                       {
                         kind: "return",
-                        value: { kind: "numLit", value: NaN, type: F64, loc },
+                        value: {
+                          kind: "libCall",
+                          fn: "num.parseInt",
+                          args: [
+                            {
+                              kind: "strLit",
+                              value: arm.kind === "nullT" ? "null" : "undefined",
+                              type: STRING,
+                              loc,
+                            },
+                            radixRef,
+                          ],
+                          type: F64,
+                          loc,
+                        },
                         loc,
                       },
                     ],

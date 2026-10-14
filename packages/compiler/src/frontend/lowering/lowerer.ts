@@ -62,6 +62,7 @@ import {
   utilTypesModuleValue,
 } from "./lower-builtin-values.js";
 import { devirtualizeVirtualCalls } from "./devirtualize.js";
+import { foldRegexSpanReads } from "./regex-span-reads.js";
 import { RuntimeOptionalProvenance } from "./runtime-optional-provenance.js";
 import { presentAtUse, reassignedBindings } from "./runtime-optional-guards.js";
 import { NarrowingStability } from "./narrowing-stability.js";
@@ -1756,6 +1757,9 @@ export class Lowerer {
    * prepass. This includes explicit annotations: unchecked TS annotations do
    * not prove that an array property read produced a value. */
   readonly runtimeOptionalBindingTypes = new Map<ts.Symbol, IrType>();
+  /** Set when a match result lowers to execGroups/matchGroups, the inputs
+   * of regex span folding. */
+  regexGroupResults = false;
   /** Bindings that receive an unchecked indexed read (or a value derived
    * from one) through an initializer or assignment. The checker narrows a
    * declared optional binding to that read's bare type, so presence tests
@@ -6348,6 +6352,7 @@ export class Lowerer {
       ...this.liftedFns,
       ...this.implicitFns,
     ];
+    if (this.regexGroupResults) for (const fn of functions) foldRegexSpanReads(this, fn);
     // The worklist can leave a virtual site with a single implementation.
     // Devirtualize after construction/override reachability has settled.
     devirtualizeVirtualCalls(this, functions, {

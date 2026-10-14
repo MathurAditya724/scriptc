@@ -771,6 +771,7 @@ export function lowerRegexMethodCall(
     // A result read only through null tests and constant indices skips
     // the captures and properties no reader uses.
     const mask = execResultCaptureMask(lowerer, call);
+    if (mask !== null) lowerer.regexGroupResults = true;
     const execCall = (regex: IrExpr): IrExpr => ({
       kind: "regexIntrinsic",
       method: mask === null ? "exec" : "execGroups",
@@ -835,6 +836,20 @@ export function lowerRegexMethodCall(
     };
     const mapped = lowerer.mapTypeOf(lowerer.typeOf(call));
     const resultT: IrType = mapped && typeEquals(mapped, exactT) ? mapped : exactT;
+    // A result read like execGroups' skips the same captures when the
+    // regex is not global (a global regex still answers every match).
+    const mask = execResultCaptureMask(lowerer, call);
+    if (mask !== null) {
+      lowerer.regexGroupResults = true;
+      return {
+        kind: "regexIntrinsic",
+        method: "matchGroups",
+        receiver,
+        args: [re, numLit(mask, loc), numLit(0, loc)],
+        type: resultT,
+        loc,
+      };
+    }
     return { kind: "regexIntrinsic", method: "match", receiver, args: [re], type: resultT, loc };
   }
   // `s.matchAll(re)` — the every-match iterator drained EAGERLY into a
@@ -872,6 +887,10 @@ export function lowerRegexMethodCall(
     const receiver = lowerReceiver();
     const re = lowerer.lowerExprExpecting(arg0, { kind: "regex" });
     return { kind: "regexIntrinsic", method: "search", receiver, args: [re], type: F64, loc };
+  }
+  if (receiverKind === "string" && (name === "replace" || name === "replaceAll")) {
+    const chain = lowerReplaceCharChain(lowerer, call);
+    if (chain) return chain;
   }
   if (
     receiverKind === "string" &&
@@ -944,6 +963,77 @@ export function lowerRegexMethodCall(
       loc,
     };
   }
+  return null;
+}
+
+/** `s.replace(/&/g, "&amp;").replace(/</g, "&lt;")…`: consecutive global
+ * replacements of one literal character by plain text (no `$`), where no
+ * replacement text contains a character a later step replaces. Replacing
+ * every character in one scan is then exactly the steps in turn, and the
+ * inline regex objects (fresh per evaluation) leave no lastIndex to
+ * observe, so one str.replaceChars call stands for the chain. Null for
+ * anything else, including a single step. */
+function lowerReplaceCharChain(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  const steps: { char: string; text: string }[] = [];
+  let node: ts.Expression = call;
+  while (ts.isCallExpression(node) && node.questionDotToken === undefined) {
+    const callee: ts.Expression = node.expression;
+    if (
+      !ts.isPropertyAccessExpression(callee) ||
+      callee.questionDotToken !== undefined ||
+      (callee.name.text !== "replace" && callee.name.text !== "replaceAll") ||
+      node.arguments.length !== 2
+    )
+      break;
+    const [pattern, replacement] = node.arguments;
+    if (
+      !pattern ||
+      !ts.isRegularExpressionLiteral(pattern) ||
+      !replacement ||
+      !(ts.isStringLiteral(replacement) || ts.isNoSubstitutionTemplateLiteral(replacement)) ||
+      replacement.text.includes("$") ||
+      replacement.text.includes("\0") ||
+      lowerer.mapTypeOf(lowerer.typeOf(callee.expression))?.kind !== "string" ||
+      !lowerer.isStdlibMember(callee)
+    )
+      break;
+    const char = globalCharPattern(pattern.text);
+    if (char === null) break;
+    steps.push({ char, text: replacement.text });
+    node = callee.expression;
+  }
+  if (steps.length < 2 || steps.length > 16) return null;
+  steps.reverse();
+  for (let i = 0; i < steps.length; i++) {
+    for (let j = i + 1; j < steps.length; j++) {
+      if (steps[j]!.char === steps[i]!.char || steps[i]!.text.includes(steps[j]!.char)) return null;
+    }
+  }
+  const loc = locOf(call);
+  return {
+    kind: "libCall",
+    fn: "str.replaceChars",
+    args: [
+      lowerer.lowerExprExpecting(node, STRING),
+      strLit(steps.map((step) => step.char).join(""), loc),
+      strLit(steps.map((step) => step.text).join("\0"), loc),
+    ],
+    type: STRING,
+    loc,
+  };
+}
+
+/** The character a `/c/g` literal matches, for one printable ASCII
+ * character or an escaped syntax character; null otherwise. */
+function globalCharPattern(text: string): string | null {
+  if (!text.endsWith("/g")) return null;
+  const body = text.slice(1, -2);
+  const syntax = "\\^$.|?*+()[]{}/-";
+  if (body.length === 1) {
+    const code = body.charCodeAt(0);
+    return code >= 0x20 && code < 0x7f && !syntax.includes(body) ? body : null;
+  }
+  if (body.length === 2 && body[0] === "\\" && syntax.includes(body[1]!)) return body[1]!;
   return null;
 }
 

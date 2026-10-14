@@ -11,6 +11,7 @@
  */
 #include "../src/scr_runtime.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -400,6 +401,97 @@ static void test_build_time_matcher(void) {
   scr_str_release(wide);
 }
 
+RE(re_matched_g, "(b)", "g");
+RE(re_pair, "(a)(\\d+)?", "");
+RE(re_digits_g, "\\d+", "g");
+
+static void test_replace_matcher(void) {
+  /* The direct loop over a build-time matcher: templates decode once. */
+  re_matched_g.matcher = fake_b_matcher;
+  ScrStr *s = S("abcb");
+  ScrStr *t1 = S("[$1|$&|$$|$2|$01]");
+  ScrStr *t2 = S("<$`>");
+  ScrStr *t3 = S("");
+  ScrStr *out = scr_regex_replace(s, &re_matched_g, t1);
+  check(str_is(out, "a[b|b|$|$2|b]c[b|b|$|$2|b]") && scr_str_known_ascii(out),
+        "matcher replace: $n, $&, $$ and out-of-range references; ASCII result");
+  scr_str_release(out);
+  expect_str(scr_regex_replace(s, &re_matched_g, t2), "a<a>c<abc>", "matcher replace: $` takes the general loop");
+  expect_str(scr_regex_replace(s, &re_matched_g, t3), "ac", "matcher replace: empty template");
+  check(re_matched_g.last_index == 0, "matcher replace: a global regex ends at lastIndex 0");
+  scr_str_release(s);
+  scr_str_release(t1);
+  scr_str_release(t2);
+  scr_str_release(t3);
+}
+
+static void test_exec_spans(void) {
+  /* Lazy captures: compared and converted without strings on ASCII
+   * subjects, materialized on wide ones. */
+  ScrStr *ascii = S("xa12");
+  ScrArr *m = scr_regex_exec_spans(ascii, &re_pair, 6.0, 6.0);
+  check(m && m->len == 4 && m->present[1] == SCR_ARR_UNDEFINED,
+        "exec_spans: ASCII subjects keep lazy captures as spans");
+  ScrStr *a = S("a");
+  ScrStr *twelve = S("12");
+  check(m && scr_regex_group_eq(m, 1, a) && !scr_regex_group_eq(m, 2, a) && scr_regex_group_eq(m, 2, twelve),
+        "group_eq compares the span");
+  check(m && scr_regex_group_number(m, 2) == 12 && scr_regex_group_parse_int(m, 2, 16) == 18,
+        "group_number and group_parse_int convert the span");
+  check(m && isnan(scr_regex_group_number(m, 5)) && !scr_regex_group_eq(m, 5, a),
+        "reads past the result are undefined");
+  scr_arr_release(m);
+  ScrStr *short_subject = S("a");
+  m = scr_regex_exec_spans(short_subject, &re_pair, 6.0, 6.0);
+  check(m && isnan(scr_regex_group_number(m, 2)) && scr_regex_group_parse_int(m, 2, 36) == 86464843759093.0,
+        "a non-participating capture reads as undefined");
+  scr_arr_release(m);
+  ScrStr *wide = S("\xC3\xA9" "a7");
+  m = scr_regex_exec_spans(wide, &re_pair, 6.0, 6.0);
+  check(m && m->len == 3 && m->present[2] == SCR_ARR_VALUE && scr_regex_group_number(m, 2) == 7,
+        "exec_spans: wide subjects materialize lazy captures");
+  scr_arr_release(m);
+  m = scr_regex_exec_spans(ascii, &re_pair, 38.0, 2.0);
+  check(m && m->len == 3 && scr_regex_group_eq(m, 1, a), "exec_spans: a read past the captures keeps strings");
+  scr_arr_release(m);
+  ScrStr *list = S("1 22 333");
+  m = scr_regex_match_groups(list, &re_digits_g, 1.0, 1.0);
+  check(m && m->len == 3 && scr_regex_group_number(m, 2) == 333, "match_groups: a global regex answers every match");
+  scr_arr_release(m);
+  m = scr_regex_match_groups(ascii, &re_pair, 6.0, 4.0);
+  check(m && scr_regex_group_number(m, 2) == 12, "match_groups: a non-global regex reads like exec_spans");
+  scr_arr_release(m);
+  scr_str_release(ascii);
+  scr_str_release(short_subject);
+  scr_str_release(wide);
+  scr_str_release(list);
+  scr_str_release(a);
+  scr_str_release(twelve);
+}
+
+static void test_replace_chars(void) {
+  ScrStr *chars = S("&<>");
+  ScrStr *texts = scr_str_new("&amp;\0&lt;\0&gt;", 15);
+  ScrStr *s = S("a<b>&c");
+  expect_str(scr_str_replace_chars(s, chars, texts), "a&lt;b&gt;&amp;c", "replace_chars: every character");
+  ScrStr *none = S("plain text without specials");
+  ScrStr *same = scr_str_replace_chars(none, chars, texts);
+  check(same == none, "replace_chars: no hit retains the subject");
+  scr_str_release(same);
+  ScrStr *longer = S("0123456789abcdefghij<0123456789abcdefghij>0123456789&");
+  expect_str(scr_str_replace_chars(longer, chars, texts),
+             "0123456789abcdefghij&lt;0123456789abcdefghij&gt;0123456789&amp;",
+             "replace_chars: word-at-a-time scan");
+  ScrStr *wide = S("\xC3\xA9<\xC3\xA9");
+  expect_str(scr_str_replace_chars(wide, chars, texts), "\xC3\xA9&lt;\xC3\xA9", "replace_chars: UTF-8 subject");
+  scr_str_release(chars);
+  scr_str_release(texts);
+  scr_str_release(s);
+  scr_str_release(none);
+  scr_str_release(longer);
+  scr_str_release(wide);
+}
+
 static void test_string_replace(void) {
   /* String search values: one pass, GetSubstitution without captures. */
   ScrStr *s = S("a.b.c");
@@ -443,6 +535,9 @@ int main(int argc, char **argv) {
   test_exec_groups();
   test_string_replace();
   test_build_time_matcher();
+  test_replace_matcher();
+  test_exec_spans();
+  test_replace_chars();
 
 #ifdef SCR_RC_AUDIT
   check(scr_str_live_count() == 0, "no live heap strings at exit (RC audit)");
