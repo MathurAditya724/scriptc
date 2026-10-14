@@ -5555,6 +5555,24 @@ bool scr_dyn_is_nullish(const ScrDyn *d);
  * fn.apply(this, arguments)`) forwards the receiver for free. */
 void scr_dyn_this_push(void *h, ScrDynHandleTag tag); /* h BORROWED (the firing site holds it); NULL binds undefined */
 void scr_dyn_this_push_dyn(const ScrDyn *v);          /* retained for the window */
+/* A class's typed-ref construction recipe, emitted once per class as a
+ * constant (kind: 0 plain, 1 observed, 2 traced capsule). `view` names the
+ * live view bound to the new capsule, as eager boxing binds it: 0 none,
+ * 1 array ops, 2 record ops, 3 class ops (`ops`). */
+typedef struct {
+  void *(*retain)(void *);
+  void (*release)(void *);
+  const char *type_key;
+  size_t type_key_len;
+  ScrDyn *(*materialize)(void *);
+  void (*commit)(void *, const ScrDyn *);
+  int kind;
+  int view;
+  const void *ops;
+} ScrDynTypedRefRecipe;
+/* A class instance as the window's receiver, boxed with its recipe only when
+ * read. ptr is BORROWED: the caller holds the instance across the window. */
+void scr_dyn_this_push_typed(void *ptr, const ScrDynTypedRefRecipe *recipe);
 void scr_dyn_this_pop(void);
 /* The innermost binding as a dyn value (+1): a boxed handle, the pushed
  * dyn value, or the undefined singleton (empty stack, NULL handle, or a
