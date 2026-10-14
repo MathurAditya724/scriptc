@@ -593,7 +593,8 @@ export class ClassDynamicDispatch {
   private readonly prototypeIdentityClasses = new Set<string>();
   private readonly instancePrototypes = new Map<string, { fn: IrFunction; classes: Set<string> }>();
   private readonly checkedCasts = new Map<string, { fn: IrFunction; classes: Set<string> }>();
-  private enumeration: IrFunction | null = null;
+  /** The for-in key helpers, by libCall (dyn and native string[] keys). */
+  private readonly enumerations = new Map<"dyn.forInKeys" | "dyn.forInKeyStrings", IrFunction>();
   private readonly enumerationClasses = new Set<string>();
 
   process(lowerer: Lowerer, functions: readonly IrFunction[]): boolean {
@@ -690,6 +691,7 @@ export class ClassDynamicDispatch {
                 expr.fn === "dyn.toString" ||
                 expr.fn === "dyn.stringConstructor" ||
                 expr.fn === "dyn.forInKeys" ||
+                expr.fn === "dyn.forInKeyStrings" ||
                 expr.fn === "dyn.hasKeyComputed" ||
                 expr.fn === "dyn.hasOwnComputed" ||
                 expr.fn === "dyn.propertyIsEnumerableComputed" ||
@@ -1353,27 +1355,35 @@ export class ClassDynamicDispatch {
               loc: expr.loc,
             };
           }
-          if (expr.kind === "libCall" && expr.fn === "dyn.forInKeys") {
-            if (!this.enumeration) {
+          if (
+            expr.kind === "libCall" &&
+            (expr.fn === "dyn.forInKeys" || expr.fn === "dyn.forInKeyStrings")
+          ) {
+            let enumeration = this.enumerations.get(expr.fn);
+            if (!enumeration) {
               const loc = expr.loc;
               const value = varRef("p.0", DYN, loc);
-              this.enumeration = {
-                name: "%dyn.class.forInKeys",
+              enumeration = {
+                name:
+                  expr.fn === "dyn.forInKeys"
+                    ? "%dyn.class.forInKeys"
+                    : "%dyn.class.forInKeyStrings",
                 params: [{ localId: "p.0", name: "value", type: DYN }],
-                returnType: DYN,
+                returnType: expr.type,
                 locals: [{ id: "p.0", name: "value", type: DYN, mutable: false }],
                 body: [{ kind: "return", value: { ...expr, args: [value] }, loc }],
                 loc,
               };
-              this.generated.add(this.enumeration);
-              lowerer.liftedFns.push(this.enumeration);
+              this.enumerations.set(expr.fn, enumeration);
+              this.generated.add(enumeration);
+              lowerer.liftedFns.push(enumeration);
               changed = true;
             }
             return {
               kind: "call",
-              callee: this.enumeration.name,
+              callee: enumeration.name,
               args: expr.args,
-              type: DYN,
+              type: expr.type,
               loc: expr.loc,
             };
           }
@@ -2701,20 +2711,21 @@ export class ClassDynamicDispatch {
         changed = true;
       }
     }
-    if (this.enumeration)
+    for (const [fn, enumeration] of this.enumerations)
       for (const plan of this.propertyReceivers(lowerer, false, false)) {
-        if (!plan.info.def.tracksOwnFields || this.enumerationClasses.has(plan.key)) continue;
-        this.enumerationClasses.add(plan.key);
-        const loc = this.enumeration.loc;
+        const classKey = `${fn}:${plan.key}`;
+        if (!plan.info.def.tracksOwnFields || this.enumerationClasses.has(classKey)) continue;
+        this.enumerationClasses.add(classKey);
+        const loc = enumeration.loc;
         const { condition } = this.propertyReceiver(plan, loc);
         const bag = this.readPropertyBagOrEmpty(lowerer, varRef("p.0", DYN, loc), loc);
-        this.enumeration.body.unshift({
+        enumeration.body.unshift({
           kind: "if",
           cond: condition,
           then: [
             {
               kind: "return",
-              value: { kind: "libCall", fn: "dyn.forInKeys", args: [bag], type: DYN, loc },
+              value: { kind: "libCall", fn, args: [bag], type: enumeration.returnType, loc },
               loc,
             },
           ],

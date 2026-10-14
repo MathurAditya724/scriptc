@@ -8577,6 +8577,120 @@ ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v) {
   }
 }
 
+/* Whether for-in's key snapshot of `v` stays exact through the walk, so
+ * visits need no live presence test: a typed record whose fields are all
+ * required cannot lose a key. */
+bool scr_dyn_for_in_stable(const ScrDyn *v) {
+  if (v->kind != SCR_DYN_TYPED_REF) return false;
+  const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
+  return record != NULL && record->fixed;
+}
+
+/* The record shape's key array for walks that only read it: built once,
+ * immortal, and shared by every thread through the ops' atomic slot. */
+static ScrArr *scr_record_shared_keys(const ScrDynTypedRecordOps *record) {
+  ScrArr **slot = &((ScrDynTypedRecordOps *)record)->keys;
+  ScrArr *keys = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
+  if (keys) return keys;
+  ScrArr *built = scr_arr_new(SCR_ELEM_STR, record->count);
+  for (size_t i = 0; i < record->count; i++)
+    scr_arr_push_ref(built, scr_str_retain(record->names[i]));
+  built->rc = SIZE_MAX;
+  ScrArr *expected = NULL;
+  if (__atomic_compare_exchange_n(slot, &expected, built, false, __ATOMIC_ACQ_REL,
+                                  __ATOMIC_ACQUIRE)) {
+#ifdef SCR_RC_AUDIT
+    scr_arr_live_forget(); /* immortal: outside the exit-time RC audit */
+#endif
+    return built;
+  }
+  built->rc = 1;
+  scr_arr_release(built);
+  return expected;
+}
+
+/* A typed record's present field names, or a plain object's enumerable
+ * own keys (integer-like keys ascending, then insertion order), as a
+ * native string[] (+1); NULL for every other value. `shared`: the caller
+ * only reads the array, so a record shape's cached array may serve. */
+static ScrArr *scr_dyn_own_key_strs(const ScrDyn *v, bool shared) {
+  if (v->kind == SCR_DYN_TYPED_REF) {
+    const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
+    if (!record) return NULL;
+    void *rec = v->v.typed_ref.ptr;
+    bool all = true;
+    for (size_t i = 0; i < record->count && all; i++) all = record->has(rec, i);
+    if (shared && all) return scr_record_shared_keys(record);
+    ScrArr *out = scr_arr_new(SCR_ELEM_STR, record->count);
+    for (size_t i = 0; i < record->count; i++)
+      if (record->has(rec, i)) scr_arr_push_ref(out, scr_str_retain(record->names[i]));
+    return out;
+  }
+  if (v->kind != SCR_DYN_OBJ) return NULL;
+  size_t n = v->v.obj.len;
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, n);
+  ScrKeyIndex *indices = NULL;
+  size_t count = 0;
+  for (size_t i = 0; i < n; i++) {
+    const ScrDynEntry *entry = &v->v.obj.entries[i];
+    uint32_t index;
+    if (!entry->enumerable || !scr_key_array_index(entry->key, entry->key_len, &index)) continue;
+    if (!indices) {
+      indices = malloc(n * sizeof *indices);
+      if (!indices) scr_json_oom();
+    }
+    indices[count++] = (ScrKeyIndex){index, i};
+  }
+  if (count) {
+    scr_key_index_sort(indices, count);
+    for (size_t i = 0; i < count; i++) {
+      const ScrDynEntry *entry = &v->v.obj.entries[indices[i].entry];
+      scr_arr_push_ref(out, scr_str_new(entry->key, entry->key_len));
+    }
+  }
+  free(indices);
+  for (size_t i = 0; i < n; i++) {
+    const ScrDynEntry *entry = &v->v.obj.entries[i];
+    uint32_t index;
+    if (entry->enumerable && !scr_key_array_index(entry->key, entry->key_len, &index))
+      scr_arr_push_ref(out, scr_str_new(entry->key, entry->key_len));
+  }
+  return out;
+}
+
+/* A dyn string array's strings as a native string[] (+1), releasing it. */
+static ScrArr *scr_dyn_key_strs_from(ScrDyn *keys) {
+  if (!keys) return NULL;
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, keys->v.arr.len);
+  for (size_t i = 0; i < keys->v.arr.len; i++)
+    scr_arr_push_ref(out, scr_str_retain(keys->v.arr.items[i]->v.str));
+  scr_dyn_release(keys);
+  return out;
+}
+
+/* for-in's key snapshot as a native string[] (+1): the typed record's
+ * field names, or a plain object's enumerable own keys (integer-like keys
+ * ascending, then insertion order) when its prototype contributes none.
+ * Every other value takes the dyn walk and converts its result. */
+ScrArr *scr_dyn_for_in_key_strs(const ScrDyn *v) {
+  if (scr_dyn_class_reflection_fence(v)) return NULL;
+  /* A plain object's prototype adds keys unless it is Object.prototype. */
+  if (v->kind != SCR_DYN_OBJ || v->prototype == NULL ||
+      v->prototype == scr_builtin_object_prototype) {
+    ScrArr *own = scr_dyn_own_key_strs(v, true);
+    if (own) return own;
+  }
+  return scr_dyn_key_strs_from(scr_dyn_for_in_keys(v));
+}
+
+/* Object.keys as a native string[] (+1): a fresh array the caller owns. */
+ScrArr *scr_dyn_obj_key_strs(const ScrDyn *v) {
+  if (scr_dyn_class_reflection_fence(v)) return NULL;
+  ScrArr *own = scr_dyn_own_key_strs(v, false);
+  if (own) return own;
+  return scr_dyn_key_strs_from(scr_dyn_obj_keys(v));
+}
+
 /* One source's own enumerable members onto an OBJ target. OBJ sources
  * snapshot their keys, then check attributes and read values in order so
  * getters can affect later entries. Arrays, strings, and bytes use their

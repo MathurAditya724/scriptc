@@ -1043,6 +1043,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // (catchable SyntaxError) — all may-throw generics over the checked-dynamic tree.
   "dyn.objKeys": "scr_dyn_obj_keys",
   "dyn.forInKeys": "scr_dyn_for_in_keys",
+  "dyn.forInKeyStrings": "scr_dyn_for_in_key_strs",
+  "dyn.forInStable": "scr_dyn_for_in_stable",
+  "dyn.objKeyStrings": "scr_dyn_obj_key_strs",
   "dyn.hasOwn": "scr_dyn_has_own",
   "dyn.propertyIsEnumerable": "scr_dyn_property_is_enumerable",
   "dyn.assign": "scr_dyn_assign",

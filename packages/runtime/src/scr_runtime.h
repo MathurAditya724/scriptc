@@ -4734,6 +4734,12 @@ typedef struct ScrDynTypedRecordOps {
   ScrStr *const *names; /* immortal field-name strings */
   bool (*has)(void *rec, size_t index);
   ScrDyn *(*get)(void *rec, size_t index);
+  /* Every field is required: `has` always answers true and no key of the
+   * record can be deleted. */
+  bool fixed;
+  /* The field names as an immortal string[], built on first use by
+   * for-in over a record with every field present (atomic slot). */
+  ScrArr *keys;
 } ScrDynTypedRecordOps;
 
 /* Prototype members of a compiled class seen as `unknown`, emitted per
@@ -4931,6 +4937,11 @@ bool scr_dyn_field_eq_bool(const ScrDyn *d, const ScrStr *key, bool value);
  * TypeError. */
 ScrDyn *scr_dyn_obj_keys(const ScrDyn *v);
 ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v);
+/* for-in keys as a native string[] (+1); NULL with an exception pending. */
+ScrArr *scr_dyn_for_in_key_strs(const ScrDyn *v);
+bool scr_dyn_for_in_stable(const ScrDyn *v);
+/* Object.keys as a native string[] (+1); NULL with an exception pending. */
+ScrArr *scr_dyn_obj_key_strs(const ScrDyn *v);
 /* Snapshot all own string keys of a SCR_DYN_OBJ in JS order. Returns +1. */
 ScrDyn *scr_dyn_obj_own_keys(const ScrDyn *v);
 ScrDyn *scr_dyn_own_keys(const ScrDyn *value);
