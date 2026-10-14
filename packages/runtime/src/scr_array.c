@@ -3390,6 +3390,17 @@ static bool scr_arr_dense_values(const ScrArr *a) {
   return all;
 }
 
+/* The 8-byte slots of `a` when every index below its length holds a value
+ * in dense storage, with the length in *len; NULL for holes,
+ * storage-level undefined, a sparse tail, an empty array, or boolean
+ * elements (stored in 1-byte slots). The slots are borrowed and stay valid
+ * while nothing writes the array. */
+const uint64_t *scr_arr_dense_slots(const ScrArr *a, size_t *len) {
+  if (a->len == 0 || a->elem == SCR_ELEM_BOOL || !scr_arr_dense_values(a)) return NULL;
+  *len = a->len;
+  return a->data;
+}
+
 /* The dense comparator sort: `a.sort(f)` (or, with `owned`, the private copy
  * of `a.toSorted(f)`) when every index below the length holds a value.
  * Returns false, having run no user code, when the array has holes,

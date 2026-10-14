@@ -2064,6 +2064,10 @@ void scr_arr_sort_values(ScrArr *a, double count, struct ScrClosure *f, uint32_t
  * published; the caller then sorts a compacted snapshot. Otherwise sorts
  * and returns true; a pending exception from `f` leaves a shared `a`
  * unwritten (an owned copy then holds a permutation of its values). */
+/* The borrowed 8-byte slots of `a` when every index below its length holds
+ * a value in dense storage (length in *len); NULL for holes, storage-level
+ * undefined, sparse tails, empty arrays and boolean elements. */
+const uint64_t *scr_arr_dense_slots(const ScrArr *a, size_t *len);
 bool scr_arr_sort_dense(ScrArr *a, struct ScrClosure *f, uint32_t arity, bool owned,
                         int32_t order, struct ScrClosure *key);
 
@@ -5928,6 +5932,11 @@ typedef struct {
   size_t seen_len;
   size_t seen_cap;
 } ScrJsonBuf;
+/* Emitted JSON writers append constant text inline (llvm/walkers.ts
+ * appendBytes) through this prefix. */
+_Static_assert(offsetof(ScrJsonBuf, data) == 0 && offsetof(ScrJsonBuf, len) == sizeof(char *) &&
+                   offsetof(ScrJsonBuf, cap) == sizeof(char *) + sizeof(size_t),
+               "LLVM backend expects ScrJsonBuf to start with { data, len, cap }");
 
 void scr_jb_init(ScrJsonBuf *b);
 /* Append a borrowed byte span verbatim, including embedded NUL bytes. */

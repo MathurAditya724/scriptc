@@ -1831,6 +1831,47 @@ static void test_typed_sort(void) {
   scr_bytes_release(three);
 }
 
+/* scr_arr_dense_slots: the borrowed slots of hole-free dense arrays. */
+static void test_dense_slots(void) {
+  size_t len = 0;
+  ScrArr *nums = scr_arr_new(SCR_ELEM_F64, 0);
+  check(scr_arr_dense_slots(nums, &len) == NULL, "an empty array has no dense slots");
+  for (int i = 0; i < 5; i++) scr_arr_push_f64(nums, i * 1.5);
+  const uint64_t *slots = scr_arr_dense_slots(nums, &len);
+  bool values = slots != NULL && len == 5;
+  for (size_t i = 0; values && i < len; i++) {
+    double v;
+    memcpy(&v, &slots[i], sizeof v);
+    values = v == (double)i * 1.5;
+  }
+  check(values, "dense number slots hold the values in order");
+  scr_arr_set_undefined(nums, 2);
+  check(scr_arr_dense_slots(nums, &len) == NULL, "storage-level undefined has no dense slots");
+  ScrArr *holes = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_push_f64(holes, 1);
+  scr_arr_set_f64(holes, 3, 2);
+  check(scr_arr_dense_slots(holes, &len) == NULL, "holes have no dense slots");
+  ScrArr *flags = scr_arr_new(SCR_ELEM_BOOL, 0);
+  scr_arr_push_bool(flags, true);
+  check(scr_arr_dense_slots(flags, &len) == NULL, "boolean arrays have no 8-byte slots");
+  ScrArr *words = scr_arr_new(SCR_ELEM_STR, 0);
+  ScrStr *word = scr_str_new("w", 1);
+  scr_arr_push_ref(words, scr_str_retain(word));
+  slots = scr_arr_dense_slots(words, &len);
+  check(slots != NULL && len == 1 && (void *)(uintptr_t)slots[0] == word,
+        "dense reference slots hold borrowed pointers");
+  ScrArr *wide = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_push_f64(wide, 1);
+  scr_arr_set_f64(wide, 3000000, 2);
+  check(scr_arr_dense_slots(wide, &len) == NULL, "a sparse tail has no dense slots");
+  scr_str_release(word);
+  scr_arr_release(wide);
+  scr_arr_release(words);
+  scr_arr_release(flags);
+  scr_arr_release(holes);
+  scr_arr_release(nums);
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) {
     ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
@@ -1856,6 +1897,7 @@ int main(int argc, char **argv) {
   test_primitive_sort();
   test_comparator_sort();
   test_keyed_sort();
+  test_dense_slots();
   test_typed_sort();
   test_dense_comparator_sort();
   test_f64_basics();
