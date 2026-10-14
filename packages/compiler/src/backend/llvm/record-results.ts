@@ -9,6 +9,7 @@ import {
   type IrStmt,
   type IrType,
 } from "../../ir/ir.js";
+import { dynamicFieldStores } from "../../ir/int32-slots.js";
 import { everyExpr, everyStmtList, transformStmtList } from "../../ir/traverse.js";
 
 /** Prefix of a function's result-slot entry: `%into.<name>(...params, dst)`
@@ -93,9 +94,11 @@ export function constructorInitializesFields(cls: IrClassDef, ctor: IrFunction):
 }
 
 /** Add a result-slot entry for every function whose returns all build a
- * fresh scalar record or standalone scalar object. The original function
- * stays as it is; the backend calls the entry only where the result is
- * proven to be consumed by projections, passing frame storage. */
+ * fresh scalar record or standalone scalar object, return another such
+ * producer's result (forwarding the slot), or return a parameter of a
+ * record shape no store can change (copied into the slot). The original
+ * function stays as it is; the backend calls the entry only where the
+ * result is proven to be consumed by projections, passing frame storage. */
 export function addRecordResultEntries(mod: IrModule): IrModule {
   const shapes = new Map((mod.records ?? []).map((shape) => [shape.id, shape]));
   const classes = new Map((mod.classes ?? []).map((cls) => [cls.name, cls]));
@@ -109,7 +112,34 @@ export function addRecordResultEntries(mod: IrModule): IrModule {
       bases.has(name),
       lifetime.has(name),
     );
-  const fillable = (value: IrExpr): boolean => {
+  // Shapes no store can change after construction: no record field write
+  // in the program, no dynamic store that can name a field, and no native
+  // boundary. A returned value of such a shape can be copied instead of
+  // shared, since nothing can tell the copy from the original once `===`
+  // and field writes are ruled out by the caller's projection proof.
+  const written = new Set<string>();
+  for (const fn of mod.functions)
+    everyStmtList(fn.body, {
+      expr: () => true,
+      stmt: (stmt) => {
+        if (
+          stmt.kind === "recordSet" ||
+          stmt.kind === "recordKeySet" ||
+          stmt.kind === "recordKeyDelete"
+        )
+          written.add(stmt.shapeId);
+        return true;
+      },
+    });
+  const dynamicStores = dynamicFieldStores(mod);
+  const copyable = (type: IrType): boolean =>
+    type.kind === "record" &&
+    mod.lib === undefined &&
+    !written.has(type.shapeId) &&
+    !dynamicStores.all &&
+    !(shapes.get(type.shapeId)?.fields ?? []).some((field) => dynamicStores.names.has(field.name));
+  const producers = new Set<string>();
+  const fillable = (value: IrExpr, params: ReadonlySet<string>): boolean => {
     switch (value.kind) {
       case "recordLit":
         return completeRecordLiteral(
@@ -119,7 +149,11 @@ export function addRecordResultEntries(mod: IrModule): IrModule {
       case "new":
         return stackClass(value.className);
       case "ternary":
-        return fillable(value.then) && fillable(value.else_);
+        return fillable(value.then, params) && fillable(value.else_, params);
+      case "varRef":
+        return params.has(value.localId) && copyable(value.type);
+      case "call":
+        return producers.has(value.callee);
       default:
         return false;
     }
@@ -135,6 +169,38 @@ export function addRecordResultEntries(mod: IrModule): IrModule {
           value: field.value,
           loc: field.value.loc,
         }));
+      case "varRef": {
+        const shapeId = (value.type as IrType & { kind: "record" }).shapeId;
+        return shapes.get(shapeId)!.fields.map((field) => ({
+          kind: "recordSet",
+          obj: dst,
+          shapeId,
+          field: field.name,
+          value: {
+            kind: "recordGet",
+            obj: value,
+            shapeId,
+            field: field.name,
+            type: field.type,
+            loc: value.loc,
+          },
+          loc: value.loc,
+        }));
+      }
+      case "call":
+        return [
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "call",
+              callee: resultEntryName(value.callee),
+              args: [...value.args, dst],
+              type: VOID,
+              loc: value.loc,
+            },
+            loc: value.loc,
+          },
+        ];
       case "new":
         return [
           {
@@ -163,26 +229,42 @@ export function addRecordResultEntries(mod: IrModule): IrModule {
         throw new Error("unreachable");
     }
   };
-  const added: IrFunction[] = [];
-  for (const fn of mod.functions) {
+  const candidates = mod.functions.filter((fn) => {
     if (fn.async || fn.generator || fn.captures !== undefined || fn.classCaptures !== undefined)
-      continue;
+      return false;
     const ret = fn.returnType;
-    if (
-      !(ret.kind === "record" && scalarRecordShape(shapes.get(ret.shapeId))) &&
-      !(ret.kind === "object" && stackClass(ret.className))
-    )
-      continue;
+    return (
+      (ret.kind === "record" && scalarRecordShape(shapes.get(ret.shapeId))) ||
+      (ret.kind === "object" && stackClass(ret.className))
+    );
+  });
+  for (const fn of candidates) producers.add(fn.name);
+  // Greatest fixpoint: a producer may return another producer's result.
+  const eligible = (fn: IrFunction): boolean => {
+    const params = new Set(fn.params.map((param) => param.localId));
     let returns = 0;
-    const eligible = everyStmtList(fn.body, {
+    const ok = everyStmtList(fn.body, {
       expr: (e) => e.kind !== "seqExpr",
       stmt: (s) => {
         if (s.kind !== "return") return s.kind !== "tryCatch";
         returns++;
-        return s.value !== null && fillable(s.value);
+        return s.value !== null && fillable(s.value, params);
       },
     });
-    if (!eligible || returns === 0) continue;
+    return ok && returns > 0;
+  };
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const fn of candidates)
+      if (producers.has(fn.name) && !eligible(fn)) {
+        producers.delete(fn.name);
+        changed = true;
+      }
+  }
+  const added: IrFunction[] = [];
+  for (const fn of candidates) {
+    if (!producers.has(fn.name)) continue;
+    const ret = fn.returnType;
     const dstId = "%into.dst";
     const dst: IrExpr = { kind: "varRef", localId: dstId, type: ret, loc: fn.loc };
     const body = transformStmtList(fn.body, {

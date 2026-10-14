@@ -89,7 +89,7 @@ test("reassigned bindings build each value apart and copy it into their slot", a
   expect(reassigned).toMatch(/load %sc_rs_\w+, ptr %s\d+\n\s+store %sc_rs_\w+ %t\d+, ptr %s\d+/);
 });
 
-test("result-slot entries cover producers whose every return is fresh", async () => {
+test("result-slot entries cover producers whose every return is fresh or a parameter", async () => {
   const mod = await moduleFor(`
 interface Vec { x: number; y: number }
 function fresh(n: number): Vec { if (n > 1) return { x: n, y: n }; return { x: 0, y: 1 }; }
@@ -100,7 +100,9 @@ console.log(fresh(1).x, passthrough({ x: 1, y: 2 }).y, guarded(3).x);
   const entries = addRecordResultEntries(mod)
     .functions.map((fn) => fn.name)
     .filter((name) => name.startsWith(RESULT_ENTRY_PREFIX));
-  expect(entries).toEqual([`${RESULT_ENTRY_PREFIX}fresh`]);
+  // A returned parameter of a shape nothing writes is copied; a return
+  // inside \`try\` keeps the ordinary function.
+  expect(entries).toEqual([`${RESULT_ENTRY_PREFIX}fresh`, `${RESULT_ENTRY_PREFIX}passthrough`]);
 });
 
 test("objects stay on the heap when their constructor or a method lets them escape", async () => {
@@ -220,4 +222,53 @@ test("loop bindings are never reassigned into a fixed slot", () => {
   // The literal keeps its ordinary record; the binding is the element.
   expect(ir).toContain("call ptr @sc_rnew_point()");
   expect(ir).not.toMatch(/alloca %sc_rs_point/);
+});
+
+test("objects updated through their methods and parameters stay in frame storage", async () => {
+  const ir = emitLlvmModule(
+    await moduleFor(`
+class Stats {
+  n = 0; sum = 0;
+  add(v: number): void { this.n++; this.sum += v; }
+  mean(): number { return this.sum / this.n; }
+}
+interface Cursor { pos: number }
+function advance(c: Cursor): void { c.pos += 2; }
+class Box { v: number; constructor(v: number) { this.v = v; } }
+export function run(k: number): number {
+  const s = new Stats();
+  for (let i = 0; i < k; i++) s.add(i);
+  const c: Cursor = { pos: k };
+  advance(c);
+  let b = new Box(1);
+  const old = b;
+  b = new Box(2);
+  return s.mean() + c.pos + old.v + b.v;
+}
+console.log(run(3));
+`),
+  );
+  const run = body(ir, "run");
+  expect(run).toMatch(/alloca %sc_o_Stats, align 8/);
+  expect(run).toMatch(/alloca %sc_rs_\w+, align 8/);
+  // An alias of a reassigned binding must keep seeing the old object.
+  expect(run).toContain("call ptr @sc_new_Box()");
+});
+
+test("producers returning a parameter copy it only for shapes nothing writes", async () => {
+  const mod = await moduleFor(`
+interface Vec { x: number; y: number }
+interface Cell { value: number }
+function pick(a: Vec, b: Vec, first: boolean): Vec { return first ? a : b; }
+function forward(v: Vec): Vec { return pick(v, { x: 0, y: 0 }, v.x > 0); }
+function same(c: Cell): Cell { return c; }
+const c: Cell = { value: 1 };
+same(c).value += 1;
+console.log(pick({ x: 1, y: 2 }, { x: 3, y: 4 }, true).y, forward({ x: 1, y: 1 }).x, c.value);
+`);
+  const entries = addRecordResultEntries(mod)
+    .functions.map((fn) => fn.name)
+    .filter((name) => name.startsWith(RESULT_ENTRY_PREFIX))
+    .sort();
+  expect(entries).toEqual([`${RESULT_ENTRY_PREFIX}forward`, `${RESULT_ENTRY_PREFIX}pick`]);
 });
