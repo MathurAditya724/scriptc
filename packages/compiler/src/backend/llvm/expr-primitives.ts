@@ -760,7 +760,9 @@ export function emitContainerExpr(
         throw new InternalCompilerError("llvm emitter bug: arrayLit of non-array type");
       const elem = e.type.elem;
       const arr = B.tmp();
-      B.line(`${arr} = ${arrNewCall(host.shapeHost, elem, String(e.capacity ?? e.elems.length))}`);
+      const small = host.appendedArrayLiterals.has(e);
+      const capacity = small ? 0 : (e.capacity ?? e.elems.length);
+      B.line(`${arr} = ${arrNewCall(host.shapeHost, elem, String(capacity), small)}`);
       const out = host.own({ name: arr, type: e.type });
       const acc = elemAccess(elem);
       const spreadSet = new Set(e.spreads ?? []);

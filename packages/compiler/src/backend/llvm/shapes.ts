@@ -585,7 +585,14 @@ function elemKindNum(elem: IrType): number {
  * SCR_ELEM_ARR spelling would hide them from the outer array's trace)
  * construct through scr_arr_new_ops with the element type's `_v` RC entry
  * points; every other element kind keeps the plain scr_arr_new call. */
-export function arrNewCall(host: ShapeHost, elem: IrType, capText: string): string {
+export function arrNewCall(
+  host: ShapeHost,
+  elem: IrType,
+  capText: string,
+  /** An empty array expected to receive a few elements (its first slots
+   * live in its own block): capText must be "0". */
+  small = false,
+): string {
   const useRef =
     elem.kind === "record" ||
     elem.kind === "object" ||
@@ -603,8 +610,16 @@ export function arrNewCall(host: ShapeHost, elem: IrType, capText: string): stri
     elem.kind === "regex" || // RegExp values: scr_regex_* adapters, no trace (no refs inside)
     (elem.kind === "array" && traceAdapter(host, elem) !== null);
   if (!useRef) {
+    if (small) {
+      host.declare(`declare ptr @scr_arr_new_small(i32)`);
+      return `call ptr @scr_arr_new_small(i32 ${elemKindNum(elem)})`;
+    }
     host.declare(`declare ptr @scr_arr_new(i32, ${host.sizeType})`);
     return `call ptr @scr_arr_new(i32 ${elemKindNum(elem)}, ${host.sizeType} ${capText})`;
+  }
+  if (small) {
+    host.declare(`declare ptr @scr_arr_new_ops_small(ptr)`);
+    return `call ptr @scr_arr_new_ops_small(ptr ${arrOps(host, elem)})`;
   }
   host.declare(`declare ptr @scr_arr_new_ops(ptr, ${host.sizeType})`);
   return `call ptr @scr_arr_new_ops(ptr ${arrOps(host, elem)}, ${host.sizeType} ${capText})`;

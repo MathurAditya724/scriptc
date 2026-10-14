@@ -1466,6 +1466,79 @@ static void test_bool_bytes(void) {
   scr_arr_release(a);
 }
 
+/* Small constructions keep their first slots in the array's own block,
+ * right after the header; growth moves them to an ordinary
+ * allocation, and storage replacement, outlining and release never free
+ * the inline room on its own (ASan reports an invalid free otherwise). */
+static bool inline_slots(const ScrArr *a) {
+  return a->data == (const uint64_t *)((const char *)a + ((sizeof(ScrArr) + 7) & ~(size_t)7));
+}
+
+static void test_inline_slots(void) {
+#ifdef SCR_RC_AUDIT
+  long strings0 = scr_str_live_count();
+  long arrays0 = scr_arr_live_count();
+#endif
+  ScrArr *plain = scr_arr_new(SCR_ELEM_F64, 4);
+  check(!inline_slots(plain), "plain constructions keep separate storage");
+  scr_arr_release(plain);
+  ScrArr *a = scr_arr_new_small(SCR_ELEM_F64);
+  check(inline_slots(a) && a->cap >= 4 && a->len == 0 && a->present == (uint8_t *)(a->data + a->cap),
+        "small construction places slots and states in the array block");
+  size_t inline_cap = a->cap;
+  for (size_t i = 0; i < inline_cap; i++) scr_arr_push_f64(a, (double)i);
+  check(inline_slots(a) && a->filled == inline_cap, "appends within the inline capacity stay inline");
+  scr_arr_push_f64(a, 100);
+  check(!inline_slots(a) && a->cap > inline_cap && scr_arr_get_f64(a, 0) == 0 &&
+            scr_arr_get_f64(a, (double)inline_cap - 1) == (double)inline_cap - 1 &&
+            scr_arr_get_f64(a, (double)inline_cap) == 100 && a->present == (uint8_t *)(a->data + a->cap),
+        "growth moves inline slots to their own allocation");
+  scr_arr_release(a);
+
+  ScrArr *flags = scr_arr_new_small(SCR_ELEM_BOOL);
+  check(inline_slots(flags) && flags->present == (uint8_t *)flags->data + flags->cap,
+        "boolean inline slots are one byte each");
+  scr_arr_push_bool(flags, true);
+  scr_arr_set_bool(flags, 3, true);
+  check(scr_arr_get_bool(flags, 0) && !scr_arr_has(flags, 1) && scr_arr_get_bool(flags, 3),
+        "boolean inline slots keep holes");
+  scr_arr_release(flags);
+
+  ScrArr *words = scr_arr_new_small(SCR_ELEM_STR);
+  scr_arr_push_ref(words, scr_str_new("a", 1));
+  scr_arr_push_ref(words, scr_str_new("b", 1));
+  scr_arr_set_ref(words, 3000000, scr_str_new("far", 3));
+  check(inline_slots(words) && arr_sparse_len(words) == 1, "a far index leaves inline slots in place");
+  scr_arr_unshift_ref(words, scr_str_new("z", 1));
+  check(!inline_slots(words) && scr_arr_len(words) == 3000002 &&
+            strcmp(((ScrStr *)scr_arr_peek_ref(words, 0))->data, "z") == 0 &&
+            strcmp(((ScrStr *)scr_arr_peek_ref(words, 2))->data, "b") == 0 &&
+            strcmp(((ScrStr *)scr_arr_peek_ref(words, 3000001))->data, "far") == 0,
+        "rebuilding storage of an inline array keeps every element");
+  scr_arr_release(words);
+
+  ScrArr *moved = scr_arr_new_small(SCR_ELEM_STR);
+  ScrArr *copy = scr_arr_new_small(SCR_ELEM_STR);
+  scr_arr_push_ref(moved, scr_str_new("x", 1));
+  scr_arr_push_ref(moved, scr_str_new("y", 1));
+  scr_arr_concat_copy(copy, moved);
+  check(inline_slots(copy) && scr_arr_len(copy) == 2, "a copy into small storage stays inline");
+  scr_arr_outline(moved);
+  check(!inline_slots(moved) && strcmp(((ScrStr *)scr_arr_peek_ref(moved, 1))->data, "y") == 0,
+        "outlining moves the slots and keeps the elements");
+  scr_arr_outline(moved);
+  scr_arr_release(scr_arr_splice(copy, 0, 1));
+  scr_arr_release(scr_arr_reverse(copy));
+  check(scr_arr_len(copy) == 1 && strcmp(((ScrStr *)scr_arr_peek_ref(copy, 0))->data, "y") == 0,
+        "moving operations work on inline slots");
+  scr_arr_release(copy);
+  scr_arr_release(moved);
+#ifdef SCR_RC_AUDIT
+  check(scr_str_live_count() == strings0 && scr_arr_live_count() == arrays0,
+        "inline-slot arrays release every element and header");
+#endif
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) {
     ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
@@ -1512,6 +1585,7 @@ int main(int argc, char **argv) {
   test_splice_drop();
   test_filled_prefix();
   test_bool_bytes();
+  test_inline_slots();
 
   fprintf(stderr, "%ld/%ld cases passed\n", total - failed, total);
   return failed == 0 ? 0 : 1;

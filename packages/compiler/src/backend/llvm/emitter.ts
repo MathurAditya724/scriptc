@@ -161,6 +161,7 @@ import { ReferenceWrites, type Writes } from "./reference-writes.js";
 import { LlvmDebugInfo } from "./debug-info.js";
 import { StackCallbacks } from "./stack-callbacks.js";
 import { findLoopArrayBorrows } from "./loop-array-borrows.js";
+import { findAppendedArrayLiterals } from "./appended-array-literals.js";
 import { AmbientReceiverReaders, findConstantCallbacks } from "./constant-callbacks.js";
 import {
   findScalarStringSlices,
@@ -622,6 +623,8 @@ export class LlEmitter {
   private readonly rcHelpers: Set<string> | null;
 
   readonly fnByName = new Map<string, IrFunction>();
+  /** Empty literals that construct with inline slots (appended-array-literals.ts). */
+  appendedArrayLiterals: ReadonlySet<IrExpr> = new Set();
   /** Emitted LLVM text of every IR function body, by function name: the
    * fiberless-async analysis scans it for suspension entry points. */
   private readonly fnDefText = new Map<string, string>();
@@ -962,6 +965,7 @@ export class LlEmitter {
     this.ffiHasRetainedCallback = hasRetainedFfiCallback(mod.ffiImports ?? []);
     this.ffiHasForeignCallback = hasForeignFfiCallback(mod.ffiImports ?? []);
     for (const fn of mod.functions) this.fnByName.set(fn.name, fn);
+    this.appendedArrayLiterals = findAppendedArrayLiterals(mod);
     for (const entry of mod.ffiImports ?? []) {
       this.ffiByName.set(entry.name, entry);
     }
