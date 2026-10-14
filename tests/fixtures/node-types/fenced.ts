@@ -34,10 +34,10 @@ ReadableStream.from(new Set([1, 2]));
  * typecheck under @types/node and fence with the module-qualified name —
  * calls and value reads alike. */
 import { watchFile } from "fs";
-import { cpus } from "node:os";
+import { setPriority } from "node:os";
 import { win32 } from "path";
 watchFile("x", () => {});
-console.log(cpus().length);
+setPriority(0);
 console.log(win32.sep);
 /* URL getters and serialization lower under @types/node, but object-URL
  * registry operations still fence by member name with the supported

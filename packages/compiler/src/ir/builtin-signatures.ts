@@ -399,6 +399,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "path.win32IsAbsolute": { argTypes: [STRING], result: BOOL },
   "path.win32Relative": { argTypes: [STRING, STRING], result: STRING },
   "path.win32ToNamespacedPath": { argTypes: [STRING], result: STRING },
+  /** path.parse: [root, dir, base, ext, name] as a fresh string[] (the
+   * frontend builds the ParsedPath record); path.format: the pathObject's
+   * root, dir, base, name and ext with undefined spelled "". */
+  "path.parse": { argTypes: [STRING], result: arrayOf(STRING) },
+  "path.win32Parse": { argTypes: [STRING], result: arrayOf(STRING) },
+  "path.format": { argTypes: [STRING, STRING, STRING, STRING, STRING], result: STRING },
+  "path.win32Format": { argTypes: [STRING, STRING, STRING, STRING, STRING], result: STRING },
   /** node:os: homedir is $HOME else getpwuid(3); tmpdir is Node's env
    * cascade ($TMPDIR/$TMP/$TEMP else /tmp, one trailing slash trimmed).
    * os.platform() lowers to process.platform — one implementation. */
@@ -414,6 +421,29 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "os.totalmem": { argTypes: [], result: F64 },
   /** os.availableParallelism(): CPUs the process may use (libuv's answer), >= 1. Never throws. */
   "os.availableParallelism": { argTypes: [], result: F64 },
+  /** os.hostname/machine/version/endianness, freemem, uptime and loadavg:
+   * libuv's answers (uname's machine and version fields, gethostname,
+   * "LE"/"BE", free memory in bytes, uptime in seconds, the three load
+   * averages). Fresh results; never throw. */
+  "os.hostname": { argTypes: [], result: STRING },
+  "os.machine": { argTypes: [], result: STRING },
+  "os.version": { argTypes: [], result: STRING },
+  "os.endianness": { argTypes: [], result: STRING },
+  "os.freemem": { argTypes: [], result: F64 },
+  "os.uptime": { argTypes: [], result: F64 },
+  "os.loadavg": { argTypes: [], result: arrayOf(F64) },
+  /** os.getPriority(pid): validateInt32 (RangeError ERR_OUT_OF_RANGE),
+   * then the priority; a failure throws Node's SystemError. */
+  "os.getPriority": { argTypes: [F64], result: F64 },
+  /** os.cpus(): cpusTake snapshots every CPU and answers the count;
+   * cpusModel(i) and cpusField(i, k) (k: 0 speed, 1 user, 2 nice, 3 sys,
+   * 4 idle, 5 irq) read the snapshot. Never throw. */
+  "os.cpusTake": { argTypes: [], result: F64 },
+  "os.cpusModel": { argTypes: [F64], result: STRING },
+  "os.cpusField": { argTypes: [F64, F64], result: F64 },
+  /** os.constants: the per-thread null-prototype constants object (dlopen,
+   * errno, signals, priority, UV_UDP_REUSEADDR). Never throws. */
+  "os.constants": { argTypes: [], result: DYN },
   /** umask(2): arg < 0 reads without setting (umask has no read-only form
    * — set 0, restore); otherwise sets and answers the PREVIOUS mask.
    * Never throws. */

@@ -494,9 +494,9 @@
       "apiEntries": 24,
       "static": {
         "supported": 0,
-        "partial": 11,
+        "partial": 23,
         "refused": 0,
-        "not-implemented": 13,
+        "not-implemented": 1,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -509,9 +509,9 @@
       "apiEntries": 17,
       "static": {
         "supported": 0,
-        "partial": 14,
+        "partial": 16,
         "refused": 0,
-        "not-implemented": 3,
+        "not-implemented": 1,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -49456,9 +49456,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49479,9 +49479,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49502,9 +49502,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49525,9 +49525,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49548,9 +49548,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49594,9 +49594,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49617,9 +49617,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49640,9 +49640,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49824,9 +49824,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49870,9 +49870,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49916,9 +49916,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49939,9 +49939,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -50054,9 +50054,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -50169,9 +50169,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {

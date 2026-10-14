@@ -4198,6 +4198,14 @@ ScrStr *scr_path_win32_extname(ScrStr *path);
 bool scr_path_win32_is_absolute(ScrStr *path);
 ScrStr *scr_path_win32_relative(ScrStr *from, ScrStr *to);
 ScrStr *scr_path_win32_to_namespaced_path(ScrStr *path);
+/* path.parse / path.format for both families: parse answers a fresh
+ * string[] [root, dir, base, ext, name]; format takes the pathObject
+ * fields with undefined spelled "" (Node reads each through `||`). */
+ScrArr *scr_path_parse(ScrStr *path);
+ScrArr *scr_path_win32_parse(ScrStr *path);
+ScrStr *scr_path_format(ScrStr *root, ScrStr *dir, ScrStr *base, ScrStr *name, ScrStr *ext);
+ScrStr *scr_path_win32_format(ScrStr *root, ScrStr *dir, ScrStr *base, ScrStr *name,
+                              ScrStr *ext);
 
 /* fs.openSync(path, flags) → the raw fd as f64 (Node's string flag
  * grammar; unknown flags throw Node's ERR_INVALID_ARG_VALUE TypeError
@@ -4439,6 +4447,26 @@ ScrStr *scr_os_tmpdir(void);
 ScrStr *scr_os_release(void); /* uname(2) release — +1 fresh */
 ScrStr *scr_os_type(void);    /* uname(2) sysname — +1 fresh */
 double scr_os_totalmem(void); /* total physical memory, bytes */
+/* node:os host facts (scr_os.c), libuv's answers: uname machine/version,
+ * the host name, "LE"/"BE", free memory in bytes, uptime in seconds and
+ * the 1/5/15-minute load averages (+1 fresh results; never throw). */
+ScrStr *scr_os_machine(void);
+ScrStr *scr_os_version(void);
+ScrStr *scr_os_hostname(void);
+ScrStr *scr_os_endianness(void);
+double scr_os_freemem(void);
+double scr_os_uptime(void);
+ScrArr *scr_os_loadavg(void);
+/* os.getPriority(pid): validateInt32, then the scheduling priority;
+ * failures throw Node's RangeError or SystemError (ERR_SYSTEM_ERROR). */
+double scr_os_get_priority(double pid);
+/* os.cpus(): take answers the CPU count of a fresh snapshot; model and
+ * field (0 speed, 1 user, 2 nice, 3 sys, 4 idle, 5 irq) read it. */
+double scr_os_cpus_take(void);
+ScrStr *scr_os_cpus_model(double i);
+double scr_os_cpus_field(double i, double field);
+/* os.constants: the per-thread null-prototype constants object (+1). */
+ScrDyn *scr_os_constants(void);
 double scr_os_available_parallelism(void); /* uv_available_parallelism: CPUs this process may use, >= 1 */
 /* os.userInfo()'s field trio (pw_name / pw_shell / pw_dir — the passwd
  * home, not the $HOME cascade). +1 fresh; abort on lookup failure. */

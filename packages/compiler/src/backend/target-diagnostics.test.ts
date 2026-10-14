@@ -152,3 +152,17 @@ test("actual constructors retain host diagnostics while stored class values do n
   fenceSpeculativeWasiFunctions(stored);
   expect(moduleWasiUnavailableSurface(stored)).toBeNull();
 });
+
+test.each([
+  ["os.cpusTake", "CPU enumeration"],
+  ["os.hostname", "the host name"],
+  ["os.freemem", "system memory statistics"],
+  ["os.loadavg", "system load averages"],
+  ["os.uptime", "system uptime"],
+  ["os.getPriority", "process scheduling priority"],
+] as const)("os host fact %s has no WASI lowering", (libFn, surface) => {
+  const read: IrExpr = { kind: "libCall", fn: libFn, args: [], type: VOID, loc };
+  const mod = module();
+  mod.functions = [fn("%main", [read])];
+  expect(moduleWasiUnavailableSurface(mod)?.surface).toContain(surface);
+});

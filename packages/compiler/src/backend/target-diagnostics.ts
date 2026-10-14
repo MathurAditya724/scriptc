@@ -121,6 +121,16 @@ export function targetRefusalDiag(target: string, surface: string, loc: SrcLoc):
   };
 }
 
+/** node:os host facts WASI Preview 1 has no interface for. */
+const WASI_UNAVAILABLE_HOST_FACTS: ReadonlyMap<string, string> = new Map([
+  ["os.cpusTake", "CPU enumeration (WASI Preview 1 has no processor API)"],
+  ["os.hostname", "the host name (WASI Preview 1 has no host-name API)"],
+  ["os.freemem", "system memory statistics (WASI Preview 1 has no memory API)"],
+  ["os.loadavg", "system load averages (WASI Preview 1 has no load API)"],
+  ["os.uptime", "system uptime (WASI Preview 1 has no boot-time API)"],
+  ["os.getPriority", "process scheduling priority (WASI Preview 1 has no priority API)"],
+]);
+
 export function moduleWasiUnavailableSurface(
   mod: IrModule,
 ): { surface: string; loc: SrcLoc } | null {
@@ -183,6 +193,11 @@ export function moduleWasiUnavailableSurface(
           surface: "network-interface enumeration (WASI Preview 1 has no interface API)",
           loc,
         };
+        return false;
+      }
+      const hostFact = WASI_UNAVAILABLE_HOST_FACTS.get(node.fn);
+      if (hostFact !== undefined) {
+        found = { surface: hostFact, loc };
         return false;
       }
       for (const [prefix, surface] of prefixes) {
