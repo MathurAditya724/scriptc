@@ -194,6 +194,27 @@ static bool scr_fs_cb_refuse_option(const ScrDyn *options, const char *name) {
   return present;
 }
 
+/* readFile's options.buffer: validateReadFileBufferOptions' type check
+ * (any value other than undefined, a function, or an ArrayBufferView
+ * throws ERR_INVALID_ARG_TYPE), then a refusal for the valid forms. False
+ * with the exception pending in both cases. */
+static bool scr_fs_cb_read_buffer_option(const ScrDyn *options) {
+  ScrDyn *value = scr_fs_cb_option(options, "buffer");
+  if (!value) return false;
+  bool absent = value->kind == SCR_DYN_UNDEF;
+  if (!absent) {
+    if (value->kind != SCR_DYN_FUNC && value->kind != SCR_DYN_BYTES) {
+      scr_dyn_prop_type_fail("options.buffer",
+                             "of type function or an instance of Buffer, TypedArray, or DataView", value);
+    } else {
+      static const char message[] = "Filesystem callback option 'buffer' has no native lowering";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    }
+  }
+  scr_dyn_release(value);
+  return absent;
+}
+
 static bool scr_fs_cb_signal(const ScrDyn *options) {
   ScrDyn *signal = scr_fs_cb_option(options, "signal");
   if (!signal) return false;
@@ -752,7 +773,8 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
   if (!scr_fs_cb_chk(callback, fileCallback || vector || timestamp ? "cb" : "callback")) { scr_arr_release(vectors); return NULL; }
   size_t count = timestamp ? argc : argc - 1;
 #define ARG(index) scr_fs_cb_arg(args, count, index)
-  if (!strcmp(op, "readFile") && !scr_fs_encoding_chk(ARG(1))) return NULL;
+  if (!strcmp(op, "readFile") && (!scr_fs_encoding_chk(ARG(1)) ||
+                                  (ARG(1)->kind != SCR_DYN_STR && !scr_fs_cb_read_buffer_option(ARG(1))))) return NULL;
   if (!strcmp(op, "read") && count >= 4 && !scr_fs_read_validate(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4))) return NULL;
   bool descriptor = timestamp_fd || vector || newControl || !strcmp(op, "close") || !strcmp(op, "fstat") || !strcmp(op, "fsync") || !strcmp(op, "read") || !strcmp(op, "write");
   ScrStr *path = descriptor ? NULL : timestamp ? scr_fs_timestamp_path(ARG(0)) : scr_fs_cb_path(ARG(0), !strcmp(op, "mkdtemp") ? "prefix" : "path");
@@ -1545,6 +1567,16 @@ static bool scr_fs_read_validate(const ScrDyn *fd, const ScrDyn *buffer, const S
       if (!scr_fs_int_range_chk(offset, "offset", 0, buflen, range)) return false;
     }
   }
+  if (!scr_fs_dyn_absent(position)) {
+    if (position->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("position", "of type bigint or integer", position);
+      return false;
+    }
+    if (!scr_fs_int_range_chk(position, "position", -1, 9007199254740991.0,
+                              ">= -1 && <= 9007199254740991")) {
+      return false;
+    }
+  }
   double off = offset->kind == SCR_DYN_NUM ? offset->v.num : 0;
   if (!scr_fs_dyn_absent(length)) {
     if (length->kind != SCR_DYN_NUM || !(isfinite(length->v.num) && trunc(length->v.num) == length->v.num) ||
@@ -1571,16 +1603,6 @@ static bool scr_fs_read_validate(const ScrDyn *fd, const ScrDyn *buffer, const S
                          "The value of \"length\" is out of range. It must be <= %.0f. Received %s",
                          buflen - off, recv);
       scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-      return false;
-    }
-  }
-  if (!scr_fs_dyn_absent(position)) {
-    if (position->kind != SCR_DYN_NUM) {
-      scr_dyn_arg_type_fail("position", "of type bigint or integer", position);
-      return false;
-    }
-    if (!scr_fs_int_range_chk(position, "position", -1, 9007199254740991.0,
-                              ">= -1 && <= 9007199254740991")) {
       return false;
     }
   }

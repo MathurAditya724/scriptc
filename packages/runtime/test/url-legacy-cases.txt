@@ -28,12 +28,12 @@ a	-x.com	-x.com
 u	-x.com	-x.com
 a	x-.com	x-.com
 u	x-.com	x-.com
-a	xn--.com	
-u	xn--.com	
-a	xn--a.com	
-u	xn--a.com	
-a	xn--xn--a.com	
-u	xn--xn--a.com	
+a	xn--.com	xn--.com
+u	xn--.com	xn--.com
+a	xn--a.com	xn--a.com
+u	xn--a.com	xn--a.com
+a	xn--xn--a.com	xn--xn--a.com
+u	xn--xn--a.com	xn--xn--a.com
 a	xn--ls8h.la	xn--ls8h.la
 u	xn--ls8h.la	\ud83d\udca9.la
 a	\ud83d\udca9.la	xn--ls8h.la
@@ -50,12 +50,12 @@ a	\u0628.com	xn--ngb.com
 u	\u0628.com	\u0628.com
 a	\u05d0\u05d1.com	xn--4dbc.com
 u	\u05d0\u05d1.com	\u05d0\u05d1.com
-a	a\u05d0.com	xn--a-0hc.com
-u	a\u05d0.com	a\u05d0.com
+a	a\u05d0.com	
+u	a\u05d0.com	
 a	\u05d01.com	xn--1-zhc.com
 u	\u05d01.com	\u05d01.com
-a	1\u05d0.com	xn--1-0hc.com
-u	1\u05d0.com	1\u05d0.com
+a	1\u05d0.com	
+u	1\u05d0.com	
 a	\u0628\u06611.com	
 u	\u0628\u06611.com	
 a	\u0301a.com	
@@ -654,11 +654,11 @@ p	1	http://a%20b/	{"protocol":"http:","slashes":true,"auth":null,"host":"a","por
 p	2	http://a%20b/	{"protocol":"http:","slashes":true,"auth":null,"host":"a","port":null,"hostname":"a","hash":null,"search":null,"query":null,"pathname":"%20b/","path":"%20b/","href":"http://a/%20b/"}
 p	3	http://a%20b/	{"protocol":"http:","slashes":true,"auth":null,"host":"a","port":null,"hostname":"a","hash":null,"search":null,"query":{},"pathname":"%20b/","path":"%20b/","href":"http://a/%20b/"}
 f	http://a%20b/	http://a/%20b/
-p	0	http://xn--zz/	E:ERR_INVALID_URL
-p	1	http://xn--zz/	E:ERR_INVALID_URL
-p	2	http://xn--zz/	E:ERR_INVALID_URL
-p	3	http://xn--zz/	E:ERR_INVALID_URL
-f	http://xn--zz/	E:ERR_INVALID_URL
+p	0	http://xn--zz/	{"protocol":"http:","slashes":true,"auth":null,"host":"xn--zz","port":null,"hostname":"xn--zz","hash":null,"search":null,"query":null,"pathname":"/","path":"/","href":"http://xn--zz/"}
+p	1	http://xn--zz/	{"protocol":"http:","slashes":true,"auth":null,"host":"xn--zz","port":null,"hostname":"xn--zz","hash":null,"search":null,"query":{},"pathname":"/","path":"/","href":"http://xn--zz/"}
+p	2	http://xn--zz/	{"protocol":"http:","slashes":true,"auth":null,"host":"xn--zz","port":null,"hostname":"xn--zz","hash":null,"search":null,"query":null,"pathname":"/","path":"/","href":"http://xn--zz/"}
+p	3	http://xn--zz/	{"protocol":"http:","slashes":true,"auth":null,"host":"xn--zz","port":null,"hostname":"xn--zz","hash":null,"search":null,"query":{},"pathname":"/","path":"/","href":"http://xn--zz/"}
+f	http://xn--zz/	http://xn--zz/
 p	0	http://xn--espaol-zwa.com/	{"protocol":"http:","slashes":true,"auth":null,"host":"xn--espaol-zwa.com","port":null,"hostname":"xn--espaol-zwa.com","hash":null,"search":null,"query":null,"pathname":"/","path":"/","href":"http://xn--espaol-zwa.com/"}
 p	1	http://xn--espaol-zwa.com/	{"protocol":"http:","slashes":true,"auth":null,"host":"xn--espaol-zwa.com","port":null,"hostname":"xn--espaol-zwa.com","hash":null,"search":null,"query":{},"pathname":"/","path":"/","href":"http://xn--espaol-zwa.com/"}
 p	2	http://xn--espaol-zwa.com/	{"protocol":"http:","slashes":true,"auth":null,"host":"xn--espaol-zwa.com","port":null,"hostname":"xn--espaol-zwa.com","hash":null,"search":null,"query":null,"pathname":"/","path":"/","href":"http://xn--espaol-zwa.com/"}
@@ -2095,8 +2095,8 @@ a	xn--fiq228ca\ufb00]
 u	xn--fiq228ca\ufb00]	
 a	\ud83d\udca9\u200d	
 u	\ud83d\udca9\u200d	
-a	xn--_	
-u	xn--_	
+a	xn--_	xn--_
+u	xn--_	xn--_
 a	\u0301	
 u	\u0301	
 a	\u200d\u0915256xn--fiq228c	
@@ -2141,8 +2141,8 @@ a	256/xn--\uff21\u4e2d	0.0.1.0
 u	256/xn--\uff21\u4e2d	0.0.1.0
 a	0x.]\u2488	
 u	0x.]\u2488	
-a	xn--zz	
-u	xn--zz	
+a	xn--zz	xn--zz
+u	xn--zz	xn--zz
 a	%41	a
 u	%41	a
 a	%2e	.
@@ -2225,8 +2225,8 @@ a	\u3002\u00e9:\ufb00#-
 u	\u3002\u00e9:\ufb00#-	
 a	\u05d0\ud83d\udca91	xn--1-zhc75119a
 u	\u05d0\ud83d\udca91	\u05d0\ud83d\udca91
-a	\u00df0x_\u0661	xn--0x_-4ka761e
-u	\u00df0x_\u0661	\u00df0x_\u0661
+a	\u00df0x_\u0661	
+u	\u00df0x_\u0661	
 a	\ud800[0x\u05d0B	
 u	\ud800[0x\u05d0B	
 a	255256\u00ad%41\u05d0B	
@@ -2293,8 +2293,8 @@ a
 u	 	
 a	B\u05d0\u4e2d:%41	
 u	B\u05d0\u4e2d:%41	
-a	\u00df\u0628\u0301	xn--zca60if4d
-u	\u00df\u0628\u0301	\u00df\u0628\u0301
+a	\u00df\u0628\u0301	
+u	\u00df\u0628\u0301	
 a	:0x1%41.	
 u	:0x1%41.	
 a	1.:	
@@ -2319,8 +2319,8 @@ a	1\u0009255\u0301/\ud83d\udca9\u0628	xn--1255-yvc
 u	1\u0009255\u0301/\ud83d\udca9\u0628	1255\u0301
 a	:-	
 u	:-	
-a	xn--	
-u	xn--	
+a	xn--	xn--
+u	xn--	xn--
 a	2560x\ufb00\u0915\u0915%2e\u094d%41	
 u	2560x\ufb00\u0915\u0915%2e\u094d%41	
 a	%2exn--fiq228c\u0628\u0628::255\u00e9a	
@@ -2359,12 +2359,12 @@ a	/256
 u	/256	
 a	@-256@	
 u	@-256@	
-a	xn--?:\u3002[?B	
-u	xn--?:\u3002[?B	
+a	xn--?:\u3002[?B	xn--
+u	xn--?:\u3002[?B	xn--
 a	_\u00e9256\u1e9e%	
 u	_\u00e9256\u1e9e%	
-a	\u00df\u05d0???	xn--zca44w
-u	\u00df\u05d0???	\u00df\u05d0
+a	\u00df\u05d0???	
+u	\u00df\u05d0???	
 a	[\u1e9exn--	
 u	[\u1e9exn--	
 a	\u0009xn--\u4e2d\u200cxn--fiq228c\u00df	
@@ -2425,10 +2425,10 @@ a	#::?
 u	#::? 	
 a	\u0628	xn--ngb
 u	\u0628	\u0628
-a	xn--zz/\u0628xn--fiq228c\ufb00256_]	
-u	xn--zz/\u0628xn--fiq228c\ufb00256_]	
+a	xn--zz/\u0628xn--fiq228c\ufb00256_]	xn--zz
+u	xn--zz/\u0628xn--fiq228c\ufb00256_]	xn--zz
 a	\u00dfxn--%4111\u0915\u0009	xn--xn--a11-zva930q
-u	\u00dfxn--%4111\u0915\u0009	xn--xn--a11-zva930q
+u	\u00dfxn--%4111\u0915\u0009	\u00dfxn--a11\u0915
 a	:1?::\u3002\u05d0	
 u	:1?::\u3002\u05d0	
 a	a\u200d##	
@@ -2582,7 +2582,7 @@ u	\u0628\u09150x/
 a	/a[%\u3002\u200d	
 u	/a[%\u3002\u200d	
 a	\u4e2dxn--zz#\u094d@	xn--xn--zz-9v7i
-u	\u4e2dxn--zz#\u094d@	xn--xn--zz-9v7i
+u	\u4e2dxn--zz#\u094d@	\u4e2dxn--zz
 a	1%41\u4e2d%2e\ud800_	
 u	1%41\u4e2d%2e\ud800_	
 a	\u4e2d\u00e9\u05d0\u4e2d\u3002[\u4e2dxn--	
@@ -2661,8 +2661,8 @@ a	\u00df\ud83d\udca9	xn--zca6007w
 u	\u00df\ud83d\udca9	\u00df\ud83d\udca9
 a	\u200d255xn--fiq228c?	
 u	\u200d255xn--fiq228c?	
-a	\u1e9e\u00e9_\u05d0\u3002\u0009a	xn--_-pfa4a303b.a
-u	\u1e9e\u00e9_\u05d0\u3002\u0009a	\u00df\u00e9_\u05d0.a
+a	\u1e9e\u00e9_\u05d0\u3002\u0009a	
+u	\u1e9e\u00e9_\u05d0\u3002\u0009a	
 a	0x\u0301 \uff21::\u0915\u200d\u05d0	
 u	0x\u0301 \uff21::\u0915\u200d\u05d0	
 a	256\u200c-	
@@ -2717,8 +2717,8 @@ a	1\u00e9#]]B	xn--1-bga
 u	1\u00e9#]]B	1\u00e9
 a	?%2e]\u2488%41xn--fiq228ca/	
 u	?%2e]\u2488%41xn--fiq228ca/	
-a	\u4e2d\u0628	xn--ngb7897a
-u	\u4e2d\u0628	\u4e2d\u0628
+a	\u4e2d\u0628	
+u	\u4e2d\u0628	
 a	?	
 u	?	
 a	1\u05d0\uff21	
@@ -2773,8 +2773,8 @@ a	xn--B::%41:].
 u	xn--B::%41:].	
 a	255\u2488\ufb00\u05d0	
 u	255\u2488\ufb00\u05d0	
-a	\u0661	xn--9hb
-u	\u0661	\u0661
+a	\u0661	
+u	\u0661	
 a	::xn--fiq228c%41%2e[]xn--fiq228c\ud800	
 u	::xn--fiq228c%41%2e[]xn--fiq228c\ud800	
 a	256//255\u1e9e\u1e9e?255	0.0.1.0
@@ -2824,13 +2824,13 @@ u	\u3002%:a.
 a	-1	-1
 u	-1	-1
 a	\u1e9exn--zz\u00dfxn--1	xn--xn--zzxn--1-u6ag
-u	\u1e9exn--zz\u00dfxn--1	xn--xn--zzxn--1-u6ag
+u	\u1e9exn--zz\u00dfxn--1	\u00dfxn--zz\u00dfxn--1
 a	0x256xn--fiq228cxn--fiq228c%# [	
 u	0x256xn--fiq228cxn--fiq228c%# [	
 a	\u00091a \u0301_	
 u	\u00091a \u0301_	
-a	\ud83d\udca9\ud83d\udca9\u05d0/%-\u0915	xn--4db5744wa
-u	\ud83d\udca9\ud83d\udca9\u05d0/%-\u0915	\ud83d\udca9\ud83d\udca9\u05d0
+a	\ud83d\udca9\ud83d\udca9\u05d0/%-\u0915	
+u	\ud83d\udca9\ud83d\udca9\u05d0/%-\u0915	
 a	%41xn--fiq228c256\u0915\u200c\ud83d\udca9	
 u	%41xn--fiq228c256\u0915\u200c\ud83d\udca9	
 a	\u00df__/-B	xn--__-fia
@@ -2905,8 +2905,8 @@ a	\u06280xxn--zza
 u	\u06280xxn--zza	
 a	\u2488#\u05d0	
 u	\u2488#\u05d0	
-a	\u0661#\u200c\u0009::\ud83d\udca9	xn--9hb
-u	\u0661#\u200c\u0009::\ud83d\udca9	\u0661
+a	\u0661#\u200c\u0009::\ud83d\udca9	
+u	\u0661#\u200c\u0009::\ud83d\udca9	
 a	0x\u0661	
 u	0x\u0661	
 a	@\u00e9-\u3002\u05d0\u200c:	
@@ -2920,7 +2920,7 @@ u	.\u00092561.
 a	?\ud83d\udca9]\u00e9\u00ad	
 u	?\ud83d\udca9]\u00e9\u00ad	
 a	\u1e9exn--	xn--xn---una
-u	\u1e9exn--	xn--xn---una
+u	\u1e9exn--	\u00dfxn--
 a	\u094d-\u1e9e\u0009\u200c	
 u	\u094d-\u1e9e\u0009\u200c	
 a	\u0301255256%[\u00df\u05d0	
@@ -2960,7 +2960,7 @@ u	\u200c\u0661
 a	\ufb00\u0915xn---	xn--ffxn----imo
 u	\ufb00\u0915xn---	ff\u0915xn---
 a	\uff21\u3002\ud83d\udca9\u0301xn--fiq228c\uff21?	a.xn--xn--fiq228ca-d2g31749o
-u	\uff21\u3002\ud83d\udca9\u0301xn--fiq228c\uff21?	a.xn--xn--fiq228ca-d2g31749o
+u	\uff21\u3002\ud83d\udca9\u0301xn--fiq228c\uff21?	a.\ud83d\udca9\u0301xn--fiq228ca
 a	\u0661xn--\u4e2d	
 u	\u0661xn--\u4e2d	
 a	/\u00e9	
@@ -3105,8 +3105,8 @@ a	\u00ad_xn--/1\ud800xn--fiq228c	_xn--
 u	\u00ad_xn--/1\ud800xn--fiq228c	_xn--
 a	xn--\u0915_a	
 u	xn--\u0915_a	
-a	a\u05d0	xn--a-0hc
-u	a\u05d0	a\u05d0
+a	a\u05d0	
+u	a\u05d0	
 a	BB\u00e9..\u0628@	
 u	BB\u00e9..\u0628@	
 a	\ud83d\udca9%\ud83d\udca9\u200dxn--1\ud83d\udca9\ud800	
@@ -3159,8 +3159,8 @@ a	\u094d1:\u0915\u200c::a
 u	\u094d1:\u0915\u200c::a	
 a	\u3002\u0628xn--zz@\u0009%	
 u	\u3002\u0628xn--zz@\u0009%	
-a	xn--zz?\u0301\u2488\u094d\u00df1	
-u	xn--zz?\u0301\u2488\u094d\u00df1	
+a	xn--zz?\u0301\u2488\u094d\u00df1	xn--zz
+u	xn--zz?\u0301\u2488\u094d\u00df1	xn--zz
 a	\u0009\u2488	
 u	\u0009\u2488	
 a	\ufb00\u0301[::	
@@ -3249,8 +3249,8 @@ a	_%41\u06610x
 u	_%41\u06610x	
 a	0x/1#\u200c#\u200c\u3002	0.0.0.0
 u	0x/1#\u200c#\u200c\u3002	0.0.0.0
-a	xn--fiq228cxn--zz	
-u	xn--fiq228cxn--zz	
+a	xn--fiq228cxn--zz	xn--fiq228cxn--zz
+u	xn--fiq228cxn--zz	xn--fiq228cxn--zz
 a	1\u0661_?	
 u	1\u0661_?	
 a	255\u1e9e%41256\uff21@\uff21	
@@ -3273,14 +3273,14 @@ a	\u0915a1xn--fiq228c	xn--a1xn--fiq228c-2dz
 u	\u0915a1xn--fiq228c	\u0915a1xn--fiq228c
 a	xn--fiq228c\u0301\u0009	
 u	xn--fiq228c\u0301\u0009	
-a	\u0661.\ud83d\udca9\u0628/10x	xn--9hb.xn--ngb9924w
-u	\u0661.\ud83d\udca9\u0628/10x	\u0661.\ud83d\udca9\u0628
+a	\u0661.\ud83d\udca9\u0628/10x	
+u	\u0661.\ud83d\udca9\u0628/10x	
 a	1%41	1a
 u	1%41	1a
 a	\u00df\u00ad\ud8000x\u0301\u0301-	
 u	\u00df\u00ad\ud8000x\u0301\u0301-	
-a	\u0661\u0009	xn--9hb
-u	\u0661\u0009	\u0661
+a	\u0661\u0009	
+u	\u0661\u0009	
 a	.256\u200c	
 u	.256\u200c	
 a	\u4e2d\u200cB@ \u4e2d\u00e9	
@@ -3395,8 +3395,8 @@ a	256\u2488
 u	256\u2488	
 a	\u30021\ud83d\udca9\ud83d\udca9	.xn--1-xb3sa
 u	\u30021\ud83d\udca9\ud83d\udca9	.1\ud83d\udca9\ud83d\udca9
-a	\u00df\u0915B255\u00df\u00ad\u0628	xn--b255-unae585gb5f
-u	\u00df\u0915B255\u00df\u00ad\u0628	\u00df\u0915b255\u00df\u0628
+a	\u00df\u0915B255\u00df\u00ad\u0628	
+u	\u00df\u0915B255\u00df\u00ad\u0628	
 a	\ud800-.\u4e2d#/	
 u	\ud800-.\u4e2d#/	
 a	%41\u03011\u3002%41\u2488\u30021	
@@ -3549,8 +3549,8 @@ a	 \u0301\u00ad
 u	 \u0301\u00ad	
 a	0x\ud800\u200d\uff21	
 u	0x\ud800\u200d\uff21	
-a	xn--1	
-u	xn--1	
+a	xn--1	xn--1
+u	xn--1	xn--1
 a	\u094d\u094d%41.\u0301\u00df	
 u	\u094d\u094d%41.\u0301\u00df	
 a	@ \u0009:256.\ud83d\udca91	
@@ -3673,8 +3673,8 @@ a	?\u0915B
 u	?\u0915B	
 a	\u00e9\u00e9\ud800\u0628-	
 u	\u00e9\u00e9\ud800\u0628-	
-a	\u0661.	xn--9hb.
-u	\u0661.	\u0661.
+a	\u0661.	
+u	\u0661.	
 a	.xn--fiq228c]\ufb00\u00ad\u4e2d\u1e9e	
 u	.xn--fiq228c]\ufb00\u00ad\u4e2d\u1e9e	
 a	xn--zz\u0628	
@@ -3708,7 +3708,7 @@ u	\u0301.xn--
 a	]0x.	
 u	]0x.	
 a	\u0915xn--xn--fiq228c1xn--fiq228cB255	xn--xn--xn--fiq228c1xn--fiq228cb255-yn1d
-u	\u0915xn--xn--fiq228c1xn--fiq228cB255	xn--xn--xn--fiq228c1xn--fiq228cb255-yn1d
+u	\u0915xn--xn--fiq228c1xn--fiq228cB255	\u0915xn--xn--fiq228c1xn--fiq228cb255
 a	\u200c[\u3002%2e\u3002@	
 u	\u200c[\u3002%2e\u3002@	
 a	\ud83d\udca9xn--fiq228c\u0661\u1e9e	
@@ -3723,8 +3723,8 @@ a	%41 \u2488\u094d\u0661
 u	%41 \u2488\u094d\u0661	
 a	-\u2488/:_\u00ad1]	
 u	-\u2488/:_\u00ad1]	
-a	%2e\u0661	.xn--9hb
-u	%2e\u0661	.\u0661
+a	%2e\u0661	
+u	%2e\u0661	
 a	?\u3002a%2e%	
 u	?\u3002a%2e%	
 a	xn--fiq228c\u094d [\u0661\u0661\u094d	
@@ -3757,16 +3757,16 @@ a	\u0628255%2eB	xn--255-rze.b
 u	\u0628255%2eB	\u0628255.b
 a	%41B\uff21	aba
 u	%41B\uff21	aba
-a	\uff21\u05d0\u00ad	xn--a-0hc
-u	\uff21\u05d0\u00ad	a\u05d0
+a	\uff21\u05d0\u00ad	
+u	\uff21\u05d0\u00ad	
 a	xn--\u00df_\u4e2d\u4e2d]\u2488	
 u	xn--\u00df_\u4e2d\u4e2d]\u2488	
-a	\u0915\u0009\u0915\u0628?_\ud83d\udca9	xn--ngb11ma
-u	\u0915\u0009\u0915\u0628?_\ud83d\udca9	\u0915\u0915\u0628
+a	\u0915\u0009\u0915\u0628?_\ud83d\udca9	
+u	\u0915\u0009\u0915\u0628?_\ud83d\udca9	
 a	\u00df\u00df\u00ad	xn--zcaa
 u	\u00df\u00df\u00ad	\u00df\u00df
 a	\uff21%2e\u4e2dxn--	a.xn--xn---zf5f
-u	\uff21%2e\u4e2dxn--	a.xn--xn---zf5f
+u	\uff21%2e\u4e2dxn--	a.\u4e2dxn--
 a	1\u094d\u094d\ud83d\udca9::256	
 u	1\u094d\u094d\ud83d\udca9::256	
 a	\u3002-\u200d\u2488\u00ad\u094d	
@@ -3863,8 +3863,8 @@ a	\u05d0[a/
 u	\u05d0[a/	
 a	%2e\uff21\uff21..xn--fiq228c	.aa..xn--fiq228c
 u	%2e\uff21\uff21..xn--fiq228c	.aa..\u4e2d\u6587
-a	xn--zz/\u200dxn--a	
-u	xn--zz/\u200dxn--a	
+a	xn--zz/\u200dxn--a	xn--zz
+u	xn--zz/\u200dxn--a	xn--zz
 a	\u3002\u05d0?/	.xn--4db
 u	\u3002\u05d0?/	.\u05d0
 a	\u0301::\u0915\u00ad\u094d	
@@ -3985,8 +3985,8 @@ a	256\u3002\u00091\u0301	256.xn--1-xbb
 u	256\u3002\u00091\u0301	256.1\u0301
 a	\u00df\uff21.1#\u0301\u0628	
 u	\u00df\uff21.1#\u0301\u0628	
-a	xn--fiq228c1	
-u	xn--fiq228c1	
+a	xn--fiq228c1	xn--fiq228c1
+u	xn--fiq228c1	xn--fiq228c1
 a	%41\ud83d\udca9-@:\u094d	
 u	%41\ud83d\udca9-@:\u094d	
 a	axn--zz	axn--zz
@@ -4121,8 +4121,8 @@ a	?B
 u	?B	
 a	\u00e9@?\u1e9e/\uff210x	
 u	\u00e9@?\u1e9e/\uff210x	
-a	\u0661\u3002\u3002\u4e2d\u00df\u0009255_	xn--9hb..xn--255_-una3589i
-u	\u0661\u3002\u3002\u4e2d\u00df\u0009255_	\u0661..\u4e2d\u00df255_
+a	\u0661\u3002\u3002\u4e2d\u00df\u0009255_	
+u	\u0661\u3002\u3002\u4e2d\u00df\u0009255_	
 a	0x\u094d	xn--0x-gsf
 u	0x\u094d	0x\u094d
 a	xn--zz\u05d0\u24880x0x	
@@ -4141,8 +4141,8 @@ a	 \u00e9
 u	 \u00e9	
 a	\u200c0xxn--%2e%41\u05d01	
 u	\u200c0xxn--%2e%41\u05d01	
-a	xn--zz255	
-u	xn--zz255	
+a	xn--zz255	xn--zz255
+u	xn--zz255	xn--zz255
 a	xn--]\u4e2d \u00df/:	
 u	xn--]\u4e2d \u00df/:	
 a	\u00ad\u0628xn--1\ufb00\u094d?	
@@ -4295,8 +4295,8 @@ a	xn--fiq228c%41 -
 u	xn--fiq228c%41 -	
 a	:::\u0661::	
 u	:::\u0661::	
-a	xn--/	
-u	xn--/	
+a	xn--/	xn--
+u	xn--/	xn--
 a	1255\u0009a	1255a
 u	1255\u0009a	1255a
 a	\u0301-\u0661\ud800[\u1e9e::xn--fiq228c	
@@ -4447,8 +4447,8 @@ a	..\u0009	..
 u	..\u0009	..
 a	/xn--fiq228c\u4e2d\u200c?	
 u	/xn--fiq228c\u4e2d\u200c?	
-a	\u00e9\u05d0\u0301?_256\u0628\u0628	xn--9ca68hv9c
-u	\u00e9\u05d0\u0301?_256\u0628\u0628	\u00e9\u05d0\u0301
+a	\u00e9\u05d0\u0301?_256\u0628\u0628	
+u	\u00e9\u05d0\u0301?_256\u0628\u0628	
 a	\u05d0\u200c::0xB\uff21\u0301	
 u	\u05d0\u200c::0xB\uff21\u0301	
 a	::1xn--fiq228c0x255??	
@@ -4457,12 +4457,12 @@ a	\u4e2dxn--zz\u0301 \uff21
 u	\u4e2dxn--zz\u0301 \uff21	
 a	[\u0915\u0915\u0009\u200d\u0009\u0661?	
 u	[\u0915\u0915\u0009\u200d\u0009\u0661?	
-a	BB\u0628	xn--bb-gtd
-u	BB\u0628	bb\u0628
+a	BB\u0628	
+u	BB\u0628	
 a	25510x0x\u1e9e	xn--25510x0x-xya
 u	25510x0x\u1e9e	25510x0x\u00df
-a	\u1e9e\u05d0	xn--zca44w
-u	\u1e9e\u05d0	\u00df\u05d0
+a	\u1e9e\u05d0	
+u	\u1e9e\u05d0	
 a	\u094d.axn--zz256	
 u	\u094d.axn--zz256	
 a	\u00e9?\u05d0\u3002\ufb00\u2488\u4e2d\u00df	xn--9ca
@@ -4537,8 +4537,8 @@ a	_B#B	_b
 u	_B#B	_b
 a	:1 -\u00df	
 u	:1 -\u00df	
-a	\u00df\ufb00\u05d0	xn--ff-fia671c
-u	\u00df\ufb00\u05d0	\u00dfff\u05d0
+a	\u00df\ufb00\u05d0	
+u	\u00df\ufb00\u05d0	
 a	xn--fiq228c\u1e9e\u1e9e\u0628::\u200d	
 u	xn--fiq228c\u1e9e\u1e9e\u0628::\u200d	
 a	xn--zz]a\u200c\uff21	
@@ -4593,8 +4593,8 @@ a	::[\u00dfxn--zz
 u	::[\u00dfxn--zz	
 a	%41/\u3002\u00df\u4e2d::B	a
 u	%41/\u3002\u00df\u4e2d::B	a
-a	256\u0628	xn--256-uze
-u	256\u0628	256\u0628
+a	256\u0628	
+u	256\u0628	
 a	\u00df/\u094d\u4e2d%41	xn--zca
 u	\u00df/\u094d\u4e2d%41	\u00df
 a	#\u09151\ufb00\u00df\u06280x\u0915	
@@ -4655,8 +4655,8 @@ a	@%2eB\u0915\u00df.\u094d
 u	@%2eB\u0915\u00df.\u094d	
 a	:\u0301255:\u094d\u00df\u094d	
 u	:\u0301255:\u094d\u00df\u094d	
-a	\ufb00\u00e9-\u0628	xn--ff--cma038d
-u	\ufb00\u00e9-\u0628	ff\u00e9-\u0628
+a	\ufb00\u00e9-\u0628	
+u	\ufb00\u00e9-\u0628	
 a	\u06611\u05d01@:0x	
 u	\u06611\u05d01@:0x	
 a	\u3002\u094d	
@@ -4669,8 +4669,8 @@ a	.\uff21\u00df\ud83d\udca9-	.xn--a--gia89822c
 u	.\uff21\u00df\ud83d\udca9-	.a\u00df\ud83d\udca9-
 a	a256\ud83d\udca9\u094d:\u200d	
 u	a256\ud83d\udca9\u094d:\u200d	
-a	xn--zz11	
-u	xn--zz11	
+a	xn--zz11	xn--zz11
+u	xn--zz11	xn--zz11
 a	\u200c.%\u00ad1 \ud800	
 u	\u200c.%\u00ad1 \ud800	
 a	\u1e9e_\ud83d\udca9/]\u0915	xn--_-pfa35949a
@@ -6336,11 +6336,11 @@ p	1	[\ud83d\udca9foo:\ud800%C3%A9foo:?%\u05d0	{"protocol":null,"slashes":null,"a
 p	2	[\ud83d\udca9foo:\ud800%C3%A9foo:?%\u05d0	{"protocol":null,"slashes":null,"auth":null,"host":null,"port":null,"hostname":null,"hash":null,"search":"?%\u05d0","query":"%\u05d0","pathname":"[\ud83d\udca9foo:\u005cud800%C3%A9foo:","path":"[\ud83d\udca9foo:\u005cud800%C3%A9foo:?%\u05d0","href":"[\ud83d\udca9foo:\u005cud800%C3%A9foo:?%\u05d0"}
 p	3	[\ud83d\udca9foo:\ud800%C3%A9foo:?%\u05d0	{"protocol":null,"slashes":null,"auth":null,"host":null,"port":null,"hostname":null,"hash":null,"search":"?%\u05d0","query":{"%\u05d0":""},"pathname":"[\ud83d\udca9foo:\u005cud800%C3%A9foo:","path":"[\ud83d\udca9foo:\u005cud800%C3%A9foo:?%\u05d0","href":"[\ud83d\udca9foo:\u005cud800%C3%A9foo:?%\u05d0"}
 f	[\ud83d\udca9foo:\ud800%C3%A9foo:?%\u05d0	[\ud83d\udca9foo:\ud800%C3%A9foo:?%\u05d0
-p	0	+http:\ud83d\udca9\u06281.2.3.4>#\u0009\u0301	{"protocol":"+http:","slashes":null,"auth":null,"host":"xn--1-0mc29809a.2.3.4","port":null,"hostname":"xn--1-0mc29809a.2.3.4","hash":"#%09\u0301","search":null,"query":null,"pathname":"%3E","path":"%3E","href":"+http:xn--1-0mc29809a.2.3.4%3E#%09\u0301"}
-p	1	+http:\ud83d\udca9\u06281.2.3.4>#\u0009\u0301	{"protocol":"+http:","slashes":null,"auth":null,"host":"xn--1-0mc29809a.2.3.4","port":null,"hostname":"xn--1-0mc29809a.2.3.4","hash":"#%09\u0301","search":null,"query":{},"pathname":"%3E","path":"%3E","href":"+http:xn--1-0mc29809a.2.3.4%3E#%09\u0301"}
-p	2	+http:\ud83d\udca9\u06281.2.3.4>#\u0009\u0301	{"protocol":"+http:","slashes":null,"auth":null,"host":"xn--1-0mc29809a.2.3.4","port":null,"hostname":"xn--1-0mc29809a.2.3.4","hash":"#%09\u0301","search":null,"query":null,"pathname":"%3E","path":"%3E","href":"+http:xn--1-0mc29809a.2.3.4%3E#%09\u0301"}
-p	3	+http:\ud83d\udca9\u06281.2.3.4>#\u0009\u0301	{"protocol":"+http:","slashes":null,"auth":null,"host":"xn--1-0mc29809a.2.3.4","port":null,"hostname":"xn--1-0mc29809a.2.3.4","hash":"#%09\u0301","search":null,"query":{},"pathname":"%3E","path":"%3E","href":"+http:xn--1-0mc29809a.2.3.4%3E#%09\u0301"}
-f	+http:\ud83d\udca9\u06281.2.3.4>#\u0009\u0301	+http:xn--1-0mc29809a.2.3.4%3E#%09\u0301
+p	0	+http:\ud83d\udca9\u06281.2.3.4>#\u0009\u0301	E:ERR_INVALID_URL
+p	1	+http:\ud83d\udca9\u06281.2.3.4>#\u0009\u0301	E:ERR_INVALID_URL
+p	2	+http:\ud83d\udca9\u06281.2.3.4>#\u0009\u0301	E:ERR_INVALID_URL
+p	3	+http:\ud83d\udca9\u06281.2.3.4>#\u0009\u0301	E:ERR_INVALID_URL
+f	+http:\ud83d\udca9\u06281.2.3.4>#\u0009\u0301	E:ERR_INVALID_URL
 p	0	;http:x-y%C3%A9\u0009file:	{"protocol":null,"slashes":null,"auth":null,"host":null,"port":null,"hostname":null,"hash":null,"search":null,"query":null,"pathname":";http:x-y%C3%A9%09file:","path":";http:x-y%C3%A9%09file:","href":";http:x-y%C3%A9%09file:"}
 p	1	;http:x-y%C3%A9\u0009file:	{"protocol":null,"slashes":null,"auth":null,"host":null,"port":null,"hostname":null,"hash":null,"search":null,"query":{},"pathname":";http:x-y%C3%A9%09file:","path":";http:x-y%C3%A9%09file:","href":";http:x-y%C3%A9%09file:"}
 p	2	;http:x-y%C3%A9\u0009file:	{"protocol":null,"slashes":null,"auth":null,"host":null,"port":null,"hostname":null,"hash":null,"search":null,"query":null,"pathname":";http:x-y%C3%A9%09file:","path":";http:x-y%C3%A9%09file:","href":";http:x-y%C3%A9%09file:"}
@@ -6611,11 +6611,11 @@ p	1	\u00e9::1c.com%C3%A9.[\u00df&\u4e2d	{"protocol":null,"slashes":null,"auth":n
 p	2	\u00e9::1c.com%C3%A9.[\u00df&\u4e2d	{"protocol":null,"slashes":null,"auth":null,"host":null,"port":null,"hostname":null,"hash":null,"search":null,"query":null,"pathname":"\u00e9::1c.com%C3%A9.[\u00df&\u4e2d","path":"\u00e9::1c.com%C3%A9.[\u00df&\u4e2d","href":"\u00e9::1c.com%C3%A9.[\u00df&\u4e2d"}
 p	3	\u00e9::1c.com%C3%A9.[\u00df&\u4e2d	{"protocol":null,"slashes":null,"auth":null,"host":null,"port":null,"hostname":null,"hash":null,"search":null,"query":{},"pathname":"\u00e9::1c.com%C3%A9.[\u00df&\u4e2d","path":"\u00e9::1c.com%C3%A9.[\u00df&\u4e2d","href":"\u00e9::1c.com%C3%A9.[\u00df&\u4e2d"}
 f	\u00e9::1c.com%C3%A9.[\u00df&\u4e2d	\u00e9::1c.com%C3%A9.[\u00df&\u4e2d
-p	0	xn--fiq228cws:xn--?\u00e9%zzxn--fiq228c\u00df=	E:ERR_INVALID_URL
-p	1	xn--fiq228cws:xn--?\u00e9%zzxn--fiq228c\u00df=	E:ERR_INVALID_URL
-p	2	xn--fiq228cws:xn--?\u00e9%zzxn--fiq228c\u00df=	E:ERR_INVALID_URL
-p	3	xn--fiq228cws:xn--?\u00e9%zzxn--fiq228c\u00df=	E:ERR_INVALID_URL
-f	xn--fiq228cws:xn--?\u00e9%zzxn--fiq228c\u00df=	E:ERR_INVALID_URL
+p	0	xn--fiq228cws:xn--?\u00e9%zzxn--fiq228c\u00df=	{"protocol":"xn--fiq228cws:","slashes":null,"auth":null,"host":"xn--","port":null,"hostname":"xn--","hash":null,"search":"?\u00e9%zzxn--fiq228c\u00df=","query":"\u00e9%zzxn--fiq228c\u00df=","pathname":null,"path":"?\u00e9%zzxn--fiq228c\u00df=","href":"xn--fiq228cws:xn--?\u00e9%zzxn--fiq228c\u00df="}
+p	1	xn--fiq228cws:xn--?\u00e9%zzxn--fiq228c\u00df=	{"protocol":"xn--fiq228cws:","slashes":null,"auth":null,"host":"xn--","port":null,"hostname":"xn--","hash":null,"search":"?\u00e9%zzxn--fiq228c\u00df=","query":{"\u00e9%zzxn--fiq228c\u00df":""},"pathname":null,"path":"?\u00e9%zzxn--fiq228c\u00df=","href":"xn--fiq228cws:xn--?\u00e9%zzxn--fiq228c\u00df="}
+p	2	xn--fiq228cws:xn--?\u00e9%zzxn--fiq228c\u00df=	{"protocol":"xn--fiq228cws:","slashes":null,"auth":null,"host":"xn--","port":null,"hostname":"xn--","hash":null,"search":"?\u00e9%zzxn--fiq228c\u00df=","query":"\u00e9%zzxn--fiq228c\u00df=","pathname":null,"path":"?\u00e9%zzxn--fiq228c\u00df=","href":"xn--fiq228cws:xn--?\u00e9%zzxn--fiq228c\u00df="}
+p	3	xn--fiq228cws:xn--?\u00e9%zzxn--fiq228c\u00df=	{"protocol":"xn--fiq228cws:","slashes":null,"auth":null,"host":"xn--","port":null,"hostname":"xn--","hash":null,"search":"?\u00e9%zzxn--fiq228c\u00df=","query":{"\u00e9%zzxn--fiq228c\u00df":""},"pathname":null,"path":"?\u00e9%zzxn--fiq228c\u00df=","href":"xn--fiq228cws:xn--?\u00e9%zzxn--fiq228c\u00df="}
+f	xn--fiq228cws:xn--?\u00e9%zzxn--fiq228c\u00df=	xn--fiq228cws:xn--?\u00e9%zzxn--fiq228c\u00df=
 p	0	\u3000}};xn-- "%41	{"protocol":null,"slashes":null,"auth":null,"host":null,"port":null,"hostname":null,"hash":null,"search":null,"query":null,"pathname":"\u3000%7D%7D;xn--%20%22%41","path":"\u3000%7D%7D;xn--%20%22%41","href":"\u3000%7D%7D;xn--%20%22%41"}
 p	1	\u3000}};xn-- "%41	{"protocol":null,"slashes":null,"auth":null,"host":null,"port":null,"hostname":null,"hash":null,"search":null,"query":{},"pathname":"\u3000%7D%7D;xn--%20%22%41","path":"\u3000%7D%7D;xn--%20%22%41","href":"\u3000%7D%7D;xn--%20%22%41"}
 p	2	\u3000}};xn-- "%41	{"protocol":null,"slashes":null,"auth":null,"host":null,"port":null,"hostname":null,"hash":null,"search":null,"query":null,"pathname":"\u3000%7D%7D;xn--%20%22%41","path":"\u3000%7D%7D;xn--%20%22%41","href":"\u3000%7D%7D;xn--%20%22%41"}
@@ -8356,11 +8356,11 @@ p	1	\u000a%41\ud83d\udca9	{"protocol":null,"slashes":null,"auth":null,"host":nul
 p	2	\u000a%41\ud83d\udca9	{"protocol":null,"slashes":null,"auth":null,"host":null,"port":null,"hostname":null,"hash":null,"search":null,"query":null,"pathname":"%41\ud83d\udca9","path":"%41\ud83d\udca9","href":"%41\ud83d\udca9"}
 p	3	\u000a%41\ud83d\udca9	{"protocol":null,"slashes":null,"auth":null,"host":null,"port":null,"hostname":null,"hash":null,"search":null,"query":{},"pathname":"%41\ud83d\udca9","path":"%41\ud83d\udca9","href":"%41\ud83d\udca9"}
 f	\u000a%41\ud83d\udca9	%41\ud83d\udca9
-p	0	c.comHTTP:xn--%%C3%A9x-yhttp:	E:ERR_INVALID_URL
-p	1	c.comHTTP:xn--%%C3%A9x-yhttp:	E:ERR_INVALID_URL
-p	2	c.comHTTP:xn--%%C3%A9x-yhttp:	E:ERR_INVALID_URL
-p	3	c.comHTTP:xn--%%C3%A9x-yhttp:	E:ERR_INVALID_URL
-f	c.comHTTP:xn--%%C3%A9x-yhttp:	E:ERR_INVALID_URL
+p	0	c.comHTTP:xn--%%C3%A9x-yhttp:	{"protocol":"c.comhttp:","slashes":null,"auth":null,"host":"xn--","port":null,"hostname":"xn--","hash":null,"search":null,"query":null,"pathname":"%%C3%A9x-yhttp:","path":"%%C3%A9x-yhttp:","href":"c.comhttp:xn--%%C3%A9x-yhttp:"}
+p	1	c.comHTTP:xn--%%C3%A9x-yhttp:	{"protocol":"c.comhttp:","slashes":null,"auth":null,"host":"xn--","port":null,"hostname":"xn--","hash":null,"search":null,"query":{},"pathname":"%%C3%A9x-yhttp:","path":"%%C3%A9x-yhttp:","href":"c.comhttp:xn--%%C3%A9x-yhttp:"}
+p	2	c.comHTTP:xn--%%C3%A9x-yhttp:	{"protocol":"c.comhttp:","slashes":null,"auth":null,"host":"xn--","port":null,"hostname":"xn--","hash":null,"search":null,"query":null,"pathname":"%%C3%A9x-yhttp:","path":"%%C3%A9x-yhttp:","href":"c.comhttp:xn--%%C3%A9x-yhttp:"}
+p	3	c.comHTTP:xn--%%C3%A9x-yhttp:	{"protocol":"c.comhttp:","slashes":null,"auth":null,"host":"xn--","port":null,"hostname":"xn--","hash":null,"search":null,"query":{},"pathname":"%%C3%A9x-yhttp:","path":"%%C3%A9x-yhttp:","href":"c.comhttp:xn--%%C3%A9x-yhttp:"}
+f	c.comHTTP:xn--%%C3%A9x-yhttp:	c.comhttp:xn--%%C3%A9x-yhttp:
 p	0	file:B=[B`::1HTTP:	{"protocol":"file:","slashes":null,"auth":null,"host":null,"port":null,"hostname":null,"hash":null,"search":null,"query":null,"pathname":"B=[B%60::1HTTP:","path":"B=[B%60::1HTTP:","href":"file://B=[B%60::1HTTP:"}
 p	1	file:B=[B`::1HTTP:	{"protocol":"file:","slashes":null,"auth":null,"host":null,"port":null,"hostname":null,"hash":null,"search":null,"query":{},"pathname":"B=[B%60::1HTTP:","path":"B=[B%60::1HTTP:","href":"file://B=[B%60::1HTTP:"}
 p	2	file:B=[B`::1HTTP:	{"protocol":"file:","slashes":null,"auth":null,"host":null,"port":null,"hostname":null,"hash":null,"search":null,"query":null,"pathname":"B=[B%60::1HTTP:","path":"B=[B%60::1HTTP:","href":"file://B=[B%60::1HTTP:"}
@@ -12119,7 +12119,7 @@ r	https://a.com/b	^\u00df{/	https://a.com/%5E\u00df%7B/
 r	http://a.com/b/c	%41@xn--fiq228c\ud83d\udca9	http://a.com/b/%41@xn--fiq228c\ud83d\udca9
 r	https://a.com/b	http:HTTP:>'\ud800	http://HTTP:%3E%27\ud800/
 r	foo://a/b	\u000a{\u200d	foo://a/%7B\u200d
-r	file:///a/b	c.comjavascript:xn--}1.2.3.4x-y	E:ERR_INVALID_URL
+r	file:///a/b	c.comjavascript:xn--}1.2.3.4x-y	c.comjavascript:xn--%7D1.2.3.4x-y
 r	mailto:local1@domain1	>::1	mailto:local1@%3E::1
 r	/a/b/c	c.com	/a/b/c.com
 r	/a/b/c	ws:mailto:#8080\u000a	ws://mailto:/#8080
@@ -13081,7 +13081,7 @@ r	foo:a/b	'>\u0301\ud800<	foo:a/%27%3E\u0301\ud800%3C
 r	http://[::1]/a	/ws:	http://[::1]/ws:
 r	mailto:a@b/c	<foo::.c.comc.com	mailto:a@b/%3Cfoo::.c.comc.com
 r	http://[::1]/a	\u200d1.2.3.4x-y{ 	http://[::1]/\u200d1.2.3.4x-y%7B
-r	http://a/b/c/d;p?q	HTTP:xn--	E:ERR_INVALID_URL
+r	http://a/b/c/d;p?q	HTTP:xn--	http://xn--/
 r	http://a.com/b/c	//file:\u005c:	http://file/:
 r	javascript:x	 \ud83d\udca9>a1.2.3.4	javascript:\ud83d\udca9%3Ea1.2.3.4
 r	http://[::1]/a	\u05d0foo:>\u05d0x-y	http://[::1]/\u05d0foo:%3E\u05d0x-y

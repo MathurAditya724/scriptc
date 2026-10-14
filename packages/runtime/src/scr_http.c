@@ -76,7 +76,7 @@ static bool scr_http_timeout_valid(double ms) {
   return false;
 }
 
-/* Node v24.15.0's STATUS_CODES table, shared by the module export and the
+/* Node v24.22.0's STATUS_CODES table, shared by the module export and the
  * default ServerResponse reason phrase. */
 static const struct { int code; const char *reason; } scr_http_status_codes_table[] = {
   {100, "Continue"}, {101, "Switching Protocols"}, {102, "Processing"},
@@ -226,6 +226,7 @@ struct ScrHttpReq {
   struct ScrHttpClientReq *pipe_client;
   ScrNetSocket *pipe_sock;
   bool ended; /* body complete (or connection dead): data/end drop */
+  bool end_consumed; /* 'end' fired on a body read through data listeners or a pipe */
   bool enc_utf8; /* setEncoding('utf8'): 'data' delivers strings */
   bool http10;   /* the parsed request/status line's version (httpVersion) */
   bool http2;    /* an h2 compat request (httpVersion "2.0") */
@@ -712,6 +713,7 @@ static void scr_http_req_finish(ScrHttpReq *r, bool fire) {
     return;
   }
   r->ended = true;
+  r->end_consumed = fire && (r->data_ls.n > 0 || r->pipe_res || r->pipe_client || r->pipe_sock);
   if (fire) scr_net_fire0_this(&r->end_ls, r, SCR_DYNH_HTTP_REQ);
   scr_net_ls_drop(&r->data_ls);
   scr_net_ls_drop(&r->end_ls);
@@ -906,8 +908,10 @@ struct ScrHttpRes {
   ScrHttpReq *req_ref;
   bool req_cleared;
   ScrNetLs close_ls, timeout_ls;
-  ScrNetLs finish_ls; /* res.end(cb) — fires deferred once the body went out */
+  ScrNetLs finish_ls; /* res.on('finish') — fires deferred once the body went out */
+  ScrNetLs endcb_ls;  /* res.end(cb) — fires just before the 'finish' listeners */
   ScrNetLs wcb_ls;    /* res.write(chunk, cb) — fires from the queue */
+  bool writable_finished; /* set where Node emits 'finish' (writableFinished) */
   bool finish_queued;
   bool wcb_queued;
   bool close_queued;
@@ -933,6 +937,7 @@ void scr_http_res_release(ScrHttpRes *r) {
     scr_net_ls_drop(&r->close_ls);
     scr_net_ls_drop(&r->timeout_ls);
     scr_net_ls_drop(&r->finish_ls);
+    scr_net_ls_drop(&r->endcb_ls);
     scr_net_ls_drop(&r->wcb_ls);
     free(r->cork_buf);
     if (r->req_ref) scr_http_req_release(r->req_ref);
@@ -958,7 +963,11 @@ ScrHttpReq *scr_http_res_request(ScrHttpRes *r) { return scr_http_req_retain(r->
 ScrNetSocket *scr_http_res_socket(ScrHttpRes *r) {
   return r->sock && !r->socket_detached ? scr_net_sock_retain(r->sock) : NULL;
 }
-bool scr_http_res_writable_finished(ScrHttpRes *r) { return r->finished; }
+/* HTTP/1 writableFinished turns true where 'finish' is emitted, not when
+ * end() returns; the h2 compat response keeps its stream's answer. */
+bool scr_http_res_writable_finished(ScrHttpRes *r) {
+  return r->h2_stream != NULL ? r->finished : r->writable_finished;
+}
 
 static bool scr_http_res_has_header(ScrHttpRes *r, const char *name);
 
@@ -1961,12 +1970,33 @@ static void scr_http_queue_res_finish(ScrHttpRes *res) {
   scr_http_emit_push(SCR_HTTP_EMIT_RES_FINISH, scr_http_res_retain(res));
 }
 
-/* res.end(cb)'s callback slot: registered just before the end call; a
- * response that already finished (a second end) still fires it deferred
- * — Node errbacks ERR_STREAM_ALREADY_FINISHED there (divergence: this
- * surface's callbacks take no arguments, so it fires plainly). */
+/* res.on('finish', cb): fires deferred once the body went out, after the
+ * end(cb) callbacks and after the response detached its socket. */
 void scr_http_res_on_finish(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
   scr_net_ls_add(&r->finish_ls, cb, NULL, true);
+  if (r->finished) scr_http_queue_res_finish(r);
+}
+
+/* res.end(cb)'s callback slot: registered just before the end call. The
+ * callbacks run where Node's OutgoingMessage flushes its end callbacks:
+ * after writableFinished turns true and before the 'finish' listeners,
+ * with the socket still attached. A callback registered after the
+ * response finished runs synchronously, where Node passes
+ * ERR_STREAM_ALREADY_FINISHED (this surface's callbacks take no
+ * arguments). The h2 compat response keeps the 'finish' listener order. */
+void scr_http_res_on_end_callback(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
+  if (r->h2_stream != NULL) {
+    scr_http_res_on_finish(r, cb);
+    return;
+  }
+  if (r->writable_finished) {
+    ScrNetLs now = {0};
+    scr_net_ls_add(&now, cb, NULL, true);
+    scr_net_fire0_this(&now, r, SCR_DYNH_HTTP_RES);
+    scr_net_ls_drop(&now);
+    return;
+  }
+  scr_net_ls_add(&r->endcb_ls, cb, NULL, true);
   if (r->finished) scr_http_queue_res_finish(r);
 }
 
@@ -2061,9 +2091,14 @@ static void scr_http_proto_sweep(void) {
       break;
     case SCR_HTTP_EMIT_RES_FINISH: {
       ScrHttpRes *res = (ScrHttpRes *)e.h;
-      res->finish_queued = false; /* a later end(cb) on the finished res re-queues */
+      res->finish_queued = false; /* a later on('finish') on the finished res re-queues */
+      res->writable_finished = true;
+      ScrNetLs endcbs = res->endcb_ls;
+      res->endcb_ls = (ScrNetLs){0};
+      scr_net_fire0_this(&endcbs, res, SCR_DYNH_HTTP_RES);
+      scr_net_ls_drop(&endcbs);
       res->socket_detached = true;
-      scr_net_fire0_this(&res->finish_ls, res, SCR_DYNH_HTTP_RES);
+      if (!scr_exc_pending()) scr_net_fire0_this(&res->finish_ls, res, SCR_DYNH_HTTP_RES);
       break;
     }
     }
@@ -2248,7 +2283,10 @@ void scr_http1_ctx_on_upgrade(void *p, ScrClosure *cb /*moves*/, ScrHttpUpgradeF
 void scr_http1_ctx_settle(void *p) { scr_http_srv_ctx_settle(p); }
 
 static void scr_http_conn_drop_request(ScrHttpConn *conn, bool fire_end) {
-  /* the deferred 'close' emits: res before req, Node's order */
+  /* the deferred 'close' emits: a request whose body was read to 'end'
+   * was destroyed then and closes first; otherwise res before req (Node
+   * ends an unread request after the response finishes) */
+  if (conn->req && conn->req->end_consumed) scr_http_queue_req_close(conn->req);
   if (conn->res) scr_http_queue_res_close(conn->res);
   if (conn->req) scr_http_queue_req_close(conn->req);
   if (conn->req) {
@@ -5128,7 +5166,7 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
       scr_http_dynh_unsupported("ServerResponse", "end", "this argument shape is not modeled");
       return NULL;
     }
-    if (cb) scr_http_res_on_finish(r, scr_dyn_listener_closure0(cb));
+    if (cb) scr_http_res_on_end_callback(r, scr_dyn_listener_closure0(cb));
     if (decoded != NULL) {
       scr_http_res_end_bytes(r, decoded);
       scr_bytes_release(decoded);
@@ -5375,7 +5413,7 @@ static ScrDyn *scr_http_dynh_res_get(void *h, const char *key, size_t key_len) {
     return scr_dyn_new_handle(r->req_ref, SCR_DYNH_HTTP_REQ);
   }
   if (strcmp(key, "writableCorked") == 0) return scr_dyn_new_num(scr_http_res_writable_corked(r));
-  if (strcmp(key, "writableFinished") == 0) return scr_dyn_new_bool(r->finished);
+  if (strcmp(key, "writableFinished") == 0) return scr_dyn_new_bool(scr_http_res_writable_finished(r));
   if (strcmp(key, "writableHighWaterMark") == 0) {
     /* Node's default socket highWaterMark — a constant here (backpressure
      * is not modeled; SEMANTICS.md) */

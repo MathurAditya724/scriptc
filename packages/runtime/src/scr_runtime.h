@@ -5881,6 +5881,7 @@ SCR_COLD void scr_dyn_arg_value_fail(const char *name, const char *reason, const
 /* The ERR_INVALID_ARG_VALUE/%j "Received" renderer (inspect-lite:
  * strings quote, scalars print plain, deep shapes sketch). */
 const char *scr_dyn_inspect_lite(const ScrDyn *v, char *buf, size_t cap);
+ScrStr *scr_str_inspect_quoted(const ScrStr *s, bool truncate);
 /* A ladder's post-validation refuse: throws the compiler-rendered SC2020
  * statement-fence text verbatim (Node's validation errors run first). */
 SCR_COLD void scr_throw_lowering_fence(const ScrStr *msg);
@@ -7682,6 +7683,8 @@ void scr_net_server_on_connection(ScrNetServer *s, ScrClosure *cb /*moves*/, Scr
  * server never fires it, like Node). */
 void scr_net_server_on_secure_connection(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrNetConnFn fn, bool once);
 ScrNetSocket *scr_net_connect(double port, ScrStr *host /*borrowed, nullable*/, ScrClosure *cb /*moves, nullable*/); /* +1 */
+ScrNetSocket *scr_net_connect_checked(double port, ScrStr *host /*borrowed, nullable*/, ScrClosure *cb /*moves, nullable*/); /* +1 */
+bool scr_net_host_chk(const ScrStr *host /*borrowed, nullable*/);
 /* connect with a validated autoSelectFamilyAttemptTimeout option: the
  * budget runs Node's validateInt32-from-1 ladder (ERR_OUT_OF_RANGE /
  * ERR_INVALID_ARG_TYPE) and is then inert — the single dial has nothing
@@ -8134,6 +8137,7 @@ ScrDyn *scr_http_res_get_headers(ScrHttpRes *r); /* +1 */
 bool scr_http_res_has_header_named(ScrHttpRes *r, ScrStr *name /*borrowed*/);
 void scr_http_res_remove_header(ScrHttpRes *r, ScrStr *name /*borrowed*/);
 void scr_http_res_on_finish(ScrHttpRes *r, ScrClosure *cb /*moves*/);
+void scr_http_res_on_end_callback(ScrHttpRes *r, ScrClosure *cb /*moves*/);
 /* createServer({ joinDuplicateHeaders: true }): repeated request-header
  * names read back joined ", " (Node's option; the default keeps first). */
 void scr_http_server_join_duplicate_headers(ScrNetServer *s);

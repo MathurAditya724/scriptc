@@ -30,8 +30,8 @@ import { lowerDiagnosticsSubscriber, lowerTracingArguments } from "./async-conte
 
 /** The pinned Node release the runtime reports as process.versions.node
  * (packages/runtime/src/scr_lib.c SCR_NODE_COMPAT_VERSION, kept equal to
- * internal/compatibility/node-v24.json by a package test). */
-export const NODE_COMPAT_VERSION = "24.15.0";
+ * internal/compatibility/node-v24.json by test/node-pin.test.ts). */
+export const NODE_COMPAT_VERSION = "24.22.0";
 
 /** Method calls on first-class process-stream receivers (procStream —
  * a WritableStream-typed value like prefixStream's `output` param):

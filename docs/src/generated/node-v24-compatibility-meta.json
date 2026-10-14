@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
-  "nodeVersion": "24.15.0",
-  "nodeCommit": "848430679556aed0bd073f2bc263331ad84fa119",
-  "artifactVersion": "5bc8e72822dd7065df84",
-  "rowCount": 3662
+  "nodeVersion": "24.22.0",
+  "nodeCommit": "f14cd3aa7bf9ca8df2cc5b8bb14beb0f335b1d93",
+  "artifactVersion": "7e9684fe4f97a27c6a16",
+  "rowCount": 3880
 }

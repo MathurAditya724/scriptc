@@ -101,7 +101,7 @@ static bool util_style_none(const ScrDyn *key) {
          !memcmp(key->v.str->data, "none", 4);
 }
 
-static void util_style_invalid(const ScrDyn *key) {
+static void util_style_invalid(const ScrDyn *key, bool hex) {
   ScrDyn *view = util_style_view(key);
   if (!view) return;
   ScrStr *shown = scr_insp_dyn(view, 0, 2);
@@ -109,18 +109,45 @@ static void util_style_invalid(const ScrDyn *key) {
   if (!shown) return;
   ScrJsonBuf message;
   scr_jb_init(&message);
-  scr_jb_puts(&message, "The argument 'format' must be one of: ");
-  for (size_t i = 0; i < sizeof util_text_styles / sizeof util_text_styles[0]; i++) {
-    if (i) scr_jb_puts(&message, ", ");
-    scr_jb_putc(&message, '\'');
-    scr_jb_puts(&message, util_text_styles[i].name);
-    scr_jb_putc(&message, '\'');
+  if (hex) {
+    scr_jb_puts(&message, "The argument 'format' must be a valid hex color (#RGB or #RRGGBB)");
+  } else {
+    scr_jb_puts(&message, "The argument 'format' must be one of: ");
+    for (size_t i = 0; i < sizeof util_text_styles / sizeof util_text_styles[0]; i++) {
+      if (i) scr_jb_puts(&message, ", ");
+      scr_jb_putc(&message, '\'');
+      scr_jb_puts(&message, util_text_styles[i].name);
+      scr_jb_putc(&message, '\'');
+    }
   }
   scr_jb_puts(&message, ". Received ");
   scr_jb_put_str(&message, shown);
   ScrStr *text = scr_jb_finish(&message);
   scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
   scr_str_release(text); scr_str_release(shown);
+}
+
+/* A string format starting with '#' names a 24-bit foreground color:
+ * 1 writes its open sequence for #RGB/#RRGGBB, -1 rejects other '#'
+ * strings, and 0 leaves every other format to the named styles. */
+static int util_style_hex(const ScrDyn *key, char open[32]) {
+  if (key->kind != SCR_DYN_STR || key->v.str->len == 0 || key->v.str->data[0] != '#') return 0;
+  const char *hex = key->v.str->data + 1;
+  size_t digits = key->v.str->len - 1;
+  if (digits != 3 && digits != 6) return -1;
+  unsigned value[6];
+  for (size_t i = 0; i < digits; i++) {
+    char c = hex[i];
+    if (c >= '0' && c <= '9') value[i] = (unsigned)(c - '0');
+    else if (c >= 'a' && c <= 'f') value[i] = (unsigned)(c - 'a' + 10);
+    else if (c >= 'A' && c <= 'F') value[i] = (unsigned)(c - 'A' + 10);
+    else return -1;
+  }
+  unsigned rgb[3];
+  for (size_t i = 0; i < 3; i++)
+    rgb[i] = digits == 3 ? value[i] * 17 : value[2 * i] * 16 + value[2 * i + 1];
+  snprintf(open, 32, "\x1b[38;2;%u;%u;%um", rgb[0], rgb[1], rgb[2]);
+  return 1;
 }
 
 /* Reopen an outer style when a nested fragment closes it. Bold and dim
@@ -255,6 +282,19 @@ ScrStr *scr_util_style_text(const ScrDyn *format, const ScrDyn *text, const ScrD
   if (!scr_dyn_truthy(validate) && format->kind == SCR_DYN_STR && text->kind == SCR_DYN_STR) {
     if (util_style_none(format)) { scr_dyn_release(validate); return scr_str_retain(text->v.str); }
     fast = util_style_lookup(format);
+    char open[32];
+    if (!fast && util_style_hex(format, open) == 1) {
+      static const char close[] = "\x1b[39m";
+      ScrStr *processed = util_style_replace(text->v.str, close, open, false);
+      ScrJsonBuf styled;
+      scr_jb_init(&styled);
+      scr_jb_puts(&styled, open);
+      scr_jb_put_str(&styled, processed);
+      scr_jb_puts(&styled, close);
+      scr_str_release(processed);
+      scr_dyn_release(validate);
+      return scr_jb_finish(&styled);
+    }
   }
   bool colorize = true;
   ScrDyn *view = NULL, *stream = NULL;
@@ -307,21 +347,33 @@ ScrStr *scr_util_style_text(const ScrDyn *format, const ScrDyn *text, const ScrD
   for (size_t i = 0; i < count; i++) {
     const ScrDyn *key = view->kind == SCR_DYN_ARR ? view->v.arr.items[i] : view;
     if (util_style_none(key)) continue;
-    const ScrTextStyle *style = util_style_lookup(key);
-    if (!style) {
-      if (!scr_exc_pending()) util_style_invalid(key);
+    char open[32], close[16];
+    int hex = util_style_hex(key, open);
+    if (hex < 0) {
+      util_style_invalid(key, true);
       scr_str_release(scr_jb_finish(&opens)); scr_str_release(scr_jb_finish(&closes)); goto done;
     }
-    char open[16], close[16];
-    snprintf(open, sizeof open, "\x1b[%um", style->open);
-    snprintf(close, sizeof close, "\x1b[%um", style->close);
+    const ScrTextStyle *style = hex ? NULL : util_style_lookup(key);
+    if (hex) {
+      /* Node skips a hex color's sequences when the stream does not
+       * colorize; later formats are still validated. */
+      if (!colorize) continue;
+      snprintf(close, sizeof close, "\x1b[39m");
+    } else if (!style) {
+      if (!scr_exc_pending()) util_style_invalid(key, false);
+      scr_str_release(scr_jb_finish(&opens)); scr_str_release(scr_jb_finish(&closes)); goto done;
+    } else {
+      snprintf(open, sizeof open, "\x1b[%um", style->open);
+      snprintf(close, sizeof close, "\x1b[%um", style->close);
+    }
     scr_jb_puts(&opens, open);
     size_t n = strlen(close);
     scr_jb_puts(&closes, close);
     /* Prepend each closing sequence so the outer formats close last. */
     memmove(closes.data + n, closes.data, closes.len - n);
     memcpy(closes.data, close, n);
-    ScrStr *next = util_style_replace(processed, close, open, style->open == 1 || style->open == 2);
+    ScrStr *next = util_style_replace(processed, close, open,
+                                      style != NULL && (style->open == 1 || style->open == 2));
     scr_str_release(processed); processed = next;
   }
   if (colorize) {

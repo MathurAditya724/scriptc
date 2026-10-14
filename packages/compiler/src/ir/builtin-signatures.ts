@@ -1335,8 +1335,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** The ServerResponse member surface: statusCode/statusMessage reads
    * and assignments (Node's writable properties), the header CRUD trio
    * (getHeader answers `string | undefined` like reqHeader), and
-   * end(cb)'s finish slot (resOnFinish registers, the end call follows —
-   * the callback fires deferred, Node's 'finish' emit). writeHead's
+   * end(cb)'s callback slot (resOnEndCallback registers, the end call
+   * follows — the callback fires deferred, just before Node's 'finish'
+   * emit; resOnFinish is the 'finish' listener slot). writeHead's
    * statusMessage forms compose in interned helpers: resStatusMsgSet
    * then the ordinary writeHead entry. */
   "http.resStatusGet": { argTypes: [HTTPRES_T], result: F64 },
@@ -1364,6 +1365,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "http.resHasHeader": { argTypes: [HTTPRES_T, STRING], result: BOOL },
   "http.resRemoveHeader": { argTypes: [HTTPRES_T, STRING], result: VOID },
   "http.resOnFinish": {
+    argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
+    result: VOID,
+  },
+  "http.resOnEndCallback": {
     argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
     result: VOID,
   },

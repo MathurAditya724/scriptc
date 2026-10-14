@@ -562,7 +562,7 @@ static void sf_any_source_abort(SfSignalWatch *w, SfSignal *source) {
 ScrDyn *scr_fetch_abort_any(ScrDyn *signals) {
   if (!signals || signals->kind != SCR_DYN_ARR) {
     static const char message[] =
-        "signals can not be converted to sequence.";
+        "signals cannot be converted to sequence.";
     scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1,
                              "ERR_INVALID_ARG_TYPE");
     return NULL;

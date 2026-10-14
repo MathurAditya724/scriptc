@@ -615,6 +615,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.accessSync",
   "fs.readFdSync",
   "fs.readFdSyncBytes",
+  // dns.lookup and net.connect throw ERR_INVALID_ARG_VALUE for a host with
+  // null bytes.
+  "dns.lookup",
+  "net.connect",
+  "net.connectCb",
   // node:dgram state errors (Node throws synchronously): bind on a bound
   // socket, connect on a connected one, send/close/address on a closed or
   // never-bound one.
