@@ -1,4 +1,5 @@
 import { checkedPromiseAll } from "../checked-promise-all.js";
+import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
@@ -438,7 +439,7 @@ function typedPromiseEntries(
   argNode: ts.Expression,
   member: string,
   lowered: IrExpr | undefined,
-): IrExpr & { type: { kind: "array"; elem: { kind: "promise" } } } {
+): IrExpr {
   const loc = locOf(argNode);
   let entries: IrExpr;
   if (lowered) {
@@ -471,7 +472,7 @@ function typedPromiseEntries(
       "an array of promises (Promise<T>[]) is the supported form",
     );
   }
-  return entries as IrExpr & { type: { kind: "array"; elem: { kind: "promise" } } };
+  return entries;
 }
 
 /** allSettled's result type. A uniform array literal lands on the tuple
@@ -503,7 +504,9 @@ function lowerTypedSettledCombinator(
 ): IrExpr {
   const loc = locOf(call);
   const entries = typedPromiseEntries(lowerer, argNode, member, lowered);
-  const entryT = entries.type.elem;
+  const entryT = entries.type.kind === "array" ? entries.type.elem : VOID;
+  if (entryT.kind !== "promise")
+    throw new InternalCompilerError("typedPromiseEntries admits only promise arrays");
   if (member === "any") {
     const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
     if (resultT?.kind !== "promise" || !typeEquals(resultT, entryT)) {
