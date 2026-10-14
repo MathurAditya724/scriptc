@@ -19,8 +19,8 @@ import { optionMember } from "./arguments.js";
 
 /** A call THROUGH a promisified-execFile binding:
  * `execFileAsync(file, args?, options?)` → one call of the interned
- * %execFileAsync helper — an ASYNC IR function (throw-becomes-rejection
- * for free) that runs the exec core synchronously and returns
+ * %execFileAsync helper — an ASYNC IR function (a throw becomes a rejection
+ * automatically) that runs the exec core synchronously and returns
  * `{ stdout, stderr }`, exactly Node's promisified execFile behind an
  * already-settled promise (the fs/promises stance, divergence 23).
  * Options are the exec-sync slice minus stdio (the async form always

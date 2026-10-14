@@ -343,7 +343,7 @@ export function appendDynamicImportModules(
 
 /** Collect pass over the WHOLE program: signatures, class shapes, and
  * file-scope globals visible everywhere → hoisting, mutual recursion, and
- * cross-module references fall out for free. Runs in both passes —
+ * cross-module references resolve without extra handling. Runs in both passes —
  * signatures are cheap and calls resolve against them; only BODY lowering
  * is reachability-gated. */
 export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
@@ -559,7 +559,7 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       // A RELATIVE specifier resolving INTO node_modules (the e2e driver
       // shape: `import "../node_modules/vercel/dist/index.js"`) is
       // package code too. Attribute it to the package so unselected source
-      // receives a diagnostic instead of silently dropping the import.
+      // receives a diagnostic instead of dropping the import.
       const relPkg =
         npm === null && isRelativeSpecifier(spec)
           ? packageNameOfPath(resolvePath(dirnamePath(fp.sf.fileName), spec))

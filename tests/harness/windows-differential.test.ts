@@ -555,7 +555,7 @@ async function acquireLaneLock(): Promise<void> {
 
 describe.skipIf(!enabled)(`windows differential (${target})`, () => {
   beforeAll(async () => {
-    // Fail loudly, not skip: SCRIPTC_WIN=1 promises a Windows verdict.
+    // Fail instead of skipping: SCRIPTC_WIN=1 promises a Windows verdict.
     await execFileAsync("zig", ["version"]).catch(() => {
       throw new Error(
         "SCRIPTC_WIN=1 needs zig on PATH (zigup) — the lane cross-compiles with `zig cc`.",

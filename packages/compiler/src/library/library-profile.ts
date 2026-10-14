@@ -122,7 +122,7 @@
  *     only through the embedder's own byte/record marshalling.
  *
  * Off by default: an absent or false `localize_runtime` produces the
- * classic artifact, byte-for-byte. Localization follows the archive's
+ * classic artifact, unchanged. Localization follows the archive's
  * object format: ELF and COFF archives localize on any supported host
  * (native or cross); Mach-O localization runs the macOS host linker, so
  * macos and ios targets build on darwin hosts and refuse elsewhere with
@@ -165,8 +165,8 @@
  *
  * Independent of `localize_runtime`, and composable with it: a thread-
  * instanced archive that must coexist with OTHER archives in one process
- * declares both. Off by default; non-opted builds are byte-for-byte
- * unchanged.
+ * declares both. Off by default; non-opted builds are identical to
+ * builds without the option.
  *
  * Host-callback channels (`callbacks` + `abi.callback_register_symbol`):
  * the mode's outbound seam. A library's default outbound channels are
@@ -244,8 +244,8 @@
  * — the root included (the anti-inert posture: profiles pin per compiler
  * release, so an unknown root key is a typo or a misplaced section, never
  * forward-compat surface; the ask-5 key names at the root refuse with a
- * pointer to their `determinism.*` home, since a silently inert `fences`
- * array is exactly the footgun the fence machinery refuses everywhere
+ * pointer to their `determinism.*` home, since an inert `fences` array
+ * that reports no diagnostic is exactly the footgun the fence machinery refuses everywhere
  * else). Only the INTERIOR of `determinism` keeps a reserved-and-ignored
  * surface beyond the three ask-5 keys. */
 import { isNativeOptimization, type NativeOptimization } from "../backend/optimization.js";
@@ -521,8 +521,8 @@ export function loadLibraryProfile(
     // Root keys are strict (checked AFTER the format gate, so a future
     // format's profile refuses as the wrong format, not as a typo). The
     // ask-5 key names get the pointed message: a `fences` array pasted at
-    // the root would otherwise be silently inert — the exact footgun the
-    // fence machinery refuses everywhere else.
+    // the root would otherwise be inert without a diagnostic — the exact
+    // footgun the fence machinery refuses everywhere else.
     for (const k of Object.keys(p)) {
       if (
         [
@@ -546,7 +546,7 @@ export function loadLibraryProfile(
         );
       }
       throw new ProfileError(
-        `unknown field '${k}' (root keys are strict: a typo here would silently change the build; remove it)`,
+        `unknown field '${k}' (root keys are strict: an ignored typo here would change the build; remove it)`,
       );
     }
     const name = req<string>(p["name"], "name", "string");
@@ -763,7 +763,7 @@ export function loadLibraryProfile(
 
     // The ask-2 sidecar section: presence turns contract emission on.
     // Unknown fields inside it are refused like abi's (a typo here would
-    // silently change the emitted contract).
+    // change the emitted contract without a diagnostic).
     let sidecar: LibrarySidecarConfig | null = null;
     const sc = p["sidecar"];
     if (sc !== undefined && sc !== null) {
@@ -822,7 +822,7 @@ export function loadLibraryProfile(
       // contract slot by its sidecar path and picks the integer class.
       // Path RESOLUTION happens at sidecar build (the contract must
       // exist first); here the shape is pinned — a typo'd key or class
-      // would silently change an ABI obligation.
+      // would change an ABI obligation without a diagnostic.
       const integerSlots: { slot: string; cls: "i64" | "u64" }[] = [];
       const isRaw = s["integer_slots"];
       if (isRaw !== undefined && isRaw !== null) {
@@ -962,9 +962,9 @@ export function loadLibraryProfile(
 
       // The fences array (spec §1): each entry exactly one of id/prefix
       // plus optional teaching/remediation, unknown fields refused (a typo
-      // here silently disarms a denial), and the selector resolved against
-      // this release's surface manifest — unknown ids/prefixes refuse
-      // loudly (ratified: fence profiles pin per compiler release).
+      // here disarms a denial without a diagnostic), and the selector resolved
+      // against this release's surface manifest — unknown ids/prefixes throw
+      // a ProfileError (ratified: fence profiles pin per compiler release).
       const fencesRaw = (det as Record<string, unknown>)["fences"];
       if (fencesRaw !== undefined && fencesRaw !== null) {
         if (!Array.isArray(fencesRaw))

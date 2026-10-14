@@ -65,7 +65,7 @@ export function exactIndexLines(
 }
 
 /** User-controlled text embedded after an LLVM `;` comment marker. Preserve
- * ordinary output byte-for-byte, but encode control and line-separator code
+ * ordinary output unchanged, but encode control and line-separator code
  * units so a property name can never inject a line or invalid source byte. */
 export function llvmCommentText(text: string): string {
   return commentText(text);

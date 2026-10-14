@@ -116,7 +116,7 @@ export function lowerExecSyncCall(
       // validates the runtime strings ("pipe"/"ignore", the same bounds
       // as the literal path — anything else throws a catchable
       // TypeError, as does a non-utf8 runtime encoding: outputs are
-      // captured utf8, and silently mislabeling them would be worse).
+      // captured utf8, and mislabeling them without an error would be worse).
       const runtime = lowerExecSyncRuntimeOptions(lowerer, expr, shell, optsNode, loc);
       if (runtime) {
         return {

@@ -1,6 +1,6 @@
 fenced.ts:5:13 - error SC2020: 'process.memoryUsage' is typed by @types/node but has no scriptc lowering yet
 
-  4 |  * never a silently broken binary. */
+  4 |  * or a binary that runs with the wrong behavior. */
   5 | console.log(process.memoryUsage()); // uptime/cpuUsage/resourceUsage lower now; the V8-heap report does not
     |             ^~~~~~~~~~~~~~~~~~~
   6 | console.log(Buffer.poolSize);

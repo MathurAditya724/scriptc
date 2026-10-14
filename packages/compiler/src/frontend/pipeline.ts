@@ -130,7 +130,7 @@ function detectAutoPackages(
       // Bare builtin names ("fs", "path") are the builtin machinery's
       // business (and the SC4005 async_free gate's, in library mode) —
       // never npm candidates. Auto keeps its original path (the
-      // @types/node answer skips them below), byte-for-byte.
+      // @types/node answer skips them below), unchanged.
       if (mode === "lib" && canonicalBuiltinModule(spec) !== null) continue;
       // Explicit attempts name the runtime package. Types-first resolution
       // may instead identify its @types twin, which has no runtime to admit.

@@ -309,7 +309,7 @@ describe("checked catch-binding casts", () => {
     // Effect-free surplus args drop at compile time, JS-exact (corpus
     // 1760 — the test-string-decoder writeSequences shape). An effectful
     // one has no evaluation slot in the completed call, so instead of
-    // silently not running it the build defers a named SC1090 to the
+    // skipping it without a diagnostic the build defers a named SC1090 to the
     // call site. JS-only: tsc's arity errors gate the TS lane.
     const r = await compileAndRun(
       "surplus-args-effectful",
@@ -317,11 +317,11 @@ describe("checked catch-binding casts", () => {
 function two(a, b) {
   return a + b;
 }
-function loud() {
+function effectful() {
   console.log('side effect JS would run');
   return 0;
 }
-console.log(two(1, 2, loud()));
+console.log(two(1, 2, effectful()));
 `,
       "cjs",
     );
@@ -381,7 +381,7 @@ console.log('unreached');
     );
   });
 
-  test("a REASSIGNED property-assigned class stays fenced, never a silently wrong base (JS lane)", async () => {
+  test("a REASSIGNED property-assigned class stays fenced instead of extending the wrong base (JS lane)", async () => {
     // Two `exports.I = class …` assignments make the binding dynamic (the
     // runtime base is whichever ran last). The second assignment's
     // class-value flow fence fires first (nominal classval slots), and the

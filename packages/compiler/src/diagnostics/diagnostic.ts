@@ -216,8 +216,8 @@ export function ffiProfileDiag(detail: string, profilePath: string): ScrDiagnost
 }
 
 /** SC5002 — a manifest binding must resolve to a signature-only ambient
- * function. A function with a body is ordinary scriptc code and must never
- * silently turn into a native call because its name happened to match. */
+ * function. A function with a body is ordinary scriptc code and must not
+ * turn into a native call because its name happened to match. */
 export function ffiBindingDiag(name: string, detail: string, loc: SrcLoc): ScrDiagnostic {
   return {
     code: "SC5002",
@@ -536,8 +536,9 @@ export function invalidPackageConfigDiag(packageJsonPath: string, loc: SrcLoc): 
 /** The project's tsconfig disables strictNullChecks, which scriptc cannot
  * adopt: null and undefined are DISTINCT STATIC TYPES in the value model
  * (union arms with their own runtime representation) — with the knob off,
- * every type silently includes them and nothing about the model holds. The
- * config gate fails loudly instead of silently re-enabling the knob. */
+ * every type implicitly includes them and nothing about the model holds. The
+ * config gate reports SC0002 instead of re-enabling the knob without a
+ * diagnostic. */
 /** True for the sync channel's surfaced Go panics: typescript-go wraps a
  * server-side panic into a thrown Error whose message starts "panic:" and
  * keeps the server intact (the prefetch fence's original finding). The
@@ -589,7 +590,7 @@ export function strictNullChecksFloorDiag(configFile: string): ScrDiagnostic {
     message:
       "this project's tsconfig disables strictNullChecks, which scriptc requires " +
       "(null and undefined are modeled as distinct static types; without the knob " +
-      "every type silently includes them)",
+      "every type implicitly includes them)",
     loc: { file: configFile, start: 0, end: 0 },
     hint: 'set "strictNullChecks": true (or "strict": true) in the project tsconfig',
   };
@@ -1083,7 +1084,7 @@ export function libSidecarComputedDiag(
  * entry wrapper raises when an inbound value falls outside its marshalling
  * class's f64-exact range: a bytes buffer's declared length past 2^53−1
  * (no real buffer), or an i64/u64 parameter past ±(2^53−1) (ask 4 — the
- * value cannot ride f64 exactly, and silent rounding is a coercion the
+ * value cannot ride f64 exactly, and implicit rounding is a coercion the
  * author never wrote). In both shapes the host and the library disagree
  * about the call contract. A RUNTIME code, never a compile-time refusal:
  * it rides the structured trap-teaching message (library/trap-teaching.ts)

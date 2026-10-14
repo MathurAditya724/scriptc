@@ -544,7 +544,7 @@ ScrDyn *scr_dc_tc_trace_sync(double h, ScrDyn *fn, ScrDyn *ctx, ScrDyn *this_arg
  * ctx.error, publishes error then asyncStart + asyncEnd, and passes the
  * rejection through. The returned promise is the REACTION's (a rejection
  * nobody observes is the unhandled one, exactly Node's then-chain). A
- * reaction fiber gives the microtask ordering for free. */
+ * reaction fiber provides the microtask ordering without extra code. */
 typedef struct {
   ScrPromise *src, *dst; /* owned */
   double h;

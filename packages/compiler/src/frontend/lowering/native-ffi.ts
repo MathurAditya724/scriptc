@@ -443,7 +443,7 @@ export function lowerFfiCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr 
           // A called, program-authored ambient with a configured channel
           // name is not unused capacity. Validate the resolved symbol now
           // so unsupported declaration forms (`declare const cb: ...`)
-          // refuse SC4024 instead of silently dropping the call. A valid
+          // refuse SC4024 instead of dropping the call. A valid
           // declaration missed by the up-front syntax walk may proceed as
           // the callback binding after this exact-symbol check.
           const diagnostic = ffiDeclarationDiagnostic(lowerer, binding, symbol, loc);
@@ -497,7 +497,7 @@ export function lowerFfiCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr 
     // registered context pointer itself, never the script function. The
     // adapter set comes from the mint sites themselves (Lowerer's
     // freshClosureAdapters), not name-prefix matching, so a new coercion
-    // helper cannot silently slip past this guard.
+    // helper cannot bypass this guard.
     if (
       isFfiReleaseParam(sourceParam) ||
       (isFfiCallbackParam(sourceParam) && sourceParam.callback.lifetime === "retained")

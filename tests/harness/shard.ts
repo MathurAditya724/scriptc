@@ -24,8 +24,8 @@ export interface ShardSpec {
 }
 
 /** Parse a shard spec of the form "i/n" (1 <= i <= n). Undefined when the
- * variable is unset or empty; malformed values throw — a typo silently
- * running everything (or nothing) would defeat the matrix. */
+ * variable is unset or empty; malformed values throw — a typo that ran
+ * everything (or nothing) without an error would defeat the matrix. */
 export function parseShardSpec(
   raw: string | undefined = process.env["SCRIPTC_TEST_SHARD"],
 ): ShardSpec | undefined {

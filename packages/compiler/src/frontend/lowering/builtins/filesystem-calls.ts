@@ -716,7 +716,7 @@ export function lowerFsPromisesMkdirCall(
 // lower as ordinary number expressions into the retry libCall, whose
 // runtime implements Node's linear-backoff retry on
 // EBUSY/EMFILE/ENFILE/ENOTEMPTY/EPERM. The retry-free shape keeps the
-// historical rmOptsSync byte for byte.
+// historical rmOptsSync lowering unchanged.
 export function lowerFsRemoveCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   const opts = literalBoolOptions(
     expr.arguments[1]!,

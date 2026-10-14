@@ -343,7 +343,7 @@ export async function compileCInternal(
   );
   // Mutable include/SDK/config inputs can change behind a stable environment
   // spelling. The complete/runtime cache is disabled below; vendor objects
-  // must follow the same rule instead of silently surviving in the user cache.
+  // must follow the same rule instead of persisting in the user cache.
   // A private root gives this invocation the usual vendor build recipe
   // without publishing or reusing those prerequisites.
   const transientVendorRoot =

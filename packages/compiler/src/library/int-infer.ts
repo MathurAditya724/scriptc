@@ -24,9 +24,9 @@
  *      adjacent integers stop being distinguishable); u64 additionally
  *      requires a non-negative lower bound.
  *
- * Never reinterpretation, never silent truncation, never a coercion the
- * author didn't write: a proven crossing is the mathematically exact
- * integer the f64 held. One consequence decided here: -0 is a whole
+ * No reinterpretation, no truncation, no coercion the author didn't
+ * write: a proven crossing is the mathematically exact integer the f64
+ * held. One consequence decided here: -0 is a whole
  * number (the f64 spelling of integer zero) — it crosses as 0, a PROVE.
  *
  * The abstract domain is an interval over the extended reals joined with

@@ -21,7 +21,7 @@
  *  - Module resolution is resolve.ts (answer-parity proven by its suite).
  *  - Diagnostics carry pos/end and flat text + messageChain; toPassthrough
  *    renders through the adapter's flattenDiagnosticMessageText, whose
- *    output shape matches 5.9.3's flattener byte for byte.
+ *    output is identical to 5.9.3's flattener output.
  *  - Finding 5 (tsgo models CommonJS strictly): TS2309 joins the JS-file
  *    relaxation here — 5.9.3 never fires it on JS CJS files, tsgo does on
  *    the table-then-member pattern. The EXPORT-IDENTITY fences do not live
@@ -150,12 +150,13 @@ const FORCED_OPTIONS: ts.Ts7CompilerOptions = {
 };
 
 /** JSONC syntax validation for a tsconfig text: tsgo's parseConfigFile
- * RECOVERS silently over syntax errors (probed: a hard-broken file answers
- * empty options, no diagnostic), where 5.9.3's readConfigFile reported the
- * first parse error — a preflight-visible difference (broken config: fail
- * loudly, never adopt silently). tsconfig's grammar is JSON plus comments
- * and trailing commas, so stripping exactly those and handing the rest to
- * JSON.parse decides validity without either TypeScript's parser. The
+ * RECOVERS over syntax errors without reporting them (probed: a hard-broken
+ * file answers empty options, no diagnostic), where 5.9.3's readConfigFile
+ * reported the first parse error — a preflight-visible difference (a broken
+ * config fails the build instead of being adopted). tsconfig's grammar is
+ * JSON plus comments and trailing commas, so stripping exactly those and
+ * handing the rest to JSON.parse decides validity without either
+ * TypeScript's parser. The
  * MESSAGE is JSON.parse's, not 5.9.3's ("'}' expected.") — the one
  * remaining wording delta on this path, unpinned by any snapshot. */
 function jsoncSyntaxError(text: string): string | null {
@@ -252,8 +253,9 @@ function adoptProjectConfig7(
   // TS 7 accepts `paths`, but no longer accepts `baseUrl` as a compiler
   // option. Translate the established baseUrl+paths spelling into absolute
   // targets: the synthesized config lives beside the entry rather than the
-  // real config, so preserving relative targets would silently change their
-  // meaning. The absolute map is also the own resolver's configuration.
+  // real config, so preserving relative targets would change their meaning
+  // without a diagnostic. The absolute map is also the own resolver's
+  // configuration.
   const rawPaths = parsed.options["paths"];
   if (rawPaths !== undefined && typeof rawPaths === "object" && rawPaths !== null) {
     const configDir = dirname(configFile);
@@ -467,7 +469,7 @@ export interface StartupCrash {
 
 /** True when a coverage mapping names one exact bare host module. TypeScript
  * gives `paths` keys containing `*` pattern semantics, so accepting one here
- * would silently broaden the mapping beyond the specifier the caller named. */
+ * would broaden the mapping beyond the specifier the caller named. */
 export function isExactExternalTypeSpecifier(specifier: string): boolean {
   return (
     specifier !== "" &&
@@ -3342,7 +3344,7 @@ function preflight7(load: LoadResult): {
 
   // An explicit entry can itself live in an installed package. Its own
   // source files are program code, including relative barrels and sibling
-  // modules; their location must not silently erase the module graph.
+  // modules; their location must not erase the module graph.
   // Match the full installed directory, not just the package name, and
   // exclude nested installations so dependencies keep their npm policy.
   const entryPackageFile = entryPackageFilePredicate(entry.fileName);
@@ -4185,7 +4187,7 @@ function preflight7(load: LoadResult): {
   // evaluating is skipped) — which the guarded %init calls reproduce
   // exactly. Cycles are admitted where Node's partially-initialized
   // semantics are UNOBSERVABLE or exactly modeled (JS's partial
-  // initialization is otherwise a silent-misbehavior trap, so SC1016
+  // initialization otherwise misbehaves without a diagnostic, so SC1016
   // stays for the rest):
   //  - a DIRECT SELF-IMPORT (the package self-name reference resolving to
   //    the importing module itself — Node's self-reference rule): the
@@ -4272,8 +4274,8 @@ function preflight7(load: LoadResult): {
     // The crash channel engages only for programs that OTHERWISE pass
     // preflight: when any other diagnostic already fails the build, every
     // refusal keeps its compile-fence fallback instead — the report names
-    // each import's story rather than silently dropping edges whose crash
-    // will never compile. (No reachable refusal → same: fallbacks only.)
+    // each import's story, so edges whose crash will never compile still
+    // get a diagnostic. (No reachable refusal → same: fallbacks only.)
     if (resolveCrash === null || diags.length > 0) {
       resolveCrash = null;
       for (const cands of refusals.values()) {
@@ -4299,8 +4301,8 @@ function preflight7(load: LoadResult): {
  * mirrors it), never from execution — so a named import the checker binds
  * happily can still fail Node's instantiate phase with a SyntaxError,
  * thrown before ANY module in the graph evaluates. The checker's word is
- * NOT Node's word exactly here, and shipping the checker's answer is the
- * silent-divergence trap (`module.exports = { a: 7 }` served `a` where
+ * NOT Node's word exactly here, and shipping the checker's answer would
+ * diverge from Node without a diagnostic (`module.exports = { a: 7 }` served `a` where
  * Node refuses the program). This walk asks Node's question at compile
  * time, in Node's exact ORDER, and answers with Node's exact message. */
 
@@ -4496,7 +4498,7 @@ function cjsNamedImportLinkCheck(
   }
   // The destructuring hint: Node regexes the failing name's SOURCE LINE
   // for its brace group (greedy, first `{` to last `}` on the line) and
-  // swaps ` as ` for `: ` — reproduced byte for byte, quirks included
+  // swaps ` as ` for `: ` — reproduced exactly, quirks included
   // (multi-line import statements simply lose the hint).
   const text = bad.sf.text;
   const pos = bad.nameNode.getStart(bad.sf);
@@ -5023,8 +5025,8 @@ export function cjsExportAssignmentOf(
  * attached before it (either spelling), any earlier table, and
  * `exports.f =` after it (exports still references the replaced object)
  * are never seen by importers. Lowering fences these instead of shipping
- * the checker's everything-is-live answer — the checker/runtime split is
- * exactly the silent-divergence trap. */
+ * the checker's everything-is-live answer — the checker/runtime split
+ * would otherwise diverge from Node without a diagnostic. */
 export function cjsExportDiscardReason(stmt: ts.Statement): string | null {
   const sf = stmt.parent;
   if (!ts.isSourceFile(sf)) return null;

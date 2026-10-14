@@ -19,15 +19,15 @@
  * `recv.m(args)` where recv is a dyn value and `m` is a name a
  * dyn-representable prototype declares (Array/String/Function shared
  * names — push, slice, forEach, apply, ...): a stored-member read would
- * silently mis-answer real methods, so the dispatch runs HERE, over the
+ * return wrong results for real methods, so the dispatch runs HERE, over the
  * receiver's runtime kind. test/common's mustCall internals are the
  * canonical caller (mustCallChecks.push/filter/forEach, fn.apply).
  *
  * Honesty ladder, per (kind, name):
  *   - implemented: JS-exact semantics below;
  *   - the name exists on that kind's JS prototype but has no
- *     implementation here: a LOUD "not supported yet" Error — never a
- *     silent wrong answer;
+ *     implementation here: a "not supported yet" Error instead of a
+ *     wrong result;
  *   - the name does not exist on that kind's prototype: Node's own
  *     TypeError ("<spelling> is not a function"), because that IS the
  *     JS answer;
@@ -686,7 +686,8 @@ static bool dyn_arr_reversed_copy(ScrDyn *out, const ScrDyn *source) {
 }
 
 /* Names each prototype declares BEYOND what's implemented here — these
- * fence loudly instead of mis-answering "is not a function". */
+ * throw the "not supported yet" Error instead of mis-answering "is not a
+ * function". */
 static bool dyn_arr_proto_unimpl(const char *m) {
   static const char *names[] = { "toString", "toLocaleString", NULL };
   for (size_t i = 0; names[i]; i++) if (dyn_name_is(m, names[i])) return true;
@@ -801,8 +802,8 @@ static ScrDyn *scr_dyn_invoke_impl(
 
   /* Native handles dispatch through the tag's ops onto the same entry
    * points the static lowerings use (scr_http/scr_net register them at
-   * main()); the ladder inside covers real-but-unimplemented members
-   * loudly. */
+   * main()); the ladder inside throws the "not supported yet" Error for
+   * real-but-unimplemented members. */
   if (recv->kind == SCR_DYN_HANDLE) {
     return scr_dynh_dispatch(recv, method, args, argc, what);
   }
@@ -1790,7 +1791,8 @@ ScrDyn *scr_dyn_array_prototype(void) {
 /* Object.defineProperties over dyn values (see scr_runtime.h). */
 static ScrDyn *scr_dyn_define_props_internal(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys) {
   /* Island-held operands ARE objects to Node — the non-object TypeError
-   * below would be a wrong claim. Loud fence (lane dyn-routing-ops). */
+   * below would be a wrong claim. They are fenced with a "not supported
+   * yet" error instead (lane dyn-routing-ops). */
 
 
   if (scr_exc_pending()) return NULL;

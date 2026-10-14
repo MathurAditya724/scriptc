@@ -1,8 +1,8 @@
 /* Runtime performance A/B harness for compiled programs.
  *
  * Builds every workload in benchmarks/runtime/workloads.json with one or two
- * scriptc checkouts, verifies each executable against Node byte-for-byte
- * (stdout, stderr, exit status), then times interleaved launches and reports
+ * scriptc checkouts, verifies that each executable's output is identical to
+ * Node's (stdout, stderr, exit status), then times interleaved launches and reports
  * per-workload medians with bootstrap confidence intervals for the
  * candidate/baseline ratio. Executables that diverge from Node are never
  * timed. A per-host advisory lock serializes measurements so concurrent

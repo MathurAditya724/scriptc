@@ -121,7 +121,7 @@ export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([
   // Class lowering checks native storage and override ABIs at each use.
   2415,
   // unresolvable modules: Node throws WHEN the require executes — the
-  // binding types as any and reached uses fence (never a silent pass)
+  // binding types as any and reached uses fence instead of passing unchecked
   2307,
   2792,
   // useUnknownInCatchVariables' annotation demand ("'e' is of type
@@ -129,7 +129,7 @@ export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([
   // annotate its variable, so the demand is unsatisfiable in source —
   // exactly the implicit-any story above. The values stay 'unknown' and
   // every use meets the lowerer's per-site unknown fences (member reads
-  // ride the checked-dynamic tree; unsupported operations fence loudly).
+  // ride the checked-dynamic tree; unsupported operations report a compile-time diagnostic).
   18046,
   2571,
 ]);

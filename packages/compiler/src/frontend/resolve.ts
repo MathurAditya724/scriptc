@@ -513,7 +513,7 @@ function nearestPkgDir(dir: string): string | null {
 
 /** The nearest package.json FILE, whether or not its JSON parses. Runtime
  * module-format lookup must stop at a malformed nearest scope: Node reports
- * ERR_INVALID_PACKAGE_CONFIG there rather than silently inheriting a parent
+ * ERR_INVALID_PACKAGE_CONFIG there rather than inheriting a parent
  * package's `type`. The resolver's historical nearestPkgDir stays parseable-
  * package-only because its callers need a package OBJECT to inspect. */
 function nearestPackageConfigDir(dir: string): string | null {

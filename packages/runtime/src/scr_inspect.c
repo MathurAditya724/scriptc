@@ -1002,8 +1002,8 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         return ib_take(&out);
       }
       /* Node prints the class's full property dump (ServerResponse {
-       * ... }) — internals we do not model. Fence loudly instead of a
-       * silent-wrong shape (SEMANTICS.md). */
+       * ... }) — internals we do not model. Throw the 'not supported yet'
+       * Error instead of printing a wrong shape (SEMANTICS.md). */
       InspBuf out = {0};
       ib_cstr(&out, "util.inspect of a dynamic ");
       ib_cstr(&out, scr_dyn_handle_cls(d));
@@ -1020,8 +1020,9 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     }
     case SCR_DYN_PROMISE: {
       /* Node renders Promise { <pending> } / Promise { value } — the
-       * settled-value rendering pulls in the whole inspector; fence
-       * loudly instead of a silent-wrong shape (the handle stance). */
+       * settled-value rendering pulls in the whole inspector; throw
+       * the 'not supported yet' Error instead of printing a wrong shape (the
+       * handle stance). */
       InspBuf out = {0};
       ib_cstr(&out, "util.inspect of a promise value is not supported yet");
       scr_throw_error(SCR_ERR_ERROR, ib_take(&out));

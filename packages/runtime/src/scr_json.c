@@ -570,7 +570,7 @@ void scr_jb_edge_idx(ScrJsonBuf *b, size_t i) {
  * A recursive-typed value crossing into a checked-dynamic slot DEEP-
  * COPIES into the checked-dynamic tree; a cyclic value has no finite copy. Node never
  * copies (an unknown-typed binding shares the reference), so there is no
- * Node-exact error to throw — the conversion TRAPS loudly instead
+ * Node-exact error to throw — the conversion traps instead
  * (SEMANTICS.md documents the divergence). The emitted converters over
  * cycle-capable containers bracket their walks with enter/leave; the
  * stack is global (conversions never interleave). */
@@ -2122,7 +2122,7 @@ void scr_dyn_proxy_set(ScrDyn *proxy, ScrStr *key, ScrDyn *value) {
   scr_dyn_release(property);
   if (result && !scr_dyn_truthy(result)) {
     /* The keyed-write ABI does not carry lexical strictness yet. A
-     * falsish trap is a silent failure in sloppy code and a TypeError
+     * falsish trap is an ignored write in sloppy code and a TypeError
      * in strict code; retain an explicit boundary instead of guessing. */
     scr_dyn_proxy_unsupported("falsish set traps");
   }
@@ -3307,7 +3307,7 @@ ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
     return NULL;
   }
   /* Unmodeled names answer undefined — the checked-dynamic tree's own-property stance
-   * (real-but-unmodeled members fence loudly inside ops->get instead;
+   * (real-but-unmodeled members throw "not supported yet" inside ops->get instead;
    * SEMANTICS.md documents the remainder). */
   return r ? r : scr_dyn_retain(scr_dyn_undefined());
 }
@@ -3413,7 +3413,7 @@ ScrDyn *scr_dyn_this_get(void) {
 }
 
 /* The keyed-write arm (see scr_dyn_key_set): modeled setters land on the
- * handle; everything else fences loudly — Node would take a silent
+ * handle; everything else throws "not supported yet" — Node would add an
  * expando, but expandos per BOX would break handle identity. */
 static void scr_dyn_handle_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   const ScrDynHandleOps *ops = scr_dyn_handle_ops(recv->v.handle.tag);
@@ -4646,7 +4646,7 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
  * indices ascending, then other strings in insertion order) with undefined/function
  * members OMITTED, arrays rendering those as null, Buffer's toJSON shape
  * ({"type":"Buffer","data":[...]}), shortest-roundtrip numbers, escaped
- * strings. HANDLE values fence loudly (Node walks own enumerable props
+ * strings. HANDLE values throw "not supported yet" (Node walks own enumerable props
  * this runtime does not model). Returns false when the VALUE ITSELF is
  * absent under stringify (root undefined/function — %j prints
  * "undefined" there, Node's tryStringify tail). */
@@ -5785,7 +5785,7 @@ ScrDyn *scr_dyn_bitwise(const ScrDyn *left, const ScrDyn *right, const ScrStr *o
  * the member (later writes win, insertion order — JS); undefined/null
  * throws Node's "Cannot set properties of ..."; every other kind throws
  * Node's strict-mode "Cannot create property ..." (sloppy mode would
- * ignore silently — the loud choice, SEMANTICS.md). Receiver, key, and
+ * ignore the write; this runtime throws in both, SEMANTICS.md). Receiver, key, and
  * value are all BORROWED (the member retains the value in). */
 static const char *scr_dyn_kind_name(const ScrDyn *d);
 /* `key in v` with a RUNTIME key (the compile-time dynHasKey fold, per
@@ -6060,7 +6060,7 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   }
   if (recv->kind == SCR_DYN_BYTES) {
     /* Integer-indexed exotic writes coerce even for an invalid canonical
-     * numeric index, then silently ignore an out-of-range index. */
+     * numeric index, then ignore an out-of-range index without an error. */
     double index = scr_string_to_number(key);
     char spelling[32];
     size_t length = scr_f64_to_str(index, spelling);
@@ -6183,7 +6183,7 @@ void scr_jb_put_dyn(ScrJsonBuf *b, const ScrDyn *d) {
   case SCR_DYN_HANDLE: {
     /* Node's JSON.stringify over these classes throws the circular-
      * structure TypeError with a V8 path dump we cannot reproduce —
-     * fence loudly instead of a silent-wrong shape (SEMANTICS.md). */
+     * throw "not supported yet" instead of a wrong shape (SEMANTICS.md). */
     ScrJsonBuf m;
     scr_jb_init(&m);
     scr_jb_puts(&m, "JSON.stringify of a dynamic ");

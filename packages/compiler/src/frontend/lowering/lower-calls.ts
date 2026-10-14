@@ -3292,7 +3292,7 @@ function lowerDynReceiverMethodCall(
   // representable prototype declares (test/common's mustCall internals:
   // mustCallChecks.push(context), failed.forEach(fn), fn.apply(this,
   // args)). Implemented (kind, name) pairs run JS-exact; real-but-
-  // unimplemented methods throw a LOUD not-supported Error; names the
+  // unimplemented methods throw the 'not supported yet' Error; names the
   // kind's prototype lacks throw Node's "x.y is not a function"; OBJ
   // receivers call the own member.
   // A stored callback must be read before argument effects, and called
@@ -3392,7 +3392,7 @@ function lowerDynReceiverMethodCall(
 /** Prototype method names of the checked-dynamic tree-representable kinds (String, Array,
  * Object, Function, Number prototypes): a dyn receiver call on one of
  * these could be a REAL method on a real value, which a stored-member
- * read would silently mis-answer — they keep the fence. Everything else
+ * read would answer incorrectly — they keep the fence. Everything else
  * is own-property-or-throw for every dyn value (the honest dynCall). */
 const DYN_PROTO_METHOD_NAMES = new Set([
   // Object.prototype
@@ -3476,7 +3476,7 @@ const DYN_PROTO_METHOD_NAMES = new Set([
  * subset of DYN_PROTO_METHOD_NAMES with a receiver-kind dispatch): the
  * runtime runs the real method for the receiver's kind, throws Node's
  * is-not-a-function where the kind's prototype lacks the name, and
- * fences LOUDLY on real-but-unimplemented pairs. */
+ * throws the 'not supported yet' Error on real-but-unimplemented pairs. */
 const DYN_DISPATCH_METHODS = new Set([
   "toFixed",
   "toExponential",
@@ -3512,7 +3512,7 @@ const DYN_DISPATCH_METHODS = new Set([
   // boxed through the checked-dynamic boundary): these names dispatch on
   // the runtime kind so a boxed IncomingMessage/ServerResponse/Socket
   // routes onto the same entry points the static lowerings use (modeled
-  // members) or the loud not-supported ladder (real-but-unmodeled ones).
+  // members) or the 'not supported yet' error path (real-but-unmodeled ones).
   // On every other dyn kind they answer exactly what the stored-member
   // path answered (OBJ own members call; the rest throw Node's
   // is-not-a-function).
@@ -4001,7 +4001,7 @@ function lowerNumberToStringCall(
  * helper dispatches on the tag, so `chunk.toString()` over the ngrok
  * `Buffer | string` listener param needs no narrowing. Unit-armed
  * unions stay out — `(undefined).toString()` THROWS in JS, and
- * claiming it here would silently print "undefined" instead. Null for
+ * claiming it here would print "undefined" instead. Null for
  * other receivers/arms (the narrow-first fences stay). */
 function lowerUnionToStringCall(
   lowerer: Lowerer,
@@ -7964,7 +7964,7 @@ export function lowerRecordFieldCall(
  * URL.revokeObjectURL() with NO argument: Node's ERR_MISSING_ARGS
  * throws before the registry lookup, so the zero-argument contract is
  * exact without any blob machinery. The one-argument form (Node's
- * silent no-op for unregistered ids) and createObjectURL keep their
+ * no-op for unregistered ids) and createObjectURL keep their
  * fences — a compiled program has no blob registry to consult. */
 function lowerUrlStaticCall(
   lowerer: Lowerer,

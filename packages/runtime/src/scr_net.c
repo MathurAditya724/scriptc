@@ -650,7 +650,7 @@ static void scr_net_listen_reuseaddr(int fd) {
  * SO_REUSEADDR is port hijacking rather than reuse-port support. FreeBSD's
  * ordinary SO_REUSEPORT does not distribute connections, so FreeBSD 12+
  * uses the load-balancing spelling instead. A setsockopt failure is returned
- * to the caller so an unsupported kernel cannot silently become a singleton. */
+ * to the caller so an unsupported kernel cannot become a singleton without an error. */
 static int scr_net_listen_reuseport(int fd) {
   int rc;
 #if defined(__FreeBSD__) && defined(__FreeBSD_version) && \
@@ -1963,8 +1963,8 @@ static bool scr_net_dyn_truthy(const ScrDyn *v) {
  * objectMode trio throws ERR_INVALID_ARG_VALUE first, then the port
  * (validatePort), the host's string contract, autoSelectFamily's boolean
  * contract, and the attempt budget. A bag that survives everything meets
- * the compiler-rendered fence: an unmodeled key must refuse loudly, never
- * silently drop. Always leaves an exception pending. */
+ * the compiler-rendered fence: an unmodeled key throws instead of being
+ * dropped. Always leaves an exception pending. */
 void scr_net_connect_opts_chk(const ScrDyn *opts, const ScrStr *fence) {
   if (opts == NULL || opts->kind != SCR_DYN_OBJ) {
     scr_dyn_arg_type_fail("options", "of type object",
@@ -2470,7 +2470,8 @@ ScrNetServer *scr_net_sock_server(ScrNetSocket *s) { return s->server; }
 
 /* socket.setEncoding(enc) — the req twin (scr_http_req_set_encoding's
  * contract: utf8 flips 'data' to strings, real-but-unsupported encodings
- * fence loudly, unknown names throw ERR_UNKNOWN_ENCODING). */
+ * throw the 'not supported yet' Error, unknown names throw
+ * ERR_UNKNOWN_ENCODING). */
 void scr_net_sock_set_encoding(ScrNetSocket *s, ScrStr *enc /*borrowed*/) {
   if ((enc->len == 4 && memcmp(enc->data, "utf8", 4) == 0) ||
       (enc->len == 5 && memcmp(enc->data, "utf-8", 5) == 0)) {
@@ -2880,8 +2881,8 @@ static void scr_net_sweep(void) {
       ScrStr *msg = sock->pending_err;
       sock->pending_err = NULL;
       /* the protocol layer gets first claim (the http conn/client owns
-       * the error story: 'error' on the req, or Node's silent server-side
-       * teardown); unconsumed errors fall through to the socket's own
+       * the error story: 'error' on the req, or Node's server-side
+       * teardown without an event); unconsumed errors fall through to the socket's own
        * listeners — and the unhandled-'error' exit */
       bool consumed = false;
       if (sock->native_err) consumed = sock->native_err(sock->native_ctx, msg);
@@ -3175,7 +3176,7 @@ void scr_net_install(void) {
  * The socket half of the HANDLE crossing (scr_http.c hosts the req/res
  * half and the shared design comment): members dispatch onto the same
  * entry points the static lowerings use; real-but-unmodeled members meet
- * the loud "not supported yet" ladder; unknown names answer Node's own
+ * the "not supported yet" error path; unknown names answer Node's own
  * shapes ("<what> is not a function" / the undefined singleton). */
 
 static void scr_net_dynh_unsupported(const char *member, const char *why) {
@@ -3534,7 +3535,8 @@ static ScrDyn *scr_net_dynh_srv_invoke(void *h, ScrDyn *self, const char *method
   }
   if (strcmp(method, "listen") == 0) {
     /* listen([port][, host][, cb]) — the static lowering's shapes over
-     * dyn arguments; the options-object form fences loudly. */
+     * dyn arguments; the options-object form throws the 'not supported yet'
+     * Error. */
     double port = 0;
     ScrStr *host = NULL;
     const ScrDyn *cb = NULL;

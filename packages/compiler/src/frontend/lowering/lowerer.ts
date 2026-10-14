@@ -1110,8 +1110,8 @@ export function neverTaintedJsType(lowerer: Lowerer, node: ts.Node, t: ts.Type):
  * per-statement runtime fence would have thrown (message + "[code at
  * file:line]"), rendered eagerly so the runtime can throw it verbatim
  * (scr_throw_lowering_fence). The diagnostic joins the runtime-fence
- * ledger exactly like a deferred statement fence — nothing silently
- * drops off the coverage report. */
+ * ledger exactly like a deferred statement fence, so every fence appears
+ * on the coverage report. */
 export function ladderFenceExpr(
   lowerer: Lowerer,
   surface: string,
@@ -2194,8 +2194,9 @@ export class Lowerer {
    * runtime closure pointer: a coercion adapter allocates a different
    * closure at the registration and release sites, so lowerFfiCall must
    * refuse these forms at compile time (SC5003). Any new closure-minting
-   * adapter helper MUST add its name here, or the identity guard silently
-   * reopens and the mismatch surfaces as a runtime release trap instead. */
+   * adapter helper MUST add its name here, or the identity guard reopens
+   * without a diagnostic and the mismatch surfaces as a runtime release
+   * trap instead. */
   readonly freshClosureAdapters = new Set<string>();
   /** Symbols bound by `const process = globalThis.process` (and the other
    * stdlib-global snapshot spellings): pure alias plumbing — receiver
@@ -6581,7 +6582,7 @@ export class Lowerer {
       : diag;
     const pending = this.pendingFlushes.get(diag);
     // Deferred collection: the wrapper decides whether these ever report
-    // (a reference flushes them; unreferenced declarations stay silent in
+    // (a reference flushes them; unreferenced declarations report nothing in
     // builds and report under coverage's unreached group).
     if (this.diagSink) {
       if (pending && d !== diag) this.pendingFlushes.set(d, pending);
@@ -9987,7 +9988,7 @@ export class Lowerer {
    * lowered — set by lowerLabeled around lowering the labeled construct,
    * consumed exactly once by the construct's own lowering (takeLabels).
    * A lowering that never consumes them signals lowerLabeled to fence:
-   * silently dropping a label would compile `break lbl` wrong. */
+   * dropping a label without a diagnostic would compile `break lbl` wrong. */
   pendingLabels: string[] | null = null;
 
   takeLabels(): string[] | undefined {

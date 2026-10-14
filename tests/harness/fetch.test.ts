@@ -45,7 +45,7 @@ beforeAll(async () => {
   // NODE_USE_ENV_PROXY=1 opt-in, and the native runtime must match
   // — so every case in this file
   // doubles as the regression test for that parity, and any fixture that
-  // DID consult the env would fail loudly instead of leaving the machine.
+  // DID consult the env would fail with a refused connection instead of leaving the machine.
   process.env["http_proxy"] = refusedUrl;
   process.env["https_proxy"] = refusedUrl;
   process.env["HTTP_PROXY"] = refusedUrl;

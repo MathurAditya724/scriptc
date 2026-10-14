@@ -1593,7 +1593,7 @@ declare module "node:fs/promises" {
  * on posix triples, path.win32 under a win32 triple, with the posix and
  * win32 namespaces answering their own platform anywhere. Every function
  * is a pure string algorithm matching Node's implementations
- * byte-for-byte; join/resolve are variadic like Node's. */
+ * exactly; join/resolve are variadic like Node's. */
 declare module "path" {
   export function join(...paths: string[]): string;
   export function resolve(...paths: string[]): string;
@@ -3328,7 +3328,8 @@ declare module "http" {
     destroy(): void;
     setTimeout(msecs: number, callback?: () => void): this;
     /* setEncoding('utf8'): 'data' delivers strings (other real encodings
-     * fence loudly at runtime; unknown names throw ERR_UNKNOWN_ENCODING). */
+     * throw a "not supported yet" Error at runtime; unknown names throw
+     * ERR_UNKNOWN_ENCODING). */
     setEncoding(encoding: string): void;
     /* The proxy legs: the body streams into a ServerResponse, a
      * ClientRequest, or a raw Socket; natural end ends the destination. */
@@ -3565,7 +3566,7 @@ declare module "node:http" {
  * that behaves exactly like a net socket (write/end/destroy/pipe and the
  * data/end/close/error events are the same lowered surface). cert/key
  * are PEM strings or Buffers. Handshake failures tear the socket down
- * silently, Node's default for 'tlsClientError' with no listener. */
+ * without emitting an event, Node's default for 'tlsClientError' with no listener. */
 declare module "tls" {
   import { Server, Socket } from "net";
   export { Server };

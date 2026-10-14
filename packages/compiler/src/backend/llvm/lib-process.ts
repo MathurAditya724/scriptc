@@ -423,8 +423,8 @@ export function emitAsyncContextLibCall(host: LlvmEmitterContext, e: LibCallExpr
     return { name: "", type: e.type };
   }
   if (e.fn === "timers.clearNoop") {
-    // clearTimeout(null) and friends: Node silently ignores
-    // non-handles — nothing runs (arguments still evaluate).
+    // clearTimeout(null) and friends: Node ignores non-handles
+    // without an error — nothing runs (arguments still evaluate).
     for (const a of e.args) host.emitExpr(a);
     return { name: "", type: e.type };
   }

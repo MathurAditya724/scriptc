@@ -3,7 +3,7 @@
  * - The DEFAULT path is pinned: no SCRIPTC_CC (or SCRIPTC_CC=clang) resolves to
  *   ["clang"]. macOS keeps zero extra args; host Linux adds glibc's
  *   -D_GNU_SOURCE compile flag and trailing -lm link library.
- *   SCRIPTC_TARGET without zigcc is an error, not a silently different clang
+ *   SCRIPTC_TARGET without zigcc is an error instead of a different clang
  *   invocation.
  * - SCRIPTC_CC=zigcc drives `zig cc`. Host-native zigcc builds must produce a
  *   working binary (zig cc is clang underneath); SCRIPTC_TARGET cross builds
@@ -56,7 +56,7 @@ test("default driver keeps bare clang while selecting host platform flags", () =
   }
 });
 
-test("SCRIPTC_TARGET without zigcc is an error, never a silent clang cross build", () => {
+test("SCRIPTC_TARGET without zigcc throws instead of falling back to a clang cross build", () => {
   expect(() => resolveCc({ SCRIPTC_TARGET: "aarch64-linux-gnu" })).toThrow(
     /requires SCRIPTC_CC=zigcc/,
   );

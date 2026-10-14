@@ -1,7 +1,7 @@
 /* node:path — BOTH of Node's lib/path.js implementations, ported
  * function-by-function (normalizeString and friends), so every edge case
  * (trailing slashes, "..", empty segments, dot-files, drive letters, UNC
- * and device roots, reserved device names) matches Node byte-for-byte;
+ * and device roots, reserved device names) matches Node exactly;
  * the differential corpus and the committed oracle cases
  * (test/path-cases.txt) are the oracle. The scr_path_* family below is
  * posix; the scr_path_win32_* family (second half of the file) is Node
@@ -477,7 +477,7 @@ ScrStr *scr_path_relative(ScrStr *from, ScrStr *to) {
   return pb_take(&out);
 }
 
-/* ── path.win32 — Node's win32 implementation, byte-for-byte ───────────
+/* ── path.win32 — Node's win32 implementation, ported exactly ──────────
  * Ported function-by-function from Node v24's lib/path.js win32 object
  * (the same fidelity standard as the posix section above): drive-letter
  * and UNC roots (\\server\share), device paths (\\.\ and \\?\), the

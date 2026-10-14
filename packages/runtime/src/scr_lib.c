@@ -3169,7 +3169,7 @@ void scr_fs_fchmod(double fd, double mode) {
   (void)fd;
   (void)mode;
   /* The CRT cannot enforce Unix permission bits through a descriptor.
-   * A silent success would misrepresent a security-sensitive operation. */
+   * A no-op success would misrepresent a security-sensitive operation. */
   scr_fs_throw_nopath(ENOSYS, "fchmod");
 #else
   if (fchmod((int)fd, (mode_t)mode) != 0) scr_fs_throw_nopath(errno, "fchmod");

@@ -40,7 +40,7 @@ export function astI32(bytes: Uint8Array, offset: number): number {
  * UTF-8 decoding deliberately replaces those sequences, so decode them
  * explicitly. Preserve U+FEFF anywhere, including just after a surrogate.
  * Valid UTF-8 segments use the runtime's optimized decoder. A runtime that
- * cannot represent lone surrogates must refuse them here; silently replacing
+ * cannot represent lone surrogates must refuse them here; replacing
  * a code unit would change checker names and compiler input. */
 export function decodeAstString(bytes: Uint8Array, offset: number, length: number): string {
   astBounds(bytes, offset, length);

@@ -2,7 +2,7 @@
  * the emitter produces must agree with the C prototype in scr_runtime.h —
  * parameter count, integer width, pointer-ness, return type, and
  * variadic-ness. A .ll `declare` is taken
- * on faith by the linker, so a disagreement is silent UB that can run
+ * on faith by the linker, so a disagreement is undefined behavior that can run
  * clean under one toolchain and misbehave under another. This test kills
  * the class mechanically, from four directions:
  *
@@ -23,10 +23,10 @@
  *  4. Structural layout: compile-time C assertions pin every ScrBytes
  *     size/alignment/offset fact used by LLVM's direct typed-array GEPs.
  *     A runtime-header layout edit therefore fails here instead of becoming
- *     silent cross-language memory corruption.
+ *     undiagnosed cross-language memory corruption.
  *
- * The header parser fails LOUDLY on any C type it cannot map so it can
- * never silently fall behind the header. */
+ * The header parser throws on any C type it cannot map, so it cannot
+ * fall behind the header without a test failure. */
 import { execFile } from "node:child_process";
 import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

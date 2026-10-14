@@ -60,7 +60,7 @@ const caseShardedFiles = [
 
 // These files neither consume SCRIPTC_SAN nor delegate to a helper that does.
 // Run their full coverage once. Files absent from this allowlist remain in
-// both lanes by default, so a new test never silently loses sanitizer coverage.
+// both lanes by default, so a new test keeps sanitizer coverage unless it is listed here.
 const invariantRemoteFiles = [
   "packages/cli/test/flush.test.ts",
   "packages/cli/test/paths.test.ts",

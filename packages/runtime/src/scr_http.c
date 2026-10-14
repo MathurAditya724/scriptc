@@ -258,8 +258,8 @@ ScrHttpReq *scr_http_req_retain(ScrHttpReq *r) {
 
 /* req.setEncoding(enc) — IncomingMessage's readable setEncoding (server
  * requests and client responses alike): utf8 flips 'data' delivery to
- * strings (the chunk-encoding window); other REAL Node encodings meet
- * the loud not-supported ladder; unknown names throw Node's
+ * strings (the chunk-encoding window); other REAL Node encodings throw
+ * the "not supported yet" Error; unknown names throw Node's
  * ERR_UNKNOWN_ENCODING TypeError. */
 void scr_http_req_set_encoding(ScrHttpReq *r, ScrStr *enc /*borrowed*/) {
   if ((enc->len == 4 && memcmp(enc->data, "utf8", 4) == 0) ||
@@ -4668,8 +4668,8 @@ void scr_http_resp_thunk_res(ScrClosure *cb, ScrHttpReq *res) {
  *
  * Honesty ladder (the scr_dyn_invoke stance):
  *   - modeled member: the static entry point's exact semantics;
- *   - a member the class HAS but this table does not model: a LOUD
- *     "not supported yet" Error — never a silent wrong answer;
+ *   - a member the class HAS but this table does not model: a
+ *     "not supported yet" Error instead of a wrong result;
  *   - anything else: Node's "<spelling> is not a function" for calls,
  *     the undefined singleton for reads (the checked-dynamic tree's own-property answer;
  *     SEMANTICS.md documents the remainder).
@@ -4870,7 +4870,7 @@ static ScrDyn *scr_http_dynh_req_invoke(void *h, ScrDyn *self, const char *metho
     return d;
   }
   {
-    /* Real prototype members without a modeled dispatch: loud. */
+    /* Real prototype members without a modeled dispatch: "not supported yet". */
     static const char *const known[] = { "unpipe",
       "read", "push", "off", "removeListener", "removeAllListeners", "emit",
       "prependListener", "prependOnceListener", "listenerCount", "listeners",
@@ -4972,8 +4972,8 @@ static ScrDyn *scr_http_dynh_req_get(void *h, const char *key, size_t key_len) {
   if (strcmp(key, "readableEnded") == 0) return scr_dyn_new_bool(r->ended);
   if (strcmp(key, "closed") == 0) return scr_dyn_new_bool(r->close_emitted);
   {
-    /* Real instance properties without a modeled read: loud, never a
-     * silent undefined where Node has a value. */
+    /* Real instance properties without a modeled read throw "not supported
+     * yet" instead of answering undefined where Node has a value. */
     static const char *const known[] = {
       "trailers", "rawTrailers", NULL };
     if (scr_http_dynh_in(key, known)) {
@@ -4986,7 +4986,7 @@ static ScrDyn *scr_http_dynh_req_get(void *h, const char *key, size_t key_len) {
 
 static bool scr_http_dynh_req_set(void *h, const char *key, size_t key_len, const ScrDyn *value) {
   (void)h; (void)key; (void)key_len; (void)value;
-  return false; /* no modeled writable properties — the caller's loud fence */
+  return false; /* no modeled writable properties — the caller throws "not supported yet" */
 }
 
 /* ── ServerResponse (SCR_DYNH_HTTP_RES) ──────────────────────────────── */
@@ -5489,7 +5489,7 @@ static void scr_http_dynh_fire_reqres(ScrClosure *cb, ScrHttpReq *req /* +1 */,
 
 /* The netServer dyn dispatch's http-event hook (scr_net_set_dynh_http_on):
  * 'request' registers; anything else answers false and the net side
- * fences loudly. */
+ * throws the "not supported yet" Error. */
 static bool scr_http_dynh_server_on(ScrNetServer *s, const char *event, const ScrDyn *cb,
                                     bool once) {
   if (strcmp(event, "request") == 0) {
@@ -5854,7 +5854,7 @@ bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure, ScrStr **host_out
   if (!u) return false; /* Invalid URL pending */
   /* The scheme is checked against the MODULE the call came from, not read
    * off the URL: http.get('https://…') is Node's ERR_INVALID_PROTOCOL, not
-   * a silent upgrade. Hence `secure` as a parameter. */
+   * an implicit upgrade to https. Hence `secure` as a parameter. */
   const char *want = secure ? "https" : "http";
   const size_t wantlen = secure ? 5 : 4;
   if (!(u->scheme->len == wantlen && memcmp(u->scheme->data, want, wantlen) == 0)) {

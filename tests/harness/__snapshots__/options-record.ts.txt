@@ -126,7 +126,7 @@ options-record.ts:52:74 - error SC2020: 'createInterface with a completer' is pa
 
 options-record.ts:57:44 - error SC2020: 'writeFileSync option '__proto__'' is part of the standard library types but has no scriptc lowering yet
 
-  56 | // These must fence instead of silently dropping an inherited flag or mode.
+  56 | // These must fence instead of dropping an inherited flag or mode without a diagnostic.
   57 | fs.writeFileSync("/tmp/proto-sync", "x", { __proto__: { flag: "a" } });
      |                                            ^~~~~~~~~~~~~~~~~~~~~~~~
   58 | void fs.promises.writeFile("/tmp/proto-promise", "x", { __proto__: { mode: 0o600 } });

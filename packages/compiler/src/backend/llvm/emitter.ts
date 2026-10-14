@@ -393,7 +393,7 @@ export interface LlvmTargetOptions {
    * separate translation unit. Public/direct emission keeps them by default. */
   emitLibraryIdentity?: boolean;
   /** Program objects carry a strong reference to the matching runtime ABI
-   * marker so manual links against an incompatible runtime fail loudly. */
+   * marker so a manual link against an incompatible runtime fails. */
   runtimeAbiMarker?: boolean;
   /** Emit live-object audit notes in emitted new/free helpers. Only the
    * sanitized lane's SCR_RC_AUDIT runtime counts them; production plain
@@ -1714,7 +1714,7 @@ export class LlEmitter {
     // Module globals, FIRST OCCURRENCE per id: a class-expression static
     // instantiated through several mixin applications registers one global
     // id several times (2041-mixin-values) — C's tentative definitions
-    // absorb the duplicates silently, LLVM rejects redefinition, so the
+    // accept the duplicates without an error, LLVM rejects redefinition, so the
     // storage AND the release emit once per id here.
     const seenGlobalIds = new Set<string>();
     const globals = (this.mod.globals ?? []).filter((g) => {
@@ -2709,7 +2709,7 @@ export class LlEmitter {
           case "i64":
             // Inbound declared-integer edge (ask 4): the helper converts
             // exactly or delivers the host-contract trap (past ±(2^53−1)
-            // the value cannot ride f64 without silent rounding).
+            // the value cannot ride f64 without rounding).
             params.push(`i64 %a${i}`);
             body.push(
               `  %c${i} = call double @scr_library_i64_in(i64 %a${i}, ptr @sc_lib_int_trap_${e.symbol})`,
@@ -3295,7 +3295,7 @@ export class LlEmitter {
    * programs keep fibers too: their fiber epilogue owns context
    * termination (a stopping worker rejects and observes the promise), which
    * the fiberless wrapper does not reproduce. A missed suspension still
-   * cannot reorder silently: the runtime traps when a context parks while a
+   * cannot reorder execution undetected: the runtime traps when a context parks while a
    * fiberless body is on its stack. */
   private fiberlessAsyncFunctions(): Set<string> {
     const eligible = new Set<string>();
@@ -4731,7 +4731,7 @@ export class LlEmitter {
 
   /** Guard for helpers that build or read a union's `%ScrUnion` box
    * directly (library-shaped unions with fixed arms): a nullable union
-   * reaching one is an emitter bug, never a silent miscompile. */
+   * reaching one is an emitter bug and throws InternalCompilerError. */
   requireBoxedUnion(unionId: string): void {
     if (this.nullableUnions.has(unionId))
       throw new InternalCompilerError(
@@ -7656,7 +7656,7 @@ export class LlEmitter {
         break;
       default: {
         // Statement coverage is now total (bytesSet closed the set) —
-        // keep the loud refusal for any future IR statement kind.
+        // keep throwing LlvmUnsupportedError for any future IR statement kind.
         const rest: never = s;
         const k = (rest as IrStmt).kind;
         throw new LlvmUnsupportedError(`stmt:${k}`, (rest as IrStmt).loc);

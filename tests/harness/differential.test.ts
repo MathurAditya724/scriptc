@@ -1,5 +1,5 @@
 /* The oracle: every corpus program runs under Node AND as a scriptc-compiled
- * native binary; stdout AND stderr must match byte-for-byte and exit codes
+ * native binary; stdout AND stderr must be identical and exit codes
  * must agree (stderr only for exit-0 programs: the uncaught-throw report
  * format is a documented divergence, so `// @exit:` programs keep the
  * historical stdout-only contract).
@@ -235,7 +235,7 @@ function programInputs(file: string): string[] {
 // ---- oracle result cache ---------------------------------------------------
 // Node's verdict for a corpus program is a pure function of the program bytes,
 // the shims, and the Node build (corpus stdout is deterministic by
-// construction — it must match a non-Node native binary byte-for-byte). So
+// construction — it must be identical to a non-Node native binary's output). So
 // cache it, keyed by all of those plus the invocation shape (SCRIPTC_TEST_ENV
 // and the cwd). Only the SPAWN is skipped: the native side always runs live
 // and the comparison itself never changes. SCRIPTC_NO_CACHE=1 (or an unset
