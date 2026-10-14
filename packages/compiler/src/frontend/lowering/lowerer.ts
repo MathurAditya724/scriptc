@@ -94,6 +94,8 @@ import { InternalCompilerError } from "../../errors.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
 import { ClassDynamicDispatch, trackClassFieldCreation } from "./class-dynamic-dispatch.js";
 import { ClassProtocols } from "./class-protocols.js";
+import { earlyReadVarSymbols } from "./var-hoisting.js";
+import { recordTextCodecClass } from "../../ir/ir.js";
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import { finalizeClassMethodValues } from "./class-method-values.js";
 import type { ClassSymbolKey } from "./symbol-fields.js";
@@ -1751,6 +1753,9 @@ export class Lowerer {
   /** All storage slots widened for runtime absence, including slots whose
    * current control-flow branch has temporarily narrowed the value. */
   readonly runtimeOptionalStorageLocals = new Set<IrLocal>();
+  /** `var` bindings code can read before their first store
+   * (var-hoisting.ts): their storage holds undefined until then. */
+  readonly earlyReadVars = new Set<ts.Symbol>();
   /** Globals whose checker-bare type was widened because an indexed read can
    * carry undefined at runtime. Identifier reads keep the union tag so
    * typeof and later boundaries observe the real value. */
@@ -2472,6 +2477,9 @@ export class Lowerer {
   /** Import-cycle bindings with an initialization flag, by global id, and
    * the top-level statements declaring them (cycle-initialization.ts). */
   readonly cycleInitFlags = new Map<string, CycleInitFlag>();
+  /** Initialization flags of classes reachable before their statement ran,
+   * by class name (cycle-initialization.ts). */
+  readonly classInitFlags = new Map<string, CycleInitFlag>();
   readonly cycleInitDeclarations = new Map<ts.Statement, CycleInitFlag[]>();
 
   get ctx(): FnCtx {
@@ -3764,6 +3772,16 @@ export class Lowerer {
           familyBySymbol.set(symbol, family);
         }
       }
+      // Static methods never share a dispatch slot: each is its own family.
+      if (info.staticMethods) {
+        for (const sig of info.staticMethods.values()) {
+          const name = sig.member.name;
+          if (!(ts.isIdentifier(name) || ts.isStringLiteral(name))) continue;
+          const symbol = symbolOf(name);
+          if (symbol && !signatureBySymbol.has(symbol))
+            signatureBySymbol.set(symbol, { params: sig.params, returnType: sig.ret, method: sig });
+        }
+      }
     }
     const mappedOrNull = (node: ts.Node): IrType | null =>
       panicSafe(() => this.mapTypeOf(this.typeOf(node)), null);
@@ -4254,6 +4272,17 @@ export class Lowerer {
       let found = false;
       for (const expression of returnsOf(fn)) if (mayBeOptional(expression)) found = true;
       return found;
+    };
+    /** A return of a var that code can read before its first store. */
+    const returnsEarlyVar = (fn: ts.FunctionLikeDeclaration): boolean => {
+      const early = (e: ts.Expression): boolean => {
+        const read = peel(e);
+        if (!ts.isIdentifier(read)) return false;
+        const symbol = symbolOf(read);
+        return symbol !== null && this.earlyReadVars.has(symbol);
+      };
+      if (fn.body && !ts.isBlock(fn.body)) return early(fn.body as ts.Expression);
+      return returnsOf(fn).some(early);
     };
     const jsLambdas: ts.FunctionLikeDeclaration[] = [];
     // TypeScript lambdas keep the checker's inferred return type, which
@@ -5290,6 +5319,20 @@ export class Lowerer {
       }
       return changed;
     };
+    // A `var` that code can read before its first store holds undefined
+    // there, whatever its declared type.
+    for (const symbol of earlyReadVarSymbols(this, sourceFiles)) {
+      // Text codec bindings keep their own presence-checked storage.
+      const declaration = this.checker.valueDeclarationOf(symbol);
+      const mapped =
+        declaration && ts.isVariableDeclaration(declaration)
+          ? mappedOrNull(declaration.name)
+          : null;
+      if (mapped?.kind === "record" && recordTextCodecClass(this.shapes.get(mapped.shapeId)!))
+        continue;
+      optionalSymbols.add(symbol);
+      this.earlyReadVars.add(symbol);
+    }
     let changed = true;
     while (changed) {
       changed = false;
@@ -5304,8 +5347,10 @@ export class Lowerer {
       for (const [symbol, decl] of functionDeclBySymbol)
         if (scanReturns(symbol, decl)) changed = true;
       for (const fn of tsLambdas) {
-        // An annotated return is the author's contract, as for parameters.
-        if (fn.type) continue;
+        // An annotated return is the author's contract, as for parameters,
+        // except that a var read before its first store is undefined
+        // whatever the annotation says.
+        if (fn.type && !returnsEarlyVar(fn)) continue;
         const mapped = this.mapTypeOf(this.typeOf(fn));
         if (mapped?.kind !== "func") continue;
         const previous = this.runtimeOptionalFunctionReturnType(fn, mapped.ret);

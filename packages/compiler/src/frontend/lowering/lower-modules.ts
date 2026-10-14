@@ -30,7 +30,11 @@ import {
   resolveNpmImport,
 } from "../program.js";
 import type { CycleEdge } from "../program.js";
-import { markCycleEarlyBindings, withCycleInitFlags } from "./cycle-initialization.js";
+import {
+  markCycleEarlyBindings,
+  withClassInitFlag,
+  withCycleInitFlags,
+} from "./cycle-initialization.js";
 import {
   invalidJsonModuleDiag,
   unsupportedPackageImportDiag,
@@ -2402,12 +2406,14 @@ export function collectGlobals(
  * direct early reads, and closure reads share let's documented
  * zero/NULL divergence window. */
 function noteVarGlobalEntryInit(lowerer: Lowerer, sf: ts.SourceFile, g: IrGlobal): void {
-  // 'any' globals need the entry init exactly like undefined-armed
-  // unions: tsc never guards `any` reads, so `var x: any;` is readable
-  // before any assignment and its slot must hold native undefined
-  // rather than a C-level NULL (an op or validated exit on NULL is
-  // memory-unsafe, not a TypeError).
-  if (g.type.kind !== "union" && g.type.kind !== "dyn") return;
+  // Every var global is noted: the runtime-optional analysis may still
+  // widen its type to an undefined-armed union (a var read before its
+  // first store), and the module entry stores undefined for the types
+  // that hold it once that settled. 'any' globals need the entry init
+  // exactly like undefined-armed unions: tsc never guards `any` reads,
+  // so `var x: any;` is readable before any assignment and its slot must
+  // hold native undefined rather than a C-level NULL (an op or validated
+  // exit on NULL is memory-unsafe, not a TypeError).
   const inits = lowerer.varGlobalEntryInits.get(sf) ?? [];
   inits.push(g);
   lowerer.varGlobalEntryInits.set(sf, inits);
@@ -2720,6 +2726,7 @@ export function lowerFileInit(
     // Node); checked-dynamic var globals hold the dyn undefined the same
     // way. After the guard: a cache-hit revisit must not reset them.
     for (const g of lowerer.varGlobalEntryInits.get(sf) ?? []) {
+      if (g.type.kind !== "union" && g.type.kind !== "dyn") continue;
       const wrapped =
         g.type.kind === "dyn" ? dynUndefinedExpr(loc0) : lowerer.unassignedSlotInit(g.type, loc0);
       if (wrapped) {
@@ -2745,7 +2752,8 @@ export function lowerFileInit(
           ts.isClassDeclaration(c.decl) &&
           !c.mixinInstance &&
           c.decl.getSourceFile() === sf &&
-          (c.callableBase !== undefined ||
+          (lowerer.classInitFlags.has(c.def.name) ||
+            c.callableBase !== undefined ||
             c.def.baseValueGlobal !== undefined ||
             c.runtimeStatics !== undefined ||
             c.staticFields.length > 0 ||
@@ -2773,7 +2781,13 @@ export function lowerFileInit(
       // declarations never share a kept statement's start, so `<=`
       // changes nothing for them.
       while (at < statics.length && statics[at]!.pos <= stmt.getStart()) {
-        body.push(...lowerer.lowerStaticFieldInits(statics[at]!.info));
+        body.push(
+          ...withClassInitFlag(
+            lowerer,
+            statics[at]!.info,
+            lowerer.lowerStaticFieldInits(statics[at]!.info),
+          ),
+        );
         at++;
       }
       // A cycle binding's declaration stays at its position: its
@@ -2792,7 +2806,13 @@ export function lowerFileInit(
       body.push(...lowerer.pendingClassExprInits.splice(0), ...stmtIr);
     }
     while (at < statics.length) {
-      body.push(...lowerer.lowerStaticFieldInits(statics[at]!.info));
+      body.push(
+        ...withClassInitFlag(
+          lowerer,
+          statics[at]!.info,
+          lowerer.lowerStaticFieldInits(statics[at]!.info),
+        ),
+      );
       at++;
     }
     const moduleRef = cjsModuleRef(lowerer, sf);
