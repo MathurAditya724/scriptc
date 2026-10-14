@@ -554,9 +554,9 @@
       "apiEntries": 119,
       "static": {
         "supported": 0,
-        "partial": 36,
+        "partial": 41,
         "refused": 0,
-        "not-implemented": 83,
+        "not-implemented": 78,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -779,9 +779,9 @@
       "apiEntries": 105,
       "static": {
         "supported": 0,
-        "partial": 47,
+        "partial": 53,
         "refused": 0,
-        "not-implemented": 58,
+        "not-implemented": 52,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -52841,9 +52841,9 @@
       "anchor": "event-warning",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Emits string and Error warnings with types, codes, and details on the next tick, reporting to stderr before the 'warning' listeners run.",
+        "verification": "test-backed"
       }
     },
     {
@@ -53039,9 +53039,9 @@
       "anchor": "processemitwarningwarning-options",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Emits string and Error warnings with types, codes, and details on the next tick, reporting to stderr before the 'warning' listeners run.",
+        "verification": "test-backed"
       }
     },
     {
@@ -53057,9 +53057,9 @@
       "anchor": "processemitwarningwarning-type-code-ctor",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Emits string and Error warnings with types, codes, and details on the next tick, reporting to stderr before the 'warning' listeners run.",
+        "verification": "test-backed"
       }
     },
     {
@@ -54299,9 +54299,9 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Program assignments silence or throw deprecation warnings; compiled binaries take no Node command-line flags.",
+        "verification": "test-backed"
       }
     },
     {
@@ -54754,9 +54754,9 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Program assignments silence or throw deprecation warnings; compiled binaries take no Node command-line flags.",
+        "verification": "test-backed"
       }
     },
     {
@@ -68897,9 +68897,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Calls back on the next tick with results, rejection reasons, and ERR_FALSY_VALUE_REJECTION, forwarding receivers; typed callbacks must accept a null error.",
+        "verification": "test-backed"
       }
     },
     {
@@ -68943,9 +68943,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Matches sections against NODE_DEBUG as the process started and writes formatted SECTION PID lines to stderr; colored object output and %o over objects are refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -68966,9 +68966,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "The enabled getter tests the section on first read; the callback receives the section's implementation with its own enabled getter.",
+        "verification": "test-backed"
       }
     },
     {
@@ -68989,9 +68989,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Matches sections against NODE_DEBUG as the process started and writes formatted SECTION PID lines to stderr; colored object output and %o over objects are refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -69012,9 +69012,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Warns once per code or wrapper on the next tick, forwards receivers, arguments, and construction, and observes process.noDeprecation and process.throwDeprecation; class constructors are refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -69219,9 +69219,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Links constructor-function prototypes and sets super_, with Node's argument errors; class constructors are refused.",
+        "verification": "test-backed"
       }
     },
     {

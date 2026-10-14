@@ -562,6 +562,18 @@ function publicDetail(tier) {
   ) {
     return "Reads filesystem capacity using string, Buffer, or file URL paths with number or BigInt fields and deferred callbacks; StatFs prototype behavior and complete filesystem error metadata remain unsupported.";
   }
+  if (source === "surface-manifest:node-builtin.util.inherits") {
+    return "Links constructor-function prototypes and sets super_, with Node's argument errors; class constructors are refused.";
+  }
+  if (source === "surface-manifest:node-builtin.util.deprecate") {
+    return "Warns once per code or wrapper on the next tick, forwards receivers, arguments, and construction, and observes process.noDeprecation and process.throwDeprecation; class constructors are refused.";
+  }
+  if (source === "surface-manifest:node-builtin.util.callbackify") {
+    return "Calls back on the next tick with results, rejection reasons, and ERR_FALSY_VALUE_REJECTION, forwarding receivers; typed callbacks must accept a null error.";
+  }
+  if (/^surface-manifest:node-builtin\.util\.debug(?:log)?$/.test(source)) {
+    return "Matches sections against NODE_DEBUG as the process started and writes formatted SECTION PID lines to stderr; colored object output and %o over objects are refused.";
+  }
   if (source.startsWith("surface-manifest:"))
     return "Implemented for the call shapes accepted by the compiler lowering.";
   if (/^compiler-dedicated:assert\.doesNot(?:Throw|Reject)$/.test(source)) {
@@ -644,6 +656,18 @@ function publicDetail(tier) {
       )
     ) {
       return "Native codec values support UTF-8 encoding and whole-buffer decoding with recognized literal labels and default options.";
+    }
+    if (source === "compiler-feature:util.debuglog") {
+      return "The enabled getter tests the section on first read; the callback receives the section's implementation with its own enabled getter.";
+    }
+    if (
+      source === "compiler-feature:process.process.emitWarning" ||
+      source === "compiler-feature:process.'warning'"
+    ) {
+      return "Emits string and Error warnings with types, codes, and details on the next tick, reporting to stderr before the 'warning' listeners run.";
+    }
+    if (/^compiler-feature:process\.(?:no|throw)Deprecation$/.test(source)) {
+      return "Program assignments silence or throw deprecation warnings; compiled binaries take no Node command-line flags.";
     }
     if (source === "compiler-feature:console.Console") {
       return "Instances over process.stdout, process.stderr, or stream writables support log, info, debug, error, and warn with Node's ignoreErrors handling; other options and methods remain refused.";

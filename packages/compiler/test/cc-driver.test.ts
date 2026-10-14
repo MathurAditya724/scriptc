@@ -276,6 +276,11 @@ test.skipIf(!zigOnPath())(
         options: { parseArgs: true, inspect: true, dynAsync: true, events: true },
         call: "scr_str_release(scr_util_style_text(scr_dyn_undefined(), scr_dyn_undefined(), scr_dyn_undefined()))",
       },
+      {
+        name: "callable",
+        options: { parseArgs: true, inspect: true, dynAsync: true, dynInvoke: true, regex: true },
+        call: "scr_dyn_release(scr_util_debuglog(scr_dyn_undefined(), scr_dyn_undefined()))",
+      },
     ];
     try {
       await withCcEnv("zigcc", "x86_64-windows-gnu", async () => {

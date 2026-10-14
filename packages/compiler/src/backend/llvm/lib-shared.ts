@@ -66,6 +66,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "util.toUSVString": "scr_util_to_usv_string",
   "util.isDeepStrictEqual": "scr_util_is_deep_strict_equal",
   "util.styleText": "scr_util_style_text",
+  "util.inherits": "scr_util_inherits",
+  "util.deprecate": "scr_util_deprecate",
+  "util.callbackify": "scr_util_callbackify",
+  "util.debuglog": "scr_util_debuglog",
   "util.typeIs": "scr_dyn_util_type_is",
   "util.typeValue": "scr_dyn_util_type_value",
   "math.maxArr": "scr_math_max_arr",
@@ -1028,6 +1032,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.offWarning": "scr_process_off_warning",
   "process.emitWarning": "scr_process_emit_warning",
   "process.emitWarningText": "scr_process_emit_warning_text",
+  "process.deprecationFlag": "scr_process_deprecation_flag",
+  "process.setDeprecationFlag": "scr_process_set_deprecation_flag",
   "process.onUncaughtException": "scr_process_on_uncaught_exception",
   "process.offUncaughtException": "scr_process_off_uncaught_exception",
   "process.onUnhandledRejection": "scr_process_on_unhandled_rejection",
@@ -1118,7 +1124,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
 };
 
 export const USES_TIMERS_LIB_FNS = new Set<string>([
+  "process.emitWarning",
   "process.emitWarningText",
+  // The wrappers schedule warnings and callbacks on the tick queue.
+  "util.deprecate",
+  "util.callbackify",
+  "util.debuglog",
   "worker.new",
   "worker.parentPort",
   "process.stdio",

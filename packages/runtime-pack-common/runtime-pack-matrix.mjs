@@ -67,6 +67,7 @@ const OPTIONAL = [
   // Utility objects must only reference runtime families selected with them.
   ["scr_util_compare.c", all("parseArgs", "symbol")],
   ["scr_util_style.c", all("parseArgs", "inspect", "dynAsync")],
+  ["scr_util_callable.c", all("parseArgs", "inspect", "dynAsync", "dynInvoke", "regex")],
   ["scr_stream.c", "stream"],
   ["scr_loop_kqueue.c", any("netEffective", "dgram")],
   ["scr_loop_epoll.c", any("netEffective", "dgram")],

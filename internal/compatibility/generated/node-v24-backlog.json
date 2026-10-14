@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 40,
-        "verify-gap": 2353,
-        "audit-partial": 795,
+        "verify-gap": 2342,
+        "audit-partial": 806,
         "classify": 2,
         "implement": 80
       }
@@ -52179,12 +52179,16 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:process.'warning'",
+          "tests": [
+            "tests/corpus/2215-process-emit-warning-exit.cjs",
+            "tests/corpus/5194-process-emit-warning-tick.cjs",
+            "tests/corpus/5188-util-deprecate-flags.cjs"
+          ]
         }
       }
     },
@@ -52419,12 +52423,16 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:process.process.emitWarning",
+          "tests": [
+            "tests/corpus/2215-process-emit-warning-exit.cjs",
+            "tests/corpus/5194-process-emit-warning-tick.cjs",
+            "tests/corpus/5188-util-deprecate-flags.cjs"
+          ]
         }
       }
     },
@@ -52439,12 +52447,16 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:process.process.emitWarning",
+          "tests": [
+            "tests/corpus/2215-process-emit-warning-exit.cjs",
+            "tests/corpus/5194-process-emit-warning-tick.cjs",
+            "tests/corpus/5188-util-deprecate-flags.cjs"
+          ]
         }
       }
     },
@@ -53867,12 +53879,16 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:process.noDeprecation",
+          "tests": [
+            "tests/corpus/5188-util-deprecate-flags.cjs",
+            "tests/corpus/5189-util-deprecate.ts",
+            "tests/fixtures/node-types/util-callables.ts"
+          ]
         }
       }
     },
@@ -54390,12 +54406,16 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:process.throwDeprecation",
+          "tests": [
+            "tests/corpus/5188-util-deprecate-flags.cjs",
+            "tests/corpus/5189-util-deprecate.ts",
+            "tests/fixtures/node-types/util-callables.ts"
+          ]
         }
       }
     },
@@ -69883,12 +69903,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.util.callbackify",
+          "tests": [
+            "tests/corpus/5190-util-callbackify.cjs",
+            "tests/corpus/5191-util-callbackify.ts",
+            "tests/fixtures/node-types/util-callables.ts"
+          ]
         }
       }
     },
@@ -69933,12 +69957,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.util.debuglog",
+          "tests": [
+            "tests/corpus/5192-util-debuglog.cjs",
+            "tests/corpus/5193-util-debuglog.ts",
+            "tests/fixtures/node-types/util-callables.ts"
+          ]
         }
       }
     },
@@ -69958,12 +69986,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.debuglog",
+          "tests": [
+            "tests/corpus/5192-util-debuglog.cjs",
+            "tests/corpus/5193-util-debuglog.ts",
+            "tests/fixtures/node-types/util-callables.ts"
+          ]
         }
       }
     },
@@ -69983,12 +70015,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.util.debug",
+          "tests": [
+            "tests/corpus/5192-util-debuglog.cjs",
+            "tests/corpus/5193-util-debuglog.ts"
+          ]
         }
       }
     },
@@ -70008,12 +70043,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.util.deprecate",
+          "tests": [
+            "tests/corpus/5187-util-deprecate.cjs",
+            "tests/corpus/5188-util-deprecate-flags.cjs",
+            "tests/corpus/5189-util-deprecate.ts",
+            "tests/fixtures/node-types/util-callables.ts"
+          ]
         }
       }
     },
@@ -70248,12 +70288,16 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.util.inherits",
+          "tests": [
+            "tests/corpus/5185-util-inherits.cjs",
+            "tests/corpus/5186-util-inherits.ts",
+            "tests/fixtures/node-types/util-callables.ts"
+          ]
         }
       }
     },

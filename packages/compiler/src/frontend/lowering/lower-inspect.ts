@@ -15,6 +15,7 @@ import {
   RUNTIME_ERROR_CLASSES,
   STRING,
   UNDEFINED_T,
+  VOID,
   type SrcLoc,
   canConvertToDyn,
   canDynCheckTo,
@@ -1937,6 +1938,12 @@ export function lowerUtilModuleCall(
         loc,
       };
     }
+    case "inherits":
+    case "deprecate":
+    case "callbackify":
+    case "debuglog":
+    case "debug":
+      return lowerUtilCallableCall(lowerer, expr, bi.member, loc);
     case "getSystemErrorMap": {
       if (expr.arguments.some(ts.isSpreadElement))
         lowerer.noLowering("util.getSystemErrorMap with spread arguments", expr);
@@ -2025,6 +2032,86 @@ export function lowerUtilModuleCall(
     default:
       return null;
   }
+}
+
+/** util.inherits/deprecate/callbackify/debuglog: every argument crosses as
+ * a checked-dynamic value, evaluated left to right before the runtime call
+ * (surplus arguments are evaluated and dropped). The function helpers
+ * answer native dyn wrappers; a static function slot checks the wrapper
+ * when it receives it, and dyn slots keep calling it with JS arity. */
+function lowerUtilCallableCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: string,
+  loc: SrcLoc,
+): IrExpr {
+  if (expr.arguments.some(ts.isSpreadElement))
+    lowerer.noLowering(`util.${member} with spread arguments`, expr);
+  const fn =
+    member === "inherits"
+      ? "util.inherits"
+      : member === "deprecate"
+        ? "util.deprecate"
+        : member === "callbackify"
+          ? "util.callbackify"
+          : "util.debuglog";
+  const arity = member === "deprecate" ? 4 : member === "callbackify" ? 1 : 2;
+  // Program classes keep static prototypes: there is no function object
+  // whose prototype chain the runtime could relink or wrap.
+  const classArgs = member === "inherits" ? 2 : member === "deprecate" ? 1 : 0;
+  for (const arg of expr.arguments.slice(0, classArgs)) {
+    if (lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind === "classval")
+      lowerer.noLowering(
+        `util.${member} over a class constructor`,
+        arg,
+        member === "inherits"
+          ? "declare the subclass with extends"
+          : "deprecate a factory function or the class's call sites instead",
+      );
+  }
+  if (member === "callbackify" && callbackifyErrorExcludesNull(lowerer, expr))
+    lowerer.noLowering(
+      "util.callbackify into a callback whose error parameter excludes null",
+      expr,
+      "Node calls back with a null error on success; type the binding's callback as (err: NodeJS.ErrnoException | null, ...) => void",
+    );
+  const stmts: IrStmt[] = [];
+  const args: IrExpr[] = [];
+  for (let i = 0; i < arity; i++) {
+    const input: IrExpr = expr.arguments[i]
+      ? lowerer.lowerExprExpecting(expr.arguments[i]!, DYN)
+      : dynUndefinedExpr(loc);
+    const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
+    stmts.push({ kind: "varDecl", localId: saved.id, init: input, loc });
+    args.push(varRef(saved.id, DYN, loc));
+  }
+  for (const arg of expr.arguments.slice(arity))
+    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc });
+  const type = fn === "util.inherits" ? VOID : DYN;
+  const result: IrExpr = { kind: "libCall", fn, args, type, loc };
+  return { kind: "seqExpr", stmts, result, type: result.type, loc };
+}
+
+/** Whether the slot receiving a callbackify wrapper declares a callback
+ * whose first parameter cannot hold null. Some @types/node overloads type
+ * that error as NodeJS.ErrnoException, but Node passes null on success, and
+ * a statically typed callback parameter cannot receive a value its type
+ * excludes. Untyped (JavaScript or unknown) slots keep the wrapper dyn. */
+function callbackifyErrorExcludesNull(lowerer: Lowerer, expr: ts.CallExpression): boolean {
+  if (isJsSourceFile(expr.getSourceFile())) return false;
+  const checker = lowerer.checker;
+  const slot = checker.getContextualType(expr) ?? lowerer.typeOf(expr);
+  const wrapper = checker.getCallSignatures(slot)[0];
+  const callbackSymbol = wrapper?.getParameters().at(-1);
+  if (!callbackSymbol) return false;
+  const callback = checker.getCallSignatures(checker.getTypeOfSymbol(callbackSymbol))[0];
+  const errorSymbol = callback?.getParameters()[0];
+  if (!errorSymbol) return false;
+  const error = checker.getTypeOfSymbol(errorSymbol);
+  const arms = error.isUnionType() ? ts.constituentTypes(error) : [error];
+  return !arms.some(
+    (arm) => (arm.flags & (ts.TypeFlags.Null | ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0,
+  );
 }
 
 /** util.parseArgs(config?): the configuration is ordinary JSON-safe data,

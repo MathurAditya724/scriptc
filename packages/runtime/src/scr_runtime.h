@@ -1634,6 +1634,17 @@ void scr_qs_parse_into(ScrMap *out, const ScrStr *qs, const ScrStr *sep,
  * Borrows config; returns +1, or NULL with a Node-coded TypeError pending. */
 struct ScrDyn *scr_util_parse_args(const struct ScrDyn *config);
 ScrStr *scr_util_style_text(const struct ScrDyn *format, const struct ScrDyn *text, const struct ScrDyn *options);
+/* Node's terminal color decision (FORCE_COLOR, NO_COLOR, TERM, CI hosts)
+ * once the stream is a terminal (scr_util_style.c). */
+bool scr_util_terminal_colors(void);
+/* util.inherits, util.deprecate, util.callbackify and util.debuglog
+ * (scr_util_callable.c). Arguments are borrowed; function results are +1
+ * native dyn functions, or NULL with Node's TypeError pending. */
+void scr_util_inherits(struct ScrDyn *ctor, struct ScrDyn *super_ctor);
+struct ScrDyn *scr_util_deprecate(struct ScrDyn *fn, struct ScrDyn *msg, struct ScrDyn *code,
+                                  struct ScrDyn *options);
+struct ScrDyn *scr_util_callbackify(struct ScrDyn *original);
+struct ScrDyn *scr_util_debuglog(struct ScrDyn *section, struct ScrDyn *callback);
 
 /* Node/libuv system error utilities. Arguments are checked without coercion;
  * entries is a fresh array of [number, [name, message]] pairs (+1). */
@@ -3501,6 +3512,8 @@ ScrStr *scr_env_get(const ScrStr *name);
  * children observe the write, like Node. Both borrowed. Never throws. */
 void scr_env_set(const ScrStr *name, const ScrStr *value);
 void scr_env_unset(const ScrStr *name); /* delete process.env.NAME */
+/* NODE_DEBUG as the process started (NULL when unset), for util.debuglog. */
+const char *scr_node_debug_initial(void);
 /* The whole environment as alternating [k, v, k, v, ...] strings in
  * environ order — the compiler's process.env snapshot builds its record
  * from this. +1 fresh array. Never throws. */
@@ -6108,11 +6121,11 @@ void scr_promise_mark_handled(ScrPromise *p);
 ScrDyn *scr_promise_reason_dyn(const ScrPromise *p);
 /* process warnings (scr_lib.c — always linked so any unit can emit a
  * deprecation): dyn listeners plus Node's default stderr report
- * ("(node:pid) [CODE] Name: message" and a detail second line). Emission
- * is SYNCHRONOUS at the call (Node defers a tick — SEMANTICS.md 138's
- * precedent). scr_process_emit_warning takes the ARGUMENT VECTOR as one
- * dyn array and applies Node's full grammar/TypeErrors; scr_emit_warning
- * is the C-side deprecation entry. */
+ * ("(node:pid) [CODE] Name: message" and a detail second line).
+ * scr_process_emit_warning takes the ARGUMENT VECTOR as one dyn array,
+ * applies Node's full grammar/TypeErrors at the call and emits on the
+ * next tick, as Node does; scr_emit_warning is the C-side entry and
+ * reports synchronously. */
 void scr_process_on_warning(ScrDyn *fn);
 void scr_process_off_warning(ScrDyn *fn);
 void scr_process_emit_warning(ScrDyn *args);
@@ -6121,6 +6134,19 @@ void scr_emit_warning(const char *name, const char *code, ScrStr *message);
  * listener registration): units that cannot link the dyn-async unit route
  * their warnings through it, and print the default report otherwise. */
 extern SCR_TL void (*scr_warning_emit_hook)(const char *name, const char *code, ScrStr *message);
+/* process.noDeprecation (which 0) and process.throwDeprecation (which 1):
+ * the stored value (+1; undefined until assigned), the assignment
+ * (borrowed), and the truthiness the warning paths test. */
+ScrDyn *scr_process_deprecation_flag(double which);
+void scr_process_set_deprecation_flag(double which, ScrDyn *value);
+bool scr_process_deprecation_flag_on(int which);
+/* Node's emitWarning tail on the next tick (util.deprecate): a
+ * DeprecationWarning is dropped under noDeprecation and thrown from its
+ * own tick under throwDeprecation; otherwise the report and the 'warning'
+ * listeners run. scr_warning_new builds the string form's warning value
+ * (borrows; +1). */
+void scr_warning_emit_deferred(ScrDyn *warning);
+ScrDyn *scr_warning_new(ScrStr *message, const char *type, const ScrStr *code);
 /* The promise-or-absent await's unit arm: one microtask hop, like JS's
  * await of any non-thenable (and like awaiting a settled promise). */
 void scr_await_hop(void);

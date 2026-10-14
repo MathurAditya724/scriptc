@@ -844,6 +844,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "util.toUSVString": { argTypes: [DYN], result: STRING },
   "util.isDeepStrictEqual": { argTypes: [DYN, DYN, DYN], result: BOOL },
   "util.styleText": { argTypes: [DYN, DYN, DYN], result: STRING },
+  /** util.inherits/deprecate/callbackify/debuglog over checked-dynamic
+   * arguments (scr_util_callable.c). The function results are native dyn
+   * wrappers; call sites with a static function type check them back. */
+  "util.inherits": { argTypes: [DYN, DYN], result: VOID },
+  "util.deprecate": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+  "util.callbackify": { argTypes: [DYN], result: DYN },
+  "util.debuglog": { argTypes: [DYN, DYN], result: DYN },
   "util.typeIs": { argTypes: [DYN, STRING], result: BOOL },
   "util.typeValue": { argTypes: [DYN, STRING], result: DYN },
   /** fs.statSync → a Stats value (may throw, like the other sync fs
@@ -3320,11 +3327,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * Node's payload. */
   "process.onRejectionHandled": { argTypes: [DYN, BOOL], result: VOID },
   "process.offRejectionHandled": { argTypes: [DYN], result: VOID },
-  /** process warnings (scr_lib.c): onWarning/offWarning register dyn
-   * listeners; emitWarning applies Node's full argument grammar over the
-   * call's dyn argument vector (ERR_INVALID_ARG_TYPE TypeErrors — MAY
-   * THROW; a listener throw propagates too) and always prints Node's
-   * stderr report. Emission is synchronous (SEMANTICS.md). */
+  /** process warnings (scr_async_dyn.c): onWarning/offWarning register
+   * dyn listeners; emitWarning applies Node's full argument grammar over
+   * the call's dyn argument vector (ERR_INVALID_ARG_TYPE TypeErrors — MAY
+   * THROW) and emits on the next tick, like Node: Node's stderr report,
+   * then the listeners. */
   "process.onWarning": { argTypes: [DYN], result: VOID },
   "process.offWarning": { argTypes: [DYN], result: VOID },
   "process.emitWarning": { argTypes: [DYN], result: VOID },
@@ -3332,6 +3339,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * members' warnings), emitted on the next tick as Node's emitWarning
    * does (so the loop runs); an empty message emits nothing. */
   "process.emitWarningText": { argTypes: [STRING], result: VOID },
+  /** process.noDeprecation (0) / process.throwDeprecation (1): the stored
+   * value (undefined until assigned) and its assignment. util.deprecate's
+   * warnings and DeprecationWarning emissions read their truthiness. */
+  "process.deprecationFlag": { argTypes: [F64], result: DYN },
+  "process.setDeprecationFlag": { argTypes: [F64, DYN], result: VOID },
   /** AsyncLocalStorage (node:async_hooks — scr_async.c): stores are f64
    * handles; contexts are immutable fiber-carried snapshots (spawned
    * fibers inherit the spawner's — Node's init-time capture). run/exit

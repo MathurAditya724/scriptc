@@ -54,7 +54,13 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.offWarning",
   "process.emitWarning",
   "process.emitWarningText",
+  "process.deprecationFlag",
+  "process.setDeprecationFlag",
   "util.styleText",
+  "util.inherits",
+  "util.deprecate",
+  "util.callbackify",
+  "util.debuglog",
   "als.new",
   "als.get",
   "als.run",
@@ -64,6 +70,13 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dc.chanBindStore",
   "dc.chanUnbindStore",
   "dc.chanRunStores",
+]);
+
+const UTIL_CALLABLE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "util.inherits",
+  "util.deprecate",
+  "util.callbackify",
+  "util.debuglog",
 ]);
 
 /** Inspect types and expressions together in one traversal. This is a fresh
@@ -203,6 +216,14 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       if (fn === "util.parseArgs" || fn === "util.isDeepStrictEqual" || fn === "util.styleText")
         features.parseArgs = true;
       if (fn === "util.styleText") features.processEvents = true;
+      // scr_util_callable.c: dyn wrappers over the descriptor, inspect,
+      // regex (NODE_DEBUG matching) and terminal-color units.
+      if (UTIL_CALLABLE_LIB_FNS.has(fn)) {
+        features.parseArgs = true;
+        features.inspect = true;
+        features.dynInvoke = true;
+        features.regex = true;
+      }
       if (fn.startsWith("fs.watch") || fn.startsWith("watcher.")) features.fsWatch = true;
       if (fn.startsWith("test.")) features.nodeTest = true;
       if (fn.startsWith("dgram.") || fn.startsWith("dns.")) features.dgram = true;
