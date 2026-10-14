@@ -64,9 +64,9 @@ export function widthCoerce(lowerer: Lowerer, expr: IrExpr, expected: IrType): I
   }
   // A TUPLE flowing into an array slot (`const NAMES = [...] as const`
   // assigned to a `readonly T[]` — the const-table pattern): TS erases
-  // the arity for free; the monomorphic tuple REBUILDS as a fresh array,
-  // each position's value lifted into the element type (the same copy
-  // stance as every width coercion — later mutations don't alias).
+  // the arity without a conversion; the monomorphic tuple REBUILDS as a
+  // fresh array, each position's value lifted into the element type (the
+  // same copy stance as every width coercion — later mutations don't alias).
   if (expected.kind === "array" && expr.type.kind === "record") {
     const helper = lowerer.tupleArrayWidthHelper(expr.type.shapeId, expected, expr.loc);
     if (!helper) return null;

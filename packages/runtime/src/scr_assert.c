@@ -427,7 +427,7 @@ void scr_assert_ref_eq_fn(const ScrClosure *a, const ScrClosure *b, bool negated
  * sources: inspectValue is a compact:false / sorted:true / depth-1000
  * rendering of the checked-dynamic tree (each entry on its own line, entries sorted by
  * their RENDERED text — Node's `sorted: true` sorts formatted entries),
- * the simple/stacked scalar forms match the static paths byte-for-byte,
+ * the simple/stacked scalar forms match the static paths exactly,
  * and composite diffs run the real myers line diff with Node's printer
  * (5 context lines, then "..." and the "... Skipped lines" banner, comma
  * disparity between object lines treated as equal). Known divergences:
@@ -935,7 +935,7 @@ static void scr_assert_line_out(ScrAssertBuf *b, const char *prefix, ScrLine l) 
 
 /* printMyersDiff: document order (the diff array reversed), 5 context
  * lines per common run, then "..." plus the run's last line and the
- * skipped flag. Trailing common lines past the window drop silently —
+ * skipped flag. Trailing common lines past the window are dropped —
  * Node's printer does the same. The message lands WITHOUT its leading
  * newline (the caller places it); trailing whitespace trimmed. */
 static bool scr_assert_print_myers(ScrAssertBuf *b, const ScrDiffOp *diff, size_t n) {

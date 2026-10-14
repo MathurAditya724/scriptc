@@ -185,7 +185,7 @@ export function lowerChildMethodCall(
     if (cb.type.ret.kind !== "void") {
       // `() => 5` IS assignable to a void-returning listener slot; the
       // registry's call ABI is void, so a value-returning closure is
-      // fenced instead of silently called wrong.
+      // fenced instead of being called through the wrong ABI.
       lowerer.unsupported(
         "SC1090",
         call.arguments[1]!,

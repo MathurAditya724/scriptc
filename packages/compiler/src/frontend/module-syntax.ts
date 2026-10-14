@@ -47,7 +47,7 @@ export interface ModuleSpecifiers {
 /** Every module specifier `source` can load at runtime, in encounter
  * order with its call-site kinds merged per specifier: import/export
  * declarations (INCLUDING `export * as ns from "x"`, which
- * ts.preProcessFile silently drops — zod v4 re-exports its util namespace
+ * ts.preProcessFile omits — zod v4 re-exports its util namespace
  * that way), dynamic import("literal"), and require("literal") /
  * module.require("literal") / __require("literal") (esbuild's external-require helper — collecting its
  * literal call sites gives bundled dists an honest build-time inventory).

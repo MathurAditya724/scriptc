@@ -334,7 +334,7 @@ export function lowerBuiltinModuleCall(
       (bi.module === "fs/promises" && bi.member === "readFile"))
   ) {
     // The runtime reads utf8 unconditionally; any other encoding would
-    // silently decode wrong, so the ARGUMENT'S TYPE must be the literal
+    // decode wrong without an error, so the ARGUMENT'S TYPE must be the literal
     // "utf8" — or Node's "utf-8" alias, the same decoder (the fallback
     // declaration enforces the pair at typecheck; @types/node accepts
     // every BufferEncoding).

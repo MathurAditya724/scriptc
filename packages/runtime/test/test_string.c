@@ -661,7 +661,7 @@ static void sparse_index_asserts(void) {
  * prefix must retain identity checkpoints instead of repeatedly walking the
  * distance between the two hot-cursor positions. A lookup at the ASCII
  * prefix's far end must retain those checkpoints too; otherwise a later
- * non-local lookup silently falls back to a linear restart. */
+ * non-local lookup falls back to a linear restart. */
 static void sparse_ascii_prefix_asserts(void) {
   enum { PREFIX = 4 * 1024 * 1024, QUERIES = 8 };
   const size_t first = (size_t)1024 * 1024 + 137;

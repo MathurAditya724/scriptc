@@ -1456,8 +1456,8 @@ function collectClassShapeDeferring(lowerer: Lowerer, decl: ts.ClassDeclaration)
   // A poisoned class containing a static BLOCK or a DECORATOR must report
   // EAGERLY: deferral's premise ("an unreached broken declaration costs
   // nothing") fails here — Node runs the block (and calls the decorator)
-  // when the class statement evaluates, referenced or not, so silently
-  // dropping the declaration would drop observable side effects (the
+  // when the class statement evaluates, referenced or not, so dropping the
+  // declaration without a diagnostic would drop observable side effects (the
   // classStaticBlock13/28 miscompiles).
   const hasDeclTimeCode = (n: ts.Node): boolean =>
     ts.isClassStaticBlockDeclaration(n) ||
@@ -2411,7 +2411,7 @@ export function collectClassShapeInner(
       // The EventEmitter API surface is runtime-provided: a subclass
       // member with one of its names would shadow behavior the runtime
       // dispatches internally (meta events, once removal), so the
-      // override is fenced rather than silently split-brained — with ONE
+      // override is fenced instead of compiling to split behavior — with ONE
       // exception: `emit` in the forwarding shape on a plain (non-
       // stream) emitter-rooted class monomorphizes per event name
       // (lower-event-emitter.ts's emit-overrides block). Stream-rooted classes
@@ -3565,7 +3565,7 @@ export function collectClassShapeInner(
     // (conditional branches, methods) would be readable before any
     // assignment ran — the zeroed-memory trap a TS declaration order
     // forbids via strictPropertyInitialization — so they keep a named
-    // fence instead of a silent undefined.
+    // fence instead of reading undefined without a diagnostic.
     if (isJsSourceFile(decl.getSourceFile())) {
       const hasAccessor = (name: string): boolean =>
         methods.has(`get:${name}`) ||
@@ -3647,8 +3647,8 @@ export function collectClassShapeInner(
             // representation follows the body — the field widens to the
             // undefined-armed union, so the declaring assignment and
             // every pre-init read carry Node's actual undefined.
-            // Trust-but-verify: the claim never silently narrows the
-            // runtime value.
+            // Trust-but-verify: the claim does not narrow the runtime
+            // value.
             {
               const rhsT = lowerer.typeOf(rhs);
               const assignsUndef = (rhsT.flags & ts.TypeFlags.Undefined) !== 0;
@@ -3787,7 +3787,7 @@ export function collectClassShapeInner(
         // poisoning the class (commander's `this.required` switch
         // assignment, `this.runningCommand` method assignment).
         // Unmappable inferences and arm-less kinds keep the fence.
-        // TypeScript classes keep the loud fence too: an annotated
+        // TypeScript classes keep the compile-time fence too: an annotated
         // program can spell `T | undefined` itself.
         if (isJsSourceFile(decl.getSourceFile())) {
           const original = undefArmedFieldType(lowerer, p);
@@ -4903,7 +4903,7 @@ export function lowerStaticFieldRead(
   // A #private static resolves only through the DECLARING class's own
   // name: in JS the brand lives on that one constructor object, so
   // `D.#s` (a subclass receiver) throws Node's TypeError instead of
-  // reaching up the chain — fenced rather than silently resolved.
+  // reaching up the chain — reported as SC1090 instead of resolved.
   if (found && expr.name.text.startsWith("#") && found.declarer !== info) {
     lowerer.unsupported(
       "SC1090",
@@ -6701,8 +6701,8 @@ export function classMemberNameOf(lowerer: Lowerer, name: ts.PropertyName): stri
  * `undefined` is falsy forever (Node loops forever too; corpus
  * iterators of that shape are deliberately infinite). Iterator classes
  * declaring `return`/`throw` members stay out — the desugars below
- * never call IteratorClose, and silently skipping a declared return()
- * would drop user cleanup. Null when the shape doesn't hold — callers
+ * never call IteratorClose, and skipping a declared return() without a
+ * diagnostic would drop user cleanup. Null when the shape doesn't hold — callers
  * keep their fences. */
 export interface ClassIteratorInfo {
   /** The `[Symbol.iterator]()` call's receiver class + its declarer. */

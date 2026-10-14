@@ -1801,7 +1801,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // it lowers like `unknown` (the dyn) — the same rule as `object` and
   // the empty object type, provenance-checked so a user's own `interface
   // Object` still maps as a record. Its Object.prototype member surface
-  // (`x.toString()`) fences at each use site, never silently.
+  // (`x.toString()`) fences at each use site with an explicit error.
   if (isStdlibInterface("Object")) return DYN;
   // NodeJS.Module / the shipped fallback's ScriptcModule: a process-lifetime
   // scalar handle into the compiled CommonJS module registry. Module
@@ -2860,7 +2860,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // is string[]; unsupported runtime modes throw at the call), and the
   // accepted-but-inert maxBuffer/windowsHide. Members outside this set
   // (env, killSignal, shell, uid, ...) keep the shape unmatched — their
-  // literals fence at the shape check instead of silently dropping.
+  // literals fence at the shape check instead of being dropped without a
+  // diagnostic.
   if (isStdlibInterface("ExecFileSyncOptionsWithStringEncoding")) {
     const optStr = withUndefinedArm(STRING, ctx.unions);
     const optNum = withUndefinedArm(F64, ctx.unions);
@@ -5008,7 +5009,7 @@ function mapRecordTypeInner(
     if (props.some((property) => property.name.startsWith("__@"))) return DYN;
     // A computed shape with NO members is not a real empty record: inside a
     // generic body `Partial<T>` resolves to no members at all (keyof T is
-    // still unknown there) — interning `{}` would be silently wrong. The
+    // still unknown there) — interning `{}` would give a wrong type. The
     // degenerate empties (`Partial<{}>`, `Omit<C, keyof C>`) go with it.
     // An INDEX-SIGNATURE shape is exempt: `Record<string, T>` legitimately
     // has zero declared members — the signature is the shape.
@@ -5050,8 +5051,8 @@ function mapRecordTypeInner(
         // accessor MEMBERS map the same way so accessor records cross
         // annotated boundaries (`function f(p: { get x(): number })`) —
         // tsc lets a plain DATA property satisfy such a member, but the
-        // exact-shape stance turns that into a loud shape-mismatch fence
-        // at the literal, never a silent split. JS-file literals keep
+        // exact-shape stance turns that into a shape-mismatch diagnostic
+        // at the literal instead of an undiagnosed split. JS-file literals keep
         // their existing paths (the CJS export-table narrowing and the
         // checked-dynamic fallback), and .d.ts declarations stay out with
         // the rest of the lib's type worlds.

@@ -740,8 +740,8 @@ export function fenceEarlyNsMemberRef(
  * the qualified form — but Node's transform (the oracle) does NOT:
  * a bare `f()` in one block referring to `export function f` in a SIBLING
  * block throws ReferenceError at runtime under
- * `--experimental-transform-types`. Static resolution would silently
- * print what Node crashes on, so those references fence with the fix in
+ * `--experimental-transform-types`. Static resolution would print what
+ * Node crashes on without a diagnostic, so those references fence with the fix in
  * the message. References to members of the SAME block or an ENCLOSING
  * namespace's block are lexically bound in the emitted nesting and lower
  * fine; alias bindings (import=/ESM imports) are exempt here — the alias

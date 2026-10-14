@@ -440,7 +440,7 @@ survived, sink_calls=1
     expect(run.signal).toBeNull();
     expect(run.status).toBe(0);
     // The facade-authored structured teaching (embedder-prefixed NS code)
-    // arrives byte-for-byte: no "Uncaught " prefix ahead of the marker,
+    // arrives unchanged: no "Uncaught " prefix ahead of the marker,
     // no added trailing newline inside the remediation.
     expect(run.stdout).toBe(
       `teach ready

@@ -296,7 +296,7 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     fences.length === 0
   ) {
     // Every failed statement must be explained; reaching this is a
-    // compiler bug, reported instead of silently omitted.
+    // compiler bug, reported instead of omitted.
     out.push(
       `  ${c(RED, "blockers:")} ${failed} statement${failed === 1 ? "" : "s"} failed without a diagnostic (a compiler bug — please report it)`,
     );

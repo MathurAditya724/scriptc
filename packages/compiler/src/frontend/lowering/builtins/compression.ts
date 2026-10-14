@@ -42,8 +42,9 @@ export function lowerZlibModuleCall(
     ) {
       const options = expr.arguments[1]!;
       // A literal level is enough for build-time compression in the native
-      // emitters. Other options retain the explicit refusal: silently
-      // dropping strategy/windowBits/dictionaries changes the wire bytes.
+      // emitters. Other options retain the explicit refusal: dropping
+      // strategy/windowBits/dictionaries without a diagnostic changes the
+      // wire bytes.
       if (ts.isObjectLiteralExpression(options) && options.properties.length === 1) {
         const prop = options.properties[0]!;
         if (

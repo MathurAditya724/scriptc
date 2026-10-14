@@ -443,8 +443,8 @@ export function lowerDynObjectLiteral(
 /** Spreading a source whose shape carries accessor slots: Node's copy
  * invokes each getter exactly once in insertion order — even for keys a
  * later contributor overrides — while the field-copy desugar assumes pure
- * reads it may drop or reorder. Getter-call counts would silently diverge,
- * so accessor-carrying sources fence by name. */
+ * reads it may drop or reorder. Getter-call counts would diverge from Node
+ * without a diagnostic, so accessor-carrying sources fence by name. */
 function fenceAccessorSpreadSource(
   lowerer: Lowerer,
   prop: ts.Node,
@@ -830,7 +830,7 @@ export function lowerObjectLiteral(
       // reserved closure slots (%get:/%set: — see accessorSlotProp);
       // `this` in the body is fenced up front: the closure slot has no
       // receiver (capturing the record under construction would be an
-      // RC cycle), and the generic lexical-this walk would silently
+      // RC cycle), and the generic lexical-this walk would incorrectly
       // capture an ENCLOSING method's `this` — the object-method rule.
       if (!isJsSourceFile(expr.getSourceFile())) {
         rejectThisInObjectAccessor(lowerer, prop.body ?? prop);
@@ -860,7 +860,7 @@ export function lowerObjectLiteral(
     // Shorthand methods are just closure-valued fields — but their `this`
     // is dynamically bound (typed as the literal by tsc, so noImplicitThis
     // lets it through) and records don't model it; the generic
-    // lexical-this walk would silently capture an ENCLOSING method's
+    // lexical-this walk would incorrectly capture an ENCLOSING method's
     // `this`, so any `this` in the body is rejected up front.
     if (ts.isMethodDeclaration(prop)) lowerer.rejectThisInObjectMethod(prop.body ?? prop);
   }
@@ -1542,8 +1542,8 @@ export function lowerObjectLiteral(
   };
   // Field names introduced by conditional spreads: their ternary carries
   // the spread's whole evaluation (cond once, value lazily), so a LATER
-  // contributor overriding one would silently drop that evaluation —
-  // collisions fence in both directions.
+  // contributor overriding one would drop that evaluation without a
+  // diagnostic — collisions fence in both directions.
   const conditionalNames = new Set<string>();
   // Member names DROPPED from the shape (JS deferral — unlowerable pure
   // member reads narrow away; see the catch in the property loop).
@@ -1618,7 +1618,7 @@ export function lowerObjectLiteral(
       }
       // `{ ...base, ... }` — field-by-field copy of a known record
       // shape. Every source field must land on the target shape with an
-      // equal type (a wider source would silently DROP fields JS keeps —
+      // equal type (a wider source would DROP fields JS keeps —
       // the width fence, same as literals). Later contributors override
       // earlier ones (JS last-write-wins). Evaluate the source exactly
       // once, including empty sources and those whose fields are all
@@ -1990,8 +1990,8 @@ export function lowerObjectLiteral(
         // field type (dynCheck) — the checked-dynamic member-read
         // discipline. A missing key answers the dyn undefined, exactly
         // the undefined-armed optional's absent case; a mismatched
-        // runtime value throws the catchable TypeError, never a silent
-        // wrong copy. Runtime-ADDED keys drop — width subtyping in
+        // runtime value throws the catchable TypeError instead of
+        // producing a wrong copy. Runtime-ADDED keys drop — width subtyping in
         // spread clothing, divergence 36's stance.
         let value: IrExpr;
         if (obj.type.kind === "dyn") {
@@ -2344,7 +2344,8 @@ function lowerUnionRecordClone(lowerer: Lowerer, expr: ts.ObjectLiteralExpressio
       const lift = valueType ? lowerer.widthLiftPlan(valueType, fieldType) : null;
       // The inferred result must retain an override's own fields and
       // aliases. A structural copy into the source field's narrower shape
-      // would silently reshape an unannotated spread expression.
+      // would reshape an unannotated spread expression without a
+      // diagnostic.
       if (!lift) return null;
       if (lift.how === "retag" && valueType?.kind === "union" && fieldType.kind === "union") {
         const from = lowerer.unions.get(valueType.unionId);
@@ -3006,7 +3007,7 @@ export function rejectThisInObjectMethod(lowerer: Lowerer, node: ts.Node): void 
  * referencing `this` (`get x() { return this._x }`). The accessor lowers
  * as a closure stored IN the record — passing the record as a receiver
  * would capture the value under construction (an RC cycle), and the
- * generic lexical-this walk would silently bind an ENCLOSING method's
+ * generic lexical-this walk would incorrectly bind an ENCLOSING method's
  * `this`; the fence names the fix (capture a binding instead). */
 function rejectThisInObjectAccessor(lowerer: Lowerer, node: ts.Node): void {
   if (node.kind === ts.SyntaxKind.ThisKeyword) {

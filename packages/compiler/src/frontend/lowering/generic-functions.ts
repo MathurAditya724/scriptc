@@ -1666,7 +1666,7 @@ function internImplicitInstance(
  * inside a method body — commander's _registerCommand shape): the
  * initializer function-like when the WHOLE declaration qualifies for
  * implicit monomorphization, else null — non-qualifying shapes keep
- * today's closure story silently (never a fence: the flag must not make
+ * today's closure story without a diagnostic (no fence: the flag must not make
  * working code worse). Qualification: an npm-static JS file, a const (or
  * never-reassigned, never-redeclared) identifier binding, an
  * arrow/function-expression initializer with bindable implicit-any
@@ -2048,7 +2048,7 @@ export function bindingGenericFnAliasInfoOf(
  * scan is the whole story). The read is pure — call and value sites skip
  * evaluating it entirely. A reassignable binding could hold a
  * structurally identical literal with a DIFFERENT body, which static
- * resolution would silently miss. */
+ * resolution would miss without a diagnostic. */
 export function requireObjLitGenericReceiver(
   lowerer: Lowerer,
   blame: ts.Node,

@@ -1001,7 +1001,7 @@ export function fenceStaticHeadersMember(
 /** The native AbortController handle dispatches `abort()` directly and
  * exposes `.signal` as data, but it has no first-class function value for
  * the prototype method. Fence method extraction before the checked-dynamic
- * keyed-read fallback can silently answer `undefined`. */
+ * keyed-read fallback can answer `undefined` without a diagnostic. */
 export function fenceStaticAbortControllerMemberRead(
   lowerer: Lowerer,
   access: StaticResponseAccess,
@@ -1304,7 +1304,8 @@ export function lowerFetchElementMethodCall(
         };
   // Literal-string unions share the STRING carrier. A cast can therefore
   // smuggle a different runtime key into this call; validate all arms and
-  // fail loudly rather than dispatching every mismatch to the last member.
+  // throw "is not a function" rather than dispatching every mismatch to the
+  // last member.
   const invocationType = staticResponsePromise ?? DYN;
   let result: IrExpr = nodeThrowExpr(
     1,

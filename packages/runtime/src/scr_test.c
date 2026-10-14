@@ -651,8 +651,8 @@ ScrStr *scr_test_ctx_name(ScrTestCtx *t) {
 int scr_test_exit_code(void) {
   /* The runner never finished: a test awaited a promise nobody settles
    * and the loop exhausted (Node cancels the test and exits 1 — the
-   * summary it prints there is not reproduced; SEMANTICS.md). Never a
-   * silent pass. */
+   * summary it prints there is not reproduced; SEMANTICS.md). The run
+   * exits 1 instead of passing. */
   if (scr_test_runner_spawned && !scr_test_run_done) {
     fflush(stdout);
     fputs("scriptc: node:test runner never finished (a test awaited a promise nobody settles)\n", stderr);

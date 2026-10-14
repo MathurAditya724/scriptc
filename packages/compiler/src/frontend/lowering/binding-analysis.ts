@@ -185,7 +185,7 @@ function usedInHeritageClause(lowerer: Lowerer, sym: ts.Symbol): boolean {
  * and a RECORD-mapped one (`const i: I<A & B> = null as any` — an
  * interface whose members are all generic signatures interns an empty
  * shape) has a slot null can never inhabit, so storing would throw the
- * representation error where Node stores null silently. Either way the
+ * representation error where Node stores null. Either way the
  * declaration emits nothing and reads know the value. Null-tolerant
  * mappings (unions with a null/undefined arm, dyn) keep their real
  * storage and every ordinary lowering. */

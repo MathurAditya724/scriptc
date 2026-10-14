@@ -62,7 +62,7 @@ export const eventLoopCases: EventLoopCase[] = [
     script: { writes: [{ delayMs: 0, data: "abc" }], end: true },
   },
   {
-    title: "race-timeout: silent open pipe — timeout wins, destroy releases the loop",
+    title: "race-timeout: open pipe with no data — timeout wins, destroy releases the loop",
     fixture: "stdin-race-timeout.ts",
     script: { writes: [], end: false },
   },

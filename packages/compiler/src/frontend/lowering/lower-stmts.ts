@@ -689,7 +689,7 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
         // only — a capture wrapper in force means collection owns the
         // report). The statement's diagnostics move OFF the build and
         // onto the fence: executing the statement throws the first
-        // one's message, so nothing is ever silently dropped — either
+        // one's message, so no diagnostic is dropped — either
         // the statement never runs (Node parity: the construct never
         // executed) or it reports exactly what the compile fence would
         // have said.
@@ -969,7 +969,7 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
  * the whole enclosing function body regardless of block position, and
  * every same-name `var` in that function is the SAME binding (tsc merges
  * the declarations into one symbol, so symbol-keyed resolution gets the
- * merge for free). This mints the one function-scoped slot on first
+ * merge automatically). This mints the one function-scoped slot on first
  * encounter: an IrLocal registered in the function's ROOT scope frame
  * (never popped by block exits) whose `varDecl` is PUSHED into the
  * function-root statement list at the current position — everything
@@ -1036,8 +1036,8 @@ function hoistVarBinding(lowerer: Lowerer, symbol: ts.Symbol, nameNode: ts.Ident
  * bindings (the dyn undefined). Everything else returns false
  * and the reference lands on the named fence in rejectUnresolvedSymbol:
  * a slot of a narrower type has no bit pattern for the `undefined` Node
- * would yield if the capture ran early, and guessing "it won't" is the
- * silent-wrong-output sin. */
+ * would yield if the capture ran early, and guessing "it won't" would
+ * produce wrong output without an error. */
 export function predeclareForwardVar(lowerer: Lowerer, symbol: ts.Symbol): boolean {
   // Module-scope vars already have their global storage.
   if (lowerer.globalsBySymbol.has(symbol)) return false;
@@ -2462,7 +2462,7 @@ export function lowerBindingPattern(
   // reads (base-chain accessors and setter-only rejections resolve
   // identically). Rest elements, methods, and names no class on the
   // chain declares keep named fences (a detached method would lose its
-  // receiver silently; JS binds the prototype function).
+  // receiver without an error; JS binds the prototype function).
   if (srcType.kind === "object") {
     const info = lowerer.classes.get(srcType.className);
     if (!info) lowerer.flushDeferredClass(srcType.className);
@@ -3599,12 +3599,12 @@ function objectRestValue(
  * members (methods and accessors stay behind; the checker's rest type
  * excludes them too, so the two sides agree). The packed record must
  * agree with the checker's rest type field-for-field — a non-public
- * field IS copied by JS but the rest type cannot name it (silent
+ * field IS copied by JS but the rest type cannot name it (undiagnosed
  * divergence; fence) — and key-for-key in ORDER: the packed shape's
  * JSON/Object.keys order is first-seen global metadata, and a checker
  * rest type that reorders (own-before-inherited) would make the
  * enumeration surfaces diverge from Node, so it fences instead of
- * silently reordering. Runtime-provided chains (Error/EventEmitter/
+ * reordering. Runtime-provided chains (Error/EventEmitter/
  * stream roots) carry runtime-internal state no record copy can
  * reproduce — fenced. ES-#private fields are own but non-enumerable:
  * JS skips them and so does the packing. */
@@ -5702,7 +5702,7 @@ function lowerCjsExportStatement(
   // through to the declaration) — EXACT for const/function bindings, a
   // live-binding lie for `let`: Node copies the VALUE into the table at
   // this statement, so later reassignments are invisible to importers.
-  // Mutable bindings fence instead of diverging silently.
+  // Mutable bindings fence instead of diverging from Node.
   const fenceMutable = (nameNode: ts.Identifier): void => {
     const sym = lowerer.resolveValueSymbol(nameNode);
     const g = sym ? lowerer.globalsBySymbol.get(sym) : undefined;
@@ -6092,7 +6092,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         // `process.env.NAME = v` — setenv(3): later env reads and spawned
         // children observe the write, exactly Node. Values are strings
         // (Node stringifies everything; a non-string RHS fences instead
-        // of silently diverging). The computed-key form lands in
+        // of diverging from Node). The computed-key form lands in
         // lowerElementWrite.
         if (lowerer.isProcessEnv(expr.left.expression) && !expr.left.questionDotToken) {
           const loc = locOf(expr);
@@ -6170,7 +6170,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         // own name: the field's module global assigns. Writes through a
         // SUBCLASS name (`D.x = v` creates an OWN property on D in JS —
         // different storage) and through class VALUES (the same dynamic
-        // story) are named fences, never a silently-wrong global write.
+        // story) are named fences instead of an incorrect global write.
         if (
           !expr.left.questionDotToken &&
           (ts.isIdentifier(expr.left.expression) ||
@@ -9634,7 +9634,7 @@ function lowerForIn(lowerer: Lowerer, stmt: ts.ForInStatement): IrStmt {
       // Accessor-carrying shapes: Node's for-in visits the accessor
       // NAMES (own enumerable properties) — the static key walk omits
       // them (accessor slots live outside declaredOrder), so the loop
-      // fences rather than silently skip keys.
+      // fences rather than skip keys.
       if (shapeHasAccessorSlots(rShape)) {
         lowerer.unsupported(
           "SC1090",

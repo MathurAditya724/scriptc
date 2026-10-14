@@ -1394,7 +1394,7 @@ ScrStr *scr_util_strip_vt(const ScrDyn *input) {
 ScrStr *scr_regex_replace_all(ScrStr *s, ScrRegex *re, ScrStr *rep) {
   if (!(lre_get_flags(scr_regex_bc(re)) & LRE_FLAG_GLOBAL)) {
     /* Node's exact TypeError — a real instance now: catch bindings narrow
-     * it and e.message carries V8's text byte-for-byte. */
+     * it and e.message carries V8's exact text. */
     static const char msg[] =
         "String.prototype.replaceAll called with a non-global RegExp argument";
     scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);

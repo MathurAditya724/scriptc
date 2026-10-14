@@ -380,7 +380,7 @@ describe("library profile sidecar section", () => {
  * Selector strictness is RATIFIED: fence profiles pin per compiler
  * release, so an id or prefix matching nothing in this release's surface
  * manifest refuses SC4001 at load — there is no forward-compatible
- * acceptance of unknown selectors, and no silently-inert fence. Static
+ * acceptance of unknown selectors, and no fence that loads as a no-op. Static
  * surfaces no detector can police refuse the same way, with the reason
  * named (folded constants, desugared methods). */
 
@@ -578,7 +578,7 @@ describe("library profile fences", () => {
     );
   });
 
-  test("unknown fields inside a fence entry refuse (a typo silently disarms a denial)", () => {
+  test("unknown fields inside a fence entry refuse (a typo would disarm a denial without a diagnostic)", () => {
     expectSc4001(
       { ...good, determinism: { fences: [{ id: "stdlib.math.random", teachng: "typo" }] } },
       "unknown field 'determinism.fences[0].teachng'",

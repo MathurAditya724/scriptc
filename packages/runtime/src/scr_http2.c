@@ -2912,8 +2912,8 @@ void scr_http2_goaway_thunk0(ScrClosure *cb, double code, double last) {
  * runtime-built listener closure over the dyn callback, header events
  * build a dyn headers object from the pairs, method calls decode dyn
  * args onto the static entry points, and property reads box the scalar
- * answers. Real-but-unmodeled members throw the loud ladder; names the
- * surface never had throw Node's "<x> is not a function". */
+ * answers. Real-but-unmodeled members take the "not supported yet" error
+ * path; names the surface never had throw Node's "<x> is not a function". */
 
 static ScrDyn *scr_h2_pairs_to_dom(ScrArr *pairs /*borrowed*/, double status) {
   ScrDyn *obj = scr_dyn_new_obj();

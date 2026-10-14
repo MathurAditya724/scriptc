@@ -81,7 +81,7 @@ describe("surface manifest generation", () => {
       }
     }
     // Every kind and every status class is populated — an empty class
-    // means a projection source silently dropped out.
+    // means a projection source dropped out without an error.
     for (const kind of ["syntax", "stdlib", "node-builtin", "diagnostic-fence"]) {
       expect(
         manifest.entries.some((e) => e.kind === kind),

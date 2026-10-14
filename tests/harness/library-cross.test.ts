@@ -240,7 +240,7 @@ const LOOPISH =
 
 describe.skipIf(!enabled)("cross-target library conformance", () => {
   test("zig is on PATH", () => {
-    // Fail loudly, not skip: SCRIPTC_CROSS=1 promises a cross verdict.
+    // Fail instead of skipping: SCRIPTC_CROSS=1 promises a cross verdict.
     try {
       execFileSync("zig", ["version"], { encoding: "utf8" });
     } catch {
@@ -296,7 +296,7 @@ describe.skipIf(!enabled)("cross-target library conformance", () => {
    * daemon (SCRIPTC_LINUX=1), the windows leg the ssh box (SCRIPTC_WIN=1).
    * Each leg builds the scalars archive fresh for its triple (both
    * emissions), links the K2 probe, executes it on the target, and
-   * compares the full scripted round-trip byte-for-byte. */
+   * requires the full scripted round-trip to be identical. */
   describe("K2 execution probes", () => {
     const linuxOn = process.env["SCRIPTC_LINUX"] === "1";
     const winOn = process.env["SCRIPTC_WIN"] === "1";

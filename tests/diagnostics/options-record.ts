@@ -53,7 +53,7 @@ readline.createInterface({ input: process.stdin, output: process.stdout, complet
 
 // A bare __proto__: value entry is not an ordinary undocumented key: it
 // changes the options record's prototype, and Node reads inherited options.
-// These must fence instead of silently dropping an inherited flag or mode.
+// These must fence instead of dropping an inherited flag or mode without a diagnostic.
 fs.writeFileSync("/tmp/proto-sync", "x", { __proto__: { flag: "a" } });
 void fs.promises.writeFile("/tmp/proto-promise", "x", { __proto__: { mode: 0o600 } });
 // Both calls must terminate in the explicit prototype-options fence.

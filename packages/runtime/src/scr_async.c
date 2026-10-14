@@ -594,8 +594,8 @@ struct ScrFiber {
   bool stackless;
   /* Fiberless async bodies (scr_async_inline_enter) currently running on
    * this fiber's stack. Such a body was proven never to park, so a park
-   * or hop while this is nonzero is a compiler bug — trap loudly instead
-   * of resuming the caller out of order. */
+   * or hop while this is nonzero is a compiler bug — trap instead of
+   * resuming the caller out of order. */
   unsigned inline_depth;
   /* Trampoline args: the spawn wrapper stores a pointer to a stack-local
    * argpack; the trampoline copies it out before the spawner resumes. */
@@ -3903,7 +3903,7 @@ bool scr_loop_run(ScrPromise *top_level) {
   scr_timers_teardown();
   /* No reffed foreign registration or queued invocation remains at ordinary
    * exhaustion. Disarm posting before exit listeners/global teardown so a
-   * straggling native thread becomes a safe silent drop. */
+   * post from a straggling native thread is dropped safely. */
   if (scr_ffi_stop_fn != NULL) scr_ffi_stop_fn();
   /* Retained native FFI registrations are deliberately NOT torn down
    * here: process 'exit' listeners run after the loop returns (inline in

@@ -26,7 +26,7 @@
  * inside functions or class members would mint a distinct class per
  * evaluation and are named fences.
  *
- * Named fences (never silent divergence): mixin functions whose base
+ * Named fences (a diagnostic instead of divergence from Node): mixin functions whose base
  * parameter flow isn't traceable (the parameter referenced anywhere but
  * the extends clause, extra statements in the body), mixins over builtin
  * or decorated or generic-family classes, calls whose argument isn't

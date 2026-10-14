@@ -25,8 +25,8 @@
  * after which this unit REOPENS the path best-effort: when a new file
  * took the name (the atomic-rewrite idiom), watching continues on the
  * new inode; when the name is gone, the watcher stays registered but
- * silent (Node's kqueue backend goes silent the same way — its FSEvents
- * backend on macOS would keep reporting, a documented divergence).
+ * stops emitting events (Node's kqueue backend stops the same way — its
+ * FSEvents backend on macOS would keep reporting, a documented divergence).
  *
  * The Linux arm is inotify, matched against Linux Node (the differential
  * container's oracle — probed, not assumed): one inotify fd for the
@@ -35,7 +35,7 @@
  * "rename", including IN_DELETE_SELF and the trailing IN_IGNORED (Linux
  * Node really does fire two 'rename's for an unlink, and a leading
  * 'change' for the link-count IN_ATTRIB). After IN_IGNORED the wd is
- * dead and the watcher goes silent but stays open (holds the loop) until
+ * dead and the watcher stops emitting events but stays open (holds the loop) until
  * close() — Node does NOT reopen on Linux, so neither does this arm; the
  * kqueue reopen dance is macOS-only, exactly like libuv. The wd → watcher
  * route trusts the kernel's cyclic wd allocation (idr_alloc_cyclic): a
@@ -99,14 +99,14 @@ typedef struct {
 
 struct ScrWatcher {
   size_t rc;
-  int fd;       /* -1 once closed, or after a failed reopen (silent) */
+  int fd;       /* -1 once closed, or after a failed reopen (no further events) */
 #ifdef SCR_HAVE_INOTIFY
   int wd;       /* the inotify watch descriptor; -1 once dead (IN_IGNORED
                  * arrived or close() removed it) */
 #endif
 #ifdef SCR_HAVE_RDCW
   HANDLE dh;       /* the watched directory handle; INVALID once closed or
-                    * silent (a failed reissue) */
+                    * after a failed reissue (no further events) */
   OVERLAPPED ovl;  /* the one outstanding ReadDirectoryChangesW; hEvent is
                     * a manual-reset event polled at dispatch */
   wchar_t *filter; /* file watches: the watched basename (UTF-16, ordinal
@@ -148,7 +148,7 @@ static bool scr_watch_arm(ScrWatcher *w) {
 static SCR_TL int scr_watch_ino = -1; /* created with the first watch */
 
 /* libuv's subscription mask: name-level events for directory watches,
- * self events for the file case, IN_IGNORED arriving for free. */
+ * self events for the file case, IN_IGNORED arriving automatically. */
 #define SCR_WATCH_IN_MASK                                                        \
   (IN_ATTRIB | IN_CREATE | IN_MODIFY | IN_DELETE | IN_DELETE_SELF |              \
    IN_MOVE_SELF | IN_MOVED_FROM | IN_MOVED_TO)
@@ -172,8 +172,9 @@ static wchar_t *scr_watch_widen(const char *s) {
   return w;
 }
 
-/* Issues the next overlapped read. False leaves the watcher SILENT (the
- * kqueue arm's exhaustion stance): open, holding the loop, never firing. */
+/* Issues the next overlapped read. False leaves the watcher without events
+ * (the kqueue arm's exhaustion stance): open, holding the loop, emitting
+ * nothing. */
 static bool scr_watch_issue(ScrWatcher *w) {
   ResetEvent(w->ovl.hEvent);
   if (!ReadDirectoryChangesW(w->dh, w->buf, (DWORD)sizeof w->buf, FALSE,
@@ -325,7 +326,7 @@ ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb /*moves, nullable*/, ScrWa
   w->filter = wfilter;
   w->ovl.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
   if (w->ovl.hEvent == NULL || !scr_watch_issue(w)) {
-    /* the kqueue exhaustion stance: open, holding the loop, silent */
+    /* the kqueue exhaustion stance: open, holding the loop, emitting no events */
     scr_watch_backend_drop(w);
   }
 #else
@@ -416,7 +417,8 @@ static void scr_watch_fire(ScrWatcher *w, const char *event) {
 /* ── the loop hooks (scr_async.c) ────────────────────────────────────── */
 
 /* Liveness: every un-closed watcher holds the loop (Node's persistent
- * default) — a silent (fd < 0) watcher included, exactly like Node's. */
+ * default) — a watcher with no event source (fd < 0) included, exactly
+ * like Node's. */
 static bool scr_watch_pending(void) { return scr_watchers_open > 0; }
 
 static int scr_watch_pollfd(void) {
@@ -486,7 +488,7 @@ static void scr_watch_dispatch(void) {
        * fires "rename". */
       bool change = (e->mask & (IN_ATTRIB | IN_MODIFY)) != 0;
       if (e->mask & IN_IGNORED) w->wd = -1; /* the kernel dropped the watch:
-                                             * silent (no reopen), like Node */
+                                             * no further events (no reopen), like Node */
       scr_watch_fire(w, change ? "change" : "rename");
       if (scr_exc_pending()) return; /* the loop surfaces it */
     }
@@ -528,7 +530,7 @@ static void scr_watch_dispatch(void) {
       }
     }
     if (!w->closed && w->dh != INVALID_HANDLE_VALUE && !scr_watch_issue(w)) {
-      scr_watch_backend_drop(w); /* reissue refused: silent, like kqueue exhaustion */
+      scr_watch_backend_drop(w); /* reissue refused: no further events, like kqueue exhaustion */
     }
   }
   scr_watch_sweep();

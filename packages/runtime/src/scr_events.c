@@ -590,7 +590,7 @@ static void scr_stdin_service(void) {
   if (n < 0) {
     if (errno == EINTR || errno == EAGAIN) return;
     /* Real read failure: 'error' listeners get Node's Error shape via the
-     * child adapters; the stream then ends silently (no 'end' after
+     * child adapters; the stream then ends without an event (no 'end' after
      * 'error', like Node). No listener: treated as EOF. */
     if (scr_stdin_nerr > 0) {
       char msg[64];

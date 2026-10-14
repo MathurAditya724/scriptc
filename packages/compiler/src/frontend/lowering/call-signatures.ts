@@ -379,7 +379,7 @@ export function paramShapes(
 /** A default expression may itself yield undefined. Keep that arm in the
  * body and parameter-property storage, including for literal `undefined`
  * and void expressions: the general type mapper represents those as VOID,
- * so checking only a mapped undefinedT silently erased a valid value.
+ * so checking only a mapped undefinedT erased a valid value without an error.
  * Shared by declared and instantiated signatures, including destructuring. */
 function defaultParameterShape(
   lowerer: Lowerer,

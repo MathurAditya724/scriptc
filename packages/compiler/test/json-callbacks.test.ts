@@ -9,7 +9,8 @@ const temp = (): string =>
   mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-json-callback-"));
 
 // Unsupported forms must be named; accepting a third argument but never
-// supplying context.source would silently change data recovery code.
+// supplying context.source would change data recovery code without a
+// diagnostic.
 test.each([
   ["reviver context", `JSON.parse("1", (key, value, context) => context.source);`, "JSON reviver"],
   ["reviver rest context", `JSON.parse("1", (...args) => args.length);`, "JSON reviver"],

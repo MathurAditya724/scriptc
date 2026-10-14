@@ -3528,7 +3528,7 @@ function lowerHttpServerOptions(
     }
     if (key === "joinDuplicateHeaders") {
       // Literal true/false: the flag decides parse-time read semantics,
-      // so a runtime value would silently pick one — fence dynamics.
+      // so a runtime value would pick one without a diagnostic — fence dynamics.
       if (initializer !== null && initializer.kind === ts.SyntaxKind.TrueKeyword) {
         joinDup = true;
         continue;
@@ -5602,7 +5602,7 @@ function lowerHttpClientCall(
 
   if (connCb !== null && (host !== null || port !== null)) {
     // Node would use host/port only for the Host header once a dialer
-    // exists — a silent half-use; set headers.host instead.
+    // exists — a partial use with no warning; set headers.host instead.
     lowerer.noLowering(
       `${member} mixing createConnection with hostname/host/port`,
       optsNode,
@@ -6310,7 +6310,7 @@ function lowerHttpReqMethodCall(
   }
   if (name === "setEncoding") {
     // setEncoding('utf8') — 'data' delivers strings (the chunk-encoding
-    // window); other real encodings fence loudly at runtime, unknown
+    // window); other real encodings throw "not supported yet" at runtime, unknown
     // names throw Node's ERR_UNKNOWN_ENCODING.
     requireStatementPosition(lowerer, call, "req.setEncoding(...)");
     if (args.length !== 1) {
@@ -6724,7 +6724,8 @@ function lowerHttpResMethodCall(
       if (v.type.kind === "dyn") {
         // A checked-dynamic headers value (an untyped JS helper's
         // parameter — the suite's test(headers) idiom): the runtime OBJ
-        // walk sets each entry, loud fences for non-string/number values.
+        // walk sets each entry and throws ERR_INVALID_ARG_TYPE for
+        // non-string/number values.
         return headResult("http.resWriteHeadDyn", [receiver, status, v]);
       }
       if (v.type.kind !== "record") {

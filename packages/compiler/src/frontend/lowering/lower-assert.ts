@@ -1589,8 +1589,8 @@ function bytesBrandOf(lowerer: Lowerer, node: ts.Expression): string | null {
 /* ── deep equality (deepStrictEqual / notDeepStrictEqual) ──────────────── */
 
 /** Why `t` has no honest deep comparison, or null when it lowers. The
- * fence names the FIRST unsupported constituent — never a silent
- * miscompare. Recursive record shapes terminate through `visiting`
+ * fence names the FIRST unsupported constituent instead of emitting a
+ * wrong comparison. Recursive record shapes terminate through `visiting`
  * (a shape being checked is assumed fine; its own walk decides). */
 function deepUnsupportedReason(lowerer: Lowerer, t: IrType, visiting: Set<string>): string | null {
   switch (t.kind) {

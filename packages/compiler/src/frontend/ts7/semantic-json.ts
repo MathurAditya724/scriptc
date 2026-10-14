@@ -1,6 +1,6 @@
 /** Check the only JSON string form the native runtime cannot yet retain.
  * JSON.parse itself validates grammar. A valid surrogate pair is preserved;
- * a lone escape must not silently change a type literal or symbol name. */
+ * a lone escape must not change a type literal or symbol name. */
 export function checkSemanticJsonStrings(json: string, preservesSurrogates: boolean): void {
   // Most checker responses contain no Unicode escapes. Inspect only escape
   // sequences instead of mapping every native string index to UTF-16. Valid

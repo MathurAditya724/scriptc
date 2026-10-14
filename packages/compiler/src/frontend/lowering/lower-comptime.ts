@@ -132,7 +132,7 @@ export function comptimeBakeable(lowerer: Lowerer, t: IrType): boolean {
 /** The self-containment fence: every identifier inside the callback must
  * resolve to a declaration INSIDE the callback (its own locals/functions)
  * or to the standard library (whose JS intrinsics exist in the vm; what
- * doesn't — process, setTimeout — fails loudly at evaluation).
+ * doesn't — process, setTimeout — throws a ReferenceError at evaluation).
  * Anything else — module locals, imports, top-level functions — would be a
  * capture, and the evaluation context has no module state to capture from.
  * Type-position references (annotations, `as` targets) are exempt: they
@@ -178,9 +178,9 @@ export function rejectComptimeCaptures(
             }
             // V8 installs console in vm contexts, where calls could no-op
             // at compile time instead of printing at runtime.
-            // Rejected so side effects can't silently vanish; the other
-            // Node-isms (process, setTimeout) don't exist in the vm and
-            // fail loudly at evaluation.
+            // Rejected so side effects cannot vanish without a diagnostic;
+            // the other Node-isms (process, setTimeout) don't exist in the
+            // vm and throw a ReferenceError at evaluation.
             if (node.text === "console" && lowerer.isStdlibSymbol(symbol)) {
               lowerer.unsupported(
                 "SC1090",

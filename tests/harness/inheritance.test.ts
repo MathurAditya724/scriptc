@@ -152,12 +152,12 @@ console.log(g.level);
     return "cell"; // getter-only, overridden below: vtable slot
   }
 }
-class LoudCell extends Cell {
+class UpperCell extends Cell {
   get label(): string {
-    return "LOUD " + this._v;
+    return "UPPER " + this._v;
   }
 }
-const c: Cell = new LoudCell();
+const c: Cell = new UpperCell();
 const plain: Cell = new Cell();
 c.v = 3;
 console.log(c.v, c.label, plain.label);
@@ -165,7 +165,7 @@ console.log(c.v, c.label, plain.label);
     );
     // The overridden getter dispatches through its slot...
     expect(llvm).toMatch(/%sc_vtt_Cell = type \{ %ScrVt, ptr \}/);
-    expect(llvm).toMatch(/@sc_vtable_LoudCell = [^\n]*ptr @sc_b?f__x25_LoudCell_get_x3a_label\b/);
+    expect(llvm).toMatch(/@sc_vtable_UpperCell = [^\n]*ptr @sc_b?f__x25_UpperCell_get_x3a_label\b/);
     expect(llvm).toMatch(
       /getelementptr inbounds %sc_vtt_Cell, ptr %\w+, i64 0, i32 1[\s\S]*call ptr %\w+\(ptr /,
     );

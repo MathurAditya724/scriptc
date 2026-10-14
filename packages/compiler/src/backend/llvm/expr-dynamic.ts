@@ -506,8 +506,8 @@ export function emitDynamicExpr(
     case "dynKeyGet": {
       // Keyed read on the checked-dynamic tree through the one interned helper — the
       // non-optional form throws JS's TypeError on an undefined/null
-      // receiver, and HANDLE receivers can throw the loud unmodeled-
-      // property ladder on EITHER form; the result is owned (+1).
+      // receiver, and HANDLE receivers can throw the "not supported yet"
+      // error for unmodeled properties on EITHER form; the result is owned (+1).
       const d = emitBorrowedInput(host, e.value);
       const k = emitBorrowedInput(host, e.key);
       const helper =
