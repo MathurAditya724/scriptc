@@ -10,6 +10,8 @@ import {
   POINTER_KINDS,
   runtimeRcStem,
   RUNTIME_EMITTER_CLASS,
+  RUNTIME_EVENT_CLASS,
+  RUNTIME_EVENT_TARGET_CLASS,
   RUNTIME_ERROR_CLASSES,
   RUNTIME_STREAM_CLASSES,
   STRING,
@@ -42,6 +44,9 @@ import { LlvmUnsupportedError } from "./unsupported.js";
  * and the module-wide cycle/shape indexes. */
 export interface ShapeHost {
   declare(decl: string): void;
+  /** The hierarchy root of a class (a program class or a runtime base),
+   * or undefined for classes outside the class graph. */
+  classRootOf?(className: string): string | undefined;
   /** Request the shared OOM abort helper (@sc_oom) — emitted once. */
   needOom(): void;
   /** The target C ABI's `size_t` / refcount integer type. */
@@ -137,13 +142,30 @@ export function vAdapters(host: ShapeHost, t: IrType): { retain: string; release
         retain: `@${mangleRecordRetain(t.shapeId)}`,
         release: `@${mangleRecordRelease(t.shapeId)}`,
       };
-    case "object":
+    case "object": {
+      // Subclasses of the runtime EventTarget and Event bases share the
+      // runtime's adapters (the same rc word and vtable dispatch as the
+      // emitted helpers): the engine recognizes their checked-dynamic
+      // capsules by the release adapter.
+      const root = host.classRootOf?.(t.className);
+      const runtime =
+        root === RUNTIME_EVENT_TARGET_CLASS
+          ? { retain: "scr_event_target_obj_retain_v", release: "scr_event_target_obj_release_v" }
+          : root === RUNTIME_EVENT_CLASS
+            ? { retain: "scr_event_obj_retain_v", release: "scr_event_obj_release_v" }
+            : null;
+      if (runtime !== null) {
+        host.declare(`declare ptr @${runtime.retain}(ptr)`);
+        host.declare(`declare void @${runtime.release}(ptr)`);
+        return { retain: `@${runtime.retain}`, release: `@${runtime.release}` };
+      }
       // Emitted per-class helpers are already `_v`-shaped (ptr → ptr /
       // ptr → void), so the same symbols serve as container entry points.
       return {
         retain: `@${mangleClassRetain(t.className)}`,
         release: `@${mangleClassRelease(t.className)}`,
       };
+    }
     default:
       throw new LlvmUnsupportedError(`rc:${t.kind}`);
   }
@@ -159,6 +181,9 @@ export function retainSym(host: ShapeHost, t: IrType): string {
   if (host.rcHelpers !== null && stem !== null && inlineRcFamily(stem, "retain") !== null) {
     return inlineRcSym(host, stem, "retain");
   }
+  // Direct retains keep the emitted helper (vAdapters' runtime adapters
+  // are for capsule and container entry points).
+  if (t.kind === "object" && stem === null) return `@${mangleClassRetain(t.className)}`;
   return vAdapters(host, t).retain;
 }
 
@@ -522,6 +547,10 @@ export function traceAdapter(host: ShapeHost, t: IrType): string | null {
         host.declare(`declare void @scr_stream_trace(ptr, ptr, ptr)`);
         return "@scr_stream_trace";
       }
+      // The EventTarget and Event bases have no instances of their own:
+      // values of subclasses trace through their own classes' entries.
+      if (t.className === RUNTIME_EVENT_TARGET_CLASS || t.className === RUNTIME_EVENT_CLASS)
+        return null;
       return `@${mangleClassTrace(t.className)}`;
     case "map":
       if (traceAdapter(host, t.key) === null && traceAdapter(host, t.value) === null) return null;

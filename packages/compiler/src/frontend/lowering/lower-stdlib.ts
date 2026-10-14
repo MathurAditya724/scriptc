@@ -31,6 +31,7 @@ import {
 } from "../../diagnostics/diagnostic.js";
 import { esmNamedImportLinkCrash, isCjsJsFile, locOf, npmPackageNameOf } from "../program.js";
 import { foldedStringKeyOf, lowerDynObjectLiteral } from "./expressions/object-literals.js";
+import { noteEventListeners } from "./lower-event-target.js";
 import { PoisonError, newFnCtx, own } from "./lowerer.js";
 import {
   NODE24_FETCH_COMPAT_PROFILE,
@@ -874,7 +875,7 @@ function hasLiveWebMutableArm(lowerer: Lowerer, type: IrType): boolean {
  * this capsule is deliberately limited to records/arrays/bytes (including
  * those selected at runtime from a union) that the live materializer can
  * snapshot and commit. */
-function lowerLiveWebValue(lowerer: Lowerer, node: ts.Expression, lowered?: IrExpr): IrExpr {
+export function lowerLiveWebValue(lowerer: Lowerer, node: ts.Expression, lowered?: IrExpr): IrExpr {
   const value = lowered ?? lowerer.lowerExpr(node);
   if (
     hasLiveWebMutableArm(lowerer, value.type) &&
@@ -1467,6 +1468,7 @@ export function lowerStaticFetchCompanionCall(
   if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
   const loc = locOf(call);
   if (root.text === "AbortSignal") {
+    noteEventListeners(lowerer, loc);
     switch (call.expression.name.text) {
       case "timeout":
         if (call.arguments[0] && ts.isSpreadElement(call.arguments[0])) {
@@ -1782,6 +1784,7 @@ export function lowerStaticAbortSignalListenerCall(
   const recv = lowerer.lowerExpr(access.expression);
   if (recv.type.kind !== "dyn") return null;
   const loc = locOf(call);
+  noteEventListeners(lowerer, loc);
   const args = call.arguments.map((arg, index) =>
     index === 1 ? lowerLiveWebValue(lowerer, arg) : lowerer.lowerExprExpecting(arg, DYN),
   );
@@ -1813,6 +1816,7 @@ export function lowerEventTargetNew(lowerer: Lowerer, expr: ts.NewExpression): I
   const args = expr.arguments ?? [];
   if (args.some(ts.isSpreadElement)) return null;
   const loc = locOf(expr);
+  if (name === "EventTarget") noteEventListeners(lowerer, loc);
   const values = args.map((arg) =>
     ts.isObjectLiteralExpression(arg)
       ? lowerDynObjectLiteral(lowerer, arg)
@@ -1847,6 +1851,7 @@ export function lowerAbortControllerNew(lowerer: Lowerer, expr: ts.NewExpression
   const args = expr.arguments ?? [];
   if (args.some((argument) => ts.isSpreadElement(argument))) return null;
   const loc = locOf(expr);
+  noteEventListeners(lowerer, loc);
 
   const result: IrExpr = {
     kind: "libCall",

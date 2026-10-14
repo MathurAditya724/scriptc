@@ -834,10 +834,31 @@ export function lambdaSignature(
     // slots included: no intrinsic lowering inspects an inferred
     // return where its own declared slot is void. Async lambdas stay
     // out (the spawn-wrapper ABI must still return a promise), and an
-    // explicit return annotation keeps its word.
+    // explicit return annotation keeps its word. So does the property
+    // value of an object literal whose contextual type maps to a
+    // checked-dynamic slot or to no lowered type (such as an EventTarget
+    // listener union): that literal's record is typed by its own inferred
+    // properties, so the field keeps the inferred return and can be read
+    // back and called (`{ handleEvent: (e) => count++ }` passed as a
+    // listener still returns the count from `.handleEvent(e)`). A literal
+    // lowered against a declared record type takes that type's void field.
+    const literal =
+      ts.isPropertyAssignment(node.parent) &&
+      node.parent.initializer === node &&
+      ts.isObjectLiteralExpression(node.parent.parent)
+        ? node.parent.parent
+        : null;
+    const literalSlot = literal ? lowerer.checker.getContextualType(literal) : undefined;
+    const literalType =
+      literalSlot !== undefined
+        ? lowerer.mapTypeOf(lowerer.checker.getNonNullableType(literalSlot))
+        : null;
+    const inferredLiteral =
+      literalSlot !== undefined && (literalType === null || literalType.kind === "dyn");
     if (
       !isAsyncLike &&
       !node.type &&
+      !inferredLiteral &&
       ret.kind !== "void" &&
       ctxSigs.length === 1 &&
       !!(lowerer.checker.getReturnTypeOfSignature(ctxSigs[0]!).flags & ts.TypeFlags.Void)

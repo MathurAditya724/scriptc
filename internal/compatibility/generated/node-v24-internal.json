@@ -41288,7 +41288,15 @@
           "tests/corpus/5135-event-target-warnings.js",
           "tests/corpus/5136-events-error-monitor-string-name.ts",
           "tests/corpus/5137-events-error-monitor-computed-name.js",
-          "tests/corpus/5138-events-error-monitor-shared-listener.ts"
+          "tests/corpus/5138-events-error-monitor-shared-listener.ts",
+          "tests/corpus/5240-event-target-subclass.ts",
+          "tests/corpus/5241-event-subclass.ts",
+          "tests/corpus/5242-event-target-subclass-hierarchy.ts",
+          "tests/corpus/5243-event-target-subclass-dynamic.ts",
+          "tests/corpus/5244-event-target-subclass.js",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
+          "tests/corpus/5247-event-target-subclass-lifetimes.ts",
+          "tests/corpus/5248-event-target-subclass-warnings.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -41433,7 +41441,13 @@
           "tests/corpus/5131-event-target-listener-errors.js",
           "tests/corpus/5132-event-target-typed.ts",
           "tests/corpus/5133-abort-signal-event-target.ts",
-          "tests/corpus/5135-event-target-warnings.js"
+          "tests/corpus/5135-event-target-warnings.js",
+          "tests/corpus/5240-event-target-subclass.ts",
+          "tests/corpus/5242-event-target-subclass-hierarchy.ts",
+          "tests/corpus/5243-event-target-subclass-dynamic.ts",
+          "tests/corpus/5244-event-target-subclass.js",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
+          "tests/corpus/5248-event-target-subclass-warnings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -41463,7 +41477,13 @@
           "tests/corpus/5131-event-target-listener-errors.js",
           "tests/corpus/5132-event-target-typed.ts",
           "tests/corpus/5133-abort-signal-event-target.ts",
-          "tests/corpus/5135-event-target-warnings.js"
+          "tests/corpus/5135-event-target-warnings.js",
+          "tests/corpus/5240-event-target-subclass.ts",
+          "tests/corpus/5242-event-target-subclass-hierarchy.ts",
+          "tests/corpus/5243-event-target-subclass-dynamic.ts",
+          "tests/corpus/5244-event-target-subclass.js",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
+          "tests/corpus/5248-event-target-subclass-warnings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -41539,7 +41559,13 @@
           "tests/corpus/5131-event-target-listener-errors.js",
           "tests/corpus/5132-event-target-typed.ts",
           "tests/corpus/5133-abort-signal-event-target.ts",
-          "tests/corpus/5135-event-target-warnings.js"
+          "tests/corpus/5135-event-target-warnings.js",
+          "tests/corpus/5240-event-target-subclass.ts",
+          "tests/corpus/5242-event-target-subclass-hierarchy.ts",
+          "tests/corpus/5243-event-target-subclass-dynamic.ts",
+          "tests/corpus/5244-event-target-subclass.js",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
+          "tests/corpus/5248-event-target-subclass-warnings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -41566,7 +41592,11 @@
         "evidence": "compiler-feature:events.Event",
         "tests": [
           "tests/corpus/5130-event-target-dispatch.js",
-          "tests/corpus/5132-event-target-typed.ts"
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5241-event-subclass.ts",
+          "tests/corpus/5242-event-target-subclass-hierarchy.ts",
+          "tests/corpus/5244-event-target-subclass.js",
+          "tests/corpus/5247-event-target-subclass-lifetimes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -42100,7 +42130,13 @@
           "tests/corpus/5131-event-target-listener-errors.js",
           "tests/corpus/5132-event-target-typed.ts",
           "tests/corpus/5133-abort-signal-event-target.ts",
-          "tests/corpus/5135-event-target-warnings.js"
+          "tests/corpus/5135-event-target-warnings.js",
+          "tests/corpus/5240-event-target-subclass.ts",
+          "tests/corpus/5242-event-target-subclass-hierarchy.ts",
+          "tests/corpus/5243-event-target-subclass-dynamic.ts",
+          "tests/corpus/5244-event-target-subclass.js",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
+          "tests/corpus/5248-event-target-subclass-warnings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -42130,7 +42166,13 @@
           "tests/corpus/5131-event-target-listener-errors.js",
           "tests/corpus/5132-event-target-typed.ts",
           "tests/corpus/5133-abort-signal-event-target.ts",
-          "tests/corpus/5135-event-target-warnings.js"
+          "tests/corpus/5135-event-target-warnings.js",
+          "tests/corpus/5240-event-target-subclass.ts",
+          "tests/corpus/5242-event-target-subclass-hierarchy.ts",
+          "tests/corpus/5243-event-target-subclass-dynamic.ts",
+          "tests/corpus/5244-event-target-subclass.js",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
+          "tests/corpus/5248-event-target-subclass-warnings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -42160,7 +42202,13 @@
           "tests/corpus/5131-event-target-listener-errors.js",
           "tests/corpus/5132-event-target-typed.ts",
           "tests/corpus/5133-abort-signal-event-target.ts",
-          "tests/corpus/5135-event-target-warnings.js"
+          "tests/corpus/5135-event-target-warnings.js",
+          "tests/corpus/5240-event-target-subclass.ts",
+          "tests/corpus/5242-event-target-subclass-hierarchy.ts",
+          "tests/corpus/5243-event-target-subclass-dynamic.ts",
+          "tests/corpus/5244-event-target-subclass.js",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
+          "tests/corpus/5248-event-target-subclass-warnings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -42190,7 +42238,13 @@
           "tests/corpus/5131-event-target-listener-errors.js",
           "tests/corpus/5132-event-target-typed.ts",
           "tests/corpus/5133-abort-signal-event-target.ts",
-          "tests/corpus/5135-event-target-warnings.js"
+          "tests/corpus/5135-event-target-warnings.js",
+          "tests/corpus/5240-event-target-subclass.ts",
+          "tests/corpus/5242-event-target-subclass-hierarchy.ts",
+          "tests/corpus/5243-event-target-subclass-dynamic.ts",
+          "tests/corpus/5244-event-target-subclass.js",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
+          "tests/corpus/5248-event-target-subclass-warnings.ts"
         ]
       },
       "anchorSource": "exact"

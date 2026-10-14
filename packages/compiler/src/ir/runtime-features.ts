@@ -1,6 +1,11 @@
 import type { IrExpr, IrModule, IrType } from "./ir.js";
 import type { IrLibFn } from "./builtin-signatures.js";
-import { RUNTIME_EMITTER_CLASS, RUNTIME_STREAM_CLASSES } from "./ir.js";
+import {
+  RUNTIME_EMITTER_CLASS,
+  RUNTIME_EVENT_CLASS,
+  RUNTIME_EVENT_TARGET_CLASS,
+  RUNTIME_STREAM_CLASSES,
+} from "./ir.js";
 import { everyModuleNode } from "./traverse.js";
 
 export interface RuntimeFeatures {
@@ -114,7 +119,11 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     legacyTextDecoder: false,
     fileHandle: false,
     fetch: false,
-    eventTarget: false,
+    // Subclasses of the runtime EventTarget/Event bases tear down and box
+    // through the EventTarget unit even when no event.* libCall survives.
+    eventTarget: (mod.classes ?? []).some(
+      (c) => c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS,
+    ),
     processEvents: false,
     emitter:
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),

@@ -257,6 +257,7 @@ import {
   appendWorkerModules,
 } from "./lower-modules.js";
 import { prepareCjsModuleGraph } from "./lower-node-module.js";
+import { registerBuiltinEventTargetClasses } from "./lower-event-target.js";
 import {
   type ClassInfo,
   type ClassMethodSignature,
@@ -445,6 +446,7 @@ import {
   stdlibGlobalFnOf,
   lowerAbortControllerNew,
   lowerEventTargetNew,
+  lowerLiveWebValue,
   lowerDynamicImportCall,
   lowerFetchCall,
   lowerFetchElementMethodCall,
@@ -1740,6 +1742,9 @@ export class Lowerer {
   requestInitPropMutatedSyms: Set<ts.Symbol> | null = null;
   emitterEventTable: Map<string, EventSig> | null = null;
   emitterComputedPatterns: ComputedEventPattern[] = [];
+  /** The EventTarget engine's handleEvent reader was lifted
+   * (lower-event-target.ts noteEventListeners). */
+  handleEventReader = false;
   /** Locals widened beyond the checker's type because an inferred indexed
    * read can be absent at runtime. Bare reads preserve that union until a
    * surrounding JavaScript guard/default consumes it. */
@@ -2737,6 +2742,7 @@ export class Lowerer {
     this.registerBuiltinErrorClasses();
     registerBuiltinEmitterClass(this);
     registerBuiltinStreamClasses(this);
+    registerBuiltinEventTargetClasses(this);
   }
 
   registerBuiltinErrorClasses(): void {
@@ -10295,6 +10301,10 @@ export class Lowerer {
 
   lowerElementWrite(expr: ts.BinaryExpression): IrStmt {
     return lowerElementWrite(this, expr);
+  }
+
+  lowerLiveWebValue(node: ts.Expression): IrExpr {
+    return lowerLiveWebValue(this, node);
   }
 
   ensureString(e: IrExpr, node: ts.Node): IrExpr {

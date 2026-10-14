@@ -2718,10 +2718,10 @@ export class LlDyn {
       B.br(done);
       B.startBlock(labels.get(DYN_KIND.TYPED_REF)!);
       {
-        host.declare(`declare ptr @scr_dyn_typed_ref_materialize(ptr)`);
+        host.declare(`declare ptr @scr_dyn_typed_ref_string_view(ptr)`);
         host.declare(`declare void @scr_dyn_release_v(ptr)`);
         const materialized = B.tmp();
-        B.line(`${materialized} = call ptr @scr_dyn_typed_ref_materialize(ptr %d)`);
+        B.line(`${materialized} = call ptr @scr_dyn_typed_ref_string_view(ptr %d)`);
         B.line(`call void @sc_ds_buf(ptr %b, ptr ${materialized})`);
         B.line(`call void @scr_dyn_release_v(ptr ${materialized})`);
         B.br(done);

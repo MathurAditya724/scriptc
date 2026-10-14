@@ -73,6 +73,25 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "event.new": { argTypes: [DYN], result: DYN },
   "event.customNew": { argTypes: [DYN], result: DYN },
   "event.is": { argTypes: [DYN, F64], result: BOOL },
+  /** Compiled EventTarget and Event subclasses: the receiver is the
+   * instance (an object rooted at %EventTarget / %Event). targetInit and
+   * init are super() (init takes the argument vector as one dyn array
+   * and throws the constructor's validation errors; initType is the
+   * super(type) form with a string); targetCall runs an EventTarget method
+   * with the instance's own capsule as `self` (targetDispatch is its
+   * dispatchEvent(event) form, answering the bool); call, get and set
+   * reach the Event members. */
+  "event.targetInit": { argTypes: [null], result: VOID },
+  "event.init": { argTypes: [null, DYN], result: VOID },
+  "event.initType": { argTypes: [null, STRING], result: VOID },
+  /** %main hands the engine the compiled `listener.handleEvent` reader
+   * (lower-event-target.ts noteEventListeners). */
+  "event.handleEventReader": { argTypes: [DYN], result: VOID },
+  "event.targetDispatch": { argTypes: [null, DYN, DYN], result: BOOL },
+  "event.targetCall": { argTypes: [null, DYN, STRING, DYN], result: DYN },
+  "event.call": { argTypes: [null, STRING, DYN], result: DYN },
+  "event.get": { argTypes: [null, STRING], result: DYN },
+  "event.set": { argTypes: [null, STRING, DYN], result: VOID },
   "events.addAbortListener": { argTypes: [DYN, DYN], result: DYN },
   "abort.timeout": { argTypes: [DYN], result: DYN },
   "abort.now": { argTypes: [DYN], result: DYN },
