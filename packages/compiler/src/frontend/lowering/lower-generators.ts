@@ -235,6 +235,24 @@ export function isSettledIteratorValueRead(
   node: ts.PropertyAccessExpression,
 ): boolean {
   if (node.name.text !== "value") return false;
+  // The member's symbol (batched with the program's symbol queries) rules
+  // out every other `.value` before any type query: only the standard
+  // IteratorYieldResult/IteratorReturnResult members qualify.
+  const member = lowerer.checker.getSymbolAtLocation(node.name);
+  if (
+    !member ||
+    !lowerer.checker
+      .declarationsOf(member)
+      .some(
+        (d) =>
+          ts.isPropertySignature(d) &&
+          ts.isInterfaceDeclaration(d.parent) &&
+          (d.parent.name.text === "IteratorYieldResult" ||
+            d.parent.name.text === "IteratorReturnResult") &&
+          lowerer.isStdlibFile(d.getSourceFile()),
+      )
+  )
+    return false;
   const receiver = lowerer.typeOf(node.expression);
   const stdlib = (sym: ts.Symbol | undefined): boolean =>
     sym !== undefined &&
