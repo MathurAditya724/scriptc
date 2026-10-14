@@ -121,7 +121,7 @@ export function targetRefusalDiag(target: string, surface: string, loc: SrcLoc):
   };
 }
 
-/** node:os host facts WASI Preview 1 has no interface for. */
+/** node:os and process host facts WASI Preview 1 has no interface for. */
 const WASI_UNAVAILABLE_HOST_FACTS: ReadonlyMap<string, string> = new Map([
   ["os.cpusTake", "CPU enumeration (WASI Preview 1 has no processor API)"],
   ["os.hostname", "the host name (WASI Preview 1 has no host-name API)"],
@@ -129,6 +129,9 @@ const WASI_UNAVAILABLE_HOST_FACTS: ReadonlyMap<string, string> = new Map([
   ["os.loadavg", "system load averages (WASI Preview 1 has no load API)"],
   ["os.uptime", "system uptime (WASI Preview 1 has no boot-time API)"],
   ["os.getPriority", "process scheduling priority (WASI Preview 1 has no priority API)"],
+  ["process.memoryUsageTake", "process memory statistics (WASI Preview 1 has no memory API)"],
+  ["process.rss", "process memory statistics (WASI Preview 1 has no memory API)"],
+  ["process.ppid", "the parent process id (WASI Preview 1 has no process API)"],
 ]);
 
 export function moduleWasiUnavailableSurface(

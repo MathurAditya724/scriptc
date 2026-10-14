@@ -181,6 +181,7 @@ import { probeNodeRequireRefusal } from "../npm.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { fenceNodeModuleMutation } from "./lower-node-module.js";
+import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
 
 interface UsingRegistration {
   acquire: IrStmt;
@@ -6353,6 +6354,24 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
               loc,
             };
           }
+          // process.title = name: libuv's uv_set_process_title (the
+          // runtime truncates to the original argument area on POSIX).
+          if (flag === "title") {
+            const loc = locOf(expr);
+            const value = lowerer.lowerExpr(expr.right);
+            if (value.type.kind !== "string") {
+              lowerer.noLowering(
+                `process.title writes of '${lowerer.fmt(value.type)}' values`,
+                expr.right,
+                "assign a string",
+              );
+            }
+            return {
+              kind: "exprStmt",
+              expr: { kind: "libCall", fn: "process.setTitle", args: [value], type: VOID, loc },
+              loc,
+            };
+          }
         }
         // `r._read = fn` / `w._write = fn` (and the other underscore
         // methods) on a runtime-stream-rooted receiver: Node's
@@ -9635,6 +9654,7 @@ function lowerForIn(lowerer: Lowerer, stmt: ts.ForInStatement): IrStmt {
       // NAMES (own enumerable properties) — the static key walk omits
       // them (accessor slots live outside declaredOrder), so the loop
       // fences rather than silently skip keys.
+      fencePerfEntryKeyWalk(lowerer, receiver.type, stmt.expression, "for-in");
       if (shapeHasAccessorSlots(rShape)) {
         lowerer.unsupported(
           "SC1090",

@@ -17,6 +17,7 @@ import {
   type IrLibFn,
   type IrStmt,
   STRING,
+  type SrcLoc,
   UNDEFINED_T,
   VOID,
   arrayOf,
@@ -381,6 +382,22 @@ export function lowerProcessProperty(
   }
   if (member === "pid") {
     return { kind: "libCall", fn: "process.pid", args: [], type: F64, loc };
+  }
+  if (member === "ppid") {
+    return { kind: "libCall", fn: "process.ppid", args: [], type: F64, loc };
+  }
+  // process.title: libuv's process title — argv[0] until a write
+  // (lower-stmts' process.title assignment) replaces it.
+  if (member === "title") {
+    return { kind: "libCall", fn: "process.title", args: [], type: STRING, loc };
+  }
+  if (member === "argv0") {
+    return { kind: "libCall", fn: "process.argv0", args: [], type: STRING, loc };
+  }
+  // process.release: the compatibility target's release record, one
+  // stable object like Node's.
+  if (member === "release") {
+    return { kind: "libCall", fn: "process.release", args: [], type: DYN, loc };
   }
   // process.execPath: the compiled binary's own resolved absolute path —
   // the honest answer where Node's is the node executable's (SEMANTICS.md
@@ -851,6 +868,18 @@ export function lowerProcessMethodCall(
       };
     }
   }
+  // process.memoryUsage.rss(): the resident set alone, read on demand.
+  if (
+    access.name.text === "rss" &&
+    !access.questionDotToken &&
+    ts.isPropertyAccessExpression(access.expression) &&
+    lowerer.stdlibGlobalMember(access.expression, "process") === "memoryUsage"
+  ) {
+    if (call.arguments.length !== 0) {
+      lowerer.noLowering(`process.memoryUsage.rss with ${call.arguments.length} arguments`, call);
+    }
+    return { kind: "libCall", fn: "process.rss", args: [], type: F64, loc: locOf(call) };
+  }
   const member = lowerer.stdlibGlobalMember(access, "process");
   if (member === null) return null;
   const loc = locOf(call);
@@ -1206,6 +1235,64 @@ export function lowerProcessMethodCall(
     }
     return { kind: "call", callee: helper, args: [prev], type: t, loc };
   }
+  // process.memoryUsage() — rss from the OS, heapTotal/heapUsed from the
+  // runtime heap's own accounting, external and arrayBuffers 0 (byte
+  // storage lives in the same heap). One sample per call: the interned
+  // helper takes it, then the record reads it field by field.
+  if (member === "memoryUsage") {
+    if (call.arguments.length !== 0) {
+      lowerer.noLowering(`process.memoryUsage with ${call.arguments.length} arguments`, call);
+    }
+    const t = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (t?.kind !== "record") lowerer.badType(call, lowerer.typeOf(call));
+    const shape = lowerer.shapes.get(t.shapeId);
+    if (
+      !shape ||
+      !shape.fields.every((f) => MEMORY_USAGE_FIELDS.includes(f.name) && f.type.kind === "f64")
+    ) {
+      lowerer.badType(call, lowerer.typeOf(call));
+    }
+    const key = `process.memoryUsage:${t.shapeId}`;
+    let helper = lowerer.valueHelpers.get(key);
+    if (!helper) {
+      helper = `%process.memoryUsage.${lowerer.valueHelpers.size}`;
+      lowerer.valueHelpers.set(key, helper);
+      lowerer.liftedFns.push({
+        name: helper,
+        params: [],
+        returnType: t,
+        locals: [],
+        body: [
+          {
+            kind: "exprStmt",
+            expr: { kind: "libCall", fn: "process.memoryUsageTake", args: [], type: VOID, loc },
+            loc,
+          },
+          {
+            kind: "return",
+            value: {
+              kind: "recordLit",
+              fields: shape.fields.map((f) => ({
+                name: f.name,
+                value: {
+                  kind: "libCall",
+                  fn: "process.memoryUsageField",
+                  args: [numLit(MEMORY_USAGE_FIELDS.indexOf(f.name), loc)],
+                  type: F64,
+                  loc,
+                } as IrExpr,
+              })),
+              type: t,
+              loc,
+            },
+            loc,
+          },
+        ],
+        loc,
+      });
+    }
+    return { kind: "call", callee: helper, args: [], type: t, loc };
+  }
   // process.resourceUsage() — getrusage's 16 fields in Node's names and
   // units (CPU times in microseconds, maxRSS in kilobytes).
   if (member === "resourceUsage") {
@@ -1300,17 +1387,11 @@ export function lowerProcessMethodCall(
   // the plain-f64 result is honest here even though @types/node declares
   // the member optional (that optionality covers Windows). The `?.()`
   // spelling routes here through lowerProcessOptionalMethodCall.
-  if (member === "getuid" || member === "getgid") {
+  if (PROCESS_CREDENTIAL_FNS.has(member)) {
     if (call.arguments.length !== 0) {
       lowerer.noLowering(`process.${member} with ${call.arguments.length} arguments`, call);
     }
-    return {
-      kind: "libCall",
-      fn: member === "getuid" ? "process.getuid" : "process.getgid",
-      args: [],
-      type: F64,
-      loc,
-    };
+    return processCredentialCall(member, loc);
   }
   // process.kill(pid, signal?) — Node's semantics exactly: the signal is
   // a name string (the runtime resolves Node's signal table; unknown
@@ -1367,15 +1448,34 @@ export function lowerProcessOptionalMethodCall(
   if (!ts.isPropertyAccessExpression(expr.expression)) return null;
   const member = lowerer.stdlibGlobalMember(expr.expression, "process");
   if (member === "send") return lowerProcessIpcSend(lowerer, expr);
-  if (member !== "getuid" && member !== "getgid") return null;
+  if (member === null || !PROCESS_CREDENTIAL_FNS.has(member)) return null;
   if (expr.arguments.length !== 0) {
     lowerer.noLowering(`process.${member} with ${expr.arguments.length} arguments`, expr);
   }
+  return processCredentialCall(member, locOf(expr));
+}
+
+/** process.memoryUsage()'s fields in Node's order — the runtime's
+ * sample index. */
+const MEMORY_USAGE_FIELDS = ["rss", "heapTotal", "heapUsed", "external", "arrayBuffers"];
+
+/** The POSIX credential readers @types/node declares optional (Windows
+ * has none): getuid(2), getgid(2), geteuid(2), getegid(2), and
+ * getgroups(2). */
+const PROCESS_CREDENTIAL_FNS: ReadonlyMap<string, IrLibFn> = new Map([
+  ["getuid", "process.getuid"],
+  ["getgid", "process.getgid"],
+  ["geteuid", "process.geteuid"],
+  ["getegid", "process.getegid"],
+  ["getgroups", "process.getgroups"],
+]);
+
+function processCredentialCall(member: string, loc: SrcLoc): IrExpr {
   return {
     kind: "libCall",
-    fn: member === "getuid" ? "process.getuid" : "process.getgid",
+    fn: PROCESS_CREDENTIAL_FNS.get(member)!,
     args: [],
-    type: F64,
-    loc: locOf(expr),
+    type: member === "getgroups" ? arrayOf(F64) : F64,
+    loc,
   };
 }

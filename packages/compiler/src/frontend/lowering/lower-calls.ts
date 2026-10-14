@@ -93,7 +93,12 @@ import {
   lowerFileHandleMethodCall,
   lowerWatcherMethodCall,
 } from "./builtins/filesystem.js";
-import { lowerPerfHooksCall } from "./builtins/performance.js";
+import {
+  fencePerfEntryKeyWalk,
+  isPerfEntryType,
+  lowerPerfHooksCall,
+  perfEntryTag,
+} from "./builtins/performance.js";
 import { lowerProcStreamMethodCall } from "./builtins/process.js";
 import { lowerReflectCall } from "./builtins/reflection.js";
 import {
@@ -2449,6 +2454,7 @@ function lowerObjectOwnCall(
     result = nodeThrowExpr(1, "", "Cannot convert undefined or null to object", BOOL, loc);
   } else if (type.kind === "record") {
     const shape = lowerer.shapes.get(type.shapeId);
+    fencePerfEntryKeyWalk(lowerer, type, receiverNode ?? call, `Object.prototype.${method}`);
     if (!shape || shape.tuple || shapeHasAccessorSlots(shape)) {
       lowerer.noLowering(
         "Object.prototype." + method + " over this record shape",
@@ -4050,6 +4056,9 @@ function lowerDefaultToStringCall(
     return null;
   }
   const loc = locOf(call);
+  if (recvT.kind === "record" && isPerfEntryType(lowerer, recvT)) {
+    return perfEntryTag(lowerer, lowerer.lowerExpr(access.expression), recvT, loc);
+  }
   const constant: IrExpr = { kind: "strLit", value: "[object Object]", type: STRING, loc };
   // `(<A>{}).toString()` — assertion-wrapped literals and plain reads
   // have nothing to evaluate; pureObjectToStringReceiver widens
@@ -7438,6 +7447,7 @@ function lowerObjectStaticCall(
   // (own enumerable properties) and — for values/entries — the getter
   // RESULTS, invoked in key order. The static field walk models neither
   // (accessor slots live outside declaredOrder), so the surface fences.
+  fencePerfEntryKeyWalk(lowerer, argIr, call, `Object.${member}`);
   if (shapeHasAccessorSlots(shape)) {
     lowerer.unsupported(
       "SC1090",

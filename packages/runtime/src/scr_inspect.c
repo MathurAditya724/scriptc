@@ -526,6 +526,71 @@ done:;
   return ib_take(&out);
 }
 
+/* ── nested inspections ──────────────────────────────────────────────
+ * A custom inspect that renders another value with util.inspect
+ * (PerformanceEntry's `${constructor.name} ${inspect(this.toJSON(),
+ * opts)}`): Node runs that inspect in a fresh context — indentation,
+ * depth tracking and the circular bookkeeping start over — and the
+ * caller re-indents the result's lines at its own level. nested_begin
+ * sets the fresh context aside the caller's; nested_end restores the
+ * caller's and answers `prefix inner` with every newline re-indented
+ * (+1; both borrowed). */
+typedef struct {
+  size_t indent;
+  double cur_depth;
+  InspSeenEnt *seen;
+  size_t nseen;
+  size_t seen_cap;
+  const void *circ[64];
+  int ncirc;
+} InspSaved;
+
+static SCR_TL InspSaved *g_saved;
+static SCR_TL size_t g_nsaved;
+static SCR_TL size_t g_saved_cap;
+
+void scr_insp_nested_begin(void) {
+  if (g_nsaved == g_saved_cap) {
+    g_saved_cap = g_saved_cap ? g_saved_cap * 2 : 4;
+    g_saved = realloc(g_saved, g_saved_cap * sizeof(InspSaved));
+    if (!g_saved) insp_oom();
+  }
+  InspSaved *sv = &g_saved[g_nsaved++];
+  sv->indent = g_indent;
+  sv->cur_depth = g_cur_depth;
+  sv->seen = g_seen;
+  sv->nseen = g_nseen;
+  sv->seen_cap = g_seen_cap;
+  memcpy(sv->circ, g_circ, sizeof g_circ);
+  sv->ncirc = g_ncirc;
+  g_indent = 0;
+  g_cur_depth = 0;
+  g_seen = NULL;
+  g_nseen = g_seen_cap = 0;
+  g_ncirc = 0;
+}
+
+ScrStr *scr_insp_nested_end(ScrStr *prefix, ScrStr *inner) {
+  InspSaved *sv = &g_saved[--g_nsaved];
+  free(g_seen);
+  g_indent = sv->indent;
+  g_cur_depth = sv->cur_depth;
+  g_seen = sv->seen;
+  g_nseen = sv->nseen;
+  g_seen_cap = sv->seen_cap;
+  memcpy(g_circ, sv->circ, sizeof g_circ);
+  g_ncirc = sv->ncirc;
+  InspBuf out = {0};
+  ib_str(&out, prefix);
+  ib_char(&out, ' ');
+  for (size_t i = 0; i < inner->len; i++) {
+    char c = inner->data[i];
+    ib_char(&out, c);
+    if (c == '\n') ib_spaces(&out, g_indent);
+  }
+  return ib_take(&out);
+}
+
 /* ── string values (formatPrimitive's string half) ───────────────────── */
 
 /* Byte offset of UTF-16 unit `units` — when the boundary splits an astral

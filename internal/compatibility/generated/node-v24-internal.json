@@ -551,9 +551,9 @@
       "apiEntries": 96,
       "static": {
         "supported": 0,
-        "partial": 2,
+        "partial": 19,
         "refused": 0,
-        "not-implemented": 94,
+        "not-implemented": 77,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -581,9 +581,9 @@
       "apiEntries": 119,
       "static": {
         "supported": 0,
-        "partial": 41,
+        "partial": 50,
         "refused": 0,
-        "not-implemented": 78,
+        "not-implemented": 69,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -70150,8 +70150,14 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/2427-perf-hooks-now.ts",
+          "tests/corpus/2446-performance-global.ts",
           "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs"
+          "tests/corpus/2596-net-arg-ladders.cjs",
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5213-perf-timing-errors.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/5215-perf-timing-validation.js"
         ]
       },
       "anchorSource": "chapter"
@@ -70174,8 +70180,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.PerformanceEntry",
+        "tests": [
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -70197,8 +70207,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.duration",
+        "tests": [
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -70220,8 +70234,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.entryType",
+        "tests": [
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -70243,8 +70261,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.name",
+        "tests": [
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -70266,8 +70288,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.startTime",
+        "tests": [
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -70289,8 +70315,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.PerformanceMark",
+        "tests": [
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -70312,8 +70342,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.detail",
+        "tests": [
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -70335,8 +70369,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.PerformanceMeasure",
+        "tests": [
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -70358,8 +70396,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.detail",
+        "tests": [
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -72202,8 +72244,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performance.clearMarks",
+        "tests": [
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5213-perf-timing-errors.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/5215-perf-timing-validation.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -72225,8 +72273,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performance.clearMeasures",
+        "tests": [
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5213-perf-timing-errors.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/5215-perf-timing-validation.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -72294,8 +72348,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performance.getEntries",
+        "tests": [
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5213-perf-timing-errors.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/5215-perf-timing-validation.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -72317,8 +72377,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performance.getEntriesByName",
+        "tests": [
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5213-perf-timing-errors.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/5215-perf-timing-validation.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -72340,8 +72406,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performance.getEntriesByType",
+        "tests": [
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5213-perf-timing-errors.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/5215-perf-timing-validation.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -72363,8 +72435,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performance.mark",
+        "tests": [
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5213-perf-timing-errors.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/5215-perf-timing-validation.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -72409,8 +72487,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performance.measure",
+        "tests": [
+          "tests/corpus/5212-perf-marks-measures.ts",
+          "tests/corpus/5213-perf-timing-errors.ts",
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/5215-perf-timing-validation.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -72432,8 +72516,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performance.now",
+        "tests": [
+          "tests/corpus/2427-perf-hooks-now.ts",
+          "tests/corpus/2446-performance-global.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -72800,6 +72888,8 @@
           "tests/corpus/5188-util-deprecate-flags.cjs",
           "tests/corpus/5189-util-deprecate.ts",
           "tests/corpus/5194-process-emit-warning-tick.cjs",
+          "tests/corpus/5210-process-memory-usage.ts",
+          "tests/corpus/5211-process-identity.ts",
           "tests/corpus/990-process-basics.ts",
           "tests/corpus/node24-env-files-errors.ts",
           "tests/corpus/node24-env-files.ts",
@@ -73583,8 +73673,11 @@
       "anchor": "processgetegid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.process.getegid",
+        "tests": [
+          "tests/corpus/5211-process-identity.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -73601,8 +73694,11 @@
       "anchor": "processgeteuid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.process.geteuid",
+        "tests": [
+          "tests/corpus/5211-process-identity.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -73641,8 +73737,11 @@
       "anchor": "processgetgroups",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.process.getgroups",
+        "tests": [
+          "tests/corpus/5211-process-identity.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -73811,8 +73910,11 @@
       "anchor": "processmemoryusage",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.process.memoryUsage",
+        "tests": [
+          "tests/corpus/5210-process-memory-usage.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -73847,8 +73949,11 @@
       "anchor": "processmemoryusagerss",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.process.memoryUsage.rss",
+        "tests": [
+          "tests/corpus/5210-process-memory-usage.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -74282,8 +74387,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.process.argv0",
+        "tests": [
+          "tests/corpus/5211-process-identity.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -74847,8 +74955,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.process.ppid",
+        "tests": [
+          "tests/corpus/5211-process-identity.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -74865,8 +74976,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.process.release",
+        "tests": [
+          "tests/corpus/5211-process-identity.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -75271,8 +75385,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.process.title",
+        "tests": [
+          "tests/corpus/5211-process-identity.ts"
+        ]
       },
       "anchorSource": "chapter"
     },

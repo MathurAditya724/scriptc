@@ -1001,3 +1001,84 @@ void scr_mem_prefault(void *lo, void *hi) {
   (void)hi;
 #endif
 }
+
+#if defined(__SANITIZE_ADDRESS__)
+#define SCR_HEAP_SANITIZER 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define SCR_HEAP_SANITIZER 1
+#endif
+#endif
+
+#if defined(SCR_HEAP_SANITIZER)
+#include <sanitizer/allocator_interface.h>
+#elif defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
+#include <malloc.h>
+#define SCR_HEAP_MALLINFO2 1
+#elif defined(__APPLE__)
+#include <malloc/malloc.h>
+#elif defined(_WIN32)
+#include <malloc.h>
+#include <windows.h>
+#endif
+
+/* process.memoryUsage's heap figures: the calling thread's small-object
+ * slices (the bytes carved from them; in use is that less the blocks on
+ * their free lists and the zeroed holes left to carve) plus the system
+ * allocator's own totals where the platform reports them (glibc's
+ * mallinfo2, the Darwin malloc zones, the Windows CRT heap, or the
+ * sanitizer's allocator in sanitized builds). Walks the free lists, so
+ * the cost grows with the number of free blocks. */
+void scr_heap_stats(double *total, double *used) {
+  size_t held = 0, idle = 0;
+#if SCR_SMALL_ALLOC
+  for (unsigned c = 0; c < SCR_SA_NCLASS; c++) {
+    if (!scr_sa.lim[c]) continue;
+    size_t sz = (size_t)(c + 1) * SCR_SA_STEP;
+    char *start = (char *)scr_sa.base + ((size_t)c << scr_sa.shift);
+    char *top = scr_sa.bump[c];
+#ifdef SCR_SA_TRIM
+    const ScrSaHoles *h = &scr_sa_holes[scr_sa_arena][c];
+    if (h->lim) {
+      top = h->bump;
+      idle += (size_t)(scr_sa.lim[c] - scr_sa.bump[c]);
+    }
+    for (size_t i = 0; i < h->n; i++) idle += (size_t)(h->runs[i].hi - h->runs[i].lo);
+#endif
+    held += (size_t)(top - start);
+    for (const ScrSaBlock *b = scr_sa.free[c]; b; b = b->next) idle += sz;
+  }
+#endif
+  size_t sys_held = 0, sys_used = 0;
+#if defined(SCR_HEAP_SANITIZER)
+  sys_held = __sanitizer_get_heap_size();
+  sys_used = __sanitizer_get_current_allocated_bytes();
+#elif defined(SCR_HEAP_MALLINFO2)
+  struct mallinfo2 info = mallinfo2();
+  sys_held = info.arena + info.hblkhd;
+  sys_used = info.uordblks + info.hblkhd;
+#elif defined(__APPLE__)
+  malloc_statistics_t stats;
+  malloc_zone_statistics(NULL, &stats);
+  sys_held = stats.size_allocated;
+  sys_used = stats.size_in_use;
+#elif defined(_WIN32)
+  typedef struct {
+    DWORD cb;
+    SIZE_T allocated;
+    SIZE_T committed;
+    SIZE_T reserved;
+    SIZE_T max_reserve;
+  } ScrHeapSummary;
+  typedef BOOL(WINAPI * SummaryFn)(HANDLE, DWORD, ScrHeapSummary *);
+  HMODULE kernel = GetModuleHandleA("kernel32.dll");
+  SummaryFn summary = kernel ? (SummaryFn)(void *)GetProcAddress(kernel, "HeapSummary") : NULL;
+  ScrHeapSummary s = {sizeof s, 0, 0, 0, 0};
+  if (summary && summary((HANDLE)_get_heap_handle(), 0, &s)) {
+    sys_held = s.committed;
+    sys_used = s.allocated;
+  }
+#endif
+  *total = (double)(held + sys_held);
+  *used = (double)(held - (idle < held ? idle : held) + sys_used);
+}

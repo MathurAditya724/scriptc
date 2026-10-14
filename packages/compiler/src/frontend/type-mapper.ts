@@ -812,6 +812,48 @@ function esOwnKeyOrder(names: string[]): string[] {
   return indices.length === 0 ? names : [...indices, ...names.filter((n) => !isArrayIndex(n))];
 }
 
+/** The hidden field that marks the perf_hooks entry record shape. */
+export const PERF_ENTRY_MARKER = "%perfEntry";
+
+/** PerformanceEntry's toJSON fields, in toJSON's order. */
+export const PERF_ENTRY_FIELDS = ["name", "entryType", "startTime", "duration", "detail"];
+
+/** The record shape behind PerformanceEntry, PerformanceMark and
+ * PerformanceMeasure values (see mapType). The marker is an always-absent
+ * optional, so dyn conversions and key walks never see it. */
+export function perfEntryShape(shapes: ShapeRegistry, unions: UnionRegistry): string {
+  return shapes.intern(
+    [
+      { name: PERF_ENTRY_MARKER, type: withUndefinedArm(F64, unions)! },
+      { name: "detail", type: DYN },
+      { name: "duration", type: F64 },
+      { name: "entryType", type: STRING },
+      { name: "name", type: STRING },
+      { name: "startTime", type: F64 },
+    ],
+    false,
+    undefined,
+    PERF_ENTRY_FIELDS,
+  );
+}
+
+/** toJSON()'s plain object over an entry: the same fields without the
+ * marker. */
+export function perfEntryJsonShape(shapes: ShapeRegistry): string {
+  return shapes.intern(
+    [
+      { name: "detail", type: DYN },
+      { name: "duration", type: F64 },
+      { name: "entryType", type: STRING },
+      { name: "name", type: STRING },
+      { name: "startTime", type: F64 },
+    ],
+    false,
+    undefined,
+    PERF_ENTRY_FIELDS,
+  );
+}
+
 function isDeclaredInAmbientModule(d: ts.Declaration, name: string): boolean {
   let node: ts.Node | undefined = d.parent;
   while (node) {
@@ -2220,7 +2262,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("ArrayBuffer") ||
     isStdlibInterface("SharedArrayBuffer") ||
     isStdlibInterface("PropertyDescriptor") ||
-    isStdlibInterface("ProcessVersions")
+    isStdlibInterface("ProcessVersions") ||
+    isStdlibInterface("ProcessRelease")
   )
     return DYN;
   if (Object.values(BYTES_ELEMENT_NAME).some((name) => isStdlibInterface(`${name}Constructor`)))
@@ -3158,6 +3201,41 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         false,
         undefined,
         ["fingerprint", "validFrom", "validTo"],
+      ),
+    };
+  }
+  // perf_hooks' PerformanceEntry, PerformanceMark and PerformanceMeasure
+  // (performance.mark/measure and the getEntries family): ONE record shape
+  // for the three classes, so marks and measures share PerformanceEntry[]
+  // arrays. The visible fields are toJSON's, in its order; the hidden
+  // marker field keeps the shape distinct from a structurally equal user
+  // record (util.inspect names the class from entryType, like Node).
+  // @types/node declares the classes in perf_hooks and global interfaces
+  // over them; the shipped fallback declares the classes.
+  if (
+    (psym?.name === "PerformanceEntry" ||
+      psym?.name === "PerformanceMark" ||
+      psym?.name === "PerformanceMeasure") &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+          ctx.isStdlibFile(d.getSourceFile()),
+      )
+  ) {
+    return { kind: "record", shapeId: perfEntryShape(ctx.shapes, ctx.unions) };
+  }
+  // process.memoryUsage()'s record, in Node's key order.
+  if (isStdlibInterface("MemoryUsage")) {
+    const names = ["rss", "heapTotal", "heapUsed", "external", "arrayBuffers"];
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [...names].sort().map((name) => ({ name, type: F64 })),
+        false,
+        undefined,
+        names,
       ),
     };
   }

@@ -160,7 +160,10 @@ test.each([
   ["os.loadavg", "system load averages"],
   ["os.uptime", "system uptime"],
   ["os.getPriority", "process scheduling priority"],
-] as const)("os host fact %s has no WASI lowering", (libFn, surface) => {
+  ["process.memoryUsageTake", "process memory statistics"],
+  ["process.rss", "process memory statistics"],
+  ["process.ppid", "the parent process id"],
+] as const)("host fact %s has no WASI lowering", (libFn, surface) => {
   const read: IrExpr = { kind: "libCall", fn: libFn, args: [], type: VOID, loc };
   const mod = module();
   mod.functions = [fn("%main", [read])];

@@ -65,6 +65,8 @@ const optional = [
   ["scr_dc.c", "dc"],
   ["scr_event_target.c", any("eventTarget", "nativeFetch")],
   ["scr_async_dyn.c", any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch")],
+  // The performance timeline emits its buffer warning through scr_async_dyn.c.
+  ["scr_perf.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],
   ["scr_events.c", "events"],
   ["scr_readline.c", "events"],

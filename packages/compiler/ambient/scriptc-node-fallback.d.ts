@@ -36,6 +36,26 @@ declare namespace NodeJS {
     user: number;
     system: number;
   }
+  interface MemoryUsage {
+    rss: number;
+    heapTotal: number;
+    heapUsed: number;
+    external: number;
+    arrayBuffers: number;
+  }
+  /* process.memoryUsage(): rss from the OS, heapTotal/heapUsed from the
+   * runtime heap's own accounting; external and arrayBuffers are 0. */
+  interface MemoryUsageFn {
+    (): MemoryUsage;
+    rss(): number;
+  }
+  interface ProcessRelease {
+    name: string;
+    sourceUrl?: string | undefined;
+    headersUrl?: string | undefined;
+    libUrl?: string | undefined;
+    lts?: string | undefined;
+  }
   interface ResourceUsage {
     userCPUTime: number;
     systemCPUTime: number;
@@ -229,6 +249,16 @@ declare var process: {
   readonly execPath: string;
   getuid?(): number;
   getgid?(): number;
+  geteuid?(): number;
+  getegid?(): number;
+  getgroups?(): number[];
+  readonly ppid: number;
+  /* libuv's process title: argv[0] until set; a write is truncated to
+   * the original argument area on POSIX and sets the console title on
+   * Windows. */
+  title: string;
+  argv0: string;
+  readonly release: NodeJS.ProcessRelease;
   /* signal admits null (Node treats it as the SIGTERM default) — real
    * callers forward a `string | null` result field. */
   kill(pid: number, signal?: string | number | null): true;
@@ -255,6 +285,7 @@ declare var process: {
   cpuUsage(previousValue?: NodeJS.CpuUsage): NodeJS.CpuUsage;
   threadCpuUsage(previousValue?: NodeJS.CpuUsage): NodeJS.CpuUsage;
   resourceUsage(): NodeJS.ResourceUsage;
+  memoryUsage: NodeJS.MemoryUsageFn;
   availableMemory(): number;
   constrainedMemory(): number;
   /* The loop's own bookkeeping: 'Timeout' per armed timer, 'Immediate'
@@ -1034,10 +1065,48 @@ declare module "diagnostics_channel" {
  * anchored monotonic clock (Node's timeOrigin for a compiled program),
  * fractional milliseconds. The .bind(performance) spelling lowers to the
  * same clock as a plain () => number function value (the mockable-clock idiom's
- * getTimestamp); everything else fences per member. */
+ * getTimestamp). mark, measure, the getEntries family and the clears run
+ * over the thread's performance timeline with Node's validation; everything
+ * else fences per member. */
 declare module "node:perf_hooks" {
+  export type EntryType = "mark" | "measure";
+  export class PerformanceEntry {
+    protected constructor();
+    readonly duration: number;
+    readonly name: string;
+    readonly startTime: number;
+    readonly entryType: EntryType;
+    toJSON(): any;
+  }
+  export class PerformanceMark extends PerformanceEntry {
+    readonly detail: any;
+    readonly duration: 0;
+    readonly entryType: "mark";
+  }
+  export class PerformanceMeasure extends PerformanceEntry {
+    readonly detail: any;
+    readonly entryType: "measure";
+  }
+  export interface MarkOptions {
+    detail?: unknown | undefined;
+    startTime?: number | undefined;
+  }
+  export interface MeasureOptions {
+    detail?: unknown;
+    duration?: number | undefined;
+    end?: number | string | undefined;
+    start?: number | string | undefined;
+  }
   export interface Performance {
     now(): number;
+    mark(name: string, options?: MarkOptions): PerformanceMark;
+    measure(name: string, startMark?: string, endMark?: string): PerformanceMeasure;
+    measure(name: string, options: MeasureOptions): PerformanceMeasure;
+    getEntries(): PerformanceEntry[];
+    getEntriesByName(name: string, type?: EntryType): PerformanceEntry[];
+    getEntriesByType(type: EntryType): PerformanceEntry[];
+    clearMarks(name?: string): void;
+    clearMeasures(name?: string): void;
   }
   export const performance: Performance;
 }
