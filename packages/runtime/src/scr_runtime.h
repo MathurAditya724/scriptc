@@ -528,7 +528,10 @@ static inline ScrCycHdr *scr_cyc_hdr(void *obj) { return (ScrCycHdr *)obj - 1; }
 extern ScrCycType scr_cyc_types[SCR_CYC_MAX_TYPES];
 uint32_t scr_cyc_register(ScrCycType *type);
 static inline uint32_t scr_cyc_type_id(ScrCycType *type) {
-  return type->id ? type->id : scr_cyc_register(type);
+  /* Acquire pairs with scr_cyc_register's publishing compare-exchange, so
+   * a thread that sees the id also sees its scr_cyc_types entry. */
+  uint32_t id = __atomic_load_n(&type->id, __ATOMIC_ACQUIRE);
+  return id ? id : scr_cyc_register(type);
 }
 
 static inline const ScrCycType *scr_cyc_type(const ScrCycHdr *h) { return &scr_cyc_types[h->id]; }

@@ -92,6 +92,7 @@ describe("emitted object allocation", () => {
     expect(cyc).toContain(
       "  %sa.tidp = getelementptr inbounds { ptr, ptr, i32, i32 }, ptr @ty, i32 0, i32 3",
     );
+    expect(cyc).toContain("  %sa.tid = load atomic i32, ptr %sa.tidp acquire, align 4");
     expect(cyc).toContain("  %sa.small = and i1 %sa.reg, %sa.fits0");
     expect(cyc).toContain("  store i16 %sa.id, ptr %sa.blk ; ScrCycHdr.id");
     expect(cyc).toContain("  store i32 0, ptr %sa.bufp ; ScrCycHdr.buf");

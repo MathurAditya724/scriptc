@@ -215,7 +215,7 @@ function allocLines(
   const registered = cyc
     ? [
         `  %sa.tidp = getelementptr inbounds ${CYC_TYPE}, ptr ${cyc.type}, i32 0, i32 3`,
-        `  %sa.tid = load i32, ptr %sa.tidp`,
+        `  %sa.tid = load atomic i32, ptr %sa.tidp acquire, align 4`,
         `  %sa.reg = icmp ne i32 %sa.tid, 0`,
         `  %sa.fits0 = icmp ule i64 %sa.n, ${SA_MAX}`,
         `  %sa.small = and i1 %sa.reg, %sa.fits0`,
