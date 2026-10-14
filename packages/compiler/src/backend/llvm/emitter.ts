@@ -74,6 +74,7 @@ import {
   type StringSplit,
 } from "./split-loops.js";
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
+import { addRecordResultEntries } from "./record-results.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
 import { analyzeIntegerRanges, INT32_RANGE, type IntegerRanges } from "../../ir/integer-ranges.js";
@@ -123,6 +124,13 @@ import {
 } from "../mangle.js";
 import { analyzeCallLifetimes, type CallLifetimes } from "./call-lifetimes.js";
 import { canStackUnion, emitStackUnion, findLocalStackUnions } from "./stack-unions.js";
+import {
+  emitStackObject,
+  findLocalStackObjects,
+  findReassignedStackObjects,
+  stackObjectStruct,
+  type StackObjectSource,
+} from "./stack-objects.js";
 import {
   allocateLocalUnion,
   emitScalarOptional,
@@ -407,7 +415,9 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
   // Keep source storage intact for debugger inspection in dev builds.
   return new LlEmitter(
     options.debugSources === undefined
-      ? scalarizeNumericRecords(specializeNumericCalls(foldConstantGlobals(mod), mangleFunction))
+      ? addRecordResultEntries(
+          scalarizeNumericRecords(specializeNumericCalls(foldConstantGlobals(mod), mangleFunction)),
+        )
       : mod,
     options,
   ).emit();
@@ -421,7 +431,9 @@ export function emitLlvmModuleSource(
   const mod = unshareNodes(input);
   const parts = new LlEmitter(
     options.debugSources === undefined
-      ? scalarizeNumericRecords(specializeNumericCalls(foldConstantGlobals(mod), mangleFunction))
+      ? addRecordResultEntries(
+          scalarizeNumericRecords(specializeNumericCalls(foldConstantGlobals(mod), mangleFunction)),
+        )
       : mod,
     options,
   ).emitParts();
@@ -475,6 +487,10 @@ export class LlEmitter {
   private scalarStringSlices = new Map<string, IrExpr & { kind: "strIntrinsic" }>();
   readonly stringSlices = new Map<string, StringSliceSnapshot>();
   private localStackUnions = new Map<string, IrExpr & { kind: "unionWrap" }>();
+  private localStackObjects = new Map<string, StackObjectSource>();
+  private reassignedStackObjects = new Set<string>();
+  /** The binding slot of each reassigned stack-object local. */
+  private stackObjectSlots = new Map<string, string>();
   private localUnionStorageProofs = new Map<string, LocalUnionStorageProof>();
   private localUnionStorage = new Map<string, LocalUnionStorage>();
   integerArrayBindings = new Set<string>();
@@ -528,6 +544,8 @@ export class LlEmitter {
     return lines;
   }
   private readonly debug: LlvmDebugInfo | null;
+  /** Projection-only scalar objects may live in frame storage (stack-objects.ts). */
+  readonly stackObjects: boolean;
   private debugScope: string | null = null;
   readonly sizeType: "i32" | "i64";
   readonly ffiExtendNarrowIntegers: boolean;
@@ -928,6 +946,7 @@ export class LlEmitter {
       options.wasi === true || ffiExtendsNarrowIntegers(options.targetTriple);
     this.wasi = options.wasi === true;
     this.stacklessGenerators = !this.wasi && mod.workers !== true && this.debug === null;
+    this.stackObjects = this.debug === null;
     // An empty triple targets the host, as for executableTls below: the
     // Node-hosted CLI passes none, the native CLI passes its toolchain's, and
     // both must emit the same module for the same target.
@@ -5491,6 +5510,13 @@ export class LlEmitter {
       this.debug === null ? findScalarStringSlices(fn, this.callLifetimes) : new Map();
     this.mapReadLifetimes = findMapReadLifetimes(fn, this.boxedUnionsById, this.callLifetimes);
     this.localStackUnions = findLocalStackUnions(fn, this.callLifetimes, this.boxedUnionsById);
+    this.localStackObjects = this.stackObjects
+      ? findLocalStackObjects(this, fn, this.callLifetimes)
+      : new Map();
+    this.reassignedStackObjects = this.stackObjects
+      ? findReassignedStackObjects(this, fn, this.callLifetimes)
+      : new Set();
+    this.stackObjectSlots = new Map();
     this.localUnionStorageProofs = findLocalUnionStorage(fn, this.callLifetimes, this.unionSources);
     this.localUnionStorage = new Map();
     this.walkBorrows = this.walkBorrowsByFunction.get(fn.name) ?? new Set();
@@ -6412,6 +6438,17 @@ export class LlEmitter {
           );
           break;
         }
+        const stackObject = this.localStackObjects.get(s.localId);
+        if (stackObject) {
+          B.line(`store ptr ${emitStackObject(this, stackObject).name}, ptr ${b.slot}`);
+          break;
+        }
+        if (s.init && this.reassignedStackObjects.has(s.localId)) {
+          const slot = this.stackObjectSlot(s.localId, s.init.type);
+          emitStackObject(this, s.init as StackObjectSource, slot);
+          B.line(`store ptr ${slot}, ptr ${b.slot}`);
+          break;
+        }
         const localUnion = this.localStackUnions.get(s.localId);
         if (localUnion) {
           const union = emitStackUnion(this, localUnion);
@@ -6557,6 +6594,15 @@ export class LlEmitter {
           this.releaseValue(old, param.type);
           B.line(`store ptr ${v.name}, ptr ${slot}`);
           B.line(`store ptr ${v.name}, ptr ${owner}`);
+          break;
+        }
+        if (this.reassignedStackObjects.has(s.localId)) {
+          // The new value may read the old one: build it apart, then copy.
+          const struct = stackObjectStruct(s.value.type);
+          const value = emitStackObject(this, s.value as StackObjectSource);
+          const bits = B.tmp();
+          B.line(`${bits} = load ${struct}, ptr ${value.name}`);
+          B.line(`store ${struct} ${bits}, ptr ${this.stackObjectSlot(s.localId, s.value.type)}`);
           break;
         }
         const localStorage = this.localUnionStorage.get(s.localId);
@@ -8538,6 +8584,17 @@ export class LlEmitter {
     if (e.kind === "call" && this.scalarResultCall(e)) return emitCallExpr(this, e, false, true);
     if (e.kind === "call" && this.canBorrowReceiver(e)) return emitBorrowedResultCall(this, e);
     return this.emitExpr(e);
+  }
+
+  /** The frame slot a reassigned stack-object local keeps for its value. */
+  private stackObjectSlot(localId: string, type: IrType): string {
+    let slot = this.stackObjectSlots.get(localId);
+    if (slot === undefined) {
+      slot = this.B.slot();
+      this.B.entryAllocas.push(`${slot} = alloca ${stackObjectStruct(type)}, align 8`);
+      this.stackObjectSlots.set(localId, slot);
+    }
+    return slot;
   }
 
   /** A private stack union source with an independently owned payload. */

@@ -1,7 +1,7 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { matchStringSelfConcat, undefinedArmTag } from "../../ir/analysis.js";
-import { isRefCounted, type IrExpr } from "../../ir/ir.js";
+import { isRefCounted, type IrExpr, type IrType } from "../../ir/ir.js";
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -966,31 +966,7 @@ export function emitRecordExpr(
       const rec = B.tmp();
       B.line(`${rec} = call ptr @${mangleRecordNew(shapeId)}()`);
       const out = host.own({ name: rec, type: e.type });
-      for (const f of e.fields) {
-        if (f.drop) {
-          // A mapping-dropped field: the initializer runs in its source-
-          // order slot — effects included — and the result (if any)
-          // releases with the statement frame instead of storing.
-          host.emitExpr(f.value);
-          continue;
-        }
-        const v = host.emitExpr(f.value);
-        if (f.overflow) {
-          const lit = host.internLiteral(f.name);
-          const acc = v.type.kind === "f64" ? "f64" : v.type.kind === "bool" ? "bool" : "ref";
-          if (acc === "ref") host.moveTemp(v);
-          const ovf = host.recordOvfPtr(rec, shapeId);
-          const argTy = acc === "f64" ? "double" : acc === "bool" ? "i1 zeroext" : "ptr";
-          host.declare(`declare void @scr_map_set_str_${acc}(ptr, ptr, ${argTy})`);
-          B.line(
-            `call void @scr_map_set_str_${acc}(ptr ${ovf}, ptr ${lit}, ${argTy === "i1 zeroext" ? "i1" : argTy} ${v.name})`,
-          );
-          continue;
-        }
-        if (isRefCounted(v.type)) host.moveTemp(v);
-        const { ptr, type } = host.recordFieldPtr(rec, shapeId, f.name);
-        host.storeField(ptr, type, v.name);
-      }
+      emitRecordLitFields(host, e, rec);
       return out;
     }
     case "recordClone": {
@@ -1057,5 +1033,43 @@ export function emitRecordExpr(
       void _exhaustive;
       throw new InternalCompilerError("unreachable");
     }
+  }
+}
+
+/** Write a record literal's fields into the fresh record `rec`, IN SOURCE
+ * ORDER (JS evaluates property values in source order). Ownership of
+ * refcounted values moves in; the struct is fresh, so there is never an
+ * old value to release. */
+export function emitRecordLitFields(
+  host: LlvmEmitterContext,
+  e: IrExpr & { kind: "recordLit" },
+  rec: string,
+): void {
+  const B = host.B;
+  const shapeId = (e.type as IrType & { kind: "record" }).shapeId;
+  for (const f of e.fields) {
+    if (f.drop) {
+      // A mapping-dropped field: the initializer runs in its source-
+      // order slot — effects included — and the result (if any)
+      // releases with the statement frame instead of storing.
+      host.emitExpr(f.value);
+      continue;
+    }
+    const v = host.emitExpr(f.value);
+    if (f.overflow) {
+      const lit = host.internLiteral(f.name);
+      const acc = v.type.kind === "f64" ? "f64" : v.type.kind === "bool" ? "bool" : "ref";
+      if (acc === "ref") host.moveTemp(v);
+      const ovf = host.recordOvfPtr(rec, shapeId);
+      const argTy = acc === "f64" ? "double" : acc === "bool" ? "i1 zeroext" : "ptr";
+      host.declare(`declare void @scr_map_set_str_${acc}(ptr, ptr, ${argTy})`);
+      B.line(
+        `call void @scr_map_set_str_${acc}(ptr ${ovf}, ptr ${lit}, ${argTy === "i1 zeroext" ? "i1" : argTy} ${v.name})`,
+      );
+      continue;
+    }
+    if (isRefCounted(v.type)) host.moveTemp(v);
+    const { ptr, type } = host.recordFieldPtr(rec, shapeId, f.name);
+    host.storeField(ptr, type, v.name);
   }
 }
