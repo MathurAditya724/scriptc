@@ -36,13 +36,43 @@ export function emitAssertInspectLibCall(host: LlvmEmitterContext, e: LibCallExp
 
 export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
-  if (e.fn === "rl.create") {
+  if (e.fn === "rl.create" || e.fn === "rl.createSignal") {
     // readline interface handles are runtime IDs (doubles); an open
-    // interface holds the loop.
+    // interface on stdin holds the loop. The mode literal says which
+    // optional arguments follow (lowerReadlineCreateCall): a stream input
+    // or output goes through scr_stream.c's bridge.
     host.usesTimers = true;
-    host.declare(`declare double @scr_rl_create()`);
+    const modeArg = e.args[0]!;
+    if (modeArg.kind !== "numLit") {
+      throw new InternalCompilerError("llvm emitter bug: rl.create mode is not a literal");
+    }
+    const mode = modeArg.value;
+    let i = 1;
+    const input = mode & 1 ? host.emitExpr(e.args[i++]!).name : "null";
+    const output = mode & 2 ? host.emitExpr(e.args[i++]!).name : "null";
+    const crlf = host.emitExpr(e.args[i++]!).name;
+    const prompt = mode & 16 ? host.emitExpr(e.args[i++]!).name : "null";
+    const signal = mode & 8 ? host.emitExpr(e.args[i++]!).name : "null";
+    let add = "null";
+    if (mode & 8) {
+      host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+      add = "@scr_events_add_abort_listener";
+    }
+    const stdout = mode & 4 ? "true" : "false";
     const t = B.tmp();
-    B.line(`${t} = call double @scr_rl_create()`);
+    if (mode & 3) {
+      host.declare(`declare double @scr_stream_rl_open(ptr, ptr, i1, double, ptr, ptr, ptr)`);
+      B.line(
+        `${t} = call double @scr_stream_rl_open(ptr ${input}, ptr ${output}, i1 ${stdout}, double ${crlf}, ptr ${prompt}, ptr ${signal}, ptr ${add})`,
+      );
+    } else {
+      host.declare(`declare double @scr_rl_open(ptr, ptr, ptr, i1, double, ptr, ptr, ptr)`);
+      B.line(
+        `${t} = call double @scr_rl_open(ptr null, ptr null, ptr null, i1 ${stdout}, double ${crlf}, ptr ${prompt}, ptr ${signal}, ptr ${add})`,
+      );
+    }
+    // A signal that is not an AbortSignal throws ERR_INVALID_ARG_TYPE.
+    if (mode & 8) host.emitPendingCheck();
     return { name: t, type: e.type };
   }
   if (e.fn === "rl.question") {
@@ -54,7 +84,12 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
       throw new InternalCompilerError("llvm emitter bug: rl.question callback not a func");
     const args = e.args.map((a) => host.emitExpr(a));
     host.moveTemp(args[2]!);
-    const adapter = cbT.params.length === 0 ? "scr_rl_answer_thunk0" : "scr_rl_answer_thunk_str";
+    const adapter =
+      cbT.params.length === 0
+        ? "scr_rl_answer_thunk0"
+        : cbT.params[0]!.kind === "dyn"
+          ? "scr_rl_answer_thunk_dyn"
+          : "scr_rl_answer_thunk_str";
     host.declare(`declare void @${adapter}(ptr, ptr)`);
     host.declare(`declare void @scr_rl_question(double, ptr, ptr, ptr)`);
     B.line(
@@ -63,20 +98,53 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
     host.emitPendingCheck();
     return { name: "", type: e.type };
   }
-  if (e.fn === "rl.close") {
-    const id = host.emitExpr(e.args[0]!);
-    host.declare(`declare void @scr_rl_close(double)`);
-    B.line(`call void @scr_rl_close(double ${id.name})`);
-    return { name: "", type: e.type };
-  }
-  if (e.fn === "rl.onClose") {
-    // The close listener MOVES into the interface's registry.
+  if (e.fn === "rl.questionAsync" || e.fn === "rl.questionAsyncSignal") {
+    // The promise question never throws: closed interfaces and aborted
+    // signals reject the answered promise (+1).
     host.usesTimers = true;
+    const args = e.args.map((a) => host.emitExpr(a));
+    let signal = "null";
+    let add = "null";
+    if (e.fn === "rl.questionAsyncSignal") {
+      signal = args[2]!.name;
+      host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+      add = "@scr_events_add_abort_listener";
+    }
+    host.declare(`declare ptr @scr_rl_question_promise(double, ptr, ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_rl_question_promise(double ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${signal}, ptr ${add})`,
+    );
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "rl.on") {
+    // The listener MOVES into the interface's registry; the adapter is
+    // picked by event and parameter count ('line': the text, 'error': the
+    // error, the rest none).
+    host.usesTimers = true;
+    const cbT = e.args[2]!.type;
+    const evArg = e.args[1]!;
+    if (cbT.kind !== "func" || evArg.kind !== "numLit") {
+      throw new InternalCompilerError("llvm emitter bug: rl.on operands");
+    }
     const id = host.emitExpr(e.args[0]!);
-    const cb = host.emitExpr(e.args[1]!);
+    const ev = host.emitExpr(evArg);
+    const cb = host.emitExpr(e.args[2]!);
+    const once = host.emitExpr(e.args[3]!);
     host.moveTemp(cb);
-    host.declare(`declare void @scr_rl_on_close(double, ptr)`);
-    B.line(`call void @scr_rl_on_close(double ${id.name}, ptr ${cb.name})`);
+    let adapter = "null";
+    if (evArg.value === 0 || evArg.value === 4) {
+      const param = cbT.params[0];
+      const kind =
+        param === undefined ? "0" : param.kind === "dyn" ? "_dyn" : evArg.value === 0 ? "_str" : "";
+      const name = evArg.value === 0 ? `scr_rl_answer_thunk${kind}` : `scr_rl_error_thunk${kind}`;
+      host.declare(`declare void @${name}(ptr, ptr)`);
+      adapter = `@${name}`;
+    }
+    host.declare(`declare void @scr_rl_on(double, double, ptr, ptr, i1)`);
+    B.line(
+      `call void @scr_rl_on(double ${id.name}, double ${ev.name}, ptr ${cb.name}, ptr ${adapter}, i1 ${once.name})`,
+    );
     return { name: "", type: e.type };
   }
   return host.emitGenericLibCall(e);
@@ -315,7 +383,12 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
 export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (USES_TIMERS_LIB_FNS.has(e.fn)) host.usesTimers = true;
   if (e.fn === "process.nextTick") return host.emitAsyncContextLibCall(e);
-  if (e.fn === "sp.pipeline") return host.emitStreamLibCall(e);
+  if (
+    e.fn === "sp.pipeline" ||
+    e.fn.startsWith("sp.pipelineOpts") ||
+    e.fn.startsWith("sp.finishedOpts")
+  )
+    return host.emitStreamLibCall(e);
   if (e.fn === "bigint.parse" && e.args[0]?.kind === "strLit") {
     // Literals (`123n`) and constant BigInt("...") texts are immortal
     // statics instead of a parse at every evaluation.

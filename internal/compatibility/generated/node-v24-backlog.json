@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 40,
-        "verify-gap": 2296,
-        "audit-partial": 852,
+        "verify-gap": 2277,
+        "audit-partial": 871,
         "classify": 2,
         "implement": 80
       }
@@ -54988,12 +54988,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.readlinePromises.Interface",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5298-readline-abort.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -55013,12 +55018,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.rl.question",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5298-readline-abort.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -55213,12 +55223,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.readlinePromises.createInterface",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5298-readline-abort.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -55263,12 +55278,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.readline.Interface",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5297-readline-callback-events.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -55288,12 +55308,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.rl.question",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5298-readline-abort.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -55523,7 +55548,10 @@
           "confidence": "high",
           "source": "compiler-feature:readline.rl",
           "tests": [
-            "tests/corpus/2844-node-disposable-resources.ts"
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5297-readline-callback-events.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
           ]
         }
       }
@@ -55544,12 +55572,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.rl.pause",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5297-readline-callback-events.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -55569,12 +55602,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.rl.prompt",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5297-readline-callback-events.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -55594,12 +55632,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.rl.resume",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5297-readline-callback-events.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -55619,12 +55662,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.rl.setPrompt",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5297-readline-callback-events.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -55644,12 +55692,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.rl.getPrompt",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5297-readline-callback-events.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -55669,12 +55722,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.rl.write",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5297-readline-callback-events.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -55694,12 +55752,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.rl",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5297-readline-callback-events.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -55794,12 +55857,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.'close'",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5297-readline-callback-events.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -55819,12 +55887,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.'error'",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5297-readline-callback-events.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -55844,12 +55917,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.'line'",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5297-readline-callback-events.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -55894,12 +55972,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.'pause'",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5297-readline-callback-events.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -55919,12 +56002,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.'resume'",
+          "tests": [
+            "tests/corpus/5295-readline-promises-question.ts",
+            "tests/corpus/5296-readline-lines.ts",
+            "tests/corpus/5297-readline-callback-events.cjs",
+            "tests/corpus/5299-readline-stdin.ts"
+          ]
         }
       }
     },
@@ -57552,7 +57640,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -57581,7 +57671,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -57610,7 +57702,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -57639,7 +57733,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -57668,7 +57764,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -57697,7 +57795,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -58043,12 +58143,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.stream.addAbortSignal",
+          "tests": [
+            "tests/corpus/5300-stream-add-abort-signal.ts",
+            "tests/corpus/5301-stream-add-abort-signal-errors.cjs"
+          ]
         }
       }
     },
@@ -58076,7 +58179,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -58130,7 +58235,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -58159,7 +58266,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -58188,7 +58297,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -58217,7 +58328,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -58246,7 +58359,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -58592,12 +58707,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.stream.addAbortSignal",
+          "tests": [
+            "tests/corpus/5300-stream-add-abort-signal.ts",
+            "tests/corpus/5301-stream-add-abort-signal-errors.cjs"
+          ]
         }
       }
     },
@@ -58625,7 +58743,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -58704,7 +58824,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -58760,7 +58882,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -58789,7 +58913,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -58818,7 +58944,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -58872,7 +59000,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -59381,7 +59511,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -59410,7 +59542,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -59439,7 +59573,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -59468,7 +59604,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -59497,7 +59635,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -59526,7 +59666,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -59555,7 +59697,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -59584,7 +59728,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -59613,7 +59759,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -60848,7 +60996,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -61002,7 +61152,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }
@@ -61031,7 +61183,9 @@
           "tests": [
             "tests/corpus/1685-stream-readable-basics.ts",
             "tests/corpus/1688-stream-writable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs"
+            "tests/corpus/1814-stream-pipeline.cjs",
+            "tests/corpus/5302-stream-promises-options.ts",
+            "tests/corpus/5303-stream-finished-callback-opts.cjs"
           ]
         }
       }

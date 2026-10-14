@@ -46,9 +46,9 @@ fs.watch("/tmp", { persistent: false }, () => {});
 dns.lookup("localhost", { family: 4, hints: 32 }, () => {});
 dns.lookup("localhost", { family: 4, all: true }, () => {});
 
-// readline: a finite crlfDelay is not the lowered splitter; completer
+// readline: history only exists for terminal interfaces; completer
 // needs an interactive terminal.
-readline.createInterface({ input: process.stdin, output: process.stdout, crlfDelay: 100 });
+readline.createInterface({ input: process.stdin, output: process.stdout, historySize: 10 });
 readline.createInterface({ input: process.stdin, output: process.stdout, completer: (l: string) => [[l], l] });
 
 // A bare __proto__: value entry is not an ordinary undocumented key: it

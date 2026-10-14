@@ -2097,11 +2097,39 @@ void scr_stream_finished_dyn_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
 typedef struct {
   size_t rc;
   size_t n, closed;
+  size_t watched;      /* stages with a watcher: all, or all but the last (end: false) */
   ScrStream **streams; /* owned */
   ScrClosure *cb;      /* owned; NULL once fired */
   ScrStreamErrInv inv;
   ScrError *err;       /* first error, owned */
+  ScrDyn *dispose;     /* the signal listener's disposable (+1), or NULL */
+  /* contexts holding a disposable: it holds the abort listener, which
+   * holds the context, so exit releases what a pipeline that never
+   * finished still holds */
+  void *live_prev, *live_next;
 } ScrStreamPipeCtx;
+
+static SCR_TL ScrStreamPipeCtx *scr_pipe_live = NULL;
+
+static void scr_pipe_unlink(ScrStreamPipeCtx *ctx) {
+  ScrStreamPipeCtx *prev = ctx->live_prev, *next = ctx->live_next;
+  if (prev) prev->live_next = next;
+  else if (scr_pipe_live == ctx) scr_pipe_live = next;
+  if (next) next->live_prev = prev;
+  ctx->live_prev = ctx->live_next = NULL;
+}
+
+static void scr_pipe_atexit(void) {
+  while (scr_pipe_live) {
+    ScrStreamPipeCtx *ctx = scr_pipe_live;
+    scr_pipe_unlink(ctx);
+    if (ctx->dispose) {
+      ScrDyn *d = ctx->dispose;
+      ctx->dispose = NULL;
+      scr_dyn_release(d);
+    }
+  }
+}
 
 static void *scr_stream_pipectx_retain_v(void *p) {
   ((ScrStreamPipeCtx *)p)->rc++;
@@ -2115,7 +2143,19 @@ static void scr_stream_pipectx_release_v(void *p) {
   free(ctx->streams);
   if (ctx->cb) scr_closure_release(ctx->cb);
   if (ctx->err) scr_error_release(ctx->err);
+  if (ctx->dispose) scr_dyn_release(ctx->dispose);
+  scr_pipe_unlink(ctx);
   free(ctx);
+}
+
+static void scr_stream_pipectx_dispose(ScrStreamPipeCtx *ctx) {
+  if (!ctx->dispose) return;
+  scr_pipe_unlink(ctx);
+  ScrDyn *d = ctx->dispose;
+  ctx->dispose = NULL;
+  ScrDyn *r = scr_dyn_call(d, NULL, 0, "dispose");
+  if (r) scr_dyn_release(r);
+  scr_dyn_release(d);
 }
 
 static void scr_stream_pipeline_watch_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
@@ -2123,16 +2163,18 @@ static void scr_stream_pipeline_watch_inv(ScrClosure *cb, ScrStream *s, ScrError
   ctx->closed++;
   if (err != NULL && ctx->err == NULL) {
     ctx->err = scr_error_retain(err);
+    scr_stream_pipectx_dispose(ctx);
     /* Node's pipeline destroyer: every other stream goes down with the
      * SAME error, pipeline order (each emits 'error' then 'close'). */
-    for (size_t i = 0; i < ctx->n; i++) {
+    for (size_t i = 0; i < ctx->watched; i++) {
       if (ctx->streams[i] != s) {
         ScrStream *chain = scr_stream_destroy(ctx->streams[i], ctx->err);
         scr_stream_release(chain);
       }
     }
   }
-  if (ctx->closed == ctx->n && ctx->cb != NULL) {
+  if (ctx->closed == ctx->watched && ctx->cb != NULL) {
+    scr_stream_pipectx_dispose(ctx);
     ScrClosure *ucb = ctx->cb;
     ctx->cb = NULL;
     ctx->inv(ucb, ctx->streams[ctx->n - 1], ctx->err);
@@ -2154,30 +2196,89 @@ ScrStream *scr_stream_pipeline_dyn(double n, ScrStream **streams, ScrDyn *cb) {
   return scr_stream_pipeline(n, streams, c, &scr_stream_finished_dyn_inv);
 }
 
+static ScrError *scr_stream_abort_error(ScrDyn *signal);
+static ScrDyn *scr_stream_signal_prop(ScrDyn *signal, const char *key);
+static void *scr_stream_dyn_retain_v(void *p);
+static void scr_stream_dyn_release_v(void *p);
+
+/* pipeline's signal: an abort destroys every watched stage with
+ * new AbortError(undefined, { cause: signal.reason }) (finishImpl's
+ * destroyers); the callback follows the last close. caps[0] the context,
+ * caps[1] the signal. */
+static ScrDyn *scr_stream_pipeline_abort_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrStreamPipeCtx *ctx = scr_box_get_ref(clo->caps[0]); /* +1 */
+  ScrDyn *signal = scr_box_get_ref(clo->caps[1]);       /* +1 */
+  if (ctx->err == NULL && ctx->cb != NULL) {
+    ctx->err = scr_stream_abort_error(signal);
+    scr_stream_pipectx_dispose(ctx);
+    for (size_t i = 0; i < ctx->watched; i++) {
+      ScrStream *chain = scr_stream_destroy(ctx->streams[i], ctx->err);
+      scr_stream_release(chain);
+    }
+  }
+  scr_dyn_release(signal);
+  scr_stream_pipectx_release_v(ctx);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static ScrStream *scr_stream_pipeline_ex(size_t n, ScrStream **streams, ScrClosure *cb,
+                                         ScrStreamErrInv inv, bool end, ScrDyn *signal,
+                                         ScrAbortAddFn add);
+
 ScrStream *scr_stream_pipeline(double n_d, ScrStream **streams /*borrowed*/,
     ScrClosure *cb /*moves*/, ScrStreamErrInv inv) {
-  size_t n = (size_t)n_d;
+  return scr_stream_pipeline_ex((size_t)n_d, streams, cb, inv, true, NULL, NULL);
+}
+
+static ScrStream *scr_stream_pipeline_ex(size_t n, ScrStream **streams, ScrClosure *cb,
+                                         ScrStreamErrInv inv, bool end, ScrDyn *signal,
+                                         ScrAbortAddFn add) {
   ScrStreamPipeCtx *ctx = calloc(1, sizeof *ctx);
   if (!ctx) scr_stream_oom();
   ctx->rc = 1;
   ctx->n = n;
+  ctx->watched = end ? n : n - 1;
   ctx->streams = calloc(n, sizeof *ctx->streams);
   if (!ctx->streams) scr_stream_oom();
   for (size_t i = 0; i < n; i++) ctx->streams[i] = scr_stream_retain(streams[i]);
   ctx->cb = cb;
   ctx->inv = inv;
-  /* Chain the pipes first (end: true — Node's pipeline forwards EOF). */
+  /* Chain the pipes first (Node's pipeline forwards EOF; end: false
+   * leaves the destination open). */
   for (size_t i = 0; i + 1 < n; i++) {
-    ScrStream *d = scr_stream_pipe(streams[i], streams[i + 1], true);
+    ScrStream *d = scr_stream_pipe(streams[i], streams[i + 1], end || i + 2 < n);
     scr_stream_release(d);
   }
-  /* One watcher per stream: the terminal statuses drive error propagation
-   * and the final callback (after the LAST 'close'). */
-  for (size_t i = 0; i < n; i++) {
+  /* One watcher per stream (the destination is not watched under end:
+   * false): the terminal statuses drive error propagation and the final
+   * callback (after the LAST 'close'). */
+  for (size_t i = 0; i < ctx->watched; i++) {
     ScrClosure *w = scr_closure_new((void *)&scr_stream_pipeline_watch_inv, 1);
     w->caps[0] = scr_box_new_obj(&scr_stream_pipectx_retain_v, &scr_stream_pipectx_release_v, NULL);
     scr_box_set_ref(w->caps[0], scr_stream_pipectx_retain_v(ctx));
     scr_stream_fin_add(streams[i]->st, w, &scr_stream_pipeline_watch_inv);
+  }
+  if (signal) {
+    ScrClosure *clo = scr_closure_new((void *)&scr_stream_pipeline_abort_thunk, 2);
+    clo->caps[0] = scr_box_new_obj(&scr_stream_pipectx_retain_v, &scr_stream_pipectx_release_v, NULL);
+    scr_box_set_ref(clo->caps[0], scr_stream_pipectx_retain_v(ctx));
+    clo->caps[1] = scr_box_new_obj(&scr_stream_dyn_retain_v, &scr_stream_dyn_release_v, NULL);
+    scr_box_set_ref(clo->caps[1], scr_dyn_retain(signal));
+    ScrDyn *listener = scr_dyn_new_func(clo, &scr_stream_pipeline_abort_thunk, 0, "()", "abort");
+    ctx->dispose = add(signal, listener);
+    scr_dyn_release(listener);
+    if (ctx->dispose) {
+      static SCR_TL bool registered = false;
+      if (!registered) {
+        registered = true;
+        scr_atexit(scr_pipe_atexit);
+      }
+      ctx->live_next = scr_pipe_live;
+      if (scr_pipe_live) scr_pipe_live->live_prev = ctx;
+      scr_pipe_live = ctx;
+    }
   }
   scr_stream_pipectx_release_v(ctx); /* the boxes own it now */
   return scr_stream_retain(streams[n - 1]);
@@ -2222,6 +2323,32 @@ ScrPromise *scr_sp_finished(ScrStream *s) {
 ScrPromise *scr_sp_pipeline(double n, ScrStream **streams) {
   ScrPromise *p = scr_promise_new();
   ScrStream *dst = scr_stream_pipeline(n, streams, scr_sp_watcher(p), &scr_sp_settle_inv);
+  scr_stream_release(dst);
+  return p;
+}
+
+/* pipeline(...streams, { signal, end }): end false leaves the destination
+ * open (the promise settles once the stages before it finish); signal is
+ * NULL or borrowed — a value that is not an AbortSignal rejects with
+ * ERR_INVALID_ARG_TYPE before anything is piped. */
+ScrPromise *scr_sp_pipeline_opts(double n, ScrStream **streams, bool end, ScrDyn *signal,
+                                 ScrAbortAddFn add) {
+  ScrPromise *p = scr_promise_new();
+  if (signal && scr_dyn_is_nullish(signal)) signal = NULL;
+  if (signal) {
+    ScrDyn *aborted = NULL;
+    if (signal->kind == SCR_DYN_OBJ || signal->kind == SCR_DYN_HANDLE) {
+      aborted = scr_stream_signal_prop(signal, "aborted");
+    }
+    if (!aborted) {
+      scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", signal);
+      scr_promise_reject_pending(p);
+      return p;
+    }
+    scr_dyn_release(aborted);
+  }
+  ScrStream *dst = scr_stream_pipeline_ex((size_t)n, streams, scr_sp_watcher(p),
+                                          &scr_sp_settle_inv, end, signal, add);
   scr_stream_release(dst);
   return p;
 }
@@ -2368,6 +2495,671 @@ ScrPromise *scr_sc_text(ScrStream *s) { return scr_sc_consume(s, SCR_SC_TEXT); }
 ScrPromise *scr_sc_json(ScrStream *s) { return scr_sc_consume(s, SCR_SC_JSON); }
 ScrPromise *scr_sc_buffer(ScrStream *s) { return scr_sc_consume(s, SCR_SC_BUFFER); }
 ScrPromise *scr_sc_array_buffer(ScrStream *s) { return scr_sc_consume(s, SCR_SC_ARRAY_BUFFER); }
+
+/* ── stream.addAbortSignal and the constructors' signal option ─────────
+ * lib/internal/streams/add-abort-signal.js: the signal must be an object
+ * with an `aborted` property (ERR_INVALID_ARG_TYPE otherwise). An aborted
+ * signal destroys the stream now with new AbortError(undefined, { cause:
+ * signal.reason }); otherwise an abort listener does it later, and the
+ * listener is removed when the stream finishes (eos — whose own 'error'
+ * listener also marks the stream's errors handled). The signal's
+ * properties are read through the generic checked-dynamic getters, and
+ * addAbortListener arrives as `add` from the event-target unit, so this
+ * unit links without it. */
+
+static ScrDyn *scr_stream_signal_prop(ScrDyn *signal, const char *key) {
+  size_t n = strlen(key);
+  if (signal->kind == SCR_DYN_OBJ) {
+    ScrDyn *v = scr_dyn_obj_get(signal, key, n);
+    return v ? scr_dyn_retain(v) : NULL;
+  }
+  ScrStr *k = scr_str_new(key, n);
+  ScrDyn *v = scr_dyn_handle_key_get(signal, k);
+  scr_str_release(k);
+  return v;
+}
+
+static ScrError *scr_stream_abort_error(ScrDyn *signal) {
+  ScrStr *message = scr_str_new("The operation was aborted", 25);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_str_release(e->name);
+  e->name = scr_str_new("AbortError", 10);
+  /* AbortError assigns code, then name: own enumerable properties */
+  scr_error_set_code(e, "ABORT_ERR");
+  e->name_present = true;
+  e->name_enumerable = true;
+  ScrDyn *reason = scr_stream_signal_prop(signal, "reason");
+  scr_error_define_cause(e, reason ? reason : scr_dyn_undefined());
+  if (reason) scr_dyn_release(reason);
+  return e;
+}
+
+static void scr_stream_abort_now(ScrStream *s, ScrDyn *signal) {
+  ScrError *e = scr_stream_abort_error(signal);
+  scr_stream_release(scr_stream_destroy(s, e));
+  scr_error_release(e);
+}
+
+/* onAbort: caps[0] the stream, caps[1] the signal. */
+static ScrDyn *scr_stream_abort_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrStream *s = scr_box_get_ref(clo->caps[0]); /* +1, NULL after exit teardown */
+  ScrDyn *signal = scr_box_get_ref(clo->caps[1]); /* +1 */
+  if (s) scr_stream_abort_now(s, signal);
+  scr_dyn_release(signal);
+  if (s) scr_stream_release(s);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* A pending abort hook: the listener closure (borrowed) holds the stream,
+ * and the stream's watcher holds the listener through the disposable — a
+ * cycle the stream's finish breaks. Hooks still pending at exit drop the
+ * listener's stream so the stream can be freed. */
+typedef struct ScrAbortHook {
+  ScrClosure *listener; /* borrowed */
+  struct ScrAbortHook *prev, *next;
+} ScrAbortHook;
+
+static SCR_TL ScrAbortHook *scr_abort_hooks = NULL;
+
+static void scr_abort_hook_unlink(ScrAbortHook *h) {
+  if (h->prev) h->prev->next = h->next;
+  else if (scr_abort_hooks == h) scr_abort_hooks = h->next;
+  if (h->next) h->next->prev = h->prev;
+  free(h);
+}
+
+static void scr_abort_hooks_atexit(void) {
+  while (scr_abort_hooks) {
+    ScrAbortHook *h = scr_abort_hooks;
+    scr_box_set_ref(h->listener->caps[0], NULL);
+    scr_abort_hook_unlink(h);
+  }
+}
+
+static void *scr_stream_ptr_keep_v(void *p) { return p; }
+static void scr_stream_ptr_drop_v(void *p) { (void)p; }
+
+/* The eos callback: the disposable (caps[0]) removes the abort listener;
+ * caps[1] is the pending hook. */
+static void scr_stream_abort_dispose_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  (void)s;
+  (void)err;
+  ScrAbortHook *h = scr_box_get_ref(cb->caps[1]);
+  if (h) {
+    scr_box_set_ref(cb->caps[1], NULL);
+    scr_abort_hook_unlink(h);
+  }
+  ScrDyn *dispose = scr_box_get_ref(cb->caps[0]); /* +1 */
+  ScrDyn *r = scr_dyn_call(dispose, NULL, 0, "dispose");
+  if (r) scr_dyn_release(r);
+  scr_dyn_release(dispose);
+}
+
+static void *scr_stream_dyn_retain_v(void *p) { return p ? scr_dyn_retain(p) : NULL; }
+static void scr_stream_dyn_release_v(void *p) { scr_dyn_release(p); }
+
+/* addAbortSignal(signal, stream), or the `signal` option (from_option:
+ * a falsy value is ignored, Node's `if (options.signal)`). Borrows both;
+ * answers the stream +1, or NULL with ERR_INVALID_ARG_TYPE pending. */
+ScrStream *scr_stream_add_abort_signal(ScrStream *s, ScrDyn *signal, bool from_option,
+                                       ScrAbortAddFn add) {
+  if (from_option && (signal == NULL || !scr_dyn_truthy(signal))) return scr_stream_retain(s);
+  if (signal && signal->kind == SCR_DYN_NULL) {
+    /* typeof null is 'object': the `in` test itself throws */
+    static const char m[] = "Cannot use 'in' operator to search for 'aborted' in null";
+    scr_throw_error_msg(SCR_ERR_TYPE, m, sizeof m - 1);
+    return NULL;
+  }
+  ScrDyn *aborted = NULL;
+  if (signal && (signal->kind == SCR_DYN_OBJ || signal->kind == SCR_DYN_HANDLE)) {
+    aborted = scr_stream_signal_prop(signal, "aborted");
+  }
+  if (aborted == NULL) {
+    scr_dyn_arg_type_fail("signal", "an instance of AbortSignal",
+                          signal ? signal : scr_dyn_undefined());
+    return NULL;
+  }
+  bool is_aborted = scr_dyn_truthy(aborted);
+  scr_dyn_release(aborted);
+  if (is_aborted) {
+    scr_stream_abort_now(s, signal);
+    return scr_stream_retain(s);
+  }
+  ScrClosure *clo = scr_closure_new((void *)&scr_stream_abort_thunk, 2);
+  clo->caps[0] = scr_box_new_obj(&scr_stream_retain_v, &scr_stream_release_v, &scr_stream_trace);
+  scr_box_set_ref(clo->caps[0], scr_stream_retain(s));
+  clo->caps[1] = scr_box_new_obj(&scr_stream_dyn_retain_v, &scr_stream_dyn_release_v, NULL);
+  scr_box_set_ref(clo->caps[1], scr_dyn_retain(signal));
+  ScrDyn *listener = scr_dyn_new_func(clo, &scr_stream_abort_thunk, 0, "()", "onAbort");
+  ScrDyn *dispose = add(signal, listener);
+  scr_dyn_release(listener);
+  if (dispose == NULL) return NULL;
+  static SCR_TL bool registered = false;
+  if (!registered) {
+    registered = true;
+    scr_atexit(scr_abort_hooks_atexit);
+  }
+  ScrAbortHook *h = calloc(1, sizeof *h);
+  if (!h) scr_stream_oom();
+  h->listener = clo;
+  h->next = scr_abort_hooks;
+  if (scr_abort_hooks) scr_abort_hooks->prev = h;
+  scr_abort_hooks = h;
+  ScrClosure *w = scr_closure_new((void *)&scr_stream_abort_dispose_inv, 2);
+  w->caps[0] = scr_box_new_obj(&scr_stream_dyn_retain_v, &scr_stream_dyn_release_v, NULL);
+  scr_box_set_ref(w->caps[0], dispose); /* moves */
+  w->caps[1] = scr_box_new_obj(&scr_stream_ptr_keep_v, &scr_stream_ptr_drop_v, NULL);
+  scr_box_set_ref(w->caps[1], h);
+  scr_closure_release(scr_stream_finished(s, w, &scr_stream_abort_dispose_inv));
+  return scr_stream_retain(s);
+}
+
+/* ── node:readline over stream inputs and outputs ─────────────────────
+ * The Interface's stream side (scr_readline.c has the model): 'data',
+ * 'end' and 'error' listeners on the input, registered in that order like
+ * Node's constructor ('error' first there; it is never observable before
+ * the others), removed again when the interface closes, and prompt
+ * writes to the output. The input resumes at creation (input.resume()). */
+
+typedef struct ScrRlHook {
+  ScrStream *s; /* borrowed: the interface holds the stream */
+  double id;
+  ScrClosure *data, *end, *error; /* borrowed: the emitter owns them */
+  struct ScrRlHook *next;
+} ScrRlHook;
+
+static SCR_TL ScrRlHook *scr_rl_hooks = NULL;
+
+static double scr_stream_rl_id(ScrClosure *cb) { return scr_box_get_f64(cb->caps[0]); }
+
+static void scr_stream_rl_data(ScrClosure *cb, void *b, void *str) {
+  if (b != NULL) scr_rl_input_bytes(scr_stream_rl_id(cb), (ScrBytes *)b);
+  else if (str != NULL) scr_rl_input_str(scr_stream_rl_id(cb), (ScrStr *)str);
+}
+
+static void scr_stream_rl_end(ScrClosure *cb) { scr_rl_input_end(scr_stream_rl_id(cb)); }
+
+static void scr_stream_rl_error(ScrClosure *cb, void *err) {
+  scr_rl_input_error(scr_stream_rl_id(cb), (ScrError *)err);
+}
+
+static ScrClosure *scr_stream_rl_listener(void *fn, double id) {
+  ScrClosure *c = scr_closure_new(fn, 1);
+  c->caps[0] = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(c->caps[0], id);
+  return c;
+}
+
+static void scr_stream_rl_on(ScrStream *s, const char *name, ScrClosure *cb, ScrEeInvoke inv) {
+  ScrStr *n = scr_str_new(name, strlen(name));
+  scr_emitter_release(scr_emitter_on((ScrEmitter *)s, n, cb, inv, false, false));
+  scr_str_release(n);
+}
+
+static void scr_stream_rl_off(ScrStream *s, const char *name, ScrClosure *cb) {
+  ScrStr *n = scr_str_new(name, strlen(name));
+  scr_emitter_release(scr_emitter_off((ScrEmitter *)s, n, cb));
+  scr_str_release(n);
+}
+
+static void scr_stream_rl_pause(void *s) { scr_stream_release(scr_stream_pause(s)); }
+static void scr_stream_rl_resume(void *s) { scr_stream_release(scr_stream_resume(s)); }
+static void scr_stream_rl_write(void *s, ScrStr *text) { scr_stream_write_str(s, text, NULL); }
+static void scr_stream_rl_release(void *s) { scr_stream_release(s); }
+
+static void scr_stream_rl_detach(void *s, double id) {
+  for (ScrRlHook **at = &scr_rl_hooks; *at; at = &(*at)->next) {
+    ScrRlHook *h = *at;
+    if (h->s != s || h->id != id) continue;
+    *at = h->next;
+    scr_stream_rl_off(h->s, "data", h->data);
+    scr_stream_rl_off(h->s, "error", h->error);
+    scr_stream_rl_off(h->s, "end", h->end);
+    free(h);
+    return;
+  }
+}
+
+static const ScrRlIo scr_stream_rl_io = {
+    &scr_stream_rl_pause, &scr_stream_rl_resume, &scr_stream_rl_detach,
+    &scr_stream_rl_write, &scr_stream_rl_release,
+};
+
+static void scr_stream_rl_hooks_free(void) {
+  while (scr_rl_hooks) {
+    ScrRlHook *h = scr_rl_hooks;
+    scr_rl_hooks = h->next;
+    free(h);
+  }
+}
+
+double scr_stream_rl_open(ScrStream *in, ScrStream *out, bool out_stdout, double crlf_delay,
+                          ScrStr *prompt, ScrDyn *signal, ScrAbortAddFn add) {
+  double id = scr_rl_open(&scr_stream_rl_io, in ? scr_stream_retain(in) : NULL,
+                          out ? scr_stream_retain(out) : NULL, out_stdout, crlf_delay, prompt,
+                          signal, add);
+  if (in == NULL) return id;
+  static SCR_TL bool registered = false;
+  if (!registered) {
+    registered = true;
+    scr_atexit(scr_stream_rl_hooks_free);
+  }
+  ScrRlHook *h = calloc(1, sizeof *h);
+  if (!h) scr_stream_oom();
+  h->s = in;
+  h->id = id;
+  h->error = scr_stream_rl_listener((void *)&scr_stream_rl_error, id);
+  h->data = scr_stream_rl_listener((void *)&scr_stream_rl_data, id);
+  h->end = scr_stream_rl_listener((void *)&scr_stream_rl_end, id);
+  h->next = scr_rl_hooks;
+  scr_rl_hooks = h;
+  scr_stream_rl_on(in, "error", h->error, scr_ee_inv_fixed1);
+  scr_stream_rl_on(in, "data", h->data, scr_ee_inv_fixed2);
+  scr_stream_rl_on(in, "end", h->end, scr_ee_inv_fixed0);
+  scr_stream_rl_resume(in);
+  return id;
+}
+
+/* ── finished(stream, options) (lib/internal/streams/end-of-stream.js) ──
+ * The options form registers Node's own listeners on the stream — 'end',
+ * 'finish', 'error' (unless options.error is false) and 'close', in that
+ * order — and decides with Node's predicates over the stream state:
+ * options.readable/writable (default: whether the stream has that side)
+ * choose which ends count, and willEmitClose (autoDestroy, emitClose,
+ * not yet closed, and both sides counted) defers the callback to 'close'.
+ * options.signal: an abort removes the listeners and calls back with
+ * new AbortError(undefined, { cause: signal.reason }). The callback runs
+ * once; the answered cleanup closure removes the listeners. */
+
+typedef struct ScrEos {
+  size_t rc;
+  /* Borrowed: the stream's listeners hold the context, so the context
+   * must not hold the stream; every closure that can run after the
+   * listeners are gone (ticks, the abort listener, cleanup) holds the
+   * stream itself. */
+  ScrStream *s;
+  bool pending;   /* the callback has not run */
+  ScrClosure *cb; /* owned until it runs or cleanup drops it (callback form) */
+  ScrStreamErrInv inv;
+  bool readable, writable;
+  bool will_emit_close;
+  bool readable_finished, writable_finished;
+  bool on_error;
+  ScrClosure *l_end, *l_finish, *l_error, *l_close; /* emitter-owned */
+  ScrDyn *dispose; /* the signal listener's disposable (+1) */
+  ScrDyn *signal;  /* +1 */
+  ScrPromise *promise; /* the promise form (+1) */
+  bool auto_cleanup;
+  struct ScrEos *live_prev, *live_next; /* pending contexts, released at exit */
+} ScrEos;
+
+static SCR_TL ScrEos *scr_eos_live = NULL;
+
+static void scr_eos_unlink(ScrEos *e) {
+  if (e->live_prev) e->live_prev->live_next = e->live_next;
+  else if (scr_eos_live == e) scr_eos_live = e->live_next;
+  if (e->live_next) e->live_next->live_prev = e->live_prev;
+  e->live_prev = e->live_next = NULL;
+}
+
+/* The callback and promise a context still holds: dropped once it
+ * settles, is cleaned up, or the program exits. */
+static void scr_eos_drop(ScrEos *e) {
+  e->pending = false;
+  scr_eos_unlink(e);
+  if (e->cb) {
+    scr_closure_release(e->cb);
+    e->cb = NULL;
+  }
+  if (e->promise) {
+    scr_promise_release(e->promise);
+    e->promise = NULL;
+  }
+}
+
+static void *scr_eos_retain_v(void *p);
+static void scr_eos_release_v(void *p);
+
+/* At exit the disposable goes too: it holds the abort listener, which
+ * holds this context. */
+static void scr_eos_atexit(void) {
+  while (scr_eos_live) {
+    ScrEos *e = scr_eos_retain_v(scr_eos_live);
+    ScrDyn *d = e->dispose;
+    e->dispose = NULL;
+    scr_eos_drop(e);
+    if (d) scr_dyn_release(d);
+    scr_eos_release_v(e);
+  }
+}
+
+static void *scr_eos_retain_v(void *p) {
+  ((ScrEos *)p)->rc++;
+  return p;
+}
+
+static void scr_eos_release_v(void *p) {
+  ScrEos *e = p;
+  if (--e->rc > 0) return;
+  if (e->cb) scr_closure_release(e->cb);
+  if (e->dispose) scr_dyn_release(e->dispose);
+  if (e->signal) scr_dyn_release(e->signal);
+  if (e->promise) scr_promise_release(e->promise);
+  scr_eos_unlink(e);
+  free(e);
+}
+
+/* A closure over the context; `keep` also holds the stream. */
+static ScrClosure *scr_eos_closure_k(void *fn, ScrEos *e, bool keep) {
+  ScrClosure *c = scr_closure_new(fn, keep ? 2 : 1);
+  c->caps[0] = scr_box_new_obj(&scr_eos_retain_v, &scr_eos_release_v, NULL);
+  scr_box_set_ref(c->caps[0], scr_eos_retain_v(e));
+  if (keep) {
+    c->caps[1] = scr_box_new_obj(&scr_stream_retain_v, &scr_stream_release_v, &scr_stream_trace);
+    scr_box_set_ref(c->caps[1], scr_stream_retain(e->s));
+  }
+  return c;
+}
+
+static ScrClosure *scr_eos_closure(void *fn, ScrEos *e) { return scr_eos_closure_k(fn, e, false); }
+
+static ScrEos *scr_eos_of(ScrClosure *c) { return scr_box_get_ref(c->caps[0]); /* +1 */ }
+
+/* Node's predicates (internal/streams/utils.js) over the state. */
+static bool scr_eos_closed(const ScrStreamState *st) { return st->close_scheduled || st->close_emitted; }
+static bool scr_eos_readable_prop(const ScrStreamState *st) {
+  return st->has_r && !st->destroyed && !st->error_emitted && !st->r.end_emitted;
+}
+static bool scr_eos_writable_prop(const ScrStreamState *st) {
+  return st->has_w && !st->destroyed && !st->errored && !st->w.ending;
+}
+static bool scr_eos_readable_finished(const ScrStreamState *st, bool strict) {
+  if (!st->has_r || st->errored) return false;
+  return st->r.end_emitted || (!strict && st->r.ended && st->r.length == 0);
+}
+static bool scr_eos_writable_finished(const ScrStreamState *st, bool strict) {
+  if (!st->has_w) return false;
+  if (st->w.finished) return true;
+  if (st->errored) return false;
+  return !strict && st->w.ending && st->w.length == 0;
+}
+/* isReadable/isWritable: -1 for null (no such property), else 0/1. */
+static int scr_eos_is_readable(const ScrStreamState *st) {
+  if (!st->has_r) return -1;
+  if (st->destroyed) return 0;
+  return scr_eos_readable_prop(st) && !st->r.end_emitted;
+}
+static int scr_eos_is_writable(const ScrStreamState *st) {
+  if (!st->has_w) return -1;
+  if (st->destroyed) return 0;
+  return scr_eos_writable_prop(st) && !st->w.ending;
+}
+
+static void scr_eos_unlisten(ScrEos *e) {
+  ScrStream *s = e->s;
+  if (e->l_end) scr_stream_rl_off(s, "end", e->l_end);
+  if (e->l_finish) scr_stream_rl_off(s, "finish", e->l_finish);
+  if (e->l_error) scr_stream_rl_off(s, "error", e->l_error);
+  if (e->l_close) scr_stream_rl_off(s, "close", e->l_close);
+  e->l_end = e->l_finish = e->l_error = e->l_close = NULL;
+}
+
+static void scr_eos_dispose_signal(ScrEos *e) {
+  if (!e->dispose) return;
+  ScrDyn *d = e->dispose;
+  e->dispose = NULL;
+  ScrDyn *r = scr_dyn_call(d, NULL, 0, "dispose");
+  if (r) scr_dyn_release(r);
+  scr_dyn_release(d);
+}
+
+static void scr_eos_settle(ScrEos *e, ScrError *err);
+
+/* callback.call(stream, err): once; borrows err. */
+static void scr_eos_fire(ScrEos *e, ScrError *err) {
+  if (!e->pending) return;
+  scr_eos_dispose_signal(e);
+  scr_eos_settle(e, err);
+}
+
+/* Runs the callback (or settles the promise) and drops them. */
+static void scr_eos_settle(ScrEos *e, ScrError *err) {
+  scr_eos_retain_v(e);
+  ScrClosure *cb = e->cb;
+  ScrPromise *p = e->promise;
+  e->cb = NULL;
+  e->promise = NULL;
+  e->pending = false;
+  scr_eos_unlink(e);
+  if (p) {
+    if (e->auto_cleanup) scr_eos_unlisten(e);
+    if (err != NULL) {
+      scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
+                    scr_error_trace_arg());
+      scr_promise_reject_pending(p);
+    } else {
+      scr_promise_fulfill_void(p);
+    }
+    scr_promise_release(p);
+  } else if (cb) {
+    e->inv(cb, e->s, err);
+    scr_closure_release(cb);
+  }
+  scr_eos_release_v(e);
+}
+
+static void scr_eos_premature(ScrEos *e) {
+  ScrError *err = scr_stream_mkerr("ERR_STREAM_PREMATURE_CLOSE", "Premature close");
+  scr_eos_fire(e, err);
+  scr_error_release(err);
+}
+
+static void scr_eos_onfinish(ScrClosure *c) {
+  ScrEos *e = scr_eos_of(c);
+  ScrStreamState *st = e->s->st;
+  e->writable_finished = true;
+  if (st->destroyed) e->will_emit_close = false;
+  if (!(e->will_emit_close && (!scr_eos_readable_prop(st) || e->readable))) {
+    if (!e->readable || e->readable_finished) scr_eos_fire(e, NULL);
+  }
+  scr_eos_release_v(e);
+}
+
+static void scr_eos_onend(ScrClosure *c) {
+  ScrEos *e = scr_eos_of(c);
+  ScrStreamState *st = e->s->st;
+  e->readable_finished = true;
+  if (st->destroyed) e->will_emit_close = false;
+  if (!(e->will_emit_close && (!scr_eos_writable_prop(st) || e->writable))) {
+    if (!e->writable || e->writable_finished) scr_eos_fire(e, NULL);
+  }
+  scr_eos_release_v(e);
+}
+
+static void scr_eos_onerror(ScrClosure *c, void *err) {
+  ScrEos *e = scr_eos_of(c);
+  scr_eos_fire(e, (ScrError *)err);
+  scr_eos_release_v(e);
+}
+
+static void scr_eos_onclose(ScrClosure *c) {
+  ScrEos *e = scr_eos_of(c);
+  ScrStreamState *st = e->s->st;
+  if (st->errored) {
+    scr_eos_fire(e, st->errored);
+  } else if (e->readable && !e->readable_finished && st->has_r &&
+             !scr_eos_readable_finished(st, false)) {
+    scr_eos_premature(e);
+  } else if (e->writable && !e->writable_finished && !scr_eos_writable_finished(st, false)) {
+    scr_eos_premature(e);
+  } else {
+    scr_eos_fire(e, NULL);
+  }
+  scr_eos_release_v(e);
+}
+
+static void scr_eos_onclosed(ScrClosure *c) {
+  ScrEos *e = scr_eos_of(c);
+  ScrStreamState *st = e->s->st;
+  scr_eos_fire(e, st->errored);
+  scr_eos_release_v(e);
+}
+
+/* abort: the listeners go (cleanup keeps the callback for this call),
+ * then the callback runs with the AbortError. */
+static void scr_eos_abort(ScrEos *e) {
+  if (!e->pending) return;
+  scr_eos_unlisten(e);
+  scr_eos_dispose_signal(e);
+  ScrError *err = scr_stream_abort_error(e->signal);
+  scr_eos_settle(e, err);
+  scr_error_release(err);
+}
+
+static void scr_eos_abort_tick(ScrClosure *c) {
+  ScrEos *e = scr_eos_of(c);
+  scr_eos_abort(e);
+  scr_eos_release_v(e);
+}
+
+static ScrDyn *scr_eos_abort_thunk(ScrClosure *c, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrEos *e = scr_eos_of(c);
+  scr_eos_abort(e);
+  scr_eos_release_v(e);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static void scr_eos_cleanup_fn(ScrClosure *c) {
+  ScrEos *e = scr_eos_of(c);
+  scr_eos_unlisten(e);
+  scr_eos_dispose_signal(e);
+  if (e->pending) scr_eos_drop(e);
+  scr_eos_release_v(e);
+}
+
+/* readable/writable: -1 for the default; on_error: options.error !==
+ * false; signal: NULL when absent (borrowed). cb moves. Answers the +1
+ * cleanup closure, or NULL with ERR_INVALID_ARG_TYPE pending for a signal
+ * that is not an AbortSignal. */
+static ScrClosure *scr_stream_eos_impl(ScrStream *s, ScrClosure *cb, ScrStreamErrInv inv,
+                                       ScrPromise *p, bool auto_cleanup, int readable,
+                                       int writable, bool on_error, ScrDyn *signal,
+                                       ScrAbortAddFn add) {
+  ScrStreamState *st = s->st;
+  static SCR_TL bool registered = false;
+  if (!registered) {
+    registered = true;
+    scr_atexit(scr_eos_atexit);
+  }
+  if (signal && !scr_dyn_is_nullish(signal)) {
+    ScrDyn *aborted = NULL;
+    if (signal->kind == SCR_DYN_OBJ || signal->kind == SCR_DYN_HANDLE) {
+      aborted = scr_stream_signal_prop(signal, "aborted");
+    }
+    if (!aborted) {
+      if (cb) scr_closure_release(cb);
+      scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", signal);
+      return NULL;
+    }
+    scr_dyn_release(aborted);
+  } else {
+    signal = NULL;
+  }
+  ScrEos *e = calloc(1, sizeof *e);
+  if (!e) scr_stream_oom();
+  e->rc = 1;
+  e->s = s;
+  e->pending = true;
+  e->cb = cb;
+  e->inv = inv;
+  e->promise = p ? scr_promise_retain(p) : NULL;
+  e->auto_cleanup = auto_cleanup;
+  e->live_next = scr_eos_live;
+  if (scr_eos_live) scr_eos_live->live_prev = e;
+  scr_eos_live = e;
+  e->readable = readable < 0 ? st->has_r : readable != 0;
+  e->writable = writable < 0 ? st->has_w : writable != 0;
+  e->on_error = on_error;
+  e->will_emit_close = st->auto_destroy && st->emit_close && !scr_eos_closed(st) &&
+                       st->has_r == e->readable && st->has_w == e->writable;
+  e->writable_finished = scr_eos_writable_finished(st, false);
+  e->readable_finished = scr_eos_readable_finished(st, false);
+  e->l_end = scr_eos_closure((void *)&scr_eos_onend, e);
+  e->l_finish = scr_eos_closure((void *)&scr_eos_onfinish, e);
+  e->l_close = scr_eos_closure((void *)&scr_eos_onclose, e);
+  scr_stream_rl_on(s, "end", e->l_end, scr_ee_inv_fixed0);
+  scr_stream_rl_on(s, "finish", e->l_finish, scr_ee_inv_fixed0);
+  if (on_error) {
+    e->l_error = scr_eos_closure((void *)&scr_eos_onerror, e);
+    scr_stream_rl_on(s, "error", e->l_error, scr_ee_inv_fixed1);
+  }
+  scr_stream_rl_on(s, "close", e->l_close, scr_ee_inv_fixed0);
+  bool closed = scr_eos_closed(st);
+  if (closed) {
+    scr_next_tick(scr_eos_closure_k((void *)&scr_eos_onclose, e, true));
+  } else if (st->error_emitted) {
+    if (!e->will_emit_close) scr_next_tick(scr_eos_closure_k((void *)&scr_eos_onclosed, e, true));
+  } else if (!e->readable && (!e->will_emit_close || scr_eos_is_readable(st) == 1) &&
+             (e->writable_finished || scr_eos_is_writable(st) == 0) &&
+             (!st->has_w || (!st->w.writing && st->w.head == st->w.n))) {
+    scr_next_tick(scr_eos_closure_k((void *)&scr_eos_onclosed, e, true));
+  } else if (!e->writable && (!e->will_emit_close || scr_eos_is_writable(st) == 1) &&
+             (e->readable_finished || scr_eos_is_readable(st) == 0)) {
+    scr_next_tick(scr_eos_closure_k((void *)&scr_eos_onclosed, e, true));
+  }
+  if (signal && !closed) {
+    e->signal = scr_dyn_retain(signal);
+    ScrDyn *aborted = scr_stream_signal_prop(signal, "aborted");
+    bool is_aborted = aborted && scr_dyn_truthy(aborted);
+    if (aborted) scr_dyn_release(aborted);
+    if (is_aborted) {
+      scr_next_tick(scr_eos_closure_k((void *)&scr_eos_abort_tick, e, true));
+    } else {
+      ScrClosure *clo = scr_eos_closure_k((void *)&scr_eos_abort_thunk, e, true);
+      ScrDyn *listener = scr_dyn_new_func(clo, &scr_eos_abort_thunk, 0, "()", "abort");
+      e->dispose = add(signal, listener);
+      scr_dyn_release(listener);
+    }
+  }
+  ScrClosure *cleanup = scr_eos_closure_k((void *)&scr_eos_cleanup_fn, e, true);
+  scr_eos_release_v(e);
+  return cleanup;
+}
+
+ScrClosure *scr_stream_finished_opts(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamErrInv inv,
+                                     double readable, double writable, bool on_error,
+                                     ScrDyn *signal, ScrAbortAddFn add) {
+  return scr_stream_eos_impl(s, cb, inv, NULL, false, (int)readable, (int)writable, on_error,
+                             signal, add);
+}
+
+ScrClosure *scr_stream_finished_opts_dyn(ScrStream *s, ScrDyn *cb, double readable,
+                                         double writable, bool on_error, ScrDyn *signal,
+                                         ScrAbortAddFn add) {
+  ScrClosure *c = scr_stream_dynopt_clo(cb, (void *)&scr_stream_finished_dyn_inv);
+  return scr_stream_eos_impl(s, c, &scr_stream_finished_dyn_inv, NULL, false, (int)readable,
+                             (int)writable, on_error, signal, add);
+}
+
+/* stream/promises finished(stream, options): cleanup removes the
+ * listeners once the promise settles. */
+ScrPromise *scr_sp_finished_opts(ScrStream *s, double readable, double writable, bool on_error,
+                                 bool cleanup, ScrDyn *signal, ScrAbortAddFn add) {
+  ScrPromise *p = scr_promise_new();
+  ScrClosure *cleanup_fn = scr_stream_eos_impl(s, NULL, NULL, p, cleanup, (int)readable,
+                                               (int)writable, on_error, signal, add);
+  if (cleanup_fn == NULL) {
+    scr_promise_reject_pending(p);
+    return p;
+  }
+  scr_closure_release(cleanup_fn);
+  return p;
+}
 
 /* ── node:console Console instances over writable streams ─────────────
  * Node's kWriteToConsole: with ignoreErrors (the default) one shared noop

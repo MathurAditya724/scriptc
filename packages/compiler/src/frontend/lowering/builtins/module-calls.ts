@@ -181,7 +181,10 @@ export function lowerBuiltinModuleCall(
     const lowered = lowerDiagnosticsChannelCall(lowerer, expr, bi, loc);
     if (lowered) return lowered;
   }
-  if (bi.module === "readline" && bi.member === "createInterface") {
+  if (
+    (bi.module === "readline" || bi.module === "readline/promises") &&
+    bi.member === "createInterface"
+  ) {
     return lowerReadlineCreateCall(lowerer, expr, loc);
   }
   if (bi.module === "fs" && bi.member === "readFileSync" && expr.arguments.length === 2) {

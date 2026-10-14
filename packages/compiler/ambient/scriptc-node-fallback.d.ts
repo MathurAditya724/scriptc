@@ -3033,28 +3033,81 @@ declare module "node:querystring" {
  * on("close", cb). An open interface keeps the process alive until
  * close()/EOF, Node's semantics; lines split on \n and \r\n. */
 declare module "readline" {
+  /* The non-terminal Interface over process.stdin or a stream input
+   * (scr_readline.c). Listener registrations are statements: chaining
+   * on()/once() results has no lowering. */
   export interface Interface extends Disposable {
     question(query: string, callback: (answer: string) => void): void;
     close(): void;
-    on(event: "close", listener: () => void): void;
+    pause(): this;
+    resume(): this;
+    prompt(preserveCursor?: boolean): void;
+    setPrompt(prompt: string): void;
+    getPrompt(): string;
+    write(data: string): void;
+    on(event: "line", listener: (input: string) => void): this;
+    on(event: "close" | "pause" | "resume", listener: () => void): this;
+    on(event: "error", listener: (err: Error) => void): this;
+    once(event: "line", listener: (input: string) => void): this;
+    once(event: "close" | "pause" | "resume", listener: () => void): this;
+    once(event: "error", listener: (err: Error) => void): this;
+    addListener(event: "line", listener: (input: string) => void): this;
+    addListener(event: "close" | "pause" | "resume", listener: () => void): this;
+    addListener(event: "error", listener: (err: Error) => void): this;
+    [Symbol.asyncIterator](): AsyncIterableIterator<string>;
     [Symbol.dispose](): void;
   }
-  export function createInterface(options: {
+  export interface ReadLineOptions {
     input: unknown;
     output?: unknown;
     terminal?: boolean;
-    /* crlfDelay: Infinity is accepted — the lowered splitter already
-     * holds a trailing \r for the next chunk, Node's Infinity behavior;
-     * completer and the history knobs fence by name (no interactive
-     * terminal). The options-record stance (see http.RequestOptions)
-     * admits every key; the walk decides. */
+    /* Node's crlfDelay: a \n arriving within this many ms (at least 100)
+     * after a line ended by \r is dropped. completer and the history
+     * knobs fence by name (no interactive terminal). The options-record
+     * stance (see http.RequestOptions) admits every key; the walk
+     * decides. */
     crlfDelay?: number;
     completer?: unknown;
+    signal?: AbortSignal;
     [option: string]: unknown;
-  }): Interface;
+  }
+  export function createInterface(options: ReadLineOptions): Interface;
+  export function createInterface(input: unknown, output?: unknown): Interface;
 }
 declare module "node:readline" {
   export * from "readline";
+}
+declare module "readline/promises" {
+  import { ReadLineOptions } from "readline";
+  /* The readline Interface with the promise question: it resolves with
+   * the next line, rejects with an AbortError when options.signal aborts,
+   * and with ERR_USE_AFTER_CLOSE after close(). */
+  export interface Interface extends Disposable {
+    question(query: string, options?: { signal?: AbortSignal }): Promise<string>;
+    close(): void;
+    pause(): this;
+    resume(): this;
+    prompt(preserveCursor?: boolean): void;
+    setPrompt(prompt: string): void;
+    getPrompt(): string;
+    write(data: string): void;
+    on(event: "line", listener: (input: string) => void): this;
+    on(event: "close" | "pause" | "resume", listener: () => void): this;
+    on(event: "error", listener: (err: Error) => void): this;
+    once(event: "line", listener: (input: string) => void): this;
+    once(event: "close" | "pause" | "resume", listener: () => void): this;
+    once(event: "error", listener: (err: Error) => void): this;
+    addListener(event: "line", listener: (input: string) => void): this;
+    addListener(event: "close" | "pause" | "resume", listener: () => void): this;
+    addListener(event: "error", listener: (err: Error) => void): this;
+    [Symbol.asyncIterator](): AsyncIterableIterator<string>;
+    [Symbol.dispose](): void;
+  }
+  export function createInterface(options: ReadLineOptions): Interface;
+  export function createInterface(input: unknown, output?: unknown): Interface;
+}
+declare module "node:readline/promises" {
+  export * from "readline/promises";
 }
 
 /* node:zlib — the one-shot zlib/raw/gzip codecs lower for string/Buffer
@@ -4731,7 +4784,7 @@ declare module "stream" {
     emitClose?: boolean;
     captureRejections?: boolean;
     defaultEncoding?: string;
-    signal?: unknown;
+    signal?: AbortSignal;
   }
   interface WritableOptions {
     highWaterMark?: number;
@@ -4751,7 +4804,7 @@ declare module "stream" {
     autoDestroy?: boolean;
     emitClose?: boolean;
     captureRejections?: boolean;
-    signal?: unknown;
+    signal?: AbortSignal;
   }
   interface DuplexOptions {
     highWaterMark?: number;
@@ -4780,7 +4833,7 @@ declare module "stream" {
     writable?: boolean;
     defaultEncoding?: string;
     writev?(this: Duplex, chunks: unknown[], callback: (error?: Error | null) => void): void;
-    signal?: unknown;
+    signal?: AbortSignal;
   }
   interface TransformOptions {
     highWaterMark?: number;
@@ -4816,7 +4869,7 @@ declare module "stream" {
     readable?: boolean;
     writable?: boolean;
     defaultEncoding?: string;
-    signal?: unknown;
+    signal?: AbortSignal;
   }
 
   class Readable extends EventEmitter {
@@ -5060,15 +5113,34 @@ declare module "stream" {
     constructor(opts?: TransformOptions);
   }
 
+  /* addAbortSignal(signal, stream): the stream, destroyed with an
+   * AbortError (cause: signal.reason) when the signal aborts. */
+  function addAbortSignal<T extends Readable | Writable>(signal: AbortSignal, stream: T): T;
   /* Declared so requires typecheck; each fences at its use site. */
   function pipeline(...streams: unknown[]): unknown;
+  /* finished's options: readable/writable choose which ends count,
+   * error: false ignores 'error' events, signal aborts the wait. */
+  interface FinishedOptions {
+    readable?: boolean;
+    writable?: boolean;
+    error?: boolean;
+    signal?: AbortSignal;
+  }
   function finished(stream: unknown, callback: (err?: Error | null) => void): () => void;
+  function finished(
+    stream: unknown,
+    options: FinishedOptions | null,
+    callback: (err?: Error | null) => void,
+  ): () => void;
   /* Folds to the TARGET platform's default at compile time (win32 16384,
    * else 65536 — Node's own state.js split); literal argument only. */
   function getDefaultHighWaterMark(objectMode: boolean): number;
   namespace promises {
     function pipeline(...streams: unknown[]): Promise<void>;
-    function finished(stream: unknown): Promise<void>;
+    function finished(
+      stream: unknown,
+      options?: FinishedOptions & { cleanup?: boolean },
+    ): Promise<void>;
   }
   class Stream extends EventEmitter {}
 
@@ -5079,12 +5151,19 @@ declare module "stream" {
     Transform,
     PassThrough,
     Stream,
+    addAbortSignal,
     pipeline,
     finished,
     getDefaultHighWaterMark,
     promises,
   };
-  export type { ReadableOptions, WritableOptions, DuplexOptions, TransformOptions };
+  export type {
+    ReadableOptions,
+    WritableOptions,
+    DuplexOptions,
+    TransformOptions,
+    FinishedOptions,
+  };
 }
 declare module "node:stream" {
   import stream = require("stream");
@@ -5094,9 +5173,20 @@ declare module "stream/promises" {
   /* The promise forms of finished/pipeline: a void promise the stream's
    * terminal point settles (rejected with the error, or
    * ERR_STREAM_PREMATURE_CLOSE on an early close). Stream arguments are
-   * the lowered surface — iterables/generators/functions fence per site. */
+   * the lowered surface — iterables/generators/functions fence per site.
+   * pipeline's trailing { signal, end } object and finished's options
+   * (readable, writable, error, cleanup, signal) are supported. */
   function pipeline(...streams: unknown[]): Promise<void>;
-  function finished(stream: unknown): Promise<void>;
+  function finished(
+    stream: unknown,
+    options?: {
+      readable?: boolean;
+      writable?: boolean;
+      error?: boolean;
+      cleanup?: boolean;
+      signal?: AbortSignal;
+    } | null,
+  ): Promise<void>;
   export { pipeline, finished };
 }
 declare module "node:stream/promises" {

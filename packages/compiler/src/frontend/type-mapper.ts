@@ -1928,11 +1928,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "object", className: RUNTIME_EMITTER_CLASS };
   }
-  // readline.Interface: the interface value is an f64 handle into the
-  // runtime's registry (the Timeout-id precedent). The NAME is generic,
-  // so the provenance check adds the enclosing ambient module, like
-  // net.Server (@types/node also declares Interface in
-  // readline/promises — that one stays unmapped and fences).
+  // readline.Interface and readline/promises.Interface: the interface
+  // value is an f64 handle into the runtime's registry (the Timeout-id
+  // precedent). The NAME is generic, so the provenance check adds the
+  // enclosing ambient module, like net.Server.
   if (
     psym?.name === "Interface" &&
     checker
@@ -1941,7 +1940,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         (d) =>
           (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
           ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "readline"),
+          (isDeclaredInAmbientModule(d, "readline") ||
+            isDeclaredInAmbientModule(d, "readline/promises")),
       )
   ) {
     return F64;
