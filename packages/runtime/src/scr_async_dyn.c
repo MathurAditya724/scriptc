@@ -677,11 +677,16 @@ static void scr_warning_dispatch(ScrDyn *w) {
     scr_jb_puts(&report, "\n");
     scr_jb_put_str(&report, ed->v.str);
   }
-  /* Node's one-time trace hint, after the first report. */
+  /* Node's one-time trace hint, after the first report (a deprecation's
+   * names the deprecation flag). */
   static SCR_TL bool hinted = false;
   if (!hinted) {
     hinted = true;
-    scr_jb_puts(&report, "\n(Use `node --trace-warnings ...` to show where the warning was created)");
+    bool deprecation = en && en->kind == SCR_DYN_STR && en->v.str->len == 18 &&
+                       memcmp(en->v.str->data, "DeprecationWarning", 18) == 0;
+    scr_jb_puts(&report, deprecation
+                             ? "\n(Use `node --trace-deprecation ...` to show where the warning was created)"
+                             : "\n(Use `node --trace-warnings ...` to show where the warning was created)");
   }
   ScrLogArg line = {.tag = SCR_ARG_STR};
   line.v.s = scr_jb_finish(&report);
@@ -708,15 +713,22 @@ void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
   scr_dyn_release(w);
 }
 
-/* The console members' warnings. Node's emitWarning emits on
- * process.nextTick, so these queue in order and each rides one raw tick
- * on the shared tick queue; any left at exit are dropped with it. */
-static SCR_TL ScrStr **scr_warn_texts = NULL;
+/* Deferred warnings: the console members' and the runtime deprecation
+ * sites'. Node's emitWarning emits on process.nextTick, so these queue in
+ * order and each rides one raw tick on the shared tick queue; any left at
+ * exit are dropped with it. name and code are static text (NULL: the
+ * defaults). */
+typedef struct {
+  ScrStr *message;
+  const char *name;
+  const char *code;
+} ScrDeferredWarning;
+static SCR_TL ScrDeferredWarning *scr_warn_texts = NULL;
 static SCR_TL size_t scr_warn_texts_head = 0, scr_warn_texts_len = 0, scr_warn_texts_cap = 0;
 static SCR_TL bool scr_warn_texts_registered = false;
 
 static void scr_warn_texts_teardown(void) {
-  for (size_t i = scr_warn_texts_head; i < scr_warn_texts_len; i++) scr_str_release(scr_warn_texts[i]);
+  for (size_t i = scr_warn_texts_head; i < scr_warn_texts_len; i++) scr_str_release(scr_warn_texts[i].message);
   free(scr_warn_texts);
   scr_warn_texts = NULL;
   scr_warn_texts_head = scr_warn_texts_len = scr_warn_texts_cap = 0;
@@ -724,21 +736,20 @@ static void scr_warn_texts_teardown(void) {
 
 static void scr_warn_text_tick(void) {
   if (scr_warn_texts_head == scr_warn_texts_len) return;
-  ScrStr *message = scr_warn_texts[scr_warn_texts_head++];
+  ScrDeferredWarning warning = scr_warn_texts[scr_warn_texts_head++];
   if (scr_warn_texts_head == scr_warn_texts_len) scr_warn_texts_head = scr_warn_texts_len = 0;
-  scr_emit_warning(NULL, NULL, message);
-  scr_str_release(message);
+  scr_emit_warning(warning.name, warning.code, warning.message);
+  scr_str_release(warning.message);
 }
 
-void scr_process_emit_warning_text(ScrStr *message) {
-  if (message->len == 0) return;
+void scr_emit_warning_deferred(const char *name, const char *code, ScrStr *message) {
   if (!scr_warn_texts_registered) {
     scr_warn_texts_registered = true;
     scr_atexit(scr_warn_texts_teardown);
   }
   if (scr_warn_texts_len == scr_warn_texts_cap) {
     size_t cap = scr_warn_texts_cap ? scr_warn_texts_cap * 2 : 4;
-    ScrStr **grown = realloc(scr_warn_texts, cap * sizeof *grown);
+    ScrDeferredWarning *grown = realloc(scr_warn_texts, cap * sizeof *grown);
     if (!grown) {
       fputs("scriptc: out of memory\n", stderr);
       abort();
@@ -746,8 +757,14 @@ void scr_process_emit_warning_text(ScrStr *message) {
     scr_warn_texts = grown;
     scr_warn_texts_cap = cap;
   }
-  scr_warn_texts[scr_warn_texts_len++] = scr_str_retain(message);
+  scr_warn_texts[scr_warn_texts_len++] =
+      (ScrDeferredWarning){.message = scr_str_retain(message), .name = name, .code = code};
   scr_next_tick_raw(scr_warn_text_tick);
+}
+
+void scr_process_emit_warning_text(ScrStr *message) {
+  if (message->len == 0) return;
+  scr_emit_warning_deferred(NULL, NULL, message);
 }
 
 static void scr_warn_bad_arg(const char *arg, const char *want) {

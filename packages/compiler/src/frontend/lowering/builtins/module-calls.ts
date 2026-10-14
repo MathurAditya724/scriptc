@@ -1,4 +1,4 @@
-import { lowerFileUrlCall } from "./url.js";
+import { lowerFileUrlCall, lowerLegacyUrlCall } from "./url.js";
 import { lowerReadlineCreateCall } from "./readline.js";
 import { lowerDiagnosticsChannelCall } from "./async-context.js";
 import { lowerTimersPromisesCall } from "./timers.js";
@@ -166,6 +166,12 @@ export function lowerBuiltinModuleCall(
     if (bi.member === "stringify" || bi.member === "encode") {
       return lowerQuerystringStringifyCall(lowerer, expr, loc);
     }
+  }
+  if (
+    bi.module === "url" &&
+    ["parse", "format", "resolve", "domainToASCII", "domainToUnicode"].includes(bi.member)
+  ) {
+    return lowerLegacyUrlCall(lowerer, expr, bi, fn, loc);
   }
   if (bi.module === "timers/promises") {
     const lowered = lowerTimersPromisesCall(lowerer, expr, bi, loc);

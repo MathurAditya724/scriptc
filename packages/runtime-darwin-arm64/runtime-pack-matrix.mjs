@@ -58,6 +58,7 @@ const optional = [
   ["scr_file_handle.c", "fileHandle"],
   ["scr_regex.c", "regex"],
   ["scr_glob.c", "regex"],
+  ["scr_idna.c", "regex"],
   ["scr_assert.c", any("assert", "regex", "symbol")],
   ["scr_inspect.c", "inspect"],
   ["scr_console_native.c", "inspect"],
@@ -72,6 +73,9 @@ const optional = [
   ["scr_symbol.c", "symbol"],
   ["scr_bigint_assert.c", all("assert", "bigint")],
   ["scr_qs.c", "qs"],
+  // The legacy url unit lowercases and normalizes through the regex unit
+  // and warns through the dyn-async one.
+  ["scr_url_legacy.c", all("regex", "qs", "dynAsync")],
   ["scr_util.c", "parseArgs"],
   // Utility objects must only reference runtime families selected with them.
   ["scr_util_compare.c", all("parseArgs", "symbol")],

@@ -1665,6 +1665,15 @@ ScrStr *scr_str_normalize(const ScrStr *s, const ScrStr *form) {
   return scr_jb_finish(&buffer);
 }
 
+uint32_t *scr_nfc_code_points(const uint32_t *input, size_t length, size_t *out_len) {
+  if (length > INT32_MAX) scr_regex_oom();
+  uint32_t *output = NULL;
+  int count = unicode_normalize(&output, input, (int)length, UNICODE_NFC, NULL, scr_normalize_realloc);
+  if (count < 0) scr_regex_oom();
+  *out_len = (size_t)count;
+  return output;
+}
+
 /* ── assert.match / assert.doesNotMatch ──────────────────────────────────
  * Lives here because it needs the matcher. Assertion matching follows
  * RegExp.test, including global and sticky lastIndex transitions. */

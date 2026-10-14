@@ -156,6 +156,7 @@ import { mixinFnOfCallee } from "./lower-mixins.js";
 import {
   isConstAssertionTypeNode,
   isGenericCallableMemberType,
+  isLegacyUrlSymbol,
   isOsConstantsType,
   isParseArgsDynTypeName,
   underConstAssertion,
@@ -2434,7 +2435,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       isParseArgsDynProperty(lowerer, expr) ||
       isStatFsDynProperty(lowerer, expr) ||
       segmentDataProperty ||
-      osConstants
+      osConstants ||
+      isLegacyUrlSymbol(lowerer.checker.getSymbolAtLocation(expr.name), lowerer)
     ) {
       const recv = lowerer.lowerExpr(expr.expression);
       if (recv.type.kind === "dyn") {
@@ -8515,7 +8517,24 @@ export function lowerAsExpression(
         );
       }
       const boxed = lowerer.coerceInto(expr, inner, DYN);
-      return boxed.kind === "dynFrom" ? { ...boxed, liveRef: true } : boxed;
+      // Only references box live; a scalar or unit source (`value as
+      // unknown as View`) is an ordinary snapshot.
+      const seen = new Set<string>();
+      const live = (type: IrType): boolean => {
+        if (
+          type.kind === "record" ||
+          type.kind === "array" ||
+          type.kind === "bytes" ||
+          isDynTypedRefType(type)
+        )
+          return true;
+        if (type.kind !== "union" || seen.has(type.unionId)) return false;
+        seen.add(type.unionId);
+        return lowerer.unions.get(type.unionId)?.arms.some(live) ?? false;
+      };
+      return boxed.kind === "dynFrom" && live(boxed.value.type)
+        ? { ...boxed, liveRef: true }
+        : boxed;
     }
     // Collection assertions are interface views only: their backing
     // value must already have the same native key/element/value layout.

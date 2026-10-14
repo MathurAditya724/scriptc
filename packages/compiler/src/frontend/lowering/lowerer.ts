@@ -8453,6 +8453,8 @@ export class Lowerer {
           builtinOption("RequestInit") ||
           builtinOption("ErrorOptions") ||
           builtinOption("SpawnOptions") ||
+          builtinOption("UrlObject") ||
+          builtinOption("URLFormatOptions") ||
           !this.mapTypeOf(this.typeOf(x))
         ) {
           return lowerDynObjectLiteral(this, x);

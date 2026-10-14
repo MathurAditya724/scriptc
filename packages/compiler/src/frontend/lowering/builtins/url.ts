@@ -702,3 +702,52 @@ export function lowerFileUrlCall(
   );
   return { kind: "libCall", fn: fn.fn, args, type: fn.result, loc };
 }
+
+/** Node's isInsideNodeModules test on the calling file: url.parse()'s
+ * DEP0169 warning skips calls made from dependencies. */
+function insideNodeModules(file: string): boolean {
+  return /[/\\]node_modules[/\\]/.test(file);
+}
+
+/** node:url's legacy API and the domain pair. Every argument crosses as a
+ * checked-dynamic value so the runtime applies Node's own validation
+ * (validateString, the urlObject type ladder, String() for the domain);
+ * parse/format/resolve also carry whether this call site emits DEP0169. */
+export function lowerLegacyUrlCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  bi: { module: string; member: string },
+  fn: BuiltinModuleFn,
+  loc: SrcLoc,
+): IrExpr {
+  const arity =
+    bi.member === "parse" ? 3 : bi.member === "format" || bi.member === "resolve" ? 2 : 1;
+  if (expr.arguments.some(ts.isSpreadElement) || expr.arguments.length > arity) {
+    lowerer.noLowering(
+      `url.${bi.member} with these arguments`,
+      expr,
+      `pass at most ${arity} argument${arity === 1 ? "" : "s"} directly`,
+    );
+  }
+  const args: IrExpr[] = [];
+  for (let index = 0; index < arity; index++) {
+    let arg = expr.arguments[index];
+    while (arg && ts.isParenthesizedExpression(arg)) arg = arg.expression;
+    // An inline urlObject or options literal builds as the checked-dynamic
+    // object format() reads (nested query objects included).
+    args.push(
+      !arg
+        ? dynUndefinedExpr(loc)
+        : ts.isObjectLiteralExpression(arg)
+          ? lowerDynObjectLiteral(lowerer, arg)
+          : lowerer.lowerExprExpecting(arg, DYN),
+    );
+  }
+  if (bi.member === "domainToASCII" || bi.member === "domainToUnicode") {
+    args.push({ kind: "boolLit", value: expr.arguments.length === 0, type: BOOL, loc });
+  } else {
+    const warn = !insideNodeModules(expr.getSourceFile().fileName);
+    args.push({ kind: "boolLit", value: warn, type: BOOL, loc });
+  }
+  return { kind: "libCall", fn: fn.fn, args, type: fn.result, loc };
+}

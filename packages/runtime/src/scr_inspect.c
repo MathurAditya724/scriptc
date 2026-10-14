@@ -864,6 +864,21 @@ static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
   return out;
 }
 
+/* A class instance's name forms: "Name {}" for an empty instance, "[Name]"
+ * past the depth limit (tail NULL). */
+static ScrStr *scr_insp_class_tag(const char *cls, const char *tail) {
+  InspBuf out = {0};
+  if (tail) {
+    ib_cstr(&out, cls);
+    ib_cstr(&out, tail);
+  } else {
+    ib_char(&out, '[');
+    ib_cstr(&out, cls);
+    ib_char(&out, ']');
+  }
+  return ib_take(&out);
+}
+
 ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
   if (d->kind == SCR_DYN_PROXY) return scr_insp_dyn(d->v.proxy.target, recurse, depth);
   switch (d->kind) {
@@ -916,11 +931,14 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
        * with "[Object: null prototype]" (formatValue's constructor-less
        * base), the empty form included, and the beyond-depth answer IS
        * the bare marker (where a plain object says [Object]). */
+      const char *cls = scr_dyn_class_name(d);
       if (d->v.obj.len == 0) {
+        if (cls) return scr_insp_class_tag(cls, " {}");
         return d->null_proto ? scr_str_new("[Object: null prototype] {}", 27)
                              : scr_str_new("{}", 2);
       }
       if (recurse > depth) {
+        if (cls) return scr_insp_class_tag(cls, NULL);
         return d->null_proto ? scr_str_new("[Object: null prototype]", 24)
                              : scr_str_new("[Object]", 8);
       }
@@ -937,8 +955,9 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         scr_insp_entry(entry, false);
         scr_str_release(entry);
       }
-      ScrStr *base = d->null_proto ? scr_str_new("[Object: null prototype]", 24)
-                                   : scr_str_new("", 0);
+      ScrStr *base = cls             ? scr_str_new(cls, strlen(cls))
+                     : d->null_proto ? scr_str_new("[Object: null prototype]", 24)
+                                     : scr_str_new("", 0);
       ScrStr *b0 = scr_str_new("{", 1);
       ScrStr *b1 = scr_str_new("}", 1);
       ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, false, false);

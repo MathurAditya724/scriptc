@@ -65,6 +65,14 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dc.chanRunStores",
 ]);
 
+const LEGACY_URL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "url.legacyParse",
+  "url.legacyFormat",
+  "url.legacyResolve",
+  "url.domainToASCII",
+  "url.domainToUnicode",
+]);
+
 /** Inspect types and expressions together in one traversal. This is a fresh
  * snapshot: callers may mutate an IR module between compilation passes. */
 export function moduleRuntimeFeatures(mod: IrModule): RuntimeFeatures {
@@ -197,6 +205,14 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       if (fn.startsWith("bigint.")) features.bigint = true;
       if (fn.startsWith("sp.") || fn === "url.searchParams") features.searchParams = true;
       if (fn === "qs.parse" || fn === "qs.stringify" || fn === "qs.unescape") features.qs = true;
+      // scr_url_legacy.c lowercases and normalizes hostnames (the regex
+      // unit's libunicode), parses and stringifies queries, and emits its
+      // deprecation warnings through the dyn-async unit.
+      if (LEGACY_URL_LIB_FNS.has(fn)) {
+        features.regex = true;
+        features.qs = true;
+        features.dynAsync = true;
+      }
       if (fn === "util.parseArgs" || fn === "util.isDeepStrictEqual" || fn === "util.styleText")
         features.parseArgs = true;
       if (fn === "util.styleText") features.processEvents = true;
