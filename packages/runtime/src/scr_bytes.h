@@ -221,6 +221,15 @@ void scr_dataview_set(ScrBytes *b, double byte_off, double value, ScrDataViewGet
 double scr_bytes_get(const ScrBytes *b, double i);
 double scr_bytes_get_or_nan(const ScrBytes *b, double i); /* NaN when the index is invalid */
 void scr_bytes_set(ScrBytes *b, double i, double v);
+/* Shared-view element access at an index the caller has checked against
+ * the length (0 <= i < len). Each takes the shared-memory lock around the
+ * access. Integer elements read as their value in 32 bits, sign- or
+ * zero-extended, with Uint32 elements as their bit pattern; float elements
+ * read as a double. Writes coerce like scr_bytes_set. Compiled code calls
+ * these only from a view's shared branch. */
+int32_t scr_bytes_shared_get_int(const ScrBytes *b, size_t i);
+double scr_bytes_shared_get_f64(const ScrBytes *b, size_t i);
+void scr_bytes_shared_set(ScrBytes *b, size_t i, double v);
 /* Replace a live typed-array capsule's fixed-size payload from its dyn
  * snapshot. Source and target have the same compiler-checked bytes type. */
 void scr_bytes_copy_contents(ScrBytes *dst, const ScrBytes *src);

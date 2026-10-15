@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 37,
-        "verify-gap": 2380,
-        "audit-partial": 968,
+        "verify-gap": 2377,
+        "audit-partial": 971,
         "classify": 2,
         "implement": 85
       }
@@ -27453,8 +27453,7 @@
           "confidence": "high",
           "source": "compiler-feature:fs.fs.mkdtemp",
           "tests": [
-            "tests/corpus/5548-fs-callback-arguments.cjs",
-            "tests/corpus/5549-fs-callback-option-checks.cjs"
+            "tests/corpus/5545-fs-options-encoding.cjs"
           ]
         }
       }
@@ -27671,8 +27670,7 @@
           "confidence": "high",
           "source": "compiler-feature:fs.fs.readFile",
           "tests": [
-            "tests/corpus/5548-fs-callback-arguments.cjs",
-            "tests/corpus/5549-fs-callback-option-checks.cjs"
+            "tests/corpus/5545-fs-options-encoding.cjs"
           ]
         }
       }
@@ -28935,12 +28933,9 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:node-builtin.fs.mkdtempSync",
+          "source": "compiler-feature:fs.fs.mkdtempSync",
           "tests": [
-            "tests/corpus/1403-buffer-fs.ts",
-            "tests/corpus/2595-fs-arg-ladders.cjs",
-            "tests/corpus/2919-fs-function-values.ts",
-            "tests/corpus/2920-fs-promises-function-values.ts"
+            "tests/corpus/5545-fs-options-encoding.cjs"
           ]
         }
       }
@@ -29077,13 +29072,9 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:node-builtin.fs.readFileSync",
+          "source": "compiler-feature:fs.fs.readFileSync",
           "tests": [
-            "tests/corpus/1403-buffer-fs.ts",
-            "tests/corpus/2595-fs-arg-ladders.cjs",
-            "tests/corpus/2919-fs-function-values.ts",
-            "tests/corpus/2920-fs-promises-function-values.ts",
-            "tests/corpus/fs-read-encodings.ts"
+            "tests/corpus/5545-fs-options-encoding.cjs"
           ]
         }
       }
@@ -51307,12 +51298,15 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:net",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.net.isIP",
+          "tests": [
+            "tests/corpus/2500-net-autosel-timeout.ts",
+            "tests/corpus/2596-net-arg-ladders.cjs"
+          ]
         }
       }
     },
@@ -51327,12 +51321,15 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:net",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.net.isIPv4",
+          "tests": [
+            "tests/corpus/2500-net-autosel-timeout.ts",
+            "tests/corpus/2596-net-arg-ladders.cjs"
+          ]
         }
       }
     },
@@ -51347,12 +51344,15 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:net",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.net.isIPv6",
+          "tests": [
+            "tests/corpus/2500-net-autosel-timeout.ts",
+            "tests/corpus/2596-net-arg-ladders.cjs"
+          ]
         }
       }
     },

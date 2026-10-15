@@ -250,6 +250,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     e.fn === "net.sockOnConnect" ||
     e.fn === "net.sockOnTimeout" ||
     e.fn === "net.sockOnReadable" ||
+    e.fn === "net.sockOnReady" ||
     e.fn === "http.reqOnEnd" ||
     e.fn === "http.reqOnClose" ||
     e.fn === "http.reqOnAborted" ||
@@ -268,6 +269,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       "net.sockOnConnect": "scr_net_sock_on_connect",
       "net.sockOnTimeout": "scr_net_sock_on_timeout",
       "net.sockOnReadable": "scr_net_sock_on_readable",
+      "net.sockOnReady": "scr_net_sock_on_ready",
       "http.reqOnEnd": "scr_http_req_on_end",
       "http.reqOnClose": "scr_http_req_on_close",
       "http.reqOnAborted": "scr_http_req_on_aborted",
@@ -638,6 +640,22 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     host.moveTemp(args[1]!);
     host.declare(`declare void @scr_net_sock_on_finish(ptr, ptr)`);
     B.line(`call void @scr_net_sock_on_finish(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "net.sockOnWriteFlush") {
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.moveTemp(args[1]!);
+    host.declare(`declare void @scr_net_sock_on_write_flush(ptr, ptr)`);
+    B.line(`call void @scr_net_sock_on_write_flush(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "net.sockSetTimeoutCb") {
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.moveTemp(args[2]!);
+    host.declare("declare void @scr_net_sock_set_timeout_cb(ptr, double, ptr)");
+    B.line(
+      `call void @scr_net_sock_set_timeout_cb(ptr ${args[0]!.name}, double ${args[1]!.name}, ptr ${args[2]!.name})`,
+    );
     return { name: "", type: e.type };
   }
   return host.emitGenericLibCall(e);

@@ -332,6 +332,33 @@ test("a body mutation keeps the byte loop on the general f64 path", () => {
   expect(ll).toContain("fptosi double");
 });
 
+test("worker programs read and write shared views at the checked integer index", () => {
+  const ll = emitLlvmModule({ ...fixture(), workers: true });
+  // The shared path receives the index the inline path checked, as an integer,
+  // and integer elements come back as 32-bit values.
+  expect(ll).toMatch(/call i32 @scr_bytes_shared_get_int\(ptr %\w+, i64 %?\w+\) cold/);
+  expect(ll).toMatch(/call double @scr_bytes_shared_get_f64\(ptr %\w+, i64 %?\w+\) cold/);
+  expect(ll).toMatch(/call void @scr_bytes_shared_set\(ptr %\w+, i64 %?\w+, double %?[\w.]+\)/);
+  expect(ll).not.toContain("@scr_bytes_get_or_nan");
+  expect(ll).not.toContain("@scr_bytes_set(");
+  // Both paths join as one integer, which converts to a number after the join.
+  expect(ll).toMatch(
+    /= phi i32 \[ %\w+, %bytes\.local\.done\d+ \], \[ %\w+, %bytes\.shared\.done\d+ \]/,
+  );
+});
+
+test("worker loops poll for cancellation on the back edge", () => {
+  const mod = integerLoopFixture(true);
+  const ll = emitLlvmModule({ ...mod, workers: true });
+  const blocks = ll.split(/\n(?=[\w.]+:)/);
+  const update = blocks.find((block) => block.startsWith("loop.u"));
+  // The poll budget is decremented in the continue target, after the body;
+  // the condition block is a single exit, so LLVM can rotate the loop.
+  expect(update).toContain("sub i32");
+  const cond = blocks.find((block) => block.startsWith("loop.c"));
+  expect(cond).not.toContain("sub i32");
+});
+
 test("large record clones stay outlined while small clones remain inlineable", () => {
   const record = (id: string, count: number): IrModule => {
     const fields = Array.from({ length: count }, (_, i) => ({ name: `f${i}`, type: F64 }));

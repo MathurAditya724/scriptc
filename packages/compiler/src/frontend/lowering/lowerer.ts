@@ -1492,6 +1492,15 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
 }
 
 /** Answers `fallback` when a checker query panics inside the type checker. */
+/** The storage of a global whose binding type widened. A lexical binding's
+ * TDZ guard needs pointer, record or checked-value storage, so a guarded
+ * function binding that may now hold undefined is a checked value. */
+function tdzStorage(global: IrGlobal, type: IrType): IrType {
+  return global.tdz && type.kind !== "record" && type.kind !== "func" && type.kind !== "dyn"
+    ? DYN
+    : type;
+}
+
 function panicSafe<T>(query: () => T, fallback: T): T {
   try {
     return query();
@@ -1853,7 +1862,10 @@ export class Lowerer {
       : this.checker.getSymbolAtLocation(node);
     if (!symbol) return fallback ?? null;
     const known = this.runtimeOptionalBindingTypes.get(symbol);
-    if (known) return known;
+    if (known) {
+      const global = this.globalsBySymbol.get(symbol);
+      return global ? tdzStorage(global, known) : known;
+    }
     // A module-scope function alias is collected as a global before the
     // optional-read fixed point settles. Derive its promoted function ABI
     // directly from the aliased declaration as a final read-side hook, so
@@ -4680,8 +4692,18 @@ export class Lowerer {
     // Checker answers for the fixed point's repeated element-ABI queries.
     // Only a binding's widened storage can change between passes.
     const checkerTypes = new Map<ts.Node, ts.Type>();
+    // Mapping a type can lower a local class expression. When that class is
+    // unsupported, its diagnostic is already recorded and the element ABI
+    // is unknown here; the program fails with that diagnostic.
     const arrayKeysOf = (node: ts.Expression): readonly string[] | null =>
-      panicSafe(() => arrayKeysUnsafe(node), null);
+      panicSafe(() => {
+        try {
+          return arrayKeysUnsafe(node);
+        } catch (e) {
+          if (e instanceof PoisonError) return null;
+          throw e;
+        }
+      }, null);
     const arrayKeysUnsafe = (node: ts.Expression): readonly string[] | null => {
       let checkerType = checkerTypes.get(node);
       if (checkerType === undefined) {
@@ -5782,7 +5804,7 @@ export class Lowerer {
             ? this.globalOf(node.name)
             : this.globalsBySymbol.get(symbol);
           if (global) {
-            global.type = promoted;
+            global.type = tdzStorage(global, promoted);
             this.runtimeOptionalGlobals.add(global);
           }
         } else if (promoted.kind === "union" && this.armTag(promoted.unionId, UNDEFINED_T) >= 0) {
