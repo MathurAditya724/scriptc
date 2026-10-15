@@ -2468,6 +2468,12 @@ static const ScrDynTypedClassOps *scr_typed_ref_class_ops(const ScrDyn *d) {
   return ops->exact ? ops->exact(d->v.typed_ref.ptr) : ops;
 }
 
+const ScrStr *scr_dyn_typed_ref_class_name(const ScrDyn *d) {
+  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return NULL;
+  const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
+  return ops ? ops->class_name : NULL;
+}
+
 static bool scr_dyn_name_in_strs(const ScrStr *key, ScrStr *const *names, size_t count) {
   for (size_t i = 0; i < count; i++) {
     if (names[i] == key || scr_str_eq(names[i], (ScrStr *)key)) return true;
@@ -4769,6 +4775,14 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
       scr_jb_putc(&b, ']');
       return scr_jb_finish(&b);
     }
+    if (scr_dyn_handle_ops_of(d)->to_string_tag) {
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "[object ");
+      scr_jb_puts(&b, scr_dyn_handle_ops_of(d)->to_string_tag);
+      scr_jb_putc(&b, ']');
+      return scr_jb_finish(&b);
+    }
     tag = "[object Object]";
     break;
   case SCR_DYN_BYTES: {
@@ -5310,6 +5324,14 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
       scr_jb_init(&b);
       scr_jb_puts(&b, "[object ");
       scr_jb_puts(&b, scr_dyn_handle_cls(d));
+      scr_jb_putc(&b, ']');
+      return scr_jb_finish(&b);
+    }
+    if (scr_dyn_handle_ops_of(d)->to_string_tag) {
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "[object ");
+      scr_jb_puts(&b, scr_dyn_handle_ops_of(d)->to_string_tag);
       scr_jb_putc(&b, ']');
       return scr_jb_finish(&b);
     }

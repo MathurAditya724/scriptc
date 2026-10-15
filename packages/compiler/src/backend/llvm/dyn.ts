@@ -2180,6 +2180,9 @@ export class LlDyn {
         B.line(
           `${r} = call ptr ${typedRefConstructor(host, t)}(ptr %v, ptr ${rc.retain}, ptr ${rc.release}, ptr ${keyLit}, ${host.sizeType} ${Buffer.byteLength(typeKey(t), "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit})`,
         );
+        // The same live view as a direct box: class members for `in` and
+        // the class name for inspection.
+        for (const line of bindLiveArrayOps(host, adapter, r)) B.line(line);
         B.terminate(`ret ptr ${r}`);
         break;
       }

@@ -6,6 +6,7 @@ import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.j
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { lowerBlobInstanceof } from "./builtins/blob.js";
+import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
 import { threadsImportOf } from "../threads-import.js";
 import { experimentalImportOf, lifetimeRegionMemberOf } from "../experimental-import.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
@@ -11728,6 +11729,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   {
     const blob = lowerBlobInstanceof(lowerer, expr);
     if (blob) return blob;
+    const keyObject = lowerKeyObjectInstanceof(lowerer, expr);
+    if (keyObject) return keyObject;
   }
   if (lowerer.isStdlibGlobal(expr.right, "SharedArrayBuffer")) {
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);

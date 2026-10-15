@@ -190,10 +190,10 @@
       "entries": 179,
       "apiEntries": 152,
       "static": {
-        "supported": 0,
-        "partial": 22,
-        "refused": 26,
-        "not-implemented": 104,
+        "supported": 5,
+        "partial": 25,
+        "refused": 23,
+        "not-implemented": 99,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -910,8 +910,8 @@
       "entries": 176,
       "apiEntries": 156,
       "static": {
-        "supported": 0,
-        "partial": 11,
+        "supported": 1,
+        "partial": 10,
         "refused": 0,
         "not-implemented": 145,
         "by-design": 0,
@@ -19768,6 +19768,13 @@
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
           "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/5440-crypto-hash-encodings.js",
+          "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/5442-crypto-random-values.ts",
+          "tests/corpus/5443-crypto-random-arguments.js",
+          "tests/corpus/5444-crypto-timing-safe-equal.js",
+          "tests/corpus/5445-crypto-secret-key-objects.ts",
+          "tests/corpus/5446-crypto-secret-key-errors.js",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -20287,6 +20294,8 @@
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
           "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/5440-crypto-hash-encodings.js",
+          "tests/corpus/5441-crypto-hash-output-length.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -20319,6 +20328,8 @@
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
           "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/5440-crypto-hash-encodings.js",
+          "tests/corpus/5441-crypto-hash-output-length.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -20434,8 +20445,12 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.createSecretKey"
+        "status": "partial",
+        "evidence": "compiler-dedicated:crypto.createSecretKey",
+        "tests": [
+          "tests/corpus/5445-crypto-secret-key-objects.ts",
+          "tests/corpus/5446-crypto-secret-key-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -20572,8 +20587,12 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.generateKey"
+        "status": "partial",
+        "evidence": "compiler-dedicated:crypto.generateKey",
+        "tests": [
+          "tests/corpus/5445-crypto-secret-key-objects.ts",
+          "tests/corpus/5446-crypto-secret-key-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -20641,8 +20660,12 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.generateKeySync"
+        "status": "partial",
+        "evidence": "compiler-dedicated:crypto.generateKeySync",
+        "tests": [
+          "tests/corpus/5445-crypto-secret-key-objects.ts",
+          "tests/corpus/5446-crypto-secret-key-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -20903,6 +20926,8 @@
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
           "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/5440-crypto-hash-encodings.js",
+          "tests/corpus/5441-crypto-hash-output-length.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -21016,6 +21041,8 @@
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
           "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/5440-crypto-hash-encodings.js",
+          "tests/corpus/5441-crypto-hash-output-length.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -21048,6 +21075,8 @@
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
           "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/5440-crypto-hash-encodings.js",
+          "tests/corpus/5441-crypto-hash-output-length.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -21197,8 +21226,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.randomFill",
+        "tests": [
+          "tests/corpus/5442-crypto-random-values.ts",
+          "tests/corpus/5443-crypto-random-arguments.js",
+          "tests/corpus/1358-crypto-random.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21220,16 +21254,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.randomFillSync",
         "tests": [
-          "tests/corpus/2890-crypto-static-utility.ts",
-          "tests/corpus/node24-crypto-sha2.ts",
-          "tests/corpus/5435-crypto-hash-algorithms.ts",
-          "tests/corpus/5436-crypto-hash-names.js",
-          "tests/corpus/5437-crypto-hmac-algorithms.ts",
-          "tests/corpus/5438-crypto-kdf-digests.ts",
-          "tests/harness/npm-static.test.ts"
+          "tests/corpus/5442-crypto-random-values.ts",
+          "tests/corpus/5443-crypto-random-arguments.js",
+          "tests/corpus/1358-crypto-random.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21255,13 +21285,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:crypto.randomInt",
         "tests": [
-          "tests/corpus/2890-crypto-static-utility.ts",
-          "tests/corpus/node24-crypto-sha2.ts",
-          "tests/corpus/5435-crypto-hash-algorithms.ts",
-          "tests/corpus/5436-crypto-hash-names.js",
-          "tests/corpus/5437-crypto-hmac-algorithms.ts",
-          "tests/corpus/5438-crypto-kdf-digests.ts",
-          "tests/harness/npm-static.test.ts"
+          "tests/corpus/5442-crypto-random-values.ts",
+          "tests/corpus/2890-crypto-static-utility.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21284,18 +21309,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.randomUUID",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.randomUUID",
         "tests": [
-          "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
-          "tests/corpus/2556-crypto-introspection.ts",
-          "tests/corpus/2890-crypto-static-utility.ts",
-          "tests/harness/npm-static.test.ts",
-          "tests/corpus/node24-crypto-sha2.ts",
-          "tests/corpus/node24-crypto-kdf.ts",
-          "tests/corpus/node24-crypto-kdf-errors.ts",
-          "tests/corpus/node24-crypto-kdf-options.ts"
+          "tests/corpus/5442-crypto-random-values.ts",
+          "tests/corpus/5443-crypto-random-arguments.js",
+          "tests/corpus/1358-crypto-random.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21318,8 +21337,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.randomUUIDv7",
+        "tests": [
+          "tests/corpus/5442-crypto-random-values.ts",
+          "tests/corpus/5443-crypto-random-arguments.js",
+          "tests/corpus/1358-crypto-random.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21491,16 +21515,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.timingSafeEqual",
         "tests": [
-          "tests/corpus/2890-crypto-static-utility.ts",
-          "tests/corpus/node24-crypto-sha2.ts",
-          "tests/corpus/5435-crypto-hash-algorithms.ts",
-          "tests/corpus/5436-crypto-hash-names.js",
-          "tests/corpus/5437-crypto-hmac-algorithms.ts",
-          "tests/corpus/5438-crypto-kdf-digests.ts",
-          "tests/harness/npm-static.test.ts"
+          "tests/corpus/5444-crypto-timing-safe-equal.js",
+          "tests/corpus/2890-crypto-static-utility.ts"
         ]
       },
       "anchorSource": "exact"
@@ -22797,6 +22816,8 @@
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
           "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/5440-crypto-hash-encodings.js",
+          "tests/corpus/5441-crypto-hash-output-length.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -22829,6 +22850,8 @@
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
           "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/5440-crypto-hash-encodings.js",
+          "tests/corpus/5441-crypto-hash-output-length.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -22861,6 +22884,8 @@
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
           "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/5440-crypto-hash-encodings.js",
+          "tests/corpus/5441-crypto-hash-output-length.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -22893,6 +22918,8 @@
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
           "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/5440-crypto-hash-encodings.js",
+          "tests/corpus/5441-crypto-hash-output-length.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -22925,6 +22952,8 @@
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
           "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/5440-crypto-hash-encodings.js",
+          "tests/corpus/5441-crypto-hash-output-length.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -22957,6 +22986,8 @@
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
           "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/5440-crypto-hash-encodings.js",
+          "tests/corpus/5441-crypto-hash-output-length.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -22989,6 +23020,8 @@
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
           "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/5440-crypto-hash-encodings.js",
+          "tests/corpus/5441-crypto-hash-output-length.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23012,8 +23045,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:KeyObject",
+        "tests": [
+          "tests/corpus/5445-crypto-secret-key-objects.ts",
+          "tests/corpus/5446-crypto-secret-key-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23035,8 +23072,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:keyObject.equals",
+        "tests": [
+          "tests/corpus/5445-crypto-secret-key-objects.ts",
+          "tests/corpus/5446-crypto-secret-key-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23058,8 +23099,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:keyObject.export",
+        "tests": [
+          "tests/corpus/5445-crypto-secret-key-objects.ts",
+          "tests/corpus/5446-crypto-secret-key-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -24686,6 +24731,8 @@
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
           "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/5440-crypto-hash-encodings.js",
+          "tests/corpus/5441-crypto-hash-output-length.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -27759,6 +27806,8 @@
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
           "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/5440-crypto-hash-encodings.js",
+          "tests/corpus/5441-crypto-hash-output-length.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -27804,6 +27853,8 @@
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
           "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/5440-crypto-hash-encodings.js",
+          "tests/corpus/5441-crypto-hash-output-length.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -99494,6 +99545,11 @@
           "tests/corpus/5191-util-callbackify.ts",
           "tests/corpus/5192-util-debuglog.cjs",
           "tests/corpus/5193-util-debuglog.ts",
+          "tests/corpus/5470-strip-vt-osc.cjs",
+          "tests/corpus/5471-strip-vt-csi.cjs",
+          "tests/corpus/5472-strip-vt-random.cjs",
+          "tests/corpus/5473-strip-vt-unterminated.cjs",
+          "tests/corpus/5474-strip-vt-surrogates.ts",
           "tests/corpus/node24-deep-equality-properties.js",
           "tests/corpus/node24-deep-equality.cjs",
           "tests/corpus/node24-deep-equality.ts",
@@ -101219,7 +101275,12 @@
           "tests/corpus/node24-text-utilities-validation.js",
           "tests/corpus/node24-text-utilities-coercion.js",
           "tests/corpus/node24-text-utilities.cjs",
-          "tests/fixtures/node-types/text-utilities.ts"
+          "tests/fixtures/node-types/text-utilities.ts",
+          "tests/corpus/5470-strip-vt-osc.cjs",
+          "tests/corpus/5471-strip-vt-csi.cjs",
+          "tests/corpus/5472-strip-vt-random.cjs",
+          "tests/corpus/5473-strip-vt-unterminated.cjs",
+          "tests/corpus/5474-strip-vt-surrogates.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101279,7 +101340,12 @@
           "tests/corpus/node24-text-utilities-validation.js",
           "tests/corpus/node24-text-utilities-coercion.js",
           "tests/corpus/node24-text-utilities.cjs",
-          "tests/fixtures/node-types/text-utilities.ts"
+          "tests/fixtures/node-types/text-utilities.ts",
+          "tests/corpus/5470-strip-vt-osc.cjs",
+          "tests/corpus/5471-strip-vt-csi.cjs",
+          "tests/corpus/5472-strip-vt-random.cjs",
+          "tests/corpus/5473-strip-vt-unterminated.cjs",
+          "tests/corpus/5474-strip-vt-surrogates.ts"
         ]
       },
       "anchorSource": "exact"
@@ -105024,6 +105090,8 @@
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
           "tests/corpus/2890-crypto-static-utility.ts",
+          "tests/corpus/5442-crypto-random-values.ts",
+          "tests/corpus/5443-crypto-random-arguments.js",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -108531,18 +108599,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.randomUUID",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.randomUUID",
         "tests": [
-          "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
-          "tests/corpus/2556-crypto-introspection.ts",
-          "tests/corpus/2890-crypto-static-utility.ts",
-          "tests/harness/npm-static.test.ts",
-          "tests/corpus/node24-crypto-sha2.ts",
-          "tests/corpus/node24-crypto-kdf.ts",
-          "tests/corpus/node24-crypto-kdf-errors.ts",
-          "tests/corpus/node24-crypto-kdf-options.ts"
+          "tests/corpus/5442-crypto-random-values.ts",
+          "tests/corpus/5443-crypto-random-arguments.js",
+          "tests/corpus/1358-crypto-random.ts"
         ]
       },
       "anchorSource": "exact"

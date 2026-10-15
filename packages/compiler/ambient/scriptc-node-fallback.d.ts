@@ -2214,34 +2214,127 @@ declare module "node:url" {
 
 /* node:crypto: the static hashing/MAC/random/key-derivation utility slice. */
 declare module "crypto" {
-  export function randomUUID(): string;
+  export type KeyObjectType = "secret" | "public" | "private";
+  export interface JsonWebKey {
+    kty?: string;
+    k?: string;
+  }
+  export interface JwkKeyExportOptions {
+    format: "jwk";
+  }
+  export interface KeyExportOptions {
+    format?: "buffer" | undefined;
+  }
+  /** Secret keys only; the asymmetric key types are not available. */
+  export class KeyObject {
+    private constructor();
+    type: KeyObjectType;
+    symmetricKeySize?: number;
+    asymmetricKeyType?: string;
+    export(options?: KeyExportOptions): Buffer;
+    export(options: JwkKeyExportOptions): JsonWebKey;
+    equals(otherKeyObject: KeyObject): boolean;
+  }
+  export function createSecretKey(key: ArrayBufferView | ArrayBufferLike): KeyObject;
+  export function createSecretKey(key: string, encoding: BufferEncoding): KeyObject;
+  export function generateKeySync(type: "hmac" | "aes", options: { length: number }): KeyObject;
+  export function generateKey(
+    type: "hmac" | "aes",
+    options: { length: number },
+    callback: (err: Error | null, key: KeyObject) => void,
+  ): void;
+  export interface RandomUUIDOptions {
+    disableEntropyCache?: boolean | undefined;
+  }
+  export function randomUUID(options?: RandomUUIDOptions): string;
+  export function randomUUIDv7(options?: RandomUUIDOptions): string;
   export function randomBytes(size: number): Buffer;
+  export type BinaryToTextEncoding = "base64" | "base64url" | "hex" | "binary";
+  export type CharacterEncoding = "utf8" | "utf-8" | "utf16le" | "utf-16le" | "latin1";
+  export type LegacyCharacterEncoding = "ascii" | "binary" | "ucs2" | "ucs-2";
+  export type Encoding = BinaryToTextEncoding | CharacterEncoding | LegacyCharacterEncoding;
+  export interface HashOptions {
+    outputLength?: number | undefined;
+  }
   export interface Hash {
-    update(data: string | Uint8Array, inputEncoding?: "utf8" | "utf-8" | "hex" | "base64"): Hash;
+    copy(options?: HashOptions): Hash;
+    update(data: string | ArrayBufferView): Hash;
+    update(data: string, inputEncoding: Encoding): Hash;
     digest(): Buffer;
-    digest(encoding: "hex" | "base64"): string;
-    copy(): Hash;
+    digest(encoding: BinaryToTextEncoding): string;
   }
   export interface Hmac {
-    update(data: string | Uint8Array, inputEncoding?: "utf8" | "utf-8" | "hex" | "base64"): Hmac;
+    update(data: string | ArrayBufferView): Hmac;
+    update(data: string, inputEncoding: Encoding): Hmac;
     digest(): Buffer;
-    digest(encoding: "hex" | "base64"): string;
+    digest(encoding: BinaryToTextEncoding): string;
   }
-  export function createHash(algorithm: string): Hash;
-  export function createHmac(algorithm: string, key: string | Uint8Array): Hmac;
+  export function createHash(algorithm: string, options?: HashOptions): Hash;
+  export function createHmac(
+    algorithm: string,
+    key: BinaryLike | KeyObject,
+    options?: { encoding?: BufferEncoding | undefined },
+  ): Hmac;
+  export interface OneShotDigestOptions {
+    outputEncoding?: BinaryToTextEncoding | "buffer" | undefined;
+    outputLength?: number | undefined;
+  }
+  export interface OneShotDigestOptionsWithStringEncoding extends OneShotDigestOptions {
+    outputEncoding?: BinaryToTextEncoding | undefined;
+  }
+  export interface OneShotDigestOptionsWithBufferEncoding extends OneShotDigestOptions {
+    outputEncoding: "buffer";
+  }
   export function hash(
     algorithm: string,
-    data: string | Uint8Array,
-    outputEncoding?: "hex" | "base64",
+    data: string | ArrayBufferView,
+    options?: OneShotDigestOptionsWithStringEncoding | BinaryToTextEncoding,
   ): string;
-  export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean;
-  export function randomFillSync<T extends Uint8Array>(
+  export function hash(
+    algorithm: string,
+    data: string | ArrayBufferView,
+    options: OneShotDigestOptionsWithBufferEncoding | "buffer",
+  ): Buffer;
+  export function hash(
+    algorithm: string,
+    data: string | ArrayBufferView,
+    options: OneShotDigestOptions | BinaryToTextEncoding | "buffer",
+  ): string | Buffer;
+  export function timingSafeEqual(
+    a: ArrayBufferView | ArrayBufferLike,
+    b: ArrayBufferView | ArrayBufferLike,
+  ): boolean;
+  export function randomFillSync<T extends ArrayBufferView | ArrayBufferLike>(
     buffer: T,
     offset?: number,
     size?: number,
   ): T;
+  export function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
+    buffer: T,
+    callback: (err: Error | null, buf: T) => void,
+  ): void;
+  export function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
+    buffer: T,
+    offset: number,
+    callback: (err: Error | null, buf: T) => void,
+  ): void;
+  export function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
+    buffer: T,
+    offset: number,
+    size: number,
+    callback: (err: Error | null, buf: T) => void,
+  ): void;
   export function randomInt(max: number): number;
   export function randomInt(min: number, max: number): number;
+  export function randomInt(
+    max: number,
+    callback: (err: Error | null, value: number) => void,
+  ): void;
+  export function randomInt(
+    min: number,
+    max: number,
+    callback: (err: Error | null, value: number) => void,
+  ): void;
   export function pbkdf2Sync(
     password: string | Uint8Array,
     salt: string | Uint8Array,
@@ -2292,14 +2385,14 @@ declare module "crypto" {
   ): void;
   export function hkdfSync(
     digest: string,
-    ikm: BinaryLike,
+    ikm: BinaryLike | KeyObject,
     salt: BinaryLike,
     info: BinaryLike,
     keylen: number,
   ): ArrayBuffer;
   export function hkdf(
     digest: string,
-    ikm: BinaryLike,
+    ikm: BinaryLike | KeyObject,
     salt: BinaryLike,
     info: BinaryLike,
     keylen: number,

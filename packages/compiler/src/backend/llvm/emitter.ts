@@ -235,6 +235,8 @@ import {
   streamDataAdapter,
   streamDoneFnFor,
   cryptoBytesThunkFor,
+  cryptoIntThunkFor,
+  type BytesThunkValue,
   fsRenameThunkFor,
   streamCbThunkFor,
   zlibBytesThunkFor,
@@ -9306,8 +9308,16 @@ export class LlEmitter {
     return fsRenameThunkFor(this, cbT);
   }
 
-  cryptoBytesThunkFor(cbT: IrType & { kind: "func" }, arrayBuffer = false): string {
-    return cryptoBytesThunkFor(this, cbT, arrayBuffer);
+  cryptoBytesThunkFor(
+    cbT: IrType & { kind: "func" },
+    arrayBuffer = false,
+    valueMode: BytesThunkValue = "buffer",
+  ): string {
+    return cryptoBytesThunkFor(this, cbT, arrayBuffer, valueMode);
+  }
+
+  cryptoIntThunkFor(cbT: IrType & { kind: "func" }): string {
+    return cryptoIntThunkFor(this, cbT);
   }
 
   zlibBytesThunkFor(cbT: IrType & { kind: "func" }): string {

@@ -22,7 +22,7 @@ static const uint64_t scr_keccak_rc[24] = {
 
 static uint64_t scr_rotl64(uint64_t x, unsigned n) { return (x << n) | (x >> (64 - n)); }
 
-static void scr_keccak_f(uint64_t s[25]) {
+SCR_DIGEST_ALIGNED static void scr_keccak_f(uint64_t s[25]) {
   /* Theta, rho, pi, chi and iota with the lanes in locals; the
    * compiler keeps the unrolled round in registers. */
   uint64_t a[25], b[25], c[5], d[5];
@@ -165,7 +165,7 @@ static uint32_t scr_rotl32(uint32_t x, unsigned n) { return (x << n) | (x >> (32
     (c) = scr_rotl32(c, 10);                                 \
   } while (0)
 
-static void scr_rmd_block(uint32_t h[5], const unsigned char *p) {
+SCR_DIGEST_ALIGNED static void scr_rmd_block(uint32_t h[5], const unsigned char *p) {
   uint32_t x[16];
   for (int i = 0; i < 16; i++)
     x[i] = (uint32_t)p[i * 4] | ((uint32_t)p[i * 4 + 1] << 8) | ((uint32_t)p[i * 4 + 2] << 16) |
@@ -413,7 +413,7 @@ static const uint64_t scr_blake2b_iv[8] = {
 
 static uint64_t scr_rotr64(uint64_t x, unsigned n) { return (x >> n) | (x << (64 - n)); }
 
-static void scr_blake2b_compress(ScrBlake2bCtx *ctx, const unsigned char *block, bool last) {
+SCR_DIGEST_ALIGNED static void scr_blake2b_compress(ScrBlake2bCtx *ctx, const unsigned char *block, bool last) {
   uint64_t m[16], v[16];
   for (int i = 0; i < 16; i++) {
     uint64_t w = 0;
@@ -495,7 +495,7 @@ static const uint32_t scr_blake2s_iv[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0
 
 static uint32_t scr_rotr32(uint32_t x, unsigned n) { return (x >> n) | (x << (32 - n)); }
 
-static void scr_blake2s_compress(ScrBlake2sCtx *ctx, const unsigned char *block, bool last) {
+SCR_DIGEST_ALIGNED static void scr_blake2s_compress(ScrBlake2sCtx *ctx, const unsigned char *block, bool last) {
   uint32_t m[16], v[16];
   for (int i = 0; i < 16; i++)
     m[i] = (uint32_t)block[i * 4] | ((uint32_t)block[i * 4 + 1] << 8) | ((uint32_t)block[i * 4 + 2] << 16) |
@@ -589,7 +589,7 @@ static const uint32_t scr_sm3_t[64] = {
     0xa7a879d8u, 0x4f50f3b1u, 0x9ea1e762u, 0x3d43cec5u,
 };
 
-static void scr_sm3_block(uint32_t v[8], const unsigned char *p) {
+SCR_DIGEST_ALIGNED static void scr_sm3_block(uint32_t v[8], const unsigned char *p) {
   uint32_t w[68], w1[64];
   for (int i = 0; i < 16; i++)
     w[i] = ((uint32_t)p[i * 4] << 24) | ((uint32_t)p[i * 4 + 1] << 16) | ((uint32_t)p[i * 4 + 2] << 8) |
