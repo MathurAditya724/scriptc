@@ -190,8 +190,8 @@
       "entries": 179,
       "apiEntries": 152,
       "static": {
-        "supported": 4,
-        "partial": 20,
+        "supported": 5,
+        "partial": 19,
         "refused": 26,
         "not-implemented": 102,
         "by-design": 0,
@@ -19772,6 +19772,7 @@
           "tests/corpus/5441-crypto-hash-output-length.ts",
           "tests/corpus/5442-crypto-random-values.ts",
           "tests/corpus/5443-crypto-random-arguments.js",
+          "tests/corpus/5444-crypto-timing-safe-equal.js",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -21500,18 +21501,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.timingSafeEqual",
         "tests": [
-          "tests/corpus/2890-crypto-static-utility.ts",
-          "tests/corpus/node24-crypto-sha2.ts",
-          "tests/corpus/5435-crypto-hash-algorithms.ts",
-          "tests/corpus/5436-crypto-hash-names.js",
-          "tests/corpus/5437-crypto-hmac-algorithms.ts",
-          "tests/corpus/5438-crypto-kdf-digests.ts",
-          "tests/corpus/5440-crypto-hash-encodings.js",
-          "tests/corpus/5441-crypto-hash-output-length.ts",
-          "tests/harness/npm-static.test.ts"
+          "tests/corpus/5444-crypto-timing-safe-equal.js",
+          "tests/corpus/2890-crypto-static-utility.ts"
         ]
       },
       "anchorSource": "exact"

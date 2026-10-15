@@ -501,6 +501,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.hmacDigestDyn": "scr_crypto_hash_digest_dyn",
   "crypto.hashOneshot": "scr_crypto_hash_oneshot",
   "crypto.timingSafeEqual": "scr_crypto_timing_safe_equal",
+  "crypto.timingSafeEqualDyn": "scr_crypto_timing_safe_equal_dyn",
   "crypto.randomFill": "scr_crypto_random_fill",
   "crypto.randomFillRest": "scr_crypto_random_fill_rest",
   "crypto.randomInt": "scr_crypto_random_int",

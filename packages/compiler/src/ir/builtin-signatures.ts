@@ -2270,7 +2270,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.hashDigestDyn": { argTypes: [CRYPTOHASH_T, DYN], result: DYN },
   "crypto.hmacDigestDyn": { argTypes: [CRYPTOHMAC_T, DYN], result: DYN },
   "crypto.hashOneshot": { argTypes: [STRING, DYN, DYN], result: DYN },
-  "crypto.timingSafeEqual": { argTypes: [BYTES_U8, BYTES_U8], result: BOOL },
+  /** Views of any element kind (the validator checks both are views). */
+  "crypto.timingSafeEqual": { argTypes: [null, null], result: BOOL },
+  "crypto.timingSafeEqualDyn": { argTypes: [DYN, DYN], result: BOOL },
   "crypto.randomFill": { argTypes: [BYTES_U8, F64, F64], result: BYTES_U8 },
   "crypto.randomFillRest": { argTypes: [BYTES_U8, F64], result: BYTES_U8 },
   "crypto.randomInt": { argTypes: [F64, F64], result: F64 },

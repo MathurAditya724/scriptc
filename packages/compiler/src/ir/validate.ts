@@ -5044,6 +5044,10 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "crypto.timingSafeEqual") {
+      if (e.args[0]?.type.kind !== "bytes" || e.args[1]?.type.kind !== "bytes")
+        err(`libCall ${e.fn} arguments must be views`, e.loc);
+    }
     if (e.fn === "crypto.randomFillCb") {
       if (e.args[0]?.type.kind !== "bytes") err(`libCall ${e.fn} buffer must be a view`, e.loc);
       if (e.args[4]?.type.kind !== "func")

@@ -456,14 +456,27 @@ export function lowerCryptoModuleCall(
     };
   }
   if (bi.member === "timingSafeEqual") {
-    if (args.length !== 2)
+    if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement))
       lowerer.noLowering(`crypto.timingSafeEqual with ${args.length} arguments`, expr);
+    const left = lowerer.lowerExpr(args[0]!);
+    const right = args[1] ? lowerer.lowerExpr(args[1]) : undefined;
+    // Views of every element kind compare their bytes; ArrayBuffers and
+    // other values take Node's checks at run time.
+    if (left.type.kind === "bytes" && right?.type.kind === "bytes") {
+      return {
+        kind: "libCall",
+        fn: "crypto.timingSafeEqual",
+        args: [left, right],
+        type: BOOL,
+        loc,
+      };
+    }
     return {
       kind: "libCall",
-      fn: "crypto.timingSafeEqual",
+      fn: "crypto.timingSafeEqualDyn",
       args: [
-        lowerer.lowerExprExpecting(args[0]!, BYTES_U8),
-        lowerer.lowerExprExpecting(args[1]!, BYTES_U8),
+        lowerer.coerceInto(args[0]!, left, DYN),
+        right ? lowerer.coerceInto(args[1]!, right, DYN) : dynUndefinedExpr(loc),
       ],
       type: BOOL,
       loc,
