@@ -17,6 +17,7 @@ import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
+import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { iteratorSlotAdapter } from "./iterator-adapters.js";
 import type { FieldLift } from "./coercions/structural-plans.js";
@@ -6865,7 +6866,7 @@ export class Lowerer {
     access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
     use: "read" | "call",
   ): IrExpr | null {
-    return fenceStaticResponseMember(this, access, use);
+    return fenceStaticResponseMember(this, access, use) ?? fenceStaticBlobMember(this, access, use);
   }
 
   fenceUnsupportedFetchConstructorMember(
@@ -10481,6 +10482,7 @@ export class Lowerer {
       lowerStaticReadableStreamControllerCall(this, expr) ??
       lowerStaticReadableStreamReaderCall(this, expr) ??
       lowerStaticResponseCall(this, expr) ??
+      lowerStaticBlobCall(this, expr) ??
       lowerFetchElementMethodCall(this, expr) ??
       lowerDynamicImportCall(this, expr) ??
       lowerCall(this, expr)
@@ -10697,6 +10699,7 @@ export class Lowerer {
       lowerEventTargetNew(this, expr) ??
       lowerFetchWebNew(this, expr) ??
       lowerResponseNew(this, expr) ??
+      lowerBlobNew(this, expr) ??
       lowerStaticReadableStreamNew(this, expr) ??
       lowerConsoleNew(this, expr);
     return (

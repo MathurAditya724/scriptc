@@ -70,10 +70,10 @@
       "entries": 104,
       "apiEntries": 99,
       "static": {
-        "supported": 8,
-        "partial": 4,
+        "supported": 16,
+        "partial": 6,
         "refused": 0,
-        "not-implemented": 87,
+        "not-implemented": 77,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -341,9 +341,9 @@
       "apiEntries": 92,
       "static": {
         "supported": 0,
-        "partial": 10,
+        "partial": 12,
         "refused": 0,
-        "not-implemented": 82,
+        "not-implemented": 80,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -3086,8 +3086,14 @@
         "tests": [
           "tests/corpus/2902-bigint-bytes.ts",
           "tests/corpus/2904-bigint-errors.ts",
+          "tests/corpus/5285-blob-construct.ts",
+          "tests/corpus/5286-blob-readers.ts",
+          "tests/corpus/5288-blob-validation.js",
+          "tests/corpus/5289-blob-read-order.ts",
+          "tests/corpus/5290-blob-dynamic.js",
           "tests/corpus/node24-buffer-encoding-errors.ts",
           "tests/corpus/node24-buffer-encoding.ts",
+          "tests/fixtures/node-types/blob-file.ts",
           "tests/fixtures/node-types/text-encoding.ts"
         ]
       },
@@ -3609,8 +3615,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "partial",
+        "evidence": "compiler-feature:buffer.Blob",
+        "tests": [
+          "tests/corpus/5285-blob-construct.ts",
+          "tests/corpus/5288-blob-validation.js",
+          "tests/fixtures/node-types/blob-file.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3655,8 +3666,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.blob.arrayBuffer",
+        "tests": [
+          "tests/corpus/5285-blob-construct.ts",
+          "tests/corpus/5286-blob-readers.ts",
+          "tests/corpus/5288-blob-validation.js",
+          "tests/corpus/5289-blob-read-order.ts",
+          "tests/corpus/5290-blob-dynamic.js",
+          "tests/fixtures/node-types/blob-file.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3678,8 +3697,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.blob.bytes",
+        "tests": [
+          "tests/corpus/5285-blob-construct.ts",
+          "tests/corpus/5286-blob-readers.ts",
+          "tests/corpus/5288-blob-validation.js",
+          "tests/corpus/5289-blob-read-order.ts",
+          "tests/corpus/5290-blob-dynamic.js",
+          "tests/fixtures/node-types/blob-file.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3701,8 +3728,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.blob.slice",
+        "tests": [
+          "tests/corpus/5285-blob-construct.ts",
+          "tests/corpus/5286-blob-readers.ts",
+          "tests/corpus/5288-blob-validation.js",
+          "tests/corpus/5289-blob-read-order.ts",
+          "tests/corpus/5290-blob-dynamic.js",
+          "tests/fixtures/node-types/blob-file.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3747,8 +3782,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.blob.text",
+        "tests": [
+          "tests/corpus/5285-blob-construct.ts",
+          "tests/corpus/5286-blob-readers.ts",
+          "tests/corpus/5288-blob-validation.js",
+          "tests/corpus/5289-blob-read-order.ts",
+          "tests/corpus/5290-blob-dynamic.js",
+          "tests/fixtures/node-types/blob-file.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3793,8 +3836,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.blob.size",
+        "tests": [
+          "tests/corpus/5285-blob-construct.ts",
+          "tests/corpus/5286-blob-readers.ts",
+          "tests/corpus/5288-blob-validation.js",
+          "tests/corpus/5289-blob-read-order.ts",
+          "tests/corpus/5290-blob-dynamic.js",
+          "tests/fixtures/node-types/blob-file.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3816,8 +3867,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.type",
+        "tests": [
+          "tests/corpus/5285-blob-construct.ts",
+          "tests/corpus/5286-blob-readers.ts",
+          "tests/corpus/5288-blob-validation.js",
+          "tests/corpus/5289-blob-read-order.ts",
+          "tests/corpus/5290-blob-dynamic.js",
+          "tests/fixtures/node-types/blob-file.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -5458,8 +5517,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "partial",
+        "evidence": "compiler-feature:buffer.File",
+        "tests": [
+          "tests/corpus/5285-blob-construct.ts",
+          "tests/corpus/5288-blob-validation.js",
+          "tests/fixtures/node-types/blob-file.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -5481,8 +5545,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.name",
+        "tests": [
+          "tests/corpus/5285-blob-construct.ts",
+          "tests/corpus/5286-blob-readers.ts",
+          "tests/corpus/5288-blob-validation.js",
+          "tests/corpus/5289-blob-read-order.ts",
+          "tests/corpus/5290-blob-dynamic.js",
+          "tests/fixtures/node-types/blob-file.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -5504,8 +5576,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.lastModified",
+        "tests": [
+          "tests/corpus/5285-blob-construct.ts",
+          "tests/corpus/5286-blob-readers.ts",
+          "tests/corpus/5288-blob-validation.js",
+          "tests/corpus/5289-blob-read-order.ts",
+          "tests/corpus/5290-blob-dynamic.js",
+          "tests/fixtures/node-types/blob-file.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -51236,6 +51316,11 @@
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
           "tests/corpus/3133-text-decoder-streaming.ts",
+          "tests/corpus/5285-blob-construct.ts",
+          "tests/corpus/5286-blob-readers.ts",
+          "tests/corpus/5287-blob-inspect.ts",
+          "tests/corpus/5288-blob-validation.js",
+          "tests/corpus/5290-blob-dynamic.js",
           "tests/corpus/text-codec-values/main.ts",
           "tests/harness/fetch-conformance.test.ts"
         ]
@@ -51467,8 +51552,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.Blob",
+        "tests": [
+          "tests/corpus/5285-blob-construct.ts",
+          "tests/corpus/5286-blob-readers.ts",
+          "tests/corpus/5287-blob-inspect.ts",
+          "tests/corpus/5288-blob-validation.js",
+          "tests/corpus/5290-blob-dynamic.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51812,8 +51904,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.File",
+        "tests": [
+          "tests/corpus/5285-blob-construct.ts",
+          "tests/corpus/5286-blob-readers.ts",
+          "tests/corpus/5287-blob-inspect.ts",
+          "tests/corpus/5288-blob-validation.js",
+          "tests/corpus/5290-blob-dynamic.js"
+        ]
       },
       "anchorSource": "exact"
     },

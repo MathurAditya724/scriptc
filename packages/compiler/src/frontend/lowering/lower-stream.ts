@@ -1847,9 +1847,9 @@ export function lowerStreamModuleCall(
     // utf8 decode / the parsed JSON dyn tree / the concatenated bytes / an
     // ArrayBuffer dyn over them) or rejects — with the stream's error,
     // ERR_STREAM_PREMATURE_CLOSE on an early close, or json's SyntaxError
-    // on malformed text, Node's own rejection set. blob returns null here:
-    // Blob has no representation, so the module-qualified fence (with the
-    // pointed hint in BUILTIN_MODULE_FENCE_HINTS) speaks.
+    // on malformed text, Node's own rejection set. blob returns null here,
+    // so the module-qualified fence (with the pointed hint in
+    // BUILTIN_MODULE_FENCE_HINTS) speaks.
     if (
       bi.member === "text" ||
       bi.member === "json" ||
