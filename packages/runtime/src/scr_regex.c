@@ -1355,11 +1355,66 @@ ScrStr *scr_regex_replace_callback(ScrStr *s, ScrRegex *re, ScrDyn *callback, bo
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
- * Keep the pattern equivalent to Node v24.22.0 internal/util/inspect.js. */
-#define SCR_VT_PATTERN "(?:\\u001B\\][\\s\\S]*?(?:\\u0007|\\u001B\\u005C|\\u009C))" \
-  "|[\\u001B\\u009B][[\\]()#;?]*" \
-  "(?:\\d{1,4}(?:[;:]\\d{0,4})*)?" \
-  "[\\dA-PR-TZcf-nq-uy=><~]"
+ * Node v24.22.0's pattern (internal/util/inspect.js), applied with /g:
+ *   (?:\u001B\][\s\S]*?(?:\u0007|\u001B\u005C|\u009C))
+ *   |[\u001B\u009B][[\]()#;?]*(?:\d{1,4}(?:[;:]\d{0,4})*)?
+ *    [\dA-PR-TZcf-nq-uy=><~]
+ * is matched by a single pass that gives the same first match at every
+ * position. The OSC branch ends at the first terminator after ESC ]; that
+ * position is cached, so text with many unterminated introducers is not
+ * rescanned from each one. The CSI branch is resolved without
+ * backtracking: the run of [[\]()#;?] is taken whole (none of those
+ * characters is a digit or a final character, so a shorter run cannot
+ * match), then a final character ends the match, or digits start the
+ * parameter group. */
+static bool scr_vt_digit(unsigned char c) { return c >= '0' && c <= '9'; }
+
+static bool scr_vt_final(unsigned char c) {
+  return scr_vt_digit(c) || (c >= 'A' && c <= 'P') || (c >= 'R' && c <= 'T') || c == 'Z' ||
+         c == 'c' || (c >= 'f' && c <= 'n') || (c >= 'q' && c <= 'u') || c == 'y' || c == '=' ||
+         c == '>' || c == '<' || c == '~';
+}
+
+static bool scr_vt_intermediate(unsigned char c) {
+  return c == '[' || c == ']' || c == '(' || c == ')' || c == '#' || c == ';' || c == '?';
+}
+
+/* The OSC terminator starting at i (BEL, ESC \, or U+009C as UTF-8 C2 9C):
+ * its byte length, or 0. */
+static size_t scr_vt_terminator(const unsigned char *d, size_t len, size_t i) {
+  if (d[i] == 0x07) return 1;
+  if (i + 1 < len && ((d[i] == 0x1b && d[i + 1] == '\\') || (d[i] == 0xc2 && d[i + 1] == 0x9c)))
+    return 2;
+  return 0;
+}
+
+static size_t scr_vt_digits(const unsigned char *d, size_t len, size_t i, size_t max) {
+  size_t n = 0;
+  while (n < max && i + n < len && scr_vt_digit(d[i + n])) n++;
+  return n;
+}
+
+/* The CSI branch after its introducer (body starts at x): the match end,
+ * or 0 when the branch does not match. */
+static size_t scr_vt_csi_end(const unsigned char *d, size_t len, size_t x) {
+  size_t t = x;
+  while (t < len && scr_vt_intermediate(d[t])) t++;
+  if (t >= len) return 0;
+  if (!scr_vt_digit(d[t])) return scr_vt_final(d[t]) ? t + 1 : 0;
+  /* \d{1,4}(?:[;:]\d{0,4})* taken greedily; on a non-final stop the
+   * engine backtracks to the last separator iteration that read digits
+   * (its last digit becomes the final character), or else to the leading
+   * digits. */
+  size_t lead = scr_vt_digits(d, len, t, 4);
+  size_t y = t + lead, last_with_digits = 0;
+  while (y < len && (d[y] == ';' || d[y] == ':')) {
+    size_t b = scr_vt_digits(d, len, y + 1, 4);
+    y += 1 + b;
+    if (b > 0) last_with_digits = y;
+  }
+  if (y < len && scr_vt_final(d[y])) return y + 1;
+  return last_with_digits ? last_with_digits : t + lead;
+}
 
 ScrStr *scr_util_strip_vt(const ScrDyn *input) {
   if (!input || input->kind != SCR_DYN_STR) {
@@ -1367,28 +1422,62 @@ ScrStr *scr_util_strip_vt(const ScrDyn *input) {
     return NULL;
   }
   ScrStr *subject = input->v.str;
+  const unsigned char *d = (const unsigned char *)subject->data;
+  size_t len = subject->len;
   bool escape = false;
-  for (size_t i = 0; i < subject->len; i++) {
-    if (subject->data[i] == '\x1b' || ((unsigned char)subject->data[i] == 0xc2 &&
-        i + 1 < subject->len && (unsigned char)subject->data[i + 1] == 0x9b)) {
+  for (size_t i = 0; i < len; i++) {
+    if (d[i] == 0x1b || (d[i] == 0xc2 && i + 1 < len && d[i + 1] == 0x9b)) {
       escape = true;
       break;
     }
   }
   if (!escape) return scr_str_retain(subject);
-  static const struct { size_t rc, len, cap; char data[sizeof SCR_VT_PATTERN]; }
-    source = { SIZE_MAX, sizeof SCR_VT_PATTERN - 1, sizeof SCR_VT_PATTERN - 1, SCR_VT_PATTERN };
-  static const struct { size_t rc, len, cap; char data[2]; }
-    flags = { SIZE_MAX, 1, 1, "g" };
-  static SCR_TL ScrRegex template = { SIZE_MAX, (ScrStr *)&source, (ScrStr *)&flags, NULL, 0, NULL, NULL };
-  ScrRegex *regex = scr_regex_literal(&template);
-  ScrStr *empty = scr_str_new("", 0);
-  ScrStr *result = scr_regex_replace(subject, regex, empty);
-  scr_str_release(empty);
-  scr_regex_release(regex);
+  char *out = malloc(len);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  size_t n = 0, i = 0;
+  /* The first OSC terminator at or after the last search start (SIZE_MAX
+   * for none). Searches start at increasing positions, and a cached
+   * terminator at or after the new start is still the first one, so each
+   * byte is searched once. */
+  size_t term = 0, term_len = 0;
+  bool searched = false;
+  while (i < len) {
+    if (d[i] == 0x1b && i + 1 < len && d[i + 1] == ']') {
+      size_t from = i + 2;
+      if (!searched || (term != SIZE_MAX && term < from)) {
+        term = SIZE_MAX;
+        for (size_t k = from; k < len; k++) {
+          size_t tl = scr_vt_terminator(d, len, k);
+          if (tl) {
+            term = k;
+            term_len = tl;
+            break;
+          }
+        }
+        searched = true;
+      }
+      if (term != SIZE_MAX) {
+        i = term + term_len;
+        continue;
+      }
+    }
+    size_t intro = d[i] == 0x1b ? 1 : d[i] == 0xc2 && i + 1 < len && d[i + 1] == 0x9b ? 2 : 0;
+    if (intro) {
+      size_t end = scr_vt_csi_end(d, len, i + intro);
+      if (end) {
+        i = end;
+        continue;
+      }
+    }
+    out[n++] = (char)d[i++];
+  }
+  /* A removal can bring a lone high surrogate next to a lone low one;
+   * canonical storage keeps them as one pair. */
+  if (n != len && scr_wtf8_any()) n = scr_wtf8_fuse(out, n);
+  ScrStr *result = scr_str_new(out, n);
+  free(out);
   return result;
 }
-#undef SCR_VT_PATTERN
 
 ScrStr *scr_regex_replace_all(ScrStr *s, ScrRegex *re, ScrStr *rep) {
   if (!(lre_get_flags(scr_regex_bc(re)) & LRE_FLAG_GLOBAL)) {
