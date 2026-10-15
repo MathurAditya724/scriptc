@@ -326,9 +326,9 @@
       "apiEntries": 280,
       "static": {
         "supported": 7,
-        "partial": 98,
+        "partial": 114,
         "refused": 0,
-        "not-implemented": 175,
+        "not-implemented": 159,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -25261,8 +25261,12 @@
       "anchor": "dep0038-fslchownsyncpath-uid-gid",
       "nodeStability": null,
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:deprecations"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.lchownSync",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/5543-fs-promises-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -43746,6 +43750,8 @@
           "tests/corpus/3135-fs-file-handle-controls.ts",
           "tests/corpus/3136-fs-file-handle-options.ts",
           "tests/corpus/3137-fs-vector-callbacks.cjs",
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/5543-fs-promises-typed.ts",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/fs-read-encodings.ts",
           "tests/corpus/node24-fs-links-callbacks.cjs",
@@ -44646,8 +44652,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.access",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/5543-fs-promises-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44669,8 +44679,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.appendFile",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/5543-fs-promises-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44721,8 +44735,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.chown",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/5543-fs-promises-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44744,8 +44762,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.copyFile",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/5543-fs-promises-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44836,8 +44858,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.lchown",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/5543-fs-promises-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44969,8 +44995,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.mkdtemp",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/5543-fs-promises-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -45206,8 +45236,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.rmdir",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/5543-fs-promises-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -45345,8 +45379,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.truncate",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/5543-fs-promises-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -45521,8 +45559,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.access",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -45613,8 +45654,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.chown",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -45800,8 +45844,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.fchown",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -45995,8 +46042,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.lchown",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -46631,8 +46681,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.truncate",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -47288,8 +47341,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.fchownSync",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/5543-fs-promises-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -47488,8 +47545,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.lchownSync",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/5543-fs-promises-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -48131,8 +48192,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.truncateSync",
+        "tests": [
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/5543-fs-promises-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },

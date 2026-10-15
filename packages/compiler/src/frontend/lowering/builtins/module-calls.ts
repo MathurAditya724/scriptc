@@ -14,6 +14,7 @@ import {
   lowerFsWriteSyncCall,
   lowerFsReadDescriptorCall,
   lowerFsEncodedRead,
+  lowerFsPromisesEncodedRead,
   lowerFsMkdirSyncCall,
   lowerFsPromisesMkdirCall,
   lowerFsRemoveCall,
@@ -28,7 +29,7 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { type BuiltinModuleFn } from "../surfaces.js";
 import { type ParamShape } from "../call-signatures.js";
-import { BYTES_U8, F64, type IrExpr, STRING, type SrcLoc, VOID, arrayOf } from "../../../ir/ir.js";
+import { BYTES_U8, F64, type IrExpr, STRING, type SrcLoc, arrayOf } from "../../../ir/ir.js";
 import { lowerProcessLoadEnvFile } from "./environment.js";
 import { lowerFsWatchCall, lowerFsReaddirTypesCall } from "./filesystem.js";
 import { lowerZlibModuleCall } from "./compression.js";
@@ -210,6 +211,10 @@ export function lowerBuiltinModuleCall(
     const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
     return { kind: "libCall", fn: "fs.readFileSyncBytes", args: [path], type: BYTES_U8, loc };
   }
+  if (bi.module === "fs/promises" && bi.member === "readFile" && expr.arguments.length === 2) {
+    const encoded = lowerFsPromisesEncodedRead(lowerer, expr, loc);
+    if (encoded) return encoded;
+  }
   if (bi.module === "fs/promises" && bi.member === "readFile" && expr.arguments.length === 1) {
     const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
     return {
@@ -237,17 +242,31 @@ export function lowerBuiltinModuleCall(
   if (bi.module === "fs" && bi.member === "rmSync" && expr.arguments.length === 2) {
     return lowerFsRemoveCall(lowerer, expr, loc);
   }
-  // accessSync(p, mode?): an omitted mode is Node's F_OK (0). The mode
-  // is an ordinary number — fs.constants.* reads bake to literals.
-  if (bi.module === "fs" && bi.member === "accessSync") {
+  // accessSync(p, mode?) and truncateSync(p, len?), with their promise
+  // spellings: an omitted mode is Node's F_OK (0) and an omitted len is 0.
+  // The mode is an ordinary number — fs.constants.* reads bake to literals.
+  const zeroDefault =
+    bi.module === "fs"
+      ? bi.member === "accessSync" || bi.member === "truncateSync"
+      : bi.module === "fs/promises" && (bi.member === "access" || bi.member === "truncate");
+  if (zeroDefault) {
     if (expr.arguments.length < 1 || expr.arguments.length > 2) {
-      lowerer.noLowering(`accessSync with ${expr.arguments.length} arguments`, expr);
+      lowerer.noLowering(`${bi.member} with ${expr.arguments.length} arguments`, expr);
     }
     const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
-    const mode: IrExpr = expr.arguments[1]
+    const second: IrExpr = expr.arguments[1]
       ? lowerer.lowerExprExpecting(expr.arguments[1], F64)
       : { kind: "numLit", value: 0, type: F64, loc };
-    return { kind: "libCall", fn: "fs.accessSync", args: [path, mode], type: VOID, loc };
+    return { kind: "libCall", fn: fn.fn, args: [path, second], type: fn.result, loc };
+  }
+  if (
+    bi.module === "fs/promises" &&
+    bi.member === "appendFile" &&
+    expr.arguments.length === 2 &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[1]!))?.kind === "bytes"
+  ) {
+    const lowered = lowerFsWriteBytesCall(lowerer, expr, bi, loc);
+    if (lowered) return lowered;
   }
   if (
     bi.module === "fs" &&

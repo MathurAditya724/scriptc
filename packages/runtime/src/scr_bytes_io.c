@@ -666,6 +666,24 @@ static bool scr_fs_encoding_chk(const ScrDyn *);
 static bool scr_fs_int_range_chk(const ScrDyn *, const char *, double, double, const char *);
 static bool scr_fs_mode_chk(const ScrDyn *, const char *);
 
+/* validateInteger(uid, 'uid', -1, 2 ** 32 - 1), then gid. */
+static bool scr_fs_cb_owner_ids(const ScrDyn *uid, const ScrDyn *gid) {
+  return scr_fs_int_range_chk(uid, "uid", -1, 4294967295.0, ">= -1 && <= 4294967295") &&
+         scr_fs_int_range_chk(gid, "gid", -1, 4294967295.0, ">= -1 && <= 4294967295");
+}
+
+/* The binding's access mode check: undefined and null mean F_OK, other
+ * non-numbers throw ERR_INVALID_ARG_TYPE. */
+static bool scr_fs_cb_access_mode(const ScrDyn *mode) {
+  if (scr_fs_dyn_absent(mode)) return true;
+  if (mode->kind != SCR_DYN_NUM) {
+    static const char message[] = "mode must be int32 or null/undefined";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_ARG_TYPE");
+    return false;
+  }
+  return scr_fs_access_mode_valid(mode->v.num);
+}
+
 static bool scr_fs_callback_times(const ScrDyn *atime, const ScrDyn *mtime, bool descriptor, double *access, double *modified) {
   *access = scr_fs_timestamp_value(atime, descriptor ? "atime" : "time");
   if (scr_exc_pending()) return false;
@@ -763,6 +781,7 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
   // futimes converts times before checking the callback; path variants do
   // callback and path validation first. Validation failures throw immediately.
   if (timestamp_fd && !scr_fs_callback_times(scr_fs_cb_arg(args, argc, 1), scr_fs_cb_arg(args, argc, 2), true, &access, &modified)) return NULL;
+  if (!strcmp(op, "fchown") && !scr_fs_cb_owner_ids(scr_fs_cb_arg(args, argc, 1), scr_fs_cb_arg(args, argc, 2))) return NULL;
   bool newControl = !strcmp(op, "fdatasync") || !strcmp(op, "fchmod") || !strcmp(op, "ftruncate");
   if ((vector || newControl) && !scr_fs_int_range_chk(scr_fs_cb_arg(args, argc, 0), "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return NULL;
   ScrArr *vectors = vector ? scr_fs_cb_vectors(scr_fs_cb_arg(args, argc, 1)) : NULL;
@@ -776,11 +795,21 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
   if (!strcmp(op, "readFile") && (!scr_fs_encoding_chk(ARG(1)) ||
                                   (ARG(1)->kind != SCR_DYN_STR && !scr_fs_cb_read_buffer_option(ARG(1))))) return NULL;
   if (!strcmp(op, "read") && count >= 4 && !scr_fs_read_validate(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4))) return NULL;
-  bool descriptor = timestamp_fd || vector || newControl || !strcmp(op, "close") || !strcmp(op, "fstat") || !strcmp(op, "fsync") || !strcmp(op, "read") || !strcmp(op, "write");
+  bool descriptor = timestamp_fd || vector || newControl || !strcmp(op, "close") || !strcmp(op, "fstat") || !strcmp(op, "fsync") || !strcmp(op, "read") || !strcmp(op, "write") || !strcmp(op, "fchown");
+  /* truncate checks len before the open its request starts with. */
+  if (!strcmp(op, "truncate") && ARG(1)->kind != SCR_DYN_UNDEF &&
+      !scr_fs_int_range_chk(ARG(1), "len", -9007199254740991.0, 9007199254740991.0, ">= -9007199254740991 && <= 9007199254740991")) return NULL;
   ScrStr *path = descriptor ? NULL : timestamp ? scr_fs_timestamp_path(ARG(0)) : scr_fs_cb_path(ARG(0), !strcmp(op, "mkdtemp") ? "prefix" : "path");
   if (!descriptor && !path) return NULL;
   if (timestamp && !timestamp_fd && !scr_fs_callback_times(ARG(1), ARG(2), false, &access, &modified)) { scr_str_release(path); return NULL; }
-  if (timestamp_fd && !scr_fs_int_range_chk(ARG(0), "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return NULL;
+  if ((timestamp_fd || !strcmp(op, "fchown")) && !scr_fs_int_range_chk(ARG(0), "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return NULL;
+  /* Node validates these before the request starts, so they throw at the
+   * call. */
+  if (((!strcmp(op, "chown") || !strcmp(op, "lchown")) && !scr_fs_cb_owner_ids(ARG(1), ARG(2))) ||
+      (!strcmp(op, "access") && !scr_fs_cb_access_mode(ARG(1)))) {
+    scr_str_release(path);
+    return NULL;
+  }
   double fd = descriptor ? scr_fs_cb_number(ARG(0), "fd", -1) : -1;
   if (scr_exc_pending()) { scr_str_release(path); scr_arr_release(vectors); return NULL; }
   if (newControl && strcmp(op, "fdatasync")) {
@@ -824,18 +853,20 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
       }
       scr_bytes_release(data);
     }
-  } else if (!strcmp(op, "access")) scr_fs_access(path, scr_fs_cb_number(ARG(1), "mode", 0));
+  } else if (!strcmp(op, "access")) scr_fs_access(path, scr_fs_dyn_absent(ARG(1)) ? 0 : ARG(1)->v.num);
   else if (!strcmp(op, "mkdir")) {
     const ScrDyn *options = ARG(1);
     double mode = options->kind == SCR_DYN_NUM ? options->v.num : scr_fs_cb_option_number(options, "mode", 0777);
     if (scr_fs_cb_option_bool(options->kind == SCR_DYN_NUM ? scr_dyn_undefined() : options, "recursive")) scr_fs_mkdir_recursive_mode(path, mode);
     else scr_fs_mkdir_mode(path, mode);
-  } else if (!strcmp(op, "mkdtemp")) result = scr_fs_cb_string(scr_fs_mkdtemp(path));
+  } else if (!strcmp(op, "mkdtemp")) result = scr_fs_cb_string(scr_fs_mkdtemp_async(path));
   else if (!strcmp(op, "rm")) scr_fs_rm_opts_retry(path, scr_fs_cb_option_bool(ARG(1), "recursive"), scr_fs_cb_option_bool(ARG(1), "force"), scr_fs_cb_option_number(ARG(1), "maxRetries", 0), scr_fs_cb_option_number(ARG(1), "retryDelay", 100));
   else if (!strcmp(op, "rmdir")) scr_fs_rmdir(path);
   else if (!strcmp(op, "unlink")) scr_fs_unlink(path);
   else if (!strcmp(op, "chmod")) scr_fs_chmod(path, scr_fs_cb_number(ARG(1), "mode", 0));
-  else if (!strcmp(op, "chown")) scr_fs_chown(path, scr_fs_cb_number(ARG(1), "uid", 0), scr_fs_cb_number(ARG(2), "gid", 0));
+  else if (!strcmp(op, "chown")) scr_fs_chown(path, ARG(1)->v.num, ARG(2)->v.num);
+  else if (!strcmp(op, "lchown")) scr_fs_lchown(path, ARG(1)->v.num, ARG(2)->v.num);
+  else if (!strcmp(op, "fchown")) scr_fs_fchown(fd, ARG(1)->v.num, ARG(2)->v.num);
   else if (!strcmp(op, "realpath")) result = scr_fs_cb_string(scr_fs_realpath(path));
   else if (!strcmp(op, "stat") || !strcmp(op, "lstat")) result = scr_fs_cb_stats(path, -1, ARG(1), !strcmp(op, "lstat"));
   else if (!strcmp(op, "fstat")) result = scr_fs_cb_stats(NULL, fd, ARG(1), false);
@@ -930,8 +961,10 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
   } else if (!strcmp(op, "truncate") || !strcmp(op, "ftruncate")) {
     double length = scr_fs_cb_number(ARG(1), "len", 0);
     if (!scr_exc_pending()) {
+      /* truncate opens the path with 'r+' first, so a missing file
+       * reports open. */
       if (descriptor) scr_fs_ftruncate(fd, length);
-      else if (truncate(path->data, (off_t)length) < 0) scr_fs_throw(errno, "truncate", path);
+      else scr_fs_truncate(path, length);
     }
   } else if (timestamp) {
     if (timestamp_fd) scr_fs_futimes(fd, access, modified);

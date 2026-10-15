@@ -3392,20 +3392,47 @@ void scr_fs_chmod(ScrStr *path, double mode) {
   if (chmod(path->data, (mode_t)mode) != 0) scr_fs_throw(errno, "chmod", path);
 }
 
-void scr_fs_chown(ScrStr *path, double uid, double gid) {
+static void scr_fs_throw_nopath(int e, const char *op);
+static bool scr_fs_write_fd_valid(double fd);
+
+/* Node's validateInteger(id, name, -1, 2 ** 32 - 1) for uid and gid. False
+ * with the RangeError thrown. */
+bool scr_fs_owner_id_valid(double id, const char *name) {
+  bool integer = isfinite(id) && trunc(id) == id;
+  if (integer && id >= -1 && id <= 4294967295.0) return true;
+  char received[48], msg[192];
+  scr_num_received(id, received);
+  int n = snprintf(msg, sizeof msg, "The value of \"%s\" is out of range. It must be %s. Received %s", name,
+                   integer ? ">= -1 && <= 4294967295" : "an integer", received);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+/* chown, lchown (path, no follow) and fchown (fd >= 0, path NULL). libuv's
+ * Windows forms are unconditional no-op successes — Node's calls "work" and
+ * change nothing there; WASI likewise has no ownership model. Node passes
+ * the ids straight to the syscall; -1 is the POSIX "leave unchanged" value
+ * and rides the same int cast. */
+static void scr_fs_chown_op(ScrStr *path, double fd, bool no_follow, double uid, double gid) {
+  if (!scr_fs_owner_id_valid(uid, "uid") || !scr_fs_owner_id_valid(gid, "gid")) return;
+  /* The binding checks fchown's fd after the ids. */
+  if (!path && !scr_fs_write_fd_valid(fd)) return;
 #if defined(_WIN32) || defined(__wasi__)
-  /* libuv's uv_fs_chown on Windows is an unconditional no-op success —
-   * Node's chownSync "works" and changes nothing there; WASI likewise has
-   * no ownership model. */
-  (void)path; (void)uid; (void)gid;
+  (void)path; (void)fd; (void)no_follow;
 #else
-  /* Node passes the ids straight to chown(2); -1 is the POSIX "leave
-   * unchanged" value and rides the same int cast. */
-  if (chown(path->data, (uid_t)(int64_t)uid, (gid_t)(int64_t)gid) != 0) {
-    scr_fs_throw(errno, "chown", path);
+  uid_t owner = (uid_t)(int64_t)uid;
+  gid_t group = (gid_t)(int64_t)gid;
+  if (!path) {
+    if (fchown((int)fd, owner, group) != 0) scr_fs_throw_nopath(errno, "fchown");
+  } else if ((no_follow ? lchown(path->data, owner, group) : chown(path->data, owner, group)) != 0) {
+    scr_fs_throw(errno, no_follow ? "lchown" : "chown", path);
   }
 #endif
 }
+
+void scr_fs_chown(ScrStr *path, double uid, double gid) { scr_fs_chown_op(path, -1, false, uid, gid); }
+void scr_fs_lchown(ScrStr *path, double uid, double gid) { scr_fs_chown_op(path, -1, true, uid, gid); }
+void scr_fs_fchown(double fd, double uid, double gid) { scr_fs_chown_op(NULL, fd, false, uid, gid); }
 
 /* fs.openSync(path, flags) → the raw fd (as f64) — the pair behind
  * spawn's fd-stdio form (openSync → stdio: ["ignore", fd, fd] →
@@ -3526,19 +3553,23 @@ void scr_fs_fdatasync(double fd) {
 #endif
 }
 
-void scr_fs_ftruncate(double fd, double length) {
-  if (!scr_fs_write_fd_valid(fd)) return;
+/* Node's validateInteger(len, 'len'). False with the RangeError thrown. */
+bool scr_fs_truncate_len_valid(double length) {
+  if (isfinite(length) && trunc(length) == length &&
+      length >= -9007199254740991.0 && length <= 9007199254740991.0) return true;
   char received[48], msg[192];
   scr_num_received(length, received);
-  if (!(isfinite(length) && trunc(length) == length) ||
-      length < -9007199254740991.0 || length > 9007199254740991.0) {
-    const char *bound = isfinite(length) && trunc(length) == length
-      ? ">= -9007199254740991 && <= 9007199254740991" : "an integer";
-    int n = snprintf(msg, sizeof msg,
-      "The value of \"len\" is out of range. It must be %s. Received %s", bound, received);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
-    return;
-  }
+  const char *bound = isfinite(length) && trunc(length) == length
+    ? ">= -9007199254740991 && <= 9007199254740991" : "an integer";
+  int n = snprintf(msg, sizeof msg,
+    "The value of \"len\" is out of range. It must be %s. Received %s", bound, received);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+void scr_fs_ftruncate(double fd, double length) {
+  if (!scr_fs_write_fd_valid(fd)) return;
+  if (!scr_fs_truncate_len_valid(length)) return;
   if (length < 0) length = 0;
 #ifdef _WIN32
   int error = (int)_chsize_s((int)fd, (__int64)length);
@@ -3546,6 +3577,18 @@ void scr_fs_ftruncate(double fd, double length) {
 #else
   if (ftruncate((int)fd, (off_t)length) != 0) scr_fs_throw_nopath(errno, "ftruncate");
 #endif
+}
+
+/* truncateSync and fsp.truncate: open(path, 'r+'), then ftruncate's len
+ * check and clamp, then close. Node's order, so an open failure wins over
+ * an invalid len. */
+void scr_fs_truncate(ScrStr *path, double length) {
+  ScrStr *flags = scr_str_new("r+", 2);
+  double fd = scr_fs_open(path, flags);
+  scr_str_release(flags);
+  if (scr_exc_pending()) return;
+  scr_fs_ftruncate(fd, length);
+  close((int)fd);
 }
 
 #ifdef _WIN32
@@ -4600,7 +4643,11 @@ static char *scr_portable_mkdtemp(char *tmpl) {
 #define mkdtemp scr_portable_mkdtemp
 #endif
 
-ScrStr *scr_fs_mkdtemp(ScrStr *prefix) {
+/* Node's sync error reports the template, X's included: mkdtemp
+ * '/nope/x-XXXXXX'. The callback and promise errors report the request's
+ * path, which is the template as mkdtemp(3) left it (glibc leaves the last
+ * name it tried; musl restores the X's). */
+static ScrStr *scr_fs_mkdtemp_op(ScrStr *prefix, bool sync) {
   char *tmpl = malloc(prefix->len + 7);
   if (!tmpl) {
     scr_trap("scriptc: out of memory\n");
@@ -4608,8 +4655,8 @@ ScrStr *scr_fs_mkdtemp(ScrStr *prefix) {
   memcpy(tmpl, prefix->data, prefix->len);
   memcpy(tmpl + prefix->len, "XXXXXX", 7);
   if (!mkdtemp(tmpl)) {
-    /* Node reports the template, X's included: mkdtemp '/nope/x-XXXXXX' */
     int e = errno;
+    if (sync) memcpy(tmpl + prefix->len, "XXXXXX", 6);
     ScrStr *shown = scr_str_new(tmpl, prefix->len + 6);
     scr_fs_throw(e, "mkdtemp", shown);
     scr_str_release(shown);
@@ -4621,8 +4668,27 @@ ScrStr *scr_fs_mkdtemp(ScrStr *prefix) {
   return out;
 }
 
+ScrStr *scr_fs_mkdtemp(ScrStr *prefix) { return scr_fs_mkdtemp_op(prefix, true); }
+ScrStr *scr_fs_mkdtemp_async(ScrStr *prefix) { return scr_fs_mkdtemp_op(prefix, false); }
+
+/* Node's GetValidFileMode for access(): a finite number whose int32 value
+ * lies in F_OK .. R_OK | W_OK | X_OK. False with the RangeError thrown. */
+bool scr_fs_access_mode_valid(double mode) {
+  static const char not_finite[] = "mode is out of range";
+  static const char range[] = "mode is out of range: >= 0 && <= 7";
+  if (!isfinite(mode)) {
+    scr_throw_error_msg_code(SCR_ERR_RANGE, not_finite, sizeof not_finite - 1, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  int32_t m = (int32_t)scr_to_uint32(mode);
+  if (m >= 0 && m <= 7) return true;
+  scr_throw_error_msg_code(SCR_ERR_RANGE, range, sizeof range - 1, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
 void scr_fs_access(ScrStr *path, double mode) {
-  int m = (int)mode;
+  if (!scr_fs_access_mode_valid(mode)) return;
+  int m = (int32_t)scr_to_uint32(mode);
 #ifdef _WIN32
   /* The CRT access() rejects X_OK (there is no execute bit); Node on
    * Windows treats X_OK as F_OK, so mask it down to the R/W bits. */
