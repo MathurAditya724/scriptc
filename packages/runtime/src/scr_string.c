@@ -96,8 +96,10 @@ typedef struct ScrSidx {
 /* Keep short-string cursor traffic out of the sparse cache. A short-lived
  * one-byte receiver can be far more common than a large indexed one; sharing
  * the round-robin slots would otherwise rebuild a warm index every few calls.
+ * Explicitly initialized so library localization can demote it: a tentative
+ * definition is a COMMON symbol on Mach-O, and COMMON symbols stay global.
  */
-SCR_TL ScrStrScan scr_str_scan;
+SCR_TL ScrStrScan scr_str_scan = {0};
 static SCR_TL ScrSidx scr_sidx_sparse_tab[SCR_SIDX_N];
 static SCR_TL ScrSidx scr_sidx_cursor_tab[SCR_SIDX_N];
 static SCR_TL unsigned scr_sidx_sparse_clock;
@@ -936,7 +938,8 @@ static inline uint32_t scr_utf8_decode(const char *p, size_t *adv) {
 
 /* ── WTF-8 lone surrogates (scr_runtime.h) ────────────────────────── */
 
-bool scr_wtf8_lone;
+/* Explicitly initialized for library localization (see scr_str_scan). */
+bool scr_wtf8_lone = false;
 
 void scr_wtf8_note(void) {
   if (!scr_wtf8_any()) __atomic_store_n(&scr_wtf8_lone, true, __ATOMIC_RELAXED);

@@ -266,8 +266,10 @@ SCR_TL size_t scr_cyc_live = 0;
 SCR_TL size_t scr_cyc_old_freed = 0;
 #endif
 
-/* Descriptor copies by registry id. Id 0 stays empty (an unregistered type). */
-ScrCycType scr_cyc_types[SCR_CYC_MAX_TYPES];
+/* Descriptor copies by registry id. Id 0 stays empty (an unregistered type).
+ * Explicitly initialized so library localization can demote it: a tentative
+ * definition is a COMMON symbol on Mach-O, and COMMON symbols stay global. */
+ScrCycType scr_cyc_types[SCR_CYC_MAX_TYPES] = {0};
 static uint32_t scr_cyc_ntypes = 1;
 
 /* Assign `type` its id on its first allocation; any thread may get there
