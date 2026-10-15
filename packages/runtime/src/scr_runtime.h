@@ -3783,7 +3783,7 @@ void scr_fs_mkdir(ScrStr *path);
  * EISDIR-coded error; use scr_fs_rmdir for empty directories). */
 void scr_fs_rm(ScrStr *path);
 void scr_fs_rmdir(ScrStr *path);
-ScrArr *scr_fs_readdir(ScrStr *path); /* names, OS order, no "."/".." */
+ScrArr *scr_fs_readdir(ScrStr *path); /* names (byte order on POSIX, as libuv sorts), no "."/".." */
 
 /* The fs option forms (same throw discipline). mkdir_recursive is Node's
  * recursive algorithm (existing-dir target is a no-op; errors report
@@ -4810,7 +4810,8 @@ ScrStr *scr_os_user_homedir(void);
  * assemble the typed Dirent record rows inline. Entry kinds use libuv's
  * UV_DIRENT encoding (1 file, 2 dir, 3 link, 4 fifo, 5 socket, 6 char,
  * 7 block, 0 unknown); a DT_UNKNOWN d_type falls back to lstat(2) —
- * Node's own getDirents rule. OS order, no "."/"..". scr_fs_scandir
+ * Node's own getDirents rule. Byte order on POSIX (libuv's scandir sorts
+ * with strcmp), the directory's order on Windows; no "."/"..". scr_fs_scandir
  * throws Node's scandir errno error and answers NULL then; count/free are
  * NULL-tolerant so the promise emitter can turn that pending error into a
  * rejection, while the name accessor returns +1. */
