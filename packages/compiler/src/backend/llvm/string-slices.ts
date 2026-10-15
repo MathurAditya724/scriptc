@@ -1,6 +1,6 @@
 import { type IrExpr, type IrFunction, type IrStmt } from "../../ir/ir.js";
 import { everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
-import { F64_INF, f64Lit } from "./common.js";
+import { F64_INF, f64Lit, sizeToDouble } from "./common.js";
 import type { CallLifetimes } from "./call-lifetimes.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 
@@ -97,7 +97,7 @@ export function emitStringSliceRead(host: LlvmEmitterContext, value: Slice): LlV
       `${pointer} = getelementptr inbounds { ${host.sizeType}, ${host.sizeType}, i32 }, ptr ${snapshot.range}, i32 0, i32 1`,
     );
     B.line(`${length} = load ${host.sizeType}, ptr ${pointer}`);
-    B.line(`${number} = sitofp ${host.sizeType} ${length} to double`);
+    B.line(`${number} = ${sizeToDouble(host.sizeType)} ${host.sizeType} ${length} to double`);
     return { name: number, type: value.type };
   }
   if (value.method !== "charCodeAt") return null;
