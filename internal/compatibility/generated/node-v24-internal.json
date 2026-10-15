@@ -85673,12 +85673,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-feature:stream.stream.Readable.from",
-        "tests": [
-          "tests/corpus/5340-readable-from-options.ts",
-          "tests/corpus/5341-readable-from-dynamic.cjs"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:stream"
       },
       "anchorSource": "exact"
     },
@@ -85723,8 +85719,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.stream.Readable.from",
+        "tests": [
+          "tests/corpus/5340-readable-from-options.ts",
+          "tests/corpus/5341-readable-from-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -86256,12 +86256,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-feature:stream.stream.Readable.from",
-        "tests": [
-          "tests/corpus/5340-readable-from-options.ts",
-          "tests/corpus/5341-readable-from-dynamic.cjs"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:stream"
       },
       "anchorSource": "ancestor"
     },
@@ -86306,8 +86302,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.stream.Readable.from",
+        "tests": [
+          "tests/corpus/5340-readable-from-options.ts",
+          "tests/corpus/5341-readable-from-dynamic.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
