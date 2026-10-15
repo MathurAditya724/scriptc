@@ -163,7 +163,8 @@ jobs:
             llvm_asset: LLVM-22.1.8-Linux-X64
             use_zig: true
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    # The Intel macOS build took 24 minutes for 0.3.2 and passed 30 for 0.3.3.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
