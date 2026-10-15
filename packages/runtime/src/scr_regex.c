@@ -1824,8 +1824,9 @@ void scr_assert_match(ScrStr *s, ScrRegex *re, bool negated, ScrStr *msg,
                       bool has_msg) {
   bool matched = scr_assert_regex_hits(re, s);
   if (negated ? !matched : matched) return;
+  scr_assert_record(scr_dyn_new_str(s), scr_dyn_native_regex(re), negated ? "doesNotMatch" : "match");
   if (has_msg) {
-    scr_assert_fail_msg(scr_str_retain(msg));
+    scr_assert_fail(scr_str_retain(msg), false);
     return;
   }
   scr_assert_regex_input_fail(negated, re, s);
@@ -1841,9 +1842,10 @@ void scr_assert_throws_regex(ScrRegex *re, ScrError *err, ScrStr *msg, bool has_
     scr_str_release(str);
     return;
   }
+  scr_assert_record(scr_dyn_from_error(err), scr_dyn_native_regex(re), "throws");
   if (has_msg) {
     scr_str_release(str);
-    scr_assert_fail_msg(scr_str_retain(msg));
+    scr_assert_fail(scr_str_retain(msg), false);
     return;
   }
   scr_assert_regex_input_fail(false, re, str);

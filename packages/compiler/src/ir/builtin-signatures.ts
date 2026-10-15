@@ -3273,7 +3273,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * the value's inspection) — the frontend routes null/undefined to a
    * no-op and everything else here (Node throws for falsy values too).
    * All arguments are borrowed. */
-  "assert.ok": { argTypes: [BOOL, STRING], result: VOID },
+  "assert.ok": { argTypes: [BOOL, STRING, BOOL], result: VOID },
+  /** The next AssertionError's actual, expected and operator, recorded on
+   * a failure branch. */
+  "assert.record": { argTypes: [DYN, DYN, STRING], result: VOID },
+  "assert.errorNew": { argTypes: [DYN], result: { kind: "object", className: "%AssertionError" } },
   "assert.eqF64": { argTypes: [F64, F64, BOOL, BOOL, STRING, BOOL], result: VOID },
   "assert.eqBigInt": { argTypes: [BIGINT_T, BIGINT_T, BOOL, BOOL, STRING, BOOL], result: VOID },
   "assert.eqStr": { argTypes: [STRING, STRING, BOOL, BOOL, STRING, BOOL], result: VOID },

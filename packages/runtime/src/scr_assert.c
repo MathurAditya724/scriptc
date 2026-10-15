@@ -125,28 +125,98 @@ ScrStr *scr_assert_inspect_str(const ScrStr *s) {
 
 /* ── the AssertionError throw ─────────────────────────────────────────── */
 
-/* Throws an AssertionError with `message` (ownership MOVES in): a runtime
- * %Error whose name/code are Node's. The exception is pending on return —
+/* ── the AssertionError properties ─────────────────────────────────────
+ * Every AssertionError carries generatedMessage, code, actual, expected,
+ * operator and diff, in that key order. A failure path records actual,
+ * expected and operator first (scr_assert_record); the throw attaches
+ * them and clears the record. */
+static SCR_TL ScrDyn *g_record_actual, *g_record_expected;
+static SCR_TL const char *g_record_operator;
+
+/* Records the next AssertionError's actual and expected (+1 each, moved
+ * in; NULL is undefined) and operator (a static string; NULL is
+ * undefined). */
+void scr_assert_record(ScrDyn *actual, ScrDyn *expected, const char *op) {
+  if (g_record_actual) scr_dyn_release(g_record_actual);
+  if (g_record_expected) scr_dyn_release(g_record_expected);
+  g_record_actual = actual;
+  g_record_expected = expected;
+  g_record_operator = op;
+}
+
+/* The compiler's form: borrowed values and an operator string. */
+void scr_assert_record_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *op) {
+  static const char *const operators[] = {
+      "strictEqual", "notStrictEqual", "deepStrictEqual", "notDeepStrictEqual",
+      "deepEqual", "notDeepEqual", "==", "!=", "fail", "throws", "doesNotThrow",
+      "rejects", "doesNotReject", "match", "doesNotMatch", "ifError", "partialDeepStrictEqual",
+  };
+  const char *name = NULL;
+  for (size_t i = 0; i < sizeof operators / sizeof operators[0]; i++) {
+    if (op->len == strlen(operators[i]) && memcmp(op->data, operators[i], op->len) == 0) {
+      name = operators[i];
+    }
+  }
+  scr_assert_record(scr_dyn_retain(actual), scr_dyn_retain(expected), name);
+}
+
+static ScrDyn *scr_assert_dyn_text(const char *text) {
+  ScrStr *s = scr_str_new(text, strlen(text));
+  ScrDyn *d = scr_dyn_new_str(s);
+  scr_str_release(s);
+  return d;
+}
+
+/* Sets the properties on the error's view in Node's order. The values
+ * move in. */
+static void scr_assert_attach_values(ScrError *e, bool generated, ScrDyn *actual, ScrDyn *expected,
+                                     ScrDyn *op, ScrDyn *diff) {
+  ScrDyn *view = scr_dyn_from_error(e);
+  scr_dyn_obj_set(view, "generatedMessage", 16, scr_dyn_new_bool(generated));
+  scr_error_set_code(e, "ERR_ASSERTION");
+  scr_dyn_obj_set(view, "code", 4, scr_assert_dyn_text("ERR_ASSERTION"));
+  scr_dyn_obj_set(view, "actual", 6, actual);
+  scr_dyn_obj_set(view, "expected", 8, expected);
+  scr_dyn_obj_set(view, "operator", 8, op);
+  scr_dyn_obj_set(view, "diff", 4, diff);
+  scr_dyn_release(view);
+}
+
+static ScrError *scr_assert_error(ScrStr *message, bool generated, const char *diff) {
+  ScrError *e = scr_error_new(SCR_ERR_ASSERTION, message);
+  scr_str_release(message); /* scr_error_new retained its copy */
+  e->name_present = true;
+  ScrDyn *actual = g_record_actual ? g_record_actual : scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *expected = g_record_expected ? g_record_expected : scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *op = g_record_operator ? scr_assert_dyn_text(g_record_operator)
+                                 : scr_dyn_retain(scr_dyn_undefined());
+  g_record_actual = g_record_expected = NULL;
+  g_record_operator = NULL;
+  scr_assert_attach_values(e, generated, actual, expected, op, scr_assert_dyn_text(diff));
+  return e;
+}
+
+/* Throws an AssertionError with `message` (ownership MOVES in) and the
+ * recorded actual, expected and operator. `generated` says whether the
+ * message is Node's generated one. The exception is pending on return —
  * callers return through the emitter's pending check like every other
  * throwing libCall. */
-void scr_assert_fail_msg(ScrStr *message) {
-  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
-  scr_str_release(message); /* scr_error_new retained its copy */
-  scr_str_release(e->name);
-  e->name = scr_str_new("AssertionError", 14);
-  e->name_present = true;
-  scr_error_set_code(e, "ERR_ASSERTION");
+void scr_assert_fail(ScrStr *message, bool generated) {
+  ScrError *e = scr_assert_error(message, generated, "simple");
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
+
+/* A generated message. */
+void scr_assert_fail_msg(ScrStr *message) { scr_assert_fail(message, true); }
 
 /* assert(value) / assert.ok(value[, message]) / assert.fail([message]):
  * the frontend computed the truthiness and the FULL message (the user's
  * string, or the compile-time "The expression evaluated to a falsy
  * value:\n\n  <source text>\n" — the source is a compile-time constant
  * where Node re-reads the file). */
-void scr_assert_ok(bool pass, ScrStr *message) {
+void scr_assert_ok(bool pass, ScrStr *message, bool generated) {
   if (pass) return;
-  scr_assert_fail_msg(scr_str_retain(message));
+  scr_assert_fail(scr_str_retain(message), generated);
 }
 
 /* SameValue over doubles — Object.is, the comparison of strictEqual AND
@@ -207,7 +277,7 @@ static const char *scr_assert_neq_header(bool deep) {
 void scr_assert_neq_fail(const char *insp, size_t ilen, bool deep,
                          ScrStr *msg, bool has_msg) {
   if (has_msg) {
-    scr_assert_fail_msg(scr_str_retain(msg));
+    scr_assert_fail(scr_str_retain(msg), false);
     return;
   }
   ScrAssertBuf b = {0};
@@ -230,7 +300,8 @@ void scr_assert_eq_fail(const char *ia, size_t la, const char *ib, size_t lb,
                         int quotes, bool both_zero, bool strings, bool deep,
                         ScrStr *msg, bool has_msg) {
   ScrAssertBuf b = {0};
-  if (has_msg && msg->len > 0) {
+  bool custom = has_msg && msg->len > 0;
+  if (custom) {
     ab_str(&b, msg);
   } else {
     ab_cstr(&b, scr_assert_eq_header(deep));
@@ -266,7 +337,13 @@ void scr_assert_eq_fail(const char *ia, size_t la, const char *ib, size_t lb,
     }
     ab_cstr(&b, "\n");
   }
-  scr_assert_fail_msg(ab_take(&b));
+  scr_assert_fail(ab_take(&b), !custom);
+}
+
+/* The equality operators' names, for the AssertionError's operator. */
+const char *scr_assert_eq_operator(bool negated, bool deep) {
+  return negated ? (deep ? "notDeepStrictEqual" : "notStrictEqual")
+                 : (deep ? "deepStrictEqual" : "strictEqual");
 }
 
 /* strictEqual / notStrictEqual / deepStrictEqual / notDeepStrictEqual over
@@ -275,6 +352,7 @@ void scr_assert_eq_f64(double a, double b, bool negated, bool deep,
                        ScrStr *msg, bool has_msg) {
   bool same = scr_assert_same_value_f64(a, b);
   if ((negated && !same) || (!negated && same)) return;
+  scr_assert_record(scr_dyn_new_num(a), scr_dyn_new_num(b), scr_assert_eq_operator(negated, deep));
   char ia[40], ib[40];
   size_t la = scr_assert_inspect_f64(a, ia);
   if (negated) {
@@ -290,6 +368,7 @@ void scr_assert_eq_str(ScrStr *a, ScrStr *b, bool negated, bool deep,
                        ScrStr *msg, bool has_msg) {
   bool same = a->len == b->len && memcmp(a->data, b->data, a->len) == 0;
   if ((negated && !same) || (!negated && same)) return;
+  scr_assert_record(scr_dyn_new_str(a), scr_dyn_new_str(b), scr_assert_eq_operator(negated, deep));
   ScrStr *ia = scr_assert_inspect_str(a);
   if (negated) {
     scr_assert_neq_fail(ia->data, ia->len, deep, msg, has_msg);
@@ -308,6 +387,7 @@ void scr_assert_eq_bool(bool a, bool b, bool negated, bool deep,
                         ScrStr *msg, bool has_msg) {
   bool same = a == b;
   if ((negated && !same) || (!negated && same)) return;
+  scr_assert_record(scr_dyn_new_bool(a), scr_dyn_new_bool(b), scr_assert_eq_operator(negated, deep));
   const char *ia = a ? "true" : "false";
   if (negated) {
     scr_assert_neq_fail(ia, strlen(ia), deep, msg, has_msg);
@@ -327,7 +407,7 @@ void scr_assert_loose_result(bool equal, bool negated, ScrStr *actual,
                              ScrStr *expected, ScrStr *msg, bool has_msg) {
   if ((negated && !equal) || (!negated && equal)) return;
   if (has_msg) {
-    scr_assert_fail_msg(scr_str_retain(msg));
+    scr_assert_fail(scr_str_retain(msg), false);
     return;
   }
   ScrAssertBuf b = {0};
@@ -349,7 +429,7 @@ void scr_assert_deep_result(bool equal, bool negated, ScrStr *msg, bool has_msg)
      * the equal operators use it as the diff HEADER when non-empty —
      * without a rendered diff below it the two collapse to the same
      * shape here. */
-    scr_assert_fail_msg(scr_str_retain(msg));
+    scr_assert_fail(scr_str_retain(msg), false);
     return;
   }
   const char *base = negated ? scr_assert_neq_header(true) : scr_assert_eq_header(true);
@@ -381,11 +461,12 @@ void scr_assert_ref_eq_bytes(const ScrBytes *a, const ScrBytes *b, bool negated,
                              bool brands_eq, ScrStr *msg, bool has_msg) {
   bool same = a == b;
   if ((negated && !same) || (!negated && same)) return;
+  scr_assert_record(scr_dyn_new_bytes(a), scr_dyn_new_bytes(b), scr_assert_eq_operator(negated, false));
   if (has_msg && (negated || msg->len > 0)) {
     /* The deepResult message stance: not-equal operators use it alone
      * (even empty); the equal operators use a non-empty one as the diff
      * header — headerless diffs collapse both to the message itself. */
-    scr_assert_fail_msg(scr_str_retain(msg));
+    scr_assert_fail(scr_str_retain(msg), false);
     return;
   }
   const char *h;
@@ -406,8 +487,11 @@ void scr_assert_ref_eq_fn(const ScrClosure *a, const ScrClosure *b, bool negated
                           ScrStr *msg, bool has_msg) {
   bool same = a == b;
   if ((negated && !same) || (!negated && same)) return;
+  /* Function values have no runtime box here; actual and expected stay
+   * undefined. */
+  scr_assert_record(NULL, NULL, scr_assert_eq_operator(negated, false));
   if (has_msg && (negated || msg->len > 0)) {
-    scr_assert_fail_msg(scr_str_retain(msg));
+    scr_assert_fail(scr_str_retain(msg), false);
     return;
   }
   const char *h = negated
@@ -1000,8 +1084,8 @@ static bool scr_assert_dyn_is_object(const ScrDyn *d) {
 }
 
 /* The failing EQUAL operators over dyn operands — createErrDiff. */
-static void scr_assert_dyn_eq_fail(ScrDyn *a, ScrDyn *b, bool deep,
-                                   ScrStr *msg, bool has_msg) {
+static ScrStr *scr_assert_dyn_eq_message(ScrDyn *a, ScrDyn *b, bool deep,
+                                         ScrStr *msg, bool has_msg) {
   /* checkOperator: strictEqual over two objects (or two functions)
    * reports the reference-equality expectation. */
   bool objOp = !deep && ((scr_assert_dyn_is_object(a) && scr_assert_dyn_is_object(b)) ||
@@ -1118,7 +1202,12 @@ static void scr_assert_dyn_eq_fail(ScrDyn *a, ScrDyn *b, bool deep,
   free(elines);
   scr_str_release(ia);
   scr_str_release(ib);
-  scr_assert_fail_msg(ab_take(&out));
+  return ab_take(&out);
+}
+
+static void scr_assert_dyn_eq_fail(ScrDyn *a, ScrDyn *b, bool deep,
+                                   ScrStr *msg, bool has_msg) {
+  scr_assert_fail(scr_assert_dyn_eq_message(a, b, deep, msg, has_msg), !(has_msg && msg->len > 0));
 }
 
 /* The failing NOT-equal operators over dyn operands (values compared
@@ -1126,11 +1215,7 @@ static void scr_assert_dyn_eq_fail(ScrDyn *a, ScrDyn *b, bool deep,
  * actual value under the operator's banner (the object banner for
  * notStrictEqual over objects/functions), inline when a single short
  * line, block form otherwise, >50-line renderings collapsed. */
-static void scr_assert_dyn_neq_fail(ScrDyn *a, bool deep, ScrStr *msg, bool has_msg) {
-  if (has_msg) {
-    scr_assert_fail_msg(scr_str_retain(msg));
-    return;
-  }
+static ScrStr *scr_assert_dyn_neq_message(ScrDyn *a, bool deep) {
   const char *base =
       deep ? "Expected \"actual\" not to be strictly deep-equal to:"
            : ((scr_assert_dyn_is_object(a) || a->kind == SCR_DYN_FUNC)
@@ -1159,7 +1244,15 @@ static void scr_assert_dyn_neq_fail(ScrDyn *a, bool deep, ScrStr *msg, bool has_
   }
   free(lines);
   scr_str_release(ia);
-  scr_assert_fail_msg(ab_take(&out));
+  return ab_take(&out);
+}
+
+static void scr_assert_dyn_neq_fail(ScrDyn *a, bool deep, ScrStr *msg, bool has_msg) {
+  if (has_msg) {
+    scr_assert_fail(scr_str_retain(msg), false);
+    return;
+  }
+  scr_assert_fail(scr_assert_dyn_neq_message(a, deep), true);
 }
 
 /* strictEqual / notStrictEqual / deepStrictEqual / notDeepStrictEqual
@@ -1171,6 +1264,7 @@ void scr_assert_eq_dyn(ScrDyn *a, ScrDyn *b, bool negated, bool deep,
 
   if (scr_exc_pending()) return;
   if ((negated && !same) || (!negated && same)) return;
+  scr_assert_record(scr_dyn_retain(a), scr_dyn_retain(b), scr_assert_eq_operator(negated, deep));
   if (negated) {
     scr_assert_dyn_neq_fail(a, deep, msg, has_msg);
   } else {
@@ -1219,7 +1313,9 @@ void scr_assert_throws_none(bool rejection, ScrStr *ename, bool has_ename,
   } else {
     ab_cstr(&b, ".");
   }
-  scr_assert_fail_msg(ab_take(&b));
+  /* Node marks the missing-exception message as not generated. */
+  scr_assert_record(NULL, NULL, rejection ? "rejects" : "throws");
+  scr_assert_fail(ab_take(&b), false);
 }
 
 /* assert.throws(fn, ErrorClass) where the thrown Error is NOT an instance
@@ -1230,10 +1326,12 @@ void scr_assert_throws_none(bool rejection, ScrStr *ename, bool has_ename,
  * Borrows both. */
 void scr_assert_throws_mismatch(ScrStr *expected_name, ScrError *err,
                                 ScrStr *msg, bool has_msg) {
+  /* The expected class has no runtime box here; expected stays undefined. */
+  scr_assert_record(scr_dyn_from_error(err), NULL, "throws");
   if (has_msg) {
     /* A custom message stands alone (Node's innerFail with the user's
      * message — the instance-of text is the generated form only). */
-    scr_assert_fail_msg(scr_str_retain(msg));
+    scr_assert_fail(scr_str_retain(msg), false);
     return;
   }
   ScrAssertBuf b = {0};
@@ -1447,7 +1545,7 @@ void scr_assert_shape_end(ScrStr *msg, bool has_msg) {
   }
   if (has_msg) {
     scr_shape_clear();
-    scr_assert_fail_msg(scr_str_retain(msg));
+    scr_assert_fail(scr_str_retain(msg), false);
     return;
   }
   scr_shape_diff_fail();
@@ -1468,7 +1566,8 @@ void scr_assert_unwanted_rejection(ScrError *err, ScrStr *msg, bool has_msg) {
   ab_cstr(&b, "\nActual message: \"");
   if (err->message) ab_str(&b, err->message);
   ab_char(&b, '"');
-  scr_assert_fail_msg(ab_take(&b));
+  scr_assert_record(scr_dyn_from_error(err), NULL, "doesNotReject");
+  scr_assert_fail(ab_take(&b), false);
 }
 
 void scr_assert_unwanted_error(ScrStr *actual_message, bool rejection, ScrStr *msg, bool has_msg) {
@@ -1481,7 +1580,8 @@ void scr_assert_unwanted_error(ScrStr *actual_message, bool rejection, ScrStr *m
   ab_cstr(&b, "\nActual message: \"");
   ab_str(&b, actual_message);
   ab_char(&b, '"');
-  scr_assert_fail_msg(ab_take(&b));
+  /* The compiled call recorded the caught value as actual. */
+  scr_assert_fail(ab_take(&b), false);
 }
 
 /* Node calls validation functions with a fresh object receiver and accepts
@@ -1504,32 +1604,34 @@ bool scr_assert_no_error_predicate(ScrDyn *predicate, ScrDyn *actual) {
  * empty — Node reads constructor.name, identical for the builtin
  * hierarchy) or the value's inspection. */
 
-static void scr_assert_iferror_fail(const char *detail, size_t len) {
+/* `actual` moves in. */
+static void scr_assert_iferror_fail(const char *detail, size_t len, ScrDyn *actual) {
   ScrAssertBuf b = {0};
   ab_cstr(&b, "ifError got unwanted exception: ");
   ab_bytes(&b, detail, len);
-  scr_assert_fail_msg(ab_take(&b));
+  scr_assert_record(actual, scr_dyn_new_null(), "ifError");
+  scr_assert_fail(ab_take(&b), false);
 }
 
 void scr_assert_iferror_err(ScrError *err) {
   const ScrStr *d = err->message && err->message->len > 0 ? err->message : err->name;
-  scr_assert_iferror_fail(d ? d->data : "", d ? d->len : 0);
+  scr_assert_iferror_fail(d ? d->data : "", d ? d->len : 0, scr_dyn_from_error(err));
 }
 
 void scr_assert_iferror_f64(double x) {
   char buf[40];
   size_t n = scr_assert_inspect_f64(x, buf);
-  scr_assert_iferror_fail(buf, n);
+  scr_assert_iferror_fail(buf, n, scr_dyn_new_num(x));
 }
 
 void scr_assert_iferror_str(ScrStr *s) {
   ScrStr *q = scr_assert_inspect_str(s);
-  scr_assert_iferror_fail(q->data, q->len);
+  scr_assert_iferror_fail(q->data, q->len, scr_dyn_new_str(s));
   scr_str_release(q);
 }
 
 void scr_assert_iferror_bool(bool v) {
-  scr_assert_iferror_fail(v ? "true" : "false", v ? 4 : 5);
+  scr_assert_iferror_fail(v ? "true" : "false", v ? 4 : 5, scr_dyn_new_bool(v));
 }
 
 /* The checked-dynamic argument (test/common's mustSucceed wrapper): the
@@ -1544,11 +1646,125 @@ void scr_assert_iferror_dyn(const ScrDyn *v) {
     const ScrDyn *name = scr_dyn_obj_get(v, "name", 4);
     const ScrDyn *d = msg != NULL && msg->kind == SCR_DYN_STR && msg->v.str->len > 0 ? msg : name;
     if (d != NULL && d->kind == SCR_DYN_STR) {
-      scr_assert_iferror_fail(d->v.str->data, d->v.str->len);
+      scr_assert_iferror_fail(d->v.str->data, d->v.str->len, scr_dyn_retain((ScrDyn *)v));
       return;
     }
   }
   ScrStr *q = scr_assert_cf_inspect(v);
-  scr_assert_iferror_fail(q->data, q->len);
+  scr_assert_iferror_fail(q->data, q->len, scr_dyn_retain((ScrDyn *)v));
   scr_str_release(q);
+}
+
+/* ── new AssertionError(options) ───────────────────────────────────────
+ * assertion_error.js's constructor: the message is the options' message
+ * (with the diff below it for strictEqual and deepStrictEqual), or the
+ * one generated from operator, actual and expected. */
+
+static bool scr_assert_op_is(const ScrDyn *op, const char *name) {
+  return op && op->kind == SCR_DYN_STR && op->v.str->len == strlen(name) &&
+         memcmp(op->v.str->data, name, op->v.str->len) == 0;
+}
+
+/* `text` past `max` UTF-8 bytes keeps its first `keep` and ends in "...". */
+static void scr_assert_ab_clipped(ScrAssertBuf *b, const ScrStr *text, size_t max, size_t keep) {
+  if (text->len > max) {
+    ab_bytes(b, text->data, keep);
+    ab_cstr(b, "...");
+  } else {
+    ab_str(b, text);
+  }
+}
+
+/* The loose and generic forms: deepEqual's and notDeepEqual's banners,
+ * else `<actual> <operator> <expected>`. */
+static ScrStr *scr_assert_generic_message(const ScrDyn *actual, const ScrDyn *expected,
+                                          const ScrDyn *op) {
+  ScrStr *res = scr_assert_cf_inspect(actual);
+  ScrStr *other = scr_assert_cf_inspect(expected);
+  ScrAssertBuf b = {0};
+  bool same = res->len == other->len && memcmp(res->data, other->data, res->len) == 0;
+  if (scr_assert_op_is(op, "notDeepEqual") && same) {
+    ScrAssertBuf head = {0};
+    ab_cstr(&head, "Expected \"actual\" not to be loosely deep-equal to:\n\n");
+    ab_str(&head, res);
+    ScrStr *whole = ab_take(&head);
+    scr_assert_ab_clipped(&b, whole, 1024, 1021);
+    scr_str_release(whole);
+  } else if (scr_assert_op_is(op, "deepEqual") || scr_assert_op_is(op, "notDeepEqual")) {
+    bool deep_equal = scr_assert_op_is(op, "deepEqual");
+    ab_cstr(&b, deep_equal ? "Expected values to be loosely deep-equal:\n\n"
+                           : "Expected values not to be loosely deep-equal:\n\n");
+    scr_assert_ab_clipped(&b, res, 512, 509);
+    ab_cstr(&b, deep_equal ? "\n\nshould loosely deep-equal\n\n" : "\n\nshould not loosely deep-equal\n\n");
+    scr_assert_ab_clipped(&b, other, 512, 509);
+  } else {
+    scr_assert_ab_clipped(&b, res, 512, 509);
+    ab_char(&b, ' ');
+    if (op && op->kind == SCR_DYN_STR) ab_str(&b, op->v.str);
+    else ab_cstr(&b, "undefined");
+    ab_char(&b, ' ');
+    scr_assert_ab_clipped(&b, other, 512, 509);
+  }
+  scr_str_release(res);
+  scr_str_release(other);
+  return ab_take(&b);
+}
+
+ScrError *scr_assert_error_new(ScrDyn *options) {
+  if (options->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *value = scr_dyn_typed_ref_materialize(options);
+    if (!value) return NULL;
+    ScrError *e = scr_assert_error_new(value);
+    scr_dyn_release(value);
+    return e;
+  }
+  if (options->kind != SCR_DYN_OBJ) {
+    scr_dyn_arg_type_fail("options", "of type object", options);
+    return NULL;
+  }
+  ScrDyn *message = scr_dyn_obj_read(options, "message", 7);
+  ScrDyn *op = scr_dyn_obj_read(options, "operator", 8);
+  ScrDyn *actual = scr_dyn_obj_read(options, "actual", 6);
+  ScrDyn *expected = scr_dyn_obj_read(options, "expected", 8);
+  ScrDyn *diff = scr_dyn_obj_read(options, "diff", 4);
+  if (!actual) actual = scr_dyn_retain(scr_dyn_undefined());
+  if (!expected) expected = scr_dyn_retain(scr_dyn_undefined());
+  if (!op) op = scr_dyn_retain(scr_dyn_undefined());
+  if (!diff || diff->kind == SCR_DYN_UNDEF) {
+    if (diff) scr_dyn_release(diff);
+    diff = scr_assert_dyn_text("simple");
+  }
+  bool custom = message && message->kind != SCR_DYN_UNDEF && message->kind != SCR_DYN_NULL;
+  bool generated = !message || !scr_dyn_truthy(message); /* Node: !message */
+  bool strict = scr_assert_op_is(op, "strictEqual"), deep = scr_assert_op_is(op, "deepStrictEqual");
+  ScrStr *text = NULL;
+  if (custom) {
+    ScrStr *given = message->kind == SCR_DYN_STR ? scr_str_retain(message->v.str)
+                                                 : scr_dyn_string_coerce_js(message);
+    if (given && (strict || deep)) {
+      text = scr_assert_dyn_eq_message(actual, expected, deep, given, true);
+      scr_str_release(given);
+    } else {
+      text = given;
+    }
+  } else if (strict || deep) {
+    text = scr_assert_dyn_eq_message(actual, expected, deep, NULL, false);
+  } else if (scr_assert_op_is(op, "notStrictEqual") || scr_assert_op_is(op, "notDeepStrictEqual")) {
+    text = scr_assert_dyn_neq_message(actual, scr_assert_op_is(op, "notDeepStrictEqual"));
+  } else {
+    text = scr_assert_generic_message(actual, expected, op);
+  }
+  if (message) scr_dyn_release(message);
+  if (!text) {
+    scr_dyn_release(actual);
+    scr_dyn_release(expected);
+    scr_dyn_release(op);
+    scr_dyn_release(diff);
+    return NULL;
+  }
+  ScrError *e = scr_error_new(SCR_ERR_ASSERTION, text);
+  scr_str_release(text);
+  e->name_present = true;
+  scr_assert_attach_values(e, generated, actual, expected, op, diff);
+  return e;
 }

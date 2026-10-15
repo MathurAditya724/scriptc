@@ -2014,6 +2014,13 @@ export function collectClassShapeInner(
           "extending AggregateError (its runtime layout carries a hidden errors slot a subclass would overlap — extend Error and keep the list in a field)",
         );
       }
+      if (lowerer.builtinErrorInfoOf(symbol)?.def.name === "%AssertionError") {
+        lowerer.unsupported(
+          "SC1090",
+          t,
+          "extending AssertionError (its constructor takes an options object the subclass constructor would have to forward — extend Error, or construct AssertionError directly)",
+        );
+      }
       const named =
         (symbol && lowerer.classBySymbol.get(symbol)) ??
         lowerer.builtinErrorInfoOf(symbol) ??
@@ -8449,6 +8456,21 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         fn: "error.newDom",
         args: [msgArg, nameArg],
         type: { kind: "object", className: "%DOMException" },
+        loc,
+      };
+    }
+    if (errInfo && errInfo.def.name === "%AssertionError") {
+      // new AssertionError(options): Node validates the options object and
+      // generates the message from operator, actual and expected.
+      const args = expr.arguments ?? [];
+      if (args.length > 1 || args.some(ts.isSpreadElement)) {
+        lowerer.noLowering(`new AssertionError with this argument list`, expr);
+      }
+      return {
+        kind: "libCall",
+        fn: "assert.errorNew",
+        args: [args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynUndefinedExpr(loc)],
+        type: { kind: "object", className: "%AssertionError" },
         loc,
       };
     }
