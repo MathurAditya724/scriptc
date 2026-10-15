@@ -101,7 +101,13 @@ struct ScrStreamState {
     bool reading, in_read_sync, ended, end_emitted, end_scheduled;
     bool need_readable, emitted_readable, readable_listening;
     bool resume_scheduled, maybe_more_scheduled;
-    bool encoded;       /* string-chunk mode (decoder active) */
+    /* The buffer's representation: encoded means every entry is a ScrStr,
+     * otherwise every entry is a ScrBytes (scr_stream_rbuf_push checks
+     * it). decoding: setEncoding() installed a decoder, so Buffer entries
+     * decode on the way in; a string object stream without one
+     * (Readable.from over strings) holds strings but decodes nothing. */
+    bool encoded;
+    bool decoding;
     ScrStr *enc;        /* owned canonical encoding name, or NULL */
     double dec_pending; /* scr_strdec packed pending state */
     /* The defaultEncoding option's push-side effect: how push(string)
@@ -422,7 +428,7 @@ static ScrError *scr_stream_mkerr(const char *code, const char *msg) {
 /* ── forward decls ────────────────────────────────────────────────────── */
 
 static void scr_stream_flow(ScrStream *s);
-static bool scr_stream_add_entry(ScrStream *s, void *entry /*moves*/);
+static int scr_stream_add_entry(ScrStream *s, void *entry /*moves*/, bool is_str);
 static void scr_stream_emit_readable_now(ScrStream *s);
 static void scr_stream_maybe_read_more(ScrStream *s);
 static void scr_stream_finish_maybe(ScrStream *s);
@@ -454,7 +460,13 @@ static void scr_stream_error_or_destroy(ScrStream *s, ScrError *err) {
 
 /* ── readable internals ───────────────────────────────────────────────── */
 
-static void scr_stream_rbuf_push(ScrStreamState *st, void *chunk /*moves*/, bool front) {
+static void scr_stream_rbuf_push(ScrStreamState *st, void *chunk /*moves*/, bool is_str,
+                                 bool front) {
+  if (is_str != st->r.encoded) {
+    /* every entry has the buffer's representation (encoded: ScrStr) */
+    fputs("scriptc: internal error: stream buffer entry of the wrong kind\n", stderr);
+    abort();
+  }
   if (st->r.n == st->r.cap) {
     st->r.cap = st->r.cap ? st->r.cap * 2 : 4;
     st->r.buf = realloc(st->r.buf, st->r.cap * sizeof *st->r.buf);
@@ -675,7 +687,7 @@ static bool scr_stream_add_chunk(ScrStream *s, ScrBytes *chunk, bool front) {
     scr_stream_entry_release(st, entry);
     if (scr_exc_pending()) return false;
   } else {
-    scr_stream_rbuf_push(st, entry, front);
+    scr_stream_rbuf_push(st, entry, st->r.encoded, front);
     if (st->r.need_readable) scr_stream_emit_readable_nt(s);
   }
   if (!front) scr_stream_maybe_read_more(s);
@@ -1106,10 +1118,25 @@ static void scr_from_src_release(ScrFromSrc *f) {
 static void *scr_from_src_retain_v(void *f) { return scr_from_src_retain(f); }
 static void scr_from_src_release_v(void *f) { scr_from_src_release(f); }
 
+/* A Readable.from source whose values no longer fit the buffer's kind
+ * (strings beside Buffers): destroyed with the "not supported yet" Error. */
+static void scr_from_destroy_mixed(ScrStream *s) {
+  static const char m[] = "a Readable.from source that mixes strings and Buffers is not supported yet";
+  ScrStr *msg = scr_str_new(m, sizeof m - 1);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+  scr_str_release(msg);
+  scr_stream_release(scr_stream_destroy(s, e));
+  scr_error_release(e);
+}
+
 /* One typed element into the stream: a whole entry in object mode, a
  * chunk in byte mode. Moves e. Returns push's answer. */
 static bool scr_from_push_typed(ScrStream *s, void *e, bool strings) {
-  if (s->st->r.object_entries) return scr_stream_add_entry(s, e);
+  if (s->st->r.object_entries) {
+    int pushed = scr_stream_add_entry(s, e, strings);
+    if (pushed < 0) scr_from_destroy_mixed(s);
+    return pushed > 0;
+  }
   bool more = strings ? scr_stream_push_str(s, e) : scr_stream_push(s, e);
   if (strings) scr_str_release(e);
   else scr_bytes_release(e);
@@ -1389,20 +1416,50 @@ ScrStream *scr_stream_new_object_readable(ScrClosure *read, ScrStreamReadInv rea
   return s;
 }
 
+/* An object-mode entry in the buffer's representation: a Buffer on a
+ * stream with a decoder decodes through it (Node's decoder.write in
+ * readableAddChunkPushObjectMode); an entry of the other kind otherwise
+ * mixes strings and Buffers, which the buffer cannot hold. Moves entry;
+ * +1, or NULL (entry released). */
+static void *scr_stream_entry_convert(ScrStreamState *st, void *entry, bool is_str) {
+  if (is_str == st->r.encoded) return entry;
+  if (!is_str && st->r.decoding) {
+    ScrBytes *b = entry;
+    ScrStr *dec = scr_strdec_write(st->r.enc, st->r.dec_pending, b);
+    st->r.dec_pending = scr_strdec_next(st->r.enc, st->r.dec_pending, b);
+    scr_bytes_release(b);
+    return dec;
+  }
+  if (is_str) scr_str_release(entry);
+  else scr_bytes_release(entry);
+  return NULL;
+}
+
 /* readableAddChunk in object mode: every value is one whole entry, empty
- * strings and Buffers included. */
-static bool scr_stream_add_entry(ScrStream *s, void *entry /*moves*/) {
+ * strings and Buffers included. is_str gives entry's kind. Answers push()'s
+ * result, or -2 (entry released) when the kinds cannot mix. */
+static int scr_stream_add_entry(ScrStream *s, void *entry /*moves*/, bool is_str) {
   ScrStreamState *st = s->st;
+  if (!st->r.object_kind_set && st->r.length == 0) {
+    /* the first entry picks the representation */
+    st->r.object_kind_set = true;
+    if (is_str && !st->r.encoded) {
+      st->r.encoded = true;
+      if (!st->r.enc) st->r.enc = scr_str_new("utf8", 4);
+    }
+  }
+  entry = scr_stream_entry_convert(st, entry, is_str);
+  if (entry == NULL) return -2;
   if (st->r.ended) {
     scr_stream_entry_release(st, entry);
     ScrError *e = scr_stream_mkerr("ERR_STREAM_PUSH_AFTER_EOF", "stream.push() after EOF");
     scr_stream_error_or_destroy(s, e);
     scr_error_release(e);
-    return false;
+    return 0;
   }
   if (st->destroyed || st->errored) {
     scr_stream_entry_release(st, entry);
-    return false;
+    return 0;
   }
   st->r.reading = false;
   if (st->r.flowing == 1 && st->r.length == 0 && !st->r.in_read_sync &&
@@ -1410,9 +1467,9 @@ static bool scr_stream_add_entry(ScrStream *s, void *entry /*moves*/) {
     if (st->r.emitted_readable) st->r.emitted_readable = false;
     scr_stream_emit_data(s, entry);
     scr_stream_entry_release(st, entry);
-    if (scr_exc_pending()) return false;
+    if (scr_exc_pending()) return 0;
   } else {
-    scr_stream_rbuf_push(st, entry, false);
+    scr_stream_rbuf_push(st, entry, st->r.encoded, false);
     if (st->r.need_readable) scr_stream_emit_readable_nt(s);
   }
   scr_stream_maybe_read_more(s);
@@ -1421,18 +1478,11 @@ static bool scr_stream_add_entry(ScrStream *s, void *entry /*moves*/) {
 }
 
 int scr_stream_push_object(ScrStream *s, const ScrDyn *v) {
-  ScrStreamState *st = s->st;
   bool is_str = v->kind == SCR_DYN_STR;
   if (!is_str && v->kind != SCR_DYN_BYTES) return -1;
-  if (!st->r.object_kind_set) {
-    st->r.object_kind_set = true;
-    st->r.encoded = is_str;
-    if (is_str && !st->r.enc) st->r.enc = scr_str_new("utf8", 4);
-  } else if (st->r.encoded != is_str) {
-    return -2;
-  }
   void *entry = is_str ? (void *)scr_str_retain(v->v.str) : (void *)scr_bytes_raw_view(v->v.bytes);
-  return scr_stream_add_entry(s, entry) ? 1 : 0;
+  int pushed = scr_stream_add_entry(s, entry, is_str);
+  return pushed < 0 ? pushed : pushed ? 1 : 0;
 }
 
 /* ── the registration hook ('data'/'readable' listeners kick flow) ────── */
@@ -3081,12 +3131,17 @@ static void scr_compose_data_l(ScrClosure *cb, ScrBytes *bytes, ScrStr *str) {
     ScrStreamState *dst = d->st;
     bool more;
     if (dst->r.object_entries) {
-      if (!dst->r.object_kind_set) {
-        dst->r.object_kind_set = true;
-        dst->r.encoded = str != NULL;
-        if (str && !dst->r.enc) dst->r.enc = scr_str_new("utf8", 4);
+      int pushed = scr_stream_add_entry(
+          d, str ? (void *)scr_str_retain(str) : (void *)scr_bytes_retain(bytes), str != NULL);
+      if (pushed < 0) {
+        static const char m[] = "a composed stream whose tail mixes strings and Buffers is not supported yet";
+        ScrStr *msg = scr_str_new(m, sizeof m - 1);
+        ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+        scr_str_release(msg);
+        scr_stream_release(scr_stream_destroy(d, e));
+        scr_error_release(e);
       }
-      more = scr_stream_add_entry(d, str ? (void *)scr_str_retain(str) : (void *)scr_bytes_retain(bytes));
+      more = pushed > 0;
     } else if (str) {
       more = scr_stream_push_str(d, str);
     } else {
@@ -4238,7 +4293,7 @@ bool scr_stream_push_null(ScrStream *s) {
       ScrStr *tail = scr_strdec_end(st->r.enc, st->r.dec_pending);
       st->r.dec_pending = 0;
       if (scr_str_utf16_len(tail) > 0) {
-        scr_stream_rbuf_push(st, tail, false);
+        scr_stream_rbuf_push(st, tail, true, false);
         if (st->r.need_readable) scr_stream_emit_readable_nt(s);
       } else {
         scr_str_release(tail);
@@ -4266,7 +4321,7 @@ void scr_stream_unshift(ScrStream *s, ScrBytes *chunk) {
   if (st->r.head_off > 0) {
     /* materialize the part-read head so the front slot is whole */
     void *rest = scr_stream_rbuf_take(st, scr_stream_entry_len(st, st->r.buf[0]) - st->r.head_off);
-    scr_stream_rbuf_push(st, rest, true);
+    scr_stream_rbuf_push(st, rest, st->r.encoded, true);
   }
   scr_stream_add_chunk(s, chunk, true);
 }
@@ -4360,11 +4415,13 @@ ScrStream *scr_stream_set_encoding(ScrStream *s, ScrStr *enc) {
     /* switching encodings mid-stream: fold the old decoder's pending
      * tail into the buffer first (rare; Node re-creates the decoder) */
     ScrStr *tail = scr_strdec_end(st->r.enc, st->r.dec_pending);
-    if (scr_str_utf16_len(tail) > 0) scr_stream_rbuf_push(st, tail, false);
+    if (scr_str_utf16_len(tail) > 0) scr_stream_rbuf_push(st, tail, true, false);
     else scr_str_release(tail);
     scr_str_release(st->r.enc);
     st->r.enc = scr_str_retain(enc);
     st->r.dec_pending = 0;
+    st->r.decoding = true;
+    st->r.object_kind_set = true;
     return scr_stream_retain(s);
   }
   st->r.enc = scr_str_retain(enc);
@@ -4392,12 +4449,29 @@ ScrStream *scr_stream_set_encoding(ScrStream *s, ScrStr *enc) {
       content = joined;
     }
   }
+  if (st->r.ended) {
+    /* Node 24: an ended stream's decoder flushes its partial tail */
+    ScrStr *tail = scr_strdec_end(st->r.enc, st->r.dec_pending);
+    st->r.dec_pending = 0;
+    if (content == NULL) {
+      content = tail;
+    } else {
+      ScrStr *joined = scr_str_concat(content, tail);
+      scr_str_release(content);
+      scr_str_release(tail);
+      content = joined;
+    }
+  }
   st->r.n = 0;
   st->r.head_off = 0;
   st->r.length = 0;
-  st->r.encoded = true; /* AFTER the byte-entry walk above */
+  /* AFTER the byte-entry walk above: from here every entry is a string,
+   * and Buffer entries pushed later decode (scr_stream_entry_convert) */
+  st->r.encoded = true;
+  st->r.decoding = true;
+  st->r.object_kind_set = true;
   if (content != NULL) {
-    if (scr_str_utf16_len(content) > 0) scr_stream_rbuf_push(st, content, false);
+    if (scr_str_utf16_len(content) > 0) scr_stream_rbuf_push(st, content, true, false);
     else scr_str_release(content);
   }
   return scr_stream_retain(s);
