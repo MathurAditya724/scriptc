@@ -440,7 +440,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * to lstat, Node's getDirents rule). The result type is the call site's
    * interned Dirent record array (name, parentPath, hidden %dtype in
    * libuv's UV_DIRENT encoding) — verified by the frontend; the emitter
-   * assembles the rows from the snapshot. OS order, no "."/"..". Throws
+   * assembles the rows from the snapshot. Byte order on POSIX (libuv
+   * sorts), the directory's order on Windows; no "."/"..". Throws
    * Node's scandir errno error (may-throw seed set); fresh +1 array. */
   "fs.readdirTypesSync": { argTypes: [STRING], result: VOID },
   /** node:path (scr_path.c ports BOTH of Node's implementations
