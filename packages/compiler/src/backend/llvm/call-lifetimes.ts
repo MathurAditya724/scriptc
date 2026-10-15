@@ -371,6 +371,7 @@ export function analyzeCallLifetimes(
       const local = locals.get(param.localId);
       if (
         local &&
+        !param.owned &&
         isRefCounted(param.type) &&
         (stable(local) || unchangedCaptures.has(local.id)) &&
         !uses.declarations.has(local.id)

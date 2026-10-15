@@ -10,6 +10,7 @@ import {
   typeKey,
   type IrExpr,
   type IrFunction,
+  type IrParam,
   type IrStmt,
   type IrType,
 } from "../../ir/ir.js";
@@ -44,6 +45,13 @@ export interface ProtocolDispatch {
    * implementing class's field. */
   field: boolean;
   classes: Set<string>;
+}
+
+/** The fallback takes its own reference to the receiver. A caller may lend
+ * the receiver from an array element, and the checked call can run code
+ * that removes that element. */
+function ownedReceiver(params: IrParam[]): IrParam[] {
+  return params.map((param, index) => (index === 0 ? { ...param, owned: true } : param));
 }
 
 /** Lowered arguments whose evaluation can neither throw nor change any
@@ -248,9 +256,16 @@ export function lowerProtocolMethodCall(
   const { params, result, returnsVoid } = signature;
   const loc = locOf(call);
   const method = access.name.text;
-  const receiverLocal = lowerer.declareHiddenLocal("%protocolReceiver", DYN);
-  const receiver = varRef(receiverLocal.id, DYN, loc);
-  const stmts: IrStmt[] = [{ kind: "varDecl", localId: receiverLocal.id, init: recv, loc }];
+  // A const binding already holds the receiver for the whole call; other
+  // receivers are evaluated once into a hidden local.
+  const constant =
+    recv.kind === "varRef" &&
+    lowerer.ctx.locals.some((local) => local.id === recv.localId && !local.mutable);
+  const receiverLocal = constant ? null : lowerer.declareHiddenLocal("%protocolReceiver", DYN);
+  const receiver = receiverLocal ? varRef(receiverLocal.id, DYN, loc) : recv;
+  const stmts: IrStmt[] = receiverLocal
+    ? [{ kind: "varDecl", localId: receiverLocal.id, init: recv, loc }]
+    : [];
   const args = call.arguments.map((arg, i) =>
     lowerer.coerceToExpected(lowerer.lowerExprExpecting(arg, params[i]!), params[i]!),
   );
@@ -260,7 +275,7 @@ export function lowerProtocolMethodCall(
   let dispatch = lowerer.protocolDispatches.get(key);
   if (!dispatch) {
     const index = lowerer.protocolDispatches.size;
-    const signatureParams = [
+    const signatureParams: IrParam[] = [
       { localId: "p.0", name: "receiver", type: DYN },
       ...(probed ? [{ localId: "p.callee", name: "callee", type: DYN }] : []),
       ...params.map((type, i) => ({ localId: `p.${i + 1}`, name: `p${i + 1}`, type })),
@@ -292,7 +307,7 @@ export function lowerProtocolMethodCall(
     };
     const fallback: IrFunction = {
       name: `%dyn.class.protocol.fallback.${index}`,
-      params: signatureParams,
+      params: ownedReceiver(signatureParams),
       returnType: result,
       locals: locals(),
       body: [{ kind: "return", value: lowerer.coerceToExpected(dynamicCall, result), loc }],
@@ -495,7 +510,7 @@ export function lowerProtocolPropertyRead(
   let dispatch = lowerer.protocolDispatches.get(key);
   if (!dispatch) {
     const index = lowerer.protocolDispatches.size;
-    const params = [{ localId: "p.0", name: "receiver", type: DYN }];
+    const params: IrParam[] = [{ localId: "p.0", name: "receiver", type: DYN }];
     const locals = () => [{ id: "p.0", name: "receiver", type: DYN, mutable: false }];
     const read: IrExpr = {
       kind: "dynKeyGet",
@@ -506,7 +521,7 @@ export function lowerProtocolPropertyRead(
     };
     const fallback: IrFunction = {
       name: `%dyn.class.protocol.fallback.${index}`,
-      params,
+      params: ownedReceiver(params),
       returnType: result,
       locals: locals(),
       body: [{ kind: "return", value: lowerer.coerceToExpected(read, result), loc }],
