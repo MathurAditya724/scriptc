@@ -309,8 +309,42 @@ const radices = [
   -4294967280,
   35,
 ];
+// parseInt cases whose Node answer depends on the architecture, keyed by
+// input and radix argument. For radixes other than 2, 4, 8, 10, 16 and 32, V8
+// folds each 32-bit digit chunk with `value * multiplier + part`; Node's
+// arm64 builds fuse that multiply-add into one rounding and its x64 builds
+// round twice. Each case is written once per architecture with the listed
+// answers, so the file is the same whichever machine generates it, and the
+// answer for this machine's architecture is checked against Node here.
+const ARCH_PARSEINT = new Map([
+  ["9007199254740993\t36", { arm64: "1.9896986116031812e+24", x64: "1.9896986116031807e+24" }],
+  [
+    "123456789012345678901234567890\t36",
+    { arm64: "1.436287679432363e+45", x64: "1.4362876794323633e+45" },
+  ],
+]);
+const ownArch = process.arch === "arm64" ? "arm64" : "x64";
+const archCases = new Set();
 for (const s of parseIntInputs)
-  for (const r of radices)
-    emit("parseInt", s, r === undefined ? "0" : num(r), hex(String(parseInt(s, r))));
+  for (const r of radices) {
+    const args = r === undefined ? "0" : num(r);
+    const answer = String(parseInt(s, r));
+    const arch = ARCH_PARSEINT.get(`${s}\t${args}`);
+    if (arch === undefined) {
+      emit("parseInt", s, args, hex(answer));
+      continue;
+    }
+    if (answer !== arch[ownArch]) {
+      throw new Error(
+        `parseInt(${JSON.stringify(s)}, ${args}) is ${answer} on ${process.arch}; ARCH_PARSEINT lists ${arch[ownArch]}`,
+      );
+    }
+    archCases.add(`${s}\t${args}`);
+    emit("parseInt.arm64", s, args, hex(arch.arm64));
+    emit("parseInt.x64", s, args, hex(arch.x64));
+  }
+if (archCases.size !== ARCH_PARSEINT.size) {
+  throw new Error("ARCH_PARSEINT lists a case that parseIntInputs and radices do not generate");
+}
 
 stdout.write([...lines].join("\n") + "\n");
