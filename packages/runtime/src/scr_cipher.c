@@ -212,8 +212,43 @@ static void sc_not_one_of(const char *name, const char *allowed, const ScrDyn *v
   scr_str_release(message);
 }
 
+/* An object's toString the program defined, as an own or inherited
+ * function property. */
+static bool sc_custom_to_string(ScrDyn *value) {
+  if (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_TYPED_REF) return false;
+  ScrDyn *member = scr_dyn_obj_read(value, "toString", 8);
+  bool custom = member && member->kind == SCR_DYN_FUNC;
+  scr_dyn_release(member);
+  return custom;
+}
+
+/* Whether value is a class instance whose class defines toString. */
+static bool sc_class_to_string(const ScrDyn *value) {
+  ScrStr *name = scr_str_new("toString", 8);
+  bool method = scr_dyn_typed_ref_class_has(value, name);
+  scr_str_release(name);
+  return method;
+}
+
+/* ERR_UNKNOWN_ENCODING formats the encoding with %s: objects without a
+ * program-defined toString are inspected at depth 0. */
 static void sc_unknown_encoding(const ScrDyn *encoding) {
-  ScrStr *text = scr_dyn_string_coerce_js(encoding);
+  ScrDyn *value = (ScrDyn *)encoding;
+  ScrStr *text;
+  /* Node prints a function's source text and calls a class's toString. */
+  if (value->kind == SCR_DYN_FUNC || sc_class_to_string(value)) {
+    static const char message[] = "An output encoding that is a function or an instance of a class defining "
+                                  "toString has no lowering; pass the encoding name as a string";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return;
+  }
+  if (value->kind == SCR_DYN_STR || sc_custom_to_string(value)) {
+    text = scr_dyn_string_coerce_js(value);
+  } else if (value->kind == SCR_DYN_NUM) {
+    text = scr_insp_f64(value->v.num);
+  } else {
+    text = scr_insp_dyn_s(value, 0);
+  }
   if (!text) return;
   ScrJsonBuf b;
   scr_jb_init(&b);
@@ -290,6 +325,20 @@ static ScrBytes *sc_buffer_or_view(const ScrDyn *value, const char *name, const 
   if (sc_is_view(value) || scr_buffer_storage_is(value)) return sc_bytes_of(value);
   scr_dyn_arg_type_fail(name, "of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView", value);
   return NULL;
+}
+
+/* The value a typed-ref box holds when it is a string, view, ArrayBuffer
+ * or native handle such as a KeyObject (+1). Other values are retained
+ * as passed, so argument errors describe the original value. NULL after
+ * throwing. */
+static ScrDyn *sc_unbox(ScrDyn *value) {
+  if (value->kind != SCR_DYN_TYPED_REF) return scr_dyn_retain(value);
+  ScrDyn *view = scr_dyn_typed_ref_materialize(value);
+  if (!view) return NULL;
+  if (view->kind == SCR_DYN_STR || sc_is_view(view) || view->kind == SCR_DYN_HANDLE || scr_buffer_storage_is(view))
+    return view;
+  scr_dyn_release(view);
+  return scr_dyn_retain(value);
 }
 
 /* options[key] when options is an object, else undefined (+1 or NULL). */
@@ -395,7 +444,7 @@ static bool sc_set(void *h, const char *key, size_t key_len, const ScrDyn *value
 /* createCipheriv/createDecipheriv(cipher, key, iv, options): the argument
  * checks of createCipherWithIV and the cipher, IV, tag-length and key
  * checks of CipherBase::InitIv, in Node's order. +1 handle or NULL. */
-ScrDyn *scr_crypto_cipher_new(bool decrypt, ScrDyn *cipher, ScrDyn *key, ScrDyn *iv, ScrDyn *options) {
+static ScrDyn *sc_cipher_new(bool decrypt, ScrDyn *cipher, ScrDyn *key, ScrDyn *iv, ScrDyn *options) {
   if (cipher->kind != SCR_DYN_STR) {
     scr_dyn_arg_type_fail("cipher", "of type string", cipher);
     return NULL;
@@ -540,6 +589,18 @@ done:
   scr_dyn_release(xts_standard);
   scr_bytes_release(iv_bytes);
   scr_bytes_release(key_bytes);
+  return result;
+}
+
+ScrDyn *scr_crypto_cipher_new(bool decrypt, ScrDyn *cipher, ScrDyn *key, ScrDyn *iv, ScrDyn *options) {
+  ScrDyn *args[3] = {cipher, key, iv};
+  ScrDyn *unboxed[3] = {NULL, NULL, NULL};
+  ScrDyn *result = NULL;
+  for (size_t i = 0; i < 3; i++)
+    if (!(unboxed[i] = sc_unbox(args[i]))) goto done;
+  result = sc_cipher_new(decrypt, unboxed[0], unboxed[1], unboxed[2], options);
+done:
+  for (size_t i = 0; i < 3; i++) scr_dyn_release(unboxed[i]);
   return result;
 }
 
@@ -1021,9 +1082,8 @@ static void sc_stream_fence(void) {
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
 }
 
-static ScrDyn *sc_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
-                         const char *what) {
-  ScCipher *c = h;
+static ScrDyn *sc_dispatch(ScCipher *c, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
+                           const char *what) {
   if (sc_name_is(method, "update"))
     return sc_update(c, sc_arg(args, argc, 0), sc_arg(args, argc, 1), sc_arg(args, argc, 2));
   if (sc_name_is(method, "final")) return sc_final(c, sc_arg(args, argc, 0));
@@ -1042,6 +1102,20 @@ static ScrDyn *sc_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *cons
   scr_jb_puts(&b, " is not a function");
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
   return NULL;
+}
+
+/* Every method reads at most three arguments. */
+static ScrDyn *sc_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
+                         const char *what) {
+  ScrDyn *unboxed[3] = {NULL, NULL, NULL};
+  size_t count = argc < 3 ? argc : 3;
+  ScrDyn *result = NULL;
+  for (size_t i = 0; i < count; i++)
+    if (!(unboxed[i] = sc_unbox(args[i]))) goto done;
+  result = sc_dispatch(h, self, method, unboxed, count, what);
+done:
+  for (size_t i = 0; i < count; i++) scr_dyn_release(unboxed[i]);
+  return result;
 }
 
 static ScrDyn *sc_get(void *h, const char *key, size_t key_len) {

@@ -283,7 +283,7 @@ test.skipIf(!zigOnPath())(
       },
       {
         name: "cipher",
-        options: { cipher: true, dynAsync: true, dynInvoke: true },
+        options: { cipher: true, dynAsync: true, dynInvoke: true, inspect: true },
         call: "scr_dyn_release(scr_crypto_cipher_new(false, scr_dyn_undefined(), scr_dyn_undefined(), scr_dyn_undefined(), scr_dyn_undefined()))",
       },
     ];

@@ -31,6 +31,7 @@ const runtimeSources = [
   "scr_cycle.c",
   "scr_alloc.c",
   "scr_json.c",
+  "scr_inspect.c",
   "scr_bigint.c",
   "scr_async.c",
   "scr_async_dyn.c",

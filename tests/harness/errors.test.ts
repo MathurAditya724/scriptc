@@ -824,6 +824,49 @@ try {
   });
 });
 
+// Node formats an unknown output encoding with %s, which prints a
+// function's source text and calls a toString the encoding's class
+// defines. The cipher runtime has neither, so both throw a coded SC2020
+// error.
+describe("cipher output encodings that print through source text or a class toString", () => {
+  test("update() and final() throw SC2020", async () => {
+    const r = await compileAndRun(
+      "cipher-encoding-class-to-string",
+      `import { createCipheriv } from "node:crypto";
+class Encoding {
+  name: string;
+  constructor(name: string) {
+    this.name = name;
+  }
+  toString(): string {
+    return this.name;
+  }
+}
+const instance: any = new Encoding("nope");
+const fn: any = () => "nope";
+try {
+  createCipheriv("aes-128-ctr", Buffer.alloc(16), Buffer.alloc(16)).final(instance);
+} catch (error) {
+  const e = error as Error & { code?: string };
+  console.log(e.name, e.code, e.message);
+}
+try {
+  createCipheriv("aes-128-ctr", Buffer.alloc(16), Buffer.alloc(16)).update("abc", "utf8", fn);
+} catch (error) {
+  const e = error as Error & { code?: string };
+  console.log(e.name, e.code, e.message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    const message =
+      "Error SC2020 An output encoding that is a function or an instance of a class defining toString has no lowering; " +
+      "pass the encoding name as a string\n";
+    expect(r.stdout).toBe(message + message);
+    expect(r.stderr).toBe("");
+  });
+});
+
 // Node 24.22 skips the chacha20-poly1305 tag check when neither
 // setAuthTag() nor authTagLength was used, and returns unverified
 // plaintext. scriptc keeps Node 24.15's behavior: final() fails.

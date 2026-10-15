@@ -4,9 +4,10 @@
 // encodings, and decryption checks that reject a wrong tag, a tampered
 // ciphertext or changed AAD with Node's error. Keys, IVs, AAD, tags and
 // data also arrive through records, untyped values, nested objects, Maps,
-// arrays, generics and secret KeyObjects. Keys and IVs are fixed byte
-// patterns, so every output is deterministic.
-import { createCipheriv, createDecipheriv, createSecretKey, type KeyObject } from "node:crypto";
+// arrays, generics and secret KeyObjects, and each argument alone through
+// `any`, including class instances, records and arrays that Node rejects.
+// Keys and IVs are fixed byte patterns, so every output is deterministic.
+import { createCipheriv, createDecipheriv, createSecretKey, type CipherGCM, type KeyObject } from "node:crypto";
 
 function pattern(length: number, seed: number): Buffer {
   const out = Buffer.alloc(length);
@@ -147,3 +148,70 @@ sealWith("key object", secret, material.iv, material.aad, material.aad);
 sealWith("untyped key object", nested.secret, nested.list[1], material.aad, material.aad);
 const typedKey = createCipheriv("aes-256-gcm", secret, material.iv);
 console.log("typed key object", Buffer.concat([typedKey.update(material.aad), typedKey.final()]).toString("hex"));
+
+// Each argument on its own through `any`. Buffers, views, secret KeyObjects,
+// strings and option records are accepted; class instances, records and
+// arrays fail with Node's errors, and an output encoding that is not a
+// string is rendered as Node's %s formats it.
+class Envelope {
+  id: number;
+  constructor(id: number) {
+    this.id = id;
+  }
+}
+const anyName: any = "aes-256-gcm";
+const anyKey: any = material.key;
+const anyIv: any = material.iv;
+const anyAad: any = material.aad;
+const anySecret: any = secret;
+const anyTagLength: any = { authTagLength: 16 };
+const anyAadOptions: any = { plaintextLength: material.aad.length };
+const anyHex: any = "hex";
+const anyBuffer: any = "buffer";
+const bad: [string, any][] = [
+  ["instance", new Envelope(1)],
+  ["record", { id: 2 }],
+  ["array", [1, 2, 3]],
+  ["nested array", [[1, 2], { a: [3] }]],
+  ["custom toString", { toString: () => "custom" }],
+  ["number", 7],
+];
+function sealAny(label: string, make: () => CipherGCM, aad: any, data: any): void {
+  const c = make();
+  c.setAAD(aad);
+  const out = c.update(data, undefined, anyHex) + c.final(anyHex);
+  const tag: any = c.getAuthTag();
+  const d = createDecipheriv("aes-256-gcm", anySecret, anyIv);
+  d.setAAD(aad, anyAadOptions);
+  d.setAuthTag(tag);
+  const opened: any = d.update(out, anyHex);
+  console.log(label, out, Buffer.concat([opened, d.final(anyBuffer)]).equals(material.aad));
+}
+sealAny("any name", () => createCipheriv(anyName, material.key, material.iv), material.aad, material.aad);
+sealAny("any key", () => createCipheriv("aes-256-gcm", anyKey, material.iv), material.aad, material.aad);
+sealAny("any key object", () => createCipheriv("aes-256-gcm", anySecret, material.iv), material.aad, material.aad);
+sealAny("any iv", () => createCipheriv("aes-256-gcm", material.key, anyIv), material.aad, material.aad);
+sealAny("any options", () => createCipheriv("aes-256-gcm", material.key, material.iv, anyTagLength), material.aad, material.aad);
+sealAny("any aad and data", () => createCipheriv("aes-256-gcm", material.key, material.iv), anyAad, anyAad);
+for (const [label, value] of bad) {
+  const attempts: [string, () => unknown][] = [
+    ["cipher", () => createCipheriv(value, material.key, material.iv)],
+    ["key", () => createCipheriv("aes-256-gcm", value, material.iv)],
+    ["iv", () => createCipheriv("aes-256-gcm", material.key, value)],
+    ["options", () => createCipheriv("aes-256-gcm", material.key, material.iv, value)],
+    ["setAAD", () => createCipheriv("aes-256-gcm", material.key, material.iv).setAAD(value)],
+    ["setAAD options", () => createCipheriv("aes-256-gcm", material.key, material.iv).setAAD(material.aad, value)],
+    ["update", () => createCipheriv("aes-256-gcm", material.key, material.iv).update(value)],
+    ["update encoding", () => createCipheriv("aes-256-gcm", material.key, material.iv).update(material.aad, undefined, value)],
+    ["final encoding", () => createCipheriv("aes-256-gcm", material.key, material.iv).final(value)],
+    ["setAuthTag", () => createDecipheriv("aes-256-gcm", material.key, material.iv).setAuthTag(value)],
+  ];
+  for (const [site, run] of attempts) {
+    try {
+      run();
+      console.log(label, site, "accepted");
+    } catch (error) {
+      console.log(label, site, describe(error));
+    }
+  }
+}

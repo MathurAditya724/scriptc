@@ -3,7 +3,8 @@
 // unknown cipher names, key and IV lengths, authTagLength values, the
 // ctsMode and xtsStandard options (no implemented cipher supports them), the
 // invalid-state errors after final(), update() after final(), methods each
-// direction lacks, and the encoding errors of update() and final().
+// direction lacks, and the encoding errors of update() and final(),
+// including output encodings that are not strings.
 import crypto from "node:crypto";
 
 const key16 = Buffer.alloc(16, 1);
@@ -97,3 +98,22 @@ attempt("setAAD cbc", () => cbc.setAAD(Buffer.from("x")));
 attempt("setAuthTag cbc", () => cbc.setAuthTag(Buffer.alloc(16)));
 attempt("final empty", () => cbc.final());
 attempt("final empty again", () => cbc.final());
+
+// Output encodings that are not strings print as Node's %s formats them.
+class Encoding {
+  constructor(name) {
+    this.name = name;
+  }
+}
+function outputEncoding(label, encoding) {
+  attempt(`update output encoding ${label}`, () => crypto.createCipheriv("aes-128-ctr", key16, iv16).update("abc", "utf8", encoding));
+  attempt(`final output encoding ${label}`, () => crypto.createCipheriv("aes-128-ctr", key16, iv16).final(encoding));
+}
+outputEncoding("object", { a: 1, b: [2, 3] });
+outputEncoding("array", [1, "two", [3]]);
+outputEncoding("instance", new Encoding("hex"));
+outputEncoding("toString", { toString: () => "custom" });
+outputEncoding("number", 12);
+outputEncoding("boolean", true);
+outputEncoding("empty object", {});
+attempt("instance key", () => crypto.createCipheriv("aes-128-ctr", new Encoding("hex"), iv16));

@@ -307,10 +307,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       if (fn.startsWith("dgram.") || fn.startsWith("dns.")) features.dgram = true;
       if (fn.startsWith("tlsca.")) features.tlsCa = true;
       // scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
-      // process-warning unit.
+      // process-warning unit, and unknown output encodings render through
+      // the inspect unit.
       if (fn === "crypto.cipherNew") {
         features.cipher = true;
         features.dynAsync = true;
+        features.inspect = true;
       }
     } else {
       switch (node.kind) {
