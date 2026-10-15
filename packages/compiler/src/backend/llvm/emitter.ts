@@ -229,6 +229,7 @@ import {
   ipcMessageThunkFor,
   ipcSendThunkFor,
   emitterFixedAdapter,
+  emitterOnceAdapter,
   wrapEmitterListener,
   unwrapNullableClosure,
   closeBindThunkFor,
@@ -9459,6 +9460,10 @@ export class LlEmitter {
 
   emitterFixedAdapter(cbT: IrType & { kind: "func" }): { fn: string; shim: string } {
     return emitterFixedAdapter(this, cbT);
+  }
+
+  emitterOnceAdapter(boxerT: IrType & { kind: "func" }): { fn: string; shim: string } {
+    return emitterOnceAdapter(this, boxerT);
   }
 
   wrapEmitterListener(target: string, adapterFn: string): string {

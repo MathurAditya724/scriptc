@@ -5065,7 +5065,12 @@ declare module "events" {
     // The class under its own name, so `import { EventEmitter }` resolves
     // (the @types/node namespace-alias pattern).
     export { internal as EventEmitter };
-    export function once(emitter: EventEmitter, eventName: string): Promise<any[]>;
+    // The event's arguments, as checked-dynamic values.
+    export function once(
+      emitter: EventEmitter,
+      eventName: string,
+      options?: { signal?: AbortSignal },
+    ): Promise<unknown[]>;
   }
   export = EventEmitter;
 }

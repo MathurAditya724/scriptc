@@ -3570,6 +3570,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * turns, Node's check phase). Neither throws. */
   "tp.setTimeout": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
   "tp.setImmediate": { argTypes: [], result: { kind: "promise", inner: VOID } },
+  /** events.once (scr_events_emitter.c): [emitter, name, boxer,
+   * errorBoxer, listenForError] → a pending promise of any[]; the boxers
+   * turn the event's and the 'error' tuple into that array. */
+  "events.once": { argTypes: [null, STRING, null, null, BOOL], result: VOID },
   /** node:diagnostics_channel (scr_dc.c, linked when any dc.* appears —
    * the zlib gating precedent): a process-global name→channel registry;
    * channel values are f64 handles (type-mapper.ts maps Channel to F64, the
