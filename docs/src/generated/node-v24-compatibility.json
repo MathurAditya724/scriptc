@@ -209,9 +209,9 @@
       "apiEntries": 152,
       "static": {
         "supported": 5,
-        "partial": 19,
-        "refused": 26,
-        "not-implemented": 102,
+        "partial": 25,
+        "refused": 23,
+        "not-implemented": 99,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -11888,9 +11888,9 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "detail": "Explicitly rejected by a named compiler diagnostic.",
-        "verification": "explicit-refusal"
+        "status": "partial",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12026,9 +12026,9 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "detail": "Explicitly rejected by a named compiler diagnostic.",
-        "verification": "explicit-refusal"
+        "status": "partial",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12095,9 +12095,9 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "detail": "Explicitly rejected by a named compiler diagnostic.",
-        "verification": "explicit-refusal"
+        "status": "partial",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -13935,9 +13935,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -13958,9 +13958,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -13981,9 +13981,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {

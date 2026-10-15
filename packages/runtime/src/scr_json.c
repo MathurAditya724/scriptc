@@ -4775,6 +4775,14 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
       scr_jb_putc(&b, ']');
       return scr_jb_finish(&b);
     }
+    if (scr_dyn_handle_ops_of(d)->to_string_tag) {
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "[object ");
+      scr_jb_puts(&b, scr_dyn_handle_ops_of(d)->to_string_tag);
+      scr_jb_putc(&b, ']');
+      return scr_jb_finish(&b);
+    }
     tag = "[object Object]";
     break;
   case SCR_DYN_BYTES: {
@@ -5314,6 +5322,14 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
       scr_jb_init(&b);
       scr_jb_puts(&b, "[object ");
       scr_jb_puts(&b, scr_dyn_handle_cls(d));
+      scr_jb_putc(&b, ']');
+      return scr_jb_finish(&b);
+    }
+    if (scr_dyn_handle_ops_of(d)->to_string_tag) {
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "[object ");
+      scr_jb_puts(&b, scr_dyn_handle_ops_of(d)->to_string_tag);
       scr_jb_putc(&b, ']');
       return scr_jb_finish(&b);
     }

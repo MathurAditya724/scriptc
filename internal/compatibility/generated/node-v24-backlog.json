@@ -7,9 +7,9 @@
     "tierItemCount": 3472,
     "tiers": {
       "static": {
-        "replace-refusal": 40,
-        "verify-gap": 2472,
-        "audit-partial": 873,
+        "replace-refusal": 37,
+        "verify-gap": 2469,
+        "audit-partial": 879,
         "classify": 2,
         "implement": 85
       }
@@ -6804,12 +6804,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.crypto.createSecretKey",
-          "tests": []
+          "source": "compiler-dedicated:crypto.createSecretKey",
+          "tests": [
+            "tests/corpus/5445-crypto-secret-key-objects.ts",
+            "tests/corpus/5446-crypto-secret-key-errors.js"
+          ]
         }
       }
     },
@@ -6954,12 +6957,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.crypto.generateKey",
-          "tests": []
+          "source": "compiler-dedicated:crypto.generateKey",
+          "tests": [
+            "tests/corpus/5445-crypto-secret-key-objects.ts",
+            "tests/corpus/5446-crypto-secret-key-errors.js"
+          ]
         }
       }
     },
@@ -7029,12 +7035,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.crypto.generateKeySync",
-          "tests": []
+          "source": "compiler-dedicated:crypto.generateKeySync",
+          "tests": [
+            "tests/corpus/5445-crypto-secret-key-objects.ts",
+            "tests/corpus/5446-crypto-secret-key-errors.js"
+          ]
         }
       }
     },
@@ -9037,12 +9046,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:KeyObject",
+          "tests": [
+            "tests/corpus/5445-crypto-secret-key-objects.ts",
+            "tests/corpus/5446-crypto-secret-key-errors.js"
+          ]
         }
       }
     },
@@ -9062,12 +9074,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:keyObject.equals",
+          "tests": [
+            "tests/corpus/5445-crypto-secret-key-objects.ts",
+            "tests/corpus/5446-crypto-secret-key-errors.js"
+          ]
         }
       }
     },
@@ -9087,12 +9102,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:keyObject.export",
+          "tests": [
+            "tests/corpus/5445-crypto-secret-key-objects.ts",
+            "tests/corpus/5446-crypto-secret-key-errors.js"
+          ]
         }
       }
     },

@@ -2214,6 +2214,35 @@ declare module "node:url" {
 
 /* node:crypto: the static hashing/MAC/random/key-derivation utility slice. */
 declare module "crypto" {
+  export type KeyObjectType = "secret" | "public" | "private";
+  export interface JsonWebKey {
+    kty?: string;
+    k?: string;
+  }
+  export interface JwkKeyExportOptions {
+    format: "jwk";
+  }
+  export interface KeyExportOptions {
+    format?: "buffer" | undefined;
+  }
+  /** Secret keys only; the asymmetric key types are not available. */
+  export class KeyObject {
+    private constructor();
+    type: KeyObjectType;
+    symmetricKeySize?: number;
+    asymmetricKeyType?: string;
+    export(options?: KeyExportOptions): Buffer;
+    export(options: JwkKeyExportOptions): JsonWebKey;
+    equals(otherKeyObject: KeyObject): boolean;
+  }
+  export function createSecretKey(key: ArrayBufferView | ArrayBufferLike): KeyObject;
+  export function createSecretKey(key: string, encoding: BufferEncoding): KeyObject;
+  export function generateKeySync(type: "hmac" | "aes", options: { length: number }): KeyObject;
+  export function generateKey(
+    type: "hmac" | "aes",
+    options: { length: number },
+    callback: (err: Error | null, key: KeyObject) => void,
+  ): void;
   export interface RandomUUIDOptions {
     disableEntropyCache?: boolean | undefined;
   }
@@ -2243,7 +2272,7 @@ declare module "crypto" {
   export function createHash(algorithm: string, options?: HashOptions): Hash;
   export function createHmac(
     algorithm: string,
-    key: BinaryLike,
+    key: BinaryLike | KeyObject,
     options?: { encoding?: BufferEncoding | undefined },
   ): Hmac;
   export interface OneShotDigestOptions {
@@ -2356,14 +2385,14 @@ declare module "crypto" {
   ): void;
   export function hkdfSync(
     digest: string,
-    ikm: BinaryLike,
+    ikm: BinaryLike | KeyObject,
     salt: BinaryLike,
     info: BinaryLike,
     keylen: number,
   ): ArrayBuffer;
   export function hkdf(
     digest: string,
-    ikm: BinaryLike,
+    ikm: BinaryLike | KeyObject,
     salt: BinaryLike,
     info: BinaryLike,
     keylen: number,
