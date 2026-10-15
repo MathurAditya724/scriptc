@@ -246,6 +246,13 @@ static void scr_stream_entry_release(const ScrStreamState *st, void *e) {
   else scr_bytes_release((ScrBytes *)e);
 }
 
+/* Releases an entry by the kind it had when it left the buffer: a 'data'
+ * listener may call setEncoding() while the entry is out. */
+static void scr_stream_entry_release_kind(void *e, bool is_str) {
+  if (is_str) scr_str_release((ScrStr *)e);
+  else scr_bytes_release((ScrBytes *)e);
+}
+
 static void scr_stream_state_drop(ScrStreamState *st, bool gc) {
   if (!st) return;
   if (st->errored) scr_error_release(st->errored);
@@ -446,6 +453,7 @@ static void scr_stream_clear_buffer(ScrStream *s);
 static void scr_stream_do_destroy(ScrStream *s, ScrError *err /*borrowed*/);
 static void scr_stream_notify_finished(ScrStream *s);
 static void *scr_stream_read_n(ScrStream *s, double size);
+static void *scr_stream_read_n_kind(ScrStream *s, double size, bool *is_str);
 static void scr_stream_settle_next(ScrStream *s);
 static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r, bool has_w,
                                     double rhwm, double whwm, bool auto_destroy,
@@ -693,8 +701,9 @@ static bool scr_stream_add_chunk(ScrStream *s, ScrBytes *chunk, bool front) {
       (scr_emitter_has((ScrEmitter *)s, "data") || st->pipes.n > 0)) {
     /* the direct-emit fast path: flowing, empty buffer, async push */
     if (st->r.emitted_readable) st->r.emitted_readable = false;
+    bool is_str = st->r.encoded;
     scr_stream_emit_data(s, entry);
-    scr_stream_entry_release(st, entry);
+    scr_stream_entry_release_kind(entry, is_str);
     if (scr_exc_pending()) return false;
   } else {
     scr_stream_rbuf_push(st, entry, st->r.encoded, front);
@@ -717,7 +726,18 @@ static void scr_stream_maybe_read_more(ScrStream *s) {
  * Answers a +1 Buffer — or a +1 string once encoded (lengths and the
  * size argument then count JS string units, Node's encoded accounting). */
 static void *scr_stream_read_n(ScrStream *s, double size) {
+  bool is_str;
+  return scr_stream_read_n_kind(s, size, &is_str);
+}
+
+/* read_n, also answering the chunk's kind as it was taken from the buffer
+ * (a string when the stream was encoded then). A _read or a lazy pull
+ * inside the read can change the representation, and a 'data' listener
+ * can call setEncoding() before this returns, so callers that need the
+ * kind read it here rather than from st->r.encoded afterwards. */
+static void *scr_stream_read_n_kind(ScrStream *s, double size, bool *is_str) {
   ScrStreamState *st = s->st;
+  *is_str = false;
   bool absent = size < 0;
   size_t n = 0;
   if (!absent) {
@@ -774,6 +794,7 @@ static void *scr_stream_read_n(ScrStream *s, double size) {
       }
     }
   }
+  *is_str = st->r.encoded;
   void *ret = want > 0 && want <= st->r.length ? scr_stream_rbuf_take(st, want) : NULL;
   if (ret == NULL) {
     st->r.need_readable = st->r.length <= st->r.hwm;
@@ -788,7 +809,7 @@ static void *scr_stream_read_n(ScrStream *s, double size) {
   if (ret != NULL && !st->error_emitted && !st->close_emitted) {
     scr_stream_emit_data(s, ret);
     if (scr_exc_pending()) {
-      scr_stream_entry_release(st, ret);
+      scr_stream_entry_release_kind(ret, *is_str);
       return NULL;
     }
   }
@@ -798,9 +819,10 @@ static void *scr_stream_read_n(ScrStream *s, double size) {
 static void scr_stream_flow(ScrStream *s) {
   ScrStreamState *st = s->st;
   while (st->r.flowing == 1 && !scr_exc_pending()) {
-    void *b = scr_stream_read_n(s, -1);
+    bool is_str;
+    void *b = scr_stream_read_n_kind(s, -1, &is_str);
     if (b == NULL) break;
-    scr_stream_entry_release(st, b);
+    scr_stream_entry_release_kind(b, is_str);
   }
 }
 
@@ -958,14 +980,32 @@ static void scr_stream_next_yield_job(ScrClosure *job) {
   scr_promise_release(w);
 }
 
-static void scr_stream_next_fulfill(ScrStreamState *st, ScrPromise *w /*moves*/, void *chunk /*moves or NULL=EOF*/) {
+static void scr_stream_next_str_fence(void) {
+  static const char msg[] =
+      "for-await over a stream with an encoding set is not supported yet in "
+      "typed code (chunks are Buffers here)";
+  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+}
+
+/* Fulfills the parked iterator with a chunk taken from the buffer; is_str
+ * is its kind as taken. The typed lane's chunk is a Buffer, so a string
+ * chunk rejects with the encoding fence instead. */
+static void scr_stream_next_fulfill(ScrStreamState *st, ScrPromise *w /*moves*/,
+                                    void *chunk /*moves or NULL=EOF*/, bool is_str) {
   void *payload;
   bool dyn = st->r.next_dyn;
+  if (!dyn && chunk != NULL && is_str) {
+    scr_str_release((ScrStr *)chunk);
+    scr_stream_next_str_fence();
+    scr_promise_reject_pending(w);
+    scr_promise_release(w);
+    return;
+  }
   if (dyn) {
     ScrDyn *d;
     if (chunk == NULL) {
       d = scr_dyn_retain(scr_dyn_undefined()); /* the EOF sentinel */
-    } else if (st->r.encoded) {
+    } else if (is_str) {
       d = scr_dyn_new_str((ScrStr *)chunk);
       scr_str_release((ScrStr *)chunk);
     } else {
@@ -1021,8 +1061,9 @@ static void scr_stream_settle_next(ScrStream *s) {
   if (st->r.length > 0) {
     ScrPromise *w = st->r.next_waiter;
     st->r.next_waiter = NULL;
+    bool is_str = st->r.encoded;
     void *chunk = scr_stream_rbuf_take(st, st->r.object_entries ? 1 : st->r.length);
-    scr_stream_next_fulfill(st, w, chunk);
+    scr_stream_next_fulfill(st, w, chunk, is_str);
     if (st->r.ended && st->r.length == 0) scr_stream_end_readable(s);
     return;
   }
@@ -1037,7 +1078,7 @@ static void scr_stream_settle_next(ScrStream *s) {
     }
     ScrPromise *w = st->r.next_waiter;
     st->r.next_waiter = NULL;
-    scr_stream_next_fulfill(st, w, NULL);
+    scr_stream_next_fulfill(st, w, NULL, false);
   }
 }
 
@@ -1046,7 +1087,7 @@ static ScrPromise *scr_stream_next_chunk_impl(ScrStream *s, bool dyn) {
   ScrPromise *p = scr_promise_new();
   if (!st->has_r) {
     st->r.next_dyn = dyn;
-    scr_stream_next_fulfill(st, scr_promise_retain(p), NULL);
+    scr_stream_next_fulfill(st, scr_promise_retain(p), NULL, false);
     return p;
   }
   if (st->r.next_waiter) {
@@ -1083,10 +1124,7 @@ ScrPromise *scr_stream_next_chunk(ScrStream *s) {
   if (st->has_r && st->r.encoded) {
     /* the typed lane's chunk is a Buffer; string chunks would confuse */
     ScrPromise *p = scr_promise_new();
-    static const char msg[] =
-        "for-await over a stream with an encoding set is not supported yet in "
-        "typed code (chunks are Buffers here)";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    scr_stream_next_str_fence();
     scr_promise_reject_pending(p);
     return p;
   }
@@ -1475,8 +1513,9 @@ static int scr_stream_add_entry(ScrStream *s, void *entry /*moves*/, bool is_str
   if (st->r.flowing == 1 && st->r.length == 0 && !st->r.in_read_sync &&
       (scr_emitter_has((ScrEmitter *)s, "data") || st->pipes.n > 0)) {
     if (st->r.emitted_readable) st->r.emitted_readable = false;
+    bool is_str = st->r.encoded;
     scr_stream_emit_data(s, entry);
-    scr_stream_entry_release(st, entry);
+    scr_stream_entry_release_kind(entry, is_str);
     if (scr_exc_pending()) return 0;
   } else {
     scr_stream_rbuf_push(st, entry, st->r.encoded, false);
@@ -4392,11 +4431,23 @@ ScrStream *scr_stream_on_dyn(ScrStream *s, ScrStr *name, ScrDyn *cb, bool once, 
 ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size) {
   double n = size && size->kind != SCR_DYN_UNDEF ? scr_dyn_number_coerce(size) : -1;
   if (scr_exc_pending()) return scr_dyn_undefined();
-  void *chunk = s->st->has_r ? scr_stream_read_n(s, n) : NULL;
+  bool is_str = false;
+  void *chunk = s->st->has_r ? scr_stream_read_n_kind(s, n, &is_str) : NULL;
   if (!chunk) return scr_dyn_new_null();
-  ScrDyn *result = s->st->r.encoded ? scr_dyn_new_str(chunk) : scr_dyn_new_buffer(chunk);
-  scr_stream_entry_release(s->st, chunk);
+  ScrDyn *result = is_str ? scr_dyn_new_str(chunk) : scr_dyn_new_buffer(chunk);
+  if (is_str) scr_str_release(chunk);
+  else scr_bytes_release(chunk);
   return result;
+}
+
+/* read() answers STRINGS once encoded: the static result type here is
+ * `Buffer | null`, so the honest answer is a fence, not a mistyped
+ * payload (SEMANTICS.md; 'data' listeners carry strings). */
+static void scr_stream_read_str_fence(void) {
+  static const char msg[] =
+      "read() on a stream with an encoding set is not supported yet "
+      "(consume 'data' events, which deliver strings)";
+  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
 }
 
 ScrBytes *scr_stream_read(ScrStream *s, double size) {
@@ -4404,16 +4455,20 @@ ScrBytes *scr_stream_read(ScrStream *s, double size) {
    * buffered chunks readable; only _read refills are blocked) */
   if (!s->st->has_r) return NULL;
   if (s->st->r.encoded) {
-    /* read() answers STRINGS once encoded — the static result type here
-     * is `Buffer | null`, so the honest answer is a fence, not a
-     * mistyped payload (SEMANTICS.md; 'data' listeners carry strings). */
-    static const char msg[] =
-        "read() on a stream with an encoding set is not supported yet "
-        "(consume 'data' events, which deliver strings)";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    scr_stream_read_str_fence();
     return NULL;
   }
-  return scr_stream_read_n(s, size);
+  bool is_str;
+  void *chunk = scr_stream_read_n_kind(s, size, &is_str);
+  if (chunk && is_str) {
+    /* the read itself made the stream hold strings (a lazy Readable.from
+     * pull's first string, or setEncoding() inside _read): the same
+     * fence, never a string in the Buffer result */
+    scr_str_release(chunk);
+    scr_stream_read_str_fence();
+    return NULL;
+  }
+  return chunk;
 }
 
 /* setEncoding(enc): flips the readable buffer into string mode — Node
@@ -5090,7 +5145,7 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
       if (st->r.next_waiter && st->r.length == 0 && (st->r.ended || st->destroyed)) {
         ScrPromise *w = st->r.next_waiter;
         st->r.next_waiter = NULL;
-        scr_stream_next_fulfill(st, w, NULL);
+        scr_stream_next_fulfill(st, w, NULL, false);
       } else if (st->r.next_waiter) {
         scr_stream_settle_next(s); /* content raced in: deliver it */
       }
