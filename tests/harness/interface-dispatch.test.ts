@@ -117,6 +117,50 @@ console.log(size(new Box()));
     );
   });
 
+  test("matched receivers unbox without reference counting, ahead of an out-of-line fallback", async () => {
+    const llvm = await emittedLlvm("inline", shapes(""));
+    const helper = llvm.indexOf("; %dyn.class.protocol.0");
+    const dispatch = llvm.slice(llvm.lastIndexOf("define", helper), llvm.indexOf("\n}\n", helper));
+    expect(dispatch).toContain("; ->v.typed_ref.ptr");
+    expect(dispatch).not.toMatch(/call ptr @sc_retain_(?:Circle|Rect)\(/);
+    expect(dispatch).toMatch(/\binlinehint\b/);
+    expect(llvm).toMatch(
+      /define internal [^\n]*@sc_bf__x25_dyn_class_protocol_fallback_0[^\n]*\bnoinline\b/,
+    );
+  });
+
+  test("loops lend interface array elements to dispatch that cannot release them", async () => {
+    const lent = await emittedLlvm(
+      "lent",
+      shapes(`function sum(list: Shape[]): number {
+  let t = 0;
+  for (const s of list) t += s.scale(2);
+  return t;
+}
+console.log(sum([circle, new Rect(1)]));`),
+    );
+    expect(bodies(lent, "sc_bf_sum")).not.toContain("@scr_dyn_retain_v");
+    // A method that can empty the array keeps the owned element read.
+    const owned = await emittedLlvm(
+      "owned",
+      shapes(`const kept: Shape[] = [];
+class Emptying implements Shape {
+  scale(k: number): number {
+    kept.length = 0;
+    return k;
+  }
+}
+kept.push(new Emptying(), circle);
+function sum(list: Shape[]): number {
+  let t = 0;
+  for (const s of list) t += s.scale(2);
+  return t;
+}
+console.log(sum(kept));`),
+    );
+    expect(bodies(owned, "sc_bf_sum")).toContain("@scr_dyn_retain_v");
+  });
+
   test("a method an instance can replace keeps the checked dynamic call", async () => {
     const llvm = await emittedLlvm(
       "replaced",

@@ -85,6 +85,13 @@
       ]
     },
     {
+      "name": "record-boundaries",
+      "entry": "workloads/record-boundaries.ts",
+      "args": [
+        "8"
+      ]
+    },
+    {
       "name": "validate-errors",
       "entry": "workloads/validate-errors.ts",
       "args": [
