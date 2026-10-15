@@ -1041,6 +1041,8 @@ export const BUILTIN_MODULE_FNS: Record<
     rmSync: { fn: "fs.rmSync", params: [STRING], result: VOID },
     rmdirSync: { fn: "fs.rmdirSync", params: [STRING], result: VOID },
     readdirSync: { fn: "fs.readdirSync", params: [STRING], result: arrayOf(STRING) },
+    // Pattern and options are checked by the runtime (lowerFsGlobSyncCall).
+    globSync: { fn: "fs.globSync", params: [DYN, DYN], result: arrayOf(STRING) },
     statSync: { fn: "fs.statSync", params: [STRING], result: STATS_T },
     mkdtempSync: { fn: "fs.mkdtempSync", params: [STRING], result: STRING },
     // accessSync's omitted mode completes to 0 (F_OK) in the special case
@@ -1194,6 +1196,8 @@ export const BUILTIN_MODULE_FNS: Record<
       result: { kind: "promise", inner: arrayOf(STRING) },
     },
     rm: { fn: "fsp.rm", params: [STRING], result: { kind: "promise", inner: VOID } },
+    // The async iterator lowers only as a for await head (lowerFspGlobCall).
+    glob: { fn: "fsp.globStrings", params: [DYN, DYN], result: arrayOf(STRING) },
     stat: { fn: "fsp.stat", params: [STRING], result: { kind: "promise", inner: STATS_T } },
     realpath: { fn: "fsp.realpath", params: [STRING], result: { kind: "promise", inner: STRING } },
     lstat: { fn: "fsp.lstat", params: [STRING], result: { kind: "promise", inner: STATS_T } },
@@ -1790,6 +1794,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     rmSync: ["fs.rmOptsSync", "fs.rmRetrySync"],
     // The { withFileTypes: true } Dirent form.
     readdirSync: ["fs.readdirTypesSync"],
+    globSync: ["fs.globTypesSync"],
     // The JS-source validation-ladder variant (lowerFsLadderCall): the
     // real mkdtemp runs when the options leave utf8 semantics.
     mkdtempSync: ["fs.mkdtempSyncChk"],
@@ -1809,6 +1814,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     writeFile: ["fsp.writeFileMode"],
     // The { withFileTypes: true } Dirent form.
     readdir: ["fsp.readdirTypes"],
+    glob: ["fsp.globTypes"],
   },
   crypto: {
     // The composed randomBytes(n).toString(enc) chain keeps its one-libCall
@@ -1903,7 +1909,7 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     id: "node-builtin.fs.callbacks",
     kind: "node-builtin",
     name: "fs error-first callbacks",
-    fns: ["fs.callbackValue", "fs.callbackCall"],
+    fns: ["fs.callbackValue", "fs.callbackCall", "fs.callbackGlob"],
     note: "native filesystem callbacks, including stored platform adapter functions",
   },
   // ── the Date slice (lowerDateCall/lowerNew): statics, construction,

@@ -27,7 +27,7 @@ const SCR_ARR_VALUE = 1;
  * module-visible memory, or trap without returning to the caller (the trap
  * writes runtime-private stderr/TLS state). Declaring this lets LLVM keep
  * array header loads out of loops whose only calls are these cold paths. */
-const READ_FALLBACK = " cold memory(read, inaccessiblemem: readwrite)";
+export const READ_FALLBACK = " cold memory(read, inaccessiblemem: readwrite)";
 
 interface DenseGuard {
   /** The checked dense offset, in the target's size type. */

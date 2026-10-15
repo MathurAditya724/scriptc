@@ -129,6 +129,7 @@ import {
   lowerServerCloseOverrideAssignment,
 } from "./lower-server.js";
 import { lowerUrlAssignment } from "./builtins/url.js";
+import { isFspGlobCall, lowerFspGlobForAwait } from "./builtins/fs-glob.js";
 import {
   isNativeFfiRequire,
   builtinMemberRequireDecl,
@@ -7828,6 +7829,11 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   // A synchronous array iterator is also valid in `for await`. Its values
   // take the async-from-sync path below; other async sources retain their
   // dedicated request protocols.
+  if (stmt.awaitModifier) {
+    let head: ts.Expression = stmt.expression;
+    while (ts.isParenthesizedExpression(head)) head = head.expression;
+    if (isFspGlobCall(lowerer, head)) return lowerFspGlobForAwait(lowerer, stmt, head);
+  }
   const awaitArray =
     !!stmt.awaitModifier && lowerer.mapTypeOf(lowerer.typeOf(stmt.expression))?.kind === "array";
   if (stmt.awaitModifier && !awaitArray) {

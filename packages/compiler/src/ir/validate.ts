@@ -4682,10 +4682,16 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "fs.readdirTypesSync" || e.fn === "fsp.readdirTypes") {
+    if (
+      e.fn === "fs.readdirTypesSync" ||
+      e.fn === "fsp.readdirTypes" ||
+      e.fn === "fs.globTypesSync" ||
+      e.fn === "fsp.globTypes"
+    ) {
       // Result: the interned Dirent record array — {%dtype: f64,
       // name: string, parentPath: string} rows (canonical field
-      // order; the structure lowerFsReaddirTypesCall pinned).
+      // order; the structure lowerFsReaddirTypesCall pinned). The glob
+      // forms answer the array itself.
       const result =
         e.fn === "fsp.readdirTypes"
           ? e.type.kind === "promise"

@@ -912,9 +912,16 @@ test.each([
     expect(ir).not.toContain("@scr_union_new");
     expect(ir).not.toContain("@scr_union_release");
     expect(ir).not.toContain("@scr_union_get");
-    // Holes, sparse and noncanonical indices keep the runtime state check.
-    expect(ir).toContain("@scr_arr_state");
-    expect(ir).toContain(elem.kind === "f64" ? "@scr_arr_get_f64" : "@scr_arr_get_bool");
+    // Holes, sparse and noncanonical indices keep the runtime state check,
+    // a read-only cold call, so loop-invariant header loads can be hoisted.
+    expect(ir).toMatch(
+      /call double @scr_arr_state\(.*\) cold memory\(read, inaccessiblemem: readwrite\)/,
+    );
+    expect(ir).toMatch(
+      elem.kind === "f64"
+        ? /call double @scr_arr_get_f64\(.*\) cold memory\(read, inaccessiblemem: readwrite\)/
+        : /call zeroext i1 @scr_arr_get_bool\(.*\) cold memory\(read, inaccessiblemem: readwrite\)/,
+    );
     if (consumer !== "local") expect(ir).toContain("local.array.dense");
   }
 });
