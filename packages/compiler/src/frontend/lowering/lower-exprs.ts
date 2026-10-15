@@ -11067,6 +11067,7 @@ function typeofAnswer(arm: IrType): string | null {
     case "searchParams":
     case "stats":
     case "fileHandle":
+    case "dir":
     case "spawnRes":
     case "child":
     case "netServer":

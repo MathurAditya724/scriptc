@@ -6,6 +6,43 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.3.3
+
+### Features
+
+- **scriptc targets Node 24.22.0.** Compatibility tables, tests and behavior follow Node 24.22.0.
+- **`node:crypto` covers more of Node 24:** every digest in `createHash`, `createHmac`, `crypto.hash`, `pbkdf2` and `hkdf`, every Hash and Hmac encoding and option, secret `KeyObject`s (`createSecretKey`, `generateKey`, `generateKeySync`), `randomFill`, `randomInt` callbacks, `randomUUID` options, `randomUUIDv7`, and `timingSafeEqual` over any view or `ArrayBuffer`.
+- **`node:fs` adds `glob`, `globSync` and `fs/promises` `glob`,** the remaining `fs/promises` functions with Node's argument checks, complete `fs.Stats` in both lanes, and results from `mkdir`, `readFile` and `write` callbacks. `readdir` lists entries in byte order on POSIX hosts, and dynamic `Dirent` values have Node's prototype and inspect form.
+- **`Blob` and `File`** are supported.
+- **`readline/promises`, `stream.addAbortSignal` and the `stream/promises` options** are supported, and stream chunks made from strings reach user code as `Buffer`s.
+- **The legacy `url` API, `url.domainToASCII` and `url.domainToUnicode`** are supported.
+- **`process.memoryUsage`, process identity members, and `performance` marks and measures** are supported.
+- **`EventTarget` and `Event` can be subclassed.**
+- **Sockets and servers support `ref()` and `unref()`.** The HTTP server enforces Node's header field limits, and `util.types` has Node 24's keys.
+- **`util.inspect` prints class names and dynamic Maps and Sets** as Node does.
+- **`localeCompare` matches Node's collation** for `l·`, U+0130, ligatures, combining Latin letters and vulgar fractions.
+
+### Performance
+
+- **Comparator sorts use V8's TimSort,** and typed-array `sort` and `toSorted` are lowered natively.
+- **The allocator has 8-byte size classes below 128 bytes,** so small objects waste less memory.
+- **Interface calls are faster.** Class methods are called directly through interfaces, interface dispatch is inlined and borrows array elements, and arrays of interface values are stored natively with direct field reads.
+- **Strings append in place** for fields, concatenation chains and character codes, and string retains are inlined in release builds.
+- **Records are leaner.** Scalar-union fields are stored inline, record parameters and returns widen by flow class, nullable records use widened record slots, result-slot entries are inlined, and conversions from typed records to `unknown` are cheaper.
+- **Typed `JSON.parse` matches member names against the text** and reads scalar members inline, and typed `JSON.stringify` writes arrays from their slots.
+- **Map and Set iteration steps are inlined,** and `Object.values` is built natively when its result is only iterated or read.
+- **Array searches over objects and strings run inline,** and array headers stay out of loops.
+- **`localeCompare` is faster:** it compares without building element lists and checks ASCII strings eight bytes at a time.
+- **Remainders by powers of two skip `fmod`,** number and string dynamic boxes are freed without the destroy queue, and VT control characters are stripped in one pass.
+
+### Fixes
+
+- **`parseInt` rounds as Node does on each architecture.**
+- **New runtime globals are defined with initializers,** so library localization hides them.
+- **Native program objects use runtime ABI v21.** Array, record and allocator layouts changed, so external object consumers must link the matching v0.3.3 runtime pack; the versioned marker rejects incompatible runtime objects at link time.
+
+<!-- release:end -->
+
 ## 0.3.2
 
 ### Features
@@ -37,8 +74,6 @@ All notable changes to scriptc will be documented in this file.
 - **Microtask and event order match Node** for `Promise.all`, `Promise.race`, async generator returns, and fork IPC `exit`, `disconnect` and `close` events.
 - **Module initializers that only `++` or `--` a binding run.**
 - **Native program objects use runtime ABI v20.** Array and object layouts changed, so external object consumers must link the matching v0.3.2 runtime pack; the versioned marker rejects incompatible runtime objects at link time.
-
-<!-- release:end -->
 
 ## 0.3.1
 
@@ -677,7 +712,6 @@ All notable changes to scriptc will be documented in this file.
 
 ## 0.0.11
 
-
 ### Features
 
 - **Profiles declare integer boundary slots**: library exports may class parameters and returns `i64`/`u64`, and the compiler proves integrality and range for every value that can reach them — or refuses with the slot path, the failed obligation with evidence, and the concrete fix. Proven returns cross as exact machine integers; a bounded counter loop proves its exact range; `x | 0` is a proof by the ToInt32 contract. Semantics stay f64 everywhere inside the program.
@@ -691,7 +725,6 @@ All notable changes to scriptc will be documented in this file.
 - The two 0.0.10 crash classes are fixed and its seven behavior regressions restored: collect-phase probes recover from rejected constructs instead of crashing, and the no-storage binding families claim statement declarators only.
 - `Buffer.slice`/`subarray` and `TypedArray.subarray` are true aliasing views — mutating through a view previously computed wrong bytes.
 - Math.trunc and Math.ceil compile statically.
-
 
 ## 0.0.10
 
@@ -709,7 +742,6 @@ All notable changes to scriptc will be documented in this file.
 - Mixed engine-vs-native `deepStrictEqual` comparisons are refused with an error instead of fabricating a failure result.
 - The LLVM code generator marshals dynamic values in `jsMarshal` positions identically to the C backend (a latent gap).
 - Concurrent plain and sanitized test-suite runs no longer race each other's scratch directories (a test-infrastructure fix).
-
 
 ## 0.0.9
 
@@ -731,7 +763,6 @@ All notable changes to scriptc will be documented in this file.
 - Two readable-stream lifecycle bugs: the `emittedReadable` flag now clears at Node's moment, and absent-size reads clear pending state correctly.
 - String-typed `'data'` listeners (the `setEncoding` shape) received raw byte headers as string content on sockets, http requests, and http2 streams; they now decode UTF-8 correctly.
 
-
 ## 0.0.8
 
 ### Features
@@ -747,7 +778,6 @@ All notable changes to scriptc will be documented in this file.
 
 - Arrays that grow from an empty `any[]` no longer break compilation under `--dynamic` when they flow into typed array methods (`map`/`filter`/`forEach` and family).
 - A latent double-getter-call in destructuring defaults over accessor results is fixed.
-
 
 ## 0.0.7
 
@@ -768,7 +798,6 @@ All notable changes to scriptc will be documented in this file.
 
 ## 0.0.5
 
-
 ### Features
 
 - **Library mode**: `scriptc build --lib --profile <profile.json>` compiles a TypeScript module set into a linkable static archive exporting profile-declared C symbols — marshalled scalar/string/bytes signatures, a re-runnable init entry, panic-to-sink routing instead of aborts, and a cycle-collection entry. The emitted archive links against nothing but libSystem, creates no threads, and installs no signal handlers; conformance fixtures drive both code generators from a real C host.
@@ -779,7 +808,6 @@ All notable changes to scriptc will be documented in this file.
 - Two compile-time crashes on unusual shipped-JavaScript shapes (probe reads that mutated locals, captures through non-lifted functions) now compile or fence with a named diagnostic.
 
 ## 0.0.4
-
 
 ### Features
 

@@ -3,7 +3,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { BYTES_ELEMENT_SIZE, F64, type IrBytesElem, type IrExpr } from "../../ir/ir.js";
 import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
-import { F64_INF, exactIndexLines, f64Lit } from "./common.js";
+import { F64_INF, exactIndexLines, f64Lit, sizeToDouble } from "./common.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
 import { byteNumberAccess } from "../../ir/byte-numbers.js";
 import { emitByteNumber } from "./byte-numbers.js";
@@ -165,7 +165,7 @@ export function emitBytesLength(
   const count = bytes && size !== 1 ? B.tmp() : len;
   if (count !== len) B.line(`${count} = shl ${host.sizeType} ${len}, ${Math.log2(size)}`);
   const out = B.tmp();
-  B.line(`${out} = sitofp ${host.sizeType} ${count} to double`);
+  B.line(`${out} = ${sizeToDouble(host.sizeType)} ${host.sizeType} ${count} to double`);
   return { name: out, type: F64 };
 }
 

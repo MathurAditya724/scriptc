@@ -467,6 +467,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "fs":
     case "fsp":
     case "fileHandle":
+    case "dir":
     case "watcher":
     case "stats":
     case "zlib":

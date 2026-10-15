@@ -742,6 +742,8 @@ export function formatIrType(
         return append("Stats");
       case "fileHandle":
         return append("FileHandle");
+      case "dir":
+        return append("Dir");
       case "spawnRes":
         return append("SpawnSyncReturns");
       case "child":
@@ -2448,6 +2450,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       )
   ) {
     return { kind: "fileHandle" };
+  }
+  // fs.Dir: an open directory stream, declared in "fs" by both the
+  // fallback and @types/node.
+  if (
+    psym?.name === "Dir" &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          isDeclaredInAmbientModule(d, "fs"),
+      )
+  ) {
+    return { kind: "dir" };
   }
   // child_process.SpawnSyncReturns: @types/node's generic interface (the
   // Buffer/string split is re-checked at the stdout/stderr READ — status

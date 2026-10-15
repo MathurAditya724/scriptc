@@ -2329,8 +2329,11 @@ int scr_promise_finish_top_level(ScrPromise *p) {
   if (p->state == SCR_PROM_PENDING) {
     /* ECMAScript module evaluation is still pending, but Node's ref'd
      * event-loop work is exhausted. Node exits with its dedicated
-     * unsettled-top-level-await status. */
-    scr_exit_code_note(13);
+     * unsettled-top-level-await status unless the program set a nonzero
+     * process.exitCode (`process.exitCode || 13`). Uncaught errors and
+     * reported rejections leave through other exits, so a nonzero hint
+     * here is the program's own. */
+    if (scr_exit_code_hint_get() == 0) scr_exit_code_note(13);
     return 13;
   }
   scr_prom_observe(p);
@@ -2621,6 +2624,17 @@ ScrPromise *scr_fsp_realpath(ScrStr *path) {
 ScrPromise *scr_fsp_lstat(ScrStr *path) {
   ScrStats *st = scr_fs_lstat(path);
   return scr_promise_settled_ref(st, &scr_stats_retain_v, &scr_stats_release_v, NULL);
+}
+
+ScrPromise *scr_fsp_opendir(ScrStr *path, double buffer_size) {
+  ScrDir *d = scr_fs_opendir(path, buffer_size);
+  return scr_promise_settled_ref(d, &scr_dir_retain_v, &scr_dir_release_v, NULL);
+}
+
+/* dir.close(): a closed Dir rejects with ERR_DIR_CLOSED. */
+ScrPromise *scr_dir_close_promise(ScrDir *d) {
+  scr_dir_close(d);
+  return scr_promise_settled_void();
 }
 
 ScrPromise *scr_fsp_rename(ScrStr *oldpath, ScrStr *newpath) {

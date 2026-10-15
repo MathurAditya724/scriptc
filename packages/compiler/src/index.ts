@@ -62,6 +62,7 @@ import {
   resolveCc,
 } from "./backend/external-c.js";
 import { emitLlvmModuleSource, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
+import { inlineRcOption } from "./backend/llvm/shapes.js";
 import {
   emitNativeArtifact,
   NativeCodegenError,
@@ -688,7 +689,7 @@ async function prepareExecutableInput(
         wasi: buildPlatform === "wasi",
         runtimeAbiMarker: outputKind === "obj",
         objectAudit: opts.sanitize === true,
-        ...(opts.optimization === "speed" ? { inlineRc: true } : {}),
+        ...inlineRcOption(opts.optimization, opts.sanitize === true),
       });
     } catch (err) {
       if (!(err instanceof LlvmUnsupportedError)) throw err;
@@ -753,7 +754,7 @@ async function prepareExecutableInput(
       wasi: buildPlatform === "wasi",
       runtimeAbiMarker: useRuntimePack,
       objectAudit: opts.sanitize === true,
-      ...(opts.optimization === "speed" ? { inlineRc: true } : {}),
+      ...inlineRcOption(opts.optimization, opts.sanitize === true),
       ...(opts.detachedExit === true ? { detachedExit: true } : {}),
     });
   } catch (err) {
@@ -1724,7 +1725,7 @@ async function compileLibraryTracked(
       pointerBits: buildPlatform === "wasi" ? 32 : 64,
       wasi: buildPlatform === "wasi",
       objectAudit: opts.sanitize === true,
-      ...(profile.optimization === "speed" ? { inlineRc: true } : {}),
+      ...inlineRcOption(profile.optimization, opts.sanitize === true),
     });
     timing("llvm-emit", {
       output_bytes:

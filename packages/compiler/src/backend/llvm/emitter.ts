@@ -199,6 +199,7 @@ import {
   ffiNativeParamLl,
   ffiNativeReturnLl,
   llvmCommentText,
+  sizeToDouble,
 } from "./common.js";
 import { ffiExtendsNarrowIntegers } from "../targets.js";
 import {
@@ -339,6 +340,8 @@ import {
   emitNullableRetainWrappers,
   FN_ATTRS,
   inlineRcDecls,
+  type InlineRcMode,
+  limitInlineDynReleases,
   llFieldType,
   type MapKeyAccess,
   releaseSym,
@@ -418,9 +421,13 @@ export interface LlvmTargetOptions {
    * builds pass false so release/dev objects carry no empty calls.
    * Defaults to true for direct emission. */
   objectAudit?: boolean;
-  /** Emit retain/release fast paths inline (the `speed` posture). Off, every
-   * retain and release is a runtime call. */
-  inlineRc?: boolean;
+  /** Emit retain/release fast paths inline: `speed` for every family with a
+   * fast path, `release` for the string retain and the dyn retain and
+   * release (shapes.ts InlineRcMode). Off, every retain and release is a
+   * runtime call. */
+  inlineRc?: InlineRcMode;
+  /** Define the inline RC fast-path helpers `noinline` (sanitized builds). */
+  rcHelpersNoinline?: boolean;
   /** Define `scr_detached_exit` so the Linux runtime hands the address-space
    * teardown after `process.exit` to a helper process (`--detached-exit`).
    * Executables only; the runtime's weak default keeps it off. */
@@ -659,6 +666,8 @@ export class LlEmitter {
   /** Inline RC fast-path helpers requested by call sites (shapes.ts); null
    * when inline RC is off. */
   private readonly rcHelpers: Set<string> | null;
+  private readonly rcMode: InlineRcMode | undefined;
+  private readonly rcHelpersNoinline: boolean;
 
   readonly fnByName = new Map<string, IrFunction>();
   /** Empty literals that construct with inline slots (appended-array-literals.ts). */
@@ -1000,7 +1009,9 @@ export class LlEmitter {
     this.emitLibraryIdentity = options.emitLibraryIdentity !== false;
     this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     this.detachedExit = options.detachedExit === true;
-    this.rcHelpers = options.inlineRc === true ? new Set() : null;
+    this.rcHelpers = options.inlineRc !== undefined ? new Set() : null;
+    this.rcMode = options.inlineRc;
+    this.rcHelpersNoinline = options.rcHelpersNoinline === true;
     // ScrCycHdr.buf sits 4 bytes behind every object on every target.
     this.cycleBufOffset = CYC_HDR - CYC_BUF;
     this.ffiCallbackAdapters = allocateFfiCallbackAdapters(mod.ffiImports ?? []);
@@ -1145,6 +1156,8 @@ export class LlEmitter {
       // paths address its thread-local state.
       threadLocalAlloc: mod.workers === true,
       rcHelpers: this.rcHelpers,
+      ...(this.rcMode !== undefined ? { rcMode: this.rcMode } : {}),
+      ...(this.rcHelpersNoinline ? { rcHelpersNoinline: true } : {}),
       nextCycKind: () => FIRST_EMITTED_CYC_KIND + this.cycKinds++,
       unionsById: this.unionsById,
       declare: (decl) => this.declare(decl),
@@ -1666,7 +1679,7 @@ export class LlEmitter {
   }
 
   emitParts(): string[] {
-    const parts = this.emitModuleParts();
+    const parts = limitInlineDynReleases(this.emitModuleParts());
     if (!this.executableTls) return parts;
     // A worker executable's thread-locals all live in the executable's own
     // TLS block: the program's internal ones, and the runtime's external
@@ -1917,22 +1930,24 @@ export class LlEmitter {
     const topPendingExitLines = (): string[] => {
       if (!asyncEntry) return [];
       const lines: string[] = [];
-      if (usesNodeTest) {
-        lines.push(`  %tla_program_exit = call i32 @scr_test_exit_code()`);
-      }
+      // finish_top_level noted 13 unless the program set process.exitCode.
+      // A failed node:test run outranks either before exit listeners run.
       if (usesNodeTest) {
         lines.push(
+          `  %tla_program_exit = call i32 @scr_test_exit_code()`,
           `  %tla_program_exit_zero = icmp eq i32 %tla_program_exit, 0`,
-          `  %tla_exit_status = select i1 %tla_program_exit_zero, i32 %tla_status, i32 %tla_program_exit`,
+          `  %tla_hint = call i32 @scr_exit_code_hint_get()`,
+          `  %tla_exit_status = select i1 %tla_program_exit_zero, i32 %tla_hint, i32 %tla_program_exit`,
+          `  call void @scr_exit_code_note(i32 %tla_exit_status)`,
         );
       }
-      const exitStatus = usesNodeTest ? "%tla_exit_status" : "%tla_status";
-      // finish_top_level initially notes 13. Replace that hint before exit
-      // listeners run when a higher-priority verdict was already selected.
-      lines.push(`  call void @scr_exit_code_note(i32 ${exitStatus})`);
       for (const line of exitListenerLines("xp")) lines.push(line);
       for (const line of topPendingReleases) lines.push(line);
-      lines.push(`  ret i32 ${exitStatus}`);
+      // An exit listener may set process.exitCode again, as in Node.
+      lines.push(
+        `  %tla_exit_code = call i32 @scr_exit_code_hint_get()`,
+        `  ret i32 %tla_exit_code`,
+      );
       return lines;
     };
     // LIBRARY mode: the runtime entry points the generated library
@@ -4787,6 +4802,7 @@ export class LlEmitter {
       case "searchParams":
       case "stats":
       case "fileHandle":
+      case "dir":
       case "spawnRes":
       case "child":
       case "childStream":
@@ -6944,7 +6960,7 @@ export class LlEmitter {
         B.line(`${lenPtr} = getelementptr inbounds %ScrArr, ptr ${arr.name}, i32 0, i32 1`);
         this.markMemoryPointer(lenPtr, "array:header");
         B.line(`${len} = load ${this.sizeType}, ptr ${lenPtr}${this.fieldAliasAttachment(lenPtr)}`);
-        B.line(`${lenNumber} = sitofp ${this.sizeType} ${len} to double`);
+        B.line(`${lenNumber} = ${sizeToDouble(this.sizeType)} ${this.sizeType} ${len} to double`);
         B.line(`${same} = fcmp oeq double ${length.name}, ${lenNumber}`);
         B.condBr(same, done, resize);
         B.startBlock(resize);
@@ -7614,7 +7630,7 @@ export class LlEmitter {
           B.line(
             `${rawLen} = load ${this.sizeType}, ptr ${lenPtr}${this.fieldAliasAttachment(lenPtr)}`,
           );
-          B.line(`${len} = sitofp ${this.sizeType} ${rawLen} to double`);
+          B.line(`${len} = ${sizeToDouble(this.sizeType)} ${this.sizeType} ${rawLen} to double`);
           B.line(`${inBounds} = fcmp olt double ${i}, ${len}`);
           cur = i;
         }
