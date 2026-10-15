@@ -418,16 +418,20 @@ console.log(load('{"port":8080}'), load('{"port":"x"}'), load('{"port":1}'));
     expect(r.stderr).toBe("");
   });
 
-  test("width tolerance really is check-and-extract: extras dropped, no throw", async () => {
+  test("width tolerance checks declared fields and keeps the extras, no throw", async () => {
+    // Extras are not validated against anything, and the record keeps them
+    // beside its declared fields for serialization (Node's output).
     const r = await compileAndRun(
       "width-tolerant",
       `type Slim = { a: number };
-const s = JSON.parse('{"a":1,"b":{"huge":[1,2,3]},"c":"ignored"}') as Slim;
+const s = JSON.parse('{"a":1,"b":{"huge":[1,2,3]},"c":"kept"}') as Slim;
 console.log(s.a, JSON.stringify(s));
 `,
+      "ts",
+      true,
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe('1 {"a":1}\n');
+    expect(r.stdout).toBe('1 {"a":1,"b":{"huge":[1,2,3]},"c":"kept"}\n');
   });
 
   test("tuple targets validate arity exactly", async () => {
