@@ -1,4 +1,5 @@
 import { lowerBuiltinByteInput, errorFirstBytesCallback, errorFirstCallback } from "./arguments.js";
+import { isKeyObjectValue } from "./key-object.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
@@ -242,7 +243,7 @@ function cryptoKdfInput(lowerer: Lowerer, node: ts.Expression): IrExpr {
   lowerer.noLowering(
     "crypto key derivation with this input",
     node,
-    "strings, Buffers, numeric typed arrays, DataViews, and fixed-length ArrayBuffers are supported; KeyObjects are not yet lowered",
+    "strings, Buffers, numeric typed arrays, DataViews, and fixed-length ArrayBuffers are supported; KeyObjects are accepted only as hkdf's key, as in Node",
   );
 }
 
@@ -306,7 +307,15 @@ export function lowerCryptoModuleCall(
       lowerer.noLowering(`crypto.${bi.member} with ${args.length} arguments`, expr);
     const values = [
       cryptoAlgorithm(lowerer, args[0]!),
-      cryptoKdfInput(lowerer, args[1]!),
+      isKeyObjectValue(lowerer, args[1]!)
+        ? ({
+            kind: "libCall",
+            fn: "crypto.keyObjectInput",
+            args: [lowerer.lowerExprExpecting(args[1]!, DYN)],
+            type: BYTES_U8,
+            loc,
+          } satisfies IrExpr)
+        : cryptoKdfInput(lowerer, args[1]!),
       cryptoKdfInput(lowerer, args[2]!),
       cryptoKdfInput(lowerer, args[3]!),
       lowerer.lowerExprExpecting(args[4]!, F64),
@@ -637,6 +646,92 @@ export function lowerCryptoModuleCall(
       fn: "crypto.randomUUIDOpts",
       args: [dynArg(lowerer, args[0], loc)],
       type: STRING,
+      loc,
+    };
+  }
+  if (bi.member === "createSecretKey") {
+    if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement))
+      lowerer.noLowering(
+        `crypto.createSecretKey with ${args.length} arguments`,
+        expr,
+        "createSecretKey(key[, encoding]) is supported",
+      );
+    return {
+      kind: "libCall",
+      fn: "crypto.createSecretKey",
+      args: [lowerer.lowerExprExpecting(args[0]!, DYN), dynArg(lowerer, args[1], loc)],
+      type: DYN,
+      loc,
+    };
+  }
+  if (bi.member === "generateKeySync") {
+    if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement))
+      lowerer.noLowering(
+        `crypto.generateKeySync with ${args.length} arguments`,
+        expr,
+        "generateKeySync(type, options) is supported",
+      );
+    return {
+      kind: "libCall",
+      fn: "crypto.generateKeySync",
+      args: [lowerer.lowerExprExpecting(args[0]!, DYN), dynArg(lowerer, args[1], loc)],
+      type: DYN,
+      loc,
+    };
+  }
+  if (bi.member === "generateKey") {
+    if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement))
+      lowerer.noLowering(
+        `crypto.generateKey with ${args.length} arguments`,
+        expr,
+        "generateKey(type, options, callback) is supported",
+      );
+    const isFunction = (node: ts.Expression | undefined): boolean =>
+      !!node && lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "func";
+    // Node takes a function in the options position as the callback, and
+    // checks the callback before the type and options.
+    const optionsNode = args.length === 2 && isFunction(args[1]) ? undefined : args[1];
+    const callbackNode = args.length === 2 && isFunction(args[1]) ? args[1] : args[2];
+    const callbackType = callbackNode ? lowerer.mapTypeOf(lowerer.typeOf(callbackNode)) : undefined;
+    const type = lowerer.lowerExprExpecting(args[0]!, DYN);
+    const options = dynArg(lowerer, optionsNode, loc);
+    if (callbackType?.kind !== "func" && callbackType?.kind !== "dyn") {
+      const got = callbackNode
+        ? lowerer.lowerExprExpecting(callbackNode, DYN)
+        : dynUndefinedExpr(loc);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "exprStmt", expr: type, loc },
+          { kind: "exprStmt", expr: options, loc },
+        ],
+        result: {
+          kind: "libCall",
+          fn: "error.argTypeThrow",
+          args: [
+            { kind: "strLit", value: "callback", type: STRING, loc },
+            { kind: "strLit", value: "of type function", type: STRING, loc },
+            got,
+          ],
+          type: VOID,
+          loc,
+        },
+        type: VOID,
+        loc,
+      };
+    }
+    const callback = errorFirstCallback(
+      lowerer,
+      callbackNode!,
+      "crypto.generateKey",
+      () => false,
+      "KeyObject",
+    );
+    return {
+      kind: "libCall",
+      fn: "crypto.generateKeyCb",
+      args: [type, options, callback],
+      type: VOID,
       loc,
     };
   }
