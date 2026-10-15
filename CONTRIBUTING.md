@@ -54,6 +54,8 @@ The docs site is a standalone pnpm workspace under `docs/`. Install its dependen
 
 Content lives in `docs/content/docs`. Keep shared layout and runtime behavior in `@vercel/geistdocs`; local adapters belong under `docs/src`. Follow the authoring conventions in [AGENTS.md](./AGENTS.md).
 
+The Limitations page is split into partials under `docs/content/limitations/`, one file per labeled bullet and one per section's other text. Edit the partial for the bullet or section you change; [AGENTS.md](./AGENTS.md#limitations-page-partials) describes the layout and how to move edits from a branch that still edits the single-file page.
+
 Before landing docs or compatibility output changes, run `NEXT_DIST_DIR=.next-check pnpm --dir docs check`. The separate output directory keeps the production build from corrupting a running dev server's `.next` state. This gate checks compatibility drift, TypeScript, the production build, and HTTP routes.
 
 ## Releases
