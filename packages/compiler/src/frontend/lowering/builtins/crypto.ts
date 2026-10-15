@@ -181,11 +181,17 @@ function stringLiteralValues(type: ts.Type): string[] | undefined {
 /** Whether every value the node's type allows is an encoding that gives a
  * string digest: a Buffer encoding Node knows. Hash.digest() treats ""
  * as no encoding and returns a Buffer; crypto.hash() reads it as UTF-8. */
-function isStringDigestEncoding(lowerer: Lowerer, node: ts.Expression, emptyIsString: boolean): boolean {
+function isStringDigestEncoding(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  emptyIsString: boolean,
+): boolean {
   const values = stringLiteralValues(lowerer.typeOf(node));
   return (
     !!values &&
-    values.every((value) => (value !== "" || emptyIsString) && cryptoEncodingName(value) !== undefined)
+    values.every(
+      (value) => (value !== "" || emptyIsString) && cryptoEncodingName(value) !== undefined,
+    )
   );
 }
 
@@ -601,7 +607,13 @@ export function lowerCryptoHashMethodCall(
         (literal?.length === 1 && cryptoEncodingName(literal[0]!) === "utf8");
       if (utf8) {
         if (encodingNode) lowerer.lowerExprExpecting(encodingNode, STRING);
-        return { kind: "libCall", fn: `${prefix}Str` as IrLibFn, args: [target, data], type: receiverType, loc };
+        return {
+          kind: "libCall",
+          fn: `${prefix}Str` as IrLibFn,
+          args: [target, data],
+          type: receiverType,
+          loc,
+        };
       }
       if (encodingType?.kind === "string") {
         return {
@@ -671,9 +683,19 @@ export function lowerCryptoHashMethodCall(
   }
   if (name === "copy" && hash) {
     if (call.arguments.length > 1)
-      lowerer.noLowering(`Hash.copy with ${call.arguments.length} arguments`, call, "copy([options]) is supported");
+      lowerer.noLowering(
+        `Hash.copy with ${call.arguments.length} arguments`,
+        call,
+        "copy([options]) is supported",
+      );
     if (call.arguments.length === 0)
-      return { kind: "libCall", fn: "crypto.hashCopy", args: [receiver()], type: CRYPTOHASH_T, loc };
+      return {
+        kind: "libCall",
+        fn: "crypto.hashCopy",
+        args: [receiver()],
+        type: CRYPTOHASH_T,
+        loc,
+      };
     return {
       kind: "libCall",
       fn: "crypto.hashCopyOpts",
