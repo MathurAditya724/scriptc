@@ -556,6 +556,21 @@ export function nearestPkgJsonPath(fromFile: string): string | null {
   return dir === null ? null : join(dir, "package.json");
 }
 
+/** The target the nearest package scope's "imports" field maps a '#'
+ * specifier to under Node's ESM runtime conditions: a './' path inside the
+ * package or another package's specifier. Null when no entry maps it. */
+export function packageImportTarget(fromFile: string, specifier: string): string | null {
+  const dir = nearestPkgDir(dirname(resolve(fromFile)));
+  if (dir === null) return null;
+  const imports = pkgJsonOf(dir)?.imports;
+  if (!imports || typeof imports !== "object" || Array.isArray(imports)) return null;
+  // The "imports" map matches like a subpath "exports" map keyed by '#'.
+  const asExports = Object.fromEntries(
+    Object.entries(imports).map(([key, value]) => ["." + key, value]),
+  );
+  return resolveExports(asExports, "." + specifier, RUNTIME_IMPORT_CONDITIONS);
+}
+
 /** The explicit module format of the nearest package scope. A package.json
  * without a recognized `type` keeps the file ambiguous, so callers may
  * apply Node's syntax detector; an explicit commonjs/module answer must win
