@@ -6974,6 +6974,71 @@ static bool scr_jschema_skip(ScrJsonP *p) {
   }
 }
 
+/* A number, boolean or string value at p->pos (whitespace already
+ * skipped and p->pos < p->len); false when the text does not hold that
+ * kind. Inlined into the record and array loops so scalar members do not
+ * re-enter scr_jschema_read. */
+static inline __attribute__((always_inline)) bool scr_jschema_scalar(ScrJsonP *p, size_t kind,
+                                                                     ScrJsonSlot *out) {
+  char c = p->s[p->pos];
+  switch (kind) {
+  case SCR_JSCHEMA_F64:
+    if (c != '-' && (c < '0' || c > '9')) return false;
+    return scr_json_number_value(p, &out->f);
+  case SCR_JSCHEMA_BOOL:
+    if (c == 't' && scr_json_lit(p, "true", 4)) {
+      out->b = true;
+      return true;
+    }
+    if (c == 'f' && scr_json_lit(p, "false", 5)) {
+      out->b = false;
+      return true;
+    }
+    return false;
+  default:
+    if (c != '"') return false;
+    out->ptr = scr_json_string_scr(p);
+    return out->ptr != NULL;
+  }
+}
+
+static bool scr_jschema_is_scalar(size_t kind) {
+  return kind == SCR_JSCHEMA_F64 || kind == SCR_JSCHEMA_BOOL || kind == SCR_JSCHEMA_STR;
+}
+
+/* A member value: scalars inline, records and arrays through the
+ * recursive reader. */
+static inline __attribute__((always_inline)) bool scr_jschema_member(ScrJsonP *p,
+                                                                     const ScrJsonSchema *type,
+                                                                     ScrJsonSlot *out) {
+  if (!scr_jschema_is_scalar(type->kind)) return scr_jschema_read(p, type, out);
+  scr_json_ws(p);
+  if (p->pos >= p->len) return false;
+  return scr_jschema_scalar(p, type->kind, out);
+}
+
+/* The quoted key at p->pos when it is exactly `f`'s name, written without
+ * escapes: the bytes consumed (name length + 2), else 0. Names of more
+ * than eight bytes, and names holding a byte JSON text would escape,
+ * take the general key scan. */
+static inline size_t scr_jschema_key_direct(const ScrJsonP *p, const ScrJsonSchemaField *f) {
+  size_t len = f->name_len;
+  size_t at = p->pos + 1;
+  if (len == 0 || len > 8 || len >= p->len - at) return 0;
+  const char *text = p->s + at;
+  uint64_t word = scr_key_short_word(f->name, len);
+  if (text[len] != '"' || scr_key_short_word(text, len) != word) return 0;
+  /* The packed word holds every name byte (lengths one to three use its
+   * low three bytes). A quote, backslash or control byte sends the key to
+   * the general scan, as in scr_json_plain_bytes. */
+  const uint64_t ones = UINT64_C(0x0101010101010101), high = UINT64_C(0x8080808080808080);
+  uint64_t quotes = word ^ (ones * '"'), slashes = word ^ (ones * '\\');
+  uint64_t special = ((quotes - ones) & ~quotes) | ((slashes - ones) & ~slashes) |
+                     ((word - ones * 0x20) & ~word);
+  uint64_t bytes = len >= 4 ? ~UINT64_C(0) : UINT64_C(0xffffff);
+  return (special & high & bytes) ? 0 : len + 2;
+}
+
 static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *out) {
   p->pos++; /* '{' */
   char *rec = s->rec_new();
@@ -6989,32 +7054,33 @@ static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot 
   for (;;) {
     scr_json_ws(p);
     if (p->pos >= p->len || p->s[p->pos] != '"') goto fail;
-    const char *key;
-    size_t key_len;
-    ScrStr *decoded = NULL;
-    int r = scr_json_string_span(p, &key, &key_len);
-    if (r < 0) goto fail;
-    if (r == 0) {
-      decoded = scr_json_string_slow(p, key_len);
-      if (!decoded) goto fail;
-      key = decoded->data;
-      key_len = decoded->len;
-    }
     /* Members usually arrive in declaration order: try the successor of
-     * the previous match before scanning. */
+     * the previous match, directly against the text, before scanning. */
     size_t idx = n;
-    if (guess < n && s->fields[guess].name_len == key_len &&
-        memcmp(s->fields[guess].name, key, key_len) == 0) {
+    size_t direct = guess < n ? scr_jschema_key_direct(p, &s->fields[guess]) : 0;
+    if (direct) {
       idx = guess;
+      p->pos += direct;
     } else {
+      const char *key;
+      size_t key_len;
+      ScrStr *decoded = NULL;
+      int r = scr_json_string_span(p, &key, &key_len);
+      if (r < 0) goto fail;
+      if (r == 0) {
+        decoded = scr_json_string_slow(p, key_len);
+        if (!decoded) goto fail;
+        key = decoded->data;
+        key_len = decoded->len;
+      }
       for (size_t i = 0; i < n; i++) {
-        if (s->fields[i].name_len == key_len && memcmp(s->fields[i].name, key, key_len) == 0) {
+        if (s->fields[i].name_len == key_len && scr_key_equal(s->fields[i].name, key, key_len)) {
           idx = i;
           break;
         }
       }
+      scr_str_release(decoded);
     }
-    scr_str_release(decoded);
     scr_json_ws(p);
     if (p->pos >= p->len || p->s[p->pos] != ':') goto fail;
     p->pos++;
@@ -7027,7 +7093,7 @@ static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot 
       seen |= bit;
       guess = idx + 1;
       ScrJsonSlot v;
-      if (!scr_jschema_read(p, f->type, &v)) goto fail;
+      if (!scr_jschema_member(p, f->type, &v)) goto fail;
       char *slot = rec + f->offset;
       switch (f->type->kind) {
       case SCR_JSCHEMA_F64: memcpy(slot, &v.f, sizeof v.f); break;
@@ -7066,7 +7132,7 @@ static bool scr_jschema_array(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *
   }
   for (;;) {
     ScrJsonSlot v;
-    if (!scr_jschema_read(p, elem, &v)) goto fail;
+    if (!scr_jschema_member(p, elem, &v)) goto fail;
     switch (elem->kind) {
     case SCR_JSCHEMA_F64: scr_arr_push_f64(arr, v.f); break;
     case SCR_JSCHEMA_BOOL: scr_arr_push_bool(arr, v.b); break;
@@ -7094,22 +7160,9 @@ static bool scr_jschema_read(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *o
   char c = p->s[p->pos];
   switch (s->kind) {
   case SCR_JSCHEMA_F64:
-    if (c != '-' && (c < '0' || c > '9')) return false;
-    return scr_json_number_value(p, &out->f);
   case SCR_JSCHEMA_BOOL:
-    if (c == 't' && scr_json_lit(p, "true", 4)) {
-      out->b = true;
-      return true;
-    }
-    if (c == 'f' && scr_json_lit(p, "false", 5)) {
-      out->b = false;
-      return true;
-    }
-    return false;
   case SCR_JSCHEMA_STR:
-    if (c != '"') return false;
-    out->ptr = scr_json_string_scr(p);
-    return out->ptr != NULL;
+    return scr_jschema_scalar(p, s->kind, out);
   case SCR_JSCHEMA_REC:
   case SCR_JSCHEMA_ARR: {
     if (c != (s->kind == SCR_JSCHEMA_REC ? '{' : '[')) return false;
