@@ -1062,6 +1062,21 @@ export const BUILTIN_MODULE_FNS: Record<
       result: VOID,
       valueParams: exactValueParams(STRING, F64, F64),
     },
+    lchownSync: {
+      fn: "fs.lchownSync",
+      params: [STRING, F64, F64],
+      result: VOID,
+      valueParams: exactValueParams(STRING, F64, F64),
+    },
+    fchownSync: {
+      fn: "fs.fchownSync",
+      params: [F64, F64, F64],
+      result: VOID,
+      valueParams: exactValueParams(F64, F64, F64),
+    },
+    // truncateSync's omitted len completes to 0 in lowerBuiltinModuleCall,
+    // like accessSync's mode.
+    truncateSync: { fn: "fs.truncateSync", params: [STRING, F64], result: VOID },
     // The 2-argument form only: Node's mode flags (COPYFILE_EXCL, ...)
     // land on the arity fence.
     copyFileSync: { fn: "fs.copyFileSync", params: [STRING, STRING], result: VOID },
@@ -1209,6 +1224,41 @@ export const BUILTIN_MODULE_FNS: Record<
       result: { kind: "promise", inner: VOID },
       valueParams: exactValueParams(STRING, F64),
     },
+    chown: {
+      fn: "fsp.chown",
+      params: [STRING, F64, F64],
+      result: { kind: "promise", inner: VOID },
+      valueParams: exactValueParams(STRING, F64, F64),
+    },
+    lchown: {
+      fn: "fsp.lchown",
+      params: [STRING, F64, F64],
+      result: { kind: "promise", inner: VOID },
+      valueParams: exactValueParams(STRING, F64, F64),
+    },
+    // access' omitted mode and truncate's omitted len complete to 0 in
+    // lowerBuiltinModuleCall, like their sync spellings.
+    access: { fn: "fsp.access", params: [STRING, F64], result: { kind: "promise", inner: VOID } },
+    truncate: {
+      fn: "fsp.truncate",
+      params: [STRING, F64],
+      result: { kind: "promise", inner: VOID },
+    },
+    // String data; Uint8Array/Buffer data routes to fsp.appendFileBytes in
+    // lowerBuiltinModuleCall.
+    appendFile: {
+      fn: "fsp.appendFile",
+      params: [STRING, STRING],
+      result: { kind: "promise", inner: VOID },
+    },
+    // The 2-argument form only, like copyFileSync.
+    copyFile: {
+      fn: "fsp.copyFile",
+      params: [STRING, STRING],
+      result: { kind: "promise", inner: VOID },
+    },
+    mkdtemp: { fn: "fsp.mkdtemp", params: [STRING], result: { kind: "promise", inner: STRING } },
+    rmdir: { fn: "fsp.rmdir", params: [STRING], result: { kind: "promise", inner: VOID } },
     link: {
       fn: "fsp.link",
       params: [DYN, DYN],
@@ -1789,14 +1839,16 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     watch: ["fs.watchCb"],
   },
   "fs/promises": {
-    // The Buffer form (no encoding).
-    readFile: ["fsp.readFileBytes"],
+    // The Buffer form (no encoding) and the runtime-encoding forms.
+    readFile: ["fsp.readFileBytes", "fsp.readFileEncoded"],
     readlink: ["fsp.readlinkStr", "fsp.readlinkBuffer"],
     // The string-data { mode } options form.
     writeFile: ["fsp.writeFileMode"],
     // The { withFileTypes: true } Dirent form.
     readdir: ["fsp.readdirTypes"],
     glob: ["fsp.globTypes"],
+    // The Uint8Array/Buffer-data form.
+    appendFile: ["fsp.appendFileBytes"],
   },
   crypto: {
     // The composed randomBytes(n).toString(enc) chain keeps its one-libCall
@@ -2408,6 +2460,8 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "copyFile",
   "chmod",
   "chown",
+  "lchown",
+  "fchown",
   "glob",
   "link",
   "mkdir",

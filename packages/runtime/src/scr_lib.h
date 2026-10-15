@@ -263,6 +263,7 @@ void scr_fs_rm_opts(ScrStr *path, bool recursive, bool force);
  * (retryDelay ms longer per try); everything else throws immediately. */
 void scr_fs_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_retries, double retry_delay);
 ScrStr *scr_fs_mkdtemp(ScrStr *prefix);
+ScrStr *scr_fs_mkdtemp_async(ScrStr *prefix); /* the callback and promise error path */
 void scr_fs_access(ScrStr *path, double mode);
 ScrStr *scr_fs_read_fd(double fd);
 
@@ -277,6 +278,15 @@ ScrStr *scr_fs_read_fd(double fd);
 void scr_fs_unlink(ScrStr *path);
 void scr_fs_chmod(ScrStr *path, double mode);
 void scr_fs_chown(ScrStr *path, double uid, double gid);
+void scr_fs_lchown(ScrStr *path, double uid, double gid);
+void scr_fs_fchown(double fd, double uid, double gid);
+/* Node's argument checks, shared by the sync, promise and callback forms
+ * (the callback forms throw them at the call). False with the error
+ * thrown. */
+bool scr_fs_owner_id_valid(double id, const char *name);
+bool scr_fs_access_mode_valid(double mode);
+bool scr_fs_truncate_len_valid(double length);
+void scr_fs_truncate(ScrStr *path, double length);
 void scr_fs_copyfile(ScrStr *src, ScrStr *dest);
 void scr_fs_rename(ScrStr *oldpath, ScrStr *newpath);
 /* The callback rename worker uses the non-throwing syscall seam off the
@@ -405,6 +415,16 @@ ScrPromise *scr_fsp_mkdir_recursive(ScrStr *path);
 ScrPromise *scr_fsp_mkdir_recursive_mode(ScrStr *path, double mode);
 ScrPromise *scr_fsp_unlink(ScrStr *path);
 ScrPromise *scr_fsp_chmod(ScrStr *path, double mode);
+ScrPromise *scr_fsp_chown(ScrStr *path, double uid, double gid);
+ScrPromise *scr_fsp_lchown(ScrStr *path, double uid, double gid);
+ScrPromise *scr_fsp_access(ScrStr *path, double mode);
+ScrPromise *scr_fsp_append_file(ScrStr *path, ScrStr *data);
+ScrPromise *scr_fsp_append_file_bytes(ScrStr *path, ScrBytes *data);
+ScrPromise *scr_fsp_copyfile(ScrStr *src, ScrStr *dest);
+ScrPromise *scr_fsp_mkdtemp(ScrStr *prefix);
+ScrPromise *scr_fsp_read_file_encoded(ScrStr *path, ScrStr *encoding);
+ScrPromise *scr_fsp_rmdir(ScrStr *path);
+ScrPromise *scr_fsp_truncate(ScrStr *path, double length);
 ScrPromise *scr_fsp_utimes(const ScrDyn *path, const ScrDyn *atime, const ScrDyn *mtime);
 ScrPromise *scr_fsp_lutimes(const ScrDyn *path, const ScrDyn *atime, const ScrDyn *mtime);
 ScrPromise *scr_fsp_readdir(ScrStr *path);
