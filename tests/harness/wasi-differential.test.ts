@@ -260,6 +260,10 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5319-map-iteration-values.ts",
     // JSON writers read array slots as pointers.
     "5305-json-stringify-typed-arrays.ts",
+    // Comparator sorts move 64-bit slots of 32-bit pointers.
+    "5360-array-sort-comparator-calls.ts",
+    "5363-array-sort-comparator-writes.ts",
+    "5365-array-sort-dynamic-values.js",
     // Blob reads settle through the dyn promise path on 32-bit pointers.
     "5286-blob-readers.ts",
     "5289-blob-read-order.ts",

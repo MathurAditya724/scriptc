@@ -555,85 +555,73 @@ static ScrDyn *scr_dynh_dispatch(ScrDyn *recv, const char *method, ScrDyn *const
   return result;
 }
 
-/* JS Array.prototype.sort over a dyn array: the spec's snapshot-sort —
- * elements copy (retained) into a work list, a stable merge sort orders
- * it (undefined elements sink to the end before any comparator runs),
- * and the ordered list writes back index by index, so a comparator that
- * mutates the receiver mid-sort never dangles the items being ordered.
- * The default comparator compares ToString images (scr_dyn_display_buf —
- * join's conversion) bytewise: code-POINT order, where JS orders UTF-16
- * code units — identical through the BMP, divergent only across the
- * surrogate boundary (SEMANTICS.md). A comparator result converts
- * loosely to number; NaN and non-numeric answers count as 0 (ToNumber's
- * common cases; exotic ToString-of-object coercions stay 0). */
+/* JS Array.prototype.sort over a dyn array: the spec's snapshot-sort, as
+ * V8 runs it. Elements other than undefined copy (retained) into a work
+ * list, V8's TimSort orders it (scr_sort_slots_with: Node's comparator
+ * calls in Node's order), and the undefined elements follow it without
+ * reaching the comparator. The ordered list writes back index by index, so
+ * a comparator that mutates the receiver mid-sort never dangles the items
+ * being ordered. The default comparator compares ToString images
+ * (scr_dyn_display_buf — join's conversion) bytewise: code-POINT order,
+ * where JS orders UTF-16 code units — identical through the BMP, divergent
+ * only across the surrogate boundary (SEMANTICS.md). A comparator result
+ * converts with ToNumber; NaN counts as 0. */
 static ScrStr *dyn_sort_str(const ScrDyn *e) {
   ScrJsonBuf b;
   scr_jb_init(&b);
   scr_dyn_display_buf(&b, e);
   return scr_jb_finish(&b);
 }
-static int dyn_sort_compare(ScrDyn *x, ScrDyn *y, ScrDyn *cmp, bool *failed) {
-  bool xu = x->kind == SCR_DYN_UNDEF, yu = y->kind == SCR_DYN_UNDEF;
-  if (xu || yu) return (xu && yu) ? 0 : xu ? 1 : -1;
+static bool dyn_sort_less(void *ctx, uint64_t xs, uint64_t ys, bool *failed) {
+  ScrDyn *cmp = ctx;
+  ScrDyn *x = (ScrDyn *)(uintptr_t)xs, *y = (ScrDyn *)(uintptr_t)ys;
   if (cmp) {
     ScrDyn *argv[2] = { x, y };
     ScrDyn *r = scr_dyn_call(cmp, argv, 2, "comparefn");
-    if (!r) { *failed = true; return 0; }
-    double v = r->kind == SCR_DYN_NUM ? r->v.num : r->kind == SCR_DYN_BOOL ? (r->v.b ? 1 : 0) : 0;
+    if (!r) { *failed = true; return false; }
+    double v = 0;
+    bool ok = scr_dyn_number_coerce_js(r, &v);
     scr_dyn_release(r);
-    return v < 0 ? -1 : v > 0 ? 1 : 0;
+    if (!ok || scr_exc_pending()) { *failed = true; return false; }
+    return v < 0;
   }
-  ScrStr *xs = dyn_sort_str(x);
-  ScrStr *ys = dyn_sort_str(y);
-  int c = scr_str_cmp(xs, ys);
-  scr_str_release(xs);
-  scr_str_release(ys);
-  return c < 0 ? -1 : c > 0 ? 1 : 0;
-}
-/* Merge sort work[lo, hi) stably (ties keep first-seen order — `<=`
- * takes the left run's element). False when a comparator threw. */
-static bool dyn_arr_sort_range(ScrDyn **work, ScrDyn **tmp, size_t lo, size_t hi, ScrDyn *cmp) {
-  if (hi - lo < 2) return true;
-  size_t mid = lo + (hi - lo) / 2;
-  if (!dyn_arr_sort_range(work, tmp, lo, mid, cmp)) return false;
-  if (!dyn_arr_sort_range(work, tmp, mid, hi, cmp)) return false;
-  size_t i = lo, j = mid, k = lo;
-  bool failed = false;
-  while (i < mid && j < hi) {
-    int c = dyn_sort_compare(work[i], work[j], cmp, &failed);
-    if (failed) return false;
-    tmp[k++] = c <= 0 ? work[i++] : work[j++];
-  }
-  while (i < mid) tmp[k++] = work[i++];
-  while (j < hi) tmp[k++] = work[j++];
-  memcpy(work + lo, tmp + lo, (hi - lo) * sizeof(ScrDyn *));
-  return true;
+  ScrStr *xstr = dyn_sort_str(x);
+  ScrStr *ystr = dyn_sort_str(y);
+  int c = scr_str_cmp(xstr, ystr);
+  scr_str_release(xstr);
+  scr_str_release(ystr);
+  return c < 0;
 }
 static bool dyn_arr_sort(ScrDyn *recv, ScrDyn *cmp) {
   size_t len = recv->v.arr.len;
-  ScrDyn **buf = (ScrDyn **)malloc(2 * len * sizeof(ScrDyn *));
-  if (!buf) return true; /* OOM: answer the array unsorted over crashing */
-  ScrDyn **work = buf, **tmp = buf + len;
-  for (size_t i = 0; i < len; i++) work[i] = scr_dyn_retain(recv->v.arr.items[i]);
-  bool ok = dyn_arr_sort_range(work, tmp, 0, len, cmp);
+  uint64_t *work = (uint64_t *)malloc((len ? len : 1) * sizeof(uint64_t));
+  if (!work) return true; /* OOM: answer the array unsorted over crashing */
+  size_t count = 0, undefined = 0;
+  for (size_t i = 0; i < len; i++) {
+    ScrDyn *item = recv->v.arr.items[i];
+    if (item->kind == SCR_DYN_UNDEF) undefined++;
+    else work[count++] = (uint64_t)(uintptr_t)scr_dyn_retain(item);
+  }
+  bool ok = scr_sort_slots_with(work, count, dyn_sort_less, cmp);
   if (ok) {
     /* Write back into whatever the array holds NOW (a mutating comparator
-     * may have replaced entries): the work list's +1 moves in, the
-     * displaced entry releases. Elements beyond the current length (a
-     * shrinking comparator) just release. */
-    for (size_t i = 0; i < len; i++) {
+     * may have replaced entries): the work list's +1 moves in, then the
+     * undefined elements, and the displaced entry releases. Elements beyond
+     * the current length (a shrinking comparator) just release. */
+    for (size_t i = 0; i < count + undefined; i++) {
+      ScrDyn *next = i < count ? (ScrDyn *)(uintptr_t)work[i] : scr_dyn_retain(scr_dyn_undefined());
       if (i < recv->v.arr.len) {
         ScrDyn *old = recv->v.arr.items[i];
-        recv->v.arr.items[i] = work[i];
+        recv->v.arr.items[i] = next;
         scr_dyn_release(old);
       } else {
-        scr_dyn_release(work[i]);
+        scr_dyn_release(next);
       }
     }
   } else {
-    for (size_t i = 0; i < len; i++) scr_dyn_release(work[i]);
+    for (size_t i = 0; i < count; i++) scr_dyn_release((ScrDyn *)(uintptr_t)work[i]);
   }
-  free(buf);
+  free(work);
   return ok;
 }
 

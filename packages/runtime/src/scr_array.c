@@ -2374,6 +2374,8 @@ typedef struct {
   bool borrowing; /* enter through f->fn_borrowed, lending the slots */
   int32_t order;  /* 1 or -1: f orders number keys ascending or descending */
   ScrClosure *key; /* the key reader of reference elements under `order` */
+  ScrSortLess less; /* a caller comparison in place of `f` (scr_sort_slots_with) */
+  void *less_ctx;
 } ScrSortCompare;
 
 static void *scr_sort_retain_str(void *p) { return scr_str_retain((ScrStr *)p); }
@@ -3217,138 +3219,669 @@ void scr_bytes_sort_compare(ScrBytes *b, ScrClosure *f, uint32_t arity) {
 #undef SCR_SORT_INSERT_UNTIL
 #undef SCR_SORT_SCAN
 
-/* The stable natural merge sort of the compiler's IR helper, in place over
- * `n >= 2` slots: strictly descending runs reverse, short runs grow to 16
- * with binary insertion after equal values, then merge passes consume pairs
- * of runs. Comparator calls happen in exactly the IR helper's order.
- * Returns false when a comparator throws.
- *
- * `values` holds every slot exactly once on either return, and, unless
- * `scratch` lets it serve as a merge target, whenever a comparator runs:
- * runs form in place (insertion moves a value only after its search
- * completes), and merge passes then only read it until the last
- * comparison. That keeps array storage passed here consistent for the
- * cycle collector, and lets callers release or keep the slots after an
- * exception. */
+/* ── comparator sort: V8's TimSort ──────────────────────────────────────
+ * Array.prototype.sort and toSorted with a comparator run V8's TimSort
+ * (third_party/v8/builtins/array-sort.tq) step for step: the same minimum
+ * run length, run detection (strictly descending runs reverse), binary
+ * insertion, run-stack invariants, galloping merges and adaptive gallop
+ * threshold. Every comparison is `f(x, y) < 0` with V8's argument order, so
+ * the comparator sees the calls Node makes, in Node's order, and an
+ * inconsistent comparator produces Node's permutation. A comparator result
+ * of NaN counts as 0, which `< 0` already gives. */
+
+#define SCR_SORT_MIN_GALLOP 7
+/* A backward merge reads cursor - 1 next: request the element the given
+ * distance below it, if it is at or above `floor`. */
+#define SCR_SORT_PREFETCH_BACK(c, buf, cursor, floor)                     \
+  do {                                                                  \
+    if ((cursor) >= (floor) + SCR_SORT_PREFETCH_DISTANCE + 1)           \
+      SCR_SORT_PREFETCH_AT(c, buf, (cursor) - 1 - SCR_SORT_PREFETCH_DISTANCE, (cursor)); \
+  } while (0)
+/* Enough pending runs for any array length (V8's kMaxMergePending). */
+#define SCR_SORT_MAX_PENDING 85
+
+typedef struct {
+  ScrSortCompare c;
+  uint64_t *a;   /* the work array being sorted */
+  uint64_t *tmp; /* merge scratch, grown on demand */
+  size_t tmp_cap;
+  size_t min_gallop;
+  size_t run_base[SCR_SORT_MAX_PENDING];
+  size_t run_len[SCR_SORT_MAX_PENDING];
+  size_t runs;
+  bool failed;
+} ScrTimSort;
+
+/* f(x, y) < 0, or false after the comparator throws (the state then records
+ * the failure and every caller unwinds without another call). */
+static inline __attribute__((always_inline)) bool scr_sort_less(const ScrSortCompare *c,
+                                                                 uint64_t x, uint64_t y,
+                                                                 bool *failed) {
+  if (__builtin_expect(c->less != NULL, 0)) {
+    /* A separate flag: the caller's stays out of memory. */
+    bool stop = false;
+    bool less = c->less(c->less_ctx, x, y, &stop);
+    if (stop) *failed = true;
+    return !stop && less;
+  }
+  double result;
+  if (c->numbers) {
+    double l = scr_slot_to_f64(x), r = scr_slot_to_f64(y);
+    if (c->arity == 2) result = ((double (*)(ScrClosure *, double, double))c->f->fn)(c->f, l, r);
+    else if (c->arity == 1) result = ((double (*)(ScrClosure *, double))c->f->fn)(c->f, l);
+    else result = ((double (*)(ScrClosure *))c->f->fn)(c->f);
+  } else {
+    void *l = scr_slot_to_ptr(x), *r = scr_slot_to_ptr(y);
+    void *fn = c->f->fn;
+    if (c->borrowing) {
+      fn = c->f->fn_borrowed;
+    } else {
+      if (l && c->arity >= 1) l = c->retain(l);
+      if (r && c->arity >= 2) r = c->retain(r);
+    }
+    if (c->arity == 2) result = ((double (*)(ScrClosure *, void *, void *))fn)(c->f, l, r);
+    else if (c->arity == 1) result = ((double (*)(ScrClosure *, void *))fn)(c->f, l);
+    else result = ((double (*)(ScrClosure *))fn)(c->f);
+  }
+  if (scr_exc_pending()) {
+    *failed = true;
+    return false;
+  }
+  return result < 0;
+}
+
+/* Each sort step copies the comparator and keeps its failure flag in a
+ * local, so both stay in registers across the comparator calls. */
+#define SCR_TS_LOCALS            \
+  const ScrSortCompare cmp_ = s->c; \
+  bool failed_ = false
+#define SCR_TS_LESS(x, y) scr_sort_less(&cmp_, (x), (y), &failed_)
+#define SCR_TS_FAILED() (failed_ && (s->failed = true))
+#define SCR_TS_FAIL_IF(value)       \
+  do {                              \
+    if (SCR_TS_FAILED()) return (value); \
+  } while (0)
+
+/* Merge scratch for the smaller run, at most n / 2 slots: allocated with
+ * the work copy (scr_sort_copy), so a sort makes one allocation. */
+static uint64_t *scr_sort_tmp(ScrTimSort *s, size_t n) {
+  if (n > s->tmp_cap) scr_trap("scriptc: internal error: sort scratch overflow\n");
+  return s->tmp;
+}
+
+/* Sorts [low, high) given that [low, start) is already sorted. */
+static void scr_sort_binary_insertion(ScrTimSort *s, size_t low, size_t start, size_t high) {
+  SCR_TS_LOCALS;
+  uint64_t *a = s->a;
+  if (low == start) start++;
+  for (; start < high; start++) {
+    size_t left = low, right = start;
+    uint64_t pivot = a[right];
+    while (left < right) {
+      size_t mid = left + ((right - left) >> 1);
+      bool less = SCR_TS_LESS(pivot, a[mid]);
+      if (SCR_TS_FAILED()) return;
+      if (less) right = mid;
+      else left = mid + 1;
+    }
+    memmove(a + left + 1, a + left, (start - left) * sizeof(*a));
+    a[left] = pivot;
+  }
+}
+
+/* The length of the run starting at low (a strictly descending run is
+ * reversed in place), or 0 after a comparator exception. */
+static size_t scr_sort_count_run(ScrTimSort *s, size_t low, size_t high) {
+  SCR_TS_LOCALS;
+  uint64_t *a = s->a;
+  size_t next = low + 1;
+  if (next == high) return 1;
+  size_t length = 2;
+  bool descending = SCR_TS_LESS(a[next], a[next - 1]);
+  SCR_TS_FAIL_IF(0);
+  uint64_t previous = a[next];
+  for (size_t i = next + 1; i < high; i++) {
+    SCR_SORT_PREFETCH(cmp_, a, i, high);
+    bool less = SCR_TS_LESS(a[i], previous);
+    SCR_TS_FAIL_IF(0);
+    if (descending ? !less : less) break;
+    previous = a[i];
+    length++;
+  }
+  if (descending) {
+    for (size_t l = low, r = low + length - 1; l < r; l++, r--) {
+      uint64_t v = a[l];
+      a[l] = a[r];
+      a[r] = v;
+    }
+  }
+  return length;
+}
+
+/* Gallop searches probe far apart in the runs. The next exponential probe
+ * is known before the current comparison, and a binary search step has two
+ * possible next probes: request their elements ahead of the comparator
+ * call, so its loads of them hit the cache. */
+#define SCR_SORT_PREFETCH_SLOT(c, arr, index, limit)       \
+  do {                                                    \
+    if (!(c).numbers && (index) < (limit))                \
+      __builtin_prefetch(scr_slot_to_ptr((arr)[(index)])); \
+  } while (0)
+
+/* A gallop result k as an offset into its run: 0 <= k <= length holds by
+ * construction, and the merges copy k or length - k slots, so a violation
+ * is an internal error rather than a copy. */
+static size_t scr_sort_gallop_result(ptrdiff_t k, size_t length) {
+  if (k < 0 || (size_t)k > length) scr_trap("scriptc: internal error: sort gallop out of range\n");
+  return (size_t)k;
+}
+
+/* The offset k in [0, length] with arr[base + k - 1] < key <= arr[base + k]. */
+static __attribute__((noinline)) size_t scr_sort_gallop_left(ScrTimSort *s, const uint64_t *arr, uint64_t key, size_t base,
+                                   size_t length, size_t hint) {
+  SCR_TS_LOCALS;
+  size_t last = 0, offset = 1;
+  bool less = SCR_TS_LESS(arr[base + hint], key);
+  SCR_TS_FAIL_IF(0);
+  ptrdiff_t lo, hi;
+  if (less) {
+    size_t max = length - hint;
+    while (offset < max) {
+      SCR_SORT_PREFETCH_SLOT(cmp_, arr, base + hint + 2 * offset + 1, base + hint + max);
+      bool l = SCR_TS_LESS(arr[base + hint + offset], key);
+      SCR_TS_FAIL_IF(0);
+      if (!l) break;
+      last = offset;
+      offset = (offset << 1) + 1;
+    }
+    if (offset > max) offset = max;
+    lo = (ptrdiff_t)(last + hint);
+    hi = (ptrdiff_t)(offset + hint);
+  } else {
+    size_t max = hint + 1;
+    while (offset < max) {
+      if (2 * offset + 1 < max) SCR_SORT_PREFETCH_SLOT(cmp_, arr, base + hint - (2 * offset + 1), base + length);
+      bool l = SCR_TS_LESS(arr[base + hint - offset], key);
+      SCR_TS_FAIL_IF(0);
+      if (l) break;
+      last = offset;
+      offset = (offset << 1) + 1;
+    }
+    if (offset > max) offset = max;
+    lo = (ptrdiff_t)hint - (ptrdiff_t)offset;
+    hi = (ptrdiff_t)hint - (ptrdiff_t)last;
+  }
+  lo++;
+  while (lo < hi) {
+    ptrdiff_t m = lo + ((hi - lo) >> 1);
+    if (m + 1 < hi) SCR_SORT_PREFETCH_SLOT(cmp_, arr, base + (size_t)(m + 1 + ((hi - m - 1) >> 1)), base + length);
+    if (lo < m) SCR_SORT_PREFETCH_SLOT(cmp_, arr, base + (size_t)(lo + ((m - lo) >> 1)), base + length);
+    bool l = SCR_TS_LESS(arr[base + (size_t)m], key);
+    SCR_TS_FAIL_IF(0);
+    if (l) lo = m + 1;
+    else hi = m;
+  }
+  return scr_sort_gallop_result(hi, length);
+}
+
+/* The offset k in [0, length] with arr[base + k - 1] <= key < arr[base + k]. */
+static __attribute__((noinline)) size_t scr_sort_gallop_right(ScrTimSort *s, const uint64_t *arr, uint64_t key, size_t base,
+                                    size_t length, size_t hint) {
+  SCR_TS_LOCALS;
+  size_t last = 0, offset = 1;
+  bool less = SCR_TS_LESS(key, arr[base + hint]);
+  SCR_TS_FAIL_IF(0);
+  ptrdiff_t lo, hi;
+  if (less) {
+    size_t max = hint + 1;
+    while (offset < max) {
+      if (2 * offset + 1 < max) SCR_SORT_PREFETCH_SLOT(cmp_, arr, base + hint - (2 * offset + 1), base + length);
+      bool l = SCR_TS_LESS(key, arr[base + hint - offset]);
+      SCR_TS_FAIL_IF(0);
+      if (!l) break;
+      last = offset;
+      offset = (offset << 1) + 1;
+    }
+    if (offset > max) offset = max;
+    lo = (ptrdiff_t)hint - (ptrdiff_t)offset;
+    hi = (ptrdiff_t)hint - (ptrdiff_t)last;
+  } else {
+    size_t max = length - hint;
+    while (offset < max) {
+      SCR_SORT_PREFETCH_SLOT(cmp_, arr, base + hint + 2 * offset + 1, base + hint + max);
+      bool l = SCR_TS_LESS(key, arr[base + hint + offset]);
+      SCR_TS_FAIL_IF(0);
+      if (l) break;
+      last = offset;
+      offset = (offset << 1) + 1;
+    }
+    if (offset > max) offset = max;
+    lo = (ptrdiff_t)(last + hint);
+    hi = (ptrdiff_t)(offset + hint);
+  }
+  lo++;
+  while (lo < hi) {
+    ptrdiff_t m = lo + ((hi - lo) >> 1);
+    if (m + 1 < hi) SCR_SORT_PREFETCH_SLOT(cmp_, arr, base + (size_t)(m + 1 + ((hi - m - 1) >> 1)), base + length);
+    if (lo < m) SCR_SORT_PREFETCH_SLOT(cmp_, arr, base + (size_t)(lo + ((m - lo) >> 1)), base + length);
+    bool l = SCR_TS_LESS(key, arr[base + (size_t)m]);
+    SCR_TS_FAIL_IF(0);
+    if (l) hi = m;
+    else lo = m + 1;
+  }
+  return scr_sort_gallop_result(hi, length);
+}
+
+/* Merges [base_a, base_a + len_a) and the run after it, len_a <= len_b,
+ * through a copy of run A, front to back. */
+static __attribute__((noinline)) void scr_sort_merge_low(ScrTimSort *s, size_t base_a, size_t len_a, size_t base_b,
+                               size_t len_b) {
+  uint64_t *a = s->a;
+  SCR_TS_LOCALS;
+  uint64_t *tmp = scr_sort_tmp(s, len_a);
+  memcpy(tmp, a + base_a, len_a * sizeof(*a));
+  size_t dest = base_a, ct = 0, cb = base_b;
+  size_t min_gallop = s->min_gallop;
+  a[dest++] = a[cb++];
+  if (--len_b == 0) goto succeed;
+  if (len_a == 1) goto copy_b;
+  for (;;) {
+    size_t wins_a = 0, wins_b = 0;
+    {
+      /* The one-at-a-time merge keeps only the cursors live across the
+       * comparator call: run A's unplaced elements fill the gap between
+       * the destination and run B's cursor, so dest = cb - len_a, and only
+       * the side that won last has a nonzero win count. */
+      const size_t end_b = cb + len_b, end_t = ct + len_a;
+      size_t win = 0;
+      bool b_won = false;
+      for (;;) {
+        uint64_t xb = a[cb], xt = tmp[ct];
+        bool less = SCR_TS_LESS(xb, xt);
+        if (SCR_TS_FAILED()) return;
+        if (less) {
+          SCR_SORT_PREFETCH(cmp_, a, cb, end_b);
+          a[cb - (end_t - ct)] = xb;
+          cb++;
+          win = b_won ? win + 1 : 1;
+          b_won = true;
+          if (cb == end_b || win >= min_gallop) break;
+        } else {
+          SCR_SORT_PREFETCH(cmp_, tmp, ct, end_t);
+          a[cb - (end_t - ct)] = xt;
+          ct++;
+          win = b_won ? 1 : win + 1;
+          b_won = false;
+          if (end_t - ct == 1 || win >= min_gallop) break;
+        }
+      }
+      len_b = end_b - cb;
+      len_a = end_t - ct;
+      dest = cb - len_a;
+      wins_b = b_won ? win : 0;
+      wins_a = b_won ? 0 : win;
+      if (len_b == 0) goto succeed;
+      if (len_a == 1) goto copy_b;
+    }
+    min_gallop++;
+    bool first = true;
+    while (wins_a >= SCR_SORT_MIN_GALLOP || wins_b >= SCR_SORT_MIN_GALLOP || first) {
+      first = false;
+      min_gallop = min_gallop > 1 ? min_gallop - 1 : 1;
+      s->min_gallop = min_gallop;
+      wins_a = scr_sort_gallop_right(s, tmp, a[cb], ct, len_a, 0);
+      if (s->failed) return;
+      if (wins_a > 0) {
+        memcpy(a + dest, tmp + ct, wins_a * sizeof(*a));
+        dest += wins_a;
+        ct += wins_a;
+        len_a -= wins_a;
+        if (len_a == 1) goto copy_b;
+        if (len_a == 0) goto succeed;
+      }
+      a[dest++] = a[cb++];
+      if (--len_b == 0) goto succeed;
+      wins_b = scr_sort_gallop_left(s, a, tmp[ct], cb, len_b, 0);
+      if (s->failed) return;
+      if (wins_b > 0) {
+        memmove(a + dest, a + cb, wins_b * sizeof(*a));
+        dest += wins_b;
+        cb += wins_b;
+        len_b -= wins_b;
+        if (len_b == 0) goto succeed;
+      }
+      a[dest++] = tmp[ct++];
+      if (--len_a == 1) goto copy_b;
+    }
+    min_gallop++;
+    s->min_gallop = min_gallop;
+  }
+succeed:
+  if (len_a > 0) memcpy(a + dest, tmp + ct, len_a * sizeof(*a));
+  return;
+copy_b:
+  memmove(a + dest, a + cb, len_b * sizeof(*a));
+  a[dest + len_b] = tmp[ct];
+}
+
+/* Merges [base_a, base_a + len_a) and the run after it, len_a > len_b,
+ * through a copy of run B, back to front. */
+static __attribute__((noinline)) void scr_sort_merge_high(ScrTimSort *s, size_t base_a, size_t len_a, size_t base_b,
+                                size_t len_b) {
+  uint64_t *a = s->a;
+  SCR_TS_LOCALS;
+  uint64_t *tmp = scr_sort_tmp(s, len_b);
+  memcpy(tmp, a + base_b, len_b * sizeof(*a));
+  /* Indices one past the next element: run A's cursor can reach base_a. */
+  size_t dest = base_b + len_b, ca = base_a + len_a, ct = len_b;
+  size_t min_gallop = s->min_gallop;
+  a[--dest] = a[--ca];
+  if (--len_a == 0) goto succeed;
+  if (len_b == 1) goto copy_a;
+  for (;;) {
+    size_t wins_a = 0, wins_b = 0;
+    {
+      /* As in scr_sort_merge_low: run B's unplaced elements tmp[0, ct) fill
+       * the gap between run A's cursor and the destination, so
+       * dest = ca + ct, len_a = ca - base_a and len_b = ct. */
+      size_t win = 0;
+      bool a_won = false;
+      for (;;) {
+        uint64_t xt = tmp[ct - 1], xa = a[ca - 1];
+        bool less = SCR_TS_LESS(xt, xa);
+        if (SCR_TS_FAILED()) return;
+        if (less) {
+          SCR_SORT_PREFETCH_BACK(cmp_, a, ca, base_a);
+          a[ca + ct - 1] = xa;
+          ca--;
+          win = a_won ? win + 1 : 1;
+          a_won = true;
+          if (ca == base_a || win >= min_gallop) break;
+        } else {
+          SCR_SORT_PREFETCH_BACK(cmp_, tmp, ct, 0);
+          a[ca + ct - 1] = xt;
+          ct--;
+          win = a_won ? 1 : win + 1;
+          a_won = false;
+          if (ct == 1 || win >= min_gallop) break;
+        }
+      }
+      len_a = ca - base_a;
+      len_b = ct;
+      dest = ca + ct;
+      wins_a = a_won ? win : 0;
+      wins_b = a_won ? 0 : win;
+      if (len_a == 0) goto succeed;
+      if (len_b == 1) goto copy_a;
+    }
+    min_gallop++;
+    bool first = true;
+    while (wins_a >= SCR_SORT_MIN_GALLOP || wins_b >= SCR_SORT_MIN_GALLOP || first) {
+      first = false;
+      min_gallop = min_gallop > 1 ? min_gallop - 1 : 1;
+      s->min_gallop = min_gallop;
+      size_t k = scr_sort_gallop_right(s, a, tmp[ct - 1], base_a, len_a, len_a - 1);
+      if (s->failed) return;
+      wins_a = len_a - k;
+      if (wins_a > 0) {
+        dest -= wins_a;
+        ca -= wins_a;
+        memmove(a + dest, a + ca, wins_a * sizeof(*a));
+        len_a -= wins_a;
+        if (len_a == 0) goto succeed;
+      }
+      a[--dest] = tmp[--ct];
+      if (--len_b == 1) goto copy_a;
+      k = scr_sort_gallop_left(s, tmp, a[ca - 1], 0, len_b, len_b - 1);
+      if (s->failed) return;
+      wins_b = len_b - k;
+      if (wins_b > 0) {
+        dest -= wins_b;
+        ct -= wins_b;
+        memcpy(a + dest, tmp + ct, wins_b * sizeof(*a));
+        len_b -= wins_b;
+        if (len_b == 1) goto copy_a;
+        if (len_b == 0) goto succeed;
+      }
+      a[--dest] = a[--ca];
+      if (--len_a == 0) goto succeed;
+    }
+    min_gallop++;
+    s->min_gallop = min_gallop;
+  }
+succeed:
+  if (len_b > 0) memcpy(a + dest - len_b, tmp + ct - len_b, len_b * sizeof(*a));
+  return;
+copy_a:
+  dest -= len_a;
+  ca -= len_a;
+  memmove(a + dest, a + ca, len_a * sizeof(*a));
+  a[dest - 1] = tmp[ct - 1];
+}
+
+/* Merges pending runs i and i + 1 (i is the second- or third-last run). */
+static void scr_sort_merge_at(ScrTimSort *s, size_t i) {
+  uint64_t *a = s->a;
+  size_t base_a = s->run_base[i], len_a = s->run_len[i];
+  size_t base_b = s->run_base[i + 1], len_b = s->run_len[i + 1];
+  s->run_len[i] = len_a + len_b;
+  if (i + 3 == s->runs) {
+    s->run_base[i + 1] = s->run_base[i + 2];
+    s->run_len[i + 1] = s->run_len[i + 2];
+  }
+  s->runs--;
+  size_t k = scr_sort_gallop_right(s, a, a[base_b], base_a, len_a, 0);
+  if (s->failed) return;
+  base_a += k;
+  len_a -= k;
+  if (len_a == 0) return;
+  len_b = scr_sort_gallop_left(s, a, a[base_a + len_a - 1], base_b, len_b, len_b - 1);
+  if (s->failed || len_b == 0) return;
+  if (len_a <= len_b) scr_sort_merge_low(s, base_a, len_a, base_b, len_b);
+  else scr_sort_merge_high(s, base_a, len_a, base_b, len_b);
+}
+
+/* Whether run m (counting from the bottom) satisfies
+ * len[m - 2] > len[m - 1] + len[m]. */
+static bool scr_sort_run_invariant(const ScrTimSort *s, size_t m) {
+  if (m < 2) return true;
+  return s->run_len[m - 2] > s->run_len[m - 1] + s->run_len[m];
+}
+
+static void scr_sort_merge_collapse(ScrTimSort *s) {
+  while (s->runs > 1 && !s->failed) {
+    size_t m = s->runs - 2;
+    if (!scr_sort_run_invariant(s, m + 1) || !scr_sort_run_invariant(s, m)) {
+      if (s->run_len[m - 1] < s->run_len[m + 1]) m--;
+      scr_sort_merge_at(s, m);
+    } else if (s->run_len[m] <= s->run_len[m + 1]) {
+      scr_sort_merge_at(s, m);
+    } else {
+      break;
+    }
+  }
+}
+
+static void scr_sort_merge_force_collapse(ScrTimSort *s) {
+  while (s->runs > 1 && !s->failed) {
+    size_t m = s->runs - 2;
+    if (m > 0 && s->run_len[m - 1] < s->run_len[m + 1]) m--;
+    scr_sort_merge_at(s, m);
+  }
+}
+
+/* Runs the sort over s->a[0, n), n >= 2. */
+static void scr_sort_run(ScrTimSort *s, size_t n) {
+  size_t min_run = n, r = 0;
+  while (min_run >= 64) {
+    r |= min_run & 1;
+    min_run >>= 1;
+  }
+  min_run += r;
+  size_t low = 0, remaining = n;
+  while (remaining != 0 && !s->failed) {
+    size_t length = scr_sort_count_run(s, low, low + remaining);
+    if (s->failed) break;
+    if (length < min_run) {
+      size_t forced = min_run < remaining ? min_run : remaining;
+      scr_sort_binary_insertion(s, low, low + length, low + forced);
+      if (s->failed) break;
+      length = forced;
+    }
+    s->run_base[s->runs] = low;
+    s->run_len[s->runs] = length;
+    s->runs++;
+    scr_sort_merge_collapse(s);
+    low += length;
+    remaining -= length;
+  }
+  if (!s->failed) scr_sort_merge_force_collapse(s);
+}
+
+/* The work copy and merge scratch of one sort. Returning a buffer of a few
+ * hundred KiB to the system allocator after every sort lets it trim its
+ * heap, and the next sort faults the pages back in, so each thread keeps
+ * its largest buffer up to SCR_SORT_CACHE_SLOTS slots. A sort that starts
+ * inside a comparator finds the cache taken and allocates its own. */
+#define SCR_SORT_CACHE_SLOTS ((size_t)1 << 17)
+static SCR_TL uint64_t *scr_sort_cache;
+static SCR_TL size_t scr_sort_cache_slots;
+static SCR_TL bool scr_sort_cache_registered;
+
+static void scr_sort_cache_free(void) {
+  free(scr_sort_cache);
+  scr_sort_cache = NULL;
+  scr_sort_cache_slots = 0;
+}
+
+static uint64_t *scr_sort_buffer_take(size_t slots, size_t *cap) {
+  if (scr_sort_cache && scr_sort_cache_slots >= slots) {
+    uint64_t *buffer = scr_sort_cache;
+    *cap = scr_sort_cache_slots;
+    scr_sort_cache = NULL;
+    scr_sort_cache_slots = 0;
+    return buffer;
+  }
+  uint64_t *buffer = malloc(slots * sizeof(*buffer));
+  if (!buffer) scr_arr_oom();
+  *cap = slots;
+  return buffer;
+}
+
+static void scr_sort_buffer_give(uint64_t *buffer, size_t cap) {
+  if (cap > SCR_SORT_CACHE_SLOTS || cap <= scr_sort_cache_slots) {
+    free(buffer);
+    return;
+  }
+  if (!scr_sort_cache_registered) {
+    scr_sort_cache_registered = true;
+    scr_atexit(scr_sort_cache_free);
+  }
+  free(scr_sort_cache);
+  scr_sort_cache = buffer;
+  scr_sort_cache_slots = cap;
+}
+
+/* Sorts a private copy of values[0, n) and, on success, stores the result
+ * back. Returns false when a comparator throws; `values` is then unchanged.
+ * `values` holds every slot exactly once, in its original order, whenever
+ * a comparator runs. */
+static bool scr_sort_copy(ScrTimSort *s, uint64_t *values, size_t n) {
+  size_t scratch = n / 2 + 1, cap;
+  if (n > SIZE_MAX / sizeof(*s->a) - scratch) scr_arr_oom();
+  s->a = scr_sort_buffer_take(n + scratch, &cap);
+  memcpy(s->a, values, n * sizeof(*s->a));
+  s->tmp = s->a + n;
+  s->tmp_cap = cap - n;
+  s->min_gallop = SCR_SORT_MIN_GALLOP;
+  s->runs = 0;
+  s->failed = false;
+  scr_sort_run(s, n);
+  bool ok = !s->failed;
+  if (ok) memcpy(values, s->a, n * sizeof(*values));
+  scr_sort_buffer_give(s->a, cap);
+  return ok;
+}
+
+/* Sorts `n >= 2` slots with V8's TimSort through the closure comparator.
+ * That keeps array storage passed here consistent for the cycle collector,
+ * and lets callers release or keep the slots after an exception; `scratch`
+ * is accepted for the callers' benefit, as the private copy makes it
+ * unnecessary. */
 static bool scr_sort_slots(uint64_t *values, size_t n, const ScrSortCompare *cmp,
                            bool scratch) {
-  ScrSortCompare c = *cmp;
-  uint64_t *src = values, *dst = NULL, *spare = NULL;
-  /* Every run but the last reaches 16 slots; the table also holds a 0. */
-  size_t *runs = malloc((n / 16 + 2) * sizeof(*runs));
-  if (!runs) scr_arr_oom();
-  bool failed = false;
+  (void)scratch;
+  ScrTimSort s;
+  s.c = *cmp;
   scr_dyn_this_push_dyn(NULL);
-#define SCR_SORT_GREATER(x, y) (scr_sort_greater(&c, (x), (y), &failed))
-#define SCR_SORT_CHECK() \
-  do {                   \
-    if (failed) goto done; \
-  } while (0)
-  size_t run_count = 1, start = 0;
-  runs[0] = 0;
-  while (start < n) {
-    size_t end = start + 1;
-    if (end < n) {
-      bool descending = SCR_SORT_GREATER(src[start], src[end]);
-      SCR_SORT_CHECK();
-      end++;
-      while (end < n) {
-        SCR_SORT_PREFETCH(c, src, end, n);
-        bool greater = SCR_SORT_GREATER(src[end - 1], src[end]);
-        SCR_SORT_CHECK();
-        if (descending ? greater : !greater) end++;
-        else break;
-      }
-      if (descending) {
-        for (size_t left = start, right = end - 1; left < right; left++, right--) {
-          uint64_t v = src[left];
-          src[left] = src[right];
-          src[right] = v;
-        }
-      }
-    }
-    size_t limit = start + 16 < n ? start + 16 : n;
-    for (; end < limit; end++) {
-      uint64_t pivot = src[end];
-      size_t low = start, high = end;
-      while (low < high) {
-        size_t center = low + (high - low) / 2;
-        bool greater = SCR_SORT_GREATER(src[center], pivot);
-        SCR_SORT_CHECK();
-        if (greater) high = center;
-        else low = center + 1;
-      }
-      memmove(src + low + 1, src + low, (end - low) * sizeof(*src));
-      src[low] = pivot;
-    }
-    runs[run_count++] = end;
-    start = end;
-  }
-  if (run_count > 2) {
-    dst = malloc(n * sizeof(*dst));
-    if (!dst) scr_arr_oom();
-  }
-  while (run_count > 2) {
-    if (dst == values && !scratch) {
-      if (!spare) {
-        spare = malloc(n * sizeof(*spare));
-        if (!spare) scr_arr_oom();
-      }
-      dst = spare;
-    }
-    size_t next_run = 1;
-    for (size_t run = 0; run + 1 < run_count; run += 2) {
-      size_t lo = runs[run], mid = runs[run + 1];
-      size_t right = run + 2 < run_count ? runs[run + 2] : n;
-      size_t i = lo, j = mid, k = lo;
-      bool merge = false;
-      if (mid < right) {
-        merge = SCR_SORT_GREATER(src[mid - 1], src[mid]);
-        SCR_SORT_CHECK();
-      }
-      if (merge) {
-        uint64_t left_value = src[i], right_value = src[j];
-        for (size_t ahead = 1; ahead < SCR_SORT_PREFETCH_DISTANCE; ahead++) {
-          SCR_SORT_PREFETCH_AT(c, src, i + ahead, mid);
-          SCR_SORT_PREFETCH_AT(c, src, j + ahead, right);
-        }
-        while (i < mid && j < right) {
-          bool greater = SCR_SORT_GREATER(left_value, right_value);
-          SCR_SORT_CHECK();
-          if (greater) {
-            dst[k] = right_value;
-            if (++j < right) right_value = src[j];
-            SCR_SORT_PREFETCH(c, src, j, right);
-          } else {
-            dst[k] = left_value;
-            if (++i < mid) left_value = src[i];
-            SCR_SORT_PREFETCH(c, src, i, mid);
-          }
-          k++;
-        }
-      }
-      memcpy(dst + k, src + i, (mid - i) * sizeof(*src));
-      k += mid - i;
-      memcpy(dst + k, src + j, (right - j) * sizeof(*src));
-      runs[next_run++] = right;
-    }
-    run_count = next_run;
-    uint64_t *tmp = src;
-    src = dst;
-    dst = tmp;
-  }
-#undef SCR_SORT_CHECK
-#undef SCR_SORT_GREATER
-done:
+  bool ok = scr_sort_copy(&s, values, n);
   scr_dyn_this_pop();
-  /* After an exception too: a merge pass's source holds every slot. */
-  if (src != values) memcpy(values, src, n * sizeof(*values));
-  if (src != values) free(src);
-  if (dst != values) free(dst);
-  if (spare != src && spare != dst) free(spare);
-  free(runs);
-  return !failed;
+  return ok;
 }
+
+bool scr_sort_slots_with(uint64_t *values, size_t n, ScrSortLess less, void *ctx) {
+  if (n < 2) return true;
+  ScrTimSort s;
+  memset(&s.c, 0, sizeof s.c);
+  s.c.less = less;
+  s.c.less_ctx = ctx;
+  return scr_sort_copy(&s, values, n);
+}
+
+#ifdef SCR_SORT_TEST
+/* Test-only entry points into the TimSort steps, deliberately absent from
+ * the normal runtime ABI. `arr` and `a` are indexed as the sort indexes its
+ * work array, so a test can pass a base pointer below its buffer and reach
+ * the buffer through indices past 2^32. */
+static ScrTimSort scr_sort_test_state(ScrSortLess less) {
+  ScrTimSort s;
+  memset(&s, 0, sizeof s);
+  s.c.less = less;
+  s.min_gallop = SCR_SORT_MIN_GALLOP;
+  return s;
+}
+
+size_t scr_sort_test_gallop(bool right, const uint64_t *arr, uint64_t key, size_t base,
+                            size_t length, size_t hint, ScrSortLess less) {
+  ScrTimSort s = scr_sort_test_state(less);
+  return right ? scr_sort_gallop_right(&s, arr, key, base, length, hint)
+               : scr_sort_gallop_left(&s, arr, key, base, length, hint);
+}
+
+/* Merges the sorted runs a[base, base + len_a) and a[base + len_a, base +
+ * len_a + len_b) as the sort's merge step does: galloping trims both runs,
+ * then merge_low or merge_high runs through `tmp`. Returns 1 after
+ * merge_low, 2 after merge_high and 0 when the trimmed runs were already in
+ * order. */
+int scr_sort_test_merge(uint64_t *a, size_t base, size_t len_a, size_t len_b, uint64_t *tmp,
+                         size_t tmp_cap, ScrSortLess less) {
+  ScrTimSort s = scr_sort_test_state(less);
+  s.a = a;
+  s.tmp = tmp;
+  s.tmp_cap = tmp_cap;
+  s.run_base[0] = base;
+  s.run_len[0] = len_a;
+  s.run_base[1] = base + len_a;
+  s.run_len[1] = len_b;
+  s.runs = 2;
+  size_t k = scr_sort_gallop_right(&s, a, a[base + len_a], base, len_a, 0);
+  size_t trimmed_b = scr_sort_gallop_left(&s, a, a[base + len_a - 1], base + len_a, len_b, len_b - 1);
+  scr_sort_merge_at(&s, 0);
+  if (k == len_a || trimmed_b == 0) return 0;
+  return len_a - k <= trimmed_b ? 1 : 2;
+}
+
+size_t scr_sort_test_gallop_result(ptrdiff_t k, size_t length) {
+  return scr_sort_gallop_result(k, length);
+}
+#endif
+
+#undef SCR_TS_FAIL_IF
+#undef SCR_TS_FAILED
+#undef SCR_TS_LESS
+#undef SCR_TS_LOCALS
+#undef SCR_SORT_PREFETCH_BACK
+#undef SCR_SORT_PREFETCH_SLOT
 
 /* Sorts the first `count` slots of a private, compacted snapshot. The array
  * keeps owning every element and stays untouched while user code runs, so

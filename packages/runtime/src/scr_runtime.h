@@ -2104,6 +2104,13 @@ void scr_arr_sort_values(ScrArr *a, double count, struct ScrClosure *f, uint32_t
 const uint64_t *scr_arr_dense_slots(const ScrArr *a, size_t *len);
 bool scr_arr_sort_dense(ScrArr *a, struct ScrClosure *f, uint32_t arity, bool owned,
                         int32_t order, struct ScrClosure *key);
+/* V8's TimSort over n slots with a caller comparison: less(ctx, x, y)
+ * answers whether x orders before y (comparefn(x, y) < 0), or sets *failed,
+ * with an exception pending, to stop the sort. Returns false after a
+ * failure; `values` is then unchanged, and it holds every slot exactly once,
+ * in its original order, whenever `less` runs. */
+typedef bool (*ScrSortLess)(void *ctx, uint64_t x, uint64_t y, bool *failed);
+bool scr_sort_slots_with(uint64_t *values, size_t n, ScrSortLess less, void *ctx);
 
 /* pop traps on an empty array; _ref transfers ownership out (+1 to the
  * caller, no release). */
