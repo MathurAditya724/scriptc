@@ -1776,6 +1776,10 @@ export const BUILTIN_MODULE_FNS: Record<
       params: [F64],
       result: VOID,
     },
+    // Node's IPv4Reg / IPv6Reg tests over String(input).
+    isIP: { fn: "net.isIP", params: [DYN], result: F64 },
+    isIPv4: { fn: "net.isIPv4", params: [DYN], result: BOOL },
+    isIPv6: { fn: "net.isIPv6", params: [DYN], result: BOOL },
   },
   http: {},
   // node:tls and node:https ride the same spoke (tls.createServer's

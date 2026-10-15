@@ -14,6 +14,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `word-graph` | cpu | string-keyed Map/Set, BFS |
 | `alloc-trees` | cpu | allocation-heavy trees, immutable object-spread updates |
 | `numeric-kernels` | cpu | sieve, hashing, `number[][]` matmul, `Float64Array` |
+| `typed-array-scan`, `typed-array-scan-workers` | cpu | element-by-element scan loops over `Uint8Array`, `Uint16Array`, `Int32Array` and `Float64Array`; the second entry is a worker-enabled executable (it can start a worker), so each access also checks for shared storage |
 | `value-objects` | cpu | small immutable records and class instances: vector helpers, method chains, particle updates |
 | `optional-fields` | cpu | records and class instances with `number \| undefined` and other scalar-union fields |
 | `record-boundaries` | cpu | records built from unchecked array reads passed to and returned from annotated functions |

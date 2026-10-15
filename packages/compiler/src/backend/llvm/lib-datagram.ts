@@ -216,6 +216,16 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
         host.declare("declare void @scr_dns_thunk0(ptr, ptr, ptr, double)");
       return finishRuntimeCall(host, e, "scr_dns_lookup", [...a, ptr("@" + symbol)]);
     }
+    case "dns.lookupDyn":
+      return finishRuntimeCall(host, e, "scr_dns_lookup_dyn", a);
+    case "dns.lookupService":
+      return finishRuntimeCall(host, e, "scr_dns_lookup_service", a);
+    case "dns.getServers":
+      return finishRuntimeCall(host, e, "scr_dns_get_servers", a);
+    case "dns.getDefaultResultOrder":
+      return finishRuntimeCall(host, e, "scr_dns_get_default_result_order", a);
+    case "dns.setDefaultResultOrder":
+      return finishRuntimeCall(host, e, "scr_dns_set_default_result_order", a);
     default:
       throw new InternalCompilerError(`unhandled datagram call ${e.fn}`);
   }

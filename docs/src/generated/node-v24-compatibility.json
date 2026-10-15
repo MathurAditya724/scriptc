@@ -494,9 +494,9 @@
       "apiEntries": 119,
       "static": {
         "supported": 0,
-        "partial": 34,
+        "partial": 37,
         "refused": 0,
-        "not-implemented": 85,
+        "not-implemented": 82,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -32083,7 +32083,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -32198,7 +32198,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -52122,9 +52122,9 @@
       "anchor": "netisipinput",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -52140,9 +52140,9 @@
       "anchor": "netisipv4input",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -52158,9 +52158,9 @@
       "anchor": "netisipv6input",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {

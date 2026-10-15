@@ -169,63 +169,13 @@ export function emitBytesLength(
   return { name: out, type: F64 };
 }
 
-export function emitBytesGet(
-  host: LlvmEmitterContext,
-  elem: IrBytesElem,
-  receiver: string,
-  index: LlValue,
-  expr?: IrExpr,
-  inBounds = false,
-  invalidNaN = false,
-): LlValue {
-  const B = host.B;
-  if (host.mod.workers) {
-    const fn = invalidNaN ? "scr_bytes_get_or_nan" : "scr_bytes_get";
-    host.declare(`declare double @${fn}(ptr, double)`);
-    const local = emitSharedBytesSplit(host, receiver);
-    const result = B.tmp();
-    B.line(`${result} = call double @${fn}(ptr ${receiver}, double ${index.name})`);
-    // Integer elements read as integers in int32/uint32 range, or NaN for a
-    // missing one: ToUint32 is the integer, or 0. Keeping it lets the join
-    // carry the local path's integer hint.
-    let sharedU32: string | undefined;
-    if (elem !== "f32" && elem !== "f64") {
-      const missing = B.tmp(),
-        present = B.tmp(),
-        wide = B.tmp();
-      sharedU32 = B.tmp();
-      B.line(`${missing} = fcmp uno double ${result}, ${result}`);
-      B.line(`${present} = select i1 ${missing}, double 0.0, double ${result}`);
-      B.line(`${wide} = fptosi double ${present} to i64`);
-      B.line(`${sharedU32} = trunc i64 ${wide} to i32`);
-    }
-    const shared = B.newLabel("bytes.shared.done");
-    B.br(shared);
-    B.startBlock(local);
-    const own = emitBytesGetLocal(host, elem, receiver, index, expr, inBounds, invalidNaN);
-    const owned = B.newLabel("bytes.local.done");
-    B.br(owned);
-    B.startBlock(owned);
-    const join = B.newLabel("bytes.join");
-    B.br(join);
-    B.startBlock(shared);
-    B.br(join);
-    B.startBlock(join);
-    const out = B.tmp();
-    B.line(`${out} = phi double [ ${own.name}, %${owned} ], [ ${result}, %${shared} ]`);
-    if (own.uint32 === undefined || sharedU32 === undefined) return { name: out, type: F64 };
-    const u32 = B.tmp();
-    B.line(`${u32} = phi i32 [ ${own.uint32}, %${owned} ], [ ${sharedU32}, %${shared} ]`);
-    return { name: out, type: F64, uint32: u32 };
-  }
-  return emitBytesGetLocal(host, elem, receiver, index, expr, inBounds, invalidNaN);
-}
-
 /** Worker programs: a view of a SharedArrayBuffer (`shared` is fixed before
  * script code can see the view) is read and written by the runtime under
  * its shared-memory lock; every other buffer belongs to this thread and
- * takes the ordinary inline path. Branches to the returned label for a
- * thread-owned buffer and continues in the shared block. */
+ * takes the ordinary inline path. The test follows the index check: a
+ * view's length never changes, so both paths use the one checked integer
+ * index. Branches to the returned label for a thread-owned buffer and
+ * continues in the shared block. */
 function emitSharedBytesSplit(host: LlvmEmitterContext, receiver: string): string {
   const B = host.B;
   host.declare(`declare i1 @llvm.expect.i1(i1, i1)`);
@@ -244,14 +194,14 @@ function emitSharedBytesSplit(host: LlvmEmitterContext, receiver: string): strin
   return local;
 }
 
-function emitBytesGetLocal(
+export function emitBytesGet(
   host: LlvmEmitterContext,
   elem: IrBytesElem,
   receiver: string,
   index: LlValue,
-  expr: IrExpr | undefined,
-  inBounds: boolean,
-  invalidNaN: boolean,
+  expr?: IrExpr,
+  inBounds = false,
+  invalidNaN = false,
 ): LlValue {
   const B = host.B;
   // Any invalid index traps (the array runtime's discipline).
@@ -304,8 +254,63 @@ function emitBytesLoad(
   inBounds: boolean,
   invalid: string | undefined,
 ): LlValue {
-  const B = host.B;
   const idx = emitBytesIndex(host, receiver, index, expr, invalid, inBounds);
+  if (host.mod.workers) return emitSharedOrLocalLoad(host, elem, receiver, idx);
+  return emitBytesLoadAt(host, elem, receiver, idx);
+}
+
+/** Worker programs: the element at a checked index of a view that may be
+ * shared. An integer element joins as its 32-bit value and converts to a
+ * number after the join, as the local load does, so compares and
+ * ToInt32/ToUint32 of the result stay integer operations. The shared read
+ * is an ordinary call: another thread's write must stay visible to a loop
+ * that reads the same element again. */
+function emitSharedOrLocalLoad(
+  host: LlvmEmitterContext,
+  elem: IrBytesElem,
+  receiver: string,
+  idx: string,
+): LlValue {
+  const B = host.B;
+  const floating = elem === "f32" || elem === "f64";
+  const fn = floating ? "scr_bytes_shared_get_f64" : "scr_bytes_shared_get_int";
+  const ret = floating ? "double" : "i32";
+  host.declare(`declare ${ret} @${fn}(ptr, ${host.sizeType})`);
+  const local = emitSharedBytesSplit(host, receiver);
+  const shared = B.tmp();
+  B.line(`${shared} = call ${ret} @${fn}(ptr ${receiver}, ${host.sizeType} ${idx}) cold`);
+  const sharedDone = B.newLabel("bytes.shared.done");
+  B.br(sharedDone);
+  B.startBlock(local);
+  const own = emitBytesLoadAt(host, elem, receiver, idx);
+  const localDone = B.newLabel("bytes.local.done");
+  B.br(localDone);
+  B.startBlock(localDone);
+  const join = B.newLabel("bytes.join");
+  B.br(join);
+  B.startBlock(sharedDone);
+  B.br(join);
+  B.startBlock(join);
+  const out = B.tmp();
+  if (floating) {
+    B.line(`${out} = phi double [ ${own.name}, %${localDone} ], [ ${shared}, %${sharedDone} ]`);
+    return { name: out, type: F64 };
+  }
+  const u32 = B.tmp();
+  B.line(`${u32} = phi i32 [ ${own.uint32!}, %${localDone} ], [ ${shared}, %${sharedDone} ]`);
+  const signed = elem === "i8" || elem === "i16" || elem === "i32";
+  B.line(`${out} = ${signed ? "sitofp" : "uitofp"} i32 ${u32} to double`);
+  return { name: out, type: F64, uint32: u32 };
+}
+
+/** The element at a checked index of a thread-owned view. */
+function emitBytesLoadAt(
+  host: LlvmEmitterContext,
+  elem: IrBytesElem,
+  receiver: string,
+  idx: string,
+): LlValue {
+  const B = host.B;
   const data = host.emitBytesData(receiver);
   const p = B.tmp();
   if (BYTES_ELEMENT_SIZE[elem] < 4) {
@@ -431,35 +436,18 @@ export function emitBytesSet(
   inBounds = false,
 ): void {
   const B = host.B;
-  if (host.mod.workers) {
-    host.declare(`declare void @scr_bytes_set(ptr, double, double)`);
-    const local = emitSharedBytesSplit(host, receiver);
-    B.line(`call void @scr_bytes_set(ptr ${receiver}, double ${index.name}, double ${value.name})`);
-    const join = B.newLabel("bytes.join");
-    B.br(join);
-    B.startBlock(local);
-    emitBytesSetLocal(host, elem, receiver, index, value, indexExpr, expr, inBounds);
-    B.br(join);
-    B.startBlock(join);
-    return;
-  }
-  emitBytesSetLocal(host, elem, receiver, index, value, indexExpr, expr, inBounds);
-}
-
-function emitBytesSetLocal(
-  host: LlvmEmitterContext,
-  elem: IrBytesElem,
-  receiver: string,
-  index: LlValue,
-  value: LlValue,
-  indexExpr: IrExpr | undefined,
-  expr: IrExpr | undefined,
-  inBounds: boolean,
-): void {
-  const B = host.B;
   // Invalid integer-indexed writes are ignored after evaluating the RHS.
   const done = B.newLabel("bytes.store.done");
   const idx = emitBytesIndex(host, receiver, index, indexExpr, done, inBounds);
+  if (host.mod.workers) {
+    host.declare(`declare void @scr_bytes_shared_set(ptr, ${host.sizeType}, double)`);
+    const local = emitSharedBytesSplit(host, receiver);
+    B.line(
+      `call void @scr_bytes_shared_set(ptr ${receiver}, ${host.sizeType} ${idx}, double ${value.name})`,
+    );
+    B.br(done);
+    B.startBlock(local);
+  }
   let stored: string | null;
   if (elem === "u8c") {
     host.declare(`declare double @scr_bytes_to_u8_clamp(double)`);

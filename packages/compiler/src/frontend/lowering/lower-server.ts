@@ -224,7 +224,7 @@ export function voidizedCallback(lowerer: Lowerer, cb: IrExpr, loc: SrcLoc): IrE
       body: [
         {
           kind: "return",
-          value: { kind: "closure", fnName: impl, captures: ["f.0"], type: toT, loc },
+          value: { kind: "closure", fnName: impl, captures: ["f.0"], type: toT, adapts: true, loc },
           loc,
         },
       ],
@@ -232,6 +232,30 @@ export function voidizedCallback(lowerer: Lowerer, cb: IrExpr, loc: SrcLoc): IrE
     });
   }
   return { kind: "call", callee: name, args: [cb], type: toT, loc };
+}
+
+/** A socket or server listener with parameters that the runtime calls
+ * through the checked-dynamic boundary (close(hadError), write's
+ * cb(err), 'drop', getConnections): a dyn function value as is, or a
+ * typed function boxed with per-argument checks. */
+function lowerSocketDynListener(lowerer: Lowerer, node: ts.Expression, what: string): IrExpr {
+  const cb = lowerer.lowerExpr(node);
+  if (cb.type.kind === "dyn") return cb;
+  if (
+    cb.type.kind === "func" &&
+    canBoxFuncIntoDyn(
+      cb.type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return { kind: "dynFrom", value: cb, type: DYN, loc: locOf(node) };
+  }
+  lowerer.noLowering(
+    `${what} that cannot cross the checked-dynamic boundary`,
+    node,
+    "the callback's parameters and return value must have checked-dynamic conversions",
+  );
 }
 
 /** A registration/side-effect libCall re-shaped to answer its RECEIVER —
@@ -1283,6 +1307,33 @@ export function lowerHttpServerTimeoutAssignment(
   };
 }
 
+/** `server.maxConnections = n`: the value crosses as a dyn (undefined
+ * and null unset the cap). */
+export function lowerNetServerMaxConnectionsAssignment(
+  lowerer: Lowerer,
+  left: ts.Expression,
+  right: ts.Expression,
+  loc: SrcLoc,
+): IrStmt | null {
+  if (!ts.isPropertyAccessExpression(left) || left.questionDotToken) return null;
+  if (left.name.text !== "maxConnections") return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(left.expression))?.kind !== "netServer") return null;
+  if (!lowerer.isStdlibMember(left)) return null;
+  const receiver = coerceToHandle(lowerer, left.expression, NETSERVER_T);
+  const value = lowerer.coerceToExpected(lowerer.lowerExpr(right), DYN);
+  return {
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "net.serverMaxConnectionsSet",
+      args: [receiver, value],
+      type: VOID,
+      loc,
+    },
+    loc,
+  };
+}
+
 /** Method calls on net.Server receivers: listen(port[, cb]), close([cb]),
  * on/once("connection" | "error" | "close", cb). address() alone fences
  * toward the composed address().port read. Null for other receivers. */
@@ -1296,6 +1347,34 @@ function lowerNetServerMethodCall(
   const name = access.name.text;
   const loc = locOf(call);
   const args = call.arguments;
+  if (name === "getConnections") {
+    // cb(null, count) on the next tick; answers the server.
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `getConnections with ${args.length} arguments`,
+        call,
+        "the form is getConnections(callback)",
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+    const cb = lowerSocketDynListener(lowerer, args[0]!, "getConnections callbacks");
+    if (resultIsDiscarded(call)) {
+      return {
+        kind: "libCall",
+        fn: "net.serverGetConnections",
+        args: [receiver, cb],
+        type: VOID,
+        loc,
+      };
+    }
+    return receiverReturningCall(
+      lowerer,
+      "net.serverGetConnections",
+      [receiver, cb],
+      NETSERVER_T,
+      loc,
+    );
+  }
   if (name === "setTimeout") {
     if (args.length < 1 || args.length > 2)
       lowerer.noLowering(
@@ -1744,6 +1823,17 @@ function lowerNetServerMethodCall(
         loc,
       };
     }
+    if (event === "drop") {
+      // A connection past maxConnections, with its local and remote
+      // addresses.
+      return {
+        kind: "libCall",
+        fn: "net.serverOnDrop",
+        args: [receiver, lowerSocketDynListener(lowerer, args[1]!, "drop listeners"), once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "session") {
       // The h2c server's per-connection session event: (session). The
       // result is voidized; the handle passes by reference.
@@ -1885,7 +1975,7 @@ function lowerNetServerMethodCall(
     lowerer.noLowering(
       `server.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
       args[0]!,
-      '"connection", "request", "stream", "session", "upgrade", "connect", "error", "close", "listening", and "sessionError" are the supported server events (as literals)',
+      '"connection", "request", "drop", "stream", "session", "upgrade", "connect", "error", "close", "listening", and "sessionError" are the supported server events (as literals)',
     );
   }
   if (name === "emit") {
@@ -2019,6 +2109,85 @@ function lowerNetSocketMethodCall(
         }
       }
     }
+    // A trailing callback: write's runs once the data is flushed (with
+    // null for the error), end's once the socket finishes ('finish').
+    const last = args.length > 0 ? args[args.length - 1]! : null;
+    if (
+      last !== null &&
+      args.length <= 2 &&
+      (name === "end" || args.length === 2) &&
+      lowerer.checker.getCallSignatures(lowerer.typeOf(last)).length > 0
+    ) {
+      const sockLocal = lowerer.declareHiddenLocal("%sockCb", NETSOCKET_T);
+      const stmts: IrStmt[] = [
+        {
+          kind: "varDecl",
+          localId: sockLocal.id,
+          init: coerceToHandle(lowerer, access.expression, NETSOCKET_T),
+          loc,
+        },
+      ];
+      const receiver = (): IrExpr => ({
+        kind: "varRef",
+        localId: sockLocal.id,
+        type: NETSOCKET_T,
+        loc,
+      });
+      const dataNode = args.length === 2 ? args[0]! : null;
+      let main: IrExpr = {
+        kind: "libCall",
+        fn: "net.sockEnd",
+        args: [receiver()],
+        type: VOID,
+        loc,
+      };
+      if (dataNode !== null) {
+        const data = lowerer.lowerExpr(dataNode);
+        const fn: IrLibFn | null =
+          data.type.kind === "string"
+            ? name === "write"
+              ? "net.sockWrite"
+              : "net.sockEndStr"
+            : data.type.kind === "bytes" && data.type.elem === "u8"
+              ? name === "write"
+                ? "net.sockWriteBytes"
+                : "net.sockEndBytes"
+              : data.type.kind === "dyn"
+                ? name === "write"
+                  ? "net.sockWriteDyn"
+                  : "net.sockEndDyn"
+                : null;
+        if (fn === null) {
+          lowerer.noLowering(
+            `${name} of '${lowerer.fmt(data.type)}' data`,
+            dataNode,
+            NARROW_DATA_HINT,
+          );
+        }
+        main = { kind: "libCall", fn, args: [receiver(), data], type: VOID, loc };
+      }
+      const cb = lowerer.lowerExpr(last);
+      let register: IrExpr;
+      if (cb.type.kind === "func" && cb.type.params.length === 0 && cb.type.ret.kind === "void") {
+        register = {
+          kind: "libCall",
+          fn: name === "write" ? "net.sockOnWriteFlush" : "net.sockOnFinish",
+          args: [receiver(), cb],
+          type: VOID,
+          loc,
+        };
+      } else {
+        register = {
+          kind: "libCall",
+          fn: name === "write" ? "net.sockOnWriteFlushDyn" : "net.sockOnFinishDyn",
+          args: [receiver(), lowerSocketDynListener(lowerer, last, `${name} callbacks`)],
+          type: VOID,
+          loc,
+        };
+      }
+      stmts.push({ kind: "exprStmt", expr: main, loc });
+      return { kind: "seqExpr", stmts, result: register, type: VOID, loc };
+    }
     const maxArgs = name === "write" ? 1 : 1;
     const minArgs = name === "write" ? 1 : 0;
     if (args.length < minArgs || args.length > maxArgs) {
@@ -2083,16 +2252,61 @@ function lowerNetSocketMethodCall(
   }
   if (name === "setTimeout") {
     requireStatementPosition(lowerer, call, "socket.setTimeout(...)");
-    if (args.length !== 1) {
+    if (args.length !== 1 && args.length !== 2) {
       lowerer.noLowering(
         `setTimeout with ${args.length} arguments`,
         call,
-        "the supported form is setTimeout(ms) — register the callback separately: socket.once('timeout', ...)",
+        "the supported forms are setTimeout(ms) and setTimeout(ms, callback)",
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
     const ms = lowerer.lowerExprExpecting(args[0]!, F64);
+    if (args.length === 2) {
+      // Node adds the callback as a once('timeout') listener (removes it
+      // for 0); msecs is checked first either way.
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "setTimeout callbacks",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: "net.sockSetTimeoutCb",
+        args: [receiver, ms, cb],
+        type: VOID,
+        loc,
+      };
+    }
     return { kind: "libCall", fn: "net.sockSetTimeout", args: [receiver, ms], type: VOID, loc };
+  }
+  if (name === "setKeepAlive") {
+    // SO_KEEPALIVE plus the initial delay (whole seconds, at least 1);
+    // Node's defaults are false and 0. Answers the socket.
+    if (args.length > 2) {
+      lowerer.noLowering(
+        `setKeepAlive with ${args.length} arguments`,
+        call,
+        "the form is setKeepAlive(enable?, initialDelay?)",
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const enable: IrExpr =
+      args.length >= 1 ? lowerer.lowerExprExpecting(args[0]!, BOOL) : boolLit(false, loc);
+    const delay: IrExpr =
+      args.length === 2
+        ? lowerer.lowerExprExpecting(args[1]!, F64)
+        : { kind: "numLit", value: 0, type: F64, loc };
+    return {
+      kind: "libCall",
+      fn: "net.sockSetKeepAlive",
+      args: [receiver, enable, delay],
+      type: NETSOCKET_T,
+      loc,
+    };
   }
   if (name === "pause" || name === "resume") {
     // Flow control (the struct's flag comments in scr_net.c): pause holds
@@ -2212,6 +2426,31 @@ function lowerNetSocketMethodCall(
     const event = evT.isStringLiteralType() ? evT.value : null;
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
     if (event === "data") {
+      const sigs = lowerer.checker.getCallSignatures(lowerer.typeOf(args[1]!));
+      const firstParam = sigs.length === 1 ? sigs[0]!.getParameters()[0] : undefined;
+      const param =
+        firstParam !== undefined
+          ? lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(firstParam))
+          : null;
+      if (
+        param !== null &&
+        param.kind !== "dyn" &&
+        !(param.kind === "bytes" && param.elem === "u8")
+      ) {
+        // A chunk typed string (or string | Buffer): the listener takes
+        // the chunk through a checked boundary, so a string arrives after
+        // setEncoding and a Buffer without it fails the check instead of
+        // being decoded.
+        const boxed = lowerSocketDynListener(lowerer, args[1]!, "data listeners");
+        const cb: IrExpr = { kind: "dynCheck", value: boxed, type: funcOf([DYN], VOID), loc };
+        return {
+          kind: "libCall",
+          fn: "net.sockOnData",
+          args: [receiver, cb, once],
+          type: VOID,
+          loc,
+        };
+      }
       const { cb } = lowerCallbackArg(
         lowerer,
         args[1]!,
@@ -2242,9 +2481,25 @@ function lowerNetSocketMethodCall(
       };
     }
     if (
+      event === "close" &&
+      lowerer.checker
+        .getCallSignatures(lowerer.typeOf(args[1]!))
+        .some((sig) => sig.getParameters().length > 0)
+    ) {
+      // close(hadError): true when the socket closed because of an error.
+      return {
+        kind: "libCall",
+        fn: "net.sockOnCloseDyn",
+        args: [receiver, lowerSocketDynListener(lowerer, args[1]!, "close listeners"), once],
+        type: VOID,
+        loc,
+      };
+    }
+    if (
       event === "end" ||
       event === "close" ||
       event === "connect" ||
+      event === "ready" ||
       event === "timeout" ||
       event === "readable"
     ) {
@@ -2266,7 +2521,9 @@ function lowerNetSocketMethodCall(
               ? "net.sockOnTimeout"
               : event === "readable"
                 ? "net.sockOnReadable"
-                : "net.sockOnConnect";
+                : event === "ready"
+                  ? "net.sockOnReady"
+                  : "net.sockOnConnect";
       return { kind: "libCall", fn, args: [receiver, cb, once], type: VOID, loc };
     }
     if (event === "finish") {
@@ -2328,13 +2585,13 @@ function lowerNetSocketMethodCall(
     lowerer.noLowering(
       `socket.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
       args[0]!,
-      '"data", "end", "close", "error", "connect", "timeout", "readable", "secureConnect", and "session" are the supported socket events (as literals)',
+      '"data", "end", "close", "error", "connect", "ready", "timeout", "readable", "secureConnect", and "session" are the supported socket events (as literals)',
     );
   }
   lowerer.noLowering(
     `Socket.${name}`,
     call,
-    "write, end, destroy, pipe, setTimeout, remoteAddress, read, unshift, and on/once of data/end/close/error/connect/timeout/readable are the supported Socket members",
+    "write, end, destroy, pipe, setTimeout, setKeepAlive, setNoDelay, the address fields, read, unshift, and on/once of data/end/close/error/connect/ready/timeout/readable are the supported Socket members",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }
@@ -2978,6 +3235,25 @@ export function lowerServerProperty(
       const receiver = coerceToHandle(lowerer, expr.expression, NETSERVER_T);
       return { kind: "libCall", fn: "net.serverListening", args: [receiver], type: BOOL, loc };
     }
+    if (expr.name.text === "maxConnections") {
+      const receiver = coerceToHandle(lowerer, expr.expression, NETSERVER_T);
+      const value: IrExpr = {
+        kind: "libCall",
+        fn: "net.serverMaxConnectionsGet",
+        args: [receiver],
+        type: DYN,
+        loc,
+      };
+      // The property's declared type: an earlier `= undefined` narrows
+      // the read's own type to undefined.
+      const sym = lowerer.checker.getSymbolAtLocation(expr.name);
+      const declared = lowerer.mapTypeOf(
+        sym ? lowerer.checker.getTypeOfSymbol(sym) : lowerer.typeOf(expr),
+      );
+      return declared === null || declared.kind === "dyn"
+        ? value
+        : lowerer.coerceInto(expr, value, declared);
+    }
     const field = httpServerTimeoutField(expr.name.text);
     if (field !== null) {
       const receiver = coerceToHandle(lowerer, expr.expression, NETSERVER_T);
@@ -3204,6 +3480,46 @@ export function lowerServerProperty(
       type: lowerer.envValueType(),
       loc,
     };
+  }
+  if (recvKind === "netSocket" && lowerer.isStdlibMember(expr)) {
+    const name = expr.name.text;
+    // The other address fields: the peer's cached like remoteAddress, the
+    // local ones read live (undefined while connecting and after close).
+    const field = [
+      "remotePort",
+      "remoteFamily",
+      "localAddress",
+      "localPort",
+      "localFamily",
+    ].indexOf(name);
+    if (field >= 0) {
+      const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
+      const value: IrExpr = {
+        kind: "libCall",
+        fn: "net.sockAddrField",
+        args: [receiver, { kind: "numLit", value: field, type: F64, loc }],
+        type: DYN,
+        loc,
+      };
+      const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      return declared === null || declared.kind === "dyn"
+        ? value
+        : lowerer.coerceInto(expr, value, declared);
+    }
+    const scalar: { fn: IrLibFn; type: IrType } | null =
+      name === "bytesRead"
+        ? { fn: "net.sockBytesRead", type: F64 }
+        : name === "connecting"
+          ? { fn: "net.sockConnecting", type: BOOL }
+          : name === "pending"
+            ? { fn: "net.sockPending", type: BOOL }
+            : name === "readyState"
+              ? { fn: "net.sockReadyState", type: STRING }
+              : null;
+    if (scalar !== null) {
+      const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
+      return { kind: "libCall", fn: scalar.fn, args: [receiver], type: scalar.type, loc };
+    }
   }
   if (
     recvKind === "httpClientReq" &&

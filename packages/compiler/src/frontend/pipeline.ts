@@ -97,7 +97,7 @@ function detectAutoPackages(
   // or a package visible only to a nested package.json realm (a pnpm
   // monorepo's packages/*/node_modules, unreachable from the entry's own
   // walk-up) answers "no runtime JS" for perfectly ordinary installs.
-  const seen = new Map<string, { typesFile: string; fromFile: string }>();
+  const seen = new Map<string, { typesFile: string; fromFile: string; spec: string }>();
   for (const sf of [...load.moduleOrder, load.entry]) {
     if (mode === "auto" && sf.fileName.includes("/node_modules/")) continue;
     const edges: { spec: string; loc: SrcLoc }[] = [];
@@ -152,15 +152,18 @@ function detectAutoPackages(
       }
       if (judged?.has(npm.packageName)) continue;
       if (!seen.has(npm.packageName)) {
-        seen.set(npm.packageName, { typesFile: npm.typesFile, fromFile: sf.fileName });
+        seen.set(npm.packageName, { typesFile: npm.typesFile, fromFile: sf.fileName, spec });
         sites?.set(npm.packageName, loc);
       }
     }
   }
   const chosen: string[] = [];
-  for (const [pkg, { typesFile, fromFile }] of seen) {
+  for (const [pkg, { typesFile, fromFile, spec }] of seen) {
     judged?.add(pkg);
-    const jsEntry = resolveBareModule(fromFile, pkg, "js-only");
+    // A package without a root entry (no "main", "exports" or index file)
+    // can still serve the subpath the program imports.
+    const jsEntry =
+      resolveBareModule(fromFile, pkg, "js-only") ?? resolveBareModule(fromFile, spec, "js-only");
     const reason = npmStaticIneligibleReason(
       pkg,
       typesFile,

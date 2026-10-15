@@ -1341,6 +1341,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     result: VOID,
   },
   "dns.lookup": { argTypes: [STRING, F64, null], result: VOID },
+  /** Node's argument forms with dyn callbacks: lookup(hostname, options,
+   * callback) and lookupService(address, port, callback). */
+  "dns.lookupDyn": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
+  "dns.lookupService": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
+  "dns.getServers": { argTypes: [], result: DYN },
+  "dns.getDefaultResultOrder": { argTypes: [], result: STRING },
+  "dns.setDefaultResultOrder": { argTypes: [DYN], result: VOID },
   // node:test (scr_test.c). Bodies are program-dependent closures (0 or
   // 1 testCtx param, void or Promise<void> result — the spoke pinned the
   // shape): null slots. sub's result is the settled Promise<void> the
@@ -1686,6 +1693,38 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "net.sockSetNoDelay": { argTypes: [NETSOCKET_T, BOOL], result: NETSOCKET_T },
   "net.sockDestroySoon": { argTypes: [NETSOCKET_T], result: VOID },
   "net.sockBytesWritten": { argTypes: [NETSOCKET_T], result: F64 },
+  /** remotePort (0), remoteFamily (1), localAddress (2), localPort (3),
+   * localFamily (4): dyn values, undefined when unknown. */
+  "net.sockAddrField": { argTypes: [NETSOCKET_T, F64], result: DYN },
+  "net.sockBytesRead": { argTypes: [NETSOCKET_T], result: F64 },
+  "net.sockConnecting": { argTypes: [NETSOCKET_T], result: BOOL },
+  "net.sockPending": { argTypes: [NETSOCKET_T], result: BOOL },
+  "net.sockReadyState": { argTypes: [NETSOCKET_T], result: STRING },
+  "net.sockSetKeepAlive": { argTypes: [NETSOCKET_T, BOOL, F64], result: NETSOCKET_T },
+  "net.sockOnReady": {
+    argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
+    result: VOID,
+  },
+  /** Listeners with a parameter, as dyn functions: close(hadError),
+   * write's cb(err) and end's cb. */
+  "net.sockOnCloseDyn": { argTypes: [NETSOCKET_T, DYN, BOOL], result: VOID },
+  "net.sockOnWriteFlush": {
+    argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }],
+    result: VOID,
+  },
+  "net.sockOnWriteFlushDyn": { argTypes: [NETSOCKET_T, DYN], result: VOID },
+  "net.sockOnFinishDyn": { argTypes: [NETSOCKET_T, DYN], result: VOID },
+  "net.sockSetTimeoutCb": {
+    argTypes: [NETSOCKET_T, F64, { kind: "func", params: [], ret: VOID }],
+    result: VOID,
+  },
+  "net.isIP": { argTypes: [DYN], result: F64 },
+  "net.isIPv4": { argTypes: [DYN], result: BOOL },
+  "net.isIPv6": { argTypes: [DYN], result: BOOL },
+  "net.serverMaxConnectionsGet": { argTypes: [NETSERVER_T], result: DYN },
+  "net.serverMaxConnectionsSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
+  "net.serverOnDrop": { argTypes: [NETSERVER_T, DYN, BOOL], result: VOID },
+  "net.serverGetConnections": { argTypes: [NETSERVER_T, DYN], result: VOID },
   "net.sockReadable": { argTypes: [NETSOCKET_T], result: BOOL },
   /** socket.on('finish', cb) / end(cb): fires once when the FIN goes out
    * (sweep-deferred, never the registering stack). */

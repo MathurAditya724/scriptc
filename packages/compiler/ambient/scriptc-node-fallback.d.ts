@@ -3752,6 +3752,17 @@ declare module "net" {
     ref(): void;
     unref(): void;
     readonly remoteAddress: string | undefined;
+    /* The peer's fields are cached at first read, like remoteAddress; the
+     * local ones are undefined while connecting and after close. */
+    readonly remotePort: number | undefined;
+    readonly remoteFamily: string | undefined;
+    readonly localAddress: string | undefined;
+    readonly localPort: number | undefined;
+    readonly localFamily: string | undefined;
+    readonly bytesRead: number;
+    readonly connecting: boolean;
+    readonly pending: boolean;
+    readonly readyState: "opening" | "open" | "readOnly" | "writeOnly" | "closed";
     /* true once the fd is gone (destroy() or full close) — Node's flag. */
     readonly destroyed: boolean;
     /* the write half is open: no end() yet, no FIN sent, fd alive. */
@@ -3761,8 +3772,11 @@ declare module "net" {
     /* every byte the write paths accepted (buffered included — Node
      * counts those too; plaintext on TLS sockets). */
     readonly bytesWritten: number;
-    write(data: string | Uint8Array): void;
-    end(data?: string | Uint8Array): void;
+    /* write's callback runs once the data is flushed, with null; end's
+     * once the socket finishes. */
+    write(data: string | Uint8Array, callback?: (err?: Error | null) => void): void;
+    end(callback?: () => void): void;
+    end(data: string | Uint8Array, callback?: () => void): void;
     destroy(): void;
     /* Flow control: pause holds reads off (kernel/TCP backpressure is
      * the buffer); resume flows — and discards without listeners, so
@@ -3771,6 +3785,8 @@ declare module "net" {
     resume(): Socket;
     /* TCP_NODELAY on the live fd; missing means true. Chains. */
     setNoDelay(noDelay?: boolean): Socket;
+    /* SO_KEEPALIVE with the initial delay in ms. Chains. */
+    setKeepAlive(enable?: boolean, initialDelay?: number): Socket;
     /* end() now, destroy once the FIN actually flushed. */
     destroySoon(): void;
     /* setEncoding('utf8'): 'data' delivers strings — the IncomingMessage
@@ -3781,7 +3797,8 @@ declare module "net" {
     pipe(
       destination: Socket | import("http").ServerResponse | import("http2").Http2ServerResponse,
     ): void;
-    setTimeout(ms: number): void;
+    /* The callback is a once('timeout') listener (removed again by 0). */
+    setTimeout(ms: number, callback?: () => void): void;
     /* The paused-mode demux surface: once('readable') + read(1) +
      * unshift — read answers exactly n buffered bytes or null. */
     read(size?: number): Buffer | null;
@@ -3792,25 +3809,34 @@ declare module "net" {
      * registration never fires — Node's exact split. 'session' fires
      * once with the serialized session (the received-ticket event). */
     on(event: "data", listener: (chunk: Buffer) => void): void;
+    /* After setEncoding the chunk is a string. */
+    on(event: "data", listener: (chunk: string) => void): void;
     on(
-      event: "end" | "close" | "connect" | "timeout" | "readable" | "finish" | "secureConnect",
+      event: "end" | "connect" | "ready" | "timeout" | "readable" | "finish" | "secureConnect",
       listener: () => void,
     ): void;
+    on(event: "close", listener: (hadError: boolean) => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     on(event: "session", listener: (session: Buffer) => void): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
     addListener(event: "data", listener: (chunk: Buffer) => void): void;
+    /* After setEncoding the chunk is a string. */
+    addListener(event: "data", listener: (chunk: string) => void): void;
     addListener(
-      event: "end" | "close" | "connect" | "timeout" | "readable" | "finish" | "secureConnect",
+      event: "end" | "connect" | "ready" | "timeout" | "readable" | "finish" | "secureConnect",
       listener: () => void,
     ): void;
+    addListener(event: "close", listener: (hadError: boolean) => void): void;
     addListener(event: "error", listener: (err: Error) => void): void;
     addListener(event: "session", listener: (session: Buffer) => void): void;
     once(event: "data", listener: (chunk: Buffer) => void): void;
+    /* After setEncoding the chunk is a string. */
+    once(event: "data", listener: (chunk: string) => void): void;
     once(
-      event: "end" | "close" | "connect" | "timeout" | "readable" | "finish" | "secureConnect",
+      event: "end" | "connect" | "ready" | "timeout" | "readable" | "finish" | "secureConnect",
       listener: () => void,
     ): void;
+    once(event: "close", listener: (hadError: boolean) => void): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "session", listener: (session: Buffer) => void): void;
   }
@@ -3819,6 +3845,11 @@ declare module "net" {
     ref(): void;
     unref(): void;
     readonly listening: boolean;
+    /* Connections past this many are closed with a 'drop' event;
+     * undefined (the default) or null lifts the cap. */
+    maxConnections: number | undefined;
+    /* cb(null, count) on the next tick. */
+    getConnections(callback: (error: Error | null, count: number) => void): Server;
     /* Node answers the server itself (`return this` chaining). */
     listen(port: number, callback?: () => void): Server;
     /* The positional bind address (the options form's host in argument
@@ -3840,6 +3871,7 @@ declare module "net" {
     emit(event: "connection", socket: Socket): boolean;
     on(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
     on(event: "close" | "listening", listener: () => void): void;
+    on(event: "drop", listener: (data?: DropArgument) => void): void;
     on(event: "timeout", listener: (socket: Socket) => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     /* The WebSocket handover: fires INSTEAD of 'request' for
@@ -3857,6 +3889,7 @@ declare module "net" {
     /* addListener IS on (Node aliases them) — the suite spells both. */
     addListener(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
     addListener(event: "close" | "listening", listener: () => void): void;
+    addListener(event: "drop", listener: (data?: DropArgument) => void): void;
     addListener(event: "timeout", listener: (socket: Socket) => void): void;
     addListener(event: "error", listener: (err: Error) => void): void;
     addListener(
@@ -3869,6 +3902,7 @@ declare module "net" {
     ): void;
     once(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
     once(event: "close" | "listening", listener: () => void): void;
+    once(event: "drop", listener: (data?: DropArgument) => void): void;
     once(event: "timeout", listener: (socket: Socket) => void): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(
@@ -3880,6 +3914,20 @@ declare module "net" {
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
   }
+  /* The 'drop' payload: the turned-away connection's addresses. */
+  export interface DropArgument {
+    localAddress?: string;
+    localPort?: number;
+    localFamily?: string;
+    remoteAddress?: string;
+    remotePort?: number;
+    remoteFamily?: string;
+  }
+  export type AddressInfo = import("node:dgram").AddressInfo;
+  /* Node's IPv4Reg and IPv6Reg tests: 4, 6, or 0 for isIP. */
+  export function isIP(input: string): number;
+  export function isIPv4(input: string): boolean;
+  export function isIPv6(input: string): boolean;
   /* The Socket VALUE — the `x instanceof net.Socket` narrowing target
    * (the h2 compat 'connect' listener's test). Constructing bare sockets
    * has no lowering; the construct signature exists for instanceof. */
@@ -5108,14 +5156,55 @@ declare module "node:dgram" {
  * ENOTFOUND <hostname>") as the callback's Error argument, with "" for
  * the address where Node passes undefined. */
 declare module "dns" {
+  export interface LookupAddress {
+    address: string;
+    family: number;
+  }
+  export interface LookupOptions {
+    family?: number | "IPv4" | "IPv6";
+    hints?: number;
+    all?: boolean;
+    order?: "ipv4first" | "ipv6first" | "verbatim";
+    verbatim?: boolean;
+  }
+  export interface LookupOneOptions extends LookupOptions {
+    all?: false;
+  }
+  export interface LookupAllOptions extends LookupOptions {
+    all: true;
+  }
+  /* The callback comes with the other lookup deliveries (literal
+   * addresses on the next tick); the options follow lib/dns.js. */
   export function lookup(
     hostname: string,
-    /* The options-record stance (see http.RequestOptions): family is the
-     * lowered option ({ family: 4 }); hints/all/order/verbatim fence by
-     * name; undocumented keys drop like Node. */
-    options: { family: number; [option: string]: unknown },
-    callback: (err: Error | null, address: string, family: number) => void,
+    callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
   ): void;
+  export function lookup(
+    hostname: string,
+    family: number,
+    callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
+  ): void;
+  export function lookup(
+    hostname: string,
+    options: LookupOneOptions,
+    callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
+  ): void;
+  export function lookup(
+    hostname: string,
+    options: LookupAllOptions,
+    callback: (err: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void,
+  ): void;
+  /* getnameinfo with NI_NAMEREQD: the host's name and the port's service
+   * name (the number when it has none). */
+  export function lookupService(
+    address: string,
+    port: number,
+    callback: (err: NodeJS.ErrnoException | null, hostname: string, service: string) => void,
+  ): void;
+  /* The nameservers /etc/resolv.conf lists. */
+  export function getServers(): string[];
+  export function getDefaultResultOrder(): "ipv4first" | "ipv6first" | "verbatim";
+  export function setDefaultResultOrder(order: "ipv4first" | "ipv6first" | "verbatim"): void;
 }
 declare module "node:dns" {
   export * from "dns";

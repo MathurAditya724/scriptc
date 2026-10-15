@@ -9949,6 +9949,8 @@ static ScrDyn *scr_array_buffer_get(void *h, const char *key, size_t len) {
   if (len == 8 && !memcmp(key, "growable", len) && ((ScrBytes *)h)->shared) return scr_dyn_new_bool(false);
   if (!((ScrBytes *)h)->shared && ((len == 9 && memcmp(key, "resizable", len) == 0) ||
       (len == 8 && memcmp(key, "detached", len) == 0))) return scr_dyn_new_bool(false);
+  if (len == 11 && !memcmp(key, "constructor", len) && !((ScrBytes *)h)->shared)
+    return scr_array_buffer_constructor();
   return NULL;
 }
 
