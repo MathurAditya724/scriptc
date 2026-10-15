@@ -6234,7 +6234,67 @@ typedef enum ScrDigestAlg {
   SCR_DIGEST_SHA256,
   SCR_DIGEST_SHA384,
   SCR_DIGEST_SHA512,
+  SCR_DIGEST_SHA256_192,
+  SCR_DIGEST_SHA512_224,
+  SCR_DIGEST_SHA512_256,
+  SCR_DIGEST_SHA3_224,
+  SCR_DIGEST_SHA3_256,
+  SCR_DIGEST_SHA3_384,
+  SCR_DIGEST_SHA3_512,
+  SCR_DIGEST_KECCAK_224,
+  SCR_DIGEST_KECCAK_256,
+  SCR_DIGEST_KECCAK_384,
+  SCR_DIGEST_KECCAK_512,
+  SCR_DIGEST_SHAKE128,
+  SCR_DIGEST_SHAKE256,
+  SCR_DIGEST_KECCAK_KMAC128,
+  SCR_DIGEST_KECCAK_KMAC256,
+  SCR_DIGEST_RIPEMD160,
+  SCR_DIGEST_BLAKE2B512,
+  SCR_DIGEST_BLAKE2S256,
+  SCR_DIGEST_SM3,
+  SCR_DIGEST_MD5_SHA1,
 } ScrDigestAlg;
+
+/* Per algorithm: digest bytes (an XOF's default output length), HMAC
+ * block bytes, and for the Keccak family its sponge rate and domain
+ * padding. */
+typedef struct {
+  unsigned char size;
+  unsigned char block;
+  unsigned char rate;
+  unsigned char pad;
+  bool xof;
+} ScrDigestInfo;
+
+static const ScrDigestInfo scr_digest_info[] = {
+    [SCR_DIGEST_MD5] = {16, 64, 0, 0, false},
+    [SCR_DIGEST_SHA1] = {20, 64, 0, 0, false},
+    [SCR_DIGEST_SHA224] = {28, 64, 0, 0, false},
+    [SCR_DIGEST_SHA256] = {32, 64, 0, 0, false},
+    [SCR_DIGEST_SHA384] = {48, 128, 0, 0, false},
+    [SCR_DIGEST_SHA512] = {64, 128, 0, 0, false},
+    [SCR_DIGEST_SHA256_192] = {24, 64, 0, 0, false},
+    [SCR_DIGEST_SHA512_224] = {28, 128, 0, 0, false},
+    [SCR_DIGEST_SHA512_256] = {32, 128, 0, 0, false},
+    [SCR_DIGEST_SHA3_224] = {28, 144, 144, 0x06, false},
+    [SCR_DIGEST_SHA3_256] = {32, 136, 136, 0x06, false},
+    [SCR_DIGEST_SHA3_384] = {48, 104, 104, 0x06, false},
+    [SCR_DIGEST_SHA3_512] = {64, 72, 72, 0x06, false},
+    [SCR_DIGEST_KECCAK_224] = {28, 144, 144, 0x01, false},
+    [SCR_DIGEST_KECCAK_256] = {32, 136, 136, 0x01, false},
+    [SCR_DIGEST_KECCAK_384] = {48, 104, 104, 0x01, false},
+    [SCR_DIGEST_KECCAK_512] = {64, 72, 72, 0x01, false},
+    [SCR_DIGEST_SHAKE128] = {16, 168, 168, 0x1f, true},
+    [SCR_DIGEST_SHAKE256] = {32, 136, 136, 0x1f, true},
+    [SCR_DIGEST_KECCAK_KMAC128] = {32, 168, 168, 0x04, true},
+    [SCR_DIGEST_KECCAK_KMAC256] = {64, 136, 136, 0x04, true},
+    [SCR_DIGEST_RIPEMD160] = {20, 64, 0, 0, false},
+    [SCR_DIGEST_BLAKE2B512] = {64, 128, 0, 0, false},
+    [SCR_DIGEST_BLAKE2S256] = {32, 64, 0, 0, false},
+    [SCR_DIGEST_SM3] = {32, 64, 0, 0, false},
+    [SCR_DIGEST_MD5_SHA1] = {36, 64, 0, 0, false},
+};
 
 typedef struct ScrDigestCtx {
   ScrDigestAlg alg;
@@ -6243,6 +6303,15 @@ typedef struct ScrDigestCtx {
     ScrSha1Ctx sha1;
     ScrSha256Ctx sha256;
     ScrSha512Ctx sha512;
+    ScrKeccakCtx keccak;
+    ScrRipemd160Ctx ripemd160;
+    ScrBlake2bCtx blake2b;
+    ScrBlake2sCtx blake2s;
+    ScrSm3Ctx sm3;
+    struct {
+      ScrMd5Ctx md5;
+      ScrSha1Ctx sha1;
+    } md5_sha1;
   } state;
 } ScrDigestCtx;
 
@@ -6259,14 +6328,150 @@ static bool scr_digest_name_is(const char *name, size_t len, const char *literal
   return true;
 }
 
+/* OpenSSL's names for the digests Node 24 lists in crypto.getHashes(),
+ * with its provider aliases and object identifiers. Lookup is
+ * case-insensitive, like OpenSSL's. */
+#define SCR_DIGEST_NAME(name, alg) {name, sizeof name - 1, alg}
+static const struct {
+  const char *name;
+  unsigned char len;
+  ScrDigestAlg alg;
+} scr_digest_names[] = {
+    /* The names most programs use come first. */
+    SCR_DIGEST_NAME("sha256", SCR_DIGEST_SHA256), SCR_DIGEST_NAME("sha1", SCR_DIGEST_SHA1),
+    SCR_DIGEST_NAME("md5", SCR_DIGEST_MD5), SCR_DIGEST_NAME("sha512", SCR_DIGEST_SHA512),
+    SCR_DIGEST_NAME("sha384", SCR_DIGEST_SHA384), SCR_DIGEST_NAME("sha224", SCR_DIGEST_SHA224),
+    SCR_DIGEST_NAME("ssl3-md5", SCR_DIGEST_MD5), SCR_DIGEST_NAME("rsa-md5", SCR_DIGEST_MD5),
+    SCR_DIGEST_NAME("md5withrsaencryption", SCR_DIGEST_MD5),
+    SCR_DIGEST_NAME("1.2.840.113549.2.5", SCR_DIGEST_MD5),
+    SCR_DIGEST_NAME("sha-1", SCR_DIGEST_SHA1), SCR_DIGEST_NAME("ssl3-sha1", SCR_DIGEST_SHA1),
+    SCR_DIGEST_NAME("rsa-sha1", SCR_DIGEST_SHA1), SCR_DIGEST_NAME("rsa-sha1-2", SCR_DIGEST_SHA1),
+    SCR_DIGEST_NAME("sha1withrsaencryption", SCR_DIGEST_SHA1),
+    SCR_DIGEST_NAME("1.3.14.3.2.26", SCR_DIGEST_SHA1),
+    SCR_DIGEST_NAME("sha-224", SCR_DIGEST_SHA224), SCR_DIGEST_NAME("sha2-224", SCR_DIGEST_SHA224),
+    SCR_DIGEST_NAME("rsa-sha224", SCR_DIGEST_SHA224),
+    SCR_DIGEST_NAME("sha224withrsaencryption", SCR_DIGEST_SHA224),
+    SCR_DIGEST_NAME("2.16.840.1.101.3.4.2.4", SCR_DIGEST_SHA224),
+    SCR_DIGEST_NAME("sha-256", SCR_DIGEST_SHA256), SCR_DIGEST_NAME("sha2-256", SCR_DIGEST_SHA256),
+    SCR_DIGEST_NAME("rsa-sha256", SCR_DIGEST_SHA256),
+    SCR_DIGEST_NAME("sha256withrsaencryption", SCR_DIGEST_SHA256),
+    SCR_DIGEST_NAME("2.16.840.1.101.3.4.2.1", SCR_DIGEST_SHA256),
+    SCR_DIGEST_NAME("sha256-192", SCR_DIGEST_SHA256_192),
+    SCR_DIGEST_NAME("sha-256/192", SCR_DIGEST_SHA256_192),
+    SCR_DIGEST_NAME("sha2-256/192", SCR_DIGEST_SHA256_192),
+    SCR_DIGEST_NAME("sha-384", SCR_DIGEST_SHA384), SCR_DIGEST_NAME("sha2-384", SCR_DIGEST_SHA384),
+    SCR_DIGEST_NAME("rsa-sha384", SCR_DIGEST_SHA384),
+    SCR_DIGEST_NAME("sha384withrsaencryption", SCR_DIGEST_SHA384),
+    SCR_DIGEST_NAME("2.16.840.1.101.3.4.2.2", SCR_DIGEST_SHA384),
+    SCR_DIGEST_NAME("sha-512", SCR_DIGEST_SHA512), SCR_DIGEST_NAME("sha2-512", SCR_DIGEST_SHA512),
+    SCR_DIGEST_NAME("rsa-sha512", SCR_DIGEST_SHA512),
+    SCR_DIGEST_NAME("sha512withrsaencryption", SCR_DIGEST_SHA512),
+    SCR_DIGEST_NAME("2.16.840.1.101.3.4.2.3", SCR_DIGEST_SHA512),
+    SCR_DIGEST_NAME("sha512-224", SCR_DIGEST_SHA512_224),
+    SCR_DIGEST_NAME("sha-512/224", SCR_DIGEST_SHA512_224),
+    SCR_DIGEST_NAME("sha2-512/224", SCR_DIGEST_SHA512_224),
+    SCR_DIGEST_NAME("rsa-sha512/224", SCR_DIGEST_SHA512_224),
+    SCR_DIGEST_NAME("sha512-224withrsaencryption", SCR_DIGEST_SHA512_224),
+    SCR_DIGEST_NAME("2.16.840.1.101.3.4.2.5", SCR_DIGEST_SHA512_224),
+    SCR_DIGEST_NAME("sha512-256", SCR_DIGEST_SHA512_256),
+    SCR_DIGEST_NAME("sha-512/256", SCR_DIGEST_SHA512_256),
+    SCR_DIGEST_NAME("sha2-512/256", SCR_DIGEST_SHA512_256),
+    SCR_DIGEST_NAME("rsa-sha512/256", SCR_DIGEST_SHA512_256),
+    SCR_DIGEST_NAME("sha512-256withrsaencryption", SCR_DIGEST_SHA512_256),
+    SCR_DIGEST_NAME("2.16.840.1.101.3.4.2.6", SCR_DIGEST_SHA512_256),
+    SCR_DIGEST_NAME("sha3-224", SCR_DIGEST_SHA3_224),
+    SCR_DIGEST_NAME("rsa-sha3-224", SCR_DIGEST_SHA3_224),
+    SCR_DIGEST_NAME("id-rsassa-pkcs1-v1_5-with-sha3-224", SCR_DIGEST_SHA3_224),
+    SCR_DIGEST_NAME("2.16.840.1.101.3.4.2.7", SCR_DIGEST_SHA3_224),
+    SCR_DIGEST_NAME("sha3-256", SCR_DIGEST_SHA3_256),
+    SCR_DIGEST_NAME("rsa-sha3-256", SCR_DIGEST_SHA3_256),
+    SCR_DIGEST_NAME("id-rsassa-pkcs1-v1_5-with-sha3-256", SCR_DIGEST_SHA3_256),
+    SCR_DIGEST_NAME("2.16.840.1.101.3.4.2.8", SCR_DIGEST_SHA3_256),
+    SCR_DIGEST_NAME("sha3-384", SCR_DIGEST_SHA3_384),
+    SCR_DIGEST_NAME("rsa-sha3-384", SCR_DIGEST_SHA3_384),
+    SCR_DIGEST_NAME("id-rsassa-pkcs1-v1_5-with-sha3-384", SCR_DIGEST_SHA3_384),
+    SCR_DIGEST_NAME("2.16.840.1.101.3.4.2.9", SCR_DIGEST_SHA3_384),
+    SCR_DIGEST_NAME("sha3-512", SCR_DIGEST_SHA3_512),
+    SCR_DIGEST_NAME("rsa-sha3-512", SCR_DIGEST_SHA3_512),
+    SCR_DIGEST_NAME("id-rsassa-pkcs1-v1_5-with-sha3-512", SCR_DIGEST_SHA3_512),
+    SCR_DIGEST_NAME("2.16.840.1.101.3.4.2.10", SCR_DIGEST_SHA3_512),
+    SCR_DIGEST_NAME("keccak-224", SCR_DIGEST_KECCAK_224),
+    SCR_DIGEST_NAME("keccak-256", SCR_DIGEST_KECCAK_256),
+    SCR_DIGEST_NAME("keccak-384", SCR_DIGEST_KECCAK_384),
+    SCR_DIGEST_NAME("keccak-512", SCR_DIGEST_KECCAK_512),
+    SCR_DIGEST_NAME("shake128", SCR_DIGEST_SHAKE128),
+    SCR_DIGEST_NAME("shake-128", SCR_DIGEST_SHAKE128),
+    SCR_DIGEST_NAME("2.16.840.1.101.3.4.2.11", SCR_DIGEST_SHAKE128),
+    SCR_DIGEST_NAME("shake256", SCR_DIGEST_SHAKE256),
+    SCR_DIGEST_NAME("shake-256", SCR_DIGEST_SHAKE256),
+    SCR_DIGEST_NAME("2.16.840.1.101.3.4.2.12", SCR_DIGEST_SHAKE256),
+    SCR_DIGEST_NAME("keccak-kmac-128", SCR_DIGEST_KECCAK_KMAC128),
+    SCR_DIGEST_NAME("keccak-kmac128", SCR_DIGEST_KECCAK_KMAC128),
+    SCR_DIGEST_NAME("keccak-kmac-256", SCR_DIGEST_KECCAK_KMAC256),
+    SCR_DIGEST_NAME("keccak-kmac256", SCR_DIGEST_KECCAK_KMAC256),
+    SCR_DIGEST_NAME("ripemd160", SCR_DIGEST_RIPEMD160),
+    SCR_DIGEST_NAME("ripemd-160", SCR_DIGEST_RIPEMD160),
+    SCR_DIGEST_NAME("ripemd", SCR_DIGEST_RIPEMD160),
+    SCR_DIGEST_NAME("rmd160", SCR_DIGEST_RIPEMD160),
+    SCR_DIGEST_NAME("rsa-ripemd160", SCR_DIGEST_RIPEMD160),
+    SCR_DIGEST_NAME("ripemd160withrsa", SCR_DIGEST_RIPEMD160),
+    SCR_DIGEST_NAME("1.3.36.3.2.1", SCR_DIGEST_RIPEMD160),
+    SCR_DIGEST_NAME("blake2b512", SCR_DIGEST_BLAKE2B512),
+    SCR_DIGEST_NAME("blake2b-512", SCR_DIGEST_BLAKE2B512),
+    SCR_DIGEST_NAME("1.3.6.1.4.1.1722.12.2.1.16", SCR_DIGEST_BLAKE2B512),
+    SCR_DIGEST_NAME("blake2s256", SCR_DIGEST_BLAKE2S256),
+    SCR_DIGEST_NAME("blake2s-256", SCR_DIGEST_BLAKE2S256),
+    SCR_DIGEST_NAME("1.3.6.1.4.1.1722.12.2.2.8", SCR_DIGEST_BLAKE2S256),
+    SCR_DIGEST_NAME("sm3", SCR_DIGEST_SM3), SCR_DIGEST_NAME("rsa-sm3", SCR_DIGEST_SM3),
+    SCR_DIGEST_NAME("sm3withrsaencryption", SCR_DIGEST_SM3),
+    SCR_DIGEST_NAME("1.2.156.10197.1.401", SCR_DIGEST_SM3),
+    SCR_DIGEST_NAME("md5-sha1", SCR_DIGEST_MD5_SHA1),
+};
+#undef SCR_DIGEST_NAME
+
+/* The RSA signature aliases resolve through OpenSSL's object table, which
+ * needs an exact match; the provider names and object identifiers also
+ * match with trailing spaces. */
+static bool scr_digest_name_exact_only(const char *literal) {
+  size_t n = strlen(literal);
+  static const char suffix[] = "withrsaencryption";
+  return strncmp(literal, "rsa-", 4) == 0 || strncmp(literal, "id-rsassa-", 10) == 0 ||
+         strcmp(literal, "ripemd160withrsa") == 0 ||
+         (n > sizeof suffix - 1 && strcmp(literal + n - (sizeof suffix - 1), suffix) == 0);
+}
+
+/* Node passes the name to OpenSSL as a C string, so it ends at the first
+ * NUL. Node maps "dss1" and "DSS1" to SHA-1 before the lookup. */
 static bool scr_digest_alg(const char *name, size_t len, ScrDigestAlg *out) {
-  if (scr_digest_name_is(name, len, "md5")) *out = SCR_DIGEST_MD5;
-  else if (scr_digest_name_is(name, len, "sha1")) *out = SCR_DIGEST_SHA1;
-  else if (scr_digest_name_is(name, len, "sha224")) *out = SCR_DIGEST_SHA224;
-  else if (scr_digest_name_is(name, len, "sha256")) *out = SCR_DIGEST_SHA256;
-  else if (scr_digest_name_is(name, len, "sha384")) *out = SCR_DIGEST_SHA384;
-  else if (scr_digest_name_is(name, len, "sha512")) *out = SCR_DIGEST_SHA512;
-  else return false;
+  const char *nul = memchr(name, '\0', len);
+  if (nul) len = (size_t)(nul - name);
+  if ((len == 4 && memcmp(name, "dss1", 4) == 0) || (len == 4 && memcmp(name, "DSS1", 4) == 0)) {
+    *out = SCR_DIGEST_SHA1;
+    return true;
+  }
+  size_t trimmed = len;
+  while (trimmed > 0 && name[trimmed - 1] == ' ') trimmed--;
+  for (size_t i = 0; i < sizeof scr_digest_names / sizeof scr_digest_names[0]; i++) {
+    size_t n = scr_digest_names[i].len;
+    if (n != len && n != trimmed) continue;
+    const char *literal = scr_digest_names[i].name;
+    if (scr_digest_name_is(name, len, literal) ||
+        (trimmed != len && scr_digest_name_is(name, trimmed, literal) &&
+         !scr_digest_name_exact_only(literal))) {
+      *out = scr_digest_names[i].alg;
+      return true;
+    }
+  }
+  return false;
+}
+
+/* createHash() and crypto.hash() also accept "dss1" in any case. */
+static bool scr_hash_alg(const char *name, size_t len, ScrDigestAlg *out) {
+  if (scr_digest_alg(name, len, out)) return true;
+  const char *nul = memchr(name, '\0', len);
+  if (nul) len = (size_t)(nul - name);
+  if (!scr_digest_name_is(name, len, "dss1")) return false;
+  *out = SCR_DIGEST_SHA1;
   return true;
 }
 
@@ -6283,9 +6488,34 @@ static void scr_digest_init(ScrDigestCtx *ctx, ScrDigestAlg alg) {
       memcpy(ctx->state.sha256.h, initial, sizeof initial);
       break;
     }
-    case SCR_DIGEST_SHA256: scr_sha256_init(&ctx->state.sha256); break;
+    case SCR_DIGEST_SHA256:
+    case SCR_DIGEST_SHA256_192: scr_sha256_init(&ctx->state.sha256); break;
     case SCR_DIGEST_SHA384: scr_sha512_init(&ctx->state.sha512, true); break;
     case SCR_DIGEST_SHA512: scr_sha512_init(&ctx->state.sha512, false); break;
+    case SCR_DIGEST_SHA512_224:
+    case SCR_DIGEST_SHA512_256: {
+      /* FIPS 180-4 section 5.3.6's SHA-512/t initial values. */
+      static const uint64_t iv224[8] = {
+          0x8c3d37c819544da2ULL, 0x73e1996689dcd4d6ULL, 0x1dfab7ae32ff9c82ULL, 0x679dd514582f9fcfULL,
+          0x0f6d2b697bd44da8ULL, 0x77e36f7304c48942ULL, 0x3f9d85a86a1d36c8ULL, 0x1112e6ad91d692a1ULL};
+      static const uint64_t iv256[8] = {
+          0x22312194fc2bf72cULL, 0x9f555fa3c84c64c2ULL, 0x2393b86b6f53b151ULL, 0x963877195940eabdULL,
+          0x96283ee2a88effe3ULL, 0xbe5e1e2553863992ULL, 0x2b0199fc2c85b8aaULL, 0x0eb72ddc81c52ca2ULL};
+      scr_sha512_init(&ctx->state.sha512, false);
+      memcpy(ctx->state.sha512.h, alg == SCR_DIGEST_SHA512_224 ? iv224 : iv256, sizeof iv224);
+      break;
+    }
+    case SCR_DIGEST_RIPEMD160: scr_ripemd160_init(&ctx->state.ripemd160); break;
+    case SCR_DIGEST_BLAKE2B512: scr_blake2b_init(&ctx->state.blake2b); break;
+    case SCR_DIGEST_BLAKE2S256: scr_blake2s_init(&ctx->state.blake2s); break;
+    case SCR_DIGEST_SM3: scr_sm3_init(&ctx->state.sm3); break;
+    case SCR_DIGEST_MD5_SHA1:
+      scr_md5_init(&ctx->state.md5_sha1.md5);
+      scr_sha1_init(&ctx->state.md5_sha1.sha1);
+      break;
+    default: /* the Keccak family */
+      scr_keccak_init(&ctx->state.keccak, scr_digest_info[alg].rate, scr_digest_info[alg].pad);
+      break;
   }
 }
 
@@ -6294,9 +6524,21 @@ static void scr_digest_update(ScrDigestCtx *ctx, const unsigned char *data, size
     case SCR_DIGEST_MD5: scr_md5_update(&ctx->state.md5, data, len); break;
     case SCR_DIGEST_SHA1: scr_sha1_update(&ctx->state.sha1, data, len); break;
     case SCR_DIGEST_SHA224:
-    case SCR_DIGEST_SHA256: scr_sha256_update(&ctx->state.sha256, data, len); break;
+    case SCR_DIGEST_SHA256:
+    case SCR_DIGEST_SHA256_192: scr_sha256_update(&ctx->state.sha256, data, len); break;
     case SCR_DIGEST_SHA384:
-    case SCR_DIGEST_SHA512: scr_sha512_update(&ctx->state.sha512, data, len); break;
+    case SCR_DIGEST_SHA512:
+    case SCR_DIGEST_SHA512_224:
+    case SCR_DIGEST_SHA512_256: scr_sha512_update(&ctx->state.sha512, data, len); break;
+    case SCR_DIGEST_RIPEMD160: scr_ripemd160_update(&ctx->state.ripemd160, data, len); break;
+    case SCR_DIGEST_BLAKE2B512: scr_blake2b_update(&ctx->state.blake2b, data, len); break;
+    case SCR_DIGEST_BLAKE2S256: scr_blake2s_update(&ctx->state.blake2s, data, len); break;
+    case SCR_DIGEST_SM3: scr_sm3_update(&ctx->state.sm3, data, len); break;
+    case SCR_DIGEST_MD5_SHA1:
+      scr_md5_update(&ctx->state.md5_sha1.md5, data, len);
+      scr_sha1_update(&ctx->state.md5_sha1.sha1, data, len);
+      break;
+    default: scr_keccak_update(&ctx->state.keccak, data, len); break;
   }
 }
 
@@ -6306,21 +6548,42 @@ static size_t scr_digest_final(const ScrDigestCtx *ctx, unsigned char out[64]) {
     case SCR_DIGEST_SHA1: return scr_sha1_final(&ctx->state.sha1, out);
     case SCR_DIGEST_SHA224: scr_sha256_final(&ctx->state.sha256, out); return 28;
     case SCR_DIGEST_SHA256: return scr_sha256_final(&ctx->state.sha256, out);
+    case SCR_DIGEST_SHA256_192: scr_sha256_final(&ctx->state.sha256, out); return 24;
     case SCR_DIGEST_SHA384: return scr_sha512_final(&ctx->state.sha512, out, true);
     case SCR_DIGEST_SHA512: return scr_sha512_final(&ctx->state.sha512, out, false);
+    case SCR_DIGEST_SHA512_224: scr_sha512_final(&ctx->state.sha512, out, false); return 28;
+    case SCR_DIGEST_SHA512_256: scr_sha512_final(&ctx->state.sha512, out, false); return 32;
+    case SCR_DIGEST_RIPEMD160: scr_ripemd160_final(&ctx->state.ripemd160, out); return 20;
+    case SCR_DIGEST_BLAKE2B512: scr_blake2b_final(&ctx->state.blake2b, out); return 64;
+    case SCR_DIGEST_BLAKE2S256: scr_blake2s_final(&ctx->state.blake2s, out); return 32;
+    case SCR_DIGEST_SM3: scr_sm3_final(&ctx->state.sm3, out); return 32;
+    case SCR_DIGEST_MD5_SHA1:
+      scr_md5_final(&ctx->state.md5_sha1.md5, out);
+      scr_sha1_final(&ctx->state.md5_sha1.sha1, out + 16);
+      return 36;
+    default:
+      scr_keccak_final(&ctx->state.keccak, out, scr_digest_info[ctx->alg].size);
+      return scr_digest_info[ctx->alg].size;
   }
   return 0;
 }
 
 static void scr_crypto_zero(void *ptr, size_t len) {
+#if defined(__GNUC__) || defined(__clang__)
+  /* The empty asm takes the pointer and clobbers memory, so the compiler
+   * keeps the memset of storage that is not read again. */
+  memset(ptr, 0, len);
+  __asm__ __volatile__("" : : "r"(ptr) : "memory");
+#else
   volatile unsigned char *p = ptr;
   while (len-- != 0) *p++ = 0;
+#endif
 }
 
 static void scr_hmac_init(ScrDigestCtx *inner, ScrDigestCtx *outer, ScrDigestAlg alg,
                           const unsigned char *key, size_t keylen) {
-  unsigned char kblock[128] = {0};
-  size_t block_len = alg == SCR_DIGEST_SHA384 || alg == SCR_DIGEST_SHA512 ? 128 : 64;
+  unsigned char kblock[168] = {0};
+  size_t block_len = scr_digest_info[alg].block;
   unsigned char kd[64];
   if (keylen > block_len) {
     ScrDigestCtx key_hash;
@@ -6333,8 +6596,8 @@ static void scr_hmac_init(ScrDigestCtx *inner, ScrDigestCtx *outer, ScrDigestAlg
   } else if (keylen != 0) {
     memcpy(kblock, key, keylen);
   }
-  unsigned char ipad[128];
-  unsigned char opad[128];
+  unsigned char ipad[168];
+  unsigned char opad[168];
   for (size_t i = 0; i < block_len; i++) {
     ipad[i] = (unsigned char)(kblock[i] ^ 0x36);
     opad[i] = (unsigned char)(kblock[i] ^ 0x5c);
@@ -6429,6 +6692,15 @@ static void scr_crypto_hash_digest_unsupported(const ScrStr *alg) {
   free(msg);
 }
 
+/* OpenSSL refuses an XOF as HMAC's digest without queueing an error, and
+ * Node reports that as its empty-error message. */
+static bool scr_crypto_hmac_digest_ok(ScrDigestAlg alg) {
+  if (!scr_digest_info[alg].xof) return true;
+  static const char msg[] = "error:00000000:lib(0)::reason(0)";
+  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  return false;
+}
+
 static void scr_crypto_hash_finalized(void) {
   static const char msg[] = "Digest already called";
   scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1,
@@ -6448,7 +6720,7 @@ static ScrCryptoHash *scr_crypto_hash_alloc(ScrDigestAlg alg, bool hmac,
 
 ScrCryptoHash *scr_crypto_hash_new(ScrStr *alg) {
   ScrDigestAlg kind;
-  if (!scr_digest_alg(alg->data, alg->len, &kind)) {
+  if (!scr_hash_alg(alg->data, alg->len, &kind)) {
     scr_crypto_digest_unsupported();
     return NULL;
   }
@@ -6461,6 +6733,7 @@ ScrCryptoHash *scr_crypto_hmac_new_str(ScrStr *alg, ScrStr *key) {
     scr_crypto_invalid_digest(alg);
     return NULL;
   }
+  if (!scr_crypto_hmac_digest_ok(kind)) return NULL;
   char *owned;
   const char *bytes = scr_str_utf8(key, &owned);
   ScrCryptoHash *r = scr_crypto_hash_alloc(kind, true, (const unsigned char *)bytes, key->len);
@@ -6475,6 +6748,7 @@ ScrCryptoHash *scr_crypto_hmac_new_bytes(ScrStr *alg, ScrBytes *key) {
     scr_crypto_invalid_digest(alg);
     return NULL;
   }
+  if (!scr_crypto_hmac_digest_ok(kind)) return NULL;
   return scr_crypto_hash_alloc(kind, true, key->data,
                                key->len * scr_bytes_elem_size(key->elem));
 }
@@ -6565,7 +6839,7 @@ ScrBytes *scr_crypto_hash_digest_buffer(ScrCryptoHash *hash) {
 static ScrStr *scr_hash_digest_raw(const ScrStr *alg, const unsigned char *data, size_t len,
                                     const ScrStr *enc) {
   ScrDigestAlg kind;
-  if (!scr_digest_alg(alg->data, alg->len, &kind)) {
+  if (!scr_hash_alg(alg->data, alg->len, &kind)) {
     scr_crypto_hash_digest_unsupported(alg);
     return NULL;
   }
@@ -6708,19 +6982,22 @@ static ScrBytes *scr_crypto_pbkdf2_raw(const unsigned char *password, size_t pas
   if (!block) scr_trap("scriptc: out of memory\n");
   memcpy(block, salt, salt_len);
   size_t blocks = (keylen + digest_len - 1) / digest_len;
+  /* The keyed inner and outer states are computed once and copied for
+   * each HMAC. */
+  ScrDigestCtx keyed_inner, outer, inner;
+  scr_hmac_init(&keyed_inner, &outer, alg, password, password_len);
   for (size_t index = 1; index <= blocks; index++) {
     block[salt_len] = (unsigned char)(index >> 24);
     block[salt_len + 1] = (unsigned char)(index >> 16);
     block[salt_len + 2] = (unsigned char)(index >> 8);
     block[salt_len + 3] = (unsigned char)index;
-    ScrDigestCtx inner, outer;
     unsigned char u[64], accum[64];
-    scr_hmac_init(&inner, &outer, alg, password, password_len);
+    inner = keyed_inner;
     scr_digest_update(&inner, block, salt_len + 4);
     scr_hmac_final(&inner, &outer, u);
     memcpy(accum, u, digest_len);
     for (uint32_t round = 1; round < iterations; round++) {
-      scr_hmac_init(&inner, &outer, alg, password, password_len);
+      inner = keyed_inner;
       scr_digest_update(&inner, u, digest_len);
       scr_hmac_final(&inner, &outer, u);
       for (size_t i = 0; i < digest_len; i++) accum[i] ^= u[i];
@@ -6728,18 +7005,24 @@ static ScrBytes *scr_crypto_pbkdf2_raw(const unsigned char *password, size_t pas
     size_t offset = (index - 1) * digest_len;
     size_t take = keylen - offset < digest_len ? keylen - offset : digest_len;
     memcpy(result->data + offset, accum, take);
-    scr_crypto_zero(&inner, sizeof inner);
-    scr_crypto_zero(&outer, sizeof outer);
     scr_crypto_zero(u, sizeof u);
     scr_crypto_zero(accum, sizeof accum);
   }
+  scr_crypto_zero(&keyed_inner, sizeof keyed_inner);
+  scr_crypto_zero(&inner, sizeof inner);
+  scr_crypto_zero(&outer, sizeof outer);
   scr_crypto_zero(block, salt_len + 4);
   free(block);
   return result;
 }
 
-ScrBytes *scr_crypto_pbkdf2(ScrBytes *password, ScrBytes *salt,
-                            double iterations, double keylen, ScrStr *digest) {
+/* Argument errors throw. A job that fails, as Node's PBKDF2 job does for
+ * an empty key or an XOF digest, returns NULL and sets `failure`, which
+ * the synchronous form throws and the callback form passes to the
+ * callback. */
+ScrBytes *scr_crypto_pbkdf2_job(ScrBytes *password, ScrBytes *salt, double iterations,
+                                double keylen, ScrStr *digest, const char **failure) {
+  *failure = NULL;
   SCR_BYTES_SNAPSHOT(password);
   SCR_BYTES_SNAPSHOT(salt);
   if (!isfinite(iterations) || floor(iterations) != iterations ||
@@ -6766,10 +7049,26 @@ ScrBytes *scr_crypto_pbkdf2(ScrBytes *password, ScrBytes *salt,
     scr_crypto_invalid_digest(digest);
     return NULL;
   }
+  if (keylen == 0) {
+    *failure = "Deriving bits failed";
+    return NULL;
+  }
+  if (scr_digest_info[alg].xof) {
+    *failure = "error:1C8000B7:Provider routines::xof digests not allowed";
+    return NULL;
+  }
   return scr_crypto_pbkdf2_raw(password->data,
       password->len * scr_bytes_elem_size(password->elem), salt->data,
       salt->len * scr_bytes_elem_size(salt->elem), (uint32_t)iterations,
       (size_t)keylen, alg);
+}
+
+ScrBytes *scr_crypto_pbkdf2(ScrBytes *password, ScrBytes *salt,
+                            double iterations, double keylen, ScrStr *digest) {
+  const char *failure;
+  ScrBytes *result = scr_crypto_pbkdf2_job(password, salt, iterations, keylen, digest, &failure);
+  if (failure) scr_throw_error_msg(SCR_ERR_ERROR, failure, strlen(failure));
+  return result;
 }
 
 /* RFC 5869 HKDF and RFC 7914 scrypt share the digest core in both
@@ -6830,6 +7129,14 @@ ScrBytes *scr_crypto_hkdf_bytes(ScrStr *digest, ScrBytes *ikm, ScrBytes *salt,
     scr_crypto_zero(&outer, sizeof outer);
     scr_throw_error_msg_code(SCR_ERR_RANGE, "Invalid key length", 18, "ERR_CRYPTO_INVALID_KEYLEN");
     return NULL;
+  }
+  if (scr_digest_info[alg].xof) {
+    /* OpenSSL's HKDF refuses an XOF; callers report the empty result as
+     * Node's "Deriving bits failed". */
+    scr_crypto_zero(prk, sizeof prk);
+    scr_crypto_zero(&inner, sizeof inner);
+    scr_crypto_zero(&outer, sizeof outer);
+    return scr_bytes_new(SCR_BYTES_U8, 0);
   }
   ScrBytes *result = scr_bytes_new(SCR_BYTES_U8, keylen);
   size_t offset = 0, previous_len = 0;

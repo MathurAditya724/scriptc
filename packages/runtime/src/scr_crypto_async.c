@@ -15,12 +15,18 @@ void scr_crypto_random_bytes_async(double size, ScrClosure *cb, ScrCryptoBytesFn
 void scr_crypto_pbkdf2_async(ScrBytes *password, ScrBytes *salt,
                              double iterations, double keylen, ScrStr *digest,
                              ScrClosure *cb, ScrCryptoBytesFn fn) {
-  ScrBytes *value = scr_crypto_pbkdf2(password, salt, iterations, keylen, digest);
+  const char *failure;
+  ScrBytes *value = scr_crypto_pbkdf2_job(password, salt, iterations, keylen, digest, &failure);
   if (scr_exc_pending()) {
     scr_closure_release(cb);
     return;
   }
-  scr_crypto_defer_bytes(value, NULL, cb, fn);
+  if (failure) {
+    ScrStr *message = scr_str_new(failure, strlen(failure));
+    ScrError *error = scr_error_new(SCR_ERR_ERROR, message);
+    scr_str_release(message);
+    scr_crypto_defer_bytes(NULL, error, cb, fn);
+  } else scr_crypto_defer_bytes(value, NULL, cb, fn);
 }
 
 void scr_crypto_hkdf_async(ScrStr *digest, ScrBytes *ikm, ScrBytes *salt,

@@ -66,6 +66,16 @@ static void scr_stream_oom(void) {
   abort();
 }
 
+/* Byte chunks the stream creates (from string chunks, Buffer.from(chunk,
+ * encoding), or the concatenation read(n) returns, Buffer.concat) are
+ * Buffers in Node, so user code that receives them sees a Buffer. Takes
+ * fresh storage the stream owns; returns it. */
+static ScrBytes *scr_stream_buffer(ScrBytes *b) {
+  b->is_buffer = true;
+  b->is_data_view = false;
+  return b;
+}
+
 /* ── state ────────────────────────────────────────────────────────────── */
 
 typedef struct ScrWEntry {
@@ -527,7 +537,7 @@ static void *scr_stream_rbuf_take(ScrStreamState *st, size_t n) {
     st->r.length -= n;
     return out;
   }
-  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)n);
+  ScrBytes *out = scr_stream_buffer(scr_bytes_new(SCR_BYTES_U8, (double)n));
   size_t at = 0;
   while (at < n) {
     ScrBytes *head = st->r.buf[0];
@@ -4256,6 +4266,7 @@ bool scr_stream_push_str(ScrStream *s, ScrStr *str) {
     memcpy(b->data, str->data, str->len);
     if (!str->ascii) scr_wtf8_to_utf8((char *)b->data, str->len);
   }
+  scr_stream_buffer(b);
   bool ret = scr_stream_add_chunk(s, b, false);
   scr_bytes_release(b);
   return ret;
@@ -4264,7 +4275,7 @@ bool scr_stream_push_str(ScrStream *s, ScrStr *str) {
 /* push(chunk, encoding) with an explicit non-utf8 literal: the per-call
  * encoding overrides the stream's default. Borrows both strings. */
 bool scr_stream_push_str_enc(ScrStream *s, ScrStr *str, ScrStr *enc) {
-  ScrBytes *b = scr_bytes_from_str(str, enc);
+  ScrBytes *b = scr_stream_buffer(scr_bytes_from_str(str, enc));
   bool ret = scr_stream_add_chunk(s, b, false);
   scr_bytes_release(b);
   return ret;
@@ -4330,6 +4341,7 @@ void scr_stream_unshift_str(ScrStream *s, ScrStr *str) {
   ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)str->len);
   memcpy(b->data, str->data, str->len);
   if (!str->ascii) scr_wtf8_to_utf8((char *)b->data, str->len);
+  scr_stream_buffer(b);
   scr_stream_unshift(s, b);
   scr_bytes_release(b);
 }
@@ -4585,6 +4597,7 @@ bool scr_stream_write_str(ScrStream *s, ScrStr *str, ScrClosure *cb) {
   ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)str->len);
   memcpy(b->data, str->data, str->len);
   if (!str->ascii) scr_wtf8_to_utf8((char *)b->data, str->len);
+  scr_stream_buffer(b);
   bool ret = scr_stream_write_chunk(s, b, cb);
   scr_bytes_release(b);
   return ret;
@@ -4723,6 +4736,7 @@ void scr_stream_transform_done(ScrStream *s, ScrError *err /*moves*/, ScrBytes *
       ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)data_str->len);
       memcpy(b->data, data_str->data, data_str->len);
       if (!data_str->ascii) scr_wtf8_to_utf8((char *)b->data, data_str->len);
+      scr_stream_buffer(b);
       scr_stream_add_chunk(s, b, false);
       scr_bytes_release(b);
     }
@@ -4754,6 +4768,7 @@ void scr_stream_flush_done(ScrStream *s, ScrError *err /*moves*/, ScrBytes *data
     ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)data_str->len);
     memcpy(b->data, data_str->data, data_str->len);
     if (!data_str->ascii) scr_wtf8_to_utf8((char *)b->data, data_str->len);
+    scr_stream_buffer(b);
     scr_stream_add_chunk(s, b, false);
     scr_bytes_release(b);
     scr_str_release(data_str);

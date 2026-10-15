@@ -93,6 +93,17 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "event.get": { argTypes: [null, STRING], result: DYN },
   "event.set": { argTypes: [null, STRING, DYN], result: VOID },
   "events.addAbortListener": { argTypes: [DYN, DYN], result: DYN },
+  /** Blob / File (scr_blob.c): the constructors and slice() take their
+   * argument vector as one dyn array and throw Node's validation errors;
+   * the readers settle on Node's microtask turn for the Blob's parts.
+   * `blob.is` is `v instanceof Blob` (kind 0) or `File` (1). */
+  "blob.new": { argTypes: [DYN], result: DYN },
+  "blob.fileNew": { argTypes: [DYN], result: DYN },
+  "blob.slice": { argTypes: [DYN, DYN], result: DYN },
+  "blob.text": { argTypes: [DYN], result: { kind: "promise", inner: STRING } },
+  "blob.bytes": { argTypes: [DYN], result: { kind: "promise", inner: BYTES_U8 } },
+  "blob.arrayBuffer": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "blob.is": { argTypes: [DYN, F64], result: BOOL },
   "abort.timeout": { argTypes: [DYN], result: DYN },
   "abort.now": { argTypes: [DYN], result: DYN },
   "abort.any": { argTypes: [DYN], result: DYN },
@@ -2874,6 +2885,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.seal": { argTypes: [DYN], result: DYN },
   "dyn.isSealed": { argTypes: [DYN], result: BOOL },
   "dyn.objValues": { argTypes: [DYN], result: DYN },
+  /** Object.values as a native vector of checked values, for results the
+   * program consumes directly (for-of, index reads, read-only methods). */
+  "dyn.objValueList": { argTypes: [DYN], result: arrayOf(DYN) },
   "dyn.objEntries": { argTypes: [DYN], result: DYN },
   /** structuredClone over the checked-dynamic tree (scr_json.c): the JSON-safe subset plus
    * bytes (a fresh copy — a Buffer clones as a plain Uint8Array, like

@@ -178,7 +178,7 @@ import { ReferenceEffects } from "./reference-effects.js";
 import { ReferenceWrites, type Writes } from "./reference-writes.js";
 import { LlvmDebugInfo } from "./debug-info.js";
 import { StackCallbacks } from "./stack-callbacks.js";
-import { findLoopArrayBorrows } from "./loop-array-borrows.js";
+import { dynHoleRead, findLoopArrayBorrows } from "./loop-array-borrows.js";
 import { findAppendedArrayLiterals } from "./appended-array-literals.js";
 import { AmbientReceiverReaders, findConstantCallbacks } from "./constant-callbacks.js";
 import {
@@ -5662,6 +5662,7 @@ export class LlEmitter {
             this.referenceEffects,
             this.optionalArrayReads,
             this.referenceWrites,
+            this.fnByName,
           )
         : new Set();
     this.localArrayReads = findLocalArrayReads(
@@ -6000,6 +6001,11 @@ export class LlEmitter {
     // hot instances out of line once they have many callers: every read pays
     // a call, and an integer index converts to a double and back across it.
     if (fn.name.startsWith("%arr.idxOr.")) attrs = `inlinehint ${attrs}`;
+    // Interface dispatch is a few key tests and direct calls ahead of the
+    // checked dynamic call. Keeping that fallback out of line leaves the
+    // tests small enough to inline at each call site.
+    if (fn.name.startsWith("%dyn.class.protocol.fallback.")) attrs = `noinline ${attrs}`;
+    else if (fn.name.startsWith("%dyn.class.protocol.")) attrs = `inlinehint ${attrs}`;
     const debug = this.debugScope === null ? "" : ` !dbg ${this.debugScope}`;
     const symbol = borrowed ? mangleBorrowedFunction(fn.name) : mangleFunction(fn.name);
     let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${debug} { ; ${fn.name}\n${B.render()}\n}`;
@@ -6223,6 +6229,9 @@ export class LlEmitter {
    * Other writable bindings need an owned snapshot. */
   canBorrowCallArgument(value: IrExpr): boolean {
     if (value.kind === "strLit") return true;
+    // An exact capsule owns its instance while the capsule's binding holds it.
+    if (value.kind === "dynCheck" && value.exact)
+      return value.value.kind === "varRef" && this.canBorrowCallArgument(value.value);
     // An inline union field has no box to lend.
     if (this.inlineFieldGet(value)) return false;
     // Class casts reinterpret the same pointer (prefix layouts).
@@ -6739,6 +6748,26 @@ export class LlEmitter {
         }
         if (this.loopArrayBorrows.has(s) && s.init.kind === "arrayGet") {
           emitBorrowedArrayRead(this, s.init, b.slot);
+          break;
+        }
+        const holeRead = this.loopArrayBorrows.has(s) ? dynHoleRead(s.init) : null;
+        if (holeRead && s.init.kind === "ternary") {
+          // A hole reads as the immortal undefined value, which needs no owner.
+          const present = this.emitExpr(s.init.cond);
+          const filled = B.newLabel("borrow.hole.filled"),
+            missing = B.newLabel("borrow.hole.missing"),
+            done = B.newLabel("borrow.hole.done");
+          B.condBr(present.name, filled, missing);
+          B.startBlock(filled);
+          emitBorrowedArrayRead(this, holeRead, b.slot);
+          B.br(done);
+          B.startBlock(missing);
+          this.declare("declare ptr @scr_dyn_undefined()");
+          const undef = B.tmp();
+          B.line(`${undef} = call ptr @scr_dyn_undefined()`);
+          B.line(`store ptr ${undef}, ptr ${b.slot}`);
+          B.br(done);
+          B.startBlock(done);
           break;
         }
         // A stable lexical alias cannot outlive its unchanged local owner.
@@ -8686,6 +8715,7 @@ export class LlEmitter {
       this.B.line(`${value} = load ptr, ptr ${binding.slot}`);
       return { name: value, type: e.type };
     }
+    if (e.kind === "dynCheck" && e.exact) return this.emitExactCapsuleObject(e.value, e.type);
     if (e.kind === "chainRecv") {
       // The chain's bind slot holds its receiver unchanged until the body
       // finishes, owned by the slot itself or by the chain's receiver.
@@ -8981,6 +9011,18 @@ export class LlEmitter {
       this.localArrayReads.has(localId) ||
       this.mapReadLifetimes.locals.has(localId)
     );
+  }
+
+  /** The instance of a capsule known to hold exactly this class (borrowed). */
+  emitExactCapsuleObject(value: IrExpr, type: IrType): LlValue {
+    const capsule = this.emitReadReceiver(value);
+    const slot = this.B.tmp();
+    const object = this.B.tmp();
+    this.B.line(
+      `${slot} = getelementptr inbounds i8, ptr ${capsule.name}, i64 16 ; ->v.typed_ref.ptr`,
+    );
+    this.B.line(`${object} = load ptr, ptr ${slot}`);
+    return { name: object, type };
   }
 
   canBorrowReceiver(e: IrExpr): boolean {

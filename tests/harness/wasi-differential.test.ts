@@ -159,6 +159,12 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5137-events-error-monitor-computed-name.js",
     "5138-events-error-monitor-shared-listener.ts",
     "5139-event-target-listener-throw.ts",
+    // The digest set beyond SHA-1/SHA-2, its names, HMAC and the KDFs.
+    "5435-crypto-hash-algorithms.ts",
+    "5436-crypto-hash-names.js",
+    "5437-crypto-hmac-algorithms.ts",
+    "5438-crypto-kdf-digests.ts",
+    "5439-crypto-kdf-callbacks.js",
     "4031-event-emitter-long-tuples.ts",
     "2700-wasi-core.ts",
     "local-union-storage.ts",
@@ -185,6 +191,8 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5232-inline-union-fields-dynamic.ts",
     "5234-inline-union-class-fields.ts",
     "5237-inline-union-frame-objects.ts",
+    "5327-record-boundary-identity.ts",
+    "5331-record-boundary-methods.ts",
     "1020-async-basics.ts",
     "1021-async-ordering.ts",
     "1022-async-exceptions.ts",
@@ -250,6 +258,9 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5319-map-iteration-values.ts",
     // JSON writers read array slots as pointers.
     "5305-json-stringify-typed-arrays.ts",
+    // Blob reads settle through the dyn promise path on 32-bit pointers.
+    "5286-blob-readers.ts",
+    "5289-blob-read-order.ts",
   ])("the LLVM target runs %s byte-identically to Node", async (fixture) => {
     const entry = join(repoRoot, "tests/corpus", fixture);
     const outDir = await mkdtemp("/tmp/scriptc-wasi-");

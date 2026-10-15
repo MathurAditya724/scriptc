@@ -4764,7 +4764,8 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
         d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER ||
         d->v.handle.tag == SCR_DYNH_WEAK_MAP || d->v.handle.tag == SCR_DYNH_WEAK_SET ||
         d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP || d->v.handle.tag == SCR_DYNH_REGEXP ||
-        d->v.handle.tag == SCR_DYNH_DATE) {
+        d->v.handle.tag == SCR_DYNH_DATE || d->v.handle.tag == SCR_DYNH_BLOB ||
+        d->v.handle.tag == SCR_DYNH_FILE) {
       ScrJsonBuf b;
       scr_jb_init(&b);
       scr_jb_puts(&b, "[object ");
@@ -4899,6 +4900,12 @@ static bool scr_dyn_json_write(ScrJsonBuf *b, const ScrDyn *d) {
     return present;
   }
   case SCR_DYN_HANDLE:
+    if (scr_dyn_handle_ops_of(d)->json_empty_object) {
+      /* No own enumerable properties (Blob, File). */
+      scr_jb_puts(b, "{}");
+      return true;
+    }
+    /* fall through */
   default: {
     const char *msg = "JSON.stringify of a runtime handle is not supported yet";
     scr_throw_error_msg(SCR_ERR_ERROR, msg, strlen(msg));
@@ -5299,7 +5306,8 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     }
     if ((d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
          d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_EVENT_TARGET ||
-        d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP) {
+        d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP ||
+        d->v.handle.tag == SCR_DYNH_BLOB || d->v.handle.tag == SCR_DYNH_FILE) {
       ScrJsonBuf b;
       scr_jb_init(&b);
       scr_jb_puts(&b, "[object ");
@@ -6991,6 +6999,71 @@ static bool scr_jschema_skip(ScrJsonP *p) {
   }
 }
 
+/* A number, boolean or string value at p->pos (whitespace already
+ * skipped and p->pos < p->len); false when the text does not hold that
+ * kind. Inlined into the record and array loops so scalar members do not
+ * re-enter scr_jschema_read. */
+static inline __attribute__((always_inline)) bool scr_jschema_scalar(ScrJsonP *p, size_t kind,
+                                                                     ScrJsonSlot *out) {
+  char c = p->s[p->pos];
+  switch (kind) {
+  case SCR_JSCHEMA_F64:
+    if (c != '-' && (c < '0' || c > '9')) return false;
+    return scr_json_number_value(p, &out->f);
+  case SCR_JSCHEMA_BOOL:
+    if (c == 't' && scr_json_lit(p, "true", 4)) {
+      out->b = true;
+      return true;
+    }
+    if (c == 'f' && scr_json_lit(p, "false", 5)) {
+      out->b = false;
+      return true;
+    }
+    return false;
+  default:
+    if (c != '"') return false;
+    out->ptr = scr_json_string_scr(p);
+    return out->ptr != NULL;
+  }
+}
+
+static bool scr_jschema_is_scalar(size_t kind) {
+  return kind == SCR_JSCHEMA_F64 || kind == SCR_JSCHEMA_BOOL || kind == SCR_JSCHEMA_STR;
+}
+
+/* A member value: scalars inline, records and arrays through the
+ * recursive reader. */
+static inline __attribute__((always_inline)) bool scr_jschema_member(ScrJsonP *p,
+                                                                     const ScrJsonSchema *type,
+                                                                     ScrJsonSlot *out) {
+  if (!scr_jschema_is_scalar(type->kind)) return scr_jschema_read(p, type, out);
+  scr_json_ws(p);
+  if (p->pos >= p->len) return false;
+  return scr_jschema_scalar(p, type->kind, out);
+}
+
+/* The quoted key at p->pos when it is exactly `f`'s name, written without
+ * escapes: the bytes consumed (name length + 2), else 0. Names of more
+ * than eight bytes, and names holding a byte JSON text would escape,
+ * take the general key scan. */
+static inline size_t scr_jschema_key_direct(const ScrJsonP *p, const ScrJsonSchemaField *f) {
+  size_t len = f->name_len;
+  size_t at = p->pos + 1;
+  if (len == 0 || len > 8 || len >= p->len - at) return 0;
+  const char *text = p->s + at;
+  uint64_t word = scr_key_short_word(f->name, len);
+  if (text[len] != '"' || scr_key_short_word(text, len) != word) return 0;
+  /* The packed word holds every name byte (lengths one to three use its
+   * low three bytes). A quote, backslash or control byte sends the key to
+   * the general scan, as in scr_json_plain_bytes. */
+  const uint64_t ones = UINT64_C(0x0101010101010101), high = UINT64_C(0x8080808080808080);
+  uint64_t quotes = word ^ (ones * '"'), slashes = word ^ (ones * '\\');
+  uint64_t special = ((quotes - ones) & ~quotes) | ((slashes - ones) & ~slashes) |
+                     ((word - ones * 0x20) & ~word);
+  uint64_t bytes = len >= 4 ? ~UINT64_C(0) : UINT64_C(0xffffff);
+  return (special & high & bytes) ? 0 : len + 2;
+}
+
 static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *out) {
   p->pos++; /* '{' */
   char *rec = s->rec_new();
@@ -7006,32 +7079,33 @@ static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot 
   for (;;) {
     scr_json_ws(p);
     if (p->pos >= p->len || p->s[p->pos] != '"') goto fail;
-    const char *key;
-    size_t key_len;
-    ScrStr *decoded = NULL;
-    int r = scr_json_string_span(p, &key, &key_len);
-    if (r < 0) goto fail;
-    if (r == 0) {
-      decoded = scr_json_string_slow(p, key_len);
-      if (!decoded) goto fail;
-      key = decoded->data;
-      key_len = decoded->len;
-    }
     /* Members usually arrive in declaration order: try the successor of
-     * the previous match before scanning. */
+     * the previous match, directly against the text, before scanning. */
     size_t idx = n;
-    if (guess < n && s->fields[guess].name_len == key_len &&
-        memcmp(s->fields[guess].name, key, key_len) == 0) {
+    size_t direct = guess < n ? scr_jschema_key_direct(p, &s->fields[guess]) : 0;
+    if (direct) {
       idx = guess;
+      p->pos += direct;
     } else {
+      const char *key;
+      size_t key_len;
+      ScrStr *decoded = NULL;
+      int r = scr_json_string_span(p, &key, &key_len);
+      if (r < 0) goto fail;
+      if (r == 0) {
+        decoded = scr_json_string_slow(p, key_len);
+        if (!decoded) goto fail;
+        key = decoded->data;
+        key_len = decoded->len;
+      }
       for (size_t i = 0; i < n; i++) {
-        if (s->fields[i].name_len == key_len && memcmp(s->fields[i].name, key, key_len) == 0) {
+        if (s->fields[i].name_len == key_len && scr_key_equal(s->fields[i].name, key, key_len)) {
           idx = i;
           break;
         }
       }
+      scr_str_release(decoded);
     }
-    scr_str_release(decoded);
     scr_json_ws(p);
     if (p->pos >= p->len || p->s[p->pos] != ':') goto fail;
     p->pos++;
@@ -7044,7 +7118,7 @@ static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot 
       seen |= bit;
       guess = idx + 1;
       ScrJsonSlot v;
-      if (!scr_jschema_read(p, f->type, &v)) goto fail;
+      if (!scr_jschema_member(p, f->type, &v)) goto fail;
       char *slot = rec + f->offset;
       switch (f->type->kind) {
       case SCR_JSCHEMA_F64: memcpy(slot, &v.f, sizeof v.f); break;
@@ -7083,7 +7157,7 @@ static bool scr_jschema_array(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *
   }
   for (;;) {
     ScrJsonSlot v;
-    if (!scr_jschema_read(p, elem, &v)) goto fail;
+    if (!scr_jschema_member(p, elem, &v)) goto fail;
     switch (elem->kind) {
     case SCR_JSCHEMA_F64: scr_arr_push_f64(arr, v.f); break;
     case SCR_JSCHEMA_BOOL: scr_arr_push_bool(arr, v.b); break;
@@ -7111,22 +7185,9 @@ static bool scr_jschema_read(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *o
   char c = p->s[p->pos];
   switch (s->kind) {
   case SCR_JSCHEMA_F64:
-    if (c != '-' && (c < '0' || c > '9')) return false;
-    return scr_json_number_value(p, &out->f);
   case SCR_JSCHEMA_BOOL:
-    if (c == 't' && scr_json_lit(p, "true", 4)) {
-      out->b = true;
-      return true;
-    }
-    if (c == 'f' && scr_json_lit(p, "false", 5)) {
-      out->b = false;
-      return true;
-    }
-    return false;
   case SCR_JSCHEMA_STR:
-    if (c != '"') return false;
-    out->ptr = scr_json_string_scr(p);
-    return out->ptr != NULL;
+    return scr_jschema_scalar(p, s->kind, out);
   case SCR_JSCHEMA_REC:
   case SCR_JSCHEMA_ARR: {
     if (c != (s->kind == SCR_JSCHEMA_REC ? '{' : '[')) return false;
@@ -7841,7 +7902,8 @@ ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len) {
 }
 
 /* ── structuredClone over the checked-dynamic tree ─────────────────────────────────────
- * The JSON-safe subset plus bytes, deep. Functions and handle kinds
+ * The JSON-safe subset plus bytes, deep. Handle kinds with a clone hook
+ * (Blob, File) clone through it; functions and other handle kinds
  * throw the spec's catchable DataCloneError; cycles throw the scriptc
  * fence (the checked-dynamic tree cannot represent them — Node clones cycles; documented
  * divergence). Option validation throws Node's exact TypeErrors and is
@@ -7969,8 +8031,10 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
     scr_dyn_release(materialized);
     return out;
   }
-  case SCR_DYN_FUNC:
   case SCR_DYN_HANDLE:
+    if (scr_dyn_handle_ops_of(v)->clone) return scr_dyn_handle_ops_of(v)->clone(v->v.handle.ptr);
+    /* fall through */
+  case SCR_DYN_FUNC:
   default: {
     /* Node renders the value's source text; the checked-dynamic tree has none — the
      * String() rendering stands in ("function () { [native code] } could
@@ -8972,6 +9036,63 @@ ScrDynEntryPairs *scr_dyn_obj_entry_pairs(const ScrDyn *v) {
 }
 
 void scr_dyn_entry_pairs_free(ScrDynEntryPairs *pairs) { free(pairs); }
+
+static const ScrArrOps scr_dyn_value_list_ops = {scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v};
+
+/* A native array of `count` owned dyn values, moved in with one dense push.
+ * Frees `values` unless it is `stack`. */
+static ScrArr *scr_dyn_value_list_from(uint64_t *values, size_t count, uint64_t *stack) {
+  ScrArr *out = scr_arr_new_ops(&scr_dyn_value_list_ops, count);
+  scr_arr_push_many(out, count, values);
+  if (values != stack) free(values);
+  return out;
+}
+
+static uint64_t *scr_dyn_value_slots(size_t count, uint64_t *stack, size_t stack_len) {
+  if (count <= stack_len) return stack;
+  if (count > SIZE_MAX / sizeof(uint64_t)) scr_json_oom();
+  uint64_t *slots = malloc(count * sizeof *slots);
+  if (!slots) scr_json_oom();
+  return slots;
+}
+
+/* Object.values as a native vector of checked values (see the header): a
+ * typed record's present fields, a plain data object's enumerable own
+ * values in own-key order, or the dyn walk's values for every other value. */
+ScrArr *scr_dyn_obj_value_list(const ScrDyn *v) {
+  if (scr_dyn_class_reflection_fence(v)) return NULL;
+  uint64_t stack[16];
+  if (v->kind == SCR_DYN_TYPED_REF) {
+    const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
+    if (record) {
+      void *rec = v->v.typed_ref.ptr;
+      uint64_t *slots = scr_dyn_value_slots(record->count, stack, 16);
+      size_t count = 0;
+      for (size_t i = 0; i < record->count; i++)
+        if (record->fixed || record->has(rec, i))
+          slots[count++] = (uint64_t)(uintptr_t)record->get(rec, i);
+      return scr_dyn_value_list_from(slots, count, stack);
+    }
+  } else if (v->kind == SCR_DYN_OBJ && scr_dyn_obj_data_only(v)) {
+    size_t *order = scr_dyn_obj_key_order(v);
+    uint64_t *slots = scr_dyn_value_slots(v->v.obj.len, stack, 16);
+    size_t count = 0;
+    for (size_t i = 0; i < v->v.obj.len; i++) {
+      const ScrDynEntry *entry = &v->v.obj.entries[order ? order[i] : i];
+      if (entry->enumerable) slots[count++] = (uint64_t)(uintptr_t)scr_dyn_retain(entry->value);
+    }
+    free(order);
+    return scr_dyn_value_list_from(slots, count, stack);
+  }
+  ScrDyn *values = scr_dyn_obj_values(v);
+  if (!values) return NULL;
+  size_t count = values->v.arr.len;
+  uint64_t *slots = scr_dyn_value_slots(count, stack, 16);
+  for (size_t i = 0; i < count; i++)
+    slots[i] = (uint64_t)(uintptr_t)scr_dyn_retain(values->v.arr.items[i]);
+  scr_dyn_release(values);
+  return scr_dyn_value_list_from(slots, count, stack);
+}
 
 /* One source's own enumerable members onto an OBJ target. OBJ sources
  * snapshot their keys, then check attributes and read values in order so

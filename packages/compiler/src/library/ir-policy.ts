@@ -181,6 +181,8 @@ export const LIB_NONDETERMINISTIC_PREFIXES: readonly [string, string][] = [
   ["crypto.random", "crypto randomness"],
   ["date.", "the live clock (Date)"],
   ["perf.", "the live clock (performance)"],
+  // new File() without lastModified reads Date.now().
+  ["blob.fileNew", "the live clock (File lastModified)"],
   ["process.env", "environment reads"],
   ["process.argv", "process.argv"],
   ["process.cwd", "process.cwd"],

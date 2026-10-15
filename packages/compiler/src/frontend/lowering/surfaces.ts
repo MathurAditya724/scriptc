@@ -1678,8 +1678,7 @@ export const BUILTIN_MODULE_FNS: Record<
   "stream/promises": {},
   // node:stream/consumers rides the stream spoke as well (text/json/
   // buffer/arrayBuffer special-case their stream argument); blob fences
-  // module-qualified with the pointed hint below — Blob has no
-  // representation in a compiled binary.
+  // module-qualified with the pointed hint below.
   "stream/consumers": {},
   // node:timers/promises — the delay-only setTimeout and bare setImmediate
   // (void promises the shared timer heap settles). The arity completion
@@ -1845,6 +1844,20 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     name: "SharedArrayBuffer",
     fns: ["sharedArrayBuffer.new"],
     note: "fixed shared storage with context-local typed-array and DataView wrappers",
+  },
+  {
+    id: "stdlib.blob",
+    kind: "stdlib",
+    name: "Blob",
+    fns: ["blob.new", "blob.slice", "blob.text", "blob.bytes", "blob.arrayBuffer", "blob.is"],
+    note: "immutable bytes with size, type, slice(), text(), bytes(), arrayBuffer() and structured cloning",
+  },
+  {
+    id: "stdlib.file",
+    kind: "stdlib",
+    name: "File",
+    fns: ["blob.fileNew"],
+    note: "a Blob with name and lastModified (Date.now() when absent)",
   },
   {
     id: "stdlib.atomics",
@@ -2590,8 +2603,8 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   "stream/consumers": {
     blob:
-      "Blob values have no representation in a compiled binary — " +
-      "buffer(stream) collects the same bytes as a Buffer, text(stream) the decoded text",
+      "collecting a stream into a Blob is not supported yet — " +
+      "buffer(stream) collects the same bytes as a Buffer (new Blob([buffer]) wraps them), text(stream) the decoded text",
   },
   module: {
     createRequire:

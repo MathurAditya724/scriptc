@@ -144,7 +144,22 @@ function expressionPreservesEdges(
         // Atomic read-modify-write on an integer typed array (a shared id
         // counter): numbers only, no callback.
         e.fn === "atomics.op" ||
+        // Class brand tests compare a capsule's key; they run no user code.
+        e.fn === "dyn.typedRefKeyIs" ||
+        e.fn === "dyn.typedRefIs" ||
         isStableReceiverOperand(e, "")
+      );
+    // An exact capsule's instance is one load (and a retain when owned).
+    case "dynCheck":
+      return e.exact === true;
+    // Boxing a scalar or the undefined/null value allocates (or returns an
+    // immortal value) and runs no user code.
+    case "dynFrom":
+      return (
+        e.value.kind === "unitLit" ||
+        e.value.type.kind === "f64" ||
+        e.value.type.kind === "bool" ||
+        e.value.type.kind === "string"
       );
     case "call":
       return call(e);

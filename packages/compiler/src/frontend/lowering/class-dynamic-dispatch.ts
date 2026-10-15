@@ -16,6 +16,7 @@ import {
   typeKey,
   type IrExpr,
   type IrFunction,
+  type IrParam,
   type IrStmt,
   type IrType,
   type SrcLoc,
@@ -1915,7 +1916,7 @@ export class ClassDynamicDispatch {
           ]);
           let dispatch = this.dispatches.get(key);
           if (!dispatch) {
-            const params = [invoke.recv, ...invoke.args].map((_, i) => ({
+            const params: IrParam[] = [invoke.recv, ...invoke.args].map((_, i) => ({
               localId: `p.${i}`,
               name: `p${i}`,
               type: DYN,
@@ -2272,7 +2273,13 @@ export class ClassDynamicDispatch {
         dispatch.classes.add(plan.key);
         const loc = dispatch.fn.loc;
         const type: IrType = { kind: "object", className: plan.info.def.name };
-        const receiver: IrExpr = { kind: "dynCheck", value: varRef("p.0", DYN, loc), type, loc };
+        const receiver: IrExpr = {
+          kind: "dynCheck",
+          value: varRef("p.0", DYN, loc),
+          exact: true,
+          type,
+          loc,
+        };
         const arm = dispatch.field
           ? protocolFieldArm(lowerer, dispatch, plan.info, receiver)
           : protocolArm(lowerer, dispatch, plan.info, receiver, this.asyncFree);
