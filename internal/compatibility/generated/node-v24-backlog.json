@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 37,
-        "verify-gap": 2395,
-        "audit-partial": 953,
+        "verify-gap": 2392,
+        "audit-partial": 956,
         "classify": 2,
         "implement": 85
       }
@@ -51298,12 +51298,15 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:net",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.net.isIP",
+          "tests": [
+            "tests/corpus/2500-net-autosel-timeout.ts",
+            "tests/corpus/2596-net-arg-ladders.cjs"
+          ]
         }
       }
     },
@@ -51318,12 +51321,15 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:net",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.net.isIPv4",
+          "tests": [
+            "tests/corpus/2500-net-autosel-timeout.ts",
+            "tests/corpus/2596-net-arg-ladders.cjs"
+          ]
         }
       }
     },
@@ -51338,12 +51344,15 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:net",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.net.isIPv6",
+          "tests": [
+            "tests/corpus/2500-net-autosel-timeout.ts",
+            "tests/corpus/2596-net-arg-ladders.cjs"
+          ]
         }
       }
     },

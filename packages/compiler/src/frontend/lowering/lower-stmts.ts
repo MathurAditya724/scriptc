@@ -126,6 +126,7 @@ import { lowerStreamUnderscoreAssign, streamClassAliasDecl } from "./lower-strea
 import {
   lowerHttpResPropertyAssignment,
   lowerHttpServerTimeoutAssignment,
+  lowerNetServerMaxConnectionsAssignment,
   lowerServerCloseOverrideAssignment,
 } from "./lower-server.js";
 import { lowerUrlAssignment } from "./builtins/url.js";
@@ -6165,6 +6166,16 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
             locOf(expr),
           );
           if (timeoutProp) return timeoutProp;
+        }
+        // server.maxConnections — net.Server's connection cap.
+        {
+          const capProp = lowerNetServerMaxConnectionsAssignment(
+            lowerer,
+            expr.left,
+            expr.right,
+            locOf(expr),
+          );
+          if (capProp) return capProp;
         }
         // `N.x = v` — a namespace-qualified write: exported `let`
         // members are module globals, so the qualified spelling assigns

@@ -521,9 +521,9 @@
       "apiEntries": 119,
       "static": {
         "supported": 0,
-        "partial": 34,
+        "partial": 37,
         "refused": 0,
-        "not-implemented": 85,
+        "not-implemented": 82,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -73516,8 +73516,12 @@
       "anchor": "netisipinput",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.net.isIP",
+        "tests": [
+          "tests/corpus/2500-net-autosel-timeout.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -73534,8 +73538,12 @@
       "anchor": "netisipv4input",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.net.isIPv4",
+        "tests": [
+          "tests/corpus/2500-net-autosel-timeout.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -73552,8 +73560,12 @@
       "anchor": "netisipv6input",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.net.isIPv6",
+        "tests": [
+          "tests/corpus/2500-net-autosel-timeout.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

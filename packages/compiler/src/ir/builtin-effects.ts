@@ -182,6 +182,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "readable.nextChunkDyn",
   // The checked-dynamic chunk forms throw Node's ERR_INVALID_ARG_TYPE
   // chunk TypeError on a non-string/Buffer dyn kind.
+  // socket.setTimeout's msecs check (ERR_OUT_OF_RANGE).
+  "net.sockSetTimeout",
+  "net.sockSetTimeoutCb",
   "net.sockWriteDyn",
   "net.sockEndDyn",
   "http.resWriteDyn",
