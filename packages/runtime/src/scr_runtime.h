@@ -563,8 +563,10 @@ void scr_cyc_free(void *obj); /* frees the block, header included */
  * up to SCR_SA_MAX bytes come from per-size-class free lists refilled by a
  * bump pointer; the fast paths below inline into every runtime unit.
  *
- * Contracts match malloc/calloc/realloc/free (NULL on OOM, 16-byte
- * alignment). scr_mem_free and scr_mem_realloc accept ANY pointer — a
+ * Contracts match malloc/calloc/realloc/free (NULL on OOM), except for
+ * alignment: blocks are 8-byte aligned, and 16-byte aligned when the size
+ * is a multiple of 16, which covers every type whose size is a multiple of
+ * its alignment. scr_mem_free and scr_mem_realloc accept ANY pointer — a
  * block outside the allocator's reservation goes back to the system — so a
  * free site can be switched without proving where its pointers came from.
  * The converse does not hold: a block from scr_mem_alloc/calloc/realloc
@@ -615,9 +617,31 @@ void scr_rt_free(void *p);
  * helper ignore it. */
 void scr_mem_prefault(void *lo, void *hi);
 
-#define SCR_SA_STEP 16u   /* class granularity; keeps malloc's 16-byte alignment */
-#define SCR_SA_NCLASS 32u /* classes of 16, 32, ... 512 bytes */
-#define SCR_SA_MAX (SCR_SA_STEP * SCR_SA_NCLASS)
+/* Size classes: requests up to 128 bytes take a class per 8-byte step
+ * (small objects often sit just under a 16-byte boundary), larger ones a
+ * class per 16-byte step up to 512. Class c below SCR_SA_FINE_MAX / 8
+ * holds (c + 1) * 8-byte blocks, except that the class of 49 to 56-byte
+ * requests (SCR_SA_WIDE) holds 64-byte blocks: a 56-byte block straddles a
+ * cache line in 3 of every 4 slots, which costs more on scattered access
+ * to records of that size than the smaller block saves. Widening the block
+ * rather than sharing the 64-byte class keeps the class lookup free of a
+ * special case. Slices start page-aligned, so a class whose block size is
+ * a multiple of 16 keeps its blocks 16-byte aligned. */
+#define SCR_SA_FINE_MAX 128u /* the largest request with an 8-byte-step class */
+#define SCR_SA_WIDE 6u       /* the class of 49 to 56-byte requests */
+#define SCR_SA_NCLASS 40u
+#define SCR_SA_MAX 512u
+
+/* The class of a block of n bytes, 1 <= n <= SCR_SA_MAX. */
+static inline unsigned scr_sa_class(size_t n) {
+  unsigned k = (unsigned)((n - 1) >> 3);
+  return k < SCR_SA_FINE_MAX / 8 ? k : (k + SCR_SA_FINE_MAX / 8) >> 1;
+}
+/* The block size of class c. */
+static inline size_t scr_sa_class_size(unsigned c) {
+  if (c < SCR_SA_FINE_MAX / 8) return (size_t)(c + 1 + (c == SCR_SA_WIDE)) * 8;
+  return (size_t)(c + 1 - SCR_SA_FINE_MAX / 16) * 16;
+}
 
 typedef struct ScrSaBlock {
   struct ScrSaBlock *next;
@@ -629,7 +653,7 @@ typedef struct ScrSaBlock {
  *
  * scr_sa exists in EVERY build, and its layout is an ABI: the LLVM backend
  * inlines the fast paths into emitted constructors and releases
- * (llvm/alloc.ts) as `{ i64, i64, i32, [32 x ptr], [32 x ptr], [32 x ptr] }`
+ * (llvm/alloc.ts) as `{ i64, i64, i32, [40 x ptr], [40 x ptr], [40 x ptr] }`
  * on 64-bit targets. Where SCR_SMALL_ALLOC is 0 the state is never written,
  * so the emitted fast paths see no free block, no bump room and an empty
  * span, and always take their out-of-line slow path (scr_rt_calloc /
@@ -666,9 +690,9 @@ extern _Thread_local ScrThreadHot scr_thread_hot;
 #define scr_cyc_old_freed (scr_thread_hot.cyc_old_freed)
 #define scr_weak_dispose_hook (scr_thread_hot.weak_dispose_hook)
 #if UINTPTR_MAX == UINT64_MAX
-_Static_assert(offsetof(ScrThreadHot, sa) == 0 && offsetof(ScrThreadHot, cyc_live) == 792 &&
-                   offsetof(ScrThreadHot, cyc_old_freed) == 800 &&
-                   offsetof(ScrThreadHot, weak_dispose_hook) == 808,
+_Static_assert(offsetof(ScrThreadHot, sa) == 0 && offsetof(ScrThreadHot, cyc_live) == 984 &&
+                   offsetof(ScrThreadHot, cyc_old_freed) == 992 &&
+                   offsetof(ScrThreadHot, weak_dispose_hook) == 1000,
                "llvm/alloc.ts addresses ScrThreadHot fields at these offsets");
 #endif
 #else
@@ -676,8 +700,8 @@ extern ScrSaState scr_sa;
 #endif
 #if UINTPTR_MAX == UINT64_MAX
 _Static_assert(offsetof(ScrSaState, span) == 8 && offsetof(ScrSaState, shift) == 16 &&
-                   offsetof(ScrSaState, free) == 24 && offsetof(ScrSaState, bump) == 280 &&
-                   offsetof(ScrSaState, lim) == 536 && sizeof(ScrSaState) == 792,
+                   offsetof(ScrSaState, free) == 24 && offsetof(ScrSaState, bump) == 344 &&
+                   offsetof(ScrSaState, lim) == 664 && sizeof(ScrSaState) == 984,
                "llvm/alloc.ts inlines the small-object allocator against this layout");
 #endif
 #if defined(SCR_RC_AUDIT) && SCR_SMALL_ALLOC
@@ -704,14 +728,14 @@ void *scr_sa_slow(size_t n, bool zero);
 
 static inline void *scr_sa_take(size_t n, bool zero) {
   if (n - 1 < SCR_SA_MAX) { /* n == 0 wraps to the slow path */
-    unsigned c = (unsigned)((n - 1) / SCR_SA_STEP);
+    unsigned c = scr_sa_class(n);
     ScrSaBlock *b = scr_sa.free[c];
     if (b) {
       scr_sa.free[c] = b->next;
       if (zero) memset(b, 0, n); /* recycled blocks are dirty */
       return b;
     }
-    size_t sz = (size_t)(c + 1) * SCR_SA_STEP;
+    size_t sz = scr_sa_class_size(c);
     char *p = scr_sa.bump[c];
     if ((size_t)(scr_sa.lim[c] - p) >= sz) { /* fresh mmap memory is zero */
       scr_sa.bump[c] = p + sz;

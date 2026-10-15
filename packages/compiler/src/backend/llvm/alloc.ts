@@ -48,11 +48,11 @@ export interface AllocHost {
  * ScrThreadHot block (layout asserted in scr_runtime.h). */
 const STATE_GLOBALS: readonly [global: string, offset: number][] = [
   ["@scr_sa", 0],
-  ["@scr_cyc_live", 792],
-  ["@scr_cyc_old_freed", 800],
-  ["@scr_weak_dispose_hook", 808],
+  ["@scr_cyc_live", 984],
+  ["@scr_cyc_old_freed", 992],
+  ["@scr_weak_dispose_hook", 1000],
 ];
-const THREAD_HOT_TYPE = "{ { i64, i64, i32, [32 x ptr], [32 x ptr], [32 x ptr] }, i64, i64, ptr }";
+const THREAD_HOT_TYPE = "{ { i64, i64, i32, [40 x ptr], [40 x ptr], [40 x ptr] }, i64, i64, ptr }";
 
 /** Worker executables: address the thread's ScrThreadHot block once through
  * llvm.threadlocal.address (which LLVM can share across a function; on
@@ -109,13 +109,17 @@ export function inlineAllocSupported(options: {
 }
 
 /* ScrSaState layout on 64-bit targets (asserted in scr_runtime.h). */
-const SA_TYPE = "{ i64, i64, i32, [32 x ptr], [32 x ptr], [32 x ptr] }";
+const SA_TYPE = "{ i64, i64, i32, [40 x ptr], [40 x ptr], [40 x ptr] }";
 const SA_SPAN = 8;
 const SA_SHIFT = 16;
 const SA_FREE = 24;
-const SA_BUMP = 280;
-const SA_LIM = 536;
-const SA_STEP_SHIFT = 4; // 16-byte classes
+const SA_BUMP = 344;
+const SA_LIM = 664;
+/** Classes step by 8 bytes up to SA_FINE_MAX and by 16 above it, and the
+ * class of 49 to 56-byte requests holds 64-byte blocks (scr_sa_class /
+ * scr_sa_class_size in scr_runtime.h). */
+const SA_FINE_MAX = 128;
+const SA_WIDE = 6;
 const SA_MAX = 512;
 /** sizeof(ScrCycHdr): the descriptor's i16 registry id, i8 color and
  * generation, and an i32 `buf` whose sign bit marks a buffered candidate
@@ -227,7 +231,11 @@ function allocLines(
     `  br i1 %sa.small, label %sa.class, label %sa.slow`,
     `sa.class:`,
     `  %sa.nm1 = sub i64 %sa.n, 1`,
-    `  %sa.c = lshr i64 %sa.nm1, ${SA_STEP_SHIFT}`,
+    `  %sa.k = lshr i64 %sa.nm1, 3`,
+    `  %sa.fine = icmp ule i64 %sa.n, ${SA_FINE_MAX}`,
+    `  %sa.kc = add i64 %sa.k, ${SA_FINE_MAX / 8}`,
+    `  %sa.cc = lshr i64 %sa.kc, 1`,
+    `  %sa.c = select i1 %sa.fine, i64 %sa.k, i64 %sa.cc`,
     `  %sa.c8 = shl i64 %sa.c, 3`,
     `  %sa.fo = add i64 %sa.c8, ${SA_FREE}`,
     `  %sa.fp = getelementptr inbounds i8, ptr @scr_sa, i64 %sa.fo`,
@@ -244,7 +252,13 @@ function allocLines(
     `  br label %sa.fast`,
     `sa.bump: ; fresh reservation memory is already zero`,
     `  %sa.c1 = add i64 %sa.c, 1`,
-    `  %sa.sz = shl i64 %sa.c1, ${SA_STEP_SHIFT}`,
+    `  %sa.wide = icmp eq i64 %sa.c, ${SA_WIDE}`,
+    `  %sa.widez = zext i1 %sa.wide to i64`,
+    `  %sa.c1w = add i64 %sa.c1, %sa.widez`,
+    `  %sa.szf = shl i64 %sa.c1w, 3`,
+    `  %sa.cs = sub i64 %sa.c1, ${SA_FINE_MAX / 16}`,
+    `  %sa.szc = shl i64 %sa.cs, 4`,
+    `  %sa.sz = select i1 %sa.fine, i64 %sa.szf, i64 %sa.szc`,
     `  %sa.bo = add i64 %sa.c8, ${SA_BUMP}`,
     `  %sa.bp = getelementptr inbounds i8, ptr @scr_sa, i64 %sa.bo`,
     `  %sa.lo = add i64 %sa.c8, ${SA_LIM}`,
