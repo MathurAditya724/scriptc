@@ -4747,7 +4747,8 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
         d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER ||
         d->v.handle.tag == SCR_DYNH_WEAK_MAP || d->v.handle.tag == SCR_DYNH_WEAK_SET ||
         d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP || d->v.handle.tag == SCR_DYNH_REGEXP ||
-        d->v.handle.tag == SCR_DYNH_DATE) {
+        d->v.handle.tag == SCR_DYNH_DATE || d->v.handle.tag == SCR_DYNH_BLOB ||
+        d->v.handle.tag == SCR_DYNH_FILE) {
       ScrJsonBuf b;
       scr_jb_init(&b);
       scr_jb_puts(&b, "[object ");
@@ -4882,6 +4883,12 @@ static bool scr_dyn_json_write(ScrJsonBuf *b, const ScrDyn *d) {
     return present;
   }
   case SCR_DYN_HANDLE:
+    if (scr_dyn_handle_ops_of(d)->json_empty_object) {
+      /* No own enumerable properties (Blob, File). */
+      scr_jb_puts(b, "{}");
+      return true;
+    }
+    /* fall through */
   default: {
     const char *msg = "JSON.stringify of a runtime handle is not supported yet";
     scr_throw_error_msg(SCR_ERR_ERROR, msg, strlen(msg));
@@ -5282,7 +5289,8 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     }
     if ((d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
          d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_EVENT_TARGET ||
-        d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP) {
+        d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP ||
+        d->v.handle.tag == SCR_DYNH_BLOB || d->v.handle.tag == SCR_DYNH_FILE) {
       ScrJsonBuf b;
       scr_jb_init(&b);
       scr_jb_puts(&b, "[object ");
@@ -7824,7 +7832,8 @@ ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len) {
 }
 
 /* ── structuredClone over the checked-dynamic tree ─────────────────────────────────────
- * The JSON-safe subset plus bytes, deep. Functions and handle kinds
+ * The JSON-safe subset plus bytes, deep. Handle kinds with a clone hook
+ * (Blob, File) clone through it; functions and other handle kinds
  * throw the spec's catchable DataCloneError; cycles throw the scriptc
  * fence (the checked-dynamic tree cannot represent them — Node clones cycles; documented
  * divergence). Option validation throws Node's exact TypeErrors and is
@@ -7952,8 +7961,10 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
     scr_dyn_release(materialized);
     return out;
   }
-  case SCR_DYN_FUNC:
   case SCR_DYN_HANDLE:
+    if (scr_dyn_handle_ops_of(v)->clone) return scr_dyn_handle_ops_of(v)->clone(v->v.handle.ptr);
+    /* fall through */
+  case SCR_DYN_FUNC:
   default: {
     /* Node renders the value's source text; the checked-dynamic tree has none — the
      * String() rendering stands in ("function () { [native code] } could

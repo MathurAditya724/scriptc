@@ -883,8 +883,9 @@ export const NODE24_FETCH_COMPAT_PROFILE = {
     ],
     excludedInterfaces: [
       {
-        name: "Blob/File/FormData",
-        reason: "these body value families have no engine-free static representation",
+        name: "Blob/File/FormData bodies",
+        reason:
+          "fetch request and response bodies do not accept or produce Blob, File, or FormData values",
       },
       {
         name: "WritableStream/TransformStream",

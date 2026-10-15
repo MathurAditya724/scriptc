@@ -497,6 +497,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "tlsca":
     case "event":
     case "events":
+    case "blob":
       return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);

@@ -68,6 +68,8 @@ const optional = [
   ["scr_async_dyn.c", any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch")],
   // The performance timeline emits its buffer warning through scr_async_dyn.c.
   ["scr_perf.c", "dynAsync"],
+  // Blob and File box their reads as dyn promises through scr_async_dyn.c.
+  ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],
   ["scr_events.c", "events"],
   ["scr_readline.c", "events"],

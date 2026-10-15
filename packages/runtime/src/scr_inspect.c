@@ -1054,8 +1054,16 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(d);
       if (ops->inspect_view) {
         /* Node's custom inspectors answer the bare class name beyond the
-         * depth limit (`depth < 0`). */
-        if (recurse > depth) return scr_str_new(ops->cls, strlen(ops->cls));
+         * depth limit (`depth < 0`); the ones that return `this` there
+         * print util.inspect's `[cls]`. */
+        if (recurse > depth) {
+          if (!ops->inspect_bracketed_past_depth) return scr_str_new(ops->cls, strlen(ops->cls));
+          InspBuf out = {0};
+          ib_char(&out, '[');
+          ib_cstr(&out, ops->cls);
+          ib_char(&out, ']');
+          return ib_take(&out);
+        }
         ScrDyn *view = ops->inspect_view(d->v.handle.ptr);
         ScrStr *body = scr_insp_dyn(view, recurse, depth);
         scr_dyn_release(view);

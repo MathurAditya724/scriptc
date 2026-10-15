@@ -518,6 +518,8 @@ describe("determinism attestation ↔ fence parity", () => {
       // identity, so the attestation demotes on them like os.* — the
       // family needs its own declaration here, not just manifest entries.
       { path: "parity[7]", prefix: "node-builtin.tls." },
+      // new File() reads the clock for an absent lastModified.
+      { path: "parity[8]", id: "stdlib.file" },
     ]);
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;

@@ -4862,6 +4862,8 @@ typedef enum {
   SCR_DYNH_CONSOLE_INSTANCE, /* node:console Console instance */
   SCR_DYNH_EVENT_TARGET,   /* ScrEventTarget — new EventTarget() */
   SCR_DYNH_CUSTOM_EVENT,   /* ScrEvent with detail — new CustomEvent() */
+  SCR_DYNH_BLOB,           /* ScrBlob — new Blob() and Blob#slice() */
+  SCR_DYNH_FILE,           /* ScrBlob with a name — new File() */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
@@ -5651,6 +5653,14 @@ typedef struct ScrDynHandleOps {
    * (+1); NULL = the class has no inspection, and util.inspect throws the
    * "not supported yet" Error. */
   ScrDyn *(*inspect_view)(void *h);
+  /* structuredClone of the handle (+1 new box); NULL = DataCloneError. */
+  ScrDyn *(*clone)(void *h);
+  /* JSON.stringify writes `{}` (the class keeps its state in internal
+   * slots behind prototype getters) instead of the unsupported fence. */
+  bool json_empty_object;
+  /* Past the depth limit util.inspect prints `[cls]` (the class's
+   * inspector returns `this`) instead of the bare class name. */
+  bool inspect_bracketed_past_depth;
 } ScrDynHandleOps;
 ScrDyn *scr_dyn_native_handle_iterator(ScrDyn *source, unsigned selection);
 
@@ -5809,6 +5819,23 @@ typedef struct ScrEventRefHooks {
   const char *(*string_tag)(const ScrDyn *d);
 } ScrEventRefHooks;
 extern SCR_TL const ScrEventRefHooks *scr_event_ref_hooks;
+
+/* ── Blob / File (scr_blob.c) ──────────────────────────────────────────
+ * Node 24's lib/internal/blob.js and file.js: immutable bytes copied from
+ * the sources at construction, shared by slices and structured clones.
+ * The constructors take the argument vector as one dyn array (borrowed)
+ * and validate it like Node; +1 handle, or NULL with the exception
+ * pending. slice takes its (start, end, contentType) vector the same way.
+ * The readers answer +1 promises (string, u8 bytes, and an ArrayBuffer
+ * dyn value) that settle on Node's microtask turn for the Blob's part
+ * count. scr_blob_is answers `v instanceof Blob` (kind 0) or `File` (1). */
+ScrDyn *scr_blob_new(ScrDyn *args);
+ScrDyn *scr_file_new(ScrDyn *args);
+ScrDyn *scr_blob_slice(ScrDyn *self, ScrDyn *args);
+ScrPromise *scr_blob_text(ScrDyn *self);
+ScrPromise *scr_blob_bytes(ScrDyn *self);
+ScrPromise *scr_blob_array_buffer(ScrDyn *self);
+bool scr_blob_is(const ScrDyn *value, double kind);
 
 ScrDyn *scr_intl_segmenter_new(void);
 ScrStr *scr_process_builtin_id(ScrDyn *id, ScrArr *known);

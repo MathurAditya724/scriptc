@@ -142,6 +142,12 @@ export const FETCH_AMBIENT_TYPES = [
   "ReadableStreamReadResult",
   "ReadableStreamReadValueResult",
   "ReadableStreamReadDoneResult",
+  "Blob",
+  "File",
+  "BlobPropertyBag",
+  "FilePropertyBag",
+  "BlobOptions",
+  "FileOptions",
 ] as const;
 
 /** node:util.parseArgs's public and @types/node helper type names, plus
