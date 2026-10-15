@@ -7,6 +7,7 @@ import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { lowerBlobInstanceof } from "./builtins/blob.js";
 import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
+import { STATS_TYPE_TESTS } from "./builtins/filesystem.js";
 import { threadsImportOf } from "../threads-import.js";
 import { experimentalImportOf, lifetimeRegionMemberOf } from "../experimental-import.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
@@ -5081,13 +5082,13 @@ export function lowerIntrinsicProperty(
       const receiver = lowerer.lowerExpr(expr.expression);
       return { kind: "libCall", fn: "stats.size", args: [receiver], type: F64, loc: locOf(expr) };
     }
-    if (name === "isFile" || name === "isDirectory") {
+    if (Object.hasOwn(STATS_TYPE_TESTS, name)) {
       lowerer.unsupported("SC1090", expr, `Stats methods as values (call '${name}' directly)`);
     }
     lowerer.noLowering(
       `Stats.${name}`,
       expr,
-      "isFile(), isDirectory(), isSymbolicLink(), dev, ino, size, blocks, nlink, atimeMs, mtimeMs, and ctimeMs are the supported Stats members",
+      "isFile(), isDirectory(), isSymbolicLink(), isBlockDevice(), isCharacterDevice(), isFIFO(), isSocket(), dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeMs, mtimeMs, ctimeMs, birthtimeMs, atime, mtime, ctime, and birthtime are the supported Stats members",
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }

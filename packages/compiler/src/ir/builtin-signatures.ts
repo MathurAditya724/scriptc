@@ -1006,6 +1006,21 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stats.atimeMs": { argTypes: [STATS_T], result: F64 },
   "stats.mtimeMs": { argTypes: [STATS_T], result: F64 },
   "stats.ctimeMs": { argTypes: [STATS_T], result: F64 },
+  "stats.birthtimeMs": { argTypes: [STATS_T], result: F64 },
+  "stats.mode": { argTypes: [STATS_T], result: F64 },
+  "stats.uid": { argTypes: [STATS_T], result: F64 },
+  "stats.gid": { argTypes: [STATS_T], result: F64 },
+  "stats.rdev": { argTypes: [STATS_T], result: F64 },
+  "stats.blksize": { argTypes: [STATS_T], result: F64 },
+  "stats.isBlockDevice": { argTypes: [STATS_T], result: BOOL },
+  "stats.isCharacterDevice": { argTypes: [STATS_T], result: BOOL },
+  "stats.isFIFO": { argTypes: [STATS_T], result: BOOL },
+  "stats.isSocket": { argTypes: [STATS_T], result: BOOL },
+  /** The Date fields: the *Ms value rounded (Node's dateFromMs). */
+  "stats.atime": { argTypes: [STATS_T], result: DATE_T },
+  "stats.mtime": { argTypes: [STATS_T], result: DATE_T },
+  "stats.ctime": { argTypes: [STATS_T], result: DATE_T },
+  "stats.birthtime": { argTypes: [STATS_T], result: DATE_T },
   // The wider sync fs slice (unlink/chmod/chown/copyfile and the
   // mode-carrying write/mkdir forms).
   /** The wider sync fs slice (scr_lib.c), all throwing catchably with
