@@ -185,6 +185,8 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5232-inline-union-fields-dynamic.ts",
     "5234-inline-union-class-fields.ts",
     "5237-inline-union-frame-objects.ts",
+    "5327-record-boundary-identity.ts",
+    "5331-record-boundary-methods.ts",
     "1020-async-basics.ts",
     "1021-async-ordering.ts",
     "1022-async-exceptions.ts",
