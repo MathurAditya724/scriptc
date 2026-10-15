@@ -9,11 +9,13 @@ import { InternalCompilerError } from "../../errors.js";
 import type { Lowerer } from "./lowerer.js";
 import {
   BOOL,
+  DIR_T,
   DYN,
   F64,
   type IrExpr,
   type IrStmt,
   type IrType,
+  NULL_T,
   STRING,
   VOID,
 } from "../../ir/ir.js";
@@ -848,6 +850,129 @@ function lowerClassAsyncIterator(
   }
 }
 
+/** `for await (const entry of dir)`: Node's Dir.entries() reads with
+ * dir.read() until it answers null and closes the Dir with dir.close() in a
+ * finally, so a break, a throw or normal exhaustion all close it, and a Dir
+ * the body already closed rejects that close with ERR_DIR_CLOSED. */
+function lowerDirEntries(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
+  const binding = checkForAwaitBinding(lowerer, stmt);
+  const loc = locOf(stmt);
+  const entryT = lowerer.mapTypeOf(lowerer.typeOf(binding.declaration.name));
+  if (entryT?.kind !== "record") {
+    lowerer.unsupported(
+      "SC1070",
+      stmt,
+      "'for await' over an fs.Dir whose entries are not typed as Dirent",
+    );
+  }
+  const resultT: IrType = { kind: "union", unionId: lowerer.unions.intern([entryT, NULL_T]) };
+  const nullTag = lowerer.armTag(resultT.unionId, NULL_T);
+  const entryTag = lowerer.armTag(resultT.unionId, entryT);
+  const readT: IrType = { kind: "promise", inner: resultT };
+  const closeT: IrType = { kind: "promise", inner: VOID };
+  lowerer.scopes.push(new Map());
+  try {
+    const dir = lowerer.declareHiddenLocal("%faDir", DIR_T);
+    const promise = lowerer.declareHiddenLocal("%faDirRead", readT);
+    const result = lowerer.declareHiddenLocal("%faDirEntry", resultT);
+    const entry = lowerer.declareLocal(
+      binding.declaration.name,
+      binding.declaration.name.text,
+      entryT,
+      binding.mutable,
+    );
+    const dirRef = (): IrExpr => ({ kind: "varRef", localId: dir.id, type: DIR_T, loc });
+    const resultRef = (): IrExpr => ({ kind: "varRef", localId: result.id, type: resultT, loc });
+    const body = lowerer.inCtl("loop", () => lowerer.lowerScopedBlock(stmt.statement));
+    const loop: IrStmt = {
+      kind: "while",
+      cond: { kind: "boolLit", value: true, type: BOOL, loc },
+      body: [
+        {
+          kind: "varDecl",
+          localId: promise.id,
+          init: { kind: "libCall", fn: "dir.read", args: [dirRef()], type: readT, loc },
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: result.id,
+          init: {
+            kind: "awaitExpr",
+            value: { kind: "varRef", localId: promise.id, type: readT, loc },
+            type: resultT,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "if",
+          cond: {
+            kind: "unionIsTag",
+            unionId: resultT.unionId,
+            tag: nullTag,
+            negated: false,
+            value: resultRef(),
+            type: BOOL,
+            loc,
+          },
+          then: [{ kind: "break", loc }],
+          else_: null,
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: entry.id,
+          init: {
+            kind: "unionNarrow",
+            unionId: resultT.unionId,
+            tag: entryTag,
+            value: resultRef(),
+            type: entryT,
+            loc,
+          },
+          loc,
+        },
+        ...body,
+      ],
+      loc,
+    };
+    return {
+      kind: "block",
+      body: [
+        {
+          kind: "varDecl",
+          localId: dir.id,
+          init: lowerer.lowerExprExpecting(stmt.expression, DIR_T),
+          loc,
+        },
+        {
+          kind: "tryCatch",
+          tryBody: [loop],
+          catchBody: null,
+          catchLocalId: null,
+          finallyBody: [
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "awaitExpr",
+                value: { kind: "libCall", fn: "dir.close", args: [dirRef()], type: closeT, loc },
+                type: VOID,
+                loc,
+              },
+              loc,
+            },
+          ],
+          loc,
+        },
+      ],
+      loc,
+    };
+  } finally {
+    lowerer.scopes.pop();
+  }
+}
+
 /** Claims the built-in static async-iterator families. Typed async
  * generators and process.stdin retain their specialized drivers; this is
  * the common stream protocol path. */
@@ -986,6 +1111,8 @@ function lowerReadlineLines(
 }
 
 export function lowerForAwaitBuiltin(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt | null {
+  if (lowerer.mapTypeOf(lowerer.typeOf(stmt.expression))?.kind === "dir")
+    return lowerDirEntries(lowerer, stmt);
   const readline = readlinePlan(lowerer, stmt.expression);
   if (readline) return lowerReadlineLines(lowerer, stmt, readline);
   const node = nodeReadablePlan(lowerer, stmt.expression);

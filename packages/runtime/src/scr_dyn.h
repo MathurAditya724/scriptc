@@ -163,6 +163,7 @@ typedef enum {
   SCR_DYNH_BLOB,           /* ScrBlob — new Blob() and Blob#slice() */
   SCR_DYNH_FILE,           /* ScrBlob with a name — new File() */
   SCR_DYNH_KEY_OBJECT,     /* node:crypto secret KeyObject (scr_lib.c) */
+  SCR_DYNH_DIR,            /* fs.Dir (scr_lib.c) */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
@@ -1080,6 +1081,8 @@ extern void scr_dyn_listener_fire_data(ScrClosure *cb, ScrBytes *chunk);
 extern void scr_dyn_listener_fire_err(ScrClosure *cb, ScrStr *msg);
 
 void *scr_dyn_retain_v(void *d);
+/* After a compiled fast path decremented a surviving capsule or handle. */
+void scr_dyn_release_survivor(ScrDyn *d);
 void scr_dyn_release_v(void *d);
 void scr_dyn_trace_v(void *d, ScrTraceVisit visit, void *ctx);
 
