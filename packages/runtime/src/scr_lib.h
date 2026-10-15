@@ -244,7 +244,7 @@ void scr_fs_mkdir(ScrStr *path);
  * EISDIR-coded error; use scr_fs_rmdir for empty directories). */
 void scr_fs_rm(ScrStr *path);
 void scr_fs_rmdir(ScrStr *path);
-ScrArr *scr_fs_readdir(ScrStr *path); /* names, OS order, no "."/".." */
+ScrArr *scr_fs_readdir(ScrStr *path); /* names (byte order on POSIX, as libuv sorts), no "."/".." */
 
 /* The fs option forms (same throw discipline). mkdir_recursive is Node's
  * recursive algorithm (existing-dir target is a no-op; errors report
@@ -287,6 +287,9 @@ void scr_fs_rename_error(int error, const ScrStr *oldpath, const ScrStr *newpath
 void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode);
 void scr_fs_mkdir_mode(ScrStr *path, double mode);
 void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode);
+/* The same walk, answering the first directory created (+1) or NULL
+ * when the path already existed (or on failure, the exception pending). */
+ScrStr *scr_fs_mkdir_recursive_first(ScrStr *path, double mode);
 
 /* Sequentially consistent integer operations and shared Int32 wait queues. */
 typedef struct ScrBytes ScrBytes;

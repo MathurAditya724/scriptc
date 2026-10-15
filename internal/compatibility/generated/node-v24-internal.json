@@ -326,9 +326,9 @@
       "apiEntries": 280,
       "static": {
         "supported": 7,
-        "partial": 98,
+        "partial": 101,
         "refused": 0,
-        "not-implemented": 175,
+        "not-implemented": 172,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -43754,6 +43754,7 @@
           "tests/corpus/3135-fs-file-handle-controls.ts",
           "tests/corpus/3136-fs-file-handle-options.ts",
           "tests/corpus/3137-fs-vector-callbacks.cjs",
+          "tests/corpus/5540-fs-callback-forms.cjs",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/fs-read-encodings.ts",
           "tests/corpus/node24-fs-links-callbacks.cjs",
@@ -46106,8 +46107,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.mkdir",
+        "tests": [
+          "tests/corpus/5540-fs-callback-forms.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -46313,8 +46317,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.readFile",
+        "tests": [
+          "tests/corpus/5540-fs-callback-forms.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -46926,8 +46933,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.write",
+        "tests": [
+          "tests/corpus/5540-fs-callback-forms.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
