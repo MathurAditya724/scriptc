@@ -11,6 +11,7 @@ import {
   CRYPTOHASH_T,
   CRYPTOHMAC_T,
   DATE_T,
+  DIR_T,
   DGRAMSOCK_T,
   DYN,
   F64,
@@ -458,6 +459,19 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** The error an fs/promises glob walk ended with (undefined when none),
    * read once right after fsp.globStrings / fsp.globTypes. */
   "fsp.globError": { argTypes: [], result: DYN },
+  /** fs.Dir (scr_lib.c): opendirSync(path, bufferSize) throws Node's
+   * opendir error (or the options.bufferSize RangeError); dir.readSync
+   * answers the call site's `Dirent | null` (VOID here — the emitter builds
+   * the row like readdirTypesSync) and dir.read is its promise twin;
+   * readSync and closeSync throw ERR_DIR_CLOSED on a closed Dir, read and
+   * close reject with it. */
+  "fs.opendirSync": { argTypes: [STRING, F64], result: DIR_T },
+  "fsp.opendir": { argTypes: [STRING, F64], result: { kind: "promise", inner: DIR_T } },
+  "dir.path": { argTypes: [DIR_T], result: STRING },
+  "dir.readSync": { argTypes: [DIR_T], result: VOID },
+  "dir.read": { argTypes: [DIR_T], result: { kind: "promise", inner: VOID } },
+  "dir.closeSync": { argTypes: [DIR_T], result: VOID },
+  "dir.close": { argTypes: [DIR_T], result: { kind: "promise", inner: VOID } },
   /** node:path (scr_path.c ports BOTH of Node's implementations
    * function-by-function): the `path.*` family is posix, the
    * `path.win32*` family is Node v24's path.win32 ported exactly — the
@@ -1058,6 +1072,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fs.unlinkSync": { argTypes: [STRING], result: VOID },
   "fs.chmodSync": { argTypes: [STRING, F64], result: VOID },
   "fs.chownSync": { argTypes: [STRING, F64, F64], result: VOID },
+  "fs.lchownSync": { argTypes: [STRING, F64, F64], result: VOID },
+  "fs.fchownSync": { argTypes: [F64, F64, F64], result: VOID },
+  /** truncateSync opens the path with 'r+', then truncates (len checked and
+   * clamped like ftruncateSync's) and closes it. */
+  "fs.truncateSync": { argTypes: [STRING, F64], result: VOID },
   "fs.copyFileSync": { argTypes: [STRING, STRING], result: VOID },
   /** renameSync is the direct two-path syscall wrapper. renameCb defers
    * the operation to the loop and fires a program-shaped Error | null
@@ -2489,6 +2508,17 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fsp.mkdirRecursiveMode": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
   "fsp.unlink": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
   "fsp.chmod": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
+  "fsp.chown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
+  "fsp.lchown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
+  "fsp.access": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
+  "fsp.truncate": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
+  "fsp.appendFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
+  "fsp.appendFileBytes": { argTypes: [STRING, BYTES_U8], result: { kind: "promise", inner: VOID } },
+  "fsp.copyFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
+  "fsp.mkdtemp": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
+  /** readFile(path, encoding | { encoding }) for any runtime encoding name. */
+  "fsp.readFileEncoded": { argTypes: [STRING, STRING], result: { kind: "promise", inner: STRING } },
+  "fsp.rmdir": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
   "fsp.link": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
   "fsp.symlink": { argTypes: [DYN, DYN, DYN], result: { kind: "promise", inner: VOID } },
   "fsp.readlink": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },

@@ -1017,6 +1017,17 @@ static void scr_dyn_gcfree(void *ptr) { scr_dyn_dispose(ptr, true); }
 
 static void scr_dyn_destroy(void *ptr) { scr_dyn_dispose(ptr, false); }
 
+/* The cycle bookkeeping of a capsule or handle that survives a release.
+ * Compiled release fast paths decrement first and call this for the kinds
+ * whose candidacy depends on per-value state, matching scr_dyn_release. */
+void scr_dyn_release_survivor(ScrDyn *d) {
+  if ((d->kind == SCR_DYN_TYPED_REF &&
+       (d->v.typed_ref.materialized || d->v.typed_ref.casts || d->v.typed_ref.traced ||
+        d->prototype || d->symbol_properties || d->symbol_keys)) ||
+      (d->kind == SCR_DYN_HANDLE && d->v.handle.traced))
+    scr_cyc_released(d);
+}
+
 void scr_dyn_release(ScrDyn *d) {
   if (!d || d->rc == SIZE_MAX) return;
   if (--d->rc != 0) {
@@ -3176,7 +3187,8 @@ void scr_dyn_arg_type_fail(const char *argname, const char *expected, const ScrD
   scr_jb_init(&b);
   scr_jb_puts(&b, "The \"");
   scr_jb_puts(&b, argname);
-  scr_jb_puts(&b, "\" argument must be ");
+  /* Node names a dotted name (options.mode) a property. */
+  scr_jb_puts(&b, strchr(argname, '.') ? "\" property must be " : "\" argument must be ");
   scr_jb_puts(&b, expected);
   scr_jb_puts(&b, ". Received ");
   scr_jb_puts(&b, d);
@@ -3765,6 +3777,19 @@ static ScrDynEntry *scr_dyn_symbol_entry(const ScrDyn *receiver, const ScrDyn *k
   }
   scr_str_release(name);
   return entry;
+}
+
+ScrDynEntry *scr_dyn_own_symbol_entry(const ScrDyn *object, const ScrDyn *key) {
+  return object->symbol_properties ? scr_dyn_symbol_entry(object, key, true) : NULL;
+}
+
+ScrStr *scr_dyn_symbol_storage_name(const ScrDyn *key) { return scr_dyn_symbol_storage_key(key); }
+
+void scr_dyn_symbol_init_own(ScrDyn *object, ScrDyn *key, const ScrStr *storage, ScrDyn *value) {
+  object->symbol_properties = scr_dyn_new_obj_null_proto();
+  scr_dyn_obj_set(object->symbol_properties, storage->data, storage->len, scr_dyn_retain(value));
+  object->symbol_keys = scr_dyn_new_arr();
+  scr_dyn_arr_push(object->symbol_keys, scr_dyn_retain(key));
 }
 
 static void scr_dyn_symbol_table(ScrDyn *receiver) {

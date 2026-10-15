@@ -160,6 +160,8 @@ title: "Limitations"
 
 <include>../limitations/buffer-construction.mdx</include>
 
+Every Buffer owns an ArrayBuffer of its own length. Node allocates small Buffers from `Buffer.from`, `Buffer.allocUnsafe`, and `Buffer.concat` out of a shared 64 KiB pool, so for those Buffers `buf.buffer.byteLength` is the pool size in Node and the Buffer's length here, and `buf.byteOffset` is `0` here. Reading `buf.buffer` through `buf.byteOffset` and `buf.length` returns the same bytes in both. `Buffer.poolSize` is unsupported.
+
 ### JSON callbacks
 
 <include>../limitations/json-callbacks.mdx</include>

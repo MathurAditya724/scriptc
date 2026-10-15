@@ -3404,20 +3404,47 @@ void scr_fs_chmod(ScrStr *path, double mode) {
   if (chmod(path->data, (mode_t)mode) != 0) scr_fs_throw(errno, "chmod", path);
 }
 
-void scr_fs_chown(ScrStr *path, double uid, double gid) {
+static void scr_fs_throw_nopath(int e, const char *op);
+static bool scr_fs_write_fd_valid(double fd);
+
+/* Node's validateInteger(id, name, -1, 2 ** 32 - 1) for uid and gid. False
+ * with the RangeError thrown. */
+bool scr_fs_owner_id_valid(double id, const char *name) {
+  bool integer = isfinite(id) && trunc(id) == id;
+  if (integer && id >= -1 && id <= 4294967295.0) return true;
+  char received[48], msg[192];
+  scr_num_received(id, received);
+  int n = snprintf(msg, sizeof msg, "The value of \"%s\" is out of range. It must be %s. Received %s", name,
+                   integer ? ">= -1 && <= 4294967295" : "an integer", received);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+/* chown, lchown (path, no follow) and fchown (fd >= 0, path NULL). libuv's
+ * Windows forms are unconditional no-op successes — Node's calls "work" and
+ * change nothing there; WASI likewise has no ownership model. Node passes
+ * the ids straight to the syscall; -1 is the POSIX "leave unchanged" value
+ * and rides the same int cast. */
+static void scr_fs_chown_op(ScrStr *path, double fd, bool no_follow, double uid, double gid) {
+  if (!scr_fs_owner_id_valid(uid, "uid") || !scr_fs_owner_id_valid(gid, "gid")) return;
+  /* The binding checks fchown's fd after the ids. */
+  if (!path && !scr_fs_write_fd_valid(fd)) return;
 #if defined(_WIN32) || defined(__wasi__)
-  /* libuv's uv_fs_chown on Windows is an unconditional no-op success —
-   * Node's chownSync "works" and changes nothing there; WASI likewise has
-   * no ownership model. */
-  (void)path; (void)uid; (void)gid;
+  (void)path; (void)fd; (void)no_follow;
 #else
-  /* Node passes the ids straight to chown(2); -1 is the POSIX "leave
-   * unchanged" value and rides the same int cast. */
-  if (chown(path->data, (uid_t)(int64_t)uid, (gid_t)(int64_t)gid) != 0) {
-    scr_fs_throw(errno, "chown", path);
+  uid_t owner = (uid_t)(int64_t)uid;
+  gid_t group = (gid_t)(int64_t)gid;
+  if (!path) {
+    if (fchown((int)fd, owner, group) != 0) scr_fs_throw_nopath(errno, "fchown");
+  } else if ((no_follow ? lchown(path->data, owner, group) : chown(path->data, owner, group)) != 0) {
+    scr_fs_throw(errno, no_follow ? "lchown" : "chown", path);
   }
 #endif
 }
+
+void scr_fs_chown(ScrStr *path, double uid, double gid) { scr_fs_chown_op(path, -1, false, uid, gid); }
+void scr_fs_lchown(ScrStr *path, double uid, double gid) { scr_fs_chown_op(path, -1, true, uid, gid); }
+void scr_fs_fchown(double fd, double uid, double gid) { scr_fs_chown_op(NULL, fd, false, uid, gid); }
 
 /* fs.openSync(path, flags) → the raw fd (as f64) — the pair behind
  * spawn's fd-stdio form (openSync → stdio: ["ignore", fd, fd] →
@@ -3538,19 +3565,23 @@ void scr_fs_fdatasync(double fd) {
 #endif
 }
 
-void scr_fs_ftruncate(double fd, double length) {
-  if (!scr_fs_write_fd_valid(fd)) return;
+/* Node's validateInteger(len, 'len'). False with the RangeError thrown. */
+bool scr_fs_truncate_len_valid(double length) {
+  if (isfinite(length) && trunc(length) == length &&
+      length >= -9007199254740991.0 && length <= 9007199254740991.0) return true;
   char received[48], msg[192];
   scr_num_received(length, received);
-  if (!(isfinite(length) && trunc(length) == length) ||
-      length < -9007199254740991.0 || length > 9007199254740991.0) {
-    const char *bound = isfinite(length) && trunc(length) == length
-      ? ">= -9007199254740991 && <= 9007199254740991" : "an integer";
-    int n = snprintf(msg, sizeof msg,
-      "The value of \"len\" is out of range. It must be %s. Received %s", bound, received);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
-    return;
-  }
+  const char *bound = isfinite(length) && trunc(length) == length
+    ? ">= -9007199254740991 && <= 9007199254740991" : "an integer";
+  int n = snprintf(msg, sizeof msg,
+    "The value of \"len\" is out of range. It must be %s. Received %s", bound, received);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+void scr_fs_ftruncate(double fd, double length) {
+  if (!scr_fs_write_fd_valid(fd)) return;
+  if (!scr_fs_truncate_len_valid(length)) return;
   if (length < 0) length = 0;
 #ifdef _WIN32
   int error = (int)_chsize_s((int)fd, (__int64)length);
@@ -3558,6 +3589,18 @@ void scr_fs_ftruncate(double fd, double length) {
 #else
   if (ftruncate((int)fd, (off_t)length) != 0) scr_fs_throw_nopath(errno, "ftruncate");
 #endif
+}
+
+/* truncateSync and fsp.truncate: open(path, 'r+'), then ftruncate's len
+ * check and clamp, then close. Node's order, so an open failure wins over
+ * an invalid len. */
+void scr_fs_truncate(ScrStr *path, double length) {
+  ScrStr *flags = scr_str_new("r+", 2);
+  double fd = scr_fs_open(path, flags);
+  scr_str_release(flags);
+  if (scr_exc_pending()) return;
+  scr_fs_ftruncate(fd, length);
+  close((int)fd);
 }
 
 #ifdef _WIN32
@@ -4657,7 +4700,11 @@ static char *scr_portable_mkdtemp(char *tmpl) {
 #define mkdtemp scr_portable_mkdtemp
 #endif
 
-ScrStr *scr_fs_mkdtemp(ScrStr *prefix) {
+/* Node's sync error reports the template, X's included: mkdtemp
+ * '/nope/x-XXXXXX'. The callback and promise errors report the request's
+ * path, which is the template as mkdtemp(3) left it (glibc leaves the last
+ * name it tried; musl restores the X's). */
+static ScrStr *scr_fs_mkdtemp_op(ScrStr *prefix, bool sync) {
   char *tmpl = malloc(prefix->len + 7);
   if (!tmpl) {
     scr_trap("scriptc: out of memory\n");
@@ -4665,8 +4712,8 @@ ScrStr *scr_fs_mkdtemp(ScrStr *prefix) {
   memcpy(tmpl, prefix->data, prefix->len);
   memcpy(tmpl + prefix->len, "XXXXXX", 7);
   if (!mkdtemp(tmpl)) {
-    /* Node reports the template, X's included: mkdtemp '/nope/x-XXXXXX' */
     int e = errno;
+    if (sync) memcpy(tmpl + prefix->len, "XXXXXX", 6);
     ScrStr *shown = scr_str_new(tmpl, prefix->len + 6);
     scr_fs_throw(e, "mkdtemp", shown);
     scr_str_release(shown);
@@ -4678,8 +4725,27 @@ ScrStr *scr_fs_mkdtemp(ScrStr *prefix) {
   return out;
 }
 
+ScrStr *scr_fs_mkdtemp(ScrStr *prefix) { return scr_fs_mkdtemp_op(prefix, true); }
+ScrStr *scr_fs_mkdtemp_async(ScrStr *prefix) { return scr_fs_mkdtemp_op(prefix, false); }
+
+/* Node's GetValidFileMode for access(): a finite number whose int32 value
+ * lies in F_OK .. R_OK | W_OK | X_OK. False with the RangeError thrown. */
+bool scr_fs_access_mode_valid(double mode) {
+  static const char not_finite[] = "mode is out of range";
+  static const char range[] = "mode is out of range: >= 0 && <= 7";
+  if (!isfinite(mode)) {
+    scr_throw_error_msg_code(SCR_ERR_RANGE, not_finite, sizeof not_finite - 1, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  int32_t m = (int32_t)scr_to_uint32(mode);
+  if (m >= 0 && m <= 7) return true;
+  scr_throw_error_msg_code(SCR_ERR_RANGE, range, sizeof range - 1, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
 void scr_fs_access(ScrStr *path, double mode) {
-  int m = (int)mode;
+  if (!scr_fs_access_mode_valid(mode)) return;
+  int m = (int32_t)scr_to_uint32(mode);
 #ifdef _WIN32
   /* The CRT access() rejects X_OK (there is no execute bit); Node on
    * Windows treats X_OK as F_OK, so mask it down to the R/W bits. */
@@ -6195,6 +6261,241 @@ void scr_fs_scandir_free(ScrScandir *s) {
   free(s->names);
   free(s->kinds);
   free(s);
+}
+
+/* ── fs.Dir ──────────────────────────────────────────────────────────
+ * opendirSync and fs.promises.opendir: one open directory stream handing
+ * out an entry at a time in OS order, like libuv's uv_fs_readdir (no "."
+ * or ".."). Entry kinds use the scandir encoding above. A closed Dir
+ * throws ERR_DIR_CLOSED; releasing the last reference closes the stream. */
+
+struct ScrDir {
+  size_t rc;
+  ScrStr *path;
+  bool closed;
+#ifdef _WIN32
+  HANDLE search;
+  WIN32_FIND_DATAW entry;
+  bool pending; /* entry holds the next unread result */
+#else
+  DIR *stream;
+#endif
+};
+
+static void scr_dir_close_stream(ScrDir *d) {
+#ifdef _WIN32
+  if (d->search != INVALID_HANDLE_VALUE) FindClose(d->search);
+  d->search = INVALID_HANDLE_VALUE;
+  d->pending = false;
+#else
+  if (d->stream) closedir(d->stream);
+  d->stream = NULL;
+#endif
+}
+
+ScrDir *scr_dir_retain(ScrDir *d) {
+  if (d->rc != SIZE_MAX) d->rc++;
+  return d;
+}
+
+void scr_dir_release(ScrDir *d) {
+  if (!d || d->rc == SIZE_MAX || --d->rc) return;
+  scr_dir_close_stream(d);
+  scr_str_release(d->path);
+  free(d);
+}
+
+void *scr_dir_retain_v(void *p) { return scr_dir_retain(p); }
+void scr_dir_release_v(void *p) { scr_dir_release(p); }
+
+ScrStr *scr_dir_path(ScrDir *d) { return scr_str_retain(d->path); }
+
+static void scr_dir_closed(void) {
+  static const char message[] = "Directory handle was closed";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "ERR_DIR_CLOSED");
+}
+
+/* Node opens the directory, then checks options.bufferSize (a uint32 of at
+ * least 1) and closes the handle when it fails. Its opendir errors name the
+ * syscall but no path. */
+static bool scr_dir_buffer_size_valid(double size) {
+  bool integer = isfinite(size) && trunc(size) == size;
+  if (integer && size >= 1 && size <= 4294967295.0) return true;
+  char received[48], msg[192];
+  scr_num_received(size, received);
+  int n = snprintf(msg, sizeof msg, "The value of \"options.bufferSize\" is out of range. It must be %s. Received %s",
+                   integer ? ">= 1 && <= 4294967295" : "an integer", received);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+/* A Dir in an 'unknown' slot: path reads and closeSync() calls; the other
+ * members throw the "not supported yet" Error. */
+static ScrDyn *scr_dir_dyn_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
+                                  const char *what) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  (void)what;
+  if (strcmp(method, "closeSync") == 0) {
+    scr_dir_close(h);
+    return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+  }
+  static const char msg[] = "Dir method calls through an 'unknown' value are not supported yet — narrow the value to Dir first";
+  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  return NULL;
+}
+
+static ScrDyn *scr_dir_dyn_get(void *h, const char *key, size_t len) {
+  if (len != 4 || memcmp(key, "path", 4) != 0) return NULL;
+  ScrStr *path = scr_dir_path(h);
+  ScrDyn *out = scr_dyn_new_str(path);
+  scr_str_release(path);
+  return out;
+}
+
+static bool scr_dir_dyn_set(void *h, const char *key, size_t len, const ScrDyn *value) {
+  (void)h;
+  (void)key;
+  (void)len;
+  (void)value;
+  return false;
+}
+
+static void scr_dir_dyn_install(void) {
+  static SCR_TL bool installed;
+  if (installed) return;
+  installed = true;
+  static const ScrDynHandleOps ops = {
+      .cls = "Dir",
+      .retain = scr_dir_retain_v,
+      .release = scr_dir_release_v,
+      .invoke = scr_dir_dyn_invoke,
+      .get = scr_dir_dyn_get,
+      .set = scr_dir_dyn_set,
+  };
+  scr_dyn_handle_install(SCR_DYNH_DIR, &ops);
+}
+
+ScrDir *scr_fs_opendir(ScrStr *path, double buffer_size) {
+  scr_dir_dyn_install();
+  ScrDir *d = calloc(1, sizeof *d);
+  if (!d) scr_trap("scriptc: out of memory\n");
+  d->rc = 1;
+#ifdef _WIN32
+  d->search = INVALID_HANDLE_VALUE;
+  WCHAR *wide = scr_fs_win_wide(path);
+  int error = 0;
+  DWORD attributes = wide ? GetFileAttributesW(wide) : INVALID_FILE_ATTRIBUTES;
+  if (!wide || attributes == INVALID_FILE_ATTRIBUTES) error = scr_fs_win_errno(GetLastError());
+  else if (!(attributes & FILE_ATTRIBUTE_DIRECTORY)) error = ENOTDIR;
+  if (!error) {
+    size_t length = wcslen(wide);
+    WCHAR *pattern = realloc(wide, (length + 3) * sizeof *wide);
+    if (!pattern) scr_trap("scriptc: out of memory\n");
+    wide = pattern;
+    if (length && pattern[length - 1] != L'\\' && pattern[length - 1] != L'/') pattern[length++] = L'\\';
+    pattern[length++] = L'*';
+    pattern[length] = 0;
+    d->search = FindFirstFileW(pattern, &d->entry);
+    DWORD last = d->search == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+    if (d->search != INVALID_HANDLE_VALUE) d->pending = true;
+    else if (last != ERROR_FILE_NOT_FOUND) error = scr_fs_win_errno(last);
+  }
+  free(wide);
+  if (error) {
+    free(d);
+    scr_fs_throw_nopath(error, "opendir");
+    return NULL;
+  }
+#else
+  d->stream = opendir(path->data);
+  if (!d->stream) {
+    int error = errno;
+    free(d);
+    scr_fs_throw_nopath(error, "opendir");
+    return NULL;
+  }
+#endif
+  if (!scr_dir_buffer_size_valid(buffer_size)) {
+    scr_dir_close_stream(d);
+    free(d);
+    return NULL;
+  }
+  d->path = scr_str_retain(path);
+  return d;
+}
+
+#ifndef _WIN32
+/* The entry kind from d_type, with Node's lstat fallback for DT_UNKNOWN. */
+static unsigned char scr_dir_entry_kind(const ScrDir *d, const struct dirent *ent) {
+#ifdef DT_REG
+  switch (ent->d_type) {
+    case DT_REG: return 1;
+    case DT_DIR: return 2;
+    case DT_LNK: return 3;
+    case DT_FIFO: return 4;
+    case DT_SOCK: return 5;
+    case DT_CHR: return 6;
+    case DT_BLK: return 7;
+    default: break;
+  }
+#endif
+  char buf[4096];
+  int w = snprintf(buf, sizeof buf, "%s/%s", d->path->data, ent->d_name);
+  struct stat st;
+  return w > 0 && (size_t)w < sizeof buf && lstat(buf, &st) == 0 ? scr_dirent_kind_of_mode(st.st_mode) : 0;
+}
+#endif
+
+/* The next entry: true with a +1 name and its kind, false at the end (or
+ * with ERR_DIR_CLOSED thrown). */
+bool scr_dir_read(ScrDir *d, ScrStr **name, double *kind) {
+  *name = NULL;
+  *kind = 0;
+  if (d->closed) {
+    scr_dir_closed();
+    return false;
+  }
+#ifdef _WIN32
+  while (d->pending) {
+    WIN32_FIND_DATAW entry = d->entry;
+    d->pending = FindNextFileW(d->search, &d->entry) != 0;
+    if (wcscmp(entry.cFileName, L".") == 0 || wcscmp(entry.cFileName, L"..") == 0) continue;
+    ScrStr *text = scr_fs_win_utf8(entry.cFileName, wcslen(entry.cFileName));
+    if (!text) {
+      scr_fs_throw_nopath(scr_fs_win_errno(GetLastError()), "scandir");
+      return false;
+    }
+    *name = text;
+    *kind = (entry.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && scr_stats_is_link_tag(entry.dwReserved0) ? 3
+            : (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 2 : 1;
+    return true;
+  }
+  return false;
+#else
+  for (;;) {
+    errno = 0;
+    const struct dirent *ent = readdir(d->stream);
+    if (!ent) {
+      if (errno) scr_fs_throw_nopath(errno, "scandir");
+      return false;
+    }
+    if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+    *name = scr_str_new(ent->d_name, strlen(ent->d_name));
+    *kind = scr_dir_entry_kind(d, ent);
+    return true;
+  }
+#endif
+}
+
+void scr_dir_close(ScrDir *d) {
+  if (d->closed) {
+    scr_dir_closed();
+    return;
+  }
+  d->closed = true;
+  scr_dir_close_stream(d);
 }
 
 /* ── node:crypto ─────────────────────────────────────────────────────

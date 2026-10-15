@@ -7,8 +7,8 @@
     "tierItemCount": 3472,
     "tiers": {
       "static": {
-        "audit-partial": 910,
-        "verify-gap": 2439,
+        "audit-partial": 954,
+        "verify-gap": 2395,
         "replace-refusal": 36,
         "classify": 2,
         "implement": 85
@@ -25863,12 +25863,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.access",
+          "tests": [
+            "tests/corpus/5542-fs-promises-parity.cjs",
+            "tests/corpus/5543-fs-promises-typed.ts"
+          ]
         }
       }
     },
@@ -25888,12 +25891,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.appendFile",
+          "tests": [
+            "tests/corpus/5542-fs-promises-parity.cjs",
+            "tests/corpus/5543-fs-promises-typed.ts"
+          ]
         }
       }
     },
@@ -25943,12 +25949,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.chown",
+          "tests": [
+            "tests/corpus/5542-fs-promises-parity.cjs",
+            "tests/corpus/5543-fs-promises-typed.ts"
+          ]
         }
       }
     },
@@ -25968,12 +25977,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.copyFile",
+          "tests": [
+            "tests/corpus/5542-fs-promises-parity.cjs",
+            "tests/corpus/5543-fs-promises-typed.ts"
+          ]
         }
       }
     },
@@ -26075,12 +26087,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.lchown",
+          "tests": [
+            "tests/corpus/5542-fs-promises-parity.cjs",
+            "tests/corpus/5543-fs-promises-typed.ts"
+          ]
         }
       }
     },
@@ -26214,12 +26229,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.mkdtemp",
+          "tests": [
+            "tests/corpus/5542-fs-promises-parity.cjs",
+            "tests/corpus/5543-fs-promises-typed.ts"
+          ]
         }
       }
     },
@@ -26294,12 +26312,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.opendir",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },
@@ -26463,12 +26483,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.rmdir",
+          "tests": [
+            "tests/corpus/5542-fs-promises-parity.cjs",
+            "tests/corpus/5543-fs-promises-typed.ts"
+          ]
         }
       }
     },
@@ -26608,12 +26631,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.truncate",
+          "tests": [
+            "tests/corpus/5542-fs-promises-parity.cjs",
+            "tests/corpus/5543-fs-promises-typed.ts"
+          ]
         }
       }
     },
@@ -26770,12 +26796,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.access",
+          "tests": [
+            "tests/corpus/5542-fs-promises-parity.cjs"
+          ]
         }
       }
     },
@@ -26795,12 +26823,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.appendFile",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -26820,12 +26851,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.chmod",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -26845,12 +26879,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.chown",
+          "tests": [
+            "tests/corpus/5542-fs-promises-parity.cjs"
+          ]
         }
       }
     },
@@ -26895,12 +26931,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.copyFile",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -27047,12 +27086,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.fchown",
+          "tests": [
+            "tests/corpus/5542-fs-promises-parity.cjs"
+          ]
         }
       }
     },
@@ -27099,12 +27140,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.fstat",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -27124,12 +27168,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.fsync",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -27262,12 +27309,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.lchown",
+          "tests": [
+            "tests/corpus/5542-fs-promises-parity.cjs"
+          ]
         }
       }
     },
@@ -27346,12 +27395,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.lstat",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -27377,7 +27429,8 @@
           "confidence": "high",
           "source": "compiler-feature:fs.fs.mkdir",
           "tests": [
-            "tests/corpus/5540-fs-callback-forms.cjs"
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
           ]
         }
       }
@@ -27398,12 +27451,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.mkdtemp",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -27423,12 +27479,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.open",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -27498,12 +27557,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.read",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -27523,12 +27585,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.read",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -27548,12 +27613,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.read",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -27573,12 +27641,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.readdir",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -27604,7 +27675,8 @@
           "confidence": "high",
           "source": "compiler-feature:fs.fs.readFile",
           "tests": [
-            "tests/corpus/5540-fs-callback-forms.cjs"
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
           ]
         }
       }
@@ -27682,12 +27754,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.realpath",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -27762,12 +27837,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.rmdir",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -27812,12 +27890,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.stat",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -27897,12 +27978,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.truncate",
+          "tests": [
+            "tests/corpus/5542-fs-promises-parity.cjs"
+          ]
         }
       }
     },
@@ -27922,12 +28005,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.unlink",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -28056,12 +28142,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.write",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -28081,12 +28170,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.write",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -28133,12 +28225,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.writeFile",
+          "tests": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs"
+          ]
         }
       }
     },
@@ -28472,12 +28567,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.fchownSync",
+          "tests": [
+            "tests/corpus/5542-fs-promises-parity.cjs",
+            "tests/corpus/5543-fs-promises-typed.ts"
+          ]
         }
       }
     },
@@ -28690,12 +28788,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.lchownSync",
+          "tests": [
+            "tests/corpus/5542-fs-promises-parity.cjs",
+            "tests/corpus/5543-fs-promises-typed.ts"
+          ]
         }
       }
     },
@@ -28889,12 +28990,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.opendirSync",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },
@@ -29359,12 +29462,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.truncateSync",
+          "tests": [
+            "tests/corpus/5542-fs-promises-parity.cjs",
+            "tests/corpus/5543-fs-promises-typed.ts"
+          ]
         }
       }
     },
@@ -29590,12 +29696,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.Dir",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },
@@ -29615,12 +29723,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.dir.close",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },
@@ -29665,12 +29775,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.dir.closeSync",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },
@@ -29690,12 +29802,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.dir.read",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },
@@ -29740,12 +29854,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.dir.readSync",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },
@@ -29765,12 +29881,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.dir",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },
@@ -29840,12 +29958,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.path",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },

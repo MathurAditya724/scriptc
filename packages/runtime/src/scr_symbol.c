@@ -243,3 +243,115 @@ void scr_dyn_global_symbol_delete(ScrSym *key) {
     return;
   }
 }
+
+/* ── fs.Dirent as a dynamic value ────────────────────────────────────
+ * A Dirent row converted to dyn (untyped JavaScript, `unknown` slots)
+ * takes Node's shape: own enumerable name and parentPath, the entry kind
+ * under an own enumerable Symbol(type) key, and the type probes on a
+ * shared Dirent prototype as non-enumerable methods. The %dtype field
+ * stays an own, non-enumerable property so a dyn Dirent converts back to
+ * the typed row. It lives in this unit because the Symbol(type) key needs
+ * it; the compiler links the unit whenever the program has the Dirent
+ * record shape. */
+static SCR_TL ScrDyn *scr_dirent_prototype;
+static SCR_TL ScrDyn *scr_dirent_type_key;
+static SCR_TL ScrStr *scr_dirent_type_storage;
+
+static ScrDyn *scr_dirent_probe(double code) {
+  ScrDyn *self = scr_dyn_this_get();
+  ScrDyn *view = self->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(self) : scr_dyn_retain(self);
+  scr_dyn_release(self);
+  if (scr_exc_pending()) {
+    scr_dyn_release(view);
+    return NULL;
+  }
+  if (view->kind == SCR_DYN_UNDEF || view->kind == SCR_DYN_NULL) {
+    char message[64];
+    int n = snprintf(message, sizeof message, "Cannot read properties of %s (reading 'Symbol(type)')",
+                     view->kind == SCR_DYN_UNDEF ? "undefined" : "null");
+    scr_dyn_release(view);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+    return NULL;
+  }
+  const ScrDyn *kind = view->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(view, "%dtype", 6) : NULL;
+  bool match = kind && kind->kind == SCR_DYN_NUM && kind->v.num == code;
+  scr_dyn_release(view);
+  return scr_dyn_new_bool(match);
+}
+
+#define SCR_DIRENT_PROBE(name, code)                                                  \
+  static ScrDyn *scr_dirent_##name(ScrClosure *closure, ScrDyn *const *args, size_t argc) { \
+    (void)closure;                                                                    \
+    (void)args;                                                                       \
+    (void)argc;                                                                       \
+    return scr_dirent_probe(code);                                                    \
+  }
+SCR_DIRENT_PROBE(isDirectory, 2)
+SCR_DIRENT_PROBE(isFile, 1)
+SCR_DIRENT_PROBE(isBlockDevice, 7)
+SCR_DIRENT_PROBE(isCharacterDevice, 6)
+SCR_DIRENT_PROBE(isSymbolicLink, 3)
+SCR_DIRENT_PROBE(isFIFO, 4)
+SCR_DIRENT_PROBE(isSocket, 5)
+#undef SCR_DIRENT_PROBE
+
+static void scr_dirent_teardown(void) {
+  if (scr_dirent_prototype) {
+    scr_dirent_prototype->v.obj.class_name = NULL;
+    scr_dyn_release(scr_dirent_prototype);
+    scr_dirent_prototype = NULL;
+  }
+  scr_dyn_release(scr_dirent_type_key);
+  scr_dirent_type_key = NULL;
+  scr_str_release(scr_dirent_type_storage);
+  scr_dirent_type_storage = NULL;
+}
+
+static void scr_dirent_init(void) {
+  if (scr_dirent_prototype) return;
+  /* Node's class body order. */
+  static const struct {
+    const char *name;
+    ScrDynThunk thunk;
+  } methods[] = {
+      {"isDirectory", scr_dirent_isDirectory},
+      {"isFile", scr_dirent_isFile},
+      {"isBlockDevice", scr_dirent_isBlockDevice},
+      {"isCharacterDevice", scr_dirent_isCharacterDevice},
+      {"isSymbolicLink", scr_dirent_isSymbolicLink},
+      {"isFIFO", scr_dirent_isFIFO},
+      {"isSocket", scr_dirent_isSocket},
+  };
+  ScrDyn *proto = scr_dyn_new_obj();
+  proto->v.obj.class_name = "Dirent";
+  for (size_t i = 0; i < sizeof methods / sizeof methods[0]; i++) {
+    scr_dyn_obj_set(proto, methods[i].name, strlen(methods[i].name),
+                    scr_dyn_new_func(scr_closure_new(NULL, 0), methods[i].thunk, 0, "native:fs.Dirent",
+                                     methods[i].name));
+    proto->v.obj.entries[proto->v.obj.len - 1].enumerable = false;
+  }
+  ScrStr *desc = scr_str_new("type", 4);
+  ScrSym *sym = scr_sym_new(desc);
+  scr_str_release(desc);
+  scr_dirent_type_key = scr_dyn_new_symbol(sym);
+  scr_sym_release(sym);
+  scr_dirent_type_storage = scr_dyn_symbol_storage_name(scr_dirent_type_key);
+  scr_dirent_prototype = proto;
+  scr_atexit(scr_dirent_teardown);
+}
+
+void scr_dyn_dirent_finish(ScrDyn *obj) {
+  scr_dirent_init();
+  scr_dyn_release(obj->prototype);
+  obj->prototype = scr_dyn_retain(scr_dirent_prototype);
+  for (size_t i = 0; i < obj->v.obj.len; i++) {
+    ScrDynEntry *ent = &obj->v.obj.entries[i];
+    if (ent->key_len != 6 || memcmp(ent->key, "%dtype", 6) != 0) continue;
+    ent->enumerable = false;
+    if (!obj->symbol_properties && !obj->symbol_keys)
+      scr_dyn_symbol_init_own(obj, scr_dirent_type_key, scr_dirent_type_storage, ent->value);
+    else
+      scr_dyn_symbol_key_set(obj, scr_dirent_type_key, ent->value);
+    break;
+  }
+}

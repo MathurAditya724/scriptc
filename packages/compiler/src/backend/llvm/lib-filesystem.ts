@@ -515,6 +515,72 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     );
     return host.own({ name: promise, type: e.type });
   }
+  if (e.fn === "dir.readSync" || e.fn === "dir.read") {
+    // `Dirent | null`: scr_dir_read answers the next entry's +1 name and
+    // kind, or false at the end; the row is the call site's Dirent record
+    // (parentPath is the Dir's path), built only for an entry. The sync
+    // form checks a closed-Dir error first; the promise form lets
+    // settled_ref turn it into a rejection of the (null) dummy.
+    const promiseForm = e.fn === "dir.read";
+    const unionT = promiseForm && e.type.kind === "promise" ? e.type.inner : e.type;
+    if (unionT.kind !== "union")
+      throw new InternalCompilerError(
+        `llvm emitter bug: ${e.fn} result is not a Dirent | null union`,
+      );
+    const def = host.unionsById.get(unionT.unionId);
+    const recTag = def ? def.arms.findIndex((a) => a.kind === "record") : -1;
+    const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
+    const recT = recTag >= 0 ? def!.arms[recTag]! : undefined;
+    if (!recT || recT.kind !== "record" || nullTag < 0)
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
+    const dir = host.emitExpr(e.args[0]!);
+    host.declare(`declare zeroext i1 @scr_dir_read(ptr, ptr, ptr)`);
+    host.declare(`declare ptr @scr_dir_path(ptr)`);
+    const nameSlot = B.slot();
+    const kindSlot = B.slot();
+    const rowSlot = B.slot();
+    B.entryAllocas.push(
+      `${nameSlot} = alloca ptr`,
+      `${kindSlot} = alloca double`,
+      `${rowSlot} = alloca ptr`,
+    );
+    const has = B.tmp();
+    B.line(
+      `${has} = call zeroext i1 @scr_dir_read(ptr ${dir.name}, ptr ${nameSlot}, ptr ${kindSlot})`,
+    );
+    if (!promiseForm) host.emitPendingCheck();
+    B.line(`store ptr null, ptr ${rowSlot}`);
+    const lr = B.newLabel("dr.r");
+    const lj = B.newLabel("dr.j");
+    B.condBr(has, lr, lj);
+    B.startBlock(lr);
+    const row = B.tmp();
+    B.line(`${row} = call ptr @${mangleRecordNew(recT.shapeId)}()`);
+    const kind = B.tmp();
+    B.line(`${kind} = load double, ptr ${kindSlot}`);
+    host.storeField(host.recordFieldPtr(row, recT.shapeId, "%dtype").ptr, F64, kind, false);
+    const nm = B.tmp();
+    B.line(`${nm} = load ptr, ptr ${nameSlot} ; +1`);
+    B.line(`store ptr ${nm}, ptr ${host.recordFieldPtr(row, recT.shapeId, "name").ptr}`);
+    const parent = B.tmp();
+    B.line(`${parent} = call ptr @scr_dir_path(ptr ${dir.name}) ; +1`);
+    B.line(`store ptr ${parent}, ptr ${host.recordFieldPtr(row, recT.shapeId, "parentPath").ptr}`);
+    B.line(`store ptr ${row}, ptr ${rowSlot}`);
+    B.br(lj);
+    B.startBlock(lj);
+    const raw = B.tmp();
+    B.line(`${raw} = load ptr, ptr ${rowSlot}`);
+    const value = host.wrapNullable(raw, raw, recT, recTag, unionT, nullTag);
+    if (!promiseForm) return value;
+    const rc = vAdapters(host.shapeHost, unionT);
+    host.declare(`declare ptr @scr_promise_settled_ref(ptr, ptr, ptr, ptr)`);
+    host.moveTemp(value);
+    const promise = B.tmp();
+    B.line(
+      `${promise} = call ptr @scr_promise_settled_ref(ptr ${value.name}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, unionT)})`,
+    );
+    return host.own({ name: promise, type: e.type });
+  }
   return host.emitGenericLibCall(e);
 }
 

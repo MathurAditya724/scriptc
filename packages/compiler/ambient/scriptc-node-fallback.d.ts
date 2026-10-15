@@ -1287,6 +1287,9 @@ declare module "node:fs" {
     options: string | { encoding?: string | null } | null,
   ): string | Buffer;
   export function chownSync(path: string, uid: number, gid: number): void;
+  export function lchownSync(path: string, uid: number, gid: number): void;
+  export function fchownSync(fd: number, uid: number, gid: number): void;
+  export function truncateSync(path: string, len?: number): void;
   /* The 2-argument form only (Node's mode flags have no lowering). The
    * destination is created or truncated carrying the SOURCE's mode. */
   export function copyFileSync(src: string, dest: string): void;
@@ -1354,6 +1357,21 @@ declare module "node:fs" {
     options: GlobOptions,
     callback: (err: NodeJS.ErrnoException | null, matches?: string[]) => void,
   ): void;
+  /* fs.Dir: an open directory stream (opendirSync, fs.promises.opendir)
+   * read one Dirent at a time in OS order; utf8 names, no recursive walk. */
+  export interface Dir {
+    readonly path: string;
+    readSync(): Dirent | null;
+    read(): Promise<Dirent | null>;
+    closeSync(): void;
+    close(): Promise<void>;
+    [Symbol.asyncIterator](): AsyncIterableIterator<Dirent>;
+  }
+  export interface OpenDirOptions {
+    encoding?: "utf8" | "utf-8";
+    bufferSize?: number;
+  }
+  export function opendirSync(path: string, options?: OpenDirOptions): Dir;
   export function accessSync(path: string, mode?: number): void;
   export function mkdtempSync(prefix: string): string;
   export const constants: {
@@ -1690,6 +1708,10 @@ declare module "fs/promises" {
     mtime: number | string | Date,
   ): Promise<void>;
   export function readFile(path: string, encoding: "utf8" | "utf-8"): Promise<string>;
+  export function readFile(
+    path: string,
+    options: BufferEncoding | { encoding: BufferEncoding },
+  ): Promise<string>;
   export function readFile(path: string): Promise<Buffer>;
   export function writeFile(
     path: string,
@@ -1743,7 +1765,19 @@ declare module "fs/promises" {
   export function lstat(path: string): Promise<import("node:fs").Stats>;
   export function unlink(path: string): Promise<void>;
   export function chmod(path: string, mode: number): Promise<void>;
+  export function chown(path: string, uid: number, gid: number): Promise<void>;
+  export function lchown(path: string, uid: number, gid: number): Promise<void>;
+  export function access(path: string, mode?: number): Promise<void>;
+  export function truncate(path: string, len?: number): Promise<void>;
+  export function appendFile(path: string, data: string | Uint8Array): Promise<void>;
+  export function copyFile(src: string, dest: string): Promise<void>;
+  export function mkdtemp(prefix: string): Promise<string>;
+  export function rmdir(path: string): Promise<void>;
   export function rename(oldPath: string, newPath: string): Promise<void>;
+  export function opendir(
+    path: string,
+    options?: import("node:fs").OpenDirOptions,
+  ): Promise<import("node:fs").Dir>;
 }
 declare module "node:fs/promises" {
   export * from "fs/promises";

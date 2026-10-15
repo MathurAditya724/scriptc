@@ -33,7 +33,13 @@ import { InternalCompilerError } from "../../errors.js";
  *   ScrBytes { rc +0; len +8; elem +16; data +24 }.
  *   ScrDynPath { parent, key, index } — the %ScrDynPath type. */
 import type { IrType, IrUnionDef } from "../../ir/ir.js";
-import { DYN_HANDLE_KINDS, isDynTypedRefType, isRefCounted, typeKey } from "../../ir/ir.js";
+import {
+  DYN_HANDLE_KINDS,
+  isDirentShape,
+  isDynTypedRefType,
+  isRefCounted,
+  typeKey,
+} from "../../ir/ir.js";
 import { dynDesc, streamTypedRefEligible } from "../../ir/analysis.js";
 import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
@@ -63,6 +69,7 @@ const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   httpClientReq: 6,
   child: 16,
   fileHandle: 17,
+  dir: 44,
 };
 
 export const DYN_KIND = {
@@ -2304,6 +2311,12 @@ export class LlDyn {
             B.br(lSkip);
             B.startBlock(lSkip);
           }
+        }
+        // A Dirent row takes Node's Dirent prototype (the type probes) and
+        // its Symbol(type) key; %dtype stays readable but non-enumerable.
+        if (isDirentShape(shape)) {
+          host.declare(`declare void @scr_dyn_dirent_finish(ptr)`);
+          B.line(`call void @scr_dyn_dirent_finish(ptr ${d})`);
         }
         if (shape.indexValue) {
           const iv = shape.indexValue;

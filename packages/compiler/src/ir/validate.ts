@@ -30,6 +30,7 @@ import {
   F64,
   ffiClassType,
   ffiSourceParamTypes,
+  isDirentShape,
   isDynTypedRefType,
   isFfiCallbackParam,
   isFfiContextParam,
@@ -4702,7 +4703,27 @@ function validateFunction(
         result?.kind === "array" && result.elem.kind === "record"
           ? records.get(result.elem.shapeId)
           : undefined;
+      const ok = shape !== undefined && isDirentShape(shape);
+      if (!ok) {
+        err(
+          `libCall ${e.fn} must return ${e.fn === "fsp.readdirTypes" ? "a promise of " : ""}the Dirent record array`,
+          e.loc,
+        );
+      }
+      return true;
+    }
+    if (e.fn === "dir.readSync" || e.fn === "dir.read") {
+      // Result: `Dirent | null` (a promise of it for dir.read) — the
+      // interned Dirent row shape readdirTypesSync uses, or null.
+      const result =
+        e.fn === "dir.read" ? (e.type.kind === "promise" ? e.type.inner : undefined) : e.type;
+      const def = result?.kind === "union" ? unions.get(result.unionId) : undefined;
+      const row = def?.arms.find((a) => a.kind === "record");
+      const shape = row?.kind === "record" ? records.get(row.shapeId) : undefined;
       const ok =
+        def !== undefined &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "nullT") &&
         shape !== undefined &&
         !shape.tuple &&
         shape.indexValue === undefined &&
@@ -4715,7 +4736,7 @@ function validateFunction(
         shape.fields[2]!.type.kind === "string";
       if (!ok) {
         err(
-          `libCall ${e.fn} must return ${e.fn === "fsp.readdirTypes" ? "a promise of " : ""}the Dirent record array`,
+          `libCall ${e.fn} must return ${e.fn === "dir.read" ? "a promise of " : ""}Dirent | null`,
           e.loc,
         );
       }

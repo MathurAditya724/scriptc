@@ -1012,10 +1012,21 @@ static ScrStr *scr_insp_dyn_collection(ScrDyn *d, double recurse, double depth, 
   return out;
 }
 
+/* An own enumerable symbol-keyed property of `d` (borrowed), or NULL. */
+static ScrDynEntry *scr_insp_symbol_entry(ScrDyn *d, size_t i) {
+  ScrDynEntry *ent = scr_dyn_own_symbol_entry(d, d->symbol_keys->v.arr.items[i]);
+  return ent && ent->enumerable ? ent : NULL;
+}
+
 /* An ordinary object: `Name { key: value }` with its constructor name
- * `cls` (NULL for a plain object). */
+ * `cls` (NULL for a plain object). Node's default view lists the own
+ * enumerable string keys, then the own enumerable symbol keys. */
 static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char *cls) {
-  if (d->v.obj.len == 0) {
+  size_t shown = 0;
+  for (size_t i = 0; i < d->v.obj.len; i++) shown += d->v.obj.entries[i].enumerable;
+  size_t nsymbols = d->symbol_keys ? d->symbol_keys->v.arr.len : 0;
+  for (size_t i = 0; i < nsymbols; i++) shown += scr_insp_symbol_entry(d, i) != NULL;
+  if (shown == 0) {
     if (cls) return scr_insp_class_tag(cls, " {}");
     return d->null_proto ? scr_str_new("[Object: null prototype] {}", 27)
                          : scr_str_new("{}", 2);
@@ -1028,11 +1039,27 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
   scr_insp_begin(recurse + 1);
   for (size_t i = 0; i < d->v.obj.len; i++) {
     ScrDynEntry *ent = &d->v.obj.entries[i];
+    if (!ent->enumerable) continue;
     ScrStr *val = scr_insp_dyn(ent->value, recurse + 1, depth);
     InspBuf eb = {0};
     insp_key_into(&eb, ent->key, ent->key_len);
     ib_cstr(&eb, ": ");
     ib_bytes(&eb, val->data, val->len);
+    scr_str_release(val);
+    ScrStr *entry = ib_take(&eb);
+    scr_insp_entry(entry, false);
+    scr_str_release(entry);
+  }
+  for (size_t i = 0; i < nsymbols; i++) {
+    ScrDynEntry *ent = scr_insp_symbol_entry(d, i);
+    if (!ent) continue;
+    ScrStr *key = scr_insp_dyn(d->symbol_keys->v.arr.items[i], recurse + 1, depth);
+    ScrStr *val = scr_insp_dyn(ent->value, recurse + 1, depth);
+    InspBuf eb = {0};
+    ib_bytes(&eb, key->data, key->len);
+    ib_cstr(&eb, ": ");
+    ib_bytes(&eb, val->data, val->len);
+    scr_str_release(key);
     scr_str_release(val);
     ScrStr *entry = ib_take(&eb);
     scr_insp_entry(entry, false);

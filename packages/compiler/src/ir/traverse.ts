@@ -27,6 +27,7 @@ export function everyTypeChild(node: IrType, visit: (node: IrType) => boolean): 
     case "symbol":
     case "stats":
     case "fileHandle":
+    case "dir":
     case "spawnRes":
     case "child":
     case "netServer":

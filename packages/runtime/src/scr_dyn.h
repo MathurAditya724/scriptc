@@ -163,6 +163,7 @@ typedef enum {
   SCR_DYNH_BLOB,           /* ScrBlob — new Blob() and Blob#slice() */
   SCR_DYNH_FILE,           /* ScrBlob with a name — new File() */
   SCR_DYNH_KEY_OBJECT,     /* node:crypto secret KeyObject (scr_lib.c) */
+  SCR_DYNH_DIR,            /* fs.Dir (scr_lib.c) */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
@@ -439,6 +440,15 @@ ScrDyn *scr_dyn_obj_own_keys(const ScrDyn *v);
 ScrDyn *scr_dyn_own_keys(const ScrDyn *value);
 ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value);
 ScrDyn *scr_dyn_get_own_property_symbols(const ScrDyn *value);
+/* The own property stored under a symbol key on an object (borrowed), or
+ * NULL when it has none. */
+ScrDynEntry *scr_dyn_own_symbol_entry(const ScrDyn *object, const ScrDyn *key);
+/* The private storage name of a symbol key (+1). With it,
+ * scr_dyn_symbol_init_own gives an object that has no symbol properties
+ * yet its first one, a writable, enumerable, configurable data property
+ * (value borrowed). */
+ScrStr *scr_dyn_symbol_storage_name(const ScrDyn *key);
+void scr_dyn_symbol_init_own(ScrDyn *object, ScrDyn *key, const ScrStr *storage, ScrDyn *value);
 /* Object.hasOwn over a dyn receiver: OBJ member presence, ARR index
  * bounds ("length" included); nullish receivers throw Node's ToObject
  * TypeError; every other kind answers false. */
@@ -1068,6 +1078,8 @@ extern void scr_dyn_listener_fire_data(ScrClosure *cb, ScrBytes *chunk);
 extern void scr_dyn_listener_fire_err(ScrClosure *cb, ScrStr *msg);
 
 void *scr_dyn_retain_v(void *d);
+/* After a compiled fast path decremented a surviving capsule or handle. */
+void scr_dyn_release_survivor(ScrDyn *d);
 void scr_dyn_release_v(void *d);
 void scr_dyn_trace_v(void *d, ScrTraceVisit visit, void *ctx);
 
