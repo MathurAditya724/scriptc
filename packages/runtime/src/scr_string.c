@@ -2731,16 +2731,8 @@ double scr_parse_int_bytes(const char *p, size_t n, double radix) {
   /* parseInt(digits, 10) of a short all-digit string (a numeric field or
    * regex capture): exact in a u64 and in a double, with no whitespace,
    * sign or prefix to resolve. Anything else takes the full algorithm. */
-  if (radix == 10 && n - 1 < 15) {
-    uint64_t acc = 0;
-    size_t i = 0;
-    for (; i < n; i++) {
-      unsigned d = (unsigned char)p[i] - (unsigned)'0';
-      if (d > 9) break;
-      acc = acc * 10 + d;
-    }
-    if (i == n) return (double)acc;
-  }
+  double fast;
+  if (radix == 10 && scr_parse_int_short_digits(p, n, &fast)) return fast;
   /* Integral radixes in range are their own ToInt32. */
   double r32 = radix >= 2 && radix <= 36 && radix == (double)(int)radix ? radix
                                                                        : scr_to_int32_d(radix);

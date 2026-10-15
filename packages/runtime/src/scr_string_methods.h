@@ -208,6 +208,19 @@ ScrStr *scr_regexp_escape(ScrStr *s);
 double scr_parse_int(ScrStr *s, double radix);
 /* parseInt over a borrowed UTF-8 byte span. */
 double scr_parse_int_bytes(const char *p, size_t n, double radix);
+/* parseInt(p, 10) when p is 1..15 ASCII digits and nothing else: exact in
+ * a u64 and in a double. False for every other input. */
+static inline bool scr_parse_int_short_digits(const char *p, size_t n, double *out) {
+  if (n - 1 >= 15) return false;
+  uint64_t acc = 0;
+  for (size_t i = 0; i < n; i++) {
+    unsigned d = (unsigned char)p[i] - (unsigned)'0';
+    if (d > 9) return false;
+    acc = acc * 10 + d;
+  }
+  *out = (double)(int64_t)acc; /* < 10^15: the signed conversion is exact and cheaper */
+  return true;
+}
 double scr_parse_float(ScrStr *s);
 
 /* ToNumber(string) — ECMA-262 7.1.4.1 StringToNumber exactly: trim

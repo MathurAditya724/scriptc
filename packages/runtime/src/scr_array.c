@@ -957,10 +957,14 @@ static void scr_arr_destroy(void *object) {
     size_t end = a->len < a->cap ? a->len : a->cap;
     if (a->elem == SCR_ELEM_STR) {
       /* Releasing a string runs no user code, so the slots need no clearing
-       * first; immortal strings (interned characters, literals) need no call. */
+       * first (and the storage cannot move under the loop); immortal strings
+       * (interned characters, literals) need no call. */
+      const uint64_t *data = a->data;
+      const uint8_t *present = a->present;
       for (size_t i = 0; i < end; i++) {
-        ScrStr *s = (ScrStr *)scr_slot_to_ptr(a->data[i]);
-        if (a->present[i] == SCR_ARR_VALUE && s && s->rc != SIZE_MAX) scr_str_release(s);
+        if (present[i] != SCR_ARR_VALUE) continue;
+        ScrStr *s = (ScrStr *)scr_slot_to_ptr(data[i]);
+        if (s && s->rc != SIZE_MAX) scr_str_release(s);
       }
     } else {
       for (size_t i = 0; i < end; i++) {
