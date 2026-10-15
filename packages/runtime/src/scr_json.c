@@ -2499,10 +2499,16 @@ static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d) {
 
 static bool scr_typed_ref_record_field(const ScrDynTypedRecordOps *ops, const ScrStr *key,
                                        size_t *out) {
+  /* Compiled reads pass the interned literal the field names also use. */
+  for (size_t i = 0; i < ops->count; i++) {
+    if (ops->names[i] == key) {
+      *out = i;
+      return true;
+    }
+  }
   for (size_t i = 0; i < ops->count; i++) {
     const ScrStr *name = ops->names[i];
-    if (name == key ||
-        (name->len == key->len && memcmp(name->data, key->data, key->len) == 0)) {
+    if (name->len == key->len && memcmp(name->data, key->data, key->len) == 0) {
       *out = i;
       return true;
     }
@@ -2515,7 +2521,7 @@ static ScrDyn *scr_typed_ref_record_get(const ScrDyn *d, const ScrStr *key) {
   const ScrDynTypedRecordOps *ops = scr_typed_ref_record_ops(d);
   size_t index;
   if (!ops || !scr_typed_ref_record_field(ops, key, &index)) return NULL;
-  if (!ops->has(d->v.typed_ref.ptr, index)) return NULL;
+  if (!ops->fixed && !ops->has(d->v.typed_ref.ptr, index)) return NULL;
   return ops->get(d->v.typed_ref.ptr, index);
 }
 
