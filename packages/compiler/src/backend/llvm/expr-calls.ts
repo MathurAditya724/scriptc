@@ -1260,14 +1260,16 @@ export function emitCallExpr(
  * (ExprOf<"virtualCall">.targets), or null to keep the indirect call. Every
  * target must be an implementation some emitted vtable of the static
  * class's subtree stores in this slot; anything else (a pruned body, a
- * runtime class in the subtree) keeps the vtable dispatch. */
+ * runtime class in the subtree, a dev build) keeps the vtable dispatch. */
 function guardedVirtualTargets(
   host: LlvmEmitterContext,
   e: ExprOf<"virtualCall">,
   meta: LlClassMeta,
   slotIdx: number,
 ): string[] | null {
-  if (e.targets === undefined || e.targets.length < 2) return null;
+  // Dev builds keep the single indirect call: their unoptimized frames
+  // would grow with every guarded call site, and recursion depth with them.
+  if (e.targets === undefined || e.targets.length < 2 || !host.optimizing) return null;
   const stored = new Set<string>();
   for (const other of host.classMeta.values()) {
     if (other.root !== meta.root || other.pre < meta.pre || other.pre > meta.post) continue;

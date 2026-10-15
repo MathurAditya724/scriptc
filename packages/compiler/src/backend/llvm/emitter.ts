@@ -1361,6 +1361,11 @@ export class LlEmitter {
     return this.virtualBorrows.slot(rootName, slotIndex);
   }
 
+  /** Optimized emission: no debug-info (dev) posture. */
+  get optimizing(): boolean {
+    return this.debug === null;
+  }
+
   /** The vtable entry for one implementation (VirtualBorrows.entry). */
   virtualEntry(implFn: string): string {
     return this.virtualBorrows.entry(implFn);
