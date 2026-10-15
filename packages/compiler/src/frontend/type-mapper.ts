@@ -2991,6 +2991,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ),
     };
   }
+  // tlsSocket.getCipher()'s { name, standardName, version }.
+  if (isStdlibInterface("CipherNameAndProtocol")) {
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "name", type: STRING },
+          { name: "standardName", type: STRING },
+          { name: "version", type: STRING },
+        ],
+        false,
+        undefined,
+        ["name", "standardName", "version"],
+      ),
+    };
+  }
   // child_process.ExecFileSyncOptionsWithStringEncoding: the exec-options
   // interface interned explicitly on the AddressInfo pattern, so a TYPED
   // options value (`const commandOptions: ExecFileSyncOptions... = {...}`,

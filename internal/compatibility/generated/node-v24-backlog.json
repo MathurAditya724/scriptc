@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 37,
-        "verify-gap": 2392,
-        "audit-partial": 956,
+        "verify-gap": 2390,
+        "audit-partial": 958,
         "classify": 2,
         "implement": 85
       }
@@ -70615,12 +70615,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:tls",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.tls.DEFAULT_MAX_VERSION",
+          "tests": [
+            "tests/corpus/2331-tls-server-options-typed.ts",
+            "tests/corpus/2557-tls-ca-store.ts"
+          ]
         }
       }
     },
@@ -70640,12 +70643,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:tls",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.tls.DEFAULT_MIN_VERSION",
+          "tests": [
+            "tests/corpus/2331-tls-server-options-typed.ts",
+            "tests/corpus/2557-tls-ca-store.ts"
+          ]
         }
       }
     },

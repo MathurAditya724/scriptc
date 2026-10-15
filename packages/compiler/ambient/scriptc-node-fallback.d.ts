@@ -3978,7 +3978,7 @@ declare module "tls" {
   }
   export function createServer(
     options: TlsOptions,
-    secureConnectionListener?: (socket: Socket) => void,
+    secureConnectionListener?: (socket: TLSSocket) => void,
   ): Server;
   /** TLSSocket — post-handshake it IS a net socket to every lowered
    * member (the mapping collapses it onto the socket kind; the
@@ -3989,7 +3989,20 @@ declare module "tls" {
   export interface TLSSocket extends Socket {
     authorized: boolean;
     authorizationError: string | null;
+    /* null before the handshake, then the negotiated protocol or false */
+    readonly alpnProtocol: string | false | null;
+    /* "TLSv1.2" or "TLSv1.3"; null before the handshake and after close */
+    getProtocol(): string | null;
+    /* OpenSSL's suite name, the IANA name and the suite's version */
+    getCipher(): CipherNameAndProtocol;
   }
+  export interface CipherNameAndProtocol {
+    name: string;
+    standardName: string;
+    version: string;
+  }
+  export const DEFAULT_MIN_VERSION: string;
+  export const DEFAULT_MAX_VERSION: string;
   /** tls.connect options — the RUNTIME options record (members read at
    * runtime; port/host/rejectUnauthorized/ca/servername are the
    * honestly-implemented set, every other documented member throws the

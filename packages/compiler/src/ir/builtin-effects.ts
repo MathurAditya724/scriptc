@@ -185,6 +185,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // socket.setTimeout's msecs check (ERR_OUT_OF_RANGE).
   "net.sockSetTimeout",
   "net.sockSetTimeoutCb",
+  // getCipher throws the "not supported yet" error for a suite without a
+  // known OpenSSL name.
+  "tls.sockGetCipher",
   "net.sockWriteDyn",
   "net.sockEndDyn",
   "http.resWriteDyn",
