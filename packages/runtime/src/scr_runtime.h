@@ -5034,6 +5034,7 @@ typedef struct ScrDynTypedClassOps {
   const struct ScrDynTypedClassOps *(*exact)(void *instance);
   size_t count;
   ScrStr *const *names; /* immortal member-name strings */
+  ScrStr *class_name;   /* immortal constructor name; NULL for an anonymous class */
 } ScrDynTypedClassOps;
 
 struct ScrDyn {
@@ -5444,6 +5445,10 @@ void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
 /* Attach the prototype member names of a class instance capsule
  * (idempotent), so `in` sees its methods and accessors. */
 void scr_dyn_typed_ref_bind_class(ScrDyn *d, const ScrDynTypedClassOps *ops);
+/* The constructor name of a class instance capsule's own class, for
+ * util.inspect; NULL when the capsule is not a bound class instance, its
+ * class is anonymous, or its prototype was replaced. */
+const ScrStr *scr_dyn_typed_ref_class_name(const ScrDyn *d);
 /* Fast keyed read on a live array capsule: +1 value for `length` and for
  * present or explicitly-undefined elements; NULL when the answer needs the
  * snapshot (holes, out-of-range, non-index names, or no bound ops). */

@@ -2468,6 +2468,12 @@ static const ScrDynTypedClassOps *scr_typed_ref_class_ops(const ScrDyn *d) {
   return ops->exact ? ops->exact(d->v.typed_ref.ptr) : ops;
 }
 
+const ScrStr *scr_dyn_typed_ref_class_name(const ScrDyn *d) {
+  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return NULL;
+  const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
+  return ops ? ops->class_name : NULL;
+}
+
 static bool scr_dyn_name_in_strs(const ScrStr *key, ScrStr *const *names, size_t count) {
   for (size_t i = 0; i < count; i++) {
     if (names[i] == key || scr_str_eq(names[i], (ScrStr *)key)) return true;
