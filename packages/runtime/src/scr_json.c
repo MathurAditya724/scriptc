@@ -858,6 +858,10 @@ static void scr_dyn_region_join(ScrDyn *d, ScrDynRegion *region) {
   else d->v.obj.region = region;
 }
 
+ScrDynRegion *scr_dyn_region_open(void) { return scr_dyn_region_new(); }
+void scr_dyn_region_tag(ScrDyn *d, ScrDynRegion *region) { scr_dyn_region_join(d, region); }
+void scr_dyn_region_close(ScrDynRegion *region) { scr_dyn_region_unref(region); }
+
 static void scr_dyn_region_leave(ScrDyn *d) {
   ScrDynRegion **slot = d->kind == SCR_DYN_ARR ? &d->v.arr.region : &d->v.obj.region;
   scr_dyn_region_unref(*slot);
@@ -8509,7 +8513,10 @@ typedef struct ScrScParent {
   const struct ScrScParent *up;
 } ScrScParent;
 
-static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
+/* The clone is a fresh tree (shared inputs are copied per path, cycles
+ * throw), so it is tagged like a parse result (ScrDynRegion); a leaf the
+ * region may not hold clears it. */
+static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion *region) {
   if (v->kind == SCR_DYN_PROXY) {
     scr_throw_domex("DataCloneError", "#<Object> could not be cloned.");
     return NULL;
@@ -8533,6 +8540,7 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
   case SCR_DYN_BOOL:
     return scr_dyn_new_bool(v->v.b);
   case SCR_DYN_BIGINT:
+    region->intact = false;
     return scr_dyn_new_bigint(v->v.bigint);
   case SCR_DYN_NUM:
     return scr_dyn_new_num(v->v.num);
@@ -8543,6 +8551,7 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
      * of a Buffer answers a plain Uint8Array). A typed array view over a
      * larger ArrayBuffer, such as a pooled Buffer, clones the whole
      * ArrayBuffer and keeps its offset and length, as Node does. */
+    region->intact = false;
     ScrBytes *src = v->v.bytes;
     ScrBytes *copy;
     if (src->backing && !src->is_data_view && !src->shared) {
@@ -8572,36 +8581,41 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
       ScrDyn *out = scr_dyn_new_arr();
       for (size_t i = 0; i < v->v.arr.len; i++) {
         if (!scr_dyn_arr_has_index(v, i)) { scr_dyn_arr_push_hole(out); continue; }
-        ScrDyn *c = scr_sc_clone(v->v.arr.items[i], &self);
+        ScrDyn *c = scr_sc_clone(v->v.arr.items[i], &self, region);
         if (c == NULL) { /* threw */
           scr_dyn_release(out);
           return NULL;
         }
         scr_dyn_arr_push(out, c); /* ownership moves */
       }
+      scr_dyn_region_join(out, region);
       return out;
     }
     ScrDyn *out = scr_dyn_new_obj();
     for (size_t i = 0; i < v->v.obj.len; i++) {
       const ScrDynEntry *e = &v->v.obj.entries[i];
-      ScrDyn *c = scr_sc_clone(e->value, &self);
+      ScrDyn *c = scr_sc_clone(e->value, &self, region);
       if (c == NULL) {
         scr_dyn_release(out);
         return NULL;
       }
       scr_dyn_obj_set(out, e->key, e->key_len, c); /* ownership moves */
     }
+    scr_dyn_region_join(out, region);
     return out;
   }
 
   case SCR_DYN_TYPED_REF: {
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
-    ScrDyn *out = scr_sc_clone(materialized, up);
+    ScrDyn *out = scr_sc_clone(materialized, up, region);
     scr_dyn_release(materialized);
     return out;
   }
   case SCR_DYN_HANDLE:
-    if (scr_dyn_handle_ops_of(v)->clone) return scr_dyn_handle_ops_of(v)->clone(v->v.handle.ptr);
+    if (scr_dyn_handle_ops_of(v)->clone) {
+      region->intact = false; /* a handle is not a leaf the region may hold */
+      return scr_dyn_handle_ops_of(v)->clone(v->v.handle.ptr);
+    }
     /* fall through */
   case SCR_DYN_FUNC:
   default: {
@@ -8629,7 +8643,10 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
 ScrDyn *scr_structured_clone(const ScrDyn *value, const ScrDyn *options) {
   scr_sc_validate_options(options);
   if (scr_exc_pending()) return NULL;
-  return scr_sc_clone(value, NULL);
+  ScrDynRegion *region = scr_dyn_region_new();
+  ScrDyn *out = scr_sc_clone(value, NULL, region);
+  scr_dyn_region_unref(region); /* the clone's own reference */
+  return out;
 }
 
 ScrDyn *scr_structured_clone_transfer_fail(void) {

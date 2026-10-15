@@ -391,6 +391,8 @@ _Static_assert(sizeof(((ScrDyn *)0)->v.arr) <= sizeof(((ScrDyn *)0)->v.typed_ref
  * program stores a reference into it, so the parser tags the containers it
  * builds with one shared region, and the region stays INTACT until the
  * first store into any of its containers that could close a cycle.
+ * structuredClone and message decoding tag the documents they build the
+ * same way; "the parser" below means whichever producer built the region.
  *
  * Invariant: while a region is intact, every outgoing edge of each of its
  * containers is an edge the parser created or a store of a primitive, and
@@ -452,6 +454,15 @@ static inline void scr_dyn_region_store(const ScrDyn *container, const ScrDyn *v
   if (region && region->intact && container->rc != SIZE_MAX && !scr_dyn_region_inert(value))
     region->intact = false;
 }
+
+/* Other whole-document producers (structuredClone, message decoding) open
+ * a region, tag each container once its members are stored, and close
+ * their own reference. They must hold the same invariant as the parser:
+ * fresh containers only, edges to containers created later, inert leaves
+ * only (else they clear `intact`). Tagging a non-container is a no-op. */
+ScrDynRegion *scr_dyn_region_open(void);
+void scr_dyn_region_tag(ScrDyn *d, ScrDynRegion *region);
+void scr_dyn_region_close(ScrDynRegion *region);
 
 static inline ScrDyn *scr_dyn_retain(ScrDyn *d) {
   if (d->rc != SIZE_MAX) {
