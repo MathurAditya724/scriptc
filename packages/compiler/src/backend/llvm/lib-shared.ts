@@ -923,6 +923,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // the client request forms have non-generic shapes — special-cased.
   "net.serverPort": "scr_net_server_port",
   "net.serverListening": "scr_net_server_listening",
+  "net.sockSetRef": "scr_net_sock_set_ref",
+  "net.serverSetRef": "scr_net_server_set_ref",
   "net.sockWrite": "scr_net_sock_write_str",
   "net.sockWriteBytes": "scr_net_sock_write_bytes",
   "net.sockEnd": "scr_net_sock_end",
