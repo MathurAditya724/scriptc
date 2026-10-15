@@ -1527,9 +1527,8 @@ export interface IrFunction {
   /** A read helper the backend can answer directly for dyn arrays and live
    * array capsules, calling the helper only when that read has no answer.
    * `index`: a computed read `(value, key)` whose callers pass a number
-   * converted to a string as the key. `length`: the `length` property
-   * read `(value)`, where the caller checks the result as a number. */
-  fastRead?: "index" | "length";
+   * converted to a string as the key. */
+  fastRead?: "index";
   params: IrParam[];
   returnType: IrType;
   /** All locals including params, pre-collected and scope-flat: ids are

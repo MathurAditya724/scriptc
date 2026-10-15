@@ -2539,14 +2539,6 @@ ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index) {
 
 SCR_TL const ScrEventRefHooks *scr_event_ref_hooks = NULL;
 
-/* d.length of a dyn array or live array capsule, else -1 (see the header). */
-double scr_dyn_array_length(const ScrDyn *d) {
-  if (d->kind == SCR_DYN_ARR) return (double)d->v.arr.len;
-  if (d->kind != SCR_DYN_TYPED_REF || scr_event_ref_hooks || !scr_dyn_typed_ref_array_ops(d))
-    return -1;
-  return (double)((const ScrArr *)d->v.typed_ref.ptr)->len;
-}
-
 /* d[index] for a numeric index without forming the key string (see the
  * header): dyn arrays answer in-range elements, and live array capsules
  * their present and explicitly undefined elements. */
