@@ -1,4 +1,5 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
+import { arraySearchHelperName, arraySearchKind } from "./array-search.js";
 import { InternalCompilerError } from "../../errors.js";
 import { isStableReceiverOperand, undefinedArmTag } from "../../ir/analysis.js";
 import { type IrExpr, type IrType, isRefCounted, typeEquals, typeKey } from "../../ir/ir.js";
@@ -16,7 +17,7 @@ import {
   vAdapters,
 } from "./shapes.js";
 import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
-import { F64_INF, f64Lit } from "./common.js";
+import { F64_INF, f64Lit, sizeToDouble } from "./common.js";
 import { MUTATING_COLLECTION_METHODS } from "../publication.js";
 import { borrowsStringInputs, emitStringInputs } from "./string-lifetimes.js";
 import {
@@ -556,7 +557,7 @@ export function emitArrIntrinsic(
       B.line(`${p} = getelementptr inbounds %ScrArr, ptr ${r.name}, i32 0, i32 1`);
       host.markMemoryPointer(p, "array:header");
       B.line(`${len} = load ${host.sizeType}, ptr ${p}${host.fieldAliasAttachment(p)}`);
-      B.line(`${t} = sitofp ${host.sizeType} ${len} to double`);
+      B.line(`${t} = ${sizeToDouble(host.sizeType)} ${host.sizeType} ${len} to double`);
       return { name: t, type: e.type };
     }
     case "getNumber": {
@@ -719,16 +720,38 @@ export function emitArrIntrinsic(
     case "indexOf": {
       // The needle is BORROWED (released with this statement's frame);
       // the ref variant dispatches on the array's element kind (strings
-      // by content, everything else by pointer). Strict equality.
+      // by content, everything else by pointer). Strict equality. Arrays of
+      // objects and strings scan inline (array-search.ts).
       const v = host.emitExpr(e.args[0]!);
+      const search = acc === "ref" ? arraySearchKind(elem) : null;
+      if (search !== null) {
+        host.arraySearchKinds.add(search);
+        const t = B.tmp();
+        B.line(
+          `${t} = call double @${arraySearchHelperName(search)}(ptr ${r.name}, ptr ${v.name})`,
+        );
+        return { name: t, type: e.type };
+      }
       host.declare(`declare double @scr_arr_index_of_${acc}(ptr, ${accArg})`);
       const t = B.tmp();
       B.line(`${t} = call double @scr_arr_index_of_${acc}(ptr ${r.name}, ${accTy} ${v.name})`);
       return { name: t, type: e.type };
     }
     case "includes": {
-      // Borrowed needle, SameValueZero (NaN matches NaN).
+      // Borrowed needle, SameValueZero (NaN matches NaN). For the inline
+      // searches SameValueZero is strict equality.
       const v = host.emitExpr(e.args[0]!);
+      const search = acc === "ref" ? arraySearchKind(elem) : null;
+      if (search !== null) {
+        host.arraySearchKinds.add(search);
+        const at = B.tmp(),
+          t = B.tmp();
+        B.line(
+          `${at} = call double @${arraySearchHelperName(search)}(ptr ${r.name}, ptr ${v.name})`,
+        );
+        B.line(`${t} = fcmp oge double ${at}, 0.0`);
+        return { name: t, type: e.type };
+      }
       host.declare(`declare zeroext i1 @scr_arr_includes_${acc}(ptr, ${accArg})`);
       const t = B.tmp();
       B.line(`${t} = call zeroext i1 @scr_arr_includes_${acc}(ptr ${r.name}, ${accTy} ${v.name})`);

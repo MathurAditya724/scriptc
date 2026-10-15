@@ -7,6 +7,7 @@ import {
   CHILD_T,
   CRYPTOHASH_T,
   CRYPTOHMAC_T,
+  DIR_T,
   DYN,
   F64,
   FILEHANDLE_T,
@@ -1015,6 +1016,55 @@ const PATH_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
   format: { fn: "path.win32Format", params: [], result: STRING },
 };
 
+/** util.types's own keys in Node's order (Node 24.22.0). The table is the
+ * key census for Object.keys over util.types and node:util/types, including
+ * the members that do not compile yet; the corpus checks it against Node. */
+export const UTIL_TYPES_KEYS: readonly string[] = [
+  "isArgumentsObject",
+  "isArrayBuffer",
+  "isAsyncFunction",
+  "isBigIntObject",
+  "isBooleanObject",
+  "isDate",
+  "isExternal",
+  "isGeneratorFunction",
+  "isGeneratorObject",
+  "isMap",
+  "isMapIterator",
+  "isModuleNamespaceObject",
+  "isNativeError",
+  "isNumberObject",
+  "isPromise",
+  "isProxy",
+  "isRegExp",
+  "isSet",
+  "isSetIterator",
+  "isSharedArrayBuffer",
+  "isStringObject",
+  "isSymbolObject",
+  "isWeakMap",
+  "isWeakSet",
+  "isAnyArrayBuffer",
+  "isBoxedPrimitive",
+  "isArrayBufferView",
+  "isDataView",
+  "isTypedArray",
+  "isUint8Array",
+  "isUint8ClampedArray",
+  "isUint16Array",
+  "isUint32Array",
+  "isInt8Array",
+  "isInt16Array",
+  "isInt32Array",
+  "isFloat16Array",
+  "isFloat32Array",
+  "isFloat64Array",
+  "isBigInt64Array",
+  "isBigUint64Array",
+  "isKeyObject",
+  "isCryptoKey",
+];
+
 export const BUILTIN_MODULE_FNS: Record<
   string,
   Record<string, BuiltinModuleFn | undefined> | undefined
@@ -1037,6 +1087,8 @@ export const BUILTIN_MODULE_FNS: Record<
     rmSync: { fn: "fs.rmSync", params: [STRING], result: VOID },
     rmdirSync: { fn: "fs.rmdirSync", params: [STRING], result: VOID },
     readdirSync: { fn: "fs.readdirSync", params: [STRING], result: arrayOf(STRING) },
+    // Pattern and options are checked by the runtime (lowerFsGlobSyncCall).
+    globSync: { fn: "fs.globSync", params: [DYN, DYN], result: arrayOf(STRING) },
     statSync: { fn: "fs.statSync", params: [STRING], result: STATS_T },
     mkdtempSync: { fn: "fs.mkdtempSync", params: [STRING], result: STRING },
     // accessSync's omitted mode completes to 0 (F_OK) in the special case
@@ -1060,6 +1112,21 @@ export const BUILTIN_MODULE_FNS: Record<
       result: VOID,
       valueParams: exactValueParams(STRING, F64, F64),
     },
+    lchownSync: {
+      fn: "fs.lchownSync",
+      params: [STRING, F64, F64],
+      result: VOID,
+      valueParams: exactValueParams(STRING, F64, F64),
+    },
+    fchownSync: {
+      fn: "fs.fchownSync",
+      params: [F64, F64, F64],
+      result: VOID,
+      valueParams: exactValueParams(F64, F64, F64),
+    },
+    // truncateSync's omitted len completes to 0 in lowerBuiltinModuleCall,
+    // like accessSync's mode.
+    truncateSync: { fn: "fs.truncateSync", params: [STRING, F64], result: VOID },
     // The 2-argument form only: Node's mode flags (COPYFILE_EXCL, ...)
     // land on the arity fence.
     copyFileSync: { fn: "fs.copyFileSync", params: [STRING, STRING], result: VOID },
@@ -1076,6 +1143,9 @@ export const BUILTIN_MODULE_FNS: Record<
     },
     // statSync's no-follow sibling; stats.isSymbolicLink answers what the
     // follow-free snapshot saw.
+    // opendirSync's options (a literal { bufferSize, encoding: "utf8" })
+    // lower in lowerBuiltinModuleCall; the row routes the dispatch.
+    opendirSync: { fn: "fs.opendirSync", params: [STRING, F64], result: DIR_T },
     lstatSync: { fn: "fs.lstatSync", params: [STRING], result: STATS_T },
     fstatSync: {
       fn: "fs.fstatSync",
@@ -1190,9 +1260,16 @@ export const BUILTIN_MODULE_FNS: Record<
       result: { kind: "promise", inner: arrayOf(STRING) },
     },
     rm: { fn: "fsp.rm", params: [STRING], result: { kind: "promise", inner: VOID } },
+    // The async iterator lowers only as a for await head (lowerFspGlobCall).
+    glob: { fn: "fsp.globStrings", params: [DYN, DYN], result: arrayOf(STRING) },
     stat: { fn: "fsp.stat", params: [STRING], result: { kind: "promise", inner: STATS_T } },
     realpath: { fn: "fsp.realpath", params: [STRING], result: { kind: "promise", inner: STRING } },
     lstat: { fn: "fsp.lstat", params: [STRING], result: { kind: "promise", inner: STATS_T } },
+    opendir: {
+      fn: "fsp.opendir",
+      params: [STRING, F64],
+      result: { kind: "promise", inner: DIR_T },
+    },
     unlink: {
       fn: "fsp.unlink",
       params: [STRING],
@@ -1205,6 +1282,41 @@ export const BUILTIN_MODULE_FNS: Record<
       result: { kind: "promise", inner: VOID },
       valueParams: exactValueParams(STRING, F64),
     },
+    chown: {
+      fn: "fsp.chown",
+      params: [STRING, F64, F64],
+      result: { kind: "promise", inner: VOID },
+      valueParams: exactValueParams(STRING, F64, F64),
+    },
+    lchown: {
+      fn: "fsp.lchown",
+      params: [STRING, F64, F64],
+      result: { kind: "promise", inner: VOID },
+      valueParams: exactValueParams(STRING, F64, F64),
+    },
+    // access' omitted mode and truncate's omitted len complete to 0 in
+    // lowerBuiltinModuleCall, like their sync spellings.
+    access: { fn: "fsp.access", params: [STRING, F64], result: { kind: "promise", inner: VOID } },
+    truncate: {
+      fn: "fsp.truncate",
+      params: [STRING, F64],
+      result: { kind: "promise", inner: VOID },
+    },
+    // String data; Uint8Array/Buffer data routes to fsp.appendFileBytes in
+    // lowerBuiltinModuleCall.
+    appendFile: {
+      fn: "fsp.appendFile",
+      params: [STRING, STRING],
+      result: { kind: "promise", inner: VOID },
+    },
+    // The 2-argument form only, like copyFileSync.
+    copyFile: {
+      fn: "fsp.copyFile",
+      params: [STRING, STRING],
+      result: { kind: "promise", inner: VOID },
+    },
+    mkdtemp: { fn: "fsp.mkdtemp", params: [STRING], result: { kind: "promise", inner: STRING } },
+    rmdir: { fn: "fsp.rmdir", params: [STRING], result: { kind: "promise", inner: VOID } },
     link: {
       fn: "fsp.link",
       params: [DYN, DYN],
@@ -1349,6 +1461,9 @@ export const BUILTIN_MODULE_FNS: Record<
     randomInt: { fn: "crypto.randomInt", params: [F64, F64], result: F64 },
     randomFill: { fn: "crypto.randomFillCb", params: [], result: VOID },
     randomUUIDv7: { fn: "crypto.randomUUIDv7", params: [DYN], result: STRING },
+    createSecretKey: { fn: "crypto.createSecretKey", params: [DYN, DYN], result: DYN },
+    generateKeySync: { fn: "crypto.generateKeySync", params: [DYN, DYN], result: DYN },
+    generateKey: { fn: "crypto.generateKeyCb", params: [], result: VOID },
     pbkdf2Sync: {
       fn: "crypto.pbkdf2",
       params: [BYTES_U8, BYTES_U8, F64, F64, STRING],
@@ -1769,6 +1884,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     rmSync: ["fs.rmOptsSync", "fs.rmRetrySync"],
     // The { withFileTypes: true } Dirent form.
     readdirSync: ["fs.readdirTypesSync"],
+    globSync: ["fs.globTypesSync"],
     // The JS-source validation-ladder variant (lowerFsLadderCall): the
     // real mkdtemp runs when the options leave utf8 semantics.
     mkdtempSync: ["fs.mkdtempSyncChk"],
@@ -1781,13 +1897,16 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     watch: ["fs.watchCb"],
   },
   "fs/promises": {
-    // The Buffer form (no encoding).
-    readFile: ["fsp.readFileBytes"],
+    // The Buffer form (no encoding) and the runtime-encoding forms.
+    readFile: ["fsp.readFileBytes", "fsp.readFileEncoded"],
     readlink: ["fsp.readlinkStr", "fsp.readlinkBuffer"],
     // The string-data { mode } options form.
     writeFile: ["fsp.writeFileMode"],
     // The { withFileTypes: true } Dirent form.
     readdir: ["fsp.readdirTypes"],
+    glob: ["fsp.globTypes"],
+    // The Uint8Array/Buffer-data form.
+    appendFile: ["fsp.appendFileBytes"],
   },
   crypto: {
     // The composed randomBytes(n).toString(enc) chain keeps its one-libCall
@@ -1804,6 +1923,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "crypto.randomFillSyncDyn",
     ],
     randomFill: ["crypto.randomFillCbDyn"],
+    timingSafeEqual: ["crypto.timingSafeEqualDyn"],
     randomInt: ["crypto.randomIntMax", "crypto.randomIntCb"],
     randomUUID: ["crypto.randomUUIDOpts"],
   },
@@ -1881,7 +2001,7 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     id: "node-builtin.fs.callbacks",
     kind: "node-builtin",
     name: "fs error-first callbacks",
-    fns: ["fs.callbackValue", "fs.callbackCall"],
+    fns: ["fs.callbackValue", "fs.callbackCall", "fs.callbackGlob"],
     note: "native filesystem callbacks, including stored platform adapter functions",
   },
   // ── the Date slice (lowerDateCall/lowerNew): statics, construction,
@@ -2398,6 +2518,8 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "copyFile",
   "chmod",
   "chown",
+  "lchown",
+  "fchown",
   "glob",
   "link",
   "mkdir",
@@ -2638,11 +2760,8 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
       [
         "generateKeyPair",
         "generateKeyPairSync",
-        "generateKey",
-        "generateKeySync",
         "createPrivateKey",
         "createPublicKey",
-        "createSecretKey",
         "createSign",
         "createVerify",
         "sign",
@@ -2658,9 +2777,9 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
         "privateDecrypt",
       ].map((m) => [
         m,
-        "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and a " +
-          "KeyObject value model — neither exists in the static runtime, so no faithful lowering " +
-          "can be small; the lowered crypto surface is hashing, randomness, and the introspection statics",
+        "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and " +
+          "public and private KeyObjects — neither exists in the static runtime, so no faithful lowering " +
+          "can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics",
       ]),
     ),
     ...Object.fromEntries(

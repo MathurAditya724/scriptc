@@ -1287,6 +1287,9 @@ declare module "node:fs" {
     options: string | { encoding?: string | null } | null,
   ): string | Buffer;
   export function chownSync(path: string, uid: number, gid: number): void;
+  export function lchownSync(path: string, uid: number, gid: number): void;
+  export function fchownSync(fd: number, uid: number, gid: number): void;
+  export function truncateSync(path: string, len?: number): void;
   /* The 2-argument form only (Node's mode flags have no lowering). The
    * destination is created or truncated carrying the SOURCE's mode. */
   export function copyFileSync(src: string, dest: string): void;
@@ -1324,6 +1327,51 @@ declare module "node:fs" {
      * fences by name at the call site; undocumented keys drop like Node. */
     options: { withFileTypes: true; recursive?: boolean; [option: string]: unknown },
   ): Dirent[];
+  /* fs.globSync / fs.glob: Node's glob walk over the file system. Patterns
+   * are minimatch globs (case-insensitive on macOS and Windows); results
+   * are relative to cwd unless the pattern is absolute. withFileTypes must
+   * be a literal so the result type is known. */
+  export interface GlobOptions {
+    cwd?: string | URL;
+    exclude?: readonly string[] | ((fileName: string) => boolean);
+    followSymlinks?: boolean;
+    withFileTypes?: false;
+  }
+  export interface GlobOptionsWithFileTypes {
+    cwd?: string | URL;
+    exclude?: readonly string[];
+    followSymlinks?: boolean;
+    withFileTypes: true;
+  }
+  export function globSync(pattern: string | readonly string[], options?: GlobOptions): string[];
+  export function globSync(
+    pattern: string | readonly string[],
+    options: GlobOptionsWithFileTypes,
+  ): Dirent[];
+  export function glob(
+    pattern: string | readonly string[],
+    callback: (err: NodeJS.ErrnoException | null, matches?: string[]) => void,
+  ): void;
+  export function glob(
+    pattern: string | readonly string[],
+    options: GlobOptions,
+    callback: (err: NodeJS.ErrnoException | null, matches?: string[]) => void,
+  ): void;
+  /* fs.Dir: an open directory stream (opendirSync, fs.promises.opendir)
+   * read one Dirent at a time in OS order; utf8 names, no recursive walk. */
+  export interface Dir {
+    readonly path: string;
+    readSync(): Dirent | null;
+    read(): Promise<Dirent | null>;
+    closeSync(): void;
+    close(): Promise<void>;
+    [Symbol.asyncIterator](): AsyncIterableIterator<Dirent>;
+  }
+  export interface OpenDirOptions {
+    encoding?: "utf8" | "utf-8";
+    bufferSize?: number;
+  }
+  export function opendirSync(path: string, options?: OpenDirOptions): Dir;
   export function accessSync(path: string, mode?: number): void;
   export function mkdtempSync(prefix: string): string;
   export const constants: {
@@ -1350,14 +1398,28 @@ declare module "node:fs" {
     isFile(): boolean;
     isDirectory(): boolean;
     isSymbolicLink(): boolean;
+    isBlockDevice(): boolean;
+    isCharacterDevice(): boolean;
+    isFIFO(): boolean;
+    isSocket(): boolean;
     readonly dev: number;
+    readonly mode: number;
+    readonly nlink: number;
+    readonly uid: number;
+    readonly gid: number;
+    readonly rdev: number;
+    readonly blksize: number;
     readonly ino: number;
     readonly size: number;
     readonly blocks: number;
-    readonly nlink: number;
     readonly atimeMs: number;
     readonly mtimeMs: number;
     readonly ctimeMs: number;
+    readonly birthtimeMs: number;
+    readonly atime: Date;
+    readonly mtime: Date;
+    readonly ctime: Date;
+    readonly birthtime: Date;
   }
   export function statSync(path: string): Stats;
   export function lstatSync(path: string): Stats;
@@ -1646,6 +1708,10 @@ declare module "fs/promises" {
     mtime: number | string | Date,
   ): Promise<void>;
   export function readFile(path: string, encoding: "utf8" | "utf-8"): Promise<string>;
+  export function readFile(
+    path: string,
+    options: BufferEncoding | { encoding: BufferEncoding },
+  ): Promise<string>;
   export function readFile(path: string): Promise<Buffer>;
   export function writeFile(
     path: string,
@@ -1672,6 +1738,15 @@ declare module "fs/promises" {
       [option: string]: unknown;
     },
   ): Promise<import("node:fs").Dirent[]>;
+  /* The async iterator form of fs.globSync: iterate it with for await. */
+  export function glob(
+    pattern: string | readonly string[],
+    options?: import("node:fs").GlobOptions,
+  ): AsyncIterableIterator<string>;
+  export function glob(
+    pattern: string | readonly string[],
+    options: import("node:fs").GlobOptionsWithFileTypes,
+  ): AsyncIterableIterator<import("node:fs").Dirent>;
   export function rm(path: string): Promise<void>;
   export function stat(path: string): Promise<import("node:fs").Stats>;
   export function statfs(
@@ -1690,7 +1765,19 @@ declare module "fs/promises" {
   export function lstat(path: string): Promise<import("node:fs").Stats>;
   export function unlink(path: string): Promise<void>;
   export function chmod(path: string, mode: number): Promise<void>;
+  export function chown(path: string, uid: number, gid: number): Promise<void>;
+  export function lchown(path: string, uid: number, gid: number): Promise<void>;
+  export function access(path: string, mode?: number): Promise<void>;
+  export function truncate(path: string, len?: number): Promise<void>;
+  export function appendFile(path: string, data: string | Uint8Array): Promise<void>;
+  export function copyFile(src: string, dest: string): Promise<void>;
+  export function mkdtemp(prefix: string): Promise<string>;
+  export function rmdir(path: string): Promise<void>;
   export function rename(oldPath: string, newPath: string): Promise<void>;
+  export function opendir(
+    path: string,
+    options?: import("node:fs").OpenDirOptions,
+  ): Promise<import("node:fs").Dir>;
 }
 declare module "node:fs/promises" {
   export * from "fs/promises";
@@ -2214,6 +2301,35 @@ declare module "node:url" {
 
 /* node:crypto: the static hashing/MAC/random/key-derivation utility slice. */
 declare module "crypto" {
+  export type KeyObjectType = "secret" | "public" | "private";
+  export interface JsonWebKey {
+    kty?: string;
+    k?: string;
+  }
+  export interface JwkKeyExportOptions {
+    format: "jwk";
+  }
+  export interface KeyExportOptions {
+    format?: "buffer" | undefined;
+  }
+  /** Secret keys only; the asymmetric key types are not available. */
+  export class KeyObject {
+    private constructor();
+    type: KeyObjectType;
+    symmetricKeySize?: number;
+    asymmetricKeyType?: string;
+    export(options?: KeyExportOptions): Buffer;
+    export(options: JwkKeyExportOptions): JsonWebKey;
+    equals(otherKeyObject: KeyObject): boolean;
+  }
+  export function createSecretKey(key: ArrayBufferView | ArrayBufferLike): KeyObject;
+  export function createSecretKey(key: string, encoding: BufferEncoding): KeyObject;
+  export function generateKeySync(type: "hmac" | "aes", options: { length: number }): KeyObject;
+  export function generateKey(
+    type: "hmac" | "aes",
+    options: { length: number },
+    callback: (err: Error | null, key: KeyObject) => void,
+  ): void;
   export interface RandomUUIDOptions {
     disableEntropyCache?: boolean | undefined;
   }
@@ -2243,7 +2359,7 @@ declare module "crypto" {
   export function createHash(algorithm: string, options?: HashOptions): Hash;
   export function createHmac(
     algorithm: string,
-    key: BinaryLike,
+    key: BinaryLike | KeyObject,
     options?: { encoding?: BufferEncoding | undefined },
   ): Hmac;
   export interface OneShotDigestOptions {
@@ -2271,7 +2387,10 @@ declare module "crypto" {
     data: string | ArrayBufferView,
     options: OneShotDigestOptions | BinaryToTextEncoding | "buffer",
   ): string | Buffer;
-  export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean;
+  export function timingSafeEqual(
+    a: ArrayBufferView | ArrayBufferLike,
+    b: ArrayBufferView | ArrayBufferLike,
+  ): boolean;
   export function randomFillSync<T extends ArrayBufferView | ArrayBufferLike>(
     buffer: T,
     offset?: number,
@@ -2353,14 +2472,14 @@ declare module "crypto" {
   ): void;
   export function hkdfSync(
     digest: string,
-    ikm: BinaryLike,
+    ikm: BinaryLike | KeyObject,
     salt: BinaryLike,
     info: BinaryLike,
     keylen: number,
   ): ArrayBuffer;
   export function hkdf(
     digest: string,
-    ikm: BinaryLike,
+    ikm: BinaryLike | KeyObject,
     salt: BinaryLike,
     info: BinaryLike,
     keylen: number,
@@ -3292,6 +3411,9 @@ declare module "node:zlib" {
  * 'error'. */
 declare module "net" {
   export interface Socket {
+    /* Whether the socket keeps the event loop alive (ref'd by default). */
+    ref(): void;
+    unref(): void;
     readonly remoteAddress: string | undefined;
     /* true once the fd is gone (destroy() or full close) — Node's flag. */
     readonly destroyed: boolean;
@@ -3356,6 +3478,9 @@ declare module "net" {
     once(event: "session", listener: (session: Buffer) => void): void;
   }
   export interface Server {
+    /* Whether the server keeps the event loop alive (ref'd by default). */
+    ref(): void;
+    unref(): void;
     readonly listening: boolean;
     /* Node answers the server itself (`return this` chaining). */
     listen(port: number, callback?: () => void): Server;

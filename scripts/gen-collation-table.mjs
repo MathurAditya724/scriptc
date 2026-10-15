@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Root-locale collation elements for String.prototype.localeCompare over the
-// Latin repertoire (ASCII, Latin-1 Supplement, Latin Extended-A and the
-// combining diacritical marks), derived from the pinned Node release's ICU
+// Latin repertoire (ASCII, Latin-1 Supplement, Latin Extended-A, the
+// combining diacritical marks and U+2044 FRACTION SLASH, which the vulgar
+// fractions expand through), derived from the pinned Node release's ICU
 // (`localeCompare` with no locales/options) and verified against it.
 //
 //   node scripts/gen-collation-table.mjs          regenerate the table
@@ -11,7 +12,9 @@
 // elements (primary, secondary, tertiary). Precomposed letters are their
 // base letter's element followed by one secondary-only element for the
 // diacritic; letters with a stroke or other built-in variant (ø, ł, đ, ...)
-// carry the same extra secondary; ligatures expand (æ → a, e). Strings
+// carry the same extra secondary; ligatures expand (æ → a, e), and so do
+// the vulgar fractions (¼ → 1, ⁄, 4); the combining Latin letters
+// (U+0363–U+036F) are their letter's primary with a combining class. Strings
 // compare level by level over the concatenated elements — primaries
 // (zero primaries skipped), then secondaries, then tertiaries — which is the
 // multi-level comparison ICU applies at its default (tertiary) strength.
@@ -34,22 +37,20 @@ export const RANGES = [
   [0x20, 0x7e],
   [0xa0, 0x17f],
   [0x300, 0x36f],
+  [0x2044, 0x2044],
 ];
 const ch = (c) => String.fromCodePoint(c);
-// Combining marks are covered when they are pure diacritics (no primary
-// weight); the combining Latin letters (U+0363–U+036F) are not.
 const isMark = (c) => c >= 0x300 && c <= 0x36f;
-// The vulgar fractions expand through U+2044 FRACTION SLASH, which is
-// outside the table, so they stay uncovered.
-const UNCOVERED = new Set([0xbc, 0xbd, 0xbe]);
+// Combining marks that carry a primary weight: the combining Latin letters.
+const isLetterMark = (c) => isMark(c) && base.compare("a" + ch(c), "a") !== 0;
 const covered = [];
-for (const [lo, hi] of RANGES)
-  for (let c = lo; c <= hi; c++)
-    if (!UNCOVERED.has(c) && (!isMark(c) || base.compare("a" + ch(c), "a") === 0)) covered.push(c);
+for (const [lo, hi] of RANGES) for (let c = lo; c <= hi; c++) covered.push(c);
 const coveredSet = new Set(covered);
 
-// 1. Combining marks: secondary weights by their order on a base letter.
-const marks = covered.filter(isMark);
+// 1. Combining marks: secondary weights of the diacritics by their order on
+//    a base letter.
+const allMarks = covered.filter(isMark);
+const marks = allMarks.filter((c) => !isLetterMark(c));
 const markOrder = [...marks].sort((a, b) => accent.compare("a" + ch(a), "a" + ch(b)) || a - b);
 const markWeight = new Map();
 {
@@ -64,7 +65,7 @@ const markWeight = new Map();
 // reordered by class) before collating. Derived from the canonical
 // reordering Node's normalize() applies to mark pairs.
 const reorders = (a, b) => ("x" + ch(a) + ch(b)).normalize("NFD") !== "x" + ch(a) + ch(b);
-const atomicMarks = marks.filter((m) => ch(m).normalize("NFD") === ch(m));
+const atomicMarks = allMarks.filter((m) => ch(m).normalize("NFD") === ch(m));
 const movable = atomicMarks.filter((m) =>
   atomicMarks.some((n) => reorders(m, n) || reorders(n, m)),
 );
@@ -99,8 +100,20 @@ for (const c of covered) {
       if (base.compare(ch(c), x + y) === 0 && !expansion.has(c)) expansion.set(c, x + y);
 }
 
+// Compatibility expansions of three or more code points (the vulgar
+// fractions): equal at the base level to their compatibility decomposition.
+const compatExpansion = new Map();
+for (const c of covered) {
+  const k = ch(c).normalize("NFKD");
+  if (isMark(c) || ch(c).normalize("NFD") !== ch(c) || [...k].length < 3) continue;
+  if ([...k].every((x) => coveredSet.has(x.codePointAt(0))) && base.compare(ch(c), k) === 0)
+    compatExpansion.set(c, k);
+}
+
 // 4. Primary classes over single code points (base level), in order.
-const singles = covered.filter((c) => !isMark(c) && !ignorable.has(c) && !expansion.has(c));
+const singles = covered.filter(
+  (c) => !isMark(c) && !ignorable.has(c) && !expansion.has(c) && !compatExpansion.has(c),
+);
 const decomposedBase = (c) => {
   const nfd = ch(c).normalize("NFD");
   return nfd.length > 1 && isMark(nfd.codePointAt(1)) ? nfd.codePointAt(0) : null;
@@ -233,13 +246,49 @@ const atomsOf = (c) =>
   [...ch(c).normalize("NFD")].flatMap((x) => elements.get(x.codePointAt(0)).map((e) => [...e]));
 for (const c of covered) {
   if (ignorable.has(c) || primaryReps.includes(c) || expansion.has(c)) continue;
-  if (isMark(c) && ch(c).normalize("NFD") === ch(c)) continue;
+  if (compatExpansion.has(c) || (isMark(c) && ch(c).normalize("NFD") === ch(c))) continue;
   elements.set(c, atomsOf(c));
 }
 const groupOf = (c) => {
   const members = groups.get(psKey(c)) ?? [c];
   return [...members].sort((a, b) => tertiaryOf.get(a) - tertiaryOf.get(b));
 };
+// The tertiary weight Node places `c` at among the case forms `group`
+// (sorted by weight) when it ties with them at the secondary level: a
+// member's weight, or an odd weight between two of them.
+const insertTertiary = (c, group, spell) => {
+  const below = group.filter((m) => variant.compare(c, spell(m)) > 0);
+  const equal = group.find((m) => variant.compare(c, spell(m)) === 0);
+  if (equal !== undefined) return tertiaryOf.get(equal);
+  return below.length > 0
+    ? tertiaryOf.get(below[below.length - 1]) + 1
+    : tertiaryOf.get(group[0]) - 1;
+};
+// A combining Latin letter is its letter's primary at the letter's
+// secondary, with a tertiary among the letter's case forms and the
+// combining class of the diacritics it reorders with.
+for (const c of allMarks.filter(isLetterMark)) {
+  const letter = primaryReps.find((r) => r < 0x80 && base.compare(ch(c), ch(r)) === 0);
+  if (letter === undefined || accent.compare(ch(c), ch(letter)) !== 0)
+    throw new Error(`U+${c.toString(16)} is not a letter at the accent level`);
+  const t = insertTertiary(ch(c), groupOf(letter), ch);
+  elements.set(c, [[primaryOf.get(letter), COMMON, t, cccRank.get(c) ?? 0]]);
+}
+// A vulgar fraction is the elements of its compatibility decomposition;
+// each element's tertiary weight is where Node places the fraction among
+// that position's case and compatibility forms (¼ after ¹⁄4).
+for (const [c, k] of compatExpansion) {
+  const atoms = [...k];
+  const es = atoms.flatMap((x, i) => {
+    const own = atomsOf(x.codePointAt(0));
+    const group = groupOf(x.codePointAt(0));
+    const spell = (m) => atoms.slice(0, i).join("") + ch(m) + atoms.slice(i + 1).join("");
+    const t = insertTertiary(ch(c), group, spell);
+    for (const e of own) if (e[0] !== 0) e[2] = t;
+    return own;
+  });
+  elements.set(c, es);
+}
 for (const [c, pair] of expansion) {
   const [x, y] = [...pair].map((q) => q.codePointAt(0));
   const middle = expansionSecondary.has(c) ? [[0, expansionSecondary.get(c), COMMON, 0]] : [];
@@ -339,7 +388,11 @@ const word = () => {
   for (let i = 0; i < n; i++) {
     const r = rnd(10);
     s += ch(
-      r < 6 ? heavy[rnd(heavy.length)] : r < 9 ? pool[rnd(pool.length)] : marks[rnd(marks.length)],
+      r < 6
+        ? heavy[rnd(heavy.length)]
+        : r < 9
+          ? pool[rnd(pool.length)]
+          : allMarks[rnd(allMarks.length)],
     );
   }
   return s;
@@ -373,6 +426,13 @@ for (const [, pair] of expansion) {
   const [x, y] = [...pair];
   for (const u of [x, x.toUpperCase()]) for (const v of [y, y.toUpperCase()]) probes.add(u + v);
 }
+// Fractions against their spellings with an ASCII slash and a superscript
+// numerator.
+const superscript = { 1: "\u00b9", 2: "\u00b2", 3: "\u00b3" };
+for (const [, k] of compatExpansion) {
+  probes.add(k.replace("\u2044", "/"));
+  probes.add(superscript[k[0]] + k.slice(1));
+}
 const contexts = [(t) => t, (t) => t + "a", (t) => t + "B", (t) => "x" + t + "y"];
 let probeCount = 0;
 for (const f of contexts)
@@ -381,13 +441,37 @@ for (const f of contexts)
       check(f(a), f(b));
       probeCount++;
     }
+// Combining Latin letters against their letters, with each diacritic before
+// and after them: canonical reordering moves them past marks of a lower
+// class only.
+let markCount = 0;
+for (const m of allMarks.filter(isLetterMark)) {
+  const letter = ch(m).normalize("NFKD") === ch(m) ? null : ch(m).normalize("NFKD");
+  const l = letter ?? [...letters].find((x) => base.compare(ch(m), x) === 0);
+  for (const d of marks) {
+    const set = [
+      "a" + ch(m) + ch(d),
+      "a" + ch(d) + ch(m),
+      "a" + ch(d) + l,
+      "a" + l + ch(d),
+      "a" + ch(m),
+      "a" + l,
+      "a" + l.toUpperCase() + ch(d),
+    ];
+    for (const x of set)
+      for (const y of set) {
+        check(x, y);
+        markCount++;
+      }
+  }
+}
 if (mismatches > 0) {
   console.error(`collation model disagrees with Node in ${mismatches} cases:`);
   for (const s of samples) console.error(`  ${s}`);
   process.exit(1);
 }
 console.log(
-  `collation model matches Node over ${pool.length ** 2 + 300000 + probeCount} comparisons`,
+  `collation model matches Node over ${pool.length ** 2 + 300000 + probeCount + markCount} comparisons`,
 );
 if (checkOnly) process.exit(0);
 
@@ -406,19 +490,32 @@ lines.push("#define SCR_COLLATION_DATA_H");
 lines.push("#include <stdint.h>");
 lines.push("typedef struct { uint16_t p; uint8_t s; uint8_t t; uint8_t ccc; } ScrCollElem;");
 lines.push("typedef struct { uint8_t n; ScrCollElem e[3]; } ScrCollEntry;");
+lines.push("#define SCR_COLL_UNCOVERED {255, {{0, 0, 0, 0}}}");
 const maxP = Math.max(...[...elements.values()].flat().map((e) => e[0]));
 const maxS = Math.max(...[...elements.values()].flat().map((e) => e[1]));
 const maxT = Math.max(...[...elements.values()].flat().map((e) => e[2]));
 if (maxP > 0xffff || maxS > 0xff || maxT > 0xff)
   throw new Error("weights overflow the table types");
-for (const [lo, hi] of RANGES) {
+// Code points below DENSE_LIMIT share one table indexed by code point, with
+// the gaps between ranges marked uncovered, so a lookup there is one
+// comparison; the ranges above it get a table each.
+const hex = (q) => "U+" + q.toString(16).toUpperCase().padStart(4, "0");
+const DENSE_LIMIT = 0x370;
+if (RANGES.some(([lo, hi]) => lo < DENSE_LIMIT && hi >= DENSE_LIMIT))
+  throw new Error("a range straddles the dense table's limit");
+const tables = [[0, DENSE_LIMIT - 1], ...RANGES.filter(([lo]) => lo >= DENSE_LIMIT)];
+for (const [lo, hi] of tables) {
   const name = `scr_coll_${lo.toString(16).padStart(4, "0")}`;
   lines.push(`static const ScrCollEntry ${name}[${hi - lo + 1}] = {`);
   for (let c = lo; c <= hi; c++) {
     if (!coveredSet.has(c)) {
-      lines.push(
-        `    {255, {{0, 0, 0, 0}}}, /* U+${c.toString(16).toUpperCase().padStart(4, "0")} not covered */`,
-      );
+      // A run of uncovered code points: a comment, then five per line.
+      let end = c;
+      while (end < hi && !coveredSet.has(end + 1)) end++;
+      lines.push(`    /* ${hex(c)}..${hex(end)} not covered */`);
+      for (let q = c; q <= end; q += 5)
+        lines.push("   " + " SCR_COLL_UNCOVERED,".repeat(Math.min(5, end - q + 1)));
+      c = end;
       continue;
     }
     const es = elements.get(c);
@@ -431,7 +528,8 @@ for (const [lo, hi] of RANGES) {
   lines.push("};");
 }
 lines.push("static const ScrCollEntry *scr_coll_lookup(uint32_t c) {");
-for (const [lo, hi] of RANGES) {
+lines.push(`  if (c < 0x${DENSE_LIMIT.toString(16)}) return &scr_coll_0000[c];`);
+for (const [lo, hi] of tables.slice(1)) {
   const name = `scr_coll_${lo.toString(16).padStart(4, "0")}`;
   lines.push(
     `  if (c >= 0x${lo.toString(16)} && c <= 0x${hi.toString(16)}) return &${name}[c - 0x${lo.toString(16)}];`,
@@ -449,7 +547,6 @@ for (const [pair, es] of contractions) {
   const [x, y] = [...pair].map((q) => q.codePointAt(0));
   if (es.length > 3) throw new Error(`contraction ${pair} needs ${es.length} elements`);
   const body = es.map((e) => `{${e[0]}, ${e[1]}, ${e[2]}, ${e[3]}}`).join(", ");
-  const hex = (q) => "U+" + q.toString(16).toUpperCase().padStart(4, "0");
   lines.push(
     `    {0x${x.toString(16)}, 0x${y.toString(16)}, {${es.length}, {${body}}}}, /* ${hex(x)} ${hex(y)} */`,
   );

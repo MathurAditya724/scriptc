@@ -156,6 +156,11 @@ export type IrType =
    * open descriptor, matching Node's ownership safety without its GC
    * warning. Holds no references and cannot participate in a cycle. */
   | { kind: "fileHandle" }
+  /** An fs.Dir (opendirSync / fs.promises.opendir): heap, refcounted,
+   * MUTABLE — aliases share one directory stream, read an entry at a time;
+   * close() closes it for every alias, and the final release closes a
+   * still-open stream. Holds no references and cannot be part of a cycle. */
+  | { kind: "dir" }
   /** A child_process.spawnSync result (scr_child.c): heap, refcounted,
    * IMMUTABLE — the reaped child's status plus its captured utf8 stdout/
    * stderr. Holds only strings — never part of a cycle, no trace. Same
@@ -365,6 +370,7 @@ export type IrType =
 const POINTER_HANDLE_KINDS = [
   "stats",
   "fileHandle",
+  "dir",
   "spawnRes",
   "child",
   "netServer",
@@ -446,6 +452,7 @@ export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   symbol: "scr_sym",
   stats: "scr_stats",
   fileHandle: "scr_file_handle",
+  dir: "scr_dir",
   spawnRes: "scr_spawn_res",
   child: "scr_child",
   netServer: "scr_net_server",
@@ -511,6 +518,7 @@ export const REF_TRUTHY_KINDS: ReadonlySet<string> = new Set([
   "searchParams",
   "stats",
   "fileHandle",
+  "dir",
   "spawnRes",
   "child",
   "netServer",
@@ -554,6 +562,7 @@ export const SEARCH_PARAMS_T: IrType = { kind: "searchParams" };
 export const SYMBOL_T: IrType = { kind: "symbol" };
 export const STATS_T: IrType = { kind: "stats" };
 export const FILEHANDLE_T: IrType = { kind: "fileHandle" };
+export const DIR_T: IrType = { kind: "dir" };
 export const SPAWNRES_T: IrType = { kind: "spawnRes" };
 export const CHILD_T: IrType = { kind: "child" };
 export const NETSERVER_T: IrType = { kind: "netServer" };
@@ -1466,6 +1475,22 @@ export interface IrRecordShape {
    * fields carry that declaredOrder OMITS are internal '%'-fields (Dirent's
    * %dtype) — hidden from every key-order surface, JSON included. */
   declaredOrder?: string[];
+}
+
+/** fs.Dirent rows: the hidden %dtype entry kind (libuv's UV_DIRENT
+ * encoding), then name and parentPath (type-mapper's interned shape). */
+export function isDirentShape(shape: IrRecordShape): boolean {
+  return (
+    !shape.tuple &&
+    shape.indexValue === undefined &&
+    shape.fields.length === 3 &&
+    shape.fields[0]!.name === "%dtype" &&
+    shape.fields[0]!.type.kind === "f64" &&
+    shape.fields[1]!.name === "name" &&
+    shape.fields[1]!.type.kind === "string" &&
+    shape.fields[2]!.name === "parentPath" &&
+    shape.fields[2]!.type.kind === "string"
+  );
 }
 
 /** Codec records have private native state, not a structurally checkable
@@ -3768,6 +3793,7 @@ export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }>
   ["http2Session", { tag: "SCR_DYNH_H2_SESSION", cls: "Http2Session" }],
   ["http2Stream", { tag: "SCR_DYNH_H2_STREAM", cls: "Http2Stream" }],
   ["httpClientReq", { tag: "SCR_DYNH_HTTP_CLIENT", cls: "ClientRequest" }],
+  ["dir", { tag: "SCR_DYNH_DIR", cls: "Dir" }],
 ]);
 
 /** A class value that crosses an `unknown` slot as a compiler-owned typed

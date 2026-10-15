@@ -218,3 +218,15 @@ void scr_crypto_random_int_async(double min, double max, double min_given, ScrCl
   *task = (ScrRandomIntTask){.min = min, .max = max, .min_given = min_given != 0, .cb = cb, .fn = fn};
   scr_random_int_run(task);
 }
+
+/* generateKey(type, options, callback): the key arrives in a later
+ * macrotask; argument errors throw, as in Node. */
+void scr_crypto_generate_key_async(ScrDyn *type, ScrDyn *options, ScrClosure *cb,
+                                   ScrCryptoBytesFn fn) {
+  ScrDyn *key = scr_crypto_generate_key_sync(type, options);
+  if (!key) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_crypto_defer_dyn(key, NULL, cb, fn);
+}

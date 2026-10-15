@@ -12,6 +12,7 @@ import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../opti
 import {
   BOOL,
   BYTES_U8,
+  DIR_T,
   DYN,
   F64,
   FILEHANDLE_T,
@@ -196,6 +197,28 @@ export function lowerFsToUnixTimestampCall(
   };
 }
 
+/** True when opendirSync's arguments fit lowerFsOpendirCall: a string
+ * path and no options, or an object literal whose members are a numeric
+ * bufferSize and a utf8 encoding. */
+function opendirLowers(lowerer: Lowerer, args: readonly ts.Expression[]): boolean {
+  if (args.length < 1 || args.length > 2) return false;
+  if (lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind !== "string") return false;
+  const options = args[1];
+  if (!options || (ts.isIdentifier(options) && options.text === "undefined")) return true;
+  if (!ts.isObjectLiteralExpression(options)) return false;
+  return options.properties.every((property) => {
+    const option = optionMember(property);
+    if (!option) return false;
+    if (option.name === "bufferSize")
+      return lowerer.mapTypeOf(lowerer.typeOf(option.value))?.kind === "f64";
+    if (option.name !== "encoding") return false;
+    const encoding = lowerer.typeOf(option.value);
+    return (
+      encoding.isStringLiteralType() && (encoding.value === "utf8" || encoding.value === "utf-8")
+    );
+  });
+}
+
 /** The fs validation-ladder spoke (checked-dynamic lane, JS sources
  * only — TypeScript keeps its compile fences): implemented-namespace
  * calls whose misuse Node rejects with typed errors lower to fs.*Chk
@@ -335,6 +358,10 @@ export function lowerFsLadderCall(
       );
     }
     case "opendirSync": {
+      // A string path with no options or a literal { bufferSize, encoding:
+      // "utf8" } takes the real lowering; anything else keeps Node's
+      // validation ladder and its fence.
+      if (opendirLowers(lowerer, args)) return null;
       const a = dynArgs([args[0], args[1]]);
       return (
         a && chk("fs.opendirChk", [...a, ladderFenceExpr(lowerer, "fs.opendirSync", expr)], resultT)
@@ -904,12 +931,81 @@ export function lowerFileHandleMethodCall(
   );
 }
 
-/** Method calls on Stats-typed receivers: isFile()/isDirectory()/
- * isSymbolicLink() are pure reads on the stat snapshot (a followed
- * statSync snapshot never answers true to isSymbolicLink — take
- * lstatSync's, Node's own split). Everything else @types/node declares
- * (mtime, mode, ...) fences member-qualified. Null for non-Stats
- * receivers. */
+/** fs.Dir's members: path, and the sync and promise read/close forms (the
+ * callback overloads have no lowering; for-await lowers in
+ * lower-async-iteration.ts). */
+export const DIR_METHODS = new Set(["readSync", "read", "closeSync", "close"]);
+export const DIR_MEMBERS =
+  "path, readSync(), read(), closeSync(), close(), and for-await iteration are the supported Dir members (no callbacks)";
+
+/** Method calls on Dir-typed receivers. readSync answers the call site's
+ * `Dirent | null` (the emitter builds the row); read is its promise twin.
+ * Null for non-Dir receivers. */
+export function lowerDirMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (call.questionDotToken || access.questionDotToken) return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "dir") return null;
+  if (!lowerer.isStdlibMember(access)) return null;
+  const name = access.name.text;
+  const loc = locOf(call);
+  if (DIR_METHODS.has(name) && call.arguments.length === 0) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, DIR_T);
+    if (name === "closeSync")
+      return { kind: "libCall", fn: "dir.closeSync", args: [receiver], type: VOID, loc };
+    if (name === "close") {
+      return {
+        kind: "libCall",
+        fn: "dir.close",
+        args: [receiver],
+        type: { kind: "promise", inner: VOID },
+        loc,
+      };
+    }
+    const type = lowerer.mapTypeOf(lowerer.typeOf(call));
+    const entry = type?.kind === "promise" ? type.inner : type;
+    const arms = entry?.kind === "union" ? lowerer.unions.get(entry.unionId)?.arms : undefined;
+    if (
+      type &&
+      arms?.length === 2 &&
+      arms.some((arm) => arm.kind === "record") &&
+      arms.some((arm) => arm.kind === "nullT") &&
+      (name === "read") === (type.kind === "promise")
+    ) {
+      return {
+        kind: "libCall",
+        fn: name === "read" ? "dir.read" : "dir.readSync",
+        args: [receiver],
+        type,
+        loc,
+      };
+    }
+  }
+  return lowerer.noLowering(
+    `Dir.${name}`,
+    call,
+    DIR_MEMBERS,
+    lowerer.checker.getSymbolAtLocation(access.name),
+  );
+}
+
+/** The Stats type tests, each a read of the snapshot's mode. */
+export const STATS_TYPE_TESTS: Record<string, IrLibFn> = {
+  isFile: "stats.isFile",
+  isDirectory: "stats.isDirectory",
+  isSymbolicLink: "stats.isSymbolicLink",
+  isBlockDevice: "stats.isBlockDevice",
+  isCharacterDevice: "stats.isCharacterDevice",
+  isFIFO: "stats.isFIFO",
+  isSocket: "stats.isSocket",
+};
+
+/** Method calls on Stats-typed receivers: the type tests are pure reads on
+ * the stat snapshot (a followed statSync snapshot never answers true to
+ * isSymbolicLink — take lstatSync's, Node's own split). Anything else
+ * fences member-qualified. Null for non-Stats receivers. */
 export function lowerStatsMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -919,23 +1015,15 @@ export function lowerStatsMethodCall(
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "stats") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
-  if (
-    (name === "isFile" || name === "isDirectory" || name === "isSymbolicLink") &&
-    call.arguments.length === 0
-  ) {
+  const fn = Object.hasOwn(STATS_TYPE_TESTS, name) ? STATS_TYPE_TESTS[name] : undefined;
+  if (fn && call.arguments.length === 0) {
     const receiver = lowerer.lowerExpr(access.expression);
-    const fn =
-      name === "isFile"
-        ? "stats.isFile"
-        : name === "isDirectory"
-          ? "stats.isDirectory"
-          : "stats.isSymbolicLink";
     return { kind: "libCall", fn, args: [receiver], type: BOOL, loc: locOf(call) };
   }
   lowerer.noLowering(
     `Stats.${name}`,
     call,
-    "isFile(), isDirectory(), isSymbolicLink(), dev, ino, size, blocks, nlink, atimeMs, mtimeMs, and ctimeMs are the supported Stats members",
+    "isFile(), isDirectory(), isSymbolicLink(), isBlockDevice(), isCharacterDevice(), isFIFO(), isSocket(), dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeMs, mtimeMs, ctimeMs, birthtimeMs, atime, mtime, ctime, and birthtime are the supported Stats members",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }

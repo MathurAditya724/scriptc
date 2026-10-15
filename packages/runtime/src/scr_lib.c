@@ -130,6 +130,17 @@ static ScrStr *scr_fs_win_utf8(const WCHAR *text, size_t length) {
 #if defined(__linux__)
 #include <sched.h> /* sched_getaffinity, CPU_COUNT (os.availableParallelism) */
 #include <sys/prctl.h> /* PR_SET_NAME (process.title) */
+#include <sys/syscall.h> /* SYS_statx (fs stats) */
+#ifndef SYS_statx
+#if defined(__x86_64__)
+#define SYS_statx 332
+#elif defined(__aarch64__)
+#define SYS_statx 291 /* the generic syscall table */
+#endif
+#endif
+#ifndef AT_EMPTY_PATH
+#define AT_EMPTY_PATH 0x1000
+#endif
 #elif defined(__APPLE__)
 #include <sys/sysctl.h> /* sysctlbyname (os.availableParallelism) */
 #endif
@@ -2140,7 +2151,7 @@ static double scr_filetime_us(FILETIME ft) {
 /* A filesystem FILETIME is 100ns ticks since 1601. Match libuv's split into
  * Unix seconds + nanoseconds before doing Node's millisecond arithmetic; the
  * split matters for the last-bit rounding of dates far from the epoch. */
-static double scr_filetime_unix_ms(FILETIME ft) {
+static void scr_filetime_timespec(FILETIME ft, int64_t *sec_out, int64_t *nsec_out) {
   ULARGE_INTEGER raw;
   raw.LowPart = ft.dwLowDateTime;
   raw.HighPart = ft.dwHighDateTime;
@@ -2151,7 +2162,8 @@ static double scr_filetime_unix_ms(FILETIME ft) {
     sec--;
     rem += INT64_C(10000000);
   }
-  return (double)sec * 1000.0 + (double)rem / 10000.0;
+  *sec_out = sec;
+  *nsec_out = rem * 100;
 }
 double scr_cpu_user(void) {
   FILETIME c, e, k, u;
@@ -3392,20 +3404,47 @@ void scr_fs_chmod(ScrStr *path, double mode) {
   if (chmod(path->data, (mode_t)mode) != 0) scr_fs_throw(errno, "chmod", path);
 }
 
-void scr_fs_chown(ScrStr *path, double uid, double gid) {
+static void scr_fs_throw_nopath(int e, const char *op);
+static bool scr_fs_write_fd_valid(double fd);
+
+/* Node's validateInteger(id, name, -1, 2 ** 32 - 1) for uid and gid. False
+ * with the RangeError thrown. */
+bool scr_fs_owner_id_valid(double id, const char *name) {
+  bool integer = isfinite(id) && trunc(id) == id;
+  if (integer && id >= -1 && id <= 4294967295.0) return true;
+  char received[48], msg[192];
+  scr_num_received(id, received);
+  int n = snprintf(msg, sizeof msg, "The value of \"%s\" is out of range. It must be %s. Received %s", name,
+                   integer ? ">= -1 && <= 4294967295" : "an integer", received);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+/* chown, lchown (path, no follow) and fchown (fd >= 0, path NULL). libuv's
+ * Windows forms are unconditional no-op successes — Node's calls "work" and
+ * change nothing there; WASI likewise has no ownership model. Node passes
+ * the ids straight to the syscall; -1 is the POSIX "leave unchanged" value
+ * and rides the same int cast. */
+static void scr_fs_chown_op(ScrStr *path, double fd, bool no_follow, double uid, double gid) {
+  if (!scr_fs_owner_id_valid(uid, "uid") || !scr_fs_owner_id_valid(gid, "gid")) return;
+  /* The binding checks fchown's fd after the ids. */
+  if (!path && !scr_fs_write_fd_valid(fd)) return;
 #if defined(_WIN32) || defined(__wasi__)
-  /* libuv's uv_fs_chown on Windows is an unconditional no-op success —
-   * Node's chownSync "works" and changes nothing there; WASI likewise has
-   * no ownership model. */
-  (void)path; (void)uid; (void)gid;
+  (void)path; (void)fd; (void)no_follow;
 #else
-  /* Node passes the ids straight to chown(2); -1 is the POSIX "leave
-   * unchanged" value and rides the same int cast. */
-  if (chown(path->data, (uid_t)(int64_t)uid, (gid_t)(int64_t)gid) != 0) {
-    scr_fs_throw(errno, "chown", path);
+  uid_t owner = (uid_t)(int64_t)uid;
+  gid_t group = (gid_t)(int64_t)gid;
+  if (!path) {
+    if (fchown((int)fd, owner, group) != 0) scr_fs_throw_nopath(errno, "fchown");
+  } else if ((no_follow ? lchown(path->data, owner, group) : chown(path->data, owner, group)) != 0) {
+    scr_fs_throw(errno, no_follow ? "lchown" : "chown", path);
   }
 #endif
 }
+
+void scr_fs_chown(ScrStr *path, double uid, double gid) { scr_fs_chown_op(path, -1, false, uid, gid); }
+void scr_fs_lchown(ScrStr *path, double uid, double gid) { scr_fs_chown_op(path, -1, true, uid, gid); }
+void scr_fs_fchown(double fd, double uid, double gid) { scr_fs_chown_op(NULL, fd, false, uid, gid); }
 
 /* fs.openSync(path, flags) → the raw fd (as f64) — the pair behind
  * spawn's fd-stdio form (openSync → stdio: ["ignore", fd, fd] →
@@ -3526,19 +3565,23 @@ void scr_fs_fdatasync(double fd) {
 #endif
 }
 
-void scr_fs_ftruncate(double fd, double length) {
-  if (!scr_fs_write_fd_valid(fd)) return;
+/* Node's validateInteger(len, 'len'). False with the RangeError thrown. */
+bool scr_fs_truncate_len_valid(double length) {
+  if (isfinite(length) && trunc(length) == length &&
+      length >= -9007199254740991.0 && length <= 9007199254740991.0) return true;
   char received[48], msg[192];
   scr_num_received(length, received);
-  if (!(isfinite(length) && trunc(length) == length) ||
-      length < -9007199254740991.0 || length > 9007199254740991.0) {
-    const char *bound = isfinite(length) && trunc(length) == length
-      ? ">= -9007199254740991 && <= 9007199254740991" : "an integer";
-    int n = snprintf(msg, sizeof msg,
-      "The value of \"len\" is out of range. It must be %s. Received %s", bound, received);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
-    return;
-  }
+  const char *bound = isfinite(length) && trunc(length) == length
+    ? ">= -9007199254740991 && <= 9007199254740991" : "an integer";
+  int n = snprintf(msg, sizeof msg,
+    "The value of \"len\" is out of range. It must be %s. Received %s", bound, received);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+void scr_fs_ftruncate(double fd, double length) {
+  if (!scr_fs_write_fd_valid(fd)) return;
+  if (!scr_fs_truncate_len_valid(length)) return;
   if (length < 0) length = 0;
 #ifdef _WIN32
   int error = (int)_chsize_s((int)fd, (__int64)length);
@@ -3546,6 +3589,18 @@ void scr_fs_ftruncate(double fd, double length) {
 #else
   if (ftruncate((int)fd, (off_t)length) != 0) scr_fs_throw_nopath(errno, "ftruncate");
 #endif
+}
+
+/* truncateSync and fsp.truncate: open(path, 'r+'), then ftruncate's len
+ * check and clamp, then close. Node's order, so an open failure wins over
+ * an invalid len. */
+void scr_fs_truncate(ScrStr *path, double length) {
+  ScrStr *flags = scr_str_new("r+", 2);
+  double fd = scr_fs_open(path, flags);
+  scr_str_release(flags);
+  if (scr_exc_pending()) return;
+  scr_fs_ftruncate(fd, length);
+  close((int)fd);
 }
 
 #ifdef _WIN32
@@ -4423,6 +4478,51 @@ void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode) {
   free(buf);
 }
 
+/* mkdir(p, { recursive: true })'s answer, Node's MKDirpSync first path:
+ * the first directory its walk creates, or NULL when the path already
+ * existed. Node tries mkdir on the path and, on ENOENT, on the path cut
+ * before its last separator, repeatedly; the first mkdir that succeeds
+ * (its kernel parent exists) is the answer, spelled as cut. Creates the
+ * path like scr_fs_mkdir_recursive_mode (the exception pending on
+ * failure). */
+static bool scr_fs_mkdirp_exists(char *buf, size_t len) {
+  char saved = buf[len];
+  buf[len] = 0;
+  struct stat st;
+  int rc = len == 0 ? stat(".", &st) : stat(buf, &st);
+  int e = errno;
+  buf[len] = saved;
+  return rc == 0 || e != ENOENT;
+}
+
+ScrStr *scr_fs_mkdir_recursive_first(ScrStr *path, double mode) {
+  char *buf = malloc(path->len + 1);
+  if (!buf) {
+    scr_trap("scriptc: out of memory\n");
+  }
+  memcpy(buf, path->data, path->len + 1);
+  size_t cur = path->len, first = 0;
+  while (cur > 0 && !scr_fs_mkdirp_exists(buf, cur)) {
+    first = cur;
+    /* The kernel's parent: trailing separators dropped, then the last
+     * component and the separators before it ("/" stays). */
+    size_t k = cur;
+    while (k > 1 && scr_fs_sep(buf[k - 1])) k--;
+    while (k > 0 && !scr_fs_sep(buf[k - 1])) k--;
+    while (k > 1 && scr_fs_sep(buf[k - 1])) k--;
+    if (scr_fs_mkdirp_exists(buf, k)) break;
+    /* ENOENT: Node retries with the path cut before its last separator. */
+    size_t cut = cur;
+    while (cut > 0 && !scr_fs_sep(buf[cut - 1])) cut--;
+    if (cut == 0) break;
+    cur = cut - 1;
+  }
+  scr_mkdir_rec(buf, path->len, (mode_t)mode);
+  free(buf);
+  if (scr_exc_pending() || first == 0) return NULL;
+  return scr_str_new(path->data, first);
+}
+
 /* First failure of an rm walk, recorded instead of thrown so the retry
  * form can decide (retryable errno + attempts left → sleep and go again)
  * before anything reaches the exception cell. `path` is +1 when err != 0;
@@ -4600,7 +4700,11 @@ static char *scr_portable_mkdtemp(char *tmpl) {
 #define mkdtemp scr_portable_mkdtemp
 #endif
 
-ScrStr *scr_fs_mkdtemp(ScrStr *prefix) {
+/* Node's sync error reports the template, X's included: mkdtemp
+ * '/nope/x-XXXXXX'. The callback and promise errors report the request's
+ * path, which is the template as mkdtemp(3) left it (glibc leaves the last
+ * name it tried; musl restores the X's). */
+static ScrStr *scr_fs_mkdtemp_op(ScrStr *prefix, bool sync) {
   char *tmpl = malloc(prefix->len + 7);
   if (!tmpl) {
     scr_trap("scriptc: out of memory\n");
@@ -4608,8 +4712,8 @@ ScrStr *scr_fs_mkdtemp(ScrStr *prefix) {
   memcpy(tmpl, prefix->data, prefix->len);
   memcpy(tmpl + prefix->len, "XXXXXX", 7);
   if (!mkdtemp(tmpl)) {
-    /* Node reports the template, X's included: mkdtemp '/nope/x-XXXXXX' */
     int e = errno;
+    if (sync) memcpy(tmpl + prefix->len, "XXXXXX", 6);
     ScrStr *shown = scr_str_new(tmpl, prefix->len + 6);
     scr_fs_throw(e, "mkdtemp", shown);
     scr_str_release(shown);
@@ -4621,8 +4725,27 @@ ScrStr *scr_fs_mkdtemp(ScrStr *prefix) {
   return out;
 }
 
+ScrStr *scr_fs_mkdtemp(ScrStr *prefix) { return scr_fs_mkdtemp_op(prefix, true); }
+ScrStr *scr_fs_mkdtemp_async(ScrStr *prefix) { return scr_fs_mkdtemp_op(prefix, false); }
+
+/* Node's GetValidFileMode for access(): a finite number whose int32 value
+ * lies in F_OK .. R_OK | W_OK | X_OK. False with the RangeError thrown. */
+bool scr_fs_access_mode_valid(double mode) {
+  static const char not_finite[] = "mode is out of range";
+  static const char range[] = "mode is out of range: >= 0 && <= 7";
+  if (!isfinite(mode)) {
+    scr_throw_error_msg_code(SCR_ERR_RANGE, not_finite, sizeof not_finite - 1, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  int32_t m = (int32_t)scr_to_uint32(mode);
+  if (m >= 0 && m <= 7) return true;
+  scr_throw_error_msg_code(SCR_ERR_RANGE, range, sizeof range - 1, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
 void scr_fs_access(ScrStr *path, double mode) {
-  int m = (int)mode;
+  if (!scr_fs_access_mode_valid(mode)) return;
+  int m = (int32_t)scr_to_uint32(mode);
 #ifdef _WIN32
   /* The CRT access() rejects X_OK (there is no execute bit); Node on
    * Windows treats X_OK as F_OK, so mask it down to the R/W bits. */
@@ -4770,24 +4893,37 @@ void scr_process_stdin_destroy(void) {
 }
 
 /* ── Stats values ────────────────────────────────────────────────────
- * An immutable snapshot of stat(2) results — the lowered type/mode, device,
- * inode, size, allocation/link, and access/write/change-time slice. statSync
- * THROWS like the other sync fs calls; the promise form rejects (see the fsp
- * section). */
+ * An immutable snapshot of one stat(2) result: libuv's integers and its four
+ * timestamps. statSync THROWS like the other sync fs calls; the promise form
+ * rejects (see the fsp section). scr_stats_dyn builds Node's Stats and
+ * BigIntStats objects from the same snapshot. */
+
+/* The integers in the order Node's binding reports them. */
+enum {
+  SCR_STATS_DEV,
+  SCR_STATS_MODE,
+  SCR_STATS_NLINK,
+  SCR_STATS_UID,
+  SCR_STATS_GID,
+  SCR_STATS_RDEV,
+  SCR_STATS_BLKSIZE,
+  SCR_STATS_INO,
+  SCR_STATS_SIZE,
+  SCR_STATS_BLOCKS,
+  SCR_STATS_FIELDS
+};
+
+/* The timestamps, each kept as seconds + nanoseconds. */
+enum { SCR_STATS_ATIME, SCR_STATS_MTIME, SCR_STATS_CTIME, SCR_STATS_BIRTHTIME };
 
 struct ScrStats {
   size_t rc;
   bool is_file;
   bool is_dir;
   bool is_symlink; /* lstat only — a followed stat never sees one */
-  double dev;
-  double ino;
-  double size;
-  double blocks;   /* allocated size in 512-byte units (Node/libuv) */
-  double nlink;
-  double atime_ms;
-  double mtime_ms; /* milliseconds with the nanosecond fraction (Node) */
-  double ctime_ms;
+  uint64_t fields[SCR_STATS_FIELDS]; /* blocks counts 512-byte units */
+  int64_t sec[4];
+  int64_t nsec[4];
 };
 
 ScrStats *scr_stats_retain(ScrStats *s) {
@@ -4803,20 +4939,66 @@ void scr_stats_release(ScrStats *s) {
 void *scr_stats_retain_v(void *p) { return scr_stats_retain(p); }
 void scr_stats_release_v(void *p) { scr_stats_release(p); }
 
+/* The S_IFMT type bits, spelled out because Windows lacks some macros. */
+#define SCR_STATS_IFMT 0xF000u
+#define SCR_STATS_IFIFO 0x1000u
+#define SCR_STATS_IFCHR 0x2000u
+#define SCR_STATS_IFDIR 0x4000u
+#define SCR_STATS_IFBLK 0x6000u
+#define SCR_STATS_IFREG 0x8000u
+#define SCR_STATS_IFLNK 0xA000u
+#define SCR_STATS_IFSOCK 0xC000u
+
+static bool scr_stats_type_is(const ScrStats *s, unsigned type) {
+#ifdef _WIN32
+  /* Node answers false for the types Windows does not have. */
+  if (type == SCR_STATS_IFIFO || type == SCR_STATS_IFBLK || type == SCR_STATS_IFSOCK) return false;
+#endif
+  return (s->fields[SCR_STATS_MODE] & SCR_STATS_IFMT) == type;
+}
+
 bool scr_stats_is_file(ScrStats *s) { return s->is_file; }
 bool scr_stats_is_dir(ScrStats *s) { return s->is_dir; }
 bool scr_stats_is_symlink(ScrStats *s) { return s->is_symlink; }
-double scr_stats_dev(ScrStats *s) { return s->dev; }
-double scr_stats_ino(ScrStats *s) { return s->ino; }
-double scr_stats_size(ScrStats *s) { return s->size; }
-double scr_stats_blocks(ScrStats *s) { return s->blocks; }
-double scr_stats_nlink(ScrStats *s) { return s->nlink; }
-double scr_stats_atime_ms(ScrStats *s) { return s->atime_ms; }
-double scr_stats_mtime_ms(ScrStats *s) { return s->mtime_ms; }
-double scr_stats_ctime_ms(ScrStats *s) { return s->ctime_ms; }
+bool scr_stats_is_block_device(ScrStats *s) { return scr_stats_type_is(s, SCR_STATS_IFBLK); }
+bool scr_stats_is_character_device(ScrStats *s) { return scr_stats_type_is(s, SCR_STATS_IFCHR); }
+bool scr_stats_is_fifo(ScrStats *s) { return scr_stats_type_is(s, SCR_STATS_IFIFO); }
+bool scr_stats_is_socket(ScrStats *s) { return scr_stats_type_is(s, SCR_STATS_IFSOCK); }
+double scr_stats_dev(ScrStats *s) { return (double)s->fields[SCR_STATS_DEV]; }
+double scr_stats_mode(ScrStats *s) { return (double)s->fields[SCR_STATS_MODE]; }
+double scr_stats_nlink(ScrStats *s) { return (double)s->fields[SCR_STATS_NLINK]; }
+double scr_stats_uid(ScrStats *s) { return (double)s->fields[SCR_STATS_UID]; }
+double scr_stats_gid(ScrStats *s) { return (double)s->fields[SCR_STATS_GID]; }
+double scr_stats_rdev(ScrStats *s) { return (double)s->fields[SCR_STATS_RDEV]; }
+double scr_stats_blksize(ScrStats *s) { return (double)s->fields[SCR_STATS_BLKSIZE]; }
+double scr_stats_ino(ScrStats *s) { return (double)s->fields[SCR_STATS_INO]; }
+double scr_stats_size(ScrStats *s) { return (double)s->fields[SCR_STATS_SIZE]; }
+double scr_stats_blocks(ScrStats *s) { return (double)s->fields[SCR_STATS_BLOCKS]; }
+
+/* Node's msFromTimeSpec: seconds * 1000 + nanoseconds / 1e6. */
+static double scr_stats_ms(const ScrStats *s, int which) {
+  return (double)s->sec[which] * 1000.0 + (double)s->nsec[which] / 1e6;
+}
+
+double scr_stats_atime_ms(ScrStats *s) { return scr_stats_ms(s, SCR_STATS_ATIME); }
+double scr_stats_mtime_ms(ScrStats *s) { return scr_stats_ms(s, SCR_STATS_MTIME); }
+double scr_stats_ctime_ms(ScrStats *s) { return scr_stats_ms(s, SCR_STATS_CTIME); }
+double scr_stats_birthtime_ms(ScrStats *s) { return scr_stats_ms(s, SCR_STATS_BIRTHTIME); }
+
+/* Math.round: the nearest integer, halves toward +Infinity. */
+static double scr_stats_round(double ms) {
+  double low = floor(ms);
+  return ms - low >= 0.5 ? low + 1 : low;
+}
+
+/* The Date fields: Node rounds the millisecond value before new Date(). */
+double scr_stats_atime(ScrStats *s) { return scr_date_new_ms(scr_stats_round(scr_stats_ms(s, SCR_STATS_ATIME))); }
+double scr_stats_mtime(ScrStats *s) { return scr_date_new_ms(scr_stats_round(scr_stats_ms(s, SCR_STATS_MTIME))); }
+double scr_stats_ctime(ScrStats *s) { return scr_date_new_ms(scr_stats_round(scr_stats_ms(s, SCR_STATS_CTIME))); }
+double scr_stats_birthtime(ScrStats *s) { return scr_date_new_ms(scr_stats_round(scr_stats_ms(s, SCR_STATS_BIRTHTIME))); }
 
 static ScrStats *scr_stats_new(void) {
-  ScrStats *s = malloc(sizeof(ScrStats));
+  ScrStats *s = calloc(1, sizeof(ScrStats));
   if (!s) {
     scr_trap("scriptc: out of memory\n");
   }
@@ -4824,7 +5006,22 @@ static ScrStats *scr_stats_new(void) {
   return s;
 }
 
+static void scr_stats_set_time(ScrStats *s, int which, int64_t sec, int64_t nsec) {
+  s->sec[which] = sec;
+  s->nsec[which] = nsec;
+}
+
 #ifdef _WIN32
+static void scr_stats_set_filetime(ScrStats *s, int which, FILETIME ft) {
+  scr_filetime_timespec(ft, &s->sec[which], &s->nsec[which]);
+}
+
+/* libuv's Windows mode: the entry type plus read for everyone, and write
+ * unless the entry is read-only. */
+static uint64_t scr_stats_win_mode(unsigned type, bool read_only) {
+  return type | (read_only ? 0444u : 0666u);
+}
+
 /* The CRT fallback is deliberately complete: callers either get every field
  * from this one stat() result or every field from one Win32 handle below,
  * never a snapshot spliced across two path resolutions. */
@@ -4833,14 +5030,22 @@ static ScrStats *scr_stats_of_crt(const struct stat *st) {
   s->is_file = S_ISREG(st->st_mode);
   s->is_dir = S_ISDIR(st->st_mode);
   s->is_symlink = false;
-  s->dev = (double)st->st_dev;
-  s->ino = (double)st->st_ino;
-  s->size = (double)st->st_size;
-  s->blocks = st->st_size <= 0 ? 0.0 : (double)(((uint64_t)st->st_size + 511) >> 9);
-  s->nlink = (double)st->st_nlink;
-  s->atime_ms = (double)st->st_atime * 1000.0;
-  s->mtime_ms = (double)st->st_mtime * 1000.0;
-  s->ctime_ms = (double)st->st_ctime * 1000.0;
+  s->fields[SCR_STATS_DEV] = (uint64_t)st->st_dev;
+  /* Character devices and pipes carry only their type bits in libuv. */
+  unsigned type = (unsigned)st->st_mode & SCR_STATS_IFMT;
+  s->fields[SCR_STATS_MODE] = type == SCR_STATS_IFREG || type == SCR_STATS_IFDIR
+    ? scr_stats_win_mode(type, !(st->st_mode & 0200))
+    : type;
+  s->fields[SCR_STATS_NLINK] = (uint64_t)st->st_nlink;
+  s->fields[SCR_STATS_BLKSIZE] = 4096;
+  s->fields[SCR_STATS_INO] = (uint64_t)st->st_ino;
+  s->fields[SCR_STATS_SIZE] = st->st_size <= 0 ? 0 : (uint64_t)st->st_size;
+  s->fields[SCR_STATS_BLOCKS] = st->st_size <= 0 ? 0 : ((uint64_t)st->st_size + 511) >> 9;
+  scr_stats_set_time(s, SCR_STATS_ATIME, (int64_t)st->st_atime, 0);
+  scr_stats_set_time(s, SCR_STATS_MTIME, (int64_t)st->st_mtime, 0);
+  /* The CRT's st_ctime is the creation time. */
+  scr_stats_set_time(s, SCR_STATS_CTIME, (int64_t)st->st_ctime, 0);
+  scr_stats_set_time(s, SCR_STATS_BIRTHTIME, (int64_t)st->st_ctime, 0);
   return s;
 }
 
@@ -5082,56 +5287,187 @@ static ScrStats *scr_stats_of_path(const ScrStr *path, const char *op,
   s->is_file = !is_link && (have_standard ? !standard.Directory : !is_dir);
   s->is_dir = !is_link && (have_standard ? standard.Directory : is_dir);
   s->is_symlink = is_link;
-  s->dev = (double)basic.dwVolumeSerialNumber;
-  s->ino = (double)basic.nFileIndexHigh * 4294967296.0 +
-    (double)basic.nFileIndexLow;
-  s->size = is_link && link_size >= 0 ? link_size : s->is_dir ? 0.0
-    : have_standard ? (double)standard.EndOfFile.QuadPart : (double)size;
-  s->blocks = have_standard
-    ? (double)((uint64_t)standard.AllocationSize.QuadPart >> 9)
-    : size == 0 ? 0.0 : (double)((size + 511) >> 9);
-  s->nlink = have_standard
-    ? (double)standard.NumberOfLinks
-    : (double)basic.nNumberOfLinks;
-  s->atime_ms = scr_filetime_unix_ms(basic.ftLastAccessTime);
-  s->mtime_ms = scr_filetime_unix_ms(basic.ftLastWriteTime);
+  s->fields[SCR_STATS_DEV] = basic.dwVolumeSerialNumber;
+  s->fields[SCR_STATS_MODE] = scr_stats_win_mode(
+    is_link ? SCR_STATS_IFLNK : s->is_dir ? SCR_STATS_IFDIR : SCR_STATS_IFREG,
+    (basic.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0);
+  s->fields[SCR_STATS_NLINK] = have_standard ? standard.NumberOfLinks : basic.nNumberOfLinks;
+  s->fields[SCR_STATS_BLKSIZE] = 4096;
+  s->fields[SCR_STATS_INO] = ((uint64_t)basic.nFileIndexHigh << 32) | basic.nFileIndexLow;
+  s->fields[SCR_STATS_SIZE] = is_link && link_size >= 0 ? (uint64_t)link_size : s->is_dir ? 0
+    : have_standard ? (uint64_t)standard.EndOfFile.QuadPart : size;
+  s->fields[SCR_STATS_BLOCKS] = have_standard
+    ? (uint64_t)standard.AllocationSize.QuadPart >> 9
+    : size == 0 ? 0 : (size + 511) >> 9;
+  scr_stats_set_filetime(s, SCR_STATS_ATIME, basic.ftLastAccessTime);
+  scr_stats_set_filetime(s, SCR_STATS_MTIME, basic.ftLastWriteTime);
+  scr_stats_set_filetime(s, SCR_STATS_BIRTHTIME, basic.ftCreationTime);
   if (have_times) {
     FILETIME changed;
     changed.dwLowDateTime = times.ChangeTime.LowPart;
     changed.dwHighDateTime = times.ChangeTime.HighPart;
-    s->ctime_ms = scr_filetime_unix_ms(changed);
+    scr_stats_set_filetime(s, SCR_STATS_CTIME, changed);
   } else {
-    s->ctime_ms = s->mtime_ms;
+    scr_stats_set_time(s, SCR_STATS_CTIME, s->sec[SCR_STATS_MTIME], s->nsec[SCR_STATS_MTIME]);
   }
   return s;
 }
+
+/* An open descriptor: the CRT snapshot, completed from the Win32 handle the
+ * way libuv's fstat reads it. */
+static ScrStats *scr_stats_of_fd_win(int fd, const struct stat *st) {
+  ScrStats *out = scr_stats_of_crt(st);
+  HANDLE os_handle = (HANDLE)_get_osfhandle(fd);
+  if (os_handle == INVALID_HANDLE_VALUE) return out;
+  BY_HANDLE_FILE_INFORMATION basic;
+  if (GetFileInformationByHandle(os_handle, &basic)) {
+    out->fields[SCR_STATS_DEV] = basic.dwVolumeSerialNumber;
+    out->fields[SCR_STATS_INO] = ((uint64_t)basic.nFileIndexHigh << 32) | basic.nFileIndexLow;
+    out->fields[SCR_STATS_NLINK] = basic.nNumberOfLinks;
+    out->fields[SCR_STATS_MODE] = scr_stats_win_mode(
+      out->is_dir ? SCR_STATS_IFDIR : SCR_STATS_IFREG,
+      (basic.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0);
+    scr_stats_set_filetime(out, SCR_STATS_ATIME, basic.ftLastAccessTime);
+    scr_stats_set_filetime(out, SCR_STATS_MTIME, basic.ftLastWriteTime);
+    scr_stats_set_filetime(out, SCR_STATS_BIRTHTIME, basic.ftCreationTime);
+  }
+  FILE_BASIC_INFO times;
+  if (GetFileInformationByHandleEx(os_handle, FileBasicInfo, &times, sizeof times)) {
+    FILETIME changed;
+    changed.dwLowDateTime = times.ChangeTime.LowPart;
+    changed.dwHighDateTime = times.ChangeTime.HighPart;
+    scr_stats_set_filetime(out, SCR_STATS_CTIME, changed);
+  }
+  FILE_STANDARD_INFO standard;
+  if (GetFileInformationByHandleEx(os_handle, FileStandardInfo, &standard, sizeof standard)) {
+    out->fields[SCR_STATS_BLOCKS] = (uint64_t)standard.AllocationSize.QuadPart >> 9;
+    out->fields[SCR_STATS_NLINK] = standard.NumberOfLinks;
+  }
+  return out;
+}
 #else
+/* libuv's uv__to_stat: macOS, FreeBSD and NetBSD report a creation time;
+ * elsewhere birthtime repeats the change time. */
 static ScrStats *scr_stats_of(const struct stat *st) {
   ScrStats *s = scr_stats_new();
   s->is_file = S_ISREG(st->st_mode);
   s->is_dir = S_ISDIR(st->st_mode);
   s->is_symlink = S_ISLNK(st->st_mode);
-  s->dev = (double)st->st_dev;
-  s->ino = (double)st->st_ino;
+  s->fields[SCR_STATS_DEV] = (uint64_t)st->st_dev;
+  s->fields[SCR_STATS_MODE] = (uint64_t)st->st_mode;
+  s->fields[SCR_STATS_NLINK] = (uint64_t)st->st_nlink;
+  s->fields[SCR_STATS_UID] = (uint64_t)st->st_uid;
+  s->fields[SCR_STATS_GID] = (uint64_t)st->st_gid;
+  s->fields[SCR_STATS_RDEV] = (uint64_t)st->st_rdev;
+  s->fields[SCR_STATS_BLKSIZE] = (uint64_t)st->st_blksize;
+  s->fields[SCR_STATS_INO] = (uint64_t)st->st_ino;
+  s->fields[SCR_STATS_SIZE] = (uint64_t)st->st_size;
+  s->fields[SCR_STATS_BLOCKS] = (uint64_t)st->st_blocks;
 #if defined(__APPLE__)
-  s->atime_ms = (double)st->st_atimespec.tv_sec * 1000.0 +
-                (double)st->st_atimespec.tv_nsec / 1e6;
-  s->mtime_ms = (double)st->st_mtimespec.tv_sec * 1000.0 +
-                (double)st->st_mtimespec.tv_nsec / 1e6;
-  s->ctime_ms = (double)st->st_ctimespec.tv_sec * 1000.0 +
-                (double)st->st_ctimespec.tv_nsec / 1e6;
+  scr_stats_set_time(s, SCR_STATS_ATIME, st->st_atimespec.tv_sec, st->st_atimespec.tv_nsec);
+  scr_stats_set_time(s, SCR_STATS_MTIME, st->st_mtimespec.tv_sec, st->st_mtimespec.tv_nsec);
+  scr_stats_set_time(s, SCR_STATS_CTIME, st->st_ctimespec.tv_sec, st->st_ctimespec.tv_nsec);
+  scr_stats_set_time(s, SCR_STATS_BIRTHTIME, st->st_birthtimespec.tv_sec, st->st_birthtimespec.tv_nsec);
 #else
-  s->atime_ms = (double)st->st_atim.tv_sec * 1000.0 +
-                (double)st->st_atim.tv_nsec / 1e6;
-  s->mtime_ms = (double)st->st_mtim.tv_sec * 1000.0 +
-                (double)st->st_mtim.tv_nsec / 1e6;
-  s->ctime_ms = (double)st->st_ctim.tv_sec * 1000.0 +
-                (double)st->st_ctim.tv_nsec / 1e6;
+  scr_stats_set_time(s, SCR_STATS_ATIME, st->st_atim.tv_sec, st->st_atim.tv_nsec);
+  scr_stats_set_time(s, SCR_STATS_MTIME, st->st_mtim.tv_sec, st->st_mtim.tv_nsec);
+  scr_stats_set_time(s, SCR_STATS_CTIME, st->st_ctim.tv_sec, st->st_ctim.tv_nsec);
+#if defined(__FreeBSD__) || defined(__NetBSD__)
+  scr_stats_set_time(s, SCR_STATS_BIRTHTIME, st->st_birthtim.tv_sec, st->st_birthtim.tv_nsec);
+#else
+  scr_stats_set_time(s, SCR_STATS_BIRTHTIME, st->st_ctim.tv_sec, st->st_ctim.tv_nsec);
 #endif
-  s->blocks = (double)st->st_blocks;
-  s->nlink = (double)st->st_nlink;
-  s->size = (double)st->st_size;
+#endif
   return s;
+}
+
+#if defined(__linux__) && defined(SYS_statx)
+/* The kernel's struct statx (include/uapi/linux/stat.h). libuv reads stat
+ * results through statx, which also reports the creation time. */
+typedef struct {
+  int64_t tv_sec;
+  uint32_t tv_nsec;
+  int32_t reserved;
+} ScrStatxTime;
+
+typedef struct {
+  uint32_t mask;
+  uint32_t blksize;
+  uint64_t attributes;
+  uint32_t nlink;
+  uint32_t uid;
+  uint32_t gid;
+  uint16_t mode;
+  uint16_t spare0;
+  uint64_t ino;
+  uint64_t size;
+  uint64_t blocks;
+  uint64_t attributes_mask;
+  ScrStatxTime atime, btime, ctime, mtime;
+  uint32_t rdev_major, rdev_minor;
+  uint32_t dev_major, dev_minor;
+  uint64_t spare[14];
+} ScrStatx;
+
+_Static_assert(sizeof(ScrStatx) == 256, "struct statx is 256 bytes");
+
+/* glibc's and musl's makedev encoding, which libuv applies to statx. */
+static uint64_t scr_stats_makedev(uint64_t major, uint64_t minor) {
+  return ((major & 0xfffff000u) << 32) | ((major & 0xfffu) << 8) |
+         ((minor & 0xffffff00u) << 12) | (minor & 0xffu);
+}
+
+static SCR_TL bool scr_stats_no_statx = false;
+
+static ScrStats *scr_stats_of_statx(const ScrStatx *sx) {
+  ScrStats *s = scr_stats_new();
+  unsigned type = sx->mode & SCR_STATS_IFMT;
+  s->is_file = type == SCR_STATS_IFREG;
+  s->is_dir = type == SCR_STATS_IFDIR;
+  s->is_symlink = type == SCR_STATS_IFLNK;
+  s->fields[SCR_STATS_DEV] = scr_stats_makedev(sx->dev_major, sx->dev_minor);
+  s->fields[SCR_STATS_MODE] = sx->mode;
+  s->fields[SCR_STATS_NLINK] = sx->nlink;
+  s->fields[SCR_STATS_UID] = sx->uid;
+  s->fields[SCR_STATS_GID] = sx->gid;
+  s->fields[SCR_STATS_RDEV] = scr_stats_makedev(sx->rdev_major, sx->rdev_minor);
+  s->fields[SCR_STATS_BLKSIZE] = sx->blksize;
+  s->fields[SCR_STATS_INO] = sx->ino;
+  s->fields[SCR_STATS_SIZE] = sx->size;
+  s->fields[SCR_STATS_BLOCKS] = sx->blocks;
+  scr_stats_set_time(s, SCR_STATS_ATIME, sx->atime.tv_sec, sx->atime.tv_nsec);
+  scr_stats_set_time(s, SCR_STATS_MTIME, sx->mtime.tv_sec, sx->mtime.tv_nsec);
+  scr_stats_set_time(s, SCR_STATS_CTIME, sx->ctime.tv_sec, sx->ctime.tv_nsec);
+  scr_stats_set_time(s, SCR_STATS_BIRTHTIME, sx->btime.tv_sec, sx->btime.tv_nsec);
+  return s;
+}
+#endif
+
+/* stat, lstat, or fstat when path is NULL, as libuv runs them: statx on
+ * Linux, else the classic call. NULL with *error set on failure. */
+static ScrStats *scr_stats_posix(const char *path, int fd, bool no_follow, int *error) {
+#if defined(__linux__) && defined(SYS_statx)
+  if (!scr_stats_no_statx) {
+    ScrStatx sx;
+    /* STATX_BASIC_STATS | STATX_BTIME */
+    long rc = path ? syscall(SYS_statx, AT_FDCWD, path, no_follow ? AT_SYMLINK_NOFOLLOW : 0, 0xfffu, &sx)
+                   : syscall(SYS_statx, fd, "", AT_EMPTY_PATH, 0xfffu, &sx);
+    if (rc == 0) return scr_stats_of_statx(&sx);
+    if (rc == -1 && errno != EINVAL && errno != EPERM && errno != ENOSYS && errno != EOPNOTSUPP) {
+      *error = errno;
+      return NULL;
+    }
+    /* A seccomp filter or an old kernel: libuv uses stat from then on. */
+    scr_stats_no_statx = true;
+  }
+#endif
+  struct stat st;
+  int rc = path ? (no_follow ? lstat(path, &st) : stat(path, &st)) : fstat(fd, &st);
+  if (rc != 0) {
+    *error = errno;
+    return NULL;
+  }
+  return scr_stats_of(&st);
 }
 #endif
 
@@ -5373,12 +5709,10 @@ ScrStats *scr_fs_stat(ScrStr *path) {
 #ifdef _WIN32
   return scr_stats_of_path(path, "stat", false);
 #else
-  struct stat st;
-  if (stat(path->data, &st) != 0) { /* follows symlinks, like Node's statSync */
-    scr_fs_throw(errno, "stat", path);
-    return NULL;
-  }
-  return scr_stats_of(&st);
+  int error = 0;
+  ScrStats *s = scr_stats_posix(path->data, -1, false, &error); /* follows symlinks */
+  if (!s) scr_fs_throw(error, "stat", path);
+  return s;
 #endif
 }
 
@@ -5386,63 +5720,341 @@ ScrStats *scr_fs_lstat(ScrStr *path) {
 #ifdef _WIN32
   return scr_stats_of_path(path, "lstat", true);
 #else
+  int error = 0;
+  ScrStats *s = scr_stats_posix(path->data, -1, true, &error); /* no follow */
+  if (!s) scr_fs_throw(error, "lstat", path);
+  return s;
+#endif
+}
+
+ScrStats *scr_stats_of_fd(int fd, int *error) {
+#ifdef _WIN32
   struct stat st;
-  if (lstat(path->data, &st) != 0) { /* no follow; Node reports lstat */
-    scr_fs_throw(errno, "lstat", path);
+  if (fstat(fd, &st) != 0) {
+    *error = errno;
     return NULL;
   }
-  return scr_stats_of(&st);
+  return scr_stats_of_fd_win(fd, &st);
+#else
+  return scr_stats_posix(NULL, fd, false, error);
 #endif
 }
 
 ScrStats *scr_fs_fstat(double fd) {
-  struct stat st;
-  if (fstat((int)fd, &st) != 0) {
-    scr_fs_throw_nopath(errno, "fstat");
-    return NULL;
-  }
-#ifdef _WIN32
-  ScrStats *s = scr_stats_new();
-  s->is_file = S_ISREG(st.st_mode);
-  s->is_dir = S_ISDIR(st.st_mode);
-  s->is_symlink = false;
-  s->dev = (double)st.st_dev;
-  s->ino = (double)st.st_ino;
-  s->size = (double)st.st_size;
-  s->blocks = s->size <= 0 ? 0 : ceil(s->size / 512.0);
-  s->nlink = (double)st.st_nlink;
-  s->atime_ms = (double)st.st_atime * 1000.0;
-  s->mtime_ms = (double)st.st_mtime * 1000.0;
-  s->ctime_ms = (double)st.st_ctime * 1000.0;
+  int error = 0;
+  ScrStats *s = scr_stats_of_fd((int)fd, &error);
+  if (!s) scr_fs_throw_nopath(error, "fstat");
   return s;
-#else
-  return scr_stats_of(&st);
-#endif
 }
 
-ScrArr *scr_fs_readdir(ScrStr *path) {
+/* ── Stats objects ───────────────────────────────────────────────────
+ * Node's Stats and BigIntStats over a snapshot. The integers and the *Ms
+ * fields (and BigIntStats' *Ns fields) are own properties in the binding's
+ * order. Stats.prototype holds _checkModeProperty and lazy atime, mtime,
+ * ctime and birthtime accessors, which define an own Date the first time
+ * they run. The type tests (isFile, ...) sit on StatsBase.prototype and go
+ * through this._checkModeProperty(S_IF...), which reads this.mode. */
+
+static SCR_TL ScrDyn *scr_stats_base_proto = NULL;
+static SCR_TL ScrDyn *scr_stats_protos[2] = { NULL, NULL }; /* Stats, BigIntStats */
+
+static const char *const scr_stats_date_names[4] = { "atime", "mtime", "ctime", "birthtime" };
+
+/* Object.defineProperty(target, name, { value, writable } or { get, set },
+ * enumerable, configurable: true). value, get and set move in. */
+static bool scr_stats_define(ScrDyn *target, const char *name, ScrDyn *value, ScrDyn *get, ScrDyn *set, bool enumerable) {
+  ScrDyn *descriptor = scr_dyn_new_obj();
+  if (value) {
+    scr_dyn_obj_set(descriptor, "value", 5, value);
+    scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(true));
+  }
+  if (get) scr_dyn_obj_set(descriptor, "get", 3, get);
+  if (set) scr_dyn_obj_set(descriptor, "set", 3, set);
+  scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(enumerable));
+  scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
+  ScrStr *text = scr_str_new(name, strlen(name));
+  ScrDyn *key = scr_dyn_new_str(text);
+  scr_str_release(text);
+  ScrDyn *defined = scr_dyn_define_property(target, key, descriptor);
+  scr_dyn_release(key);
+  scr_dyn_release(descriptor);
+  if (!defined) return false;
+  scr_dyn_release(defined);
+  return true;
+}
+
+/* `this` for a prototype member, or NULL with Node's TypeError when the
+ * receiver is undefined or null and a property read would throw. */
+static ScrDyn *scr_stats_receiver(const char *reading) {
+  ScrDyn *self = scr_dyn_this_get();
+  if (self->kind != SCR_DYN_UNDEF && self->kind != SCR_DYN_NULL) return self;
+  char message[96];
+  int n = snprintf(message, sizeof message, "Cannot read properties of %s (reading '%s')",
+                   self->kind == SCR_DYN_UNDEF ? "undefined" : "null", reading);
+  scr_dyn_release(self);
+  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+  return NULL;
+}
+
+/* The lazy Date getter: setOwnProperty(this, name, new Date(Math.round(
+ * Number(this.<name>Ms)))). */
+static ScrDyn *scr_stats_date_get(int which) {
+  char ms_name[16];
+  int len = snprintf(ms_name, sizeof ms_name, "%sMs", scr_stats_date_names[which]);
+  ScrDyn *self = scr_stats_receiver(ms_name);
+  if (!self) return NULL;
+  ScrDyn *ms = scr_dyn_obj_read(self, ms_name, (size_t)len);
+  double number = ms ? scr_dyn_number_constructor(ms) : NAN;
+  scr_dyn_release(ms);
+  ScrDyn *date = NULL;
+  if (!scr_exc_pending()) {
+    ScrDyn *arguments = scr_dyn_new_arr();
+    scr_dyn_arr_push(arguments, scr_dyn_new_num(scr_stats_round(number)));
+    date = scr_dyn_native_date_new(arguments);
+    scr_dyn_release(arguments);
+  }
+  if (date && !scr_stats_define(self, scr_stats_date_names[which], scr_dyn_retain(date), NULL, NULL, true)) {
+    scr_dyn_release(date);
+    date = NULL;
+  }
+  scr_dyn_release(self);
+  return date;
+}
+
+/* The setter: setOwnProperty(this, name, value). */
+static ScrDyn *scr_stats_date_set(int which, ScrDyn *const *args, size_t argc) {
+  ScrDyn *self = scr_dyn_this_get();
+  bool ok = scr_stats_define(self, scr_stats_date_names[which],
+                             scr_dyn_retain(argc > 0 ? args[0] : scr_dyn_undefined()), NULL, NULL, true);
+  scr_dyn_release(self);
+  return ok ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
+}
+
+#define SCR_STATS_DATE_ACCESSORS(index)                                                        \
+  static ScrDyn *scr_stats_date_get_##index(ScrClosure *closure, ScrDyn *const *args, size_t argc) { \
+    (void)closure;                                                                             \
+    (void)args;                                                                                \
+    (void)argc;                                                                                \
+    return scr_stats_date_get(index);                                                          \
+  }                                                                                            \
+  static ScrDyn *scr_stats_date_set_##index(ScrClosure *closure, ScrDyn *const *args, size_t argc) { \
+    (void)closure;                                                                             \
+    return scr_stats_date_set(index, args, argc);                                              \
+  }
+SCR_STATS_DATE_ACCESSORS(0)
+SCR_STATS_DATE_ACCESSORS(1)
+SCR_STATS_DATE_ACCESSORS(2)
+SCR_STATS_DATE_ACCESSORS(3)
+#undef SCR_STATS_DATE_ACCESSORS
+
+static const ScrDynThunk scr_stats_date_getters[4] = {
+  scr_stats_date_get_0, scr_stats_date_get_1, scr_stats_date_get_2, scr_stats_date_get_3,
+};
+static const ScrDynThunk scr_stats_date_setters[4] = {
+  scr_stats_date_set_0, scr_stats_date_set_1, scr_stats_date_set_2, scr_stats_date_set_3,
+};
+
+/* _checkModeProperty(property): (this.mode & S_IFMT) === property, with
+ * BigInt operands on BigIntStats. */
+static ScrDyn *scr_stats_check_mode(ScrDyn *const *args, size_t argc, bool bigint) {
+  const ScrDyn *property = argc > 0 ? args[0] : scr_dyn_undefined();
 #ifdef _WIN32
+  if (property->kind == SCR_DYN_NUM &&
+      (property->v.num == SCR_STATS_IFIFO || property->v.num == SCR_STATS_IFBLK || property->v.num == SCR_STATS_IFSOCK))
+    return scr_dyn_new_bool(false);
+#endif
+  ScrDyn *self = scr_stats_receiver("mode");
+  if (!self) return NULL;
+  ScrDyn *mode = scr_dyn_obj_read(self, "mode", 4);
+  scr_dyn_release(self);
+  if (!mode) return NULL;
+  ScrDyn *mask;
+  if (bigint) {
+    ScrBigInt *value = scr_bigint_from_u64(SCR_STATS_IFMT);
+    mask = scr_dyn_new_bigint(value);
+    scr_bigint_release(value);
+  } else mask = scr_dyn_new_num(SCR_STATS_IFMT);
+  ScrStr *operation = scr_str_new("&", 1);
+  ScrDyn *masked = scr_dyn_bitwise(mode, mask, operation);
+  scr_str_release(operation);
+  scr_dyn_release(mask);
+  scr_dyn_release(mode);
+  if (!masked) return NULL;
+  ScrDyn *expected = NULL;
+  if (bigint) {
+    ScrBigInt *value = scr_dyn_bigint_constructor(property);
+    if (value) {
+      expected = scr_dyn_new_bigint(value);
+      scr_bigint_release(value);
+    }
+  } else expected = scr_dyn_retain((ScrDyn *)property);
+  ScrDyn *result = expected ? scr_dyn_new_bool(scr_dyn_strict_eq(masked, expected)) : NULL;
+  scr_dyn_release(expected);
+  scr_dyn_release(masked);
+  return result;
+}
+
+static ScrDyn *scr_stats_check_mode_number(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  return scr_stats_check_mode(args, argc, false);
+}
+
+static ScrDyn *scr_stats_check_mode_bigint(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  return scr_stats_check_mode(args, argc, true);
+}
+
+/* isFile() and the other type tests: this._checkModeProperty(S_IF...). */
+static ScrDyn *scr_stats_type_test(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrDyn *self = scr_stats_receiver("_checkModeProperty");
+  if (!self) return NULL;
+  ScrDyn *check = scr_dyn_obj_read(self, "_checkModeProperty", 18);
+  ScrDyn *result = NULL;
+  if (check) {
+    ScrDyn *type = scr_dyn_new_num(scr_box_get_f64(closure->caps[0]));
+    scr_dyn_this_push_dyn(self);
+    result = scr_dyn_call(check, &type, 1, "this._checkModeProperty");
+    scr_dyn_this_pop();
+    scr_dyn_release(type);
+    scr_dyn_release(check);
+  }
+  scr_dyn_release(self);
+  return result;
+}
+
+/* The prototypes' constructor members are only named; calling one has no
+ * lowering. The type tests and _checkModeProperty are anonymous functions in
+ * Node (assigned function expressions), so they carry no name. */
+static ScrDyn *scr_stats_constructor(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  (void)args;
+  (void)argc;
+  static const char message[] = "Calling the fs.Stats constructors has no lowering";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  return NULL;
+}
+
+static ScrDyn *scr_stats_method(ScrDynThunk thunk, uint32_t arity, const char *name, double type) {
+  ScrClosure *closure = scr_closure_new(NULL, 1);
+  closure->caps[0] = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(closure->caps[0], type);
+  return scr_dyn_new_func(closure, thunk, arity, "native:fs.Stats", name);
+}
+
+static void scr_stats_protos_teardown(void) {
+  for (size_t i = 0; i < 2; i++) {
+    if (!scr_stats_protos[i]) continue;
+    scr_stats_protos[i]->v.obj.class_name = NULL;
+    scr_dyn_release(scr_stats_protos[i]);
+    scr_stats_protos[i] = NULL;
+  }
+  if (scr_stats_base_proto) {
+    scr_stats_base_proto->v.obj.class_name = NULL;
+    scr_dyn_release(scr_stats_base_proto);
+    scr_stats_base_proto = NULL;
+  }
+}
+
+static ScrDyn *scr_stats_prototype(bool bigint) {
+  if (scr_stats_protos[bigint]) return scr_stats_protos[bigint];
+  if (!scr_stats_base_proto) {
+    static const struct {
+      const char *name;
+      unsigned type;
+    } tests[] = {
+      { "isDirectory", SCR_STATS_IFDIR },
+      { "isFile", SCR_STATS_IFREG },
+      { "isBlockDevice", SCR_STATS_IFBLK },
+      { "isCharacterDevice", SCR_STATS_IFCHR },
+      { "isSymbolicLink", SCR_STATS_IFLNK },
+      { "isFIFO", SCR_STATS_IFIFO },
+      { "isSocket", SCR_STATS_IFSOCK },
+    };
+    ScrDyn *base = scr_dyn_new_obj();
+    base->v.obj.class_name = "StatsBase";
+    scr_stats_define(base, "constructor", scr_stats_method(scr_stats_constructor, 10, "StatsBase", 0), NULL, NULL, false);
+    for (size_t i = 0; i < sizeof tests / sizeof tests[0]; i++)
+      scr_dyn_obj_set(base, tests[i].name, strlen(tests[i].name),
+                      scr_stats_method(scr_stats_type_test, 0, NULL, tests[i].type));
+    scr_stats_base_proto = base;
+    scr_atexit(scr_stats_protos_teardown);
+  }
+  const char *name = bigint ? "BigIntStats" : "Stats";
+  ScrDyn *proto = scr_dyn_new_obj();
+  proto->v.obj.class_name = name;
+  proto->prototype = scr_dyn_retain(scr_stats_base_proto);
+  scr_stats_define(proto, "constructor", scr_stats_method(scr_stats_constructor, 14, name, 0), NULL, NULL, false);
+  for (int i = 0; i < 4; i++)
+    scr_stats_define(proto, scr_stats_date_names[i], NULL,
+                     scr_stats_method(scr_stats_date_getters[i], 0, "get", 0),
+                     scr_stats_method(scr_stats_date_setters[i], 1, "set", 0), true);
+  scr_dyn_obj_set(proto, "_checkModeProperty", 18,
+                  scr_stats_method(bigint ? scr_stats_check_mode_bigint : scr_stats_check_mode_number, 1, NULL, 0));
+  scr_stats_protos[bigint] = proto;
+  return proto;
+}
+
+static ScrDyn *scr_stats_bigint_dyn(ScrBigInt *value /* moves */) {
+  ScrDyn *boxed = scr_dyn_new_bigint(value);
+  scr_bigint_release(value);
+  return boxed;
+}
+
+ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint) {
+  static const char *const names[SCR_STATS_FIELDS] = {
+    "dev", "mode", "nlink", "uid", "gid", "rdev", "blksize", "ino", "size", "blocks",
+  };
+  ScrDyn *object = scr_dyn_new_obj();
+  object->prototype = scr_dyn_retain(scr_stats_prototype(bigint));
+  for (size_t i = 0; i < SCR_STATS_FIELDS; i++) {
+    /* The binding's BigInt64Array holds the integers as signed values. */
+    ScrDyn *value = bigint ? scr_stats_bigint_dyn(scr_bigint_from_i64((int64_t)s->fields[i]))
+                           : scr_dyn_new_num((double)s->fields[i]);
+    scr_dyn_obj_set(object, names[i], strlen(names[i]), value);
+  }
+  ScrDyn *ns[4] = { NULL, NULL, NULL, NULL };
+  for (int i = 0; i < 4; i++) {
+    char name[16];
+    int len = snprintf(name, sizeof name, "%sMs", scr_stats_date_names[i]);
+    if (!bigint) {
+      scr_dyn_obj_set(object, name, (size_t)len, scr_dyn_new_num(scr_stats_ms(s, i)));
+      continue;
+    }
+    /* nsFromTimeSpecBigInt, then the millisecond quotient. */
+    ScrBigInt *sec = scr_bigint_from_i64(s->sec[i]);
+    ScrBigInt *billion = scr_bigint_from_i64(1000000000);
+    ScrBigInt *scaled = scr_bigint_mul(sec, billion);
+    ScrBigInt *nsec = scr_bigint_from_i64(s->nsec[i]);
+    ScrBigInt *total = scr_bigint_add(scaled, nsec);
+    ScrBigInt *million = scr_bigint_from_i64(1000000);
+    ScrBigInt *ms = scr_bigint_div(total, million);
+    scr_bigint_release(sec);
+    scr_bigint_release(billion);
+    scr_bigint_release(scaled);
+    scr_bigint_release(nsec);
+    scr_bigint_release(million);
+    scr_dyn_obj_set(object, name, (size_t)len, scr_stats_bigint_dyn(ms));
+    ns[i] = scr_stats_bigint_dyn(total);
+  }
+  for (int i = 0; bigint && i < 4; i++) {
+    char name[16];
+    int len = snprintf(name, sizeof name, "%sNs", scr_stats_date_names[i]);
+    scr_dyn_obj_set(object, name, (size_t)len, ns[i]);
+  }
+  return object;
+}
+
+/* The names of one scandir listing: byte order on POSIX (libuv sorts),
+ * the directory's own order on Windows (libuv does not). */
+ScrArr *scr_fs_readdir(ScrStr *path) {
   ScrScandir *scan = scr_fs_scandir(path);
   if (!scan) return NULL;
   ScrArr *arr = scr_arr_new(SCR_ELEM_STR, scr_fs_scandir_count(scan));
   for (size_t i = 0; i < scr_fs_scandir_count(scan); i++) scr_arr_push_ref(arr, scr_fs_scandir_name(scan, i));
   scr_fs_scandir_free(scan);
   return arr;
-#else
-  DIR *d = opendir(path->data);
-  if (!d) {
-    scr_fs_throw(errno, "scandir", path); /* Node reports scandir */
-    return NULL;
-  }
-  ScrArr *arr = scr_arr_new(SCR_ELEM_STR, 8);
-  const struct dirent *ent;
-  while ((ent = readdir(d)) != NULL) {
-    if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
-    scr_arr_push_ref(arr, scr_str_new(ent->d_name, strlen(ent->d_name)));
-  }
-  closedir(d);
-  return arr; /* OS order, exactly like Node (unsorted) */
-#endif
 }
 
 /* ── the withFileTypes scandir snapshot ──────────────────────────────
@@ -5460,6 +6072,33 @@ struct ScrScandir {
 };
 
 #ifndef _WIN32
+/* libuv's uv_fs_scandir sorts entries with strcmp on POSIX hosts, so
+ * readdir, readdirSync and fs/promises readdir list names in byte order. */
+typedef struct {
+  ScrStr *name;
+  unsigned char kind;
+} ScrScandirEntry;
+
+static int scr_fs_scandir_cmp(const void *a, const void *b) {
+  const ScrStr *x = ((const ScrScandirEntry *)a)->name, *y = ((const ScrScandirEntry *)b)->name;
+  size_t n = x->len < y->len ? x->len : y->len;
+  int c = memcmp(x->data, y->data, n);
+  return c ? c : (x->len > y->len) - (x->len < y->len);
+}
+
+static void scr_fs_scandir_sort(ScrScandir *s) {
+  if (s->len < 2) return;
+  ScrScandirEntry *rows = malloc(s->len * sizeof *rows);
+  if (!rows) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < s->len; i++) rows[i] = (ScrScandirEntry){s->names[i], s->kinds[i]};
+  qsort(rows, s->len, sizeof *rows, scr_fs_scandir_cmp);
+  for (size_t i = 0; i < s->len; i++) {
+    s->names[i] = rows[i].name;
+    s->kinds[i] = rows[i].kind;
+  }
+  free(rows);
+}
+
 static unsigned char scr_dirent_kind_of_mode(mode_t m) {
   if (S_ISREG(m)) return 1;
   if (S_ISDIR(m)) return 2;
@@ -5603,6 +6242,7 @@ ScrScandir *scr_fs_scandir(ScrStr *path) {
     s->len++;
   }
   closedir(d);
+  scr_fs_scandir_sort(s);
   return s;
 #endif
 }
@@ -5621,6 +6261,241 @@ void scr_fs_scandir_free(ScrScandir *s) {
   free(s->names);
   free(s->kinds);
   free(s);
+}
+
+/* ── fs.Dir ──────────────────────────────────────────────────────────
+ * opendirSync and fs.promises.opendir: one open directory stream handing
+ * out an entry at a time in OS order, like libuv's uv_fs_readdir (no "."
+ * or ".."). Entry kinds use the scandir encoding above. A closed Dir
+ * throws ERR_DIR_CLOSED; releasing the last reference closes the stream. */
+
+struct ScrDir {
+  size_t rc;
+  ScrStr *path;
+  bool closed;
+#ifdef _WIN32
+  HANDLE search;
+  WIN32_FIND_DATAW entry;
+  bool pending; /* entry holds the next unread result */
+#else
+  DIR *stream;
+#endif
+};
+
+static void scr_dir_close_stream(ScrDir *d) {
+#ifdef _WIN32
+  if (d->search != INVALID_HANDLE_VALUE) FindClose(d->search);
+  d->search = INVALID_HANDLE_VALUE;
+  d->pending = false;
+#else
+  if (d->stream) closedir(d->stream);
+  d->stream = NULL;
+#endif
+}
+
+ScrDir *scr_dir_retain(ScrDir *d) {
+  if (d->rc != SIZE_MAX) d->rc++;
+  return d;
+}
+
+void scr_dir_release(ScrDir *d) {
+  if (!d || d->rc == SIZE_MAX || --d->rc) return;
+  scr_dir_close_stream(d);
+  scr_str_release(d->path);
+  free(d);
+}
+
+void *scr_dir_retain_v(void *p) { return scr_dir_retain(p); }
+void scr_dir_release_v(void *p) { scr_dir_release(p); }
+
+ScrStr *scr_dir_path(ScrDir *d) { return scr_str_retain(d->path); }
+
+static void scr_dir_closed(void) {
+  static const char message[] = "Directory handle was closed";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "ERR_DIR_CLOSED");
+}
+
+/* Node opens the directory, then checks options.bufferSize (a uint32 of at
+ * least 1) and closes the handle when it fails. Its opendir errors name the
+ * syscall but no path. */
+static bool scr_dir_buffer_size_valid(double size) {
+  bool integer = isfinite(size) && trunc(size) == size;
+  if (integer && size >= 1 && size <= 4294967295.0) return true;
+  char received[48], msg[192];
+  scr_num_received(size, received);
+  int n = snprintf(msg, sizeof msg, "The value of \"options.bufferSize\" is out of range. It must be %s. Received %s",
+                   integer ? ">= 1 && <= 4294967295" : "an integer", received);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+/* A Dir in an 'unknown' slot: path reads and closeSync() calls; the other
+ * members throw the "not supported yet" Error. */
+static ScrDyn *scr_dir_dyn_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
+                                  const char *what) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  (void)what;
+  if (strcmp(method, "closeSync") == 0) {
+    scr_dir_close(h);
+    return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+  }
+  static const char msg[] = "Dir method calls through an 'unknown' value are not supported yet — narrow the value to Dir first";
+  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  return NULL;
+}
+
+static ScrDyn *scr_dir_dyn_get(void *h, const char *key, size_t len) {
+  if (len != 4 || memcmp(key, "path", 4) != 0) return NULL;
+  ScrStr *path = scr_dir_path(h);
+  ScrDyn *out = scr_dyn_new_str(path);
+  scr_str_release(path);
+  return out;
+}
+
+static bool scr_dir_dyn_set(void *h, const char *key, size_t len, const ScrDyn *value) {
+  (void)h;
+  (void)key;
+  (void)len;
+  (void)value;
+  return false;
+}
+
+static void scr_dir_dyn_install(void) {
+  static SCR_TL bool installed;
+  if (installed) return;
+  installed = true;
+  static const ScrDynHandleOps ops = {
+      .cls = "Dir",
+      .retain = scr_dir_retain_v,
+      .release = scr_dir_release_v,
+      .invoke = scr_dir_dyn_invoke,
+      .get = scr_dir_dyn_get,
+      .set = scr_dir_dyn_set,
+  };
+  scr_dyn_handle_install(SCR_DYNH_DIR, &ops);
+}
+
+ScrDir *scr_fs_opendir(ScrStr *path, double buffer_size) {
+  scr_dir_dyn_install();
+  ScrDir *d = calloc(1, sizeof *d);
+  if (!d) scr_trap("scriptc: out of memory\n");
+  d->rc = 1;
+#ifdef _WIN32
+  d->search = INVALID_HANDLE_VALUE;
+  WCHAR *wide = scr_fs_win_wide(path);
+  int error = 0;
+  DWORD attributes = wide ? GetFileAttributesW(wide) : INVALID_FILE_ATTRIBUTES;
+  if (!wide || attributes == INVALID_FILE_ATTRIBUTES) error = scr_fs_win_errno(GetLastError());
+  else if (!(attributes & FILE_ATTRIBUTE_DIRECTORY)) error = ENOTDIR;
+  if (!error) {
+    size_t length = wcslen(wide);
+    WCHAR *pattern = realloc(wide, (length + 3) * sizeof *wide);
+    if (!pattern) scr_trap("scriptc: out of memory\n");
+    wide = pattern;
+    if (length && pattern[length - 1] != L'\\' && pattern[length - 1] != L'/') pattern[length++] = L'\\';
+    pattern[length++] = L'*';
+    pattern[length] = 0;
+    d->search = FindFirstFileW(pattern, &d->entry);
+    DWORD last = d->search == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+    if (d->search != INVALID_HANDLE_VALUE) d->pending = true;
+    else if (last != ERROR_FILE_NOT_FOUND) error = scr_fs_win_errno(last);
+  }
+  free(wide);
+  if (error) {
+    free(d);
+    scr_fs_throw_nopath(error, "opendir");
+    return NULL;
+  }
+#else
+  d->stream = opendir(path->data);
+  if (!d->stream) {
+    int error = errno;
+    free(d);
+    scr_fs_throw_nopath(error, "opendir");
+    return NULL;
+  }
+#endif
+  if (!scr_dir_buffer_size_valid(buffer_size)) {
+    scr_dir_close_stream(d);
+    free(d);
+    return NULL;
+  }
+  d->path = scr_str_retain(path);
+  return d;
+}
+
+#ifndef _WIN32
+/* The entry kind from d_type, with Node's lstat fallback for DT_UNKNOWN. */
+static unsigned char scr_dir_entry_kind(const ScrDir *d, const struct dirent *ent) {
+#ifdef DT_REG
+  switch (ent->d_type) {
+    case DT_REG: return 1;
+    case DT_DIR: return 2;
+    case DT_LNK: return 3;
+    case DT_FIFO: return 4;
+    case DT_SOCK: return 5;
+    case DT_CHR: return 6;
+    case DT_BLK: return 7;
+    default: break;
+  }
+#endif
+  char buf[4096];
+  int w = snprintf(buf, sizeof buf, "%s/%s", d->path->data, ent->d_name);
+  struct stat st;
+  return w > 0 && (size_t)w < sizeof buf && lstat(buf, &st) == 0 ? scr_dirent_kind_of_mode(st.st_mode) : 0;
+}
+#endif
+
+/* The next entry: true with a +1 name and its kind, false at the end (or
+ * with ERR_DIR_CLOSED thrown). */
+bool scr_dir_read(ScrDir *d, ScrStr **name, double *kind) {
+  *name = NULL;
+  *kind = 0;
+  if (d->closed) {
+    scr_dir_closed();
+    return false;
+  }
+#ifdef _WIN32
+  while (d->pending) {
+    WIN32_FIND_DATAW entry = d->entry;
+    d->pending = FindNextFileW(d->search, &d->entry) != 0;
+    if (wcscmp(entry.cFileName, L".") == 0 || wcscmp(entry.cFileName, L"..") == 0) continue;
+    ScrStr *text = scr_fs_win_utf8(entry.cFileName, wcslen(entry.cFileName));
+    if (!text) {
+      scr_fs_throw_nopath(scr_fs_win_errno(GetLastError()), "scandir");
+      return false;
+    }
+    *name = text;
+    *kind = (entry.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && scr_stats_is_link_tag(entry.dwReserved0) ? 3
+            : (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 2 : 1;
+    return true;
+  }
+  return false;
+#else
+  for (;;) {
+    errno = 0;
+    const struct dirent *ent = readdir(d->stream);
+    if (!ent) {
+      if (errno) scr_fs_throw_nopath(errno, "scandir");
+      return false;
+    }
+    if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+    *name = scr_str_new(ent->d_name, strlen(ent->d_name));
+    *kind = scr_dir_entry_kind(d, ent);
+    return true;
+  }
+#endif
+}
+
+void scr_dir_close(ScrDir *d) {
+  if (d->closed) {
+    scr_dir_closed();
+    return;
+  }
+  d->closed = true;
+  scr_dir_close_stream(d);
 }
 
 /* ── node:crypto ─────────────────────────────────────────────────────
@@ -7177,7 +8052,8 @@ ScrCryptoHash *scr_crypto_hash_new_opts(ScrStr *alg, ScrDyn *options) {
 }
 
 /* createHmac(algorithm, key, options): Node's options.encoding and
- * prepareSecretKey checks, then the digest lookup. */
+ * prepareSecretKey checks (a KeyObject's bytes are the key), then the
+ * digest lookup. */
 ScrCryptoHash *scr_crypto_hmac_new_dyn(ScrStr *alg, ScrDyn *key, ScrDyn *options) {
   if (options->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *value = scr_dyn_typed_ref_materialize(options);
@@ -7203,7 +8079,12 @@ ScrCryptoHash *scr_crypto_hmac_new_dyn(ScrStr *alg, ScrDyn *key, ScrDyn *options
     return result;
   }
   ScrBytes *bytes;
-  if (key->kind == SCR_DYN_STR) {
+  size_t key_object_len;
+  const unsigned char *key_object = scr_key_object_bytes(key, &key_object_len);
+  if (key_object) {
+    bytes = scr_bytes_new(SCR_BYTES_U8, (double)key_object_len);
+    if (key_object_len) memcpy(bytes->data, key_object, key_object_len);
+  } else if (key->kind == SCR_DYN_STR) {
     ScrStr *utf8 = encoding ? NULL : scr_str_new("utf8", 4);
     bytes = scr_bytes_from_str_checked(key->v.str, encoding ? encoding : utf8);
     if (utf8) scr_str_release(utf8);
@@ -7417,6 +8298,39 @@ bool scr_crypto_timing_safe_equal(ScrBytes *left, ScrBytes *right) {
   unsigned char diff = 0;
   for (size_t i = 0; i < left_len; i++) diff |= left->data[i] ^ right->data[i];
   return diff == 0;
+}
+
+/* A timingSafeEqual argument as a view: any TypedArray, DataView or
+ * Buffer, or a u8 view over an ArrayBuffer or SharedArrayBuffer. +1, or
+ * NULL with Node's ERR_INVALID_ARG_TYPE pending. */
+static ScrBytes *scr_timing_view(const ScrDyn *value, const char *name) {
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *materialized = scr_dyn_typed_ref_materialize(value);
+    if (!materialized) return NULL;
+    ScrBytes *view = scr_timing_view(materialized, name);
+    scr_dyn_release(materialized);
+    return view;
+  }
+  if (value->kind == SCR_DYN_BYTES) return scr_bytes_retain(value->v.bytes);
+  if (scr_buffer_storage_is(value)) return scr_bytes_buffer_source(value);
+  char message[128];
+  int n = snprintf(message, sizeof message,
+                   "The \"%s\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView.",
+                   name);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)n, "ERR_INVALID_ARG_TYPE");
+  return NULL;
+}
+
+/* timingSafeEqual(buf1, buf2) over any values, checked in Node's order:
+ * buf1, buf2, then the byte lengths. */
+bool scr_crypto_timing_safe_equal_dyn(ScrDyn *left, ScrDyn *right) {
+  ScrBytes *a = scr_timing_view(left, "buf1");
+  if (!a) return false;
+  ScrBytes *b = scr_timing_view(right, "buf2");
+  bool equal = b && scr_crypto_timing_safe_equal(a, b);
+  scr_bytes_release(a);
+  if (b) scr_bytes_release(b);
+  return equal;
 }
 
 /* ERR_OUT_OF_RANGE's Received value: integers beyond 2^32 take Node's
@@ -7754,6 +8668,289 @@ ScrStr *scr_crypto_random_uuid_v7(ScrDyn *options) {
   uint64_t now = (uint64_t)scr_date_now();
   for (int i = 0; i < 6; i++) b[i] = (unsigned char)(now >> (40 - 8 * i));
   return scr_uuid_string(b, 0x70);
+}
+
+/* ── KeyObject (secret keys) ──────────────────────────────────────────
+ * node:crypto's SecretKeyObject as a native dyn handle over the key bytes:
+ * createSecretKey, generateKey/generateKeySync for "hmac" and "aes", the
+ * type and symmetricKeySize getters, export() and equals(). createHmac and
+ * hkdf take these keys. The bytes are cleared when the last reference
+ * goes. */
+typedef struct ScrKeyObject {
+  size_t rc;
+  size_t len;
+  unsigned char data[];
+} ScrKeyObject;
+
+static void *scr_key_object_retain(void *p) {
+  ScrKeyObject *key = p;
+  if (key->rc != SIZE_MAX) key->rc++;
+  return key;
+}
+
+static void scr_key_object_release(void *p) {
+  ScrKeyObject *key = p;
+  if (!key || key->rc == SIZE_MAX || --key->rc != 0) return;
+  scr_crypto_zero(key->data, key->len);
+  free(key);
+}
+
+static void scr_key_object_install(void);
+
+static ScrDyn *scr_key_object_new(const unsigned char *data, size_t len) {
+  scr_key_object_install();
+  ScrKeyObject *key = malloc(sizeof *key + (len ? len : 1));
+  if (!key) scr_trap("scriptc: out of memory\n");
+  key->rc = 1;
+  key->len = len;
+  if (len) memcpy(key->data, data, len);
+  ScrDyn *box = scr_dyn_new_handle(key, SCR_DYNH_KEY_OBJECT);
+  scr_key_object_release(key);
+  return box;
+}
+
+/* The key bytes of a KeyObject value, or NULL for any other value. */
+const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len) {
+  if (value->kind != SCR_DYN_HANDLE || value->v.handle.tag != SCR_DYNH_KEY_OBJECT) return NULL;
+  const ScrKeyObject *key = value->v.handle.ptr;
+  *len = key->len;
+  return key->data;
+}
+
+/* `value instanceof KeyObject`. */
+bool scr_crypto_is_key_object(const ScrDyn *value) {
+  size_t len;
+  return scr_key_object_bytes(value, &len) != NULL;
+}
+
+static void scr_key_object_type_fail(const char *name, const ScrDyn *value) {
+  scr_dyn_arg_type_fail(name, "an instance of KeyObject", value);
+}
+
+/* The property flavor of ERR_INVALID_ARG_VALUE: "The property 'x' must be
+ * one of: ...". */
+static void scr_crypto_property_one_of(const char *name, const char *choices, const ScrDyn *value) {
+  char rendered[160], message[320];
+  const char *text = scr_dyn_inspect_lite(value, rendered, sizeof rendered);
+  int n = snprintf(message, sizeof message, "The property '%s' must be one of: %s. Received %s", name,
+                   choices, text);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)n, "ERR_INVALID_ARG_VALUE");
+}
+
+/* keyObject.export(options): a copy of the bytes, or a JWK with kty
+ * "oct" and the base64url key. */
+static ScrDyn *scr_key_object_export(const ScrKeyObject *key, const ScrDyn *options) {
+  if (options && options->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *value = scr_dyn_typed_ref_materialize(options);
+    if (!value) return NULL;
+    ScrDyn *result = scr_key_object_export(key, value);
+    scr_dyn_release(value);
+    return result;
+  }
+  bool jwk = false;
+  if (options && options->kind != SCR_DYN_UNDEF) {
+    if (options->kind == SCR_DYN_ARR || options->kind == SCR_DYN_NULL || !scr_crypto_is_object(options)) {
+      scr_dyn_arg_type_fail("options", "of type object", options);
+      return NULL;
+    }
+    ScrDyn *format = scr_dyn_obj_read(options, "format", 6);
+    bool ok = !format || format->kind == SCR_DYN_UNDEF;
+    if (!ok && format->kind == SCR_DYN_STR) {
+      const ScrStr *text = format->v.str;
+      if (text->len == 6 && memcmp(text->data, "buffer", 6) == 0) ok = true;
+      if (text->len == 3 && memcmp(text->data, "jwk", 3) == 0) ok = jwk = true;
+    }
+    if (!ok) scr_crypto_property_one_of("options.format", "undefined, 'buffer', 'jwk'", format);
+    if (format) scr_dyn_release(format);
+    if (!ok) return NULL;
+  }
+  if (!jwk) return scr_crypto_dyn_buffer(key->data, key->len);
+  ScrDyn *out = scr_dyn_new_obj();
+  scr_dyn_obj_set(out, "kty", 3, scr_crypto_dyn_str(scr_str_new("oct", 3)));
+  ScrBytes view = {.rc = 1, .len = key->len, .elem = SCR_BYTES_U8, .data = (unsigned char *)key->data};
+  ScrStr *name = scr_str_new("base64url", 9);
+  scr_dyn_obj_set(out, "k", 1, scr_crypto_dyn_str(scr_bytes_to_str(&view, name)));
+  scr_str_release(name);
+  return out;
+}
+
+static ScrDyn *scr_key_object_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args,
+                                     size_t argc, const char *what) {
+  (void)self;
+  const ScrKeyObject *key = h;
+  if (strcmp(method, "export") == 0) return scr_key_object_export(key, argc ? args[0] : NULL);
+  if (strcmp(method, "equals") == 0) {
+    size_t len;
+    const unsigned char *other = argc ? scr_key_object_bytes(args[0], &len) : NULL;
+    if (!other) {
+      ScrDyn *undefined = scr_dyn_undefined();
+      scr_key_object_type_fail("otherKeyObject", argc ? args[0] : undefined);
+      scr_dyn_release(undefined);
+      return NULL;
+    }
+    bool equal = len == key->len;
+    unsigned char diff = 0;
+    for (size_t i = 0; equal && i < len; i++) diff |= other[i] ^ key->data[i];
+    return scr_dyn_new_bool(equal && diff == 0);
+  }
+  if (strcmp(method, "toCryptoKey") == 0) {
+    static const char message[] = "KeyObject.toCryptoKey() needs WebCrypto CryptoKey values, which have no native lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  char message[160];
+  int n = snprintf(message, sizeof message, "%s is not a function", what);
+  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+  return NULL;
+}
+
+static ScrDyn *scr_key_object_get(void *h, const char *name, size_t len) {
+  const ScrKeyObject *key = h;
+  if (len == 4 && memcmp(name, "type", 4) == 0) return scr_crypto_dyn_str(scr_str_new("secret", 6));
+  if (len == 16 && memcmp(name, "symmetricKeySize", 16) == 0) return scr_dyn_new_num((double)key->len);
+  return NULL;
+}
+
+/* The getters have no setters; Node's strict-mode TypeError names the
+ * prototype that defines each one. */
+static bool scr_key_object_set(void *h, const char *name, size_t len, const ScrDyn *value) {
+  (void)h;
+  (void)value;
+  const char *holder = len == 4 && memcmp(name, "type", 4) == 0 ? "KeyObject"
+                       : len == 16 && memcmp(name, "symmetricKeySize", 16) == 0 ? "SecretKeyObject"
+                                                                                : NULL;
+  if (!holder) return false;
+  char message[160];
+  int n = snprintf(message, sizeof message, "Cannot set property %.*s of #<%s> which has only a getter",
+                   (int)len, name, holder);
+  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+  return true;
+}
+
+static ScrDyn *scr_key_object_inspect_view(void *h) {
+  (void)h;
+  return scr_dyn_new_obj();
+}
+
+static const ScrDynHandleOps scr_key_object_ops = {
+    .cls = "SecretKeyObject",
+    .retain = scr_key_object_retain,
+    .release = scr_key_object_release,
+    .invoke = scr_key_object_invoke,
+    .get = scr_key_object_get,
+    .set = scr_key_object_set,
+    .inspect_view = scr_key_object_inspect_view,
+    .json_empty_object = true,
+    .to_string_tag = "KeyObject",
+    .inspect_view_empty = true,
+};
+
+static void scr_key_object_install(void) {
+  static SCR_TL bool installed;
+  if (installed) return;
+  installed = true;
+  scr_dyn_handle_install(SCR_DYNH_KEY_OBJECT, &scr_key_object_ops);
+}
+
+/* createSecretKey(key[, encoding]): a string decodes with a string
+ * encoding (UTF-8 otherwise); views, ArrayBuffers and SharedArrayBuffers
+ * are copied. */
+ScrDyn *scr_crypto_create_secret_key(ScrDyn *key, ScrDyn *encoding) {
+  if (key->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *value = scr_dyn_typed_ref_materialize(key);
+    if (!value) return NULL;
+    ScrDyn *result = scr_crypto_create_secret_key(value, encoding);
+    scr_dyn_release(value);
+    return result;
+  }
+  ScrBytes *bytes;
+  if (key->kind == SCR_DYN_STR) {
+    bool named = encoding->kind == SCR_DYN_STR;
+    ScrStr *utf8 = named ? NULL : scr_str_new("utf8", 4);
+    bytes = scr_bytes_from_str_checked(key->v.str, named ? encoding->v.str : utf8);
+    if (utf8) scr_str_release(utf8);
+  } else if (key->kind == SCR_DYN_BYTES || scr_buffer_storage_is(key)) {
+    bytes = scr_bytes_buffer_source(key);
+  } else {
+    scr_dyn_arg_type_fail("key", "an instance of ArrayBuffer, Buffer, TypedArray, or DataView", key);
+    return NULL;
+  }
+  if (!bytes) return NULL;
+  ScrDyn *result = scr_key_object_new(bytes->data, (size_t)scr_bytes_byte_len(bytes));
+  scr_bytes_release(bytes);
+  return result;
+}
+
+/* generateKeySync(type, options) for "hmac" (options.length in bits,
+ * 8 to 2^31 - 1, rounded down to whole bytes) and "aes" (128, 192 or
+ * 256), checked in Node's order. */
+ScrDyn *scr_crypto_generate_key_sync(ScrDyn *type, ScrDyn *options) {
+  if (type->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("type", "of type string", type);
+    return NULL;
+  }
+  if (options->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *value = scr_dyn_typed_ref_materialize(options);
+    if (!value) return NULL;
+    ScrDyn *result = scr_crypto_generate_key_sync(type, value);
+    scr_dyn_release(value);
+    return result;
+  }
+  if (options->kind == SCR_DYN_ARR || options->kind == SCR_DYN_NULL || !scr_crypto_is_object(options)) {
+    scr_dyn_arg_type_fail("options", "of type object", options);
+    return NULL;
+  }
+  const ScrStr *name = type->v.str;
+  bool hmac = name->len == 4 && memcmp(name->data, "hmac", 4) == 0;
+  bool aes = name->len == 3 && memcmp(name->data, "aes", 3) == 0;
+  if (!hmac && !aes) {
+    char reason[] = "must be a supported key type";
+    scr_dyn_arg_value_fail("type", reason, type);
+    return NULL;
+  }
+  ScrDyn *length = scr_dyn_obj_read(options, "length", 6);
+  ScrDyn *undefined = length ? NULL : scr_dyn_undefined();
+  const ScrDyn *value = length ? length : undefined;
+  double bits = value->kind == SCR_DYN_NUM ? value->v.num : NAN;
+  bool ok;
+  if (hmac) {
+    ok = value->kind == SCR_DYN_NUM;
+    if (!ok) scr_dyn_prop_type_fail("options.length", "of type number", value);
+    else if (!isfinite(bits) || floor(bits) != bits) {
+      scr_crypto_out_of_range("options.length", "an integer", bits);
+      ok = false;
+    } else if (bits < 8 || bits > 2147483647.0) {
+      scr_crypto_out_of_range("options.length", ">= 8 && <= 2147483647", bits);
+      ok = false;
+    }
+  } else {
+    ok = value->kind == SCR_DYN_NUM && (bits == 128 || bits == 192 || bits == 256);
+    if (!ok) scr_crypto_property_one_of("options.length", "128, 192, 256", value);
+  }
+  if (length) scr_dyn_release(length);
+  if (undefined) scr_dyn_release(undefined);
+  if (!ok) return NULL;
+  size_t len = (size_t)(bits / 8);
+  unsigned char *data = malloc(len ? len : 1);
+  if (!data) scr_trap("scriptc: out of memory\n");
+  arc4random_buf(data, len);
+  ScrDyn *result = scr_key_object_new(data, len);
+  scr_crypto_zero(data, len);
+  free(data);
+  return result;
+}
+
+/* hkdf's key: a KeyObject's bytes as a fresh u8 Buffer. */
+ScrBytes *scr_crypto_key_object_input(ScrDyn *key) {
+  size_t len;
+  const unsigned char *data = scr_key_object_bytes(key, &len);
+  if (!data) {
+    scr_key_object_type_fail("key", key);
+    return NULL;
+  }
+  ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)len);
+  if (len) memcpy(bytes->data, data, len);
+  return bytes;
 }
 
 static ScrBytes *scr_crypto_pbkdf2_raw(const unsigned char *password, size_t password_len,

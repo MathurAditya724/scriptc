@@ -30,6 +30,7 @@ import {
   F64,
   ffiClassType,
   ffiSourceParamTypes,
+  isDirentShape,
   isDynTypedRefType,
   isFfiCallbackParam,
   isFfiContextParam,
@@ -4682,10 +4683,16 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "fs.readdirTypesSync" || e.fn === "fsp.readdirTypes") {
+    if (
+      e.fn === "fs.readdirTypesSync" ||
+      e.fn === "fsp.readdirTypes" ||
+      e.fn === "fs.globTypesSync" ||
+      e.fn === "fsp.globTypes"
+    ) {
       // Result: the interned Dirent record array — {%dtype: f64,
       // name: string, parentPath: string} rows (canonical field
-      // order; the structure lowerFsReaddirTypesCall pinned).
+      // order; the structure lowerFsReaddirTypesCall pinned). The glob
+      // forms answer the array itself.
       const result =
         e.fn === "fsp.readdirTypes"
           ? e.type.kind === "promise"
@@ -4696,7 +4703,27 @@ function validateFunction(
         result?.kind === "array" && result.elem.kind === "record"
           ? records.get(result.elem.shapeId)
           : undefined;
+      const ok = shape !== undefined && isDirentShape(shape);
+      if (!ok) {
+        err(
+          `libCall ${e.fn} must return ${e.fn === "fsp.readdirTypes" ? "a promise of " : ""}the Dirent record array`,
+          e.loc,
+        );
+      }
+      return true;
+    }
+    if (e.fn === "dir.readSync" || e.fn === "dir.read") {
+      // Result: `Dirent | null` (a promise of it for dir.read) — the
+      // interned Dirent row shape readdirTypesSync uses, or null.
+      const result =
+        e.fn === "dir.read" ? (e.type.kind === "promise" ? e.type.inner : undefined) : e.type;
+      const def = result?.kind === "union" ? unions.get(result.unionId) : undefined;
+      const row = def?.arms.find((a) => a.kind === "record");
+      const shape = row?.kind === "record" ? records.get(row.shapeId) : undefined;
       const ok =
+        def !== undefined &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "nullT") &&
         shape !== undefined &&
         !shape.tuple &&
         shape.indexValue === undefined &&
@@ -4709,7 +4736,7 @@ function validateFunction(
         shape.fields[2]!.type.kind === "string";
       if (!ok) {
         err(
-          `libCall ${e.fn} must return ${e.fn === "fsp.readdirTypes" ? "a promise of " : ""}the Dirent record array`,
+          `libCall ${e.fn} must return ${e.fn === "dir.read" ? "a promise of " : ""}Dirent | null`,
           e.loc,
         );
       }
@@ -5044,12 +5071,20 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "crypto.timingSafeEqual") {
+      if (e.args[0]?.type.kind !== "bytes" || e.args[1]?.type.kind !== "bytes")
+        err(`libCall ${e.fn} arguments must be views`, e.loc);
+    }
     if (e.fn === "crypto.randomFillCb") {
       if (e.args[0]?.type.kind !== "bytes") err(`libCall ${e.fn} buffer must be a view`, e.loc);
       if (e.args[4]?.type.kind !== "func")
         err(`libCall ${e.fn} callback must be a function`, e.loc);
     }
-    if (e.fn === "crypto.randomFillCbDyn" || e.fn === "crypto.randomIntCb") {
+    if (
+      e.fn === "crypto.randomFillCbDyn" ||
+      e.fn === "crypto.randomIntCb" ||
+      e.fn === "crypto.generateKeyCb"
+    ) {
       const callback = e.args[e.args.length - 1]?.type;
       if (callback?.kind !== "func") err(`libCall ${e.fn} callback must be a function`, e.loc);
     }

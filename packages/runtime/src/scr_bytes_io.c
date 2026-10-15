@@ -23,13 +23,6 @@ static const ScrArrOps scr_bytes_io_bytes_ops = { scr_bytes_retain_v, scr_bytes_
 #ifndef O_SYNC
 #define O_SYNC 0 /* Windows CRT opens have no separate synchronous flag. */
 #endif
-/* Bionic added glob/globfree in API 28; Android packs target API 26. */
-#if !defined(_WIN32) && !defined(__wasi__) && (!defined(__ANDROID__) || __ANDROID_API__ >= 28)
-#include <glob.h>
-#define SCR_FS_HAS_GLOB 1
-#else
-#define SCR_FS_HAS_GLOB 0
-#endif
 #ifdef __APPLE__
 #include <sys/stat.h> /* lchmod(2) — the fs.lchmodSync ladder's real tail */
 #endif
@@ -243,32 +236,49 @@ static bool scr_fs_cb_signal(const ScrDyn *options) {
   return !scr_exc_pending();
 }
 
+/* stringToFlags for the string spellings; -1 for an unknown one. */
+static int scr_fs_flag_bits(const char *f) {
+  if (!strcmp(f, "r")) return O_RDONLY;
+  if (!strcmp(f, "r+")) return O_RDWR;
+  if (!strcmp(f, "rs") || !strcmp(f, "sr")) return O_RDONLY | O_SYNC;
+  if (!strcmp(f, "rs+") || !strcmp(f, "sr+")) return O_RDWR | O_SYNC;
+  if (!strcmp(f, "w")) return O_WRONLY | O_CREAT | O_TRUNC;
+  if (!strcmp(f, "w+")) return O_RDWR | O_CREAT | O_TRUNC;
+  if (!strcmp(f, "wx") || !strcmp(f, "xw")) return O_WRONLY | O_CREAT | O_TRUNC | O_EXCL;
+  if (!strcmp(f, "wx+") || !strcmp(f, "xw+")) return O_RDWR | O_CREAT | O_TRUNC | O_EXCL;
+  if (!strcmp(f, "a")) return O_WRONLY | O_CREAT | O_APPEND;
+  if (!strcmp(f, "a+")) return O_RDWR | O_CREAT | O_APPEND;
+  if (!strcmp(f, "ax") || !strcmp(f, "xa")) return O_WRONLY | O_CREAT | O_APPEND | O_EXCL;
+  if (!strcmp(f, "ax+") || !strcmp(f, "xa+")) return O_RDWR | O_CREAT | O_APPEND | O_EXCL;
+  if (!strcmp(f, "as") || !strcmp(f, "sa")) return O_WRONLY | O_CREAT | O_APPEND | O_SYNC;
+  if (!strcmp(f, "as+") || !strcmp(f, "sa+")) return O_RDWR | O_CREAT | O_APPEND | O_SYNC;
+  return -1;
+}
+
+static void scr_fs_flag_invalid(const char *f) {
+  char message[160];
+  int length = snprintf(message, sizeof message, "The argument 'flags' is invalid. Received '%s'", f);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)length, "ERR_INVALID_ARG_VALUE");
+}
+
+/* open's flags check, which Node runs before its callback check. Numeric
+ * flags keep their open-time refusal. */
+static bool scr_fs_cb_open_flags(const ScrDyn *flag) {
+  if (flag->kind != SCR_DYN_STR || scr_fs_flag_bits(flag->v.str->data) >= 0) return true;
+  scr_fs_flag_invalid(flag->v.str->data);
+  return false;
+}
+
 static double scr_fs_cb_open(const ScrStr *path, const ScrDyn *flag, double mode, const char *fallback) {
-  const char *f = flag->kind == SCR_DYN_UNDEF ? fallback : flag->kind == SCR_DYN_STR ? flag->v.str->data : NULL;
+  const char *f = scr_fs_dyn_absent(flag) ? fallback : flag->kind == SCR_DYN_STR ? flag->v.str->data : NULL;
   if (!f) {
     static const char message[] = "Runtime numeric filesystem flags have no portable native lowering";
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return -1;
   }
-  int bits;
-  if (!strcmp(f, "r")) bits = O_RDONLY;
-  else if (!strcmp(f, "r+")) bits = O_RDWR;
-  else if (!strcmp(f, "rs") || !strcmp(f, "sr")) bits = O_RDONLY | O_SYNC;
-  else if (!strcmp(f, "rs+") || !strcmp(f, "sr+")) bits = O_RDWR | O_SYNC;
-  else if (!strcmp(f, "w")) bits = O_WRONLY | O_CREAT | O_TRUNC;
-  else if (!strcmp(f, "w+")) bits = O_RDWR | O_CREAT | O_TRUNC;
-  else if (!strcmp(f, "wx") || !strcmp(f, "xw")) bits = O_WRONLY | O_CREAT | O_TRUNC | O_EXCL;
-  else if (!strcmp(f, "wx+") || !strcmp(f, "xw+")) bits = O_RDWR | O_CREAT | O_TRUNC | O_EXCL;
-  else if (!strcmp(f, "a")) bits = O_WRONLY | O_CREAT | O_APPEND;
-  else if (!strcmp(f, "a+")) bits = O_RDWR | O_CREAT | O_APPEND;
-  else if (!strcmp(f, "ax") || !strcmp(f, "xa")) bits = O_WRONLY | O_CREAT | O_APPEND | O_EXCL;
-  else if (!strcmp(f, "ax+") || !strcmp(f, "xa+")) bits = O_RDWR | O_CREAT | O_APPEND | O_EXCL;
-  else if (!strcmp(f, "as") || !strcmp(f, "sa")) bits = O_WRONLY | O_CREAT | O_APPEND | O_SYNC;
-  else if (!strcmp(f, "as+") || !strcmp(f, "sa+")) bits = O_RDWR | O_CREAT | O_APPEND | O_SYNC;
-  else {
-    char message[160];
-    int length = snprintf(message, sizeof message, "The argument 'flags' is invalid. Received '%s'", f);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)length, "ERR_INVALID_ARG_VALUE");
+  int bits = scr_fs_flag_bits(f);
+  if (bits < 0) {
+    scr_fs_flag_invalid(f);
     return -1;
   }
   if (scr_exc_pending()) return -1;
@@ -537,91 +547,11 @@ static void scr_fs_cb_copy(const ScrStr *source, const ScrStr *destination, bool
   }
 }
 
-static ScrDyn *scr_fs_cb_stat_test(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
-  (void)args; (void)argc;
-  return scr_dyn_new_bool(scr_box_get_bool(closure->caps[0]));
-}
-
-static void scr_fs_cb_stat_method(ScrDyn *object, const char *name, bool answer) {
-  ScrClosure *closure = scr_closure_new(NULL, 1);
-  closure->caps[0] = scr_box_new(SCR_BOX_BOOL);
-  scr_box_set_bool(closure->caps[0], answer);
-  scr_dyn_obj_set(object, name, strlen(name), scr_dyn_new_func(closure, scr_fs_cb_stat_test, 0, "native:fs.Stats", name));
-}
-
-static void scr_fs_cb_stat_number(ScrDyn *object, const char *name, int64_t number, bool bigint) {
-  ScrDyn *value;
-  if (bigint) {
-    ScrBigInt *integer = scr_bigint_from_i64(number);
-    value = scr_dyn_new_bigint(integer);
-    scr_bigint_release(integer);
-  } else value = scr_dyn_new_num((double)number);
-  scr_dyn_obj_set(object, name, strlen(name), value);
-}
-
-static void scr_fs_cb_stat_date(ScrDyn *object, const char *name, double milliseconds) {
-  ScrDyn *arguments = scr_dyn_new_arr();
-  scr_dyn_arr_push(arguments, scr_dyn_new_num(milliseconds));
-  ScrDyn *date = scr_dyn_native_date_new(arguments);
-  scr_dyn_release(arguments);
-  if (date) scr_dyn_obj_set(object, name, strlen(name), date);
-}
-
 static ScrDyn *scr_fs_cb_stats(const ScrStr *path, double fd, const ScrDyn *options, bool nofollow) {
-  struct stat status;
-#ifdef _WIN32
-  (void)nofollow;
-  int rc = path ? stat(path->data, &status) : fstat((int)fd, &status);
-#else
-  int rc = path ? (nofollow ? lstat(path->data, &status) : stat(path->data, &status)) : fstat((int)fd, &status);
-#endif
-  if (rc < 0) { scr_fs_throw(errno, path ? (nofollow ? "lstat" : "stat") : "fstat", path); return NULL; }
-  bool bigint = scr_fs_cb_option_bool(options, "bigint");
-  ScrDyn *object = scr_dyn_new_obj();
-#define SCR_FS_STAT_FIELD(field) scr_fs_cb_stat_number(object, #field, (int64_t)status.st_##field, bigint)
-  SCR_FS_STAT_FIELD(dev); SCR_FS_STAT_FIELD(ino); SCR_FS_STAT_FIELD(mode); SCR_FS_STAT_FIELD(nlink);
-  SCR_FS_STAT_FIELD(uid); SCR_FS_STAT_FIELD(gid); SCR_FS_STAT_FIELD(rdev); SCR_FS_STAT_FIELD(size);
-#ifndef _WIN32
-  SCR_FS_STAT_FIELD(blksize); SCR_FS_STAT_FIELD(blocks);
-#endif
-#undef SCR_FS_STAT_FIELD
-  double atime = (double)status.st_atime * 1000, mtime = (double)status.st_mtime * 1000, ctime = (double)status.st_ctime * 1000;
-  double birthtime = 0;
-#ifdef __APPLE__
-  atime += status.st_atimespec.tv_nsec / 1000000.0; mtime += status.st_mtimespec.tv_nsec / 1000000.0;
-  ctime += status.st_ctimespec.tv_nsec / 1000000.0;
-  birthtime = (double)status.st_birthtimespec.tv_sec * 1000 + status.st_birthtimespec.tv_nsec / 1000000.0;
-#elif !defined(_WIN32) && !defined(__wasi__)
-  atime += status.st_atim.tv_nsec / 1000000.0; mtime += status.st_mtim.tv_nsec / 1000000.0;
-  ctime += status.st_ctim.tv_nsec / 1000000.0;
-#endif
-  scr_fs_cb_stat_date(object, "atime", atime); scr_fs_cb_stat_date(object, "mtime", mtime);
-  scr_fs_cb_stat_date(object, "ctime", ctime); scr_fs_cb_stat_date(object, "birthtime", birthtime);
-  if (bigint) {
-    scr_fs_cb_stat_number(object, "atimeMs", (int64_t)atime, true);
-    scr_fs_cb_stat_number(object, "mtimeMs", (int64_t)mtime, true);
-    scr_fs_cb_stat_number(object, "ctimeMs", (int64_t)ctime, true);
-    scr_fs_cb_stat_number(object, "birthtimeMs", (int64_t)birthtime, true);
-  } else {
-    scr_dyn_obj_set(object, "atimeMs", 7, scr_dyn_new_num(atime));
-    scr_dyn_obj_set(object, "mtimeMs", 7, scr_dyn_new_num(mtime));
-    scr_dyn_obj_set(object, "ctimeMs", 7, scr_dyn_new_num(ctime));
-    scr_dyn_obj_set(object, "birthtimeMs", 11, scr_dyn_new_num(birthtime));
-  }
-  scr_fs_cb_stat_method(object, "isFile", S_ISREG(status.st_mode));
-  scr_fs_cb_stat_method(object, "isDirectory", S_ISDIR(status.st_mode));
-#ifndef _WIN32
-  scr_fs_cb_stat_method(object, "isSymbolicLink", S_ISLNK(status.st_mode));
-  scr_fs_cb_stat_method(object, "isBlockDevice", S_ISBLK(status.st_mode));
-  scr_fs_cb_stat_method(object, "isCharacterDevice", S_ISCHR(status.st_mode));
-  scr_fs_cb_stat_method(object, "isFIFO", S_ISFIFO(status.st_mode));
-  scr_fs_cb_stat_method(object, "isSocket", S_ISSOCK(status.st_mode));
-#else
-  scr_fs_cb_stat_method(object, "isSymbolicLink", false);
-  scr_fs_cb_stat_method(object, "isBlockDevice", false);
-  scr_fs_cb_stat_method(object, "isCharacterDevice", S_ISCHR(status.st_mode));
-  scr_fs_cb_stat_method(object, "isFIFO", false); scr_fs_cb_stat_method(object, "isSocket", false);
-#endif
+  ScrStats *snapshot = !path ? scr_fs_fstat(fd) : nofollow ? scr_fs_lstat((ScrStr *)path) : scr_fs_stat((ScrStr *)path);
+  if (!snapshot) return NULL;
+  ScrDyn *object = scr_stats_dyn(snapshot, scr_fs_cb_option_bool(options, "bigint"));
+  scr_stats_release(snapshot);
   return object;
 }
 
@@ -634,7 +564,7 @@ static void scr_fs_cb_fire(ScrClosure *closure) {
 }
 #endif
 
-static void scr_fs_cb_schedule(const ScrDyn *callback, ScrDyn *result, const ScrDyn *buffer) {
+void scr_fs_cb_schedule(const ScrDyn *callback, ScrDyn *result, const ScrDyn *buffer) {
   ScrDyn *arguments = scr_dyn_new_arr();
   if (scr_exc_pending()) {
     ScrCaught *caught = scr_exc_take();
@@ -665,6 +595,94 @@ static bool scr_fs_read_validate(const ScrDyn *, const ScrDyn *, const ScrDyn *,
 static bool scr_fs_encoding_chk(const ScrDyn *);
 static bool scr_fs_int_range_chk(const ScrDyn *, const char *, double, double, const char *);
 static bool scr_fs_mode_chk(const ScrDyn *, const char *);
+
+/* Where Node's signature handling finds the callback: a fixed position, or
+ * an earlier optional argument it takes instead when that one is a
+ * function. readFile, writeFile, appendFile, readv and writev use
+ * `callback ||= <previous argument>`; open treats a two-argument call as
+ * (path, callback); read and write follow their own argument forms. */
+static size_t scr_fs_cb_slot(const char *op, ScrDyn *const *args, size_t argc) {
+  static const struct {
+    const char *op;
+    unsigned char slot;
+    unsigned char shift; /* 0: none */
+  } table[] = {
+    { "access", 2, 1 }, { "copyFile", 3, 2 }, { "chmod", 2, 0 }, { "chown", 3, 0 }, { "lchown", 3, 0 },
+    { "fchown", 3, 0 }, { "mkdir", 2, 1 }, { "mkdtemp", 2, 1 }, { "rmdir", 2, 1 }, { "unlink", 1, 0 },
+    { "close", 1, 0 }, { "fstat", 2, 1 }, { "ftruncate", 2, 1 }, { "fsync", 1, 0 }, { "fdatasync", 1, 0 },
+    { "fchmod", 2, 0 }, { "realpath", 2, 1 }, { "rename", 2, 0 }, { "stat", 2, 1 }, { "lstat", 2, 1 },
+    { "truncate", 2, 1 }, { "readdir", 2, 1 },
+  };
+#define SCR_FS_IS_FN(i) ((i) < argc && args[(i)]->kind == SCR_DYN_FUNC)
+#define SCR_FS_TRUTHY(i) ((i) < argc && scr_dyn_truthy(args[(i)]))
+  for (size_t i = 0; i < sizeof table / sizeof table[0]; i++) {
+    if (strcmp(op, table[i].op)) continue;
+    return table[i].shift && SCR_FS_IS_FN(table[i].shift) ? table[i].shift : table[i].slot;
+  }
+  if (!strcmp(op, "open")) return argc < 3 ? 1 : SCR_FS_IS_FN(2) ? 2 : 3;
+  if (!strcmp(op, "readFile")) return SCR_FS_TRUTHY(2) ? 2 : 1;
+  if (!strcmp(op, "writeFile") || !strcmp(op, "appendFile")) return SCR_FS_TRUTHY(3) ? 3 : 2;
+  if (!strcmp(op, "readv") || !strcmp(op, "writev")) return SCR_FS_TRUTHY(3) ? 3 : 2;
+  if (!strcmp(op, "read")) return argc <= 4 ? (argc > 1 ? argc - 1 : 1) : 5;
+  if (!strcmp(op, "write")) {
+    if (argc > 1 && args[1]->kind == SCR_DYN_STR) return SCR_FS_IS_FN(4) ? 4 : SCR_FS_IS_FN(2) ? 2 : 3;
+    return SCR_FS_TRUTHY(5) ? 5 : SCR_FS_TRUTHY(4) ? 4 : SCR_FS_TRUTHY(3) ? 3 : 2;
+  }
+#undef SCR_FS_IS_FN
+#undef SCR_FS_TRUTHY
+  return argc ? argc - 1 : 0;
+}
+
+/* parseFileMode(value, name): an octal string or a uint32. */
+static bool scr_fs_cb_file_mode(const ScrDyn *value, const char *name, double *mode) {
+  if (!scr_fs_mode_chk(value, name)) return false;
+  *mode = value->kind == SCR_DYN_STR ? (double)strtoul(value->v.str->data, NULL, 8) : value->v.num;
+  return true;
+}
+
+/* mkdir's options: a function (the callback) or nothing means the
+ * defaults, a number or string is the mode, and an object may carry a
+ * boolean recursive and a mode. */
+static bool scr_fs_cb_mkdir_options(const ScrDyn *options, double *mode, bool *recursive) {
+  *mode = 0777;
+  *recursive = false;
+  if (options->kind == SCR_DYN_FUNC) return true;
+  if (options->kind == SCR_DYN_NUM || options->kind == SCR_DYN_STR) return scr_fs_cb_file_mode(options, "mode", mode);
+  if (!scr_dyn_truthy(options)) return true;
+  ScrDyn *value = scr_fs_cb_option(options, "recursive");
+  bool ok = true;
+  if (value && value->kind != SCR_DYN_UNDEF) {
+    if (value->kind == SCR_DYN_BOOL) *recursive = value->v.b;
+    else {
+      scr_dyn_arg_type_fail("options.recursive", "of type boolean", value);
+      ok = false;
+    }
+  }
+  scr_dyn_release(value);
+  if (!ok) return false;
+  value = scr_fs_cb_option(options, "mode");
+  if (value && value->kind != SCR_DYN_UNDEF) ok = scr_fs_cb_file_mode(value, "options.mode", mode);
+  scr_dyn_release(value);
+  return ok;
+}
+
+/* validateInteger(uid, 'uid', -1, 2 ** 32 - 1), then gid. */
+static bool scr_fs_cb_owner_ids(const ScrDyn *uid, const ScrDyn *gid) {
+  return scr_fs_int_range_chk(uid, "uid", -1, 4294967295.0, ">= -1 && <= 4294967295") &&
+         scr_fs_int_range_chk(gid, "gid", -1, 4294967295.0, ">= -1 && <= 4294967295");
+}
+
+/* The binding's access mode check: undefined and null mean F_OK, other
+ * non-numbers throw ERR_INVALID_ARG_TYPE. */
+static bool scr_fs_cb_access_mode(const ScrDyn *mode) {
+  if (scr_fs_dyn_absent(mode)) return true;
+  if (mode->kind != SCR_DYN_NUM) {
+    static const char message[] = "mode must be int32 or null/undefined";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_ARG_TYPE");
+    return false;
+  }
+  return scr_fs_access_mode_valid(mode->v.num);
+}
 
 static bool scr_fs_callback_times(const ScrDyn *atime, const ScrDyn *mtime, bool descriptor, double *access, double *modified) {
   *access = scr_fs_timestamp_value(atime, descriptor ? "atime" : "time");
@@ -763,40 +781,129 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
   // futimes converts times before checking the callback; path variants do
   // callback and path validation first. Validation failures throw immediately.
   if (timestamp_fd && !scr_fs_callback_times(scr_fs_cb_arg(args, argc, 1), scr_fs_cb_arg(args, argc, 2), true, &access, &modified)) return NULL;
+  if (!strcmp(op, "fchown") && !scr_fs_cb_owner_ids(scr_fs_cb_arg(args, argc, 1), scr_fs_cb_arg(args, argc, 2))) return NULL;
   bool newControl = !strcmp(op, "fdatasync") || !strcmp(op, "fchmod") || !strcmp(op, "ftruncate");
-  if ((vector || newControl) && !scr_fs_int_range_chk(scr_fs_cb_arg(args, argc, 0), "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return NULL;
+  if (vector && !scr_fs_int_range_chk(scr_fs_cb_arg(args, argc, 0), "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return NULL;
   ScrArr *vectors = vector ? scr_fs_cb_vectors(scr_fs_cb_arg(args, argc, 1)) : NULL;
   if (vector && !vectors) return NULL;
-  bool fileCallback = !strcmp(op, "readFile") || !strcmp(op, "mkdtemp");
-  const ScrDyn *callback = timestamp ? scr_fs_cb_arg(args, argc, 3)
-    : argc >= (fileCallback ? 2u : 1u) ? args[argc - 1] : scr_dyn_undefined();
-  if (!scr_fs_cb_chk(callback, fileCallback || vector || timestamp ? "cb" : "callback")) { scr_arr_release(vectors); return NULL; }
-  size_t count = timestamp ? argc : argc - 1;
+  /* cp, glob and rm keep the last argument as their callback. */
+  bool legacy = !strcmp(op, "cp") || !strcmp(op, "glob") || !strcmp(op, "rm");
+  size_t slot = timestamp ? 3 : legacy ? (argc ? argc - 1 : 0) : scr_fs_cb_slot(op, args, argc);
+  const ScrDyn *callback = scr_fs_cb_arg(args, argc, slot);
+  /* These check their callback after the arguments Node validates first
+   * (below); every other form checks it here, before its path. */
+  bool late = !strcmp(op, "access") || !strcmp(op, "copyFile") || !strcmp(op, "chmod") || !strcmp(op, "open") ||
+              !strcmp(op, "mkdir") || !strcmp(op, "fchmod") || !strcmp(op, "ftruncate") || !strcmp(op, "truncate") ||
+              !strcmp(op, "read");
+  if (!late && !scr_fs_cb_chk(callback, legacy ? "callback" : "cb")) { scr_arr_release(vectors); return NULL; }
+  size_t count = timestamp ? argc : slot < argc ? slot : argc;
 #define ARG(index) scr_fs_cb_arg(args, count, index)
-  if (!strcmp(op, "readFile") && (!scr_fs_encoding_chk(ARG(1)) ||
-                                  (ARG(1)->kind != SCR_DYN_STR && !scr_fs_cb_read_buffer_option(ARG(1))))) return NULL;
-  if (!strcmp(op, "read") && count >= 4 && !scr_fs_read_validate(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4))) return NULL;
-  bool descriptor = timestamp_fd || vector || newControl || !strcmp(op, "close") || !strcmp(op, "fstat") || !strcmp(op, "fsync") || !strcmp(op, "read") || !strcmp(op, "write");
-  ScrStr *path = descriptor ? NULL : timestamp ? scr_fs_timestamp_path(ARG(0)) : scr_fs_cb_path(ARG(0), !strcmp(op, "mkdtemp") ? "prefix" : "path");
-  if (!descriptor && !path) return NULL;
-  if (timestamp && !timestamp_fd && !scr_fs_callback_times(ARG(1), ARG(2), false, &access, &modified)) { scr_str_release(path); return NULL; }
-  if (timestamp_fd && !scr_fs_int_range_chk(ARG(0), "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return NULL;
-  double fd = descriptor ? scr_fs_cb_number(ARG(0), "fd", -1) : -1;
-  if (scr_exc_pending()) { scr_str_release(path); scr_arr_release(vectors); return NULL; }
-  if (newControl && strcmp(op, "fdatasync")) {
+  /* fchmod and ftruncate check their mode or len, then the callback; the
+   * binding checks the fd last. */
+  if (newControl) {
     const ScrDyn *value = ARG(1);
-    if (strcmp(op, "ftruncate") || value->kind != SCR_DYN_UNDEF) {
+    if (strcmp(op, "fdatasync") && (strcmp(op, "ftruncate") || value->kind != SCR_DYN_UNDEF)) {
       bool chmod = !strcmp(op, "fchmod");
       if (chmod ? !scr_fs_mode_chk(value, "mode") : !scr_fs_int_range_chk(value, "len", -9007199254740991.0, 9007199254740991.0, ">= -9007199254740991 && <= 9007199254740991")) return NULL;
     }
+    if (strcmp(op, "fdatasync") && !scr_fs_cb_chk(callback, "cb")) return NULL;
+    if (!scr_fs_int_range_chk(ARG(0), "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return NULL;
   }
+  if ((!strcmp(op, "fsync") || !strcmp(op, "fstat") || !strcmp(op, "close")) &&
+      !scr_fs_int_range_chk(ARG(0), "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return NULL;
+  double mkdir_mode = 0777;
+  bool mkdir_recursive = false;
+  if (!strcmp(op, "mkdir") && (!scr_fs_cb_mkdir_options(ARG(1), &mkdir_mode, &mkdir_recursive) || !scr_fs_cb_chk(callback, "cb"))) return NULL;
+  if (!strcmp(op, "readFile") && (!scr_fs_encoding_chk(ARG(1)) ||
+                                  (ARG(1)->kind != SCR_DYN_STR && !scr_fs_cb_read_buffer_option(ARG(1))))) return NULL;
+  /* read checks its fd and the buffer of the full form before the
+   * callback, and offset, length and position after it. */
+  if (!strcmp(op, "read")) {
+    if (!scr_fs_int_range_chk(ARG(0), "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return NULL;
+    if (count == 2 || count == 3) {
+      /* read(fd, params, cb) and read(fd, buffer, options, cb): Node's
+       * validateObject, nullish allowed. */
+      const ScrDyn *params = count == 3 ? ARG(2) : scr_dyn_bytes_is(ARG(1), SCR_BYTES_U8) ? NULL : ARG(1);
+      bool object = !params || scr_fs_dyn_absent(params) ||
+                    params->kind == SCR_DYN_OBJ || params->kind == SCR_DYN_BYTES ||
+                    (params->kind == SCR_DYN_TYPED_REF && !scr_dyn_ref_is_array(params));
+      if (!object) {
+        scr_dyn_arg_type_fail("options", "of type object", params);
+        return NULL;
+      }
+    }
+    if (count >= 4 && ARG(1)->kind != SCR_DYN_BYTES) {
+      scr_dyn_arg_type_fail("buffer", "an instance of Buffer, TypedArray, or DataView", ARG(1));
+      return NULL;
+    }
+    if (!scr_fs_cb_chk(callback, "cb")) return NULL;
+  }
+  if (!strcmp(op, "read") && count >= 4 && !scr_fs_read_validate(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4))) return NULL;
+  bool descriptor = timestamp_fd || vector || newControl || !strcmp(op, "close") || !strcmp(op, "fstat") || !strcmp(op, "fsync") || !strcmp(op, "read") || !strcmp(op, "write") || !strcmp(op, "fchown");
+  /* truncate checks len, then the callback, before the open its request
+   * starts with. */
+  if (!strcmp(op, "truncate") &&
+      ((ARG(1)->kind != SCR_DYN_UNDEF &&
+        !scr_fs_int_range_chk(ARG(1), "len", -9007199254740991.0, 9007199254740991.0, ">= -9007199254740991 && <= 9007199254740991")) ||
+       !scr_fs_cb_chk(callback, "cb"))) return NULL;
+  ScrStr *path = descriptor ? NULL : timestamp ? scr_fs_timestamp_path(ARG(0)) : scr_fs_cb_path(ARG(0), !strcmp(op, "mkdtemp") ? "prefix" : !strcmp(op, "copyFile") ? "src" : !strcmp(op, "rename") ? "oldPath" : "path");
+  if (!descriptor && !path) return NULL;
+  if (timestamp && !timestamp_fd && !scr_fs_callback_times(ARG(1), ARG(2), false, &access, &modified)) { scr_str_release(path); return NULL; }
+  if ((timestamp_fd || !strcmp(op, "fchown")) && !scr_fs_int_range_chk(ARG(0), "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return NULL;
+  double chmod_mode = 0, open_mode = 0666;
+  bool checked = true;
+  if (!strcmp(op, "copyFile")) checked = scr_fs_path_chk(ARG(1), "dest");
+  else if (!strcmp(op, "chmod")) checked = scr_fs_cb_file_mode(ARG(1), "mode", &chmod_mode);
+  else if (!strcmp(op, "open")) {
+    checked = ARG(2)->kind == SCR_DYN_UNDEF || scr_fs_cb_file_mode(ARG(2), "mode", &open_mode);
+    if (checked) checked = scr_fs_cb_open_flags(ARG(1));
+  }
+  if (checked && (!strcmp(op, "access") || !strcmp(op, "copyFile") || !strcmp(op, "chmod") || !strcmp(op, "open")))
+    checked = scr_fs_cb_chk(callback, "cb");
+  /* Node validates these before the request starts, so they throw at the
+   * call. */
+  if (!checked || ((!strcmp(op, "chown") || !strcmp(op, "lchown")) && !scr_fs_cb_owner_ids(ARG(1), ARG(2))) ||
+      (!strcmp(op, "access") && !scr_fs_cb_access_mode(ARG(1)))) {
+    scr_str_release(path);
+    return NULL;
+  }
+  double fd = descriptor ? scr_fs_cb_number(ARG(0), "fd", -1) : -1;
+  if (scr_exc_pending()) { scr_str_release(path); scr_arr_release(vectors); return NULL; }
   ScrDyn *result = NULL;
   const ScrDyn *buffer = NULL;
   if (!strcmp(op, "readFile")) {
     const ScrDyn *options = ARG(1);
-    if (options->kind != SCR_DYN_STR && (!scr_fs_cb_signal(options) || scr_fs_cb_refuse_option(options, "flag"))) goto done;
+    if (options->kind != SCR_DYN_STR && !scr_fs_cb_signal(options)) goto done;
     ScrDyn *encoding = options->kind == SCR_DYN_STR ? scr_dyn_retain((ScrDyn *)options) : scr_fs_cb_option(options, "encoding");
-    if (encoding) result = scr_fs_read_file_sync_dyn(path, encoding);
+    ScrDyn *flag = options->kind == SCR_DYN_STR ? NULL : scr_fs_cb_option(options, "flag");
+    bool reading_flag = !flag || flag->kind == SCR_DYN_UNDEF || flag->kind == SCR_DYN_NULL ||
+                        (flag->kind == SCR_DYN_STR && flag->v.str->len == 1 && flag->v.str->data[0] == 'r');
+    if (encoding && reading_flag) result = scr_fs_read_file_sync_dyn(path, encoding);
+    else if (encoding) {
+      /* Node opens the file with options.flag ('w+' truncates first), then
+       * reads the whole descriptor. */
+      double opened = scr_fs_cb_open(path, flag, 0666, "r");
+      if (opened >= 0 && !scr_exc_pending()) {
+        bool text = encoding->kind == SCR_DYN_STR && encoding->v.str->len > 0;
+        if (text) {
+          ScrStr *content = scr_fs_read_fd_encoded(opened, encoding->v.str);
+          if (content) {
+            result = scr_dyn_new_str(content);
+            scr_str_release(content);
+          }
+        } else {
+          ScrBytes *content = scr_fs_read_fd_bytes(opened);
+          if (content) {
+            result = scr_dyn_new_buffer(content);
+            scr_bytes_release(content);
+          }
+        }
+        int saved = errno;
+        close((int)opened);
+        errno = saved;
+      }
+    }
+    scr_dyn_release(flag);
     scr_dyn_release(encoding);
   } else if (!strcmp(op, "writeFile") || !strcmp(op, "appendFile")) {
     const ScrDyn *options = ARG(2);
@@ -824,18 +931,23 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
       }
       scr_bytes_release(data);
     }
-  } else if (!strcmp(op, "access")) scr_fs_access(path, scr_fs_cb_number(ARG(1), "mode", 0));
+  } else if (!strcmp(op, "access")) scr_fs_access(path, scr_fs_dyn_absent(ARG(1)) ? 0 : ARG(1)->v.num);
   else if (!strcmp(op, "mkdir")) {
-    const ScrDyn *options = ARG(1);
-    double mode = options->kind == SCR_DYN_NUM ? options->v.num : scr_fs_cb_option_number(options, "mode", 0777);
-    if (scr_fs_cb_option_bool(options->kind == SCR_DYN_NUM ? scr_dyn_undefined() : options, "recursive")) scr_fs_mkdir_recursive_mode(path, mode);
-    else scr_fs_mkdir_mode(path, mode);
-  } else if (!strcmp(op, "mkdtemp")) result = scr_fs_cb_string(scr_fs_mkdtemp(path));
+    if (mkdir_recursive) {
+      /* The callback receives the first directory created (undefined when
+       * the path already existed). */
+      ScrStr *first = scr_fs_mkdir_recursive_first(path, mkdir_mode);
+      if (first && !scr_exc_pending()) result = scr_fs_cb_string(first);
+      else if (first) scr_str_release(first);
+    } else scr_fs_mkdir_mode(path, mkdir_mode);
+  } else if (!strcmp(op, "mkdtemp")) result = scr_fs_cb_string(scr_fs_mkdtemp_async(path));
   else if (!strcmp(op, "rm")) scr_fs_rm_opts_retry(path, scr_fs_cb_option_bool(ARG(1), "recursive"), scr_fs_cb_option_bool(ARG(1), "force"), scr_fs_cb_option_number(ARG(1), "maxRetries", 0), scr_fs_cb_option_number(ARG(1), "retryDelay", 100));
   else if (!strcmp(op, "rmdir")) scr_fs_rmdir(path);
   else if (!strcmp(op, "unlink")) scr_fs_unlink(path);
-  else if (!strcmp(op, "chmod")) scr_fs_chmod(path, scr_fs_cb_number(ARG(1), "mode", 0));
-  else if (!strcmp(op, "chown")) scr_fs_chown(path, scr_fs_cb_number(ARG(1), "uid", 0), scr_fs_cb_number(ARG(2), "gid", 0));
+  else if (!strcmp(op, "chmod")) scr_fs_chmod(path, chmod_mode);
+  else if (!strcmp(op, "chown")) scr_fs_chown(path, ARG(1)->v.num, ARG(2)->v.num);
+  else if (!strcmp(op, "lchown")) scr_fs_lchown(path, ARG(1)->v.num, ARG(2)->v.num);
+  else if (!strcmp(op, "fchown")) scr_fs_fchown(fd, ARG(1)->v.num, ARG(2)->v.num);
   else if (!strcmp(op, "realpath")) result = scr_fs_cb_string(scr_fs_realpath(path));
   else if (!strcmp(op, "stat") || !strcmp(op, "lstat")) result = scr_fs_cb_stats(path, -1, ARG(1), !strcmp(op, "lstat"));
   else if (!strcmp(op, "fstat")) result = scr_fs_cb_stats(NULL, fd, ARG(1), false);
@@ -850,7 +962,7 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
     buffer = ARG(1);
   }
   else if (!strcmp(op, "open")) {
-    double opened = scr_fs_cb_open(path, ARG(1), scr_fs_cb_number(ARG(2), "mode", 0666), "r");
+    double opened = scr_fs_cb_open(path, ARG(1), open_mode, "r");
     if (!scr_exc_pending()) result = scr_dyn_new_num(opened);
   } else if (!strcmp(op, "cp")) {
     if (scr_fs_cb_refuse_option(ARG(2), "filter") || scr_fs_cb_refuse_option(ARG(2), "dereference") || scr_fs_cb_refuse_option(ARG(2), "verbatimSymlinks") || scr_fs_cb_refuse_option(ARG(2), "errorOnExist") || scr_fs_cb_refuse_option(ARG(2), "mode")) goto done;
@@ -862,45 +974,69 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
       scr_dyn_release(force); scr_str_release(destination);
     }
   } else if (!strcmp(op, "glob")) {
-#if SCR_FS_HAS_GLOB
-    if (strstr(path->data, "**") || scr_fs_cb_option_bool(ARG(1), "withFileTypes")) {
-      const char *message = "Recursive glob patterns and Dirent results have no native lowering";
-      scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "SC2020");
-      goto done;
-    }
-    ScrDyn *cwd = scr_fs_cb_option(ARG(1), "cwd");
-    ScrDyn *exclude = scr_fs_cb_option(ARG(1), "exclude");
-    if (exclude && exclude->kind != SCR_DYN_UNDEF) {
-      const char *message = "fs.glob exclude options have no native lowering";
-      scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "SC2020");
+    /* Direct fs.glob calls lower to scr_fs_glob_callback (scr_glob.c); a
+     * stored fs.glob value is not supported. */
+    const char *message = "fs.glob stored as a value has no native lowering; call fs.glob directly";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "SC2020");
+  } else if (!strcmp(op, "write") && ARG(1)->kind == SCR_DYN_STR) {
+    /* write(fd, string[, position[, encoding]], callback): a non-number
+     * position writes at the current offset; the encoding defaults to
+     * utf8 (unknown names write utf8, as the binding does). */
+    const ScrDyn *string = ARG(1);
+    const ScrDyn *position = count >= 3 ? ARG(2) : scr_dyn_undefined();
+    const ScrDyn *encoding = count >= 4 ? ARG(3) : scr_dyn_undefined();
+    ScrStr *codec = encoding->kind == SCR_DYN_STR && scr_bytes_is_encoding(encoding->v.str)
+        ? scr_str_retain(encoding->v.str)
+        : scr_str_new("utf8", 4);
+    if (codec->len == 3 && memcmp(codec->data, "hex", 3) == 0 && string->v.str->len % 2 != 0) {
+      /* validateEncoding throws at the call, before any write. */
+      char reason[64];
+      snprintf(reason, sizeof reason, "is invalid for data of length %zu", (size_t)string->v.str->len);
+      scr_dyn_arg_value_fail("encoding", reason, encoding);
+      scr_str_release(codec);
+      return NULL;
     } else {
-      ScrStr *pattern = cwd && cwd->kind == SCR_DYN_STR ? scr_fs_cb_join(cwd->v.str, path->data) : scr_str_retain(path);
-      glob_t matches = {0};
-      int rc = glob(pattern->data, 0, NULL, &matches);
-      if (rc && rc != GLOB_NOMATCH) scr_fs_throw(rc == GLOB_NOSPACE ? ENOMEM : EIO, "glob", path);
-      else {
-        result = scr_dyn_new_arr();
-        size_t prefix = cwd && cwd->kind == SCR_DYN_STR ? cwd->v.str->len + 1 : 0;
-        for (size_t i = 0; i < matches.gl_pathc; i++) {
-          const char *name = matches.gl_pathv[i] + prefix;
-          scr_dyn_arr_push(result, scr_fs_cb_string(scr_str_new(name, strlen(name))));
-        }
+      ScrBytes *bytes = scr_buffer_from_dyn(string, codec);
+      if (bytes) {
+        double at = position->kind == SCR_DYN_NUM ? position->v.num : -1;
+        result = scr_dyn_new_num(scr_fs_write_sync(fd, bytes, 0, (double)bytes->len, at));
+        scr_bytes_release(bytes);
       }
-      globfree(&matches); scr_str_release(pattern);
     }
-    scr_dyn_release(cwd); scr_dyn_release(exclude);
-#else
-    scr_fs_throw(ENOSYS, "glob", path);
-#endif
+    scr_str_release(codec);
+    buffer = string;
   } else if (!strcmp(op, "read") || !strcmp(op, "write")) {
     bool readOp = !strcmp(op, "read");
     const ScrDyn *options = ARG(1);
     ScrDyn *ownedBuffer = NULL;
-    if (readOp && !scr_dyn_bytes_is(options, SCR_BYTES_U8)) { ownedBuffer = scr_fs_cb_option(options, "buffer"); buffer = ownedBuffer; }
-    else buffer = options;
+    if (readOp && !scr_dyn_bytes_is(options, SCR_BYTES_U8)) {
+      ownedBuffer = scr_fs_cb_option(options, "buffer");
+      if (ownedBuffer && ownedBuffer->kind == SCR_DYN_UNDEF) {
+        /* read(fd, cb) and read(fd, { buffer: undefined }, cb) read into
+         * a fresh 16384-byte Buffer. */
+        scr_dyn_release(ownedBuffer);
+        ScrBytes *fresh = scr_bytes_new(SCR_BYTES_U8, 16384);
+        ownedBuffer = scr_dyn_new_buffer(fresh);
+        scr_bytes_release(fresh);
+      }
+      buffer = ownedBuffer;
+    } else if (readOp && count == 3 && ARG(2)->kind != SCR_DYN_NUM && !scr_fs_dyn_absent(ARG(2))) {
+      /* read(fd, buffer, { offset, length, position }, cb) */
+      ownedBuffer = scr_dyn_retain((ScrDyn *)options);
+      options = ARG(2);
+      buffer = ownedBuffer;
+    } else buffer = options;
     ScrBytes *bytes = buffer && buffer->kind == SCR_DYN_BYTES ? scr_dyn_bytes_unbox(buffer) : NULL;
-    if (!bytes) scr_dyn_arg_type_fail("buffer", "an instance of Buffer, TypedArray, or DataView", buffer ? buffer : scr_dyn_undefined());
-    else {
+    if (!bytes) {
+      /* The argument check throws at the call (Node validates before the
+       * request is made). */
+      scr_dyn_arg_type_fail("buffer",
+                            readOp ? "an instance of Buffer, TypedArray, or DataView"
+                                   : "of type string or an instance of Buffer, TypedArray, or DataView",
+                            buffer ? buffer : scr_dyn_undefined());
+      scr_dyn_release(ownedBuffer);
+      return NULL;
+    } else {
       double offset = ownedBuffer ? scr_fs_cb_option_number(options, "offset", 0) : scr_fs_cb_number(ARG(2), "offset", 0);
       double length = ownedBuffer ? scr_fs_cb_option_number(options, "length", bytes->len - offset) : scr_fs_cb_number(ARG(3), "length", bytes->len - offset);
       double position = ownedBuffer ? scr_fs_cb_option_number(options, "position", -1) : scr_fs_cb_number(ARG(4), "position", -1);
@@ -914,7 +1050,7 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
       return scr_dyn_retain(scr_dyn_undefined());
     }
   } else if (!strcmp(op, "copyFile") || !strcmp(op, "rename")) {
-    ScrStr *destination = scr_fs_cb_path(ARG(1), "dest");
+    ScrStr *destination = scr_fs_cb_path(ARG(1), !strcmp(op, "rename") ? "newPath" : "dest");
     if (destination) {
       if (!strcmp(op, "rename")) scr_fs_rename(path, destination);
       else if (!strcmp(op, "copyFile")) {
@@ -930,8 +1066,10 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
   } else if (!strcmp(op, "truncate") || !strcmp(op, "ftruncate")) {
     double length = scr_fs_cb_number(ARG(1), "len", 0);
     if (!scr_exc_pending()) {
+      /* truncate opens the path with 'r+' first, so a missing file
+       * reports open. */
       if (descriptor) scr_fs_ftruncate(fd, length);
-      else if (truncate(path->data, (off_t)length) < 0) scr_fs_throw(errno, "truncate", path);
+      else scr_fs_truncate(path, length);
     }
   } else if (timestamp) {
     if (timestamp_fd) scr_fs_futimes(fd, access, modified);

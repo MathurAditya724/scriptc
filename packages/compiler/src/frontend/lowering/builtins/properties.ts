@@ -8,13 +8,17 @@ import {
   BOOL,
   CHILDSTREAM_T,
   CHILDWRITER_T,
+  DATE_T,
+  DIR_T,
   F64,
   FILEHANDLE_T,
   type IrExpr,
+  type IrLibFn,
   type IrType,
   STRING,
 } from "../../../ir/ir.js";
 import { storedTextCodecClassOf } from "./text-codecs.js";
+import { DIR_MEMBERS, DIR_METHODS } from "./filesystem.js";
 
 /** The property-read extensions this spoke owns, tried BEFORE the
  * lower-exprs intrinsic-property fallback (the lowerer's wrapper chains
@@ -23,6 +27,28 @@ import { storedTextCodecClassOf } from "./text-codecs.js";
  * — null for a normal exit or spawn failure; a timeout kill reports its
  * killSignal, Node's shape). Null for everything else, so the ordinary
  * chain (and its fences) keeps going. */
+
+/** Stats data members: each reads the snapshot (scr_stats_*). */
+const STATS_FIELDS: Record<string, IrLibFn> = {
+  dev: "stats.dev",
+  mode: "stats.mode",
+  nlink: "stats.nlink",
+  uid: "stats.uid",
+  gid: "stats.gid",
+  rdev: "stats.rdev",
+  blksize: "stats.blksize",
+  ino: "stats.ino",
+  blocks: "stats.blocks",
+  atimeMs: "stats.atimeMs",
+  mtimeMs: "stats.mtimeMs",
+  ctimeMs: "stats.ctimeMs",
+  birthtimeMs: "stats.birthtimeMs",
+  atime: "stats.atime",
+  mtime: "stats.mtime",
+  ctime: "stats.ctime",
+  birthtime: "stats.birthtime",
+};
+const DATE_FIELDS = new Set(["atime", "mtime", "ctime", "birthtime"]);
 export function lowerBuiltinExtraProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -111,6 +137,7 @@ export function lowerBuiltinExtraProperty(
   if (
     kind !== "stats" &&
     kind !== "fileHandle" &&
+    kind !== "dir" &&
     kind !== "spawnRes" &&
     kind !== "child" &&
     kind !== "childWriter"
@@ -141,6 +168,21 @@ export function lowerBuiltinExtraProperty(
       `FileHandle.${name}`,
       expr,
       "fd, close(), read(), write(), readFile(), writeFile(), appendFile(), and stat() are the supported FileHandle members",
+      lowerer.checker.getSymbolAtLocation(expr.name),
+    );
+  }
+  if (kind === "dir") {
+    if (name === "path") {
+      const receiver = lowerer.lowerExprExpecting(expr.expression, DIR_T);
+      return { kind: "libCall", fn: "dir.path", args: [receiver], type: STRING, loc };
+    }
+    if (DIR_METHODS.has(name)) {
+      lowerer.unsupported("SC1090", expr, `Dir methods as values (call '${name}' directly)`);
+    }
+    lowerer.noLowering(
+      `Dir.${name}`,
+      expr,
+      DIR_MEMBERS,
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }
@@ -199,26 +241,12 @@ export function lowerBuiltinExtraProperty(
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }
-  if (
-    kind === "stats" &&
-    (name === "dev" ||
-      name === "ino" ||
-      name === "blocks" ||
-      name === "nlink" ||
-      name === "atimeMs" ||
-      name === "mtimeMs" ||
-      name === "ctimeMs")
-  ) {
+  if (kind === "stats" && Object.hasOwn(STATS_FIELDS, name)) {
     const receiver = lowerer.lowerExpr(expr.expression);
-    const fn = `stats.${name}` as
-      | "stats.dev"
-      | "stats.ino"
-      | "stats.blocks"
-      | "stats.nlink"
-      | "stats.atimeMs"
-      | "stats.mtimeMs"
-      | "stats.ctimeMs";
-    return { kind: "libCall", fn, args: [receiver], type: F64, loc };
+    const fn = STATS_FIELDS[name]!;
+    // The Date fields are the *Ms values rounded, as Node's dateFromMs builds them.
+    const type = DATE_FIELDS.has(name) ? DATE_T : F64;
+    return { kind: "libCall", fn, args: [receiver], type, loc };
   }
   if (kind === "spawnRes" && name === "signal") {
     const receiver = lowerer.lowerExpr(expr.expression);

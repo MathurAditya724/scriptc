@@ -11,6 +11,7 @@ import {
   CRYPTOHASH_T,
   CRYPTOHMAC_T,
   DATE_T,
+  DIR_T,
   DGRAMSOCK_T,
   DYN,
   F64,
@@ -440,9 +441,37 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * to lstat, Node's getDirents rule). The result type is the call site's
    * interned Dirent record array (name, parentPath, hidden %dtype in
    * libuv's UV_DIRENT encoding) — verified by the frontend; the emitter
-   * assembles the rows from the snapshot. OS order, no "."/"..". Throws
+   * assembles the rows from the snapshot. Byte order on POSIX (libuv
+   * sorts), the directory's order on Windows; no "."/"..". Throws
    * Node's scandir errno error (may-throw seed set); fresh +1 array. */
   "fs.readdirTypesSync": { argTypes: [STRING], result: VOID },
+  /** fs.globSync / fs.glob / fs/promises glob (scr_glob.c, Node's
+   * lib/internal/fs/glob.js walk): pattern and options are dyn values the
+   * runtime validates in Node's order. The string forms answer string[];
+   * the Dirent forms answer the call site's Dirent record array (validated
+   * in validate.ts) assembled from the snapshot; fs.callbackGlob takes the
+   * argument vector and calls back with string[]. */
+  "fs.globSync": { argTypes: [DYN, DYN], result: arrayOf(STRING) },
+  "fs.globTypesSync": { argTypes: [DYN, DYN], result: VOID },
+  "fs.callbackGlob": { argTypes: [DYN], result: VOID },
+  "fsp.globStrings": { argTypes: [DYN, DYN], result: arrayOf(STRING) },
+  "fsp.globTypes": { argTypes: [DYN, DYN], result: VOID },
+  /** The error an fs/promises glob walk ended with (undefined when none),
+   * read once right after fsp.globStrings / fsp.globTypes. */
+  "fsp.globError": { argTypes: [], result: DYN },
+  /** fs.Dir (scr_lib.c): opendirSync(path, bufferSize) throws Node's
+   * opendir error (or the options.bufferSize RangeError); dir.readSync
+   * answers the call site's `Dirent | null` (VOID here — the emitter builds
+   * the row like readdirTypesSync) and dir.read is its promise twin;
+   * readSync and closeSync throw ERR_DIR_CLOSED on a closed Dir, read and
+   * close reject with it. */
+  "fs.opendirSync": { argTypes: [STRING, F64], result: DIR_T },
+  "fsp.opendir": { argTypes: [STRING, F64], result: { kind: "promise", inner: DIR_T } },
+  "dir.path": { argTypes: [DIR_T], result: STRING },
+  "dir.readSync": { argTypes: [DIR_T], result: VOID },
+  "dir.read": { argTypes: [DIR_T], result: { kind: "promise", inner: VOID } },
+  "dir.closeSync": { argTypes: [DIR_T], result: VOID },
+  "dir.close": { argTypes: [DIR_T], result: { kind: "promise", inner: VOID } },
   /** node:path (scr_path.c ports BOTH of Node's implementations
    * function-by-function): the `path.*` family is posix, the
    * `path.win32*` family is Node v24's path.win32 ported exactly — the
@@ -1006,6 +1035,21 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stats.atimeMs": { argTypes: [STATS_T], result: F64 },
   "stats.mtimeMs": { argTypes: [STATS_T], result: F64 },
   "stats.ctimeMs": { argTypes: [STATS_T], result: F64 },
+  "stats.birthtimeMs": { argTypes: [STATS_T], result: F64 },
+  "stats.mode": { argTypes: [STATS_T], result: F64 },
+  "stats.uid": { argTypes: [STATS_T], result: F64 },
+  "stats.gid": { argTypes: [STATS_T], result: F64 },
+  "stats.rdev": { argTypes: [STATS_T], result: F64 },
+  "stats.blksize": { argTypes: [STATS_T], result: F64 },
+  "stats.isBlockDevice": { argTypes: [STATS_T], result: BOOL },
+  "stats.isCharacterDevice": { argTypes: [STATS_T], result: BOOL },
+  "stats.isFIFO": { argTypes: [STATS_T], result: BOOL },
+  "stats.isSocket": { argTypes: [STATS_T], result: BOOL },
+  /** The Date fields: the *Ms value rounded (Node's dateFromMs). */
+  "stats.atime": { argTypes: [STATS_T], result: DATE_T },
+  "stats.mtime": { argTypes: [STATS_T], result: DATE_T },
+  "stats.ctime": { argTypes: [STATS_T], result: DATE_T },
+  "stats.birthtime": { argTypes: [STATS_T], result: DATE_T },
   // The wider sync fs slice (unlink/chmod/chown/copyfile and the
   // mode-carrying write/mkdir forms).
   /** The wider sync fs slice (scr_lib.c), all throwing catchably with
@@ -1028,6 +1072,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fs.unlinkSync": { argTypes: [STRING], result: VOID },
   "fs.chmodSync": { argTypes: [STRING, F64], result: VOID },
   "fs.chownSync": { argTypes: [STRING, F64, F64], result: VOID },
+  "fs.lchownSync": { argTypes: [STRING, F64, F64], result: VOID },
+  "fs.fchownSync": { argTypes: [F64, F64, F64], result: VOID },
+  /** truncateSync opens the path with 'r+', then truncates (len checked and
+   * clamped like ftruncateSync's) and closes it. */
+  "fs.truncateSync": { argTypes: [STRING, F64], result: VOID },
   "fs.copyFileSync": { argTypes: [STRING, STRING], result: VOID },
   /** renameSync is the direct two-path syscall wrapper. renameCb defers
    * the operation to the loop and fires a program-shaped Error | null
@@ -1136,6 +1185,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   },
   "net.serverPort": { argTypes: [NETSERVER_T], result: F64 },
   "net.serverListening": { argTypes: [NETSERVER_T], result: BOOL },
+  /** socket.ref()/unref() and server.ref()/unref(): whether the handle
+   * keeps the event loop alive. */
+  "net.sockSetRef": { argTypes: [NETSOCKET_T, BOOL], result: VOID },
+  "net.serverSetRef": { argTypes: [NETSERVER_T, BOOL], result: VOID },
   // net.serverAddress's record result is shape-checked in the libCall case
   // (the dgram.address sentinel pattern).
   /** server.address() as the full AddressInfo record (the dgram.address
@@ -2270,7 +2323,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.hashDigestDyn": { argTypes: [CRYPTOHASH_T, DYN], result: DYN },
   "crypto.hmacDigestDyn": { argTypes: [CRYPTOHMAC_T, DYN], result: DYN },
   "crypto.hashOneshot": { argTypes: [STRING, DYN, DYN], result: DYN },
-  "crypto.timingSafeEqual": { argTypes: [BYTES_U8, BYTES_U8], result: BOOL },
+  /** Views of any element kind (the validator checks both are views). */
+  "crypto.timingSafeEqual": { argTypes: [null, null], result: BOOL },
+  "crypto.timingSafeEqualDyn": { argTypes: [DYN, DYN], result: BOOL },
   "crypto.randomFill": { argTypes: [BYTES_U8, F64, F64], result: BYTES_U8 },
   "crypto.randomFillRest": { argTypes: [BYTES_U8, F64], result: BYTES_U8 },
   "crypto.randomInt": { argTypes: [F64, F64], result: F64 },
@@ -2287,6 +2342,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.randomFillCbDyn": { argTypes: [DYN, DYN, DYN, F64, null], result: VOID },
   "crypto.randomIntCb": { argTypes: [F64, F64, F64, null], result: VOID },
   "crypto.randomUUIDOpts": { argTypes: [DYN], result: STRING },
+  /** Secret KeyObjects: native handles whose getters and methods dispatch
+   * through the handle. keyObjectInput reads a key's bytes for hkdf. */
+  "crypto.createSecretKey": { argTypes: [DYN, DYN], result: DYN },
+  "crypto.generateKeySync": { argTypes: [DYN, DYN], result: DYN },
+  "crypto.generateKeyCb": { argTypes: [DYN, DYN, null], result: VOID },
+  "crypto.keyObjectInput": { argTypes: [DYN], result: BYTES_U8 },
+  "crypto.isKeyObject": { argTypes: [DYN], result: BOOL },
   "crypto.randomUUIDv7": { argTypes: [DYN], result: STRING },
   "crypto.pbkdf2": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING], result: BYTES_U8 },
   "crypto.randomBytesCb": { argTypes: [F64, null], result: VOID },
@@ -2446,6 +2508,17 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fsp.mkdirRecursiveMode": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
   "fsp.unlink": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
   "fsp.chmod": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
+  "fsp.chown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
+  "fsp.lchown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
+  "fsp.access": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
+  "fsp.truncate": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
+  "fsp.appendFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
+  "fsp.appendFileBytes": { argTypes: [STRING, BYTES_U8], result: { kind: "promise", inner: VOID } },
+  "fsp.copyFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
+  "fsp.mkdtemp": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
+  /** readFile(path, encoding | { encoding }) for any runtime encoding name. */
+  "fsp.readFileEncoded": { argTypes: [STRING, STRING], result: { kind: "promise", inner: STRING } },
+  "fsp.rmdir": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
   "fsp.link": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
   "fsp.symlink": { argTypes: [DYN, DYN, DYN], result: { kind: "promise", inner: VOID } },
   "fsp.readlink": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },

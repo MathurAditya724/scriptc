@@ -2329,8 +2329,11 @@ int scr_promise_finish_top_level(ScrPromise *p) {
   if (p->state == SCR_PROM_PENDING) {
     /* ECMAScript module evaluation is still pending, but Node's ref'd
      * event-loop work is exhausted. Node exits with its dedicated
-     * unsettled-top-level-await status. */
-    scr_exit_code_note(13);
+     * unsettled-top-level-await status unless the program set a nonzero
+     * process.exitCode (`process.exitCode || 13`). Uncaught errors and
+     * reported rejections leave through other exits, so a nonzero hint
+     * here is the program's own. */
+    if (scr_exit_code_hint_get() == 0) scr_exit_code_note(13);
     return 13;
   }
   scr_prom_observe(p);
@@ -2505,6 +2508,56 @@ ScrPromise *scr_fsp_chmod(ScrStr *path, double mode) {
   return scr_promise_settled_void();
 }
 
+ScrPromise *scr_fsp_chown(ScrStr *path, double uid, double gid) {
+  scr_fs_chown(path, uid, gid);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_lchown(ScrStr *path, double uid, double gid) {
+  scr_fs_lchown(path, uid, gid);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_access(ScrStr *path, double mode) {
+  scr_fs_access(path, mode);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_append_file(ScrStr *path, ScrStr *data) {
+  scr_fs_append_file(path, data);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_append_file_bytes(ScrStr *path, ScrBytes *data) {
+  scr_fs_append_file_bytes(path, data);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_copyfile(ScrStr *src, ScrStr *dest) {
+  scr_fs_copyfile(src, dest);
+  return scr_promise_settled_void();
+}
+
+/* readFile(path, encoding | { encoding }): the encoding is checked first,
+ * so an unknown name rejects before the read. */
+ScrPromise *scr_fsp_read_file_encoded(ScrStr *path, ScrStr *encoding) {
+  return scr_promise_settled_str(scr_fs_read_file_encoded(path, encoding));
+}
+
+ScrPromise *scr_fsp_mkdtemp(ScrStr *prefix) {
+  return scr_promise_settled_str(scr_fs_mkdtemp_async(prefix));
+}
+
+ScrPromise *scr_fsp_rmdir(ScrStr *path) {
+  scr_fs_rmdir(path);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_truncate(ScrStr *path, double length) {
+  scr_fs_truncate(path, length);
+  return scr_promise_settled_void();
+}
+
 ScrPromise *scr_fsp_utimes(const ScrDyn *path, const ScrDyn *atime, const ScrDyn *mtime) {
   scr_fs_utimes_checked(path, atime, mtime);
   return scr_promise_settled_void();
@@ -2571,6 +2624,17 @@ ScrPromise *scr_fsp_realpath(ScrStr *path) {
 ScrPromise *scr_fsp_lstat(ScrStr *path) {
   ScrStats *st = scr_fs_lstat(path);
   return scr_promise_settled_ref(st, &scr_stats_retain_v, &scr_stats_release_v, NULL);
+}
+
+ScrPromise *scr_fsp_opendir(ScrStr *path, double buffer_size) {
+  ScrDir *d = scr_fs_opendir(path, buffer_size);
+  return scr_promise_settled_ref(d, &scr_dir_retain_v, &scr_dir_release_v, NULL);
+}
+
+/* dir.close(): a closed Dir rejects with ERR_DIR_CLOSED. */
+ScrPromise *scr_dir_close_promise(ScrDir *d) {
+  scr_dir_close(d);
+  return scr_promise_settled_void();
 }
 
 ScrPromise *scr_fsp_rename(ScrStr *oldpath, ScrStr *newpath) {
@@ -3340,6 +3404,12 @@ static SCR_TL bool (*scr_net_pending_fn)(void) = NULL;
 static SCR_TL void (*scr_net_dispatch_fn)(void) = NULL;
 static SCR_TL int (*scr_net_pollfd_fn)(void) = NULL;
 
+/* Net io without liveness: unref'd sockets and servers still deliver
+ * events while the loop runs for other work, but do not keep it alive. */
+static SCR_TL bool (*scr_net_io_fn)(void) = NULL;
+
+void scr_loop_set_net_io(bool (*io)(void)) { scr_net_io_fn = io; }
+
 void scr_loop_set_net(bool (*pending)(void), void (*dispatch)(void), int (*pollfd)(void)) {
   scr_net_pending_fn = pending;
   scr_net_dispatch_fn = dispatch;
@@ -3621,6 +3691,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     bool kids = scr_children_pending();
     bool events = scr_events_pending_fn != NULL && scr_events_pending_fn();
     bool net = scr_net_pending_fn != NULL && scr_net_pending_fn();
+    /* `net` keeps the process alive; `net_io` (unref'd handles too) decides
+     * whether the sleep polls the net unit's fd */
+    bool net_io = net || (scr_net_io_fn != NULL && scr_net_io_fn());
     bool dgram = scr_dgram_pending_fn != NULL && scr_dgram_pending_fn();
     bool watch = scr_watch_pending_fn != NULL && scr_watch_pending_fn();
     bool ffi = scr_ffi_pending_fn != NULL && scr_ffi_pending_fn();
@@ -3674,12 +3747,12 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #endif
     bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
 #ifdef SCR_WORKERS
-    if (workers && scr_workers_wait_fn && !kids && !evw && !net && !dgram && !watch && !ffi && !renames && !crypto) {
+    if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {
       scr_workers_wait_fn(due > now ? due - now : 0);
       now = scr_now_ms();
     } else
 #endif
-    if (evw || net || dgram || watch || ffi || workers) {
+    if (evw || net_io || dgram || watch || ffi || workers) {
 #if defined(_WIN32) || defined(__wasi__)
       /* The win32 arm, and WASI hosts whose poll_oneoff adapters do not
        * reliably wake for a closed inherited stdin pipe: the sleep is a capped nanosleep and
@@ -3693,7 +3766,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
        * show up in a profile, the upgrade is a real waitable arm —
        * WaitForMultipleObjects over WSAEVENTs, or IOCP. */
       if (evw && due > now + SCR_SIGNAL_POLL_MS) due = now + SCR_SIGNAL_POLL_MS;
-      if ((net || dgram || watch) && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
+      if ((net_io || dgram || watch) && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
       if ((ffi || workers) && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
       if (kids && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
       if (due > now) {
@@ -3720,7 +3793,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         fds[nfds].events = POLLIN;
         fds[nfds++].revents = 0;
       }
-      if (net) {
+      if (net_io) {
         /* The net unit's poller fd: readable while socket events are
          * pending, so arrived data/accepts end the sleep immediately.
          * Dispatch (which also DRAINS the poller) happens at the next

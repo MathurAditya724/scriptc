@@ -741,6 +741,8 @@ export function formatIrType(
         return append("Stats");
       case "fileHandle":
         return append("FileHandle");
+      case "dir":
+        return append("Dir");
       case "spawnRes":
         return append("SpawnSyncReturns");
       case "child":
@@ -2189,6 +2191,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (!elem) return null;
     return genResultRecord(elem, VOID, ctx.shapes, ctx.unions);
   }
+  // node:crypto's KeyObject: secret keys are native handles (scr_lib.c)
+  // whose getters and methods dispatch through the handle. The JsonWebKey
+  // that export() returns is a plain checked-dynamic object.
+  if (
+    (psym?.name === "KeyObject" || psym?.name === "JsonWebKey") &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
+          ctx.isStdlibFile(d.getSourceFile()),
+      )
+  ) {
+    return DYN;
+  }
   if (
     psym &&
     (FETCH_AMBIENT_TYPES as readonly string[]).includes(psym.name) &&
@@ -2432,6 +2449,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       )
   ) {
     return { kind: "fileHandle" };
+  }
+  // fs.Dir: an open directory stream, declared in "fs" by both the
+  // fallback and @types/node.
+  if (
+    psym?.name === "Dir" &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          isDeclaredInAmbientModule(d, "fs"),
+      )
+  ) {
+    return { kind: "dir" };
   }
   // child_process.SpawnSyncReturns: @types/node's generic interface (the
   // Buffer/string split is re-checked at the stdout/stderr READ — status
@@ -3094,10 +3126,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // hidden %dtype field carries the entry kind (libuv's UV_DIRENT
   // encoding) that the isFile/isDirectory/isSymbolicLink call lowerings
   // read (lowerDirentMethodCall — the StringDecoder pattern, so the
-  // %-field never surfaces through the lowered Dirent surface itself;
-  // JSON.stringify of a Dirent would show it — the documented
-  // internal-shape edge). @types/node declares Dirent<Name> generic over
-  // the name's encoding — only the string instantiation maps (the
+  // %-field never surfaces through the lowered Dirent surface itself).
+  // A row converted to dyn takes Node's Dirent prototype and Symbol(type)
+  // key, with %dtype non-enumerable (scr_dyn_dirent_finish), and inspect
+  // renders rows through that view. @types/node declares Dirent<Name>
+  // generic over the name's encoding — only the string instantiation maps (the
   // encoding:'buffer' readdir form has no lowering); the shipped fallback
   // declares it concrete (an interface; @types/node uses a class — both
   // provenance-checked, the Buffer/URL pattern).

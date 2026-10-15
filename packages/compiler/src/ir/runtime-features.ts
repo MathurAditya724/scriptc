@@ -1,6 +1,7 @@
 import type { IrExpr, IrModule, IrType } from "./ir.js";
 import type { IrLibFn } from "./builtin-signatures.js";
 import {
+  isDirentShape,
   RUNTIME_EMITTER_CLASS,
   RUNTIME_EVENT_CLASS,
   RUNTIME_EVENT_TARGET_CLASS,
@@ -43,6 +44,7 @@ export interface RuntimeFeatures {
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.callbackValue",
   "fs.callbackCall",
+  "fs.callbackGlob",
   "async.awaitDyn",
   "timers.immediatePromise",
   "crypto.native",
@@ -149,7 +151,9 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     inspect: false,
     childProcess: false,
     net: false,
-    symbol: false,
+    // A Dirent row converted to dyn carries Node's Symbol(type) key
+    // (scr_dyn_dirent_finish, defined in scr_symbol.c).
+    symbol: (mod.records ?? []).some(isDirentShape),
     bigint: false,
     searchParams: false,
     qs: false,
@@ -171,7 +175,14 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn === "dyn.nativeRegexIs" ||
         fn === "util.stripVTControlCharacters" ||
         fn === "path.matchesGlob" ||
-        fn === "path.win32MatchesGlob"
+        fn === "path.win32MatchesGlob" ||
+        // fs.glob's walk compiles its patterns with the glob matcher.
+        fn === "fs.globSync" ||
+        fn === "fs.globTypesSync" ||
+        fn === "fs.callbackGlob" ||
+        fn === "fsp.globStrings" ||
+        fn === "fsp.globTypes" ||
+        fn === "fsp.globError"
       )
         features.regex = true;
       if (

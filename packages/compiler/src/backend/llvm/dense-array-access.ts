@@ -17,7 +17,7 @@
  * whose writes extend the bound when they continue it. */
 
 import { isRefCounted, type IrExpr, type IrType } from "../../ir/ir.js";
-import { f64Lit, SCR_ARR_FIELD } from "./common.js";
+import { f64Lit, SCR_ARR_FIELD, sizeToDouble } from "./common.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
 
@@ -27,7 +27,7 @@ const SCR_ARR_VALUE = 1;
  * module-visible memory, or trap without returning to the caller (the trap
  * writes runtime-private stderr/TLS state). Declaring this lets LLVM keep
  * array header loads out of loops whose only calls are these cold paths. */
-const READ_FALLBACK = " cold memory(read, inaccessiblemem: readwrite)";
+export const READ_FALLBACK = " cold memory(read, inaccessiblemem: readwrite)";
 
 interface DenseGuard {
   /** The checked dense offset, in the target's size type. */
@@ -538,7 +538,7 @@ export function emitDenseArrayPush(
   B.line(`${nextFilled} = add i32 ${filled}, 1`);
   B.line(`${bumped} = select i1 ${packed}, i32 ${nextFilled}, i32 ${filled}`);
   B.line(`store i32 ${bumped}, ptr ${filledPtr}${host.fieldAliasAttachment(filledPtr)}`);
-  B.line(`${fastValue} = sitofp ${size} ${next} to double`);
+  B.line(`${fastValue} = ${sizeToDouble(size)} ${size} ${next} to double`);
   B.br(join);
   B.startBlock(slow);
   const slowValue = B.tmp();

@@ -365,6 +365,7 @@ struct ScrNetServer {
   int fd; /* -1 while not listening */
   int port;
   bool listening;
+  bool unrefd;        /* server.unref(): does not keep the loop alive */
   bool closing;       /* close() called; 'close' fires when conns drain */
   bool close_emitted; /* settled: off the registry, listeners dropped */
   bool emit_listening;
@@ -420,6 +421,7 @@ struct ScrNetSocket {
   int kind; /* FIRST: poller udata routes on it */
   size_t rc;
   int fd; /* -1 once closed */
+  bool unrefd; /* socket.unref(): does not keep the loop alive */
   bool connecting;
   bool rd_eof;    /* peer FIN seen (or read half abandoned) */
   bool enc_utf8;  /* setEncoding('utf8'): 'data' delivers strings */
@@ -3039,10 +3041,23 @@ static void scr_net_sweep(void) {
 
 /* ── the loop hooks (scr_async.c) ────────────────────────────────────── */
 
+/* Loop liveness: a ref'd server or socket, or pending protocol work. */
 static bool scr_net_pending(void) {
-  if (scr_net_servers != NULL || scr_net_socks != NULL) return true;
+  for (ScrNetServer *srv = scr_net_servers; srv; srv = srv->next)
+    if (!srv->unrefd) return true;
+  for (ScrNetSocket *sock = scr_net_socks; sock; sock = sock->next)
+    if (!sock->unrefd) return true;
   return scr_net_proto_pending();
 }
+
+/* Any handle, ref'd or not: the loop polls the net fd while it runs. */
+static bool scr_net_io(void) { return scr_net_servers != NULL || scr_net_socks != NULL; }
+
+/* socket.ref() / socket.unref() and the server pair: whether the handle
+ * keeps the event loop alive (Node's default is ref'd). */
+void scr_net_sock_set_ref(ScrNetSocket *s, bool ref) { s->unrefd = !ref; }
+void scr_net_server_set_ref(ScrNetServer *s, bool ref) { s->unrefd = !ref; }
+bool scr_net_sock_has_ref(ScrNetSocket *s) { return !s->unrefd; }
 
 static int scr_net_pollfd(void) {
   return scr_net_poller != NULL ? scrp_poller_fd(scr_net_poller) : -1;
@@ -3203,6 +3218,7 @@ void scr_net_install(void) {
   installed = true;
   scr_atexit(scr_net_cleanup_atexit);
   scr_loop_set_net(&scr_net_pending, &scr_net_dispatch, &scr_net_pollfd);
+  scr_loop_set_net_io(&scr_net_io);
 }
 
 /* ── checked-dynamic handle dispatch (SCR_DYNH_NET_SOCKET ops) ─────────
@@ -3385,13 +3401,17 @@ static ScrDyn *scr_net_dynh_sock_invoke(void *h, ScrDyn *self, const char *metho
     scr_str_release(str);
     return d;
   }
+  if (strcmp(method, "ref") == 0 || strcmp(method, "unref") == 0) {
+    scr_net_sock_set_ref(s, method[0] == 'r');
+    return scr_dyn_retain(self);
+  }
   if (scr_net_dynh_tls != NULL) {
     ScrDyn *out = NULL;
     if (scr_net_dynh_tls->invoke(s, method, args, argc, &out)) return out;
   }
   {
     static const char *const known[] = { "connect", "setKeepAlive",
-      "address", "ref", "unref", "cork", "uncork", "read", "unpipe",
+      "address", "cork", "uncork", "read", "unpipe",
       "off", "removeListener", "removeAllListeners", "emit", "prependListener",
       "prependOnceListener", "listenerCount", "listeners", "resetAndDestroy", NULL };
     for (size_t i = 0; known[i]; i++) {
@@ -3619,6 +3639,10 @@ static ScrDyn *scr_net_dynh_srv_invoke(void *h, ScrDyn *self, const char *method
     scr_dyn_arg_type_fail("socket", "an instance of Socket", sockd);
     return NULL;
   }
+  if (strcmp(method, "ref") == 0 || strcmp(method, "unref") == 0) {
+    scr_net_server_set_ref((ScrNetServer *)h, method[0] == 'r');
+    return scr_dyn_retain(self);
+  }
   if (strcmp(method, "toString") == 0) {
     ScrStr *str = scr_str_new("[object Object]", 15);
     ScrDyn *d = scr_dyn_new_str(str);
@@ -3626,7 +3650,7 @@ static ScrDyn *scr_net_dynh_srv_invoke(void *h, ScrDyn *self, const char *method
     return d;
   }
   {
-    static const char *const known[] = { "ref", "unref", "setTimeout", "getConnections",
+    static const char *const known[] = { "setTimeout", "getConnections",
       "off", "removeListener", "removeAllListeners", "emit", "prependListener",
       "prependOnceListener", "listenerCount", "listeners", "closeAllConnections",
       "closeIdleConnections", NULL };
