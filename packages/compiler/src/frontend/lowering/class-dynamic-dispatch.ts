@@ -1604,6 +1604,9 @@ export class ClassDynamicDispatch {
                       ]
                     : [{ kind: "return", value: fallback, loc }],
                 loc,
+                ...(numericKey && computedRead && !reflect && !dynamicKey
+                  ? { fastRead: "index" as const }
+                  : {}),
               };
               if (dynamicKey)
                 helper.body.unshift(
