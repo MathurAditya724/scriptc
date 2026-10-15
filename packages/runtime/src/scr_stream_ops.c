@@ -78,7 +78,7 @@ static void op_sentinels_init(void) {
   if (op_k_empty) return;
   op_k_empty = scr_dyn_new_obj();
   op_k_eof = scr_dyn_new_obj();
-  op_k_done = scr_dyn_new_obj();
+  op_k_done = scr_stream_from_done(); /* shared with pumpToNode (scr_stream.c) */
   scr_atexit(op_sentinels_free);
 }
 
@@ -1726,10 +1726,6 @@ ScrStream *scr_stream_from_async_gen(ScrGen *g, ScrClosure *next, ScrClosure *re
   return op_from_compiled(FROM_ASYNC, g, next, read, ret, thr, flags, hwm);
 }
 
-ScrDyn *scr_stream_from_done(void) {
-  op_sentinels_init();
-  return scr_dyn_retain(op_k_done);
-}
 
 /* ── the promise operators ─────────────────────────────────────────── */
 

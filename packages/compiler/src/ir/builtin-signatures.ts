@@ -3207,6 +3207,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stream.finishedDyn": { argTypes: [null, DYN], result: VOID },
   "stream.pipeline": { argTypes: [F64], result: VOID },
   "stream.pipelineDyn": { argTypes: [F64], result: VOID },
+  "stream.pipelineStages": { argTypes: [F64, F64, F64], result: VOID },
+  "stream.pipelineStagesDyn": { argTypes: [F64, F64, F64], result: VOID },
   /** stream.compose(count, s1..sn): the Duplex over a pipeline of the
    * streams (+1). MAY THROW (ERR_INVALID_ARG_VALUE for a stream that is
    * no longer readable or writable). */
@@ -3237,6 +3239,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stream.finishedOpts": { argTypes: [null, F64, F64, BOOL, null], result: VOID },
   "stream.finishedOptsSignal": { argTypes: [null, F64, F64, BOOL, DYN, null], result: VOID },
   "sp.pipeline": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
+  /** pipeline with a run of async generator stages: [n, at, k, s1..sn,
+   * stage1..stagek, next, read, return] (+ the callback for the stream.*
+   * forms): the user's stage functions, then the frontend's helpers over
+   * the last stage's generator (scr_stream_pipeline_stages). */
+  "sp.pipelineStages": { argTypes: [F64, F64, F64], result: { kind: "promise", inner: VOID } },
   /** node:stream/consumers — the promise consumers over the readable
    * machinery: (s) → a pending promise settled at the terminal point
    * with the accumulated result (sc.text: the utf8 decode, sc.json: the

@@ -7849,7 +7849,9 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     !!stmt.awaitModifier && lowerer.mapTypeOf(lowerer.typeOf(stmt.expression))?.kind === "array";
   if (stmt.awaitModifier && !awaitArray) {
     {
-      const genT = lowerer.mapTypeOf(lowerer.typeOf(stmt.expression));
+      const genT =
+        lowerer.stageSourceType(stmt.expression) ??
+        lowerer.mapTypeOf(lowerer.typeOf(stmt.expression));
       if (genT?.kind === "generator" && genT.async) {
         const iterable = lowerer.lowerExpr(stmt.expression);
         if (iterable.type.kind === "generator" && iterable.type.async) {
