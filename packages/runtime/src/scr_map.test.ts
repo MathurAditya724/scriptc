@@ -38,6 +38,7 @@ test("number-key maps keep Map semantics across linear, direct and hashed indexe
         "scr_cycle.c",
         "scr_alloc.c",
         "scr_lib.c",
+        "scr_hash.c",
         "scr_bytes.c",
         "scr_shared.c",
         "scr_bigint.c",

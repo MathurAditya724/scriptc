@@ -46,6 +46,7 @@ test("scr_string_to_number and scr_parse_float match Node on committed oracle ca
     join(testDir, "../src/scr_bytes.c"),
     join(testDir, "../src/scr_shared.c"),
     join(testDir, "../src/scr_lib.c"),
+    join(testDir, "../src/scr_hash.c"),
     join(testDir, "../src/scr_console.c"),
     join(testDir, "../src/scr_path.c"),
     join(testDir, "../src/scr_url.c"),

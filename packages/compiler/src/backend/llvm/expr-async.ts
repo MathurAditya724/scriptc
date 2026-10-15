@@ -373,6 +373,14 @@ export function emitSerializationExpr(
           return fusedOut;
         }
       }
+      if (e.exact && isDynTypedRefType(e.type)) {
+        const object = host.emitExactCapsuleObject(e.value, e.type);
+        const retained = B.tmp();
+        B.line(
+          `${retained} = call ptr ${vAdapters(host.shapeHost, e.type).retain}(ptr ${object.name})`,
+        );
+        return host.own({ name: retained, type: e.type });
+      }
       const dynV = emitBorrowedInput(host, e.value);
       const helper = host.dyn.dynCheckHelper(e.type, e.preserveRefs);
       if (isDynTypedRefType(e.type)) return emitClassCheck(host, e.type, dynV.name, helper);

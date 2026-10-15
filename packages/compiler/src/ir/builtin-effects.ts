@@ -94,6 +94,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "event.targetCall",
   "event.targetDispatch",
   "event.call",
+  "blob.new",
+  "blob.fileNew",
+  "blob.slice",
   "events.addAbortListener",
   "fetch.streamNew",
   "fetch.streamFrom",
@@ -460,6 +463,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.seal",
   "dyn.isSealed",
   "dyn.objValues",
+  "dyn.objValueList",
   "dyn.objEntries",
   "error.domClone",
   // new RegExp compiles the pattern eagerly: an invalid pattern or flag

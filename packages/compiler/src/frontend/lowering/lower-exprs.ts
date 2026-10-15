@@ -5,6 +5,7 @@ import { lowerEventStaticProperty } from "./builtins/numbers.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
+import { lowerBlobInstanceof } from "./builtins/blob.js";
 import { threadsImportOf } from "../threads-import.js";
 import { experimentalImportOf, lifetimeRegionMemberOf } from "../experimental-import.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
@@ -11723,6 +11724,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       const kind: IrExpr = { kind: "numLit", value: eventKind, type: F64, loc };
       return { kind: "libCall", fn: "event.is", args: [value, kind], type: BOOL, loc };
     }
+  }
+  {
+    const blob = lowerBlobInstanceof(lowerer, expr);
+    if (blob) return blob;
   }
   if (lowerer.isStdlibGlobal(expr.right, "SharedArrayBuffer")) {
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);

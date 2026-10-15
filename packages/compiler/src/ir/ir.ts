@@ -1591,6 +1591,9 @@ export interface IrParam {
   localId: string;
   name: string;
   type: IrType;
+  /** Callers pass an owned reference, which the body holds for its whole
+   * run, even when the parameter is never rebound. */
+  owned?: true;
 }
 
 export interface IrGlobal {
@@ -3509,7 +3512,17 @@ export type IrExpr =
    * corrupting memory). `preserveRefs` refuses structural copies of native
    * references, including references nested in newly materialized arrays or
    * tuples; collection seeds use it to preserve key identity. */
-  | { kind: "dynCheck"; value: IrExpr; preserveRefs?: true; type: IrType; loc: SrcLoc };
+  /** `exact`: the value is known to be a capsule this program boxed from
+   * exactly the class `type` names (a `dyn.typedRefKeyIs` test guards the
+   * expression), so the check is one load of the capsule's instance. */
+  | {
+      kind: "dynCheck";
+      value: IrExpr;
+      preserveRefs?: true;
+      exact?: true;
+      type: IrType;
+      loc: SrcLoc;
+    };
 
 /** True when a type is a union with an undefined arm — the optional-flavored
  * slot marker shared by the frontend (record literals may omit such fields)

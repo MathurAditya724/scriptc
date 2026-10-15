@@ -29,6 +29,7 @@ beforeAll(async () => {
     bin,
     join(testDir, "test_lib.c"),
     join(testDir, "../src/scr_lib.c"),
+    join(testDir, "../src/scr_hash.c"),
     join(testDir, "../src/scr_url.c"),
     join(testDir, "../src/scr_url_params.c"),
     join(testDir, "../src/scr_path.c"),

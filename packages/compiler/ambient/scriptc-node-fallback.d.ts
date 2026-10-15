@@ -871,6 +871,44 @@ declare var Response: {
   json(data: unknown, init?: ResponseInit): Response;
   redirect(url: string | URL, status?: number): Response;
 };
+/* Blob and File (node:buffer, also globals): immutable bytes with a
+ * content type. Sources are copied when the Blob is built. */
+interface BlobPropertyBag {
+  endings?: "transparent" | "native";
+  type?: string;
+}
+interface FilePropertyBag extends BlobPropertyBag {
+  lastModified?: number;
+}
+interface Blob {
+  readonly size: number;
+  readonly type: string;
+  slice(start?: number, end?: number, contentType?: string): Blob;
+  text(): Promise<string>;
+  arrayBuffer(): Promise<ArrayBuffer>;
+  bytes(): Promise<Uint8Array>;
+  stream(): ReadableStream<Uint8Array>;
+  textStream(): ReadableStream<string>;
+}
+declare var Blob: {
+  new (
+    sources?: readonly (string | ArrayBuffer | ArrayBufferView | Blob)[],
+    options?: BlobPropertyBag,
+  ): Blob;
+  readonly prototype: Blob;
+};
+interface File extends Blob {
+  readonly name: string;
+  readonly lastModified: number;
+}
+declare var File: {
+  new (
+    sources: readonly (string | ArrayBuffer | ArrayBufferView | Blob)[],
+    fileName: string,
+    options?: FilePropertyBag,
+  ): File;
+  readonly prototype: File;
+};
 interface Request {
   readonly method: string;
   readonly url: string;
@@ -4971,6 +5009,10 @@ declare module "buffer" {
   export const kMaxLength: number;
   export const kStringMaxLength: number;
   export const Buffer: BufferConstructor;
+  export type Blob = globalThis.Blob;
+  export type File = globalThis.File;
+  export const Blob: typeof globalThis.Blob;
+  export const File: typeof globalThis.File;
 }
 declare module "node:buffer" {
   export * from "buffer";
@@ -5538,8 +5580,8 @@ declare module "stream/consumers" {
    * with the parse's SyntaxError), buffer (the concatenated bytes;
    * string chunks contribute their utf8 bytes, Node's Blob rule).
    * Stream errors reject; an early close rejects with
-   * ERR_STREAM_PREMATURE_CLOSE. arrayBuffer and blob fence per site:
-   * neither value has a representation in a compiled binary. */
+   * ERR_STREAM_PREMATURE_CLOSE. arrayBuffer answers an ArrayBuffer over
+   * the bytes; blob fences per site. */
   function text(stream: unknown): Promise<string>;
   function json(stream: unknown): Promise<unknown>;
   function buffer(stream: unknown): Promise<Buffer>;

@@ -148,18 +148,10 @@ function cryptoEncoding(lowerer: Lowerer, node: ts.Expression, use: string): IrE
   return lowerer.lowerExprExpecting(node, STRING);
 }
 
-function cryptoAlgorithm(lowerer: Lowerer, node: ts.Expression, use: string): IrExpr {
-  const type = lowerer.typeOf(node);
-  if (
-    type.isStringLiteralType() &&
-    !["md5", "sha1", "sha224", "sha256", "sha384", "sha512"].includes(type.value.toLowerCase())
-  ) {
-    lowerer.noLowering(
-      `${use} with algorithm '${type.value}'`,
-      node,
-      "md5, sha1, sha224, sha256, sha384, and sha512 are the lowered digest algorithms",
-    );
-  }
+/** A digest name. The runtime resolves every name and alias Node 24
+ * accepts and throws Node's error for the others, so literals are not
+ * checked here. */
+function cryptoAlgorithm(lowerer: Lowerer, node: ts.Expression): IrExpr {
   return lowerer.lowerExprExpecting(node, STRING);
 }
 
@@ -230,7 +222,7 @@ export function lowerCryptoModuleCall(
         lowerBuiltinByteInput(lowerer, args[1]!, locOf(args[1]!), "crypto"),
         lowerer.lowerExprExpecting(args[2]!, F64),
         lowerer.lowerExprExpecting(args[3]!, F64),
-        cryptoAlgorithm(lowerer, args[4]!, "crypto.pbkdf2"),
+        cryptoAlgorithm(lowerer, args[4]!),
         errorFirstBytesCallback(lowerer, args[5]!, "crypto"),
       ],
       type: VOID,
@@ -242,7 +234,7 @@ export function lowerCryptoModuleCall(
     if (args.length !== (async ? 6 : 5))
       lowerer.noLowering(`crypto.${bi.member} with ${args.length} arguments`, expr);
     const values = [
-      cryptoAlgorithm(lowerer, args[0]!, `crypto.${bi.member}`),
+      cryptoAlgorithm(lowerer, args[0]!),
       cryptoKdfInput(lowerer, args[1]!),
       cryptoKdfInput(lowerer, args[2]!),
       cryptoKdfInput(lowerer, args[3]!),
@@ -294,7 +286,7 @@ export function lowerCryptoModuleCall(
     return {
       kind: "libCall",
       fn: "crypto.hashNew",
-      args: [cryptoAlgorithm(lowerer, args[0]!, "crypto.createHash")],
+      args: [cryptoAlgorithm(lowerer, args[0]!)],
       type: CRYPTOHASH_T,
       loc,
     };
@@ -307,7 +299,7 @@ export function lowerCryptoModuleCall(
         "createHmac(algorithm, stringOrBufferKey) is supported; options and KeyObject keys are not yet lowered",
       );
     }
-    const algorithm = cryptoAlgorithm(lowerer, args[0]!, "crypto.createHmac");
+    const algorithm = cryptoAlgorithm(lowerer, args[0]!);
     const key = lowerer.lowerExpr(args[1]!);
     if (key.type.kind === "string") {
       return {
@@ -341,7 +333,7 @@ export function lowerCryptoModuleCall(
         'hash(algorithm, stringOrBuffer[, "hex" | "base64"]) is supported',
       );
     }
-    const algorithm = cryptoAlgorithm(lowerer, args[0]!, "crypto.hash");
+    const algorithm = cryptoAlgorithm(lowerer, args[0]!);
     const data = lowerer.lowerExpr(args[1]!);
     const encoding = args[2]
       ? cryptoEncoding(lowerer, args[2]!, "crypto.hash")
@@ -447,7 +439,7 @@ export function lowerCryptoModuleCall(
         salt,
         lowerer.lowerExprExpecting(args[2]!, F64),
         lowerer.lowerExprExpecting(args[3]!, F64),
-        cryptoAlgorithm(lowerer, args[4]!, "crypto.pbkdf2Sync"),
+        cryptoAlgorithm(lowerer, args[4]!),
       ],
       type: BYTES_U8,
       loc,

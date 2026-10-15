@@ -1,5 +1,5 @@
 import { emitBigIntWrap } from "./bigint-wrap.js";
-import { emitBorrowedInput } from "./borrowed-inputs.js";
+import { emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { borrowsIteratorInputs, borrowsJsonInputs } from "./checked-value-lifetimes.js";
 import { emitTlsLibCall } from "./lib-tls.js";
 import { emitHttp2LibCall } from "./lib-http2.js";
@@ -353,11 +353,13 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   }
   const sym = LIB_FN_SYMS[e.fn];
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
-  const args = e.args.map((a) =>
-    borrowsJsonInputs(e.fn) || borrowsIteratorInputs(e.fn)
-      ? emitBorrowedInput(host, a)
-      : host.emitExpr(a),
-  );
+  const args = READ_ONLY_STRING_LIB_FNS.has(e.fn)
+    ? emitBorrowedInputs(host, e.args)
+    : e.args.map((a) =>
+        borrowsJsonInputs(e.fn) || borrowsIteratorInputs(e.fn)
+          ? emitBorrowedInput(host, a)
+          : host.emitExpr(a),
+      );
   const argDecls = args.map((a) => {
     const ty = host.llType(a.type);
     return ty === "i1" ? "i1 zeroext" : ty;
@@ -379,6 +381,11 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   if (MAY_THROW_LIB_FNS.has(e.fn)) host.emitPendingCheck();
   return out;
 }
+
+/** Runtime string functions that only read their string arguments and keep
+ * no reference to them: their operands are lent (a comparator's
+ * `a.name.localeCompare(b.name)` reads both fields without retaining). */
+const READ_ONLY_STRING_LIB_FNS: ReadonlySet<string> = new Set(["str.localeCompare"]);
 
 export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (USES_TIMERS_LIB_FNS.has(e.fn)) host.usesTimers = true;
@@ -497,6 +504,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "tlsca":
     case "event":
     case "events":
+    case "blob":
       return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);
