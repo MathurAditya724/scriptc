@@ -4165,6 +4165,23 @@ static ScrDyn *scr_iterator_method(const ScrDyn *source) {
   return scr_builtin_iterable(source) ? scr_builtin_iterator_method(source) : scr_dyn_retain(scr_dyn_undefined());
 }
 
+int scr_dyn_iterable_kind(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) return 0;
+  if (scr_dyn_generator(value)) return value->v.typed_ref.type_key[0] == 'a' ? 2 : 1;
+  if (scr_async_iterator_symbol) {
+    ScrDyn *method = scr_dyn_symbol_key_get(value, scr_async_iterator_symbol, false);
+    if (!method) return -1;
+    bool set = method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL;
+    scr_dyn_release(method);
+    if (set) return 2;
+  }
+  ScrDyn *method = scr_iterator_method(value);
+  if (!method) return -1;
+  bool set = method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL;
+  scr_dyn_release(method);
+  return set ? 1 : 0;
+}
+
 /* Compiled class methods are dispatched before this checked-object path. */
 ScrDyn *scr_dyn_iterator_optional(const ScrDyn *source) {
   ScrDyn *method = scr_iterator_method(source);
@@ -9960,6 +9977,8 @@ static ScrDyn *scr_array_buffer_get(void *h, const char *key, size_t len) {
   if (len == 8 && !memcmp(key, "growable", len) && ((ScrBytes *)h)->shared) return scr_dyn_new_bool(false);
   if (!((ScrBytes *)h)->shared && ((len == 9 && memcmp(key, "resizable", len) == 0) ||
       (len == 8 && memcmp(key, "detached", len) == 0))) return scr_dyn_new_bool(false);
+  if (len == 11 && !memcmp(key, "constructor", len) && !((ScrBytes *)h)->shared)
+    return scr_array_buffer_constructor();
   return NULL;
 }
 

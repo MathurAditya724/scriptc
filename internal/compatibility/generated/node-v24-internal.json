@@ -521,9 +521,9 @@
       "apiEntries": 119,
       "static": {
         "supported": 0,
-        "partial": 34,
+        "partial": 37,
         "refused": 0,
-        "not-implemented": 85,
+        "not-implemented": 82,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -716,9 +716,9 @@
       "apiEntries": 140,
       "static": {
         "supported": 0,
-        "partial": 38,
+        "partial": 53,
         "refused": 0,
-        "not-implemented": 102,
+        "not-implemented": 87,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -43760,10 +43760,10 @@
           "tests/corpus/5542-fs-promises-parity.cjs",
           "tests/corpus/5543-fs-promises-typed.ts",
           "tests/corpus/5544-fs-opendir.cjs",
+          "tests/corpus/5545-fs-options-encoding.cjs",
           "tests/corpus/5548-fs-callback-arguments.cjs",
           "tests/corpus/5549-fs-callback-option-checks.cjs",
           "tests/corpus/fs-native-realpath.ts",
-          "tests/corpus/fs-read-encodings.ts",
           "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
           "tests/corpus/node24-fs-links-options.cjs",
@@ -46232,8 +46232,7 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.fs.mkdtemp",
         "tests": [
-          "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5545-fs-options-encoding.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -46440,8 +46439,7 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.fs.readFile",
         "tests": [
-          "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5545-fs-options-encoding.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -47813,12 +47811,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.mkdtempSync",
+        "evidence": "compiler-feature:fs.fs.mkdtempSync",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/5545-fs-options-encoding.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -47949,13 +47944,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.readFileSync",
+        "evidence": "compiler-feature:fs.fs.readFileSync",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-read-encodings.ts"
+          "tests/corpus/5545-fs-options-encoding.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -73525,8 +73516,12 @@
       "anchor": "netisipinput",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.net.isIP",
+        "tests": [
+          "tests/corpus/2500-net-autosel-timeout.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -73543,8 +73538,12 @@
       "anchor": "netisipv4input",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.net.isIPv4",
+        "tests": [
+          "tests/corpus/2500-net-autosel-timeout.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -73561,8 +73560,12 @@
       "anchor": "netisipv6input",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.net.isIPv6",
+        "tests": [
+          "tests/corpus/2500-net-autosel-timeout.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -85799,7 +85802,15 @@
           "tests/corpus/5300-stream-add-abort-signal.ts",
           "tests/corpus/5301-stream-add-abort-signal-errors.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs",
+          "tests/corpus/5340-readable-from-options.ts",
+          "tests/corpus/5341-readable-from-dynamic.cjs",
+          "tests/corpus/5342-stream-compose.ts",
+          "tests/corpus/5343-stream-compose-edges.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -86117,8 +86128,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.stream.compose",
+        "tests": [
+          "tests/corpus/5342-stream-compose.ts",
+          "tests/corpus/5343-stream-compose-edges.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -86232,8 +86247,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.stream.Readable.from",
+        "tests": [
+          "tests/corpus/5340-readable-from-options.ts",
+          "tests/corpus/5341-readable-from-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -86692,8 +86711,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.stream.compose",
+        "tests": [
+          "tests/corpus/5342-stream-compose.ts",
+          "tests/corpus/5343-stream-compose-edges.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -86807,8 +86830,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.stream.Readable.from",
+        "tests": [
+          "tests/corpus/5340-readable-from-options.ts",
+          "tests/corpus/5341-readable-from-dynamic.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -88291,8 +88318,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.map",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -88314,8 +88347,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.filter",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -88337,8 +88376,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.forEach",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -88360,8 +88405,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.toArray",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -88383,8 +88434,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.some",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -88406,8 +88463,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.find",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -88429,8 +88492,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.every",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -88452,8 +88521,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.flatMap",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -88475,8 +88550,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.drop",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -88498,8 +88579,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.take",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -88521,8 +88608,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.reduce",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

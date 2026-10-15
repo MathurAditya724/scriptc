@@ -570,7 +570,6 @@ async function emitNativeProgramObject(
     opts.nativeProgramObject === true || target === null
       ? 1
       : nativeProgramPartitions(
-          target,
           (typeof llvm === "string" ? [llvm] : llvm).reduce(
             (bytes, part) => bytes + Buffer.byteLength(part),
             0,

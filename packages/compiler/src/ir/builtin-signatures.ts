@@ -1341,6 +1341,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     result: VOID,
   },
   "dns.lookup": { argTypes: [STRING, F64, null], result: VOID },
+  /** Node's argument forms with dyn callbacks: lookup(hostname, options,
+   * callback) and lookupService(address, port, callback). */
+  "dns.lookupDyn": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
+  "dns.lookupService": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
+  "dns.getServers": { argTypes: [], result: DYN },
+  "dns.getDefaultResultOrder": { argTypes: [], result: STRING },
+  "dns.setDefaultResultOrder": { argTypes: [DYN], result: VOID },
   // node:test (scr_test.c). Bodies are program-dependent closures (0 or
   // 1 testCtx param, void or Promise<void> result — the spoke pinned the
   // shape): null slots. sub's result is the settled Promise<void> the
@@ -1686,6 +1693,38 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "net.sockSetNoDelay": { argTypes: [NETSOCKET_T, BOOL], result: NETSOCKET_T },
   "net.sockDestroySoon": { argTypes: [NETSOCKET_T], result: VOID },
   "net.sockBytesWritten": { argTypes: [NETSOCKET_T], result: F64 },
+  /** remotePort (0), remoteFamily (1), localAddress (2), localPort (3),
+   * localFamily (4): dyn values, undefined when unknown. */
+  "net.sockAddrField": { argTypes: [NETSOCKET_T, F64], result: DYN },
+  "net.sockBytesRead": { argTypes: [NETSOCKET_T], result: F64 },
+  "net.sockConnecting": { argTypes: [NETSOCKET_T], result: BOOL },
+  "net.sockPending": { argTypes: [NETSOCKET_T], result: BOOL },
+  "net.sockReadyState": { argTypes: [NETSOCKET_T], result: STRING },
+  "net.sockSetKeepAlive": { argTypes: [NETSOCKET_T, BOOL, F64], result: NETSOCKET_T },
+  "net.sockOnReady": {
+    argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
+    result: VOID,
+  },
+  /** Listeners with a parameter, as dyn functions: close(hadError),
+   * write's cb(err) and end's cb. */
+  "net.sockOnCloseDyn": { argTypes: [NETSOCKET_T, DYN, BOOL], result: VOID },
+  "net.sockOnWriteFlush": {
+    argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }],
+    result: VOID,
+  },
+  "net.sockOnWriteFlushDyn": { argTypes: [NETSOCKET_T, DYN], result: VOID },
+  "net.sockOnFinishDyn": { argTypes: [NETSOCKET_T, DYN], result: VOID },
+  "net.sockSetTimeoutCb": {
+    argTypes: [NETSOCKET_T, F64, { kind: "func", params: [], ret: VOID }],
+    result: VOID,
+  },
+  "net.isIP": { argTypes: [DYN], result: F64 },
+  "net.isIPv4": { argTypes: [DYN], result: BOOL },
+  "net.isIPv6": { argTypes: [DYN], result: BOOL },
+  "net.serverMaxConnectionsGet": { argTypes: [NETSERVER_T], result: DYN },
+  "net.serverMaxConnectionsSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
+  "net.serverOnDrop": { argTypes: [NETSERVER_T, DYN, BOOL], result: VOID },
+  "net.serverGetConnections": { argTypes: [NETSERVER_T, DYN], result: VOID },
   "net.sockReadable": { argTypes: [NETSOCKET_T], result: BOOL },
   /** socket.on('finish', cb) / end(cb): fires once when the FIN goes out
    * (sweep-deferred, never the registering stack). */
@@ -3168,6 +3207,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stream.finishedDyn": { argTypes: [null, DYN], result: VOID },
   "stream.pipeline": { argTypes: [F64], result: VOID },
   "stream.pipelineDyn": { argTypes: [F64], result: VOID },
+  /** stream.compose(count, s1..sn): the Duplex over a pipeline of the
+   * streams (+1). MAY THROW (ERR_INVALID_ARG_VALUE for a stream that is
+   * no longer readable or writable). */
+  "stream.compose": { argTypes: [F64], result: VOID },
   /** node:stream/promises — the promise forms over the same machinery:
    * sp.finished: (s) → a pending void promise the terminal watcher
    * settles; sp.pipeline: (count, s1..sn) → the callback pipeline's
@@ -3250,11 +3293,32 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * +1 promise of the next chunk — buffered content, the EOF sentinel
    * (empty Buffer / dyn undefined), or a rejection with the stream's
    * error. The Dyn twin boxes chunks by runtime tag (the JS lane).
-   * readable.fromArr is Readable.from(array): a fully-seeded object-
-   * entry stream (one whole chunk per element; strings per the flag). */
+   * readable.fromArr is Readable.from over a typed array, string or
+   * Buffer: [array, SCR_FROM_* flags, highWaterMark]. readable.fromDyn is
+   * the JS lane's [source, options]. */
   "readable.nextChunk": { argTypes: [null], result: VOID },
   "readable.nextChunkDyn": { argTypes: [null], result: VOID },
-  "readable.fromArr": { argTypes: [null, BOOL], result: VOID },
+  "readable.fromArr": { argTypes: [null, F64, F64], result: VOID },
+  "readable.fromDyn": { argTypes: [DYN, DYN], result: VOID },
+  /** The Readable operators (scr_stream_ops.c): [stream, ...] with every
+   * other argument a checked-dynamic value (the callback, the count, the
+   * options). map/filter/flatMap/drop/take answer the object-mode output
+   * stream (validated as a stream class; THROW Node's validation errors);
+   * toArray settles a dyn array, find a dyn value, some/every a boolean,
+   * forEach nothing; reduce: [stream, fn, init, hasInit, options, kind]
+   * with the payload kind (0 dyn, 1 number, 2 boolean, 3 string). The
+   * promise-returning ones reject instead of throwing. */
+  "readable.opMap": { argTypes: [null, DYN, DYN], result: VOID },
+  "readable.opFilter": { argTypes: [null, DYN, DYN], result: VOID },
+  "readable.opFlatMap": { argTypes: [null, DYN, DYN], result: VOID },
+  "readable.opDrop": { argTypes: [null, DYN, DYN], result: VOID },
+  "readable.opTake": { argTypes: [null, DYN, DYN], result: VOID },
+  "readable.opToArray": { argTypes: [null, DYN], result: { kind: "promise", inner: DYN } },
+  "readable.opForEach": { argTypes: [null, DYN, DYN], result: { kind: "promise", inner: VOID } },
+  "readable.opSome": { argTypes: [null, DYN, DYN], result: { kind: "promise", inner: BOOL } },
+  "readable.opEvery": { argTypes: [null, DYN, DYN], result: { kind: "promise", inner: BOOL } },
+  "readable.opFind": { argTypes: [null, DYN, DYN], result: { kind: "promise", inner: DYN } },
+  "readable.opReduce": { argTypes: [null, DYN, DYN, BOOL, DYN, F64], result: VOID },
   "readable.resume": { argTypes: [null], result: VOID },
   "readable.isPaused": { argTypes: [null], result: BOOL },
   "readable.pipe": { argTypes: [null, null, BOOL], result: VOID },

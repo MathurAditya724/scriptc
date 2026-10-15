@@ -533,6 +533,9 @@ void scr_dyn_arr_push_hole(ScrDyn *arr);
 ScrDyn *scr_dyn_new_obj(void);
 ScrDyn *scr_dyn_iterator(const ScrDyn *value, const ScrStr *spell);
 ScrDyn *scr_dyn_iterator_optional(const ScrDyn *value);
+/* from.js's probe: 2 when value[Symbol.asyncIterator] is set, 1 when
+ * value[Symbol.iterator] is, 0 for neither, -1 with an error pending. */
+int scr_dyn_iterable_kind(const ScrDyn *value);
 void scr_dyn_install_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key);
 ScrDyn *scr_dyn_array_values_function(void);
