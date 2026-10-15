@@ -1022,6 +1022,24 @@ static void check_rebuffer_past_mature(void) {
   scr_collect_cycles();
 }
 
+/* Dead rings with one candidate each: fewer candidates than the nursery
+ * threshold, but each candidate's release runs a pass once the live
+ * cycle-headered count has grown by SCR_CYC_NURSERY_ALLOCATIONS (4096 in
+ * scr_cycle.c) since the last one, so the dead nodes left uncollected stay
+ * within that much plus the ring in hand. */
+static void check_allocation_growth_runs_passes(void) {
+  enum { RINGS = 80, NODES_PER_RING = 64, ALLOCATION_WINDOW = 4096 };
+  scr_collect_cycles();
+  size_t before = freed;
+  for (size_t i = 0; i < RINGS; i++) release_live(make_ring(NODES_PER_RING));
+  size_t dropped = (size_t)RINGS * NODES_PER_RING;
+  check(freed > before, "allocation growth ran no pass");
+  check(before + dropped - freed <= ALLOCATION_WINDOW + NODES_PER_RING,
+        "dead rings outgrew the allocation window");
+  scr_collect_cycles();
+  check(freed - before == dropped, "dead rings survived a full collection");
+}
+
 int main(void) {
   check_old_garbage_reclaimed_while_growing();
   check_older_rings_into_old();
@@ -1046,6 +1064,7 @@ int main(void) {
   check_mature_bypass();
   check_probe_sees_candidate_rings();
   check_rebuffer_past_mature();
+  check_allocation_growth_runs_passes();
   printf("cycle collection checks passed: threshold=%zu growth_cap=%zu\n",
          configured_nursery_threshold(), configured_growth_cap());
   return 0;
