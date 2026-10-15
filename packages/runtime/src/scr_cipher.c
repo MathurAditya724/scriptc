@@ -41,36 +41,41 @@ static const ScCipherSpec sc_specs[] = {
   {"chacha20-poly1305", SC_CHACHA, 32},
 };
 
-/* crypto.getCiphers() on Node 24.15 (OpenSSL 3.5). Names in this list that
+/* crypto.getCiphers() on Node 24.22 (OpenSSL 3.5). Names in this list that
  * have no implementation throw a coded SC2020 error instead of Node's
  * ERR_CRYPTO_UNKNOWN_CIPHER. */
 static const char *const sc_known[] = {
-  "aes-128-cbc", "aes-128-cbc-hmac-sha1", "aes-128-cbc-hmac-sha256", "aes-128-ccm",
-  "aes-128-cfb", "aes-128-cfb1", "aes-128-cfb8", "aes-128-ctr", "aes-128-ecb", "aes-128-gcm",
-  "aes-128-ocb", "aes-128-ofb", "aes-128-xts", "aes-192-cbc", "aes-192-ccm", "aes-192-cfb",
-  "aes-192-cfb1", "aes-192-cfb8", "aes-192-ctr", "aes-192-ecb", "aes-192-gcm", "aes-192-ocb",
-  "aes-192-ofb", "aes-256-cbc", "aes-256-cbc-hmac-sha1", "aes-256-cbc-hmac-sha256", "aes-256-ccm",
-  "aes-256-cfb", "aes-256-cfb1", "aes-256-cfb8", "aes-256-ctr", "aes-256-ecb", "aes-256-gcm",
-  "aes-256-ocb", "aes-256-ofb", "aes-256-xts", "aes128", "aes128-wrap", "aes128-wrap-pad",
-  "aes192", "aes192-wrap", "aes192-wrap-pad", "aes256", "aes256-wrap", "aes256-wrap-pad",
-  "aria-128-cbc", "aria-128-ccm", "aria-128-cfb", "aria-128-cfb1", "aria-128-cfb8",
-  "aria-128-ctr", "aria-128-ecb", "aria-128-gcm", "aria-128-ofb", "aria-192-cbc", "aria-192-ccm",
-  "aria-192-cfb", "aria-192-cfb1", "aria-192-cfb8", "aria-192-ctr", "aria-192-ecb",
-  "aria-192-gcm", "aria-192-ofb", "aria-256-cbc", "aria-256-ccm", "aria-256-cfb",
-  "aria-256-cfb1", "aria-256-cfb8", "aria-256-ctr", "aria-256-ecb", "aria-256-gcm",
-  "aria-256-ofb", "aria128", "aria192", "aria256", "camellia-128-cbc", "camellia-128-cfb",
-  "camellia-128-cfb1", "camellia-128-cfb8", "camellia-128-ctr", "camellia-128-ecb",
-  "camellia-128-ofb", "camellia-192-cbc", "camellia-192-cfb", "camellia-192-cfb1",
-  "camellia-192-cfb8", "camellia-192-ctr", "camellia-192-ecb", "camellia-192-ofb",
-  "camellia-256-cbc", "camellia-256-cfb", "camellia-256-cfb1", "camellia-256-cfb8",
-  "camellia-256-ctr", "camellia-256-ecb", "camellia-256-ofb", "camellia128", "camellia192",
-  "camellia256", "chacha20", "chacha20-poly1305", "des-ede", "des-ede-cbc", "des-ede-cfb",
-  "des-ede-ecb", "des-ede-ofb", "des-ede3", "des-ede3-cbc", "des-ede3-cfb", "des-ede3-cfb1",
-  "des-ede3-cfb8", "des-ede3-ecb", "des-ede3-ofb", "des3", "des3-wrap", "id-aes128-ccm",
-  "id-aes128-gcm", "id-aes128-wrap", "id-aes128-wrap-pad", "id-aes192-ccm", "id-aes192-gcm",
-  "id-aes192-wrap", "id-aes192-wrap-pad", "id-aes256-ccm", "id-aes256-gcm", "id-aes256-wrap",
-  "id-aes256-wrap-pad", "id-smime-alg-cms3deswrap", "sm4", "sm4-cbc", "sm4-cfb", "sm4-ctr",
-  "sm4-ecb", "sm4-ofb",
+  "aes-128-cbc", "aes-128-cbc-cts", "aes-128-ccm", "aes-128-cfb", "aes-128-cfb1", "aes-128-cfb8",
+  "aes-128-ctr", "aes-128-ecb", "aes-128-gcm", "aes-128-gcm-siv", "aes-128-ocb", "aes-128-ofb",
+  "aes-128-siv", "aes-128-wrap", "aes-128-wrap-inv", "aes-128-wrap-pad", "aes-128-wrap-pad-inv",
+  "aes-128-xts", "aes-192-cbc", "aes-192-cbc-cts", "aes-192-ccm", "aes-192-cfb", "aes-192-cfb1",
+  "aes-192-cfb8", "aes-192-ctr", "aes-192-ecb", "aes-192-gcm", "aes-192-gcm-siv", "aes-192-ocb",
+  "aes-192-ofb", "aes-192-siv", "aes-192-wrap", "aes-192-wrap-inv", "aes-192-wrap-pad",
+  "aes-192-wrap-pad-inv", "aes-256-cbc", "aes-256-cbc-cts", "aes-256-ccm", "aes-256-cfb",
+  "aes-256-cfb1", "aes-256-cfb8", "aes-256-ctr", "aes-256-ecb", "aes-256-gcm", "aes-256-gcm-siv",
+  "aes-256-ocb", "aes-256-ofb", "aes-256-siv", "aes-256-wrap", "aes-256-wrap-inv",
+  "aes-256-wrap-pad", "aes-256-wrap-pad-inv", "aes-256-xts", "aes128", "aes128-wrap",
+  "aes128-wrap-inv", "aes128-wrap-pad", "aes128-wrap-pad-inv", "aes192", "aes192-wrap",
+  "aes192-wrap-inv", "aes192-wrap-pad", "aes192-wrap-pad-inv", "aes256", "aes256-wrap",
+  "aes256-wrap-inv", "aes256-wrap-pad", "aes256-wrap-pad-inv", "aria-128-cbc", "aria-128-ccm",
+  "aria-128-cfb", "aria-128-cfb1", "aria-128-cfb8", "aria-128-ctr", "aria-128-ecb", "aria-128-gcm",
+  "aria-128-ofb", "aria-192-cbc", "aria-192-ccm", "aria-192-cfb", "aria-192-cfb1", "aria-192-cfb8",
+  "aria-192-ctr", "aria-192-ecb", "aria-192-gcm", "aria-192-ofb", "aria-256-cbc", "aria-256-ccm",
+  "aria-256-cfb", "aria-256-cfb1", "aria-256-cfb8", "aria-256-ctr", "aria-256-ecb", "aria-256-gcm",
+  "aria-256-ofb", "aria128", "aria192", "aria256", "camellia-128-cbc", "camellia-128-cbc-cts",
+  "camellia-128-cfb", "camellia-128-cfb1", "camellia-128-cfb8", "camellia-128-ctr",
+  "camellia-128-ecb", "camellia-128-ofb", "camellia-192-cbc", "camellia-192-cbc-cts",
+  "camellia-192-cfb", "camellia-192-cfb1", "camellia-192-cfb8", "camellia-192-ctr",
+  "camellia-192-ecb", "camellia-192-ofb", "camellia-256-cbc", "camellia-256-cbc-cts",
+  "camellia-256-cfb", "camellia-256-cfb1", "camellia-256-cfb8", "camellia-256-ctr",
+  "camellia-256-ecb", "camellia-256-ofb", "camellia128", "camellia192", "camellia256", "chacha20",
+  "chacha20-poly1305", "des-ede", "des-ede-cbc", "des-ede-cfb", "des-ede-ecb", "des-ede-ofb",
+  "des-ede3", "des-ede3-cbc", "des-ede3-cfb", "des-ede3-cfb1", "des-ede3-cfb8", "des-ede3-ecb",
+  "des-ede3-ofb", "des3", "des3-wrap", "id-aes128-ccm", "id-aes128-gcm", "id-aes128-wrap",
+  "id-aes128-wrap-pad", "id-aes192-ccm", "id-aes192-gcm", "id-aes192-wrap", "id-aes192-wrap-pad",
+  "id-aes256-ccm", "id-aes256-gcm", "id-aes256-wrap", "id-aes256-wrap-pad",
+  "id-smime-alg-cms3deswrap", "sm4", "sm4-cbc", "sm4-ccm", "sm4-cfb", "sm4-cfb128", "sm4-ctr",
+  "sm4-ecb", "sm4-gcm", "sm4-ofb", "sm4-ofb128", "sm4-xts",
 };
 
 enum { SC_NO_TAG = -1 };
@@ -82,8 +87,9 @@ typedef struct ScCipher {
   bool decrypt;
   bool active;       /* false after final(), like Node's reset context */
   bool pad;          /* CBC automatic padding */
-  bool data_started; /* GCM: a non-empty update() ran, so AAD is closed */
+  bool data_started; /* a non-empty update() ran, so non-empty AAD is refused */
   int tag_len;       /* SC_NO_TAG until known */
+  bool tag_option;   /* authTagLength was passed */
   int tag_state;
   unsigned char tag[16];
   unsigned char block[16]; /* CBC: chaining value; CTR: counter block */
@@ -179,6 +185,24 @@ static void sc_invalid_property(const char *name, const ScrDyn *value) {
   scr_str_release(message);
 }
 
+/* validateOneOf: "The property 'options.x' must be one of: 'A', 'B'.
+ * Received <value>". */
+static void sc_not_one_of(const char *name, const char *allowed, const ScrDyn *value) {
+  char rendered[160];
+  const char *text = scr_dyn_inspect_lite(value, rendered, sizeof rendered);
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "The property '");
+  scr_jb_puts(&b, name);
+  scr_jb_puts(&b, "' must be one of: ");
+  scr_jb_puts(&b, allowed);
+  scr_jb_puts(&b, ". Received ");
+  scr_jb_puts(&b, text);
+  ScrStr *message = scr_jb_finish(&b);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "ERR_INVALID_ARG_VALUE");
+  scr_str_release(message);
+}
+
 static void sc_unknown_encoding(const ScrDyn *encoding) {
   ScrStr *text = scr_dyn_string_coerce_js(encoding);
   if (!text) return;
@@ -203,6 +227,11 @@ static bool sc_ascii_eq_ci(const char *a, size_t a_len, const char *b) {
     if (x != y) return false;
   }
   return true;
+}
+
+static bool sc_str_is(const ScrStr *text, const char *literal) {
+  size_t len = strlen(literal);
+  return text->len == len && memcmp(text->data, literal, len) == 0;
 }
 
 /* Node's normalizeEncoding: the canonical name, or NULL. */
@@ -385,7 +414,21 @@ ScrDyn *scr_crypto_cipher_new(bool decrypt, ScrDyn *cipher, ScrDyn *key, ScrDyn 
   }
   double tag_option = sc_uint_option(options, "authTagLength");
   ScrDyn *result = NULL;
+  ScrDyn *cts_mode = NULL, *xts_standard = NULL;
   if (tag_option == -2) goto done;
+  cts_mode = sc_string_option(options, "ctsMode", &failed);
+  if (failed) goto done;
+  xts_standard = sc_string_option(options, "xtsStandard", &failed);
+  if (failed) goto done;
+  if (cts_mode && !sc_str_is(cts_mode->v.str, "CS1") && !sc_str_is(cts_mode->v.str, "CS2") &&
+      !sc_str_is(cts_mode->v.str, "CS3")) {
+    sc_not_one_of("options.ctsMode", "'CS1', 'CS2', 'CS3'", cts_mode);
+    goto done;
+  }
+  if (xts_standard && !sc_str_is(xts_standard->v.str, "GB") && !sc_str_is(xts_standard->v.str, "IEEE")) {
+    sc_not_one_of("options.xtsStandard", "'GB', 'IEEE'", xts_standard);
+    goto done;
+  }
   const ScCipherSpec *spec = sc_lookup(cipher->v.str);
   if (!spec) {
     if (sc_known_name(cipher->v.str)) sc_unsupported_cipher(cipher->v.str);
@@ -396,6 +439,17 @@ ScrDyn *scr_crypto_cipher_new(bool decrypt, ScrDyn *cipher, ScrDyn *key, ScrDyn 
   bool aead = spec->mode == SC_GCM || spec->mode == SC_CHACHA;
   if (iv_len == 0 || (!aead && iv_len != 16) || (spec->mode == SC_CHACHA && iv_len != 12)) {
     sc_throw(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_IV", "Invalid initialization vector");
+    goto done;
+  }
+  /* None of the implemented ciphers is a CTS or XTS mode. */
+  if (cts_mode || xts_standard) {
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_jb_put_str(&b, cipher->v.str);
+    scr_jb_puts(&b, cts_mode ? " does not support the ctsMode option" : " does not support the xtsStandard option");
+    ScrStr *message = scr_jb_finish(&b);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "ERR_CRYPTO_UNSUPPORTED_OPERATION");
+    scr_str_release(message);
     goto done;
   }
   int tag_len = SC_NO_TAG;
@@ -424,6 +478,7 @@ ScrDyn *scr_crypto_cipher_new(bool decrypt, ScrDyn *cipher, ScrDyn *key, ScrDyn 
   c->active = true;
   c->pad = true;
   c->tag_len = tag_len;
+  c->tag_option = tag_option >= 0;
   mbedtls_aes_init(&c->aes);
   mbedtls_gcm_init(&c->gcm);
   mbedtls_chacha20_init(&c->chacha);
@@ -467,6 +522,8 @@ ScrDyn *scr_crypto_cipher_new(bool decrypt, ScrDyn *cipher, ScrDyn *key, ScrDyn 
   result = scr_dyn_new_handle(c, tag); /* retains */
   sc_release(c);
 done:
+  scr_dyn_release(cts_mode);
+  scr_dyn_release(xts_standard);
   scr_bytes_release(iv_bytes);
   scr_bytes_release(key_bytes);
   return result;
@@ -626,7 +683,7 @@ static ScrBytes *sc_transform(ScCipher *c, const unsigned char *in, size_t len) 
 /* ── output encodings ─────────────────────────────────────────────────── */
 
 /* Node's getDecoder: the StringDecoder for this encoding, created on first
- * string output; a different encoding later fails Node's assertion. */
+ * string output; a different encoding later throws ERR_INVALID_ARG_VALUE. */
 static bool sc_decoder(ScCipher *c, const ScrDyn *encoding) {
   const char *name = encoding->kind == SCR_DYN_STR ? sc_normalize_encoding(encoding->v.str) : NULL;
   if (!c->decoder) {
@@ -643,10 +700,17 @@ static bool sc_decoder(ScCipher *c, const ScrDyn *encoding) {
     sc_unknown_encoding(encoding);
     return false;
   }
-  static const char message[] =
-    "Cannot change encoding\nThis is caused by either a bug in Node.js or incorrect usage of Node.js "
-    "internals.\nPlease open an issue with this stack trace at https://github.com/nodejs/node/issues\n";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "ERR_INTERNAL_ASSERTION");
+  char rendered[160];
+  const char *text = scr_dyn_inspect_lite(encoding, rendered, sizeof rendered);
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "The argument 'outputEncoding' cannot be changed from '");
+  scr_jb_put_str(&b, c->decoder);
+  scr_jb_puts(&b, "'. Received ");
+  scr_jb_puts(&b, text);
+  ScrStr *message = scr_jb_finish(&b);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "ERR_INVALID_ARG_VALUE");
+  scr_str_release(message);
   return false;
 }
 
@@ -766,7 +830,10 @@ static ScrDyn *sc_final(ScCipher *c, ScrDyn *output_encoding) {
     unsigned char full[16];
     sc_chacha_finish(c, full);
     if (c->decrypt) {
-      ok = c->tag_state == SC_TAG_SET_BY_USER && sc_tag_equal(full, c->tag, (size_t)c->tag_len);
+      /* Node only hands OpenSSL a tag length when authTagLength is passed
+       * or setAuthTag() ran; without either, OpenSSL skips verification. */
+      ok = !(c->tag_state == SC_TAG_SET_BY_USER || c->tag_option) ||
+           sc_tag_equal(full, c->tag, (size_t)c->tag_len);
     } else {
       memcpy(c->tag, full, (size_t)c->tag_len);
       c->tag_state = SC_TAG_COMPUTED;
@@ -799,7 +866,9 @@ static ScrDyn *sc_set_aad(ScCipher *c, ScrDyn *self, ScrDyn *buffer, ScrDyn *opt
   ScrBytes *aad = sc_buffer_or_view(buffer, "aadbuf", encoding);
   scr_dyn_release(encoding);
   if (!aad) return NULL;
-  bool ok = c->active && sc_aead(c) && !(c->mode == SC_GCM && c->data_started);
+  /* After data, GCM refuses any AAD and chacha20-poly1305 refuses
+   * non-empty AAD. */
+  bool ok = c->active && sc_aead(c) && !(c->data_started && (c->mode == SC_GCM || aad->len > 0));
   if (ok && c->mode == SC_GCM) ok = mbedtls_gcm_update_ad(&c->gcm, aad->data, aad->len) == 0;
   if (ok && c->mode == SC_CHACHA && aad->len > 0) {
     mbedtls_poly1305_update(&c->poly, aad->data, aad->len);

@@ -1,6 +1,7 @@
 // createCipheriv/createDecipheriv argument and state errors from
 // JavaScript: argument types for the cipher, key, IV, options and data,
 // unknown cipher names, key and IV lengths, authTagLength values, the
+// ctsMode and xtsStandard options (no implemented cipher supports them), the
 // invalid-state errors after final(), update() after final(), methods each
 // direction lacks, and the encoding errors of update() and final().
 import crypto from "node:crypto";
@@ -41,6 +42,21 @@ attempt("encoding option", () => crypto.createCipheriv("aes-128-cbc", "012345678
 attempt("key encoding hex", () => crypto.createCipheriv("aes-128-cbc", "000102030405060708090a0b0c0d0e0f", iv16, { encoding: "hex" }).final());
 attempt("key encoding unknown", () => crypto.createCipheriv("aes-128-cbc", "0123456789abcdef", iv16, { encoding: "nope" }));
 attempt("options number", () => crypto.createCipheriv("aes-128-gcm", key16, iv12, 5).final());
+attempt("ctsMode cbc", () => crypto.createCipheriv("aes-128-cbc", key16, iv16, { ctsMode: "CS1" }));
+attempt("ctsMode name case", () => crypto.createDecipheriv("AES-256-CBC", Buffer.alloc(32), iv16, { ctsMode: "CS3" }));
+attempt("ctsMode gcm", () => crypto.createCipheriv("aes-128-gcm", key16, iv12, { ctsMode: "CS2" }));
+attempt("ctsMode lowercase", () => crypto.createCipheriv("aes-128-cbc", key16, iv16, { ctsMode: "cs1" }));
+attempt("ctsMode number", () => crypto.createCipheriv("aes-128-cbc", key16, iv16, { ctsMode: 1 }));
+attempt("ctsMode null", () => crypto.createCipheriv("aes-128-cbc", key16, iv16, { ctsMode: null }).final());
+attempt("ctsMode unknown cipher", () => crypto.createCipheriv("aes-999-cbc", key16, iv16, { ctsMode: "CS1" }));
+attempt("ctsMode bad iv", () => crypto.createCipheriv("aes-128-cbc", key16, iv12, { ctsMode: "CS1" }));
+attempt("ctsMode bad key", () => crypto.createCipheriv("aes-128-ctr", key16.subarray(1), iv16, { ctsMode: "CS1" }));
+attempt("ctsMode bad tag", () => crypto.createCipheriv("aes-128-gcm", key16, iv12, { ctsMode: "CS1", authTagLength: 3 }));
+attempt("ctsMode tag type", () => crypto.createCipheriv("aes-128-gcm", key16, iv12, { ctsMode: "CS9", authTagLength: "3" }));
+attempt("xtsStandard chacha", () => crypto.createCipheriv("chacha20-poly1305", Buffer.alloc(32), iv12, { xtsStandard: "IEEE" }));
+attempt("xtsStandard bad", () => crypto.createCipheriv("aes-128-ctr", key16, iv16, { xtsStandard: "ieee" }));
+attempt("xtsStandard type before ctsMode value", () => crypto.createCipheriv("aes-128-ctr", key16, iv16, { ctsMode: "X", xtsStandard: 2 }));
+attempt("ctsMode and xtsStandard", () => crypto.createCipheriv("aes-128-ctr", key16, iv16, { ctsMode: "CS1", xtsStandard: "GB" }));
 
 const cipher = crypto.createCipheriv("aes-128-gcm", key16, iv12);
 attempt("data number", () => cipher.update(5));
@@ -51,6 +67,10 @@ attempt("unknown input encoding", () => cipher.update("abc", "nope"));
 attempt("unknown output encoding", () => cipher.update("abc", "utf8", "nope"));
 attempt("hex output", () => cipher.update("abc", "utf8", "hex"));
 attempt("change encoding", () => cipher.update("abc", "utf8", "base64"));
+const latin = crypto.createCipheriv("aes-128-ctr", key16, iv16);
+attempt("binary output", () => latin.update("abc", "utf8", "binary"));
+attempt("change encoding from binary", () => latin.update("abc", "utf8", "UTF-8"));
+attempt("change encoding on final", () => latin.final("hex"));
 attempt("buffer output", () => cipher.update("abc", "utf8", "buffer"));
 attempt("getAuthTag early", () => cipher.getAuthTag());
 attempt("final", () => cipher.final());

@@ -1,9 +1,10 @@
 // chacha20-poly1305: encryption and decryption with AAD, the default
 // 16-byte tag and every authTagLength from 1 to 16 (a truncated tag is the
-// leading bytes of the full tag), AAD added after data (accepted, as in
-// OpenSSL), rejection of a wrong tag and of tag lengths that differ from
-// authTagLength, and Node's errors for IVs other than 12 bytes and tag
-// lengths outside 1 to 16.
+// leading bytes of the full tag), non-empty AAD after data (refused) and
+// empty AAD after data (accepted), rejection of a wrong tag and of tag
+// lengths that differ from authTagLength, decryption without setAuthTag()
+// (verified only when authTagLength is passed), and Node's errors for IVs
+// other than 12 bytes and tag lengths outside 1 to 16.
 import { createCipheriv, createDecipheriv } from "node:crypto";
 
 function pattern(length: number, seed: number): Buffer {
@@ -59,16 +60,38 @@ try {
 const late = createCipheriv("chacha20-poly1305", key, iv);
 late.setAAD(Buffer.from("early"));
 late.update("data first");
-late.setAAD(Buffer.from("late"));
+try {
+  late.setAAD(Buffer.from("late"));
+  console.log("aad after data accepted");
+} catch (error) {
+  console.log("aad after data", describe(error));
+}
+late.setAAD(Buffer.alloc(0));
 late.update("more data");
 late.final();
-console.log("aad after data", late.getAuthTag().toString("hex"));
+console.log("tag after refused aad", late.getAuthTag().toString("hex"));
 const emptyFirst = createCipheriv("chacha20-poly1305", key, iv);
 emptyFirst.update("");
 emptyFirst.setAAD(Buffer.from("after empty update"));
 emptyFirst.update("x");
 emptyFirst.final();
 console.log("aad after empty update", emptyFirst.getAuthTag().toString("hex"));
+const untagged = createDecipheriv("chacha20-poly1305", key, iv);
+const untaggedText = untagged.update(Buffer.from(ciphertext, "hex"));
+try {
+  untagged.final();
+  console.log("no tag, default length", untaggedText.toString("utf8"));
+} catch (error) {
+  console.log("no tag, default length", describe(error));
+}
+const untaggedSized = createDecipheriv("chacha20-poly1305", key, iv, { authTagLength: 16 });
+untaggedSized.update(Buffer.from(ciphertext, "hex"));
+try {
+  untaggedSized.final();
+  console.log("no tag, authTagLength 16 accepted");
+} catch (error) {
+  console.log("no tag, authTagLength 16", describe(error));
+}
 for (const ivLength of [0, 8, 11, 13, 16]) {
   try {
     createCipheriv("chacha20-poly1305", key, pattern(ivLength, 3));
