@@ -327,7 +327,7 @@ describe("LLVM backend declares match scr_runtime.h prototypes", () => {
 #include <stdint.h>
 #include "scr_runtime.h"
 
-/* LLVM emits: %ScrBytes = type { i64, i64, i32, ptr, ptr, i8, i8, i8, ptr }.
+/* LLVM emits: %ScrBytes = type { i64, i64, i32, ptr, ptr, i8, i8, i8, i8, ptr }.
  * Keep every ABI fact used by its field-index GEPs explicit here. */
 _Static_assert(sizeof(size_t) == 8, "LLVM ScrBytes expects 64-bit size_t");
 _Static_assert(sizeof(void *) == 8, "LLVM ScrBytes expects 64-bit pointers");
@@ -342,6 +342,7 @@ _Static_assert(offsetof(ScrBytes, backing) == 32, "LLVM ScrBytes.backing offset 
 _Static_assert(offsetof(ScrBytes, is_buffer) == 40, "LLVM ScrBytes.is_buffer offset changed");
 _Static_assert(offsetof(ScrBytes, is_data_view) == 41, "LLVM ScrBytes.is_data_view offset changed");
 _Static_assert(offsetof(ScrBytes, external) == 42, "LLVM ScrBytes.external offset changed");
+_Static_assert(offsetof(ScrBytes, untransferable) == 43, "LLVM ScrBytes.untransferable offset changed");
 _Static_assert(offsetof(ScrBytes, shared) == 48, "LLVM ScrBytes.shared offset changed");
 `,
     );

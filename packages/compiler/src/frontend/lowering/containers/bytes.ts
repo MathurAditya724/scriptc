@@ -1357,7 +1357,7 @@ function lowerBufferStaticValue(
         if (args.length === 1) {
           const elems = argNode.elements.map((el) => lowerer.lowerExprExpecting(el, F64));
           const seed: IrExpr = { kind: "arrayLit", elems, type: arrayOf(F64), loc };
-          return { kind: "bytesNew", source: seed, type: BYTES_U8, loc };
+          return { kind: "libCall", fn: "buffer.poolFromArray", args: [seed], type: BYTES_U8, loc };
         }
       } else {
         const srcIr = lowerer.mapTypeOf(lowerer.typeOf(argNode));
@@ -1367,13 +1367,19 @@ function lowerBufferStaticValue(
         if (value.type.kind === "dyn") {
           const encName = args[1] ? bufEncoding(lowerer, "Buffer.from", args[1]) : "utf8";
           const enc: IrExpr = { kind: "strLit", value: encName, type: STRING, loc };
-          return { kind: "libCall", fn: "buffer.fromDyn", args: [value, enc], type: BYTES_U8, loc };
+          return {
+            kind: "libCall",
+            fn: "buffer.poolFromDyn",
+            args: [value, enc],
+            type: BYTES_U8,
+            loc,
+          };
         }
         if (srcIr?.kind === "string") {
           const s = lowerer.coerceInto(argNode, value, STRING);
           const encNode = args[1];
           let enc: IrExpr = { kind: "strLit", value: "utf8", type: STRING, loc };
-          let fn: IrLibFn = "buffer.fromStr";
+          let fn: IrLibFn = "buffer.poolFromStr";
           if (encNode) {
             const encType = lowerer.typeOf(encNode);
             const encName = encType.isStringLiteralType()
@@ -1392,17 +1398,29 @@ function lowerBufferStaticValue(
                 enc = defaultAfterUndefined(undefinedArg, enc);
               } else {
                 enc = lowerOptionalArgument(lowerer, encNode, STRING, enc);
-                fn = "buffer.fromStrChecked";
+                fn = "buffer.poolFromStrChecked";
               }
             }
           }
           return { kind: "libCall", fn, args: [s, enc], type: BYTES_U8, loc };
         }
         if (args.length === 1 && srcIr?.kind === "bytes" && srcIr.elem === "u8") {
-          return { kind: "bytesNew", source: value, type: BYTES_U8, loc };
+          return {
+            kind: "libCall",
+            fn: "buffer.poolFromBytes",
+            args: [value],
+            type: BYTES_U8,
+            loc,
+          };
         }
         if (args.length === 1 && srcIr?.kind === "array" && srcIr.elem.kind === "f64") {
-          return { kind: "bytesNew", source: value, type: BYTES_U8, loc };
+          return {
+            kind: "libCall",
+            fn: "buffer.poolFromArray",
+            args: [value],
+            type: BYTES_U8,
+            loc,
+          };
         }
       }
     }
@@ -1414,17 +1432,21 @@ function lowerBufferStaticValue(
         "the buffer's storage; narrow unions first",
     );
   }
-  if (member === "alloc" || member === "allocUnsafe") {
+  if (member === "alloc" || member === "allocUnsafe" || member === "allocUnsafeSlow") {
     const maxArgs = member === "alloc" ? 3 : 1;
     if (args.length < 1 || args.length > maxArgs || args.some(ts.isSpreadElement)) {
       lowerer.noLowering(`Buffer.${member} with ${args.length} arguments`, call);
     }
-    // allocUnsafe's contents are UNSPECIFIED in Node (uninitialized pool
-    // memory); a zero-filled buffer is a valid instance of unspecified,
-    // and the deterministic choice — a program observing the difference
-    // is depending on garbage.
+    // allocUnsafe's contents are unspecified in Node (uninitialized pool
+    // memory). Pool slabs and unpooled buffers start zero-filled.
     const size = lowerer.lowerExprExpecting(args[0]!, F64);
-    const fresh: IrExpr = { kind: "bytesNew", source: size, type: BYTES_U8, loc };
+    const fn: IrLibFn =
+      member === "alloc"
+        ? "buffer.alloc"
+        : member === "allocUnsafe"
+          ? "buffer.allocUnsafe"
+          : "buffer.allocUnsafeSlow";
+    const fresh: IrExpr = { kind: "libCall", fn, args: [size], type: BYTES_U8, loc };
     if (args.length === 1) return fresh;
     // alloc(size, fill, encoding?): the fill semantics ARE fill()'s —
     // the fresh buffer is the receiver of a whole-range fill.

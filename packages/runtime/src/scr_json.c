@@ -7957,8 +7957,13 @@ void scr_sc_validate_options(const ScrDyn *options) {
   }
   if (tr->v.arr.len > 0) {
     /* Nothing in the static world is transferable — Node's own error for
-     * a non-transferable list member. */
-    scr_throw_domex("DataCloneError", "Found invalid value in transferList.");
+     * a non-transferable list member. A Buffer pool slab's ArrayBuffer is
+     * marked untransferable in Node, which reports it differently. */
+    const ScrDyn *first = tr->v.arr.items[0];
+    if (first && scr_array_buffer_is(first) && ((ScrBytes *)first->v.handle.ptr)->untransferable)
+      scr_throw_domex("DataCloneError", "Cannot transfer object of unsupported type.");
+    else
+      scr_throw_domex("DataCloneError", "Found invalid value in transferList.");
   }
   scr_dyn_release(transferView);
 }
@@ -8000,8 +8005,19 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
     return scr_dyn_new_str(v->v.str);
   case SCR_DYN_BYTES: {
     /* A fresh byte copy; the Buffer flavor drops (Node: structuredClone
-     * of a Buffer answers a plain Uint8Array). */
-    ScrBytes *copy = scr_bytes_copy(v->v.bytes);
+     * of a Buffer answers a plain Uint8Array). A typed array view over a
+     * larger ArrayBuffer, such as a pooled Buffer, clones the whole
+     * ArrayBuffer and keeps its offset and length, as Node does. */
+    ScrBytes *src = v->v.bytes;
+    ScrBytes *copy;
+    if (src->backing && !src->is_data_view && !src->shared) {
+      ScrBytes *storage = scr_bytes_copy(src->backing);
+      copy = scr_bytes_buffer_view(storage, src->elem, scr_bytes_byte_offset(src), true,
+                                   (double)src->len);
+      scr_bytes_release(storage);
+    } else {
+      copy = scr_bytes_copy(src);
+    }
     ScrDyn *result = scr_dyn_new_bytes(copy);
     scr_bytes_release(copy);
     return result;
@@ -8084,6 +8100,16 @@ ScrDyn *scr_structured_clone(const ScrDyn *value, const ScrDyn *options) {
 ScrDyn *scr_structured_clone_transfer_fail(void) {
   scr_throw_domex("DataCloneError", "Found invalid value in transferList.");
   return NULL;
+}
+
+/* A literal transfer list whose first member is `first`: a Buffer pool
+ * slab's ArrayBuffer is untransferable in Node. Borrowed. */
+ScrDyn *scr_structured_clone_transfer_fail_with(const ScrDyn *first) {
+  if (scr_array_buffer_is(first) && ((ScrBytes *)first->v.handle.ptr)->untransferable) {
+    scr_throw_domex("DataCloneError", "Cannot transfer object of unsupported type.");
+    return NULL;
+  }
+  return scr_structured_clone_transfer_fail();
 }
 
 ScrDyn *scr_structured_clone_missing(void) {

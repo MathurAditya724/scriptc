@@ -233,7 +233,7 @@ function emitSharedBytesSplit(host: LlvmEmitterContext, receiver: string): strin
     storage = B.tmp(),
     isShared = B.tmp(),
     expected = B.tmp();
-  B.line(`${slot} = getelementptr inbounds %ScrBytes, ptr ${receiver}, i64 0, i32 8`);
+  B.line(`${slot} = getelementptr inbounds %ScrBytes, ptr ${receiver}, i64 0, i32 9`);
   B.line(`${storage} = load ptr, ptr ${slot}`);
   B.line(`${isShared} = icmp ne ptr ${storage}, null`);
   B.line(`${expected} = call i1 @llvm.expect.i1(i1 ${isShared}, i1 false)`);

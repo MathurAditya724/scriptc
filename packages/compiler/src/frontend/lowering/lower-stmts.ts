@@ -6335,6 +6335,18 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         }
         if (
           !expr.left.questionDotToken &&
+          lowerer.stdlibGlobalMember(expr.left, "Buffer") === "poolSize"
+        ) {
+          const loc = locOf(expr);
+          const value = lowerer.lowerExprExpecting(expr.right, F64);
+          return {
+            kind: "exprStmt",
+            expr: { kind: "libCall", fn: "buffer.setPoolSize", args: [value], type: VOID, loc },
+            loc,
+          };
+        }
+        if (
+          !expr.left.questionDotToken &&
           lowerer.stdlibGlobalMember(expr.left, "process") === "exitCode"
         ) {
           const loc = locOf(expr);

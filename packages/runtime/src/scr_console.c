@@ -49,6 +49,7 @@ extern long scr_dyn_live_count(void);     /* scr_json.c */
 extern long scr_bytes_live_count(void);   /* scr_bytes.c */
 
 static void scr_rc_audit_at_exit(void) {
+  scr_buffer_pool_reset(); /* the pool's own slab reference */
   /* Fibers suspended forever at loop exhaustion (awaits nobody resolves —
    * Node exits 0 there too) still hold their stacks and owned values by
    * design; a strict audit would only report that deliberate abandonment. */
