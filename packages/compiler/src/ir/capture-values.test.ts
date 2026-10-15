@@ -299,6 +299,20 @@ test("calls through a binding of an environment-free function become direct call
   // The closure value itself still exists for other uses.
   expect(fns.get("sq")!.captures).toEqual([]);
 
+  // An unshared hoisted binding whose every call became direct is dropped.
+  const plain = run(
+    outer(
+      [
+        decl("sq.0", null),
+        { kind: "assign", localId: "sq.0", value: closure("sq", []), loc },
+        ret(call("sq.0")),
+      ],
+      [{ id: "sq.0", name: "sq", type: square, mutable: true }],
+    ),
+    sq,
+  );
+  expect(plain.get("outer")!.body).toEqual([ret(direct)]);
+
   // A body that reads the ambient receiver keeps the closure call.
   const reader: IrFunction = {
     ...sq,

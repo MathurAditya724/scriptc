@@ -117,6 +117,41 @@ function plainLiteral(value: number | null): number | null {
   return value !== null && Number.isFinite(value) && !Object.is(value, -0) ? value : null;
 }
 
+/** `body` without the definitions of the `dead` bindings: their empty
+ * declarations and the declarations or assignments binding a closure. */
+function prune(body: readonly IrStmt[], dead: ReadonlySet<string>): IrStmt[] {
+  const list = (stmts: readonly IrStmt[]): IrStmt[] =>
+    stmts.flatMap((s): IrStmt[] => {
+      switch (s.kind) {
+        case "varDecl":
+          return dead.has(s.localId) && (s.init === null || s.init.kind === "closure") ? [] : [s];
+        case "assign":
+          return dead.has(s.localId) && s.value.kind === "closure" ? [] : [s];
+        case "block":
+          return [{ ...s, body: list(s.body) }];
+        case "if":
+          return [{ ...s, then: list(s.then), else_: s.else_ === null ? null : list(s.else_) }];
+        case "while":
+        case "doWhile":
+        case "for":
+        case "forOf":
+          return [{ ...s, body: list(s.body) }];
+        case "tryCatch":
+          return [
+            {
+              ...s,
+              tryBody: list(s.tryBody),
+              catchBody: s.catchBody === null ? null : list(s.catchBody),
+              finallyBody: s.finallyBody === null ? null : list(s.finallyBody),
+            },
+          ];
+        default:
+          return [s];
+      }
+    });
+  return list(body);
+}
+
 interface Declaration {
   count: number;
   /** Every occurrence has an initializer that creates no environment over
@@ -765,12 +800,23 @@ export class CaptureFlow {
       },
     });
     const live = entry.filter((s) => s.kind !== "varDecl" || readIds.has(s.localId));
+    // An unshared function binding whose every call became direct is dead:
+    // its definition only creates a closure, which then never exists.
+    const dead = new Set(
+      [...facts.callees].filter(
+        (id) =>
+          !readIds.has(id) &&
+          facts.locals.get(id)?.boxed !== true &&
+          this.target(fn.name, id) !== null,
+      ),
+    );
+    const pruned = dead.size === 0 ? body : prune(body, dead);
     const liveIds = new Set(live.map((s) => (s.kind === "varDecl" ? s.localId : "")));
     const added = locals.filter(
       (local) =>
         liveIds.has(local.id) || !entry.some((s) => s.kind === "varDecl" && s.localId === local.id),
     );
-    return { ...fn, locals: [...kept, ...added], body: [...live, ...body] };
+    return { ...fn, locals: [...kept, ...added], body: [...live, ...pruned] };
   }
 }
 
