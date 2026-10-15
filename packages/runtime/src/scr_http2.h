@@ -199,6 +199,7 @@ void scr_tls_fetch_client_wrap(ScrNetSocket *sock, void *ctx);
  * events hook, and `pollfd` exposes the unit's poller fd so the idle
  * poll(2) sleep wakes on socket readiness (-1 = no fd yet). */
 void scr_loop_set_net(bool (*pending)(void), void (*dispatch)(void), int (*pollfd)(void));
+void scr_loop_set_net_io(bool (*io)(void));
 /* True when fibers are queued on the microtask ready queue — dispatch
  * hooks use it to yield between event batches so promise jobs interleave
  * (net's sweep/drain alternation). */
