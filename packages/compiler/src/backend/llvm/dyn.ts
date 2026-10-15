@@ -69,6 +69,7 @@ const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   httpClientReq: 6,
   child: 16,
   fileHandle: 17,
+  dir: 44,
 };
 
 export const DYN_KIND = {

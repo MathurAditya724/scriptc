@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 37,
-        "verify-gap": 2404,
-        "audit-partial": 944,
+        "verify-gap": 2395,
+        "audit-partial": 953,
         "classify": 2,
         "implement": 85
       }
@@ -26308,12 +26308,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.opendir",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },
@@ -28984,12 +28986,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.opendirSync",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },
@@ -29688,12 +29692,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.Dir",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },
@@ -29713,12 +29719,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.dir.close",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },
@@ -29763,12 +29771,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.dir.closeSync",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },
@@ -29788,12 +29798,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.dir.read",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },
@@ -29838,12 +29850,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.dir.readSync",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },
@@ -29863,12 +29877,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.dir",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },
@@ -29938,12 +29954,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.path",
+          "tests": [
+            "tests/corpus/5544-fs-opendir.cjs"
+          ]
         }
       }
     },

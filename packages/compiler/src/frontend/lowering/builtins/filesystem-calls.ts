@@ -686,6 +686,56 @@ export function lowerFsPromisesEncodedRead(
   };
 }
 
+/** opendirSync(path[, options]) and fs.promises.opendir: the options are a
+ * literal `{ bufferSize?: <number>, encoding?: "utf8" }`. bufferSize
+ * defaults to Node's 32 and is checked by the runtime after the directory
+ * opens, as Node's Dir constructor does; other options (recursive, other
+ * encodings) have no lowering. */
+export function lowerFsOpendirCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  fn: BuiltinModuleFn,
+  member: string,
+  loc: SrcLoc,
+): IrExpr {
+  if (
+    expr.arguments.length < 1 ||
+    expr.arguments.length > 2 ||
+    expr.arguments.some(ts.isSpreadElement)
+  ) {
+    lowerer.noLowering(`${member} with ${expr.arguments.length} arguments`, expr);
+  }
+  const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+  let bufferSize: IrExpr = { kind: "numLit", value: 32, type: F64, loc };
+  const optsNode = expr.arguments[1];
+  if (optsNode && !(ts.isIdentifier(optsNode) && optsNode.text === "undefined")) {
+    const fence = (): never =>
+      lowerer.noLowering(
+        `${member} options beyond { bufferSize, encoding: "utf8" }`,
+        optsNode,
+        "pass an object literal with a numeric bufferSize and a utf8 encoding; recursive walks and other encodings have no lowering",
+      );
+    if (!ts.isObjectLiteralExpression(optsNode)) fence();
+    for (const property of (optsNode as ts.ObjectLiteralExpression).properties) {
+      const option = optionMember(property);
+      if (!option) fence();
+      else if (option.name === "bufferSize")
+        bufferSize = lowerer.lowerExprExpecting(option.value, F64);
+      else if (option.name === "encoding") {
+        const encoding = lowerer.typeOf(option.value);
+        if (
+          !(
+            encoding.isStringLiteralType() &&
+            (encoding.value === "utf8" || encoding.value === "utf-8")
+          )
+        )
+          fence();
+      } else fence();
+    }
+  }
+  return { kind: "libCall", fn: fn.fn, args: [path, bufferSize], type: fn.result, loc };
+}
+
 // mkdirSync(p, options): the lowered options form is a literal
 // `{ recursive?: <boolean literal>, mode?: <number> }` — recursive:
 // true routes to Node's recursive algorithm (the mode, when present,

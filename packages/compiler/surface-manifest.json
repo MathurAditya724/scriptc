@@ -1000,6 +1000,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.opendirSync",
+      "kind": "node-builtin",
+      "name": "fs.opendirSync",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.promises",
       "kind": "node-builtin",
       "name": "fs/promises",
@@ -1082,6 +1088,12 @@
       "id": "node-builtin.fs.promises.open",
       "kind": "node-builtin",
       "name": "fs/promises.open",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.promises.opendir",
+      "kind": "node-builtin",
+      "name": "fs/promises.opendir",
       "status": "static"
     },
     {

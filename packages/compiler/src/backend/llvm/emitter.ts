@@ -4799,6 +4799,7 @@ export class LlEmitter {
       case "searchParams":
       case "stats":
       case "fileHandle":
+      case "dir":
       case "spawnRes":
       case "child":
       case "childStream":

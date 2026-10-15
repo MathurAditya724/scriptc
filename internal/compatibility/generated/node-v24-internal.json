@@ -326,9 +326,9 @@
       "apiEntries": 280,
       "static": {
         "supported": 7,
-        "partial": 166,
+        "partial": 175,
         "refused": 0,
-        "not-implemented": 107,
+        "not-implemented": 98,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -43759,6 +43759,7 @@
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/5542-fs-promises-parity.cjs",
           "tests/corpus/5543-fs-promises-typed.ts",
+          "tests/corpus/5544-fs-opendir.cjs",
           "tests/corpus/5548-fs-callback-arguments.cjs",
           "tests/corpus/5549-fs-callback-option-checks.cjs",
           "tests/corpus/fs-native-realpath.ts",
@@ -45092,8 +45093,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.opendir",
+        "tests": [
+          "tests/corpus/5544-fs-opendir.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -47860,8 +47864,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.opendirSync",
+        "tests": [
+          "tests/corpus/5544-fs-opendir.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -48562,8 +48569,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.Dir",
+        "tests": [
+          "tests/corpus/5544-fs-opendir.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -48585,8 +48595,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dir.close",
+        "tests": [
+          "tests/corpus/5544-fs-opendir.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -48631,8 +48644,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dir.closeSync",
+        "tests": [
+          "tests/corpus/5544-fs-opendir.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -48654,8 +48670,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dir.read",
+        "tests": [
+          "tests/corpus/5544-fs-opendir.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -48700,8 +48719,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dir.readSync",
+        "tests": [
+          "tests/corpus/5544-fs-opendir.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -48723,8 +48745,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dir",
+        "tests": [
+          "tests/corpus/5544-fs-opendir.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -48792,8 +48817,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.path",
+        "tests": [
+          "tests/corpus/5544-fs-opendir.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
