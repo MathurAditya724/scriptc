@@ -53,9 +53,17 @@ show("Buffer offset 16", () => {
   const view = randomFillSync(Buffer.alloc(64), 16);
   return touched(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
 });
+// The fractional offset fills bytes 17 to 32, so the last group holds a
+// single random byte, which is zero 1 time in 256: the groups OR over
+// eight fills.
 show("u16 fractional offset", () => {
-  const view = randomFillSync(new Uint16Array(32), 8.5, 8);
-  return touched(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+  const seen = new Uint8Array(64);
+  for (let run = 0; run < 8; run++) {
+    const view = randomFillSync(new Uint16Array(32), 8.5, 8);
+    const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    for (let i = 0; i < bytes.length; i++) seen[i] |= bytes[i]!;
+  }
+  return touched(seen);
 });
 const same = new Uint32Array(8);
 show("identity", () => String(randomFillSync(same) === same));
