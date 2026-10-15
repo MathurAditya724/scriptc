@@ -1341,6 +1341,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     result: VOID,
   },
   "dns.lookup": { argTypes: [STRING, F64, null], result: VOID },
+  /** Node's argument forms with dyn callbacks: lookup(hostname, options,
+   * callback) and lookupService(address, port, callback). */
+  "dns.lookupDyn": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
+  "dns.lookupService": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
+  "dns.getServers": { argTypes: [], result: DYN },
+  "dns.getDefaultResultOrder": { argTypes: [], result: STRING },
+  "dns.setDefaultResultOrder": { argTypes: [DYN], result: VOID },
   // node:test (scr_test.c). Bodies are program-dependent closures (0 or
   // 1 testCtx param, void or Promise<void> result — the spoke pinned the
   // shape): null slots. sub's result is the settled Promise<void> the

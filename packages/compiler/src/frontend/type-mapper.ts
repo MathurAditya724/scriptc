@@ -2976,6 +2976,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // PromiseFulfilledResult precedent). RemoteInfo's 'IPv4' | 'IPv6'
   // family widens to string here; the runtime only ever answers "IPv4"
   // (udp4 is the one lowered socket type).
+  // dns.lookup's all: true entries: { address, family }.
+  if (isStdlibInterface("LookupAddress")) {
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "address", type: STRING },
+          { name: "family", type: F64 },
+        ],
+        false,
+        undefined,
+        ["address", "family"],
+      ),
+    };
+  }
   // child_process.ExecFileSyncOptionsWithStringEncoding: the exec-options
   // interface interned explicitly on the AddressInfo pattern, so a TYPED
   // options value (`const commandOptions: ExecFileSyncOptions... = {...}`,
