@@ -6671,6 +6671,8 @@
             "tests/corpus/5436-crypto-hash-names.js",
             "tests/corpus/5437-crypto-hmac-algorithms.ts",
             "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -6704,6 +6706,8 @@
             "tests/corpus/5436-crypto-hash-names.js",
             "tests/corpus/5437-crypto-hmac-algorithms.ts",
             "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -7312,6 +7316,8 @@
             "tests/corpus/5436-crypto-hash-names.js",
             "tests/corpus/5437-crypto-hmac-algorithms.ts",
             "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -7430,6 +7436,8 @@
             "tests/corpus/5436-crypto-hash-names.js",
             "tests/corpus/5437-crypto-hmac-algorithms.ts",
             "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -7463,6 +7471,8 @@
             "tests/corpus/5436-crypto-hash-names.js",
             "tests/corpus/5437-crypto-hmac-algorithms.ts",
             "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -7656,6 +7666,8 @@
             "tests/corpus/5436-crypto-hash-names.js",
             "tests/corpus/5437-crypto-hmac-algorithms.ts",
             "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -7689,6 +7701,8 @@
             "tests/corpus/5436-crypto-hash-names.js",
             "tests/corpus/5437-crypto-hmac-algorithms.ts",
             "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -7942,6 +7956,8 @@
             "tests/corpus/5436-crypto-hash-names.js",
             "tests/corpus/5437-crypto-hmac-algorithms.ts",
             "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -8950,6 +8966,8 @@
             "tests/corpus/5436-crypto-hash-names.js",
             "tests/corpus/5437-crypto-hmac-algorithms.ts",
             "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -8983,6 +9001,8 @@
             "tests/corpus/5436-crypto-hash-names.js",
             "tests/corpus/5437-crypto-hmac-algorithms.ts",
             "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -9016,6 +9036,8 @@
             "tests/corpus/5436-crypto-hash-names.js",
             "tests/corpus/5437-crypto-hmac-algorithms.ts",
             "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -9049,6 +9071,8 @@
             "tests/corpus/5436-crypto-hash-names.js",
             "tests/corpus/5437-crypto-hmac-algorithms.ts",
             "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -9082,6 +9106,8 @@
             "tests/corpus/5436-crypto-hash-names.js",
             "tests/corpus/5437-crypto-hmac-algorithms.ts",
             "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -9115,6 +9141,8 @@
             "tests/corpus/5436-crypto-hash-names.js",
             "tests/corpus/5437-crypto-hmac-algorithms.ts",
             "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -9148,6 +9176,8 @@
             "tests/corpus/5436-crypto-hash-names.js",
             "tests/corpus/5437-crypto-hmac-algorithms.ts",
             "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }

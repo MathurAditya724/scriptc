@@ -165,6 +165,8 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5437-crypto-hmac-algorithms.ts",
     "5438-crypto-kdf-digests.ts",
     "5439-crypto-kdf-callbacks.js",
+    "5440-crypto-hash-encodings.js",
+    "5441-crypto-hash-output-length.ts",
     "4031-event-emitter-long-tuples.ts",
     "2700-wasi-core.ts",
     "local-union-storage.ts",

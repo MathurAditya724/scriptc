@@ -2241,7 +2241,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.hashDigestStr": { argTypes: [STRING, STRING, STRING], result: STRING },
   "crypto.hashDigestBytes": { argTypes: [STRING, BYTES_U8, STRING], result: STRING },
   /** First-class static Hash/Hmac handles. Constructors validate the
-   * runtime algorithm string (MD5, SHA-1, or SHA-2); update returns the same
+   * runtime algorithm string (every digest Node 24 lists); update returns the same
    * handle by retained identity, copy snapshots Hash state, and digest
    * finalizes the handle and returns either a Buffer or encoded string. */
   "crypto.native": { argTypes: [], result: DYN },
@@ -2257,6 +2257,19 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.hashDigestBuffer": { argTypes: [CRYPTOHASH_T], result: BYTES_U8 },
   "crypto.hmacDigestString": { argTypes: [CRYPTOHMAC_T, STRING], result: STRING },
   "crypto.hmacDigestBuffer": { argTypes: [CRYPTOHMAC_T], result: BYTES_U8 },
+  /** The option and any-value forms, with Node's checks at run time. The
+   * Dyn digests return a string or a Buffer, and crypto.hash's Dyn form
+   * either one by its outputEncoding. */
+  "crypto.hashNewOpts": { argTypes: [STRING, DYN], result: CRYPTOHASH_T },
+  "crypto.hmacNewDyn": { argTypes: [STRING, DYN, DYN], result: CRYPTOHMAC_T },
+  "crypto.hashCopyOpts": { argTypes: [CRYPTOHASH_T, DYN], result: CRYPTOHASH_T },
+  "crypto.hashUpdateEnc": { argTypes: [CRYPTOHASH_T, STRING, STRING], result: CRYPTOHASH_T },
+  "crypto.hmacUpdateEnc": { argTypes: [CRYPTOHMAC_T, STRING, STRING], result: CRYPTOHMAC_T },
+  "crypto.hashUpdateDyn": { argTypes: [CRYPTOHASH_T, DYN, DYN], result: CRYPTOHASH_T },
+  "crypto.hmacUpdateDyn": { argTypes: [CRYPTOHMAC_T, DYN, DYN], result: CRYPTOHMAC_T },
+  "crypto.hashDigestDyn": { argTypes: [CRYPTOHASH_T, DYN], result: DYN },
+  "crypto.hmacDigestDyn": { argTypes: [CRYPTOHMAC_T, DYN], result: DYN },
+  "crypto.hashOneshot": { argTypes: [STRING, DYN, DYN], result: DYN },
   "crypto.timingSafeEqual": { argTypes: [BYTES_U8, BYTES_U8], result: BOOL },
   "crypto.randomFill": { argTypes: [BYTES_U8, F64, F64], result: BYTES_U8 },
   "crypto.randomFillRest": { argTypes: [BYTES_U8, F64], result: BYTES_U8 },
