@@ -57,7 +57,9 @@
 
 /* The HTTP/1 parser has no configurable maxHeaderSize surface yet. Keep its
  * head and trailer block within the existing 64 KiB parser bound, and cap
- * fields too: each stored field owns three strings and three growing arrays. */
+ * fields per block at Node's default of 1000 (server.maxHeadersCount unset):
+ * each stored field owns three strings and three growing arrays. A server
+ * answers 431 past either bound, like Node. */
 #define SCR_HTTP_MAX_HEADER_BYTES 65536u
 #define SCR_HTTP_MAX_HEADER_FIELDS 1000u
 
@@ -243,6 +245,14 @@ struct ScrHttpReq {
   bool drain_queued;
   char *pend;
   size_t pend_len, pend_cap;
+  /* HTTP/1 server requests start paused like Node's IncomingMessage: body
+   * bytes and the completed body's 'end' are held in pend/end_pending until
+   * a consumer starts the flow (a 'data' listener, pipe() or resume()), or
+   * until the response finishes and the unread request is dumped. */
+  bool gated;     /* holds until flowing */
+  bool flowing;   /* a consumer or the dump started the flow */
+  bool received;  /* the whole body arrived (req.complete) */
+  bool body_seen; /* body bytes arrived */
   bool destroyed; /* req.destroy()/the teardown ran — req.destroyed */
   ScrNetLs aborted_ls; /* req.on('aborted') — the h2 compat event */
 };
@@ -521,6 +531,8 @@ ScrStr *scr_http_req_header(ScrHttpReq *r, ScrStr *name) {
  * backpressure — divergence 54's stream model); the body's natural end
  * ends the destination, Node's pipe default. A body that already ended
  * ends the destination NOW (nothing more will flow). */
+static void scr_http_req_consume(ScrHttpReq *r);
+
 void scr_http_req_pipe_res(ScrHttpReq *r, ScrHttpRes *dst /*borrowed*/) {
   if (r->ended) {
     scr_http_res_end(dst);
@@ -528,6 +540,7 @@ void scr_http_req_pipe_res(ScrHttpReq *r, ScrHttpRes *dst /*borrowed*/) {
   }
   if (r->pipe_res) scr_http_res_release(r->pipe_res);
   r->pipe_res = scr_http_res_retain(dst);
+  scr_http_req_consume(r);
 }
 
 /* socket.pipe(res) — the extended-CONNECT bridge leg: a native reader on
@@ -576,6 +589,7 @@ void scr_http_req_pipe_client(ScrHttpReq *r, ScrHttpClientReq *dst /*borrowed*/)
   }
   if (r->pipe_client) scr_http_client_release(r->pipe_client);
   r->pipe_client = scr_http_client_retain(dst);
+  scr_http_req_consume(r);
 }
 
 void scr_http_req_pipe_sock(ScrHttpReq *r, ScrNetSocket *dst /*borrowed*/) {
@@ -585,6 +599,7 @@ void scr_http_req_pipe_sock(ScrHttpReq *r, ScrNetSocket *dst /*borrowed*/) {
   }
   if (r->pipe_sock) scr_net_sock_release(r->pipe_sock);
   r->pipe_sock = scr_net_sock_retain(dst);
+  scr_http_req_consume(r);
 }
 
 void scr_http_req_on_data(ScrHttpReq *r, ScrClosure *cb /*moves*/, ScrNetDataFn fn, bool once) {
@@ -593,6 +608,7 @@ void scr_http_req_on_data(ScrHttpReq *r, ScrClosure *cb /*moves*/, ScrNetDataFn 
     return;
   }
   scr_net_ls_add(&r->data_ls, cb, (void *)fn, once);
+  scr_http_req_consume(r);
 }
 
 void scr_http_req_on_end(ScrHttpReq *r, ScrClosure *cb /*moves*/, bool once) {
@@ -619,17 +635,48 @@ static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n);
 static void scr_http_res_cork_flush(ScrHttpRes *r);
 #define SCR_HTTP_EMIT_REQ_DRAIN_K 6
 
-/* resume(): a flow-control no-op unless pause() held delivery — then the
- * buffered bytes (and a deferred 'end') drain through the emit queue,
- * never the resuming stack. This parser always consumes body bytes
- * (SEMANTICS.md; Node requires the stream to flow). */
-void scr_http_req_resume(ScrHttpReq *r) {
-  if (!r->paused) return;
+static bool scr_http_req_holding(const ScrHttpReq *r) {
+  return r->paused || (r->gated && !r->flowing);
+}
+
+static void scr_http_req_queue_drain(ScrHttpReq *r) {
+  if (r->drain_queued) return;
+  r->drain_queued = true;
+  scr_http_emit_push(SCR_HTTP_EMIT_REQ_DRAIN_K, scr_http_req_retain(r));
+}
+
+/* Starts (or restarts) the flow: held bytes and a deferred 'end' drain
+ * through the emit queue, never the resuming stack. */
+static void scr_http_req_flow(ScrHttpReq *r) {
   r->paused = false;
-  if ((r->pend_len > 0 || r->end_pending) && !r->drain_queued) {
-    r->drain_queued = true;
-    scr_http_emit_push(SCR_HTTP_EMIT_REQ_DRAIN_K, scr_http_req_retain(r));
-  }
+  r->flowing = true;
+  if (r->pend_len > 0 || r->end_pending) scr_http_req_queue_drain(r);
+}
+
+/* A 'data' listener or pipe() starts the flow unless pause() stopped it,
+ * like Node's `if (state.flowing !== false) this.resume()`. */
+static void scr_http_req_consume(ScrHttpReq *r) {
+  if (r->gated && !r->paused && !r->flowing) scr_http_req_flow(r);
+}
+
+/* resume(): releases what pause() or the initial paused state held. This
+ * parser always consumes body bytes from the socket (SEMANTICS.md); held
+ * bytes buffer in memory. */
+void scr_http_req_resume(ScrHttpReq *r) {
+  if (!scr_http_req_holding(r)) return;
+  scr_http_req_flow(r);
+}
+
+/* Node's resOnFinish: a request nothing consumed is dumped. Its 'data'
+ * listeners are removed, held bytes are discarded and the stream flows,
+ * so 'end' fires once the body is complete. */
+static void scr_http_req_dump(ScrHttpReq *r) {
+  scr_net_ls_drop(&r->data_ls);
+  free(r->pend);
+  r->pend = NULL;
+  r->pend_len = r->pend_cap = 0;
+  r->paused = false;
+  r->flowing = true;
 }
 
 /* pause(): delivery holds until resume() (scr_http_req_deliver buffers;
@@ -707,8 +754,8 @@ void scr_http_req_on_aborted(ScrHttpReq *r, ScrClosure *cb /*moves*/, bool once)
  * req cannot cycle past the body). */
 static void scr_http_req_finish(ScrHttpReq *r, bool fire) {
   if (r->ended) return;
-  if (fire && r->paused) {
-    /* pause() holds 'end' too — resume()'s drain finishes the body */
+  if (fire && scr_http_req_holding(r)) {
+    /* a held body holds 'end' too — the drain finishes the body */
     r->end_pending = true;
     return;
   }
@@ -2201,12 +2248,15 @@ typedef struct ScrHttpConn {
   size_t len, cap;
   ScrHttpParseState state;
   size_t body_remaining;
-  size_t head_bytes, head_fields;
+  size_t head_bytes;
   size_t trailer_bytes, trailer_fields;
   ScrHttpReq *req; /* the in-flight request (server) or response (client),
                     * +1; NULL between requests / before the head */
   ScrHttpRes *res; /* +1; server mode only */
   bool close_after; /* the response said Connection: close */
+  bool pumping; /* inside scr_http_conn_pump */
+  bool res_close_deferred; /* the response finished inside the pump while
+                            * the request body was still arriving */
   bool client_mode; /* RESPONSE parsing: status line, EOF bodies */
   bool client_resp_started; /* the status line parsed (conn-level twin of
                              * the client's response_started — the pump
@@ -2219,8 +2269,9 @@ typedef struct ScrHttpConn {
 static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len);
 static void scr_http_client_head_overflow(ScrHttpConn *conn);
 
-/* The trailer budget includes the request/response head and every trailer
- * line on the wire, including the terminating blank line. Counters live on
+/* The trailer byte budget includes the request/response head and every
+ * trailer line on the wire, including the terminating blank line; the field
+ * count covers the trailer block alone, like Node's. Counters live on
  * the connection because an early response can release conn->req while the
  * parser must continue consuming and validating its incoming chunk stream. */
 static bool scr_http_conn_trailer_fits(const ScrHttpConn *conn, size_t bytes, bool field) {
@@ -2228,10 +2279,7 @@ static bool scr_http_conn_trailer_fits(const ScrHttpConn *conn, size_t bytes, bo
       conn->trailer_bytes > SCR_HTTP_MAX_HEADER_BYTES - conn->head_bytes) return false;
   size_t remaining = SCR_HTTP_MAX_HEADER_BYTES - conn->head_bytes - conn->trailer_bytes;
   if (bytes > remaining) return false;
-  if (!field) return true;
-  if (conn->head_fields > SCR_HTTP_MAX_HEADER_FIELDS ||
-      conn->trailer_fields >= SCR_HTTP_MAX_HEADER_FIELDS - conn->head_fields) return false;
-  return true;
+  return !field || conn->trailer_fields < SCR_HTTP_MAX_HEADER_FIELDS;
 }
 
 /* The server-side ctx: the 'request' listener list, shared by every
@@ -2343,17 +2391,53 @@ static void scr_http_conn_drop_request(ScrHttpConn *conn, bool fire_end) {
   }
 }
 
+/* Ends a request whose response already finished and detaches the
+ * exchange; the queued emits hold their own references. Node emits the
+ * request's 'end' after the response's 'close' when body bytes arrived,
+ * and before it otherwise. */
+static void scr_http_conn_end_after_response(ScrHttpConn *conn) {
+  ScrHttpReq *r = conn->req;
+  bool before_close = !r->body_seen;
+  conn->res_close_deferred = false;
+  r->received = true;
+  r->end_pending = true;
+  if (before_close) scr_http_req_queue_drain(r);
+  if (conn->res) scr_http_queue_res_close(conn->res);
+  if (!before_close) scr_http_req_queue_drain(r);
+  scr_http_queue_req_close(r);
+  conn->req = NULL;
+  scr_http_req_release(r);
+  if (conn->res) {
+    conn->res->conn = NULL;
+    scr_http_res_release(conn->res);
+    conn->res = NULL;
+  }
+}
+
 /* The response finished: with keep-alive the parser waits for the next
  * request (pipelined bytes may already sit in the buffer — the read path
- * keeps parsing); without it the socket half-closes, Node's teardown. */
+ * keeps parsing); without it the socket half-closes, Node's teardown. A
+ * request nothing consumed is dumped first. While its body is still
+ * arriving the exchange stays attached, and scr_http_conn_body_done ends
+ * the request when the body completes. */
 static void scr_http_conn_response_finished(ScrHttpConn *conn, bool keep_alive) {
-  bool fire_end = conn->req != NULL && conn->state == SCR_HTTP_HEAD;
-  /* the handler answered before consuming the whole body: the request
-   * settles quietly (Node destroys unconsumed bodies on 'close') */
-  scr_http_conn_drop_request(conn, fire_end && false);
-  if (!keep_alive || conn->close_after) {
-    scr_net_sock_end(conn->sock);
+  ScrHttpReq *r = conn->req;
+  bool close = !keep_alive || conn->close_after;
+  if (r != NULL && !r->ended && r->gated && !r->flowing) scr_http_req_dump(r);
+  if (r != NULL && !r->ended && conn->state != SCR_HTTP_HEAD) {
+    /* The rest of the body may already sit in the buffer: inside the pump
+     * the response's 'close' waits until the pump stops, so a body that
+     * completes there orders its 'end' first. */
+    if (conn->pumping) conn->res_close_deferred = true;
+    else scr_http_queue_res_close(conn->res);
+  } else if (r != NULL && !r->ended) {
+    /* the body is complete (a request without one completes after the
+     * 'request' listeners return) */
+    scr_http_conn_end_after_response(conn);
+  } else {
+    scr_http_conn_drop_request(conn, false);
   }
+  if (close) scr_net_sock_end(conn->sock);
 }
 
 /* One parsed header line (name lowercased into the req). */
@@ -2406,16 +2490,26 @@ static void scr_http_req_add_trailer(ScrHttpReq *r, const char *name, size_t nle
   free(lower);
 }
 
-/* Malformed input: answer 400 and close. Node's lenient spots (bare LF
- * line endings, obsolete folding) are NOT accepted; SEMANTICS.md states
- * the bound. */
-static void scr_http_conn_bad_request(ScrHttpConn *conn) {
-  static const char bad[] =
-      "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-  scr_net_sock_write_native(conn->sock, bad, sizeof bad - 1);
+/* Parser errors answer Node's fixed responses and close: 400 for
+ * malformed input, 431 when a head or trailer block exceeds the field or
+ * byte bound. Node's lenient spots (bare LF line endings, obsolete
+ * folding) are NOT accepted; SEMANTICS.md states the bound. */
+static void scr_http_conn_reject(ScrHttpConn *conn, const char *response, size_t len) {
+  scr_net_sock_write_native(conn->sock, response, len);
   scr_net_sock_end(conn->sock);
   conn->len = 0;
   scr_http_conn_drop_request(conn, false);
+}
+
+static void scr_http_conn_bad_request(ScrHttpConn *conn) {
+  static const char bad[] = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n";
+  scr_http_conn_reject(conn, bad, sizeof bad - 1);
+}
+
+static void scr_http_conn_header_overflow(ScrHttpConn *conn) {
+  static const char overflow[] =
+      "HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n";
+  scr_http_conn_reject(conn, overflow, sizeof overflow - 1);
 }
 
 /* Node answers a missing HTTP/1.1 Host through ServerResponse rather than
@@ -2436,9 +2530,10 @@ static void scr_http_conn_missing_host(ScrHttpConn *conn) {
  * feed, and the h2 compat DATA-frame feed). */
 static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n) {
   if (!r || n == 0 || r->ended) return;
-  if (r->paused) {
-    /* req.pause(): the parser keeps consuming (memory is the buffer —
-     * a documented bound), delivery waits for resume()'s drain */
+  r->body_seen = true;
+  if (scr_http_req_holding(r)) {
+    /* paused: the parser keeps consuming (memory is the buffer — a
+     * documented bound), delivery waits for the drain */
     if (r->pend_len + n > r->pend_cap) {
       size_t cap = r->pend_cap ? r->pend_cap : 4096;
       while (cap < r->pend_len + n) cap *= 2;
@@ -2493,7 +2588,13 @@ static void scr_http_conn_body_done(ScrHttpConn *conn) {
     return;
   }
   ScrHttpReq *r = conn->req;
+  if (r && !r->ended && conn->res && conn->res->finished) {
+    /* the response finished while the body was arriving */
+    scr_http_conn_end_after_response(conn);
+    return;
+  }
   if (r) {
+    r->received = true;
     scr_http_req_retain(r);
     scr_http_req_finish(r, true);
     scr_http_req_release(r);
@@ -2506,8 +2607,9 @@ static void scr_http_conn_body_done(ScrHttpConn *conn) {
 }
 
 /* Parses one complete request HEAD sitting at buf[0..head_len). Returns
- * false on malformed input (already answered). */
-static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len) {
+ * false on malformed input, with *overflow set when the head carries more
+ * fields than the parser accepts. */
+static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *overflow) {
   const char *buf = conn->buf;
   const char *line_end = memchr(buf, '\r', head_len);
   if (!line_end || line_end + 1 >= buf + head_len || line_end[1] != '\n') return false;
@@ -2527,6 +2629,7 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len) {
   if (!req) scr_http_oom();
   req->rc = 1;
   req->status = -1; /* Node: statusCode is undefined on server requests */
+  req->gated = true;
   req->join_dup = conn->srv != NULL && conn->srv->join_dup;
   req->sock = scr_net_sock_retain(conn->sock);
 #ifdef SCR_RC_AUDIT
@@ -2563,11 +2666,11 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len) {
     p = eol + 2;
   }
   if (!ok || req->nheaders > SCR_HTTP_MAX_HEADER_FIELDS) {
+    *overflow = ok;
     scr_http_req_release(req);
     return false;
   }
   conn->head_bytes = head_len;
-  conn->head_fields = req->nheaders;
   conn->trailer_bytes = 0;
   conn->trailer_fields = 0;
 
@@ -2763,14 +2866,14 @@ static void scr_http_conn_pump(ScrHttpConn *conn) {
       if (!hit) {
         if (conn->len > SCR_HTTP_MAX_HEADER_BYTES) {
           if (conn->client_mode) scr_http_client_head_overflow(conn);
-          else scr_http_conn_bad_request(conn); /* header cap */
+          else scr_http_conn_header_overflow(conn);
         }
         return;
       }
       size_t head_len = (size_t)(hit - conn->buf) + 4;
       if (head_len > SCR_HTTP_MAX_HEADER_BYTES) {
         if (conn->client_mode) scr_http_client_head_overflow(conn);
-        else scr_http_conn_bad_request(conn);
+        else scr_http_conn_header_overflow(conn);
         return;
       }
       if (conn->client_mode) {
@@ -2784,8 +2887,10 @@ static void scr_http_conn_pump(ScrHttpConn *conn) {
        * response may still be streaming (keep-alive pipelining waits) */
       if (conn->res != NULL && !conn->res->finished) return;
       if (conn->res != NULL) scr_http_conn_drop_request(conn, false);
-      if (!scr_http_conn_parse_head(conn, head_len)) {
-        scr_http_conn_bad_request(conn);
+      bool overflow = false;
+      if (!scr_http_conn_parse_head(conn, head_len, &overflow)) {
+        if (overflow) scr_http_conn_header_overflow(conn);
+        else scr_http_conn_bad_request(conn);
         return;
       }
       continue;
@@ -2878,7 +2983,7 @@ static void scr_http_conn_pump(ScrHttpConn *conn) {
       if (conn->buf[0] == '\r' && conn->buf[1] == '\n') {
         if (!scr_http_conn_trailer_fits(conn, 2, false)) {
           if (conn->client_mode) scr_http_client_head_overflow(conn);
-          else scr_http_conn_bad_request(conn);
+          else scr_http_conn_header_overflow(conn);
           return;
         }
         memmove(conn->buf, conn->buf + 2, conn->len - 2);
@@ -2897,7 +3002,7 @@ static void scr_http_conn_pump(ScrHttpConn *conn) {
       if (!eol) {
         if (!scr_http_conn_trailer_fits(conn, conn->len, false)) {
           if (conn->client_mode) scr_http_client_head_overflow(conn);
-          else scr_http_conn_bad_request(conn);
+          else scr_http_conn_header_overflow(conn);
         }
         return;
       }
@@ -2925,7 +3030,7 @@ static void scr_http_conn_pump(ScrHttpConn *conn) {
       size_t consumed = (size_t)(eol - conn->buf) + 2;
       if (!scr_http_conn_trailer_fits(conn, consumed, true)) {
         if (conn->client_mode) scr_http_client_head_overflow(conn);
-        else scr_http_conn_bad_request(conn);
+        else scr_http_conn_header_overflow(conn);
         return;
       }
       /* An early server response releases the request but deliberately leaves
@@ -2957,7 +3062,13 @@ static void scr_http_conn_data(void *ctx, const char *buf, size_t n) {
   }
   memcpy(conn->buf + conn->len, buf, n);
   conn->len += n;
+  conn->pumping = true;
   scr_http_conn_pump(conn);
+  conn->pumping = false;
+  if (conn->res_close_deferred) {
+    conn->res_close_deferred = false;
+    if (conn->res) scr_http_queue_res_close(conn->res);
+  }
 }
 
 static void scr_http_client_eof(ScrHttpConn *conn);
@@ -3200,7 +3311,7 @@ ScrStr *scr_http_req_http_version(ScrHttpReq *r) {
 double scr_http_req_http_version_major(ScrHttpReq *r) { return r->http2 ? 2 : 1; }
 double scr_http_req_http_version_minor(ScrHttpReq *r) { return r->http2 || r->http10 ? 0 : 1; }
 bool scr_http_req_aborted_flag(ScrHttpReq *r) { return r->aborted; }
-bool scr_http_req_complete(ScrHttpReq *r) { return r->ended && !r->aborted; }
+bool scr_http_req_complete(ScrHttpReq *r) { return (r->ended || r->received) && !r->aborted; }
 
 /* The stream died with the response side open: 'aborted' fires NOW (the
  * teardown macrotask, Node's position), then the close rides the sweep. */
@@ -4051,7 +4162,6 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len) {
     return false;
   }
   conn->head_bytes = head_len;
-  conn->head_fields = res->nheaders;
   conn->trailer_bytes = 0;
   conn->trailer_fields = 0;
 

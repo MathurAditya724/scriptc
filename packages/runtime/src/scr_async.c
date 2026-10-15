@@ -2505,6 +2505,56 @@ ScrPromise *scr_fsp_chmod(ScrStr *path, double mode) {
   return scr_promise_settled_void();
 }
 
+ScrPromise *scr_fsp_chown(ScrStr *path, double uid, double gid) {
+  scr_fs_chown(path, uid, gid);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_lchown(ScrStr *path, double uid, double gid) {
+  scr_fs_lchown(path, uid, gid);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_access(ScrStr *path, double mode) {
+  scr_fs_access(path, mode);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_append_file(ScrStr *path, ScrStr *data) {
+  scr_fs_append_file(path, data);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_append_file_bytes(ScrStr *path, ScrBytes *data) {
+  scr_fs_append_file_bytes(path, data);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_copyfile(ScrStr *src, ScrStr *dest) {
+  scr_fs_copyfile(src, dest);
+  return scr_promise_settled_void();
+}
+
+/* readFile(path, encoding | { encoding }): the encoding is checked first,
+ * so an unknown name rejects before the read. */
+ScrPromise *scr_fsp_read_file_encoded(ScrStr *path, ScrStr *encoding) {
+  return scr_promise_settled_str(scr_fs_read_file_encoded(path, encoding));
+}
+
+ScrPromise *scr_fsp_mkdtemp(ScrStr *prefix) {
+  return scr_promise_settled_str(scr_fs_mkdtemp_async(prefix));
+}
+
+ScrPromise *scr_fsp_rmdir(ScrStr *path) {
+  scr_fs_rmdir(path);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_truncate(ScrStr *path, double length) {
+  scr_fs_truncate(path, length);
+  return scr_promise_settled_void();
+}
+
 ScrPromise *scr_fsp_utimes(const ScrDyn *path, const ScrDyn *atime, const ScrDyn *mtime) {
   scr_fs_utimes_checked(path, atime, mtime);
   return scr_promise_settled_void();

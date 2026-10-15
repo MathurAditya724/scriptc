@@ -912,6 +912,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.fchownSync",
+      "kind": "node-builtin",
+      "name": "fs.fchownSync",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.fdatasyncSync",
       "kind": "node-builtin",
       "name": "fs.fdatasyncSync",
@@ -945,6 +951,12 @@
       "id": "node-builtin.fs.globSync",
       "kind": "node-builtin",
       "name": "fs.globSync",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.lchownSync",
+      "kind": "node-builtin",
+      "name": "fs.lchownSync",
       "status": "static"
     },
     {
@@ -991,15 +1003,45 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.fs.promises.access",
+      "kind": "node-builtin",
+      "name": "fs/promises.access",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.promises.appendFile",
+      "kind": "node-builtin",
+      "name": "fs/promises.appendFile",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.promises.chmod",
       "kind": "node-builtin",
       "name": "fs/promises.chmod",
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.promises.chown",
+      "kind": "node-builtin",
+      "name": "fs/promises.chown",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.promises.copyFile",
+      "kind": "node-builtin",
+      "name": "fs/promises.copyFile",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.promises.glob",
       "kind": "node-builtin",
       "name": "fs/promises.glob",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.promises.lchown",
+      "kind": "node-builtin",
+      "name": "fs/promises.lchown",
       "status": "static"
     },
     {
@@ -1024,6 +1066,12 @@
       "id": "node-builtin.fs.promises.mkdir",
       "kind": "node-builtin",
       "name": "fs/promises.mkdir",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.promises.mkdtemp",
+      "kind": "node-builtin",
+      "name": "fs/promises.mkdtemp",
       "status": "static"
     },
     {
@@ -1069,6 +1117,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.promises.rmdir",
+      "kind": "node-builtin",
+      "name": "fs/promises.rmdir",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.promises.stat",
       "kind": "node-builtin",
       "name": "fs/promises.stat",
@@ -1084,6 +1138,12 @@
       "id": "node-builtin.fs.promises.symlink",
       "kind": "node-builtin",
       "name": "fs/promises.symlink",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.promises.truncate",
+      "kind": "node-builtin",
+      "name": "fs/promises.truncate",
       "status": "static"
     },
     {
@@ -1186,6 +1246,12 @@
       "id": "node-builtin.fs.symlinkSync",
       "kind": "node-builtin",
       "name": "fs.symlinkSync",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.truncateSync",
+      "kind": "node-builtin",
+      "name": "fs.truncateSync",
       "status": "static"
     },
     {
