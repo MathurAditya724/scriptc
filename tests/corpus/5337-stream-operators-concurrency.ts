@@ -22,13 +22,17 @@ await new Promise<void>((done) => {
   setImmediate(() => log.push("immediate"));
 });
 
-// concurrency 2 keeps output order; take() destroys its source
+// concurrency 2 keeps output order; take() destroys its source. "a" is
+// released only after "c" ends and the others resume on setImmediate, so
+// the order does not depend on timer precision.
 const log: string[] = [];
-const wait = (ms: number): Promise<void> => new Promise<void>((r) => setTimeout(r, ms));
+const gate = Promise.withResolvers<void>();
 const out = Readable.from(["a", "b", "c", "d"]).map(async (c: string) => {
   log.push(`start ${c}`);
-  await wait(c === "a" ? 20 : 5);
+  if (c === "a") await gate.promise;
+  else await new Promise<void>((r) => setImmediate(r));
   log.push(`end ${c}`);
+  if (c === "c") gate.resolve();
   return c + c;
 }, { concurrency: 2 });
 for await (const v of out) log.push(`got ${String(v)}`);
