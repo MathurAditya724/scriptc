@@ -447,6 +447,54 @@ static ScrArr *schema_parse(const char *text) {
   return list;
 }
 
+/* Member names a direct text comparison must not match: a quote or a
+ * backslash in a name is written escaped in JSON text. */
+typedef struct {
+  size_t rc;
+  double quoted, slashed;
+} TestPair;
+static int test_pairs_live = 0;
+static void *test_pair_new(void) {
+  TestPair *pair = calloc(1, sizeof *pair);
+  assert(pair);
+  pair->rc = 1;
+  test_pairs_live++;
+  return pair;
+}
+static void test_pair_release(void *ptr) {
+  TestPair *pair = ptr;
+  if (!pair || --pair->rc) return;
+  test_pairs_live--;
+  free(pair);
+}
+static const ScrJsonSchemaField test_pair_fields[] = {
+    {"a\"b", 3, offsetof(TestPair, quoted), &test_f64},
+    {"c\\d", 3, offsetof(TestPair, slashed), &test_f64},
+};
+static const ScrJsonSchema test_pair = {SCR_JSCHEMA_REC, 2, test_pair_fields, NULL, test_pair_new, NULL, test_pair_release};
+
+static TestPair *pair_parse(const char *text) {
+  ScrStr *input = scr_str_new(text, strlen(text));
+  TestPair *pair = scr_json_parse_schema(input, &test_pair);
+  scr_str_release(input);
+  assert(!scr_exc_pending());
+  return pair;
+}
+
+static void json_schema_special_names(void) {
+  TestPair *pair = pair_parse("{\"a\\\"b\":1,\"c\\\\d\":2}");
+  assert(pair && pair->quoted == 1 && pair->slashed == 2);
+  test_pair_release(pair);
+  pair = pair_parse("{\"c\\\\d\":4,\"a\\u0022b\":3}");
+  assert(pair && pair->quoted == 3 && pair->slashed == 4);
+  test_pair_release(pair);
+  /* Raw bytes equal to a name are not that name: the key ends at the
+   * quote, and a lone backslash starts an escape. */
+  assert(pair_parse("{\"a\"b\":1,\"c\\\\d\":2}") == NULL);
+  assert(pair_parse("{\"a\\\"b\":1,\"c\\d\":2}") == NULL);
+  assert(test_pairs_live == 0);
+}
+
 static void json_schema_parse(void) {
 #ifdef SCR_RC_AUDIT
   long strings = scr_str_live_count();
@@ -496,6 +544,9 @@ static void json_schema_parse(void) {
       "[{\"sku\":\"a\",\"x\":{\"k\" 1},\"qty\":1,\"ok\":true,\"tags\":[]}]",
       "[{\"sku\":\"a\nb\",\"qty\":1,\"ok\":true,\"tags\":[]}]",          /* control */
       "[{\"sku\":\"a\",\"qty\":1,\"ok\":true,\"tags\":[]} {}]",
+      "[{\"sku\":\"a\",\"qty\":1,\"ok\":true,\"tags\":[]},{\"sku\"",   /* key at the end */
+      "[{\"sku\":\"a\",\"qty\":1,\"ok\":true,\"tags\":[]},{\"sk",       /* cut key */
+      "[{\"sku\":\"a\",\"qty\":1,\"ok\":true,\"tags\":[]},{\"sku",      /* unclosed key */
   };
   for (size_t i = 0; i < sizeof declined / sizeof *declined; i++) {
     assert(!schema_parse(declined[i]));
@@ -530,6 +581,7 @@ int main(void) {
   checked_leaf_cycles();
   checked_number_storage();
   json_schema_parse();
+  json_schema_special_names();
   /* Native Set boxes may own headerless scalar/string maps. Collecting an
    * enclosing cycle must neither trace those leaves nor skip their release. */
   for (int i = 0; i < 2000; i++) {

@@ -871,6 +871,44 @@ declare var Response: {
   json(data: unknown, init?: ResponseInit): Response;
   redirect(url: string | URL, status?: number): Response;
 };
+/* Blob and File (node:buffer, also globals): immutable bytes with a
+ * content type. Sources are copied when the Blob is built. */
+interface BlobPropertyBag {
+  endings?: "transparent" | "native";
+  type?: string;
+}
+interface FilePropertyBag extends BlobPropertyBag {
+  lastModified?: number;
+}
+interface Blob {
+  readonly size: number;
+  readonly type: string;
+  slice(start?: number, end?: number, contentType?: string): Blob;
+  text(): Promise<string>;
+  arrayBuffer(): Promise<ArrayBuffer>;
+  bytes(): Promise<Uint8Array>;
+  stream(): ReadableStream<Uint8Array>;
+  textStream(): ReadableStream<string>;
+}
+declare var Blob: {
+  new (
+    sources?: readonly (string | ArrayBuffer | ArrayBufferView | Blob)[],
+    options?: BlobPropertyBag,
+  ): Blob;
+  readonly prototype: Blob;
+};
+interface File extends Blob {
+  readonly name: string;
+  readonly lastModified: number;
+}
+declare var File: {
+  new (
+    sources: readonly (string | ArrayBuffer | ArrayBufferView | Blob)[],
+    fileName: string,
+    options?: FilePropertyBag,
+  ): File;
+  readonly prototype: File;
+};
 interface Request {
   readonly method: string;
   readonly url: string;
@@ -2176,34 +2214,98 @@ declare module "node:url" {
 
 /* node:crypto: the static hashing/MAC/random/key-derivation utility slice. */
 declare module "crypto" {
-  export function randomUUID(): string;
+  export interface RandomUUIDOptions {
+    disableEntropyCache?: boolean | undefined;
+  }
+  export function randomUUID(options?: RandomUUIDOptions): string;
+  export function randomUUIDv7(options?: RandomUUIDOptions): string;
   export function randomBytes(size: number): Buffer;
+  export type BinaryToTextEncoding = "base64" | "base64url" | "hex" | "binary";
+  export type CharacterEncoding = "utf8" | "utf-8" | "utf16le" | "utf-16le" | "latin1";
+  export type LegacyCharacterEncoding = "ascii" | "binary" | "ucs2" | "ucs-2";
+  export type Encoding = BinaryToTextEncoding | CharacterEncoding | LegacyCharacterEncoding;
+  export interface HashOptions {
+    outputLength?: number | undefined;
+  }
   export interface Hash {
-    update(data: string | Uint8Array, inputEncoding?: "utf8" | "utf-8" | "hex" | "base64"): Hash;
+    copy(options?: HashOptions): Hash;
+    update(data: string | ArrayBufferView): Hash;
+    update(data: string, inputEncoding: Encoding): Hash;
     digest(): Buffer;
-    digest(encoding: "hex" | "base64"): string;
-    copy(): Hash;
+    digest(encoding: BinaryToTextEncoding): string;
   }
   export interface Hmac {
-    update(data: string | Uint8Array, inputEncoding?: "utf8" | "utf-8" | "hex" | "base64"): Hmac;
+    update(data: string | ArrayBufferView): Hmac;
+    update(data: string, inputEncoding: Encoding): Hmac;
     digest(): Buffer;
-    digest(encoding: "hex" | "base64"): string;
+    digest(encoding: BinaryToTextEncoding): string;
   }
-  export function createHash(algorithm: string): Hash;
-  export function createHmac(algorithm: string, key: string | Uint8Array): Hmac;
+  export function createHash(algorithm: string, options?: HashOptions): Hash;
+  export function createHmac(
+    algorithm: string,
+    key: BinaryLike,
+    options?: { encoding?: BufferEncoding | undefined },
+  ): Hmac;
+  export interface OneShotDigestOptions {
+    outputEncoding?: BinaryToTextEncoding | "buffer" | undefined;
+    outputLength?: number | undefined;
+  }
+  export interface OneShotDigestOptionsWithStringEncoding extends OneShotDigestOptions {
+    outputEncoding?: BinaryToTextEncoding | undefined;
+  }
+  export interface OneShotDigestOptionsWithBufferEncoding extends OneShotDigestOptions {
+    outputEncoding: "buffer";
+  }
   export function hash(
     algorithm: string,
-    data: string | Uint8Array,
-    outputEncoding?: "hex" | "base64",
+    data: string | ArrayBufferView,
+    options?: OneShotDigestOptionsWithStringEncoding | BinaryToTextEncoding,
   ): string;
-  export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean;
-  export function randomFillSync<T extends Uint8Array>(
+  export function hash(
+    algorithm: string,
+    data: string | ArrayBufferView,
+    options: OneShotDigestOptionsWithBufferEncoding | "buffer",
+  ): Buffer;
+  export function hash(
+    algorithm: string,
+    data: string | ArrayBufferView,
+    options: OneShotDigestOptions | BinaryToTextEncoding | "buffer",
+  ): string | Buffer;
+  export function timingSafeEqual(
+    a: ArrayBufferView | ArrayBufferLike,
+    b: ArrayBufferView | ArrayBufferLike,
+  ): boolean;
+  export function randomFillSync<T extends ArrayBufferView | ArrayBufferLike>(
     buffer: T,
     offset?: number,
     size?: number,
   ): T;
+  export function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
+    buffer: T,
+    callback: (err: Error | null, buf: T) => void,
+  ): void;
+  export function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
+    buffer: T,
+    offset: number,
+    callback: (err: Error | null, buf: T) => void,
+  ): void;
+  export function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
+    buffer: T,
+    offset: number,
+    size: number,
+    callback: (err: Error | null, buf: T) => void,
+  ): void;
   export function randomInt(max: number): number;
   export function randomInt(min: number, max: number): number;
+  export function randomInt(
+    max: number,
+    callback: (err: Error | null, value: number) => void,
+  ): void;
+  export function randomInt(
+    min: number,
+    max: number,
+    callback: (err: Error | null, value: number) => void,
+  ): void;
   export function pbkdf2Sync(
     password: string | Uint8Array,
     salt: string | Uint8Array,
@@ -4723,6 +4825,10 @@ declare module "buffer" {
   export const kMaxLength: number;
   export const kStringMaxLength: number;
   export const Buffer: BufferConstructor;
+  export type Blob = globalThis.Blob;
+  export type File = globalThis.File;
+  export const Blob: typeof globalThis.Blob;
+  export const File: typeof globalThis.File;
 }
 declare module "node:buffer" {
   export * from "buffer";
@@ -5290,8 +5396,8 @@ declare module "stream/consumers" {
    * with the parse's SyntaxError), buffer (the concatenated bytes;
    * string chunks contribute their utf8 bytes, Node's Blob rule).
    * Stream errors reject; an early close rejects with
-   * ERR_STREAM_PREMATURE_CLOSE. arrayBuffer and blob fence per site:
-   * neither value has a representation in a compiled binary. */
+   * ERR_STREAM_PREMATURE_CLOSE. arrayBuffer answers an ArrayBuffer over
+   * the bytes; blob fences per site. */
   function text(stream: unknown): Promise<string>;
   function json(stream: unknown): Promise<unknown>;
   function buffer(stream: unknown): Promise<Buffer>;

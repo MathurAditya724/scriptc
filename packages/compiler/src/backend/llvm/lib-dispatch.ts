@@ -1,5 +1,5 @@
 import { emitBigIntWrap } from "./bigint-wrap.js";
-import { emitBorrowedInput } from "./borrowed-inputs.js";
+import { emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { borrowsIteratorInputs, borrowsJsonInputs } from "./checked-value-lifetimes.js";
 import { emitTlsLibCall } from "./lib-tls.js";
 import { emitHttp2LibCall } from "./lib-http2.js";
@@ -242,6 +242,39 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${result} = load i1, ptr ${slot}`);
     return { name: result, type: e.type };
   }
+  if (e.fn === "crypto.randomFillCb" || e.fn === "crypto.randomFillCbDyn") {
+    host.usesTimers = true;
+    const args = e.args.map((arg) => host.emitExpr(arg));
+    const cbT = e.args[4]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: randomFill callback not a func");
+    host.moveTemp(args[4]!);
+    const dyn = e.fn === "crypto.randomFillCbDyn";
+    const adapter = host.cryptoBytesThunkFor(cbT, false, dyn ? "dyn" : "view");
+    const symbol = dyn ? "scr_crypto_random_fill_async_dyn" : "scr_crypto_random_fill_async";
+    const position = dyn ? "ptr" : "double";
+    host.declare(`declare void @${symbol}(ptr, ${position}, ${position}, double, ptr, ptr)`);
+    B.line(
+      `call void @${symbol}(ptr ${args[0]!.name}, ${position} ${args[1]!.name}, ${position} ${args[2]!.name}, double ${args[3]!.name}, ptr ${args[4]!.name}, ptr @${adapter})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "crypto.randomIntCb") {
+    host.usesTimers = true;
+    const args = e.args.map((arg) => host.emitExpr(arg));
+    const cbT = e.args[3]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: randomInt callback not a func");
+    host.moveTemp(args[3]!);
+    const adapter = host.cryptoIntThunkFor(cbT);
+    host.declare(`declare void @scr_crypto_random_int_async(double, double, double, ptr, ptr)`);
+    B.line(
+      `call void @scr_crypto_random_int_async(double ${args[0]!.name}, double ${args[1]!.name}, double ${args[2]!.name}, ptr ${args[3]!.name}, ptr @${adapter})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (
     e.fn === "crypto.randomBytesCb" ||
     e.fn === "crypto.pbkdf2Cb" ||
@@ -353,11 +386,13 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   }
   const sym = LIB_FN_SYMS[e.fn];
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
-  const args = e.args.map((a) =>
-    borrowsJsonInputs(e.fn) || borrowsIteratorInputs(e.fn)
-      ? emitBorrowedInput(host, a)
-      : host.emitExpr(a),
-  );
+  const args = READ_ONLY_STRING_LIB_FNS.has(e.fn)
+    ? emitBorrowedInputs(host, e.args)
+    : e.args.map((a) =>
+        borrowsJsonInputs(e.fn) || borrowsIteratorInputs(e.fn)
+          ? emitBorrowedInput(host, a)
+          : host.emitExpr(a),
+      );
   const argDecls = args.map((a) => {
     const ty = host.llType(a.type);
     return ty === "i1" ? "i1 zeroext" : ty;
@@ -379,6 +414,11 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   if (MAY_THROW_LIB_FNS.has(e.fn)) host.emitPendingCheck();
   return out;
 }
+
+/** Runtime string functions that only read their string arguments and keep
+ * no reference to them: their operands are lent (a comparator's
+ * `a.name.localeCompare(b.name)` reads both fields without retaining). */
+const READ_ONLY_STRING_LIB_FNS: ReadonlySet<string> = new Set(["str.localeCompare"]);
 
 export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (USES_TIMERS_LIB_FNS.has(e.fn)) host.usesTimers = true;
@@ -497,6 +537,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "tlsca":
     case "event":
     case "events":
+    case "blob":
       return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);

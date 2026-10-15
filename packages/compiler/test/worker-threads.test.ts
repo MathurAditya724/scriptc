@@ -182,7 +182,7 @@ settle().then((value) => console.log(value));
     expect(llvm).toMatch(/@scr_thread_hot = external thread_local(\(localexec\))? global /);
     expect(llvm).not.toMatch(/@scr_(sa|cyc_live|cyc_old_freed|weak_dispose_hook) = external/);
     expect(llvm).toContain("call ptr @llvm.threadlocal.address.p0(ptr @scr_thread_hot)");
-    expect(llvm).toMatch(/getelementptr inbounds i8, ptr %[\w.]+\.tl\.hot, i64 808/);
+    expect(llvm).toMatch(/getelementptr inbounds i8, ptr %[\w.]+\.tl\.hot, i64 1000/);
     // Worker fibers own context termination; no fiberless async frames.
     expect(llvm).not.toContain("@scr_async_inline_enter");
   }

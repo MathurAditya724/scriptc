@@ -19,6 +19,7 @@ import {
   type SrcLoc,
   canConvertToDyn,
   canDynCheckTo,
+  isDynTypedRefType,
   recordTextCodecClass,
   shapeHasAccessorSlots,
   typeKey,
@@ -210,8 +211,23 @@ function inspectSupport(
           ? null
           : "error subclasses with declared fields have no inspect lowering yet (the extra own properties are runtime-dynamic)";
       }
+      // A class with subclasses renders through its checked-dynamic view,
+      // which names the instance's own class and holds its own fields.
       if (info.subclasses.length > 0) {
-        return `inspect of '${t.className}' values is not lowered (the class has subclasses — the runtime value's constructor name and fields are dynamic)`;
+        if (!isDynTypedRefType(t) || visiting.has(t.className)) return null;
+        visiting.add(t.className);
+        const hierarchy = (current: ClassInfo): ClassInfo[] => [
+          current,
+          ...current.subclasses.flatMap(hierarchy),
+        ];
+        for (const member of hierarchy(info))
+          for (const f of member.def.fields) {
+            if (f.name.startsWith("#") || f.name.startsWith("%")) continue;
+            const why = inspectSupport(lowerer, f.type, visiting, out);
+            if (why !== null) return why;
+          }
+        visiting.delete(t.className);
+        return null;
       }
       if (visiting.has(t.className)) {
         out.recursive = true;
@@ -306,6 +322,15 @@ export function inspectExpr(
           kind: "libCall",
           fn: "insp.error",
           args: [value, recurse, depth],
+          type: STRING,
+          loc,
+        };
+      }
+      if (lowerer.classes.get(t.className)?.subclasses.length) {
+        return {
+          kind: "libCall",
+          fn: "insp.dyn",
+          args: [lowerer.coerceToExpected(value, DYN), recurse, depth],
           type: STRING,
           loc,
         };
@@ -1069,13 +1094,13 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       // Node prints the class's OWN name — the declaration's, never the
       // IR name's module qualifier (`m0.Timer` is the frontend's spelling
       // for a class declared in a non-entry module).
-      const display = info.decl?.name?.text ?? info.def.name.replace(/^%/, "");
+      const display = info.def.jsName ?? info.decl?.name?.text ?? info.def.name.replace(/^%/, "");
       // #private fields never render: they are not properties in any
       // observable way — Node's inspect omits them entirely (verified),
       // so a class whose only fields are private prints as `C {}`.
       const visible = info.def.fields.filter((f) => !f.name.startsWith("#"));
       if (visible.length === 0) {
-        body = [ret(strLit(`${display} {}`, loc))];
+        body = [ret(strLit(display === "" ? "{}" : `${display} {}`, loc))];
         break;
       }
       const get = (field: string, type: IrType): IrExpr => ({
@@ -1086,7 +1111,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
         type,
         loc,
       });
-      body = [depthGate(`[${display}]`), ...begin()];
+      body = [depthGate(display === "" ? "[Object]" : `[${display}]`), ...begin()];
       // def.fields carries layout order: the base chain first, then own —
       // exactly the own-property insertion order of a constructor that
       // assigns in declaration order (SEMANTICS.md 36's stance). SYMBOL-
@@ -1115,7 +1140,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
         ret(
           end(
             strLit("", loc),
-            strLit(`${display} {`, loc),
+            strLit(display === "" ? "{" : `${display} {`, loc),
             strLit("}", loc),
             false,
             boolLit(false, loc),

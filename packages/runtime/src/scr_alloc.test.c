@@ -18,16 +18,37 @@ static void verify(const unsigned char *p, size_t n, unsigned char seed) {
   for (size_t i = 0; i < n; i++) assert(p[i] == (unsigned char)(seed + i * 7));
 }
 
+/* Blocks are 8-byte aligned, and 16-byte aligned for multiples of 16. */
+static bool aligned(const void *p, size_t n) {
+  return ((uintptr_t)p & (n % 16 ? 7 : 15)) == 0;
+}
+
+/* Classes step by 8 bytes up to SCR_SA_FINE_MAX and by 16 above it; the
+ * class of 49 to 56-byte requests holds 64-byte blocks. */
+static void check_classes(void) {
+  unsigned prev = 0;
+  for (size_t n = 1; n <= SCR_SA_MAX; n++) {
+    unsigned c = scr_sa_class(n);
+    size_t sz = scr_sa_class_size(c), step = n <= SCR_SA_FINE_MAX ? 8u : 16u;
+    assert(c < SCR_SA_NCLASS && (c == prev || c == prev + 1));
+    if (n > 48 && n <= 56) assert(sz == 64);
+    else assert(sz >= n && sz - n < step && sz % step == 0);
+    prev = c;
+  }
+  assert(scr_sa_class(SCR_SA_MAX) == SCR_SA_NCLASS - 1);
+  assert(scr_sa_class_size(SCR_SA_NCLASS - 1) == SCR_SA_MAX);
+}
+
 static void check_alignment_and_zeroing(void) {
   for (size_t n = 1; n <= 600; n++) {
     unsigned char *p = scr_mem_calloc(n);
-    assert(p && ((uintptr_t)p & 15) == 0);
+    assert(p && aligned(p, n));
     for (size_t i = 0; i < n; i++) assert(p[i] == 0);
     fill(p, n, (unsigned char)n);
     scr_mem_free(p);
     /* A recycled block (same class, LIFO) must come back zeroed. */
     unsigned char *q = scr_mem_calloc(n);
-    assert(q && ((uintptr_t)q & 15) == 0);
+    assert(q && aligned(q, n));
     for (size_t i = 0; i < n; i++) assert(q[i] == 0);
 #if SCR_SMALL_ALLOC
     if (n <= SCR_SA_MAX) assert(q == p && owned(q));
@@ -40,12 +61,12 @@ static void check_alignment_and_zeroing(void) {
 static void check_realloc(void) {
   unsigned char *p = scr_mem_realloc(NULL, 10);
   fill(p, 10, 3);
-  size_t sizes[] = {12, 16, 17, 100, 512, 513, 4000, 300, 40, 7};
+  size_t sizes[] = {12, 16, 17, 100, 512, 513, 4000, 300, 40, 24, 16, 7};
   size_t live = 10;
   for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
     size_t n = sizes[i];
     p = scr_mem_realloc(p, n);
-    assert(p && ((uintptr_t)p & 15) == 0);
+    assert(p && aligned(p, n));
     verify(p, live < n ? live : n, 3);
     fill(p, n, 3);
     live = n;
@@ -131,7 +152,7 @@ static void check_slice_growth(void) {
   enum { SZ = 496, AFTER = 8 << 20, PAST = 3 * (2 << 20) + (1 << 20) };
   unsigned char *first = scr_mem_alloc(SZ), *prev = first;
   assert(owned(first));
-  uintptr_t start = scr_sa.base + ((uintptr_t)((SZ - 1) / SCR_SA_STEP) << scr_sa.shift);
+  uintptr_t start = scr_sa.base + ((uintptr_t)scr_sa_class(SZ) << scr_sa.shift);
   assert((uintptr_t)first == start); /* a class nothing else has touched */
   size_t blocks = (AFTER + PAST) / SZ;
   for (size_t i = 1; i < blocks; i++) {
@@ -356,6 +377,7 @@ int main(void) {
 #if SCR_SMALL_ALLOC
   check_slice_growth(); /* first: its class must be untouched */
 #endif
+  check_classes();
   check_alignment_and_zeroing();
   check_realloc();
   check_system_pointers();

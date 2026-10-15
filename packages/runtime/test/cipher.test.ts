@@ -16,6 +16,7 @@ const runtimeSources = [
   "scr_bytes_io.c",
   "scr_zlib.c",
   "scr_lib.c",
+  "scr_hash.c",
   "scr_string.c",
   "scr_array.c",
   "scr_map.c",

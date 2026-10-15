@@ -72,11 +72,11 @@ http2.connect("https://localhost");
 /* The crypto surface beyond the lowered slice (randomness, the hash
  * chain, the introspection statics): asymmetric-key operations name the
  * missing public-key stack, symmetric ciphers the missing cipher stack,
- * KDFs their family, and setFips the FIPS truth (getFips() lowers to 0). */
-import { createCipheriv, generateKeyPair, pbkdf2Sync, setFips } from "node:crypto";
+ * prime checks theirs, and setFips the FIPS truth (getFips() lowers to 0). */
+import { checkPrimeSync, createCipheriv, generateKeyPair, setFips } from "node:crypto";
 generateKeyPair("rsa", { modulusLength: 2048 }, () => {});
 createCipheriv("aes-128-ccm", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });
-pbkdf2Sync("pw", "salt", 100000, 64, "sha3-512");
+checkPrimeSync(7n);
 setFips(false);
 fetch("https://example.invalid/", {
   integrity: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",

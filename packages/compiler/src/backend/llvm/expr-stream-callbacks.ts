@@ -279,12 +279,78 @@ export function fsRenameThunkFor(host: LlvmEmitterContext, cbT: IrType & { kind:
   return sym;
 }
 
+/** How a bytes-callback adapter hands over its value: "buffer" boxes a
+ * u8 value as a Buffer for a dyn parameter, "view" passes a view of any
+ * element kind and keeps its own brand when boxed, and "dyn" receives a
+ * dyn value in the value slot and passes it unchanged. */
+export type BytesThunkValue = "buffer" | "view" | "dyn";
+
 export function cryptoBytesThunkFor(
   host: LlvmEmitterContext,
   cbT: IrType & { kind: "func" },
   arrayBuffer = false,
+  valueMode: BytesThunkValue = "buffer",
 ): string {
-  return zlibBytesThunkFor(host, cbT, arrayBuffer, "crypto");
+  return zlibBytesThunkFor(host, cbT, arrayBuffer, "crypto", valueMode);
+}
+
+/** randomInt's callback adapter: (cb, value). Node passes undefined as the
+ * error, which a parameter typed Error | null without an undefined arm
+ * receives as null. */
+export function cryptoIntThunkFor(
+  host: LlvmEmitterContext,
+  cbT: IrType & { kind: "func" },
+): string {
+  if (cbT.params.length > 2)
+    throw new InternalCompilerError("llvm emitter bug: randomInt callback arity");
+  const key = `cryptoint:${typeKey(cbT)}`;
+  let sym = host.resolveThunks.get(key);
+  if (sym) return sym;
+  sym = `sc_cryptoint_${host.resolveThunks.size}`;
+  host.resolveThunks.set(key, sym);
+  const d: string[] = [
+    `define internal void @${sym}(ptr %cb, double %value) ${FN_ATTRS} { ; randomInt callback ${typeKey(cbT)}`,
+    `entry:`,
+  ];
+  const passed = ["ptr %cb"];
+  const error = cbT.params[0];
+  if (error !== undefined) {
+    if (error.kind === "dyn") {
+      host.declare(`declare ptr @scr_dyn_undefined()`);
+      d.push(`  %error = call ptr @scr_dyn_undefined()`);
+      passed.push("ptr %error");
+    } else if (error.kind === "union") {
+      const def = host.unionsById.get(error.unionId);
+      const undefinedTag = def ? def.arms.findIndex((arm) => arm.kind === "undefinedT") : -1;
+      const nullTag = def ? def.arms.findIndex((arm) => arm.kind === "nullT") : -1;
+      const tag = undefinedTag >= 0 ? undefinedTag : nullTag;
+      if (tag < 0)
+        throw new InternalCompilerError("llvm emitter bug: randomInt callback error union");
+      passed.push(`ptr ${host.unitInstanceRef(error.unionId, tag)}`);
+    } else {
+      throw new InternalCompilerError("llvm emitter bug: randomInt callback error param");
+    }
+  }
+  const value = cbT.params[1];
+  if (value?.kind === "f64") {
+    passed.push("double %value");
+  } else if (value?.kind === "dyn") {
+    host.declare(`declare ptr @scr_dyn_new_num(double)`);
+    d.push(`  %boxed = call ptr @scr_dyn_new_num(double %value)`);
+    passed.push("ptr %boxed");
+  } else if (value !== undefined) {
+    throw new InternalCompilerError("llvm emitter bug: randomInt callback value param");
+  }
+  d.push(
+    `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,
+    `  %fn = load ptr, ptr %fnp`,
+    `  call void %fn(${passed.join(", ")})`,
+    `  ret void`,
+    `}`,
+    ``,
+  );
+  host.resolveThunkDefs.push(...d);
+  return sym;
 }
 
 export function zlibBytesThunkFor(
@@ -292,10 +358,12 @@ export function zlibBytesThunkFor(
   cbT: IrType & { kind: "func" },
   arrayBuffer = false,
   family = "zlib",
+  valueMode: BytesThunkValue = "buffer",
 ): string {
   if (cbT.params.length > 2)
     throw new InternalCompilerError("llvm emitter bug: zlib callback arity");
-  const key = `${family}bytes:${arrayBuffer ? "arraybuffer:" : ""}${typeKey(cbT)}`;
+  const mode = valueMode === "buffer" ? "" : `${valueMode}:`;
+  const key = `${family}bytes:${arrayBuffer ? "arraybuffer:" : ""}${mode}${typeKey(cbT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
   sym = `sc_${family}bytes_${host.resolveThunks.size}`;
@@ -352,9 +420,28 @@ export function zlibBytesThunkFor(
     passed.push("ptr %error");
   }
   const value = cbT.params[1];
-  if (value === undefined) {
+  if (valueMode === "dyn") {
+    if (value === undefined) {
+      host.declare(`declare void @scr_dyn_release(ptr)`);
+      d.push(`  call void @scr_dyn_release(ptr %value)`);
+    } else if (value.kind === "dyn") {
+      passed.push("ptr %value");
+    } else {
+      throw new InternalCompilerError("llvm emitter bug: dyn-valued callback param");
+    }
+  } else if (value === undefined) {
     host.declare(`declare void @scr_bytes_release(ptr)`);
     d.push(`  call void @scr_bytes_release(ptr %value)`);
+  } else if (value.kind === "dyn" && valueMode === "view") {
+    host.declare(`declare ptr @scr_dyn_new_bytes(ptr)`);
+    host.declare(`declare void @scr_bytes_release(ptr)`);
+    d.push(
+      `  %boxed = call ptr @scr_dyn_new_bytes(ptr %value)`,
+      `  call void @scr_bytes_release(ptr %value)`,
+    );
+    passed.push("ptr %boxed");
+  } else if (value.kind === "bytes" && valueMode === "view") {
+    passed.push("ptr %value");
   } else if (value.kind === "dyn") {
     host.declare(
       `declare ptr @${arrayBuffer ? "scr_array_buffer_from_bytes" : "scr_dyn_new_buffer"}(ptr)`,

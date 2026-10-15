@@ -944,6 +944,112 @@ static ScrStr *scr_insp_class_tag(const char *cls, const char *tail) {
   return ib_take(&out);
 }
 
+/* A native Set or Map held as a checked-dynamic value: `Set(n) { a, b }`,
+ * `Map(n) { k => v }`, at most 100 entries like Node's maxArrayLength. */
+static ScrStr *scr_insp_dyn_collection(ScrDyn *d, double recurse, double depth, bool is_map) {
+  ScrMap *map = d->v.handle.ptr;
+  const char *label = is_map ? "Map" : "Set";
+  size_t size = 0;
+  for (double i = 0; i < scr_map_iter_count(map); i++)
+    if (scr_map_iter_live(map, i)) size++;
+  InspBuf head = {0};
+  ib_cstr(&head, label);
+  char count[32];
+  snprintf(count, sizeof count, "(%zu)", size);
+  ib_cstr(&head, count);
+  if (size == 0) {
+    ib_cstr(&head, " {}");
+    return ib_take(&head);
+  }
+  if (recurse > depth) {
+    scr_str_release(ib_take(&head));
+    InspBuf out = {0};
+    ib_char(&out, '[');
+    ib_cstr(&out, label);
+    ib_char(&out, ']');
+    return ib_take(&out);
+  }
+  ScrStr *base = ib_take(&head);
+  scr_insp_begin(recurse + 1);
+  scr_map_iter_enter(map);
+  size_t shown = 0;
+  for (double i = 0; i < scr_map_iter_count(map) && shown < 100; i++) {
+    if (!scr_map_iter_live(map, i)) continue;
+    shown++;
+    ScrDyn *key = scr_map_dyn_key(map, i);
+    ScrStr *k = scr_insp_dyn(key, recurse + 1, depth);
+    scr_dyn_release(key);
+    if (!is_map) {
+      scr_insp_entry(k, false);
+      scr_str_release(k);
+      continue;
+    }
+    ScrDyn *value = scr_map_dyn_value(map, i);
+    ScrStr *v = scr_insp_dyn(value, recurse + 1, depth);
+    scr_dyn_release(value);
+    InspBuf eb = {0};
+    ib_bytes(&eb, k->data, k->len);
+    ib_cstr(&eb, " => ");
+    ib_bytes(&eb, v->data, v->len);
+    scr_str_release(k);
+    scr_str_release(v);
+    ScrStr *entry = ib_take(&eb);
+    scr_insp_entry(entry, false);
+    scr_str_release(entry);
+  }
+  scr_map_iter_exit(map);
+  if (size > shown) {
+    ScrStr *more = scr_insp_more_items((double)(size - shown));
+    scr_insp_entry(more, false);
+    scr_str_release(more);
+  }
+  ScrStr *b0 = scr_str_new("{", 1);
+  ScrStr *b1 = scr_str_new("}", 1);
+  ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, false, false);
+  scr_str_release(base);
+  scr_str_release(b0);
+  scr_str_release(b1);
+  return out;
+}
+
+/* An ordinary object: `Name { key: value }` with its constructor name
+ * `cls` (NULL for a plain object). */
+static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char *cls) {
+  if (d->v.obj.len == 0) {
+    if (cls) return scr_insp_class_tag(cls, " {}");
+    return d->null_proto ? scr_str_new("[Object: null prototype] {}", 27)
+                         : scr_str_new("{}", 2);
+  }
+  if (recurse > depth) {
+    if (cls) return scr_insp_class_tag(cls, NULL);
+    return d->null_proto ? scr_str_new("[Object: null prototype]", 24)
+                         : scr_str_new("[Object]", 8);
+  }
+  scr_insp_begin(recurse + 1);
+  for (size_t i = 0; i < d->v.obj.len; i++) {
+    ScrDynEntry *ent = &d->v.obj.entries[i];
+    ScrStr *val = scr_insp_dyn(ent->value, recurse + 1, depth);
+    InspBuf eb = {0};
+    insp_key_into(&eb, ent->key, ent->key_len);
+    ib_cstr(&eb, ": ");
+    ib_bytes(&eb, val->data, val->len);
+    scr_str_release(val);
+    ScrStr *entry = ib_take(&eb);
+    scr_insp_entry(entry, false);
+    scr_str_release(entry);
+  }
+  ScrStr *base = cls             ? scr_str_new(cls, strlen(cls))
+                 : d->null_proto ? scr_str_new("[Object: null prototype]", 24)
+                                 : scr_str_new("", 0);
+  ScrStr *b0 = scr_str_new("{", 1);
+  ScrStr *b1 = scr_str_new("}", 1);
+  ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, false, false);
+  scr_str_release(base);
+  scr_str_release(b0);
+  scr_str_release(b1);
+  return out;
+}
+
 ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
   if (d->kind == SCR_DYN_PROXY) return scr_insp_dyn(d->v.proxy.target, recurse, depth);
   switch (d->kind) {
@@ -996,40 +1102,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
        * with "[Object: null prototype]" (formatValue's constructor-less
        * base), the empty form included, and the beyond-depth answer IS
        * the bare marker (where a plain object says [Object]). */
-      const char *cls = scr_dyn_class_name(d);
-      if (d->v.obj.len == 0) {
-        if (cls) return scr_insp_class_tag(cls, " {}");
-        return d->null_proto ? scr_str_new("[Object: null prototype] {}", 27)
-                             : scr_str_new("{}", 2);
-      }
-      if (recurse > depth) {
-        if (cls) return scr_insp_class_tag(cls, NULL);
-        return d->null_proto ? scr_str_new("[Object: null prototype]", 24)
-                             : scr_str_new("[Object]", 8);
-      }
-      scr_insp_begin(recurse + 1);
-      for (size_t i = 0; i < d->v.obj.len; i++) {
-        ScrDynEntry *ent = &d->v.obj.entries[i];
-        ScrStr *val = scr_insp_dyn(ent->value, recurse + 1, depth);
-        InspBuf eb = {0};
-        insp_key_into(&eb, ent->key, ent->key_len);
-        ib_cstr(&eb, ": ");
-        ib_bytes(&eb, val->data, val->len);
-        scr_str_release(val);
-        ScrStr *entry = ib_take(&eb);
-        scr_insp_entry(entry, false);
-        scr_str_release(entry);
-      }
-      ScrStr *base = cls             ? scr_str_new(cls, strlen(cls))
-                     : d->null_proto ? scr_str_new("[Object: null prototype]", 24)
-                                     : scr_str_new("", 0);
-      ScrStr *b0 = scr_str_new("{", 1);
-      ScrStr *b1 = scr_str_new("}", 1);
-      ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, false, false);
-      scr_str_release(base);
-      scr_str_release(b0);
-      scr_str_release(b1);
-      return out;
+      return scr_insp_obj(d, recurse, depth, scr_dyn_class_name(d));
     }
     case SCR_DYN_FUNC: {
       /* Node's function rendering: [Function: name] / [Function
@@ -1051,11 +1124,21 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
           d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER) {
         return scr_insp_array_buffer(d->v.handle.ptr, scr_dyn_handle_cls(d), recurse, depth);
       }
+      if (d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP)
+        return scr_insp_dyn_collection(d, recurse, depth, d->v.handle.tag == SCR_DYNH_MAP);
       const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(d);
       if (ops->inspect_view) {
         /* Node's custom inspectors answer the bare class name beyond the
-         * depth limit (`depth < 0`). */
-        if (recurse > depth) return scr_str_new(ops->cls, strlen(ops->cls));
+         * depth limit (`depth < 0`); the ones that return `this` there
+         * print util.inspect's `[cls]`. */
+        if (recurse > depth) {
+          if (!ops->inspect_bracketed_past_depth) return scr_str_new(ops->cls, strlen(ops->cls));
+          InspBuf out = {0};
+          ib_char(&out, '[');
+          ib_cstr(&out, ops->cls);
+          ib_char(&out, ']');
+          return ib_take(&out);
+        }
         ScrDyn *view = ops->inspect_view(d->v.handle.ptr);
         ScrStr *body = scr_insp_dyn(view, recurse, depth);
         scr_dyn_release(view);
@@ -1096,7 +1179,21 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         return ib_take(&out);
       }
       ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
-      ScrStr *out = scr_insp_dyn(materialized, recurse, depth);
+      /* A class instance prints with its class's name, which the checked
+       * view of its fields does not carry. */
+      const ScrStr *name = scr_dyn_typed_ref_class_name(d);
+      ScrStr *out;
+      if (name && materialized->kind == SCR_DYN_OBJ &&
+          scr_dyn_obj_get(materialized, "%error", 6) == NULL) {
+        char *cls = malloc(name->len + 1);
+        if (!cls) scr_trap("scriptc: out of memory\n");
+        memcpy(cls, name->data, name->len);
+        cls[name->len] = '\0';
+        out = scr_insp_obj(materialized, recurse, depth, cls);
+        free(cls);
+      } else {
+        out = scr_insp_dyn(materialized, recurse, depth);
+      }
       scr_dyn_release(materialized);
       return out;
     }

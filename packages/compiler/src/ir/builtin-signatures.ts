@@ -93,6 +93,17 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "event.get": { argTypes: [null, STRING], result: DYN },
   "event.set": { argTypes: [null, STRING, DYN], result: VOID },
   "events.addAbortListener": { argTypes: [DYN, DYN], result: DYN },
+  /** Blob / File (scr_blob.c): the constructors and slice() take their
+   * argument vector as one dyn array and throw Node's validation errors;
+   * the readers settle on Node's microtask turn for the Blob's parts.
+   * `blob.is` is `v instanceof Blob` (kind 0) or `File` (1). */
+  "blob.new": { argTypes: [DYN], result: DYN },
+  "blob.fileNew": { argTypes: [DYN], result: DYN },
+  "blob.slice": { argTypes: [DYN, DYN], result: DYN },
+  "blob.text": { argTypes: [DYN], result: { kind: "promise", inner: STRING } },
+  "blob.bytes": { argTypes: [DYN], result: { kind: "promise", inner: BYTES_U8 } },
+  "blob.arrayBuffer": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "blob.is": { argTypes: [DYN, F64], result: BOOL },
   "abort.timeout": { argTypes: [DYN], result: DYN },
   "abort.now": { argTypes: [DYN], result: DYN },
   "abort.any": { argTypes: [DYN], result: DYN },
@@ -2230,7 +2241,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.hashDigestStr": { argTypes: [STRING, STRING, STRING], result: STRING },
   "crypto.hashDigestBytes": { argTypes: [STRING, BYTES_U8, STRING], result: STRING },
   /** First-class static Hash/Hmac handles. Constructors validate the
-   * runtime algorithm string (MD5, SHA-1, or SHA-2); update returns the same
+   * runtime algorithm string (every digest Node 24 lists); update returns the same
    * handle by retained identity, copy snapshots Hash state, and digest
    * finalizes the handle and returns either a Buffer or encoded string. */
   "crypto.native": { argTypes: [], result: DYN },
@@ -2250,10 +2261,39 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.hashDigestBuffer": { argTypes: [CRYPTOHASH_T], result: BYTES_U8 },
   "crypto.hmacDigestString": { argTypes: [CRYPTOHMAC_T, STRING], result: STRING },
   "crypto.hmacDigestBuffer": { argTypes: [CRYPTOHMAC_T], result: BYTES_U8 },
-  "crypto.timingSafeEqual": { argTypes: [BYTES_U8, BYTES_U8], result: BOOL },
+  /** The option and any-value forms, with Node's checks at run time. The
+   * Dyn digests return a string or a Buffer, and crypto.hash's Dyn form
+   * either one by its outputEncoding. */
+  "crypto.hashNewOpts": { argTypes: [STRING, DYN], result: CRYPTOHASH_T },
+  "crypto.hmacNewDyn": { argTypes: [STRING, DYN, DYN], result: CRYPTOHMAC_T },
+  "crypto.hashCopyOpts": { argTypes: [CRYPTOHASH_T, DYN], result: CRYPTOHASH_T },
+  "crypto.hashUpdateEnc": { argTypes: [CRYPTOHASH_T, STRING, STRING], result: CRYPTOHASH_T },
+  "crypto.hmacUpdateEnc": { argTypes: [CRYPTOHMAC_T, STRING, STRING], result: CRYPTOHMAC_T },
+  "crypto.hashUpdateDyn": { argTypes: [CRYPTOHASH_T, DYN, DYN], result: CRYPTOHASH_T },
+  "crypto.hmacUpdateDyn": { argTypes: [CRYPTOHMAC_T, DYN, DYN], result: CRYPTOHMAC_T },
+  "crypto.hashDigestDyn": { argTypes: [CRYPTOHASH_T, DYN], result: DYN },
+  "crypto.hmacDigestDyn": { argTypes: [CRYPTOHMAC_T, DYN], result: DYN },
+  "crypto.hashOneshot": { argTypes: [STRING, DYN, DYN], result: DYN },
+  /** Views of any element kind (the validator checks both are views). */
+  "crypto.timingSafeEqual": { argTypes: [null, null], result: BOOL },
+  "crypto.timingSafeEqualDyn": { argTypes: [DYN, DYN], result: BOOL },
   "crypto.randomFill": { argTypes: [BYTES_U8, F64, F64], result: BYTES_U8 },
   "crypto.randomFillRest": { argTypes: [BYTES_U8, F64], result: BYTES_U8 },
   "crypto.randomInt": { argTypes: [F64, F64], result: F64 },
+  "crypto.randomIntMax": { argTypes: [F64], result: F64 },
+  /** randomFillSync over any view returns that view at its own type (the
+   * validator checks the result against the first argument). The Dyn form
+   * takes ArrayBuffers and other values. The callback forms carry
+   * randomFill's argument count before the callback; randomIntCb carries
+   * whether min was given. */
+  "crypto.randomFillView": { argTypes: [null, F64, F64], result: BYTES_U8 },
+  "crypto.randomFillViewRest": { argTypes: [null, F64], result: BYTES_U8 },
+  "crypto.randomFillSyncDyn": { argTypes: [DYN, DYN, DYN], result: DYN },
+  "crypto.randomFillCb": { argTypes: [null, F64, F64, F64, null], result: VOID },
+  "crypto.randomFillCbDyn": { argTypes: [DYN, DYN, DYN, F64, null], result: VOID },
+  "crypto.randomIntCb": { argTypes: [F64, F64, F64, null], result: VOID },
+  "crypto.randomUUIDOpts": { argTypes: [DYN], result: STRING },
+  "crypto.randomUUIDv7": { argTypes: [DYN], result: STRING },
   "crypto.pbkdf2": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING], result: BYTES_U8 },
   "crypto.randomBytesCb": { argTypes: [F64, null], result: VOID },
   "crypto.pbkdf2Cb": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING, null], result: VOID },
@@ -2878,6 +2918,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.seal": { argTypes: [DYN], result: DYN },
   "dyn.isSealed": { argTypes: [DYN], result: BOOL },
   "dyn.objValues": { argTypes: [DYN], result: DYN },
+  /** Object.values as a native vector of checked values, for results the
+   * program consumes directly (for-of, index reads, read-only methods). */
+  "dyn.objValueList": { argTypes: [DYN], result: arrayOf(DYN) },
   "dyn.objEntries": { argTypes: [DYN], result: DYN },
   /** structuredClone over the checked-dynamic tree (scr_json.c): the JSON-safe subset plus
    * bytes (a fresh copy — a Buffer clones as a plain Uint8Array, like

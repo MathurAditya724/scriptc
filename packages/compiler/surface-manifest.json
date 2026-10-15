@@ -718,6 +718,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.crypto.randomFill",
+      "kind": "node-builtin",
+      "name": "crypto.randomFill",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.randomFillSync",
       "kind": "node-builtin",
       "name": "crypto.randomFillSync",
@@ -733,6 +739,12 @@
       "id": "node-builtin.crypto.randomUUID",
       "kind": "node-builtin",
       "name": "crypto.randomUUID",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.crypto.randomUUIDv7",
+      "kind": "node-builtin",
+      "name": "crypto.randomUUIDv7",
       "status": "static"
     },
     {
@@ -2078,7 +2090,7 @@
       "name": "stream/consumers.blob",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "Blob values have no representation in a compiled binary — buffer(stream) collects the same bytes as a Buffer, text(stream) the decoded text"
+      "note": "collecting a stream into a Blob is not supported yet — buffer(stream) collects the same bytes as a Buffer (new Blob([buffer]) wraps them), text(stream) the decoded text"
     },
     {
       "id": "node-builtin.stream.promises",
@@ -2930,6 +2942,13 @@
       "note": "8-, 16- and 32-bit integer operations, plus Int32Array wait and notify"
     },
     {
+      "id": "stdlib.blob",
+      "kind": "stdlib",
+      "name": "Blob",
+      "status": "static",
+      "note": "immutable bytes with size, type, slice(), text(), bytes(), arrayBuffer() and structured cloning"
+    },
+    {
       "id": "stdlib.date.UTC",
       "kind": "stdlib",
       "name": "Date.UTC",
@@ -3208,6 +3227,13 @@
       "status": "unsupported",
       "code": "SC2020",
       "note": "Node 24.22.0 / Undici 7.29.1; the compiler does not preserve this RequestInit member's conversion or transport behavior"
+    },
+    {
+      "id": "stdlib.file",
+      "kind": "stdlib",
+      "name": "File",
+      "status": "static",
+      "note": "a Blob with name and lastModified (Date.now() when absent)"
     },
     {
       "id": "stdlib.headers.append",

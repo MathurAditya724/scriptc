@@ -65,6 +65,16 @@ void arc4random_buf(void *buf, size_t n);
 #define SCR_COLD
 #endif
 
+/* Digest compression functions start on a cache line. The release
+ * runtime keeps the compiler's default function alignment, so without it
+ * their speed moves with the size of unrelated code before them. WASM
+ * code has no addresses to align. */
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__wasm__)
+#define SCR_DIGEST_ALIGNED __attribute__((aligned(64)))
+#else
+#define SCR_DIGEST_ALIGNED
+#endif
+
 /* ── process ──────────────────────────────────────────────────────────── */
 
 /* Called once at the top of main: private stdout formatter buffer,
@@ -563,8 +573,10 @@ void scr_cyc_free(void *obj); /* frees the block, header included */
  * up to SCR_SA_MAX bytes come from per-size-class free lists refilled by a
  * bump pointer; the fast paths below inline into every runtime unit.
  *
- * Contracts match malloc/calloc/realloc/free (NULL on OOM, 16-byte
- * alignment). scr_mem_free and scr_mem_realloc accept ANY pointer — a
+ * Contracts match malloc/calloc/realloc/free (NULL on OOM), except for
+ * alignment: blocks are 8-byte aligned, and 16-byte aligned when the size
+ * is a multiple of 16, which covers every type whose size is a multiple of
+ * its alignment. scr_mem_free and scr_mem_realloc accept ANY pointer — a
  * block outside the allocator's reservation goes back to the system — so a
  * free site can be switched without proving where its pointers came from.
  * The converse does not hold: a block from scr_mem_alloc/calloc/realloc
@@ -615,9 +627,31 @@ void scr_rt_free(void *p);
  * helper ignore it. */
 void scr_mem_prefault(void *lo, void *hi);
 
-#define SCR_SA_STEP 16u   /* class granularity; keeps malloc's 16-byte alignment */
-#define SCR_SA_NCLASS 32u /* classes of 16, 32, ... 512 bytes */
-#define SCR_SA_MAX (SCR_SA_STEP * SCR_SA_NCLASS)
+/* Size classes: requests up to 128 bytes take a class per 8-byte step
+ * (small objects often sit just under a 16-byte boundary), larger ones a
+ * class per 16-byte step up to 512. Class c below SCR_SA_FINE_MAX / 8
+ * holds (c + 1) * 8-byte blocks, except that the class of 49 to 56-byte
+ * requests (SCR_SA_WIDE) holds 64-byte blocks: a 56-byte block straddles a
+ * cache line in 3 of every 4 slots, which costs more on scattered access
+ * to records of that size than the smaller block saves. Widening the block
+ * rather than sharing the 64-byte class keeps the class lookup free of a
+ * special case. Slices start page-aligned, so a class whose block size is
+ * a multiple of 16 keeps its blocks 16-byte aligned. */
+#define SCR_SA_FINE_MAX 128u /* the largest request with an 8-byte-step class */
+#define SCR_SA_WIDE 6u       /* the class of 49 to 56-byte requests */
+#define SCR_SA_NCLASS 40u
+#define SCR_SA_MAX 512u
+
+/* The class of a block of n bytes, 1 <= n <= SCR_SA_MAX. */
+static inline unsigned scr_sa_class(size_t n) {
+  unsigned k = (unsigned)((n - 1) >> 3);
+  return k < SCR_SA_FINE_MAX / 8 ? k : (k + SCR_SA_FINE_MAX / 8) >> 1;
+}
+/* The block size of class c. */
+static inline size_t scr_sa_class_size(unsigned c) {
+  if (c < SCR_SA_FINE_MAX / 8) return (size_t)(c + 1 + (c == SCR_SA_WIDE)) * 8;
+  return (size_t)(c + 1 - SCR_SA_FINE_MAX / 16) * 16;
+}
 
 typedef struct ScrSaBlock {
   struct ScrSaBlock *next;
@@ -629,7 +663,7 @@ typedef struct ScrSaBlock {
  *
  * scr_sa exists in EVERY build, and its layout is an ABI: the LLVM backend
  * inlines the fast paths into emitted constructors and releases
- * (llvm/alloc.ts) as `{ i64, i64, i32, [32 x ptr], [32 x ptr], [32 x ptr] }`
+ * (llvm/alloc.ts) as `{ i64, i64, i32, [40 x ptr], [40 x ptr], [40 x ptr] }`
  * on 64-bit targets. Where SCR_SMALL_ALLOC is 0 the state is never written,
  * so the emitted fast paths see no free block, no bump room and an empty
  * span, and always take their out-of-line slow path (scr_rt_calloc /
@@ -666,9 +700,9 @@ extern _Thread_local ScrThreadHot scr_thread_hot;
 #define scr_cyc_old_freed (scr_thread_hot.cyc_old_freed)
 #define scr_weak_dispose_hook (scr_thread_hot.weak_dispose_hook)
 #if UINTPTR_MAX == UINT64_MAX
-_Static_assert(offsetof(ScrThreadHot, sa) == 0 && offsetof(ScrThreadHot, cyc_live) == 792 &&
-                   offsetof(ScrThreadHot, cyc_old_freed) == 800 &&
-                   offsetof(ScrThreadHot, weak_dispose_hook) == 808,
+_Static_assert(offsetof(ScrThreadHot, sa) == 0 && offsetof(ScrThreadHot, cyc_live) == 984 &&
+                   offsetof(ScrThreadHot, cyc_old_freed) == 992 &&
+                   offsetof(ScrThreadHot, weak_dispose_hook) == 1000,
                "llvm/alloc.ts addresses ScrThreadHot fields at these offsets");
 #endif
 #else
@@ -676,8 +710,8 @@ extern ScrSaState scr_sa;
 #endif
 #if UINTPTR_MAX == UINT64_MAX
 _Static_assert(offsetof(ScrSaState, span) == 8 && offsetof(ScrSaState, shift) == 16 &&
-                   offsetof(ScrSaState, free) == 24 && offsetof(ScrSaState, bump) == 280 &&
-                   offsetof(ScrSaState, lim) == 536 && sizeof(ScrSaState) == 792,
+                   offsetof(ScrSaState, free) == 24 && offsetof(ScrSaState, bump) == 344 &&
+                   offsetof(ScrSaState, lim) == 664 && sizeof(ScrSaState) == 984,
                "llvm/alloc.ts inlines the small-object allocator against this layout");
 #endif
 #if defined(SCR_RC_AUDIT) && SCR_SMALL_ALLOC
@@ -704,14 +738,14 @@ void *scr_sa_slow(size_t n, bool zero);
 
 static inline void *scr_sa_take(size_t n, bool zero) {
   if (n - 1 < SCR_SA_MAX) { /* n == 0 wraps to the slow path */
-    unsigned c = (unsigned)((n - 1) / SCR_SA_STEP);
+    unsigned c = scr_sa_class(n);
     ScrSaBlock *b = scr_sa.free[c];
     if (b) {
       scr_sa.free[c] = b->next;
       if (zero) memset(b, 0, n); /* recycled blocks are dirty */
       return b;
     }
-    size_t sz = (size_t)(c + 1) * SCR_SA_STEP;
+    size_t sz = scr_sa_class_size(c);
     char *p = scr_sa.bump[c];
     if ((size_t)(scr_sa.lim[c] - p) >= sz) { /* fresh mmap memory is zero */
       scr_sa.bump[c] = p + sz;
@@ -2070,6 +2104,13 @@ void scr_arr_sort_values(ScrArr *a, double count, struct ScrClosure *f, uint32_t
 const uint64_t *scr_arr_dense_slots(const ScrArr *a, size_t *len);
 bool scr_arr_sort_dense(ScrArr *a, struct ScrClosure *f, uint32_t arity, bool owned,
                         int32_t order, struct ScrClosure *key);
+/* V8's TimSort over n slots with a caller comparison: less(ctx, x, y)
+ * answers whether x orders before y (comparefn(x, y) < 0), or sets *failed,
+ * with an exception pending, to stop the sort. Returns false after a
+ * failure; `values` is then unchanged, and it holds every slot exactly once,
+ * in its original order, whenever `less` runs. */
+typedef bool (*ScrSortLess)(void *ctx, uint64_t x, uint64_t y, bool *failed);
+bool scr_sort_slots_with(uint64_t *values, size_t n, ScrSortLess less, void *ctx);
 
 /* pop traps on an empty array; _ref transfers ownership out (+1 to the
  * caller, no release). */
@@ -4295,12 +4336,33 @@ ScrCryptoHash *scr_crypto_hash_update_bytes(ScrCryptoHash *h, ScrBytes *data);
 ScrCryptoHash *scr_crypto_hash_copy(ScrCryptoHash *h);
 ScrStr *scr_crypto_hash_digest_string(ScrCryptoHash *h, ScrStr *enc);
 ScrBytes *scr_crypto_hash_digest_buffer(ScrCryptoHash *h);
+/* The option and any-value forms of createHash, copy, update, digest and
+ * crypto.hash, with Node 24.22's validation and errors. */
+ScrCryptoHash *scr_crypto_hash_new_opts(ScrStr *alg, ScrDyn *options);
+ScrCryptoHash *scr_crypto_hash_copy_opts(ScrCryptoHash *h, ScrDyn *options);
+ScrCryptoHash *scr_crypto_hmac_new_dyn(ScrStr *alg, ScrDyn *key, ScrDyn *options);
+ScrCryptoHash *scr_crypto_hash_update_enc(ScrCryptoHash *h, ScrStr *data, ScrStr *enc);
+ScrCryptoHash *scr_crypto_hash_update_dyn(ScrCryptoHash *h, ScrDyn *data, ScrDyn *enc);
+ScrDyn *scr_crypto_hash_digest_dyn(ScrCryptoHash *h, ScrDyn *enc);
+ScrDyn *scr_crypto_hash_oneshot(ScrStr *alg, ScrDyn *input, ScrDyn *options);
 bool scr_crypto_timing_safe_equal(ScrBytes *left, ScrBytes *right);
+bool scr_crypto_timing_safe_equal_dyn(ScrDyn *left, ScrDyn *right);
 ScrBytes *scr_crypto_random_fill(ScrBytes *bytes, double offset, double size);
 ScrBytes *scr_crypto_random_fill_rest(ScrBytes *bytes, double offset);
 double scr_crypto_random_int(double min, double max);
+double scr_crypto_random_int_max(double max);
+ScrDyn *scr_crypto_random_fill_sync_dyn(ScrDyn *buf, ScrDyn *offset, ScrDyn *size);
+double scr_crypto_random_fill_args(ScrBytes *view, bool typed_array, double offset, double size,
+                                   int form);
+void scr_crypto_random_int_refill(void);
+bool scr_crypto_random_int_check(double min, double max, bool min_given, double *range);
+bool scr_crypto_random_int_try(double min, double range, double *out);
+ScrStr *scr_crypto_random_uuid_opts(ScrDyn *options);
+ScrStr *scr_crypto_random_uuid_v7(ScrDyn *options);
 ScrBytes *scr_crypto_pbkdf2(ScrBytes *password, ScrBytes *salt,
                             double iterations, double keylen, ScrStr *digest);
+ScrBytes *scr_crypto_pbkdf2_job(ScrBytes *password, ScrBytes *salt, double iterations,
+                                double keylen, ScrStr *digest, const char **failure);
 ScrBytes *scr_crypto_hkdf_bytes(ScrStr *digest, ScrBytes *ikm, ScrBytes *salt,
                                 ScrBytes *info, double keylen);
 ScrDyn *scr_crypto_hkdf(ScrStr *digest, ScrBytes *ikm, ScrBytes *salt,
@@ -4311,6 +4373,17 @@ ScrBytes *scr_crypto_scrypt_derive(ScrBytes *password, ScrBytes *salt, double ke
 typedef void (*ScrCryptoBytesFn)(ScrClosure *cb, ScrError *error /* borrowed */, ScrBytes *value /* moves */);
 void scr_crypto_defer_bytes(ScrBytes *value /* moves */, ScrError *error /* moves */, ScrClosure *cb /* moves */,
                             ScrCryptoBytesFn fn);
+void scr_crypto_defer_dyn(ScrDyn *value /* moves */, ScrError *error /* moves */, ScrClosure *cb /* moves */,
+                          ScrCryptoBytesFn fn);
+/* randomFill and randomInt with callbacks (scr_crypto_async.c). `form` is
+ * randomFill's argument count before the callback. */
+void scr_crypto_random_fill_async(ScrBytes *buf, double offset, double size, double form,
+                                  ScrClosure *cb, ScrCryptoBytesFn fn);
+void scr_crypto_random_fill_async_dyn(ScrDyn *buf, ScrDyn *offset, ScrDyn *size, double form,
+                                      ScrClosure *cb, ScrCryptoBytesFn fn);
+typedef void (*ScrCryptoIntFn)(ScrClosure *cb, double value);
+void scr_crypto_random_int_async(double min, double max, double min_given, ScrClosure *cb,
+                                 ScrCryptoIntFn fn);
 void scr_crypto_random_bytes_async(double size, ScrClosure *cb /* moves */,
                                    ScrCryptoBytesFn fn);
 void scr_crypto_pbkdf2_async(ScrBytes *password, ScrBytes *salt,
@@ -4320,6 +4393,55 @@ void scr_crypto_hkdf_async(ScrStr *digest, ScrBytes *ikm, ScrBytes *salt,
                            ScrBytes *info, double keylen, ScrClosure *cb, ScrCryptoBytesFn fn);
 void scr_crypto_scrypt_async(ScrBytes *password, ScrBytes *salt, double keylen,
                              ScrDyn *options, ScrClosure *cb, ScrCryptoBytesFn fn);
+
+/* The digest primitives beyond MD5/SHA-1/SHA-2 (scr_hash.c). Each final
+ * reads a copy of its context. */
+typedef struct ScrKeccakCtx {
+  uint64_t s[25];
+  unsigned char buf[200];
+  size_t rate; /* bytes absorbed per permutation */
+  size_t len;  /* buffered bytes */
+  unsigned char pad; /* domain bits: 0x06 SHA-3, 0x01 Keccak, 0x1f SHAKE, 0x04 KECCAK-KMAC */
+} ScrKeccakCtx;
+void scr_keccak_init(ScrKeccakCtx *ctx, size_t rate, unsigned char pad);
+void scr_keccak_update(ScrKeccakCtx *ctx, const unsigned char *data, size_t len);
+void scr_keccak_final(const ScrKeccakCtx *ctx, unsigned char *out, size_t len);
+typedef struct ScrRipemd160Ctx {
+  uint32_t h[5];
+  uint64_t bytes;
+  unsigned char buf[64];
+  size_t len;
+} ScrRipemd160Ctx;
+void scr_ripemd160_init(ScrRipemd160Ctx *ctx);
+void scr_ripemd160_update(ScrRipemd160Ctx *ctx, const unsigned char *data, size_t len);
+void scr_ripemd160_final(const ScrRipemd160Ctx *ctx, unsigned char out[20]);
+typedef struct ScrBlake2bCtx {
+  uint64_t h[8];
+  uint64_t t[2];
+  unsigned char buf[128];
+  size_t len;
+} ScrBlake2bCtx;
+void scr_blake2b_init(ScrBlake2bCtx *ctx);
+void scr_blake2b_update(ScrBlake2bCtx *ctx, const unsigned char *data, size_t len);
+void scr_blake2b_final(const ScrBlake2bCtx *ctx, unsigned char out[64]);
+typedef struct ScrBlake2sCtx {
+  uint32_t h[8];
+  uint32_t t[2];
+  unsigned char buf[64];
+  size_t len;
+} ScrBlake2sCtx;
+void scr_blake2s_init(ScrBlake2sCtx *ctx);
+void scr_blake2s_update(ScrBlake2sCtx *ctx, const unsigned char *data, size_t len);
+void scr_blake2s_final(const ScrBlake2sCtx *ctx, unsigned char out[32]);
+typedef struct ScrSm3Ctx {
+  uint32_t h[8];
+  uint64_t bytes;
+  unsigned char buf[64];
+  size_t len;
+} ScrSm3Ctx;
+void scr_sm3_init(ScrSm3Ctx *ctx);
+void scr_sm3_update(ScrSm3Ctx *ctx, const unsigned char *data, size_t len);
+void scr_sm3_final(const ScrSm3Ctx *ctx, unsigned char out[32]);
 
 size_t scr_crypto_digest_raw(const char *alg, const unsigned char *data, size_t len,
                              unsigned char out[64]);
@@ -4862,6 +4984,8 @@ typedef enum {
   SCR_DYNH_CONSOLE_INSTANCE, /* node:console Console instance */
   SCR_DYNH_EVENT_TARGET,   /* ScrEventTarget — new EventTarget() */
   SCR_DYNH_CUSTOM_EVENT,   /* ScrEvent with detail — new CustomEvent() */
+  SCR_DYNH_BLOB,           /* ScrBlob — new Blob() and Blob#slice() */
+  SCR_DYNH_FILE,           /* ScrBlob with a name — new File() */
   SCR_DYNH_CIPHER,           /* node:crypto Cipheriv (scr_cipher.c) */
   SCR_DYNH_DECIPHER,         /* node:crypto Decipheriv (scr_cipher.c) */
   SCR_DYNH_COUNT,
@@ -4959,6 +5083,7 @@ typedef struct ScrDynTypedClassOps {
   const struct ScrDynTypedClassOps *(*exact)(void *instance);
   size_t count;
   ScrStr *const *names; /* immortal member-name strings */
+  ScrStr *class_name;   /* immortal constructor name; NULL for an anonymous class */
 } ScrDynTypedClassOps;
 
 struct ScrDyn {
@@ -5179,6 +5304,10 @@ typedef struct {
 } ScrDynEntryPairs;
 ScrDynEntryPairs *scr_dyn_obj_entry_pairs(const ScrDyn *v);
 void scr_dyn_entry_pairs_free(ScrDynEntryPairs *pairs);
+/* Object.values as a native array of owned checked values in own-key order
+ * (+1), for results compiled code only iterates, indexes or reads. NULL with
+ * an exception pending. */
+ScrArr *scr_dyn_obj_value_list(const ScrDyn *v);
 /* Snapshot all own string keys of a SCR_DYN_OBJ in JS order. Returns +1. */
 ScrDyn *scr_dyn_obj_own_keys(const ScrDyn *v);
 ScrDyn *scr_dyn_own_keys(const ScrDyn *value);
@@ -5365,6 +5494,10 @@ void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
 /* Attach the prototype member names of a class instance capsule
  * (idempotent), so `in` sees its methods and accessors. */
 void scr_dyn_typed_ref_bind_class(ScrDyn *d, const ScrDynTypedClassOps *ops);
+/* The constructor name of a class instance capsule's own class, for
+ * util.inspect; NULL when the capsule is not a bound class instance, its
+ * class is anonymous, or its prototype was replaced. */
+const ScrStr *scr_dyn_typed_ref_class_name(const ScrDyn *d);
 /* Fast keyed read on a live array capsule: +1 value for `length` and for
  * present or explicitly-undefined elements; NULL when the answer needs the
  * snapshot (holes, out-of-range, non-index names, or no bound ops). */
@@ -5653,6 +5786,14 @@ typedef struct ScrDynHandleOps {
    * (+1); NULL = the class has no inspection, and util.inspect throws the
    * "not supported yet" Error. */
   ScrDyn *(*inspect_view)(void *h);
+  /* structuredClone of the handle (+1 new box); NULL = DataCloneError. */
+  ScrDyn *(*clone)(void *h);
+  /* JSON.stringify writes `{}` (the class keeps its state in internal
+   * slots behind prototype getters) instead of the unsupported fence. */
+  bool json_empty_object;
+  /* Past the depth limit util.inspect prints `[cls]` (the class's
+   * inspector returns `this`) instead of the bare class name. */
+  bool inspect_bracketed_past_depth;
 } ScrDynHandleOps;
 ScrDyn *scr_dyn_native_handle_iterator(ScrDyn *source, unsigned selection);
 
@@ -5811,6 +5952,23 @@ typedef struct ScrEventRefHooks {
   const char *(*string_tag)(const ScrDyn *d);
 } ScrEventRefHooks;
 extern SCR_TL const ScrEventRefHooks *scr_event_ref_hooks;
+
+/* ── Blob / File (scr_blob.c) ──────────────────────────────────────────
+ * Node 24's lib/internal/blob.js and file.js: immutable bytes copied from
+ * the sources at construction, shared by slices and structured clones.
+ * The constructors take the argument vector as one dyn array (borrowed)
+ * and validate it like Node; +1 handle, or NULL with the exception
+ * pending. slice takes its (start, end, contentType) vector the same way.
+ * The readers answer +1 promises (string, u8 bytes, and an ArrayBuffer
+ * dyn value) that settle on Node's microtask turn for the Blob's part
+ * count. scr_blob_is answers `v instanceof Blob` (kind 0) or `File` (1). */
+ScrDyn *scr_blob_new(ScrDyn *args);
+ScrDyn *scr_file_new(ScrDyn *args);
+ScrDyn *scr_blob_slice(ScrDyn *self, ScrDyn *args);
+ScrPromise *scr_blob_text(ScrDyn *self);
+ScrPromise *scr_blob_bytes(ScrDyn *self);
+ScrPromise *scr_blob_array_buffer(ScrDyn *self);
+bool scr_blob_is(const ScrDyn *value, double kind);
 
 ScrDyn *scr_intl_segmenter_new(void);
 ScrStr *scr_process_builtin_id(ScrDyn *id, ScrArr *known);

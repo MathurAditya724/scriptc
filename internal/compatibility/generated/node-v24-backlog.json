@@ -3,19 +3,19 @@
   "nodeVersion": "24.22.0",
   "nodeCommit": "f14cd3aa7bf9ca8df2cc5b8bb14beb0f335b1d93",
   "summary": {
-    "taskCount": 3486,
-    "tierItemCount": 3486,
+    "taskCount": 3472,
+    "tierItemCount": 3472,
     "tiers": {
       "static": {
         "replace-refusal": 38,
-        "verify-gap": 2477,
+        "verify-gap": 2463,
         "audit-partial": 884,
         "classify": 2,
         "implement": 85
       }
     },
     "priorities": {
-      "high": 2303,
+      "high": 2289,
       "normal": 710,
       "low": 473
     }
@@ -2219,12 +2219,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:buffer",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:buffer.Blob",
+          "tests": [
+            "tests/corpus/5285-blob-construct.ts",
+            "tests/corpus/5288-blob-validation.js",
+            "tests/fixtures/node-types/blob-file.ts"
+          ]
         }
       }
     },
@@ -2235,81 +2239,6 @@
       "signature": "`Blob` objects and `MessageChannel`",
       "apiSymbol": "Blob",
       "docsUrl": "https://nodejs.org/docs/v24.22.0/api/buffer.html#blob-objects-and-messagechannel",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:buffer",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "buffer:fd92362208df",
-      "chapter": "buffer",
-      "label": "blob.arrayBuffer()",
-      "signature": "`blob.arrayBuffer()`",
-      "apiSymbol": "blob.arrayBuffer",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/buffer.html#blobarraybuffer",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:buffer",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "buffer:9f1b499f235f",
-      "chapter": "buffer",
-      "label": "blob.bytes()",
-      "signature": "`blob.bytes()`",
-      "apiSymbol": "blob.bytes",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/buffer.html#blobbytes",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:buffer",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "buffer:0b785450eeac",
-      "chapter": "buffer",
-      "label": "blob.slice([start[, end[, type]]])",
-      "signature": "`blob.slice([start[, end[, type]]])`",
-      "apiSymbol": "blob.slice",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/buffer.html#blobslicestart-end-type",
       "nodeStability": {
         "index": "2",
         "level": 2,
@@ -2354,87 +2283,12 @@
       }
     },
     {
-      "id": "buffer:568587fd78af",
-      "chapter": "buffer",
-      "label": "blob.text()",
-      "signature": "`blob.text()`",
-      "apiSymbol": "blob.text",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/buffer.html#blobtext",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:buffer",
-          "tests": []
-        }
-      }
-    },
-    {
       "id": "buffer:00e095984e8b",
       "chapter": "buffer",
       "label": "blob.textStream()",
       "signature": "`blob.textStream()`",
       "apiSymbol": "blob.textStream",
       "docsUrl": "https://nodejs.org/docs/v24.22.0/api/buffer.html#blobtextstream",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:buffer",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "buffer:fe2720024378",
-      "chapter": "buffer",
-      "label": "blob.size",
-      "signature": "`blob.size`",
-      "apiSymbol": "blob.size",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/buffer.html#blobsize",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:buffer",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "buffer:23148ab6a5af",
-      "chapter": "buffer",
-      "label": "type",
-      "signature": "`type` Type: {string}",
-      "apiSymbol": "type",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/buffer.html#class-blob",
       "nodeStability": {
         "index": "2",
         "level": 2,
@@ -3994,62 +3848,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:buffer",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "buffer:3c4f6df8cde2",
-      "chapter": "buffer",
-      "label": "name",
-      "signature": "`name` Type: {string}",
-      "apiSymbol": "name",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/buffer.html#class-file",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:buffer",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "buffer:0e7d3e3ae7de",
-      "chapter": "buffer",
-      "label": "lastModified",
-      "signature": "`lastModified` Type: {number}",
-      "apiSymbol": "lastModified",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/buffer.html#class-file",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:buffer",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:buffer.File",
+          "tests": [
+            "tests/corpus/5285-blob-construct.ts",
+            "tests/corpus/5288-blob-validation.js",
+            "tests/fixtures/node-types/blob-file.ts"
+          ]
         }
       }
     },
@@ -6883,6 +6691,12 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -6912,6 +6726,12 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -7516,6 +7336,12 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -7545,7 +7371,8 @@
           "tests": [
             "tests/corpus/node24-crypto-kdf.ts",
             "tests/corpus/node24-crypto-kdf-errors.ts",
-            "tests/corpus/node24-crypto-kdf-options.ts"
+            "tests/corpus/node24-crypto-kdf-options.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts"
           ]
         }
       }
@@ -7574,7 +7401,8 @@
           "tests": [
             "tests/corpus/node24-crypto-kdf.ts",
             "tests/corpus/node24-crypto-kdf-errors.ts",
-            "tests/corpus/node24-crypto-kdf-options.ts"
+            "tests/corpus/node24-crypto-kdf-options.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts"
           ]
         }
       }
@@ -7628,6 +7456,12 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -7657,6 +7491,12 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -7798,60 +7638,6 @@
       }
     },
     {
-      "id": "crypto:974195d3b725",
-      "chapter": "crypto",
-      "label": "crypto.randomFill(buffer[, offset][, size], callback)",
-      "signature": "`crypto.randomFill(buffer[, offset][, size], callback)`",
-      "apiSymbol": "crypto.randomFill",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/crypto.html#cryptorandomfillbuffer-offset-size-callback",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "crypto:9a954164ef2a",
-      "chapter": "crypto",
-      "label": "crypto.randomFillSync(buffer[, offset][, size])",
-      "signature": "`crypto.randomFillSync(buffer[, offset][, size])`",
-      "apiSymbol": "crypto.randomFillSync",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/crypto.html#cryptorandomfillsyncbuffer-offset-size",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "compiler-dedicated:crypto.randomFillSync",
-          "tests": [
-            "tests/corpus/2890-crypto-static-utility.ts",
-            "tests/corpus/node24-crypto-sha2.ts",
-            "tests/harness/npm-static.test.ts"
-          ]
-        }
-      }
-    },
-    {
       "id": "crypto:a403de3874bc",
       "chapter": "crypto",
       "label": "crypto.randomInt([min, ]max[, callback])",
@@ -7873,70 +7659,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:crypto.randomInt",
           "tests": [
-            "tests/corpus/2890-crypto-static-utility.ts",
-            "tests/corpus/node24-crypto-sha2.ts",
-            "tests/harness/npm-static.test.ts"
+            "tests/corpus/5442-crypto-random-values.ts",
+            "tests/corpus/2890-crypto-static-utility.ts"
           ]
-        }
-      }
-    },
-    {
-      "id": "crypto:0d3bcb43072b",
-      "chapter": "crypto",
-      "label": "crypto.randomUUID([options])",
-      "signature": "`crypto.randomUUID([options])`",
-      "apiSymbol": "crypto.randomUUID",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/crypto.html#cryptorandomuuidoptions",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.crypto.randomUUID",
-          "tests": [
-            "tests/corpus/1358-crypto-random.ts",
-            "tests/corpus/1534-crypto-hash-chain.ts",
-            "tests/corpus/2556-crypto-introspection.ts",
-            "tests/corpus/2890-crypto-static-utility.ts",
-            "tests/harness/npm-static.test.ts",
-            "tests/corpus/node24-crypto-sha2.ts",
-            "tests/corpus/node24-crypto-kdf.ts",
-            "tests/corpus/node24-crypto-kdf-errors.ts",
-            "tests/corpus/node24-crypto-kdf-options.ts"
-          ]
-        }
-      }
-    },
-    {
-      "id": "crypto:5fe8e4024b07",
-      "chapter": "crypto",
-      "label": "crypto.randomUUIDv7([options])",
-      "signature": "`crypto.randomUUIDv7([options])`",
-      "apiSymbol": "crypto.randomUUIDv7",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/crypto.html#cryptorandomuuidv7options",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
         }
       }
     },
@@ -7964,7 +7689,8 @@
           "tests": [
             "tests/corpus/node24-crypto-kdf.ts",
             "tests/corpus/node24-crypto-kdf-errors.ts",
-            "tests/corpus/node24-crypto-kdf-options.ts"
+            "tests/corpus/node24-crypto-kdf-options.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts"
           ]
         }
       }
@@ -7993,7 +7719,8 @@
           "tests": [
             "tests/corpus/node24-crypto-kdf.ts",
             "tests/corpus/node24-crypto-kdf-errors.ts",
-            "tests/corpus/node24-crypto-kdf-options.ts"
+            "tests/corpus/node24-crypto-kdf-options.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts"
           ]
         }
       }
@@ -8095,35 +7822,6 @@
           "confidence": "high",
           "source": "surface-manifest:unsupported:node-builtin.crypto.sign",
           "tests": []
-        }
-      }
-    },
-    {
-      "id": "crypto:6ed432bf0cfd",
-      "chapter": "crypto",
-      "label": "crypto.timingSafeEqual(a, b)",
-      "signature": "`crypto.timingSafeEqual(a, b)`",
-      "apiSymbol": "crypto.timingSafeEqual",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/crypto.html#cryptotimingsafeequala-b",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "compiler-dedicated:crypto.timingSafeEqual",
-          "tests": [
-            "tests/corpus/2890-crypto-static-utility.ts",
-            "tests/corpus/node24-crypto-sha2.ts",
-            "tests/harness/npm-static.test.ts"
-          ]
         }
       }
     },
@@ -9270,6 +8968,12 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -9299,6 +9003,12 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -9328,6 +9038,12 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -9357,6 +9073,12 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -9386,6 +9108,12 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -9415,6 +9143,12 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -9444,6 +9178,12 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
+            "tests/corpus/5440-crypto-hash-encodings.js",
+            "tests/corpus/5441-crypto-hash-output-length.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -32854,12 +32594,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:globals",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:globals.Blob",
+          "tests": [
+            "tests/corpus/5285-blob-construct.ts",
+            "tests/corpus/5286-blob-readers.ts",
+            "tests/corpus/5287-blob-inspect.ts",
+            "tests/corpus/5288-blob-validation.js",
+            "tests/corpus/5290-blob-dynamic.js"
+          ]
         }
       }
     },
@@ -33229,12 +32975,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:globals",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:globals.File",
+          "tests": [
+            "tests/corpus/5285-blob-construct.ts",
+            "tests/corpus/5286-blob-readers.ts",
+            "tests/corpus/5287-blob-inspect.ts",
+            "tests/corpus/5288-blob-validation.js",
+            "tests/corpus/5290-blob-dynamic.js"
+          ]
         }
       }
     },
@@ -75805,7 +75557,12 @@
             "tests/corpus/node24-text-utilities-validation.js",
             "tests/corpus/node24-text-utilities-coercion.js",
             "tests/corpus/node24-text-utilities.cjs",
-            "tests/fixtures/node-types/text-utilities.ts"
+            "tests/fixtures/node-types/text-utilities.ts",
+            "tests/corpus/5470-strip-vt-osc.cjs",
+            "tests/corpus/5471-strip-vt-csi.cjs",
+            "tests/corpus/5472-strip-vt-random.cjs",
+            "tests/corpus/5473-strip-vt-unterminated.cjs",
+            "tests/corpus/5474-strip-vt-surrogates.ts"
           ]
         }
       }
@@ -75867,7 +75624,12 @@
             "tests/corpus/node24-text-utilities-validation.js",
             "tests/corpus/node24-text-utilities-coercion.js",
             "tests/corpus/node24-text-utilities.cjs",
-            "tests/fixtures/node-types/text-utilities.ts"
+            "tests/fixtures/node-types/text-utilities.ts",
+            "tests/corpus/5470-strip-vt-osc.cjs",
+            "tests/corpus/5471-strip-vt-csi.cjs",
+            "tests/corpus/5472-strip-vt-random.cjs",
+            "tests/corpus/5473-strip-vt-unterminated.cjs",
+            "tests/corpus/5474-strip-vt-surrogates.ts"
           ]
         }
       }
@@ -80483,41 +80245,6 @@
           "confidence": "low",
           "source": "compiler-unmatched:webcrypto",
           "tests": []
-        }
-      }
-    },
-    {
-      "id": "webcrypto:35fd8cce482a",
-      "chapter": "webcrypto",
-      "label": "crypto.randomUUID()",
-      "signature": "`crypto.randomUUID()`",
-      "apiSymbol": "crypto.randomUUID",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/webcrypto.html#cryptorandomuuid",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.crypto.randomUUID",
-          "tests": [
-            "tests/corpus/1358-crypto-random.ts",
-            "tests/corpus/1534-crypto-hash-chain.ts",
-            "tests/corpus/2556-crypto-introspection.ts",
-            "tests/corpus/2890-crypto-static-utility.ts",
-            "tests/harness/npm-static.test.ts",
-            "tests/corpus/node24-crypto-sha2.ts",
-            "tests/corpus/node24-crypto-kdf.ts",
-            "tests/corpus/node24-crypto-kdf-errors.ts",
-            "tests/corpus/node24-crypto-kdf-options.ts"
-          ]
         }
       }
     },
