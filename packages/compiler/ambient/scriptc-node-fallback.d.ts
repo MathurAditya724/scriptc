@@ -2359,7 +2359,7 @@ declare module "crypto" {
    * chacha20-poly1305. The stream.Transform members are not declared. */
   export type CipherGCMTypes = "aes-128-gcm" | "aes-192-gcm" | "aes-256-gcm";
   export type CipherChaCha20Poly1305Types = "chacha20-poly1305";
-  export type CipherKey = string | ArrayBuffer | ArrayBufferView;
+  export type CipherKey = BinaryLike | KeyObject;
   export interface CipherGCMOptions {
     authTagLength?: number;
   }

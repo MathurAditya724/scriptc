@@ -2,9 +2,11 @@
 // keys: several setAAD calls before the data, chunked updates, every
 // authTagLength Node accepts, IVs of 1, 12, 16 and 64 bytes, string output
 // encodings, and decryption checks that reject a wrong tag, a tampered
-// ciphertext or changed AAD with Node's error. Keys and IVs are fixed
-// byte patterns, so every output is deterministic.
-import { createCipheriv, createDecipheriv } from "node:crypto";
+// ciphertext or changed AAD with Node's error. Keys, IVs, AAD, tags and
+// data also arrive through records, untyped values, nested objects, Maps,
+// arrays, generics and secret KeyObjects. Keys and IVs are fixed byte
+// patterns, so every output is deterministic.
+import { createCipheriv, createDecipheriv, createSecretKey, type KeyObject } from "node:crypto";
 
 function pattern(length: number, seed: number): Buffer {
   const out = Buffer.alloc(length);
@@ -106,3 +108,42 @@ try {
 } catch (error) {
   console.log("no tag", describe(error));
 }
+
+interface Material {
+  key: Buffer;
+  iv: Uint8Array;
+  aad: Buffer;
+}
+const material: Material = { key: pattern(32, 21), iv: new Uint8Array(pattern(12, 22)), aad: pattern(5, 23) };
+const secret: KeyObject = createSecretKey(material.key);
+const untyped: any = material;
+const nested: any = { inner: material, list: [material.key, material.iv], secret };
+const byName = new Map<string, Uint8Array>([
+  ["key", material.key],
+  ["iv", material.iv],
+]);
+const listed: Uint8Array[] = [material.key, material.iv, material.aad];
+function same<T>(value: T): T {
+  return value;
+}
+function sealWith(label: string, key: any, iv: any, aad: any, data: any): void {
+  const c = createCipheriv("aes-256-gcm", key, iv);
+  c.setAAD(aad);
+  const sealed = Buffer.concat([c.update(data), c.final()]);
+  const tag: any = { value: c.getAuthTag() };
+  const d = createDecipheriv("aes-256-gcm", key, iv);
+  d.setAAD(aad);
+  d.setAuthTag(tag.value);
+  const opened = Buffer.concat([d.update(sealed), d.final()]);
+  console.log(label, sealed.toString("hex"), opened.equals(Buffer.from(data)));
+}
+sealWith("record fields", material.key, material.iv, material.aad, material.aad);
+sealWith("untyped fields", untyped.key, untyped.iv, untyped.aad, untyped.aad);
+sealWith("nested values", nested.inner.key, nested.list[1], nested.inner.aad, nested.inner.aad);
+sealWith("map values", byName.get("key"), byName.get("iv"), material.aad, material.aad);
+sealWith("array elements", listed[0], listed[1], listed[2], listed[2]);
+sealWith("generic values", same(material.key), same(material.iv), same(material.aad), same(material.aad));
+sealWith("key object", secret, material.iv, material.aad, material.aad);
+sealWith("untyped key object", nested.secret, nested.list[1], material.aad, material.aad);
+const typedKey = createCipheriv("aes-256-gcm", secret, material.iv);
+console.log("typed key object", Buffer.concat([typedKey.update(material.aad), typedKey.final()]).toString("hex"));
