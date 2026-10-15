@@ -1,3 +1,4 @@
+import { inlineRcOption } from "./shapes.js";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,6 +42,7 @@ test("sort-heavy programs emit equal LLVM from memory and from serialized IR", a
           wasi: false,
           runtimeAbiMarker: false,
           objectAudit: sanitize,
+          ...inlineRcOption(options.optimization),
         });
         const text = typeof emitted === "string" ? emitted : emitted.join("");
         expect(text === readFileSync(llvmPath, "utf8"), label).toBe(true);

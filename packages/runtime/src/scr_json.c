@@ -1017,6 +1017,17 @@ static void scr_dyn_gcfree(void *ptr) { scr_dyn_dispose(ptr, true); }
 
 static void scr_dyn_destroy(void *ptr) { scr_dyn_dispose(ptr, false); }
 
+/* The cycle bookkeeping of a capsule or handle that survives a release.
+ * Compiled release fast paths decrement first and call this for the kinds
+ * whose candidacy depends on per-value state, matching scr_dyn_release. */
+void scr_dyn_release_survivor(ScrDyn *d) {
+  if ((d->kind == SCR_DYN_TYPED_REF &&
+       (d->v.typed_ref.materialized || d->v.typed_ref.casts || d->v.typed_ref.traced ||
+        d->prototype || d->symbol_properties || d->symbol_keys)) ||
+      (d->kind == SCR_DYN_HANDLE && d->v.handle.traced))
+    scr_cyc_released(d);
+}
+
 void scr_dyn_release(ScrDyn *d) {
   if (!d || d->rc == SIZE_MAX) return;
   if (--d->rc != 0) {

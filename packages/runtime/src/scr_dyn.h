@@ -1068,6 +1068,8 @@ extern void scr_dyn_listener_fire_data(ScrClosure *cb, ScrBytes *chunk);
 extern void scr_dyn_listener_fire_err(ScrClosure *cb, ScrStr *msg);
 
 void *scr_dyn_retain_v(void *d);
+/* After a compiled fast path decremented a surviving capsule or handle. */
+void scr_dyn_release_survivor(ScrDyn *d);
 void scr_dyn_release_v(void *d);
 void scr_dyn_trace_v(void *d, ScrTraceVisit visit, void *ctx);
 

@@ -85,9 +85,10 @@ export interface ShapeHost {
   readonly threadLocalAlloc?: boolean;
   /** Inline RC fast-path helpers requested so far ("<family>:<op>"); the
    * emitter defines each once through {@link emitInlineRcHelpers}. Null
-   * keeps every retain/release a runtime call: inline RC is a
-   * size-for-speed optimization of the `speed` posture only. */
+   * keeps every retain/release a runtime call. */
   readonly rcHelpers: Set<string> | null;
+  /** Which fast paths are inlined (see {@link InlineRcMode}). */
+  readonly rcMode?: InlineRcMode;
   /** The next collector statistics index for an emitted ScrCycType
    * descriptor (cycTypeDescriptor), counting from FIRST_EMITTED_CYC_KIND
    * in emission order.
@@ -178,7 +179,7 @@ export function retainSym(host: ShapeHost, t: IrType): string {
   const nullable = host.nullableUnions.of(t);
   if (nullable) return nullableRetainSym(host, nullable.arm);
   const stem = runtimeRcStem(t);
-  if (host.rcHelpers !== null && stem !== null && inlineRcFamily(stem, "retain") !== null) {
+  if (host.rcHelpers !== null && stem !== null && inlineRcFamily(host, stem, "retain") !== null) {
     return inlineRcSym(host, stem, "retain");
   }
   // Direct retains keep the emitted helper (vAdapters' runtime adapters
@@ -227,7 +228,7 @@ export function releaseSym(host: ShapeHost, t: IrType): string {
   const nullable = host.nullableUnions.of(t);
   if (nullable) return releaseSym(host, nullable.arm);
   const stem = runtimeRcStem(t);
-  if (host.rcHelpers !== null && stem !== null && inlineRcFamily(stem, "release") !== null) {
+  if (host.rcHelpers !== null && stem !== null && inlineRcFamily(host, stem, "release") !== null) {
     return inlineRcSym(host, stem, "release");
   }
   if (stem !== null) {
@@ -273,8 +274,11 @@ interface InlineRcFamily {
  * collector's on_dead bookkeeping) stays in the runtime release, which
  * repeats its own checks, so the fast path never duplicates it.
  *
+ * The dyn release buffers a surviving value by kind (scr_dyn_release):
+ * the fast path decides the always and never cases and calls
+ * scr_dyn_release_survivor for kinds whose candidacy is per value.
+ *
  * Releases stay plain calls for:
- * - dyn: scr_dyn_release buffers a surviving object only for some kinds.
  * - arr: array releases are the most numerous release sites and the
  *   least hot (at most 1% self time across the benchmark suite), and
  *   inlining them roughly doubled the code growth for no measured speedup.
@@ -291,19 +295,36 @@ export const INLINE_RC_FAMILIES: Readonly<Record<string, InlineRcFamily>> = {
   promise: { cycle: "always", retainNull: true, release: "scr_promise_release" },
   classobj: { cycle: "always", retainNull: true, release: "scr_classobj_release" },
   box: { cycle: "always", retainNull: false, release: "scr_box_release" },
-  dyn: { cycle: "always", retainNull: false, release: null },
+  dyn: { cycle: "always", retainNull: false, release: "scr_dyn_release" },
 };
 
 type RcOp = "retain" | "release";
 
 /** The mirrored family for an RC operation on a runtime stem (`scr_str`),
  * or null when it stays a call. */
-export function inlineRcFamily(stem: string, op: RcOp): InlineRcFamily | null {
-  return mirroredFamily(stem.replace(/^scr_/, ""), op);
+export function inlineRcFamily(host: ShapeHost, stem: string, op: RcOp): InlineRcFamily | null {
+  return mirroredFamily(host, stem.replace(/^scr_/, ""), op);
 }
 
-function mirroredFamily(family: string, op: RcOp): InlineRcFamily | null {
+/** Which RC fast paths an emission inlines. `speed` mirrors every family
+ * with a fast path. `release` mirrors only the string retain and the dyn
+ * retain and release: the operations that dominate dynamic-value and string
+ * code, at almost no size cost. String releases stay calls in `release`
+ * because string-heavy programs have many release sites. */
+export type InlineRcMode = "release" | "speed";
+
+const RELEASE_RC_OPS = new Set(["str:retain", "dyn:retain", "dyn:release"]);
+
+/** The emitter's inline RC option for a native optimization posture: none
+ * at `dev`, the `release` subset by default. */
+export function inlineRcOption(optimization: string | undefined): { inlineRc?: InlineRcMode } {
+  if (optimization === "speed") return { inlineRc: "speed" };
+  return optimization === "dev" ? {} : { inlineRc: "release" };
+}
+
+function mirroredFamily(host: ShapeHost, family: string, op: RcOp): InlineRcFamily | null {
   if (!Object.hasOwn(INLINE_RC_FAMILIES, family)) return null;
+  if (host.rcMode !== "speed" && !RELEASE_RC_OPS.has(`${family}:${op}`)) return null;
   const row = INLINE_RC_FAMILIES[family]!;
   return op === "retain" || row.release !== null ? row : null;
 }
@@ -317,7 +338,7 @@ function inlineRcSym(host: ShapeHost, stem: string, op: RcOp): string {
 /** The release call target for a capture box: scr_box_release's fast path,
  * or scr_box_release itself without inline RC. */
 export function boxReleaseSym(host: ShapeHost): string {
-  if (host.rcHelpers === null) {
+  if (host.rcHelpers === null || mirroredFamily(host, "box", "release") === null) {
     host.declare(`declare void @scr_box_release(ptr)`);
     return "@scr_box_release";
   }
@@ -327,7 +348,7 @@ export function boxReleaseSym(host: ShapeHost): string {
 /** Record the helper and declare the runtime symbols it calls now, so they
  * land in the extern block. */
 function requestRcHelper(host: ShapeHost, family: string, op: RcOp): string {
-  if (host.rcHelpers === null || mirroredFamily(family, op) === null) {
+  if (host.rcHelpers === null || mirroredFamily(host, family, op) === null) {
     throw new LlvmUnsupportedError(`inline rc:${family}:${op}`);
   }
   host.rcHelpers.add(`${family}:${op}`);
@@ -345,6 +366,7 @@ function rcHelperDecls(family: string, op: RcOp): string[] {
   return [
     `declare void @${row.release}(ptr)`,
     ...(row.cycle === "always" ? [`declare void @scr_cyc_on_release(ptr)`] : []),
+    ...(family === "dyn" ? [`declare void @scr_dyn_release_survivor(ptr)`] : []),
   ];
 }
 
@@ -449,23 +471,37 @@ function releaseHelper(host: ShapeHost, family: string, row: InlineRcFamily): st
           `  br i1 %untraced, label %done, label %root`,
           `root:`,
         ]
-      : family === "box"
+      : family === "dyn"
         ? [
-            // scr_box_release buffers a surviving box only when its trace
-            // visits the payload (scr_box_traced): a closure (kind 4), or a
-            // class instance whose obj_trace is set.
-            `  %kp = getelementptr i8, ptr %o, ${S} ${S === "i64" ? 8 : 4} ; ScrBox.kind`,
+            // scr_dyn_release buffers a surviving value by kind: always for
+            // arrays, objects, functions and proxies, per value for capsules
+            // and handles (scr_dyn_release_survivor), never for scalars.
+            `  %kp = getelementptr i8, ptr %o, ${S} ${S === "i64" ? 8 : 4} ; ScrDyn.kind`,
             `  %kind = load i32, ptr %kp`,
-            `  %func = icmp eq i32 %kind, 4`,
-            `  br i1 %func, label %root, label %objbox`,
-            `objbox:`,
-            `  %otp = getelementptr i8, ptr %o, ${S} ${S === "i64" ? 32 : 16} ; ScrBox.obj_trace`,
-            `  %ot = load ptr, ptr %otp`,
-            `  %untraced = icmp eq ptr %ot, null`,
-            `  br i1 %untraced, label %done, label %root`,
+            // SCR_DYN_ARR 4, OBJ 5, FUNC 8, PROXY 13; HANDLE 9, TYPED_REF 12.
+            `  switch i32 %kind, label %done [ i32 4, label %root i32 5, label %root i32 8, label %root i32 13, label %root i32 9, label %survivor i32 12, label %survivor ]`,
+            `survivor:`,
+            `  call void @scr_dyn_release_survivor(ptr %o)`,
+            `  br label %done`,
             `root:`,
           ]
-        : []),
+        : family === "box"
+          ? [
+              // scr_box_release buffers a surviving box only when its trace
+              // visits the payload (scr_box_traced): a closure (kind 4), or a
+              // class instance whose obj_trace is set.
+              `  %kp = getelementptr i8, ptr %o, ${S} ${S === "i64" ? 8 : 4} ; ScrBox.kind`,
+              `  %kind = load i32, ptr %kp`,
+              `  %func = icmp eq i32 %kind, 4`,
+              `  br i1 %func, label %root, label %objbox`,
+              `objbox:`,
+              `  %otp = getelementptr i8, ptr %o, ${S} ${S === "i64" ? 32 : 16} ; ScrBox.obj_trace`,
+              `  %ot = load ptr, ptr %otp`,
+              `  %untraced = icmp eq ptr %ot, null`,
+              `  br i1 %untraced, label %done, label %root`,
+              `root:`,
+            ]
+          : []),
     ...(cycle === "always" ? cycleRootLines(host, "done") : [`  br label %done`]),
     `done:`,
     `  ret void`,
