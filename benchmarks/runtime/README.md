@@ -16,7 +16,6 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `numeric-kernels` | cpu | sieve, hashing, `number[][]` matmul, `Float64Array` |
 | `value-objects` | cpu | small immutable records and class instances: vector helpers, method chains, particle updates |
 | `optional-fields` | cpu | records and class instances with `number \| undefined` and other scalar-union fields |
-| `record-boundaries` | cpu | records built from unchecked array reads passed to and returned from annotated functions |
 | `validate-errors` | cpu | throw/catch on a fraction of inputs, small call chains |
 | `csv-numbers` | cpu | `split`, `Number`, `parseInt`, `toFixed` |
 | `log-lines` | cpu | 200k immediate `console.log`/`process.stdout.write` lines into the runner's pipe |

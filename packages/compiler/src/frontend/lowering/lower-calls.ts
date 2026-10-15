@@ -7441,18 +7441,6 @@ function lowerObjectStaticCall(
           type: resultT,
           loc: locOf(call),
         };
-      // Values are `any[]`, which is the checked-dynamic array. When the
-      // program only iterates or indexes the result, or passes it to a
-      // read-only array method, a native vector of the checked values skips
-      // building that array and, for for-of, the iterator protocol.
-      if (member === "values" && !isJsSourceFile(call.getSourceFile()) && consumesValueList(call))
-        return {
-          kind: "libCall",
-          fn: "dyn.objValueList",
-          args: [v],
-          type: arrayOf(DYN),
-          loc: locOf(call),
-        };
       return { kind: "libCall", fn, args: [v], type: DYN, loc: locOf(call) };
     }
   }
@@ -7754,46 +7742,6 @@ function consumesEntryPairs(call: ts.CallExpression): boolean {
     parent.parent.expression === parent
   );
 }
-
-/** Whether an Object.values result is only iterated, indexed or passed to
- * a read-only array method, so no code observes or changes its array
- * representation. A bare `.length` read keeps the checked-dynamic array,
- * which measures as fast. */
-function consumesValueList(call: ts.CallExpression): boolean {
-  let node: ts.Node = call;
-  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
-  const parent = node.parent;
-  if (ts.isForOfStatement(parent)) return parent.expression === node && !parent.awaitModifier;
-  if (ts.isElementAccessExpression(parent))
-    return parent.expression === node && !isWriteTarget(parent);
-  if (!ts.isPropertyAccessExpression(parent) || parent.expression !== node) return false;
-  return (
-    VALUE_LIST_METHODS.has(parent.name.text) &&
-    ts.isCallExpression(parent.parent) &&
-    parent.parent.expression === parent
-  );
-}
-
-/** Whether an access is assigned, updated or deleted. */
-function isWriteTarget(access: ts.Expression): boolean {
-  let node: ts.Node = access;
-  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
-  const parent = node.parent;
-  if (ts.isBinaryExpression(parent))
-    return (
-      parent.left === node &&
-      parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-      parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
-    );
-  if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
-    return (
-      parent.operator === ts.SyntaxKind.PlusPlusToken ||
-      parent.operator === ts.SyntaxKind.MinusMinusToken
-    );
-  return ts.isDeleteExpression(parent);
-}
-
-const VALUE_LIST_METHODS = new Set(["every", "findIndex", "forEach", "join", "reduce", "some"]);
 
 const ENTRY_PAIR_CALLBACK_METHODS = new Set([
   "every",

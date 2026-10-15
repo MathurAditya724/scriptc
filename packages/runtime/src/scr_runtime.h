@@ -4959,6 +4959,7 @@ typedef struct ScrDynTypedClassOps {
   const struct ScrDynTypedClassOps *(*exact)(void *instance);
   size_t count;
   ScrStr *const *names; /* immortal member-name strings */
+  ScrStr *class_name;   /* immortal constructor name; NULL for an anonymous class */
 } ScrDynTypedClassOps;
 
 struct ScrDyn {
@@ -5179,10 +5180,6 @@ typedef struct {
 } ScrDynEntryPairs;
 ScrDynEntryPairs *scr_dyn_obj_entry_pairs(const ScrDyn *v);
 void scr_dyn_entry_pairs_free(ScrDynEntryPairs *pairs);
-/* Object.values as a native array of owned checked values in own-key order
- * (+1), for results compiled code only iterates, indexes or reads. NULL with
- * an exception pending. */
-ScrArr *scr_dyn_obj_value_list(const ScrDyn *v);
 /* Snapshot all own string keys of a SCR_DYN_OBJ in JS order. Returns +1. */
 ScrDyn *scr_dyn_obj_own_keys(const ScrDyn *v);
 ScrDyn *scr_dyn_own_keys(const ScrDyn *value);
@@ -5369,6 +5366,10 @@ void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
 /* Attach the prototype member names of a class instance capsule
  * (idempotent), so `in` sees its methods and accessors. */
 void scr_dyn_typed_ref_bind_class(ScrDyn *d, const ScrDynTypedClassOps *ops);
+/* The constructor name of a class instance capsule's own class, for
+ * util.inspect; NULL when the capsule is not a bound class instance, its
+ * class is anonymous, or its prototype was replaced. */
+const ScrStr *scr_dyn_typed_ref_class_name(const ScrDyn *d);
 /* Fast keyed read on a live array capsule: +1 value for `length` and for
  * present or explicitly-undefined elements; NULL when the answer needs the
  * snapshot (holes, out-of-range, non-index names, or no bound ops). */

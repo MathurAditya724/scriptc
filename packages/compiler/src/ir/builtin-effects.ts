@@ -463,7 +463,6 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.seal",
   "dyn.isSealed",
   "dyn.objValues",
-  "dyn.objValueList",
   "dyn.objEntries",
   "error.domClone",
   // new RegExp compiles the pattern eagerly: an invalid pattern or flag

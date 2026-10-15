@@ -2885,9 +2885,6 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.seal": { argTypes: [DYN], result: DYN },
   "dyn.isSealed": { argTypes: [DYN], result: BOOL },
   "dyn.objValues": { argTypes: [DYN], result: DYN },
-  /** Object.values as a native vector of checked values, for results the
-   * program consumes directly (for-of, index reads, read-only methods). */
-  "dyn.objValueList": { argTypes: [DYN], result: arrayOf(DYN) },
   "dyn.objEntries": { argTypes: [DYN], result: DYN },
   /** structuredClone over the checked-dynamic tree (scr_json.c): the JSON-safe subset plus
    * bytes (a fresh copy — a Buffer clones as a plain Uint8Array, like
