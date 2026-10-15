@@ -658,6 +658,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // dns.lookup and net.connect throw ERR_INVALID_ARG_VALUE for a host with
   // null bytes.
   "dns.lookup",
+  // Node's argument checks (ERR_INVALID_ARG_TYPE/VALUE, ERR_SOCKET_BAD_PORT).
+  "dns.lookupDyn",
+  "dns.lookupService",
+  "dns.setDefaultResultOrder",
   "net.connect",
   "net.connectCb",
   // node:dgram state errors (Node throws synchronously): bind on a bound

@@ -72,6 +72,7 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h> /* getaddrinfo/EAI_*, inet_pton/ntop, socklen_t */
+#include <process.h> /* _getpid */
 #else
 #include <netdb.h>
 #include <netinet/in.h>
@@ -356,7 +357,8 @@ static SCR_TL ScrPoller *scr_dgram_poller = NULL;
 /* Pending dns.lookup deliveries (already resolved — getaddrinfo ran at
  * the call; the sweep fires them FIFO). */
 typedef struct ScrDnsPending {
-  ScrClosure *cb; /* +1 */
+  ScrClosure *cb; /* +1, or NULL for a dyn call */
+  ScrDyn *call;   /* a dyn [callback, ...args] array (+1), or NULL */
   ScrDnsLookupFn fn;
   ScrStr *errmsg; /* +1 or NULL (success) */
   ScrStr *addr;   /* +1 ("" on failure) */
@@ -869,6 +871,457 @@ void scr_dns_lookup(ScrStr *hostname, double family, ScrClosure *cb, ScrDnsLooku
   *link = p;
 }
 
+/* ── dns with Node's argument forms (dyn callbacks) ──────────────────── */
+
+/* Calls a dyn [callback, ...args] array. */
+static void scr_dns_dyn_call(const ScrDyn *call) {
+  size_t argc = call->v.arr.len - 1;
+  scr_dyn_release(scr_dyn_call(call->v.arr.items[0], call->v.arr.items + 1, argc, "callback"));
+}
+
+static void scr_dns_tick_fire(ScrClosure *self) {
+  ScrDyn *call = (ScrDyn *)scr_box_get_ref(self->caps[0]);
+  scr_dns_dyn_call(call);
+  scr_dyn_release(call);
+}
+
+/* Queues callback(args...) (the args move): on the next tick, as Node's
+ * process.nextTick answers for literal addresses, or with the lookup
+ * deliveries. */
+static void scr_dns_call_later(const ScrDyn *callback, ScrDyn **args, size_t argc, bool tick) {
+  ScrDyn *call = scr_dyn_new_arr();
+  scr_dyn_arr_push(call, scr_dyn_retain((ScrDyn *)callback));
+  for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(call, args[i]);
+  if (tick) {
+    ScrClosure *clo = scr_closure_new((void *)&scr_dns_tick_fire, 1);
+    ScrBox *box = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, NULL);
+    scr_box_set_ref(box, call);
+    clo->caps[0] = box;
+    scr_next_tick(clo);
+    return;
+  }
+  ScrDnsPending *p = calloc(1, sizeof *p);
+  if (!p) scr_dgram_oom();
+  p->call = call;
+  ScrDnsPending **link = &scr_dns_pending;
+  while (*link) link = &(*link)->next;
+  *link = p;
+}
+
+/* The default result order (dns.setDefaultResultOrder): 0 verbatim,
+ * 1 ipv4first, 2 ipv6first. */
+static SCR_TL int scr_dns_default_order = 0;
+static const char *const scr_dns_orders[] = { "verbatim", "ipv4first", "ipv6first" };
+
+static int scr_dns_order_of(const ScrDyn *v) {
+  if (v->kind != SCR_DYN_STR) return -1;
+  for (int i = 0; i < 3; i++) {
+    size_t n = strlen(scr_dns_orders[i]);
+    if (v->v.str->len == n && memcmp(v->v.str->data, scr_dns_orders[i], n) == 0) return i;
+  }
+  return -1;
+}
+
+ScrStr *scr_dns_get_default_result_order(void) {
+  const char *o = scr_dns_orders[scr_dns_default_order];
+  return scr_str_new(o, strlen(o));
+}
+
+void scr_dns_set_default_result_order(const ScrDyn *order) {
+  int o = scr_dns_order_of(order);
+  if (o < 0) {
+    scr_dyn_arg_value_fail("dnsOrder", "must be one of: 'verbatim', 'ipv4first', 'ipv6first'", order);
+    return;
+  }
+  scr_dns_default_order = o;
+}
+
+/* Node's DNSException: "<syscall> <code> <host>" with errno, code,
+ * syscall and hostname. +1 dyn. */
+static ScrDyn *scr_dns_exception(int rc, const char *syscall, const ScrStr *host) {
+  bool notfound = rc == EAI_NONAME
+#ifdef EAI_NODATA
+                  || rc == EAI_NODATA
+#endif
+      ;
+  const char *code = notfound ? "ENOTFOUND" : rc == EAI_AGAIN ? "EAI_AGAIN" : "EAI_FAIL";
+  double errnum = rc == EAI_NONAME ? -3008
+#ifdef EAI_NODATA
+                  : rc == EAI_NODATA ? -3007
+#endif
+                  : rc == EAI_AGAIN ? -3001
+                                    : -3002;
+  char msg[320];
+  int len = snprintf(msg, sizeof msg, "%s %s %.*s", syscall, code, (int)(host->len < 255 ? host->len : 255),
+                     host->data);
+  ScrStr *m = scr_str_new(msg, (size_t)len);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, m);
+  scr_str_release(m);
+  scr_error_set_code(e, code);
+  e->system_call = scr_str_new(syscall, strlen(syscall));
+  e->system_errno = errnum;
+  ScrDyn *d = scr_dyn_from_error(e);
+  scr_error_release(e);
+  scr_dyn_obj_set(d, "hostname", 8, scr_dyn_new_str((ScrStr *)host));
+  return d;
+}
+
+static double scr_dns_literal_family(const ScrStr *h) {
+  unsigned char buf[16];
+  char tmp[64];
+  if (h->len == 0 || h->len >= sizeof tmp) return 0;
+  memcpy(tmp, h->data, h->len);
+  tmp[h->len] = '\0';
+  if (inet_pton(AF_INET, tmp, buf) == 1) return 4;
+  if (strchr(tmp, ':') != NULL) {
+    char *pct = strchr(tmp, '%');
+    if (pct) *pct = '\0';
+    if (inet_pton(AF_INET6, tmp, buf) == 1) return 6;
+  }
+  return 0;
+}
+
+static SCR_TL bool scr_dns_hostname_warned = false;
+
+/* DEP0118 on the next tick, as process.emitWarning reports it: through
+ * the events unit's warning machinery when it is linked, otherwise the
+ * default stderr report. */
+static void scr_dns_warn_tick(ScrClosure *self) {
+  ScrStr *message = (ScrStr *)scr_box_get_ref(self->caps[0]);
+  if (scr_warning_emit_hook) {
+    scr_warning_emit_hook("DeprecationWarning", "DEP0118", message);
+  } else {
+    fflush(stdout);
+#ifdef _WIN32
+    long pid = (long)_getpid();
+#else
+    long pid = (long)getpid();
+#endif
+    fprintf(stderr, "(node:%ld) [DEP0118] DeprecationWarning: %.*s\n", pid, (int)message->len,
+            message->data);
+    fputs("(Use `node --trace-deprecation ...` to show where the warning was created)\n", stderr);
+  }
+  scr_str_release(message);
+}
+
+/* dns.lookup(hostname[, options], callback) as Node's lib/dns.js parses
+ * it: options is a family number or { family, all, order, verbatim,
+ * hints }, validated in Node's order. Results come back with the other
+ * lookups; literal addresses and an empty hostname answer on the next
+ * tick. */
+static void scr_dns_lookup_plain(const ScrDyn *hostname, const ScrDyn *options, const ScrDyn *callback,
+                                 bool typed);
+
+/* `typed`: the callback declares a string address (or a LookupAddress
+ * array), which cannot hold the undefined Node passes after an error;
+ * it receives "" and NaN (or []) there instead. */
+void scr_dns_lookup_dyn(const ScrDyn *hostname, const ScrDyn *options, const ScrDyn *callback,
+                        bool typed) {
+  /* a typed options record arrives by reference */
+  if (options->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(options);
+    if (!scr_exc_pending()) scr_dns_lookup_plain(hostname, view, callback, typed);
+    scr_dyn_release(view);
+    return;
+  }
+  scr_dns_lookup_plain(hostname, options, callback, typed);
+}
+
+/* A lookup failure's callback arguments. */
+static void scr_dns_fail(const ScrDyn *callback, int rc, const ScrStr *host, bool all, bool typed) {
+  ScrDyn *err = scr_dns_exception(rc, "getaddrinfo", host);
+  if (!typed) {
+    ScrDyn *args[1] = { err };
+    scr_dns_call_later(callback, args, 1, false);
+  } else if (all) {
+    ScrDyn *args[2] = { err, scr_dyn_new_arr() };
+    scr_dns_call_later(callback, args, 2, false);
+  } else {
+    ScrStr *empty = scr_str_new("", 0);
+    ScrDyn *args[3] = { err, scr_dyn_new_str(empty), scr_dyn_new_num(NAN) };
+    scr_str_release(empty);
+    scr_dns_call_later(callback, args, 3, false);
+  }
+}
+
+static void scr_dns_lookup_plain(const ScrDyn *hostname, const ScrDyn *options, const ScrDyn *callback,
+                                 bool typed) {
+  bool host_given = scr_dyn_truthy(hostname);
+  if (host_given && hostname->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("hostname", "of type string", hostname);
+    return;
+  }
+  double family = 0;
+  bool all = false;
+  int order = scr_dns_default_order;
+  if (options->kind == SCR_DYN_NUM) {
+    double f = options->v.num;
+    if (f != 0 && f != 4 && f != 6) {
+      scr_dyn_arg_value_fail("family", "must be one of: 0, 4, 6", options);
+      return;
+    }
+    family = f;
+  } else if (options->kind != SCR_DYN_UNDEF && options->kind != SCR_DYN_OBJ &&
+             options->kind != SCR_DYN_NULL) {
+    scr_dyn_arg_type_fail("options", "of type integer or an instance of Object", options);
+    return;
+  } else if (options->kind == SCR_DYN_OBJ) {
+    const ScrDyn *v = scr_dyn_obj_get(options, "hints", 5);
+    if (v != NULL && v->kind != SCR_DYN_UNDEF && v->kind != SCR_DYN_NULL) {
+      if (v->kind != SCR_DYN_NUM) {
+        scr_dyn_prop_type_fail("options.hints", "of type number", v);
+        return;
+      }
+      if (v->v.num != 0) {
+        scr_throw_error_msg_code(SCR_ERR_ERROR, "dns.lookup hints are not supported yet", 38, "SC2020");
+        return;
+      }
+    }
+    v = scr_dyn_obj_get(options, "family", 6);
+    if (v != NULL && v->kind != SCR_DYN_UNDEF && v->kind != SCR_DYN_NULL) {
+      if (v->kind == SCR_DYN_STR && v->v.str->len == 4 && memcmp(v->v.str->data, "IPv4", 4) == 0) family = 4;
+      else if (v->kind == SCR_DYN_STR && v->v.str->len == 4 && memcmp(v->v.str->data, "IPv6", 4) == 0) family = 6;
+      else if (v->kind == SCR_DYN_NUM && (v->v.num == 0 || v->v.num == 4 || v->v.num == 6)) family = v->v.num;
+      else {
+        scr_dyn_arg_value_fail("options.family", "must be one of: 0, 4, 6", v);
+        return;
+      }
+    }
+    v = scr_dyn_obj_get(options, "all", 3);
+    if (v != NULL && v->kind != SCR_DYN_UNDEF && v->kind != SCR_DYN_NULL) {
+      if (v->kind != SCR_DYN_BOOL) {
+        scr_dyn_prop_type_fail("options.all", "of type boolean", v);
+        return;
+      }
+      all = v->v.b;
+    }
+    v = scr_dyn_obj_get(options, "verbatim", 8);
+    if (v != NULL && v->kind != SCR_DYN_UNDEF && v->kind != SCR_DYN_NULL) {
+      if (v->kind != SCR_DYN_BOOL) {
+        scr_dyn_prop_type_fail("options.verbatim", "of type boolean", v);
+        return;
+      }
+      order = v->v.b ? 0 : 1;
+    }
+    v = scr_dyn_obj_get(options, "order", 5);
+    if (v != NULL && v->kind != SCR_DYN_UNDEF && v->kind != SCR_DYN_NULL) {
+      int o = scr_dns_order_of(v);
+      if (o < 0) {
+        scr_dyn_arg_value_fail("options.order", "must be one of: 'verbatim', 'ipv4first', 'ipv6first'", v);
+        return;
+      }
+      order = o;
+    }
+  }
+  if (callback->kind != SCR_DYN_FUNC) {
+    scr_dyn_arg_type_fail("callback", "of type function", callback);
+    return;
+  }
+  if (!host_given) {
+    if (!scr_dns_hostname_warned) {
+      scr_dns_hostname_warned = true;
+      ScrStr *shown = scr_dyn_string_coerce_js(hostname);
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "The provided hostname \"");
+      if (shown) scr_jb_write(&b, shown->data, shown->len);
+      scr_jb_puts(&b, "\" is not a valid hostname, and is supported in the dns module solely for compatibility.");
+      scr_str_release(shown);
+      ScrStr *message = scr_jb_finish(&b);
+      ScrClosure *clo = scr_closure_new((void *)&scr_dns_warn_tick, 1);
+      ScrBox *box = scr_box_new(SCR_BOX_STR);
+      scr_box_set_ref(box, message);
+      clo->caps[0] = box;
+      scr_next_tick(clo);
+    }
+    if (all) {
+      ScrDyn *args[2] = { scr_dyn_new_null(), scr_dyn_new_arr() };
+      scr_dns_call_later(callback, args, 2, true);
+    } else {
+      ScrDyn *args[3] = { scr_dyn_new_null(), scr_dyn_new_null(), scr_dyn_new_num(family == 6 ? 6 : 4) };
+      scr_dns_call_later(callback, args, 3, true);
+    }
+    return;
+  }
+  const ScrStr *host = hostname->v.str;
+  double literal = scr_dns_literal_family(host);
+  if (literal != 0) {
+    if (all) {
+      ScrDyn *entry = scr_dyn_new_obj();
+      scr_dyn_obj_set(entry, "address", 7, scr_dyn_new_str((ScrStr *)host));
+      scr_dyn_obj_set(entry, "family", 6, scr_dyn_new_num(literal));
+      ScrDyn *list = scr_dyn_new_arr();
+      scr_dyn_arr_push(list, entry);
+      ScrDyn *args[2] = { scr_dyn_new_null(), list };
+      scr_dns_call_later(callback, args, 2, true);
+    } else {
+      ScrDyn *args[3] = { scr_dyn_new_null(), scr_dyn_new_str((ScrStr *)host), scr_dyn_new_num(literal) };
+      scr_dns_call_later(callback, args, 3, true);
+    }
+    return;
+  }
+  if (memchr(host->data, '\0', host->len) != NULL) {
+    ScrStr *shown = scr_str_inspect_quoted((ScrStr *)host, true);
+    ScrJsonBuf msg;
+    scr_jb_init(&msg);
+    scr_jb_puts(&msg, "The argument 'hostname' must be a string without null bytes. Received ");
+    scr_jb_put_str(&msg, shown);
+    scr_str_release(shown);
+    ScrStr *text = scr_jb_finish(&msg);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
+    scr_str_release(text);
+    return;
+  }
+#ifdef _WIN32
+  (void)scr_dgram_poller_init();
+#endif
+  struct addrinfo hints;
+  memset(&hints, 0, sizeof hints);
+  hints.ai_family = family == 4 ? AF_INET : family == 6 ? AF_INET6 : AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  struct addrinfo *res = NULL;
+  int rc = getaddrinfo(host->data, NULL, &hints, &res);
+  if (rc != 0 || res == NULL) {
+    if (res) freeaddrinfo(res);
+    scr_dns_fail(callback, rc != 0 ? rc : EAI_NONAME, host, all, typed);
+    return;
+  }
+  /* the answers in order: verbatim, or one family first (stable) */
+  ScrDyn *list = scr_dyn_new_arr();
+  for (int pass = 0; pass < 2; pass++) {
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+      int fam = ai->ai_family == AF_INET6 ? 6 : ai->ai_family == AF_INET ? 4 : 0;
+      if (fam == 0) continue;
+      bool first = order == 0 || (order == 1 ? fam == 4 : fam == 6);
+      if (order == 0 ? pass == 1 : first != (pass == 0)) continue;
+      char ip[INET6_ADDRSTRLEN];
+      const void *src = fam == 4 ? (const void *)&((struct sockaddr_in *)ai->ai_addr)->sin_addr
+                                 : (const void *)&((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr;
+      if (!inet_ntop(fam == 4 ? AF_INET : AF_INET6, src, ip, sizeof ip)) continue;
+      ScrDyn *entry = scr_dyn_new_obj();
+      ScrStr *a = scr_str_new(ip, strlen(ip));
+      scr_dyn_obj_set(entry, "address", 7, scr_dyn_new_str(a));
+      scr_str_release(a);
+      scr_dyn_obj_set(entry, "family", 6, scr_dyn_new_num(fam));
+      scr_dyn_arr_push(list, entry);
+    }
+  }
+  freeaddrinfo(res);
+  if (all) {
+    ScrDyn *args[2] = { scr_dyn_new_null(), list };
+    scr_dns_call_later(callback, args, 2, false);
+    return;
+  }
+  if (list->v.arr.len == 0) {
+    scr_dyn_release(list);
+    scr_dns_fail(callback, EAI_NONAME, host, false, typed);
+    return;
+  }
+  const ScrDyn *first = list->v.arr.items[0];
+  ScrDyn *args[3] = { scr_dyn_new_null(), scr_dyn_retain((ScrDyn *)scr_dyn_obj_get(first, "address", 7)),
+                      scr_dyn_retain((ScrDyn *)scr_dyn_obj_get(first, "family", 6)) };
+  scr_dyn_release(list);
+  scr_dns_call_later(callback, args, 3, false);
+}
+
+/* dns.lookupService(address, port, callback): Node's checks (an IP
+ * address, a valid port), then getnameinfo with NI_NAMEREQD. */
+void scr_dns_lookup_service(const ScrDyn *address, const ScrDyn *port, const ScrDyn *callback,
+                            bool typed) {
+  if (address->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("address", "of type string", address);
+    return;
+  }
+  double fam = scr_dns_literal_family(address->v.str);
+  if (fam == 0) {
+    scr_dyn_arg_value_fail("address", "is invalid", address);
+    return;
+  }
+  double p = NAN;
+  bool numeric = (port->kind == SCR_DYN_NUM || port->kind == SCR_DYN_STR) && scr_dyn_number_coerce_js(port, &p);
+  if (port->kind == SCR_DYN_STR && port->v.str->len == 0) numeric = false;
+  if (!numeric || !(p >= 0 && p < 65536) || trunc(p) != p) {
+    char detail[256];
+    const char *d = scr_dyn_specific_type(port, detail, sizeof detail);
+    char msg[320];
+    int len = snprintf(msg, sizeof msg, "Port should be >= 0 and < 65536. Received %s.", d);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_SOCKET_BAD_PORT");
+    return;
+  }
+  if (callback->kind != SCR_DYN_FUNC) {
+    scr_dyn_arg_type_fail("callback", "of type function", callback);
+    return;
+  }
+  struct sockaddr_storage ss;
+  memset(&ss, 0, sizeof ss);
+  socklen_t len;
+  char tmp[64];
+  memcpy(tmp, address->v.str->data, address->v.str->len);
+  tmp[address->v.str->len] = '\0';
+  if (fam == 4) {
+    struct sockaddr_in *in = (struct sockaddr_in *)&ss;
+    in->sin_family = AF_INET;
+    in->sin_port = htons((unsigned short)p);
+    inet_pton(AF_INET, tmp, &in->sin_addr);
+    len = sizeof *in;
+  } else {
+    char *pct = strchr(tmp, '%');
+    if (pct) *pct = '\0';
+    struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)&ss;
+    in6->sin6_family = AF_INET6;
+    in6->sin6_port = htons((unsigned short)p);
+    inet_pton(AF_INET6, tmp, &in6->sin6_addr);
+    len = sizeof *in6;
+  }
+  char host[1025], serv[64];
+  int rc = getnameinfo((struct sockaddr *)&ss, len, host, sizeof host, serv, sizeof serv, NI_NAMEREQD);
+  if (rc != 0) {
+    ScrDyn *err = scr_dns_exception(rc, "getnameinfo", address->v.str);
+    if (typed) {
+      ScrStr *empty = scr_str_new("", 0);
+      ScrDyn *args[3] = { err, scr_dyn_new_str(empty), scr_dyn_new_str(empty) };
+      scr_str_release(empty);
+      scr_dns_call_later(callback, args, 3, false);
+    } else {
+      ScrDyn *args[1] = { err };
+      scr_dns_call_later(callback, args, 1, false);
+    }
+    return;
+  }
+  ScrStr *h = scr_str_new(host, strlen(host));
+  ScrStr *sv = scr_str_new(serv, strlen(serv));
+  ScrDyn *args[3] = { scr_dyn_new_null(), scr_dyn_new_str(h), scr_dyn_new_str(sv) };
+  scr_str_release(h);
+  scr_str_release(sv);
+  scr_dns_call_later(callback, args, 3, false);
+}
+
+/* dns.getServers(): the nameserver lines of /etc/resolv.conf, as c-ares
+ * reads them ("[addr]:port" only for a port other than 53). +1. */
+ScrDyn *scr_dns_get_servers(void) {
+  ScrDyn *out = scr_dyn_new_arr();
+#ifndef _WIN32
+  FILE *f = fopen("/etc/resolv.conf", "r");
+  if (!f) return out;
+  char line[512];
+  while (fgets(line, sizeof line, f)) {
+    char *p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    if (strncmp(p, "nameserver", 10) != 0 || (p[10] != ' ' && p[10] != '\t')) continue;
+    p += 10;
+    while (*p == ' ' || *p == '\t') p++;
+    char *end = p;
+    while (*end && *end != ' ' && *end != '\t' && *end != '\n' && *end != '\r' && *end != '#' && *end != ';') end++;
+    if (end == p) continue;
+    ScrStr *s = scr_str_new(p, (size_t)(end - p));
+    scr_dyn_arr_push(out, scr_dyn_new_str(s));
+    scr_str_release(s);
+  }
+  fclose(f);
+#endif
+  return out;
+}
+
 void scr_dns_thunk0(ScrClosure *cb, ScrStr *errmsg, ScrStr *addr, double family) {
   (void)errmsg; (void)addr; (void)family;
   ((void (*)(ScrClosure *))cb->fn)(cb);
@@ -957,7 +1410,11 @@ static void scr_dgram_sweep(void) {
   while (scr_dns_pending) {
     ScrDnsPending *p = scr_dns_pending;
     scr_dns_pending = p->next;
-    if (!scr_exc_pending()) p->fn(p->cb, p->errmsg, p->addr, p->family);
+    if (!scr_exc_pending()) {
+      if (p->call != NULL) scr_dns_dyn_call(p->call);
+      else p->fn(p->cb, p->errmsg, p->addr, p->family);
+    }
+    scr_dyn_release(p->call);
     scr_closure_release(p->cb);
     scr_str_release(p->errmsg);
     scr_str_release(p->addr);
@@ -1022,6 +1479,7 @@ static void scr_dgram_cleanup_atexit(void) {
   while (scr_dns_pending) {
     ScrDnsPending *p = scr_dns_pending;
     scr_dns_pending = p->next;
+    scr_dyn_release(p->call);
     scr_closure_release(p->cb);
     scr_str_release(p->errmsg);
     scr_str_release(p->addr);

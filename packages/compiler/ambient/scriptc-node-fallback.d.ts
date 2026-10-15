@@ -4819,14 +4819,55 @@ declare module "node:dgram" {
  * ENOTFOUND <hostname>") as the callback's Error argument, with "" for
  * the address where Node passes undefined. */
 declare module "dns" {
+  export interface LookupAddress {
+    address: string;
+    family: number;
+  }
+  export interface LookupOptions {
+    family?: number | "IPv4" | "IPv6";
+    hints?: number;
+    all?: boolean;
+    order?: "ipv4first" | "ipv6first" | "verbatim";
+    verbatim?: boolean;
+  }
+  export interface LookupOneOptions extends LookupOptions {
+    all?: false;
+  }
+  export interface LookupAllOptions extends LookupOptions {
+    all: true;
+  }
+  /* The callback comes with the other lookup deliveries (literal
+   * addresses on the next tick); the options follow lib/dns.js. */
   export function lookup(
     hostname: string,
-    /* The options-record stance (see http.RequestOptions): family is the
-     * lowered option ({ family: 4 }); hints/all/order/verbatim fence by
-     * name; undocumented keys drop like Node. */
-    options: { family: number; [option: string]: unknown },
-    callback: (err: Error | null, address: string, family: number) => void,
+    callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
   ): void;
+  export function lookup(
+    hostname: string,
+    family: number,
+    callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
+  ): void;
+  export function lookup(
+    hostname: string,
+    options: LookupOneOptions,
+    callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
+  ): void;
+  export function lookup(
+    hostname: string,
+    options: LookupAllOptions,
+    callback: (err: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void,
+  ): void;
+  /* getnameinfo with NI_NAMEREQD: the host's name and the port's service
+   * name (the number when it has none). */
+  export function lookupService(
+    address: string,
+    port: number,
+    callback: (err: NodeJS.ErrnoException | null, hostname: string, service: string) => void,
+  ): void;
+  /* The nameservers /etc/resolv.conf lists. */
+  export function getServers(): string[];
+  export function getDefaultResultOrder(): "ipv4first" | "ipv6first" | "verbatim";
+  export function setDefaultResultOrder(order: "ipv4first" | "ipv6first" | "verbatim"): void;
 }
 declare module "node:dns" {
   export * from "dns";
