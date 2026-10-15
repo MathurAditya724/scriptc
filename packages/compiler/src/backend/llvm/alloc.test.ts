@@ -99,8 +99,52 @@ describe("emitted object allocation", () => {
     expect(cyc).toContain("  %sa.s = call ptr @scr_cyc_alloc(i64 40, ptr @ty)");
     expect(cyc).toContain("  store i64 %sa.live1, ptr @scr_cyc_live");
     expect(h.decls).toContain(
-      "@scr_sa = external global { i64, i64, i32, [32 x ptr], [32 x ptr], [32 x ptr] }",
+      "@scr_sa = external global { i64, i64, i32, [40 x ptr], [40 x ptr], [40 x ptr] }",
     );
+  });
+
+  test("inline size classes match the runtime's: 8-byte steps to 128, then 16", () => {
+    const lines = emitObjectAlloc(host(true), "%n", null);
+    // Evaluate the integer arithmetic of the class and block-size lines.
+    const env = new Map<string, bigint>();
+    const val = (v: string) => (v.startsWith("%") ? env.get(v)! : BigInt(v));
+    const run = (n: number) => {
+      env.clear();
+      env.set("%n", BigInt(n));
+      for (const line of lines) {
+        const m = /^\s*(%[\w.]+) = (add|sub|lshr|shl) i64 ([%\w.]+), ([%\w.]+)$/.exec(line);
+        const cmp = /^\s*(%[\w.]+) = icmp (ule|eq) i64 ([%\w.]+), ([%\w.]+)$/.exec(line);
+        const ext = /^\s*(%[\w.]+) = zext i1 (%[\w.]+) to i64$/.exec(line);
+        const sel = /^\s*(%[\w.]+) = select i1 (%[\w.]+), i64 ([%\w.]+), i64 ([%\w.]+)$/.exec(line);
+        if (m) {
+          const [a, b] = [val(m[3]!), val(m[4]!)];
+          const ops = { add: a + b, sub: a - b, lshr: a >> b, shl: a << b };
+          env.set(m[1]!, ops[m[2] as keyof typeof ops]);
+        } else if (cmp) {
+          const [a, b] = [val(cmp[3]!), val(cmp[4]!)];
+          env.set(cmp[1]!, (cmp[2] === "eq" ? a === b : a <= b) ? 1n : 0n);
+        } else if (ext) {
+          env.set(ext[1]!, val(ext[2]!));
+        } else if (sel) {
+          env.set(sel[1]!, val(sel[2]!) === 1n ? val(sel[3]!) : val(sel[4]!));
+        }
+      }
+      return { c: Number(env.get("%sa.c")), size: Number(env.get("%sa.sz")) };
+    };
+    let prev = 0;
+    for (let n = 1; n <= 512; n++) {
+      const { c, size } = run(n);
+      const step = n <= 128 ? 8 : 16;
+      expect(size).toBe(n > 48 && n <= 56 ? 64 : Math.ceil(n / step) * step);
+      expect(c === prev || c === prev + 1).toBe(true);
+      prev = c;
+    }
+    expect(run(8)).toEqual({ c: 0, size: 8 });
+    expect(run(48)).toEqual({ c: 5, size: 48 });
+    expect(run(56)).toEqual({ c: 6, size: 64 });
+    expect(run(57)).toEqual({ c: 7, size: 64 });
+    expect(run(129)).toEqual({ c: 16, size: 144 });
+    expect(run(512)).toEqual({ c: 39, size: 512 });
   });
 
   test("inline frees route foreign blocks and the bypassed allocator to scr_rt_free", () => {

@@ -313,8 +313,9 @@ static void scr_arr_sparse_drop_prefix(ScrArr *a, size_t count) {
 
 static bool scr_arr_inline(const ScrArr *a) { return (a->spare & SCR_ARR_INLINE_SLOTS) != 0; }
 
-/* Slots requested by the small constructions, rounded up to fill their
- * block: 5 eight-byte slots (or 8 booleans) after a plain header. */
+/* Slots requested by the small constructions, rounded up to fill a block
+ * on the 16-byte grid: 5 eight-byte slots (or 8 booleans) after a plain
+ * header. */
 #define SCR_ARR_SMALL_SLOTS ((size_t)4)
 
 /* Inline capacity of a small construction with `prefix` bytes of block
@@ -322,7 +323,7 @@ static bool scr_arr_inline(const ScrArr *a) { return (a->spare & SCR_ARR_INLINE_
 static size_t scr_arr_small_cap(size_t prefix, bool bools) {
   size_t unit = bools ? SCR_ARR_BOOL_SLOT_BYTES : SCR_ARR_SLOT_BYTES;
 #if SCR_SMALL_ALLOC
-  size_t block = (prefix + SCR_ARR_SMALL_SLOTS * unit + SCR_SA_STEP - 1) / SCR_SA_STEP * SCR_SA_STEP;
+  size_t block = (prefix + SCR_ARR_SMALL_SLOTS * unit + 15) & ~(size_t)15;
   return bools ? (block - prefix) / SCR_ARR_BOOL_SLOT_BYTES : (block - prefix) / SCR_ARR_SLOT_BYTES;
 #else
   (void)prefix;
@@ -362,16 +363,16 @@ typedef enum {
   SCR_ARR_GROW_EXACT,  /* construction with a known element count */
 } ScrArrGrow;
 
-/* The small-object allocator rounds blocks up to SCR_SA_STEP bytes, so an
+/* The small-object allocator rounds blocks up to their size class, so an
  * exactly sized array can use the whole block for slots: a one-element
- * literal keeps a 16-byte block rather than reserving 4 slots in a 48-byte
+ * literal keeps a 16-byte block rather than reserving 4 slots in a 40-byte
  * one. Growth keeps its own sequence (4, 8, 16, ...): rounding it as well
  * moves array storage into other size classes and measured slower. */
 static size_t scr_arr_block_cap(size_t cap, bool bools) {
 #if SCR_SMALL_ALLOC
   size_t bytes = cap * (bools ? SCR_ARR_BOOL_SLOT_BYTES : SCR_ARR_SLOT_BYTES);
   if (bytes <= SCR_SA_MAX) {
-    size_t block = (bytes + SCR_SA_STEP - 1) / SCR_SA_STEP * SCR_SA_STEP;
+    size_t block = scr_sa_class_size(scr_sa_class(bytes));
     return bools ? block / SCR_ARR_BOOL_SLOT_BYTES : block / SCR_ARR_SLOT_BYTES;
   }
 #else

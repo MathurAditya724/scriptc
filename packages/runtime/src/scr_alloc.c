@@ -659,7 +659,7 @@ static _Thread_local size_t scr_sa_trim_stats[3];
 /* Returns the pages of class c that hold only free blocks (see above). */
 static void scr_sa_trim_class(unsigned c, size_t page) {
   ScrSaHoles *h = &scr_sa_holes[scr_sa_arena][c];
-  size_t sz = (size_t)(c + 1) * SCR_SA_STEP;
+  size_t sz = scr_sa_class_size(c);
   char *start = (char *)scr_sa.base + ((size_t)c << scr_sa.shift);
   /* Close the region being carved: its rest is still zero. */
   if (h->lim) {
@@ -762,11 +762,9 @@ static void scr_sa_trim(void) {
   scr_sa_drain_remote();
   size_t free_bytes = 0;
   for (unsigned c = 0; c < SCR_SA_NCLASS; c++) {
-    size_t n = 0;
-    for (ScrSaBlock *b = scr_sa.free[c]; b && n * (c + 1) * SCR_SA_STEP < SCR_SA_TRIM_MIN;
-         b = b->next)
-      n++;
-    free_bytes += n * (c + 1) * SCR_SA_STEP;
+    size_t n = 0, sz = scr_sa_class_size(c);
+    for (ScrSaBlock *b = scr_sa.free[c]; b && n * sz < SCR_SA_TRIM_MIN; b = b->next) n++;
+    free_bytes += n * sz;
     if (free_bytes >= SCR_SA_TRIM_MIN) break;
   }
   const char *stats = getenv("SCR_SA_STATS");
@@ -776,7 +774,7 @@ static void scr_sa_trim(void) {
   if (!trim && stats && stats[0] == '1')
     for (unsigned c = 0; c < SCR_SA_NCLASS; c++) {
       if (!scr_sa.lim[c]) continue;
-      size_t sz = (size_t)(c + 1) * SCR_SA_STEP;
+      size_t sz = scr_sa_class_size(c);
       char *start = (char *)scr_sa.base + ((size_t)c << scr_sa.shift);
       scr_sa_trim_stats[0] += (size_t)(scr_sa.bump[c] - start);
       for (ScrSaBlock *b = scr_sa.free[c]; b; b = b->next) scr_sa_trim_stats[1] += sz;
@@ -875,7 +873,7 @@ static size_t scr_sa_foreign_size(const void *p) {
   uintptr_t region = atomic_load_explicit(&scr_sa_region, memory_order_acquire);
   uintptr_t off = (uintptr_t)p - region;
   if (!region || off >= scr_sa_arena_span * SCR_SA_ARENAS) return 0;
-  return (size_t)(((off % scr_sa_arena_span) >> scr_sa_region_shift) + 1) * SCR_SA_STEP;
+  return scr_sa_class_size((unsigned)((off % scr_sa_arena_span) >> scr_sa_region_shift));
 }
 
 void scr_sa_free_foreign(void *p) {
@@ -916,7 +914,7 @@ static bool scr_sa_reserve(void) {
  * blocks the fast path does not serve. */
 __attribute__((cold, noinline)) void *scr_sa_slow(size_t n, bool zero) {
   if (n - 1 < SCR_SA_MAX && (scr_sa.span || (!scr_sa_refused && scr_sa_reserve()))) {
-    unsigned c = (unsigned)((n - 1) / SCR_SA_STEP);
+    unsigned c = scr_sa_class(n);
 #ifdef SCR_WORKERS
     /* A claimed arena may be a parked one with free blocks and bump room,
      * and other threads may have returned blocks since the last miss. */
@@ -931,7 +929,7 @@ __attribute__((cold, noinline)) void *scr_sa_slow(size_t n, bool zero) {
 #endif
     /* Carve from the slice, opening it or raising its limit as needed;
      * fresh pages are zero. */
-    size_t sz = (size_t)(c + 1) * SCR_SA_STEP;
+    size_t sz = scr_sa_class_size(c);
 #ifdef SCR_SA_TRIM
     if (scr_sa.lim[c]) scr_sa_next_hole(c, sz);
 #endif
@@ -963,7 +961,7 @@ void *scr_mem_realloc(void *p, size_t n) {
   if (!p) return scr_mem_alloc(n);
   uintptr_t off = (uintptr_t)p - scr_sa.base;
   size_t have;
-  if (off < scr_sa.span) have = (size_t)((off >> scr_sa.shift) + 1) * SCR_SA_STEP;
+  if (off < scr_sa.span) have = scr_sa_class_size((unsigned)(off >> scr_sa.shift));
 #ifdef SCR_WORKERS
   else if ((have = scr_sa_foreign_size(p)) != 0) {
     /* Another arena's block: move it into this thread's allocator. */
@@ -974,7 +972,8 @@ void *scr_mem_realloc(void *p, size_t n) {
     if (n > SCR_SA_MAX) SCR_SA_LARGE_NOTE(q, n);
     return q;
   }
-  if (n && n <= have) return p; /* still fits its block */
+  /* Still fits its block, which is aligned for n (see the contract). */
+  if (n && n <= have && (n % 16 || have % 16 == 0)) return p;
   void *q = scr_mem_alloc(n ? n : 1);
   if (!q) return NULL;
   memcpy(q, p, have < n ? have : n);
@@ -1034,7 +1033,7 @@ void scr_heap_stats(double *total, double *used) {
 #if SCR_SMALL_ALLOC
   for (unsigned c = 0; c < SCR_SA_NCLASS; c++) {
     if (!scr_sa.lim[c]) continue;
-    size_t sz = (size_t)(c + 1) * SCR_SA_STEP;
+    size_t sz = scr_sa_class_size(c);
     char *start = (char *)scr_sa.base + ((size_t)c << scr_sa.shift);
     char *top = scr_sa.bump[c];
 #ifdef SCR_SA_TRIM
