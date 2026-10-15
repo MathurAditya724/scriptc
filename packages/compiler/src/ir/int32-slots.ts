@@ -49,6 +49,8 @@ export class Int32Slots {
   private readonly familyOf = new Map<string, string | null>();
   private readonly paramFacts = new Map<string, Map<string, IntegerRange>>();
   private readonly returns = new Set<string>();
+  /** Results narrowed below their level (narrowSlotRanges). */
+  private readonly returnRanges = new Map<string, IntegerRange>();
   /** Captured-binding groups (one shared box) that hold an int32, and the
    * group of each `function\0local` member. */
   private readonly boxes = new Set<string>();
@@ -116,7 +118,8 @@ export class Int32Slots {
       this.nonNegative.has(key) ? NON_NEGATIVE_INT32_RANGE : INT32_RANGE;
     const result: IntegerSlotFacts = {
       field: (className, field) => (this.isField(className, field) ? INT32_RANGE : null),
-      call: (callee) => (this.returns.has(callee) ? level(`ret:${callee}`) : null),
+      call: (callee) =>
+        this.returns.has(callee) ? (this.returnRanges.get(callee) ?? level(`ret:${callee}`)) : null,
       boxed: (localId) => {
         const group = this.boxGroup(fnName, localId);
         return group !== null && this.boxes.has(group) ? level(`box:${group}`) : null;
@@ -154,6 +157,23 @@ export class Int32Slots {
   }
   isPinned(key: string): boolean {
     return this.pinned.has(key);
+  }
+  /** The range a parameter fact currently asserts, if it has one. */
+  paramRange(fnName: string, localId: string): IntegerRange | null {
+    return this.facts(fnName).params?.get(localId) ?? null;
+  }
+  /** The range a result fact currently asserts, if it has one. */
+  returnRange(fnName: string): IntegerRange | null {
+    return this.facts(fnName).call?.(fnName) ?? null;
+  }
+  /** Replace a parameter fact with a narrower proven range. */
+  narrowParam(fnName: string, localId: string, range: IntegerRange): void {
+    this.nonNegative.delete(`param:${fnName}\0${localId}`);
+    this.addParam(fnName, localId, range);
+  }
+  /** Replace a result fact with a narrower proven range. */
+  narrowReturn(fnName: string, range: IntegerRange): void {
+    this.returnRanges.set(fnName, range);
   }
 
   boxGroup(fnName: string, localId: string): string | null {
@@ -222,6 +242,7 @@ export class Int32Slots {
   dropReturn(fnName: string): boolean {
     if (this.refusePinned(`ret:${fnName}`)) return false;
     this.nonNegative.delete(`ret:${fnName}`);
+    this.returnRanges.delete(fnName);
     return this.returns.delete(fnName);
   }
   hasReturn(fnName: string): boolean {
@@ -886,6 +907,9 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
     });
   };
   const provenByFunction = new Map<string, IrExpr[]>();
+  // Each function's parameter and result writes under its latest analysis:
+  // at the fixpoint, the ranges of every write under the final facts.
+  const lastWrites = new Map<string, Map<string, IntegerRange | null>>();
   while (queue.length) {
     const fn = functions.get(queue.pop()!)!;
     queued.delete(fn.name);
@@ -896,6 +920,8 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
     const ranges: IntegerRanges = hasCandidateWrite(fn)
       ? analyzeIntegerRanges(numeric(fn), slots.facts(fn.name))
       : new Map();
+    if (ranges.size > 0) lastWrites.set(fn.name, slotWrites(fn, ranges, functions));
+    else lastWrites.delete(fn.name);
     const proven: IrExpr[] = [];
     const int32 = (e: IrExpr): boolean => withinInt32(ranges.get(e));
     // An int32 written into a slot still assumed non-negative: widen the
@@ -966,7 +992,10 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
   }
   for (const proven of provenByFunction.values())
     for (const value of proven) slots.provenWrites.add(value);
-  rangedParameters(slots, functions, retry, numeric, (callee) => readers.get(`ret:${callee}`));
+  const ranged = rangedParameters(slots, functions, retry, numeric, (callee) =>
+    readers.get(`ret:${callee}`),
+  );
+  narrowSlotRanges(slots, functions, numeric, lastWrites, ranged, (slot) => readers.get(slot));
   return slots;
 }
 
@@ -1001,8 +1030,9 @@ function rangedParameters(
   retry: ReadonlySet<string>,
   numeric: (fn: IrFunction) => IrFunction,
   callersOf: (callee: string) => ReadonlySet<string> | undefined,
-): void {
-  if (retry.size === 0) return;
+): Set<string> {
+  const changed = new Set<string>();
+  if (retry.size === 0) return changed;
   // Per function: retried parameter → its range so far (absent: no call
   // site analyzed yet; null: failed).
   const retried = new Map<string, Map<string, IntegerRange | null>>();
@@ -1094,5 +1124,256 @@ function rangedParameters(
     }
   }
   for (const [fnName, ranges] of retried)
-    for (const [id, range] of ranges) if (range) slots.addParam(fnName, id, range);
+    for (const [id, range] of ranges)
+      if (range) {
+        slots.addParam(fnName, id, range);
+        changed.add(fnName);
+      }
+  return changed;
+}
+
+const joinRanges = (a: IntegerRange | null, b: IntegerRange | null): IntegerRange | null =>
+  a && b ? { min: Math.min(a.min, b.min), max: Math.max(a.max, b.max) } : null;
+const rangeWithin = (inner: IntegerRange | null, outer: IntegerRange): boolean =>
+  inner !== null && inner.min >= outer.min && inner.max <= outer.max;
+const sameRange = (a: IntegerRange, b: IntegerRange): boolean => a.min === b.min && a.max === b.max;
+
+/** The values one analysis of a function writes into parameter slots of
+ * its direct callees and into its own result slot (`param:` and `ret:`
+ * keys), joined per slot; null when some write has no proven range. */
+function slotWrites(
+  fn: IrFunction,
+  ranges: IntegerRanges,
+  functions: ReadonlyMap<string, IrFunction>,
+): Map<string, IntegerRange | null> {
+  const writes = new Map<string, IntegerRange | null>();
+  const write = (key: string, value: IrExpr | null): void => {
+    const range = value ? (ranges.get(value) ?? null) : null;
+    const previous = writes.get(key);
+    writes.set(key, previous === undefined ? range : joinRanges(previous, range));
+  };
+  const args = (callee: IrFunction | undefined, list: IrExpr[], offset: number): void => {
+    if (!callee) return;
+    list.forEach((arg, i) => {
+      const param = callee.params[i + offset];
+      if (param) write(`param:${callee.name}\0${param.localId}`, arg);
+    });
+  };
+  walkFunction(fn, {
+    stmt: (s) => {
+      if (s.kind === "return") write(`ret:${fn.name}`, s.value);
+    },
+    expr: (e) => {
+      if (e.kind === "call") args(functions.get(e.callee), e.args, 0);
+      else if (e.kind === "new") args(functions.get(`%${e.className}.constructor`), e.args, 1);
+    },
+  });
+  return writes;
+}
+
+/** Rounds after which narrowSlotRanges keeps its last verified ranges. */
+const NARROW_ROUNDS = 6;
+
+/** Narrows parameter and result facts from their proven level (int32 or
+ * non-negative int32, or a call-site range) to the values actually written
+ * into them, and revives results the level could not prove. `(x * 31 + n)
+ * % m` proves its result only under a positive divisor, and keeps i32
+ * arithmetic only when `x` is known to be small; the levels know neither,
+ * the values passed and returned do.
+ *
+ * A descending iteration from the fixpoint's facts: each round assumes a
+ * range for every slot, reanalyzes the functions that read a slot whose
+ * assumption changed, and joins the ranges of every write into each slot.
+ * The assumptions are verified (inductive) when every slot's writes land
+ * inside its assumed range: then, by induction over the execution, every
+ * slot holds only values in its range. A verified round adopts the joined
+ * writes as the next assumptions (each bound moves at most once, so the
+ * iteration ends), and a reanalyzed function whose every return is now an
+ * int32 joins with that range as a result candidate. A slot whose writes
+ * leave its assumption falls back to its last verified range (a revived
+ * result to none). Only verified assumptions are kept, and a reanalyzed
+ * function must still prove every write into a field or box slot (whose
+ * facts do not change here), or the narrowing is abandoned. Pinned
+ * (contract) slots keep their contract range. */
+function narrowSlotRanges(
+  slots: Int32Slots,
+  functions: ReadonlyMap<string, IrFunction>,
+  numeric: (fn: IrFunction) => IrFunction,
+  lastWrites: ReadonlyMap<string, ReadonlyMap<string, IntegerRange | null>>,
+  changed: ReadonlySet<string>,
+  readersOf: (slot: string) => ReadonlySet<string> | undefined,
+): void {
+  // Every parameter and result slot with a fact, and that fact.
+  const proven = new Map<string, IntegerRange>();
+  const fixed = new Set<string>();
+  // Results the fixpoint dropped (a return was not an int32 at the level).
+  const revivable = new Set<string>();
+  for (const fn of functions.values()) {
+    const result = slots.hasReturn(fn.name) ? slots.returnRange(fn.name) : null;
+    if (result) proven.set(`ret:${fn.name}`, result);
+    else if (fn.returnType.kind === "f64" && !fn.async && !fn.generator)
+      revivable.add(`ret:${fn.name}`);
+    for (const param of fn.params) {
+      const range = slots.hasParam(fn.name, param.localId)
+        ? slots.paramRange(fn.name, param.localId)
+        : null;
+      if (range) proven.set(`param:${fn.name}\0${param.localId}`, range);
+    }
+  }
+  for (const key of proven.keys()) if (slots.isPinned(key)) fixed.add(key);
+  if (proven.size === fixed.size) return;
+  // The readers of a slot: a parameter's function, a result's callers.
+  const readersOfKey = (key: string): string[] => {
+    if (key.startsWith("param:")) return [key.slice(6, key.indexOf("\0"))];
+    const readers = readersOf(key);
+    return readers ? [...readers] : [];
+  };
+  const factsUnder = (
+    fn: IrFunction,
+    assumed: ReadonlyMap<string, IntegerRange>,
+  ): IntegerSlotFacts => {
+    const base = slots.facts(fn.name);
+    const params = new Map(base.params ?? []);
+    for (const param of fn.params) {
+      const range = assumed.get(`param:${fn.name}\0${param.localId}`);
+      if (range) params.set(param.localId, range);
+    }
+    const call = base.call;
+    return {
+      ...base,
+      params,
+      call: (callee) => assumed.get(`ret:${callee}`) ?? (call ? call(callee) : null),
+    };
+  };
+  // Reanalyze one function: its slot writes, and whether it still proves
+  // every write into field and box slots.
+  const observe = (
+    fn: IrFunction,
+    assumed: ReadonlyMap<string, IntegerRange>,
+  ): { writes: Map<string, IntegerRange | null>; sound: boolean } => {
+    const ranges = analyzeIntegerRanges(numeric(fn), factsUnder(fn, assumed));
+    let sound = true;
+    const box = (localId: string, value: IrExpr): void => {
+      const group = slots.boxGroup(fn.name, localId);
+      if (!slots.hasBox(group)) return;
+      const range = ranges.get(value) ?? null;
+      const level = slots.isNonNegative(`box:${group}`) ? NON_NEGATIVE_INT32_RANGE : INT32_RANGE;
+      if (!rangeWithin(range, level)) sound = false;
+    };
+    walkFunction(fn, {
+      stmt: (s) => {
+        if (s.kind === "assign") box(s.localId, s.value);
+        else if (s.kind === "varDecl" && s.init) box(s.localId, s.init);
+        else if (s.kind === "fieldSet" && slots.isField(s.className, s.field))
+          if (!withinInt32(ranges.get(s.value))) sound = false;
+      },
+      expr: (e) => {
+        if (e.kind === "assignExpr") box(e.localId, e.value);
+      },
+    });
+    return { writes: slotWrites(fn, ranges, functions), sound };
+  };
+  const writesByFunction = new Map(lastWrites);
+  const join = (): Map<string, IntegerRange | null> => {
+    const joined = new Map<string, IntegerRange | null>();
+    for (const writes of writesByFunction.values())
+      for (const [key, range] of writes) {
+        if (!proven.has(key) && !revivable.has(key)) continue;
+        const previous = joined.get(key);
+        joined.set(key, previous === undefined ? range : joinRanges(previous, range));
+      }
+    return joined;
+  };
+  // The ranges every function was last analyzed under.
+  let analyzed: Map<string, IntegerRange> = new Map(proven);
+  let verified: Map<string, IntegerRange> = new Map(proven);
+  // Functions whose recorded writes predate their current facts.
+  const dirty = new Set(changed);
+  // The narrowing operator: a bound moves at most once from its proven
+  // value (a revived result's from int32), so recursion that shifts its
+  // argument (`f(d - 1)`) cannot walk a bound down one step per round.
+  const narrowed = (
+    joined: ReadonlyMap<string, IntegerRange | null>,
+  ): Map<string, IntegerRange> => {
+    const next = new Map(verified);
+    for (const [key, range] of joined) {
+      const current = verified.get(key);
+      if (!current || fixed.has(key) || !range || !rangeWithin(range, current)) continue;
+      const original = proven.get(key) ?? INT32_RANGE;
+      next.set(key, {
+        min: current.min === original.min ? range.min : current.min,
+        max: current.max === original.max ? range.max : current.max,
+      });
+    }
+    return next;
+  };
+  let assumed = dirty.size > 0 ? new Map(proven) : narrowed(join());
+  for (let round = 0; round < NARROW_ROUNDS; round++) {
+    for (const [key, range] of assumed) {
+      const before = analyzed.get(key);
+      if (!before || !sameRange(range, before))
+        for (const name of readersOfKey(key)) dirty.add(name);
+    }
+    for (const key of analyzed.keys())
+      if (!assumed.has(key)) for (const name of readersOfKey(key)) dirty.add(name);
+    const observedNow = new Set<string>();
+    for (const name of dirty) {
+      const fn = functions.get(name);
+      if (!fn) continue;
+      const observed = observe(fn, assumed);
+      if (!observed.sound) return;
+      writesByFunction.set(name, observed.writes);
+      observedNow.add(name);
+    }
+    dirty.clear();
+    analyzed = assumed;
+    const joined = join();
+    let inductive = true;
+    const next = new Map(assumed);
+    for (const [key, range] of assumed) {
+      const written = joined.get(key);
+      if (written === undefined || rangeWithin(written, range)) continue;
+      inductive = false;
+      const fallback = verified.get(key);
+      if (fallback) next.set(key, fallback);
+      else next.delete(key);
+    }
+    if (inductive) {
+      verified = assumed;
+      const tighter = narrowed(joined);
+      // Results that reanalysis under the narrowed facts proves now.
+      for (const key of revivable) {
+        const range = joined.get(key);
+        if (!tighter.has(key) && observedNow.has(key.slice(4)) && withinInt32(range))
+          tighter.set(key, range!);
+      }
+      if (
+        tighter.size === assumed.size &&
+        [...tighter].every(([key, range]) => sameRange(range, assumed.get(key)!))
+      )
+        break;
+      assumed = tighter;
+    } else if (
+      next.size !== assumed.size ||
+      [...next].some(([key, range]) => !sameRange(range, assumed.get(key)!))
+    ) {
+      assumed = next;
+    } else break; // narrowing other slots broke a verified one: keep `verified`
+  }
+  for (const [key, range] of verified) {
+    if (fixed.has(key)) continue;
+    const original = proven.get(key);
+    if (original && sameRange(range, original)) continue;
+    if (key.startsWith("ret:")) {
+      const fnName = key.slice(4);
+      if (!original) {
+        slots.addReturn(fnName);
+        slots.reasons.delete(key);
+      }
+      slots.narrowReturn(fnName, range);
+    } else {
+      const cut = key.indexOf("\0");
+      slots.narrowParam(key.slice(6, cut), key.slice(cut + 1), range);
+    }
+  }
 }
