@@ -675,7 +675,13 @@ static void scr_dyn_key_release(char *key, size_t length) {
 #ifndef SCR_RC_AUDIT
 static SCR_TL ScrDyn *scr_dyn_free_arr, *scr_dyn_free_obj, *scr_dyn_free_misc;
 static SCR_TL size_t scr_dyn_free_count;
-#define SCR_DYN_FREE_MAX 8192
+/* Sized for whole documents: a parse/serialize loop over a 100k-record
+ * document frees ~400k nodes per round, and a pool capped below that sent
+ * most of them back through zeroing allocation and entry-buffer regrowth.
+ * The pool only keeps blocks the thread already allocated (the small-object
+ * arena never returns them to the system either), at the cost of reserving
+ * them, with their item/entry buffers, for dyn nodes. */
+#define SCR_DYN_FREE_MAX ((size_t)1 << 20)
 /* Recycled small objects may retain key bytes, but never values or an
  * unbounded document's keys. This budget applies across the whole pool. */
 static SCR_TL size_t scr_dyn_cached_key_bytes;
