@@ -76,6 +76,7 @@ import { NarrowingStability } from "./narrowing-stability.js";
 import { ArrayElementStates } from "./runtime-optional-elements.js";
 import { indexReadInBounds } from "./runtime-optional-bounds.js";
 import { ArrayOwnership } from "./runtime-optional-ownership.js";
+import { RecordFlowClasses } from "./runtime-optional-records.js";
 import { StringIndexBounds } from "./string-index-bounds.js";
 import { NanCodedReads } from "./nan-coded-reads.js";
 import { RuntimeOptionalLocals } from "./runtime-optional-locals.js";
@@ -1798,6 +1799,10 @@ export class Lowerer {
   /** Record fields promoted to an undefined-armed union by an indexed-read
    * value. The key is the concrete emitted shape and field name. */
   readonly runtimeOptionalFields = new Set<string>();
+  /** Record bindings whose flow class reaches storage outside the class:
+   * they keep the declared layout, so an initializer from unchecked reads
+   * converts once instead of the binding adopting the widened variant. */
+  readonly runtimeOptionalRecordsKeptDeclared = new Set<ts.Symbol>();
   /** Callback pattern parameters carry an optional source without making
    * every name destructured from a present source optional. */
   readonly runtimeOptionalPatternTypes = new Map<ts.Node, IrType>();
@@ -3804,6 +3809,61 @@ export class Lowerer {
     }
     const mappedOrNull = (node: ts.Node): IrType | null =>
       panicSafe(() => this.mapTypeOf(this.typeOf(node)), null);
+    const admitsUndefined = (type: IrType): boolean => typeEquals(addUndefined(type), type);
+    const plainRecordShape = (type: IrType | null | undefined): string | null => {
+      if (type?.kind !== "record") return null;
+      const shape = this.shapes.get(type.shapeId);
+      return shape && !shape.tuple && !shape.indexValue && shape.fields.length > 0
+        ? type.shapeId
+        : null;
+    };
+    // Parameters and results read the signatures collected above; bindings
+    // ask the checker, so the scan builds no layout of its own.
+    const parameterType = (node: ts.Node): IrType | null => {
+      const parameter = node.parent;
+      if (!parameter || !ts.isParameter(parameter)) return null;
+      const fn = parameter.parent;
+      const symbol =
+        (ts.isFunctionDeclaration(fn) || ts.isMethodDeclaration(fn)) && fn.name
+          ? symbolOf(fn.name)
+          : null;
+      const index = (fn as ts.FunctionLikeDeclaration).parameters.indexOf(parameter);
+      return (symbol && signatureBySymbol.get(symbol)?.params[index]?.type) ?? null;
+    };
+    const returnTypeOf = (fn: ts.FunctionDeclaration | ts.MethodDeclaration): IrType | null => {
+      const symbol = fn.name ? symbolOf(fn.name) : null;
+      return (symbol && signatureBySymbol.get(symbol)?.returnType) ?? null;
+    };
+    const recordFlows = new RecordFlowClasses(sourceFiles, {
+      symbolOf,
+      declarationOf: (symbol) => this.checker.valueDeclarationOf(symbol),
+      mayBeRecord: (node) => {
+        if (node.parent && ts.isParameter(node.parent))
+          return plainRecordShape(parameterType(node)) !== null;
+        const t = panicSafe(() => this.typeOf(node), null);
+        return (
+          t !== null &&
+          (t.flags & ts.TypeFlags.Object) !== 0 &&
+          !this.checker.isArrayType(t) &&
+          this.checker.getCallSignatures(t).length === 0 &&
+          this.checker.getConstructSignatures(t).length === 0
+        );
+      },
+      prefetchTypes: (nodes) => this.checker.prefetchCollectionTypes(nodes),
+      mayReturnRecord: (fn) => plainRecordShape(returnTypeOf(fn)) !== null,
+      familyOf: (method) => familyBySymbol.get(method),
+      recordShape: (node) =>
+        plainRecordShape(
+          node.parent && ts.isParameter(node.parent) ? parameterType(node) : mappedOrNull(node),
+        ),
+      returnShape: (fn) => plainRecordShape(returnTypeOf(fn)),
+      isGlobal: (node, name) => this.isStdlibGlobal(node, name),
+    });
+    /** Optional fields of the records a visible function returns. */
+    const returnFields = new Map<ts.Symbol, Set<string>>();
+    /** Record parameters that receive a value with optional fields, by the
+     * parameter's own symbol. */
+    const recordParameterSlots = new Map<ts.Symbol, { target: ts.Symbol; index: number }>();
     const nanCoded = new NanCodedReads(
       {
         symbolOf,
@@ -4081,10 +4141,8 @@ export class Lowerer {
         if (op === ts.SyntaxKind.AmpersandAmpersandToken)
           return mayBeOptional(e.left) || mayBeOptional(e.right);
       }
-      if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression)) {
-        const symbol = symbolOf(e.expression);
-        const fields = symbol === null ? undefined : optionalFields.get(symbol);
-        return fields?.has(fieldName(e)) ?? false;
+      if (ts.isPropertyAccessExpression(e)) {
+        return fieldsOfValue(e.expression)?.has(fieldName(e)) ?? false;
       }
       return false;
     };
@@ -4179,9 +4237,40 @@ export class Lowerer {
     // a spread or a parameter receives the source's optional fields.
     const fieldsOfValue = (node: ts.Expression): ReadonlySet<string> | undefined => {
       const e = peel(node);
-      if (!ts.isIdentifier(e)) return undefined;
-      const symbol = symbolOf(e);
-      return symbol === null ? undefined : optionalFields.get(symbol);
+      if (ts.isIdentifier(e)) {
+        const symbol = symbolOf(e);
+        // A binding whose class reaches other storage keeps the declared
+        // layout, so its fields read as present.
+        return symbol === null || recordFlows.opened(symbol)
+          ? undefined
+          : optionalFields.get(symbol);
+      }
+      // A fresh literal carries the fields its values can leave undefined.
+      if (ts.isObjectLiteralExpression(e)) {
+        const out = spreadFieldsOf(e);
+        for (const prop of e.properties) {
+          if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) continue;
+          const name = prop.name;
+          if (!(ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)))
+            continue;
+          const value = ts.isPropertyAssignment(prop) ? prop.initializer : (name as ts.Expression);
+          if (mayBeOptional(value)) out.add(name.text);
+        }
+        return out.size > 0 ? out : undefined;
+      }
+      if (
+        ts.isCallExpression(e) &&
+        (ts.isIdentifier(e.expression) || ts.isPropertyAccessExpression(e.expression))
+      ) {
+        const symbol = symbolOf(ts.isIdentifier(e.expression) ? e.expression : e.expression.name);
+        return symbol === null ? undefined : returnFields.get(symbol);
+      }
+      if (ts.isConditionalExpression(e)) {
+        const a = fieldsOfValue(e.whenTrue);
+        const b = fieldsOfValue(e.whenFalse);
+        return a && b ? new Set([...a, ...b]) : (a ?? b);
+      }
+      return undefined;
     };
     const noteFieldsFrom = (symbol: ts.Symbol, source: ts.Expression): boolean => {
       const fields = fieldsOfValue(source);
@@ -5222,27 +5311,20 @@ export class Lowerer {
                 if (!parameter || !ts.isIdentifier(parameter.name)) continue;
                 const bound = symbolOf(parameter.name);
                 if (!bound) continue;
-                let promoted: IrType = parameterShape.type;
+                const declared = this.shapes.get(parameterShape.type.shapeId);
+                // The parameter's layout settles with its flow class once
+                // the fixed point ends. A literal or call argument only adds
+                // fields the declaration calls present.
+                const fresh = !ts.isIdentifier(peel(arg));
                 for (const field of fields) {
-                  const source =
-                    promoted.kind === "record"
-                      ? this.shapes.get(promoted.shapeId)?.fields.find((f) => f.name === field)
-                      : undefined;
-                  if (source) {
-                    promoted = this.runtimeOptionalRecordField(
-                      promoted,
-                      field,
-                      addUndefined(source.type),
-                    );
+                  const slot = declared?.fields.find((f) => f.name === field);
+                  if (!slot || (fresh && admitsUndefined(slot.type))) continue;
+                  if (noteFieldSymbol(bound, field)) {
+                    provenance?.note("record-parameter", parameter, arg);
+                    changed = true;
                   }
-                  if (noteFieldSymbol(bound, field)) changed = true;
                 }
-                if (!typeEquals(promoted, parameterShape.type)) {
-                  parameterShape.type = promoted;
-                  this.runtimeOptionalBindingTypes.set(bound, promoted);
-                  provenance?.note("record-parameter", parameter, arg);
-                  changed = true;
-                }
+                recordParameterSlots.set(bound, { target, index: i });
               }
             }
             if (ts.isSpreadElement(arg) || !shape) return;
@@ -5324,7 +5406,25 @@ export class Lowerer {
     };
     const scanReturns = (symbol: ts.Symbol, decl: ts.FunctionLikeDeclaration): boolean => {
       let changed = false;
+      const recordReturn = recordFlows.returnClass(symbol) !== null;
+      const returned = signatureBySymbol.get(symbol)?.returnType;
+      const returnedShape = returned?.kind === "record" ? this.shapes.get(returned.shapeId) : null;
       for (const expression of returnsOf(decl)) {
+        const fields = recordReturn ? fieldsOfValue(expression) : undefined;
+        if (fields) {
+          for (const field of fields) {
+            // A result field that already admits undefined keeps the
+            // checker's narrowing.
+            const slot = returnedShape?.fields.find((f) => f.name === field);
+            if (slot && admitsUndefined(slot.type)) continue;
+            const set = returnFields.get(symbol) ?? new Set<string>();
+            if (set.has(field)) continue;
+            set.add(field);
+            returnFields.set(symbol, set);
+            provenance?.note("record-return", decl.name ?? decl, expression);
+            changed = true;
+          }
+        }
         if (mayBeOptional(expression) && !optionalReturns.has(symbol)) {
           optionalReturns.add(symbol);
           provenance?.note("return", decl.name ?? decl, expression);
@@ -5497,6 +5597,70 @@ export class Lowerer {
         this.runtimeOptionalGlobals.add(global);
       }
     }
+    // Record layouts settle per flow class: a closed class widens every
+    // member to the union of its members' optional fields, and a class that
+    // reaches other storage keeps the declared layout for every member.
+    const classFields = new Map<number, Set<string>>();
+    const addClassFields = (id: number | null, fields: ReadonlySet<string>): void => {
+      if (id === null) return;
+      const set = classFields.get(id) ?? new Set<string>();
+      for (const field of fields) set.add(field);
+      classFields.set(id, set);
+    };
+    for (const [symbol, fields] of optionalFields)
+      addClassFields(recordFlows.bindingClass(symbol), fields);
+    for (const [symbol, fields] of returnFields)
+      addClassFields(recordFlows.returnClass(symbol), fields);
+    const settledFields = (
+      id: number | null,
+      own: ReadonlySet<string> | undefined,
+    ): ReadonlySet<string> | undefined =>
+      id === null
+        ? own
+        : classFields.has(id) && recordFlows.closed(id)
+          ? classFields.get(id)
+          : undefined;
+    const widenRecordFields = (type: IrType, fields: ReadonlySet<string>): IrType => {
+      let promoted = type;
+      for (const field of fields) {
+        const source =
+          promoted.kind === "record"
+            ? this.shapes.get(promoted.shapeId)?.fields.find((f) => f.name === field)
+            : undefined;
+        if (source)
+          promoted = this.runtimeOptionalRecordField(promoted, field, addUndefined(source.type));
+      }
+      return promoted;
+    };
+    for (const [symbol, id] of recordFlows.bindings())
+      if (classFields.has(id) && !recordFlows.closed(id))
+        this.runtimeOptionalRecordsKeptDeclared.add(symbol);
+    // Every tracked parameter settles with its class, including one that
+    // only receives plain records. An untracked one (a function used as a
+    // value, a method another member name or view can reach) widens to the
+    // fields its own arguments carry.
+    for (const { symbol, fn, index } of recordFlows.parameters())
+      recordParameterSlots.set(symbol, { target: fn, index });
+    for (const [bound, { target, index }] of recordParameterSlots) {
+      const shape = signatureBySymbol.get(target)?.params[index];
+      if (!shape || shape.type.kind !== "record") continue;
+      const fields = settledFields(recordFlows.bindingClass(bound), optionalFields.get(bound));
+      if (!fields) continue;
+      const promoted = widenRecordFields(shape.type, fields);
+      if (typeEquals(promoted, shape.type)) continue;
+      shape.type = promoted;
+      this.runtimeOptionalBindingTypes.set(bound, promoted);
+    }
+    for (const [symbol, sig] of signatureBySymbol) {
+      const id = recordFlows.returnClass(symbol);
+      const fields = id === null ? undefined : settledFields(id, undefined);
+      if (fields && sig.returnType.kind === "record") {
+        const next = widenRecordFields(sig.returnType, fields);
+        sig.returnType = next;
+        if (sig.top) sig.top.returnType = next;
+        if (sig.method) sig.method.ret = next;
+      }
+    }
     for (const [symbol, sig] of signatureBySymbol) {
       const params = optionalParams.get(symbol);
       if (params) {
@@ -5577,7 +5741,7 @@ export class Lowerer {
             if (global) global.type = promoted;
           }
         }
-        const fields = optionalFields.get(symbol);
+        const fields = settledFields(recordFlows.bindingClass(symbol), optionalFields.get(symbol));
         if (!dynamicObjectEntryRows.has(symbol) && !optionalSymbols.has(symbol) && !fields) return;
         const current = this.mapTypeOf(this.typeOf(node.name));
         if (!current) return;
@@ -5594,16 +5758,7 @@ export class Lowerer {
             };
           }
         }
-        if (fields && promoted.kind === "record") {
-          for (const field of fields) {
-            const source =
-              promoted.kind === "record"
-                ? this.shapes.get(promoted.shapeId)?.fields.find((f) => f.name === field)
-                : undefined;
-            if (!source) continue;
-            promoted = this.runtimeOptionalRecordField(promoted, field, addUndefined(source.type));
-          }
-        }
+        if (fields && promoted.kind === "record") promoted = widenRecordFields(promoted, fields);
         if (!typeEquals(promoted, current)) {
           this.runtimeOptionalBindingTypes.set(symbol, promoted);
           const global = ts.isIdentifier(node.name)
