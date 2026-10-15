@@ -154,6 +154,112 @@ export function boundedIntegerLoopFacts(
   return result;
 }
 
+/** Bound counters of a while loop by its condition. A counter qualifies when
+ * the loop (condition and body) changes it only by increments of positive
+ * integer literals outside nested loops, switch and exception regions, and a
+ * conjunct of the condition compares it below a literal or a binding the loop
+ * never writes (`while (x * x + y * y <= 4 && it < MAX) it++`). The body runs
+ * only after that conjunct held, and the condition never writes the counter,
+ * so every pass starts at most at the conjunct's bound and climbs by at most
+ * the sum of the body's increments. The counter starts at its entry fact and
+ * only grows, so the range holds at every read inside and after the loop. */
+export function guardedLoopCounterFacts(
+  loop: IrStmt & { kind: "while" },
+  locals: ReadonlyMap<string, IrLocal>,
+  initial: ReadonlyMap<string, IntegerRange>,
+): ReadonlyMap<string, IntegerRange> {
+  const result = new Map<string, IntegerRange>();
+  const budget = new Map<string, number>(),
+    refused = new Set<string>();
+  let opaque = 0;
+  const write = (id: string, delta: number | null): void => {
+    if (opaque || delta === null || delta <= 0 || delta > 2147483647) refused.add(id);
+    else budget.set(id, (budget.get(id) ?? 0) + delta);
+  };
+  const expr = (e: IrExpr): boolean => {
+    if (e.kind === "assignExpr") write(e.localId, increment(e.localId, e.value));
+    if (e.kind === "incDec") write(e.localId, e.op === "+" ? 1 : null);
+    return everyExprChild(e, expr, stmt);
+  };
+  const stmt = (s: IrStmt): boolean => {
+    const region =
+      s.kind === "for" ||
+      s.kind === "while" ||
+      s.kind === "doWhile" ||
+      s.kind === "forOf" ||
+      s.kind === "tryCatch" ||
+      s.kind === "switch";
+    if (region) opaque++;
+    if (s.kind === "assign") write(s.localId, increment(s.localId, s.value));
+    if (s.kind === "varDecl" || s.kind === "forOf") write(s.localId, null);
+    if (s.kind === "tryCatch" && s.catchLocalId) write(s.catchLocalId, null);
+    const completed = everyStmtChild(s, expr, stmt);
+    if (region) opaque--;
+    return completed;
+  };
+  // The condition is evaluated before every pass; a write there would
+  // separate the compared value from the one the body sees.
+  const condition = new Set<string>();
+  const conditionWrites = (e: IrExpr): boolean => {
+    if (e.kind === "assignExpr" || e.kind === "incDec") condition.add(e.localId);
+    return everyExprChild(e, conditionWrites, (s) => {
+      opaque++;
+      stmt(s);
+      opaque--;
+      return true;
+    });
+  };
+  conditionWrites(loop.cond);
+  for (const id of condition) refused.add(id);
+  loop.body.every(stmt);
+  const stable = (id: string): boolean => {
+    const local = locals.get(id);
+    return local !== undefined && !local.boxed && !local.tdz && !budget.has(id) && !refused.has(id);
+  };
+  const limit = (e: IrExpr): IntegerRange | null => {
+    if (e.kind === "numLit" && Number.isSafeInteger(e.value) && !Object.is(e.value, -0))
+      return { min: e.value, max: e.value };
+    if (e.kind === "varRef" && stable(e.localId)) return initial.get(e.localId) ?? null;
+    return null;
+  };
+  // Conjuncts that hold whenever the body runs.
+  const conjuncts: IrExpr[] = [];
+  const collect = (e: IrExpr): void => {
+    if (e.kind === "toBool") collect(e.operand);
+    else if (e.kind === "logical" && e.op === "&&") {
+      collect(e.left);
+      collect(e.right);
+    } else conjuncts.push(e);
+  };
+  collect(loop.cond);
+  const ceiling = new Map<string, number>();
+  for (const c of conjuncts) {
+    if (c.kind !== "bin") continue;
+    // `counter < bound` or `bound > counter` (and the inclusive forms).
+    const below = c.op === "<" || c.op === "<=",
+      above = c.op === ">" || c.op === ">=";
+    const counter = below ? c.left : above ? c.right : null,
+      other = below ? c.right : c.left;
+    if (counter?.kind !== "varRef") continue;
+    const bound = limit(other);
+    if (!bound) continue;
+    const hi = c.op === "<" || c.op === ">" ? bound.max - 1 : bound.max;
+    const previous = ceiling.get(counter.localId);
+    ceiling.set(counter.localId, previous === undefined ? hi : Math.min(previous, hi));
+  }
+  for (const [id, step] of budget) {
+    const local = locals.get(id),
+      start = initial.get(id),
+      hi = ceiling.get(id);
+    if (refused.has(id) || !local || local.boxed || local.tdz || !start || hi === undefined)
+      continue;
+    const max = Math.max(start.max, hi + step);
+    if (Number.isSafeInteger(start.min) && Number.isSafeInteger(max))
+      result.set(id, { min: start.min, max });
+  }
+  return result;
+}
+
 /** Recognize only exits whose target cannot be inside this statement list.
  * Labeled blocks, loops, switch and exception regions retain the join. */
 export function integerPathFallsThrough(body: readonly IrStmt[]): boolean {

@@ -1,7 +1,11 @@
 import type { IrExpr, IrFunction, IrStmt } from "./ir.js";
 import { everyExprChild, everyStmtChild, everyStmtList } from "./traverse.js";
 import { byteNumberAccess, byteNumberRange } from "./byte-numbers.js";
-import { boundedIntegerLoopFacts, integerPathFallsThrough } from "./integer-loop-facts.js";
+import {
+  boundedIntegerLoopFacts,
+  guardedLoopCounterFacts,
+  integerPathFallsThrough,
+} from "./integer-loop-facts.js";
 
 /** Exactly representable integers, excluding negative zero. Facts describe
  * the evaluated value, never a later read of the same local binding. */
@@ -846,15 +850,21 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
         }
         case "while":
         case "doWhile": {
+          // Counters the condition bounds keep their range at every read
+          // inside and after the loop.
+          const guarded =
+            s.kind === "while" ? guardedLoopCounterFacts(s, loopLocals, facts) : noInvariants;
           const loop = new Map(facts);
-          havoc(loop, [s], loop);
+          havocWith(loop, [s], loop, guarded);
+          for (const [id, range] of guarded) set(loop, id, range);
           const header = new Map(loop);
           expr(s.cond, header);
           if (s.kind === "while") {
             refine(s.cond, true, header);
             body(s.body, header);
           } else body(s.body, new Map(loop));
-          havoc(facts, [s], facts);
+          havocWith(facts, [s], facts, guarded);
+          for (const [id, range] of guarded) set(facts, id, range);
           break;
         }
         case "forOf": {

@@ -611,6 +611,101 @@ test("a loop-invariant positive step bounds the counter of a limited loop", () =
     expect(loop(step, update, body).inside, label).toBeNull();
 });
 
+test("a while condition bounds a counter the loop only increments", () => {
+  // it = start; while (unknown <= 4 && it < MAX) { observe(it); it++ } observe(it)
+  const set = (localId: string, value: IrExpr): IrStmt => ({ loc, kind: "assign", localId, value });
+  const bump = (op: "+" | "-" = "+"): IrStmt => ({
+    loc,
+    kind: "exprStmt",
+    expr: { loc, kind: "incDec", op, prefix: false, localId: "it", type: F64 },
+  });
+  const and = (left: IrExpr, right: IrExpr): IrExpr => ({
+    loc,
+    kind: "logical",
+    op: "&&",
+    left,
+    right,
+    type: BOOL,
+  });
+  const run = (
+    options: {
+      start?: IrExpr;
+      cond?: IrExpr;
+      body?: IrStmt[];
+      before?: IrStmt[];
+    } = {},
+  ) => {
+    const inside = ref("it"),
+      after = ref("it");
+    const f = fn([
+      set("max", num(300)),
+      set("it", options.start ?? num(0)),
+      ...(options.before ?? []),
+      {
+        loc,
+        kind: "while",
+        cond:
+          options.cond ??
+          and(condition("<=", ref("unknown"), num(4)), condition("<", ref("it"), ref("max"))),
+        body: options.body ?? [observe(inside), bump()],
+      },
+      observe(after),
+    ]);
+    for (const id of ["it", "max"]) f.locals.push({ id, name: id, type: F64, mutable: true });
+    const ranges = analyzeIntegerRanges(f);
+    return { inside: ranges.get(inside), after: ranges.get(after) };
+  };
+  expect(run()).toEqual({ inside: { min: 0, max: 299 }, after: { min: 0, max: 300 } });
+  // `MAX > it`, an inclusive bound, two increments per pass and an early exit.
+  expect(run({ cond: condition(">", ref("max"), ref("it")) }).after).toEqual({ min: 0, max: 300 });
+  expect(run({ cond: condition("<=", ref("it"), num(10)) }).after).toEqual({ min: 0, max: 11 });
+  const twice = [observe(ref("it")), bump(), set("it", bin("+", ref("it"), num(2)))];
+  expect(run({ body: twice }).after).toEqual({ min: 0, max: 302 });
+  const exit: IrStmt = {
+    loc,
+    kind: "if",
+    cond: condition("===", ref("unknown"), num(0)),
+    then: [{ loc, kind: "break" }],
+    else_: null,
+  };
+  expect(run({ body: [exit, bump()] }).after).toEqual({ min: 0, max: 300 });
+  // A start above the bound stays the entry value.
+  expect(run({ start: num(500) }).after).toEqual({ min: 500, max: 500 });
+  // Decrements, fractional or variable steps, increments in a nested loop,
+  // writes in the condition, a bound the loop writes, a disjunction, and an
+  // unknown start prove nothing.
+  const nested: IrStmt = {
+    loc,
+    kind: "while",
+    cond: condition("<", ref("unknown"), num(3)),
+    body: [bump()],
+  };
+  const counted: IrExpr = { loc, kind: "incDec", op: "+", prefix: false, localId: "it", type: F64 };
+  const open: [string, Parameters<typeof run>[0]][] = [
+    ["decrement", { body: [bump("-")] }],
+    ["fraction step", { body: [set("it", bin("+", ref("it"), num(0.5)))] }],
+    ["variable step", { body: [set("it", bin("+", ref("it"), ref("unknown")))] }],
+    ["nested increment", { body: [nested] }],
+    ["condition write", { cond: condition("<", counted, ref("max")), body: [] }],
+    ["written bound", { body: [bump(), set("max", num(1e12))] }],
+    [
+      "disjunction",
+      {
+        cond: {
+          loc,
+          kind: "logical",
+          op: "||",
+          left: condition("<=", ref("unknown"), num(4)),
+          right: condition("<", ref("it"), ref("max")),
+          type: BOOL,
+        },
+      },
+    ],
+    ["unknown start", { start: ref("unknown") }],
+  ];
+  for (const [label, options] of open) expect(run(options).after, label).toBeNull();
+});
+
 test("whole-program slot facts seed parameters, field reads and call results", () => {
   const field: IrExpr = {
     loc,
