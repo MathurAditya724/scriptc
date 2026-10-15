@@ -1,9 +1,9 @@
 // Every covered Latin character with its canonical and compatibility
 // decompositions and case forms, compared pairwise in four contexts; a
 // hash of all results and their counts match Node.
-const ranges: [number, number][] = [[0x09, 0x0d], [0x20, 0x7e], [0xa0, 0x17f], [0x300, 0x362]];
+const ranges: [number, number][] = [[0x09, 0x0d], [0x20, 0x7e], [0xa0, 0x17f], [0x300, 0x36f], [0x2044, 0x2044]];
 const covered = new Set<number>();
-for (const [lo, hi] of ranges) for (let c = lo; c <= hi; c++) if (c < 0xbc || c > 0xbe) covered.add(c);
+for (const [lo, hi] of ranges) for (let c = lo; c <= hi; c++) covered.add(c);
 function inTable(s: string): boolean {
   for (const ch of s) if (!covered.has(ch.codePointAt(0)!)) return false;
   return true;
