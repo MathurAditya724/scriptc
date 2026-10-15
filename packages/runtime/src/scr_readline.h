@@ -1,0 +1,113 @@
+/* scriptc runtime — node:readline (scr_readline.c) and the event-loop entry
+ * points (scr_async.c). Included by scr_runtime.h, which says where new
+ * declarations go. */
+#ifndef SCR_READLINE_H
+#define SCR_READLINE_H
+
+#include "scr_events.h"
+
+/* ── node:readline and node:readline/promises (scr_readline.c, linked
+ * under the events gate) ─────────────────────────────────────────────
+ * The non-terminal Interface (the file header has the model). Interfaces
+ * are f64 handles. A stream input or output goes through ScrRlIo, which
+ * scr_stream.c provides (scr_stream_rl_open), so stdin-only programs
+ * never link the stream unit; the stream side feeds input through
+ * scr_rl_input_*. Signal-taking entry points get addAbortListener as
+ * `add` (scr_events_add_abort_listener), passed only by programs that
+ * link the event-target unit. Listener event numbers: 0 'line',
+ * 1 'close', 2 'pause', 3 'resume', 4 'error'. */
+typedef struct ScrRlIo {
+  void (*pause)(void *s);
+  void (*resume)(void *s);
+  void (*detach)(void *s, double id); /* removes the interface's input listeners */
+  void (*write)(void *s, ScrStr *text); /* borrows text */
+  void (*release)(void *s);
+} ScrRlIo;
+double scr_rl_open(const ScrRlIo *io, void *in /*+1 or NULL: stdin*/, void *out /*+1 or NULL*/,
+                   bool out_stdout, double crlf_delay, ScrStr *prompt, ScrDyn *signal,
+                   ScrAbortAddFn add);
+void scr_rl_input_bytes(double id, ScrBytes *chunk);
+void scr_rl_input_str(double id, ScrStr *chunk);
+void scr_rl_input_end(double id);
+void scr_rl_input_error(double id, ScrError *err);
+/* question: throws ERR_USE_AFTER_CLOSE on a closed interface (may-throw);
+ * fn(cb, +1 answer). The promise form never throws. */
+void scr_rl_question(double id, ScrStr *query, ScrClosure *cb /*moves*/,
+                      void (*fn)(ScrClosure *, ScrStr *));
+ScrPromise *scr_rl_question_promise(double id, ScrStr *query, ScrDyn *signal, ScrAbortAddFn add);
+void scr_rl_close(double id);
+void scr_rl_pause(double id);  /* may throw ERR_USE_AFTER_CLOSE */
+void scr_rl_resume(double id); /* may throw ERR_USE_AFTER_CLOSE */
+void scr_rl_prompt(double id); /* may throw ERR_USE_AFTER_CLOSE */
+void scr_rl_set_prompt(double id, ScrStr *prompt);
+ScrStr *scr_rl_get_prompt(double id); /* +1 */
+void scr_rl_write(double id, ScrStr *data); /* may throw ERR_USE_AFTER_CLOSE */
+void scr_rl_on(double id, double ev, ScrClosure *cb /*moves*/, void *fn, bool once);
+void scr_rl_iter_open(double id);
+ScrPromise *scr_rl_iter_next(double id); /* +1 promise<dyn>: the line, or undefined */
+void scr_rl_iter_return(double id);
+/* Listener adapters: line/answer (fn(cb, +1 text)) and error listeners. */
+void scr_rl_answer_thunk0(ScrClosure *cb, ScrStr *answer);
+void scr_rl_answer_thunk_str(ScrClosure *cb, ScrStr *answer);
+void scr_rl_error_thunk(ScrClosure *cb, ScrError *err);
+void scr_rl_error_thunk0(ScrClosure *cb, ScrError *err);
+void scr_rl_answer_thunk_dyn(ScrClosure *cb, ScrStr *answer);
+void scr_rl_error_thunk_dyn(ScrClosure *cb, ScrError *err);
+/* createInterface with a stream input and/or output (scr_stream.c): in is
+ * the input stream or NULL for process.stdin; out the output stream or
+ * NULL (out_stdout picks process.stdout). Both borrowed, like prompt
+ * (NULL: the default "> "). */
+double scr_stream_rl_open(ScrStream *in, ScrStream *out, bool out_stdout, double crlf_delay,
+                          ScrStr *prompt, ScrDyn *signal, ScrAbortAddFn add);
+void scr_stdin_data_thunk0(ScrClosure *cb, ScrBytes *chunk);
+void scr_stdin_data_thunk_bytes(ScrClosure *cb, ScrBytes *chunk);
+/* The loop-side registration (scr_async.c, always linked) and the
+ * scr_lib.c hooks the unit fills. The abnormal-exit code hint lives in
+ * scr_async.c so the uncaught/unhandled reporters can note it whether or
+ * not the unit is present. */
+void scr_loop_set_events(bool (*pending)(void), bool (*watching)(void),
+                          void (*dispatch)(void), int (*pollfds)(int out[2]));
+extern SCR_TL void (*scr_process_exit_hook)(double code);
+extern SCR_TL void (*scr_stdin_destroy_hook)(void);
+void scr_exit_code_note(int code);
+int scr_exit_code_hint_get(void);
+/* The pollable child-exit wake fd (the child kqueue / pidfd epoll) for the loop's
+ * poll(2) sleep, or -1 when it can't wake for every pending child. */
+int scr_children_wake_fd(void);
+double scr_now_ms(void); /* the loop's monotonic clock, in ms */
+/* Run to ordinary loop exhaustion, except that a non-NULL executable
+ * module-root promise stops the loop as soon as it is rejected at a
+ * microtask checkpoint. Fulfilled roots do not stop the loop: Node keeps
+ * running ref'd work scheduled by a successfully evaluated module.
+ * Returns true when a default/listener-crashing unhandled rejection
+ * already selected and reported exit status 1. */
+bool scr_loop_run(ScrPromise *top_level);
+void scr_loop_commonjs_entry(void);
+bool scr_report_unhandled_rejections(void); /* true = exit 1 */
+void scr_discard_unhandled_rejections(void);
+long scr_abandoned_fiber_count(void);
+
+
+void *scr_fiber_self(void);
+void scr_note_abandoned_fibers(long n); /* scr_console.c owns the flag */
+
+/* new Promise(executor): kind 0 f64, 1 bool, 2 str, 3 void; ref-kind
+ * resolve thunks are emitted (they know the concrete RC helpers) over
+ * scr_resolve_ref_impl, constructed via scr_make_resolve_fn. The
+ * executor runs synchronously; an escaping throw rejects the promise. */
+ScrClosure *scr_make_resolve(ScrPromise *p, int kind);
+ScrClosure *scr_make_resolve_fn(ScrPromise *p, void *fn);
+void scr_resolve_ref_impl(ScrClosure *self, void *v, void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace);
+/* The reject closure: `(reason: Error) => void` — stores the reason as a
+ * SCR_EXC_OBJ payload (the thrown-Error representation) and wakes waiters;
+ * a reject after any settle is a no-op (first settle wins, exactly JS). */
+ScrClosure *scr_make_reject(ScrPromise *p);
+void scr_promise_run_executor(ScrPromise *p, ScrClosure *exec, ScrClosure *resolve);
+void scr_promise_run_executor0(ScrPromise *p, ScrClosure *exec);
+void scr_promise_run_executor2(ScrPromise *p, ScrClosure *exec, ScrClosure *resolve, ScrClosure *reject);
+
+/* The promise a fiber settles (borrowed) — the emitted trampolines fulfill
+ * through it. */
+ScrPromise *scr_fiber_promise(ScrFiber *f);
+
+#endif /* SCR_READLINE_H */
