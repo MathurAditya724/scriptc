@@ -123,7 +123,7 @@ void scr_exc_alert_thread_exit(void) {}
  * thread costs the others slow-path calls only until it is caught. Only its
  * owner changes a thread's share, so a thread's own raise is visible to all
  * of its later checks. */
-_Alignas(64) _Atomic uint32_t scr_exc_alert;
+_Alignas(64) _Atomic uint32_t scr_exc_alert = 0;
 static SCR_TL bool scr_exc_alerted;
 
 void scr_exc_alert_add(int delta) {
