@@ -70,12 +70,18 @@ export function emitCallExpr(
   /** The frame storage a result-slot entry (record-results.ts) writes:
    * passed after the call's own arguments. */
   resultSlot?: LlValue,
+  /** The slow path of a numeric index read: emit the helper call itself. */
+  plainCall = false,
 ): LlValue {
   const B = host.B;
   switch (e.kind) {
     case "call": {
       const callee = host.fnByName.get(e.callee);
       if (!callee) throw new InternalCompilerError(`llvm emitter bug: unknown callee ${e.callee}`);
+      if (callee.fastRead === "index" && !plainCall && !awaitEntry && !resultSlot) {
+        const indexed = emitNumericIndexRead(host, e, callee);
+        if (indexed) return indexed;
+      }
       if (callee.captures !== undefined)
         throw new InternalCompilerError(
           `llvm emitter bug: direct call to lifted function ${e.callee}`,
@@ -1303,4 +1309,46 @@ export function emitConstruction(
     `call void @${mangleFunction(ctorName)}${host.int32Abis.has(ctorName) ? INT32_ABI_SUFFIX : ""}(${argList})`,
   );
   if (host.mayThrow.has(`%${e.className}.constructor`)) host.emitPendingCheck();
+}
+
+/** A call to a numeric computed-read helper (IrFunction.fastRead "index")
+ * `helper(value, String(index))`: scr_dyn_index_get answers dyn arrays and
+ * live array capsules at the index without forming the key, and the helper
+ * call (with its key string) runs only when that read has no answer. Both
+ * operands must be variables or literals, since the slow path evaluates the
+ * call again. Null when the call does not have that shape. */
+function emitNumericIndexRead(
+  host: LlvmEmitterContext,
+  e: ExprOf<"call">,
+  callee: IrFunction,
+): LlValue | null {
+  const value = e.args[0];
+  const key = e.args[1];
+  if (e.args.length !== 2 || !value || !key || value.kind !== "varRef") return null;
+  if (key.kind !== "toString" || key.operand.type.kind !== "f64") return null;
+  if (key.operand.kind !== "varRef" && key.operand.kind !== "numLit") return null;
+  if (callee.returnType.kind !== "dyn" || host.int32Abis.has(e.callee)) return null;
+  const B = host.B;
+  const receiver = host.emitReadReceiver(value);
+  const index = host.emitExpr(key.operand);
+  host.declare(`declare ptr @scr_dyn_index_get(ptr, double)`);
+  const fast = B.tmp();
+  B.line(`${fast} = call ptr @scr_dyn_index_get(ptr ${receiver.name}, double ${index.name})`);
+  const hit = B.tmp();
+  B.line(`${hit} = icmp ne ptr ${fast}, null`);
+  const fastLabel = B.currentLabel();
+  const slow = B.newLabel("idx.slow");
+  const join = B.newLabel("idx.join");
+  B.condBr(hit, join, slow);
+  B.startBlock(slow);
+  host.frames.push([]);
+  const read = emitCallExpr(host, e, false, false, undefined, true);
+  host.moveTemp(read);
+  host.releaseFrame(host.frames.pop()!);
+  const slowLabel = B.currentLabel();
+  B.terminate(`br label %${join}`);
+  B.startBlock(join);
+  const result = B.tmp();
+  B.line(`${result} = phi ptr [ ${fast}, %${fastLabel} ], [ ${read.name}, %${slowLabel} ]`);
+  return host.own({ name: result, type: e.type });
 }

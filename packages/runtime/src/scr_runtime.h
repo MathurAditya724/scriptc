@@ -5502,6 +5502,15 @@ ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key);
 /* +1 view of an own element of a bound live array capsule; NULL for a hole
  * or an index at or past its length. */
 ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index);
+/* d[index] for a numeric index (+1) when the receiver answers it without
+ * the property-key string: an in-range element of a dyn array, or a present
+ * or explicitly undefined element of a live array capsule. NULL otherwise
+ * (other receivers, holes, out-of-range and non-index numbers), and the
+ * caller takes the keyed path. Never throws. */
+ScrDyn *scr_dyn_index_get(const ScrDyn *d, double index);
+/* d.length of a dyn array or live array capsule, or -1 for every other
+ * receiver (the caller takes the keyed path). Never throws. */
+double scr_dyn_array_length(const ScrDyn *d);
 void *scr_dyn_typed_ref_cached_cast(
     const ScrDyn *d, const char *type_key, size_t type_key_len); /* +1/NULL */
 void scr_dyn_typed_ref_cache_cast(

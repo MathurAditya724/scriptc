@@ -1524,6 +1524,12 @@ export interface IrFunction {
   /** Generated reflection dispatch contains speculative source-member edges.
    * Target-only host operations behind those edges retain runtime refusals. */
   speculativeDispatch?: boolean;
+  /** A read helper the backend can answer directly for dyn arrays and live
+   * array capsules, calling the helper only when that read has no answer.
+   * `index`: a computed read `(value, key)` whose callers pass a number
+   * converted to a string as the key. `length`: the `length` property
+   * read `(value)`, where the caller checks the result as a number. */
+  fastRead?: "index" | "length";
   params: IrParam[];
   returnType: IrType;
   /** All locals including params, pre-collected and scope-flat: ids are

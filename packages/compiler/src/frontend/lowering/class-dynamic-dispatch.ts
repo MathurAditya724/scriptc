@@ -1598,6 +1598,9 @@ export class ClassDynamicDispatch {
                       ]
                     : [{ kind: "return", value: fallback, loc }],
                 loc,
+                ...(numericKey && computedRead && !reflect && !dynamicKey
+                  ? { fastRead: "index" as const }
+                  : {}),
               };
               if (dynamicKey)
                 helper.body.unshift(
@@ -1835,6 +1838,7 @@ export class ClassDynamicDispatch {
                     ]
                   : [{ kind: "return", value: fallback, loc }],
                 loc,
+                ...(read && name === "length" ? { fastRead: "length" as const } : {}),
               };
               if (!write && name === "toString" && lowerer.classes.has("%Error")) {
                 const value = varRef("p.0", DYN, loc);

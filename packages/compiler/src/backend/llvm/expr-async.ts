@@ -298,6 +298,8 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
 export function emitSerializationExpr(
   host: LlvmEmitterContext,
   e: ExprOf<"jsonStringify" | "dynCheck">,
+  /** The slow path of an array length read: emit the check itself. */
+  plainLength = false,
 ): LlValue {
   const B = host.B;
   switch (e.kind) {
@@ -372,6 +374,10 @@ export function emitSerializationExpr(
           host.emitPendingCheck();
           return fusedOut;
         }
+      }
+      if (!plainLength && e.type.kind === "f64") {
+        const length = emitArrayLengthRead(host, e);
+        if (length) return length;
       }
       if (e.exact && isDynTypedRefType(e.type)) {
         const object = host.emitExactCapsuleObject(e.value, e.type);
@@ -1170,4 +1176,36 @@ export function emitAsyncExpr(
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** `length` read as a number through a property helper (IrFunction.fastRead
+ * "length") on a variable: scr_dyn_array_length answers dyn arrays and live
+ * array capsules directly, and the helper call and number check run only
+ * when it answers -1. Null when the check does not have that shape. */
+function emitArrayLengthRead(host: LlvmEmitterContext, e: ExprOf<"dynCheck">): LlValue | null {
+  const call = e.value;
+  if (call.kind !== "call" || call.args.length !== 1 || call.args[0]!.kind !== "varRef")
+    return null;
+  if (host.fnByName.get(call.callee)?.fastRead !== "length") return null;
+  const B = host.B;
+  const receiver = host.emitReadReceiver(call.args[0]!);
+  host.declare(`declare double @scr_dyn_array_length(ptr)`);
+  const fast = B.tmp();
+  B.line(`${fast} = call double @scr_dyn_array_length(ptr ${receiver.name})`);
+  const hit = B.tmp();
+  B.line(`${hit} = fcmp oge double ${fast}, 0.0`);
+  const fastLabel = B.currentLabel();
+  const slow = B.newLabel("len.slow");
+  const join = B.newLabel("len.join");
+  B.condBr(hit, join, slow);
+  B.startBlock(slow);
+  host.frames.push([]);
+  const checked = emitSerializationExpr(host, e, true);
+  host.releaseFrame(host.frames.pop()!);
+  const slowLabel = B.currentLabel();
+  B.terminate(`br label %${join}`);
+  B.startBlock(join);
+  const result = B.tmp();
+  B.line(`${result} = phi double [ ${fast}, %${fastLabel} ], [ ${checked.name}, %${slowLabel} ]`);
+  return { name: result, type: e.type };
 }
