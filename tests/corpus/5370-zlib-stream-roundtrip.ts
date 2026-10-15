@@ -57,6 +57,18 @@ function header(label: string, encoder: zlib.Gzip): Promise<void> {
   });
 }
 
+// Decoded chunks are Buffers: string conversion gives their text.
+function text(): Promise<void> {
+  return new Promise((resolve) => {
+    const decoder = zlib.createGunzip();
+    decoder.on("data", (chunk: Buffer) => {
+      console.log("chunk text", `${chunk}`, String(chunk) + "!", chunk + "", chunk.toString("hex"));
+    });
+    decoder.on("end", () => resolve());
+    decoder.end(zlib.gzipSync("plain text"));
+  });
+}
+
 async function main(): Promise<void> {
   await roundTrip("deflate", zlib.createDeflate(), zlib.createInflate());
   await roundTrip("raw", zlib.createDeflateRaw(), zlib.createInflateRaw());
@@ -66,6 +78,7 @@ async function main(): Promise<void> {
   await roundTrip("level 1", zlib.createGzip({ level: 1 }), zlib.createGunzip({ chunkSize: 1024 }));
   await header("gzip header", zlib.createGzip());
   await header("zlib header", zlib.createDeflate());
+  await text();
 }
 
 main();

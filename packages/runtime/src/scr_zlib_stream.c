@@ -195,6 +195,7 @@ static void scr_zs_process(ScrZlibStream *zs, ScrStream *s) {
   bool full = false;
   if (have > 0) {
     ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)have);
+    out->is_buffer = true; /* Node pushes Buffer slices of its output buffer */
     memcpy(out->data, zs->out_buf + zs->out_offset, have);
     zs->out_offset += have;
     full = !scr_stream_push(s, out);

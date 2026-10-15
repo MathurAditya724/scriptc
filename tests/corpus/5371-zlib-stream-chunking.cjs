@@ -2,8 +2,8 @@
 // inflates into chunkSize pieces (the output buffer fills, a new one
 // starts), 'data' follows the synchronous code and its nextTick, the end()
 // callback runs before 'finish', and 'end' then 'close' follow the
-// flush. The write and flush callbacks, writableFinished, and the
-// readable/writable flags settle in Node's order.
+// flush. Each chunk is a Buffer. The write and flush callbacks,
+// writableFinished, and the readable/writable flags settle in Node's order.
 const zlib = require("node:zlib");
 
 const input = Buffer.from(Array.from({ length: 2500 }, (_, i) => `row ${i * 7919}`).join("\n"));
@@ -15,7 +15,7 @@ function run(label, options, next) {
   const sizes = [];
   stream.on("data", (chunk) => {
     sizes.push(chunk.length);
-    if (sizes.length === 1) order.push("data");
+    if (sizes.length === 1) order.push(`data ${Buffer.isBuffer(chunk)} ${JSON.stringify(String(chunk.subarray(0, 8)))}`);
   });
   stream.on("finish", () => order.push(`finish ${stream.writableFinished}`));
   stream.on("end", () => order.push(`end ${stream.readableEnded}`));
