@@ -162,6 +162,10 @@ ScrStr *scr_net_server_addr_family(ScrNetServer *s); /* +1 — address().family 
 void scr_net_server_close(ScrNetServer *s, ScrClosure *cb /*moves, nullable*/);
 void scr_net_server_close_all_connections(ScrNetServer *s);
 void scr_net_server_close_idle_connections(ScrNetServer *s);
+ScrDyn *scr_net_server_max_connections_get(ScrNetServer *s); /* +1 */
+void scr_net_server_max_connections_set(ScrNetServer *s, const ScrDyn *value /*borrowed*/);
+void scr_net_server_on_drop(ScrNetServer *s, const ScrDyn *listener /*borrowed*/, bool once);
+void scr_net_server_get_connections(ScrNetServer *s, const ScrDyn *callback /*borrowed*/);
 /* The REAL close behind `wrapper.close.bind(wrapper)` — never consults
  * the override (the proxy-through idiom cannot recurse). */
 void scr_net_server_close_direct(ScrNetServer *s, ScrClosure *cb /*moves, nullable*/);
@@ -233,6 +237,26 @@ void scr_net_sock_dial_start(ScrNetSocket *s);
 void scr_net_sock_set_timeout(ScrNetSocket *s, double ms);
 void scr_net_sock_on_timeout(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
 ScrStr *scr_net_sock_remote_address(ScrNetSocket *s); /* +1 or NULL (undefined arm) */
+double scr_net_sock_remote_port(ScrNetSocket *s);    /* NaN = undefined */
+ScrStr *scr_net_sock_remote_family(ScrNetSocket *s); /* +1 or NULL */
+ScrStr *scr_net_sock_local_address(ScrNetSocket *s); /* +1 or NULL */
+double scr_net_sock_local_port(ScrNetSocket *s);     /* NaN = undefined */
+ScrStr *scr_net_sock_local_family(ScrNetSocket *s);  /* +1 or NULL */
+ScrDyn *scr_net_sock_addr_field(ScrNetSocket *s, double field); /* +1 */
+double scr_net_sock_bytes_read(ScrNetSocket *s);
+bool scr_net_sock_connecting(ScrNetSocket *s);
+bool scr_net_sock_pending(ScrNetSocket *s);
+ScrStr *scr_net_sock_ready_state(ScrNetSocket *s); /* +1 */
+void scr_net_sock_on_ready(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
+void scr_net_sock_on_close_dyn(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/, bool once);
+void scr_net_sock_on_write_flush_dyn(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/);
+void scr_net_sock_on_finish_dyn(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/);
+ScrNetSocket *scr_net_sock_set_keepalive_ret(ScrNetSocket *s, bool enable, double delay_ms); /* +1 */
+void scr_net_sock_set_timeout_checked(ScrNetSocket *s, double ms);
+void scr_net_sock_set_timeout_cb(ScrNetSocket *s, double ms, ScrClosure *cb /*moves*/);
+double scr_net_is_ip(const ScrDyn *input);
+bool scr_net_is_ipv4(const ScrDyn *input);
+bool scr_net_is_ipv6(const ScrDyn *input);
 bool scr_net_sock_encrypted(ScrNetSocket *s); /* true = TLS transport (false maps to the undefined arm) */
 void scr_net_sock_pipe(ScrNetSocket *src, ScrNetSocket *dst);
 void scr_net_sock_on_data(ScrNetSocket *s, ScrClosure *cb /*moves*/, ScrNetDataFn fn, bool once);
