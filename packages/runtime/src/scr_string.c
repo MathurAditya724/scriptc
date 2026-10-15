@@ -3307,7 +3307,8 @@ static SCR_TL bool scr_coll_ascii_levels;
 #define SCR_COLL_BITS_LIMIT 0x180
 static SCR_TL uint64_t scr_coll_starts_bits[SCR_COLL_BITS_LIMIT / 64];
 /* scr_coll_scan's answer for one code point below SCR_COLL_SCAN_LIMIT
- * (every code point the table covers): 0 for plain covered, 1 for covered
+ * (the table's ranges through the combining marks; U+2044 FRACTION SLASH,
+ * above it, is looked up): 0 for plain covered, 1 for covered
  * but needing the element lists (a mark with a primary weight, or the end
  * of a contraction), 2 for uncovered. */
 #define SCR_COLL_SCAN_LIMIT 0x370
