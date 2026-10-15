@@ -61,5 +61,32 @@ ScrStr *scr_path_win32_format(ScrStr *root, ScrStr *dir, ScrStr *base, ScrStr *n
 bool scr_path_matches_glob(ScrStr *path, ScrStr *pattern);
 bool scr_path_win32_matches_glob(ScrStr *path, ScrStr *pattern);
 bool scr_glob_match(ScrStr *path, ScrStr *pattern, bool windows, bool nocase);
+/* fs.globSync / fs.glob / fs/promises glob (scr_glob.c): Node 24's
+ * lib/internal/fs/glob.js walk. The pattern (a string or string array) and
+ * options (exclude, cwd, followSymlinks, withFileTypes) arrive as dyn
+ * values and are validated in Node's order with Node's errors (borrowed).
+ * scr_fs_glob answers the result snapshot (+1, or NULL with the exception
+ * pending); mode bit 0 asks for Dirent rows (name, parentPath, UV_DIRENT
+ * kind) and must agree with withFileTypes, bit 1 is the fs/promises form,
+ * whose Dirents carry resolved parent paths. strings is the string[] form.
+ * callback takes fs.glob's argument vector, throws validation errors
+ * synchronously and delivers the result or the walk's error through the
+ * filesystem callback queue. */
+typedef struct ScrDyn ScrDyn; /* full definition in scr_dyn.h (C11 repeat) */
+typedef struct ScrFsGlob ScrFsGlob;
+ScrFsGlob *scr_fs_glob(const ScrDyn *pattern, const ScrDyn *options, double mode);
+size_t scr_fs_glob_count(const ScrFsGlob *g); /* NULL -> 0 */
+ScrStr *scr_fs_glob_path(const ScrFsGlob *g, size_t i);   /* +1 */
+ScrStr *scr_fs_glob_name(const ScrFsGlob *g, size_t i);   /* +1 */
+ScrStr *scr_fs_glob_parent(const ScrFsGlob *g, size_t i); /* +1 */
+double scr_fs_glob_type(const ScrFsGlob *g, size_t i);
+void scr_fs_glob_free(ScrFsGlob *g); /* NULL-tolerant */
+ScrArr *scr_fs_glob_strings(const ScrDyn *pattern, const ScrDyn *options);
+void scr_fs_glob_callback(ScrDyn *args);
+/* The fs/promises form: a walk error does not throw; the matches found
+ * before it are returned and scr_fsp_glob_error answers the error (+1 dyn,
+ * undefined when there is none) once, for the loop to throw after them. */
+ScrArr *scr_fsp_glob_strings(const ScrDyn *pattern, const ScrDyn *options);
+ScrDyn *scr_fsp_glob_error(void);
 
 #endif /* SCR_PATH_H */

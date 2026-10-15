@@ -101,6 +101,10 @@ ScrStr *scr_fs_read_file_encoded(ScrStr *path, ScrStr *encoding);
 ScrStr *scr_fs_read_fd_encoded(double fd, ScrStr *encoding);
 ScrDyn *scr_fs_callback_value(ScrStr *member);
 ScrDyn *scr_fs_callback_call(ScrStr *member, const ScrDyn *args);
+/* The error-first callback queue (scr_bytes_io.c): a pending exception
+ * becomes [err], otherwise [null, result(, buffer)]; the callback runs on
+ * a later loop turn. result moves in. */
+void scr_fs_cb_schedule(const ScrDyn *callback, ScrDyn *result, const ScrDyn *buffer);
 ScrBytes *scr_fs_read_fd_bytes(double fd);      /* +1; the fd form (scr_lib.c) */
 void scr_fs_write_file_bytes(ScrStr *path, const ScrBytes *data);
 void scr_fs_append_file_bytes(ScrStr *path, const ScrBytes *data);

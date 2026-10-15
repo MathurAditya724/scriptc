@@ -26,7 +26,12 @@ import {
   withinUint32,
 } from "../../ir/integer-ranges.js";
 import { emitArrayValues } from "./expr-containers.js";
-import { emitCheckedRemainder, emitSignedIntegerRemainder } from "./integer-remainder.js";
+import {
+  constantDivisor,
+  emitCheckedRemainder,
+  emitPowerOfTwoRemainder,
+  emitSignedIntegerRemainder,
+} from "./integer-remainder.js";
 import { emitDenseArrayGet, emitDenseArrayState } from "./dense-array-access.js";
 import { emitWrappingSum, markWrappingOperands } from "./wrapping-sums.js";
 
@@ -300,7 +305,14 @@ export function emitOperatorExpr(
           }
         }
         if (e.op === "%") {
-          const checked = emitCheckedRemainder(host, l, r, li, ri);
+          const constant = constantDivisor(e.right, ri);
+          const power = constant === null ? null : emitPowerOfTwoRemainder(host, l, constant);
+          if (power) return power;
+          // A fractional constant divisor never passes the integer check.
+          const checked =
+            constant !== null && !Number.isInteger(constant)
+              ? null
+              : emitCheckedRemainder(host, l, r, li, ri);
           if (checked) return checked;
         }
         if (arith[e.op] !== undefined) {

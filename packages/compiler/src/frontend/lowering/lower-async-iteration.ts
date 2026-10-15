@@ -279,7 +279,7 @@ function classAsyncIteratorPlan(
   };
 }
 
-function checkForAwaitBinding(
+export function checkForAwaitBinding(
   lowerer: Lowerer,
   stmt: ts.ForOfStatement,
 ): { declaration: ts.VariableDeclaration & { name: ts.Identifier }; mutable: boolean } {
