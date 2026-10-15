@@ -14,6 +14,7 @@ import {
 import { liveRefView } from "./expr-stream-bridges.js";
 import { typedRefConstructor, vAdapters } from "./shapes.js";
 import { INT32_ABI_SUFFIX, SCALAR_UNION_RESULT } from "./int32-abi.js";
+import { dispatchesCall, INTEGER_DISPATCH_SUFFIX } from "./integer-clones.js";
 import { canStackObject, emitStackObject } from "./stack-objects.js";
 import { collectFfiRetainedOps, parseFfiCallbackKey } from "../ffi-callbacks.js";
 import {
@@ -182,7 +183,13 @@ export function emitCallExpr(
       // first suspension and returns the promise (+1). The call itself
       // never unwinds — rejections surface at await (computeMayThrow's
       // async exclusion).
-      const target = `@${borrowed ? mangleBorrowedFunction(e.callee) : host.callTarget(e.callee)}${abi ? INT32_ABI_SUFFIX : ""}`;
+      // Callers outside a recursive integer-clone member's recursion enter
+      // its dispatcher (integer-clones.ts), which has the same signature.
+      const dispatch =
+        !borrowed && dispatchesCall(host.integerClones, host.currentFunctionName, e.callee)
+          ? INTEGER_DISPATCH_SUFFIX
+          : "";
+      const target = `@${borrowed ? mangleBorrowedFunction(e.callee) : host.callTarget(e.callee)}${abi ? INT32_ABI_SUFFIX : ""}${dispatch}`;
       if (e.type.kind === "void") {
         B.line(`call void ${target}(${argList})`);
         if (host.mayThrow.has(e.callee)) host.emitPendingCheck();

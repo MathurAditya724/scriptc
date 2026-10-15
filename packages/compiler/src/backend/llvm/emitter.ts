@@ -94,6 +94,13 @@ import {
   type Int32Abi,
 } from "./int32-abi.js";
 import { findInt32Locals, type Int32Local } from "./int32-locals.js";
+import {
+  emitIntegerClone,
+  emitIntegerDispatcher,
+  findIntegerClones,
+  NO_INTEGER_CLONES,
+  type IntegerClones,
+} from "./integer-clones.js";
 import { exactInteger, narrowInteger } from "./integer-values.js";
 import { findInitializerBindings, withInitializerBindings } from "../../ir/initializer-bindings.js";
 import { findConstantNumericTables, type ConstantNumericTable } from "../../ir/constant-tables.js";
@@ -856,6 +863,10 @@ export class LlEmitter {
   readonly int32Slots: Int32Slots;
   /** Functions whose direct calls use i32 parameters or results. */
   readonly int32Abis: ReadonlyMap<string, Int32Abi>;
+  /** Pure number functions with speculative integer clones. */
+  readonly integerClones: IntegerClones;
+  /** The IR function being emitted. */
+  currentFunctionName = "";
   /** Immutable module constants (contract types) whose graphs become
    * immortal once initialized: their reads need no reference counting. */
   readonly immortalGlobals: ReadonlySet<string>;
@@ -1020,6 +1031,17 @@ export class LlEmitter {
     this.mayThrow = mt.fns;
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
+    // Integer clones signal a stack overflow through their result, which
+    // needs the single-threaded guard; worker programs also poll for
+    // termination, and debug builds and stack traces keep every frame.
+    this.integerClones =
+      this.debug === null &&
+      this.stackChecks !== null &&
+      mod.workers !== true &&
+      mod.lib === undefined &&
+      !this.stackTraces
+        ? findIntegerClones(mod)
+        : NO_INTEGER_CLONES;
     this.publishedTypes = computePublishedTypes(mod);
     this.immutableFields = computeImmutableFields(mod);
     this.constructorFunctions = new Set((mod.classes ?? []).map((c) => `%${c.name}.constructor`));
@@ -5589,6 +5611,7 @@ export class LlEmitter {
   private emitFunction(fn: IrFunction): string {
     const B = new BlockBuilder();
     this.B = B;
+    this.currentFunctionName = fn.name;
     // Fiber switches restore the active exception cell before control
     // returns to a synchronous frame (emitPendingCheck).
     B.excCellInvariant = fn.async !== true && fn.generator === undefined;
@@ -6016,6 +6039,19 @@ export class LlEmitter {
     const symbol = borrowed ? mangleBorrowedFunction(fn.name) : mangleFunction(fn.name);
     let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${debug} { ; ${fn.name}\n${B.render()}\n}`;
     if (int32Abi) body += "\n" + this.emitInt32AbiWrapper(fn, symbol, int32Abi);
+    if (!borrowed && this.integerClones.members.has(fn.name)) {
+      body += "\n" + emitIntegerClone(fn, this, this.stackChecks?.has(fn.name) === true);
+      if (this.integerClones.dispatched.has(fn.name))
+        body +=
+          "\n" +
+          emitIntegerDispatcher(
+            fn,
+            this,
+            `${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}`,
+            int32Abi?.params ?? [],
+            int32Abi?.result === true,
+          );
+    }
     if (!borrowed) return body;
     const slot = this.implSlotBorrowed(fn.name);
     const virtual =
