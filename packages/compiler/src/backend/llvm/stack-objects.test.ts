@@ -73,6 +73,9 @@ test("projection-only records live in frame storage and producers fill it", asyn
   expect(projected).not.toMatch(/@sc_rnew_/);
   expect(projected).toMatch(/call void @sc_\w*into_add\(/);
   expect(projected).toMatch(/call void @sc_\w*into_shortest\(/);
+  // The result-slot entries are small and called per use: hinted inline.
+  expect(ir).toMatch(/^define internal void @sc_\w*into_add\([^)]*\) inlinehint /m);
+  expect(ir).toMatch(/^define internal void @sc_\w*into_shortest\([^)]*\) inlinehint /m);
   // A literal stores every field: its storage is not zeroed first.
   expect(projected).not.toContain("zeroinitializer");
   // Stored values keep the heap path and the ordinary producer.
