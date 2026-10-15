@@ -892,6 +892,14 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
 static void scr_dyn_handle_release(void *h, ScrDynHandleTag tag);
 static bool scr_dyn_to_primitive_result_is_object(const ScrDyn *d);
 
+/* Pooled dyn nodes report their disposal to weak collections only: they
+ * are never the native records the kept-source table is keyed by. */
+static SCR_TL bool scr_weak_observing;
+static void scr_weak_disposed(void *key);
+static inline void scr_dyn_weak_dispose(ScrDyn *d) {
+  if (scr_weak_observing) scr_weak_disposed(d);
+}
+
 static void scr_dyn_dispose(ScrDyn *d, bool collected) {
 #ifndef SCR_RC_AUDIT
   /* A capsule with nothing but its referent and adapters: the common end
@@ -901,7 +909,7 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
       scr_dyn_free_count < SCR_DYN_FREE_MAX) {
     scr_typed_ref_forget(d);
     d->v.typed_ref.release(d->v.typed_ref.ptr);
-    scr_weak_dispose(d);
+    scr_dyn_weak_dispose(d);
     d->v.str = (ScrStr *)scr_dyn_free_misc;
     scr_dyn_free_misc = d;
     scr_dyn_free_count++;
@@ -995,7 +1003,7 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
     if (d->kind == SCR_DYN_OBJ) scr_dyn_obj_drop_keys(d, true);
     /* Pooled blocks retain their headers and count toward the bounded
      * allocated heap, but never remain in a candidate buffer. */
-    scr_weak_dispose(d);
+    scr_dyn_weak_dispose(d);
     ScrDyn **list = d->kind == SCR_DYN_ARR   ? &scr_dyn_free_arr
                     : d->kind == SCR_DYN_OBJ ? &scr_dyn_free_obj
                                              : &scr_dyn_free_misc;
@@ -2263,14 +2271,32 @@ typedef struct {
 } ScrRecordSource;
 static SCR_TL ScrRecordSource *scr_record_sources;
 static SCR_TL size_t scr_record_source_capacity, scr_record_source_count;
-static SCR_TL bool scr_weak_observing;
+/* Deleted slots keep this marker so probe runs stay intact without moving
+ * entries (records free in conversion order, so a backward shift would
+ * rescan the same run on every deletion); insertion reuses them and the
+ * rehash drops them. */
+#define SCR_RECORD_SOURCE_DELETED ((void *)1)
+static SCR_TL size_t scr_record_source_deleted;
+/* Every native object free reports to the dispose hook, and most freed
+ * objects have no entry: a bit filter over the entry keys (cleared when the
+ * table empties) answers those without probing the table. */
+#define SCR_RECORD_SOURCE_FILTER_BITS 20
+static SCR_TL uint64_t *scr_record_source_filter;
 
+static size_t scr_record_source_filter_bit(const void *rec) {
+  return (size_t)(((uint64_t)(uintptr_t)rec >> 4) * UINT64_C(0x9E3779B97F4A7C15) >>
+                  (64 - SCR_RECORD_SOURCE_FILTER_BITS));
+}
+
+/* Records converted together are usually allocated together, and are
+ * then serialized and freed in that order: keys within one 1 KiB region
+ * keep their order in a 64-slot run, and the runs scatter by a mix of the
+ * region, so sequential work touches neighboring slots. */
 static size_t scr_record_source_bucket(const void *rec) {
-  uintptr_t hash = (uintptr_t)rec >> 4;
-  hash ^= hash >> 17;
-  hash *= (uintptr_t)0x9e3779b1u;
-  hash ^= hash >> 13;
-  return hash & (scr_record_source_capacity - 1);
+  uint64_t key = (uint64_t)(uintptr_t)rec >> 4;
+  uint64_t run = (key >> 6) * UINT64_C(0x9E3779B97F4A7C15);
+  run ^= run >> 29;
+  return (size_t)((run << 6) | (key & 63)) & (scr_record_source_capacity - 1);
 }
 
 static ScrRecordSource *scr_record_source_find(const void *rec) {
@@ -2293,23 +2319,15 @@ bool scr_record_source_has(const void *rec) {
   return scr_record_source_count && scr_record_source_find(rec) != NULL;
 }
 
-static void scr_weak_disposed(void *key);
 static void scr_record_source_disposed(void *rec) {
+  size_t bit = scr_record_source_filter_bit(rec);
+  if (!(scr_record_source_filter[bit >> 6] & (UINT64_C(1) << (bit & 63)))) return;
   ScrRecordSource *found = scr_record_source_find(rec);
   if (!found) return;
   ScrDyn *view = found->view;
-  size_t mask = scr_record_source_capacity - 1;
-  size_t hole = (size_t)(found - scr_record_sources);
-  /* Backward-shift deletion, as in the typed-reference table. */
-  for (size_t slot = (hole + 1) & mask; scr_record_sources[slot].rec; slot = (slot + 1) & mask) {
-    size_t home = scr_record_source_bucket(scr_record_sources[slot].rec);
-    if (((slot - home) & mask) >= ((slot - hole) & mask)) {
-      scr_record_sources[hole] = scr_record_sources[slot];
-      hole = slot;
-    }
-  }
-  scr_record_sources[hole] = (ScrRecordSource){ 0 };
+  *found = (ScrRecordSource){ .rec = SCR_RECORD_SOURCE_DELETED };
   scr_record_source_count--;
+  scr_record_source_deleted++;
   /* The table no longer refers to the view, so a nested disposal that
    * re-enters this hook sees a consistent table. */
   scr_dyn_release(view);
@@ -2322,19 +2340,36 @@ static void scr_dispose_observers(void *object) {
   if (scr_record_source_count) scr_record_source_disposed(object);
 }
 
+/* Keeps live entries plus deleted markers at most half the table: grows
+ * when live entries fill a quarter, otherwise rehashes in place to drop the
+ * markers. A large rehash also rebuilds the dispose filter, so stale bits
+ * of freed records stop costing probes (amortized over the deletions). */
 static void scr_record_source_reserve(void) {
-  if (scr_record_source_capacity && scr_record_source_count < scr_record_source_capacity / 2) return;
+  size_t used = scr_record_source_count + scr_record_source_deleted;
+  if (scr_record_source_capacity && used < scr_record_source_capacity / 2) return;
   size_t old_capacity = scr_record_source_capacity;
   ScrRecordSource *old = scr_record_sources;
-  scr_record_source_capacity = old_capacity ? old_capacity * 2 : 256;
+  scr_record_source_capacity =
+      !old_capacity ? 256
+      : scr_record_source_count >= old_capacity / 4 ? old_capacity * 2
+                                                    : old_capacity;
   scr_record_sources = calloc(scr_record_source_capacity, sizeof *scr_record_sources);
   if (!scr_record_sources) scr_json_oom();
+  bool refilter = scr_record_source_filter && old_capacity >= 16384;
+  if (refilter) {
+    memset(scr_record_source_filter, 0, ((size_t)1 << SCR_RECORD_SOURCE_FILTER_BITS) / 8);
+  }
   for (size_t i = 0; i < old_capacity; i++) {
-    if (!old[i].rec) continue;
+    if (!old[i].rec || old[i].rec == SCR_RECORD_SOURCE_DELETED) continue;
     size_t slot = scr_record_source_bucket(old[i].rec);
     while (scr_record_sources[slot].rec) slot = (slot + 1) & (scr_record_source_capacity - 1);
     scr_record_sources[slot] = old[i];
+    if (refilter) {
+      size_t bit = scr_record_source_filter_bit(old[i].rec);
+      scr_record_source_filter[bit >> 6] |= UINT64_C(1) << (bit & 63);
+    }
   }
+  scr_record_source_deleted = 0;
   free(old);
 }
 
@@ -2357,18 +2392,25 @@ static bool scr_record_source_declared(const ScrRecordSource *source, const char
   return scr_record_source_index(source, key, key_len) < source->count;
 }
 
-/* Inserts (or replaces) an entry; the table takes the entry's view. */
+/* Inserts the entry of a record the caller just built; the table takes
+ * the entry's view. A fresh record has no entry: the previous owner of its
+ * address left the table when it was freed (the dispose hook). */
 static void scr_record_source_put(const ScrRecordSource *entry) {
-  ScrRecordSource *existing = scr_record_source_find(entry->rec);
-  if (existing) {
-    ScrDyn *old = existing->view;
-    *existing = *entry;
-    scr_dyn_release(old);
-    return;
-  }
   scr_record_source_reserve();
+  if (!scr_record_source_filter) {
+    scr_record_source_filter = calloc(((size_t)1 << SCR_RECORD_SOURCE_FILTER_BITS) / 64,
+                                      sizeof *scr_record_source_filter);
+    if (!scr_record_source_filter) scr_json_oom();
+  }
+  size_t bit = scr_record_source_filter_bit(entry->rec);
+  scr_record_source_filter[bit >> 6] |= UINT64_C(1) << (bit & 63);
+  /* Take the first deleted slot of the key's probe run, or the empty slot
+   * that ends it. */
+  size_t mask = scr_record_source_capacity - 1;
   size_t slot = scr_record_source_bucket(entry->rec);
-  while (scr_record_sources[slot].rec) slot = (slot + 1) & (scr_record_source_capacity - 1);
+  while (scr_record_sources[slot].rec && scr_record_sources[slot].rec != SCR_RECORD_SOURCE_DELETED)
+    slot = (slot + 1) & mask;
+  if (scr_record_sources[slot].rec == SCR_RECORD_SOURCE_DELETED) scr_record_source_deleted--;
   scr_record_sources[slot] = *entry;
   scr_record_source_count++;
   scr_weak_dispose_hook = &scr_dispose_observers;
@@ -2470,10 +2512,18 @@ ScrDyn *scr_record_source_apply(ScrDyn *snapshot, const void *rec) {
  * had not seen. May leave an exception pending (a BigInt property). */
 void scr_jb_put_record_source(ScrJsonBuf *b, void *rec,
                               bool (*field)(ScrJsonBuf *, void *, size_t, bool)) {
+  if (!scr_jb_try_record_source(b, rec, field)) scr_jb_puts(b, "{}");
+}
+
+/* The same in one lookup: writes the record and answers true when it kept
+ * a source, otherwise writes nothing and answers false. */
+bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
+                              bool (*field)(ScrJsonBuf *, void *, size_t, bool)) {
   ScrRecordSource *source = scr_record_source_find(rec);
+  if (!source) return false;
   scr_jb_putc(b, '{');
   bool first = true;
-  if (source) {
+  {
     size_t count = source->count;
     bool small[64] = { false };
     bool *seen = count <= 64 ? small : calloc(count, sizeof *seen);
@@ -2502,6 +2552,7 @@ void scr_jb_put_record_source(ScrJsonBuf *b, void *rec,
     if (seen != small) free(seen);
   }
   scr_jb_putc(b, '}');
+  return true;
 }
 
 /* The flags are written with the rest of the capsule: setting a flag bit

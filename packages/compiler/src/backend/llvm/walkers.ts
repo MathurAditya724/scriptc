@@ -392,20 +392,33 @@ export class LlWalkers {
    * site checks pending. */
   private emitRecordSourceWriter(B: BlockBuilder, shapeId: string): void {
     const host = this.host;
+    const writer = this.recordFieldWriter(shapeId);
+    const lSource = B.newLabel("jw.source");
+    const lNative = B.newLabel("jw.native");
+    if (traceAdapter(host, { kind: "record", shapeId }) === null) {
+      // One lookup: the runtime writes the record when it kept a source.
+      host.declare(`declare zeroext i1 @scr_jb_try_record_source(ptr, ptr, ptr)`);
+      const written = B.tmp();
+      B.line(
+        `${written} = call zeroext i1 @scr_jb_try_record_source(ptr %b, ptr %v, ptr @${writer})`,
+      );
+      B.condBr(written, lSource, lNative);
+      B.startBlock(lSource);
+      B.terminate("ret void");
+      B.startBlock(lNative);
+      return;
+    }
+    // Cycle-capable shapes bracket the kept-source walk with the circular
+    // detection stack, like the native walk below.
     host.declare(`declare zeroext i1 @scr_record_source_has(ptr)`);
     const has = B.tmp();
     B.line(`${has} = call zeroext i1 @scr_record_source_has(ptr %v)`);
-    const lSource = B.newLabel("jw.source");
-    const lNative = B.newLabel("jw.native");
     B.condBr(has, lSource, lNative);
     B.startBlock(lSource);
-    const cyclic = traceAdapter(host, { kind: "record", shapeId }) !== null;
-    if (cyclic) this.jbEnter(B, false);
+    this.jbEnter(B, false);
     host.declare(`declare void @scr_jb_put_record_source(ptr, ptr, ptr)`);
-    B.line(
-      `call void @scr_jb_put_record_source(ptr %b, ptr %v, ptr @${this.recordFieldWriter(shapeId)})`,
-    );
-    if (cyclic) this.jbLeave(B);
+    B.line(`call void @scr_jb_put_record_source(ptr %b, ptr %v, ptr @${writer})`);
+    this.jbLeave(B);
     B.terminate("ret void");
     B.startBlock(lNative);
   }
