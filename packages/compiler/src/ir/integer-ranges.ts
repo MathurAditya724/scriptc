@@ -284,6 +284,7 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
     return { values, declared };
   }
   let functionWrites: Map<string, (IrExpr | null)[]> | null = null;
+  const noInvariants = new Map<string, IntegerRange>();
 
   /** Locals that hold an exact integer inside a fixed bound (int32, uint32
    * or non-negative int32) everywhere inside and after a region whose
@@ -305,7 +306,7 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
   function closedLocals(
     nodes: (IrExpr | IrStmt)[],
     entry: Facts,
-    invariant: ReadonlyMap<string, IntegerRange> = new Map(),
+    invariant: ReadonlyMap<string, IntegerRange>,
   ): Map<string, IntegerRange> {
     const { values, declared } = regionWrites(nodes);
     const result = new Map<string, IntegerRange>();
@@ -467,11 +468,15 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
   /** Invalidate the region's writes, keeping int32- and uint32-closed
    * locals at their closed range. `entry` is the state before any of the
    * region's writes can run. */
-  function havoc(
+  function havoc(facts: Facts, nodes: (IrExpr | IrStmt)[], entry: Facts): void {
+    havocWith(facts, nodes, entry, noInvariants);
+  }
+  /** `havoc` with ranges that hold at every read inside the region. */
+  function havocWith(
     facts: Facts,
     nodes: (IrExpr | IrStmt)[],
     entry: Facts,
-    invariant?: ReadonlyMap<string, IntegerRange>,
+    invariant: ReadonlyMap<string, IntegerRange>,
   ): void {
     const closed = closedLocals(nodes, entry, invariant);
     invalidate(facts, nodes);
@@ -808,7 +813,7 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
                   : range,
               );
           }
-          havoc(
+          havocWith(
             loop,
             [...s.body, ...(s.cond ? [s.cond] : []), ...(s.update ? [s.update] : [])],
             loop,
