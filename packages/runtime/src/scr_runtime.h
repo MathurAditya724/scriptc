@@ -5180,6 +5180,10 @@ typedef struct {
 } ScrDynEntryPairs;
 ScrDynEntryPairs *scr_dyn_obj_entry_pairs(const ScrDyn *v);
 void scr_dyn_entry_pairs_free(ScrDynEntryPairs *pairs);
+/* Object.values as a native array of owned checked values in own-key order
+ * (+1), for results compiled code only iterates, indexes or reads. NULL with
+ * an exception pending. */
+ScrArr *scr_dyn_obj_value_list(const ScrDyn *v);
 /* Snapshot all own string keys of a SCR_DYN_OBJ in JS order. Returns +1. */
 ScrDyn *scr_dyn_obj_own_keys(const ScrDyn *v);
 ScrDyn *scr_dyn_own_keys(const ScrDyn *value);
