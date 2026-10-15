@@ -156,6 +156,55 @@ test("temporal-dead-zone, class-captured and self-capturing bindings keep their 
   expect(self.get("reader")!.body).toEqual([ret(ref("f.0", FN))]);
 });
 
+test("a temporal-dead-zone binding qualifies when nothing can run its environments early", () => {
+  const reader = lifted("reader", [ret(ref("n.0"))], [boxed("n.0", F64, { tdz: true })]);
+  const call: IrExpr = { kind: "callValue", callee: ref("f.0", FN), args: [], type: F64, loc };
+  const initialize: IrStmt = {
+    kind: "assign",
+    localId: "n.0",
+    value: num(7),
+    initializes: true,
+    loc,
+  };
+  const origin = (body: IrStmt[]): IrFunction =>
+    outer(body, [
+      boxed("n.0", F64, { tdz: true }),
+      { id: "f.0", name: "f", type: FN, mutable: false },
+    ]);
+  const ordered = run(
+    origin([
+      decl("n.0", null),
+      decl("f.0", closure("reader", ["n.0"])),
+      initialize,
+      ret({ kind: "bin", op: "+", left: call, right: ref("n.0"), type: F64, loc }),
+    ]),
+    reader,
+  );
+  expect(ordered.get("outer")!.body.slice(2)).toEqual([
+    decl("n.1", num(7)),
+    { ...initialize, value: ref("n.1") },
+    ret({ kind: "bin", op: "+", left: call, right: ref("n.1"), type: F64, loc }),
+  ]);
+  expect(ordered.get("reader")!.body).toEqual([decl("n.1", num(7)), ret(ref("n.1"))]);
+
+  // The holder runs before the initialization: every read stays checked.
+  const early = run(
+    origin([decl("n.0", null), decl("f.0", closure("reader", ["n.0"])), use(call), initialize]),
+    reader,
+  );
+  expect(early.get("reader")!.body).toEqual([ret(ref("n.0"))]);
+  // So does a call inside the initializer itself.
+  const inside = run(
+    origin([
+      decl("n.0", null),
+      decl("f.0", closure("reader", ["n.0"])),
+      { ...initialize, value: call },
+    ]),
+    reader,
+  );
+  expect(inside.get("reader")!.body).toEqual([ret(ref("n.0"))]);
+});
+
 test("declarations in switch cases and loop heads are not split", () => {
   const sw: IrStmt = {
     kind: "switch",

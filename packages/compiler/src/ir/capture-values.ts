@@ -51,10 +51,12 @@ import {
  * before any environment can observe it and nothing rebinds it in any
  * function that shares the box:
  *
- * - temporal-dead-zone bindings never qualify (an environment created
- *   before the declaration can observe the empty box),
  * - the declaration is the binding's only `varDecl` and has an
- *   initializer that does not itself create an environment over it,
+ *   initializer that does not itself create an environment over it; a
+ *   temporal-dead-zone binding (an environment exists before its
+ *   initializing `assign`) qualifies only when no code can run any such
+ *   environment, or read the binding, before that assignment (orderedTdz),
+ *   and otherwise keeps every checked read,
  * - no `assign`, `assignExpr`, `incDec`, `forOf`, catch or rethrow binding
  *   targets it, here or in any closure body reached through capture edges,
  * - local classes keep their boxes (method bodies are not followed).
@@ -142,6 +144,9 @@ interface FunctionFacts {
   hoisted: Map<string, IrStmt>;
   /** Bindings called through `callValue` without a receiver. */
   callees: Set<string>;
+  /** Temporal-dead-zone bindings: the statement list holding both the
+   * empty `varDecl` and the initializing `assign`, with their indexes. */
+  tdzInits: Map<string, { body: readonly IrStmt[]; declared: number; initialized: number }>;
   classCaptured: Set<string>;
   reads: Map<string, number>;
   /** Closure capture edges: the creator's binding `source` flows into
@@ -230,6 +235,80 @@ export class CaptureFlow {
     return result;
   }
 
+  private readonly statementIds = new Map<
+    IrStmt,
+    { reads: Map<string, number>; captures: Set<string> }
+  >();
+
+  /** The bindings a statement reads (with counts) and captures, at any depth. */
+  private idsIn(s: IrStmt): { reads: Map<string, number>; captures: Set<string> } {
+    const known = this.statementIds.get(s);
+    if (known !== undefined) return known;
+    const result = { reads: new Map<string, number>(), captures: new Set<string>() };
+    const expr = (e: IrExpr): boolean => {
+      if (e.kind === "varRef") result.reads.set(e.localId, (result.reads.get(e.localId) ?? 0) + 1);
+      else if (e.kind === "closure" || e.kind === "classRef")
+        for (const id of e.captures ?? []) result.captures.add(id);
+      return everyExprChild(e, expr, stmt);
+    };
+    const stmt = (node: IrStmt): boolean => everyStmtChild(node, expr, stmt);
+    stmt(s);
+    this.statementIds.set(s, result);
+    return result;
+  }
+
+  /** Reads of `id` in the statements of `body` after index `after`. */
+  private readsAfter(body: readonly IrStmt[], after: number, id: string): number {
+    let count = 0;
+    for (let k = after + 1; k < body.length; k++) count += this.idsIn(body[k]!).reads.get(id) ?? 0;
+    return count;
+  }
+
+  /** A temporal-dead-zone binding no read can reach before its
+   * initialization: every environment created before the initializing
+   * assignment is the direct value of an unshared local of this function
+   * whose every read follows that assignment, and so is every read of the
+   * binding itself. Its box is then filled before any code can observe it. */
+  private orderedTdz(fn: IrFunction, id: string): boolean {
+    const facts = this.factsOf(fn);
+    const init = facts.tdzInits.get(id);
+    if (init === undefined || (facts.writes.get(id) ?? 0) !== 1) return false;
+    const { body, declared, initialized } = init;
+    if ((facts.reads.get(id) ?? 0) !== this.readsAfter(body, initialized, id)) return false;
+    for (let k = declared + 1; k < body.length; k++) {
+      const s = body[k]!;
+      if (!this.idsIn(s).captures.has(id)) continue;
+      if (k > initialized) continue;
+      if (k === initialized) return false;
+      let holder: string;
+      let value: IrExpr | null;
+      if (s.kind === "assign") {
+        holder = s.localId;
+        value = s.value;
+      } else if (s.kind === "varDecl") {
+        holder = s.localId;
+        value = s.init;
+      } else return false;
+      if (value?.kind !== "closure") return false;
+      const local = facts.locals.get(holder);
+      if (local === undefined || local.boxed === true || local.tdz === true) return false;
+      const declaration = facts.declarations.get(holder);
+      const writes = facts.writes.get(holder) ?? 0;
+      if (declaration?.count !== 1 || writes !== (s.kind === "assign" ? 1 : 0)) return false;
+      if ((facts.reads.get(holder) ?? 0) !== this.readsAfter(body, initialized, holder))
+        return false;
+    }
+    // Every environment over the binding is created in this list.
+    let nodes = 0;
+    const count = (e: IrExpr): boolean => {
+      if (e.kind === "closure" && e.captures.includes(id)) nodes++;
+      return true;
+    };
+    everyStmtList(body.slice(declared + 1), { stmt: () => true, expr: count });
+    const edges = facts.edges.filter((edge) => edge.source === id).length;
+    return nodes === edges && !facts.classCaptured.has(id);
+  }
+
   /** An unboxed binding (no environment shares it) of `fn` itself that
    * holds its single definition from its first read on. */
   private plainConstant(fn: IrFunction, id: string): boolean {
@@ -274,6 +353,7 @@ export class CaptureFlow {
       writes: new Map(),
       hoisted: new Map(),
       callees: new Set(),
+      tdzInits: new Map(),
       classCaptured: new Set(),
       reads: new Map(),
       edges: [],
@@ -360,8 +440,20 @@ export class CaptureFlow {
     // scope across dispatch targets, `for` heads are freshened per
     // iteration, and statement lists inside expressions release their
     // locals with the enclosing frame; declarations there stay as they are.
+    const findTdzInits = (body: readonly IrStmt[]): void => {
+      body.forEach((s, j) => {
+        if (s.kind !== "assign" || s.initializes !== true) return;
+        const declared = body.findIndex(
+          (d, i) => i < j && d.kind === "varDecl" && d.localId === s.localId && d.init === null,
+        );
+        if (declared >= 0) facts.tdzInits.set(s.localId, { body, declared, initialized: j });
+      });
+    };
     const list = (body: readonly IrStmt[], split: boolean): boolean => {
-      if (split) findHoisted(body);
+      if (split) {
+        findHoisted(body);
+        findTdzInits(body);
+      }
       return body.every((s) => stmt(s, split));
     };
     const stmt = (s: IrStmt, split: boolean): boolean => {
@@ -438,7 +530,12 @@ export class CaptureFlow {
    * once, before any environment observes it, and never written again. */
   stableOrigin(fn: IrFunction, id: string): boolean {
     const local = this.local(fn, id);
-    if (local?.boxed !== true || local.tdz === true) return false;
+    if (local?.boxed !== true) return false;
+    if (local.tdz === true) {
+      if (fn.captures?.some((c) => c.localId === id)) return false;
+      if (this.factsOf(fn).declarations.get(id)?.count !== 1) return false;
+      return this.orderedTdz(fn, id) && this.unchanged(fn.name, id, 1);
+    }
     if (fn.captures?.some((c) => c.localId === id)) return false;
     if (fn.classCaptures?.some((c) => c.localId === id)) return false;
     const facts = this.factsOf(fn);
@@ -465,7 +562,6 @@ export class CaptureFlow {
     const fn = this.functions.get(fnName);
     const index = fn?.captures?.findIndex((c) => c.localId === id) ?? -1;
     if (fn === undefined || index < 0) return false;
-    if (this.local(fn, id)?.tdz === true) return false;
     const sites = this.sites.get(fnName);
     if (sites === undefined || sites.length === 0) return false;
     for (const site of sites) {
@@ -483,7 +579,12 @@ export class CaptureFlow {
     const fn = this.functions.get(fnName);
     if (fn === undefined || depth > 64) return null;
     const own = this.factsOf(fn).declarations.get(id);
-    if (own !== undefined) return this.stableOrigin(fn, id) ? own.literal : null;
+    if (own !== undefined) {
+      if (!this.stableOrigin(fn, id)) return null;
+      const init = this.factsOf(fn).tdzInits.get(id);
+      const assign = init?.body[init.initialized];
+      return assign?.kind === "assign" ? plainLiteral(constantNumber(assign.value)) : own.literal;
+    }
     const index = fn.captures?.findIndex((c) => c.localId === id) ?? -1;
     if (index < 0 || !this.stableCapture(fnName, id)) return null;
     let value: number | null = null;
@@ -519,7 +620,7 @@ export class CaptureFlow {
     // treat them as the constants they are.
     const immutable = new Set<string>();
     for (const local of fn.locals) {
-      if (local.boxed !== true || local.tdz === true) continue;
+      if (local.boxed !== true) continue;
       const capture = fn.captures?.some((c) => c.localId === local.id) === true;
       const param = fn.params.some((p) => p.localId === local.id);
       if (capture && local.mutable && this.stableCapture(fn.name, local.id))
@@ -551,9 +652,13 @@ export class CaptureFlow {
       } else {
         if (!this.stableOrigin(fn, local.id)) continue;
         const declaration = facts.declarations.get(local.id)!;
-        // A hoisted function binding splits at its assignment, which
-        // findHoisted only records in expandable statement lists.
-        if (declaration.initialized ? !declaration.splittable : !facts.hoisted.has(local.id))
+        // Hoisted function and temporal-dead-zone bindings split at their
+        // assignment, which is only recorded in expandable statement lists.
+        if (
+          declaration.initialized
+            ? !declaration.splittable
+            : !facts.hoisted.has(local.id) && !facts.tdzInits.has(local.id)
+        )
           continue;
         const copy = fresh(local);
         splits.set(local.id, copy.id);
@@ -596,7 +701,10 @@ export class CaptureFlow {
         }
         case "assign": {
           const to = splits.get(s.localId);
-          if (to === undefined || facts.hoisted.get(s.localId) !== s) break;
+          const init = facts.tdzInits.get(s.localId);
+          const splitHere =
+            facts.hoisted.get(s.localId) === s || init?.body[init.initialized] === s;
+          if (to === undefined || !splitHere) break;
           const local = localsById.get(s.localId)!;
           return [
             { kind: "varDecl", localId: to, init: expr(s.value), loc: s.loc },
