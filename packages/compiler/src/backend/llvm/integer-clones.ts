@@ -1,3 +1,4 @@
+import { type IntegerRanges, withinInt32 } from "../../ir/integer-ranges.js";
 import type { IrExpr, IrFunction, IrLocal, IrModule, IrStmt, IrType } from "../../ir/ir.js";
 import { mangleFunction } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
@@ -390,6 +391,9 @@ export interface IntegerCloneHost {
   /** The range every caller passes to a number parameter (int32-slots
    * facts, proven over every call site, recursive ones included), if any. */
   integerParamRange(fnName: string, localId: string): { min: number; max: number } | null;
+  /** The static integer ranges of the function being cloned
+   * (ir/integer-ranges.ts, under the same parameter facts). */
+  readonly integerRanges: IntegerRanges;
   declare(decl: string): void;
   /** Lines setting the i1 `dest` to "an exception is pending". */
   pendingTestLines(dest: string): string[];
@@ -1186,7 +1190,18 @@ class CloneEmitter {
       case "bin": {
         const left = this.emitNum(e.left);
         const right = this.emitNum(e.right);
-        if (e.op === "+" || e.op === "-") return this.add(e.op, left, right);
+        if (e.op === "+" || e.op === "-") {
+          // A sum the static analysis proves int32 cannot overflow; clone
+          // values are never -0, so neither is their sum.
+          if (withinInt32(this.host.integerRanges.get(e))) {
+            const value = B.tmp();
+            B.line(
+              `${value} = ${e.op === "+" ? "add" : "sub"} nsw i32 ${this.narrow(left)}, ${this.narrow(right)}`,
+            );
+            return { name: value, wide: false };
+          }
+          return this.add(e.op, left, right);
+        }
         const l = this.narrow(left);
         const r = this.narrow(right);
         const value = B.tmp();

@@ -248,6 +248,40 @@ test("the clone loops over its accumulating self call and outside callers dispat
   expect(llvm).not.toContain("@sc_f_helper.spec");
 });
 
+test("sums the static integer ranges prove skip the overflow check", () => {
+  // count(n) = n < 1 ? 0 : 1 + count(n - 1), only ever called with 10:
+  // n is within [0, 10], so n - 1 cannot overflow; the accumulated sum is
+  // still checked.
+  const mod: IrModule = {
+    irVersion: 16,
+    sourceFile: loc.file,
+    entry: "main",
+    functions: [
+      fn("main", [], [stmt(call("count", [num(10)]))], VOID),
+      fn(
+        "count",
+        ["n"],
+        [
+          ret(
+            ternary(
+              bin("<", ref("n"), num(1)),
+              num(0),
+              bin("+", num(1), call("count", [bin("-", ref("n"), num(1))])),
+            ),
+          ),
+        ],
+      ),
+    ],
+  };
+  expect(validateModule(mod)).toEqual([]);
+  const clone = define(emitLlvmModule(mod), "sc_f_count.int");
+  expect(clone).toMatch(/= sub nsw i32 %t\d+, 1/);
+  expect(clone).not.toContain("@llvm.ssub.with.overflow");
+  expect(clone).toContain("@llvm.sadd.with.overflow.i32");
+  // The accumulating loop is real recursion in the ordinary body.
+  expect(clone).toContain("virtual stack pointer");
+});
+
 test("debug and library builds emit no clones", () => {
   const debug = emitLlvmModule(module(), {
     debugSources: new Map([[loc.file, "function main() {}"]]),
