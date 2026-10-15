@@ -3302,6 +3302,9 @@ static SCR_TL uint16_t scr_coll_ascii_primaries[128];
  * the single-pass primary comparison. */
 static SCR_TL bool scr_coll_ascii_one_pass;
 static SCR_TL bool scr_coll_ascii_levels;
+/* The covered ASCII bytes are exactly TAB..CR and 0x20..0x7E: the
+ * single-pass comparison then checks eight bytes at a time. */
+static SCR_TL bool scr_coll_ascii_printable;
 /* Code points below 0x180 that start a contraction, as a bit set; higher
  * ones are looked up in scr_coll_contractions. */
 #define SCR_COLL_BITS_LIMIT 0x180
@@ -3335,6 +3338,10 @@ static __attribute__((noinline)) void scr_coll_ascii_init(void) {
   for (uint32_t c = 0; c < 128; c++) scr_coll_ascii_plain[c] = scr_coll_ascii_table[c].ok && !in_contraction[c];
   scr_coll_ascii_one_pass = !zero_primary && !contraction;
   scr_coll_ascii_levels = !contraction;
+  uint64_t printable[2] = {0, 0};
+  for (uint32_t c = 0; c < 128; c++)
+    if ((c >= 0x09 && c <= 0x0d) || (c >= 0x20 && c <= 0x7e)) printable[c >> 6] |= UINT64_C(1) << (c & 63);
+  scr_coll_ascii_printable = scr_coll_ascii_mask[0] == printable[0] && scr_coll_ascii_mask[1] == printable[1];
   for (uint32_t c = 0; c < SCR_COLL_SCAN_LIMIT; c++) {
     const ScrCollEntry *entry = scr_coll_lookup(c);
     uint8_t klass = entry == NULL || entry->n == 255 ? 2 : 0;
@@ -3537,7 +3544,7 @@ static bool scr_coll_ascii_tail(const unsigned char *p, size_t from, size_t len)
  * over the rest of both strings, because an uncovered byte anywhere moves
  * the whole comparison to code-point order. Returns -1 or 1, 0 when the
  * primaries are all equal, or 2 when a byte is not covered. */
-static int scr_coll_ascii_primary(const ScrStr *a, const ScrStr *b) {
+static int scr_coll_ascii_primary_bytes(const ScrStr *a, const ScrStr *b) {
   const unsigned char *x = (const unsigned char *)a->data, *y = (const unsigned char *)b->data;
   size_t n = a->len, m = b->len, k = n < m ? n : m, i = 0;
   int r = 0;
@@ -3554,6 +3561,104 @@ static int scr_coll_ascii_primary(const ScrStr *a, const ScrStr *b) {
     }
   }
   if (!scr_coll_ascii_tail(x, i, n) || !scr_coll_ascii_tail(y, i, m)) return 2;
+  if (r == 0 && n != m) r = n < m ? -1 : 1;
+  return r;
+}
+
+#define SCR_COLL_ONES UINT64_C(0x0101010101010101)
+#define SCR_COLL_HIGHS (SCR_COLL_ONES * 0x80)
+
+/* The 0 < n < 8 bytes at offset i of s's data in one word, the other lanes
+ * zero. On little-endian targets: the eight bytes ending at the last of
+ * them, shifted down; they start in the string's header when i + n < 8, so
+ * the load stays inside the object. Elsewhere: fixed-size loads (a
+ * variable-size memcpy is a library call). */
+_Static_assert(offsetof(ScrStr, data) >= 8, "a short load may start in the header");
+static inline uint64_t scr_coll_partial(const ScrStr *s, size_t i, size_t n) {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+  uint64_t v;
+  memcpy(&v, (const unsigned char *)s + offsetof(ScrStr, data) + i + n - 8, 8);
+  return v >> (8 * (8 - n));
+#else
+  const unsigned char *p = (const unsigned char *)s->data + i;
+  uint64_t w = 0;
+  size_t o = 0;
+  if (n & 4) {
+    uint32_t v;
+    memcpy(&v, p, 4);
+    w = v;
+    o = 4;
+  }
+  if (n & 2) {
+    uint16_t v;
+    memcpy(&v, p + o, 2);
+    w |= (uint64_t)v << (8 * o);
+    o += 2;
+  }
+  if (n & 1) w |= (uint64_t)p[o] << (8 * o);
+  return w;
+#endif
+}
+
+/* Up to eight bytes at offset i of s's data (n > 0 of them) as a word,
+ * padded with spaces (a covered byte). */
+static inline uint64_t scr_coll_word(const ScrStr *s, size_t i, size_t n) {
+  uint64_t w;
+  if (n >= 8) {
+    memcpy(&w, s->data + i, 8);
+    return w;
+  }
+  return scr_coll_partial(s, i, n) | (SCR_COLL_ONES * 0x20) << (8 * n);
+}
+
+/* Whether a byte of w is outside 0x20..0x7E: below 0x20, DEL, or non-ASCII. */
+static inline bool scr_coll_word_unusual(uint64_t w) {
+  return (((w - SCR_COLL_ONES * 0x20) & ~w) | (w + SCR_COLL_ONES) | w) & SCR_COLL_HIGHS;
+}
+
+/* 0 when s's bytes from offset `from` on are all 0x20..0x7E, 2 when one of
+ * them is non-ASCII, 1 otherwise. */
+static inline int scr_coll_printable_tail(const ScrStr *s, size_t from) {
+  for (size_t i = from; i < s->len; i += 8) {
+    uint64_t w = scr_coll_word(s, i, s->len - i);
+    if (w & SCR_COLL_HIGHS) return 2;
+    if (scr_coll_word_unusual(w)) return 1;
+  }
+  return 0;
+}
+
+/* scr_coll_ascii_primary_bytes eight bytes at a time when the covered ASCII
+ * bytes are TAB..CR and 0x20..0x7E (scr_coll_ascii_printable): words of
+ * printable bytes need no per-byte check, and equal words have equal
+ * primaries. A non-ASCII byte anywhere answers 2 at once; a word with any
+ * other byte outside 0x20..0x7E (a tab, say) sends the comparison to the
+ * per-byte pass. */
+static int scr_coll_ascii_primary(const ScrStr *a, const ScrStr *b) {
+  if (!scr_coll_ascii_printable) return scr_coll_ascii_primary_bytes(a, b);
+  const unsigned char *x = (const unsigned char *)a->data, *y = (const unsigned char *)b->data;
+  size_t n = a->len, m = b->len, k = n < m ? n : m, i = 0;
+  int r = 0;
+  for (; i < k; i += 8) {
+    uint64_t wx = scr_coll_word(a, i, k - i), wy = scr_coll_word(b, i, k - i);
+    if ((wx | wy) & SCR_COLL_HIGHS) return 2; /* a non-ASCII byte */
+    if (scr_coll_word_unusual(wx) || scr_coll_word_unusual(wy)) return scr_coll_ascii_primary_bytes(a, b);
+    if (wx == wy) continue;
+    size_t end = k - i < 8 ? k : i + 8;
+    for (size_t j = i; j < end; j++) {
+      unsigned pc = scr_coll_ascii_primaries[x[j]], pd = scr_coll_ascii_primaries[y[j]];
+      if (pc != pd) {
+        r = pc < pd ? -1 : 1;
+        break;
+      }
+    }
+    if (r != 0) {
+      i = end;
+      break;
+    }
+  }
+  if (i > k) i = k;
+  int tail = scr_coll_printable_tail(a, i) | scr_coll_printable_tail(b, i);
+  if (tail != 0) return tail & 2 ? 2 : scr_coll_ascii_primary_bytes(a, b);
   if (r == 0 && n != m) r = n < m ? -1 : 1;
   return r;
 }
@@ -3585,22 +3690,28 @@ static int scr_coll_ascii_level(const ScrCollAscii *table, const ScrStr *a, cons
   }
 }
 
-double scr_str_locale_compare(ScrStr *a, ScrStr *b) {
-  /* Equal bytes have equal elements at every level. */
-  if (a == b || (a->len == b->len && memcmp(a->data, b->data, a->len) == 0)) return 0;
-  const ScrCollAscii *table = scr_coll_ascii();
-  if (scr_coll_ascii_one_pass) {
-    int r = scr_coll_ascii_primary(a, b);
-    if (r != 2) {
-      for (int level = 1; level < 3 && r == 0; level++) r = scr_coll_ascii_level(table, a, b, level);
-      return (double)r;
-    }
-  } else if (scr_coll_ascii_levels && scr_coll_ascii_covered(table, a) &&
-             scr_coll_ascii_covered(table, b)) {
-    int r = 0;
-    for (int level = 0; level < 3 && r == 0; level++) r = scr_coll_ascii_level(table, a, b, level);
-    return (double)r;
-  }
+/* Whether two strings have the same bytes; strings of up to 16 bytes
+ * compare as two words. */
+static inline bool scr_coll_same_bytes(const ScrStr *a, const ScrStr *b) {
+  size_t n = a->len;
+  if (n != b->len) return false;
+  const unsigned char *x = (const unsigned char *)a->data, *y = (const unsigned char *)b->data;
+  if (n > 16) return memcmp(x, y, n) == 0;
+  if (n < 8) return n == 0 || scr_coll_partial(a, 0, n) == scr_coll_partial(b, 0, n);
+  uint64_t x0, y0, x1, y1;
+  memcpy(&x0, x, 8);
+  memcpy(&y0, y, 8);
+  memcpy(&x1, x + n - 8, 8);
+  memcpy(&y1, y + n - 8, 8);
+  return x0 == y0 && x1 == y1;
+}
+
+/* Strings outside the ASCII paths: a scan finds uncovered characters
+ * (code-point order) and characters that need element lists. Out of line,
+ * so the ASCII paths do not set up the element buffers' stack frame. */
+static __attribute__((noinline)) double scr_coll_compare_lists(const ScrCollAscii *table, ScrStr *a,
+                                                               ScrStr *b) {
+  if (scr_coll_same_bytes(a, b)) return 0;
   int scan_a = scr_coll_scan(a);
   if (scan_a == 2) return scr_str_cmp(a, b) < 0 ? -1 : 1; /* bytes differ (checked above) */
   int scan_b = scr_coll_scan(b);
@@ -3627,4 +3738,27 @@ double scr_str_locale_compare(ScrStr *a, ScrStr *b) {
   if (ea.e != ea.inline_buf) free(ea.e);
   if (eb.e != eb.inline_buf) free(eb.e);
   return (double)r;
+}
+
+/* Equal bytes have equal elements at every level, so each path checks for
+ * them before comparing secondary weights; the single-pass ASCII path does
+ * so only after the primaries tie. */
+double scr_str_locale_compare(ScrStr *a, ScrStr *b) {
+  if (a == b) return 0;
+  const ScrCollAscii *table = scr_coll_ascii();
+  if (scr_coll_ascii_one_pass) {
+    int r = scr_coll_ascii_primary(a, b);
+    if (r != 2) {
+      if (r == 0 && scr_coll_same_bytes(a, b)) return 0;
+      for (int level = 1; level < 3 && r == 0; level++) r = scr_coll_ascii_level(table, a, b, level);
+      return (double)r;
+    }
+  } else if (scr_coll_ascii_levels && scr_coll_ascii_covered(table, a) &&
+             scr_coll_ascii_covered(table, b)) {
+    if (scr_coll_same_bytes(a, b)) return 0;
+    int r = 0;
+    for (int level = 0; level < 3 && r == 0; level++) r = scr_coll_ascii_level(table, a, b, level);
+    return (double)r;
+  }
+  return scr_coll_compare_lists(table, a, b);
 }
