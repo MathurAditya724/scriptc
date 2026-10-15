@@ -30,6 +30,7 @@ import {
   F64,
   ffiClassType,
   ffiSourceParamTypes,
+  isDirentShape,
   isDynTypedRefType,
   isFfiCallbackParam,
   isFfiContextParam,
@@ -4696,17 +4697,7 @@ function validateFunction(
         result?.kind === "array" && result.elem.kind === "record"
           ? records.get(result.elem.shapeId)
           : undefined;
-      const ok =
-        shape !== undefined &&
-        !shape.tuple &&
-        shape.indexValue === undefined &&
-        shape.fields.length === 3 &&
-        shape.fields[0]!.name === "%dtype" &&
-        shape.fields[0]!.type.kind === "f64" &&
-        shape.fields[1]!.name === "name" &&
-        shape.fields[1]!.type.kind === "string" &&
-        shape.fields[2]!.name === "parentPath" &&
-        shape.fields[2]!.type.kind === "string";
+      const ok = shape !== undefined && isDirentShape(shape);
       if (!ok) {
         err(
           `libCall ${e.fn} must return ${e.fn === "fsp.readdirTypes" ? "a promise of " : ""}the Dirent record array`,

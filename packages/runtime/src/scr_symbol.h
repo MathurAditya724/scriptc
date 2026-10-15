@@ -28,4 +28,11 @@ ScrStr *scr_sym_desc(ScrSym *s);      /* +1 description, or NULL when absent */
 ScrStr *scr_sym_key_for(ScrSym *s);   /* +1 registry key, or NULL (not registered) */
 ScrStr *scr_sym_to_string(ScrSym *s); /* +1 "Symbol(desc)" ("Symbol()" when absent) */
 
+/* A Dirent row's dyn object (the record converter has set name,
+ * parentPath and %dtype): sets the Dirent prototype with the type probes,
+ * adds the Symbol(type) key and makes %dtype non-enumerable. The compiler
+ * links this unit whenever the program has the Dirent record shape. */
+typedef struct ScrDyn ScrDyn; /* full definition in scr_dyn.h (C11 repeat) */
+void scr_dyn_dirent_finish(ScrDyn *obj);
+
 #endif /* SCR_SYMBOL_H */
