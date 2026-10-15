@@ -443,11 +443,8 @@ export function emitOperatorExpr(
       // `x = e` in expression position: the binding takes its OWN
       // reference (retain for ref kinds), the temp stays the yielded
       // value — release the old value before storing the retained value.
-      const concat = e.value;
-      const suffix = matchStringSelfConcat(e.localId, concat);
-      if (suffix && concat.kind === "strConcat") {
-        return host.emitStringSelfConcatAssign(e.localId, concat.left, suffix, true);
-      }
+      const self = matchStringSelfConcat(e.localId, e.value);
+      if (self) return host.emitStringSelfConcatAssign(e.localId, self.left, self.suffix, true);
       const b = host.binding(e.localId);
       const v = host.emitExpr(e.value);
       if (host.storeInt32Local(e.localId, v, e.value)) return v;
