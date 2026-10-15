@@ -3708,8 +3708,11 @@ declare module "http" {
     /* Node's writable head properties: the implicit head reads them. */
     statusCode: number;
     statusMessage: string | undefined;
-    setHeader(name: string, value: string | number): void;
-    getHeader(name: string): string | undefined;
+    /* The value keeps its type: getHeader answers the number, string or
+     * array that was set. */
+    setHeader(name: string, value: number | string | readonly string[]): void;
+    appendHeader(name: string, value: string | readonly string[]): void;
+    getHeader(name: string): number | string | string[] | undefined;
     getHeaderNames(): string[];
     getRawHeaderNames(): string[];
     getHeaders(): OutgoingHttpHeaders;

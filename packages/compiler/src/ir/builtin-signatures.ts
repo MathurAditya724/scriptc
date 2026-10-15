@@ -1442,6 +1442,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // resGetHeader answers the interned `string | undefined` union — the
   // reqHeader/envGet sentinel pattern (VOID here, checked specially).
   "http.resGetHeader": { argTypes: [HTTPRES_T, STRING], result: VOID },
+  /** getHeader as Node answers it: the number, string or string[] that was
+   * set, or undefined, as a checked-dynamic value. */
+  "http.resGetHeaderDyn": { argTypes: [HTTPRES_T, STRING], result: DYN },
   "http.resGetHeaderNames": { argTypes: [HTTPRES_T], result: arrayOf(STRING) },
   "http.resGetRawHeaderNames": { argTypes: [HTTPRES_T], result: arrayOf(STRING) },
   "http.resGetHeaders": { argTypes: [HTTPRES_T], result: DYN },
@@ -1467,6 +1470,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     result: VOID,
   },
   "http.resSetHeader": { argTypes: [HTTPRES_T, STRING, STRING], result: VOID },
+  /** setHeader / appendHeader with a number, string or array value; the
+   * stored value keeps its type for getHeader/getHeaders. MAY THROW. */
+  "http.resSetHeaderDyn": { argTypes: [HTTPRES_T, STRING, DYN], result: VOID },
+  "http.resAppendHeader": { argTypes: [HTTPRES_T, STRING, DYN], result: VOID },
   "http.resWriteHead": { argTypes: [HTTPRES_T, F64], result: VOID },
   "http.resWriteHeadN": {
     argTypes: [HTTPRES_T, F64, arrayOf(STRING), arrayOf(STRING)],
@@ -1525,6 +1532,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * ...] pairs in arrival order — the interned %headers.snapshot helper
    * builds the record over it, exactly the process.envPairs pattern. */
   "http.reqHeaderPairs": { argTypes: [HTTPREQ_T], result: arrayOf(STRING) },
+  /** Every value of one header in arrival order (empty when absent): the
+   * set-cookie array of a `{ ...req.headers }` snapshot. */
+  "http.reqHeaderList": { argTypes: [HTTPREQ_T, STRING], result: arrayOf(STRING) },
   "http.reqRawTrailers": { argTypes: [HTTPREQ_T], result: arrayOf(STRING) },
   "http.reqTrailerPairs": { argTypes: [HTTPREQ_T], result: arrayOf(STRING) },
   "net.sockDestroyed": { argTypes: [NETSOCKET_T], result: BOOL },

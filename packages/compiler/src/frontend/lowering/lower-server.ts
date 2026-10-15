@@ -42,6 +42,7 @@ import {
 } from "../../ir/ir.js";
 import {
   AGENT_DOCUMENTED_OPTIONS,
+  HTTPS_AGENT_DOCUMENTED_OPTIONS,
   builtinFenceHintOf,
   builtinModuleFnOf,
   fenceOrDropOptionKey,
@@ -1945,15 +1946,55 @@ function lowerNetServerMethodCall(
       );
     }
     const result = lowerer.mapTypeOf(lowerer.typeOf(call));
-    if (!result || !isAddressInfoRecord(lowerer, result)) {
+    if (result && isAddressInfoRecord(lowerer, result)) {
+      const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+      return { kind: "libCall", fn: "net.serverAddress", args: [receiver], type: result, loc };
+    }
+    // @types/node's `string | AddressInfo | null`: the record while the
+    // server listens (a TCP server never answers the pipe-path string),
+    // null otherwise, like Node.
+    const arms = result?.kind === "union" ? (lowerer.unions.get(result.unionId)?.arms ?? []) : [];
+    const record = arms.find((arm) => isAddressInfoRecord(lowerer, arm));
+    const nullTag = result?.kind === "union" ? lowerer.armTag(result.unionId, NULL_T) : -1;
+    if (!result || result.kind !== "union" || record === undefined || nullTag < 0) {
       lowerer.noLowering(
         "address() where the result is not the {address, family, port} record",
         call,
         "the AddressInfo shape is the supported result",
       );
     }
+    const unionId = result.unionId;
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
-    return { kind: "libCall", fn: "net.serverAddress", args: [receiver], type: result, loc };
+    const local = lowerer.declareHiddenLocal("%addressServer", NETSERVER_T);
+    const server = varRef(local.id, NETSERVER_T, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: receiver, loc }],
+      result: {
+        kind: "ternary",
+        cond: { kind: "libCall", fn: "net.serverListening", args: [server], type: BOOL, loc },
+        then: {
+          kind: "unionWrap",
+          unionId,
+          tag: lowerer.armTag(unionId, record),
+          value: { kind: "libCall", fn: "net.serverAddress", args: [server], type: record, loc },
+          type: result,
+          loc,
+        },
+        else_: {
+          kind: "unionWrap",
+          unionId,
+          tag: nullTag,
+          value: { kind: "unitLit", unit: "null", type: NULL_T, loc },
+          type: result,
+          loc,
+        },
+        type: result,
+        loc,
+      },
+      type: result,
+      loc,
+    };
   }
   lowerer.noLowering(
     `Server.${name}`,
@@ -2373,6 +2414,7 @@ function headersSnapshotHelper(lowerer: Lowerer, shapeId: string, loc: SrcLoc): 
     libCall: "http.reqHeaderPairs",
     params: [{ localId: "r.0", name: "r", type: HTTPREQ_T }],
     callArgs: [varRef("r.0", HTTPREQ_T, loc)],
+    listKey: { name: "set-cookie", libCall: "http.reqHeaderList" },
   });
 }
 
@@ -3270,17 +3312,19 @@ export function lowerServerProperty(
       HTTPREQ_T,
     );
     const key: IrExpr = { kind: "strLit", value: expr.name.text, type: STRING, loc };
+    const list = isSetCookieRead(lowerer, expr, collection, key);
     const fn: IrLibFn =
-      collection === "headers"
+      collection === "headers" && !list
         ? "http.reqHeader"
         : collection === "trailers"
           ? "http.reqTrailer"
-          : collection === "headersDistinct"
+          : collection === "headersDistinct" || list
             ? "http.reqHeaderValues"
             : "http.reqTrailerValues";
-    const type = collection.endsWith("Distinct")
-      ? lowerer.withUndefinedArm(arrayOf(STRING))
-      : lowerer.envValueType();
+    const type =
+      collection.endsWith("Distinct") || list
+        ? lowerer.withUndefinedArm(arrayOf(STRING))
+        : lowerer.envValueType();
     return { kind: "libCall", fn, args: [receiver, key], type, loc };
   }
   if (recvKind === "httpRes" && lowerer.isStdlibMember(expr) && expr.name.text === "headersSent") {
@@ -3842,8 +3886,10 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
             prop,
             key,
             api,
-            AGENT_DOCUMENTED_OPTIONS,
-            "keepAlive, keepAliveMsecs, maxSockets, maxFreeSockets, timeout, port, and scheduling are the supported options",
+            bi.module === "https" ? HTTPS_AGENT_DOCUMENTED_OPTIONS : AGENT_DOCUMENTED_OPTIONS,
+            bi.module === "https"
+              ? "keepAlive, keepAliveMsecs, maxSockets, maxFreeSockets, timeout, port, and scheduling are the supported options; pass TLS options such as ca and rejectUnauthorized on each https.request"
+              : "keepAlive, keepAliveMsecs, maxSockets, maxFreeSockets, timeout, port, and scheduling are the supported options",
           );
       }
     }
@@ -6254,22 +6300,46 @@ export function lowerHttpHeadersElement(
     );
   }
   const receiver = lowerer.lowerExpr(recv);
+  const list = isSetCookieRead(lowerer, expr, collection, key);
   return {
     kind: "libCall",
     fn:
-      collection === "headers"
+      collection === "headers" && !list
         ? "http.reqHeader"
         : collection === "trailers"
           ? "http.reqTrailer"
-          : collection === "headersDistinct"
+          : collection === "headersDistinct" || list
             ? "http.reqHeaderValues"
             : "http.reqTrailerValues",
     args: [receiver, key],
-    type: collection.endsWith("Distinct")
-      ? lowerer.withUndefinedArm(arrayOf(STRING))
-      : lowerer.envValueType(),
+    type:
+      collection.endsWith("Distinct") || list
+        ? lowerer.withUndefinedArm(arrayOf(STRING))
+        : lowerer.envValueType(),
     loc: locOf(expr),
   };
+}
+
+/** `headers["set-cookie"]` reads Node's array of every Set-Cookie line,
+ * the `string[] | undefined` that @types/node's IncomingHttpHeaders
+ * declares. A read typed as a string (the bundled declarations type every
+ * header as one) is refused, because Node's value is an array. */
+function isSetCookieRead(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+  collection: string,
+  key: IrExpr,
+): boolean {
+  if (collection !== "headers" || key.kind !== "strLit" || key.value !== "set-cookie") return false;
+  const type = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const array = lowerer.withUndefinedArm(arrayOf(STRING));
+  if (type?.kind === "union" && array.kind === "union" && type.unionId === array.unionId)
+    return true;
+  lowerer.noLowering(
+    "reading set-cookie through string-typed headers",
+    expr,
+    "Node stores set-cookie as an array: read headersDistinct['set-cookie'], or install @types/node, which types headers['set-cookie'] as string[]",
+  );
 }
 
 /** Method calls on IncomingMessage receivers: on/once("data" | "end").
@@ -6664,21 +6734,42 @@ function lowerHttpResMethodCall(
       // retains the setHeader refusal below.
       value = lowerer.coerceInto(args[1]!, value, STRING);
     }
-    if (value.type.kind === "f64") {
-      // Node formats number values via String(n) — the same ToString.
-      value = { kind: "toString", operand: value, type: STRING, loc };
-    }
     if (value.type.kind !== "string") {
-      lowerer.noLowering(
-        `setHeader with a '${lowerer.fmt(value.type)}' value`,
-        args[1]!,
-        "header values are strings or numbers here",
-      );
+      // Numbers and arrays keep their type for getHeader/getHeaders, like
+      // Node's stored value; numbers serialize as String(n) and arrays as
+      // one line per element.
+      return {
+        kind: "libCall",
+        fn: "http.resSetHeaderDyn",
+        args: [receiver, header, lowerer.coerceToExpected(value, DYN)],
+        type: VOID,
+        loc,
+      };
     }
     return {
       kind: "libCall",
       fn: "http.resSetHeader",
       args: [receiver, header, value],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "appendHeader") {
+    requireStatementPosition(lowerer, call, "res.appendHeader(...)");
+    if (args.length !== 2) {
+      lowerer.noLowering(
+        `appendHeader with ${args.length} arguments`,
+        call,
+        "the supported form is appendHeader(name, value)",
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
+    const header = lowerer.lowerExprExpecting(args[0]!, STRING);
+    const value = lowerer.lowerExpr(args[1]!);
+    return {
+      kind: "libCall",
+      fn: "http.resAppendHeader",
+      args: [receiver, header, lowerer.coerceToExpected(value, DYN)],
       type: VOID,
       loc,
     };
@@ -6929,10 +7020,9 @@ function lowerHttpResMethodCall(
   }
   if (name === "getHeader" || name === "hasHeader" || name === "removeHeader") {
     // The header CRUD trio (setHeader's readers): getHeader answers the
-    // value as SET — `string | undefined` here, where Node can also
-    // answer numbers/arrays it was handed (this surface stores strings);
-    // removeHeader drops every case-insensitive match before the head
-    // goes out; hasHeader is the boolean probe.
+    // value as set (a number, string or string[]); removeHeader drops
+    // every case-insensitive match before the head goes out; hasHeader is
+    // the boolean probe.
     if (name === "removeHeader") requireStatementPosition(lowerer, call, "res.removeHeader(...)");
     if (args.length !== 1) {
       lowerer.noLowering(
@@ -6944,13 +7034,19 @@ function lowerHttpResMethodCall(
     const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
     const header = lowerer.lowerExprExpecting(args[0]!, STRING);
     if (name === "getHeader") {
-      return {
+      // The value as set: number, string or string[] (undefined when
+      // absent), checked against the declared result type.
+      const value: IrExpr = {
         kind: "libCall",
-        fn: "http.resGetHeader",
+        fn: "http.resGetHeaderDyn",
         args: [receiver, header],
-        type: lowerer.envValueType(),
+        type: DYN,
         loc,
       };
+      const declared = lowerer.mapTypeOf(lowerer.typeOf(call));
+      return declared === null || declared.kind === "dyn"
+        ? value
+        : lowerer.coerceInto(call, value, declared);
     }
     if (name === "hasHeader") {
       return {
@@ -7026,7 +7122,7 @@ function lowerHttpResMethodCall(
   lowerer.noLowering(
     `ServerResponse.${name}`,
     call,
-    "setHeader, getHeader, hasHeader, removeHeader, writeHead, writeContinue, writeProcessing, writeEarlyHints, setTimeout, write, end, destroy, response state reads, and on/once of close are the supported ServerResponse members",
+    "setHeader, appendHeader, getHeader, hasHeader, removeHeader, writeHead, writeContinue, writeProcessing, writeEarlyHints, setTimeout, write, end, destroy, response state reads, and on/once of close are the supported ServerResponse members",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }

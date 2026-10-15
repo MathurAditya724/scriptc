@@ -1541,6 +1541,25 @@ void scr_net_server_timeout_set(ScrNetServer *s, double field, double value) {
   s->http_timeouts[i] = value;
 }
 
+/* The idle period a keep-alive connection gets after a response:
+ * keepAliveTimeout + keepAliveTimeoutBuffer, or 0 (no timer) when
+ * keepAliveTimeout is 0 or holds a non-number. */
+double scr_net_server_keep_alive_ms(ScrNetServer *s) {
+  if (s->http_timeout_dyn[1] != NULL || s->http_timeouts[1] <= 0) return 0;
+  double buffer = s->http_timeout_dyn[4] == NULL ? s->http_timeouts[4] : 0;
+  return s->http_timeouts[1] + buffer;
+}
+
+/* server.keepAliveTimeout in milliseconds (0 when unset or not a number). */
+double scr_net_server_keep_alive_timeout(ScrNetServer *s) {
+  return s->http_timeout_dyn[1] == NULL && s->http_timeouts[1] > 0 ? s->http_timeouts[1] : 0;
+}
+
+/* server.timeout as a socket idle period (0 = none). */
+double scr_net_server_idle_ms(ScrNetServer *s) {
+  return s->http_timeout_dyn[0] == NULL && s->http_timeouts[0] > 0 ? s->http_timeouts[0] : 0;
+}
+
 void scr_net_server_set_timeout_plain(ScrNetServer *s, double ms) {
   scr_net_server_timeout_set(s, 0, ms);
 }
@@ -1641,6 +1660,11 @@ void scr_net_server_close_direct(ScrNetServer *s, ScrClosure *cb /*moves, nullab
     s->close_seq = ++scr_net_close_seq;
   }
   s->closing = true; /* the sweep fires 'close' once nconns drains */
+  /* Node's http server.close() first closes its idle keep-alive
+   * connections; busy ones end after their response (scr_http.c). Only
+   * HTTP connections carry an idle probe, so plain net servers keep
+   * their connections. */
+  scr_net_server_close_idle_connections(s);
 }
 
 void scr_net_server_close(ScrNetServer *s, ScrClosure *cb /*moves, nullable*/) {
