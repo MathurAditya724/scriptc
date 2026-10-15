@@ -181,6 +181,18 @@ test("pure number functions get clones; recursive ones get dispatchers", () => {
   expect(dispatchesCall(clones, "fib", "isEven")).toBe(true);
 });
 
+test("pure functions no recursive member reaches get no clone", () => {
+  const mod = module();
+  mod.functions.push(fn("double", ["n"], [ret(bin("*", ref("n"), num(2)))]));
+  mod.functions[0]!.body.push(stmt(call("double", [num(4)])));
+  expect(validateModule(mod)).toEqual([]);
+  expect(findIntegerClones(mod).members.has("double")).toBe(false);
+  // Without recursion there is nothing to clone.
+  const flat: IrModule = { ...mod, functions: [mod.functions[0]!, mod.functions.at(-1)!] };
+  flat.functions[0] = fn("main", [], [stmt(call("double", [num(4)]))], VOID);
+  expect(findIntegerClones(flat).members.size).toBe(0);
+});
+
 test("a call to a non-member disqualifies the caller", () => {
   const mod = module();
   mod.functions.push(fn("usesHalves", ["n"], [ret(bin("+", call("halves", [ref("n")]), num(1)))]));

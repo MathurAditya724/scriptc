@@ -56,7 +56,8 @@ import { SCR_ARR_FIELD } from "./common.js";
  * range, every value the ordinary body adds is the final result minus a
  * partial sum, within 2^32, so each double addition is exact. */
 export interface IntegerClones {
-  /** Functions with an integer clone. */
+  /** Functions with an integer clone: the recursive members and the
+   * members they call. */
   readonly members: ReadonlySet<string>;
   /** Members with a dispatcher: those in a recursive call cycle. */
   readonly dispatched: ReadonlySet<string>;
@@ -349,8 +350,18 @@ export function findIntegerClones(mod: IrModule, borrowed?: BorrowedParameter): 
     for (const callee of tailCallees(byName.get(name)!))
       if (callee !== name && component.get(callee) === component.get(name))
         mutual.add(component.get(name)!);
+  if (dispatched.size === 0) return NO_INTEGER_CLONES;
   const tailLinked = new Set([...dispatched].filter((name) => mutual.has(component.get(name)!)));
-  return { members: new Set(edges.keys()), dispatched, component, tailLinked };
+  // Clones are entered only through dispatchers: keep the members a
+  // recursive member reaches.
+  const members = new Set<string>();
+  const reach = (name: string): void => {
+    if (members.has(name)) return;
+    members.add(name);
+    for (const callee of edges.get(name)!) reach(callee);
+  };
+  for (const name of dispatched) reach(name);
+  return { members, dispatched, component, tailLinked };
 }
 
 /** The functions `fn` calls in tail position: as a returned value, directly
