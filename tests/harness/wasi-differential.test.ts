@@ -159,6 +159,12 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5137-events-error-monitor-computed-name.js",
     "5138-events-error-monitor-shared-listener.ts",
     "5139-event-target-listener-throw.ts",
+    // The digest set beyond SHA-1/SHA-2, its names, HMAC and the KDFs.
+    "5435-crypto-hash-algorithms.ts",
+    "5436-crypto-hash-names.js",
+    "5437-crypto-hmac-algorithms.ts",
+    "5438-crypto-kdf-digests.ts",
+    "5439-crypto-kdf-callbacks.js",
     "4031-event-emitter-long-tuples.ts",
     "2700-wasi-core.ts",
     "local-union-storage.ts",

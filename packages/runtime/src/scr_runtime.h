@@ -4301,6 +4301,8 @@ ScrBytes *scr_crypto_random_fill_rest(ScrBytes *bytes, double offset);
 double scr_crypto_random_int(double min, double max);
 ScrBytes *scr_crypto_pbkdf2(ScrBytes *password, ScrBytes *salt,
                             double iterations, double keylen, ScrStr *digest);
+ScrBytes *scr_crypto_pbkdf2_job(ScrBytes *password, ScrBytes *salt, double iterations,
+                                double keylen, ScrStr *digest, const char **failure);
 ScrBytes *scr_crypto_hkdf_bytes(ScrStr *digest, ScrBytes *ikm, ScrBytes *salt,
                                 ScrBytes *info, double keylen);
 ScrDyn *scr_crypto_hkdf(ScrStr *digest, ScrBytes *ikm, ScrBytes *salt,
@@ -4320,6 +4322,55 @@ void scr_crypto_hkdf_async(ScrStr *digest, ScrBytes *ikm, ScrBytes *salt,
                            ScrBytes *info, double keylen, ScrClosure *cb, ScrCryptoBytesFn fn);
 void scr_crypto_scrypt_async(ScrBytes *password, ScrBytes *salt, double keylen,
                              ScrDyn *options, ScrClosure *cb, ScrCryptoBytesFn fn);
+
+/* The digest primitives beyond MD5/SHA-1/SHA-2 (scr_hash.c). Each final
+ * reads a copy of its context. */
+typedef struct ScrKeccakCtx {
+  uint64_t s[25];
+  unsigned char buf[200];
+  size_t rate; /* bytes absorbed per permutation */
+  size_t len;  /* buffered bytes */
+  unsigned char pad; /* domain bits: 0x06 SHA-3, 0x01 Keccak, 0x1f SHAKE, 0x04 KECCAK-KMAC */
+} ScrKeccakCtx;
+void scr_keccak_init(ScrKeccakCtx *ctx, size_t rate, unsigned char pad);
+void scr_keccak_update(ScrKeccakCtx *ctx, const unsigned char *data, size_t len);
+void scr_keccak_final(const ScrKeccakCtx *ctx, unsigned char *out, size_t len);
+typedef struct ScrRipemd160Ctx {
+  uint32_t h[5];
+  uint64_t bytes;
+  unsigned char buf[64];
+  size_t len;
+} ScrRipemd160Ctx;
+void scr_ripemd160_init(ScrRipemd160Ctx *ctx);
+void scr_ripemd160_update(ScrRipemd160Ctx *ctx, const unsigned char *data, size_t len);
+void scr_ripemd160_final(const ScrRipemd160Ctx *ctx, unsigned char out[20]);
+typedef struct ScrBlake2bCtx {
+  uint64_t h[8];
+  uint64_t t[2];
+  unsigned char buf[128];
+  size_t len;
+} ScrBlake2bCtx;
+void scr_blake2b_init(ScrBlake2bCtx *ctx);
+void scr_blake2b_update(ScrBlake2bCtx *ctx, const unsigned char *data, size_t len);
+void scr_blake2b_final(const ScrBlake2bCtx *ctx, unsigned char out[64]);
+typedef struct ScrBlake2sCtx {
+  uint32_t h[8];
+  uint32_t t[2];
+  unsigned char buf[64];
+  size_t len;
+} ScrBlake2sCtx;
+void scr_blake2s_init(ScrBlake2sCtx *ctx);
+void scr_blake2s_update(ScrBlake2sCtx *ctx, const unsigned char *data, size_t len);
+void scr_blake2s_final(const ScrBlake2sCtx *ctx, unsigned char out[32]);
+typedef struct ScrSm3Ctx {
+  uint32_t h[8];
+  uint64_t bytes;
+  unsigned char buf[64];
+  size_t len;
+} ScrSm3Ctx;
+void scr_sm3_init(ScrSm3Ctx *ctx);
+void scr_sm3_update(ScrSm3Ctx *ctx, const unsigned char *data, size_t len);
+void scr_sm3_final(const ScrSm3Ctx *ctx, unsigned char out[32]);
 
 size_t scr_crypto_digest_raw(const char *alg, const unsigned char *data, size_t len,
                              unsigned char out[64]);
