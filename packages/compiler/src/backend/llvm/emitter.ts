@@ -339,6 +339,8 @@ import {
   emitNullableRetainWrappers,
   FN_ATTRS,
   inlineRcDecls,
+  type InlineRcMode,
+  limitInlineDynReleases,
   llFieldType,
   type MapKeyAccess,
   releaseSym,
@@ -418,9 +420,13 @@ export interface LlvmTargetOptions {
    * builds pass false so release/dev objects carry no empty calls.
    * Defaults to true for direct emission. */
   objectAudit?: boolean;
-  /** Emit retain/release fast paths inline (the `speed` posture). Off, every
-   * retain and release is a runtime call. */
-  inlineRc?: boolean;
+  /** Emit retain/release fast paths inline: `speed` for every family with a
+   * fast path, `release` for the string retain and the dyn retain and
+   * release (shapes.ts InlineRcMode). Off, every retain and release is a
+   * runtime call. */
+  inlineRc?: InlineRcMode;
+  /** Define the inline RC fast-path helpers `noinline` (sanitized builds). */
+  rcHelpersNoinline?: boolean;
   /** Define `scr_detached_exit` so the Linux runtime hands the address-space
    * teardown after `process.exit` to a helper process (`--detached-exit`).
    * Executables only; the runtime's weak default keeps it off. */
@@ -659,6 +665,8 @@ export class LlEmitter {
   /** Inline RC fast-path helpers requested by call sites (shapes.ts); null
    * when inline RC is off. */
   private readonly rcHelpers: Set<string> | null;
+  private readonly rcMode: InlineRcMode | undefined;
+  private readonly rcHelpersNoinline: boolean;
 
   readonly fnByName = new Map<string, IrFunction>();
   /** Empty literals that construct with inline slots (appended-array-literals.ts). */
@@ -1000,7 +1008,9 @@ export class LlEmitter {
     this.emitLibraryIdentity = options.emitLibraryIdentity !== false;
     this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     this.detachedExit = options.detachedExit === true;
-    this.rcHelpers = options.inlineRc === true ? new Set() : null;
+    this.rcHelpers = options.inlineRc !== undefined ? new Set() : null;
+    this.rcMode = options.inlineRc;
+    this.rcHelpersNoinline = options.rcHelpersNoinline === true;
     // ScrCycHdr.buf sits 4 bytes behind every object on every target.
     this.cycleBufOffset = CYC_HDR - CYC_BUF;
     this.ffiCallbackAdapters = allocateFfiCallbackAdapters(mod.ffiImports ?? []);
@@ -1145,6 +1155,8 @@ export class LlEmitter {
       // paths address its thread-local state.
       threadLocalAlloc: mod.workers === true,
       rcHelpers: this.rcHelpers,
+      ...(this.rcMode !== undefined ? { rcMode: this.rcMode } : {}),
+      ...(this.rcHelpersNoinline ? { rcHelpersNoinline: true } : {}),
       nextCycKind: () => FIRST_EMITTED_CYC_KIND + this.cycKinds++,
       unionsById: this.unionsById,
       declare: (decl) => this.declare(decl),
@@ -1666,7 +1678,7 @@ export class LlEmitter {
   }
 
   emitParts(): string[] {
-    const parts = this.emitModuleParts();
+    const parts = limitInlineDynReleases(this.emitModuleParts());
     if (!this.executableTls) return parts;
     // A worker executable's thread-locals all live in the executable's own
     // TLS block: the program's internal ones, and the runtime's external
