@@ -186,7 +186,8 @@ for (const [c, pair] of expansion) {
 for (const [c, m] of variantMark) extraSecondary.set(c, markWeight.get(m));
 for (const [c, m] of expansionMark) expansionSecondary.set(c, markWeight.get(m));
 
-// 6. Elements per code point (tertiary assigned below).
+// 6. Elements of marks, ignorables and base characters; decomposable
+//    characters and ligatures are built from them in step 7.
 const COMMON = 1;
 const elements = new Map();
 for (const c of covered) {
@@ -199,38 +200,20 @@ for (const c of primaryReps) {
   if (extraSecondary.has(c)) ces.push([0, extraSecondary.get(c), COMMON, 0]);
   elements.set(c, ces);
 }
-for (const c of covered) {
-  if (elements.has(c) || expansion.has(c)) continue;
-  // Canonically decomposable: the elements of its NFD atoms.
-  const nfd = [...ch(c).normalize("NFD")].map((x) => x.codePointAt(0));
-  if (nfd.length === 1 && nfd[0] === c) throw new Error(`no elements for U+${c.toString(16)}`);
-  elements.set(
-    c,
-    nfd.flatMap((x) => {
-      const es = elements.get(x);
-      if (es === undefined) throw new Error(`U+${c.toString(16)} decomposes outside the table`);
-      return es.map((e) => [...e]);
-    }),
-  );
-}
-for (const [c, pair] of expansion) {
-  const first = elements.get(pair.codePointAt(0)).map((e) => [...e]);
-  const second = elements.get(pair.codePointAt(1)).map((e) => [...e]);
-  // A ligature differs from its spelled-out pair at the secondary level:
-  // find the mark-equivalent secondary between the two halves, if any.
-  const middle = expansionSecondary.has(c) ? [[0, expansionSecondary.get(c), COMMON, 0]] : [];
-  elements.set(c, [...first, ...middle, ...second]);
-}
-
-// 7. Tertiary: rank code points whose primary+secondary elements agree.
+// 7. Tertiary. Base characters (primaryReps) are ranked within each group
+//    whose primary+secondary elements agree, at even weights. Canonically
+//    decomposable characters then take their atoms' elements, so they equal
+//    their decompositions at every level, as canonical equivalence requires.
+//    A ligature whose spelled-out pair ties with it at the secondary level
+//    (ĳ against ij) gets the weight Node places it at among the case forms
+//    of its first letter; odd weights fall between two of them.
 const psKey = (c) =>
   elements
     .get(c)
     .map((e) => `${e[0]}.${e[1]}`)
     .join(" ");
 const groups = new Map();
-for (const c of covered) {
-  if (ignorable.has(c) || isMark(c)) continue;
+for (const c of primaryReps) {
   const k = psKey(c);
   if (!groups.has(k)) groups.set(k, []);
   groups.get(k).push(c);
@@ -241,18 +224,81 @@ for (const members of groups.values()) {
   let t = 1;
   for (let i = 0; i < members.length; i++) {
     if (i > 0 && variant.compare(ch(members[i - 1]), ch(members[i])) !== 0) t++;
-    tertiaryOf.set(members[i], t);
+    tertiaryOf.set(members[i], 2 * t);
   }
 }
-for (const c of covered) {
-  if (ignorable.has(c) || isMark(c)) continue;
+for (const c of primaryReps)
   for (const e of elements.get(c)) if (e[0] !== 0) e[2] = tertiaryOf.get(c);
+const atomsOf = (c) =>
+  [...ch(c).normalize("NFD")].flatMap((x) => elements.get(x.codePointAt(0)).map((e) => [...e]));
+for (const c of covered) {
+  if (ignorable.has(c) || primaryReps.includes(c) || expansion.has(c)) continue;
+  if (isMark(c) && ch(c).normalize("NFD") === ch(c)) continue;
+  elements.set(c, atomsOf(c));
+}
+const groupOf = (c) => {
+  const members = groups.get(psKey(c)) ?? [c];
+  return [...members].sort((a, b) => tertiaryOf.get(a) - tertiaryOf.get(b));
+};
+for (const [c, pair] of expansion) {
+  const [x, y] = [...pair].map((q) => q.codePointAt(0));
+  const middle = expansionSecondary.has(c) ? [[0, expansionSecondary.get(c), COMMON, 0]] : [];
+  const es = [...atomsOf(x), ...middle, ...atomsOf(y)];
+  // A ligature with its own secondary (æ) keeps the case of its first
+  // letter in the ligature's case (Æ: the weight of A).
+  const upper = ch(c) !== ch(c).toLowerCase();
+  let t = tertiaryOf.get(upper ? ch(x).toUpperCase().codePointAt(0) : x);
+  if (middle.length === 0) {
+    const gx = groupOf(x);
+    const gy = groupOf(y);
+    const low = ch(gy[0]),
+      high = ch(gy[gy.length - 1]);
+    const below = gx.filter((m) => variant.compare(ch(c), ch(m) + high) > 0);
+    const equal = gx.find(
+      (m) => variant.compare(ch(c), ch(m) + low) >= 0 && variant.compare(ch(c), ch(m) + high) <= 0,
+    );
+    t =
+      equal !== undefined
+        ? tertiaryOf.get(equal)
+        : below.length > 0
+          ? tertiaryOf.get(below[below.length - 1]) + 1
+          : tertiaryOf.get(gx[0]) - 1;
+  }
+  for (const e of es) if (e[0] !== 0) e[2] = t;
+  elements.set(c, es);
+}
+// Contractions: a covered character that Node treats as equal to its
+// two-character compatibility form (ŀ and l·) gives that pair its elements,
+// where the pair's own characters would order differently ("L·a" > "La").
+const contractions = new Map();
+for (const c of covered) {
+  const k = ch(c).normalize("NFKD");
+  const cps = [...k].map((q) => q.codePointAt(0));
+  if (cps.length !== 2 || !cps.every((q) => coveredSet.has(q))) continue;
+  if (ch(c).normalize("NFD") === k || variant.compare(ch(c), k) !== 0) continue;
+  const own = JSON.stringify(elements.get(c));
+  const spelled = JSON.stringify(cps.flatMap((q) => elements.get(q)));
+  if (own !== spelled)
+    contractions.set(
+      k,
+      elements.get(c).map((e) => [...e]),
+    );
 }
 
 // The model's comparison (mirrored by scr_str_locale_compare in C).
 export function modelCompare(a, b) {
   const ces = (s) => {
-    const es = [...s].flatMap((x) => elements.get(x.codePointAt(0)));
+    const cps = [...s].map((x) => x.codePointAt(0));
+    const es = [];
+    for (let i = 0; i < cps.length; i++) {
+      const pair = i + 1 < cps.length ? String.fromCodePoint(cps[i], cps[i + 1]) : "";
+      if (contractions.has(pair)) {
+        es.push(...contractions.get(pair));
+        i++;
+      } else {
+        es.push(...elements.get(cps[i]));
+      }
+    }
     // Canonical reordering: stable sort each run of movable marks by class.
     for (let i = 1; i < es.length; i++) {
       const e = es[i];
@@ -311,12 +357,38 @@ const check = (a, b) => {
 };
 for (const x of pool) for (const y of pool) check(ch(x), ch(y));
 for (let i = 0; i < 300000; i++) check(word(), word());
+// Equivalent and near-equivalent spellings, which random strings rarely
+// produce: each covered character with its canonical and compatibility
+// decompositions and case forms, ligatures with their spelled-out pairs, in
+// four contexts. These pairs tie at the primary and secondary levels, so
+// they check the tertiary weights, contractions and canonical equivalence.
+const inTable = (t) => [...t].every((x) => coveredSet.has(x.codePointAt(0)));
+const probes = new Set();
+for (const c of covered) {
+  const t = ch(c);
+  for (const v of [t, t.normalize("NFD"), t.normalize("NFKD"), t.toUpperCase(), t.toLowerCase()])
+    if (inTable(v)) probes.add(v);
+}
+for (const [, pair] of expansion) {
+  const [x, y] = [...pair];
+  for (const u of [x, x.toUpperCase()]) for (const v of [y, y.toUpperCase()]) probes.add(u + v);
+}
+const contexts = [(t) => t, (t) => t + "a", (t) => t + "B", (t) => "x" + t + "y"];
+let probeCount = 0;
+for (const f of contexts)
+  for (const a of probes)
+    for (const b of probes) {
+      check(f(a), f(b));
+      probeCount++;
+    }
 if (mismatches > 0) {
   console.error(`collation model disagrees with Node in ${mismatches} cases:`);
   for (const s of samples) console.error(`  ${s}`);
   process.exit(1);
 }
-console.log(`collation model matches Node over ${pool.length ** 2 + 300000} comparisons`);
+console.log(
+  `collation model matches Node over ${pool.length ** 2 + 300000 + probeCount} comparisons`,
+);
 if (checkOnly) process.exit(0);
 
 // 9. Emit the C table.
@@ -327,7 +399,8 @@ lines.push(" * options). Do not edit by hand. Each covered code point maps to up
 lines.push(" * three collation elements {primary, secondary, tertiary, combining class");
 lines.push(" * rank}; zero primaries are skipped at the primary level, and runs of");
 lines.push(" * marks with a nonzero class rank are put in canonical order before");
-lines.push(" * comparing. n == 255 marks an uncovered code point. */");
+lines.push(" * comparing. n == 255 marks an uncovered code point. A pair listed in");
+lines.push(" * scr_coll_contractions collates as its one entry. */");
 lines.push("#ifndef SCR_COLLATION_DATA_H");
 lines.push("#define SCR_COLLATION_DATA_H");
 lines.push("#include <stdint.h>");
@@ -366,6 +439,23 @@ for (const [lo, hi] of RANGES) {
 }
 lines.push("  return 0;");
 lines.push("}");
+lines.push("/* Two-code-point contractions: the pair collates as one entry (l· as ŀ). */");
+lines.push("typedef struct { uint32_t first, second; ScrCollEntry entry; } ScrCollContraction;");
+lines.push(`#define SCR_COLL_CONTRACTIONS ${contractions.size}`);
+lines.push(
+  `static const ScrCollContraction scr_coll_contractions[${Math.max(contractions.size, 1)}] = {`,
+);
+for (const [pair, es] of contractions) {
+  const [x, y] = [...pair].map((q) => q.codePointAt(0));
+  if (es.length > 3) throw new Error(`contraction ${pair} needs ${es.length} elements`);
+  const body = es.map((e) => `{${e[0]}, ${e[1]}, ${e[2]}, ${e[3]}}`).join(", ");
+  const hex = (q) => "U+" + q.toString(16).toUpperCase().padStart(4, "0");
+  lines.push(
+    `    {0x${x.toString(16)}, 0x${y.toString(16)}, {${es.length}, {${body}}}}, /* ${hex(x)} ${hex(y)} */`,
+  );
+}
+if (contractions.size === 0) lines.push("    {0, 0, {0, {{0, 0, 0, 0}}}},");
+lines.push("};");
 lines.push("#endif");
 await writeFile(out, lines.join("\n") + "\n");
 console.log(`wrote ${out}`);

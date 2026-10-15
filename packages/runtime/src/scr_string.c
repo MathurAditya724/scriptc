@@ -3289,28 +3289,104 @@ typedef struct {
   bool ok;
 } ScrCollAscii;
 static SCR_TL ScrCollAscii scr_coll_ascii_table[128];
+/* Covered bytes that are part of no contraction: one element each. */
+static SCR_TL bool scr_coll_ascii_plain[128];
 static SCR_TL bool scr_coll_ascii_ready;
 /* The same table for the single-pass primary comparison: covered bytes as
  * a bit set, their primaries, and whether any covered byte has a zero
  * primary (then the level-0 skip makes the byte-by-byte pass inexact). */
 static SCR_TL uint64_t scr_coll_ascii_mask[2];
 static SCR_TL uint16_t scr_coll_ascii_primaries[128];
-static SCR_TL bool scr_coll_ascii_zero_primary;
+/* Which byte-by-byte ASCII paths are exact: a contraction of two ASCII code
+ * points turns both off, and a covered byte with a zero primary turns off
+ * the single-pass primary comparison. */
+static SCR_TL bool scr_coll_ascii_one_pass;
+static SCR_TL bool scr_coll_ascii_levels;
+/* Code points below 0x180 that start a contraction, as a bit set; higher
+ * ones are looked up in scr_coll_contractions. */
+#define SCR_COLL_BITS_LIMIT 0x180
+static SCR_TL uint64_t scr_coll_starts_bits[SCR_COLL_BITS_LIMIT / 64];
+/* scr_coll_scan's answer for one code point below SCR_COLL_SCAN_LIMIT
+ * (every code point the table covers): 0 for plain covered, 1 for covered
+ * but needing the element lists (a mark with a primary weight, or the end
+ * of a contraction), 2 for uncovered. */
+#define SCR_COLL_SCAN_LIMIT 0x370
+static SCR_TL uint8_t scr_coll_scan_class[SCR_COLL_SCAN_LIMIT];
 
-static const ScrCollAscii *scr_coll_ascii(void) {
-  if (__builtin_expect(!scr_coll_ascii_ready, 0)) {
-    for (uint32_t c = 0; c < 128; c++) {
-      const ScrCollEntry *entry = scr_coll_lookup(c);
-      bool ok = entry != NULL && entry->n == 1 && entry->e[0].ccc == 0;
-      scr_coll_ascii_table[c] = (ScrCollAscii){ok ? entry->e[0].p : 0, ok ? entry->e[0].s : 0,
-                                               ok ? entry->e[0].t : 0, ok};
-      if (ok) scr_coll_ascii_mask[c >> 6] |= UINT64_C(1) << (c & 63);
-      scr_coll_ascii_primaries[c] = ok ? entry->e[0].p : 0;
-      if (ok && entry->e[0].p == 0) scr_coll_ascii_zero_primary = true;
-    }
-    scr_coll_ascii_ready = true;
+static __attribute__((noinline)) void scr_coll_ascii_init(void) {
+  bool zero_primary = false, contraction = false, in_contraction[128] = {false};
+  for (uint32_t c = 0; c < 128; c++) {
+    const ScrCollEntry *entry = scr_coll_lookup(c);
+    bool ok = entry != NULL && entry->n == 1 && entry->e[0].ccc == 0;
+    scr_coll_ascii_table[c] = (ScrCollAscii){ok ? entry->e[0].p : 0, ok ? entry->e[0].s : 0,
+                                             ok ? entry->e[0].t : 0, ok};
+    if (ok) scr_coll_ascii_mask[c >> 6] |= UINT64_C(1) << (c & 63);
+    scr_coll_ascii_primaries[c] = ok ? entry->e[0].p : 0;
+    if (ok && entry->e[0].p == 0) zero_primary = true;
   }
+  for (size_t k = 0; k < SCR_COLL_CONTRACTIONS; k++) {
+    uint32_t first = scr_coll_contractions[k].first, second = scr_coll_contractions[k].second;
+    if (first < 128) in_contraction[first] = true;
+    if (second < 128) in_contraction[second] = true;
+    if (first < 128 && second < 128) contraction = true;
+    if (first < SCR_COLL_BITS_LIMIT) scr_coll_starts_bits[first >> 6] |= UINT64_C(1) << (first & 63);
+  }
+  for (uint32_t c = 0; c < 128; c++) scr_coll_ascii_plain[c] = scr_coll_ascii_table[c].ok && !in_contraction[c];
+  scr_coll_ascii_one_pass = !zero_primary && !contraction;
+  scr_coll_ascii_levels = !contraction;
+  for (uint32_t c = 0; c < SCR_COLL_SCAN_LIMIT; c++) {
+    const ScrCollEntry *entry = scr_coll_lookup(c);
+    uint8_t klass = entry == NULL || entry->n == 255 ? 2 : 0;
+    for (uint8_t i = 0; klass == 0 && i < entry->n; i++)
+      if (entry->e[i].ccc != 0 && entry->e[i].p != 0) klass = 1;
+    for (size_t k = 0; klass == 0 && k < SCR_COLL_CONTRACTIONS; k++)
+      if (scr_coll_contractions[k].second == c) klass = 1;
+    scr_coll_scan_class[c] = klass;
+  }
+  scr_coll_ascii_ready = true;
+}
+
+/* The per-thread tables, built on first use. */
+static inline __attribute__((always_inline)) const ScrCollAscii *scr_coll_ascii(void) {
+  if (__builtin_expect(!scr_coll_ascii_ready, 0)) scr_coll_ascii_init();
   return scr_coll_ascii_table;
+}
+
+static inline __attribute__((always_inline)) uint32_t scr_coll_decode(const unsigned char **pp,
+                                                                  const unsigned char *end) {
+  const unsigned char *p = *pp;
+  uint32_t c = *p++;
+  if (c >= 0x80) {
+    int extra = c >= 0xf0 ? 3 : c >= 0xe0 ? 2 : 1;
+    c &= extra == 3 ? 0x07 : extra == 2 ? 0x0f : 0x1f;
+    for (int i = 0; i < extra && p < end; i++) c = (c << 6) | (*p++ & 0x3f);
+  }
+  *pp = p;
+  return c;
+}
+
+/* The contraction of code point c with the code point at p, setting *after
+ * past that second code point; NULL when the pair is not a contraction. */
+static const ScrCollEntry *scr_coll_contraction(uint32_t c, const unsigned char *p,
+                                                const unsigned char *end,
+                                                const unsigned char **after) {
+  for (size_t k = 0; k < SCR_COLL_CONTRACTIONS; k++) {
+    if (scr_coll_contractions[k].first != c || p == end) continue;
+    const unsigned char *q = p;
+    if (scr_coll_decode(&q, end) == scr_coll_contractions[k].second) {
+      *after = q;
+      return &scr_coll_contractions[k].entry;
+    }
+  }
+  return NULL;
+}
+
+/* Whether code point c starts a contraction. */
+static inline bool scr_coll_starts_contraction(uint32_t c) {
+  if (c < SCR_COLL_BITS_LIMIT) return (scr_coll_starts_bits[c >> 6] >> (c & 63)) & 1;
+  for (size_t k = 0; k < SCR_COLL_CONTRACTIONS; k++)
+    if (scr_coll_contractions[k].first == c) return true;
+  return false;
 }
 
 /* Elements of a UTF-8 string, marks in canonical order; false when a code
@@ -3331,17 +3407,16 @@ static bool scr_coll_elements(const ScrStr *s, ScrCollBuf *b) {
   const unsigned char *p = (const unsigned char *)s->data;
   const unsigned char *end = p + s->len;
   while (p < end) {
-    uint32_t c = *p++;
-    if (c < 0x80 && ascii[c].ok) {
+    uint32_t c = *p;
+    if (c < 0x80 && scr_coll_ascii_plain[c]) {
+      p++;
       e[n++] = (ScrCollElem){ascii[c].p, ascii[c].s, ascii[c].t, 0};
       continue;
     }
-    if (c >= 0x80) {
-      int extra = c >= 0xf0 ? 3 : c >= 0xe0 ? 2 : 1;
-      c &= extra == 3 ? 0x07 : extra == 2 ? 0x0f : 0x1f;
-      for (int i = 0; i < extra && p < end; i++) c = (c << 6) | (*p++ & 0x3f);
-    }
-    const ScrCollEntry *entry = scr_coll_lookup(c);
+    c = scr_coll_decode(&p, end);
+    const ScrCollEntry *entry = NULL;
+    if (scr_coll_starts_contraction(c)) entry = scr_coll_contraction(c, p, end, &p);
+    if (entry == NULL) entry = scr_coll_lookup(c);
     if (entry == NULL || entry->n == 255) {
       b->n = n;
       return false;
@@ -3374,32 +3449,27 @@ typedef struct {
   uint8_t next;              /* its next element */
 } ScrCollCursor;
 
-static uint32_t scr_coll_decode(const unsigned char **pp, const unsigned char *end) {
-  const unsigned char *p = *pp;
-  uint32_t c = *p++;
-  if (c >= 0x80) {
-    int extra = c >= 0xf0 ? 3 : c >= 0xe0 ? 2 : 1;
-    c &= extra == 3 ? 0x07 : extra == 2 ? 0x0f : 0x1f;
-    for (int i = 0; i < extra && p < end; i++) c = (c << 6) | (*p++ & 0x3f);
-  }
-  *pp = p;
-  return c;
-}
-
 /* 0: every code point is covered and no mark carries a primary weight;
  * 1: covered, with such a mark; 2: a code point outside the table. */
-static int scr_coll_scan(const ScrCollAscii *ascii, const ScrStr *s) {
+static int scr_coll_scan(const ScrStr *s) {
   const unsigned char *p = (const unsigned char *)s->data, *end = p + s->len;
   int result = 0;
   while (p < end) {
-    if (*p < 0x80 && ascii[*p].ok) {
+    if (*p < 0x80 && scr_coll_ascii_plain[*p]) {
       p++;
       continue;
     }
-    const ScrCollEntry *entry = scr_coll_lookup(scr_coll_decode(&p, end));
-    if (entry == NULL || entry->n == 255) return 2;
-    for (uint8_t i = 0; i < entry->n; i++)
-      if (entry->e[i].ccc != 0 && entry->e[i].p != 0) result = 1;
+    uint32_t c = scr_coll_decode(&p, end);
+    if (c >= SCR_COLL_SCAN_LIMIT) {
+      /* Above the class table: covered ones take the element lists. */
+      const ScrCollEntry *entry = scr_coll_lookup(c);
+      if (entry == NULL || entry->n == 255) return 2;
+      result = 1;
+      continue;
+    }
+    uint8_t klass = scr_coll_scan_class[c];
+    if (klass == 2) return 2;
+    result |= klass;
   }
   return result;
 }
@@ -3518,20 +3588,21 @@ double scr_str_locale_compare(ScrStr *a, ScrStr *b) {
   /* Equal bytes have equal elements at every level. */
   if (a == b || (a->len == b->len && memcmp(a->data, b->data, a->len) == 0)) return 0;
   const ScrCollAscii *table = scr_coll_ascii();
-  if (!scr_coll_ascii_zero_primary) {
+  if (scr_coll_ascii_one_pass) {
     int r = scr_coll_ascii_primary(a, b);
     if (r != 2) {
       for (int level = 1; level < 3 && r == 0; level++) r = scr_coll_ascii_level(table, a, b, level);
       return (double)r;
     }
-  } else if (scr_coll_ascii_covered(table, a) && scr_coll_ascii_covered(table, b)) {
+  } else if (scr_coll_ascii_levels && scr_coll_ascii_covered(table, a) &&
+             scr_coll_ascii_covered(table, b)) {
     int r = 0;
     for (int level = 0; level < 3 && r == 0; level++) r = scr_coll_ascii_level(table, a, b, level);
     return (double)r;
   }
-  int scan_a = scr_coll_scan(table, a);
+  int scan_a = scr_coll_scan(a);
   if (scan_a == 2) return scr_str_cmp(a, b) < 0 ? -1 : 1; /* bytes differ (checked above) */
-  int scan_b = scr_coll_scan(table, b);
+  int scan_b = scr_coll_scan(b);
   if (scan_b == 2) return scr_str_cmp(a, b) < 0 ? -1 : 1;
   if (scan_a == 0 && scan_b == 0) {
     int r = scr_coll_primary(table, a, b);
