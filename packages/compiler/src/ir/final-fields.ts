@@ -75,7 +75,10 @@ export function constructorClass(fnName: string): string | null {
     : null;
 }
 
-export function analyzeFinalFields(mod: IrModule): FinalFields {
+/** `scalars` extends the analysis from reference-counted fields to fields of
+ * every type, for consumers that read a final field's value once instead of
+ * borrowing it (field-values.ts). */
+export function analyzeFinalFields(mod: IrModule, scalars = false): FinalFields {
   const classes = new Map((mod.classes ?? []).map((c) => [c.name, c]));
   const finals = new FinalFields(classes);
   if (mod.lib) return finals;
@@ -104,7 +107,7 @@ export function analyzeFinalFields(mod: IrModule): FinalFields {
 
   for (const cls of classes.values())
     for (const field of cls.fields) {
-      if (!isRefCounted(field.type) || field.name.startsWith("%")) continue;
+      if ((!scalars && !isRefCounted(field.type)) || field.name.startsWith("%")) continue;
       const family = finals.family(cls.name, field.name)!;
       if (finals.reasons.has(family)) continue;
       if (!plainClass(cls)) finals.drop(family, "runtime-provided or generic class");
@@ -131,7 +134,12 @@ export function analyzeFinalFields(mod: IrModule): FinalFields {
       }
       return everyStmtChild(s, expr, stmt);
     };
-    const expr = (e: IrExpr): boolean => everyExprChild(e, expr, stmt);
+    // `o.n++` updates a numeric field in place; reference fields never see it.
+    const expr = (e: IrExpr): boolean => {
+      if (e.kind === "fieldIncDec" && finals.isFinal(e.className, e.field))
+        finals.drop(finals.family(e.className, e.field)!, `updated in ${fn.name}`);
+      return everyExprChild(e, expr, stmt);
+    };
     for (const s of fn.body) stmt(s);
   }
   return finals;
