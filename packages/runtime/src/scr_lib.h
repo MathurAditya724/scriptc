@@ -432,6 +432,9 @@ ScrPromise *scr_fsp_rm(ScrStr *path);
 ScrPromise *scr_fsp_stat(ScrStr *path);
 ScrPromise *scr_fsp_realpath(ScrStr *path);
 ScrPromise *scr_fsp_lstat(ScrStr *path);
+typedef struct ScrDir ScrDir; /* fs.Dir, declared with its operations in scr_os.h */
+ScrPromise *scr_fsp_opendir(ScrStr *path, double buffer_size);
+ScrPromise *scr_dir_close_promise(ScrDir *d);
 ScrPromise *scr_fsp_rename(ScrStr *oldpath, ScrStr *newpath);
 ScrPromise *scr_fsp_open(ScrStr *path, ScrStr *flags, double mode);
 ScrPromise *scr_file_handle_close_promise(ScrFileHandle *h);

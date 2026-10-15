@@ -55,6 +55,7 @@ import {
   nearestInvalidPackageJsonPath,
   nearestPackageType,
   nearestPkgJsonPath,
+  packageImportTarget,
   projectDtsRuntimeSibling,
   resolveBareModule,
   resolveProjectModule,
@@ -3881,6 +3882,17 @@ function preflight7(load: LoadResult): {
             continue;
           }
           if (spec.startsWith("#")) {
+            const target = packageImportTarget(sf.fileName, spec);
+            if (target !== null && !target.startsWith("./") && !target.startsWith("../")) {
+              diags.push(
+                unsupportedDiag(
+                  "SC1010",
+                  locOf7(stmt),
+                  `package.json imports entries that map to other packages (the '${spec}' import maps to '${target}')`,
+                ),
+              );
+              continue;
+            }
             const pkgJson = nearestPkgJsonPath(sf.fileName);
             refuse(
               `Package import specifier "${spec}" is not defined${pkgJson !== null ? ` in package ${pkgJson}` : ""} imported from ${sf.fileName}`,

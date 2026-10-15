@@ -604,6 +604,17 @@ static bool scr_uncaught_print_dyn_primitive(const ScrDyn *d) {
   }
 }
 
+/* An SC diagnostic code ("SC" and four digits) that `text` does not
+ * already name as "[SCnnnn". */
+static bool scr_uncaught_unnamed_sc_code(const ScrStr *code, const ScrStr *text) {
+  if (code == NULL || code->len != 6 || code->data[0] != 'S' || code->data[1] != 'C') return false;
+  for (size_t i = 2; i < 6; i++)
+    if (code->data[i] < '0' || code->data[i] > '9') return false;
+  for (size_t i = 0; i + 7 <= text->len; i++)
+    if (text->data[i] == '[' && memcmp(text->data + i + 1, code->data, 6) == 0) return false;
+  return true;
+}
+
 void scr_exc_print_uncaught(void) {
 #ifdef SCR_WORKERS
   if (scr_context_checkpoint()) { scr_exc_clear(); return; }
@@ -638,8 +649,14 @@ void scr_exc_print_uncaught(void) {
      * line: "name: message" (toString rules for the empty halves). Node
      * appends a stack trace; scriptc has none (documented divergence). */
     if (scr_error_is(scr_exc_payload)) {
+      const ScrError *error = (const ScrError *)scr_exc_payload;
       ScrStr *s = scr_error_to_string((ScrError *)scr_exc_payload);
       fwrite(s->data, 1, s->len, stderr);
+      /* A runtime refusal carries its scriptc diagnostic code on `code`;
+       * name it unless the message already does, as deferred compile-time
+       * refusals' "[SC1090 at file:line]" suffix does. */
+      if (scr_uncaught_unnamed_sc_code(error->code, s))
+        fprintf(stderr, " [%.*s]", (int)error->code->len, error->code->data);
       scr_str_release(s);
       break;
     }

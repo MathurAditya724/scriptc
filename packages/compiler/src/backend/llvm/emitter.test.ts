@@ -146,14 +146,18 @@ test("detached exit defines the runtime opt-in symbol only when requested", () =
   expect(detached.replace("@scr_detached_exit = constant i8 1\n", "")).toBe(plain);
 });
 
-test("inline RC is a speed-only emission mode and leaves release IR unchanged", () => {
+test("inline RC inlines every fast path at speed and keeps string and box releases as calls in release", () => {
   for (const boxed of [false, true]) {
     const module = moduleFor(Array.from({ length: 4 }, call), { boxed });
     const release = emitLlvmModule(module);
-    expect(emitLlvmModule(module, { inlineRc: false })).toBe(release);
     expect(release).not.toContain("@sc_rc_");
     expect(release).not.toContain("%ScrMapRc");
-    const speed = emitLlvmModule(module, { inlineRc: true });
+    // The release subset inlines string retains and dyn retains and releases
+    // only; these string and box releases stay runtime calls.
+    const subset = emitLlvmModule(module, { inlineRc: "release" });
+    expect(subset).not.toContain("@sc_rc_release_str");
+    expect(subset).not.toContain("@sc_rc_release_box");
+    const speed = emitLlvmModule(module, { inlineRc: "speed" });
     const helper = boxed ? "sc_rc_release_box" : "sc_rc_release_str";
     const runtime = boxed ? "scr_box_release" : "scr_str_release";
     expect(release.match(new RegExp(`call void @${runtime}\\(ptr`, "g"))?.length).toBeGreaterThan(

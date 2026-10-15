@@ -1,6 +1,6 @@
 import { typedRefConstructor } from "./shapes.js";
 import { bindLiveArrayOps } from "./expr-stream-bridges.js";
-import { BYTES_ELEM_NUM, SCR_ARR_FIELD, f64Lit } from "./common.js";
+import { BYTES_ELEM_NUM, SCR_ARR_FIELD, f64Lit, sizeToDouble } from "./common.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
   INLINE_UNION_FIELD,
@@ -69,6 +69,7 @@ const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   httpClientReq: 6,
   child: 16,
   fileHandle: 17,
+  dir: 44,
 };
 
 export const DYN_KIND = {
@@ -1754,7 +1755,7 @@ export class LlDyn {
           host.declare(`declare void @scr_arr_set_len(ptr, double)`);
           const index = B.tmp();
           const length = B.tmp();
-          B.line(`${index} = sitofp ${this.S} ${i} to double`);
+          B.line(`${index} = ${sizeToDouble(this.S)} ${this.S} ${i} to double`);
           B.line(`${length} = fadd double ${index}, 1.0`);
           B.line(`call void @scr_arr_set_len(ptr ${a}, double ${length})`);
           B.br(doneLabel);
@@ -3502,7 +3503,7 @@ export class LlDyn {
         const n = this.lenOf(B, "%d");
         const nd = B.tmp();
         const r = B.tmp();
-        B.line(`${nd} = sitofp ${host.sizeType} ${n} to double`);
+        B.line(`${nd} = ${sizeToDouble(host.sizeType)} ${host.sizeType} ${n} to double`);
         B.line(`${r} = call ptr @scr_dyn_new_num(double ${nd})`);
         B.terminate(`ret ptr ${r}`);
         B.startBlock(lStr);
@@ -3541,7 +3542,7 @@ export class LlDyn {
         const n2 = B.tmp();
         B.line(`${n2} = call double @scr_str_utf16_len(ptr ${s})`);
         const idxD = B.tmp();
-        B.line(`${idxD} = sitofp ${host.sizeType} ${idx} to double`);
+        B.line(`${idxD} = ${sizeToDouble(host.sizeType)} ${host.sizeType} ${idx} to double`);
         const inR2 = B.tmp();
         B.line(`${inR2} = fcmp olt double ${idxD}, ${n2}`);
         const lHit2 = B.newLabel("kg.ash");
@@ -3814,7 +3815,7 @@ export class LlDyn {
         const index = B.tmp();
         const bd = B.tmp();
         const r = B.tmp();
-        B.line(`${index} = sitofp ${host.sizeType} ${i} to double`);
+        B.line(`${index} = ${sizeToDouble(host.sizeType)} ${host.sizeType} ${i} to double`);
         B.line(`${bd} = call double @scr_bytes_get(ptr ${bts}, double ${index})`);
         B.line(`${r} = call ptr @scr_dyn_new_num(double ${bd})`);
         B.line(`store ptr ${r}, ptr ${itemSlot}`);

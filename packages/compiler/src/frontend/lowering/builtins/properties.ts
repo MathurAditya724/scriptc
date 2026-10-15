@@ -9,6 +9,7 @@ import {
   CHILDSTREAM_T,
   CHILDWRITER_T,
   DATE_T,
+  DIR_T,
   F64,
   FILEHANDLE_T,
   type IrExpr,
@@ -17,6 +18,7 @@ import {
   STRING,
 } from "../../../ir/ir.js";
 import { storedTextCodecClassOf } from "./text-codecs.js";
+import { DIR_MEMBERS, DIR_METHODS } from "./filesystem.js";
 
 /** The property-read extensions this spoke owns, tried BEFORE the
  * lower-exprs intrinsic-property fallback (the lowerer's wrapper chains
@@ -135,6 +137,7 @@ export function lowerBuiltinExtraProperty(
   if (
     kind !== "stats" &&
     kind !== "fileHandle" &&
+    kind !== "dir" &&
     kind !== "spawnRes" &&
     kind !== "child" &&
     kind !== "childWriter"
@@ -165,6 +168,21 @@ export function lowerBuiltinExtraProperty(
       `FileHandle.${name}`,
       expr,
       "fd, close(), read(), write(), readFile(), writeFile(), appendFile(), and stat() are the supported FileHandle members",
+      lowerer.checker.getSymbolAtLocation(expr.name),
+    );
+  }
+  if (kind === "dir") {
+    if (name === "path") {
+      const receiver = lowerer.lowerExprExpecting(expr.expression, DIR_T);
+      return { kind: "libCall", fn: "dir.path", args: [receiver], type: STRING, loc };
+    }
+    if (DIR_METHODS.has(name)) {
+      lowerer.unsupported("SC1090", expr, `Dir methods as values (call '${name}' directly)`);
+    }
+    lowerer.noLowering(
+      `Dir.${name}`,
+      expr,
+      DIR_MEMBERS,
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }
