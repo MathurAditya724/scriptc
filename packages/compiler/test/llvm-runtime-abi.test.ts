@@ -7,7 +7,8 @@
  * the class mechanically, from four directions:
  *
  *  1. Source scan: every fully-literal `declare ... @scr_*` template
- *     string in the backend/llvm sources is checked against the header.
+ *     string in the backend/llvm sources is checked against the header
+ *     (scr_runtime.h with its module headers expanded in include order).
  *  2. Emitted scan: a curated fs/path/os-heavy corpus slice compiles
  *     through the LLVM backend and every `declare @scr_*` in the emitted
  *     .ll — including the generic LIB_FN_SYMS path, whose signatures are
@@ -42,7 +43,7 @@ import { compile } from "../src/index.js";
 const execFileAsync = promisify(execFile);
 
 const repoRoot = join(import.meta.dirname, "../../..");
-const headerPath = join(repoRoot, "packages/runtime/src/scr_runtime.h");
+const runtimeHeaderDir = join(repoRoot, "packages/runtime/src");
 const llvmSrcDir = join(import.meta.dirname, "../src/backend/llvm");
 const corpusDir = join(repoRoot, "tests/corpus");
 
@@ -152,13 +153,30 @@ function splitParams(argsText: string): string[] {
   return out;
 }
 
+/** scr_runtime.h with every quoted runtime include expanded in place, each
+ * header once — the declarations a runtime TU sees, in order. */
+async function readRuntimeHeader(
+  name = "scr_runtime.h",
+  seen = new Set<string>(),
+): Promise<string> {
+  seen.add(name);
+  const text = await readFile(join(runtimeHeaderDir, name), "utf8");
+  const parts: string[] = [];
+  for (const line of text.split("\n")) {
+    const include = line.match(/^#include "(scr_[a-z0-9_]+\.h)"/);
+    if (include === null) parts.push(line);
+    else if (!seen.has(include[1]!)) parts.push(await readRuntimeHeader(include[1]!, seen));
+  }
+  return parts.join("\n");
+}
+
 /** Parse scr_runtime.h into name → prototype, plus the extern data
  * symbols (vtable globals and the like) the emitter references by name.
  * Only `;`-terminated prototypes count: a `static inline` definition has
  * no linkage symbol the emitter could declare, so a declare against one
  * must report as missing. */
 async function parseHeader(): Promise<{ protos: Map<string, CProto>; dataSyms: Set<string> }> {
-  const raw = await readFile(headerPath, "utf8");
+  const raw = await readRuntimeHeader();
   const src = raw
     .replace(/\\\r?\n/g, "")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
@@ -312,7 +330,7 @@ describe("LLVM backend declares match scr_runtime.h prototypes", () => {
     const llvm = emitLlvmModule(mod, { runtimeAbiMarker: true });
     expect(llvm).toContain(`declare void @${RUNTIME_ABI_MARKER}()`);
     expect(llvm).toContain(`call void @${RUNTIME_ABI_MARKER}()`);
-    expect(await readFile(headerPath, "utf8")).toContain(`void ${RUNTIME_ABI_MARKER}(void);`);
+    expect(await readRuntimeHeader()).toContain(`void ${RUNTIME_ABI_MARKER}(void);`);
     expect(await readFile(join(repoRoot, "packages/runtime/src/scr_console.c"), "utf8")).toContain(
       `void ${RUNTIME_ABI_MARKER}(void) {}`,
     );
