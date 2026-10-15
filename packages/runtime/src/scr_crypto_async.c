@@ -48,3 +48,185 @@ void scr_crypto_scrypt_async(ScrBytes *password, ScrBytes *salt, double keylen,
   if (scr_exc_pending()) { scr_closure_release(cb); return; }
   scr_crypto_defer_bytes(value, NULL, cb, fn);
 }
+
+/* randomFill(buf, [offset, [size,]] callback) over a typed view: the fill
+ * happens now, and the callback receives the same view in a later
+ * macrotask, or synchronously when nothing is filled, as in Node. */
+void scr_crypto_random_fill_async(ScrBytes *buf, double offset, double size, double form,
+                                  ScrClosure *cb, ScrCryptoBytesFn fn) {
+  double filled = scr_crypto_random_fill_args(buf, !buf->is_data_view, offset, size, (int)form);
+  if (filled < 0) {
+    scr_closure_release(cb);
+    return;
+  }
+  if (filled == 0) {
+    fn(cb, NULL, scr_bytes_retain(buf));
+    scr_closure_release(cb);
+    return;
+  }
+  scr_crypto_defer_bytes(scr_bytes_retain(buf), NULL, cb, fn);
+}
+
+/* The same over any buffer value; the callback adapter receives the
+ * original value (an ArrayBuffer stays an ArrayBuffer). */
+void scr_crypto_random_fill_async_dyn(ScrDyn *buf, ScrDyn *offset, ScrDyn *size, double form,
+                                      ScrClosure *cb, ScrCryptoBytesFn fn) {
+  ScrBytes *view = NULL;
+  bool typed_array = false;
+  if (buf->kind == SCR_DYN_BYTES) {
+    view = scr_bytes_retain(buf->v.bytes);
+    typed_array = !view->is_data_view;
+  } else if (scr_buffer_storage_is(buf)) {
+    view = scr_bytes_buffer_source(buf);
+  } else {
+    scr_dyn_arg_type_fail("buf", "an instance of ArrayBuffer or ArrayBufferView", buf);
+  }
+  double start = 0, count = 0;
+  int shape = (int)form;
+  bool ok = view != NULL;
+  if (ok && shape >= 2) {
+    if (offset->kind == SCR_DYN_NUM) {
+      start = offset->v.num;
+    } else {
+      scr_dyn_arg_type_fail("offset", "of type number", offset);
+      ok = false;
+    }
+  }
+  if (ok && shape == 3) {
+    if (size->kind == SCR_DYN_UNDEF) {
+      shape = 4;
+    } else if (size->kind == SCR_DYN_NUM) {
+      count = size->v.num;
+    } else {
+      scr_dyn_arg_type_fail("size", "of type number", size);
+      ok = false;
+    }
+  }
+  double filled = ok ? scr_crypto_random_fill_args(view, typed_array, start, count, shape) : -1;
+  if (view) scr_bytes_release(view);
+  if (filled < 0) {
+    scr_closure_release(cb);
+    return;
+  }
+  if (filled == 0) {
+    fn(cb, NULL, (ScrBytes *)scr_dyn_retain(buf));
+    scr_closure_release(cb);
+    return;
+  }
+  scr_crypto_defer_dyn(scr_dyn_retain(buf), NULL, cb, fn);
+}
+
+/* randomInt(min, max, callback). While the modeled cache has data the
+ * result arrives on the next tick; when it is empty the call waits for an
+ * asynchronous refill, and every waiting call then draws again, as Node's
+ * asyncRefillRandomIntCache does. Node passes undefined as the error. */
+typedef struct ScrRandomIntTask {
+  double min;
+  double max;
+  bool min_given;
+  ScrClosure *cb;
+  ScrCryptoIntFn fn;
+  double value;
+  struct ScrRandomIntTask *next;
+} ScrRandomIntTask;
+
+static SCR_TL ScrRandomIntTask *scr_random_int_waiting = NULL, **scr_random_int_waiting_tail = NULL;
+static SCR_TL ScrRandomIntTask *scr_random_int_ticks = NULL, **scr_random_int_ticks_tail = NULL;
+static SCR_TL bool scr_random_int_refilling = false;
+static SCR_TL bool scr_random_int_cleanup = false;
+
+static void scr_random_int_free(ScrRandomIntTask *task) {
+  while (task) {
+    ScrRandomIntTask *next = task->next;
+    scr_closure_release(task->cb);
+    free(task);
+    task = next;
+  }
+}
+
+/* Calls and ticks still queued at exit never run. */
+static void scr_random_int_shutdown(void) {
+  scr_random_int_free(scr_random_int_waiting);
+  scr_random_int_free(scr_random_int_ticks);
+  scr_random_int_waiting = scr_random_int_ticks = NULL;
+  scr_random_int_waiting_tail = scr_random_int_ticks_tail = NULL;
+}
+
+static void scr_random_int_push(ScrRandomIntTask ***tail, ScrRandomIntTask **head,
+                                ScrRandomIntTask *task) {
+  task->next = NULL;
+  if (!*tail) *tail = head;
+  **tail = task;
+  *tail = &task->next;
+}
+
+static void scr_random_int_tick(void) {
+  ScrRandomIntTask *task = scr_random_int_ticks;
+  if (!task) return;
+  scr_random_int_ticks = task->next;
+  if (!scr_random_int_ticks) scr_random_int_ticks_tail = &scr_random_int_ticks;
+  task->fn(task->cb, task->value);
+  scr_closure_release(task->cb);
+  free(task);
+}
+
+static void scr_random_int_run(ScrRandomIntTask *task);
+
+static void scr_random_int_refilled(ScrClosure *cb, ScrError *error, ScrBytes *value) {
+  (void)cb;
+  (void)error;
+  (void)value;
+  scr_random_int_refilling = false;
+  scr_crypto_random_int_refill();
+  ScrRandomIntTask *task = scr_random_int_waiting;
+  scr_random_int_waiting = NULL;
+  scr_random_int_waiting_tail = &scr_random_int_waiting;
+  while (task) {
+    ScrRandomIntTask *next = task->next;
+    scr_random_int_run(task);
+    task = next;
+  }
+}
+
+static void scr_random_int_run(ScrRandomIntTask *task) {
+  double value;
+  if (scr_crypto_random_int_try(task->min, task->max - task->min, &value)) {
+    task->value = value;
+    scr_random_int_push(&scr_random_int_ticks_tail, &scr_random_int_ticks, task);
+    scr_next_tick_raw(scr_random_int_tick);
+    return;
+  }
+  scr_random_int_push(&scr_random_int_waiting_tail, &scr_random_int_waiting, task);
+  if (scr_random_int_refilling) return;
+  scr_random_int_refilling = true;
+  scr_crypto_defer_bytes(NULL, NULL, NULL, scr_random_int_refilled);
+}
+
+void scr_crypto_random_int_async(double min, double max, double min_given, ScrClosure *cb,
+                                 ScrCryptoIntFn fn) {
+  double range;
+  if (!scr_crypto_random_int_check(min, max, min_given != 0, &range)) {
+    scr_closure_release(cb);
+    return;
+  }
+  if (!scr_random_int_cleanup) {
+    if (scr_atexit(scr_random_int_shutdown) != 0) scr_trap("scriptc: could not register randomInt cleanup\n");
+    scr_random_int_cleanup = true;
+  }
+  ScrRandomIntTask *task = malloc(sizeof *task);
+  if (!task) scr_trap("scriptc: out of memory\n");
+  *task = (ScrRandomIntTask){.min = min, .max = max, .min_given = min_given != 0, .cb = cb, .fn = fn};
+  scr_random_int_run(task);
+}
+
+/* generateKey(type, options, callback): the key arrives in a later
+ * macrotask; argument errors throw, as in Node. */
+void scr_crypto_generate_key_async(ScrDyn *type, ScrDyn *options, ScrClosure *cb,
+                                   ScrCryptoBytesFn fn) {
+  ScrDyn *key = scr_crypto_generate_key_sync(type, options);
+  if (!key) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_crypto_defer_dyn(key, NULL, cb, fn);
+}

@@ -1329,9 +1329,12 @@ function liveClassOps(host: LlvmEmitterContext, snapshot: string, meta: LlClassM
       ``,
     );
   }
+  // The constructor's name, as util.inspect prints before the fields.
+  const jsName = meta.def.jsName ?? meta.def.name.replace(/^%/, "");
+  const className = jsName === "" ? "null" : host.internLiteral(jsName);
   host.resolveThunkDefs.push(
     `@${names} = internal constant [${members.length} x ptr] [${literals.join(", ")}]`,
-    `@${ops} = internal constant { ptr, ${host.sizeType}, ptr } { ptr ${exact}, ${host.sizeType} ${members.length}, ptr @${names} }`,
+    `@${ops} = internal constant { ptr, ${host.sizeType}, ptr, ptr } { ptr ${exact}, ${host.sizeType} ${members.length}, ptr @${names}, ptr ${className} }`,
     ``,
   );
 }

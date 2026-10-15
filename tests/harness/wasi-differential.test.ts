@@ -165,6 +165,13 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5437-crypto-hmac-algorithms.ts",
     "5438-crypto-kdf-digests.ts",
     "5439-crypto-kdf-callbacks.js",
+    "5440-crypto-hash-encodings.js",
+    "5441-crypto-hash-output-length.ts",
+    "5442-crypto-random-values.ts",
+    "5443-crypto-random-arguments.js",
+    "5444-crypto-timing-safe-equal.js",
+    "5445-crypto-secret-key-objects.ts",
+    "5446-crypto-secret-key-errors.js",
     "4031-event-emitter-long-tuples.ts",
     "2700-wasi-core.ts",
     "local-union-storage.ts",
@@ -258,6 +265,10 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5319-map-iteration-values.ts",
     // JSON writers read array slots as pointers.
     "5305-json-stringify-typed-arrays.ts",
+    // Comparator sorts move 64-bit slots of 32-bit pointers.
+    "5360-array-sort-comparator-calls.ts",
+    "5363-array-sort-comparator-writes.ts",
+    "5365-array-sort-dynamic-values.js",
     // Blob reads settle through the dyn promise path on 32-bit pointers.
     "5286-blob-readers.ts",
     "5289-blob-read-order.ts",

@@ -867,7 +867,8 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
       }
       d->v.obj.source_identity = NULL;
       d->v.obj.source_access = NULL;
-    } else {
+    } else if (kind != SCR_DYN_NUM && kind != SCR_DYN_STR) {
+      /* Number and string boxes set their one payload word. */
       memset(&d->v, 0, sizeof d->v);
     }
     return d;
@@ -1030,6 +1031,18 @@ void scr_dyn_release(ScrDyn *d) {
       scr_cyc_released(d);
     return;
   }
+#ifndef SCR_RC_AUDIT
+  /* Number and string boxes own at most one string, are never cycle
+   * candidates and cannot be weak keys: return them to the free list. */
+  if ((d->kind == SCR_DYN_NUM || d->kind == SCR_DYN_STR) && !d->prototype &&
+      !d->symbol_properties && !d->symbol_keys && scr_dyn_free_count < SCR_DYN_FREE_MAX) {
+    if (d->kind == SCR_DYN_STR) scr_str_release(d->v.str);
+    d->v.str = (ScrStr *)scr_dyn_free_misc;
+    scr_dyn_free_misc = d;
+    scr_dyn_free_count++;
+    return;
+  }
+#endif
   scr_cyc_dead(d);
   scr_rc_destroy(d, scr_dyn_destroy);
 }
@@ -2453,6 +2466,12 @@ static const ScrDynTypedClassOps *scr_typed_ref_class_ops(const ScrDyn *d) {
   if (!d->v.typed_ref.klass) return NULL;
   const ScrDynTypedClassOps *ops = (const ScrDynTypedClassOps *)(const void *)d->v.typed_ref.array;
   return ops->exact ? ops->exact(d->v.typed_ref.ptr) : ops;
+}
+
+const ScrStr *scr_dyn_typed_ref_class_name(const ScrDyn *d) {
+  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return NULL;
+  const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
+  return ops ? ops->class_name : NULL;
 }
 
 static bool scr_dyn_name_in_strs(const ScrStr *key, ScrStr *const *names, size_t count) {
@@ -4773,6 +4792,14 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
       scr_jb_putc(&b, ']');
       return scr_jb_finish(&b);
     }
+    if (scr_dyn_handle_ops_of(d)->to_string_tag) {
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "[object ");
+      scr_jb_puts(&b, scr_dyn_handle_ops_of(d)->to_string_tag);
+      scr_jb_putc(&b, ']');
+      return scr_jb_finish(&b);
+    }
     tag = "[object Object]";
     break;
   case SCR_DYN_BYTES: {
@@ -5312,6 +5339,14 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
       scr_jb_init(&b);
       scr_jb_puts(&b, "[object ");
       scr_jb_puts(&b, scr_dyn_handle_cls(d));
+      scr_jb_putc(&b, ']');
+      return scr_jb_finish(&b);
+    }
+    if (scr_dyn_handle_ops_of(d)->to_string_tag) {
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "[object ");
+      scr_jb_puts(&b, scr_dyn_handle_ops_of(d)->to_string_tag);
       scr_jb_putc(&b, ']');
       return scr_jb_finish(&b);
     }
