@@ -5374,6 +5374,25 @@ function validateFunction(
         }
         return true;
       }
+      if (e.fn === "readable.fromDone") {
+        if (e.args.length !== 0 || e.type.kind !== "dyn")
+          err(`libCall ${e.fn} takes no arguments`, e.loc);
+        return true;
+      }
+      if (e.fn === "readable.fromGen" || e.fn === "readable.fromAsyncGen") {
+        const g = e.args[0]?.type;
+        const helpers = e.fn === "readable.fromGen" ? 3 : 4;
+        if (
+          g?.kind !== "generator" ||
+          (g.async === true) !== (e.fn === "readable.fromAsyncGen") ||
+          !e.args.slice(1, 1 + helpers).every((a) => a.kind === "closure") ||
+          e.args[1 + helpers]?.kind !== "numLit" ||
+          !isStreamObject(e.type)
+        ) {
+          err(`libCall ${e.fn} must take a generator, its helpers and the flags`, e.loc);
+        }
+        return true;
+      }
       if (e.fn === "readable.fromArr" || e.fn === "readable.fromDyn") {
         // No receiver: the source leads; the result is the class.
         const src = e.fn === "readable.fromArr" ? "array" : "dyn";

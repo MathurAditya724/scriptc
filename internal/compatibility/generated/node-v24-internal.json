@@ -85810,7 +85810,9 @@
           "tests/corpus/5340-readable-from-options.ts",
           "tests/corpus/5341-readable-from-dynamic.cjs",
           "tests/corpus/5342-stream-compose.ts",
-          "tests/corpus/5343-stream-compose-edges.ts"
+          "tests/corpus/5343-stream-compose-edges.ts",
+          "tests/corpus/5420-readable-from-generators.ts",
+          "tests/corpus/5421-readable-from-generators.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -86251,7 +86253,9 @@
         "evidence": "compiler-feature:stream.stream.Readable.from",
         "tests": [
           "tests/corpus/5340-readable-from-options.ts",
-          "tests/corpus/5341-readable-from-dynamic.cjs"
+          "tests/corpus/5341-readable-from-dynamic.cjs",
+          "tests/corpus/5420-readable-from-generators.ts",
+          "tests/corpus/5421-readable-from-generators.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -86834,7 +86838,9 @@
         "evidence": "compiler-feature:stream.stream.Readable.from",
         "tests": [
           "tests/corpus/5340-readable-from-options.ts",
-          "tests/corpus/5341-readable-from-dynamic.cjs"
+          "tests/corpus/5341-readable-from-dynamic.cjs",
+          "tests/corpus/5420-readable-from-generators.ts",
+          "tests/corpus/5421-readable-from-generators.cjs"
         ]
       },
       "anchorSource": "ancestor"

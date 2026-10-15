@@ -1336,17 +1336,72 @@ static void flat_thr(OpGen *g, ScrCaught *c) {
 /* The operator's output stream: from.js's nextAsync pulls the generator
  * while push() accepts, and _destroy runs close(error) (the generator's
  * throw, then return) before the destroy callback, on a nextTick. */
+enum { FROM_OP, FROM_SYNC, FROM_ASYNC };
+
 typedef struct {
   OpObj base;
-  OpGen *g;        /* +1 */
+  int kind;
+  OpGen *g;        /* +1 (FROM_OP: an operator's generator) */
+  /* FROM_SYNC / FROM_ASYNC: a compiled generator and the compiler's
+   * helpers over it (+1 each). next/ret/thr answer the next value or the
+   * done marker (sync), or the resume's promise (async, read through
+   * `read`). */
+  ScrGen *gen;
+  ScrClosure *next, *ret, *thr, *read;
   ScrStream *out;  /* borrowed: the stream owns this object */
   bool reading;
 } OpFrom;
 
 static void op_from_drop(OpObj *o) {
   OpFrom *f = (OpFrom *)o;
-  op_unref(f->g);
+  if (f->g) op_unref(f->g);
+  scr_gen_release(f->gen);
+  if (f->next) scr_closure_release(f->next);
+  if (f->ret) scr_closure_release(f->ret);
+  if (f->thr) scr_closure_release(f->thr);
+  if (f->read) scr_closure_release(f->read);
   free(f);
+}
+
+/* The helper ABIs: the closure first, then the declared parameters, which
+ * the callee owns. */
+typedef ScrDyn *(*FromSyncFn)(ScrClosure *, ScrGen *);
+typedef ScrDyn *(*FromSyncThrowFn)(ScrClosure *, ScrGen *, ScrDyn *);
+typedef ScrPromise *(*FromAsyncFn)(ScrClosure *, ScrGen *);
+typedef ScrPromise *(*FromAsyncThrowFn)(ScrClosure *, ScrGen *, ScrDyn *);
+typedef ScrDyn *(*FromReadFn)(ScrClosure *, void *);
+
+/* `await p` over an async generator's resume promise: the IteratorResult
+ * record goes through `read` (the value, or the done marker) before k.
+ * Awaiting the typed promise itself keeps from.js's single await. */
+typedef struct {
+  void *self;
+  OpCont k;
+  ScrPromise *p;
+  ScrClosure *read;
+} OpAwaitGen;
+
+static void op_await_gen_entry(ScrFiber *fiber, void *arg) {
+  (void)fiber;
+  OpAwaitGen a = *(OpAwaitGen *)arg;
+  free(arg);
+  void *rec = scr_await_ref(a.p);
+  scr_promise_release(a.p);
+  ScrDyn *v = scr_exc_pending() ? NULL : ((FromReadFn)a.read->fn)(a.read, rec);
+  scr_closure_release(a.read);
+  a.k(a.self, v);
+  if (scr_exc_pending()) scr_exc_clear();
+  op_unref(a.self);
+}
+
+static void op_await_gen(ScrPromise *p, ScrClosure *read, OpCont k, void *self) {
+  OpAwaitGen *a = op_alloc(sizeof *a);
+  a->self = op_ref(self);
+  a->k = k;
+  a->p = scr_promise_retain(p);
+  a->read = scr_closure_retain(read);
+  ScrPromise *fiber = scr_async_spawn_after(p, &op_await_gen_entry, a);
+  scr_promise_release(fiber);
 }
 
 /* One pull: the stream is held for the await. */
@@ -1380,10 +1435,38 @@ static void op_from_destroy_with(ScrStream *out, ScrError *e /*moves*/) {
   scr_error_release(e);
 }
 
+/* A compiled generator's value: from.js's push, with null and values
+ * other than strings or Buffers destroying the stream. Answers whether
+ * to pull again. Moves v (NULL: the resume threw, pending). */
+static bool from_take(OpFrom *f, ScrStream *out, ScrDyn *v) {
+  if (!v) {
+    ScrCaught *c = scr_exc_take();
+    op_from_destroy_with(out, op_caught_error(c));
+    scr_caught_release(c);
+    return false;
+  }
+  if (v == op_k_done) {
+    scr_dyn_release(v);
+    scr_stream_push_null(out);
+    return false;
+  }
+  if (v->kind == SCR_DYN_NULL) f->reading = false;
+  int pushed = scr_stream_from_push(out, v);
+  scr_dyn_release(v);
+  if (pushed < 0 || scr_exc_pending()) return false;
+  if (pushed) return true;
+  f->reading = false;
+  return false;
+}
+
 static void op_from_step_k(void *self, ScrDyn *v) {
   OpFromStep *st = self;
   OpFrom *f = st->from;
   ScrStream *out = st->out;
+  if (f->kind != FROM_OP) {
+    if (from_take(f, out, v)) from_next(f, out);
+    return;
+  }
   if (!v) {
     ScrCaught *c = scr_exc_take();
     op_from_destroy_with(out, op_caught_error(c));
@@ -1422,14 +1505,26 @@ static void op_from_step_k(void *self, ScrDyn *v) {
 }
 
 static void from_next(OpFrom *f, ScrStream *out) {
+  if (f->kind == FROM_SYNC) {
+    /* nextSyncWithSyncValues: no awaits between the pushes */
+    while (from_take(f, out, ((FromSyncFn)f->next->fn)(f->next, scr_gen_retain(f->gen)))) {
+    }
+    return;
+  }
   OpFromStep *st = op_alloc(sizeof *st);
   st->base.rc = 1;
   st->base.drop = &op_from_step_drop;
   st->from = op_ref(f);
   st->out = scr_stream_retain(out);
-  ScrPromise *p = gen_next(f->g);
-  op_await(p, &op_from_step_k, st);
-  scr_promise_release(p);
+  if (f->kind == FROM_ASYNC) {
+    ScrPromise *p = ((FromAsyncFn)f->next->fn)(f->next, scr_gen_retain(f->gen));
+    op_await_gen(p, f->read, &op_from_step_k, st);
+    scr_promise_release(p);
+  } else {
+    ScrPromise *p = gen_next(f->g);
+    op_await(p, &op_from_step_k, st);
+    scr_promise_release(p);
+  }
   op_unref(st);
 }
 
@@ -1490,6 +1585,40 @@ static void op_from_close_step(OpFromClose *c, ScrPromise *p) {
   scr_promise_release(p);
 }
 
+/* `await iterator.throw(error)` (err set) or `await iterator.return()`:
+ * op_from_close_k receives the result's value, or the done marker. A
+ * compiled sync generator answers at once (one job for the await); a
+ * compiled async generator answers through its promise. */
+static void from_close_resume(OpFromClose *c, ScrError *err) {
+  OpFrom *f = c->from;
+  if (f->kind == FROM_OP) {
+    if (err) {
+      ScrCaught *thrown = op_take_error(scr_error_retain(err));
+      op_from_close_step(c, gen_throw(f->g, thrown));
+      scr_caught_release(thrown);
+    } else {
+      op_from_close_step(c, gen_return(f->g, scr_dyn_undefined()));
+    }
+    return;
+  }
+  ScrDyn *e = err ? scr_dyn_from_error(err) : NULL;
+  if (f->kind == FROM_SYNC) {
+    ScrDyn *v = e ? ((FromSyncThrowFn)f->thr->fn)(f->thr, scr_gen_retain(f->gen), e)
+                  : ((FromSyncFn)f->ret->fn)(f->ret, scr_gen_retain(f->gen));
+    if (!v) {
+      op_from_close_k(c, NULL); /* close() rejects without an await */
+      return;
+    }
+    op_await_value(v, &op_from_close_k, c);
+    scr_dyn_release(v);
+    return;
+  }
+  ScrPromise *p = e ? ((FromAsyncThrowFn)f->thr->fn)(f->thr, scr_gen_retain(f->gen), e)
+                    : ((FromAsyncFn)f->ret->fn)(f->ret, scr_gen_retain(f->gen));
+  op_await_gen(p, f->read, &op_from_close_k, c);
+  scr_promise_release(p);
+}
+
 static void op_from_close_k(void *self, ScrDyn *v) {
   OpFromClose *c = self;
   if (!v) {
@@ -1510,7 +1639,7 @@ static void op_from_close_k(void *self, ScrDyn *v) {
   case 1: /* not done: iterator.return() */
   case 3:
     c->stage = 4;
-    op_from_close_step(c, gen_return(c->from->g, scr_dyn_undefined()));
+    from_close_resume(c, NULL);
     return;
   case 2: /* done after the throw: close() returns */
   case 5:
@@ -1534,15 +1663,8 @@ static void op_from_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
   c->from = f; /* the +1 from op_from_of moves here */
   c->out = scr_stream_retain(s);
   c->error = err ? scr_error_retain(err) : NULL;
-  if (err) {
-    ScrCaught *thrown = op_take_error(scr_error_retain(err));
-    c->stage = 0;
-    op_from_close_step(c, gen_throw(f->g, thrown));
-    scr_caught_release(thrown);
-  } else {
-    c->stage = 4;
-    op_from_close_step(c, gen_return(f->g, scr_dyn_undefined()));
-  }
+  c->stage = err ? 0 : 4;
+  from_close_resume(c, err);
   op_unref(c);
 }
 
@@ -1566,6 +1688,47 @@ static ScrStream *op_from_gen(OpGen *g) {
   f->out = out;
   op_unref(f);
   return out;
+}
+
+/* Readable.from over a compiled generator (the compiler's helpers move
+ * in, borrowed; g borrowed). +1, or NULL with ERR_INVALID_ARG_VALUE
+ * pending for a bad highWaterMark. */
+static ScrStream *op_from_compiled(int kind, ScrGen *g, ScrClosure *next, ScrClosure *read,
+                                   ScrClosure *ret, ScrClosure *thr, double flags, double hwm) {
+  OpFrom *f = op_alloc(sizeof *f);
+  f->base.rc = 1;
+  f->base.drop = &op_from_drop;
+  f->kind = kind;
+  f->gen = scr_gen_retain(g);
+  f->next = scr_closure_retain(next);
+  f->read = read ? scr_closure_retain(read) : NULL;
+  f->ret = scr_closure_retain(ret);
+  f->thr = scr_closure_retain(thr);
+  ScrStream *out = scr_stream_new_from_readable(op_from_closure((void *)&op_from_read_inv, f),
+                                                &op_from_read_inv,
+                                                op_from_closure((void *)&op_from_destroy_inv, f),
+                                                &op_from_destroy_inv, flags, hwm);
+  f->out = out;
+  op_unref(f);
+  return out;
+}
+
+ScrStream *scr_stream_from_gen(ScrGen *g, ScrClosure *next, ScrClosure *ret, ScrClosure *thr,
+                               double flags, double hwm) {
+  op_sentinels_init();
+  return op_from_compiled(FROM_SYNC, g, next, NULL, ret, thr, flags, hwm);
+}
+
+ScrStream *scr_stream_from_async_gen(ScrGen *g, ScrClosure *next, ScrClosure *read,
+                                     ScrClosure *ret, ScrClosure *thr, double flags,
+                                     double hwm) {
+  op_sentinels_init();
+  return op_from_compiled(FROM_ASYNC, g, next, read, ret, thr, flags, hwm);
+}
+
+ScrDyn *scr_stream_from_done(void) {
+  op_sentinels_init();
+  return scr_dyn_retain(op_k_done);
 }
 
 /* ── the promise operators ─────────────────────────────────────────── */

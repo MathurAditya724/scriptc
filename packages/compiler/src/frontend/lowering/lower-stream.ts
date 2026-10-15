@@ -39,7 +39,9 @@ import { bufEncoding, knownBufEncoding } from "./containers/bytes.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { sideEffectFreeOptionValue } from "./surfaces.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
-import { dynUndefinedExpr } from "../../ir/build.js";
+import { dynUndefinedExpr, varRef } from "../../ir/build.js";
+import { genResultRecord } from "../type-mapper.js";
+import { extractIteratorValue, genStep, genValue, stepDrivable } from "./lower-generators.js";
 import {
   BOOL,
   DYN,
@@ -1431,6 +1433,21 @@ export function lowerStreamStaticCall(
   const single = typedElem(srcT);
   const elem = srcT?.kind === "array" ? typedElem(srcT.elem) : null;
   const opts = optsNode ? fromOptions(lowerer, optsNode) : { flags: 0, hwm: null };
+  if (srcNode && srcT?.kind === "generator" && opts && fromGenChunk(lowerer, srcT.yieldT)) {
+    // A compiled generator: the runtime pulls it through interned helpers.
+    const gen = lowerer.lowerExpr(srcNode);
+    const helpers = fromGenHelpers(lowerer, srcT, loc);
+    if (helpers) {
+      const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
+      return {
+        kind: "libCall",
+        fn: srcT.async ? "readable.fromAsyncGen" : "readable.fromGen",
+        args: [gen, ...helpers, numLit(opts.flags, loc), hwm],
+        type,
+        loc,
+      };
+    }
+  }
   if (srcNode && (single || elem) && opts) {
     const v = lowerer.lowerExpr(srcNode);
     const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
@@ -1470,6 +1487,150 @@ export function lowerStreamStaticCall(
     srcNode ?? call,
     "string[] / Buffer[] arrays (and a single string or Buffer) are the supported sources — generators and async iterables have no lowering yet",
   );
+}
+
+/** Whether a generator's yields are stream chunks: strings, Buffers, a
+ * union of them (null included: the runtime destroys the stream with
+ * ERR_STREAM_NULL_VALUES), or checked-dynamic values (checked when
+ * pushed). */
+function fromGenChunk(lowerer: Lowerer, t: IrType): boolean {
+  const chunk = (a: IrType): boolean =>
+    a.kind === "string" || (a.kind === "bytes" && a.elem === "u8") || a.kind === "nullT";
+  if (t.kind === "dyn" || (chunk(t) && t.kind !== "nullT")) return true;
+  if (t.kind !== "union") return false;
+  return lowerer.unions.get(t.unionId)?.arms.every(chunk) ?? false;
+}
+
+/** The helpers Readable.from pulls a compiled generator through, as
+ * closures in libcall order: a sync generator's next/return/throw answer
+ * the next value as a checked-dynamic value or the done marker
+ * (readable.fromDone); an async generator's next/return/throw answer the
+ * resume's promise, followed by `read`, which maps its IteratorResult the
+ * same way. Interned per generator type. Null when the result record has
+ * no lowering. */
+function fromGenHelpers(
+  lowerer: Lowerer,
+  gen: IrType & { kind: "generator" },
+  loc: SrcLoc,
+): IrExpr[] | null {
+  const recT = genResultRecord(gen.yieldT, gen.retT, lowerer.shapes, lowerer.unions);
+  const valueT =
+    recT && lowerer.shapes.get(recT.shapeId)?.fields.find((f) => f.name === "value")?.type;
+  if (!recT || !valueT) return null;
+  const done = (): IrExpr => ({
+    kind: "libCall",
+    fn: "readable.fromDone",
+    args: [],
+    type: DYN,
+    loc,
+  });
+  // `r.done ? done : r.value` over a record local.
+  const readRecord = (localId: string): IrStmt[] | null => {
+    const r = varRef(localId, recT, loc);
+    const value = extractIteratorValue(
+      lowerer,
+      gen.yieldT,
+      valueT,
+      { kind: "recordGet", obj: r, shapeId: recT.shapeId, field: "value", type: valueT, loc },
+      loc,
+    );
+    if (!value) return null;
+    return [
+      {
+        kind: "if",
+        cond: { kind: "recordGet", obj: r, shapeId: recT.shapeId, field: "done", type: BOOL, loc },
+        then: [{ kind: "return", value: done(), loc }],
+        else_: null,
+        loc,
+      },
+      { kind: "return", value: lowerer.coerceToExpected(value, DYN), loc },
+    ];
+  };
+  const promiseT: IrType = { kind: "promise", inner: recT };
+  const define = (
+    role: string,
+    params: { id: string; type: IrType }[],
+    returnType: IrType,
+    body: IrStmt[],
+    locals: { id: string; type: IrType }[] = [],
+  ): IrExpr => {
+    const key = `streamFromGen:${role}:${typeKey(gen)}`;
+    let name = lowerer.valueHelpers.get(key);
+    if (!name) {
+      name = `%stream.fromGen.${role}.${lowerer.valueHelpers.size}`;
+      lowerer.valueHelpers.set(key, name);
+      lowerer.liftedFns.push({
+        name,
+        params: params.map((p) => ({ localId: p.id, name: p.id.split(".")[0]!, type: p.type })),
+        returnType,
+        locals: [...params, ...locals].map((l) => ({
+          id: l.id,
+          name: l.id.split(".")[0]!,
+          type: l.type,
+          mutable: false,
+        })),
+        body,
+        loc,
+      });
+    }
+    return {
+      kind: "closure",
+      fnName: name,
+      captures: [],
+      type: funcOf(
+        params.map((p) => p.type),
+        returnType,
+      ),
+      loc,
+    };
+  };
+  const g = { id: "gen.0", type: gen as IrType };
+  const e = { id: "err.0", type: DYN };
+  const r = { id: "res.0", type: recT as IrType };
+  const genRef = varRef("gen.0", gen, loc) as IrExpr & { type: typeof gen };
+  const resume = (mode: "next" | "return" | "throw"): IrExpr => ({
+    kind: "genResume",
+    mode,
+    gen: genRef,
+    arg: mode === "throw" ? varRef("err.0", DYN, loc) : null,
+    type: gen.async ? promiseT : recT,
+    loc,
+  });
+  const read = readRecord("res.0");
+  if (!read) return null;
+  if (gen.async) {
+    const ret = (mode: "next" | "return" | "throw"): IrStmt[] => [
+      { kind: "return", value: resume(mode), loc },
+    ];
+    return [
+      define("anext", [g], promiseT, ret("next")),
+      define("aread", [r], DYN, read),
+      define("areturn", [g], promiseT, ret("return")),
+      define("athrow", [g, e], promiseT, ret("throw")),
+    ];
+  }
+  const viaRecord = (mode: "next" | "return" | "throw"): IrStmt[] => [
+    { kind: "varDecl", localId: "res.0", init: resume(mode), loc },
+    ...read,
+  ];
+  const next: IrStmt[] = stepDrivable(gen)
+    ? [
+        {
+          kind: "if",
+          cond: genStep(genRef, loc),
+          then: [{ kind: "return", value: done(), loc }],
+          else_: null,
+          loc,
+        },
+        { kind: "return", value: lowerer.coerceToExpected(genValue(genRef, loc), DYN), loc },
+      ]
+    : viaRecord("next");
+  const withRecord = stepDrivable(gen) ? [] : [r];
+  return [
+    define("next", [g], DYN, next, withRecord),
+    define("return", [g], DYN, viaRecord("return"), [r]),
+    define("throw", [g, e], DYN, viaRecord("throw"), [r]),
+  ];
 }
 
 /** Readable.from's typed options: an object literal of `objectMode`
@@ -2346,6 +2507,14 @@ function lowerStreamOperator(
   throw new InternalCompilerError(`unknown stream operator ${member}`);
 }
 
+/** The literal 'buffer' encoding on write()/end(): Node 24 takes it for a
+ * Buffer chunk and throws ERR_UNKNOWN_ENCODING for a string chunk. */
+function isBufferEncoding(lowerer: Lowerer, arg: ts.Expression | undefined): boolean {
+  if (arg === undefined) return false;
+  const t = lowerer.typeOf(arg);
+  return t.isStringLiteralType() && t.value === "buffer";
+}
+
 /** The one supported encoding argument: utf8 (Node's default), as a
  * compile-time literal or absent. */
 function checkUtf8Encoding(lowerer: Lowerer, member: string, arg: ts.Expression | undefined): void {
@@ -2705,7 +2874,11 @@ export function lowerStreamMethodCall(
     // Disambiguate (chunk, cb?) vs (chunk, encoding, cb?) by the second
     // argument's static type.
     let cbArg: ts.Expression | undefined;
-    if (args.length === 2) {
+    if (args.length >= 2 && isBufferEncoding(lowerer, args[1])) {
+      if (kind !== "bytes")
+        return nodeThrowExpr(1, "ERR_UNKNOWN_ENCODING", "Unknown encoding: buffer", BOOL, loc);
+      cbArg = args[2];
+    } else if (args.length === 2) {
       const t = lowerer.mapTypeOf(lowerer.typeOf(args[1]!));
       if (t?.kind === "string") checkUtf8Encoding(lowerer, "write", args[1]);
       else cbArg = args[1];
@@ -2743,6 +2916,15 @@ export function lowerStreamMethodCall(
       const t = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
       if (t?.kind === "func") cbArg = args[0];
       else chunkNode = args[0];
+    } else if (args.length >= 2 && isBufferEncoding(lowerer, args[1])) {
+      chunkNode = args[0];
+      const endKind = chunkKind(args[0]!);
+      if (endKind === "string") {
+        const endT = lowerer.mapTypeOf(lowerer.typeOf(call)) ?? DYN;
+        return nodeThrowExpr(1, "ERR_UNKNOWN_ENCODING", "Unknown encoding: buffer", endT, loc);
+      }
+      if (endKind !== "bytes") checkUtf8Encoding(lowerer, "end", args[1]);
+      cbArg = args[2];
     } else if (args.length === 2) {
       chunkNode = args[0];
       const t = lowerer.mapTypeOf(lowerer.typeOf(args[1]!));
