@@ -15,7 +15,11 @@ import { validateModule } from "../../ir/validate.js";
 import { analyzeCallLifetimes } from "./call-lifetimes.js";
 import { emitLlvmModule } from "./emitter.js";
 import { keepUnionsBoxed } from "./test-boxed-unions.js";
-import { borrowsMapReadInputs, findMapReadLifetimes } from "./map-read-lifetimes.js";
+import {
+  borrowsMapReadInputs,
+  findMapReadLifetimes,
+  findReadNumberMapWrites,
+} from "./map-read-lifetimes.js";
 
 const loc = { file: "map-reads.ts", start: 0, end: 1 };
 const record: IrType = { kind: "record", shapeId: "cell" };
@@ -264,4 +268,154 @@ test("string-key lookups test the absent-key filter inline on 64-bit targets onl
   const narrow = helper(32);
   expect(narrow).not.toContain("%ScrMapIx");
   expect(narrow).toContain("call ptr @scr_map_entry_str(ptr %m, ptr %k)");
+});
+
+test("number-key writes look the key up inline only after a read of the same collection and key", () => {
+  const map: IrType = { kind: "map", key: F64, value: F64 };
+  const other: IrType = { kind: "map", key: F64, value: F64 };
+  const set: IrType = { kind: "set", elem: F64 };
+  const call = (
+    kind: "mapIntrinsic" | "setIntrinsic",
+    method: string,
+    receiver: IrExpr,
+    args: IrExpr[],
+    type: IrType,
+  ): IrExpr => ({ kind, method, receiver, args, type, loc }) as IrExpr;
+  const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+  const k = ref("k", F64);
+  const count = call(
+    "mapIntrinsic",
+    "set",
+    ref("map", map),
+    [
+      k,
+      {
+        kind: "bin",
+        op: "+",
+        left: {
+          kind: "nullish",
+          left: call("mapIntrinsic", "get", ref("map", map), [k], optional),
+          right: num(0),
+          type: F64,
+          loc,
+        },
+        right: num(1),
+        type: F64,
+        loc,
+      } as IrExpr,
+    ],
+    VOID,
+  );
+  const afterRead = call("mapIntrinsic", "set", ref("map", map), [ref("j", F64), num(1)], VOID);
+  const guarded = call("setIntrinsic", "add", ref("seen", set), [k], VOID);
+  const unread = call("mapIntrinsic", "set", ref("map", map), [num(7), num(1)], VOID);
+  const elsewhere = call(
+    "mapIntrinsic",
+    "set",
+    ref("map", map),
+    [k, call("mapIntrinsic", "get", ref("other", other), [k], F64)],
+    VOID,
+  );
+  const fn: IrFunction = {
+    name: "work",
+    params: [],
+    returnType: VOID,
+    loc,
+    locals: [],
+    body: [
+      { kind: "exprStmt", expr: count, loc },
+      {
+        kind: "varDecl",
+        localId: "v",
+        init: call("mapIntrinsic", "get", ref("map", map), [ref("j", F64)], optional),
+        loc,
+      },
+      { kind: "exprStmt", expr: afterRead, loc },
+      {
+        kind: "if",
+        cond: {
+          kind: "unary",
+          op: "!",
+          operand: call("setIntrinsic", "has", ref("seen", set), [k], BOOL),
+          type: BOOL,
+          loc,
+        },
+        then: [{ kind: "exprStmt", expr: guarded, loc }],
+        else_: null,
+        loc,
+      },
+      { kind: "exprStmt", expr: unread, loc },
+      { kind: "exprStmt", expr: elsewhere, loc },
+    ],
+  };
+  const writes = findReadNumberMapWrites(fn);
+  expect(writes.has(count)).toBe(true);
+  expect(writes.has(afterRead)).toBe(true);
+  expect(writes.has(guarded)).toBe(false);
+  expect(writes.has(unread)).toBe(false);
+  expect(writes.has(elsewhere)).toBe(false);
+});
+
+test("a number-key write after a read stores into the found entry and appends through the runtime", () => {
+  const map: IrType = { kind: "map", key: F64, value: F64 };
+  const params = [
+    { localId: "map", name: "map", type: map },
+    { localId: "k", name: "k", type: F64 },
+  ];
+  const work: IrFunction = {
+    name: "work",
+    params,
+    returnType: BOOL,
+    loc,
+    locals: [
+      ...params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: true })),
+      { id: "present", name: "present", type: BOOL, mutable: false },
+    ],
+    body: [
+      {
+        kind: "varDecl",
+        localId: "present",
+        init: {
+          kind: "mapIntrinsic",
+          method: "has",
+          receiver: ref("map", map),
+          args: [ref("k", F64)],
+          type: BOOL,
+          loc,
+        },
+        loc,
+      },
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "mapIntrinsic",
+          method: "set",
+          receiver: ref("map", map),
+          args: [ref("k", F64), { kind: "numLit", value: 2, type: F64, loc }],
+          type: VOID,
+          loc,
+        },
+        loc,
+      },
+      { kind: "return", value: ref("present", BOOL), loc },
+    ],
+  };
+  const mod: IrModule = {
+    irVersion: 16,
+    sourceFile: loc.file,
+    entry: "main",
+    records: [],
+    unions: [],
+    functions: [{ name: "main", params: [], locals: [], returnType: VOID, body: [], loc }, work],
+  };
+  expect(validateModule(mod)).toEqual([]);
+  for (const bits of [32, 64] as const) {
+    const ir = emitLlvmModule(mod, { pointerBits: bits });
+    const body = /^define internal [^\n]*@sc_(?:b)?f_work\([^]*?^}/m.exec(ir)![0];
+    expect(body.match(/call ptr @sc_map_entry_f64\(/g)).toHaveLength(2);
+    expect(body).toMatch(
+      /mapn\.set\.hit\d*:\n\s+(%t\d+) = getelementptr inbounds %ScrMapEntry, ptr %t\d+, i32 0, i32 1\n\s+store i64 %t\d+, ptr \1\n/,
+    );
+    expect(body).toContain("call void @scr_map_set_f64_f64(");
+  }
 });
