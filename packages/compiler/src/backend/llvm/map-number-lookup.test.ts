@@ -117,3 +117,68 @@ test("string keys and reference values are retained inline, boolean slots compar
   expect(text).toContain("@scr_str_retain");
   expect(text).toContain("call ptr @scr_map_iter_val_ref(");
 });
+
+/** work(map, k): map.has(k) on a number-keyed map. */
+function lookupFixture(): IrModule {
+  const map: IrType = { kind: "map", key: F64, value: F64 };
+  const params = [
+    { localId: "map", name: "map", type: map },
+    { localId: "k", name: "k", type: F64 },
+  ];
+  const has: IrExpr = {
+    kind: "mapIntrinsic",
+    method: "has",
+    receiver: ref("map", map),
+    args: [ref("k", F64)],
+    type: BOOL,
+    loc,
+  };
+  const work: IrFunction = {
+    name: "work",
+    params,
+    returnType: BOOL,
+    loc,
+    locals: params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: true })),
+    body: [{ kind: "return", value: has, loc }],
+  };
+  return {
+    irVersion: 16,
+    sourceFile: loc.file,
+    entry: "main",
+    records: [],
+    unions: [],
+    functions: [{ name: "main", params: [], locals: [], returnType: VOID, body: [], loc }, work],
+  };
+}
+
+test("hashed number-key lookups probe inline and call the runtime only for wide tables", () => {
+  for (const bits of [32, 64] as const) {
+    const sz = bits === 64 ? "i64" : "i32";
+    const { work, module } = emitted(lookupFixture(), bits);
+    expect(work).toContain("call ptr @sc_map_entry_f64(");
+    const helper = /^define internal ptr @sc_map_entry_f64\(ptr %m, double %k\)[^]*?^}/m.exec(
+      module,
+    )![0];
+    expect(helper).toContain("call ptr @sc_map_entry_f64_hashed(ptr %m, double %k)");
+    const hashed =
+      /^define internal ptr @sc_map_entry_f64_hashed\(ptr %m, double %k\) noinline [^]*?^}/m.exec(
+        module,
+      )![0];
+    // The SameValueZero key word (canonical NaN, +0 for -0) and the
+    // scr_key_mix multipliers 0xbf58476d1ce4e5b9 and 0x94d049bb133111eb.
+    expect(hashed).toContain("select i1 %nan, i64 9221120237041090560, i64 %kzb");
+    expect(hashed).toContain("mul i64 %x1, -4658895280553007687");
+    expect(hashed).toContain("mul i64 %x3, -7723592293110705685");
+    // Filter (field 11), small-map scan of the entry count (field 9), and
+    // compact buckets (fields 14 and 15) tagged with the hash's top byte.
+    expect(hashed).toContain("getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11");
+    expect(hashed).toContain(`%ne = load ${sz}, ptr %nep`);
+    expect(hashed).toContain(`%nb = load ${sz}, ptr %nbp`);
+    expect(hashed).toContain("getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 15");
+    expect(hashed).toContain("and i32 %ht32, -16777216");
+    expect(hashed).toContain(`icmp ugt ${sz} %nb, 16777216`);
+    expect(hashed).toContain(
+      "call ptr @scr_map_entry_f64(ptr %m, double %k) memory(read) nounwind willreturn",
+    );
+  }
+});

@@ -258,7 +258,11 @@ static inline bool scr_map_lookup_eq(const ScrMap *m, uint64_t stored, uint64_t 
 /* Compact tables keep a hash fingerprint beside each 24-bit entry index.
  * Rejecting a collision here avoids loading an unrelated ordered entry.
  * Larger tables keep full-width indices; collection size remains limited
- * only by the allocator. Zero is empty in compact tables, so store index+1. */
+ * only by the allocator. Zero is empty in compact tables, so store index+1.
+ * The LLVM backend's inline number-key probe (sc_map_entry_f64_hashed)
+ * reads this encoding for tables of at most 1 << 24 buckets, hashes keys
+ * as scr_map_find_f64 does, and calls scr_map_entry_f64 for wider tables;
+ * only the runtime unit test builds a smaller bound. */
 #ifndef SCR_MAP_COMPACT_BUCKETS
 #define SCR_MAP_COMPACT_BUCKETS ((size_t)1 << 24)
 #endif
@@ -999,10 +1003,19 @@ static inline bool scr_map_append_grows_index(const ScrMap *m) {
 
 /* Number keys arrive normalized (+0 for -0, canonical NaN). A directly
  * indexed map overwrites or appends through its table; a key the table
- * cannot hold converts it to hashing first. */
+ * cannot hold converts it to hashing first. When an append would grow a
+ * hashed map's index, the lookup that decides whether the key is new also
+ * overwrites a key that is already present. */
 static void scr_map_set_f64_slot(ScrMap *m, uint64_t key, uint64_t val) {
   double k = scr_map_slot_to_f64(key);
-  if (!m->ndense && scr_map_append_grows_index(m) && scr_map_find_f64(m, k) == SCR_MAP_EMPTY) {
+  if (!m->ndense && scr_map_append_grows_index(m)) {
+    size_t e = scr_map_find_f64(m, k);
+    if (e != SCR_MAP_EMPTY) {
+      uint64_t old = m->entries[e].val;
+      m->entries[e].val = val; /* unlink before releasing (cycle collector) */
+      scr_map_release_val(m, old);
+      return;
+    }
     scr_map_enter_dense(m, k); /* the append would grow the index */
   }
   if (m->ndense) {

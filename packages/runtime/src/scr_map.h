@@ -119,7 +119,8 @@ _Static_assert(offsetof(ScrMap, key_trace) == offsetof(ScrMap, val_trace) + 3 * 
 /* The LLVM backend's inline number-key lookup (sc_map_entry_f64) reads
  * entries, dense and ndense through %ScrMapIx fields 13, 19 and 20, and
  * entries as %ScrMapEntry { key, val, hash }; %ScrMapIx field 11 is the
- * i64 filter. */
+ * i64 filter. Its hashed probe (sc_map_entry_f64_hashed) also reads the
+ * entry count, nbuckets and buckets as fields 9, 14 and 15. */
 _Static_assert(offsetof(ScrMap, filter) ==
                    (offsetof(ScrMap, nlive) + sizeof(size_t) + _Alignof(uint64_t) - 1) / _Alignof(uint64_t) * _Alignof(uint64_t),
                "%ScrMapIx field 11 is ScrMap.filter, directly after nlive");
@@ -132,6 +133,9 @@ _Static_assert(offsetof(ScrMap, nentries) + sizeof(size_t) == offsetof(ScrMap, n
 _Static_assert(offsetof(ScrMapEntry, hash) == 16, "inline iteration reads ScrMapEntry.hash at byte 16");
 _Static_assert(offsetof(ScrMap, entries) == offsetof(ScrMap, filter) + sizeof(uint64_t) + sizeof(size_t),
                "inline number-key lookups read ScrMap.entries as %ScrMapIx field 13");
+_Static_assert(offsetof(ScrMap, nbuckets) == offsetof(ScrMap, entries) + sizeof(void *) &&
+                   offsetof(ScrMap, buckets) == offsetof(ScrMap, nbuckets) + sizeof(size_t),
+               "inline number-key probes read ScrMap.nbuckets and buckets as %ScrMapIx fields 14 and 15");
 _Static_assert(offsetof(ScrMap, dense) == offsetof(ScrMap, entries) + 6 * sizeof(void *),
                "inline number-key lookups read ScrMap.dense as %ScrMapIx field 19");
 _Static_assert(offsetof(ScrMap, ndense) == offsetof(ScrMap, dense) + sizeof(void *),
