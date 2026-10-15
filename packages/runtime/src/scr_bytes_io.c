@@ -537,91 +537,11 @@ static void scr_fs_cb_copy(const ScrStr *source, const ScrStr *destination, bool
   }
 }
 
-static ScrDyn *scr_fs_cb_stat_test(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
-  (void)args; (void)argc;
-  return scr_dyn_new_bool(scr_box_get_bool(closure->caps[0]));
-}
-
-static void scr_fs_cb_stat_method(ScrDyn *object, const char *name, bool answer) {
-  ScrClosure *closure = scr_closure_new(NULL, 1);
-  closure->caps[0] = scr_box_new(SCR_BOX_BOOL);
-  scr_box_set_bool(closure->caps[0], answer);
-  scr_dyn_obj_set(object, name, strlen(name), scr_dyn_new_func(closure, scr_fs_cb_stat_test, 0, "native:fs.Stats", name));
-}
-
-static void scr_fs_cb_stat_number(ScrDyn *object, const char *name, int64_t number, bool bigint) {
-  ScrDyn *value;
-  if (bigint) {
-    ScrBigInt *integer = scr_bigint_from_i64(number);
-    value = scr_dyn_new_bigint(integer);
-    scr_bigint_release(integer);
-  } else value = scr_dyn_new_num((double)number);
-  scr_dyn_obj_set(object, name, strlen(name), value);
-}
-
-static void scr_fs_cb_stat_date(ScrDyn *object, const char *name, double milliseconds) {
-  ScrDyn *arguments = scr_dyn_new_arr();
-  scr_dyn_arr_push(arguments, scr_dyn_new_num(milliseconds));
-  ScrDyn *date = scr_dyn_native_date_new(arguments);
-  scr_dyn_release(arguments);
-  if (date) scr_dyn_obj_set(object, name, strlen(name), date);
-}
-
 static ScrDyn *scr_fs_cb_stats(const ScrStr *path, double fd, const ScrDyn *options, bool nofollow) {
-  struct stat status;
-#ifdef _WIN32
-  (void)nofollow;
-  int rc = path ? stat(path->data, &status) : fstat((int)fd, &status);
-#else
-  int rc = path ? (nofollow ? lstat(path->data, &status) : stat(path->data, &status)) : fstat((int)fd, &status);
-#endif
-  if (rc < 0) { scr_fs_throw(errno, path ? (nofollow ? "lstat" : "stat") : "fstat", path); return NULL; }
-  bool bigint = scr_fs_cb_option_bool(options, "bigint");
-  ScrDyn *object = scr_dyn_new_obj();
-#define SCR_FS_STAT_FIELD(field) scr_fs_cb_stat_number(object, #field, (int64_t)status.st_##field, bigint)
-  SCR_FS_STAT_FIELD(dev); SCR_FS_STAT_FIELD(ino); SCR_FS_STAT_FIELD(mode); SCR_FS_STAT_FIELD(nlink);
-  SCR_FS_STAT_FIELD(uid); SCR_FS_STAT_FIELD(gid); SCR_FS_STAT_FIELD(rdev); SCR_FS_STAT_FIELD(size);
-#ifndef _WIN32
-  SCR_FS_STAT_FIELD(blksize); SCR_FS_STAT_FIELD(blocks);
-#endif
-#undef SCR_FS_STAT_FIELD
-  double atime = (double)status.st_atime * 1000, mtime = (double)status.st_mtime * 1000, ctime = (double)status.st_ctime * 1000;
-  double birthtime = 0;
-#ifdef __APPLE__
-  atime += status.st_atimespec.tv_nsec / 1000000.0; mtime += status.st_mtimespec.tv_nsec / 1000000.0;
-  ctime += status.st_ctimespec.tv_nsec / 1000000.0;
-  birthtime = (double)status.st_birthtimespec.tv_sec * 1000 + status.st_birthtimespec.tv_nsec / 1000000.0;
-#elif !defined(_WIN32) && !defined(__wasi__)
-  atime += status.st_atim.tv_nsec / 1000000.0; mtime += status.st_mtim.tv_nsec / 1000000.0;
-  ctime += status.st_ctim.tv_nsec / 1000000.0;
-#endif
-  scr_fs_cb_stat_date(object, "atime", atime); scr_fs_cb_stat_date(object, "mtime", mtime);
-  scr_fs_cb_stat_date(object, "ctime", ctime); scr_fs_cb_stat_date(object, "birthtime", birthtime);
-  if (bigint) {
-    scr_fs_cb_stat_number(object, "atimeMs", (int64_t)atime, true);
-    scr_fs_cb_stat_number(object, "mtimeMs", (int64_t)mtime, true);
-    scr_fs_cb_stat_number(object, "ctimeMs", (int64_t)ctime, true);
-    scr_fs_cb_stat_number(object, "birthtimeMs", (int64_t)birthtime, true);
-  } else {
-    scr_dyn_obj_set(object, "atimeMs", 7, scr_dyn_new_num(atime));
-    scr_dyn_obj_set(object, "mtimeMs", 7, scr_dyn_new_num(mtime));
-    scr_dyn_obj_set(object, "ctimeMs", 7, scr_dyn_new_num(ctime));
-    scr_dyn_obj_set(object, "birthtimeMs", 11, scr_dyn_new_num(birthtime));
-  }
-  scr_fs_cb_stat_method(object, "isFile", S_ISREG(status.st_mode));
-  scr_fs_cb_stat_method(object, "isDirectory", S_ISDIR(status.st_mode));
-#ifndef _WIN32
-  scr_fs_cb_stat_method(object, "isSymbolicLink", S_ISLNK(status.st_mode));
-  scr_fs_cb_stat_method(object, "isBlockDevice", S_ISBLK(status.st_mode));
-  scr_fs_cb_stat_method(object, "isCharacterDevice", S_ISCHR(status.st_mode));
-  scr_fs_cb_stat_method(object, "isFIFO", S_ISFIFO(status.st_mode));
-  scr_fs_cb_stat_method(object, "isSocket", S_ISSOCK(status.st_mode));
-#else
-  scr_fs_cb_stat_method(object, "isSymbolicLink", false);
-  scr_fs_cb_stat_method(object, "isBlockDevice", false);
-  scr_fs_cb_stat_method(object, "isCharacterDevice", S_ISCHR(status.st_mode));
-  scr_fs_cb_stat_method(object, "isFIFO", false); scr_fs_cb_stat_method(object, "isSocket", false);
-#endif
+  ScrStats *snapshot = !path ? scr_fs_fstat(fd) : nofollow ? scr_fs_lstat((ScrStr *)path) : scr_fs_stat((ScrStr *)path);
+  if (!snapshot) return NULL;
+  ScrDyn *object = scr_stats_dyn(snapshot, scr_fs_cb_option_bool(options, "bigint"));
+  scr_stats_release(snapshot);
   return object;
 }
 
