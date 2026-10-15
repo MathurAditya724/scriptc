@@ -250,6 +250,10 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5319-map-iteration-values.ts",
     // JSON writers read array slots as pointers.
     "5305-json-stringify-typed-arrays.ts",
+    // Comparator sorts move 64-bit slots of 32-bit pointers.
+    "5360-array-sort-comparator-calls.ts",
+    "5363-array-sort-comparator-writes.ts",
+    "5365-array-sort-dynamic-values.js",
   ])("the LLVM target runs %s byte-identically to Node", async (fixture) => {
     const entry = join(repoRoot, "tests/corpus", fixture);
     const outDir = await mkdtemp("/tmp/scriptc-wasi-");

@@ -8,6 +8,7 @@ import {
   type IrType,
   VOID,
   type SrcLoc,
+  UNDEFINED_T,
   arrayOf,
   funcOf,
 } from "../../ir/ir.js";
@@ -15,7 +16,8 @@ import { numLit } from "../../ir/build.js";
 import { transformStmtList } from "../../ir/traverse.js";
 
 type SortLocal = IrExpr & { kind: "varRef" };
-type Greater = (left: IrExpr, right: IrExpr) => IrExpr;
+/** `f(left, right) < 0`: the one comparison TimSort makes. */
+type Less = (left: IrExpr, right: IrExpr) => IrExpr;
 
 /** Small IR vocabulary shared by the array and byte sort helpers. */
 class SortIr {
@@ -134,165 +136,566 @@ function distinctNodes(body: IrStmt[]): IrStmt[] {
   });
 }
 
-/** Stable natural merge sort over an owned snapshot. Strict descending runs
- * can be reversed without reversing ties. Short runs use bounded binary
- * insertion; merge passes then consume pairs of complete runs. The boundary
- * table compacts in place, and a single run needs no scratch buffer at all.
- * Comparator scheduling is intentionally unspecified, as for the previous
- * bottom-up sorter. Every callback still uses ordinary IR exception/ownership
- * handling; the caller's array is only written after sorting succeeds. */
-function stableSort(b: SortIr, src: SortLocal, n: IrExpr, greater: Greater): IrStmt[] {
+/** V8's TimSort (third_party/v8/builtins/array-sort.tq) over the first `n`
+ * slots of an owned snapshot, step for step like the runtime's
+ * (scr_array.c): the same minimum run length, run detection, binary
+ * insertion, run-stack invariants, galloping merges and adaptive gallop
+ * threshold. Every comparison is `less(x, y)`, the comparator's
+ * `f(x, y) < 0`, so the comparator sees Node's calls in Node's order. Every
+ * callback still uses ordinary IR exception/ownership handling; the
+ * caller's array is only written after sorting succeeds. */
+function timSort(b: SortIr, src: SortLocal, n: IrExpr, less: Less): IrStmt[] {
+  return [b.branch(b.lt(b.num(1), n), timSortBody(b, src, n, less))];
+}
+
+function timSortBody(b: SortIr, src: SortLocal, n: IrExpr, less: Less): IrStmt[] {
   const elem = src.type.kind === "array" ? src.type.elem : F64;
-  const dst = b.local("dst", src.type);
-  const tmp = b.local("tmp", src.type);
-  const runs = b.local("runs", arrayOf(F64));
-  const runCount = b.local("runCount");
-  const start = b.local("start");
-  const end = b.local("end");
-  const descending = b.local("descending", BOOL);
-  const left = b.local("left");
-  const right = b.local("right");
-  const pivot = b.local("pivot", elem);
-  const low = b.local("low");
-  const high = b.local("high");
-  const center = b.local("center");
-  const limit = b.local("limit");
-  const i = b.local("i");
-  const j = b.local("j");
-  const k = b.local("k");
-  const mid = b.local("mid");
-  const run = b.local("run");
-  const nextRun = b.local("nextRun");
-  const vLeft = b.local("vLeft", elem);
-  const vRight = b.local("vRight", elem);
-  const boundaryLeft = b.local("boundaryLeft", elem);
-  const boundaryRight = b.local("boundaryRight", elem);
+  const loc = b.loc;
+  let labels = 0;
+  const local = (name: string, type: IrType = F64) => b.local(name, type);
   const zero = b.num(0),
     one = b.num(1),
     two = b.num(2);
-  const at = (index: IrExpr): IrExpr => b.at(src, index);
-  const copy = (index: SortLocal, stop: IrExpr): IrStmt =>
-    b.while(b.lt(index, stop), [b.set(dst, k, at(index)), b.step(index), b.step(k)]);
-  const merge: IrStmt[] = [
-    b.bind(vLeft, at(i)),
-    b.bind(vRight, at(j)),
-    b.while(
-      {
-        kind: "logical",
-        op: "&&",
-        left: b.lt(i, mid),
-        right: b.lt(j, right),
-        type: BOOL,
-        loc: b.loc,
-      },
-      [
-        b.branch(
-          greater(vLeft, vRight),
-          [b.set(dst, k, vRight), b.step(j), b.branch(b.lt(j, right), [b.assign(vRight, at(j))])],
-          [b.set(dst, k, vLeft), b.step(i), b.branch(b.lt(i, mid), [b.assign(vLeft, at(i))])],
-        ),
-        b.step(k),
-      ],
-    ),
-    copy(i, mid),
-    copy(j, right),
+  const at = (arr: IrExpr, index: IrExpr): IrExpr => b.at(arr, index);
+  const ge = (left: IrExpr, right: IrExpr): IrExpr => b.not(b.lt(left, right));
+  const le = (left: IrExpr, right: IrExpr): IrExpr => b.not(b.lt(right, left));
+  const and = (left: IrExpr, right: IrExpr): IrExpr => ({
+    kind: "logical",
+    op: "&&",
+    left,
+    right,
+    type: BOOL,
+    loc,
+  });
+  const or = (left: IrExpr, right: IrExpr): IrExpr => ({
+    kind: "logical",
+    op: "||",
+    left,
+    right,
+    type: BOOL,
+    loc,
+  });
+  const truth: IrExpr = { kind: "boolLit", value: true, type: BOOL, loc };
+  const forever = (body: IrStmt[]): IrStmt => b.while(truth, body);
+  const brk = (label?: string): IrStmt => ({ kind: "break", ...(label ? { label } : {}), loc });
+  const block = (label: string, body: IrStmt[]): IrStmt => ({
+    kind: "block",
+    body,
+    labels: [label],
+    loc,
+  });
+  const half = (low: IrExpr, high: IrExpr): IrExpr =>
+    b.add(low, {
+      kind: "libCall",
+      fn: "math.floor",
+      args: [{ kind: "bin", op: "/", left: b.sub(high, low), right: two, type: F64, loc }],
+      type: F64,
+      loc,
+    });
+  const min = (x: IrExpr, y: IrExpr): IrExpr => b.choose(b.lt(x, y), x, y);
+  /** Copies `count` slots between arrays (or within one, front to back). */
+  const copyForward = (from: IrExpr, fromAt: IrExpr, to: IrExpr, toAt: IrExpr, count: IrExpr) => [
+    b.assign(cp, zero),
+    b.while(b.lt(cp, count), [b.set(to, b.add(toAt, cp), at(from, b.add(fromAt, cp))), b.step(cp)]),
   ];
-  return [
-    b.bind(runs, { kind: "arrayLit", elems: [zero], type: runs.type, loc: b.loc }),
-    b.bind(runCount, one),
-    b.bind(start, zero),
-    b.while(b.lt(start, n), [
-      b.bind(end, b.add(start, one)),
-      b.branch(b.lt(end, n), [
-        b.bind(descending, greater(at(start), at(end))),
-        b.step(end),
-        b.while(b.lt(end, n), [
+  /** Copies `count` slots within `src` back to front (overlap to the right). */
+  const copyBackward = (fromAt: IrExpr, toAt: IrExpr, count: IrExpr) => [
+    b.assign(cp, count),
+    b.while(b.lt(zero, cp), [
+      b.step(cp, -1),
+      b.set(src, b.add(toAt, cp), at(src, b.add(fromAt, cp))),
+    ]),
+  ];
+
+  const minGallop = local("minGallop");
+  const runBase = local("runBase", arrayOf(F64));
+  const runLen = local("runLen", arrayOf(F64));
+  const runs = local("runs");
+  const cp = local("copyIndex");
+  // Gallop search state; searches never nest.
+  const gLast = local("gallopLast");
+  const gOfs = local("gallopOffset");
+  const gMax = local("gallopMax");
+  const gMid = local("gallopMid");
+  const gTmp = local("gallopTmp");
+  const gBase = local("gallopBase");
+  const gLength = local("gallopLength");
+  const gHint = local("gallopHint");
+  const gKey = local("gallopKey", elem);
+
+  /** gallopLeft/gallopRight: assigns `out` the offset k in [0, length] of
+   * `key` in arr[base .. base + length), starting the search at `hint`. */
+  const gallop = (
+    right: boolean,
+    out: SortLocal,
+    arr: IrExpr,
+    key: IrExpr,
+    base: IrExpr,
+    lengthExpr: IrExpr,
+    hintExpr: IrExpr,
+  ): IrStmt[] => {
+    // gallopLeft tests arr[i] < key; gallopRight tests key < arr[i].
+    const probe = (index: IrExpr): IrExpr =>
+      right ? less(gKey, at(arr, b.add(gBase, index))) : less(at(arr, b.add(gBase, index)), gKey);
+    // Whether the search moves right (toward higher indices) from the hint.
+    const towardHigh = right ? b.not(probe(gHint)) : probe(gHint);
+    const advance = () => [b.assign(gLast, gOfs), b.assign(gOfs, b.add(b.add(gOfs, gOfs), one))];
+    const length = gLength,
+      hint = gHint;
+    const body: IrStmt[] = [
+      b.bind(gKey, key),
+      b.assign(gBase, base),
+      b.assign(gLength, lengthExpr),
+      b.assign(gHint, hintExpr),
+      b.assign(gLast, zero),
+      b.assign(gOfs, one),
+      b.branch(
+        towardHigh,
+        [
+          b.assign(gMax, b.sub(length, hint)),
+          b.while(b.lt(gOfs, gMax), [
+            // Stop at the first element the key does not pass.
+            b.branch(right ? probe(b.add(hint, gOfs)) : b.not(probe(b.add(hint, gOfs))), [brk()]),
+            ...advance(),
+          ]),
+          b.branch(b.lt(gMax, gOfs), [b.assign(gOfs, gMax)]),
+          b.assign(gLast, b.add(gLast, hint)),
+          b.assign(gOfs, b.add(gOfs, hint)),
+        ],
+        [
+          b.assign(gMax, b.add(hint, one)),
+          b.while(b.lt(gOfs, gMax), [
+            b.branch(right ? b.not(probe(b.sub(hint, gOfs))) : probe(b.sub(hint, gOfs)), [brk()]),
+            ...advance(),
+          ]),
+          b.branch(b.lt(gMax, gOfs), [b.assign(gOfs, gMax)]),
+          b.assign(gTmp, gLast),
+          b.assign(gLast, b.sub(hint, gOfs)),
+          b.assign(gOfs, b.sub(hint, gTmp)),
+        ],
+      ),
+      b.step(gLast),
+      b.while(b.lt(gLast, gOfs), [
+        b.assign(gMid, half(gLast, gOfs)),
+        b.branch(
+          probe(gMid),
+          right ? [b.assign(gOfs, gMid)] : [b.assign(gLast, b.add(gMid, one))],
+          right ? [b.assign(gLast, b.add(gMid, one))] : [b.assign(gOfs, gMid)],
+        ),
+      ]),
+      b.assign(out, gOfs),
+    ];
+    return [{ kind: "block", body, loc }];
+  };
+
+  // Merge state (merges never nest).
+  const tmp = local("mergeTmp", src.type);
+  const baseA = local("baseA");
+  const lenA = local("lenA");
+  const baseB = local("baseB");
+  const lenB = local("lenB");
+  const dest = local("dest");
+  const cursorT = local("cursorT");
+  const cursorX = local("cursorX");
+  const winsA = local("winsA");
+  const winsB = local("winsB");
+  const firstPass = local("firstPass", BOOL);
+  const k = local("mergeK");
+
+  const takeTmp = (count: IrExpr, from: IrExpr): IrStmt[] => [
+    b.bind(tmp, b.allocate(src.type, count)),
+    ...copyForward(src, from, tmp, zero, count),
+  ];
+  const lowerGallop = (value: IrExpr): IrStmt =>
+    b.assign(minGallop, b.choose(b.lt(one, value), b.sub(value, one), one));
+  const enoughWins = (): IrExpr => or(or(ge(winsA, b.num(7)), ge(winsB, b.num(7))), firstPass);
+
+  const mergeLow = (): IrStmt[] => {
+    const id = labels++;
+    const succeed = `ts.low${id}.succeed`,
+      copyB = `ts.low${id}.copyB`,
+      exit = `ts.low${id}.exit`;
+    const moveB = [b.set(src, dest, at(src, cursorX)), b.step(dest), b.step(cursorX)];
+    const moveT = [b.set(src, dest, at(tmp, cursorT)), b.step(dest), b.step(cursorT)];
+    return [
+      ...takeTmp(lenA, baseA),
+      b.assign(dest, baseA),
+      b.assign(cursorT, zero),
+      b.assign(cursorX, baseB),
+      ...moveB,
+      block(exit, [
+        block(copyB, [
+          block(succeed, [
+            b.step(lenB, -1),
+            b.branch(b.eq(lenB, zero), [brk(succeed)]),
+            b.branch(b.eq(lenA, one), [brk(copyB)]),
+            forever([
+              b.assign(winsA, zero),
+              b.assign(winsB, zero),
+              forever([
+                b.branch(
+                  less(at(src, cursorX), at(tmp, cursorT)),
+                  [
+                    ...moveB,
+                    b.step(winsB),
+                    b.step(lenB, -1),
+                    b.assign(winsA, zero),
+                    b.branch(b.eq(lenB, zero), [brk(succeed)]),
+                    b.branch(ge(winsB, minGallop), [brk()]),
+                  ],
+                  [
+                    ...moveT,
+                    b.step(winsA),
+                    b.step(lenA, -1),
+                    b.assign(winsB, zero),
+                    b.branch(b.eq(lenA, one), [brk(copyB)]),
+                    b.branch(ge(winsA, minGallop), [brk()]),
+                  ],
+                ),
+              ]),
+              b.step(minGallop),
+              b.assign(firstPass, truth),
+              b.while(enoughWins(), [
+                b.assign(firstPass, { kind: "boolLit", value: false, type: BOOL, loc }),
+                lowerGallop(minGallop),
+                ...gallop(true, winsA, tmp, at(src, cursorX), cursorT, lenA, zero),
+                b.branch(b.lt(zero, winsA), [
+                  ...copyForward(tmp, cursorT, src, dest, winsA),
+                  b.assign(dest, b.add(dest, winsA)),
+                  b.assign(cursorT, b.add(cursorT, winsA)),
+                  b.assign(lenA, b.sub(lenA, winsA)),
+                  b.branch(b.eq(lenA, one), [brk(copyB)]),
+                  b.branch(b.eq(lenA, zero), [brk(succeed)]),
+                ]),
+                ...moveB,
+                b.step(lenB, -1),
+                b.branch(b.eq(lenB, zero), [brk(succeed)]),
+                ...gallop(false, winsB, src, at(tmp, cursorT), cursorX, lenB, zero),
+                b.branch(b.lt(zero, winsB), [
+                  ...copyForward(src, cursorX, src, dest, winsB),
+                  b.assign(dest, b.add(dest, winsB)),
+                  b.assign(cursorX, b.add(cursorX, winsB)),
+                  b.assign(lenB, b.sub(lenB, winsB)),
+                  b.branch(b.eq(lenB, zero), [brk(succeed)]),
+                ]),
+                ...moveT,
+                b.step(lenA, -1),
+                b.branch(b.eq(lenA, one), [brk(copyB)]),
+              ]),
+              b.step(minGallop),
+            ]),
+          ]),
+          // succeed
+          ...copyForward(tmp, cursorT, src, dest, lenA),
+          brk(exit),
+        ]),
+        // copyB: the last element of run A belongs at the end of the merge.
+        ...copyForward(src, cursorX, src, dest, lenB),
+        b.set(src, b.add(dest, lenB), at(tmp, cursorT)),
+      ]),
+    ];
+  };
+
+  const mergeHigh = (): IrStmt[] => {
+    const id = labels++;
+    const succeed = `ts.high${id}.succeed`,
+      copyA = `ts.high${id}.copyA`,
+      exit = `ts.high${id}.exit`;
+    // dest, cursorX (run A) and cursorT index their next slot.
+    const moveA = [b.set(src, dest, at(src, cursorX)), b.step(dest, -1), b.step(cursorX, -1)];
+    const moveT = [b.set(src, dest, at(tmp, cursorT)), b.step(dest, -1), b.step(cursorT, -1)];
+    return [
+      ...takeTmp(lenB, baseB),
+      b.assign(dest, b.sub(b.add(baseB, lenB), one)),
+      b.assign(cursorT, b.sub(lenB, one)),
+      b.assign(cursorX, b.sub(b.add(baseA, lenA), one)),
+      ...moveA,
+      block(exit, [
+        block(copyA, [
+          block(succeed, [
+            b.step(lenA, -1),
+            b.branch(b.eq(lenA, zero), [brk(succeed)]),
+            b.branch(b.eq(lenB, one), [brk(copyA)]),
+            forever([
+              b.assign(winsA, zero),
+              b.assign(winsB, zero),
+              forever([
+                b.branch(
+                  less(at(tmp, cursorT), at(src, cursorX)),
+                  [
+                    ...moveA,
+                    b.step(winsA),
+                    b.step(lenA, -1),
+                    b.assign(winsB, zero),
+                    b.branch(b.eq(lenA, zero), [brk(succeed)]),
+                    b.branch(ge(winsA, minGallop), [brk()]),
+                  ],
+                  [
+                    ...moveT,
+                    b.step(winsB),
+                    b.step(lenB, -1),
+                    b.assign(winsA, zero),
+                    b.branch(b.eq(lenB, one), [brk(copyA)]),
+                    b.branch(ge(winsB, minGallop), [brk()]),
+                  ],
+                ),
+              ]),
+              b.step(minGallop),
+              b.assign(firstPass, truth),
+              b.while(enoughWins(), [
+                b.assign(firstPass, { kind: "boolLit", value: false, type: BOOL, loc }),
+                lowerGallop(minGallop),
+                ...gallop(true, k, src, at(tmp, cursorT), baseA, lenA, b.sub(lenA, one)),
+                b.assign(winsA, b.sub(lenA, k)),
+                b.branch(b.lt(zero, winsA), [
+                  b.assign(dest, b.sub(dest, winsA)),
+                  b.assign(cursorX, b.sub(cursorX, winsA)),
+                  ...copyBackward(b.add(cursorX, one), b.add(dest, one), winsA),
+                  b.assign(lenA, b.sub(lenA, winsA)),
+                  b.branch(b.eq(lenA, zero), [brk(succeed)]),
+                ]),
+                ...moveT,
+                b.step(lenB, -1),
+                b.branch(b.eq(lenB, one), [brk(copyA)]),
+                ...gallop(false, k, tmp, at(src, cursorX), zero, lenB, b.sub(lenB, one)),
+                b.assign(winsB, b.sub(lenB, k)),
+                b.branch(b.lt(zero, winsB), [
+                  b.assign(dest, b.sub(dest, winsB)),
+                  b.assign(cursorT, b.sub(cursorT, winsB)),
+                  ...copyForward(tmp, b.add(cursorT, one), src, b.add(dest, one), winsB),
+                  b.assign(lenB, b.sub(lenB, winsB)),
+                  b.branch(b.eq(lenB, one), [brk(copyA)]),
+                  b.branch(b.eq(lenB, zero), [brk(succeed)]),
+                ]),
+                ...moveA,
+                b.step(lenA, -1),
+                b.branch(b.eq(lenA, zero), [brk(succeed)]),
+              ]),
+              b.step(minGallop),
+            ]),
+          ]),
+          // succeed
+          ...copyForward(tmp, zero, src, b.sub(dest, b.sub(lenB, one)), lenB),
+          brk(exit),
+        ]),
+        // copyA: the first element of run B belongs at the front of the merge.
+        b.assign(dest, b.sub(dest, lenA)),
+        b.assign(cursorX, b.sub(cursorX, lenA)),
+        ...copyBackward(b.add(cursorX, one), b.add(dest, one), lenA),
+        b.set(src, dest, at(tmp, cursorT)),
+      ]),
+    ];
+  };
+
+  const mergeAt = (i: IrExpr): IrStmt[] => {
+    const merged = local(`mergeAt${labels++}`);
+    const id = `ts.at${labels++}`;
+    return [
+      b.bind(merged, i),
+      b.assign(baseA, at(runBase, merged)),
+      b.assign(lenA, at(runLen, merged)),
+      b.assign(baseB, at(runBase, b.add(merged, one))),
+      b.assign(lenB, at(runLen, b.add(merged, one))),
+      b.set(runLen, merged, b.add(lenA, lenB)),
+      b.branch(b.eq(b.add(merged, b.num(3)), runs), [
+        b.set(runBase, b.add(merged, one), at(runBase, b.add(merged, two))),
+        b.set(runLen, b.add(merged, one), at(runLen, b.add(merged, two))),
+      ]),
+      b.step(runs, -1),
+      block(id, [
+        ...gallop(true, k, src, at(src, baseB), baseA, lenA, zero),
+        b.assign(baseA, b.add(baseA, k)),
+        b.assign(lenA, b.sub(lenA, k)),
+        b.branch(b.eq(lenA, zero), [brk(id)]),
+        ...gallop(
+          false,
+          lenB,
+          src,
+          at(src, b.sub(b.add(baseA, lenA), one)),
+          baseB,
+          lenB,
+          b.sub(lenB, one),
+        ),
+        b.branch(b.eq(lenB, zero), [brk(id)]),
+        b.branch(le(lenA, lenB), mergeLow(), mergeHigh()),
+      ]),
+    ];
+  };
+
+  const invariant = (m: IrExpr): IrExpr =>
+    or(
+      b.lt(m, two),
+      b.lt(b.add(at(runLen, b.sub(m, one)), at(runLen, m)), at(runLen, b.sub(m, two))),
+    );
+  const top = local("top");
+  const low = local("low");
+  const remaining = local("remaining");
+  const minRun = local("minRun");
+  const minRunOdd = local("minRunOdd");
+  const runEnd = local("runEnd");
+  const descending = local("descending", BOOL);
+  const previous = local("previous", elem);
+  const pivot = local("pivot", elem);
+  const left = local("left");
+  const right = local("right");
+  const mid = local("mid");
+  const pos = local("insert");
+  const forced = local("forced");
+  const vl = local("swapLeft", elem);
+  const vr = local("swapRight", elem);
+  const length = local("runLength");
+  const scan = local("scan");
+  const half2 = (value: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: "math.floor",
+    args: [{ kind: "bin", op: "/", left: value, right: two, type: F64, loc }],
+    type: F64,
+    loc,
+  });
+
+  const countRun: IrStmt[] = [
+    b.assign(scan, b.add(low, one)),
+    b.assign(runEnd, b.add(low, remaining)),
+    b.branch(
+      b.eq(scan, runEnd),
+      [b.assign(length, one)],
+      [
+        b.assign(length, two),
+        b.assign(descending, less(at(src, scan), at(src, low))),
+        b.bind(previous, at(src, scan)),
+        b.step(scan),
+        b.while(b.lt(scan, runEnd), [
           b.branch(
             b.choose(
               descending,
-              greater(at(b.sub(end, one)), at(end)),
-              b.not(greater(at(b.sub(end, one)), at(end))),
+              b.not(less(at(src, scan), previous)),
+              less(at(src, scan), previous),
             ),
-            [b.step(end)],
-            [{ kind: "break", loc: b.loc }],
+            [brk()],
           ),
+          b.assign(previous, at(src, scan)),
+          b.step(length),
+          b.step(scan),
         ]),
         b.branch(descending, [
-          b.bind(left, start),
-          b.bind(right, b.sub(end, one)),
+          b.assign(left, low),
+          b.assign(right, b.sub(b.add(low, length), one)),
           b.while(b.lt(left, right), [
-            b.bind(vLeft, at(left)),
-            b.bind(vRight, at(right)),
-            b.set(src, left, vRight),
-            b.set(src, right, vLeft),
+            b.bind(vl, at(src, left)),
+            b.bind(vr, at(src, right)),
+            b.set(src, left, vr),
+            b.set(src, right, vl),
             b.step(left),
             b.step(right, -1),
           ]),
         ]),
+      ],
+    ),
+  ];
+  const insertion: IrStmt[] = [
+    b.assign(forced, min(minRun, remaining)),
+    // [low, low + length) is sorted; insert each later element.
+    b.assign(pos, b.add(low, length)),
+    b.while(b.lt(pos, b.add(low, forced)), [
+      b.assign(left, low),
+      b.assign(right, pos),
+      b.bind(pivot, at(src, pos)),
+      b.while(b.lt(left, right), [
+        b.assign(mid, half(left, right)),
+        b.branch(
+          less(pivot, at(src, mid)),
+          [b.assign(right, mid)],
+          [b.assign(left, b.add(mid, one))],
+        ),
       ]),
-      // Bound insertion movement while avoiding tiny merge runs.
-      b.bind(limit, b.choose(b.lt(b.add(start, b.num(16)), n), b.add(start, b.num(16)), n)),
-      b.while(b.lt(end, limit), [
-        b.bind(pivot, at(end)),
-        b.bind(low, start),
-        b.bind(high, end),
-        b.while(b.lt(low, high), [
-          b.bind(center, {
-            kind: "libCall",
-            fn: "math.floor",
-            args: [
-              { kind: "bin", op: "/", left: b.add(low, high), right: two, type: F64, loc: b.loc },
-            ],
-            type: F64,
-            loc: b.loc,
-          }),
-          // Insert after equal values to preserve their original order.
-          b.branch(
-            greater(at(center), pivot),
-            [b.assign(high, center)],
-            [b.assign(low, b.add(center, one))],
-          ),
-        ]),
-        b.bind(i, end),
-        b.while(b.lt(low, i), [b.set(src, i, at(b.sub(i, one))), b.step(i, -1)]),
-        b.set(src, low, pivot),
-        b.step(end),
-      ]),
-      b.set(runs, runCount, end),
-      b.step(runCount),
-      b.assign(start, end),
+      ...copyBackward(left, b.add(left, one), b.sub(pos, left)),
+      b.set(src, left, pivot),
+      b.step(pos),
     ]),
-    b.branch(b.lt(two, runCount), [
-      b.bind(dst, b.allocate(src.type, n)),
-      b.while(b.lt(two, runCount), [
-        b.bind(run, zero),
-        b.bind(nextRun, one),
-        b.while(b.lt(b.add(run, one), runCount), [
-          b.bind(start, b.at(runs, run)),
-          b.bind(mid, b.at(runs, b.add(run, one))),
-          b.bind(right, b.choose(b.lt(b.add(run, two), runCount), b.at(runs, b.add(run, two)), n)),
-          b.bind(i, start),
-          b.bind(j, mid),
-          b.bind(k, start),
-          b.branch(
-            b.lt(mid, right),
-            [
-              b.bind(boundaryLeft, at(b.sub(mid, one))),
-              b.bind(boundaryRight, at(mid)),
-              b.branch(greater(boundaryLeft, boundaryRight), merge, [copy(i, right)]),
-            ],
-            [copy(i, right)],
-          ),
-          b.set(runs, nextRun, right),
-          b.step(nextRun),
-          b.step(run, 2),
-        ]),
-        b.assign(runCount, nextRun),
-        b.bind(tmp, src),
-        b.assign(src, dst),
-        b.assign(dst, tmp),
-      ]),
+    b.assign(length, forced),
+  ];
+  const collapse: IrStmt = b.while(b.lt(one, runs), [
+    b.assign(top, b.sub(runs, two)),
+    b.branch(
+      or(b.not(invariant(b.add(top, one))), b.not(invariant(top))),
+      [
+        b.branch(b.lt(at(runLen, b.sub(top, one)), at(runLen, b.add(top, one))), [b.step(top, -1)]),
+        ...mergeAt(top),
+      ],
+      [b.branch(le(at(runLen, top), at(runLen, b.add(top, one))), [...mergeAt(top)], [brk()])],
+    ),
+  ]);
+  const forceCollapse: IrStmt = b.while(b.lt(one, runs), [
+    b.assign(top, b.sub(runs, two)),
+    b.branch(and(b.lt(zero, top), b.lt(at(runLen, b.sub(top, one)), at(runLen, b.add(top, one)))), [
+      b.step(top, -1),
     ]),
+    ...mergeAt(top),
+  ]);
+  const scalars = [
+    cp,
+    gLast,
+    gOfs,
+    gMax,
+    gMid,
+    gTmp,
+    gBase,
+    gLength,
+    gHint,
+    baseA,
+    lenA,
+    baseB,
+    lenB,
+    dest,
+    cursorT,
+    cursorX,
+    winsA,
+    winsB,
+    k,
+    top,
+    low,
+    remaining,
+    minRun,
+    minRunOdd,
+    runEnd,
+    left,
+    right,
+    mid,
+    pos,
+    forced,
+    length,
+    scan,
+  ];
+  return [
+    ...scalars.map((local) => b.bind(local, zero)),
+    b.bind(firstPass, { kind: "boolLit", value: false, type: BOOL, loc }),
+    b.bind(descending, { kind: "boolLit", value: false, type: BOOL, loc }),
+    b.bind(minGallop, b.num(7)),
+    b.bind(runBase, { kind: "arrayLit", elems: [], type: runBase.type, loc }),
+    b.bind(runLen, { kind: "arrayLit", elems: [], type: runLen.type, loc }),
+    b.bind(runs, zero),
+    b.bind(minRun, n),
+    b.bind(minRunOdd, zero),
+    b.while(ge(minRun, b.num(64)), [
+      b.branch(b.not(b.eq(b.sub(minRun, b.add(half2(minRun), half2(minRun))), zero)), [
+        b.assign(minRunOdd, one),
+      ]),
+      b.assign(minRun, half2(minRun)),
+    ]),
+    b.assign(minRun, b.add(minRun, minRunOdd)),
+    b.bind(low, zero),
+    b.bind(remaining, n),
+    b.while(b.lt(zero, remaining), [
+      ...countRun,
+      b.branch(b.lt(length, minRun), insertion),
+      b.set(runBase, runs, low),
+      b.set(runLen, runs, length),
+      b.step(runs),
+      collapse,
+      b.assign(low, b.add(low, length)),
+      b.assign(remaining, b.sub(remaining, length)),
+    ]),
+    forceCollapse,
   ];
 }
 
@@ -438,7 +841,8 @@ export function buildArraySortFn(
   const src = b.local("src", arrT);
   const n = b.local("n"),
     valueCount = b.local("valueCount"),
-    undefinedCount = b.local("undefinedCount");
+    undefinedCount = b.local("undefinedCount"),
+    undefinedValues = b.local("undefinedValues");
   const index = b.local("index"),
     state = b.local("state");
   const isUndefined = (value: IrExpr): IrExpr | null => {
@@ -456,25 +860,48 @@ export function buildArraySortFn(
 
     return null;
   };
-  const greater: Greater = (left, right) => {
-    const compare: IrExpr = {
-      kind: "bin",
-      op: ">",
-      left: { kind: "callValue", callee: f, args: [left, right].slice(0, arity), type: F64, loc },
-      right: b.num(0),
-      type: BOOL,
-      loc,
-    };
-    const leftUndefined = isUndefined(left),
-      rightUndefined = isUndefined(right);
-    return leftUndefined !== null && rightUndefined !== null
-      ? b.choose(
-          leftUndefined,
-          b.not(rightUndefined),
-          b.choose(rightUndefined, { kind: "boolLit", value: false, type: BOOL, loc }, compare),
-        )
-      : compare;
+  // A NaN result compares as 0, which `< 0` gives.
+  const less: Less = (left, right) => ({
+    kind: "bin",
+    op: "<",
+    left: { kind: "callValue", callee: f, args: [left, right].slice(0, arity), type: F64, loc },
+    right: b.num(0),
+    type: BOOL,
+    loc,
+  });
+  const keepValue = (): IrStmt[] => [
+    b.branch(b.lt(valueCount, index), [b.set(src, valueCount, b.at(src, index))]),
+    b.step(valueCount),
+  ];
+  const compactValue = (): IrStmt => {
+    const undefinedValue = isUndefined(b.at(src, index));
+    return undefinedValue === null
+      ? { kind: "block", body: keepValue(), loc }
+      : b.branch(undefinedValue, [b.step(undefinedValues)], keepValue());
   };
+  // The union's undefined value, for the elements that held one.
+  const undefinedValue = (): IrExpr | null =>
+    elem.kind === "union" && undefinedTag !== null
+      ? {
+          kind: "unionWrap",
+          unionId: elem.unionId,
+          tag: undefinedTag,
+          value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+          type: elem,
+          loc,
+        }
+      : null;
+  const unionTail = (): IrStmt[] => {
+    const value = undefinedValue();
+    return value === null
+      ? []
+      : [
+          b.loop(index, valueCount, b.add(valueCount, undefinedValues), [
+            b.set(result, index, value),
+          ]),
+        ];
+  };
+  const tailStart = (): IrExpr => b.add(valueCount, undefinedValues);
   const result = copyFirst ? src : a;
   // Dense arrays sort in the runtime without the compacting snapshot below:
   // `sort` orders the receiver's values outside it and writes them back
@@ -498,16 +925,16 @@ export function buildArraySortFn(
     ...(native && copyFirst ? [dense(src)] : []),
     b.bind(valueCount, b.num(0)),
     b.bind(undefinedCount, b.num(0)),
-    // Compact the owned snapshot before callbacks. Dense values stay in
-    // place; only values following holes or storage-level undefined move.
+    b.bind(undefinedValues, b.num(0)),
+    // Compact the owned snapshot before callbacks, as V8 does: holes are
+    // dropped, undefined values (storage-level, or a union's undefined arm)
+    // are counted, and the comparator only sees the other values. Dense
+    // values stay in place; only values following the others move.
     b.loop(index, b.num(0), n, [
       b.bind(state, { kind: "arrayState", arr: src, index, type: F64, loc }),
       b.branch(
         b.eq(state, b.num(1)),
-        [
-          b.branch(b.lt(valueCount, index), [b.set(src, valueCount, b.at(src, index))]),
-          b.step(valueCount),
-        ],
+        [compactValue()],
         [b.branch(b.eq(state, b.num(2)), [b.step(undefinedCount)])],
       ),
     ]),
@@ -530,17 +957,18 @@ export function buildArraySortFn(
             loc,
           },
         ]
-      : stableSort(b, src, valueCount, greater)),
+      : timSort(b, src, valueCount, less)),
     ...(copyFirst
       ? []
       : [b.loop(index, b.num(0), valueCount, [b.set(a, index, b.at(src, index))])]),
-    b.loop(index, valueCount, copyFirst ? n : b.add(valueCount, undefinedCount), [
+    ...unionTail(),
+    b.loop(index, tailStart(), copyFirst ? n : b.add(tailStart(), undefinedCount), [
       { kind: "arraySetUndefined", arr: result, index, loc },
     ]),
     ...(copyFirst
       ? []
       : [
-          b.loop(index, b.add(valueCount, undefinedCount), n, [
+          b.loop(index, b.add(tailStart(), undefinedCount), n, [
             { kind: "arrayDelete", arr: a, index, loc },
           ]),
         ]),
