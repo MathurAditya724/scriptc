@@ -3176,7 +3176,8 @@ void scr_dyn_arg_type_fail(const char *argname, const char *expected, const ScrD
   scr_jb_init(&b);
   scr_jb_puts(&b, "The \"");
   scr_jb_puts(&b, argname);
-  scr_jb_puts(&b, "\" argument must be ");
+  /* Node names a dotted name (options.mode) a property. */
+  scr_jb_puts(&b, strchr(argname, '.') ? "\" property must be " : "\" argument must be ");
   scr_jb_puts(&b, expected);
   scr_jb_puts(&b, ". Received ");
   scr_jb_puts(&b, d);
