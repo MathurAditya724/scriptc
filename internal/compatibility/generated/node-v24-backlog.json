@@ -75521,7 +75521,12 @@
             "tests/corpus/node24-text-utilities-validation.js",
             "tests/corpus/node24-text-utilities-coercion.js",
             "tests/corpus/node24-text-utilities.cjs",
-            "tests/fixtures/node-types/text-utilities.ts"
+            "tests/fixtures/node-types/text-utilities.ts",
+            "tests/corpus/5470-strip-vt-osc.cjs",
+            "tests/corpus/5471-strip-vt-csi.cjs",
+            "tests/corpus/5472-strip-vt-random.cjs",
+            "tests/corpus/5473-strip-vt-unterminated.cjs",
+            "tests/corpus/5474-strip-vt-surrogates.ts"
           ]
         }
       }
@@ -75583,7 +75588,12 @@
             "tests/corpus/node24-text-utilities-validation.js",
             "tests/corpus/node24-text-utilities-coercion.js",
             "tests/corpus/node24-text-utilities.cjs",
-            "tests/fixtures/node-types/text-utilities.ts"
+            "tests/fixtures/node-types/text-utilities.ts",
+            "tests/corpus/5470-strip-vt-osc.cjs",
+            "tests/corpus/5471-strip-vt-csi.cjs",
+            "tests/corpus/5472-strip-vt-random.cjs",
+            "tests/corpus/5473-strip-vt-unterminated.cjs",
+            "tests/corpus/5474-strip-vt-surrogates.ts"
           ]
         }
       }
