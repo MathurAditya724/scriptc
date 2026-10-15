@@ -2216,24 +2216,57 @@ declare module "node:url" {
 declare module "crypto" {
   export function randomUUID(): string;
   export function randomBytes(size: number): Buffer;
+  export type BinaryToTextEncoding = "base64" | "base64url" | "hex" | "binary";
+  export type CharacterEncoding = "utf8" | "utf-8" | "utf16le" | "utf-16le" | "latin1";
+  export type LegacyCharacterEncoding = "ascii" | "binary" | "ucs2" | "ucs-2";
+  export type Encoding = BinaryToTextEncoding | CharacterEncoding | LegacyCharacterEncoding;
+  export interface HashOptions {
+    outputLength?: number | undefined;
+  }
   export interface Hash {
-    update(data: string | Uint8Array, inputEncoding?: "utf8" | "utf-8" | "hex" | "base64"): Hash;
+    copy(options?: HashOptions): Hash;
+    update(data: string | ArrayBufferView): Hash;
+    update(data: string, inputEncoding: Encoding): Hash;
     digest(): Buffer;
-    digest(encoding: "hex" | "base64"): string;
-    copy(): Hash;
+    digest(encoding: BinaryToTextEncoding): string;
   }
   export interface Hmac {
-    update(data: string | Uint8Array, inputEncoding?: "utf8" | "utf-8" | "hex" | "base64"): Hmac;
+    update(data: string | ArrayBufferView): Hmac;
+    update(data: string, inputEncoding: Encoding): Hmac;
     digest(): Buffer;
-    digest(encoding: "hex" | "base64"): string;
+    digest(encoding: BinaryToTextEncoding): string;
   }
-  export function createHash(algorithm: string): Hash;
-  export function createHmac(algorithm: string, key: string | Uint8Array): Hmac;
+  export function createHash(algorithm: string, options?: HashOptions): Hash;
+  export function createHmac(
+    algorithm: string,
+    key: BinaryLike,
+    options?: { encoding?: BufferEncoding | undefined },
+  ): Hmac;
+  export interface OneShotDigestOptions {
+    outputEncoding?: BinaryToTextEncoding | "buffer" | undefined;
+    outputLength?: number | undefined;
+  }
+  export interface OneShotDigestOptionsWithStringEncoding extends OneShotDigestOptions {
+    outputEncoding?: BinaryToTextEncoding | undefined;
+  }
+  export interface OneShotDigestOptionsWithBufferEncoding extends OneShotDigestOptions {
+    outputEncoding: "buffer";
+  }
   export function hash(
     algorithm: string,
-    data: string | Uint8Array,
-    outputEncoding?: "hex" | "base64",
+    data: string | ArrayBufferView,
+    options?: OneShotDigestOptionsWithStringEncoding | BinaryToTextEncoding,
   ): string;
+  export function hash(
+    algorithm: string,
+    data: string | ArrayBufferView,
+    options: OneShotDigestOptionsWithBufferEncoding | "buffer",
+  ): Buffer;
+  export function hash(
+    algorithm: string,
+    data: string | ArrayBufferView,
+    options: OneShotDigestOptions | BinaryToTextEncoding | "buffer",
+  ): string | Buffer;
   export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean;
   export function randomFillSync<T extends Uint8Array>(
     buffer: T,

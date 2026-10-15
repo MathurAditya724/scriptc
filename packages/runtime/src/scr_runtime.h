@@ -65,6 +65,16 @@ void arc4random_buf(void *buf, size_t n);
 #define SCR_COLD
 #endif
 
+/* Digest compression functions start on a cache line. The release
+ * runtime keeps the compiler's default function alignment, so without it
+ * their speed moves with the size of unrelated code before them. WASM
+ * code has no addresses to align. */
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__wasm__)
+#define SCR_DIGEST_ALIGNED __attribute__((aligned(64)))
+#else
+#define SCR_DIGEST_ALIGNED
+#endif
+
 /* ── process ──────────────────────────────────────────────────────────── */
 
 /* Called once at the top of main: private stdout formatter buffer,
@@ -4295,6 +4305,15 @@ ScrCryptoHash *scr_crypto_hash_update_bytes(ScrCryptoHash *h, ScrBytes *data);
 ScrCryptoHash *scr_crypto_hash_copy(ScrCryptoHash *h);
 ScrStr *scr_crypto_hash_digest_string(ScrCryptoHash *h, ScrStr *enc);
 ScrBytes *scr_crypto_hash_digest_buffer(ScrCryptoHash *h);
+/* The option and any-value forms of createHash, copy, update, digest and
+ * crypto.hash, with Node 24.22's validation and errors. */
+ScrCryptoHash *scr_crypto_hash_new_opts(ScrStr *alg, ScrDyn *options);
+ScrCryptoHash *scr_crypto_hash_copy_opts(ScrCryptoHash *h, ScrDyn *options);
+ScrCryptoHash *scr_crypto_hmac_new_dyn(ScrStr *alg, ScrDyn *key, ScrDyn *options);
+ScrCryptoHash *scr_crypto_hash_update_enc(ScrCryptoHash *h, ScrStr *data, ScrStr *enc);
+ScrCryptoHash *scr_crypto_hash_update_dyn(ScrCryptoHash *h, ScrDyn *data, ScrDyn *enc);
+ScrDyn *scr_crypto_hash_digest_dyn(ScrCryptoHash *h, ScrDyn *enc);
+ScrDyn *scr_crypto_hash_oneshot(ScrStr *alg, ScrDyn *input, ScrDyn *options);
 bool scr_crypto_timing_safe_equal(ScrBytes *left, ScrBytes *right);
 ScrBytes *scr_crypto_random_fill(ScrBytes *bytes, double offset, double size);
 ScrBytes *scr_crypto_random_fill_rest(ScrBytes *bytes, double offset);
