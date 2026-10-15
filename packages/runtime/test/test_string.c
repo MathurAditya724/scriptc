@@ -27,6 +27,16 @@
 long scr_str_live_count(void); /* provided by scr_string.c */
 #endif
 
+/* parseInt cases whose Node answer depends on the architecture carry it in
+ * the op name ("parseInt.arm64" / "parseInt.x64"); only this build's runs.
+ * scr_radix_fold uses the fused multiply-add on aarch64 and two roundings
+ * elsewhere, matching Node on arm64 and x64. */
+#if defined(__aarch64__)
+#define SCR_TEST_PARSEINT_ARCH "parseInt.arm64"
+#else
+#define SCR_TEST_PARSEINT_ARCH "parseInt.x64"
+#endif
+
 #ifdef SCR_SIDX_TEST
 /* Test-only sparse-index observability, deliberately absent from the normal
  * runtime ABI. The walker count is code-point steps after a cache prime. */
@@ -977,9 +987,12 @@ int main(int argc, char **argv) {
     } else if (strcmp(op, "trimEnd") == 0) {
       check_str(op, args, input, scr_str_trim_end(input), expected_bytes,
                 exp_len);
-    } else if (strcmp(op, "parseInt") == 0) {
+    } else if (strcmp(op, "parseInt") == 0 ||
+               strcmp(op, SCR_TEST_PARSEINT_ARCH) == 0) {
       check_f64(op, args, input, scr_parse_int(input, strtod(args, NULL)),
                 expected_bytes, exp_len);
+    } else if (strncmp(op, "parseInt.", 9) == 0) {
+      /* another architecture's answer (see SCR_TEST_PARSEINT_ARCH) */
     } else if (strcmp(op, "split") == 0 || strcmp(op, "splitLimit") == 0) {
       /* args = separator hex; expected = "<count>:<pieces joined by 0x01>" */
       double limit = 4294967295.0;

@@ -96,8 +96,10 @@ typedef struct ScrSidx {
 /* Keep short-string cursor traffic out of the sparse cache. A short-lived
  * one-byte receiver can be far more common than a large indexed one; sharing
  * the round-robin slots would otherwise rebuild a warm index every few calls.
+ * Explicitly initialized so library localization can demote it: a tentative
+ * definition is a COMMON symbol on Mach-O, and COMMON symbols stay global.
  */
-SCR_TL ScrStrScan scr_str_scan;
+SCR_TL ScrStrScan scr_str_scan = {0};
 static SCR_TL ScrSidx scr_sidx_sparse_tab[SCR_SIDX_N];
 static SCR_TL ScrSidx scr_sidx_cursor_tab[SCR_SIDX_N];
 static SCR_TL unsigned scr_sidx_sparse_clock;
@@ -936,7 +938,8 @@ static inline uint32_t scr_utf8_decode(const char *p, size_t *adv) {
 
 /* ── WTF-8 lone surrogates (scr_runtime.h) ────────────────────────── */
 
-bool scr_wtf8_lone;
+/* Explicitly initialized for library localization (see scr_str_scan). */
+bool scr_wtf8_lone = false;
 
 void scr_wtf8_note(void) {
   if (!scr_wtf8_any()) __atomic_store_n(&scr_wtf8_lone, true, __ATOMIC_RELAXED);
@@ -2603,6 +2606,25 @@ static int scr_digit_value(char c) {
   return 99;
 }
 
+/* One fold of V8's generic-radix loop: v * multiplier + part. Node's V8 is
+ * compiled with the C++ compiler's default floating-point contraction,
+ * which fuses this multiply-add into one rounding on arm64 and keeps two
+ * roundings on x86-64, so Node answers long inputs differently on the two
+ * architectures (parseInt("9007199254740993", 36) is 1.9896986116031812e+24
+ * on arm64 and 1.9896986116031807e+24 on x64). Each form is written out so
+ * the result matches the same architecture's Node under any contraction
+ * setting this file is compiled with. */
+static inline double scr_radix_fold(double v, uint32_t multiplier, uint32_t part) {
+#if defined(__aarch64__)
+  return fma(v, (double)multiplier, (double)part);
+#else
+#ifdef __clang__
+#pragma clang fp contract(off)
+#endif
+  return v * (double)multiplier + (double)part;
+#endif
+}
+
 /* Digit string → double (digits already validated against the radix,
  * leading zeros stripped, count >= 1). Node (V8) is the oracle, and V8 is
  * only EXACT where the spec requires it (radix 2, 4, 8, 10, 16, 32); for
@@ -2615,8 +2637,8 @@ static double scr_digits_to_double(const char *p, size_t n, int radix) {
   if (radix != 10 && (radix & (radix - 1)) != 0) {
     /* V8's generic-radix loop (numbers/conversions.cc): consume the
      * longest digit run whose multiplier stays below 0xFFFFFFFF/36, then
-     * fold with one double multiply-add per chunk — the rounding of each
-     * fold IS the observable Node behavior. */
+     * fold with one double multiply-add per chunk (scr_radix_fold) — the
+     * rounding of each fold IS the observable Node behavior. */
     const uint32_t kMaximumMultiplier = 0xFFFFFFFFu / 36u;
     double v = 0.0;
     size_t i = 0;
@@ -2635,7 +2657,7 @@ static double scr_digits_to_double(const char *p, size_t n, int radix) {
         multiplier = m;
         i++;
       }
-      v = v * (double)multiplier + (double)part;
+      v = scr_radix_fold(v, multiplier, part);
     } while (!done);
     return v;
   }
