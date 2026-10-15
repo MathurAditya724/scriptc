@@ -85,11 +85,10 @@ typedef struct ScCipher {
   size_t rc;
   ScCipherMode mode;
   bool decrypt;
-  bool active;       /* false after final(), like Node's reset context */
+  bool active;       /* false after final() or a failed backend call */
   bool pad;          /* CBC automatic padding */
   bool data_started; /* a non-empty update() ran, so non-empty AAD is refused */
   int tag_len;       /* SC_NO_TAG until known */
-  bool tag_option;   /* authTagLength was passed */
   int tag_state;
   unsigned char tag[16];
   unsigned char block[16]; /* CBC: chaining value; CTR: counter block */
@@ -134,6 +133,16 @@ static void sc_invalid_state(const char *operation) {
   char message[64];
   snprintf(message, sizeof message, "Invalid state for operation %s", operation);
   sc_throw(SCR_ERR_ERROR, "ERR_CRYPTO_INVALID_STATE", message);
+}
+
+/* A backend call failed. The context is retired, like Node's after
+ * final(): later calls throw, and no output or tag is returned. */
+static void sc_fail(ScCipher *c) {
+  c->active = false;
+  c->tag_state = SC_TAG_UNKNOWN;
+  mbedtls_platform_zeroize(c->tag, sizeof c->tag);
+  mbedtls_platform_zeroize(c->buf, sizeof c->buf);
+  c->bufsz = 0;
 }
 
 static void sc_invalid_tag(unsigned long length) {
@@ -478,7 +487,6 @@ ScrDyn *scr_crypto_cipher_new(bool decrypt, ScrDyn *cipher, ScrDyn *key, ScrDyn 
   c->active = true;
   c->pad = true;
   c->tag_len = tag_len;
-  c->tag_option = tag_option >= 0;
   mbedtls_aes_init(&c->aes);
   mbedtls_gcm_init(&c->gcm);
   mbedtls_chacha20_init(&c->chacha);
@@ -532,15 +540,17 @@ done:
 /* ── the cipher transforms ────────────────────────────────────────────── */
 
 /* Raw CBC over whole blocks. */
-static void sc_cbc_blocks(ScCipher *c, const unsigned char *in, size_t len, unsigned char *out) {
-  mbedtls_aes_crypt_cbc(&c->aes, c->decrypt ? MBEDTLS_AES_DECRYPT : MBEDTLS_AES_ENCRYPT, len, c->block, in, out);
+static bool sc_cbc_blocks(ScCipher *c, const unsigned char *in, size_t len, unsigned char *out) {
+  return mbedtls_aes_crypt_cbc(&c->aes, c->decrypt ? MBEDTLS_AES_DECRYPT : MBEDTLS_AES_ENCRYPT, len, c->block, in,
+                               out) == 0;
 }
 
 /* OpenSSL's ossl_cipher_generic_block_update for CBC: complete blocks
  * are processed, the remainder is buffered, and a decryption that ends on
  * a block boundary holds the last block back for padding removal. Returns
- * the output length; out has room for len + 16 bytes. */
-static size_t sc_cbc_update(ScCipher *c, const unsigned char *in, size_t inl, unsigned char *out) {
+ * the output length, or -1 when the backend fails; out has room for
+ * len + 16 bytes. */
+static long sc_cbc_update(ScCipher *c, const unsigned char *in, size_t inl, unsigned char *out) {
   size_t outl = 0;
   size_t nextblocks;
   if (c->bufsz != 0) {
@@ -555,7 +565,7 @@ static size_t sc_cbc_update(ScCipher *c, const unsigned char *in, size_t inl, un
     nextblocks = inl & ~(size_t)15;
   }
   if (c->bufsz == 16 && (!c->decrypt || inl > 0 || !c->pad)) {
-    sc_cbc_blocks(c, c->buf, 16, out);
+    if (!sc_cbc_blocks(c, c->buf, 16, out)) return -1;
     c->bufsz = 0;
     outl = 16;
     out += 16;
@@ -563,7 +573,7 @@ static size_t sc_cbc_update(ScCipher *c, const unsigned char *in, size_t inl, un
   if (nextblocks > 0) {
     if (c->decrypt && c->pad && nextblocks == inl) nextblocks -= 16;
     if (nextblocks > 0) {
-      sc_cbc_blocks(c, in, nextblocks, out);
+      if (!sc_cbc_blocks(c, in, nextblocks, out)) return -1;
       outl += nextblocks;
       in += nextblocks;
       inl -= nextblocks;
@@ -573,11 +583,11 @@ static size_t sc_cbc_update(ScCipher *c, const unsigned char *in, size_t inl, un
     memcpy(c->buf + c->bufsz, in, inl);
     c->bufsz += inl;
   }
-  return outl;
+  return (long)outl;
 }
 
-/* ossl_cipher_generic_block_final for CBC. Returns the output length, or
- * -1 after throwing OpenSSL's error. */
+/* ossl_cipher_generic_block_final for CBC. Returns the output length, -1
+ * after throwing OpenSSL's error, or -2 when the backend fails. */
 static long sc_cbc_final(ScCipher *c, unsigned char out[16]) {
   if (!c->decrypt) {
     if (c->pad) {
@@ -589,7 +599,7 @@ static long sc_cbc_final(ScCipher *c, unsigned char out[16]) {
       sc_throw_openssl("1C80006B", "wrong final block length", "ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH");
       return -1;
     }
-    sc_cbc_blocks(c, c->buf, 16, out);
+    if (!sc_cbc_blocks(c, c->buf, 16, out)) return -2;
     c->bufsz = 0;
     return 16;
   }
@@ -598,7 +608,7 @@ static long sc_cbc_final(ScCipher *c, unsigned char out[16]) {
     sc_throw_openssl("1C80006B", "wrong final block length", "ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH");
     return -1;
   }
-  sc_cbc_blocks(c, c->buf, 16, c->buf);
+  if (!sc_cbc_blocks(c, c->buf, 16, c->buf)) return -2;
   size_t len = 16;
   if (c->pad) {
     unsigned char fill = c->buf[15];
@@ -622,58 +632,71 @@ static bool sc_tag_equal(const unsigned char *a, const unsigned char *b, size_t 
 }
 
 /* Poly1305 zero padding to the next 16-byte boundary of `length`. */
-static void sc_poly_pad(ScCipher *c, uint64_t length) {
+static bool sc_poly_pad(ScCipher *c, uint64_t length) {
   static const unsigned char zero[16] = {0};
   size_t rem = (size_t)(length % 16);
-  if (rem) mbedtls_poly1305_update(&c->poly, zero, 16 - rem);
+  return rem == 0 || mbedtls_poly1305_update(&c->poly, zero, 16 - rem) == 0;
 }
 
 /* OpenSSL's chacha20-poly1305 data step: pending AAD is padded first, and
  * the ciphertext feeds Poly1305 unpadded until final(). */
-static void sc_chacha_update(ScCipher *c, const unsigned char *in, size_t len, unsigned char *out) {
+static bool sc_chacha_update(ScCipher *c, const unsigned char *in, size_t len, unsigned char *out) {
   if (c->aad_open) {
-    sc_poly_pad(c, c->aad_len);
+    if (!sc_poly_pad(c, c->aad_len)) return false;
     c->aad_open = false;
   }
-  if (c->decrypt) mbedtls_poly1305_update(&c->poly, in, len);
-  mbedtls_chacha20_update(&c->chacha, len, in, out);
-  if (!c->decrypt) mbedtls_poly1305_update(&c->poly, out, len);
+  if (c->decrypt && mbedtls_poly1305_update(&c->poly, in, len) != 0) return false;
+  if (mbedtls_chacha20_update(&c->chacha, len, in, out) != 0) return false;
+  if (!c->decrypt && mbedtls_poly1305_update(&c->poly, out, len) != 0) return false;
   c->text_len += len;
+  return true;
 }
 
-static void sc_chacha_finish(ScCipher *c, unsigned char tag[16]) {
-  if (c->aad_open) sc_poly_pad(c, c->aad_len);
-  sc_poly_pad(c, c->text_len);
+static bool sc_chacha_finish(ScCipher *c, unsigned char tag[16]) {
+  if (c->aad_open && !sc_poly_pad(c, c->aad_len)) return false;
+  if (!sc_poly_pad(c, c->text_len)) return false;
   unsigned char lengths[16];
   for (size_t i = 0; i < 8; i++) {
     lengths[i] = (unsigned char)(c->aad_len >> (8 * i));
     lengths[8 + i] = (unsigned char)(c->text_len >> (8 * i));
   }
-  mbedtls_poly1305_update(&c->poly, lengths, sizeof lengths);
-  mbedtls_poly1305_finish(&c->poly, tag);
+  return mbedtls_poly1305_update(&c->poly, lengths, sizeof lengths) == 0 && mbedtls_poly1305_finish(&c->poly, tag) == 0;
 }
 
-/* The cipher output of an update over len bytes (+1 Buffer). */
+/* The cipher output of an update over len bytes (+1 Buffer), or NULL
+ * after a backend failure (for example AES-GCM's 2^36 - 32 byte message
+ * limit) has retired the context and thrown Node's update error. */
 static ScrBytes *sc_transform(ScCipher *c, const unsigned char *in, size_t len) {
   size_t room = len + 16;
   ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)room);
   out->is_buffer = true;
   size_t produced = 0;
+  bool ok = true;
   switch (c->mode) {
-  case SC_CBC:
-    produced = sc_cbc_update(c, in, len, out->data);
+  case SC_CBC: {
+    long n = sc_cbc_update(c, in, len, out->data);
+    ok = n >= 0;
+    produced = ok ? (size_t)n : 0;
     break;
+  }
   case SC_CTR:
-    if (len) mbedtls_aes_crypt_ctr(&c->aes, len, &c->bufsz, c->block, c->buf, in, out->data);
+    ok = len == 0 || mbedtls_aes_crypt_ctr(&c->aes, len, &c->bufsz, c->block, c->buf, in, out->data) == 0;
     produced = len;
     break;
   case SC_GCM:
-    if (len) mbedtls_gcm_update(&c->gcm, in, len, out->data, room, &produced);
+    ok = len == 0 || mbedtls_gcm_update(&c->gcm, in, len, out->data, room, &produced) == 0;
     break;
   case SC_CHACHA:
-    if (len) sc_chacha_update(c, in, len, out->data);
+    ok = len == 0 || sc_chacha_update(c, in, len, out->data);
     produced = len;
     break;
+  }
+  if (!ok) {
+    mbedtls_platform_zeroize(out->data, room);
+    scr_bytes_release(out);
+    sc_fail(c);
+    sc_throw(SCR_ERR_ERROR, NULL, "Trying to add data in unsupported state");
+    return NULL;
   }
   out->len = produced;
   if (len) c->data_started = true;
@@ -787,7 +810,12 @@ static ScrDyn *sc_update(ScCipher *c, ScrDyn *data, ScrDyn *input_encoding, ScrD
   }
   ScrBytes *out = sc_transform(c, in->data, in->len);
   scr_bytes_release(in);
+  if (!out) return NULL;
   return sc_output(c, out, output_encoding, false);
+}
+
+static bool sc_aead(const ScCipher *c) {
+  return c->mode == SC_GCM || c->mode == SC_CHACHA;
 }
 
 static ScrDyn *sc_final(ScCipher *c, ScrDyn *output_encoding) {
@@ -799,15 +827,16 @@ static ScrDyn *sc_final(ScCipher *c, ScrDyn *output_encoding) {
   ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, 16);
   out->is_buffer = true;
   out->len = 0;
-  bool ok = true;
+  bool ok = true, backend = true;
   switch (c->mode) {
   case SC_CBC: {
     long produced = sc_cbc_final(c, out->data);
-    if (produced < 0) {
+    if (produced == -1) {
       scr_bytes_release(out);
       return NULL;
     }
-    out->len = (size_t)produced;
+    backend = produced >= 0;
+    out->len = backend ? (size_t)produced : 0;
     break;
   }
   case SC_CTR:
@@ -815,8 +844,10 @@ static ScrDyn *sc_final(ScCipher *c, ScrDyn *output_encoding) {
   case SC_GCM: {
     unsigned char full[16];
     size_t ignored;
-    mbedtls_gcm_finish(&c->gcm, NULL, 0, &ignored, full, 16);
-    if (c->decrypt) {
+    backend = mbedtls_gcm_finish(&c->gcm, NULL, 0, &ignored, full, 16) == 0;
+    if (!backend) {
+      /* No tag is computed or compared. */
+    } else if (c->decrypt) {
       ok = c->tag_state == SC_TAG_SET_BY_USER && sc_tag_equal(full, c->tag, (size_t)c->tag_len);
     } else {
       if (c->tag_len == SC_NO_TAG) c->tag_len = 16;
@@ -828,12 +859,14 @@ static ScrDyn *sc_final(ScCipher *c, ScrDyn *output_encoding) {
   }
   case SC_CHACHA: {
     unsigned char full[16];
-    sc_chacha_finish(c, full);
-    if (c->decrypt) {
-      /* Node only hands OpenSSL a tag length when authTagLength is passed
-       * or setAuthTag() ran; without either, OpenSSL skips verification. */
-      ok = !(c->tag_state == SC_TAG_SET_BY_USER || c->tag_option) ||
-           sc_tag_equal(full, c->tag, (size_t)c->tag_len);
+    backend = sc_chacha_finish(c, full);
+    if (!backend) {
+      /* No tag is computed or compared. */
+    } else if (c->decrypt) {
+      /* Decryption without setAuthTag() fails. Node 24.22 skips the check
+       * when authTagLength was not passed either and returns unverified
+       * plaintext; this keeps Node 24.15's behavior. */
+      ok = c->tag_state == SC_TAG_SET_BY_USER && sc_tag_equal(full, c->tag, (size_t)c->tag_len);
     } else {
       memcpy(c->tag, full, (size_t)c->tag_len);
       c->tag_state = SC_TAG_COMPUTED;
@@ -842,16 +875,20 @@ static ScrDyn *sc_final(ScCipher *c, ScrDyn *output_encoding) {
     break;
   }
   }
+  if (!backend) {
+    mbedtls_platform_zeroize(out->data, 16);
+    scr_bytes_release(out);
+    sc_fail(c);
+    sc_throw(SCR_ERR_ERROR, NULL,
+             sc_aead(c) ? "Unsupported state or unable to authenticate data" : "Unsupported state");
+    return NULL;
+  }
   if (!ok) {
     scr_bytes_release(out);
     sc_throw(SCR_ERR_ERROR, NULL, "Unsupported state or unable to authenticate data");
     return NULL;
   }
   return sc_output(c, out, output_encoding, true);
-}
-
-static bool sc_aead(const ScCipher *c) {
-  return c->mode == SC_GCM || c->mode == SC_CHACHA;
 }
 
 static ScrDyn *sc_set_aad(ScCipher *c, ScrDyn *self, ScrDyn *buffer, ScrDyn *options) {
@@ -869,13 +906,18 @@ static ScrDyn *sc_set_aad(ScCipher *c, ScrDyn *self, ScrDyn *buffer, ScrDyn *opt
   /* After data, GCM refuses any AAD and chacha20-poly1305 refuses
    * non-empty AAD. */
   bool ok = c->active && sc_aead(c) && !(c->data_started && (c->mode == SC_GCM || aad->len > 0));
-  if (ok && c->mode == SC_GCM) ok = mbedtls_gcm_update_ad(&c->gcm, aad->data, aad->len) == 0;
+  bool backend = true;
+  if (ok && c->mode == SC_GCM) backend = mbedtls_gcm_update_ad(&c->gcm, aad->data, aad->len) == 0;
   if (ok && c->mode == SC_CHACHA && aad->len > 0) {
-    mbedtls_poly1305_update(&c->poly, aad->data, aad->len);
+    backend = mbedtls_poly1305_update(&c->poly, aad->data, aad->len) == 0;
     c->aad_len += aad->len;
     c->aad_open = true;
   }
   scr_bytes_release(aad);
+  if (!backend) {
+    sc_fail(c);
+    ok = false;
+  }
   if (!ok) {
     sc_invalid_state("setAAD");
     return NULL;

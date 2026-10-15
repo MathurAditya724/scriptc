@@ -823,3 +823,36 @@ try {
     expect(r.stderr).toBe("");
   });
 });
+
+// Node 24.22 skips the chacha20-poly1305 tag check when neither
+// setAuthTag() nor authTagLength was used, and returns unverified
+// plaintext. scriptc keeps Node 24.15's behavior: final() fails.
+describe("chacha20-poly1305 decryption without a tag", () => {
+  test("final() fails instead of returning unverified plaintext", async () => {
+    const r = await compileAndRun(
+      "cipher-chacha-no-tag",
+      `import { createCipheriv, createDecipheriv } from "node:crypto";
+const key = Buffer.alloc(32, 1);
+const iv = Buffer.alloc(12, 2);
+const cipher = createCipheriv("chacha20-poly1305", key, iv);
+const ciphertext = Buffer.concat([cipher.update("secret"), cipher.final()]);
+for (const input of [ciphertext, Buffer.from("forged data"), Buffer.alloc(0)]) {
+  const decipher = createDecipheriv("chacha20-poly1305", key, iv);
+  const text = decipher.update(input);
+  try {
+    decipher.final();
+    console.log("accepted", text.toString("hex"));
+  } catch (error) {
+    const e = error as Error & { code?: string };
+    console.log(e.name, e.code, e.message);
+  }
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Error undefined Unsupported state or unable to authenticate data\n".repeat(3),
+    );
+    expect(r.stderr).toBe("");
+  });
+});

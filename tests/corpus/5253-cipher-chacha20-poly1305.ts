@@ -3,8 +3,9 @@
 // leading bytes of the full tag), non-empty AAD after data (refused) and
 // empty AAD after data (accepted), rejection of a wrong tag and of tag
 // lengths that differ from authTagLength, decryption without setAuthTag()
-// (verified only when authTagLength is passed), and Node's errors for IVs
-// other than 12 bytes and tag lengths outside 1 to 16.
+// when authTagLength is passed, and Node's errors for IVs other than 12
+// bytes and tag lengths outside 1 to 16. (Decryption without a tag and
+// without authTagLength is covered by tests/harness/errors.test.ts.)
 import { createCipheriv, createDecipheriv } from "node:crypto";
 
 function pattern(length: number, seed: number): Buffer {
@@ -76,14 +77,6 @@ emptyFirst.setAAD(Buffer.from("after empty update"));
 emptyFirst.update("x");
 emptyFirst.final();
 console.log("aad after empty update", emptyFirst.getAuthTag().toString("hex"));
-const untagged = createDecipheriv("chacha20-poly1305", key, iv);
-const untaggedText = untagged.update(Buffer.from(ciphertext, "hex"));
-try {
-  untagged.final();
-  console.log("no tag, default length", untaggedText.toString("utf8"));
-} catch (error) {
-  console.log("no tag, default length", describe(error));
-}
 const untaggedSized = createDecipheriv("chacha20-poly1305", key, iv, { authTagLength: 16 });
 untaggedSized.update(Buffer.from(ciphertext, "hex"));
 try {
