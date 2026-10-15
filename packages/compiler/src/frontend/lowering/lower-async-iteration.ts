@@ -315,6 +315,19 @@ function boolRef(localId: string, loc: ReturnType<typeof locOf>): IrExpr {
   return { kind: "varRef", localId, type: BOOL, loc };
 }
 
+/** The loop's stream: a JavaScript value typed as a stream can arrive as a
+ * checked-dynamic value (returned through an untyped function), which
+ * checks back into the stream class. */
+function streamSource(
+  lowerer: Lowerer,
+  plan: NodeReadablePlan,
+  loc: ReturnType<typeof locOf>,
+): IrExpr {
+  const v = lowerer.lowerExpr(plan.source);
+  if (v.type.kind !== "dyn") return v;
+  return { kind: "dynCheck", value: v, type: plan.type, loc };
+}
+
 function lowerNodeReadable(
   lowerer: Lowerer,
   stmt: ts.ForOfStatement,
@@ -421,7 +434,7 @@ function lowerNodeReadable(
     return {
       kind: "block",
       body: [
-        { kind: "varDecl", localId: stream.id, init: lowerer.lowerExpr(plan.source), loc },
+        { kind: "varDecl", localId: stream.id, init: streamSource(lowerer, plan, loc), loc },
         {
           kind: "varDecl",
           localId: active.id,

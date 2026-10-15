@@ -716,9 +716,9 @@
       "apiEntries": 140,
       "static": {
         "supported": 0,
-        "partial": 38,
+        "partial": 53,
         "refused": 0,
-        "not-implemented": 102,
+        "not-implemented": 87,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -85274,7 +85274,15 @@
           "tests/corpus/5300-stream-add-abort-signal.ts",
           "tests/corpus/5301-stream-add-abort-signal-errors.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs",
+          "tests/corpus/5340-readable-from-options.ts",
+          "tests/corpus/5341-readable-from-dynamic.cjs",
+          "tests/corpus/5342-stream-compose.ts",
+          "tests/corpus/5343-stream-compose-edges.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -85592,8 +85600,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.stream.compose",
+        "tests": [
+          "tests/corpus/5342-stream-compose.ts",
+          "tests/corpus/5343-stream-compose-edges.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -85661,8 +85673,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.stream.Readable.from",
+        "tests": [
+          "tests/corpus/5340-readable-from-options.ts",
+          "tests/corpus/5341-readable-from-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -86167,8 +86183,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.stream.compose",
+        "tests": [
+          "tests/corpus/5342-stream-compose.ts",
+          "tests/corpus/5343-stream-compose-edges.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -86236,8 +86256,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.stream.Readable.from",
+        "tests": [
+          "tests/corpus/5340-readable-from-options.ts",
+          "tests/corpus/5341-readable-from-dynamic.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -87766,8 +87790,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.map",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -87789,8 +87819,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.filter",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -87812,8 +87848,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.forEach",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -87835,8 +87877,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.toArray",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -87858,8 +87906,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.some",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -87881,8 +87935,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.find",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -87904,8 +87964,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.every",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -87927,8 +87993,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.flatMap",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -87950,8 +88022,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.drop",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -87973,8 +88051,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.take",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -87996,8 +88080,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.reduce",
+        "tests": [
+          "tests/corpus/5335-stream-operators-values.ts",
+          "tests/corpus/5336-stream-operators-promise-timing.ts",
+          "tests/corpus/5337-stream-operators-concurrency.ts",
+          "tests/corpus/5338-stream-operators-checks.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

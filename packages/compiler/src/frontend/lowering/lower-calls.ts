@@ -142,6 +142,7 @@ import {
 } from "./lower-console.js";
 import {
   STREAM_API_MEMBERS,
+  STREAM_OPERATORS,
   lowerStreamMethodCall,
   lowerStreamStaticCall,
   streamSidesOf,
@@ -8488,7 +8489,7 @@ export function lowerObjectMethodCall(
   if (
     info &&
     !found &&
-    STREAM_API_MEMBERS.has(access.name.text) &&
+    (STREAM_API_MEMBERS.has(access.name.text) || STREAM_OPERATORS.has(access.name.text)) &&
     streamSidesOf(lowerer, info) !== null
   ) {
     const stream = lowerStreamMethodCall(lowerer, call, access, info);

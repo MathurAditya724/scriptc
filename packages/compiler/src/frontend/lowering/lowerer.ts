@@ -1142,8 +1142,21 @@ export function dynFallbackType(lowerer: Lowerer, node: ts.Node, t: ts.Type): Ir
       symbol && lowerer.isStdlibSymbol(symbol)
         ? lowerer.checker.getTypeArguments(t as ts.TypeReference)
         : [];
-    if (symbol?.name === "Promise" && args[0] && args[0].flags & ts.TypeFlags.Any)
-      return jsFallbackPromiseType(lowerer, t);
+    // Promise<any> and Promise<any[]> (an any[] is itself a checked
+    // value below): a promise of a checked value.
+    const anyArray = (x: ts.Type): boolean =>
+      lowerer.checker.isArrayType(x) &&
+      ((lowerer.checker.getTypeArguments(x as ts.TypeReference)[0]?.flags ?? 0) &
+        ts.TypeFlags.Any) !==
+        0;
+    if (
+      symbol?.name === "Promise" &&
+      args[0] &&
+      (args[0].flags & ts.TypeFlags.Any || anyArray(args[0]))
+    )
+      return symbol.name === "Promise" && anyArray(args[0])
+        ? { kind: "promise", inner: DYN }
+        : jsFallbackPromiseType(lowerer, t);
     if (
       symbol &&
       ["Generator", "AsyncGenerator", "IterableIterator"].includes(symbol.name) &&

@@ -612,6 +612,27 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     host.emitPendingCheck();
     return out;
   }
+  if (e.fn === "stream.compose") {
+    // compose(count, s1..sn): the stream list rides a stack array.
+    const countArg = e.args[0]!;
+    if (countArg.kind !== "numLit")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} count not a literal`);
+    const n = countArg.value;
+    const args = e.args.map((a) => host.emitExpr(a));
+    const arr = B.slot();
+    B.entryAllocas.push(`${arr} = alloca [${n} x ptr]`);
+    for (let i = 0; i < n; i++) {
+      const p = B.tmp();
+      B.line(`${p} = getelementptr inbounds [${n} x ptr], ptr ${arr}, i64 0, i64 ${i}`);
+      B.line(`store ptr ${args[1 + i]!.name}, ptr ${p}`);
+    }
+    const t = B.tmp();
+    host.declare(`declare ptr @scr_stream_compose(double, ptr)`);
+    B.line(`${t} = call ptr @scr_stream_compose(double ${f64Lit(n)}, ptr ${arr})`);
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
   if (e.fn === "stream.pipeline" || e.fn === "stream.pipelineDyn") {
     // pipeline(count, s1..sn, cb): the destination answers +1. The
     // stream list rides a stack array (the C compound literal).

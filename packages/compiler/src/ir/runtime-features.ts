@@ -210,6 +210,9 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       )
         features.stream = true;
       if (fn.startsWith("zlib.")) features.zlib = true;
+      // The Readable operators (scr_stream_ops.c) await through the
+      // dyn-async unit.
+      if (fn.startsWith("readable.op")) features.dynAsync = true;
       if (fn.startsWith("dc.")) features.dc = true;
       if (fn.startsWith("assert.")) features.assert = true;
       if (
