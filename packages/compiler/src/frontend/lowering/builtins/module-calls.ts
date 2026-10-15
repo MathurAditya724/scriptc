@@ -42,6 +42,7 @@ import {
   lowerPathParseCall,
 } from "./operating-system.js";
 import { lowerQuerystringParseCall, lowerQuerystringStringifyCall } from "./querystring.js";
+import { lowerFsGlobCallbackCall, lowerFsGlobSyncCall, lowerFspGlobCall } from "./fs-glob.js";
 
 export function lowerBuiltinModuleCall(
   lowerer: Lowerer,
@@ -59,6 +60,12 @@ export function lowerBuiltinModuleCall(
   if (bi.module === "buffer" && ["isAscii", "isUtf8", "transcode"].includes(bi.member)) {
     return lowerBufferEncodingCall(lowerer, expr, bi, fn, loc);
   }
+  if (bi.module === "fs" && bi.member === "glob")
+    return lowerFsGlobCallbackCall(lowerer, expr, loc);
+  if (bi.module === "fs" && bi.member === "globSync")
+    return lowerFsGlobSyncCall(lowerer, expr, loc);
+  if (bi.module === "fs/promises" && bi.member === "glob")
+    return lowerFspGlobCall(lowerer, expr, loc);
   if (fn.fn === "fs.callbackCall" && bi.member !== "rename") {
     return lowerFsCallbackCall(lowerer, expr, bi, loc);
   }

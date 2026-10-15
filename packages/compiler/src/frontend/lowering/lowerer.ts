@@ -1819,6 +1819,9 @@ export class Lowerer {
   /** for-of loops over arrays that can hold neither holes nor undefined:
    * each pass reads the element payload directly. */
   readonly presentElementLoops = new Set<ts.ForOfStatement>();
+  /** The fs/promises glob() call lowerForOf is lowering as a for await
+   * head; other glob() calls have no lowering. */
+  fspGlobHead: ts.Node | null = null;
   /** Capture entries and their origin share one mutable box. Normalize each
    * entry to the origin so writes and flow proofs stay synchronized. */
   readonly runtimeOptionalRoots = new Map<IrLocal, IrLocal>();
@@ -7904,6 +7907,22 @@ export class Lowerer {
         const helper = this.narrowedArmHelper(expr.type.unionId, expected, expr.loc);
         if (helper) {
           return this.checkedNarrowCall(helper, expr, expected, expr.loc);
+        }
+      }
+      // A record arm beside unit arms flowing into another layout of that
+      // record (`R | undefined` into the runtime-optional variant of R): the
+      // same checked extraction of the record arm, then the record's width
+      // lift into the destination layout.
+      if (expr.type.kind === "union" && expected.kind === "record") {
+        const arms = this.unions.get(expr.type.unionId)?.arms ?? [];
+        const records = arms.filter((arm) => !isUnitType(arm));
+        const arm = records.length === 1 && records[0]!.kind === "record" ? records[0]! : null;
+        const lift = arm ? this.widthLiftPlan(arm, expected) : null;
+        const helper =
+          arm && lift ? this.narrowedArmHelper(expr.type.unionId, arm, expr.loc) : null;
+        if (arm && lift && helper) {
+          const narrowed = this.checkedNarrowCall(helper, expr, arm, expr.loc);
+          return this.applyWidthLift(lift, narrowed, expected, expr.loc);
         }
       }
       if (!typeEquals(expr.type, expected)) {

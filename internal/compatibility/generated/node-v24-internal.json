@@ -326,9 +326,9 @@
       "apiEntries": 280,
       "static": {
         "supported": 7,
-        "partial": 101,
+        "partial": 131,
         "refused": 0,
-        "not-implemented": 172,
+        "not-implemented": 142,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -43939,7 +43939,13 @@
           "tests/corpus/3135-fs-file-handle-controls.ts",
           "tests/corpus/3136-fs-file-handle-options.ts",
           "tests/corpus/3137-fs-vector-callbacks.cjs",
+          "tests/corpus/5448-fs-glob-patterns.ts",
+          "tests/corpus/5449-fs-glob-options.ts",
+          "tests/corpus/5450-fs-glob-validation.js",
+          "tests/corpus/5451-fs-promises-glob.ts",
+          "tests/corpus/5452-fs-glob-callback.ts",
           "tests/corpus/5540-fs-callback-forms.cjs",
+          "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/fs-read-encodings.ts",
           "tests/corpus/node24-fs-links-callbacks.cjs",
@@ -43957,6 +43963,7 @@
           "tests/corpus/node24-fs-timestamps-promises.ts",
           "tests/corpus/node24-fs-timestamps-symlinks.ts",
           "tests/corpus/node24-fs-timestamps.ts",
+          "tests/fixtures/node-types/fs-glob.ts",
           "tests/fixtures/node-types/fs-links.ts",
           "tests/fixtures/node-types/fs-statfs.ts",
           "tests/fixtures/node-types/fs-timestamps.ts"
@@ -44984,8 +44991,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fsPromises.glob",
+        "tests": [
+          "tests/corpus/5448-fs-glob-patterns.ts",
+          "tests/corpus/5449-fs-glob-options.ts",
+          "tests/corpus/5450-fs-glob-validation.js",
+          "tests/corpus/5451-fs-promises-glob.ts",
+          "tests/corpus/5452-fs-glob-callback.ts",
+          "tests/fixtures/node-types/fs-glob.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -46143,8 +46158,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.glob",
+        "tests": [
+          "tests/corpus/5448-fs-glob-patterns.ts",
+          "tests/corpus/5449-fs-glob-options.ts",
+          "tests/corpus/5450-fs-glob-validation.js",
+          "tests/corpus/5451-fs-promises-glob.ts",
+          "tests/corpus/5452-fs-glob-callback.ts",
+          "tests/fixtures/node-types/fs-glob.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -47645,8 +47668,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.globSync",
+        "tests": [
+          "tests/corpus/5448-fs-glob-patterns.ts",
+          "tests/corpus/5449-fs-glob-options.ts",
+          "tests/corpus/5450-fs-glob-validation.js",
+          "tests/corpus/5451-fs-promises-glob.ts",
+          "tests/corpus/5452-fs-glob-callback.ts",
+          "tests/fixtures/node-types/fs-glob.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49453,8 +49484,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.Stats",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49499,8 +49533,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.stats.isBlockDevice",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49522,8 +49559,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.stats.isCharacterDevice",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49545,8 +49585,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.stats.isDirectory",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49568,8 +49611,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.stats.isFIFO",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49591,8 +49637,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.stats.isFile",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49614,8 +49663,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.stats.isSocket",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49637,8 +49689,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.stats.isSymbolicLink",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49712,8 +49767,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.mode",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -49735,8 +49793,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.nlink",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -49758,8 +49819,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.uid",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -49781,8 +49845,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.gid",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -49804,8 +49871,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.rdev",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -49827,8 +49897,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.size",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -49850,8 +49923,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.blksize",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -49873,8 +49949,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.blocks",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -49896,8 +49975,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.atimeMs",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -49919,8 +50001,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.mtimeMs",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -49968,8 +50053,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.birthtimeMs",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -49991,8 +50079,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.atimeNs",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -50014,8 +50105,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.mtimeNs",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -50037,8 +50131,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.ctimeNs",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -50060,8 +50157,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.birthtimeNs",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -50083,8 +50183,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.atime",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -50106,8 +50209,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.mtime",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -50129,8 +50235,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.ctime",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -50152,8 +50261,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.birthtime",
+        "tests": [
+          "tests/corpus/5541-fs-stats-fields.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },

@@ -1,4 +1,5 @@
 import { type ArraySearchKind, emitArraySearchHelpers } from "./array-search.js";
+import { emitStringInputs } from "./string-lifetimes.js";
 import { emitLlvmLayouts } from "./layouts.js";
 import { compileRegexMatcher, type RegexMatcherCode } from "./regex-matchers.js";
 import { CYC_BUF, CYC_HDR, FIRST_EMITTED_CYC_KIND, inlineAllocSupported } from "./alloc.js";
@@ -77,7 +78,7 @@ import {
   type StringSplit,
 } from "./split-loops.js";
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
-import { addRecordResultEntries } from "./record-results.js";
+import { RESULT_ENTRY_PREFIX, addRecordResultEntries } from "./record-results.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
 import { analyzeIntegerRanges, INT32_RANGE, type IntegerRanges } from "../../ir/integer-ranges.js";
@@ -6012,6 +6013,7 @@ export class LlEmitter {
     // tests small enough to inline at each call site.
     if (fn.name.startsWith("%dyn.class.protocol.fallback.")) attrs = `noinline ${attrs}`;
     else if (fn.name.startsWith("%dyn.class.protocol.")) attrs = `inlinehint ${attrs}`;
+    if (fn.name.startsWith(RESULT_ENTRY_PREFIX)) attrs = `inlinehint ${attrs}`;
     const debug = this.debugScope === null ? "" : ` !dbg ${this.debugScope}`;
     const symbol = borrowed ? mangleBorrowedFunction(fn.name) : mangleFunction(fn.name);
     let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${debug} { ; ${fn.name}\n${B.render()}\n}`;
@@ -6836,10 +6838,9 @@ export class LlEmitter {
           storeLocalUnion(this, localStorage, s.value);
           break;
         }
-        const concat = s.value;
-        const suffix = matchStringSelfConcat(s.localId, concat);
-        if (suffix && concat.kind === "strConcat") {
-          this.emitStringSelfConcatAssign(s.localId, concat.left, suffix, false);
+        const self = matchStringSelfConcat(s.localId, s.value);
+        if (self) {
+          this.emitStringSelfConcatAssign(s.localId, self.left, self.suffix, false);
           break;
         }
         const b = this.binding(s.localId);
@@ -8226,7 +8227,11 @@ export class LlEmitter {
       e.kind === "seqExpr" &&
       isRefCounted(e.result.type) &&
       e.result.kind !== "strLit" &&
-      this.discardableRead(e.result)
+      (this.discardableRead(e.result) ||
+        // A function-local binding's read has no effect of its own (a
+        // compound assignment's result, say); a module binding's read may
+        // throw before initialization, so it stays.
+        (e.result.kind === "varRef" && this.binding(e.result.localId).kind === "local"))
     ) {
       this.emitSequence(() => {
         for (const s of e.stmts) this.emitStmt(s);
@@ -8287,8 +8292,11 @@ export class LlEmitter {
     // of first building the suffix as a separate string.
     const parts = stringParts(suffix);
     const mixed = parts.length > 1 || numberPart(parts[0]!) !== null;
+    const charCode = mixed ? null : this.emitSingleCharCode(suffix);
     const inputs = mixed ? emitConcatInputs(this, parts) : [];
-    const right = mixed ? null : this.emitExpr(suffix);
+    // The concat only reads the suffix; relinquishing the binding below
+    // runs no code that could rebind a borrowed local.
+    const right = mixed || charCode !== null ? null : emitStringInputs(this, [suffix])[0]!;
     const b = this.binding(localId);
     const B = this.B;
     if (b.kind === "boxed") {
@@ -8301,7 +8309,15 @@ export class LlEmitter {
       this.releaseValue(old, b.type);
     }
     let raw: string;
-    if (right === null) {
+    if (charCode !== null) {
+      // The snapshot moves into the consuming character append.
+      this.moveTemp(snapshot);
+      this.declare(`declare ptr @scr_str_concat_move_char_code(ptr, double)`);
+      raw = B.tmp();
+      B.line(
+        `${raw} = call ptr @scr_str_concat_move_char_code(ptr ${snapshot.name}, double ${charCode.name})`,
+      );
+    } else if (right === null) {
       raw = emitMixedConcat(this, snapshot.name, inputs);
     } else {
       this.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
@@ -8319,6 +8335,17 @@ export class LlEmitter {
       else B.line(`store ptr ${result.name}, ptr ${b.slot}`);
     }
     return result;
+  }
+
+  /** The code of a one-argument `String.fromCharCode(c)` suffix, emitted, so
+   * `s += String.fromCharCode(c)` appends the character without building
+   * the one-character string; null for any other suffix. */
+  private emitSingleCharCode(suffix: IrExpr): LlValue | null {
+    if (suffix.kind !== "libCall" || suffix.fn !== "string.fromCharCode") return null;
+    const packed = suffix.args[0];
+    if (packed?.kind !== "arrayLit" || packed.elems.length !== 1 || packed.spreads?.length)
+      return null;
+    return this.emitExpr(packed.elems[0]!);
   }
 
   /** `local = local + suffix` when the suffix cannot read or write the
@@ -8347,14 +8374,22 @@ export class LlEmitter {
       return null;
     const parts = stringParts(suffix);
     const mixed = parts.length > 1 || numberPart(parts[0]!) !== null;
+    const charCode = mixed ? null : this.emitSingleCharCode(suffix);
     const inputs = mixed ? emitConcatInputs(this, parts) : [];
-    const right = mixed ? null : this.emitExpr(suffix);
+    // The concat only reads the suffix, which may stay borrowed.
+    const right = mixed || charCode !== null ? null : emitStringInputs(this, [suffix])[0]!;
     this.materializeSplitLocal(localId);
     const B = this.B;
     const head = B.tmp();
     B.line(`${head} = load ptr, ptr ${b.slot}`);
     let raw: string;
-    if (right === null) {
+    if (charCode !== null) {
+      this.declare(`declare ptr @scr_str_concat_move_char_code(ptr, double)`);
+      raw = B.tmp();
+      B.line(
+        `${raw} = call ptr @scr_str_concat_move_char_code(ptr ${head}, double ${charCode.name})`,
+      );
+    } else if (right === null) {
       raw = emitMixedConcat(this, head, inputs, true);
     } else {
       this.declare(`declare ptr @scr_str_concat_move(ptr, ptr)`);

@@ -1324,6 +1324,36 @@ declare module "node:fs" {
      * fences by name at the call site; undocumented keys drop like Node. */
     options: { withFileTypes: true; recursive?: boolean; [option: string]: unknown },
   ): Dirent[];
+  /* fs.globSync / fs.glob: Node's glob walk over the file system. Patterns
+   * are minimatch globs (case-insensitive on macOS and Windows); results
+   * are relative to cwd unless the pattern is absolute. withFileTypes must
+   * be a literal so the result type is known. */
+  export interface GlobOptions {
+    cwd?: string | URL;
+    exclude?: readonly string[] | ((fileName: string) => boolean);
+    followSymlinks?: boolean;
+    withFileTypes?: false;
+  }
+  export interface GlobOptionsWithFileTypes {
+    cwd?: string | URL;
+    exclude?: readonly string[];
+    followSymlinks?: boolean;
+    withFileTypes: true;
+  }
+  export function globSync(pattern: string | readonly string[], options?: GlobOptions): string[];
+  export function globSync(
+    pattern: string | readonly string[],
+    options: GlobOptionsWithFileTypes,
+  ): Dirent[];
+  export function glob(
+    pattern: string | readonly string[],
+    callback: (err: NodeJS.ErrnoException | null, matches?: string[]) => void,
+  ): void;
+  export function glob(
+    pattern: string | readonly string[],
+    options: GlobOptions,
+    callback: (err: NodeJS.ErrnoException | null, matches?: string[]) => void,
+  ): void;
   export function accessSync(path: string, mode?: number): void;
   export function mkdtempSync(prefix: string): string;
   export const constants: {
@@ -1350,14 +1380,28 @@ declare module "node:fs" {
     isFile(): boolean;
     isDirectory(): boolean;
     isSymbolicLink(): boolean;
+    isBlockDevice(): boolean;
+    isCharacterDevice(): boolean;
+    isFIFO(): boolean;
+    isSocket(): boolean;
     readonly dev: number;
+    readonly mode: number;
+    readonly nlink: number;
+    readonly uid: number;
+    readonly gid: number;
+    readonly rdev: number;
+    readonly blksize: number;
     readonly ino: number;
     readonly size: number;
     readonly blocks: number;
-    readonly nlink: number;
     readonly atimeMs: number;
     readonly mtimeMs: number;
     readonly ctimeMs: number;
+    readonly birthtimeMs: number;
+    readonly atime: Date;
+    readonly mtime: Date;
+    readonly ctime: Date;
+    readonly birthtime: Date;
   }
   export function statSync(path: string): Stats;
   export function lstatSync(path: string): Stats;
@@ -1672,6 +1716,15 @@ declare module "fs/promises" {
       [option: string]: unknown;
     },
   ): Promise<import("node:fs").Dirent[]>;
+  /* The async iterator form of fs.globSync: iterate it with for await. */
+  export function glob(
+    pattern: string | readonly string[],
+    options?: import("node:fs").GlobOptions,
+  ): AsyncIterableIterator<string>;
+  export function glob(
+    pattern: string | readonly string[],
+    options: import("node:fs").GlobOptionsWithFileTypes,
+  ): AsyncIterableIterator<import("node:fs").Dirent>;
   export function rm(path: string): Promise<void>;
   export function stat(path: string): Promise<import("node:fs").Stats>;
   export function statfs(
@@ -3413,6 +3466,9 @@ declare module "node:zlib" {
  * 'error'. */
 declare module "net" {
   export interface Socket {
+    /* Whether the socket keeps the event loop alive (ref'd by default). */
+    ref(): void;
+    unref(): void;
     readonly remoteAddress: string | undefined;
     /* true once the fd is gone (destroy() or full close) — Node's flag. */
     readonly destroyed: boolean;
@@ -3477,6 +3533,9 @@ declare module "net" {
     once(event: "session", listener: (session: Buffer) => void): void;
   }
   export interface Server {
+    /* Whether the server keeps the event loop alive (ref'd by default). */
+    ref(): void;
+    unref(): void;
     readonly listening: boolean;
     /* Node answers the server itself (`return this` chaining). */
     listen(port: number, callback?: () => void): Server;

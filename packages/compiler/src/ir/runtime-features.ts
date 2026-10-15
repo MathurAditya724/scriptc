@@ -44,6 +44,7 @@ export interface RuntimeFeatures {
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.callbackValue",
   "fs.callbackCall",
+  "fs.callbackGlob",
   "async.awaitDyn",
   "timers.immediatePromise",
   "crypto.native",
@@ -173,7 +174,14 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn === "dyn.nativeRegexIs" ||
         fn === "util.stripVTControlCharacters" ||
         fn === "path.matchesGlob" ||
-        fn === "path.win32MatchesGlob"
+        fn === "path.win32MatchesGlob" ||
+        // fs.glob's walk compiles its patterns with the glob matcher.
+        fn === "fs.globSync" ||
+        fn === "fs.globTypesSync" ||
+        fn === "fs.callbackGlob" ||
+        fn === "fsp.globStrings" ||
+        fn === "fsp.globTypes" ||
+        fn === "fsp.globError"
       )
         features.regex = true;
       if (
