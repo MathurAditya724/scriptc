@@ -2271,7 +2271,10 @@ declare module "crypto" {
     data: string | ArrayBufferView,
     options: OneShotDigestOptions | BinaryToTextEncoding | "buffer",
   ): string | Buffer;
-  export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean;
+  export function timingSafeEqual(
+    a: ArrayBufferView | ArrayBufferLike,
+    b: ArrayBufferView | ArrayBufferLike,
+  ): boolean;
   export function randomFillSync<T extends ArrayBufferView | ArrayBufferLike>(
     buffer: T,
     offset?: number,

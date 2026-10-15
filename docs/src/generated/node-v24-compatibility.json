@@ -208,8 +208,8 @@
       "entries": 152,
       "apiEntries": 152,
       "static": {
-        "supported": 4,
-        "partial": 20,
+        "supported": 5,
+        "partial": 19,
         "refused": 26,
         "not-implemented": 102,
         "by-design": 0,
@@ -12854,7 +12854,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }

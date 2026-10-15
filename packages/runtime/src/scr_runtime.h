@@ -4346,6 +4346,7 @@ ScrCryptoHash *scr_crypto_hash_update_dyn(ScrCryptoHash *h, ScrDyn *data, ScrDyn
 ScrDyn *scr_crypto_hash_digest_dyn(ScrCryptoHash *h, ScrDyn *enc);
 ScrDyn *scr_crypto_hash_oneshot(ScrStr *alg, ScrDyn *input, ScrDyn *options);
 bool scr_crypto_timing_safe_equal(ScrBytes *left, ScrBytes *right);
+bool scr_crypto_timing_safe_equal_dyn(ScrDyn *left, ScrDyn *right);
 ScrBytes *scr_crypto_random_fill(ScrBytes *bytes, double offset, double size);
 ScrBytes *scr_crypto_random_fill_rest(ScrBytes *bytes, double offset);
 double scr_crypto_random_int(double min, double max);

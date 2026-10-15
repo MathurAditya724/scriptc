@@ -3,19 +3,19 @@
   "nodeVersion": "24.22.0",
   "nodeCommit": "f14cd3aa7bf9ca8df2cc5b8bb14beb0f335b1d93",
   "summary": {
-    "taskCount": 3473,
-    "tierItemCount": 3473,
+    "taskCount": 3472,
+    "tierItemCount": 3472,
     "tiers": {
       "static": {
         "replace-refusal": 40,
         "verify-gap": 2475,
-        "audit-partial": 871,
+        "audit-partial": 870,
         "classify": 2,
         "implement": 85
       }
     },
     "priorities": {
-      "high": 2290,
+      "high": 2289,
       "normal": 710,
       "low": 473
     }
@@ -7798,41 +7798,6 @@
           "confidence": "high",
           "source": "surface-manifest:unsupported:node-builtin.crypto.sign",
           "tests": []
-        }
-      }
-    },
-    {
-      "id": "crypto:6ed432bf0cfd",
-      "chapter": "crypto",
-      "label": "crypto.timingSafeEqual(a, b)",
-      "signature": "`crypto.timingSafeEqual(a, b)`",
-      "apiSymbol": "crypto.timingSafeEqual",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/crypto.html#cryptotimingsafeequala-b",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "compiler-dedicated:crypto.timingSafeEqual",
-          "tests": [
-            "tests/corpus/2890-crypto-static-utility.ts",
-            "tests/corpus/node24-crypto-sha2.ts",
-            "tests/corpus/5435-crypto-hash-algorithms.ts",
-            "tests/corpus/5436-crypto-hash-names.js",
-            "tests/corpus/5437-crypto-hmac-algorithms.ts",
-            "tests/corpus/5438-crypto-kdf-digests.ts",
-            "tests/corpus/5440-crypto-hash-encodings.js",
-            "tests/corpus/5441-crypto-hash-output-length.ts",
-            "tests/harness/npm-static.test.ts"
-          ]
         }
       }
     },

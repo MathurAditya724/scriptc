@@ -7419,6 +7419,39 @@ bool scr_crypto_timing_safe_equal(ScrBytes *left, ScrBytes *right) {
   return diff == 0;
 }
 
+/* A timingSafeEqual argument as a view: any TypedArray, DataView or
+ * Buffer, or a u8 view over an ArrayBuffer or SharedArrayBuffer. +1, or
+ * NULL with Node's ERR_INVALID_ARG_TYPE pending. */
+static ScrBytes *scr_timing_view(const ScrDyn *value, const char *name) {
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *materialized = scr_dyn_typed_ref_materialize(value);
+    if (!materialized) return NULL;
+    ScrBytes *view = scr_timing_view(materialized, name);
+    scr_dyn_release(materialized);
+    return view;
+  }
+  if (value->kind == SCR_DYN_BYTES) return scr_bytes_retain(value->v.bytes);
+  if (scr_buffer_storage_is(value)) return scr_bytes_buffer_source(value);
+  char message[128];
+  int n = snprintf(message, sizeof message,
+                   "The \"%s\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView.",
+                   name);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)n, "ERR_INVALID_ARG_TYPE");
+  return NULL;
+}
+
+/* timingSafeEqual(buf1, buf2) over any values, checked in Node's order:
+ * buf1, buf2, then the byte lengths. */
+bool scr_crypto_timing_safe_equal_dyn(ScrDyn *left, ScrDyn *right) {
+  ScrBytes *a = scr_timing_view(left, "buf1");
+  if (!a) return false;
+  ScrBytes *b = scr_timing_view(right, "buf2");
+  bool equal = b && scr_crypto_timing_safe_equal(a, b);
+  scr_bytes_release(a);
+  if (b) scr_bytes_release(b);
+  return equal;
+}
+
 /* ERR_OUT_OF_RANGE's Received value: integers beyond 2^32 take Node's
  * underscore separators. */
 static void scr_crypto_received(double value, char out[64]) {

@@ -1804,6 +1804,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "crypto.randomFillSyncDyn",
     ],
     randomFill: ["crypto.randomFillCbDyn"],
+    timingSafeEqual: ["crypto.timingSafeEqualDyn"],
     randomInt: ["crypto.randomIntMax", "crypto.randomIntCb"],
     randomUUID: ["crypto.randomUUIDOpts"],
   },
