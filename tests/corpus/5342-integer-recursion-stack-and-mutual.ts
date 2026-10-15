@@ -13,12 +13,14 @@ function spin(n: number): number {
   return spin(n + 0) + 1;
 }
 
-// An accumulating chain; for negative input it outruns the loop's limit and
-// reruns as ordinary recursion, which overflows the stack.
+// An accumulating chain: deep or endless input overflows the stack even
+// though the recursion runs as a loop.
 function count(n: number): number {
   return n === 0 ? 0 : 1 + count(n - 1);
 }
 
+// Plain mutual tail calls (kept within Node's stack depth: compiled code
+// runs them as a loop, so an endless chain would not overflow).
 function isEven(n: number): boolean {
   return n === 0 ? true : isOdd(n - 1);
 }
@@ -63,10 +65,11 @@ attempt("down 10 after overflow", () => down(10));
 attempt("spin", () => spin(2));
 attempt("count 3000", () => count(3000));
 attempt("count -1", () => count(-1));
+attempt("count 1e7", () => count(1e7));
+attempt("count 5 after overflow", () => count(5));
 attempt("isEven 7", () => isEven(7));
 attempt("isOdd 7", () => isOdd(7));
 attempt("isEven 1001", () => isEven(1001));
-attempt("isEven -1", () => isEven(-1));
 for (const n of [0, 1, 5, 20, 40, 60, 61, 62, 100]) attempt(`ping ${n}`, () => ping(n));
 for (const n of [0, 1, 2, 3, 4, 5, 6, 7]) attempt(`alternate ${n}`, () => alternate(true, n));
 attempt("ack 2 3", () => ack(2, 3));

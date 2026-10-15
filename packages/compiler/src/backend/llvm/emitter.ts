@@ -80,7 +80,12 @@ import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
 import { addRecordResultEntries } from "./record-results.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
-import { analyzeIntegerRanges, INT32_RANGE, type IntegerRanges } from "../../ir/integer-ranges.js";
+import {
+  analyzeIntegerRanges,
+  INT32_RANGE,
+  type IntegerRange,
+  type IntegerRanges,
+} from "../../ir/integer-ranges.js";
 import { unshareNodes } from "../../ir/unshare.js";
 import { analyzeInt32Slots, type Int32Slots } from "../../ir/int32-slots.js";
 import { analyzeFinalFields, constructorClass, type FinalFields } from "../../ir/final-fields.js";
@@ -867,6 +872,10 @@ export class LlEmitter {
   readonly integerClones: IntegerClones;
   /** The IR function being emitted. */
   currentFunctionName = "";
+
+  integerParamRange(fnName: string, localId: string): IntegerRange | null {
+    return this.int32Slots.facts(fnName).params?.get(localId) ?? null;
+  }
   /** Immutable module constants (contract types) whose graphs become
    * immortal once initialized: their reads need no reference counting. */
   readonly immortalGlobals: ReadonlySet<string>;
@@ -1031,17 +1040,6 @@ export class LlEmitter {
     this.mayThrow = mt.fns;
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
-    // Integer clones signal a stack overflow through their result, which
-    // needs the single-threaded guard; worker programs also poll for
-    // termination, and debug builds and stack traces keep every frame.
-    this.integerClones =
-      this.debug === null &&
-      this.stackChecks !== null &&
-      mod.workers !== true &&
-      mod.lib === undefined &&
-      !this.stackTraces
-        ? findIntegerClones(mod)
-        : NO_INTEGER_CLONES;
     this.publishedTypes = computePublishedTypes(mod);
     this.immutableFields = computeImmutableFields(mod);
     this.constructorFunctions = new Set((mod.classes ?? []).map((c) => `%${c.name}.constructor`));
@@ -1138,6 +1136,23 @@ export class LlEmitter {
       },
     );
     this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes);
+    // Integer clones signal a stack overflow through their result, which
+    // needs the single-threaded guard; worker programs also poll for
+    // termination, and debug builds and stack traces keep every frame.
+    // Clones read number arrays their function borrows (64-bit layouts).
+    this.integerClones =
+      this.debug === null &&
+      this.stackChecks !== null &&
+      mod.workers !== true &&
+      mod.lib === undefined &&
+      !this.stackTraces
+        ? findIntegerClones(
+            mod,
+            this.sizeType === "i64"
+              ? (fn, index) => this.callLifetimes.borrowed.get(fn)?.has(index) === true
+              : undefined,
+          )
+        : NO_INTEGER_CLONES;
     this.stackCallbacks = new StackCallbacks(this.fnByName);
     this.receiverReaders = new AmbientReceiverReaders(this.fnByName);
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
@@ -6039,7 +6054,7 @@ export class LlEmitter {
     const symbol = borrowed ? mangleBorrowedFunction(fn.name) : mangleFunction(fn.name);
     let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${debug} { ; ${fn.name}\n${B.render()}\n}`;
     if (int32Abi) body += "\n" + this.emitInt32AbiWrapper(fn, symbol, int32Abi);
-    if (!borrowed && this.integerClones.members.has(fn.name)) {
+    if (this.integerClones.members.has(fn.name)) {
       body += "\n" + emitIntegerClone(fn, this, this.stackChecks?.has(fn.name) === true);
       if (this.integerClones.dispatched.has(fn.name))
         body +=

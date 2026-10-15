@@ -216,7 +216,9 @@ test("the clone loops over its accumulating self call and outside callers dispat
   const clone = define(llvm, "sc_f_fib.int");
   expect(clone).toContain("define internal { i32, i1 } @sc_f_fib.int(i32 %a0)");
   // One recursive call per level: fib(n - 2) is the loop's next iteration.
-  expect(clone.match(/call \{ i32, i1 \} @sc_f_fib\.int\(/g)).toHaveLength(1);
+  expect(clone.match(/= call \{ i32, i1 \} @sc_f_fib\.int\(/g)).toHaveLength(1);
+  // Accumulating iterations lower the virtual stack pointer by a frame.
+  expect(clone).toMatch(/sub i64 %t\d+, 32/);
   expect(clone).toMatch(/br label %tail\d+/);
   expect(clone).toContain("call void @scr_stack_overflow()");
   expect(clone).toContain("ret { i32, i1 } { i32 poison, i1 true }");
@@ -233,10 +235,15 @@ test("the clone loops over its accumulating self call and outside callers dispat
   expect(define(llvm, "sc_f_fib")).not.toContain(".spec(");
   // The closure keeps the ordinary entry.
   expect(llvm).not.toMatch(/ptr @sc_f_fib\.(spec|int)\b/);
-  // Boolean clones forward BAIL from mutual calls.
+  // Boolean clones forward BAIL from mutual calls: a plain mutual tail call
+  // returns the callee's result as is and, like the ordinary body's tail
+  // call, carries no virtual stack.
   const even = define(llvm, "sc_f_isEven.int");
-  expect(even).toContain("call { i32, i1 } @sc_f_isOdd.int(");
-  expect(even).toMatch(/extractvalue \{ i32, i1 \} %t\d+, 1/);
+  expect(even).toContain("define internal { i32, i1 } @sc_f_isEven.int(i32 %a0)");
+  expect(even).toMatch(
+    /= tail call \{ i32, i1 \} @sc_f_isOdd\.int\(i32 %t\d+\)\n\s*ret \{ i32, i1 \} %t\d+/,
+  );
+  expect(even).not.toContain("virtual stack pointer");
   expect(define(llvm, "sc_f_helped.int")).toContain("call { i32, i1 } @sc_f_helper.int(");
   expect(llvm).not.toContain("@sc_f_helper.spec");
 });
@@ -247,4 +254,44 @@ test("debug and library builds emit no clones", () => {
   });
   expect(debug).not.toContain(".int(");
   expect(debug).not.toContain(".spec(");
+});
+
+test("borrowed number arrays: length and element reads qualify", () => {
+  const arr: IrType = { kind: "array", elem: F64 };
+  const a = ref("a", arr);
+  const length: IrExpr = {
+    kind: "arrIntrinsic",
+    method: "length",
+    receiver: a,
+    args: [],
+    type: F64,
+    loc,
+  };
+  const element: IrExpr = { kind: "arrayGet", arr: a, index: ref("i"), type: F64, loc };
+  // sum(a, i) = i < a.length ? a[i] + sum(a, i + 1) : 0
+  const sum = fn(
+    "sum",
+    ["a", "i"],
+    [
+      ret(
+        ternary(
+          bin("<", ref("i"), length),
+          bin("+", element, call("sum", [a, bin("+", ref("i"), num(1))])),
+          num(0),
+        ),
+      ),
+    ],
+    F64,
+    [arr, F64],
+  );
+  const mod: IrModule = { irVersion: 16, sourceFile: loc.file, entry: "sum", functions: [sum] };
+  expect(findIntegerClones(mod).members.has("sum")).toBe(false);
+  expect(findIntegerClones(mod, () => false).members.has("sum")).toBe(false);
+  const clones = findIntegerClones(mod, (name, index) => name === "sum" && index === 0);
+  expect(clones.dispatched.has("sum")).toBe(true);
+  // Arrays of other elements never qualify.
+  const strings: IrType = { kind: "array", elem: { kind: "string" } };
+  const other = fn("other", ["s"], [ret(num(1))], F64, [strings]);
+  const withOther: IrModule = { ...mod, functions: [sum, other] };
+  expect(findIntegerClones(withOther, () => true).members.has("other")).toBe(false);
 });

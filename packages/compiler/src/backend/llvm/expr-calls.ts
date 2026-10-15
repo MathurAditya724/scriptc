@@ -184,11 +184,11 @@ export function emitCallExpr(
       // never unwinds — rejections surface at await (computeMayThrow's
       // async exclusion).
       // Callers outside a recursive integer-clone member's recursion enter
-      // its dispatcher (integer-clones.ts), which has the same signature.
-      const dispatch =
-        !borrowed && dispatchesCall(host.integerClones, host.currentFunctionName, e.callee)
-          ? INTEGER_DISPATCH_SUFFIX
-          : "";
+      // its dispatcher (integer-clones.ts), which has the signature of the
+      // entry it replaces (ordinary or borrowed, double or i32).
+      const dispatch = dispatchesCall(host.integerClones, host.currentFunctionName, e.callee)
+        ? INTEGER_DISPATCH_SUFFIX
+        : "";
       const target = `@${borrowed ? mangleBorrowedFunction(e.callee) : host.callTarget(e.callee)}${abi ? INT32_ABI_SUFFIX : ""}${dispatch}`;
       if (e.type.kind === "void") {
         B.line(`call void ${target}(${argList})`);

@@ -1,13 +1,15 @@
 import type { IrExpr, IrFunction, IrLocal, IrModule, IrStmt, IrType } from "../../ir/ir.js";
 import { mangleFunction } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
+import { SCR_ARR_FIELD } from "./common.js";
 
 /** Speculative integer clones of pure number-valued functions.
  *
  * A function qualifies when its parameters, locals and result are numbers
- * or booleans and its body only reads and writes its own locals, branches,
- * computes with numbers and booleans, and directly calls other qualifying
- * functions. Such a body has no observable effect besides its result, a
+ * or booleans (parameters may also be number arrays it borrows) and its
+ * body only reads and writes its own locals, reads `length` and elements of
+ * those arrays, branches, computes with numbers and booleans, and directly
+ * calls other qualifying functions. Such a body has no observable effect besides its result, a
  * stack-overflow RangeError, or not terminating.
  *
  * Its clone (`<symbol>.int`) takes its number parameters as i32 and keeps
@@ -36,10 +38,19 @@ import { BlockBuilder } from "./blocks.js";
  * can arise, so calls between clones need no pending test.
  *
  * Self tail calls (`return f(...)`) and accumulating self calls (`return
- * x + f(...)`, also `f(...) + x` when `x` calls nothing) become a loop.
- * The loop counts its iterations and bails beyond TAIL_LIMIT, so recursion
- * that would overflow the stack (or never end) reruns as ordinary
- * recursion and throws there. Its int32 accumulator is overflow checked.
+ * x + f(...)`, also `f(...) + x` when `x` calls nothing) become a loop, and
+ * tail calls between members of a component return the callee's result as
+ * is, so LLVM inlines them into one loop.
+ *
+ * A clone overflows the stack where the ordinary body would. LLVM already
+ * turns the ordinary body's plain tail calls into loops, so the clone's
+ * plain tail calls run unchecked too (endless tail recursion runs forever
+ * on either path, like before clones). An accumulating call is real
+ * recursion in the ordinary body (a double sum is not associative), so its
+ * loop carries a virtual stack pointer, starting at the real one, that
+ * every accumulating iteration lowers by one VIRTUAL_FRAME; passing the
+ * stack guard throws Node's RangeError like the real overflow would. The
+ * int32 accumulator is overflow checked.
  * That is exact: with every partial sum and the final result in the int32
  * range, every value the ordinary body adds is the final result minus a
  * partial sum, within 2^32, so each double addition is exact. */
@@ -50,20 +61,25 @@ export interface IntegerClones {
   readonly dispatched: ReadonlySet<string>;
   /** The recursive component of each dispatched member. */
   readonly component: ReadonlyMap<string, number>;
+  /** Members of components with tail calls between different members,
+   * which return the callee's result as is. */
+  readonly tailLinked: ReadonlySet<string>;
 }
 
 export const NO_INTEGER_CLONES: IntegerClones = {
   members: new Set(),
   dispatched: new Set(),
   component: new Map(),
+  tailLinked: new Set(),
 };
 
 /** A clone's result: the value and whether the clone bailed. */
 export const CLONE_RESULT = "{ i32, i1 }";
 /** The result of a clone that bailed: no caller reads its value. */
 const BAIL = `${CLONE_RESULT} { i32 poison, i1 true }`;
-/** Self tail-call iterations one clone frame runs before it bails (2^14). */
-const TAIL_LIMIT = 16384;
+/** The stack one replaced recursion level is charged, in bytes. Ordinary
+ * frames of these functions are about that size. */
+const VIRTUAL_FRAME = 32;
 
 /** The single-threaded stack guard, declared as the emitter's ordinary
  * stack checks declare it (clones only exist without workers). */
@@ -73,10 +89,25 @@ export const INTEGER_CLONE_SUFFIX = ".int";
 export const INTEGER_DISPATCH_SUFFIX = ".spec";
 
 type Scalar = "num" | "bool";
+/** A value kind: an int32 number, a boolean, or a borrowed number array. */
+type Kind = Scalar | "arr";
 
 function scalarKind(type: IrType): Scalar | null {
   return type.kind === "f64" ? "num" : type.kind === "bool" ? "bool" : null;
 }
+
+function valueKind(type: IrType): Kind | null {
+  return type.kind === "array" && type.elem.kind === "f64" ? "arr" : scalarKind(type);
+}
+
+/** The LLVM type of a value of `kind` inside a clone. */
+function kindType(kind: Kind): string {
+  return kind === "num" ? "i32" : kind === "bool" ? "i1" : "ptr";
+}
+
+/** Whether the function borrows its parameter at `index` (callers keep the
+ * array alive and unchanged for the call); absent, clones take no arrays. */
+export type BorrowedParameter = (fnName: string, index: number) => boolean;
 
 function isInt32Literal(value: number): boolean {
   return (
@@ -85,19 +116,29 @@ function isInt32Literal(value: number): boolean {
 }
 
 /** The call targets of `fn` when its body has the qualifying shape. */
-function cloneShape(fn: IrFunction): Set<string> | null {
+function cloneShape(fn: IrFunction, borrowed?: BorrowedParameter): Set<string> | null {
   if (fn.async || fn.generator !== undefined || fn.captures !== undefined) return null;
   if (fn.classCaptures !== undefined && fn.classCaptures.length > 0) return null;
   const result = scalarKind(fn.returnType);
   if (result === null) return null;
   const locals = new Map<string, IrLocal>(fn.locals.map((l) => [l.id, l]));
+  // Array parameters are only read: never assigned, and their locals are
+  // the parameters themselves.
+  const arrays = new Set<string>();
+  for (const [index, p] of fn.params.entries())
+    if (valueKind(p.type) === "arr") {
+      if (borrowed?.(fn.name, index) !== true) return null;
+      arrays.add(p.localId);
+    }
   const localKind = (id: string): Scalar | null => {
     const local = locals.get(id);
     if (!local || local.boxed || local.tdz) return null;
     return scalarKind(local.type);
   };
+  const arrayRef = (e: IrExpr): boolean => e.kind === "varRef" && arrays.has(e.localId);
   for (const p of fn.params)
-    if (localKind(p.localId) === null || scalarKind(p.type) === null) return null;
+    if (!arrays.has(p.localId) && (localKind(p.localId) === null || scalarKind(p.type) === null))
+      return null;
   const callees = new Set<string>();
   const expr = (e: IrExpr, want: Scalar): boolean => {
     if (scalarKind(e.type) !== want) return false;
@@ -147,11 +188,17 @@ function cloneShape(fn: IrFunction): Set<string> | null {
         return want === "bool" && expr(e.left, "bool") && expr(e.right, "bool");
       case "ternary":
         return expr(e.cond, "bool") && expr(e.then, want) && expr(e.else_, want);
+      case "arrIntrinsic":
+        return (
+          want === "num" && e.method === "length" && e.args.length === 0 && arrayRef(e.receiver)
+        );
+      case "arrayGet":
+        return want === "num" && arrayRef(e.arr) && expr(e.index, "num");
       case "call":
         callees.add(e.callee);
         return e.args.every((a) => {
-          const kind = scalarKind(a.type);
-          return kind !== null && expr(a, kind);
+          const kind = valueKind(a.type);
+          return kind === "arr" ? arrayRef(a) : kind !== null && expr(a, kind);
         });
       default:
         return false;
@@ -196,7 +243,7 @@ function callsMatch(fn: IrFunction, byName: ReadonlyMap<string, IrFunction>): bo
           !callee ||
           callee.params.length !== e.args.length ||
           scalarKind(callee.returnType) !== scalarKind(e.type) ||
-          callee.params.some((p, i) => scalarKind(p.type) !== scalarKind(e.args[i]!.type))
+          callee.params.some((p, i) => valueKind(p.type) !== valueKind(e.args[i]!.type))
         )
           ok = false;
         e.args.forEach(visit);
@@ -215,6 +262,9 @@ function callsMatch(fn: IrFunction, byName: ReadonlyMap<string, IrFunction>): bo
         visit(e.cond);
         visit(e.then);
         visit(e.else_);
+        return;
+      case "arrayGet":
+        visit(e.index);
         return;
       default:
         return;
@@ -237,11 +287,11 @@ function callsMatch(fn: IrFunction, byName: ReadonlyMap<string, IrFunction>): bo
   return ok;
 }
 
-export function findIntegerClones(mod: IrModule): IntegerClones {
+export function findIntegerClones(mod: IrModule, borrowed?: BorrowedParameter): IntegerClones {
   const byName = new Map(mod.functions.map((fn) => [fn.name, fn]));
   const edges = new Map<string, Set<string>>();
   for (const fn of mod.functions) {
-    const callees = cloneShape(fn);
+    const callees = cloneShape(fn, borrowed);
     if (callees && callsMatch(fn, byName)) edges.set(fn.name, callees);
   }
   // Drop functions that call a non-member until none does.
@@ -292,7 +342,38 @@ export function findIntegerClones(mod: IrModule): IntegerClones {
       }
   };
   for (const name of edges.keys()) if (!index.has(name)) strong(name);
-  return { members: new Set(edges.keys()), dispatched, component };
+  // Components with a tail call from one member to another.
+  const mutual = new Set<number>();
+  for (const name of dispatched)
+    for (const callee of tailCallees(byName.get(name)!))
+      if (callee !== name && component.get(callee) === component.get(name))
+        mutual.add(component.get(name)!);
+  const tailLinked = new Set([...dispatched].filter((name) => mutual.has(component.get(name)!)));
+  return { members: new Set(edges.keys()), dispatched, component, tailLinked };
+}
+
+/** The functions `fn` calls in tail position: as a returned value, directly
+ * or as an arm of a returned conditional. */
+function tailCallees(fn: IrFunction): Set<string> {
+  const result = new Set<string>();
+  const value = (e: IrExpr): void => {
+    if (e.kind === "call") result.add(e.callee);
+    else if (e.kind === "ternary") {
+      value(e.then);
+      value(e.else_);
+    }
+  };
+  const stmts = (list: readonly IrStmt[]): void => {
+    for (const s of list) {
+      if (s.kind === "return" && s.value) value(s.value);
+      else if (s.kind === "if") {
+        stmts(s.then);
+        if (s.else_) stmts(s.else_);
+      } else if (s.kind === "block") stmts(s.body);
+    }
+  };
+  stmts(fn.body);
+  return result;
 }
 
 /** Whether a direct call from `caller` to `callee` enters the callee's
@@ -305,6 +386,10 @@ export function dispatchesCall(clones: IntegerClones, caller: string, callee: st
 }
 
 export interface IntegerCloneHost {
+  readonly integerClones: IntegerClones;
+  /** The range every caller passes to a number parameter (int32-slots
+   * facts, proven over every call site, recursive ones included), if any. */
+  integerParamRange(fnName: string, localId: string): { min: number; max: number } | null;
   declare(decl: string): void;
   /** Lines setting the i1 `dest` to "an exception is pending". */
   pendingTestLines(dest: string): string[];
@@ -330,6 +415,8 @@ function callsAnything(e: IrExpr): boolean {
       return callsAnything(e.operand);
     case "ternary":
       return callsAnything(e.cond) || callsAnything(e.then) || callsAnything(e.else_);
+    case "arrayGet":
+      return callsAnything(e.index);
     default:
       return false;
   }
@@ -344,7 +431,7 @@ function mayBail(e: IrExpr): boolean {
 /** One activation of the body: the clone's own, or a self call inlined
  * into it. */
 interface Frame {
-  slots: Map<string, { slot: string; kind: Scalar }>;
+  slots: Map<string, { slot: string; kind: Kind }>;
   loopLabel: string | null;
   accSlot: string | null;
   depthSlot: string | null;
@@ -393,9 +480,14 @@ class CloneEmitter {
   private bailLabel: string | null = null;
   private frame!: Frame;
   private slotCount = 0;
+  /** The real stack pointer at the clone's entry (i64), once the stack
+   * check read it for an accumulating loop. */
+  private entrySp: string | null = null;
   /** Inline one level of non-tail self calls: each removes the call, the
    * stack check and the frame of a recursion level (leaf calls entirely). */
   private readonly inlineSelf: boolean;
+  /** Tail calls to other members pass through (IntegerClones.tailLinked). */
+  private readonly tailLinked: boolean;
 
   constructor(
     private readonly fn: IrFunction,
@@ -403,6 +495,7 @@ class CloneEmitter {
     private readonly stackCheck: boolean,
   ) {
     this.result = scalarKind(fn.returnType)!;
+    this.tailLinked = host.integerClones.tailLinked.has(fn.name);
     const size = stmtsSize(fn.body);
     this.inlineSelf = size * this.selfCallSites() <= INLINE_BUDGET;
   }
@@ -464,6 +557,7 @@ class CloneEmitter {
    * opens its tail loop. */
   private openFrame(args: readonly string[], inline: Frame["inline"]): void {
     const { B, fn } = this;
+    const parent = inline === null ? null : this.frame;
     const frame: Frame = {
       slots: new Map(),
       loopLabel: null,
@@ -471,25 +565,27 @@ class CloneEmitter {
       depthSlot: null,
       inline,
     };
+    const params = new Set(fn.params.map((p) => p.localId));
     for (const local of fn.locals) {
-      const kind = scalarKind(local.type);
+      const kind = params.has(local.id) ? valueKind(local.type) : scalarKind(local.type);
       if (kind === null || local.boxed) continue;
       const slot = `%l${this.slotCount++}`;
-      B.entryAllocas.push(`${slot} = alloca ${kind === "num" ? "i32" : "i1"} ; ${local.name}`);
+      B.entryAllocas.push(`${slot} = alloca ${kindType(kind)} ; ${local.name}`);
       frame.slots.set(local.id, { slot, kind });
     }
     fn.params.forEach((p, i) => {
       const { slot, kind } = frame.slots.get(p.localId)!;
-      B.line(`store ${kind === "num" ? "i32" : "i1"} ${args[i]!}, ptr ${slot}`);
+      B.line(`store ${kindType(kind)} ${args[i]!}, ptr ${slot}`);
     });
     this.frame = frame;
     if (inline === null && this.stackCheck) this.emitStackCheck();
     const tail = this.tailShape();
-    if (!tail.loop) return;
-    frame.depthSlot = `%l${this.slotCount++}`;
-    B.entryAllocas.push(`${frame.depthSlot} = alloca i32 ; tail iterations left`);
-    B.line(`store i32 ${TAIL_LIMIT}, ptr ${frame.depthSlot}`);
+    if (!tail.loop) {
+      this.assumeParamRanges();
+      return;
+    }
     if (tail.accumulates) {
+      this.openVirtualStack(frame, parent);
       frame.accSlot = `%l${this.slotCount++}`;
       B.entryAllocas.push(`${frame.accSlot} = alloca i32 ; accumulator`);
       B.line(`store i32 0, ptr ${frame.accSlot}`);
@@ -497,18 +593,64 @@ class CloneEmitter {
     frame.loopLabel = B.newLabel("tail");
     B.br(frame.loopLabel);
     B.startBlock(frame.loopLabel);
-    // Tested here rather than at each tail call, where LLVM would merge the
-    // test with the accumulator's overflow test into one select.
-    const depth = B.tmp();
-    const left = B.tmp();
-    B.line(`${depth} = load i32, ptr ${frame.depthSlot}`);
-    B.line(`${left} = icmp ne i32 ${depth}, 0`);
-    this.require(left);
+    this.assumeParamRanges();
+  }
+
+  /** Starts the virtual stack pointer of an activation with an accumulating
+   * loop. */
+  private openVirtualStack(frame: Frame, parent: Frame | null): void {
+    const { B } = this;
+    frame.depthSlot = `%l${this.slotCount++}`;
+    B.entryAllocas.push(`${frame.depthSlot} = alloca i64 ; virtual stack pointer`);
+    // The activation starts at the stack pointer its entry check read; an
+    // inlined one a frame below its parent's virtual stack pointer, or at
+    // the real one read afresh.
+    let start = frame.inline === null ? this.entrySp : null;
+    if (parent !== null && parent.depthSlot !== null) {
+      const at = B.tmp();
+      start = B.tmp();
+      B.line(`${at} = load i64, ptr ${parent.depthSlot}`);
+      B.line(`${start} = sub i64 ${at}, ${VIRTUAL_FRAME}`);
+    } else if (start === null) {
+      this.host.declare(`declare ptr @llvm.stacksave.p0()`);
+      const sp = B.tmp();
+      start = B.tmp();
+      B.line(`${sp} = call ptr @llvm.stacksave.p0()`);
+      B.line(`${start} = ptrtoint ptr ${sp} to i64`);
+    }
+    B.line(`store i64 ${start}, ptr ${frame.depthSlot}`);
+  }
+
+  /** Tells LLVM the proven ranges of the current activation's number
+   * parameters (`%` of non-negative operands then needs no sign handling). */
+  private assumeParamRanges(): void {
+    const { B } = this;
+    for (const p of this.fn.params) {
+      const range = this.host.integerParamRange(this.fn.name, p.localId);
+      const slot = this.frame.slots.get(p.localId);
+      if (!range || slot?.kind !== "num") continue;
+      const bounds: string[] = [];
+      const value = B.tmp();
+      B.line(`${value} = load i32, ptr ${slot.slot}`);
+      if (range.min > -0x80000000) {
+        const t = B.tmp();
+        B.line(`${t} = icmp sge i32 ${value}, ${range.min}`);
+        bounds.push(t);
+      }
+      if (range.max < 0x7fffffff) {
+        const t = B.tmp();
+        B.line(`${t} = icmp sle i32 ${value}, ${range.max}`);
+        bounds.push(t);
+      }
+      if (bounds.length === 0) continue;
+      this.host.declare(`declare void @llvm.assume(i1)`);
+      for (const bound of bounds) B.line(`call void @llvm.assume(i1 ${bound})`);
+    }
   }
 
   emit(): string {
     const { B, fn } = this;
-    const params = fn.params.map((p, i) => `${scalarKind(p.type) === "num" ? "i32" : "i1"} %a${i}`);
+    const params = fn.params.map((p, i) => `${kindType(valueKind(p.type)!)} %a${i}`);
     this.openFrame(
       fn.params.map((_, i) => `%a${i}`),
       null,
@@ -518,6 +660,12 @@ class CloneEmitter {
     if (!B.isTerminated()) B.terminate(`ret ${BAIL}`);
     if (this.bailLabel !== null) {
       B.startBlock(this.bailLabel);
+      B.terminate(`ret ${BAIL}`);
+    }
+    if (this.overflowLabel !== null) {
+      this.host.declare(`declare void @scr_stack_overflow()`);
+      B.startBlock(this.overflowLabel);
+      B.line(`call void @scr_stack_overflow()`);
       B.terminate(`ret ${BAIL}`);
     }
     const symbol = `${mangleFunction(fn.name)}${INTEGER_CLONE_SUFFIX}`;
@@ -617,12 +765,45 @@ class CloneEmitter {
     B.line(`${guard} = load ptr, ptr @scr_stack_guard`);
     B.line(`${low} = icmp ult ptr ${sp}, ${guard}`);
     B.line(`${cold} = call i1 @llvm.expect.i1(i1 ${low}, i1 false)`);
-    const over = B.newLabel("stack.over");
     const ok = B.newLabel("stack.ok");
-    B.condBr(cold, over, ok);
-    B.startBlock(over);
-    B.line(`call void @scr_stack_overflow()`);
-    B.terminate(`ret ${BAIL}`);
+    B.condBr(cold, this.overflow(), ok);
+    B.startBlock(ok);
+    if (!this.tailShape().accumulates) return;
+    const top = B.tmp();
+    B.line(`${top} = ptrtoint ptr ${sp} to i64`);
+    this.entrySp = top;
+  }
+
+  private overflowLabel: string | null = null;
+
+  /** The shared block that throws Node's stack-overflow RangeError and
+   * bails (the dispatcher forwards the pending exception). */
+  private overflow(): string {
+    return (this.overflowLabel ??= this.B.newLabel("stack.over"));
+  }
+
+  /** Lowers the current activation's virtual stack pointer by one frame,
+   * continuing at the overflow block past the guard. */
+  private consumeFrame(): void {
+    const { B } = this;
+    this.host.declare(STACK_GUARD_DECL);
+    const depth = B.tmp();
+    const next = B.tmp();
+    const guardPtr = B.tmp();
+    const guard = B.tmp();
+    const more = B.tmp();
+    const likely = B.tmp();
+    B.line(`${depth} = load i64, ptr ${this.frame.depthSlot!}`);
+    B.line(`${next} = sub i64 ${depth}, ${VIRTUAL_FRAME}`);
+    B.line(`store i64 ${next}, ptr ${this.frame.depthSlot!}`);
+    B.line(`${guardPtr} = load ptr, ptr @scr_stack_guard`);
+    B.line(`${guard} = ptrtoint ptr ${guardPtr} to i64`);
+    // Unsigned: a pointer that wrapped below zero is far below the guard.
+    B.line(`${more} = icmp uge i64 ${next}, ${guard}`);
+    this.host.declare(`declare i1 @llvm.expect.i1(i1, i1)`);
+    B.line(`${likely} = call i1 @llvm.expect.i1(i1 ${more}, i1 true)`);
+    const ok = B.newLabel("frame.ok");
+    B.condBr(likely, ok, this.overflow());
     B.startBlock(ok);
   }
 
@@ -690,14 +871,23 @@ class CloneEmitter {
       this.emitReturn(e.else_);
       return;
     }
+    if (e.kind === "call" && this.passesThrough(e)) return this.emitMutualTailCall(e);
     if (this.frame.loopLabel !== null) {
       if (this.isSelfCall(e)) return this.emitTailCall(e, null);
       const accumulating = this.accumulatingCall(e);
       if (accumulating) return this.emitTailCall(accumulating.call, accumulating.term);
     }
+    if (this.result === "bool") this.finishReturn(this.emitBool(e));
+    else this.finishReturn(this.emitNum(e));
+  }
+
+  /** Returns `value` from the current activation: a number result adds the
+   * activation's accumulator. */
+  private finishReturn(result: NumValue | string): void {
+    const { B } = this;
     const inline = this.frame.inline;
-    if (this.result === "bool") {
-      const value = this.emitBool(e);
+    if (typeof result === "string") {
+      const value = result;
       if (inline) {
         B.line(`store i1 ${value}, ptr ${inline.result}`);
         B.br(inline.done);
@@ -708,7 +898,7 @@ class CloneEmitter {
       B.terminate(`ret ${CLONE_RESULT} ${this.result32(wide)}`);
       return;
     }
-    let value = this.emitNum(e);
+    let value = result;
     if (this.frame.accSlot !== null) {
       const acc = B.tmp();
       B.line(`${acc} = load i32, ptr ${this.frame.accSlot}`);
@@ -724,6 +914,28 @@ class CloneEmitter {
       return;
     }
     B.terminate(`ret ${CLONE_RESULT} ${this.result32(value.name)}`);
+  }
+
+  /** A tail call to another member of a tail-linked component, from the
+   * clone's own activation with nothing accumulated: it returns the
+   * callee's result as is. */
+  private passesThrough(call: Extract<IrExpr, { kind: "call" }>): boolean {
+    const clones = this.host.integerClones;
+    return (
+      this.tailLinked &&
+      this.frame.inline === null &&
+      this.frame.accSlot === null &&
+      call.callee !== this.fn.name &&
+      clones.tailLinked.has(call.callee) &&
+      clones.component.get(call.callee) === clones.component.get(this.fn.name)
+    );
+  }
+
+  private emitMutualTailCall(call: Extract<IrExpr, { kind: "call" }>): void {
+    const { B } = this;
+    const args = this.emitArgs(call);
+    const result = this.emitCloneCall(call.callee, args, call.args, "tail ");
+    B.terminate(`ret ${CLONE_RESULT} ${result}`);
   }
 
   private emitTailCall(call: Extract<IrExpr, { kind: "call" }>, term: IrExpr | null): void {
@@ -742,31 +954,119 @@ class CloneEmitter {
     }
     this.fn.params.forEach((p, i) => {
       const { slot, kind } = this.frame.slots.get(p.localId)!;
-      B.line(`store ${kind === "num" ? "i32" : "i1"} ${args[i]!}, ptr ${slot}`);
+      B.line(`store ${kindType(kind)} ${args[i]!}, ptr ${slot}`);
     });
-    const depth = B.tmp();
-    const next = B.tmp();
-    B.line(`${depth} = load i32, ptr ${this.frame.depthSlot!}`);
-    B.line(`${next} = sub i32 ${depth}, 1`);
-    B.line(`store i32 ${next}, ptr ${this.frame.depthSlot!}`);
+    // Only an accumulating call is real recursion in the ordinary body.
+    if (addend !== null) this.consumeFrame();
     B.br(this.frame.loopLabel!);
   }
 
-  private emitArgs(call: Extract<IrExpr, { kind: "call" }>): string[] {
-    return call.args.map((a) =>
-      scalarKind(a.type) === "num" ? this.narrow(this.emitNum(a)) : this.emitBool(a),
+  /** A call of `callee`'s clone with evaluated arguments. */
+  private emitCloneCall(
+    callee: string,
+    args: readonly string[],
+    exprs: readonly IrExpr[],
+    marker = "",
+  ): string {
+    const list = args.map((a, i) => `${kindType(valueKind(exprs[i]!.type)!)} ${a}`);
+    const result = this.B.tmp();
+    this.B.line(
+      `${result} = ${marker}call ${CLONE_RESULT} @${mangleFunction(callee)}${INTEGER_CLONE_SUFFIX}(${list.join(", ")})`,
     );
+    return result;
+  }
+
+  /** The borrowed array an array parameter holds. */
+  private emitArray(e: IrExpr): string {
+    const value = this.B.tmp();
+    if (e.kind !== "varRef") throw new Error("integer clone: unexpected array expression");
+    this.B.line(`${value} = load ptr, ptr ${this.frame.slots.get(e.localId)!.slot}`);
+    return value;
+  }
+
+  /** `a.length`, bailing beyond the int32 range. */
+  private emitLength(array: string): string {
+    const { B } = this;
+    const field = B.tmp();
+    const len = B.tmp();
+    const fits = B.tmp();
+    const value = B.tmp();
+    B.line(
+      `${field} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 ${SCR_ARR_FIELD.len}`,
+    );
+    B.line(`${len} = load i64, ptr ${field}`);
+    B.line(`${fits} = icmp ule i64 ${len}, 2147483647`);
+    this.require(fits);
+    B.line(`${value} = trunc i64 ${len} to i32`);
+    return value;
+  }
+
+  /** `a[i]` for an index inside the array's hole-free prefix (the runtime
+   * keeps every slot below `filled` a present value) whose element is
+   * exactly an int32. Everything else (holes, indices outside the prefix,
+   * other numbers) bails: the ordinary body reads it. */
+  private emitElement(e: Extract<IrExpr, { kind: "arrayGet" }>): string {
+    const { B } = this;
+    const array = this.emitArray(e.arr);
+    const index = this.narrow(this.emitNum(e.index));
+    const filledField = B.tmp();
+    const filled = B.tmp();
+    const inside = B.tmp();
+    B.line(
+      `${filledField} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 ${SCR_ARR_FIELD.filled}`,
+    );
+    B.line(`${filled} = load i32, ptr ${filledField}`);
+    // Unsigned: a negative index lies above every bound.
+    B.line(`${inside} = icmp ult i32 ${index}, ${filled}`);
+    this.require(inside);
+    const dataField = B.tmp();
+    const data = B.tmp();
+    const offset = B.tmp();
+    const slot = B.tmp();
+    const number = B.tmp();
+    B.line(
+      `${dataField} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 ${SCR_ARR_FIELD.data}`,
+    );
+    B.line(`${data} = load ptr, ptr ${dataField}`);
+    B.line(`${offset} = zext i32 ${index} to i64`);
+    B.line(`${slot} = getelementptr inbounds double, ptr ${data}, i64 ${offset}`);
+    B.line(`${number} = load double, ptr ${slot}`);
+    return this.exactInt32(number);
+  }
+
+  /** The int32 the double `number` equals bit for bit (never -0, NaN, a
+   * fraction or out of range), bailing otherwise. */
+  private exactInt32(number: string): string {
+    const { B } = this;
+    this.host.declare(`declare i32 @llvm.fptosi.sat.i32.f64(double)`);
+    const value = B.tmp();
+    const back = B.tmp();
+    const a = B.tmp();
+    const b = B.tmp();
+    const exact = B.tmp();
+    B.line(`${value} = call i32 @llvm.fptosi.sat.i32.f64(double ${number})`);
+    B.line(`${back} = sitofp i32 ${value} to double`);
+    B.line(`${a} = bitcast double ${back} to i64`);
+    B.line(`${b} = bitcast double ${number} to i64`);
+    B.line(`${exact} = icmp eq i64 ${a}, ${b}`);
+    this.require(exact);
+    return value;
+  }
+
+  private emitArgs(call: Extract<IrExpr, { kind: "call" }>): string[] {
+    return call.args.map((a) => {
+      const kind = valueKind(a.type);
+      return kind === "arr"
+        ? this.emitArray(a)
+        : kind === "num"
+          ? this.narrow(this.emitNum(a))
+          : this.emitBool(a);
+    });
   }
 
   private emitCall(call: Extract<IrExpr, { kind: "call" }>): string {
-    const { B } = this;
     const args = this.emitArgs(call);
-    const types = call.args.map((a) => (scalarKind(a.type) === "num" ? "i32" : "i1"));
-    const result = B.tmp();
-    B.line(
-      `${result} = call ${CLONE_RESULT} @${mangleFunction(call.callee)}${INTEGER_CLONE_SUFFIX}(${args.map((a, i) => `${types[i]} ${a}`).join(", ")})`,
-    );
-    return result;
+    return this.emitCloneCall(call.callee, args, call.args);
   }
 
   /** The successful CLONE_RESULT of the i32 `value`. */
@@ -841,6 +1141,10 @@ class CloneEmitter {
       case "call":
         if (this.inlines(e)) return { name: this.emitInlineCall(e), wide: false };
         return { name: this.emitCall(e), wide: true };
+      case "arrIntrinsic":
+        return { name: this.emitLength(this.emitArray(e.receiver)), wide: false };
+      case "arrayGet":
+        return { name: this.emitElement(e), wide: false };
       case "unary": {
         const operand = this.narrow(this.emitNum(e.operand));
         const value = B.tmp();
@@ -1069,10 +1373,13 @@ export function emitIntegerDispatcher(
   const cloneArgs: string[] = [];
   const exact: string[] = [];
   fn.params.forEach((p, i) => {
-    if (scalarKind(p.type) === "bool") {
-      params.push(`i1 %p${i}`);
-      entryArgs.push(`i1 %p${i}`);
-      cloneArgs.push(`i1 %p${i}`);
+    const kind = valueKind(p.type);
+    if (kind === "bool" || kind === "arr") {
+      // Borrowed arrays pass through to the clone and the ordinary entry.
+      const type = kindType(kind);
+      params.push(`${type} %p${i}`);
+      entryArgs.push(`${type} %p${i}`);
+      cloneArgs.push(`${type} %p${i}`);
     } else if (int32Params[i]) {
       params.push(`i32 %p${i}`);
       entryArgs.push(`i32 %p${i}`);
