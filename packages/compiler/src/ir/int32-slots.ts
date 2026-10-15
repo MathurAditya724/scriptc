@@ -2,6 +2,7 @@ import type { IrClassDef, IrExpr, IrFunction, IrModule, IrStmt, IrType } from ".
 import {
   analyzeIntegerRanges,
   INT32_RANGE,
+  NON_NEGATIVE_INT32_RANGE,
   withinInt32,
   type IntegerRange,
   type IntegerRanges,
@@ -66,6 +67,12 @@ export class Int32Slots {
   /** Drops the analysis attempted on pinned slots. The contract check and
    * this analysis use the same range proofs, so this stays empty. */
   readonly pinViolations: string[] = [];
+  /** Parameter, return and box candidates (`param:`, `ret:`, `box:` keys)
+   * still assumed to hold only non-negative int32s. The optimistic fixpoint
+   * starts every unpinned candidate here and demotes it to int32 when a
+   * write is an int32 that may be negative: `(x * 31 + n) % m` only proves
+   * a result when x and n are known not to be negative. */
+  private readonly nonNegative = new Set<string>();
 
   constructor(private readonly classes: ReadonlyMap<string, IrClassDef> = new Map()) {}
 
@@ -105,10 +112,15 @@ export class Int32Slots {
       this.int32Locals.size === 0
     )
       return {};
+    const level = (key: string): IntegerRange =>
+      this.nonNegative.has(key) ? NON_NEGATIVE_INT32_RANGE : INT32_RANGE;
     const result: IntegerSlotFacts = {
       field: (className, field) => (this.isField(className, field) ? INT32_RANGE : null),
-      call: (callee) => (this.returns.has(callee) ? INT32_RANGE : null),
-      boxed: (localId) => (this.hasBox(this.boxGroup(fnName, localId)) ? INT32_RANGE : null),
+      call: (callee) => (this.returns.has(callee) ? level(`ret:${callee}`) : null),
+      boxed: (localId) => {
+        const group = this.boxGroup(fnName, localId);
+        return group !== null && this.boxes.has(group) ? level(`box:${group}`) : null;
+      },
     };
     if (this.int32Locals.size > 0)
       result.locals = (localId) =>
@@ -116,8 +128,32 @@ export class Int32Slots {
           ? INT32_RANGE
           : null;
     const params = this.paramFacts.get(fnName);
-    if (params) result.params = params;
+    if (params)
+      result.params =
+        this.nonNegative.size === 0
+          ? params
+          : new Map(
+              [...params].map(([id, range]) => {
+                const key = `param:${fnName}\0${id}`;
+                return [id, this.nonNegative.has(key) ? NON_NEGATIVE_INT32_RANGE : range];
+              }),
+            );
     return result;
+  }
+
+  /** Assume an unpinned candidate holds only non-negative int32s. */
+  assumeNonNegative(key: string): void {
+    if (!this.pinned.has(key)) this.nonNegative.add(key);
+  }
+  isNonNegative(key: string): boolean {
+    return this.nonNegative.has(key);
+  }
+  /** Widen a non-negative candidate to int32; whether it was one. */
+  demote(key: string): boolean {
+    return this.nonNegative.delete(key);
+  }
+  isPinned(key: string): boolean {
+    return this.pinned.has(key);
   }
 
   boxGroup(fnName: string, localId: string): string | null {
@@ -147,6 +183,7 @@ export class Int32Slots {
   }
   dropBox(group: string): boolean {
     if (this.refusePinned(`box:${group}`)) return false;
+    this.nonNegative.delete(`box:${group}`);
     return this.boxes.delete(group);
   }
   hasBox(group: string | null): boolean {
@@ -170,6 +207,7 @@ export class Int32Slots {
   }
   dropParam(fnName: string, localId: string): boolean {
     if (this.refusePinned(`param:${fnName}\0${localId}`)) return false;
+    this.nonNegative.delete(`param:${fnName}\0${localId}`);
     const params = this.paramFacts.get(fnName);
     if (!params?.delete(localId)) return false;
     if (params.size === 0) this.paramFacts.delete(fnName);
@@ -183,6 +221,7 @@ export class Int32Slots {
   }
   dropReturn(fnName: string): boolean {
     if (this.refusePinned(`ret:${fnName}`)) return false;
+    this.nonNegative.delete(`ret:${fnName}`);
     return this.returns.delete(fnName);
   }
   hasReturn(fnName: string): boolean {
@@ -642,7 +681,10 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
       },
     });
   for (const fn of mod.functions) {
-    if (fn.returnType.kind === "f64" && !fn.async && !fn.generator) slots.addReturn(fn.name);
+    if (fn.returnType.kind === "f64" && !fn.async && !fn.generator) {
+      slots.addReturn(fn.name);
+      slots.assumeNonNegative(`ret:${fn.name}`);
+    }
     if (
       fn.async ||
       fn.generator ||
@@ -652,7 +694,10 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
     )
       continue;
     for (const param of fn.params)
-      if (param.type.kind === "f64") slots.addParam(fn.name, param.localId);
+      if (param.type.kind === "f64" && !slots.isPinned(paramKey(fn.name, param.localId))) {
+        slots.addParam(fn.name, param.localId);
+        slots.assumeNonNegative(paramKey(fn.name, param.localId));
+      }
   }
   const arityChecked = (fn: IrFunction | undefined, args: number, offset: number): void => {
     if (fn && fn.params.length !== args + offset) dropAllParams(fn, "call arity differs");
@@ -755,6 +800,13 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
     }
     boxOrigin.set(`param:${fnName}\0${localId}`, group);
     slots.addBox(group, members);
+    // A box starts from its origin parameter's value: it can only be
+    // non-negative while that parameter is.
+    if (
+      !origin.params.some((p) => p.localId === localId) ||
+      slots.isNonNegative(paramKey(fnName, localId))
+    )
+      slots.assumeNonNegative(`box:${group}`);
   }
   const dropBox = (group: string | null, why: string): boolean => {
     if (group === null) return false;
@@ -846,12 +898,25 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
       : new Map();
     const proven: IrExpr[] = [];
     const int32 = (e: IrExpr): boolean => withinInt32(ranges.get(e));
+    // An int32 written into a slot still assumed non-negative: widen the
+    // assumption when the value may be negative, and reanalyze its readers.
+    const settle = (slot: string, e: IrExpr): void => {
+      if (!slots.isNonNegative(slot) || (ranges.get(e)?.min ?? -1) >= 0) return;
+      slots.demote(slot);
+      invalidate(slot);
+      const group = boxOrigin.get(slot);
+      if (group !== undefined && slots.demote(`box:${group}`)) invalidate(`box:${group}`);
+    };
     const args = (callee: IrFunction | undefined, list: IrExpr[], offset: number): void => {
       if (!callee) return;
       list.forEach((arg, i) => {
         const param = callee.params[i + offset];
-        if (!param || !slots.hasParam(callee.name, param.localId) || int32(arg)) return;
+        if (!param || !slots.hasParam(callee.name, param.localId)) return;
         const slot = `param:${callee.name}\0${param.localId}`;
+        if (int32(arg)) {
+          settle(slot, arg);
+          return;
+        }
         if (dropParam(callee.name, param.localId, `argument in ${fn.name} is not int32`)) {
           invalidate(slot);
           // An argument computed where the caller's own parameters were
@@ -865,8 +930,9 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
     };
     const boxWrite = (localId: string, value: IrExpr): void => {
       const group = slots.boxGroup(fn.name, localId);
-      if (!slots.hasBox(group) || int32(value)) return;
-      if (dropBox(group, `write in ${fn.name} is not int32`)) invalidate(`box:${group}`);
+      if (!slots.hasBox(group)) return;
+      if (int32(value)) settle(`box:${group}`, value);
+      else if (dropBox(group, `write in ${fn.name} is not int32`)) invalidate(`box:${group}`);
     };
     walkFunction(fn, {
       stmt: (s) => {
@@ -881,7 +947,10 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
             invalidate(`field:${family}`);
           }
         } else if (s.kind === "return" && slots.hasReturn(fn.name)) {
-          if (s.value && int32(s.value)) return;
+          if (s.value && int32(s.value)) {
+            settle(`ret:${fn.name}`, s.value);
+            return;
+          }
           reason(`ret:${fn.name}`, "return is not int32");
           slots.dropReturn(fn.name);
           invalidate(`ret:${fn.name}`);

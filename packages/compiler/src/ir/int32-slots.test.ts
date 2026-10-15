@@ -23,7 +23,7 @@ const ref = (localId: string, type: IrType = F64): IrExpr => ({
   localId,
   type,
 });
-const bin = (op: "|" | "&" | "+" | "-" | "/", left: IrExpr, right: IrExpr): IrExpr => ({
+const bin = (op: "|" | "&" | "+" | "-" | "/" | "*" | "%", left: IrExpr, right: IrExpr): IrExpr => ({
   loc,
   kind: "bin",
   op,
@@ -131,7 +131,7 @@ test("proves fields through constructor parameter chains and rejects a fractiona
   const slots = analyzeInt32Slots(int);
   expect(slots.isField("T", "flags")).toBe(true);
   expect(slots.isField("T", "id")).toBe(true);
-  expect(slots.facts("make").params?.get("f")).toEqual({ min: -2147483648, max: 2147483647 });
+  expect(slots.facts("make").params?.get("f")).toEqual({ min: 0, max: 2147483647 });
 
   const fraction = fn("frac", [], [stmt(newOf("T", [num(1), num(0.5)]))]);
   const mixed = analyzeInt32Slots(mod(classes, [ctor("T", ["flags", "id"]), make, fraction]));
@@ -187,7 +187,7 @@ test("results are proven per return and parameters of escaping functions stay un
     ),
   ];
   const slots = analyzeInt32Slots(mod([], functions));
-  expect(slots.facts("user").call?.("bits")).toEqual({ min: -2147483648, max: 2147483647 });
+  expect(slots.facts("user").call?.("bits")).toEqual({ min: 0, max: 2147483647 });
   expect(slots.facts("user").call?.("half")).toBeNull();
   expect(slots.facts("bits").params?.has("n")).toBe(true);
   expect(slots.facts("cb").params).toBeUndefined();
@@ -308,8 +308,14 @@ test("captured bindings share one proof across the declaring function and its cl
   const caller = fn("caller", [], [stmt(call("outer", [num(5)], VOID))]);
   const read = inner([ret(null)]);
   const proven = analyzeInt32Slots(mod([], [outer(), read, caller]));
-  expect(proven.facts("inner").boxed?.("c")).toEqual({ min: -2147483648, max: 2147483647 });
-  expect(proven.facts("outer").boxed?.("s")).toEqual({ min: -2147483648, max: 2147483647 });
+  // Every write (the parameter's only argument, 5) is a non-negative int32.
+  expect(proven.facts("inner").boxed?.("c")).toEqual({ min: 0, max: 2147483647 });
+  expect(proven.facts("outer").boxed?.("s")).toEqual({ min: 0, max: 2147483647 });
+  // A negative argument widens the parameter and its box to int32.
+  const negative = fn("caller", [], [stmt(call("outer", [num(-5)], VOID))]);
+  const widened = analyzeInt32Slots(mod([], [outer(), read, negative]));
+  expect(widened.facts("inner").boxed?.("c")).toEqual({ min: -2147483648, max: 2147483647 });
+  expect(widened.facts("outer").params?.get("s")).toEqual({ min: -2147483648, max: 2147483647 });
 
   const store = inner([{ loc, kind: "assign", localId: "c", value: bin("/", ref("c"), num(2)) }]);
   const stored = analyzeInt32Slots(mod([], [outer(), store, caller]));
@@ -322,6 +328,30 @@ test("captured bindings share one proof across the declaring function and its cl
       .facts("inner")
       .boxed?.("c") ?? null,
   ).toBeNull();
+});
+
+test("non-negative parameter and result facts carry remainders through calls", () => {
+  // step(x, n) = (x * 31 + n) % 1000003 proves a result only while x and n
+  // cannot be negative; the caller feeds a result back in.
+  const step = fn(
+    "step",
+    [{ id: "x" }, { id: "n" }],
+    [ret(bin("%", bin("+", bin("*", ref("x"), num(31)), ref("n")), num(1000003)))],
+    F64,
+  );
+  const NON_NEGATIVE = { min: 0, max: 2147483647 };
+  const caller = (first: number) =>
+    fn("caller", [], [stmt(call("step", [call("step", [num(first), num(2)]), num(4)]))]);
+  const proven = analyzeInt32Slots(mod([], [step, caller(1)]));
+  expect(proven.facts("step").params?.get("x")).toEqual(NON_NEGATIVE);
+  expect(proven.facts("step").params?.get("n")).toEqual(NON_NEGATIVE);
+  expect(proven.facts("caller").call?.("step")).toEqual(NON_NEGATIVE);
+  // One negative argument widens x to int32, after which the remainder
+  // may be negative or -0: no result fact, and the fed-back x fails too.
+  const widened = analyzeInt32Slots(mod([], [step, caller(-1)]));
+  expect(widened.facts("caller").call?.("step") ?? null).toBeNull();
+  expect(widened.facts("step").params?.get("x") ?? null).toBeNull();
+  expect(widened.facts("step").params?.get("n")).toEqual(NON_NEGATIVE);
 });
 
 test("worker builds specialize int32 fields like ordinary executables", () => {
@@ -362,10 +392,24 @@ test("counting-down recursion proves its parameter from the call-site ranges", (
       args.flatMap((a) => [stmt(call("count", [num(a)])), stmt(call("even", [num(a)]))]),
     );
   const slots = analyzeInt32Slots(mod([], [count, even, odd, user([18, 3])]));
-  // Ranges grow from the calls, then widen down to 0.
-  expect(slots.facts("count").params?.get("d")).toEqual({ min: 0, max: 18 });
-  expect(slots.facts("even").params?.get("n")).toEqual({ min: 0, max: 18 });
-  expect(slots.facts("odd").params?.get("n")).toEqual({ min: 0, max: 17 });
+  // Under the non-negative assumption `d - 1` after `d !== 0` stays one.
+  for (const [name, id] of [
+    ["count", "d"],
+    ["even", "n"],
+    ["odd", "n"],
+  ] as const)
+    expect(slots.facts(name).params?.get(id)).toEqual({ min: 0, max: 2147483647 });
+
+  // Counting up from a negative start fails both assumptions (`d + 1`
+  // leaves int32 for the largest one); the call-site ranges prove it.
+  const up = fn(
+    "up",
+    [{ id: "d" }],
+    [ret(cond(cmp("===", ref("d"), num(0)), num(0), call("up", [bin("+", ref("d"), num(1))])))],
+    F64,
+  );
+  const rising = analyzeInt32Slots(mod([], [up, fn("user", [], [stmt(call("up", [num(-18)]))])]));
+  expect(rising.facts("up").params?.get("d")).toEqual({ min: -18, max: 0 });
 
   // A negative start counts down past the smallest int32.
   const negative = analyzeInt32Slots(mod([], [count, even, odd, user([18, -1])]));

@@ -66,6 +66,7 @@ export function integerArithmeticRange(
 }
 
 export const INT32_RANGE: IntegerRange = SIGNED;
+export const NON_NEGATIVE_INT32_RANGE: IntegerRange = NON_NEGATIVE;
 export function withinInt32(range: IntegerRange | null | undefined): boolean {
   return !!range && range.min >= SIGNED.min && range.max <= SIGNED.max;
 }
