@@ -296,8 +296,14 @@ test("calls through a binding of an environment-free function become direct call
   expect(clone.ownsPrototype).toBe(true);
   expect(clone.body).toEqual(sq.body);
   expect(clone.body[0]).not.toBe(sq.body[0]);
-  // The closure value itself still exists for other uses.
-  expect(fns.get("sq")!.captures).toEqual([]);
+  // The closure value itself still exists for other uses, as a call of its
+  // copy rather than a second body.
+  const value = fns.get("sq")!;
+  expect(value.captures).toEqual([]);
+  expect(value.locals).toEqual(sq.locals);
+  expect(value.body).toEqual([
+    ret({ kind: "call", callee: "sq%direct", args: [ref("x")], type: F64, loc: sq.loc }),
+  ]);
 
   // An unshared hoisted binding whose every call became direct is dropped.
   const plain = run(
@@ -312,6 +318,9 @@ test("calls through a binding of an environment-free function become direct call
     sq,
   );
   expect(plain.get("outer")!.body).toEqual([ret(direct)]);
+  // Nothing references the closure body any more: only its copy remains.
+  expect(plain.has("sq")).toBe(false);
+  expect(plain.has("sq%direct")).toBe(true);
 
   // A body that reads the ambient receiver keeps the closure call.
   const reader: IrFunction = {

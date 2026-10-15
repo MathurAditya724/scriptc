@@ -6,6 +6,7 @@ import {
   type IrModule,
   type IrStmt,
 } from "./ir.js";
+import { exprFunctionReference, moduleFunctionReferences } from "./function-references.js";
 import { AmbientReceiverReaders } from "./receiver-readers.js";
 import { reparseStmt } from "./serialize.js";
 import {
@@ -82,7 +83,65 @@ export function copyStableCaptures(mod: IrModule): IrModule {
     // Analyses key facts by node identity: the copy gets its own nodes.
     functions.push({ ...plain, name: clone, body: plain.body.map(reparseStmt) });
   }
-  return { ...mod, functions };
+  // A closure body whose every use became a direct call is only reachable
+  // through its copy now.
+  const referenced = new Set(moduleFunctionReferences(mod));
+  for (const fn of functions)
+    everyStmtList(fn.body, {
+      stmt: () => true,
+      expr: (e) => {
+        const name = e.kind === "call" ? e.callee : exprFunctionReference(e);
+        if (name !== undefined) referenced.add(name);
+        return true;
+      },
+    });
+  const clones = flow.directClones();
+  return {
+    ...mod,
+    functions: functions
+      .filter((fn) => !clones.has(fn.name) || referenced.has(fn.name))
+      .map((fn) => {
+        const clone = clones.get(fn.name);
+        return clone === undefined ? fn : forwardTo(fn, clone);
+      }),
+  };
+}
+
+/** A closure body that other uses still reach as a value, reduced to a call
+ * of its capture-free copy so the body exists once in the module. The copy
+ * takes the same parameters, and the body neither names its own closure nor
+ * reads the ambient receiver (CaptureFlow.direct), so the call is the whole
+ * behavior. */
+function forwardTo(fn: IrFunction, clone: string): IrFunction {
+  const call: IrExpr = {
+    kind: "call",
+    callee: clone,
+    args: fn.params.map((p) => ({ kind: "varRef", localId: p.localId, type: p.type, loc: fn.loc })),
+    type: fn.returnType,
+    loc: fn.loc,
+  };
+  const params = new Set(fn.params.map((p) => p.localId));
+  return {
+    ...fn,
+    // Parameters only flow into the call now: nothing captures them.
+    locals: fn.locals.filter((l) => params.has(l.id)).map(plainLocal),
+    body:
+      fn.returnType.kind === "void"
+        ? [{ kind: "exprStmt", expr: call, loc: fn.loc }]
+        : [{ kind: "return", value: call, loc: fn.loc }],
+  };
+}
+
+/** A parameter local without the capture box or TDZ flag of its old body. */
+function plainLocal(local: IrLocal): IrLocal {
+  const plain: IrLocal = {
+    id: local.id,
+    name: local.name,
+    type: local.type,
+    mutable: local.mutable,
+  };
+  if (local.source !== undefined) plain.source = local.source;
+  return plain;
 }
 
 /** The value of a closed numeric expression over literals (`1024`,
