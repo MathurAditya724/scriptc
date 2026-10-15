@@ -93,6 +93,7 @@ import { analyzeInt32Slots, dynamicFieldStores, type Int32Slots } from "../../ir
 import { analyzeFinalFields, constructorClass, type FinalFields } from "../../ir/final-fields.js";
 import { foldConstantGlobals } from "../../ir/constant-globals.js";
 import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
+import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
 import { findIntegerViews } from "./integer-views.js";
 import {
   findInt32Abis,
@@ -465,7 +466,9 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
       ? addRecordResultEntries(
           scalarizeNumericRecords(
             specializeNumericCalls(
-              foldConstantGlobals(copyStableCaptures(dropUnwrittenPropertyBags(mod))),
+              foldConstantGlobals(
+                copyStableCaptures(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+              ),
               mangleFunction,
             ),
           ),
@@ -486,7 +489,9 @@ export function emitLlvmModuleSource(
       ? addRecordResultEntries(
           scalarizeNumericRecords(
             specializeNumericCalls(
-              foldConstantGlobals(copyStableCaptures(dropUnwrittenPropertyBags(mod))),
+              foldConstantGlobals(
+                copyStableCaptures(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+              ),
               mangleFunction,
             ),
           ),
