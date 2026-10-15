@@ -117,7 +117,14 @@ export function planSpeculativeLoop(
     nodes++;
     if (e.kind === "varRef") reads.add(e.localId);
     else if (e.kind === "assignExpr" || e.kind === "incDec") unspeculable.add(e.localId);
-    return everyExprChild(e, expr, stmt);
+    return everyExprChild(e, expr, nested);
+  };
+  // Statements inside expressions (sequence expressions) run mid-expression,
+  // where no statement can restart: their writes stay unspeculated.
+  const nested = (s: IrStmt): boolean => {
+    nodes++;
+    if (s.kind === "assign" || s.kind === "varDecl") unspeculable.add(s.localId);
+    return everyStmtChild(s, expr, nested);
   };
   const stmt = (s: IrStmt): boolean => {
     if (rejected) return false;

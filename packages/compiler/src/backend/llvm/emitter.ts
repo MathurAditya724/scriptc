@@ -7255,7 +7255,12 @@ export class LlEmitter {
       this.B.startBlock(resume.label);
     }
     if (this.speculation?.writes.has(s)) {
+      // Speculable values read only numbers, so no temporary needs a
+      // release on either the written or the bailing path.
+      this.frames.push([]);
       this.emitSpeculativeWrite(s, this.speculation.resume.get(s)!);
+      if (this.frames.pop()!.length > 0)
+        throw new InternalCompilerError("llvm emitter bug: speculative write owns a temporary");
       return;
     }
     const previous = this.B.debugLocation;
