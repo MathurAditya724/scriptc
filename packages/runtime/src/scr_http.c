@@ -4526,6 +4526,20 @@ static void scr_http_client_response_done(ScrHttpConn *conn) {
  * before any response head → 'socket hang up' on the REQUEST; mid-body →
  * 'aborted' on the RESPONSE (the request just closes) — both orders
  * oracle-pinned. */
+/* An incomplete client response that will never complete: 'aborted' and
+ * 'close' queue on it, its body never ends, and the conn drops its
+ * reference so the res→sock→ctx→res cycle breaks. */
+static void scr_http_client_settle_response(ScrHttpConn *conn) {
+  ScrHttpReq *res = conn->req;
+  if (res == NULL) return;
+  scr_http_h2_req_aborted(res);
+  if (!res->destroyed) scr_http_queue_req_aborted(res);
+  scr_http_queue_req_close(res);
+  scr_http_req_finish(res, false); /* body never completes */
+  conn->req = NULL;
+  scr_http_req_release(res);
+}
+
 static void scr_http_client_premature(ScrHttpConn *conn) {
   ScrHttpClientReq *c = conn->client;
   if (!c || c->response_done || c->close_emitted) return;
@@ -4543,15 +4557,7 @@ static void scr_http_client_premature(ScrHttpConn *conn) {
      * caller-initiated response.destroy() does not emit an 'error'; a
      * premature peer close still does. */
     scr_http_client_queue_close(c);
-    if (conn->req) {
-      ScrHttpReq *res = conn->req;
-      scr_http_h2_req_aborted(res);
-      if (!res->destroyed) scr_http_queue_req_aborted(res);
-      scr_http_queue_req_close(res);
-      scr_http_req_finish(res, false); /* body never completes */
-      conn->req = NULL; /* break the res→sock→ctx→res cycle */
-      scr_http_req_release(res);
-    }
+    scr_http_client_settle_response(conn);
   }
 }
 
@@ -4618,6 +4624,9 @@ static void scr_http_client_head_overflow(ScrHttpConn *conn) {
     ScrStr *msg = scr_str_new("Parse Error: Header overflow", 28);
     scr_http_client_error(c, msg);
     scr_str_release(msg);
+    /* a trailer overflow ends a response already in progress: settle it
+     * now, since the exchange no longer reaches the premature-close path */
+    scr_http_client_settle_response(conn);
     if (scr_exc_pending()) return;
     scr_http_client_queue_close(c);
   } else {
