@@ -1058,6 +1058,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fs.unlinkSync": { argTypes: [STRING], result: VOID },
   "fs.chmodSync": { argTypes: [STRING, F64], result: VOID },
   "fs.chownSync": { argTypes: [STRING, F64, F64], result: VOID },
+  "fs.lchownSync": { argTypes: [STRING, F64, F64], result: VOID },
+  "fs.fchownSync": { argTypes: [F64, F64, F64], result: VOID },
+  /** truncateSync opens the path with 'r+', then truncates (len checked and
+   * clamped like ftruncateSync's) and closes it. */
+  "fs.truncateSync": { argTypes: [STRING, F64], result: VOID },
   "fs.copyFileSync": { argTypes: [STRING, STRING], result: VOID },
   /** renameSync is the direct two-path syscall wrapper. renameCb defers
    * the operation to the loop and fires a program-shaped Error | null
@@ -2489,6 +2494,17 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fsp.mkdirRecursiveMode": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
   "fsp.unlink": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
   "fsp.chmod": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
+  "fsp.chown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
+  "fsp.lchown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
+  "fsp.access": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
+  "fsp.truncate": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
+  "fsp.appendFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
+  "fsp.appendFileBytes": { argTypes: [STRING, BYTES_U8], result: { kind: "promise", inner: VOID } },
+  "fsp.copyFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
+  "fsp.mkdtemp": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
+  /** readFile(path, encoding | { encoding }) for any runtime encoding name. */
+  "fsp.readFileEncoded": { argTypes: [STRING, STRING], result: { kind: "promise", inner: STRING } },
+  "fsp.rmdir": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
   "fsp.link": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
   "fsp.symlink": { argTypes: [DYN, DYN, DYN], result: { kind: "promise", inner: VOID } },
   "fsp.readlink": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },

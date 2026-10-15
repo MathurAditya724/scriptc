@@ -636,6 +636,56 @@ export function lowerFsEncodedRead(
   };
 }
 
+/** fs.promises.readFile(path, encoding | { encoding }) when its result is a
+ * Promise<string>: the runtime checks the name and decodes, as
+ * readFileSync's encoded read does. Null for other shapes. */
+export function lowerFsPromisesEncodedRead(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (expr.arguments.length !== 2 || expr.arguments.some(ts.isSpreadElement)) return null;
+  const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (result?.kind !== "promise" || result.inner.kind !== "string") return null;
+  const options = expr.arguments[1]!;
+  const optionsTsType = lowerer.typeOf(options);
+  if (
+    optionsTsType.isStringLiteralType() &&
+    (optionsTsType.value === "utf8" || optionsTsType.value === "utf-8")
+  )
+    return null;
+  const optionsType = lowerer.mapTypeOf(optionsTsType);
+  if (optionsType?.kind !== "string" && optionsType?.kind !== "record") return null;
+  if (optionsType.kind === "record") {
+    const fields = lowerer.shapes.get(optionsType.shapeId)?.fields;
+    if (
+      !fields ||
+      fields.find((entry) => entry.name === "encoding")?.type.kind !== "string" ||
+      fields.some((entry) => entry.name !== "encoding")
+    )
+      return null;
+  }
+  const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+  const encoding: IrExpr =
+    optionsType.kind === "string"
+      ? lowerer.lowerExprExpecting(options, STRING)
+      : {
+          kind: "recordGet",
+          obj: lowerer.lowerExpr(options),
+          shapeId: optionsType.shapeId,
+          field: "encoding",
+          type: STRING,
+          loc,
+        };
+  return {
+    kind: "libCall",
+    fn: "fsp.readFileEncoded",
+    args: [path, encoding],
+    type: { kind: "promise", inner: STRING },
+    loc,
+  };
+}
+
 // mkdirSync(p, options): the lowered options form is a literal
 // `{ recursive?: <boolean literal>, mode?: <number> }` — recursive:
 // true routes to Node's recursive algorithm (the mode, when present,
@@ -789,6 +839,15 @@ export function lowerFsWriteBytesCall(
     }
     const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
     const data = lowerer.lowerExprExpecting(expr.arguments[1]!, BYTES_U8);
+    if (bi.module === "fs/promises") {
+      return {
+        kind: "libCall",
+        fn: "fsp.appendFileBytes",
+        args: [path, data],
+        type: { kind: "promise", inner: VOID },
+        loc,
+      };
+    }
     return {
       kind: "libCall",
       fn: bi.member === "appendFileSync" ? "fs.appendFileSyncBytes" : "fs.writeFileSyncBytes",
