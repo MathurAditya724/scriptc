@@ -1468,6 +1468,22 @@ export interface IrRecordShape {
   declaredOrder?: string[];
 }
 
+/** fs.Dirent rows: the hidden %dtype entry kind (libuv's UV_DIRENT
+ * encoding), then name and parentPath (type-mapper's interned shape). */
+export function isDirentShape(shape: IrRecordShape): boolean {
+  return (
+    !shape.tuple &&
+    shape.indexValue === undefined &&
+    shape.fields.length === 3 &&
+    shape.fields[0]!.name === "%dtype" &&
+    shape.fields[0]!.type.kind === "f64" &&
+    shape.fields[1]!.name === "name" &&
+    shape.fields[1]!.type.kind === "string" &&
+    shape.fields[2]!.name === "parentPath" &&
+    shape.fields[2]!.type.kind === "string"
+  );
+}
+
 /** Codec records have private native state, not a structurally checkable
  * data surface. Reserve the same '%' namespace as other internal slots. */
 export function recordTextCodecClass(shape: IrRecordShape): "TextEncoder" | "TextDecoder" | null {

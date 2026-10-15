@@ -19,6 +19,7 @@ import {
   type SrcLoc,
   canConvertToDyn,
   canDynCheckTo,
+  isDirentShape,
   isDynTypedRefType,
   recordTextCodecClass,
   shapeHasAccessorSlots,
@@ -284,6 +285,20 @@ export function inspectExpr(
   depth: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
+  // A Dirent row renders through its dyn view: Node's `Dirent { ... }`
+  // with the Symbol(type) key.
+  if (t.kind === "record") {
+    const shape = lowerer.shapes.get(t.shapeId);
+    if (shape && isDirentShape(shape)) {
+      return {
+        kind: "libCall",
+        fn: "insp.dyn",
+        args: [lowerer.coerceToExpected(value, DYN), recurse, depth],
+        type: STRING,
+        loc,
+      };
+    }
+  }
   switch (t.kind) {
     case "f64":
       return { kind: "libCall", fn: "insp.f64", args: [value], type: STRING, loc };
