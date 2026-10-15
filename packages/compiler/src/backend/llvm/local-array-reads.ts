@@ -14,6 +14,7 @@ import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { ReferenceEffects } from "./reference-effects.js";
 import { SCR_ARR_FIELD, exactIndexLines } from "./common.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
+import { READ_FALLBACK } from "./dense-array-access.js";
 
 export interface LocalArrayRead {
   type: IrType;
@@ -696,10 +697,15 @@ export function emitLocalArrayRead(
   if (scalar) {
     // Holes, present undefined, sparse and noncanonical indices: the
     // runtime state decides presence, then the strict getter reads it.
+    // Both only read (the getter runs for a present element, so it does
+    // not trap), which lets LLVM keep the array's header loads out of a
+    // loop around an inlined read.
     const state = B.tmp(),
       present = B.tmp();
     host.declare(`declare double @scr_arr_state(ptr, double)`);
-    B.line(`${state} = call double @scr_arr_state(ptr ${array.name}, double ${index.name})`);
+    B.line(
+      `${state} = call double @scr_arr_state(ptr ${array.name}, double ${index.name})${READ_FALLBACK}`,
+    );
     B.line(`${present} = fcmp oeq double ${state}, 1.0`);
     B.condBr(present, slowValue, no);
     B.startBlock(slowValue);
@@ -707,12 +713,14 @@ export function emitLocalArrayRead(
       bits = B.tmp();
     if (read.element.kind === "f64") {
       host.declare(`declare double @scr_arr_get_f64(ptr, double)`);
-      B.line(`${value} = call double @scr_arr_get_f64(ptr ${array.name}, double ${index.name})`);
+      B.line(
+        `${value} = call double @scr_arr_get_f64(ptr ${array.name}, double ${index.name})${READ_FALLBACK}`,
+      );
       B.line(`${bits} = bitcast double ${value} to i64`);
     } else {
       host.declare(`declare zeroext i1 @scr_arr_get_bool(ptr, double)`);
       B.line(
-        `${value} = call zeroext i1 @scr_arr_get_bool(ptr ${array.name}, double ${index.name})`,
+        `${value} = call zeroext i1 @scr_arr_get_bool(ptr ${array.name}, double ${index.name})${READ_FALLBACK}`,
       );
       B.line(`${bits} = zext i1 ${value} to i64`);
     }
