@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 37,
-        "verify-gap": 2472,
-        "audit-partial": 876,
+        "verify-gap": 2469,
+        "audit-partial": 879,
         "classify": 2,
         "implement": 85
       }
@@ -27353,12 +27353,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.mkdir",
+          "tests": [
+            "tests/corpus/5540-fs-callback-forms.cjs"
+          ]
         }
       }
     },
@@ -27578,12 +27580,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.readFile",
+          "tests": [
+            "tests/corpus/5540-fs-callback-forms.cjs"
+          ]
         }
       }
     },
@@ -28084,12 +28088,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.write",
+          "tests": [
+            "tests/corpus/5540-fs-callback-forms.cjs"
+          ]
         }
       }
     },
