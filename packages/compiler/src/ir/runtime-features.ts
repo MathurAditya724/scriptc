@@ -206,7 +206,8 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn === "stream.addAbortSignalFn" ||
         fn.startsWith("sp.finishedOpts") ||
         fn.startsWith("sp.pipelineOpts") ||
-        fn.startsWith("stream.finishedOpts")
+        fn.startsWith("stream.finishedOpts") ||
+        fn.startsWith("zlib.stream")
       )
         features.stream = true;
       if (fn.startsWith("zlib.")) features.zlib = true;

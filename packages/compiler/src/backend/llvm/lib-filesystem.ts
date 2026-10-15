@@ -211,6 +211,59 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     );
     return { name: "", type: e.type };
   }
+  if (e.fn === "zlib.streamNew") {
+    // The stream's engine steps run on the worker pool; the options value
+    // is borrowed and the +1 stream may be NULL with a pending throw.
+    host.usesTimers = true;
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.declare("declare ptr @scr_zlib_stream_new(double, ptr)");
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_zlib_stream_new(double ${args[0]!.name}, ptr ${args[1]!.name})`);
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "zlib.streamBytesWritten") {
+    const recv = host.emitExpr(e.args[0]!);
+    host.declare("declare double @scr_zlib_stream_bytes_written(ptr)");
+    const t = B.tmp();
+    B.line(`${t} = call double @scr_zlib_stream_bytes_written(ptr ${recv.name})`);
+    return { name: t, type: e.type };
+  }
+  if (
+    e.fn === "zlib.streamFlush" ||
+    e.fn === "zlib.streamFlushCb" ||
+    e.fn === "zlib.streamParams" ||
+    e.fn === "zlib.streamParamsCb" ||
+    e.fn === "zlib.streamClose" ||
+    e.fn === "zlib.streamCloseCb" ||
+    e.fn === "zlib.streamReset"
+  ) {
+    // Receiver and dyn operands borrowed; the trailing () => void callback
+    // of the Cb forms MOVES (NULL when absent).
+    const args = e.args.map((a) => host.emitExpr(a));
+    const withCb = e.fn.endsWith("Cb");
+    const base = withCb ? e.fn.slice(0, -2) : e.fn;
+    const operands = args.slice(0, withCb ? -1 : undefined).map((a) => `ptr ${a.name}`);
+    let cb = "null";
+    if (withCb) {
+      host.moveTemp(args[args.length - 1]!);
+      cb = args[args.length - 1]!.name;
+    }
+    const sym =
+      base === "zlib.streamFlush"
+        ? "scr_zlib_stream_flush"
+        : base === "zlib.streamParams"
+          ? "scr_zlib_stream_params"
+          : base === "zlib.streamClose"
+            ? "scr_zlib_stream_close"
+            : "scr_zlib_stream_reset";
+    const params = base === "zlib.streamReset" ? operands : [...operands, `ptr ${cb}`];
+    host.declare(`declare void @${sym}(${params.map(() => "ptr").join(", ")})`);
+    B.line(`call void @${sym}(${params.join(", ")})`);
+    if (base !== "zlib.streamClose") host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (e.fn === "zlib.deflateLevelSync") {
     const args = e.args.map((arg) => host.emitExpr(arg));
     host.declare("declare ptr @scr_zlib_deflate_mode(ptr, double, double)");

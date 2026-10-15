@@ -4,13 +4,14 @@ import { canonicalBuiltinModule, locOf, requireSpecOf } from "../../program.js";
 import { builtinConstLit } from "../surfaces.js";
 import { HTTP2_CONSTANTS } from "../http2-constants.js";
 import { CRYPTO_CONSTANTS } from "../crypto-tables.js";
+import { ZLIB_CONSTANTS } from "../zlib-constants.js";
 import { F64, type IrExpr } from "../../../ir/ir.js";
 import { builtinImportOf } from "./module-bindings.js";
 
 /** The builtin modules whose `constants` object bakes as literals at
  * every access site (the fs.constants precedent, scaled up): http2's
- * full Node v24 table, and crypto's OpenSSL-constant table. The object
- * itself never materializes at runtime. */
+ * full Node v24 table, crypto's OpenSSL-constant table, and zlib's
+ * table. The object itself never materializes at runtime. */
 const BUILTIN_CONSTANTS_TABLES: Record<
   string,
   { table: Record<string, number | string>; hint: string } | undefined
@@ -22,6 +23,10 @@ const BUILTIN_CONSTANTS_TABLES: Record<
   crypto: {
     table: CRYPTO_CONSTANTS,
     hint: "the table bakes Node v24's crypto.constants members as literals — this name is not one of them",
+  },
+  zlib: {
+    table: ZLIB_CONSTANTS,
+    hint: "the table bakes Node v24's zlib.constants members as literals — this name is not one of them",
   },
 };
 

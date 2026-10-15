@@ -620,6 +620,16 @@ function publicDetail(tier) {
     if (/^compiler-feature:process\.std(?:in|out|err)$/.test(source)) {
       return "Stored JavaScript process streams support native input listeners, pause/resume and buffered reads, synchronous output writes, and output write replacement; other stream operations remain unsupported.";
     }
+    if (
+      /^compiler-feature:zlib\.(?:zlib\.(?:Deflate|Inflate|Gzip|Gunzip|DeflateRaw|InflateRaw|Unzip|ZlibBase|close|flush|params|reset)|bytesWritten|Options)$/.test(
+        source,
+      )
+    ) {
+      return "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Brotli and Zstd streams remain unsupported.";
+    }
+    if (source === "compiler-feature:zlib.zlib.constants") {
+      return "Each zlib.constants member and its module-level copy reads as Node's value; the constants object itself is not a runtime value.";
+    }
     if (source === "compiler-feature:url.URL") {
       return "Supports absolute inputs and relative inputs with string or URL bases; setters and some WHATWG parsing behavior remain unsupported.";
     }

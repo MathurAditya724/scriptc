@@ -1199,7 +1199,8 @@ typedef struct ScrError {
   bool name_enumerable;
   ScrStr *stack_frames; /* captured native source frames */
   ScrStr *stack; /* lazily formatted, cached stack */
-  double system_errno; /* present exactly when system_call is non-NULL */
+  double system_errno; /* present when system_call is non-NULL or this is
+                        * nonzero (zlib errors carry errno without syscall) */
   ScrStr *system_call;
   ScrStr *system_path;
   ScrStr *system_dest;
@@ -3288,6 +3289,14 @@ void scr_stream_set_final(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
 void scr_stream_set_destroy(ScrStream *s, ScrClosure *cb, ScrStreamErrInv inv);
 void scr_stream_set_transform(ScrStream *s, ScrClosure *cb, ScrStreamChunkInv inv);
 void scr_stream_set_flush(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
+/* Runtime-built Transforms (scr_zlib_stream.c): the flush starts at
+ * 'prefinish' and 'finish' does not wait for it (a _final that completes
+ * at once). set_native moves one reference to the stream's own state,
+ * released when the stream is freed; scr_stream_native answers it
+ * (borrowed) when it was set with `release`, else NULL. */
+void scr_stream_set_flush_on_prefinish(ScrStream *s);
+void scr_stream_set_native(ScrStream *s, void *state, void (*release)(void *));
+void *scr_stream_native(ScrStream *s, void (*release)(void *));
 
 /* Completion entries for the compiler-emitted done closures (err/data
  * MOVE; NULLs = absent). */
@@ -7611,6 +7620,38 @@ typedef void (*ScrZlibBytesFn)(ScrClosure *cb, ScrError *err,
                               ScrBytes *value /* moves, NULL on error */);
 void scr_zlib_codec_async(const ScrBytes *data, double mode, bool compressing,
                           ScrClosure *cb /* moves */, ScrZlibBytesFn fn);
+/* The stream engine (Node's ZlibContext): one z_stream per zlib stream
+ * object, initialized on its first step. scr_zlib_engine_work runs on a
+ * worker thread and touches only the engine; every other entry runs on the
+ * main thread. The error entries answer true and fill *out (static or
+ * engine-owned strings) when Node would emit an error. */
+typedef struct ScrZlibEngine ScrZlibEngine;
+typedef struct {
+  const char *message;
+  const char *code;
+  int err;
+} ScrZlibError;
+ScrZlibEngine *scr_zlib_engine_new(int mode, int level, int window_bits, int mem_level,
+                                   int strategy, const unsigned char *dict, size_t dict_len,
+                                   bool reject_garbage);
+void scr_zlib_engine_work(ScrZlibEngine *e, int flush, const unsigned char *in, uint32_t in_len,
+                          unsigned char *out, uint32_t out_len);
+void scr_zlib_engine_offsets(const ScrZlibEngine *e, uint32_t *avail_in, uint32_t *avail_out);
+bool scr_zlib_engine_error(const ScrZlibEngine *e, ScrZlibError *out);
+bool scr_zlib_engine_reset(ScrZlibEngine *e, ScrZlibError *out);
+bool scr_zlib_engine_params(ScrZlibEngine *e, int level, int strategy, ScrZlibError *out);
+void scr_zlib_engine_free(ScrZlibEngine *e);
+/* zlib.Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw and Unzip
+ * (scr_zlib_stream.c — linked when the program uses both zlib and the
+ * stream surface): Transform streams over the engine. mode is Node's
+ * node_zlib_mode, opts the options value (undefined for none), validated
+ * with Node's ladder. The callbacks MOVE in and may be NULL. */
+ScrStream *scr_zlib_stream_new(double mode, ScrDyn *opts);
+double scr_zlib_stream_bytes_written(ScrStream *s);
+void scr_zlib_stream_flush(ScrStream *s, ScrDyn *kind, ScrClosure *cb);
+void scr_zlib_stream_params(ScrStream *s, ScrDyn *level, ScrDyn *strategy, ScrClosure *cb);
+void scr_zlib_stream_close(ScrStream *s, ScrClosure *cb);
+void scr_zlib_stream_reset(ScrStream *s);
 
 /* ── node:net (scr_net.c — compiled and linked ONLY when the program
  * uses the net surface, like scr_events.c; see native-toolchain.ts) ─────────────────

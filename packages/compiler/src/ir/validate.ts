@@ -5153,6 +5153,25 @@ function validateFunction(
     fixedArgs: number,
     result: IrType,
   ): boolean {
+    if (e.fn.startsWith("zlib.stream")) {
+      // The zlib stream classes: streamNew answers a runtime Transform;
+      // the members take one as their receiver, and the Cb forms end in
+      // the () => void callback.
+      const isTransform = (t: IrType | undefined): boolean =>
+        t?.kind === "object" && t.className === "%Transform";
+      if (e.fn === "zlib.streamNew") {
+        if (!isTransform(e.type)) err(`libCall ${e.fn} must return a %Transform`, e.loc);
+        return true;
+      }
+      if (!isTransform(e.args[0]?.type)) {
+        err(`libCall ${e.fn} receiver must be a %Transform`, e.loc);
+      }
+      if (e.fn.endsWith("Cb") && e.args[e.args.length - 1]?.type.kind !== "func") {
+        err(`libCall ${e.fn} callback must be a func`, e.loc);
+      }
+      if (!typeEquals(e.type, result)) err(`libCall ${e.fn} result type mismatch`, e.loc);
+      return true;
+    }
     if (
       e.fn.startsWith("readable.") ||
       e.fn.startsWith("writable.") ||

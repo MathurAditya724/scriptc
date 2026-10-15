@@ -7,9 +7,9 @@
     "tierItemCount": 3486,
     "tiers": {
       "static": {
-        "replace-refusal": 40,
-        "verify-gap": 2489,
-        "audit-partial": 870,
+        "replace-refusal": 48,
+        "verify-gap": 2459,
+        "audit-partial": 892,
         "classify": 2,
         "implement": 85
       }
@@ -85364,11 +85364,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.zlib.BrotliCompress",
           "tests": []
         }
       }
@@ -85389,11 +85389,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.zlib.BrotliDecompress",
           "tests": []
         }
       }
@@ -85414,12 +85414,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.Deflate",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85439,12 +85447,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.DeflateRaw",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85464,12 +85480,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.Gunzip",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85489,12 +85513,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.Gzip",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85514,12 +85546,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.Inflate",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85539,12 +85579,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.InflateRaw",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85564,12 +85612,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.Unzip",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85589,12 +85645,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.ZlibBase",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85614,12 +85678,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.close",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85639,12 +85711,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.flush",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85664,12 +85744,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.params",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85689,12 +85777,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.reset",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85714,12 +85810,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.bytesWritten",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85797,7 +85901,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -85818,11 +85925,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.zlib.createBrotliCompress",
           "tests": []
         }
       }
@@ -85843,11 +85950,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.zlib.createBrotliDecompress",
           "tests": []
         }
       }
@@ -85868,12 +85975,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.zlib.createDeflate",
+          "tests": [
+            "tests/corpus/1404-zlib-crypto-bytes.ts",
+            "tests/corpus/2921-zlib-callbacks.ts",
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
+          ]
         }
       }
     },
@@ -85893,12 +86007,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.zlib.createDeflateRaw",
+          "tests": [
+            "tests/corpus/1404-zlib-crypto-bytes.ts",
+            "tests/corpus/2921-zlib-callbacks.ts",
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
+          ]
         }
       }
     },
@@ -85918,12 +86039,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.zlib.createGunzip",
+          "tests": [
+            "tests/corpus/1404-zlib-crypto-bytes.ts",
+            "tests/corpus/2921-zlib-callbacks.ts",
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
+          ]
         }
       }
     },
@@ -85943,12 +86071,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.zlib.createGzip",
+          "tests": [
+            "tests/corpus/1404-zlib-crypto-bytes.ts",
+            "tests/corpus/2921-zlib-callbacks.ts",
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
+          ]
         }
       }
     },
@@ -85968,12 +86103,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.zlib.createInflate",
+          "tests": [
+            "tests/corpus/1404-zlib-crypto-bytes.ts",
+            "tests/corpus/2921-zlib-callbacks.ts",
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
+          ]
         }
       }
     },
@@ -85993,12 +86135,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.zlib.createInflateRaw",
+          "tests": [
+            "tests/corpus/1404-zlib-crypto-bytes.ts",
+            "tests/corpus/2921-zlib-callbacks.ts",
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
+          ]
         }
       }
     },
@@ -86018,12 +86167,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.zlib.createUnzip",
+          "tests": [
+            "tests/corpus/1404-zlib-crypto-bytes.ts",
+            "tests/corpus/2921-zlib-callbacks.ts",
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
+          ]
         }
       }
     },
@@ -86093,11 +86249,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.zlib.brotliCompress",
           "tests": []
         }
       }
@@ -86143,11 +86299,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.zlib.brotliDecompress",
           "tests": []
         }
       }
@@ -86201,7 +86357,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86230,7 +86389,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86259,7 +86421,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86288,7 +86453,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86317,7 +86485,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86346,7 +86517,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86375,7 +86549,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86404,7 +86581,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86433,7 +86613,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86462,7 +86645,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86491,7 +86677,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86520,7 +86709,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86549,7 +86741,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86578,7 +86773,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86699,12 +86897,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.constants",
+          "tests": [
+            "tests/corpus/5376-zlib-constants.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts"
+          ]
         }
       }
     },
@@ -86724,12 +86925,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.Options",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -86799,11 +87008,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.zlib.brotliCompress",
           "tests": []
         }
       }
@@ -86849,11 +87058,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.zlib.brotliDecompress",
           "tests": []
         }
       }
@@ -86907,7 +87116,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86936,7 +87148,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86965,7 +87180,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86994,7 +87212,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87023,7 +87244,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87052,7 +87276,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87081,7 +87308,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87110,7 +87340,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87139,7 +87372,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87168,7 +87404,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87197,7 +87436,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87226,7 +87468,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87255,7 +87500,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87284,7 +87532,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }

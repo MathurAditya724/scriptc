@@ -8,6 +8,7 @@ import { InternalCompilerError } from "../../errors.js";
  * accessor access, upcasts, `new` expressions, and the builtin Error
  * hierarchy registration. */
 import * as ts from "../ts7/adapter.js";
+import { lowerZlibStreamNew, zlibStreamModeOf } from "./builtins/compression.js";
 import type { FnCtx, Lowerer } from "./lowerer.js";
 import {
   BOOL,
@@ -8288,6 +8289,12 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // `require('stream').Readable`) construction form.
     const streamInfoNs = builtinStreamInfoOf(lowerer, resolved);
     if (streamInfoNs) return lowerStreamNew(lowerer, expr, streamInfoNs);
+    // `new zlib.Gzip(options?)` — the zlib stream classes.
+    const zlibModeNs = zlibStreamModeOf(lowerer, resolved);
+    if (zlibModeNs !== null) {
+      const what = `new zlib.${expr.expression.name.text}`;
+      return lowerZlibStreamNew(lowerer, expr.arguments ?? [], zlibModeNs, what, expr, loc);
+    }
     // `new N.C(...)` / `new a.Point(...)` — construction through a
     // USER namespace qualifier (import= alias chains included): the
     // member resolves to the registered program class, guarded by the
@@ -8500,6 +8507,11 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // object parses structurally in the stream spoke.
     const streamInfo = builtinStreamInfoOf(lowerer, symbol);
     if (streamInfo) return lowerStreamNew(lowerer, expr, streamInfo);
+    const zlibMode = zlibStreamModeOf(lowerer, symbol);
+    if (zlibMode !== null) {
+      const what = `new zlib.${symbol!.name}`;
+      return lowerZlibStreamNew(lowerer, expr.arguments ?? [], zlibMode, what, expr, loc);
+    }
     // `new URL(input)`: the WHATWG URL class (stdlib/@types provenance —
     // a user's own `class URL` resolves through classBySymbol below).
     // Invalid input or base throws a catchable TypeError ("Invalid URL").

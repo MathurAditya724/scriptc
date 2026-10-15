@@ -2380,6 +2380,21 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "zlib.gunzipCb": { argTypes: [BYTES_U8, null], result: VOID },
   "zlib.unzipCb": { argTypes: [BYTES_U8, null], result: VOID },
   "zlib.crc32": { argTypes: [BYTES_U8, F64], result: F64 },
+  /** The stream classes (scr_zlib_stream.c, linked with the stream unit):
+   * streamNew takes Node's node_zlib_mode number and the options value
+   * (undefined when absent), validates it with Node's ladder, and answers
+   * the +1 %Transform stream. flush takes the kind value, params the level
+   * and strategy values; the Cb forms move their () => void callback. The
+   * receivers are borrowed. */
+  "zlib.streamNew": { argTypes: [F64, DYN], result: VOID },
+  "zlib.streamBytesWritten": { argTypes: [null], result: F64 },
+  "zlib.streamFlush": { argTypes: [null, DYN], result: VOID },
+  "zlib.streamFlushCb": { argTypes: [null, DYN, null], result: VOID },
+  "zlib.streamParams": { argTypes: [null, DYN, DYN], result: VOID },
+  "zlib.streamParamsCb": { argTypes: [null, DYN, DYN, null], result: VOID },
+  "zlib.streamClose": { argTypes: [null], result: VOID },
+  "zlib.streamCloseCb": { argTypes: [null, null], result: VOID },
+  "zlib.streamReset": { argTypes: [null], result: VOID },
   /** The Buffer overloads of the raw stream writes — same promptly
    * submitted streams as process.stdoutWrite/stderrWrite, constantly true.
    * The encoding arg is evaluated but ignored for bytes, like Node. The Cb
