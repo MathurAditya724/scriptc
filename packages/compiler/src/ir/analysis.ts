@@ -27,28 +27,45 @@ export function unionWideningTags(from: readonly IrType[], to: readonly IrType[]
 }
 
 /**
- * Recognize the one concat shape whose destination binding can temporarily
+ * Recognize the concat shape whose destination binding can temporarily
  * hand off its ownership to the left operand:
  *
  *     target = target + suffix
+ *     target = target + a + b      (the suffix is a + b)
  *
- * Both native emitters use this rather than attempting a wider purity or
- * alias analysis.  In particular, fields, nested concat trees, dynamic
- * operations, and a different destination all retain the ordinary borrowed
- * concat lowering.
+ * The target is the leftmost operand, so it is read first either way, and
+ * the remaining operands keep their order in the suffix; every operand is
+ * already a string, so regrouping them does not change the result. Both
+ * native emitters use this rather than attempting a wider purity or alias
+ * analysis.  In particular, fields, dynamic operations, and a different
+ * destination all retain the ordinary borrowed concat lowering.
  */
-export function matchStringSelfConcat(targetLocalId: string, value: IrExpr): IrExpr | null {
+export function matchStringSelfConcat(
+  targetLocalId: string,
+  value: IrExpr,
+): { left: IrExpr; suffix: IrExpr } | null {
   if (
     value.kind !== "strConcat" ||
     value.type.kind !== "string" ||
-    value.left.kind !== "varRef" ||
-    value.left.type.kind !== "string" ||
-    value.left.localId !== targetLocalId ||
     value.right.type.kind !== "string"
-  ) {
+  )
     return null;
+  if (value.left.kind === "varRef") {
+    if (value.left.type.kind !== "string" || value.left.localId !== targetLocalId) return null;
+    return { left: value.left, suffix: value.right };
   }
-  return value.right;
+  const inner = matchStringSelfConcat(targetLocalId, value.left);
+  if (inner === null) return null;
+  return {
+    left: inner.left,
+    suffix: {
+      kind: "strConcat",
+      left: inner.suffix,
+      right: value.right,
+      type: value.type,
+      loc: value.loc,
+    },
+  };
 }
 
 /** Descendant tree needed by constructor queries. Parent links deliberately
