@@ -339,6 +339,7 @@ import {
   FN_ATTRS,
   inlineRcDecls,
   type InlineRcMode,
+  limitInlineDynReleases,
   llFieldType,
   type MapKeyAccess,
   releaseSym,
@@ -423,6 +424,8 @@ export interface LlvmTargetOptions {
    * release (shapes.ts InlineRcMode). Off, every retain and release is a
    * runtime call. */
   inlineRc?: InlineRcMode;
+  /** Define the inline RC fast-path helpers `noinline` (sanitized builds). */
+  rcHelpersNoinline?: boolean;
   /** Define `scr_detached_exit` so the Linux runtime hands the address-space
    * teardown after `process.exit` to a helper process (`--detached-exit`).
    * Executables only; the runtime's weak default keeps it off. */
@@ -662,6 +665,7 @@ export class LlEmitter {
    * when inline RC is off. */
   private readonly rcHelpers: Set<string> | null;
   private readonly rcMode: InlineRcMode | undefined;
+  private readonly rcHelpersNoinline: boolean;
 
   readonly fnByName = new Map<string, IrFunction>();
   /** Empty literals that construct with inline slots (appended-array-literals.ts). */
@@ -1005,6 +1009,7 @@ export class LlEmitter {
     this.detachedExit = options.detachedExit === true;
     this.rcHelpers = options.inlineRc !== undefined ? new Set() : null;
     this.rcMode = options.inlineRc;
+    this.rcHelpersNoinline = options.rcHelpersNoinline === true;
     // ScrCycHdr.buf sits 4 bytes behind every object on every target.
     this.cycleBufOffset = CYC_HDR - CYC_BUF;
     this.ffiCallbackAdapters = allocateFfiCallbackAdapters(mod.ffiImports ?? []);
@@ -1150,6 +1155,7 @@ export class LlEmitter {
       threadLocalAlloc: mod.workers === true,
       rcHelpers: this.rcHelpers,
       ...(this.rcMode !== undefined ? { rcMode: this.rcMode } : {}),
+      ...(this.rcHelpersNoinline ? { rcHelpersNoinline: true } : {}),
       nextCycKind: () => FIRST_EMITTED_CYC_KIND + this.cycKinds++,
       unionsById: this.unionsById,
       declare: (decl) => this.declare(decl),
@@ -1671,7 +1677,7 @@ export class LlEmitter {
   }
 
   emitParts(): string[] {
-    const parts = this.emitModuleParts();
+    const parts = limitInlineDynReleases(this.emitModuleParts());
     if (!this.executableTls) return parts;
     // A worker executable's thread-locals all live in the executable's own
     // TLS block: the program's internal ones, and the runtime's external

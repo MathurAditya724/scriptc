@@ -89,6 +89,8 @@ export interface ShapeHost {
   readonly rcHelpers: Set<string> | null;
   /** Which fast paths are inlined (see {@link InlineRcMode}). */
   readonly rcMode?: InlineRcMode;
+  /** Define the fast-path helpers `noinline` (see {@link inlineRcOption}). */
+  readonly rcHelpersNoinline?: boolean;
   /** The next collector statistics index for an emitted ScrCycType
    * descriptor (cycTypeDescriptor), counting from FIRST_EMITTED_CYC_KIND
    * in emission order.
@@ -316,10 +318,18 @@ export type InlineRcMode = "release" | "speed";
 const RELEASE_RC_OPS = new Set(["str:retain", "dyn:retain", "dyn:release"]);
 
 /** The emitter's inline RC option for a native optimization posture: none
- * at `dev`, the `release` subset by default. */
-export function inlineRcOption(optimization: string | undefined): { inlineRc?: InlineRcMode } {
-  if (optimization === "speed") return { inlineRc: "speed" };
-  return optimization === "dev" ? {} : { inlineRc: "release" };
+ * at `dev`, the `release` subset by default. Sanitized builds compile the
+ * whole program in one AddressSanitizer pass, whose time grows with every
+ * inlined fast path, so they call the same helpers out of line. */
+export function inlineRcOption(
+  optimization: string | undefined,
+  sanitize = false,
+): { inlineRc?: InlineRcMode; rcHelpersNoinline?: true } {
+  if (optimization === "dev") return {};
+  return {
+    inlineRc: optimization === "speed" ? "speed" : "release",
+    ...(sanitize ? { rcHelpersNoinline: true as const } : {}),
+  };
 }
 
 function mirroredFamily(host: ShapeHost, family: string, op: RcOp): InlineRcFamily | null {
@@ -356,8 +366,75 @@ function requestRcHelper(host: ShapeHost, family: string, op: RcOp): string {
   return `@${inlineRcName(family, op)}`;
 }
 
+function rcHelperAttrs(host: ShapeHost): string {
+  return host.rcHelpersNoinline === true ? `noinline ${FN_ATTRS}` : FN_ATTRS;
+}
+
 function inlineRcName(family: string, op: RcOp): string {
   return `sc_rc_${op}_${family}`;
+}
+
+/** Inlined dyn releases one function body keeps. LLVM's optimization time
+ * grows faster than the number of inlined releases in one function, and
+ * generated dispatch tables and module initializers of large packages have
+ * thousands of release sites; a body with more calls scr_dyn_release, which
+ * the inline helper mirrors, at every site. */
+export const INLINE_DYN_RELEASES_PER_FUNCTION = 256;
+
+/** Apply {@link INLINE_DYN_RELEASES_PER_FUNCTION} to each function of an
+ * emitted module, given as parts joined by newlines. A function can span
+ * parts (main's lines) and a part can hold several functions. */
+export function limitInlineDynReleases(parts: readonly string[]): string[] {
+  const call = `call void @${inlineRcName("dyn", "release")}(`;
+  const runtime = `call void @${INLINE_RC_FAMILIES["dyn"]!.release}(`;
+  // The function each release site belongs to: the last `define` line
+  // before it, counted over the joined text.
+  const sites = (
+    part: string,
+    each: (offset: number, fn: number) => void,
+    first: number,
+  ): number => {
+    let fn = first;
+    let define = part.startsWith("define ") ? 0 : part.indexOf("\ndefine ");
+    for (let at = part.indexOf(call); at >= 0; at = part.indexOf(call, at + call.length)) {
+      while (define >= 0 && define < at) {
+        fn++;
+        define = part.indexOf("\ndefine ", define + 1);
+      }
+      each(at, fn);
+    }
+    while (define >= 0) {
+      fn++;
+      define = part.indexOf("\ndefine ", define + 1);
+    }
+    return fn;
+  };
+  const counts = new Map<number, number>();
+  let fn = 0;
+  for (const part of parts) fn = sites(part, (_, f) => counts.set(f, (counts.get(f) ?? 0) + 1), fn);
+  const over = new Set(
+    [...counts].filter(([, n]) => n > INLINE_DYN_RELEASES_PER_FUNCTION).map(([f]) => f),
+  );
+  if (over.size === 0) return [...parts];
+  fn = 0;
+  return parts.map((part) => {
+    const cuts: number[] = [];
+    fn = sites(
+      part,
+      (at, f) => {
+        if (over.has(f)) cuts.push(at);
+      },
+      fn,
+    );
+    if (cuts.length === 0) return part;
+    let out = "";
+    let from = 0;
+    for (const at of cuts) {
+      out += part.slice(from, at) + runtime;
+      from = at + call.length;
+    }
+    return out + part.slice(from);
+  });
 }
 
 function rcHelperDecls(family: string, op: RcOp): string[] {
@@ -415,7 +492,7 @@ function rcHeaderTest(cycle: "arr" | "map", yes: string, no: string): string[] {
 function retainHelper(host: ShapeHost, family: string, row: InlineRcFamily): string[] {
   const S = host.sizeType;
   return [
-    `define internal ptr @${inlineRcName(family, "retain")}(ptr %o) ${FN_ATTRS} { ; scr_${family}_retain fast path`,
+    `define internal ptr @${inlineRcName(family, "retain")}(ptr %o) ${rcHelperAttrs(host)} { ; scr_${family}_retain fast path`,
     `entry:`,
     ...(row.retainNull
       ? [`  %isnull = icmp eq ptr %o, null`, `  br i1 %isnull, label %done, label %check`, `check:`]
@@ -438,7 +515,7 @@ function releaseHelper(host: ShapeHost, family: string, row: InlineRcFamily): st
   const S = host.sizeType;
   const cycle = row.cycle;
   return [
-    `define internal void @${inlineRcName(family, "release")}(ptr %o) ${FN_ATTRS} { ; ${row.release} fast path`,
+    `define internal void @${inlineRcName(family, "release")}(ptr %o) ${rcHelperAttrs(host)} { ; ${row.release} fast path`,
     `entry:`,
     `  %isnull = icmp eq ptr %o, null`,
     `  br i1 %isnull, label %done, label %check`,

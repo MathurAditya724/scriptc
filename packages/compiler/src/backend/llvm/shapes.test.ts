@@ -5,6 +5,9 @@ import {
   emitInlineRcHelpers,
   emitRecordShapes,
   inlineRcDecls,
+  INLINE_DYN_RELEASES_PER_FUNCTION,
+  inlineRcOption,
+  limitInlineDynReleases,
   releaseSym,
   retainSym,
   type ShapeHost,
@@ -143,6 +146,22 @@ describe("LLVM runtime RC symbols", () => {
     expect(ir).toMatch(/switch i32 %kind, label %done \[ i32 4, label %root/);
   });
 
+  test("sanitized builds call the fast-path helpers out of line", () => {
+    expect(inlineRcOption("release", true)).toEqual({
+      inlineRc: "release",
+      rcHelpersNoinline: true,
+    });
+    expect(inlineRcOption("release")).toEqual({ inlineRc: "release" });
+    expect(inlineRcOption("dev", true)).toEqual({});
+    const { host } = declarationHost(64, "release");
+    const outOfLine: ShapeHost = { ...host, rcHelpersNoinline: true };
+    retainSym(outOfLine, { kind: "dyn" });
+    releaseSym(outOfLine, { kind: "dyn" });
+    const ir = emitInlineRcHelpers(outOfLine).join("\n");
+    expect(ir).toMatch(/define internal ptr @sc_rc_retain_dyn\(ptr %o\) noinline /);
+    expect(ir).toMatch(/define internal void @sc_rc_release_dyn\(ptr %o\) noinline /);
+  });
+
   test("mirrors the C fast paths and header offsets", () => {
     const { host } = declarationHost(64, true);
     retainSym(host, { kind: "string" });
@@ -188,6 +207,32 @@ describe("LLVM runtime RC symbols", () => {
     const ir = emitInlineRcHelpers(host).join("\n");
     expect(ir).toContain("load i32, ptr %o");
     expect(ir).toContain("getelementptr i8, ptr %o, i32 -4");
+  });
+});
+
+describe("inline dyn release budget", () => {
+  const body = (name: string, sites: number): string =>
+    [
+      `define internal void @${name}(ptr %v) #0 {`,
+      "entry:",
+      ...Array.from({ length: sites }, () => "  call void @sc_rc_release_dyn(ptr %v)"),
+      "  ret void",
+      "}",
+      "",
+    ].join("\n");
+
+  test("a function over the budget calls the runtime release at every site", () => {
+    const small = body("small", INLINE_DYN_RELEASES_PER_FUNCTION);
+    const large = body("large", INLINE_DYN_RELEASES_PER_FUNCTION + 1);
+    // main's lines are separate parts.
+    const limited = limitInlineDynReleases([`; header\n${small}`, ...large.split("\n")]).join("\n");
+    expect(limited.startsWith("; header\n")).toBe(true);
+    expect(limited).toContain(small);
+    const out = limited.slice(limited.indexOf("@large("));
+    expect(out).not.toContain("@sc_rc_release_dyn(");
+    expect(out.split("call void @scr_dyn_release(ptr %v)").length - 1).toBe(
+      INLINE_DYN_RELEASES_PER_FUNCTION + 1,
+    );
   });
 });
 

@@ -42,7 +42,7 @@ test("sort-heavy programs emit equal LLVM from memory and from serialized IR", a
           wasi: false,
           runtimeAbiMarker: false,
           objectAudit: sanitize,
-          ...inlineRcOption(options.optimization),
+          ...inlineRcOption(options.optimization, sanitize),
         });
         const text = typeof emitted === "string" ? emitted : emitted.join("");
         expect(text === readFileSync(llvmPath, "utf8"), label).toBe(true);
