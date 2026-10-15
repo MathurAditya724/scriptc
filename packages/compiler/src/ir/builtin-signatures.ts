@@ -3300,6 +3300,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "readable.nextChunkDyn": { argTypes: [null], result: VOID },
   "readable.fromArr": { argTypes: [null, F64, F64], result: VOID },
   "readable.fromDyn": { argTypes: [DYN, DYN], result: VOID },
+  /** Readable.from over a compiled generator: [generator, next, return,
+   * throw, flags, highWaterMark] (sync) or [generator, next, read,
+   * return, throw, flags, highWaterMark] (async), the helpers being the
+   * frontend's interned closures. readable.fromDone is the done marker
+   * the helpers answer. */
+  "readable.fromGen": { argTypes: [null, null, null, null, F64, F64], result: VOID },
+  "readable.fromAsyncGen": { argTypes: [null, null, null, null, null, F64, F64], result: VOID },
+  "readable.fromDone": { argTypes: [], result: DYN },
   /** The Readable operators (scr_stream_ops.c): [stream, ...] with every
    * other argument a checked-dynamic value (the callback, the count, the
    * options). map/filter/flatMap/drop/take answer the object-mode output

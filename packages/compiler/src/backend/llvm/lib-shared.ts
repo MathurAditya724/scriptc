@@ -942,6 +942,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "readable.nextChunkDyn": "scr_stream_next_chunk_dyn",
   "readable.fromArr": "scr_stream_from_arr",
   "readable.fromDyn": "scr_stream_from_dyn",
+  "readable.fromGen": "scr_stream_from_gen",
+  "readable.fromAsyncGen": "scr_stream_from_async_gen",
+  "readable.fromDone": "scr_stream_from_done",
   // The Readable operators: borrowed operands; +1 stream or promise.
   "readable.opMap": "scr_stream_op_map",
   "readable.opFilter": "scr_stream_op_filter",
@@ -1337,6 +1340,8 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "readable.nextChunkDyn",
   "readable.fromArr",
   "readable.fromDyn",
+  "readable.fromGen",
+  "readable.fromAsyncGen",
   "readable.opMap",
   "readable.opFilter",
   "readable.opFlatMap",

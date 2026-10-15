@@ -270,6 +270,30 @@ ScrStream *scr_stream_from_arr(ScrArr *arr, double flags, double hwm);
  * arrays of them; options objectMode and highWaterMark. +1, or NULL with
  * the error pending (ERR_INVALID_ARG_TYPE for a non-iterable). Borrows. */
 ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts);
+/* One checked-dynamic value into a Readable.from stream: a whole entry in
+ * object mode, a chunk in byte mode. null, values other than strings and
+ * Buffers in object mode, and byte mode's chunk errors destroy the stream
+ * and answer -1; otherwise push()'s answer. Borrows v. */
+int scr_stream_from_push(ScrStream *s, const ScrDyn *v);
+/* The from.js stream around native read/destroy callbacks (moved), with
+ * SCR_FROM_* option flags: +1, or NULL with ERR_INVALID_ARG_VALUE
+ * pending for a bad highWaterMark. */
+ScrStream *scr_stream_new_from_readable(ScrClosure *read, ScrStreamReadInv read_inv,
+                                        ScrClosure *destroy, ScrStreamErrInv destroy_inv,
+                                        double flags, double hwm);
+struct ScrGen;
+/* Readable.from over a compiled generator (scr_stream_ops.c). The
+ * compiler's helpers (borrowed) take the generator: next/ret answer the
+ * next value or the done marker (scr_stream_from_done) and thr takes the
+ * error as a checked-dynamic value; for an async generator they answer
+ * the resume's promise and `read` turns its IteratorResult into the value
+ * or the marker. g borrowed; +1, or NULL with the error pending. */
+ScrStream *scr_stream_from_gen(struct ScrGen *g, ScrClosure *next, ScrClosure *ret, ScrClosure *thr,
+                               double flags, double hwm);
+ScrStream *scr_stream_from_async_gen(struct ScrGen *g, ScrClosure *next, ScrClosure *read,
+                                     ScrClosure *ret, ScrClosure *thr, double flags,
+                                     double hwm);
+ScrDyn *scr_stream_from_done(void); /* +1 */
 ScrStream *scr_stream_pause(ScrStream *s);            /* recv +1 */
 ScrStream *scr_stream_resume(ScrStream *s);           /* recv +1 */
 bool scr_stream_is_paused(ScrStream *s);
