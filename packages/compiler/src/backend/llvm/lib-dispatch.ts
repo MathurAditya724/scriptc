@@ -260,6 +260,21 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitPendingCheck();
     return { name: "", type: e.type };
   }
+  if (e.fn === "crypto.generateKeyCb") {
+    host.usesTimers = true;
+    const args = e.args.map((arg) => host.emitExpr(arg));
+    const cbT = e.args[2]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: generateKey callback not a func");
+    host.moveTemp(args[2]!);
+    const adapter = host.cryptoBytesThunkFor(cbT, false, "dyn");
+    host.declare(`declare void @scr_crypto_generate_key_async(ptr, ptr, ptr, ptr)`);
+    B.line(
+      `call void @scr_crypto_generate_key_async(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, ptr @${adapter})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (e.fn === "crypto.randomIntCb") {
     host.usesTimers = true;
     const args = e.args.map((arg) => host.emitExpr(arg));

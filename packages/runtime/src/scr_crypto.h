@@ -53,6 +53,12 @@ bool scr_crypto_random_int_check(double min, double max, bool min_given, double 
 bool scr_crypto_random_int_try(double min, double range, double *out);
 ScrStr *scr_crypto_random_uuid_opts(ScrDyn *options);
 ScrStr *scr_crypto_random_uuid_v7(ScrDyn *options);
+/* Secret KeyObjects (scr_lib.c). */
+ScrDyn *scr_crypto_create_secret_key(ScrDyn *key, ScrDyn *encoding);
+ScrDyn *scr_crypto_generate_key_sync(ScrDyn *type, ScrDyn *options);
+ScrBytes *scr_crypto_key_object_input(ScrDyn *key);
+bool scr_crypto_is_key_object(const ScrDyn *value);
+const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len);
 ScrBytes *scr_crypto_pbkdf2(ScrBytes *password, ScrBytes *salt,
                             double iterations, double keylen, ScrStr *digest);
 ScrBytes *scr_crypto_pbkdf2_job(ScrBytes *password, ScrBytes *salt, double iterations,
@@ -75,6 +81,8 @@ void scr_crypto_random_fill_async(ScrBytes *buf, double offset, double size, dou
                                   ScrClosure *cb, ScrCryptoBytesFn fn);
 void scr_crypto_random_fill_async_dyn(ScrDyn *buf, ScrDyn *offset, ScrDyn *size, double form,
                                       ScrClosure *cb, ScrCryptoBytesFn fn);
+void scr_crypto_generate_key_async(ScrDyn *type, ScrDyn *options, ScrClosure *cb,
+                                   ScrCryptoBytesFn fn);
 typedef void (*ScrCryptoIntFn)(ScrClosure *cb, double value);
 void scr_crypto_random_int_async(double min, double max, double min_given, ScrClosure *cb,
                                  ScrCryptoIntFn fn);

@@ -1349,6 +1349,9 @@ export const BUILTIN_MODULE_FNS: Record<
     randomInt: { fn: "crypto.randomInt", params: [F64, F64], result: F64 },
     randomFill: { fn: "crypto.randomFillCb", params: [], result: VOID },
     randomUUIDv7: { fn: "crypto.randomUUIDv7", params: [DYN], result: STRING },
+    createSecretKey: { fn: "crypto.createSecretKey", params: [DYN, DYN], result: DYN },
+    generateKeySync: { fn: "crypto.generateKeySync", params: [DYN, DYN], result: DYN },
+    generateKey: { fn: "crypto.generateKeyCb", params: [], result: VOID },
     pbkdf2Sync: {
       fn: "crypto.pbkdf2",
       params: [BYTES_U8, BYTES_U8, F64, F64, STRING],
@@ -2639,11 +2642,8 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
       [
         "generateKeyPair",
         "generateKeyPairSync",
-        "generateKey",
-        "generateKeySync",
         "createPrivateKey",
         "createPublicKey",
-        "createSecretKey",
         "createSign",
         "createVerify",
         "sign",
@@ -2659,9 +2659,9 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
         "privateDecrypt",
       ].map((m) => [
         m,
-        "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and a " +
-          "KeyObject value model — neither exists in the static runtime, so no faithful lowering " +
-          "can be small; the lowered crypto surface is hashing, randomness, and the introspection statics",
+        "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and " +
+          "public and private KeyObjects — neither exists in the static runtime, so no faithful lowering " +
+          "can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics",
       ]),
     ),
     ...Object.fromEntries(

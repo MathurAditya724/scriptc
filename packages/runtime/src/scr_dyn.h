@@ -162,6 +162,7 @@ typedef enum {
   SCR_DYNH_CUSTOM_EVENT,   /* ScrEvent with detail — new CustomEvent() */
   SCR_DYNH_BLOB,           /* ScrBlob — new Blob() and Blob#slice() */
   SCR_DYNH_FILE,           /* ScrBlob with a name — new File() */
+  SCR_DYNH_KEY_OBJECT,     /* node:crypto secret KeyObject (scr_lib.c) */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
@@ -919,6 +920,12 @@ typedef struct ScrDynHandleOps {
   /* Past the depth limit util.inspect prints `[cls]` (the class's
    * inspector returns `this`) instead of the bare class name. */
   bool inspect_bracketed_past_depth;
+  /* The @@toStringTag when it differs from cls: String() answers
+   * "[object <tag>]" and util.inspect prints `<cls> [<tag>] <view>`. */
+  const char *to_string_tag;
+  /* The view has no properties, so util.inspect prints it in full at any
+   * depth, as Node prints `{}`. */
+  bool inspect_view_empty;
 } ScrDynHandleOps;
 ScrDyn *scr_dyn_native_handle_iterator(ScrDyn *source, unsigned selection);
 
