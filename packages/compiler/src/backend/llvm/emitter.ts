@@ -4635,6 +4635,11 @@ export class LlEmitter {
     return slot;
   }
 
+  /** The amortized cancellation poll, emitted on the loop's back edge (the
+   * continue target), after the body. A poll in the header would be a loop
+   * exit ahead of the body; LLVM then cannot rotate the loop, so loads that
+   * the body repeats on every iteration (a typed array's length, for one)
+   * stay in the loop. */
   private emitWorkerLoopCheck(slot: string | null): void {
     if (slot === null) return;
     const B = this.B;
@@ -7275,15 +7280,15 @@ export class LlEmitter {
         const lc = B.newLabel("loop.c");
         const lb = B.newLabel("loop.b");
         const le = B.newLabel("loop.e");
+        const lp = workerBudget !== null ? B.newLabel("loop.p") : lc;
         B.br(lc);
         B.startBlock(lc);
-        this.emitWorkerLoopCheck(workerBudget);
         B.condBr(this.emitCondition(s.cond), lb, le);
         B.startBlock(lb);
         this.jumpTargets.push({
           kind: "loop",
           brkLabel: le,
-          contLabel: lc,
+          contLabel: lp,
           labels: s.labels,
           frameDepth: this.frames.length,
           scopeDepth: this.scopes.length,
@@ -7291,7 +7296,12 @@ export class LlEmitter {
         });
         this.emitBlock(s.body);
         this.jumpTargets.pop();
-        B.br(lc);
+        B.br(lp);
+        if (lp !== lc) {
+          B.startBlock(lp);
+          this.emitWorkerLoopCheck(workerBudget);
+          B.br(lc);
+        }
         B.startBlock(le);
         break;
       }
@@ -7303,7 +7313,6 @@ export class LlEmitter {
         const le = B.newLabel("loop.e");
         B.br(lb);
         B.startBlock(lb);
-        this.emitWorkerLoopCheck(workerBudget);
         this.jumpTargets.push({
           kind: "loop",
           brkLabel: le,
@@ -7317,6 +7326,7 @@ export class LlEmitter {
         this.jumpTargets.pop();
         B.br(lc);
         B.startBlock(lc);
+        this.emitWorkerLoopCheck(workerBudget);
         B.condBr(this.emitCondition(s.cond), lb, le);
         B.startBlock(le);
         break;
@@ -7502,12 +7512,12 @@ export class LlEmitter {
             B.line(`store ptr ${fresh}, ptr ${slot}`);
           }
         };
-        const lu = s.update || capturedLets.length > 0 ? B.newLabel("loop.u") : lc;
-        freshenBindings();
         const workerBudget = this.workerLoopBudget(s);
+        const lu =
+          s.update || capturedLets.length > 0 || workerBudget !== null ? B.newLabel("loop.u") : lc;
+        freshenBindings();
         B.br(lc);
         B.startBlock(lc);
-        this.emitWorkerLoopCheck(workerBudget);
         if (integerLoop && integerSlot) {
           const receiver = this.emitStableReceiver(integerLoop.limitReceiver, []);
           const lenPtr = B.tmp();
@@ -7549,6 +7559,7 @@ export class LlEmitter {
         B.br(lu);
         if (lu !== lc) {
           B.startBlock(lu);
+          this.emitWorkerLoopCheck(workerBudget);
           freshenBindings();
           if (integerLoop && integerSlot) {
             const old = B.tmp();
@@ -7610,7 +7621,6 @@ export class LlEmitter {
         const workerBudget = this.workerLoopBudget(s);
         B.br(lc);
         B.startBlock(lc);
-        this.emitWorkerLoopCheck(workerBudget);
         const inBounds = B.tmp();
         let cur: string;
         if (snapshot && cursor && scratch) {
@@ -7694,6 +7704,7 @@ export class LlEmitter {
         this.jumpTargets.pop();
         B.br(lu);
         B.startBlock(lu);
+        this.emitWorkerLoopCheck(workerBudget);
         if (idxSlot) {
           const i2 = B.tmp(),
             i3 = B.tmp();
