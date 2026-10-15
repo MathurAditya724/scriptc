@@ -1,0 +1,3 @@
+Node-API (N-API) and V8 `.node` addons depend on Node.js itself, so compiled programs can't load them. Direct `createRequire` calls to local addons are rejected at compile time. A package that requires an addon needs a JavaScript implementation that compiles, or a replacement through native FFI.
+
+Use [Native FFI](/docs/ffi#replacing-a-node-api-addon) to call a plain C ABI function linked from an object or static archive. The guide includes a replacement for a small Node-API helper.

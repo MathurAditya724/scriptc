@@ -12,6 +12,17 @@ const get = (path, headers = {}) => fetch(new URL(path, base), {
   headers: { "user-agent": "Mozilla/5.0", accept: "text/html", ...headers },
 });
 const decode = (text) => text.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+/** A page's MDX with its `<include>` partials inlined. */
+const pageSource = async (file) => {
+  const url = new URL(`../content/docs/${file}.mdx`, import.meta.url);
+  const source = await readFile(url, "utf8");
+  const parts = [];
+  for (const line of source.split("\n")) {
+    const include = line.match(/^<include>([^<]+\.mdx)<\/include>$/);
+    parts.push(include ? await readFile(new URL(include[1], url), "utf8") : line);
+  }
+  return parts.join("\n");
+};
 const meta = (html, key) => decode(html.match(new RegExp(`<meta (?:name|property)="${key}" content="([^"]*)"`))?.[1] ?? "");
 
 for (const { href, title, headings } of pages) {
@@ -51,7 +62,7 @@ test("Markdown twins preserve examples and declare the HTML canonical URL", asyn
     assert.ok(response.headers.get("link")?.includes(`<${siteUrl}${href}>; rel="canonical"`));
     const markdown = await response.text();
     const file = href === "/docs" ? "index" : href.slice("/docs/".length);
-    const source = await readFile(new URL(`../content/docs/${file}.mdx`, import.meta.url), "utf8");
+    const source = await pageSource(file);
     for (const fence of source.matchAll(/^```[^\n]*\n([\s\S]*?)^```/gm)) {
       assert.ok(markdown.includes(fence[1].trimEnd()), `${file} lost a code example`);
     }
@@ -123,7 +134,7 @@ test("internal documentation links and their fragments resolve", async () => {
   for (const { href } of pages) anchors.set(href, await (await get(href)).text());
   for (const { href } of pages) {
     const file = href === "/docs" ? "index" : href.slice("/docs/".length);
-    const source = await readFile(new URL(`../content/docs/${file}.mdx`, import.meta.url), "utf8");
+    const source = await pageSource(file);
     for (const [, path, fragment] of source.matchAll(/\]\((\/docs(?:\/[\w-]+)?)(?:#([\w-]+))?\)/g)) {
       assert.ok(anchors.has(path), `${href} links to missing page ${path}`);
       if (fragment) assert.ok(anchors.get(path).includes(`id="${fragment}"`), `${href} links to missing fragment ${path}#${fragment}`);
