@@ -244,7 +244,7 @@ void scr_fs_mkdir(ScrStr *path);
  * EISDIR-coded error; use scr_fs_rmdir for empty directories). */
 void scr_fs_rm(ScrStr *path);
 void scr_fs_rmdir(ScrStr *path);
-ScrArr *scr_fs_readdir(ScrStr *path); /* names, OS order, no "."/".." */
+ScrArr *scr_fs_readdir(ScrStr *path); /* names (byte order on POSIX, as libuv sorts), no "."/".." */
 
 /* The fs option forms (same throw discipline). mkdir_recursive is Node's
  * recursive algorithm (existing-dir target is a no-op; errors report
@@ -297,6 +297,9 @@ void scr_fs_rename_error(int error, const ScrStr *oldpath, const ScrStr *newpath
 void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode);
 void scr_fs_mkdir_mode(ScrStr *path, double mode);
 void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode);
+/* The same walk, answering the first directory created (+1) or NULL
+ * when the path already existed (or on failure, the exception pending). */
+ScrStr *scr_fs_mkdir_recursive_first(ScrStr *path, double mode);
 
 /* Sequentially consistent integer operations and shared Int32 wait queues. */
 typedef struct ScrBytes ScrBytes;
@@ -372,6 +375,30 @@ double scr_stats_nlink(ScrStats *s);
 double scr_stats_atime_ms(ScrStats *s); /* ms with the sub-second fraction */
 double scr_stats_mtime_ms(ScrStats *s); /* ms with the ns fraction */
 double scr_stats_ctime_ms(ScrStats *s); /* ms with the ns fraction */
+double scr_stats_birthtime_ms(ScrStats *s);
+double scr_stats_mode(ScrStats *s);
+double scr_stats_uid(ScrStats *s);
+double scr_stats_gid(ScrStats *s);
+double scr_stats_rdev(ScrStats *s);
+double scr_stats_blksize(ScrStats *s);
+/* The type tests Node derives from mode (false on Windows for FIFOs, block
+ * devices and sockets). */
+bool scr_stats_is_block_device(ScrStats *s);
+bool scr_stats_is_character_device(ScrStats *s);
+bool scr_stats_is_fifo(ScrStats *s);
+bool scr_stats_is_socket(ScrStats *s);
+/* The Date fields' time values: the *Ms value rounded, as Node's
+ * dateFromMs does. */
+double scr_stats_atime(ScrStats *s);
+double scr_stats_mtime(ScrStats *s);
+double scr_stats_ctime(ScrStats *s);
+double scr_stats_birthtime(ScrStats *s);
+/* fstat without throwing: +1, or NULL with *error set to the errno. */
+ScrStats *scr_stats_of_fd(int fd, int *error);
+/* Node's Stats (or BigIntStats) object for the snapshot: own fields in the
+ * binding's order, lazy Date accessors and the type tests on the
+ * prototypes. Borrows s; +1. */
+ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint);
 
 /* fs/promises: the SAME sync operations, minting an already-settled
  * promise — success fulfills, failure REJECTS with the would-be thrown

@@ -1353,14 +1353,28 @@ declare module "node:fs" {
     isFile(): boolean;
     isDirectory(): boolean;
     isSymbolicLink(): boolean;
+    isBlockDevice(): boolean;
+    isCharacterDevice(): boolean;
+    isFIFO(): boolean;
+    isSocket(): boolean;
     readonly dev: number;
+    readonly mode: number;
+    readonly nlink: number;
+    readonly uid: number;
+    readonly gid: number;
+    readonly rdev: number;
+    readonly blksize: number;
     readonly ino: number;
     readonly size: number;
     readonly blocks: number;
-    readonly nlink: number;
     readonly atimeMs: number;
     readonly mtimeMs: number;
     readonly ctimeMs: number;
+    readonly birthtimeMs: number;
+    readonly atime: Date;
+    readonly mtime: Date;
+    readonly ctime: Date;
+    readonly birthtime: Date;
   }
   export function statSync(path: string): Stats;
   export function lstatSync(path: string): Stats;
@@ -3339,6 +3353,9 @@ declare module "node:zlib" {
  * 'error'. */
 declare module "net" {
   export interface Socket {
+    /* Whether the socket keeps the event loop alive (ref'd by default). */
+    ref(): void;
+    unref(): void;
     readonly remoteAddress: string | undefined;
     /* true once the fd is gone (destroy() or full close) — Node's flag. */
     readonly destroyed: boolean;
@@ -3403,6 +3420,9 @@ declare module "net" {
     once(event: "session", listener: (session: Buffer) => void): void;
   }
   export interface Server {
+    /* Whether the server keeps the event loop alive (ref'd by default). */
+    ref(): void;
+    unref(): void;
     readonly listening: boolean;
     /* Node answers the server itself (`return this` chaining). */
     listen(port: number, callback?: () => void): Server;

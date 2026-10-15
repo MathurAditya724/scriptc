@@ -242,6 +242,10 @@ ScrStr *scr_str_concat_mixed(ScrStr *head, ScrStr *const *parts, const double *n
  * else can observe `s`): one call instead of a snapshot retain, the
  * binding's release and the snapshot's release around a borrowing concat. */
 ScrStr *scr_str_concat_move(ScrStr *a, ScrStr *b);
+/* scr_str_concat_move(a, String.fromCharCode(code)) without building the
+ * one-character string: an ASCII character appends to a uniquely owned a
+ * in place. */
+ScrStr *scr_str_concat_move_char_code(ScrStr *a, double code);
 ScrStr *scr_str_concat_mixed_move(ScrStr *head, ScrStr *const *parts, const double *nums,
                                   size_t count);
 /* a + String(x): scr_str_concat's contract with a number right operand. */

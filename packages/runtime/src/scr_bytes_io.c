@@ -537,91 +537,11 @@ static void scr_fs_cb_copy(const ScrStr *source, const ScrStr *destination, bool
   }
 }
 
-static ScrDyn *scr_fs_cb_stat_test(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
-  (void)args; (void)argc;
-  return scr_dyn_new_bool(scr_box_get_bool(closure->caps[0]));
-}
-
-static void scr_fs_cb_stat_method(ScrDyn *object, const char *name, bool answer) {
-  ScrClosure *closure = scr_closure_new(NULL, 1);
-  closure->caps[0] = scr_box_new(SCR_BOX_BOOL);
-  scr_box_set_bool(closure->caps[0], answer);
-  scr_dyn_obj_set(object, name, strlen(name), scr_dyn_new_func(closure, scr_fs_cb_stat_test, 0, "native:fs.Stats", name));
-}
-
-static void scr_fs_cb_stat_number(ScrDyn *object, const char *name, int64_t number, bool bigint) {
-  ScrDyn *value;
-  if (bigint) {
-    ScrBigInt *integer = scr_bigint_from_i64(number);
-    value = scr_dyn_new_bigint(integer);
-    scr_bigint_release(integer);
-  } else value = scr_dyn_new_num((double)number);
-  scr_dyn_obj_set(object, name, strlen(name), value);
-}
-
-static void scr_fs_cb_stat_date(ScrDyn *object, const char *name, double milliseconds) {
-  ScrDyn *arguments = scr_dyn_new_arr();
-  scr_dyn_arr_push(arguments, scr_dyn_new_num(milliseconds));
-  ScrDyn *date = scr_dyn_native_date_new(arguments);
-  scr_dyn_release(arguments);
-  if (date) scr_dyn_obj_set(object, name, strlen(name), date);
-}
-
 static ScrDyn *scr_fs_cb_stats(const ScrStr *path, double fd, const ScrDyn *options, bool nofollow) {
-  struct stat status;
-#ifdef _WIN32
-  (void)nofollow;
-  int rc = path ? stat(path->data, &status) : fstat((int)fd, &status);
-#else
-  int rc = path ? (nofollow ? lstat(path->data, &status) : stat(path->data, &status)) : fstat((int)fd, &status);
-#endif
-  if (rc < 0) { scr_fs_throw(errno, path ? (nofollow ? "lstat" : "stat") : "fstat", path); return NULL; }
-  bool bigint = scr_fs_cb_option_bool(options, "bigint");
-  ScrDyn *object = scr_dyn_new_obj();
-#define SCR_FS_STAT_FIELD(field) scr_fs_cb_stat_number(object, #field, (int64_t)status.st_##field, bigint)
-  SCR_FS_STAT_FIELD(dev); SCR_FS_STAT_FIELD(ino); SCR_FS_STAT_FIELD(mode); SCR_FS_STAT_FIELD(nlink);
-  SCR_FS_STAT_FIELD(uid); SCR_FS_STAT_FIELD(gid); SCR_FS_STAT_FIELD(rdev); SCR_FS_STAT_FIELD(size);
-#ifndef _WIN32
-  SCR_FS_STAT_FIELD(blksize); SCR_FS_STAT_FIELD(blocks);
-#endif
-#undef SCR_FS_STAT_FIELD
-  double atime = (double)status.st_atime * 1000, mtime = (double)status.st_mtime * 1000, ctime = (double)status.st_ctime * 1000;
-  double birthtime = 0;
-#ifdef __APPLE__
-  atime += status.st_atimespec.tv_nsec / 1000000.0; mtime += status.st_mtimespec.tv_nsec / 1000000.0;
-  ctime += status.st_ctimespec.tv_nsec / 1000000.0;
-  birthtime = (double)status.st_birthtimespec.tv_sec * 1000 + status.st_birthtimespec.tv_nsec / 1000000.0;
-#elif !defined(_WIN32) && !defined(__wasi__)
-  atime += status.st_atim.tv_nsec / 1000000.0; mtime += status.st_mtim.tv_nsec / 1000000.0;
-  ctime += status.st_ctim.tv_nsec / 1000000.0;
-#endif
-  scr_fs_cb_stat_date(object, "atime", atime); scr_fs_cb_stat_date(object, "mtime", mtime);
-  scr_fs_cb_stat_date(object, "ctime", ctime); scr_fs_cb_stat_date(object, "birthtime", birthtime);
-  if (bigint) {
-    scr_fs_cb_stat_number(object, "atimeMs", (int64_t)atime, true);
-    scr_fs_cb_stat_number(object, "mtimeMs", (int64_t)mtime, true);
-    scr_fs_cb_stat_number(object, "ctimeMs", (int64_t)ctime, true);
-    scr_fs_cb_stat_number(object, "birthtimeMs", (int64_t)birthtime, true);
-  } else {
-    scr_dyn_obj_set(object, "atimeMs", 7, scr_dyn_new_num(atime));
-    scr_dyn_obj_set(object, "mtimeMs", 7, scr_dyn_new_num(mtime));
-    scr_dyn_obj_set(object, "ctimeMs", 7, scr_dyn_new_num(ctime));
-    scr_dyn_obj_set(object, "birthtimeMs", 11, scr_dyn_new_num(birthtime));
-  }
-  scr_fs_cb_stat_method(object, "isFile", S_ISREG(status.st_mode));
-  scr_fs_cb_stat_method(object, "isDirectory", S_ISDIR(status.st_mode));
-#ifndef _WIN32
-  scr_fs_cb_stat_method(object, "isSymbolicLink", S_ISLNK(status.st_mode));
-  scr_fs_cb_stat_method(object, "isBlockDevice", S_ISBLK(status.st_mode));
-  scr_fs_cb_stat_method(object, "isCharacterDevice", S_ISCHR(status.st_mode));
-  scr_fs_cb_stat_method(object, "isFIFO", S_ISFIFO(status.st_mode));
-  scr_fs_cb_stat_method(object, "isSocket", S_ISSOCK(status.st_mode));
-#else
-  scr_fs_cb_stat_method(object, "isSymbolicLink", false);
-  scr_fs_cb_stat_method(object, "isBlockDevice", false);
-  scr_fs_cb_stat_method(object, "isCharacterDevice", S_ISCHR(status.st_mode));
-  scr_fs_cb_stat_method(object, "isFIFO", false); scr_fs_cb_stat_method(object, "isSocket", false);
-#endif
+  ScrStats *snapshot = !path ? scr_fs_fstat(fd) : nofollow ? scr_fs_lstat((ScrStr *)path) : scr_fs_stat((ScrStr *)path);
+  if (!snapshot) return NULL;
+  ScrDyn *object = scr_stats_dyn(snapshot, scr_fs_cb_option_bool(options, "bigint"));
+  scr_stats_release(snapshot);
   return object;
 }
 
@@ -823,9 +743,37 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
   const ScrDyn *buffer = NULL;
   if (!strcmp(op, "readFile")) {
     const ScrDyn *options = ARG(1);
-    if (options->kind != SCR_DYN_STR && (!scr_fs_cb_signal(options) || scr_fs_cb_refuse_option(options, "flag"))) goto done;
+    if (options->kind != SCR_DYN_STR && !scr_fs_cb_signal(options)) goto done;
     ScrDyn *encoding = options->kind == SCR_DYN_STR ? scr_dyn_retain((ScrDyn *)options) : scr_fs_cb_option(options, "encoding");
-    if (encoding) result = scr_fs_read_file_sync_dyn(path, encoding);
+    ScrDyn *flag = options->kind == SCR_DYN_STR ? NULL : scr_fs_cb_option(options, "flag");
+    bool reading_flag = !flag || flag->kind == SCR_DYN_UNDEF || flag->kind == SCR_DYN_NULL ||
+                        (flag->kind == SCR_DYN_STR && flag->v.str->len == 1 && flag->v.str->data[0] == 'r');
+    if (encoding && reading_flag) result = scr_fs_read_file_sync_dyn(path, encoding);
+    else if (encoding) {
+      /* Node opens the file with options.flag ('w+' truncates first), then
+       * reads the whole descriptor. */
+      double opened = scr_fs_cb_open(path, flag, 0666, "r");
+      if (opened >= 0 && !scr_exc_pending()) {
+        bool text = encoding->kind == SCR_DYN_STR && encoding->v.str->len > 0;
+        if (text) {
+          ScrStr *content = scr_fs_read_fd_encoded(opened, encoding->v.str);
+          if (content) {
+            result = scr_dyn_new_str(content);
+            scr_str_release(content);
+          }
+        } else {
+          ScrBytes *content = scr_fs_read_fd_bytes(opened);
+          if (content) {
+            result = scr_dyn_new_buffer(content);
+            scr_bytes_release(content);
+          }
+        }
+        int saved = errno;
+        close((int)opened);
+        errno = saved;
+      }
+    }
+    scr_dyn_release(flag);
     scr_dyn_release(encoding);
   } else if (!strcmp(op, "writeFile") || !strcmp(op, "appendFile")) {
     const ScrDyn *options = ARG(2);
@@ -857,8 +805,13 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
   else if (!strcmp(op, "mkdir")) {
     const ScrDyn *options = ARG(1);
     double mode = options->kind == SCR_DYN_NUM ? options->v.num : scr_fs_cb_option_number(options, "mode", 0777);
-    if (scr_fs_cb_option_bool(options->kind == SCR_DYN_NUM ? scr_dyn_undefined() : options, "recursive")) scr_fs_mkdir_recursive_mode(path, mode);
-    else scr_fs_mkdir_mode(path, mode);
+    if (scr_fs_cb_option_bool(options->kind == SCR_DYN_NUM ? scr_dyn_undefined() : options, "recursive")) {
+      /* The callback receives the first directory created (undefined when
+       * the path already existed). */
+      ScrStr *first = scr_fs_mkdir_recursive_first(path, mode);
+      if (first && !scr_exc_pending()) result = scr_fs_cb_string(first);
+      else if (first) scr_str_release(first);
+    } else scr_fs_mkdir_mode(path, mode);
   } else if (!strcmp(op, "mkdtemp")) result = scr_fs_cb_string(scr_fs_mkdtemp_async(path));
   else if (!strcmp(op, "rm")) scr_fs_rm_opts_retry(path, scr_fs_cb_option_bool(ARG(1), "recursive"), scr_fs_cb_option_bool(ARG(1), "force"), scr_fs_cb_option_number(ARG(1), "maxRetries", 0), scr_fs_cb_option_number(ARG(1), "retryDelay", 100));
   else if (!strcmp(op, "rmdir")) scr_fs_rmdir(path);
@@ -923,6 +876,33 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
 #else
     scr_fs_throw(ENOSYS, "glob", path);
 #endif
+  } else if (!strcmp(op, "write") && ARG(1)->kind == SCR_DYN_STR) {
+    /* write(fd, string[, position[, encoding]], callback): a non-number
+     * position writes at the current offset; the encoding defaults to
+     * utf8 (unknown names write utf8, as the binding does). */
+    const ScrDyn *string = ARG(1);
+    const ScrDyn *position = count >= 3 ? ARG(2) : scr_dyn_undefined();
+    const ScrDyn *encoding = count >= 4 ? ARG(3) : scr_dyn_undefined();
+    ScrStr *codec = encoding->kind == SCR_DYN_STR && scr_bytes_is_encoding(encoding->v.str)
+        ? scr_str_retain(encoding->v.str)
+        : scr_str_new("utf8", 4);
+    if (codec->len == 3 && memcmp(codec->data, "hex", 3) == 0 && string->v.str->len % 2 != 0) {
+      /* validateEncoding throws at the call, before any write. */
+      char reason[64];
+      snprintf(reason, sizeof reason, "is invalid for data of length %zu", (size_t)string->v.str->len);
+      scr_dyn_arg_value_fail("encoding", reason, encoding);
+      scr_str_release(codec);
+      return NULL;
+    } else {
+      ScrBytes *bytes = scr_buffer_from_dyn(string, codec);
+      if (bytes) {
+        double at = position->kind == SCR_DYN_NUM ? position->v.num : -1;
+        result = scr_dyn_new_num(scr_fs_write_sync(fd, bytes, 0, (double)bytes->len, at));
+        scr_bytes_release(bytes);
+      }
+    }
+    scr_str_release(codec);
+    buffer = string;
   } else if (!strcmp(op, "read") || !strcmp(op, "write")) {
     bool readOp = !strcmp(op, "read");
     const ScrDyn *options = ARG(1);
@@ -930,8 +910,16 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
     if (readOp && !scr_dyn_bytes_is(options, SCR_BYTES_U8)) { ownedBuffer = scr_fs_cb_option(options, "buffer"); buffer = ownedBuffer; }
     else buffer = options;
     ScrBytes *bytes = buffer && buffer->kind == SCR_DYN_BYTES ? scr_dyn_bytes_unbox(buffer) : NULL;
-    if (!bytes) scr_dyn_arg_type_fail("buffer", "an instance of Buffer, TypedArray, or DataView", buffer ? buffer : scr_dyn_undefined());
-    else {
+    if (!bytes) {
+      /* The argument check throws at the call (Node validates before the
+       * request is made). */
+      scr_dyn_arg_type_fail("buffer",
+                            readOp ? "an instance of Buffer, TypedArray, or DataView"
+                                   : "of type string or an instance of Buffer, TypedArray, or DataView",
+                            buffer ? buffer : scr_dyn_undefined());
+      scr_dyn_release(ownedBuffer);
+      return NULL;
+    } else {
       double offset = ownedBuffer ? scr_fs_cb_option_number(options, "offset", 0) : scr_fs_cb_number(ARG(2), "offset", 0);
       double length = ownedBuffer ? scr_fs_cb_option_number(options, "length", bytes->len - offset) : scr_fs_cb_number(ARG(3), "length", bytes->len - offset);
       double position = ownedBuffer ? scr_fs_cb_option_number(options, "position", -1) : scr_fs_cb_number(ARG(4), "position", -1);

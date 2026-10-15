@@ -3390,6 +3390,12 @@ static SCR_TL bool (*scr_net_pending_fn)(void) = NULL;
 static SCR_TL void (*scr_net_dispatch_fn)(void) = NULL;
 static SCR_TL int (*scr_net_pollfd_fn)(void) = NULL;
 
+/* Net io without liveness: unref'd sockets and servers still deliver
+ * events while the loop runs for other work, but do not keep it alive. */
+static SCR_TL bool (*scr_net_io_fn)(void) = NULL;
+
+void scr_loop_set_net_io(bool (*io)(void)) { scr_net_io_fn = io; }
+
 void scr_loop_set_net(bool (*pending)(void), void (*dispatch)(void), int (*pollfd)(void)) {
   scr_net_pending_fn = pending;
   scr_net_dispatch_fn = dispatch;
@@ -3671,6 +3677,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     bool kids = scr_children_pending();
     bool events = scr_events_pending_fn != NULL && scr_events_pending_fn();
     bool net = scr_net_pending_fn != NULL && scr_net_pending_fn();
+    /* `net` keeps the process alive; `net_io` (unref'd handles too) decides
+     * whether the sleep polls the net unit's fd */
+    bool net_io = net || (scr_net_io_fn != NULL && scr_net_io_fn());
     bool dgram = scr_dgram_pending_fn != NULL && scr_dgram_pending_fn();
     bool watch = scr_watch_pending_fn != NULL && scr_watch_pending_fn();
     bool ffi = scr_ffi_pending_fn != NULL && scr_ffi_pending_fn();
@@ -3724,12 +3733,12 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #endif
     bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
 #ifdef SCR_WORKERS
-    if (workers && scr_workers_wait_fn && !kids && !evw && !net && !dgram && !watch && !ffi && !renames && !crypto) {
+    if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {
       scr_workers_wait_fn(due > now ? due - now : 0);
       now = scr_now_ms();
     } else
 #endif
-    if (evw || net || dgram || watch || ffi || workers) {
+    if (evw || net_io || dgram || watch || ffi || workers) {
 #if defined(_WIN32) || defined(__wasi__)
       /* The win32 arm, and WASI hosts whose poll_oneoff adapters do not
        * reliably wake for a closed inherited stdin pipe: the sleep is a capped nanosleep and
@@ -3743,7 +3752,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
        * show up in a profile, the upgrade is a real waitable arm —
        * WaitForMultipleObjects over WSAEVENTs, or IOCP. */
       if (evw && due > now + SCR_SIGNAL_POLL_MS) due = now + SCR_SIGNAL_POLL_MS;
-      if ((net || dgram || watch) && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
+      if ((net_io || dgram || watch) && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
       if ((ffi || workers) && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
       if (kids && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
       if (due > now) {
@@ -3770,7 +3779,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         fds[nfds].events = POLLIN;
         fds[nfds++].revents = 0;
       }
-      if (net) {
+      if (net_io) {
         /* The net unit's poller fd: readable while socket events are
          * pending, so arrived data/accepts end the sleep immediately.
          * Dispatch (which also DRAINS the poller) happens at the next
