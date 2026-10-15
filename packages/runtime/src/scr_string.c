@@ -700,6 +700,28 @@ ScrStr *scr_str_concat_move(ScrStr *a, ScrStr *b) {
   return r;
 }
 
+ScrStr *scr_str_concat_move_char_code(ScrStr *a, double code) {
+  uint32_t cp = scr_to_uint32(code) & 0xFFFFu;
+  if (cp < 0x80 && a->rc == 1 && a->cap > a->len) {
+    /* scr_str_concat's in-place append of one ASCII byte: the string stays
+     * ASCII if it was, and a non-ASCII string's index facts below the old
+     * end stay valid (scr_sidx_concat_append). */
+    size_t oldlen = a->len;
+    scr_short_forget(a);
+    scr_str_hash_forget(a);
+    a->data[oldlen] = (char)cp;
+    a->len = oldlen + 1;
+    a->data[oldlen + 1] = '\0';
+    if (!a->ascii) scr_sidx_concat_append(a, oldlen);
+    return a;
+  }
+  ScrStr *c = scr_str_from_char_code_one(code);
+  ScrStr *r = scr_str_concat(a, c);
+  scr_str_release(a);
+  scr_str_release(c);
+  return r;
+}
+
 ScrStr *scr_str_concat_mixed_move(ScrStr *head, ScrStr *const *parts, const double *nums,
                                   size_t count) {
   /* A head selects the general body directly (see scr_str_concat_mixed). */

@@ -440,7 +440,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * to lstat, Node's getDirents rule). The result type is the call site's
    * interned Dirent record array (name, parentPath, hidden %dtype in
    * libuv's UV_DIRENT encoding) — verified by the frontend; the emitter
-   * assembles the rows from the snapshot. OS order, no "."/"..". Throws
+   * assembles the rows from the snapshot. Byte order on POSIX (libuv
+   * sorts), the directory's order on Windows; no "."/"..". Throws
    * Node's scandir errno error (may-throw seed set); fresh +1 array. */
   "fs.readdirTypesSync": { argTypes: [STRING], result: VOID },
   /** node:path (scr_path.c ports BOTH of Node's implementations
@@ -1006,6 +1007,21 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stats.atimeMs": { argTypes: [STATS_T], result: F64 },
   "stats.mtimeMs": { argTypes: [STATS_T], result: F64 },
   "stats.ctimeMs": { argTypes: [STATS_T], result: F64 },
+  "stats.birthtimeMs": { argTypes: [STATS_T], result: F64 },
+  "stats.mode": { argTypes: [STATS_T], result: F64 },
+  "stats.uid": { argTypes: [STATS_T], result: F64 },
+  "stats.gid": { argTypes: [STATS_T], result: F64 },
+  "stats.rdev": { argTypes: [STATS_T], result: F64 },
+  "stats.blksize": { argTypes: [STATS_T], result: F64 },
+  "stats.isBlockDevice": { argTypes: [STATS_T], result: BOOL },
+  "stats.isCharacterDevice": { argTypes: [STATS_T], result: BOOL },
+  "stats.isFIFO": { argTypes: [STATS_T], result: BOOL },
+  "stats.isSocket": { argTypes: [STATS_T], result: BOOL },
+  /** The Date fields: the *Ms value rounded (Node's dateFromMs). */
+  "stats.atime": { argTypes: [STATS_T], result: DATE_T },
+  "stats.mtime": { argTypes: [STATS_T], result: DATE_T },
+  "stats.ctime": { argTypes: [STATS_T], result: DATE_T },
+  "stats.birthtime": { argTypes: [STATS_T], result: DATE_T },
   // The wider sync fs slice (unlink/chmod/chown/copyfile and the
   // mode-carrying write/mkdir forms).
   /** The wider sync fs slice (scr_lib.c), all throwing catchably with
@@ -1136,6 +1152,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   },
   "net.serverPort": { argTypes: [NETSERVER_T], result: F64 },
   "net.serverListening": { argTypes: [NETSERVER_T], result: BOOL },
+  /** socket.ref()/unref() and server.ref()/unref(): whether the handle
+   * keeps the event loop alive. */
+  "net.sockSetRef": { argTypes: [NETSOCKET_T, BOOL], result: VOID },
+  "net.serverSetRef": { argTypes: [NETSERVER_T, BOOL], result: VOID },
   // net.serverAddress's record result is shape-checked in the libCall case
   // (the dgram.address sentinel pattern).
   /** server.address() as the full AddressInfo record (the dgram.address
