@@ -4,17 +4,25 @@
 // the open halves.
 import * as net from "node:net";
 
+// The server's 'connection' and the client's 'connect' race (either can
+// run first), so each side records its line and both print once both
+// have run.
+let serverLine: string | null = null;
+let clientLine: string | null = null;
+let startClient: (() => void) | null = null;
+function bothConnected(): void {
+  if (serverLine === null || clientLine === null || startClient === null) return;
+  console.log(serverLine);
+  console.log(clientLine);
+  startClient();
+}
+
 const server = net.createServer((sock) => {
   const port = (server.address() as net.AddressInfo).port;
-  console.log(
-    "server side",
-    sock.remoteAddress,
-    sock.remoteFamily,
-    typeof sock.remotePort,
-    sock.localAddress,
-    sock.localPort === port,
-    sock.localFamily,
-  );
+  serverLine =
+    `server side ${sock.remoteAddress} ${sock.remoteFamily} ${typeof sock.remotePort} ` +
+    `${sock.localAddress} ${sock.localPort === port} ${sock.localFamily}`;
+  bothConnected();
   sock.on("data", (d: Buffer) => {
     console.log("server got", d.toString(), sock.bytesRead);
     sock.end("bye");
@@ -36,18 +44,11 @@ server.listen(0, "127.0.0.1", () => {
     c.bytesRead,
   );
   c.on("connect", () => {
-    console.log(
-      "connected",
-      c.readyState,
-      c.connecting,
-      c.pending,
-      c.remotePort === port,
-      c.remoteFamily,
-      c.localAddress,
-      typeof c.localPort,
-      c.localFamily,
-    );
-    c.write("hello");
+    clientLine =
+      `connected ${c.readyState} ${c.connecting} ${c.pending} ${c.remotePort === port} ` +
+      `${c.remoteFamily} ${c.localAddress} ${typeof c.localPort} ${c.localFamily}`;
+    startClient = () => c.write("hello");
+    bothConnected();
   });
   c.on("data", (d: Buffer) => console.log("client got", d.toString(), c.bytesRead));
   c.on("end", () => console.log("end", c.readyState, c.bytesRead, c.bytesWritten));

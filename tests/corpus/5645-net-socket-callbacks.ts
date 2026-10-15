@@ -3,18 +3,22 @@
 // setKeepAlive's chaining.
 import * as net from "node:net";
 
+// Each side keeps its own list: the client's callbacks and the server's
+// events can interleave either way, so the lists print one after the
+// other at the end.
 const events: string[] = [];
+const serverEvents: string[] = [];
 let serverSockets = 0;
 const server = net.createServer((sock) => {
   sock.setEncoding("utf8");
   sock.on("data", (d: string) => {
-    events.push(`server data ${typeof d} ${d}`);
-    sock.end("pong", () => events.push("server end callback"));
+    serverEvents.push(`server data ${typeof d} ${d}`);
+    sock.end("pong", () => serverEvents.push("server end callback"));
   });
   // the first connection's server side (the timeout connection's close
   // order against the client's depends on the event loop phase)
   if (serverSockets++ === 0) {
-    sock.on("close", (hadError: boolean) => events.push(`server close ${hadError}`));
+    sock.on("close", (hadError: boolean) => serverEvents.push(`server close ${hadError}`));
   }
 });
 
@@ -59,7 +63,10 @@ server.listen(0, "127.0.0.1", () => {
     t.on("timeout", () => events.push("timeout event"));
     t.on("close", (hadError: boolean) => {
       events.push(`t close ${hadError}`);
-      server.close(() => console.log(events.join("\n")));
+      server.close(() => {
+        console.log(serverEvents.join("\n"));
+        console.log(events.join("\n"));
+      });
     });
   });
 });
