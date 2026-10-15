@@ -154,13 +154,15 @@ describe(`server differential (${cases.length} programs${sanitize ? ", sanitized
     120_000,
   );
 
-  test("http-trailers rejects an aggregate trailer overflow", async () => {
+  test("http-trailers answers 431 for a trailer block over the field limit", async () => {
     const entry = join(fixturesRoot, "cases/http-trailers/main.ts");
     const driver = join(fixturesRoot, "cases/http-trailers/limit-driver.mjs");
     const binary = await build(entry);
     const nativeRes = await runLane(binary, [], driver);
     expect(nativeRes.exitCode).toBe(0);
-    expect(nativeRes.driverStdout).toBe("limit HTTP/1.1 400 Bad Request\nlimit driver done\n");
+    expect(nativeRes.driverStdout).toBe(
+      "limit HTTP/1.1 431 Request Header Fields Too Large\nlimit driver done\n",
+    );
   }, 120_000);
 
   test("net-reuse-port emits the additive LLVM ABI", async () => {

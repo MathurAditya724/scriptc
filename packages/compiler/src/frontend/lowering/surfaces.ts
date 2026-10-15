@@ -1015,6 +1015,55 @@ const PATH_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
   format: { fn: "path.win32Format", params: [], result: STRING },
 };
 
+/** util.types's own keys in Node's order (Node 24.22.0). The table is the
+ * key census for Object.keys over util.types and node:util/types, including
+ * the members that do not compile yet; the corpus checks it against Node. */
+export const UTIL_TYPES_KEYS: readonly string[] = [
+  "isArgumentsObject",
+  "isArrayBuffer",
+  "isAsyncFunction",
+  "isBigIntObject",
+  "isBooleanObject",
+  "isDate",
+  "isExternal",
+  "isGeneratorFunction",
+  "isGeneratorObject",
+  "isMap",
+  "isMapIterator",
+  "isModuleNamespaceObject",
+  "isNativeError",
+  "isNumberObject",
+  "isPromise",
+  "isProxy",
+  "isRegExp",
+  "isSet",
+  "isSetIterator",
+  "isSharedArrayBuffer",
+  "isStringObject",
+  "isSymbolObject",
+  "isWeakMap",
+  "isWeakSet",
+  "isAnyArrayBuffer",
+  "isBoxedPrimitive",
+  "isArrayBufferView",
+  "isDataView",
+  "isTypedArray",
+  "isUint8Array",
+  "isUint8ClampedArray",
+  "isUint16Array",
+  "isUint32Array",
+  "isInt8Array",
+  "isInt16Array",
+  "isInt32Array",
+  "isFloat16Array",
+  "isFloat32Array",
+  "isFloat64Array",
+  "isBigInt64Array",
+  "isBigUint64Array",
+  "isKeyObject",
+  "isCryptoKey",
+];
+
 export const BUILTIN_MODULE_FNS: Record<
   string,
   Record<string, BuiltinModuleFn | undefined> | undefined
