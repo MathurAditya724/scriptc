@@ -6667,6 +6667,10 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -6696,6 +6700,10 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -7300,6 +7308,10 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -7329,7 +7341,8 @@
           "tests": [
             "tests/corpus/node24-crypto-kdf.ts",
             "tests/corpus/node24-crypto-kdf-errors.ts",
-            "tests/corpus/node24-crypto-kdf-options.ts"
+            "tests/corpus/node24-crypto-kdf-options.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts"
           ]
         }
       }
@@ -7358,7 +7371,8 @@
           "tests": [
             "tests/corpus/node24-crypto-kdf.ts",
             "tests/corpus/node24-crypto-kdf-errors.ts",
-            "tests/corpus/node24-crypto-kdf-options.ts"
+            "tests/corpus/node24-crypto-kdf-options.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts"
           ]
         }
       }
@@ -7412,6 +7426,10 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -7441,6 +7459,10 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -7630,6 +7652,10 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -7659,6 +7685,10 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -7748,7 +7778,8 @@
           "tests": [
             "tests/corpus/node24-crypto-kdf.ts",
             "tests/corpus/node24-crypto-kdf-errors.ts",
-            "tests/corpus/node24-crypto-kdf-options.ts"
+            "tests/corpus/node24-crypto-kdf-options.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts"
           ]
         }
       }
@@ -7777,7 +7808,8 @@
           "tests": [
             "tests/corpus/node24-crypto-kdf.ts",
             "tests/corpus/node24-crypto-kdf-errors.ts",
-            "tests/corpus/node24-crypto-kdf-options.ts"
+            "tests/corpus/node24-crypto-kdf-options.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts"
           ]
         }
       }
@@ -7906,6 +7938,10 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -8910,6 +8946,10 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -8939,6 +8979,10 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -8968,6 +9012,10 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -8997,6 +9045,10 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -9026,6 +9078,10 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -9055,6 +9111,10 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }
@@ -9084,6 +9144,10 @@
           "tests": [
             "tests/corpus/2890-crypto-static-utility.ts",
             "tests/corpus/node24-crypto-sha2.ts",
+            "tests/corpus/5435-crypto-hash-algorithms.ts",
+            "tests/corpus/5436-crypto-hash-names.js",
+            "tests/corpus/5437-crypto-hmac-algorithms.ts",
+            "tests/corpus/5438-crypto-kdf-digests.ts",
             "tests/harness/npm-static.test.ts"
           ]
         }

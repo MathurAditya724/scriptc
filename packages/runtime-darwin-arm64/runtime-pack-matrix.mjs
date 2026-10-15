@@ -30,6 +30,7 @@ const BASE_RUNTIME_SOURCES = [
   "scr_error.c",
   "scr_console.c",
   "scr_lib.c",
+  "scr_hash.c",
   "scr_path.c",
   "scr_os.c",
   "scr_url.c",
