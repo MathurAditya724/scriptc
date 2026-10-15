@@ -7919,6 +7919,22 @@ export class Lowerer {
           return this.checkedNarrowCall(helper, expr, expected, expr.loc);
         }
       }
+      // A record arm beside unit arms flowing into another layout of that
+      // record (`R | undefined` into the runtime-optional variant of R): the
+      // same checked extraction of the record arm, then the record's width
+      // lift into the destination layout.
+      if (expr.type.kind === "union" && expected.kind === "record") {
+        const arms = this.unions.get(expr.type.unionId)?.arms ?? [];
+        const records = arms.filter((arm) => !isUnitType(arm));
+        const arm = records.length === 1 && records[0]!.kind === "record" ? records[0]! : null;
+        const lift = arm ? this.widthLiftPlan(arm, expected) : null;
+        const helper =
+          arm && lift ? this.narrowedArmHelper(expr.type.unionId, arm, expr.loc) : null;
+        if (arm && lift && helper) {
+          const narrowed = this.checkedNarrowCall(helper, expr, arm, expr.loc);
+          return this.applyWidthLift(lift, narrowed, expected, expr.loc);
+        }
+      }
       if (!typeEquals(expr.type, expected)) {
         const w = this.widthCoerce(expr, expected);
         if (w) return w;

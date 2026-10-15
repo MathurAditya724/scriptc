@@ -182,6 +182,18 @@ The docs site is a standalone pnpm workspace under `docs/`. It uses Next.js App 
 - Use `diff` fences for additions and removals.
 - Use HTML `<dl>/<dt>/<dd>` for flag and subcommand references.
 
+### Limitations page partials
+
+`docs/content/docs/limitations.mdx` holds only the frontmatter, the headings, the anchor spans, and one `<include>` line per partial. The text lives in `docs/content/limitations/`:
+
+- A labeled bullet (`- **Crypto:** ...`) is `docs/content/limitations/<section>/<label>.mdx`, for example `builtin-apis/crypto.mdx`. Edit that file to change the bullet.
+- The other text of a section (paragraphs, code blocks, unlabeled lists) is `docs/content/limitations/<section>.mdx`; text before the first heading is `introduction.mdx`.
+- `<section>` and `<label>` are the heading and label text in lowercase with each run of other characters replaced by `-`.
+- To add a bullet, add its file and an include line at its position in `limitations.mdx`, with a blank line on each side. Consecutive bullet includes render as one list.
+- To add a section, add the heading to `limitations.mdx` and include the section's partial below it.
+
+`node scripts/limitations-partials.mjs join` (from `docs/`) prints the page with its partials inlined. For a branch that still edits the single-file page, run `node scripts/limitations-partials.mjs merge <base> <theirs>`, where `<theirs>` is the branch's `limitations.mdx` and `<base>` is that file at the branch's merge base. It merges the branch's changes into the partials, or writes `docs/limitations.merged.mdx` with conflict markers to resolve and pass to `split`.
+
 ### Adding a docs page
 
 1. Add `docs/content/docs/<topic>.mdx` with a `title` in YAML frontmatter. Geistdocs renders the page title, so do not duplicate it as a Markdown H1. `index.mdx` is served at `/docs`; other pages are served at `/docs/<topic>`.

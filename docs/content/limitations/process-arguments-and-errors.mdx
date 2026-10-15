@@ -1,0 +1,5 @@
+`process.argv[0]` is `"scriptc"`, `process.argv[1]` is the binary's path, and program arguments begin at index 2. `process.version` and `process.versions.node` report the Node.js release the runtime is verified against.
+
+Uncaught exceptions print `Uncaught <value>` to stderr instead of Node.js's source excerpt and stack-trace block; thrown strings and numbers print their value. Exit codes and output written before the exception are preserved. Runtime errors expose `message` and Node's `code`, but not `errno`, `syscall`, or `path`.
+
+Errors carry no stack frames. `console.log` and `util.inspect` print an Error in Node's stackless form, `[TypeError: message]`, where Node prints `TypeError: message` followed by stack frames; the two agree when `Error.stackTraceLimit` is `0`.
