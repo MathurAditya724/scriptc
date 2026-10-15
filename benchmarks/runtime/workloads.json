@@ -106,6 +106,13 @@
       ]
     },
     {
+      "name": "number-maps",
+      "entry": "workloads/number-maps.ts",
+      "args": [
+        "4"
+      ]
+    },
+    {
       "name": "validate-errors",
       "entry": "workloads/validate-errors.ts",
       "args": [
