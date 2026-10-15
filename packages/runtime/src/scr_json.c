@@ -8956,6 +8956,63 @@ ScrDynEntryPairs *scr_dyn_obj_entry_pairs(const ScrDyn *v) {
 
 void scr_dyn_entry_pairs_free(ScrDynEntryPairs *pairs) { free(pairs); }
 
+static const ScrArrOps scr_dyn_value_list_ops = {scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v};
+
+/* A native array of `count` owned dyn values, moved in with one dense push.
+ * Frees `values` unless it is `stack`. */
+static ScrArr *scr_dyn_value_list_from(uint64_t *values, size_t count, uint64_t *stack) {
+  ScrArr *out = scr_arr_new_ops(&scr_dyn_value_list_ops, count);
+  scr_arr_push_many(out, count, values);
+  if (values != stack) free(values);
+  return out;
+}
+
+static uint64_t *scr_dyn_value_slots(size_t count, uint64_t *stack, size_t stack_len) {
+  if (count <= stack_len) return stack;
+  if (count > SIZE_MAX / sizeof(uint64_t)) scr_json_oom();
+  uint64_t *slots = malloc(count * sizeof *slots);
+  if (!slots) scr_json_oom();
+  return slots;
+}
+
+/* Object.values as a native vector of checked values (see the header): a
+ * typed record's present fields, a plain data object's enumerable own
+ * values in own-key order, or the dyn walk's values for every other value. */
+ScrArr *scr_dyn_obj_value_list(const ScrDyn *v) {
+  if (scr_dyn_class_reflection_fence(v)) return NULL;
+  uint64_t stack[16];
+  if (v->kind == SCR_DYN_TYPED_REF) {
+    const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
+    if (record) {
+      void *rec = v->v.typed_ref.ptr;
+      uint64_t *slots = scr_dyn_value_slots(record->count, stack, 16);
+      size_t count = 0;
+      for (size_t i = 0; i < record->count; i++)
+        if (record->fixed || record->has(rec, i))
+          slots[count++] = (uint64_t)(uintptr_t)record->get(rec, i);
+      return scr_dyn_value_list_from(slots, count, stack);
+    }
+  } else if (v->kind == SCR_DYN_OBJ && scr_dyn_obj_data_only(v)) {
+    size_t *order = scr_dyn_obj_key_order(v);
+    uint64_t *slots = scr_dyn_value_slots(v->v.obj.len, stack, 16);
+    size_t count = 0;
+    for (size_t i = 0; i < v->v.obj.len; i++) {
+      const ScrDynEntry *entry = &v->v.obj.entries[order ? order[i] : i];
+      if (entry->enumerable) slots[count++] = (uint64_t)(uintptr_t)scr_dyn_retain(entry->value);
+    }
+    free(order);
+    return scr_dyn_value_list_from(slots, count, stack);
+  }
+  ScrDyn *values = scr_dyn_obj_values(v);
+  if (!values) return NULL;
+  size_t count = values->v.arr.len;
+  uint64_t *slots = scr_dyn_value_slots(count, stack, 16);
+  for (size_t i = 0; i < count; i++)
+    slots[i] = (uint64_t)(uintptr_t)scr_dyn_retain(values->v.arr.items[i]);
+  scr_dyn_release(values);
+  return scr_dyn_value_list_from(slots, count, stack);
+}
+
 /* One source's own enumerable members onto an OBJ target. OBJ sources
  * snapshot their keys, then check attributes and read values in order so
  * getters can affect later entries. Arrays, strings, and bytes use their
