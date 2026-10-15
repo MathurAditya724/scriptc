@@ -191,9 +191,9 @@
       "apiEntries": 152,
       "static": {
         "supported": 5,
-        "partial": 19,
-        "refused": 26,
-        "not-implemented": 102,
+        "partial": 25,
+        "refused": 23,
+        "not-implemented": 99,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -19773,6 +19773,8 @@
           "tests/corpus/5442-crypto-random-values.ts",
           "tests/corpus/5443-crypto-random-arguments.js",
           "tests/corpus/5444-crypto-timing-safe-equal.js",
+          "tests/corpus/5445-crypto-secret-key-objects.ts",
+          "tests/corpus/5446-crypto-secret-key-errors.js",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -20443,8 +20445,12 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.createSecretKey"
+        "status": "partial",
+        "evidence": "compiler-dedicated:crypto.createSecretKey",
+        "tests": [
+          "tests/corpus/5445-crypto-secret-key-objects.ts",
+          "tests/corpus/5446-crypto-secret-key-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -20581,8 +20587,12 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.generateKey"
+        "status": "partial",
+        "evidence": "compiler-dedicated:crypto.generateKey",
+        "tests": [
+          "tests/corpus/5445-crypto-secret-key-objects.ts",
+          "tests/corpus/5446-crypto-secret-key-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -20650,8 +20660,12 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.generateKeySync"
+        "status": "partial",
+        "evidence": "compiler-dedicated:crypto.generateKeySync",
+        "tests": [
+          "tests/corpus/5445-crypto-secret-key-objects.ts",
+          "tests/corpus/5446-crypto-secret-key-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23031,8 +23045,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:KeyObject",
+        "tests": [
+          "tests/corpus/5445-crypto-secret-key-objects.ts",
+          "tests/corpus/5446-crypto-secret-key-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23054,8 +23072,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:keyObject.equals",
+        "tests": [
+          "tests/corpus/5445-crypto-secret-key-objects.ts",
+          "tests/corpus/5446-crypto-secret-key-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23077,8 +23099,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:keyObject.export",
+        "tests": [
+          "tests/corpus/5445-crypto-secret-key-objects.ts",
+          "tests/corpus/5446-crypto-secret-key-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },

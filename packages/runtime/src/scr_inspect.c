@@ -1131,7 +1131,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         /* Node's custom inspectors answer the bare class name beyond the
          * depth limit (`depth < 0`); the ones that return `this` there
          * print util.inspect's `[cls]`. */
-        if (recurse > depth) {
+        if (recurse > depth && !ops->inspect_view_empty) {
           if (!ops->inspect_bracketed_past_depth) return scr_str_new(ops->cls, strlen(ops->cls));
           InspBuf out = {0};
           ib_char(&out, '[');
@@ -1144,6 +1144,11 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         scr_dyn_release(view);
         InspBuf out = {0};
         ib_cstr(&out, ops->cls);
+        if (ops->to_string_tag) {
+          ib_cstr(&out, " [");
+          ib_cstr(&out, ops->to_string_tag);
+          ib_char(&out, ']');
+        }
         ib_char(&out, ' ');
         ib_bytes(&out, body->data, body->len);
         scr_str_release(body);

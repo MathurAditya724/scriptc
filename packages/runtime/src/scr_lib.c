@@ -7177,7 +7177,8 @@ ScrCryptoHash *scr_crypto_hash_new_opts(ScrStr *alg, ScrDyn *options) {
 }
 
 /* createHmac(algorithm, key, options): Node's options.encoding and
- * prepareSecretKey checks, then the digest lookup. */
+ * prepareSecretKey checks (a KeyObject's bytes are the key), then the
+ * digest lookup. */
 ScrCryptoHash *scr_crypto_hmac_new_dyn(ScrStr *alg, ScrDyn *key, ScrDyn *options) {
   if (options->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *value = scr_dyn_typed_ref_materialize(options);
@@ -7203,7 +7204,12 @@ ScrCryptoHash *scr_crypto_hmac_new_dyn(ScrStr *alg, ScrDyn *key, ScrDyn *options
     return result;
   }
   ScrBytes *bytes;
-  if (key->kind == SCR_DYN_STR) {
+  size_t key_object_len;
+  const unsigned char *key_object = scr_key_object_bytes(key, &key_object_len);
+  if (key_object) {
+    bytes = scr_bytes_new(SCR_BYTES_U8, (double)key_object_len);
+    if (key_object_len) memcpy(bytes->data, key_object, key_object_len);
+  } else if (key->kind == SCR_DYN_STR) {
     ScrStr *utf8 = encoding ? NULL : scr_str_new("utf8", 4);
     bytes = scr_bytes_from_str_checked(key->v.str, encoding ? encoding : utf8);
     if (utf8) scr_str_release(utf8);
@@ -7787,6 +7793,289 @@ ScrStr *scr_crypto_random_uuid_v7(ScrDyn *options) {
   uint64_t now = (uint64_t)scr_date_now();
   for (int i = 0; i < 6; i++) b[i] = (unsigned char)(now >> (40 - 8 * i));
   return scr_uuid_string(b, 0x70);
+}
+
+/* ── KeyObject (secret keys) ──────────────────────────────────────────
+ * node:crypto's SecretKeyObject as a native dyn handle over the key bytes:
+ * createSecretKey, generateKey/generateKeySync for "hmac" and "aes", the
+ * type and symmetricKeySize getters, export() and equals(). createHmac and
+ * hkdf take these keys. The bytes are cleared when the last reference
+ * goes. */
+typedef struct ScrKeyObject {
+  size_t rc;
+  size_t len;
+  unsigned char data[];
+} ScrKeyObject;
+
+static void *scr_key_object_retain(void *p) {
+  ScrKeyObject *key = p;
+  if (key->rc != SIZE_MAX) key->rc++;
+  return key;
+}
+
+static void scr_key_object_release(void *p) {
+  ScrKeyObject *key = p;
+  if (!key || key->rc == SIZE_MAX || --key->rc != 0) return;
+  scr_crypto_zero(key->data, key->len);
+  free(key);
+}
+
+static void scr_key_object_install(void);
+
+static ScrDyn *scr_key_object_new(const unsigned char *data, size_t len) {
+  scr_key_object_install();
+  ScrKeyObject *key = malloc(sizeof *key + (len ? len : 1));
+  if (!key) scr_trap("scriptc: out of memory\n");
+  key->rc = 1;
+  key->len = len;
+  if (len) memcpy(key->data, data, len);
+  ScrDyn *box = scr_dyn_new_handle(key, SCR_DYNH_KEY_OBJECT);
+  scr_key_object_release(key);
+  return box;
+}
+
+/* The key bytes of a KeyObject value, or NULL for any other value. */
+const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len) {
+  if (value->kind != SCR_DYN_HANDLE || value->v.handle.tag != SCR_DYNH_KEY_OBJECT) return NULL;
+  const ScrKeyObject *key = value->v.handle.ptr;
+  *len = key->len;
+  return key->data;
+}
+
+/* `value instanceof KeyObject`. */
+bool scr_crypto_is_key_object(const ScrDyn *value) {
+  size_t len;
+  return scr_key_object_bytes(value, &len) != NULL;
+}
+
+static void scr_key_object_type_fail(const char *name, const ScrDyn *value) {
+  scr_dyn_arg_type_fail(name, "an instance of KeyObject", value);
+}
+
+/* The property flavor of ERR_INVALID_ARG_VALUE: "The property 'x' must be
+ * one of: ...". */
+static void scr_crypto_property_one_of(const char *name, const char *choices, const ScrDyn *value) {
+  char rendered[160], message[320];
+  const char *text = scr_dyn_inspect_lite(value, rendered, sizeof rendered);
+  int n = snprintf(message, sizeof message, "The property '%s' must be one of: %s. Received %s", name,
+                   choices, text);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)n, "ERR_INVALID_ARG_VALUE");
+}
+
+/* keyObject.export(options): a copy of the bytes, or a JWK with kty
+ * "oct" and the base64url key. */
+static ScrDyn *scr_key_object_export(const ScrKeyObject *key, const ScrDyn *options) {
+  if (options && options->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *value = scr_dyn_typed_ref_materialize(options);
+    if (!value) return NULL;
+    ScrDyn *result = scr_key_object_export(key, value);
+    scr_dyn_release(value);
+    return result;
+  }
+  bool jwk = false;
+  if (options && options->kind != SCR_DYN_UNDEF) {
+    if (options->kind == SCR_DYN_ARR || options->kind == SCR_DYN_NULL || !scr_crypto_is_object(options)) {
+      scr_dyn_arg_type_fail("options", "of type object", options);
+      return NULL;
+    }
+    ScrDyn *format = scr_dyn_obj_read(options, "format", 6);
+    bool ok = !format || format->kind == SCR_DYN_UNDEF;
+    if (!ok && format->kind == SCR_DYN_STR) {
+      const ScrStr *text = format->v.str;
+      if (text->len == 6 && memcmp(text->data, "buffer", 6) == 0) ok = true;
+      if (text->len == 3 && memcmp(text->data, "jwk", 3) == 0) ok = jwk = true;
+    }
+    if (!ok) scr_crypto_property_one_of("options.format", "undefined, 'buffer', 'jwk'", format);
+    if (format) scr_dyn_release(format);
+    if (!ok) return NULL;
+  }
+  if (!jwk) return scr_crypto_dyn_buffer(key->data, key->len);
+  ScrDyn *out = scr_dyn_new_obj();
+  scr_dyn_obj_set(out, "kty", 3, scr_crypto_dyn_str(scr_str_new("oct", 3)));
+  ScrBytes view = {.rc = 1, .len = key->len, .elem = SCR_BYTES_U8, .data = (unsigned char *)key->data};
+  ScrStr *name = scr_str_new("base64url", 9);
+  scr_dyn_obj_set(out, "k", 1, scr_crypto_dyn_str(scr_bytes_to_str(&view, name)));
+  scr_str_release(name);
+  return out;
+}
+
+static ScrDyn *scr_key_object_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args,
+                                     size_t argc, const char *what) {
+  (void)self;
+  const ScrKeyObject *key = h;
+  if (strcmp(method, "export") == 0) return scr_key_object_export(key, argc ? args[0] : NULL);
+  if (strcmp(method, "equals") == 0) {
+    size_t len;
+    const unsigned char *other = argc ? scr_key_object_bytes(args[0], &len) : NULL;
+    if (!other) {
+      ScrDyn *undefined = scr_dyn_undefined();
+      scr_key_object_type_fail("otherKeyObject", argc ? args[0] : undefined);
+      scr_dyn_release(undefined);
+      return NULL;
+    }
+    bool equal = len == key->len;
+    unsigned char diff = 0;
+    for (size_t i = 0; equal && i < len; i++) diff |= other[i] ^ key->data[i];
+    return scr_dyn_new_bool(equal && diff == 0);
+  }
+  if (strcmp(method, "toCryptoKey") == 0) {
+    static const char message[] = "KeyObject.toCryptoKey() needs WebCrypto CryptoKey values, which have no native lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  char message[160];
+  int n = snprintf(message, sizeof message, "%s is not a function", what);
+  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+  return NULL;
+}
+
+static ScrDyn *scr_key_object_get(void *h, const char *name, size_t len) {
+  const ScrKeyObject *key = h;
+  if (len == 4 && memcmp(name, "type", 4) == 0) return scr_crypto_dyn_str(scr_str_new("secret", 6));
+  if (len == 16 && memcmp(name, "symmetricKeySize", 16) == 0) return scr_dyn_new_num((double)key->len);
+  return NULL;
+}
+
+/* The getters have no setters; Node's strict-mode TypeError names the
+ * prototype that defines each one. */
+static bool scr_key_object_set(void *h, const char *name, size_t len, const ScrDyn *value) {
+  (void)h;
+  (void)value;
+  const char *holder = len == 4 && memcmp(name, "type", 4) == 0 ? "KeyObject"
+                       : len == 16 && memcmp(name, "symmetricKeySize", 16) == 0 ? "SecretKeyObject"
+                                                                                : NULL;
+  if (!holder) return false;
+  char message[160];
+  int n = snprintf(message, sizeof message, "Cannot set property %.*s of #<%s> which has only a getter",
+                   (int)len, name, holder);
+  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+  return true;
+}
+
+static ScrDyn *scr_key_object_inspect_view(void *h) {
+  (void)h;
+  return scr_dyn_new_obj();
+}
+
+static const ScrDynHandleOps scr_key_object_ops = {
+    .cls = "SecretKeyObject",
+    .retain = scr_key_object_retain,
+    .release = scr_key_object_release,
+    .invoke = scr_key_object_invoke,
+    .get = scr_key_object_get,
+    .set = scr_key_object_set,
+    .inspect_view = scr_key_object_inspect_view,
+    .json_empty_object = true,
+    .to_string_tag = "KeyObject",
+    .inspect_view_empty = true,
+};
+
+static void scr_key_object_install(void) {
+  static SCR_TL bool installed;
+  if (installed) return;
+  installed = true;
+  scr_dyn_handle_install(SCR_DYNH_KEY_OBJECT, &scr_key_object_ops);
+}
+
+/* createSecretKey(key[, encoding]): a string decodes with a string
+ * encoding (UTF-8 otherwise); views, ArrayBuffers and SharedArrayBuffers
+ * are copied. */
+ScrDyn *scr_crypto_create_secret_key(ScrDyn *key, ScrDyn *encoding) {
+  if (key->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *value = scr_dyn_typed_ref_materialize(key);
+    if (!value) return NULL;
+    ScrDyn *result = scr_crypto_create_secret_key(value, encoding);
+    scr_dyn_release(value);
+    return result;
+  }
+  ScrBytes *bytes;
+  if (key->kind == SCR_DYN_STR) {
+    bool named = encoding->kind == SCR_DYN_STR;
+    ScrStr *utf8 = named ? NULL : scr_str_new("utf8", 4);
+    bytes = scr_bytes_from_str_checked(key->v.str, named ? encoding->v.str : utf8);
+    if (utf8) scr_str_release(utf8);
+  } else if (key->kind == SCR_DYN_BYTES || scr_buffer_storage_is(key)) {
+    bytes = scr_bytes_buffer_source(key);
+  } else {
+    scr_dyn_arg_type_fail("key", "an instance of ArrayBuffer, Buffer, TypedArray, or DataView", key);
+    return NULL;
+  }
+  if (!bytes) return NULL;
+  ScrDyn *result = scr_key_object_new(bytes->data, (size_t)scr_bytes_byte_len(bytes));
+  scr_bytes_release(bytes);
+  return result;
+}
+
+/* generateKeySync(type, options) for "hmac" (options.length in bits,
+ * 8 to 2^31 - 1, rounded down to whole bytes) and "aes" (128, 192 or
+ * 256), checked in Node's order. */
+ScrDyn *scr_crypto_generate_key_sync(ScrDyn *type, ScrDyn *options) {
+  if (type->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("type", "of type string", type);
+    return NULL;
+  }
+  if (options->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *value = scr_dyn_typed_ref_materialize(options);
+    if (!value) return NULL;
+    ScrDyn *result = scr_crypto_generate_key_sync(type, value);
+    scr_dyn_release(value);
+    return result;
+  }
+  if (options->kind == SCR_DYN_ARR || options->kind == SCR_DYN_NULL || !scr_crypto_is_object(options)) {
+    scr_dyn_arg_type_fail("options", "of type object", options);
+    return NULL;
+  }
+  const ScrStr *name = type->v.str;
+  bool hmac = name->len == 4 && memcmp(name->data, "hmac", 4) == 0;
+  bool aes = name->len == 3 && memcmp(name->data, "aes", 3) == 0;
+  if (!hmac && !aes) {
+    char reason[] = "must be a supported key type";
+    scr_dyn_arg_value_fail("type", reason, type);
+    return NULL;
+  }
+  ScrDyn *length = scr_dyn_obj_read(options, "length", 6);
+  ScrDyn *undefined = length ? NULL : scr_dyn_undefined();
+  const ScrDyn *value = length ? length : undefined;
+  double bits = value->kind == SCR_DYN_NUM ? value->v.num : NAN;
+  bool ok;
+  if (hmac) {
+    ok = value->kind == SCR_DYN_NUM;
+    if (!ok) scr_dyn_prop_type_fail("options.length", "of type number", value);
+    else if (!isfinite(bits) || floor(bits) != bits) {
+      scr_crypto_out_of_range("options.length", "an integer", bits);
+      ok = false;
+    } else if (bits < 8 || bits > 2147483647.0) {
+      scr_crypto_out_of_range("options.length", ">= 8 && <= 2147483647", bits);
+      ok = false;
+    }
+  } else {
+    ok = value->kind == SCR_DYN_NUM && (bits == 128 || bits == 192 || bits == 256);
+    if (!ok) scr_crypto_property_one_of("options.length", "128, 192, 256", value);
+  }
+  if (length) scr_dyn_release(length);
+  if (undefined) scr_dyn_release(undefined);
+  if (!ok) return NULL;
+  size_t len = (size_t)(bits / 8);
+  unsigned char *data = malloc(len ? len : 1);
+  if (!data) scr_trap("scriptc: out of memory\n");
+  arc4random_buf(data, len);
+  ScrDyn *result = scr_key_object_new(data, len);
+  scr_crypto_zero(data, len);
+  free(data);
+  return result;
+}
+
+/* hkdf's key: a KeyObject's bytes as a fresh u8 Buffer. */
+ScrBytes *scr_crypto_key_object_input(ScrDyn *key) {
+  size_t len;
+  const unsigned char *data = scr_key_object_bytes(key, &len);
+  if (!data) {
+    scr_key_object_type_fail("key", key);
+    return NULL;
+  }
+  ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)len);
+  if (len) memcpy(bytes->data, data, len);
+  return bytes;
 }
 
 static ScrBytes *scr_crypto_pbkdf2_raw(const unsigned char *password, size_t password_len,
