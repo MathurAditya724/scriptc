@@ -95,7 +95,12 @@ import {
 } from "./int32-abi.js";
 import { findInt32Locals, type Int32Local } from "./int32-locals.js";
 import { exactInteger, narrowInteger } from "./integer-values.js";
-import { findInitializerBindings, withInitializerBindings } from "../../ir/initializer-bindings.js";
+import {
+  findInitializerBindings,
+  initializerLocalCandidates,
+  withInitializerBindings,
+  withInitializerLocals,
+} from "../../ir/initializer-bindings.js";
 import { findConstantNumericTables, type ConstantNumericTable } from "../../ir/constant-tables.js";
 import {
   allocateFfiCallbackAdapters,
@@ -5707,10 +5712,14 @@ export class LlEmitter {
     // Debug builds keep every number local a double for the debugger's
     // variable view. Lazily boxed captured parameters keep their double,
     // which the box is created from.
+    // Initializer bindings proven int32 move into an i32 local of their
+    // initializer: no other code observes the global, so the loop-carried
+    // value never round-trips through the double slot.
+    const initializerLocals = initializerLocalCandidates(initializerBindings);
     const int32Locals =
       this.debug === null
         ? findInt32Locals(
-            fn,
+            withInitializerLocals(fn, initializerLocals),
             this.integerRanges,
             this.int32Slots.facts(fn.name),
             new Set(this.lazyCaptureBoxes.keys()),
@@ -5718,6 +5727,17 @@ export class LlEmitter {
         : null;
     this.int32Locals = int32Locals?.locals ?? new Map();
     this.int32LocalWrites = int32Locals?.values ?? new Set();
+    const localizedGlobals = new Set<string>();
+    for (const global of initializerLocals) {
+      if (!this.int32Locals.has(global.id)) continue;
+      localizedGlobals.add(global.id);
+      this.currentLocals.set(global.id, {
+        id: global.id,
+        name: global.name,
+        type: global.type,
+        mutable: global.mutable,
+      });
+    }
     this.chainSlots.clear();
     this.finallyStack = [];
     this.tryStack = [];
@@ -5807,6 +5827,8 @@ export class LlEmitter {
         fn.params.findIndex((p) => p.localId === local.id) + 1,
         this.captureIds.has(local.id),
       );
+      // A localized initializer binding starts at its global's zero value.
+      if (localizedGlobals.has(local.id)) B.line(`store i32 0, ptr %${mangleLocal(local.id)}`);
       // Refcounted/boxed locals start NULL (the C prologue's `= NULL`):
       // scope-exit releases run whether or not an assign ever did.
       if (paramIds.has(local.id) || this.captureIds.has(local.id)) continue;

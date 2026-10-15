@@ -266,3 +266,51 @@ test("int32-closed locals are stored as i32 and keep doubles only for floating c
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+const moduleSource = `
+function step(x: number, n: number): number {
+  return (x * 31 + n) % 1000003;
+}
+let v = 1;
+for (let r = 0; r < 3; r++) for (let n = 0; n < 1000; n++) v = step(v, n);
+let shared = 0;
+function readShared(): number {
+  return shared * 2;
+}
+for (let i = 0; i < 10; i++) shared = (shared + i) % 7;
+console.log(v, shared, readShared());
+`;
+
+test("module numbers private to the initializer keep an i32 local there", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-int32-globals-"));
+  try {
+    await symlink(join(repoRoot, "node_modules"), join(dir, "node_modules"));
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(entry, moduleSource);
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    const ll = emitLlvmModule(mod);
+    const init = body(ll, "_x25_init_0");
+    // `v` lives in an i32 local that starts at the global's zero value; the
+    // loop never touches the global's double.
+    expect(init).toMatch(/alloca i32 ; v\n/);
+    expect(init).toMatch(/store i32 0, ptr %sc_l__x25_g_\w+_v\n/);
+    expect(ll).not.toMatch(/(?:load double, ptr|store double [^,]+, ptr) @sc_g_\w*_v\b/);
+    expect(carriers(init)).toEqual([]);
+    // Another function reads `shared`: it keeps its global.
+    expect(init).not.toMatch(/alloca i32 ; shared\n/);
+    expect(init).toMatch(/store double [^,]+, ptr @sc_g_\w*_shared\b/);
+    // The narrowed parameter and result facts keep step in i32 arithmetic.
+    expect(body(ll, "step")).toMatch(/ = urem i32 /);
+    expect(body(ll, "step")).not.toMatch(/ = urem i64 /);
+
+    // Debug builds keep the global for the variable view.
+    const debug = emitLlvmModule(mod, { debugSources: new Map([[entry, moduleSource]]) });
+    expect(debug).not.toMatch(/alloca i32 ; v\n/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
