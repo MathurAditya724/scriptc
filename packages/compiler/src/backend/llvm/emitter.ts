@@ -964,7 +964,12 @@ export class LlEmitter {
   private speculativeLoopsEnabled = false;
   /** The fast copy of a speculative integer loop being emitted: its
    * integer-computed writes and where each resumes in the ordinary copy. */
-  private speculation: { writes: Set<IrStmt>; resume: Map<IrStmt, string> } | null = null;
+  private speculation: {
+    writes: Set<IrStmt>;
+    resume: Map<IrStmt, string>;
+    /** Globals whose double is written back only when the copy is left. */
+    deferred: Set<string>;
+  } | null = null;
   /** The ordinary copy being emitted: resume labels still to place. */
   private speculationResume: Map<IrStmt, { label: string; placed: boolean }> | null = null;
   /** The function being emitted, for speculative globals. */
@@ -4934,17 +4939,22 @@ export class LlEmitter {
   private emitLoopCopies(
     loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" }>,
     allowed: boolean,
-    emitCopy: () => void,
+    exit: string,
+    emitCopy: (exit: string) => void,
   ): void {
     const plan =
       allowed &&
       this.speculativeLoopsEnabled &&
       this.speculation === null &&
       this.speculationResume === null
-        ? planSpeculativeLoop(loop, (id) => this.speculativeLocal(id))
+        ? planSpeculativeLoop(
+            loop,
+            (id) => this.speculativeLocal(id),
+            (id) => this.integerLoopBindings.has(id) || this.int32Locals.has(id),
+          )
         : null;
     if (!plan) {
-      emitCopy();
+      emitCopy(exit);
       return;
     }
     const B = this.B;
@@ -4971,7 +4981,7 @@ export class LlEmitter {
     B.startBlock(slow);
     this.speculationResume = resume;
     try {
-      emitCopy();
+      emitCopy(exit);
     } finally {
       this.speculationResume = null;
     }
@@ -5001,15 +5011,42 @@ export class LlEmitter {
         range: SPECULATIVE_RANGE,
       });
     }
+    // A global's store stays in the loop (calls may read it). When nothing
+    // in the loop can observe it, its double is written once on leaving the
+    // copy instead, so the loop keeps it in a register as the double copy
+    // would.
+    const deferred = new Set<string>();
+    // Worker loops also leave through their cancellation poll.
+    if (plan.observerFree && !this.mod.workers)
+      for (const id of plan.locals.keys()) if (!this.currentLocals.has(id)) deferred.add(id);
     this.speculation = {
       writes: plan.writes,
       resume: new Map([...resume].map(([s, r]) => [s, r.label])),
+      deferred,
     };
     try {
-      emitCopy();
+      if (deferred.size === 0) emitCopy(exit);
+      else {
+        const leave = B.newLabel("spec.leave");
+        emitCopy(leave);
+        B.startBlock(leave);
+        this.writeBackSpeculativeGlobals(deferred);
+        B.br(exit);
+      }
     } finally {
       this.speculation = null;
       for (const id of plan.locals.keys()) this.integerLoopBindings.delete(id);
+    }
+  }
+
+  private writeBackSpeculativeGlobals(deferred: Set<string>): void {
+    const B = this.B;
+    for (const id of deferred) {
+      const integer = B.tmp(),
+        number = B.tmp();
+      B.line(`${integer} = load i64, ptr ${this.integerLoopBindings.get(id)!.slot}`);
+      B.line(`${number} = sitofp i64 ${integer} to double`);
+      B.line(`store double ${number}, ptr ${this.binding(id).slot}`);
     }
   }
 
@@ -5076,6 +5113,7 @@ export class LlEmitter {
     let bails = false;
     this.declare("declare i1 @llvm.expect.i1(i1, i1)");
     const bail = (condition: string): void => {
+      if (condition === "false") return;
       bails = true;
       const expected = B.tmp();
       B.line(`${expected} = call i1 @llvm.expect.i1(i1 ${condition}, i1 false)`);
@@ -5095,14 +5133,18 @@ export class LlEmitter {
       B.line(`${outside} = icmp ugt i64 ${biased}, ${2 * Number.MAX_SAFE_INTEGER}`);
       bail(outside);
     } else result = emitSpeculativeInteger(this, target.value, bail);
-    const number = B.tmp();
     B.line(`store i64 ${result}, ptr ${binding.slot}`);
-    B.line(`${number} = sitofp i64 ${result} to double`);
-    B.line(`store double ${number}, ptr ${this.binding(target.localId).slot}`);
+    const deferred = this.speculation!.deferred;
+    if (!deferred.has(target.localId)) {
+      const number = B.tmp();
+      B.line(`${number} = sitofp i64 ${result} to double`);
+      B.line(`store double ${number}, ptr ${this.binding(target.localId).slot}`);
+    }
     if (!bails) return;
     const done = B.newLabel("spec.done");
     B.br(done);
     B.startBlock(failed);
+    this.writeBackSpeculativeGlobals(deferred);
     B.br(resume);
     B.startBlock(done);
   }
@@ -7924,17 +7966,17 @@ export class LlEmitter {
       case "while": {
         const workerBudget = this.workerLoopBudget(s);
         const le = B.newLabel("loop.e");
-        this.emitLoopCopies(s, true, () => {
+        this.emitLoopCopies(s, true, le, (exit) => {
           const lc = B.newLabel("loop.c");
           const lb = B.newLabel("loop.b");
           const lp = workerBudget !== null ? B.newLabel("loop.p") : lc;
           B.br(lc);
           B.startBlock(lc);
-          B.condBr(this.emitCondition(s.cond), lb, le);
+          B.condBr(this.emitCondition(s.cond), lb, exit);
           B.startBlock(lb);
           this.jumpTargets.push({
             kind: "loop",
-            brkLabel: le,
+            brkLabel: exit,
             contLabel: lp,
             labels: s.labels,
             frameDepth: this.frames.length,
@@ -7957,14 +7999,14 @@ export class LlEmitter {
         const workerBudget = this.workerLoopBudget(s);
         // Body first (runs at least once); continue jumps to the CONDITION.
         const le = B.newLabel("loop.e");
-        this.emitLoopCopies(s, true, () => {
+        this.emitLoopCopies(s, true, le, (exit) => {
           const lb = B.newLabel("loop.b");
           const lc = B.newLabel("loop.c");
           B.br(lb);
           B.startBlock(lb);
           this.jumpTargets.push({
             kind: "loop",
-            brkLabel: le,
+            brkLabel: exit,
             contLabel: lc,
             labels: s.labels,
             frameDepth: this.frames.length,
@@ -7976,7 +8018,7 @@ export class LlEmitter {
           B.br(lc);
           B.startBlock(lc);
           this.emitWorkerLoopCheck(workerBudget);
-          B.condBr(this.emitCondition(s.cond), lb, le);
+          B.condBr(this.emitCondition(s.cond), lb, exit);
         });
         B.startBlock(le);
         break;
@@ -8162,7 +8204,7 @@ export class LlEmitter {
         };
         const workerBudget = this.workerLoopBudget(s);
         freshenBindings();
-        this.emitLoopCopies(s, capturedLets.length === 0, () => {
+        this.emitLoopCopies(s, capturedLets.length === 0, le, (exit) => {
           const lc = B.newLabel("loop.c");
           const lb = B.newLabel("loop.b");
           const lu =
@@ -8186,7 +8228,7 @@ export class LlEmitter {
             );
             B.line(`${index} = load ${this.sizeType}, ptr ${integerSlot}`);
             B.line(`${inBounds} = icmp ult ${this.sizeType} ${index}, ${len}`);
-            B.condBr(inBounds, lb, le);
+            B.condBr(inBounds, lb, exit);
           } else if (countedLoop && integerSlot && countedLimit) {
             const index = B.tmp();
             const inBounds = B.tmp();
@@ -8194,13 +8236,13 @@ export class LlEmitter {
             B.line(
               `${inBounds} = icmp ${countedLoop.step > 0 ? "slt" : "sgt"} i64 ${index}, ${countedLimit}`,
             );
-            B.condBr(inBounds, lb, le);
-          } else if (s.cond) B.condBr(this.emitCondition(s.cond), lb, le);
+            B.condBr(inBounds, lb, exit);
+          } else if (s.cond) B.condBr(this.emitCondition(s.cond), lb, exit);
           else B.br(lb);
           B.startBlock(lb);
           this.jumpTargets.push({
             kind: "loop",
-            brkLabel: le,
+            brkLabel: exit,
             contLabel: lu,
             labels: s.labels,
             frameDepth: this.frames.length,

@@ -36,7 +36,10 @@ show("grow 2", grow(0, 2));
 // Sums that cross 2^53 - 1 on the way.
 function crossing(): number {
   let s: number = 9007199254740900;
-  for (let i: number = 0; i < 200; i++) s += i;
+  for (let i: number = 0; i < 200; i++) {
+    s += i;
+    if (s === 1) break;
+  }
   return s;
 }
 show("crossing", crossing());
@@ -65,13 +68,17 @@ function negativeZeroRemainder(): number {
   for (let i: number = 1; i < 5; i++) {
     out = r % 3;
     r = r + i;
+    if (out === 7) break;
   }
   return out;
 }
 show("remainder", negativeZeroRemainder());
 function remainderNegZero(): number {
   let r: number = 0;
-  for (let i: number = 0; i < 2; i++) r = -6 % (3 + i * 0);
+  for (let i: number = 0; i < 2; i++) {
+    r = -6 % (3 + i * 0);
+    if (r > 100) break;
+  }
   return r;
 }
 show("remainder -0", remainderNegZero());
@@ -81,6 +88,7 @@ function negation(): number {
   for (let i: number = 0; i < 4; i++) {
     a = a - 1;
     b = -a;
+    if (a * b === 999) break;
   }
   return b;
 }
@@ -91,6 +99,7 @@ function negationZero(): number {
   for (let i: number = 0; i < 2; i++) {
     a = a - 1;
     b = -a;
+    if (a * b === 999) break;
   }
   return b;
 }
@@ -223,7 +232,10 @@ show("complement", complement());
 // Inputs that are not integers on entry, and loop-invariant inputs.
 function scaled(step: number): number {
   let x: number = 0;
-  for (let i: number = 0; i < 10; i++) x = x + step;
+  for (let i: number = 0; i < 10; i++) {
+    x = x + step;
+    if (x === -1) break;
+  }
   return x;
 }
 show("scaled int", scaled(3));
@@ -232,7 +244,10 @@ show("scaled huge", scaled(1e300));
 show("scaled Infinity", scaled(Infinity));
 function invariantNegZero(z: number): number {
   let x: number = 0;
-  for (let i: number = 0; i < 3; i++) x = z * 1;
+  for (let i: number = 0; i < 3; i++) {
+    x = z * 1;
+    if (x === 5) break;
+  }
   return x;
 }
 show("invariant -0", invariantNegZero(-0));

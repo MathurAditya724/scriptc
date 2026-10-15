@@ -13,11 +13,15 @@ function peek(): number {
 
 for (let i: number = 0; i < 1000; i++) {
   total = total + (i % 7);
+  if (total < 0) break;
   if (i % 250 === 0) console.log("peek", peek());
 }
 console.log("total", total, "calls", calls);
 
-for (let i: number = 0; i < 3000; i++) big += i;
+for (let i: number = 0; i < 3000; i++) {
+  big += i;
+  if (big === 1) break;
+}
 console.log("big", big, Number.isSafeInteger(big));
 
 let product: number = 1;
@@ -38,3 +42,25 @@ for (let i: number = 0; i < 6; i++) {
   mixed = mixed * 2;
 }
 console.log("mixed", mixed);
+
+let found: number = 0;
+for (let i: number = 0; i < 100; i++) {
+  found = found + i * i;
+  if (found > 1000) break;
+}
+console.log("found", found);
+
+let acc: number = 1;
+let steps: number = 0;
+while (true) {
+  acc = acc * 7;
+  steps++;
+  if (steps > 30) break;
+}
+console.log("acc", acc, steps);
+
+let countdown: number = 5;
+do {
+  countdown = countdown - 2;
+} while (countdown > -3);
+console.log("countdown", countdown);

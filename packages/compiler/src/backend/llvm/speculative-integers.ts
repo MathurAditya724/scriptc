@@ -1,8 +1,9 @@
 import type { IrExpr, IrStmt } from "../../ir/ir.js";
 import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 import { f64Lit } from "./common.js";
-import type { LlvmEmitterContext } from "./expr-context.js";
+import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
+import { withinInt32 } from "../../ir/integer-ranges.js";
 
 /** Speculative integer loops.
  *
@@ -25,6 +26,10 @@ export interface SpeculativeLoopPlan {
   locals: Map<string, boolean>;
   /** Statement-level writes computed as integers in the fast copy. */
   writes: Set<IrStmt>;
+  /** Nothing in the loop can observe a module global or leave it other
+   * than through its condition, `break` or a failed check: no calls, no
+   * throwing operations, no labeled jumps and no `return`. */
+  observerFree: boolean;
 }
 
 type SpeculativeLoop = Extract<IrStmt, { kind: "for" | "while" | "doWhile" }>;
@@ -48,6 +53,50 @@ const SIMPLE_STATEMENTS = new Set<string>([
   "break",
   "continue",
   "return",
+]);
+
+/** Statements and expressions that run no other code and cannot throw. */
+const OBSERVER_FREE_STATEMENTS = new Set<string>([
+  "varDecl",
+  "assign",
+  "exprStmt",
+  "if",
+  "block",
+  "break",
+  "continue",
+]);
+const OBSERVER_FREE_EXPRESSIONS = new Set<string>([
+  "numLit",
+  "boolLit",
+  "varRef",
+  "bin",
+  "unary",
+  "incDec",
+  "assignExpr",
+  "toBool",
+  "logical",
+  "ternary",
+]);
+
+/** Operators whose double form costs conversions or long latency, and that
+ * take an integer operand directly. */
+const CONSUMING_OPS = new Set<string>([
+  "*",
+  "/",
+  "%",
+  "**",
+  "&",
+  "|",
+  "^",
+  "<<",
+  ">>",
+  ">>>",
+  "<",
+  "<=",
+  ">",
+  ">=",
+  "===",
+  "!==",
 ]);
 
 const INTEGER_OPS = new Set<string>(["+", "-", "*", "%", "&", "|", "^", "<<", ">>", ">>>"]);
@@ -100,9 +149,12 @@ export function speculativeWriteTarget(
   }
 }
 
+/** `eligible` names the locals a shadow may stand for; `integral` those the
+ * emitter already holds as integers (counters, int32 locals). */
 export function planSpeculativeLoop(
   loop: SpeculativeLoop,
   eligible: (localId: string) => boolean,
+  integral: (localId: string) => boolean = () => false,
 ): SpeculativeLoopPlan | null {
   const writes = new Map<string, IrStmt[]>();
   const unspeculable = new Set<string>();
@@ -111,18 +163,36 @@ export function planSpeculativeLoop(
   let nodes = 0;
   let rejected = false;
   let arithmetic = false;
+  let observerFree = true;
+  // Locals the loop reads as integers: operands of multiplication,
+  // remainder, bitwise operators and comparisons, and indexes. An
+  // accumulator only ever added to gains little from an integer shadow
+  // (the double add is cheap), so it keeps its double.
+  const consumed = new Set<string>();
+  const consume = (e: IrExpr): void => {
+    if (e.kind === "varRef") consumed.add(e.localId);
+  };
 
   const expr = (e: IrExpr): boolean => {
     if (rejected) return false;
     nodes++;
+    if (!OBSERVER_FREE_EXPRESSIONS.has(e.kind) || (e.kind === "bin" && e.left.type.kind !== "f64"))
+      observerFree = false;
     if (e.kind === "varRef") reads.add(e.localId);
     else if (e.kind === "assignExpr" || e.kind === "incDec") unspeculable.add(e.localId);
+    else if (e.kind === "bin" && CONSUMING_OPS.has(e.op)) {
+      consume(e.left);
+      consume(e.right);
+    } else if (e.kind === "arrayGet" || e.kind === "arrayHas" || e.kind === "arrayState")
+      consume(e.index);
+    else if (e.kind === "bytesIntrinsic" || e.kind === "strIntrinsic") e.args.forEach(consume);
     return everyExprChild(e, expr, nested);
   };
   // Statements inside expressions (sequence expressions) run mid-expression,
   // where no statement can restart: their writes stay unspeculated.
   const nested = (s: IrStmt): boolean => {
     nodes++;
+    observerFree = false;
     if (s.kind === "assign" || s.kind === "varDecl") unspeculable.add(s.localId);
     return everyStmtChild(s, expr, nested);
   };
@@ -133,7 +203,13 @@ export function planSpeculativeLoop(
       rejected = true;
       return false;
     }
+    if (
+      !OBSERVER_FREE_STATEMENTS.has(s.kind) ||
+      ((s.kind === "break" || s.kind === "continue") && s.label !== undefined)
+    )
+      observerFree = false;
     if (s.kind === "varDecl") declared.add(s.localId);
+    if (s.kind === "arraySet" || s.kind === "bytesSet") consume(s.index);
     const target = speculativeWriteTarget(s);
     if (target) {
       if (target.value === null || isSpeculableValue(target.value)) {
@@ -157,12 +233,37 @@ export function planSpeculativeLoop(
   if (rejected || nodes > MAX_LOOP_NODES) return null;
 
   const locals = new Map<string, boolean>();
-  const speculated = new Set<IrStmt>();
-  for (const [id, list] of writes) {
-    if (unspeculable.has(id) || !reads.has(id) || !eligible(id)) continue;
-    locals.set(id, !declared.has(id));
-    for (const s of list) speculated.add(s);
+  for (const id of writes.keys())
+    if (!unspeculable.has(id) && consumed.has(id) && eligible(id))
+      locals.set(id, !declared.has(id));
+  // Every local a speculated write reads must be an integer whenever the
+  // write runs: speculated itself, already an integer, or loop-invariant
+  // (checked on entry). A value computed from doubles the loop writes
+  // would only fail its check on every entry.
+  const grounded = (e: IrExpr): boolean => {
+    if (e.kind === "varRef") {
+      const id = e.localId;
+      return (
+        locals.has(id) || integral(id) || (!writes.has(id) && !unspeculable.has(id) && eligible(id))
+      );
+    }
+    return everyExprChild(e, grounded, () => false);
+  };
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const id of [...locals.keys()]) {
+      for (const s of writes.get(id)!) {
+        const target = speculativeWriteTarget(s)!;
+        if (target.value !== null && !grounded(target.value)) {
+          locals.delete(id);
+          changed = true;
+          break;
+        }
+      }
+    }
   }
+  const speculated = new Set<IrStmt>();
+  for (const id of locals.keys()) for (const s of writes.get(id)!) speculated.add(s);
   if (speculated.size === 0) return null;
   // Loop-invariant integer inputs of the writes and the condition join the
   // shadows, so their reads carry integer facts too.
@@ -185,7 +286,7 @@ export function planSpeculativeLoop(
   }
   if (!arithmetic) return null;
   if (loop.cond) invariant(loop.cond);
-  return { locals, writes: speculated };
+  return { locals, writes: speculated, observerFree };
 }
 
 const SAFE = Number.MAX_SAFE_INTEGER;
@@ -232,6 +333,36 @@ function unsafeInteger(host: LlvmEmitterContext, value: string): string {
   return outside;
 }
 
+/** A condition that is true when a safe i64 lies outside [low, high]. Every
+ * speculative value is within ±(2^53 - 1), so bounds at or past those
+ * limits need no test, and the remaining bounds are exact integers. */
+function outsideRange(host: LlvmEmitterContext, value: string, low: number, high: number): string {
+  const B = host.B;
+  let outside = "false";
+  if (low > -SAFE) {
+    outside = B.tmp();
+    B.line(`${outside} = icmp slt i64 ${value}, ${low}`);
+  }
+  if (high < SAFE) {
+    const above = B.tmp();
+    B.line(`${above} = icmp sgt i64 ${value}, ${high}`);
+    outside = outside === "false" ? above : either(host, outside, above);
+  }
+  return outside;
+}
+
+/** A literal's value or the range analysis' proof for an expression whose
+ * range lies well inside the safe integers. */
+function staticRange(
+  host: LlvmEmitterContext,
+  e: IrExpr,
+): { min: number; max: number } | undefined {
+  const range = e.kind === "numLit" ? { min: e.value, max: e.value } : host.integerRanges.get(e);
+  if (!range) return undefined;
+  const limit = 2 ** 52;
+  return range.min >= -limit && range.max <= limit ? range : undefined;
+}
+
 function either(host: LlvmEmitterContext, a: string, b: string): string {
   const t = host.B.tmp();
   host.B.line(`${t} = or i1 ${a}, ${b}`);
@@ -250,6 +381,11 @@ export function emitSpeculativeInteger(
   bail: (condition: string) => void,
 ): string {
   const B = host.B;
+  // A value the range analysis already proves takes the ordinary integer
+  // emission, which needs no checks.
+  const proven = e.kind === "bin" ? host.integerRanges.get(e) : undefined;
+  if (proven && proven.min >= -SAFE && proven.max <= SAFE)
+    return speculativeLeaf(host, host.emitExpr(e), e, bail);
   switch (e.kind) {
     case "numLit":
       return String(e.value);
@@ -279,9 +415,21 @@ export function emitSpeculativeInteger(
       const b = emitSpeculativeInteger(host, e.right, bail);
       const result = B.tmp();
       if (e.op === "+" || e.op === "-") {
+        // With one operand's range known, the other is checked against the
+        // narrowed bounds before the operation: the check then depends on
+        // no new value, and LLVM keeps the operation itself simple.
+        const right = staticRange(host, e.right);
+        const left = e.op === "+" ? staticRange(host, e.left) : undefined;
+        if (right) {
+          // a + b with b in [lo, hi] is safe iff a in [-SAFE - lo, SAFE - hi];
+          // a - b iff a in [-SAFE + hi, SAFE + lo].
+          const low = e.op === "+" ? -SAFE - right.min : -SAFE + right.max;
+          const high = e.op === "+" ? SAFE - right.max : SAFE + right.min;
+          bail(outsideRange(host, a, low, high));
+        } else if (left) bail(outsideRange(host, b, -SAFE - left.min, SAFE - left.max));
         // Safe operands cannot overflow i64; an exact zero sum is +0.
         B.line(`${result} = ${e.op === "+" ? "add" : "sub"} nsw i64 ${a}, ${b}`);
-        bail(unsafeInteger(host, result));
+        if (!right && !left) bail(unsafeInteger(host, result));
         return result;
       }
       if (e.op === "*") {
@@ -332,13 +480,33 @@ export function emitSpeculativeInteger(
     default:
       break;
   }
-  const value = host.emitExpr(e);
+  return speculativeLeaf(host, host.emitExpr(e), e, bail);
+}
+
+/** The safe i64 of an evaluated number: its proven integer, or a checked
+ * conversion. */
+function speculativeLeaf(
+  host: LlvmEmitterContext,
+  value: LlValue,
+  e: IrExpr,
+  bail: (condition: string) => void,
+): string {
   const integer = exactInteger(host, value, e);
+  if (integer && integer.type === "i64" && withinInt32(integer.range)) {
+    // Only the low half is used, as by a double conversion of an int32:
+    // LLVM then narrows the operation that produced it (a 64-bit remainder
+    // by a constant costs a wide multiply).
+    const narrow = host.B.tmp(),
+      wide = host.B.tmp();
+    host.B.line(`${narrow} = trunc i64 ${integer.name} to i32`);
+    host.B.line(`${wide} = sext i32 ${narrow} to i64`);
+    return wide;
+  }
   if (integer && integer.range.min >= -SAFE && integer.range.max <= SAFE)
     return widenInteger(host, integer);
   const [wide, ok] = emitSafeIntegerCheck(host, value.name);
-  const fail = B.tmp();
-  B.line(`${fail} = xor i1 ${ok}, true`);
+  const fail = host.B.tmp();
+  host.B.line(`${fail} = xor i1 ${ok}, true`);
   bail(fail);
   return wide;
 }

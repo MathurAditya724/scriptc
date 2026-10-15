@@ -52,7 +52,11 @@ test("integer writes and their loop-invariant inputs are speculated", () => {
 test("locals declared in the body need no entry check", () => {
   const declare: IrStmt = { kind: "varDecl", localId: "t", init: bin("*", ref("i"), num(2)), loc };
   const plan = planSpeculativeLoop(
-    loop([declare, assign("s", bin("+", ref("s"), ref("t"))), increment("i")]) as never,
+    loop([
+      declare,
+      assign("s", bin("%", bin("*", ref("s"), ref("t")), num(65521))),
+      increment("i"),
+    ]) as never,
     all,
   )!;
   expect(plan.locals.get("t")).toBe(false);
@@ -90,6 +94,11 @@ test("non-integer, expression-position and ineligible writes keep the double cop
       (id) => id !== "v",
     ),
   ).toBeNull();
+});
+
+test("accumulators that are only added to keep their double", () => {
+  const sum = loop([assign("s", bin("+", ref("s"), bin("%", ref("i"), num(7)))), increment("i")]);
+  expect(planSpeculativeLoop(sum as never, all)?.locals.has("s")).toBe(false);
 });
 
 test("nested loops are left to the inner loop", () => {
