@@ -1920,6 +1920,18 @@ function lowerNetServerMethodCall(
       loc,
     };
   }
+  if ((name === "ref" || name === "unref") && args.length === 0) {
+    // Whether the server keeps the event loop alive.
+    requireStatementPosition(lowerer, call, `server.${name}()`);
+    const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+    return {
+      kind: "libCall",
+      fn: "net.serverSetRef",
+      args: [receiver, boolLit(name === "ref", loc)],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "address") {
     // The full AddressInfo record (the dgram.address materialization).
     // The composed `server.address().port` read already lowered through
@@ -1964,6 +1976,18 @@ function lowerNetSocketMethodCall(
   const name = access.name.text;
   const loc = locOf(call);
   const args = call.arguments;
+  if ((name === "ref" || name === "unref") && args.length === 0) {
+    // Whether the socket keeps the event loop alive.
+    requireStatementPosition(lowerer, call, `socket.${name}()`);
+    const receiver = lowerer.lowerExpr(access.expression);
+    return {
+      kind: "libCall",
+      fn: "net.sockSetRef",
+      args: [receiver, boolLit(name === "ref", loc)],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "write" || name === "end") {
     requireStatementPosition(lowerer, call, `socket.${name}(...)`);
     // write(chunk, encoding) — the two-argument encoding form: 'buffer'

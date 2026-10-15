@@ -42,14 +42,30 @@ test("union widening preserves record identity and recursive element layouts", (
   expect(unionWideningTags([node], [other])).toBeNull();
 });
 
-test("matchStringSelfConcat recognizes only the immediate string self-concat", () => {
+test("matchStringSelfConcat recognizes the string self-concat", () => {
   const suffix = str("x");
-  expect(matchStringSelfConcat("acc", concat(ref("acc"), suffix))).toBe(suffix);
+  const target = ref("acc");
+  expect(matchStringSelfConcat("acc", concat(target, suffix))).toEqual({ left: target, suffix });
+});
+
+test("matchStringSelfConcat takes the operands after a leftmost target as the suffix", () => {
+  const target = ref("acc");
+  const self = matchStringSelfConcat(
+    "acc",
+    concat(concat(concat(target, str("x")), str("y")), str("z")),
+  );
+  expect(self?.left).toBe(target);
+  expect(self?.suffix).toMatchObject({
+    kind: "strConcat",
+    left: { kind: "strConcat", left: { value: "x" }, right: { value: "y" } },
+    right: { value: "z" },
+  });
 });
 
 test("matchStringSelfConcat rejects non-canonical and non-string shapes", () => {
   expect(matchStringSelfConcat("acc", concat(ref("other"), str("x")))).toBeNull();
-  expect(matchStringSelfConcat("acc", concat(concat(ref("acc"), str("x")), str("y")))).toBeNull();
+  expect(matchStringSelfConcat("acc", concat(concat(ref("other"), str("x")), str("y")))).toBeNull();
+  expect(matchStringSelfConcat("acc", concat(str("x"), ref("acc")))).toBeNull();
   expect(matchStringSelfConcat("acc", str("x"))).toBeNull();
   expect(matchStringSelfConcat("acc", concat(ref("acc", F64), str("x")))).toBeNull();
   expect(matchStringSelfConcat("acc", concat(ref("acc"), str("x"), F64))).toBeNull();

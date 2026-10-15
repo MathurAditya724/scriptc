@@ -29,7 +29,7 @@ import { checkedClassAssertion, checkedClassUnionAssertion } from "./class-asser
 import { checkedArmExtraction } from "./coercions/unions.js";
 import { narrowClassUnion, narrowStoredClassValue } from "./class-unions.js";
 import { lowerUnionFieldRead, lowerUnionFieldWrite } from "./expressions/union-fields.js";
-import { captureContextArguments } from "./function-context.js";
+import { captureContextArguments, declareContextLocal } from "./function-context.js";
 import { OBJECT_CALLABLE_VALUES } from "./surfaces.js";
 import { wasiGuestPath } from "../../wasi-paths.js";
 import {
@@ -15045,7 +15045,29 @@ function lowerFieldCompoundValue(
   target.obj = save(target.obj, "%compoundReceiver");
   // Accessors observe getter, RHS side effects, then setter, all through
   // the saved receiver.
-  const read = save(lowerer.fieldGetExpr(target, locOf(access), access), "%compoundOld");
+  const fieldRead = lowerer.fieldGetExpr(target, locOf(access), access);
+  // `+=` on a stored string field reads it into a mutable local, so the
+  // concat below can append to that local in place.
+  const storedString =
+    op === "+" &&
+    fieldRead.type.kind === "string" &&
+    target.fieldType.kind === "string" &&
+    (target.container === "class" || target.container === "record");
+  let read: IrExpr;
+  if (storedString) {
+    const old = declareContextLocal(
+      lowerer.ctx,
+      "%compoundOld",
+      STRING,
+      true,
+      undefined,
+      undefined,
+    );
+    body.push({ kind: "varDecl", localId: old.id, init: fieldRead, loc: fieldRead.loc });
+    read = varRef(old.id, STRING, fieldRead.loc);
+  } else {
+    read = save(fieldRead, "%compoundOld");
+  }
   const rhs = save(
     rhsNode ? lowerer.lowerExpr(rhsNode) : { kind: "numLit", value: 1, type: F64, loc },
     "%compoundRhs",
@@ -15055,16 +15077,12 @@ function lowerFieldCompoundValue(
       ? { kind: "dynCheck", value: rhs, type: F64, loc: rhs.loc }
       : lowerOptionalNumber(lowerer, rhs, loc);
   let value: IrExpr;
+  let appended: IrExpr | null = null;
   const numericRead = lowerOptionalNumber(lowerer, read, loc, access);
   const bigintValue = rhsNode ? bigintCompoundValue(op, read, rhs, loc) : null;
   if (op === "+" && read.type.kind === "string") {
-    value = {
-      kind: "strConcat",
-      left: read,
-      right: lowerer.ensureString(rhs, rhsNode ?? access),
-      type: STRING,
-      loc,
-    };
+    appended = lowerer.ensureString(rhs, rhsNode ?? access);
+    value = { kind: "strConcat", left: read, right: appended, type: STRING, loc };
   } else if (numericRead.type.kind === "f64" && numericRhs.type.kind === "f64") {
     value = { kind: "bin", op, left: numericRead, right: numericRhs, type: F64, loc };
   } else if (bigintValue) {
@@ -15085,6 +15103,30 @@ function lowerFieldCompoundValue(
     };
   } else {
     lowerer.unsupported("SC1043", access);
+  }
+  if (storedString && rhs.type.kind === "string" && read.kind === "varRef" && appended !== null) {
+    // The field gives up its value before the concat (no code runs in
+    // between: both operands are already strings), and the concat is the
+    // self-append `old = old + rhs`, which hands the local's reference to
+    // the runtime: the old string is then uniquely owned unless something
+    // else holds it, and is appended to in place. Repeated `this.text += s`
+    // is linear rather than a copy per append.
+    const oldId = read.localId;
+    const oldLoc = read.loc;
+    const oldRef = (): IrExpr => varRef(oldId, STRING, oldLoc);
+    const concat: IrExpr = {
+      kind: "strConcat",
+      left: oldRef(),
+      right: appended,
+      type: STRING,
+      loc,
+    };
+    body.push(
+      lowerer.fieldSetStmt(target, { kind: "strLit", value: "", type: STRING, loc }, loc, access),
+      { kind: "assign", localId: oldId, value: concat, loc },
+      lowerer.fieldSetStmt(target, oldRef(), loc, access),
+    );
+    return { kind: "seqExpr", stmts: body, result: oldRef(), type: STRING, loc };
   }
   const result = save(value, "%compoundResult");
   body.push(

@@ -1137,6 +1137,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   },
   "net.serverPort": { argTypes: [NETSERVER_T], result: F64 },
   "net.serverListening": { argTypes: [NETSERVER_T], result: BOOL },
+  /** socket.ref()/unref() and server.ref()/unref(): whether the handle
+   * keeps the event loop alive. */
+  "net.sockSetRef": { argTypes: [NETSOCKET_T, BOOL], result: VOID },
+  "net.serverSetRef": { argTypes: [NETSERVER_T, BOOL], result: VOID },
   // net.serverAddress's record result is shape-checked in the libCall case
   // (the dgram.address sentinel pattern).
   /** server.address() as the full AddressInfo record (the dgram.address
