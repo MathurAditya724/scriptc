@@ -2203,6 +2203,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (!elem) return null;
     return genResultRecord(elem, VOID, ctx.shapes, ctx.unions);
   }
+  // node:crypto's KeyObject: secret keys are native handles (scr_lib.c)
+  // whose getters and methods dispatch through the handle. The JsonWebKey
+  // that export() returns is a plain checked-dynamic object.
+  if (
+    (psym?.name === "KeyObject" || psym?.name === "JsonWebKey") &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
+          ctx.isStdlibFile(d.getSourceFile()),
+      )
+  ) {
+    return DYN;
+  }
   if (
     psym &&
     (FETCH_AMBIENT_TYPES as readonly string[]).includes(psym.name) &&

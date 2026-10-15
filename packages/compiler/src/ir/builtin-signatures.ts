@@ -2293,6 +2293,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.randomFillCbDyn": { argTypes: [DYN, DYN, DYN, F64, null], result: VOID },
   "crypto.randomIntCb": { argTypes: [F64, F64, F64, null], result: VOID },
   "crypto.randomUUIDOpts": { argTypes: [DYN], result: STRING },
+  /** Secret KeyObjects: native handles whose getters and methods dispatch
+   * through the handle. keyObjectInput reads a key's bytes for hkdf. */
+  "crypto.createSecretKey": { argTypes: [DYN, DYN], result: DYN },
+  "crypto.generateKeySync": { argTypes: [DYN, DYN], result: DYN },
+  "crypto.generateKeyCb": { argTypes: [DYN, DYN, null], result: VOID },
+  "crypto.keyObjectInput": { argTypes: [DYN], result: BYTES_U8 },
+  "crypto.isKeyObject": { argTypes: [DYN], result: BOOL },
   "crypto.randomUUIDv7": { argTypes: [DYN], result: STRING },
   "crypto.pbkdf2": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING], result: BYTES_U8 },
   "crypto.randomBytesCb": { argTypes: [F64, null], result: VOID },

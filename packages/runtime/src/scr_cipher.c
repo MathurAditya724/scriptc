@@ -404,7 +404,13 @@ ScrDyn *scr_crypto_cipher_new(bool decrypt, ScrDyn *cipher, ScrDyn *key, ScrDyn 
   ScrDyn *encoding = sc_string_option(options, "encoding", &failed);
   if (failed) return NULL;
   ScrBytes *key_bytes = NULL;
-  if (key->kind == SCR_DYN_STR || sc_is_view(key) || scr_buffer_storage_is(key)) {
+  size_t key_object_len;
+  const unsigned char *key_object = scr_key_object_bytes(key, &key_object_len);
+  if (key_object) {
+    /* prepareSecretKey: a secret KeyObject supplies its bytes. */
+    key_bytes = scr_bytes_new(SCR_BYTES_U8, (double)key_object_len);
+    if (key_object_len) memcpy(key_bytes->data, key_object, key_object_len);
+  } else if (key->kind == SCR_DYN_STR || sc_is_view(key) || scr_buffer_storage_is(key)) {
     key_bytes = sc_buffer_or_view(key, "key", encoding);
   } else {
     scr_dyn_arg_type_fail("key",

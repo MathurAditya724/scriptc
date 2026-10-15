@@ -5053,7 +5053,11 @@ function validateFunction(
       if (e.args[4]?.type.kind !== "func")
         err(`libCall ${e.fn} callback must be a function`, e.loc);
     }
-    if (e.fn === "crypto.randomFillCbDyn" || e.fn === "crypto.randomIntCb") {
+    if (
+      e.fn === "crypto.randomFillCbDyn" ||
+      e.fn === "crypto.randomIntCb" ||
+      e.fn === "crypto.generateKeyCb"
+    ) {
       const callback = e.args[e.args.length - 1]?.type;
       if (callback?.kind !== "func") err(`libCall ${e.fn} callback must be a function`, e.loc);
     }
