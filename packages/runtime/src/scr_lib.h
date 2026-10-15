@@ -244,7 +244,7 @@ void scr_fs_mkdir(ScrStr *path);
  * EISDIR-coded error; use scr_fs_rmdir for empty directories). */
 void scr_fs_rm(ScrStr *path);
 void scr_fs_rmdir(ScrStr *path);
-ScrArr *scr_fs_readdir(ScrStr *path); /* names, OS order, no "."/".." */
+ScrArr *scr_fs_readdir(ScrStr *path); /* names (byte order on POSIX, as libuv sorts), no "."/".." */
 
 /* The fs option forms (same throw discipline). mkdir_recursive is Node's
  * recursive algorithm (existing-dir target is a no-op; errors report

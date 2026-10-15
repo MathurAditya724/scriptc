@@ -5420,29 +5420,15 @@ ScrStats *scr_fs_fstat(double fd) {
 #endif
 }
 
+/* The names of one scandir listing: byte order on POSIX (libuv sorts),
+ * the directory's own order on Windows (libuv does not). */
 ScrArr *scr_fs_readdir(ScrStr *path) {
-#ifdef _WIN32
   ScrScandir *scan = scr_fs_scandir(path);
   if (!scan) return NULL;
   ScrArr *arr = scr_arr_new(SCR_ELEM_STR, scr_fs_scandir_count(scan));
   for (size_t i = 0; i < scr_fs_scandir_count(scan); i++) scr_arr_push_ref(arr, scr_fs_scandir_name(scan, i));
   scr_fs_scandir_free(scan);
   return arr;
-#else
-  DIR *d = opendir(path->data);
-  if (!d) {
-    scr_fs_throw(errno, "scandir", path); /* Node reports scandir */
-    return NULL;
-  }
-  ScrArr *arr = scr_arr_new(SCR_ELEM_STR, 8);
-  const struct dirent *ent;
-  while ((ent = readdir(d)) != NULL) {
-    if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
-    scr_arr_push_ref(arr, scr_str_new(ent->d_name, strlen(ent->d_name)));
-  }
-  closedir(d);
-  return arr; /* OS order, exactly like Node (unsorted) */
-#endif
 }
 
 /* ── the withFileTypes scandir snapshot ──────────────────────────────
@@ -5460,6 +5446,33 @@ struct ScrScandir {
 };
 
 #ifndef _WIN32
+/* libuv's uv_fs_scandir sorts entries with strcmp on POSIX hosts, so
+ * readdir, readdirSync and fs/promises readdir list names in byte order. */
+typedef struct {
+  ScrStr *name;
+  unsigned char kind;
+} ScrScandirEntry;
+
+static int scr_fs_scandir_cmp(const void *a, const void *b) {
+  const ScrStr *x = ((const ScrScandirEntry *)a)->name, *y = ((const ScrScandirEntry *)b)->name;
+  size_t n = x->len < y->len ? x->len : y->len;
+  int c = memcmp(x->data, y->data, n);
+  return c ? c : (x->len > y->len) - (x->len < y->len);
+}
+
+static void scr_fs_scandir_sort(ScrScandir *s) {
+  if (s->len < 2) return;
+  ScrScandirEntry *rows = malloc(s->len * sizeof *rows);
+  if (!rows) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < s->len; i++) rows[i] = (ScrScandirEntry){s->names[i], s->kinds[i]};
+  qsort(rows, s->len, sizeof *rows, scr_fs_scandir_cmp);
+  for (size_t i = 0; i < s->len; i++) {
+    s->names[i] = rows[i].name;
+    s->kinds[i] = rows[i].kind;
+  }
+  free(rows);
+}
+
 static unsigned char scr_dirent_kind_of_mode(mode_t m) {
   if (S_ISREG(m)) return 1;
   if (S_ISDIR(m)) return 2;
@@ -5603,6 +5616,7 @@ ScrScandir *scr_fs_scandir(ScrStr *path) {
     s->len++;
   }
   closedir(d);
+  scr_fs_scandir_sort(s);
   return s;
 #endif
 }
