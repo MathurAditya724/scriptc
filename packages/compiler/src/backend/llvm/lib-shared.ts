@@ -1162,6 +1162,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.seal": "scr_dyn_seal",
   "dyn.isSealed": "scr_dyn_is_sealed",
   "dyn.objValues": "scr_dyn_obj_values",
+  "dyn.objValueList": "scr_dyn_obj_value_list",
   "dyn.objEntries": "scr_dyn_obj_entries",
   "dyn.structuredClone": "scr_structured_clone",
   "dyn.cloneMissing": "scr_structured_clone_missing",
