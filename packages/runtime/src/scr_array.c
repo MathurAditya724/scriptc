@@ -3367,6 +3367,14 @@ static size_t scr_sort_count_run(ScrTimSort *s, size_t low, size_t high) {
       __builtin_prefetch(scr_slot_to_ptr((arr)[(index)])); \
   } while (0)
 
+/* A gallop result k as an offset into its run: 0 <= k <= length holds by
+ * construction, and the merges copy k or length - k slots, so a violation
+ * is an internal error rather than a copy. */
+static size_t scr_sort_gallop_result(ptrdiff_t k, size_t length) {
+  if (k < 0 || (size_t)k > length) scr_trap("scriptc: internal error: sort gallop out of range\n");
+  return (size_t)k;
+}
+
 /* The offset k in [0, length] with arr[base + k - 1] < key <= arr[base + k]. */
 static __attribute__((noinline)) size_t scr_sort_gallop_left(ScrTimSort *s, const uint64_t *arr, uint64_t key, size_t base,
                                    size_t length, size_t hint) {
@@ -3374,7 +3382,7 @@ static __attribute__((noinline)) size_t scr_sort_gallop_left(ScrTimSort *s, cons
   size_t last = 0, offset = 1;
   bool less = SCR_TS_LESS(arr[base + hint], key);
   SCR_TS_FAIL_IF(0);
-  long lo, hi;
+  ptrdiff_t lo, hi;
   if (less) {
     size_t max = length - hint;
     while (offset < max) {
@@ -3386,8 +3394,8 @@ static __attribute__((noinline)) size_t scr_sort_gallop_left(ScrTimSort *s, cons
       offset = (offset << 1) + 1;
     }
     if (offset > max) offset = max;
-    lo = (long)(last + hint);
-    hi = (long)(offset + hint);
+    lo = (ptrdiff_t)(last + hint);
+    hi = (ptrdiff_t)(offset + hint);
   } else {
     size_t max = hint + 1;
     while (offset < max) {
@@ -3399,12 +3407,12 @@ static __attribute__((noinline)) size_t scr_sort_gallop_left(ScrTimSort *s, cons
       offset = (offset << 1) + 1;
     }
     if (offset > max) offset = max;
-    lo = (long)hint - (long)offset;
-    hi = (long)hint - (long)last;
+    lo = (ptrdiff_t)hint - (ptrdiff_t)offset;
+    hi = (ptrdiff_t)hint - (ptrdiff_t)last;
   }
   lo++;
   while (lo < hi) {
-    long m = lo + ((hi - lo) >> 1);
+    ptrdiff_t m = lo + ((hi - lo) >> 1);
     if (m + 1 < hi) SCR_SORT_PREFETCH_SLOT(cmp_, arr, base + (size_t)(m + 1 + ((hi - m - 1) >> 1)), base + length);
     if (lo < m) SCR_SORT_PREFETCH_SLOT(cmp_, arr, base + (size_t)(lo + ((m - lo) >> 1)), base + length);
     bool l = SCR_TS_LESS(arr[base + (size_t)m], key);
@@ -3412,7 +3420,7 @@ static __attribute__((noinline)) size_t scr_sort_gallop_left(ScrTimSort *s, cons
     if (l) lo = m + 1;
     else hi = m;
   }
-  return (size_t)hi;
+  return scr_sort_gallop_result(hi, length);
 }
 
 /* The offset k in [0, length] with arr[base + k - 1] <= key < arr[base + k]. */
@@ -3422,7 +3430,7 @@ static __attribute__((noinline)) size_t scr_sort_gallop_right(ScrTimSort *s, con
   size_t last = 0, offset = 1;
   bool less = SCR_TS_LESS(key, arr[base + hint]);
   SCR_TS_FAIL_IF(0);
-  long lo, hi;
+  ptrdiff_t lo, hi;
   if (less) {
     size_t max = hint + 1;
     while (offset < max) {
@@ -3434,8 +3442,8 @@ static __attribute__((noinline)) size_t scr_sort_gallop_right(ScrTimSort *s, con
       offset = (offset << 1) + 1;
     }
     if (offset > max) offset = max;
-    lo = (long)hint - (long)offset;
-    hi = (long)hint - (long)last;
+    lo = (ptrdiff_t)hint - (ptrdiff_t)offset;
+    hi = (ptrdiff_t)hint - (ptrdiff_t)last;
   } else {
     size_t max = length - hint;
     while (offset < max) {
@@ -3447,12 +3455,12 @@ static __attribute__((noinline)) size_t scr_sort_gallop_right(ScrTimSort *s, con
       offset = (offset << 1) + 1;
     }
     if (offset > max) offset = max;
-    lo = (long)(last + hint);
-    hi = (long)(offset + hint);
+    lo = (ptrdiff_t)(last + hint);
+    hi = (ptrdiff_t)(offset + hint);
   }
   lo++;
   while (lo < hi) {
-    long m = lo + ((hi - lo) >> 1);
+    ptrdiff_t m = lo + ((hi - lo) >> 1);
     if (m + 1 < hi) SCR_SORT_PREFETCH_SLOT(cmp_, arr, base + (size_t)(m + 1 + ((hi - m - 1) >> 1)), base + length);
     if (lo < m) SCR_SORT_PREFETCH_SLOT(cmp_, arr, base + (size_t)(lo + ((m - lo) >> 1)), base + length);
     bool l = SCR_TS_LESS(key, arr[base + (size_t)m]);
@@ -3460,7 +3468,7 @@ static __attribute__((noinline)) size_t scr_sort_gallop_right(ScrTimSort *s, con
     if (l) hi = m;
     else lo = m + 1;
   }
-  return (size_t)hi;
+  return scr_sort_gallop_result(hi, length);
 }
 
 /* Merges [base_a, base_a + len_a) and the run after it, len_a <= len_b,
@@ -3818,6 +3826,54 @@ bool scr_sort_slots_with(uint64_t *values, size_t n, ScrSortLess less, void *ctx
   s.c.less_ctx = ctx;
   return scr_sort_copy(&s, values, n);
 }
+
+#ifdef SCR_SORT_TEST
+/* Test-only entry points into the TimSort steps, deliberately absent from
+ * the normal runtime ABI. `arr` and `a` are indexed as the sort indexes its
+ * work array, so a test can pass a base pointer below its buffer and reach
+ * the buffer through indices past 2^32. */
+static ScrTimSort scr_sort_test_state(ScrSortLess less) {
+  ScrTimSort s;
+  memset(&s, 0, sizeof s);
+  s.c.less = less;
+  s.min_gallop = SCR_SORT_MIN_GALLOP;
+  return s;
+}
+
+size_t scr_sort_test_gallop(bool right, const uint64_t *arr, uint64_t key, size_t base,
+                            size_t length, size_t hint, ScrSortLess less) {
+  ScrTimSort s = scr_sort_test_state(less);
+  return right ? scr_sort_gallop_right(&s, arr, key, base, length, hint)
+               : scr_sort_gallop_left(&s, arr, key, base, length, hint);
+}
+
+/* Merges the sorted runs a[base, base + len_a) and a[base + len_a, base +
+ * len_a + len_b) as the sort's merge step does: galloping trims both runs,
+ * then merge_low or merge_high runs through `tmp`. Returns 1 after
+ * merge_low, 2 after merge_high and 0 when the trimmed runs were already in
+ * order. */
+int scr_sort_test_merge(uint64_t *a, size_t base, size_t len_a, size_t len_b, uint64_t *tmp,
+                         size_t tmp_cap, ScrSortLess less) {
+  ScrTimSort s = scr_sort_test_state(less);
+  s.a = a;
+  s.tmp = tmp;
+  s.tmp_cap = tmp_cap;
+  s.run_base[0] = base;
+  s.run_len[0] = len_a;
+  s.run_base[1] = base + len_a;
+  s.run_len[1] = len_b;
+  s.runs = 2;
+  size_t k = scr_sort_gallop_right(&s, a, a[base + len_a], base, len_a, 0);
+  size_t trimmed_b = scr_sort_gallop_left(&s, a, a[base + len_a - 1], base + len_a, len_b, len_b - 1);
+  scr_sort_merge_at(&s, 0);
+  if (k == len_a || trimmed_b == 0) return 0;
+  return len_a - k <= trimmed_b ? 1 : 2;
+}
+
+size_t scr_sort_test_gallop_result(ptrdiff_t k, size_t length) {
+  return scr_sort_gallop_result(k, length);
+}
+#endif
 
 #undef SCR_TS_FAIL_IF
 #undef SCR_TS_FAILED
