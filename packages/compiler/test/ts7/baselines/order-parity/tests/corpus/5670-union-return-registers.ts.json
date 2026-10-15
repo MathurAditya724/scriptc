@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5670-union-return-registers.ts"
+ ],
+ "diags": []
+}

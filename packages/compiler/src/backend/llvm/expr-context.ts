@@ -16,6 +16,9 @@ export interface LlValue {
    * high bits and the proven range of its original value. */
   integer?: { name: string; type: "i32" | "i64"; signed: boolean; range: IntegerRange };
   slot?: boolean;
+  /** A private stack union box whose payload the frame owns: releasing it
+   * releases the reference arm's payload by tag. */
+  unionPayload?: boolean;
   /** A sequence local held in a capture box; release the box itself. */
   boxed?: boolean;
 }
