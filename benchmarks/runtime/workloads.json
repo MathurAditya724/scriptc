@@ -71,6 +71,20 @@
       ]
     },
     {
+      "name": "typed-array-scan",
+      "entry": "workloads/typed-array-scan.ts",
+      "args": [
+        "3"
+      ]
+    },
+    {
+      "name": "typed-array-scan-workers",
+      "entry": "workloads/typed-array-scan-workers.ts",
+      "args": [
+        "3"
+      ]
+    },
+    {
       "name": "value-objects",
       "entry": "workloads/value-objects.ts",
       "args": [

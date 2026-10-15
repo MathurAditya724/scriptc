@@ -204,6 +204,10 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5237-inline-union-frame-objects.ts",
     "5327-record-boundary-identity.ts",
     "5331-record-boundary-methods.ts",
+    // Fetch named in text only, and pending top-level await exit statuses.
+    "5334-fetch-mentions-without-calls.ts",
+    "5335-top-level-await-pending-exit-code.ts",
+    "5336-top-level-await-pending-exit-listener.ts",
     "1020-async-basics.ts",
     "1021-async-ordering.ts",
     "1022-async-exceptions.ts",
@@ -333,22 +337,9 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     }
   });
 
-  test("embedded source comments mentioning fetch do not trigger SC3002", async () => {
-    const entry = join(repoRoot, "tests/fixtures/npm/cases/island-web-plumbing/main.ts");
-    const outDir = await mkdtemp("/tmp/scriptc-wasi-fetch-comment-");
-    const result = await compile(entry, {
-      outDir,
-      outPath: join(outDir, "program.wasm"),
-    });
-    if (!result.ok) {
-      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
-    }
-    expect(result.backend).toBe("llvm");
-  });
-
-  test("embedded destructuring of global fetch reports SC3002", async () => {
-    const entry = join(repoRoot, "tests/fixtures/npm/cases/fetch-destructure/main.ts");
-    const outDir = await mkdtemp("/tmp/scriptc-wasi-fetch-destructure-");
+  test("a global fetch call reports SC3002", async () => {
+    const entry = join(repoRoot, "tests/fixtures/fetch/static-network-error/main.mts");
+    const outDir = await mkdtemp("/tmp/scriptc-wasi-fetch-");
     const result = await compile(entry, {
       outDir,
       outPath: join(outDir, "program.wasm"),
@@ -400,28 +391,31 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     expect(wasm).toEqual(node);
   });
 
-  test("the LLVM target compiles npm packages natively", async () => {
-    const entry = join(repoRoot, "tests/fixtures/npm/cases/namespace/main.ts");
-    const outDir = await mkdtemp("/tmp/scriptc-wasi-npm-");
-    const outPath = join(outDir, "program.wasm");
-    const result = await compile(entry, { outDir, outPath });
-    if (!result.ok)
-      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
-    expect(result.backend).toBe("llvm");
+  test.each(["cjs-named", "esm-entries"])(
+    "the LLVM target compiles the %s npm packages natively",
+    async (fixture) => {
+      const entry = join(repoRoot, "tests/fixtures/npm/cases", fixture, "main.ts");
+      const outDir = await mkdtemp("/tmp/scriptc-wasi-npm-");
+      const outPath = join(outDir, "program.wasm");
+      const result = await compile(entry, { outDir, outPath });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      expect(result.backend).toBe("llvm");
 
-    const node = await run(process.execPath, ["--no-warnings", entry]);
-    const wasm = await run(process.execPath, [
-      "--no-warnings",
-      "--experimental-wasi-unstable-preview1",
-      "-e",
-      WASI_RUNNER,
-      outPath,
-    ]);
-    expect(wasm).toEqual(node);
-  });
+      const node = await run(process.execPath, ["--no-warnings", entry]);
+      const wasm = await run(process.execPath, [
+        "--no-warnings",
+        "--experimental-wasi-unstable-preview1",
+        "-e",
+        WASI_RUNNER,
+        outPath,
+      ]);
+      expect(wasm).toEqual(node);
+    },
+  );
 
   test.each(["top-level-await-pending-exit-code", "top-level-await-pending-exit-listener"])(
-    "embedded npm preserves pending-module exit precedence for %s",
+    "npm packages keep the pending-module exit precedence for %s",
     async (fixture) => {
       const entry = join(repoRoot, "tests/fixtures/npm/cases", fixture, "main.ts");
       const outDir = await mkdtemp("/tmp/scriptc-wasi-npm-pending-");

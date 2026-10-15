@@ -199,6 +199,7 @@ import {
   ffiNativeParamLl,
   ffiNativeReturnLl,
   llvmCommentText,
+  sizeToDouble,
 } from "./common.js";
 import { ffiExtendsNarrowIntegers } from "../targets.js";
 import {
@@ -1929,22 +1930,24 @@ export class LlEmitter {
     const topPendingExitLines = (): string[] => {
       if (!asyncEntry) return [];
       const lines: string[] = [];
-      if (usesNodeTest) {
-        lines.push(`  %tla_program_exit = call i32 @scr_test_exit_code()`);
-      }
+      // finish_top_level noted 13 unless the program set process.exitCode.
+      // A failed node:test run outranks either before exit listeners run.
       if (usesNodeTest) {
         lines.push(
+          `  %tla_program_exit = call i32 @scr_test_exit_code()`,
           `  %tla_program_exit_zero = icmp eq i32 %tla_program_exit, 0`,
-          `  %tla_exit_status = select i1 %tla_program_exit_zero, i32 %tla_status, i32 %tla_program_exit`,
+          `  %tla_hint = call i32 @scr_exit_code_hint_get()`,
+          `  %tla_exit_status = select i1 %tla_program_exit_zero, i32 %tla_hint, i32 %tla_program_exit`,
+          `  call void @scr_exit_code_note(i32 %tla_exit_status)`,
         );
       }
-      const exitStatus = usesNodeTest ? "%tla_exit_status" : "%tla_status";
-      // finish_top_level initially notes 13. Replace that hint before exit
-      // listeners run when a higher-priority verdict was already selected.
-      lines.push(`  call void @scr_exit_code_note(i32 ${exitStatus})`);
       for (const line of exitListenerLines("xp")) lines.push(line);
       for (const line of topPendingReleases) lines.push(line);
-      lines.push(`  ret i32 ${exitStatus}`);
+      // An exit listener may set process.exitCode again, as in Node.
+      lines.push(
+        `  %tla_exit_code = call i32 @scr_exit_code_hint_get()`,
+        `  ret i32 %tla_exit_code`,
+      );
       return lines;
     };
     // LIBRARY mode: the runtime entry points the generated library
@@ -4632,6 +4635,11 @@ export class LlEmitter {
     return slot;
   }
 
+  /** The amortized cancellation poll, emitted on the loop's back edge (the
+   * continue target), after the body. A poll in the header would be a loop
+   * exit ahead of the body; LLVM then cannot rotate the loop, so loads that
+   * the body repeats on every iteration (a typed array's length, for one)
+   * stay in the loop. */
   private emitWorkerLoopCheck(slot: string | null): void {
     if (slot === null) return;
     const B = this.B;
@@ -6957,7 +6965,7 @@ export class LlEmitter {
         B.line(`${lenPtr} = getelementptr inbounds %ScrArr, ptr ${arr.name}, i32 0, i32 1`);
         this.markMemoryPointer(lenPtr, "array:header");
         B.line(`${len} = load ${this.sizeType}, ptr ${lenPtr}${this.fieldAliasAttachment(lenPtr)}`);
-        B.line(`${lenNumber} = sitofp ${this.sizeType} ${len} to double`);
+        B.line(`${lenNumber} = ${sizeToDouble(this.sizeType)} ${this.sizeType} ${len} to double`);
         B.line(`${same} = fcmp oeq double ${length.name}, ${lenNumber}`);
         B.condBr(same, done, resize);
         B.startBlock(resize);
@@ -7272,15 +7280,15 @@ export class LlEmitter {
         const lc = B.newLabel("loop.c");
         const lb = B.newLabel("loop.b");
         const le = B.newLabel("loop.e");
+        const lp = workerBudget !== null ? B.newLabel("loop.p") : lc;
         B.br(lc);
         B.startBlock(lc);
-        this.emitWorkerLoopCheck(workerBudget);
         B.condBr(this.emitCondition(s.cond), lb, le);
         B.startBlock(lb);
         this.jumpTargets.push({
           kind: "loop",
           brkLabel: le,
-          contLabel: lc,
+          contLabel: lp,
           labels: s.labels,
           frameDepth: this.frames.length,
           scopeDepth: this.scopes.length,
@@ -7288,7 +7296,12 @@ export class LlEmitter {
         });
         this.emitBlock(s.body);
         this.jumpTargets.pop();
-        B.br(lc);
+        B.br(lp);
+        if (lp !== lc) {
+          B.startBlock(lp);
+          this.emitWorkerLoopCheck(workerBudget);
+          B.br(lc);
+        }
         B.startBlock(le);
         break;
       }
@@ -7300,7 +7313,6 @@ export class LlEmitter {
         const le = B.newLabel("loop.e");
         B.br(lb);
         B.startBlock(lb);
-        this.emitWorkerLoopCheck(workerBudget);
         this.jumpTargets.push({
           kind: "loop",
           brkLabel: le,
@@ -7314,6 +7326,7 @@ export class LlEmitter {
         this.jumpTargets.pop();
         B.br(lc);
         B.startBlock(lc);
+        this.emitWorkerLoopCheck(workerBudget);
         B.condBr(this.emitCondition(s.cond), lb, le);
         B.startBlock(le);
         break;
@@ -7499,12 +7512,12 @@ export class LlEmitter {
             B.line(`store ptr ${fresh}, ptr ${slot}`);
           }
         };
-        const lu = s.update || capturedLets.length > 0 ? B.newLabel("loop.u") : lc;
-        freshenBindings();
         const workerBudget = this.workerLoopBudget(s);
+        const lu =
+          s.update || capturedLets.length > 0 || workerBudget !== null ? B.newLabel("loop.u") : lc;
+        freshenBindings();
         B.br(lc);
         B.startBlock(lc);
-        this.emitWorkerLoopCheck(workerBudget);
         if (integerLoop && integerSlot) {
           const receiver = this.emitStableReceiver(integerLoop.limitReceiver, []);
           const lenPtr = B.tmp();
@@ -7546,6 +7559,7 @@ export class LlEmitter {
         B.br(lu);
         if (lu !== lc) {
           B.startBlock(lu);
+          this.emitWorkerLoopCheck(workerBudget);
           freshenBindings();
           if (integerLoop && integerSlot) {
             const old = B.tmp();
@@ -7607,7 +7621,6 @@ export class LlEmitter {
         const workerBudget = this.workerLoopBudget(s);
         B.br(lc);
         B.startBlock(lc);
-        this.emitWorkerLoopCheck(workerBudget);
         const inBounds = B.tmp();
         let cur: string;
         if (snapshot && cursor && scratch) {
@@ -7627,7 +7640,7 @@ export class LlEmitter {
           B.line(
             `${rawLen} = load ${this.sizeType}, ptr ${lenPtr}${this.fieldAliasAttachment(lenPtr)}`,
           );
-          B.line(`${len} = sitofp ${this.sizeType} ${rawLen} to double`);
+          B.line(`${len} = ${sizeToDouble(this.sizeType)} ${this.sizeType} ${rawLen} to double`);
           B.line(`${inBounds} = fcmp olt double ${i}, ${len}`);
           cur = i;
         }
@@ -7691,6 +7704,7 @@ export class LlEmitter {
         this.jumpTargets.pop();
         B.br(lu);
         B.startBlock(lu);
+        this.emitWorkerLoopCheck(workerBudget);
         if (idxSlot) {
           const i2 = B.tmp(),
             i3 = B.tmp();
