@@ -346,16 +346,15 @@ test("sanitized native artifacts fail before helper resolution", async () => {
   ).rejects.toMatchObject({ diagnosticCode: "SC3002", detailCode: "sanitize_unsupported" });
 });
 
-test("program partitions depend only on module size and target", () => {
+test("program partitions depend only on module size", () => {
   const megabyte = 1024 * 1024;
-  expect(nativeProgramPartitions(LINUX_X64_GNU_TARGET, 4 * megabyte)).toBe(1);
-  expect(nativeProgramPartitions(LINUX_X64_GNU_TARGET, 4 * megabyte + 1)).toBe(2);
+  expect(nativeProgramPartitions(4 * megabyte)).toBe(1);
+  expect(nativeProgramPartitions(4 * megabyte + 1)).toBe(2);
   // Powers of two keep every function in its partition across small edits.
-  expect(nativeProgramPartitions(LINUX_X64_GNU_TARGET, 13 * megabyte)).toBe(4);
-  expect(nativeProgramPartitions(LINUX_X64_GNU_TARGET, 16 * megabyte)).toBe(4);
-  expect(nativeProgramPartitions(MACOS_ARM64_TARGET, 100 * megabyte)).toBe(32);
-  expect(nativeProgramPartitions(MACOS_ARM64_TARGET, 1024 * megabyte)).toBe(64);
-  expect(nativeProgramPartitions(WASM32_WASI_TARGET, 100 * megabyte)).toBe(1);
+  expect(nativeProgramPartitions(13 * megabyte)).toBe(4);
+  expect(nativeProgramPartitions(16 * megabyte)).toBe(4);
+  expect(nativeProgramPartitions(100 * megabyte)).toBe(32);
+  expect(nativeProgramPartitions(1024 * megabyte)).toBe(64);
   expect(nativePartitionPaths("/build.d/program.o", 3)).toEqual([
     "/build.d/program.o",
     "/build.d/program.part1.o",

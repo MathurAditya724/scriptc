@@ -237,9 +237,7 @@ export class NativeCompiler {
         : null;
     const split = llvm === null ? null : splitLlvmLibraryProgram(llvm);
     if (split === null) {
-      const partitions = library
-        ? 1
-        : nativeProgramPartitions(this.toolchain.target, statSync(input).size);
+      const partitions = library ? 1 : nativeProgramPartitions(statSync(input).size);
       return this.emitObject(input, output, source, optimization, "obj", partitions);
     }
     const objects: string[] = [];
