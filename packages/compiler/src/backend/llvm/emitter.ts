@@ -56,6 +56,13 @@ import {
   matchIntegerCountedForLoop,
 } from "../../ir/integer-loops.js";
 import { emitCountedLoopLimit } from "./counted-loops.js";
+import {
+  emitSafeIntegerCheck,
+  emitSpeculativeInteger,
+  planSpeculativeLoop,
+  speculativeWriteTarget,
+  SPECULATIVE_RANGE,
+} from "./speculative-integers.js";
 import { emitLiteralSwitch } from "./switch-dispatch.js";
 import { findBytesBounds } from "./bytes-bounds.js";
 import {
@@ -953,6 +960,17 @@ export class LlEmitter {
     { slot: string; type: "i32" | "i64"; signed?: boolean; range?: { min: number; max: number } }
   >();
   private countedLoopsEnabled = false;
+  /** Speculative integer loops (speculative-integers.ts) run in this function. */
+  private speculativeLoopsEnabled = false;
+  /** The fast copy of a speculative integer loop being emitted: its
+   * integer-computed writes and where each resumes in the ordinary copy. */
+  private speculation: { writes: Set<IrStmt>; resume: Map<IrStmt, string> } | null = null;
+  /** The ordinary copy being emitted: resume labels still to place. */
+  private speculationResume: Map<IrStmt, { label: string; placed: boolean }> | null = null;
+  /** The function being emitted, for speculative globals. */
+  private speculativeFunction = "";
+  /** Every function that writes each number global (computed on demand). */
+  private globalWriters: Map<string, Set<string>> | null = null;
   /** Whole-program final reference fields (ir/final-fields.ts). */
   private finalFields!: FinalFields;
   /** The current function may borrow final fields of borrowable objects:
@@ -4909,6 +4927,186 @@ export class LlEmitter {
     return slot;
   }
 
+  /** Emit a loop's condition, body and update through `emitCopy`, twice
+   * when speculative-integers.ts plans a fast integer copy. Both copies
+   * share the loop's setup and exit; the ordinary copy comes first so the
+   * fast copy is only emitted when every resume point exists. */
+  private emitLoopCopies(
+    loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" }>,
+    allowed: boolean,
+    emitCopy: () => void,
+  ): void {
+    const plan =
+      allowed &&
+      this.speculativeLoopsEnabled &&
+      this.speculation === null &&
+      this.speculationResume === null
+        ? planSpeculativeLoop(loop, (id) => this.speculativeLocal(id))
+        : null;
+    if (!plan) {
+      emitCopy();
+      return;
+    }
+    const B = this.B;
+    const entries = new Map<string, string>();
+    let ok = "true";
+    for (const [id, live] of plan.locals) {
+      if (!live) continue;
+      const value = B.tmp();
+      B.line(`${value} = load double, ptr ${this.binding(id).slot}`);
+      const [integer, exact] = emitSafeIntegerCheck(this, value);
+      entries.set(id, integer);
+      if (ok === "true") ok = exact;
+      else {
+        const both = B.tmp();
+        B.line(`${both} = and i1 ${ok}, ${exact}`);
+        ok = both;
+      }
+    }
+    const fast = B.newLabel("spec.fast"),
+      slow = B.newLabel("spec.slow");
+    B.condBr(ok, fast, slow);
+    const resume = new Map<IrStmt, { label: string; placed: boolean }>();
+    for (const s of plan.writes) resume.set(s, { label: B.newLabel("spec.resume"), placed: false });
+    B.startBlock(slow);
+    this.speculationResume = resume;
+    try {
+      emitCopy();
+    } finally {
+      this.speculationResume = null;
+    }
+    B.startBlock(fast);
+    if (![...resume.values()].every((r) => r.placed)) {
+      B.br(slow);
+      return;
+    }
+    for (const id of plan.locals.keys()) {
+      const shadow = B.slot();
+      B.entryAllocas.push(
+        `${shadow} = alloca i64 ; speculative integer ${this.currentLocals.get(id)?.name ?? id}`,
+      );
+      const entry = entries.get(id);
+      if (entry !== undefined) {
+        // The same double, now visibly an integer conversion: the double
+        // phis of the fast copy fold into integer phis.
+        const exact = B.tmp();
+        B.line(`store i64 ${entry}, ptr ${shadow}`);
+        B.line(`${exact} = sitofp i64 ${entry} to double`);
+        B.line(`store double ${exact}, ptr ${this.binding(id).slot}`);
+      } else B.line(`store i64 0, ptr ${shadow}`);
+      this.integerLoopBindings.set(id, {
+        slot: shadow,
+        type: "i64",
+        signed: true,
+        range: SPECULATIVE_RANGE,
+      });
+    }
+    this.speculation = {
+      writes: plan.writes,
+      resume: new Map([...resume].map(([s, r]) => [s, r.label])),
+    };
+    try {
+      emitCopy();
+    } finally {
+      this.speculation = null;
+      for (const id of plan.locals.keys()) this.integerLoopBindings.delete(id);
+    }
+  }
+
+  /** A number local whose only storage is its own double slot, so an i64
+   * shadow beside it can stand for it within one loop. */
+  private speculativeLocal(id: string): boolean {
+    const local = this.currentLocals.get(id);
+    if (!local) return this.speculativeGlobal(id);
+    if (local.type.kind !== "f64" || local.boxed || local.tdz) return false;
+    return !(
+      this.captureIds.has(id) ||
+      this.int32Locals.has(id) ||
+      this.integerLoopBindings.has(id) ||
+      this.integerViews.has(id) ||
+      this.localUnionStorage.has(id) ||
+      this.reboundOwnerSlots.has(id) ||
+      this.lazyCaptureBoxes.has(id) ||
+      this.privateSplitLocals.has(id)
+    );
+  }
+
+  /** A module-level number written only by the file's top-level code that
+   * is emitting this loop. Calls may still read it: the fast copy keeps its
+   * double current. An init function runs once and is never re-entered, so
+   * no call from the loop can write the global behind the shadow. */
+  private speculativeGlobal(id: string): boolean {
+    if (!this.speculativeFunction.startsWith("%init.")) return false;
+    if (this.globalTypes.get(id)?.kind !== "f64") return false;
+    if (this.tdzGlobals.has(id) || this.integerViews.has(id)) return false;
+    if (!this.globalWriters) {
+      const writers = new Map<string, Set<string>>();
+      for (const fn of this.mod.functions) {
+        const note = (localId: string): void => {
+          if (!localId.startsWith("%g.")) return;
+          const set = writers.get(localId) ?? new Set<string>();
+          set.add(fn.name);
+          writers.set(localId, set);
+        };
+        everyStmtList(fn.body, {
+          stmt: (s) => {
+            if (s.kind === "assign" || s.kind === "varDecl") note(s.localId);
+            return true;
+          },
+          expr: (e) => {
+            if (e.kind === "assignExpr" || e.kind === "incDec") note(e.localId);
+            return true;
+          },
+        });
+      }
+      this.globalWriters = writers;
+    }
+    const writers = this.globalWriters.get(id);
+    return writers === undefined || (writers.size === 1 && writers.has(this.speculativeFunction));
+  }
+
+  /** A speculated write in the fast copy: compute the value as a safe
+   * integer, store it to the shadow and its exact double to the local.
+   * Any failed check re-executes the statement in the ordinary copy. */
+  private emitSpeculativeWrite(s: IrStmt, resume: string): void {
+    const B = this.B;
+    const target = speculativeWriteTarget(s)!;
+    const binding = this.integerLoopBindings.get(target.localId)!;
+    const failed = B.newLabel("spec.bail");
+    let bails = false;
+    this.declare("declare i1 @llvm.expect.i1(i1, i1)");
+    const bail = (condition: string): void => {
+      bails = true;
+      const expected = B.tmp();
+      B.line(`${expected} = call i1 @llvm.expect.i1(i1 ${condition}, i1 false)`);
+      const next = B.newLabel("spec.ok");
+      B.condBr(expected, failed, next);
+      B.startBlock(next);
+    };
+    let result: string;
+    if (target.value === null) {
+      const old = B.tmp();
+      result = B.tmp();
+      B.line(`${old} = load i64, ptr ${binding.slot}`);
+      B.line(`${result} = ${target.op === "+" ? "add" : "sub"} nsw i64 ${old}, 1`);
+      const biased = B.tmp(),
+        outside = B.tmp();
+      B.line(`${biased} = add i64 ${result}, ${Number.MAX_SAFE_INTEGER}`);
+      B.line(`${outside} = icmp ugt i64 ${biased}, ${2 * Number.MAX_SAFE_INTEGER}`);
+      bail(outside);
+    } else result = emitSpeculativeInteger(this, target.value, bail);
+    const number = B.tmp();
+    B.line(`store i64 ${result}, ptr ${binding.slot}`);
+    B.line(`${number} = sitofp i64 ${result} to double`);
+    B.line(`store double ${number}, ptr ${this.binding(target.localId).slot}`);
+    if (!bails) return;
+    const done = B.newLabel("spec.done");
+    B.br(done);
+    B.startBlock(failed);
+    B.br(resume);
+    B.startBlock(done);
+  }
+
   /** The amortized cancellation poll, emitted on the loop's back edge (the
    * continue target), after the body. A poll in the header would be a loop
    * exit ahead of the body; LLVM then cannot rotate the loop, so loads that
@@ -6022,6 +6220,10 @@ export class LlEmitter {
       fn.captures !== undefined ? this.lazyCaptures.stableCaptures(fn.name) : new Set();
     this.integerLoopBindings.clear();
     this.countedLoopsEnabled = this.debug === null && !fn.async && !fn.generator;
+    this.speculativeLoopsEnabled = this.countedLoopsEnabled;
+    this.speculativeFunction = fn.name;
+    this.speculation = null;
+    this.speculationResume = null;
     this.finalFieldBorrows =
       !fn.async && !fn.generator && constructorClass(fn.name) === null && this.finalFields.size > 0;
     this.byteWindowsEnabled = this.countedLoopsEnabled;
@@ -7045,6 +7247,17 @@ export class LlEmitter {
   }
 
   emitStmt(s: IrStmt): void {
+    const resume = this.speculationResume?.get(s);
+    if (resume && !resume.placed && !this.B.isTerminated()) {
+      // The fast copy's failed checks re-execute this statement here.
+      resume.placed = true;
+      this.B.br(resume.label);
+      this.B.startBlock(resume.label);
+    }
+    if (this.speculation?.writes.has(s)) {
+      this.emitSpeculativeWrite(s, this.speculation.resume.get(s)!);
+      return;
+    }
     const previous = this.B.debugLocation;
     this.B.debugLocation = this.debug?.location(s.loc, this.debugScope) ?? null;
     const loop =
@@ -7705,57 +7918,61 @@ export class LlEmitter {
       }
       case "while": {
         const workerBudget = this.workerLoopBudget(s);
-        const lc = B.newLabel("loop.c");
-        const lb = B.newLabel("loop.b");
         const le = B.newLabel("loop.e");
-        const lp = workerBudget !== null ? B.newLabel("loop.p") : lc;
-        B.br(lc);
-        B.startBlock(lc);
-        B.condBr(this.emitCondition(s.cond), lb, le);
-        B.startBlock(lb);
-        this.jumpTargets.push({
-          kind: "loop",
-          brkLabel: le,
-          contLabel: lp,
-          labels: s.labels,
-          frameDepth: this.frames.length,
-          scopeDepth: this.scopes.length,
-          finallyDepth: this.finallyStack.length,
-        });
-        this.emitBlock(s.body);
-        this.jumpTargets.pop();
-        B.br(lp);
-        if (lp !== lc) {
-          B.startBlock(lp);
-          this.emitWorkerLoopCheck(workerBudget);
+        this.emitLoopCopies(s, true, () => {
+          const lc = B.newLabel("loop.c");
+          const lb = B.newLabel("loop.b");
+          const lp = workerBudget !== null ? B.newLabel("loop.p") : lc;
           B.br(lc);
-        }
+          B.startBlock(lc);
+          B.condBr(this.emitCondition(s.cond), lb, le);
+          B.startBlock(lb);
+          this.jumpTargets.push({
+            kind: "loop",
+            brkLabel: le,
+            contLabel: lp,
+            labels: s.labels,
+            frameDepth: this.frames.length,
+            scopeDepth: this.scopes.length,
+            finallyDepth: this.finallyStack.length,
+          });
+          this.emitBlock(s.body);
+          this.jumpTargets.pop();
+          B.br(lp);
+          if (lp !== lc) {
+            B.startBlock(lp);
+            this.emitWorkerLoopCheck(workerBudget);
+            B.br(lc);
+          }
+        });
         B.startBlock(le);
         break;
       }
       case "doWhile": {
         const workerBudget = this.workerLoopBudget(s);
         // Body first (runs at least once); continue jumps to the CONDITION.
-        const lb = B.newLabel("loop.b");
-        const lc = B.newLabel("loop.c");
         const le = B.newLabel("loop.e");
-        B.br(lb);
-        B.startBlock(lb);
-        this.jumpTargets.push({
-          kind: "loop",
-          brkLabel: le,
-          contLabel: lc,
-          labels: s.labels,
-          frameDepth: this.frames.length,
-          scopeDepth: this.scopes.length,
-          finallyDepth: this.finallyStack.length,
+        this.emitLoopCopies(s, true, () => {
+          const lb = B.newLabel("loop.b");
+          const lc = B.newLabel("loop.c");
+          B.br(lb);
+          B.startBlock(lb);
+          this.jumpTargets.push({
+            kind: "loop",
+            brkLabel: le,
+            contLabel: lc,
+            labels: s.labels,
+            frameDepth: this.frames.length,
+            scopeDepth: this.scopes.length,
+            finallyDepth: this.finallyStack.length,
+          });
+          this.emitBlock(s.body);
+          this.jumpTargets.pop();
+          B.br(lc);
+          B.startBlock(lc);
+          this.emitWorkerLoopCheck(workerBudget);
+          B.condBr(this.emitCondition(s.cond), lb, le);
         });
-        this.emitBlock(s.body);
-        this.jumpTargets.pop();
-        B.br(lc);
-        B.startBlock(lc);
-        this.emitWorkerLoopCheck(workerBudget);
-        B.condBr(this.emitCondition(s.cond), lb, le);
         B.startBlock(le);
         break;
       }
@@ -7911,8 +8128,6 @@ export class LlEmitter {
           const initializers = s.init.kind === "block" ? s.init.body : [s.init];
           for (const initializer of initializers) this.emitStmt(initializer);
         }
-        const lc = B.newLabel("loop.c");
-        const lb = B.newLabel("loop.b");
         const le = B.newLabel("loop.e");
         // JS `for (let i ...)`: each iteration gets a FRESH binding holding
         // a copy of the previous one (closures made in iteration k keep
@@ -7941,69 +8156,75 @@ export class LlEmitter {
           }
         };
         const workerBudget = this.workerLoopBudget(s);
-        const lu =
-          s.update || capturedLets.length > 0 || workerBudget !== null ? B.newLabel("loop.u") : lc;
         freshenBindings();
-        B.br(lc);
-        B.startBlock(lc);
-        if (integerLoop && integerSlot) {
-          const receiver = this.emitStableReceiver(integerLoop.limitReceiver, []);
-          const lenPtr = B.tmp();
-          const len = B.tmp();
-          const index = B.tmp();
-          const inBounds = B.tmp();
-          B.line(
-            `${lenPtr} = getelementptr inbounds %${integerArrayLoop ? "ScrArr" : "ScrBytes"}, ptr ${receiver.name}, i64 0, i32 1`,
-          );
-          if (integerArrayLoop) this.markMemoryPointer(lenPtr, "array:header");
-          B.line(
-            `${len} = load ${this.sizeType}, ptr ${lenPtr}${this.fieldAliasAttachment(lenPtr)}`,
-          );
-          B.line(`${index} = load ${this.sizeType}, ptr ${integerSlot}`);
-          B.line(`${inBounds} = icmp ult ${this.sizeType} ${index}, ${len}`);
-          B.condBr(inBounds, lb, le);
-        } else if (countedLoop && integerSlot && countedLimit) {
-          const index = B.tmp();
-          const inBounds = B.tmp();
-          B.line(`${index} = load i64, ptr ${integerSlot}`);
-          B.line(
-            `${inBounds} = icmp ${countedLoop.step > 0 ? "slt" : "sgt"} i64 ${index}, ${countedLimit}`,
-          );
-          B.condBr(inBounds, lb, le);
-        } else if (s.cond) B.condBr(this.emitCondition(s.cond), lb, le);
-        else B.br(lb);
-        B.startBlock(lb);
-        this.jumpTargets.push({
-          kind: "loop",
-          brkLabel: le,
-          contLabel: lu,
-          labels: s.labels,
-          frameDepth: this.frames.length,
-          scopeDepth: this.scopes.length,
-          finallyDepth: this.finallyStack.length,
-        });
-        this.emitBlock(s.body);
-        this.jumpTargets.pop();
-        B.br(lu);
-        if (lu !== lc) {
-          B.startBlock(lu);
-          this.emitWorkerLoopCheck(workerBudget);
-          freshenBindings();
-          if (integerLoop && integerSlot) {
-            const old = B.tmp();
-            const next = B.tmp();
-            B.line(`${old} = load ${this.sizeType}, ptr ${integerSlot}`);
-            B.line(`${next} = add nuw ${this.sizeType} ${old}, 1`);
-            B.line(`store ${this.sizeType} ${next}, ptr ${integerSlot}`);
-          } else if (countedLoop && integerSlot) {
-            const old = B.tmp();
-            const next = B.tmp();
-            B.line(`${old} = load i64, ptr ${integerSlot}`);
-            B.line(`${next} = add nsw i64 ${old}, ${countedLoop.step}`);
-            B.line(`store i64 ${next}, ptr ${integerSlot}`);
-          } else if (s.update) this.emitStmt(s.update);
+        this.emitLoopCopies(s, capturedLets.length === 0, () => {
+          const lc = B.newLabel("loop.c");
+          const lb = B.newLabel("loop.b");
+          const lu =
+            s.update || capturedLets.length > 0 || workerBudget !== null
+              ? B.newLabel("loop.u")
+              : lc;
           B.br(lc);
-        }
+          B.startBlock(lc);
+          if (integerLoop && integerSlot) {
+            const receiver = this.emitStableReceiver(integerLoop.limitReceiver, []);
+            const lenPtr = B.tmp();
+            const len = B.tmp();
+            const index = B.tmp();
+            const inBounds = B.tmp();
+            B.line(
+              `${lenPtr} = getelementptr inbounds %${integerArrayLoop ? "ScrArr" : "ScrBytes"}, ptr ${receiver.name}, i64 0, i32 1`,
+            );
+            if (integerArrayLoop) this.markMemoryPointer(lenPtr, "array:header");
+            B.line(
+              `${len} = load ${this.sizeType}, ptr ${lenPtr}${this.fieldAliasAttachment(lenPtr)}`,
+            );
+            B.line(`${index} = load ${this.sizeType}, ptr ${integerSlot}`);
+            B.line(`${inBounds} = icmp ult ${this.sizeType} ${index}, ${len}`);
+            B.condBr(inBounds, lb, le);
+          } else if (countedLoop && integerSlot && countedLimit) {
+            const index = B.tmp();
+            const inBounds = B.tmp();
+            B.line(`${index} = load i64, ptr ${integerSlot}`);
+            B.line(
+              `${inBounds} = icmp ${countedLoop.step > 0 ? "slt" : "sgt"} i64 ${index}, ${countedLimit}`,
+            );
+            B.condBr(inBounds, lb, le);
+          } else if (s.cond) B.condBr(this.emitCondition(s.cond), lb, le);
+          else B.br(lb);
+          B.startBlock(lb);
+          this.jumpTargets.push({
+            kind: "loop",
+            brkLabel: le,
+            contLabel: lu,
+            labels: s.labels,
+            frameDepth: this.frames.length,
+            scopeDepth: this.scopes.length,
+            finallyDepth: this.finallyStack.length,
+          });
+          this.emitBlock(s.body);
+          this.jumpTargets.pop();
+          B.br(lu);
+          if (lu !== lc) {
+            B.startBlock(lu);
+            this.emitWorkerLoopCheck(workerBudget);
+            freshenBindings();
+            if (integerLoop && integerSlot) {
+              const old = B.tmp();
+              const next = B.tmp();
+              B.line(`${old} = load ${this.sizeType}, ptr ${integerSlot}`);
+              B.line(`${next} = add nuw ${this.sizeType} ${old}, 1`);
+              B.line(`store ${this.sizeType} ${next}, ptr ${integerSlot}`);
+            } else if (countedLoop && integerSlot) {
+              const old = B.tmp();
+              const next = B.tmp();
+              B.line(`${old} = load i64, ptr ${integerSlot}`);
+              B.line(`${next} = add nsw i64 ${old}, ${countedLoop.step}`);
+              B.line(`store i64 ${next}, ptr ${integerSlot}`);
+            } else if (s.update) this.emitStmt(s.update);
+            B.br(lc);
+          }
+        });
         B.startBlock(le);
         this.releaseScope(this.scopes.pop()!);
         if (integerLoop) this.integerLoopBindings.delete(integerLoop.localId);
