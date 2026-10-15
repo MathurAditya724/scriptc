@@ -3028,7 +3028,8 @@ void scr_fs_rename_thunk0(ScrClosure *cb, ScrError *err) {
  * the API call. The queue owns both references and transfers the Buffer to
  * the emitted callback adapter. */
 typedef struct ScrCryptoBytesOp {
-  ScrBytes *value;
+  ScrBytes *value; /* a ScrDyn when value_is_dyn */
+  bool value_is_dyn;
   ScrError *error;
   ScrClosure *cb;
   ScrCryptoBytesFn fn;
@@ -3042,13 +3043,18 @@ static SCR_TL ScrCryptoBytesOp **scr_crypto_bytes_tail;
 static SCR_TL ScrCryptoBytesOp **scr_crypto_bytes_tail = &scr_crypto_bytes_head;
 #endif
 static SCR_TL size_t scr_crypto_bytes_pending_count = 0;
+static SCR_TL ScrCryptoBytesOp *scr_crypto_bytes_last = NULL; /* the newest entry */
 static SCR_TL bool scr_crypto_bytes_cleanup_registered = false;
 
 static void scr_crypto_bytes_shutdown(void) {
   while (scr_crypto_bytes_head != NULL) {
     ScrCryptoBytesOp *op = scr_crypto_bytes_head;
     scr_crypto_bytes_head = op->next;
-    scr_bytes_release(op->value);
+    if (op->value_is_dyn) {
+      if (op->value) scr_dyn_release((ScrDyn *)op->value);
+    } else {
+      scr_bytes_release(op->value);
+    }
     scr_error_release(op->error);
     scr_closure_release(op->cb);
     free(op);
@@ -3093,13 +3099,24 @@ void scr_crypto_defer_bytes(ScrBytes *value, ScrError *error, ScrClosure *cb, Sc
     scr_trap("scriptc: out of memory\n");
   }
   op->value = value;
+  op->value_is_dyn = false;
   op->error = error;
   op->cb = cb;
   op->fn = fn;
   op->next = NULL;
   *scr_crypto_bytes_tail = op;
   scr_crypto_bytes_tail = &op->next;
+  scr_crypto_bytes_last = op;
   scr_crypto_bytes_pending_count++;
+}
+
+/* The same queue with a dyn value, which the callback adapter receives in
+ * the value slot unchanged (randomFill over an ArrayBuffer passes back the
+ * ArrayBuffer itself). */
+void scr_crypto_defer_dyn(ScrDyn *value, ScrError *error, ScrClosure *cb, ScrCryptoBytesFn fn) {
+  scr_crypto_defer_bytes(NULL, error, cb, fn);
+  scr_crypto_bytes_last->value = (ScrBytes *)value;
+  scr_crypto_bytes_last->value_is_dyn = true;
 }
 
 /* ── node:timers/promises ────────────────────────────────────────────

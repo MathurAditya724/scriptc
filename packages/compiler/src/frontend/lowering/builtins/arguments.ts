@@ -229,6 +229,25 @@ export function errorFirstBytesCallback(
   api: string,
   arrayBuffer = false,
 ): IrExpr {
+  return errorFirstCallback(
+    lowerer,
+    node,
+    api,
+    (value) => !arrayBuffer && value.kind === "bytes" && value.elem === "u8",
+    arrayBuffer ? "ArrayBuffer" : "Buffer/Uint8Array",
+  );
+}
+
+/** An error-first callback (error, value) whose error parameter is
+ * Error | null or dyn and whose value parameter is dyn or accepted by
+ * `acceptValue`; `values` names the accepted values in the refusal. */
+export function errorFirstCallback(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  api: string,
+  acceptValue: (value: IrType) => boolean,
+  values: string,
+): IrExpr {
   let callback = lowerer.lowerExpr(node);
   if (callback.type.kind === "dyn") {
     callback = {
@@ -261,15 +280,11 @@ export function errorFirstBytesCallback(
       lowerer.unsupported("SC1090", node, `${api} callback error parameters must be Error | null`);
   }
   const value = callback.type.params[1];
-  if (
-    value !== undefined &&
-    value.kind !== "dyn" &&
-    (arrayBuffer || !(value.kind === "bytes" && value.elem === "u8"))
-  ) {
+  if (value !== undefined && value.kind !== "dyn" && !acceptValue(value)) {
     lowerer.unsupported(
       "SC1090",
       node,
-      `${api} callback result parameters must be ${arrayBuffer ? "ArrayBuffer" : "Buffer/Uint8Array"} values`,
+      `${api} callback result parameters must be ${values} values`,
     );
   }
   return voidizedCallback(lowerer, callback, locOf(node));

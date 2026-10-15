@@ -1347,6 +1347,8 @@ export const BUILTIN_MODULE_FNS: Record<
     timingSafeEqual: { fn: "crypto.timingSafeEqual", params: [BYTES_U8, BYTES_U8], result: BOOL },
     randomFillSync: { fn: "crypto.randomFill", params: [BYTES_U8, F64, F64], result: BYTES_U8 },
     randomInt: { fn: "crypto.randomInt", params: [F64, F64], result: F64 },
+    randomFill: { fn: "crypto.randomFillCb", params: [], result: VOID },
+    randomUUIDv7: { fn: "crypto.randomUUIDv7", params: [DYN], result: STRING },
     pbkdf2Sync: {
       fn: "crypto.pbkdf2",
       params: [BYTES_U8, BYTES_U8, F64, F64, STRING],
@@ -1794,7 +1796,16 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     randomBytes: ["crypto.randomBytesToString", "crypto.randomBytesCb"],
     // Omitting size fills from offset through the rest of the Buffer and
     // uses a separate runtime entry point for Node's exact bounds checks.
-    randomFillSync: ["crypto.randomFillRest"],
+    // Views of every kind return themselves; other buffers take the Dyn form.
+    randomFillSync: [
+      "crypto.randomFillRest",
+      "crypto.randomFillView",
+      "crypto.randomFillViewRest",
+      "crypto.randomFillSyncDyn",
+    ],
+    randomFill: ["crypto.randomFillCbDyn"],
+    randomInt: ["crypto.randomIntMax", "crypto.randomIntCb"],
+    randomUUID: ["crypto.randomUUIDOpts"],
   },
   os: {
     // lowerOsUserInfoCall assembles the record from scalar libCalls.

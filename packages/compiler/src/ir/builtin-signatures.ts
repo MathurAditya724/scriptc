@@ -2274,6 +2274,20 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.randomFill": { argTypes: [BYTES_U8, F64, F64], result: BYTES_U8 },
   "crypto.randomFillRest": { argTypes: [BYTES_U8, F64], result: BYTES_U8 },
   "crypto.randomInt": { argTypes: [F64, F64], result: F64 },
+  "crypto.randomIntMax": { argTypes: [F64], result: F64 },
+  /** randomFillSync over any view returns that view at its own type (the
+   * validator checks the result against the first argument). The Dyn form
+   * takes ArrayBuffers and other values. The callback forms carry
+   * randomFill's argument count before the callback; randomIntCb carries
+   * whether min was given. */
+  "crypto.randomFillView": { argTypes: [null, F64, F64], result: BYTES_U8 },
+  "crypto.randomFillViewRest": { argTypes: [null, F64], result: BYTES_U8 },
+  "crypto.randomFillSyncDyn": { argTypes: [DYN, DYN, DYN], result: DYN },
+  "crypto.randomFillCb": { argTypes: [null, F64, F64, F64, null], result: VOID },
+  "crypto.randomFillCbDyn": { argTypes: [DYN, DYN, DYN, F64, null], result: VOID },
+  "crypto.randomIntCb": { argTypes: [F64, F64, F64, null], result: VOID },
+  "crypto.randomUUIDOpts": { argTypes: [DYN], result: STRING },
+  "crypto.randomUUIDv7": { argTypes: [DYN], result: STRING },
   "crypto.pbkdf2": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING], result: BYTES_U8 },
   "crypto.randomBytesCb": { argTypes: [F64, null], result: VOID },
   "crypto.pbkdf2Cb": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING, null], result: VOID },
