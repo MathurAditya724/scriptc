@@ -3205,6 +3205,43 @@ ScrPromise *scr_tp_set_immediate(void) {
   return p;
 }
 
+/* setTimeout(delay, value[, { ref }]) and setImmediate(value[, { ref }]):
+ * the value arrives as an already-settled promise of its own type (the
+ * Promise.resolve lowering, borrowed), whose settlement the result copies
+ * when the timer or immediate fires. `ref: false` unrefs it, so it no
+ * longer keeps the loop alive, as in Node. */
+static void scr_tp_settle_thunk(ScrClosure *self) {
+  ScrPromise *dst = (ScrPromise *)scr_box_get_ref(self->caps[0]);
+  ScrPromise *src = (ScrPromise *)scr_box_get_ref(self->caps[1]);
+  scr_promise_settle_from(dst, src);
+  scr_promise_release(dst);
+  scr_promise_release(src);
+}
+
+static ScrClosure *scr_tp_settle_closure(ScrPromise *dst, ScrPromise *src) {
+  ScrClosure *c = scr_closure_new((void *)&scr_tp_settle_thunk, 2);
+  for (int i = 0; i < 2; i++) {
+    ScrBox *b = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
+    scr_box_set_ref(b, scr_promise_retain(i == 0 ? dst : src));
+    c->caps[i] = b;
+  }
+  return c;
+}
+
+ScrPromise *scr_tp_set_timeout_value(double ms, ScrPromise *value, bool ref) {
+  ScrPromise *p = scr_promise_new();
+  double handle = scr_set_timeout_handle(scr_tp_settle_closure(p, value), ms);
+  if (!ref) scr_timer_unref(handle);
+  return p;
+}
+
+ScrPromise *scr_tp_set_immediate_value(ScrPromise *value, bool ref) {
+  ScrPromise *p = scr_promise_new();
+  double handle = scr_set_immediate(scr_tp_settle_closure(p, value));
+  if (!ref) scr_immediate_unref(handle);
+  return p;
+}
+
 /* ── setImmediate as a first-class dyn value ─────────────────────────
  * The global passed AS A FUNCTION VALUE into untyped code (the Node-suite
  * traceCallback shape: `channel.traceCallback(setImmediate, 0, ctx, null,

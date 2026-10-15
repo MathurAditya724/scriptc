@@ -126,6 +126,24 @@ test("node-types: util.styleText supports stored calls and standard streams unde
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: timers/promises resolve values and setInterval iteration under @types/node", async () => {
+  const outDir = outDirFor("timers-promises");
+  const entry = join(nodeTypesDir, "timers-promises.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "timers-promises"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: readline/promises over stdin compiles under @types/node", async () => {
   const outDir = outDirFor("readline-promises");
   const entry = join(nodeTypesDir, "readline-promises.ts");

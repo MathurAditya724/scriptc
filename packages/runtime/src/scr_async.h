@@ -11,6 +11,8 @@
  * the immediate queue fulfills (the armed entry keeps the loop alive
  * until it fires, like Node). Results +1; neither throws. */
 ScrPromise *scr_tp_set_timeout(double ms);
+ScrPromise *scr_tp_set_timeout_value(double ms, ScrPromise *value, bool ref);
+ScrPromise *scr_tp_set_immediate_value(ScrPromise *value, bool ref);
 ScrPromise *scr_tp_set_immediate(void);
 
 /* ── async: promises, fibers, event loop ────────────────────────────
