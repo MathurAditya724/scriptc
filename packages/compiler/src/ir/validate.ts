@@ -4712,6 +4712,36 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "dir.readSync" || e.fn === "dir.read") {
+      // Result: `Dirent | null` (a promise of it for dir.read) — the
+      // interned Dirent row shape readdirTypesSync uses, or null.
+      const result =
+        e.fn === "dir.read" ? (e.type.kind === "promise" ? e.type.inner : undefined) : e.type;
+      const def = result?.kind === "union" ? unions.get(result.unionId) : undefined;
+      const row = def?.arms.find((a) => a.kind === "record");
+      const shape = row?.kind === "record" ? records.get(row.shapeId) : undefined;
+      const ok =
+        def !== undefined &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "nullT") &&
+        shape !== undefined &&
+        !shape.tuple &&
+        shape.indexValue === undefined &&
+        shape.fields.length === 3 &&
+        shape.fields[0]!.name === "%dtype" &&
+        shape.fields[0]!.type.kind === "f64" &&
+        shape.fields[1]!.name === "name" &&
+        shape.fields[1]!.type.kind === "string" &&
+        shape.fields[2]!.name === "parentPath" &&
+        shape.fields[2]!.type.kind === "string";
+      if (!ok) {
+        err(
+          `libCall ${e.fn} must return ${e.fn === "dir.read" ? "a promise of " : ""}Dirent | null`,
+          e.loc,
+        );
+      }
+      return true;
+    }
     if (e.fn === "os.networkInterfaces") {
       // Result: a pure index-signature record whose value is
       // `Info[] | undefined`, Info a two-record union (one arm's

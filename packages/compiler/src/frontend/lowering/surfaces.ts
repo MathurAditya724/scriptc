@@ -7,6 +7,7 @@ import {
   CHILD_T,
   CRYPTOHASH_T,
   CRYPTOHMAC_T,
+  DIR_T,
   DYN,
   F64,
   FILEHANDLE_T,
@@ -1142,6 +1143,9 @@ export const BUILTIN_MODULE_FNS: Record<
     },
     // statSync's no-follow sibling; stats.isSymbolicLink answers what the
     // follow-free snapshot saw.
+    // opendirSync's options (a literal { bufferSize, encoding: "utf8" })
+    // lower in lowerBuiltinModuleCall; the row routes the dispatch.
+    opendirSync: { fn: "fs.opendirSync", params: [STRING, F64], result: DIR_T },
     lstatSync: { fn: "fs.lstatSync", params: [STRING], result: STATS_T },
     fstatSync: {
       fn: "fs.fstatSync",
@@ -1261,6 +1265,11 @@ export const BUILTIN_MODULE_FNS: Record<
     stat: { fn: "fsp.stat", params: [STRING], result: { kind: "promise", inner: STATS_T } },
     realpath: { fn: "fsp.realpath", params: [STRING], result: { kind: "promise", inner: STRING } },
     lstat: { fn: "fsp.lstat", params: [STRING], result: { kind: "promise", inner: STATS_T } },
+    opendir: {
+      fn: "fsp.opendir",
+      params: [STRING, F64],
+      result: { kind: "promise", inner: DIR_T },
+    },
     unlink: {
       fn: "fsp.unlink",
       params: [STRING],

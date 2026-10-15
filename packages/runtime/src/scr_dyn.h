@@ -163,6 +163,7 @@ typedef enum {
   SCR_DYNH_BLOB,           /* ScrBlob — new Blob() and Blob#slice() */
   SCR_DYNH_FILE,           /* ScrBlob with a name — new File() */
   SCR_DYNH_KEY_OBJECT,     /* node:crypto secret KeyObject (scr_lib.c) */
+  SCR_DYNH_DIR,            /* fs.Dir (scr_lib.c) */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 

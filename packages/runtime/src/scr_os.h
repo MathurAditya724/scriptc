@@ -58,6 +58,23 @@ ScrStr *scr_fs_scandir_name(const ScrScandir *s, size_t i); /* +1 */
 double scr_fs_scandir_type(const ScrScandir *s, size_t i);
 void scr_fs_scandir_free(ScrScandir *s); /* NULL-tolerant */
 
+/* fs.Dir (opendirSync, fs.promises.opendir; scr_lib.c): an open directory
+ * stream read one entry at a time in OS order, like libuv's uv_fs_readdir.
+ * scr_dir_read answers true with a +1 name and its UV_DIRENT kind (the
+ * scandir encoding), false at the end; a closed Dir throws ERR_DIR_CLOSED
+ * from read and close. Releasing the last reference closes the stream.
+ * scr_fs_opendir throws Node's opendir errno error (no path), or the
+ * options.bufferSize RangeError, and answers NULL then. */
+typedef struct ScrDir ScrDir;
+ScrDir *scr_fs_opendir(ScrStr *path, double buffer_size); /* +1, or throws (NULL) */
+ScrDir *scr_dir_retain(ScrDir *d);
+void scr_dir_release(ScrDir *d);
+void *scr_dir_retain_v(void *p);
+void scr_dir_release_v(void *p);
+ScrStr *scr_dir_path(ScrDir *d); /* +1 */
+bool scr_dir_read(ScrDir *d, ScrStr **name, double *kind);
+void scr_dir_close(ScrDir *d);
+
 /* os.networkInterfaces(): a getifaddrs(3) snapshot (scr_lib.c) the emitter
  * walks to build the typed Dict<NetworkInterfaceInfo[]> record inline. Row
  * selection and fields follow libuv/Node (IFF_UP && IFF_RUNNING,
