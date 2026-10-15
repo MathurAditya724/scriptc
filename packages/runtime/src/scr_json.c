@@ -8105,8 +8105,11 @@ static bool scr_json_replaced_write(ScrJsonBuf *buffer, const ScrDyn *value,
                                    const ScrDyn *replacer, const ScrDyn *properties,
                                    const ScrStr *gap, size_t depth);
 
-static bool scr_json_plain_write(ScrJsonBuf *buffer, const ScrDyn *value,
-                                 const ScrStr *gap, size_t depth) {
+/* Out of line so the protocol walk's frame stays as small as it was: deep
+ * documents recurse through one of the two, and plain nesting recurses
+ * here directly, one small frame per level. */
+static __attribute__((noinline)) bool scr_json_plain_write(ScrJsonBuf *buffer, const ScrDyn *value,
+                                                           const ScrStr *gap, size_t depth) {
   bool array = value->kind == SCR_DYN_ARR;
   size_t length = array ? value->v.arr.len : value->v.obj.len;
   scr_jb_putc(buffer, array ? '[' : '{');
@@ -8128,8 +8131,13 @@ static bool scr_json_plain_write(ScrJsonBuf *buffer, const ScrDyn *value,
     }
     if (omitted) scr_jb_puts(buffer, "null");
     else if (child->kind == SCR_DYN_ARR || child->kind == SCR_DYN_OBJ) {
-      /* Only an intact region admits these (scr_json_plain_container). */
-      if (!scr_json_replaced_write(buffer, child, scr_dyn_undefined(), NULL, gap, depth + 1)) return false;
+      /* Only an intact region admits these (scr_json_plain_container); its
+       * members are never capsules, so a member that is not plain itself
+       * (holes, index-like names) only needs the protocol walk. */
+      bool ok = scr_json_plain_container(child)
+          ? scr_json_plain_write(buffer, child, gap, depth + 1)
+          : scr_json_replaced_write(buffer, child, scr_dyn_undefined(), NULL, gap, depth + 1);
+      if (!ok) return false;
     } else scr_dyn_json_write(buffer, child);
   }
   if (!first) scr_json_gap(buffer, gap, depth);

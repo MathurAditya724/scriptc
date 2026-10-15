@@ -11,6 +11,10 @@ console.log(JSON.stringify(JSON.parse(doc), null, 2));
 console.log(JSON.stringify(JSON.parse(doc), null, "--"));
 console.log(JSON.stringify(JSON.parse("[[],[[]],{},[{}],[1,\"s\",true,null]]")));
 
+// Deep documents recurse through the plain writer.
+const deep: string = "[".repeat(900) + '{"k":[1,{"v":2}]}' + "]".repeat(900);
+console.log(JSON.stringify(JSON.parse(deep)) === deep);
+
 // Index-like names inside nested objects keep their numeric ordering.
 console.log(JSON.stringify(JSON.parse('[{"b":1,"10":2,"a":3,"2":4},{"x":{"9":0,"1":1}}]')));
 
