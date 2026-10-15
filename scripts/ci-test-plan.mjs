@@ -30,7 +30,9 @@ export const fileExclusions = [
 
 // Pull requests run the full suite on Linux. Their macOS lane keeps the
 // darwin clang/libc/kqueue oracles: the Node differential corpus, plus every
-// file whose assertions run only on darwin or take darwin-specific branches.
+// file whose assertions run only on darwin or take darwin-specific branches
+// (including the Mach-O library localization arm and the arm64 runtime
+// string oracle).
 // Pushes to main and the nightly schedule still run the full suite on macOS.
 export const darwinCorpusFiles = ["tests/harness/differential.test.ts"];
 export const darwinFiles = [
@@ -42,9 +44,13 @@ export const darwinFiles = [
   "packages/compiler/test/native-codegen-integration.test.ts",
   "packages/compiler/test/source-debugging.test.ts",
   "packages/runtime-darwin-arm64/test/archive.test.ts",
+  "packages/runtime/test/string.test.ts",
   "tests/harness/ffi-callback-pool.test.ts",
   "tests/harness/ffi-catalog.test.ts",
   "tests/harness/ffi-frameworks.test.ts",
+  "tests/harness/library-callbacks.test.ts",
+  "tests/harness/library-dispatch.test.ts",
+  "tests/harness/library-multi.test.ts",
   "tests/harness/native-object-example.test.ts",
   "tests/harness/runtime-tree-shaking.test.ts",
   "tests/harness/terminal-geometry.test.ts",
