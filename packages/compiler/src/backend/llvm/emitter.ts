@@ -199,6 +199,7 @@ import {
   ffiNativeParamLl,
   ffiNativeReturnLl,
   llvmCommentText,
+  sizeToDouble,
 } from "./common.js";
 import { ffiExtendsNarrowIntegers } from "../targets.js";
 import {
@@ -1929,22 +1930,24 @@ export class LlEmitter {
     const topPendingExitLines = (): string[] => {
       if (!asyncEntry) return [];
       const lines: string[] = [];
-      if (usesNodeTest) {
-        lines.push(`  %tla_program_exit = call i32 @scr_test_exit_code()`);
-      }
+      // finish_top_level noted 13 unless the program set process.exitCode.
+      // A failed node:test run outranks either before exit listeners run.
       if (usesNodeTest) {
         lines.push(
+          `  %tla_program_exit = call i32 @scr_test_exit_code()`,
           `  %tla_program_exit_zero = icmp eq i32 %tla_program_exit, 0`,
-          `  %tla_exit_status = select i1 %tla_program_exit_zero, i32 %tla_status, i32 %tla_program_exit`,
+          `  %tla_hint = call i32 @scr_exit_code_hint_get()`,
+          `  %tla_exit_status = select i1 %tla_program_exit_zero, i32 %tla_hint, i32 %tla_program_exit`,
+          `  call void @scr_exit_code_note(i32 %tla_exit_status)`,
         );
       }
-      const exitStatus = usesNodeTest ? "%tla_exit_status" : "%tla_status";
-      // finish_top_level initially notes 13. Replace that hint before exit
-      // listeners run when a higher-priority verdict was already selected.
-      lines.push(`  call void @scr_exit_code_note(i32 ${exitStatus})`);
       for (const line of exitListenerLines("xp")) lines.push(line);
       for (const line of topPendingReleases) lines.push(line);
-      lines.push(`  ret i32 ${exitStatus}`);
+      // An exit listener may set process.exitCode again, as in Node.
+      lines.push(
+        `  %tla_exit_code = call i32 @scr_exit_code_hint_get()`,
+        `  ret i32 %tla_exit_code`,
+      );
       return lines;
     };
     // LIBRARY mode: the runtime entry points the generated library
@@ -6957,7 +6960,7 @@ export class LlEmitter {
         B.line(`${lenPtr} = getelementptr inbounds %ScrArr, ptr ${arr.name}, i32 0, i32 1`);
         this.markMemoryPointer(lenPtr, "array:header");
         B.line(`${len} = load ${this.sizeType}, ptr ${lenPtr}${this.fieldAliasAttachment(lenPtr)}`);
-        B.line(`${lenNumber} = sitofp ${this.sizeType} ${len} to double`);
+        B.line(`${lenNumber} = ${sizeToDouble(this.sizeType)} ${this.sizeType} ${len} to double`);
         B.line(`${same} = fcmp oeq double ${length.name}, ${lenNumber}`);
         B.condBr(same, done, resize);
         B.startBlock(resize);
@@ -7627,7 +7630,7 @@ export class LlEmitter {
           B.line(
             `${rawLen} = load ${this.sizeType}, ptr ${lenPtr}${this.fieldAliasAttachment(lenPtr)}`,
           );
-          B.line(`${len} = sitofp ${this.sizeType} ${rawLen} to double`);
+          B.line(`${len} = ${sizeToDouble(this.sizeType)} ${this.sizeType} ${rawLen} to double`);
           B.line(`${inBounds} = fcmp olt double ${i}, ${len}`);
           cur = i;
         }
