@@ -3767,6 +3767,19 @@ static ScrDynEntry *scr_dyn_symbol_entry(const ScrDyn *receiver, const ScrDyn *k
   return entry;
 }
 
+ScrDynEntry *scr_dyn_own_symbol_entry(const ScrDyn *object, const ScrDyn *key) {
+  return object->symbol_properties ? scr_dyn_symbol_entry(object, key, true) : NULL;
+}
+
+ScrStr *scr_dyn_symbol_storage_name(const ScrDyn *key) { return scr_dyn_symbol_storage_key(key); }
+
+void scr_dyn_symbol_init_own(ScrDyn *object, ScrDyn *key, const ScrStr *storage, ScrDyn *value) {
+  object->symbol_properties = scr_dyn_new_obj_null_proto();
+  scr_dyn_obj_set(object->symbol_properties, storage->data, storage->len, scr_dyn_retain(value));
+  object->symbol_keys = scr_dyn_new_arr();
+  scr_dyn_arr_push(object->symbol_keys, scr_dyn_retain(key));
+}
+
 static void scr_dyn_symbol_table(ScrDyn *receiver) {
   if (!receiver->symbol_properties) receiver->symbol_properties = scr_dyn_new_obj_null_proto();
   if (!receiver->symbol_keys) receiver->symbol_keys = scr_dyn_new_arr();

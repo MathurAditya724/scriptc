@@ -1,6 +1,7 @@
 import type { IrExpr, IrModule, IrType } from "./ir.js";
 import type { IrLibFn } from "./builtin-signatures.js";
 import {
+  isDirentShape,
   RUNTIME_EMITTER_CLASS,
   RUNTIME_EVENT_CLASS,
   RUNTIME_EVENT_TARGET_CLASS,
@@ -150,7 +151,9 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     inspect: false,
     childProcess: false,
     net: false,
-    symbol: false,
+    // A Dirent row converted to dyn carries Node's Symbol(type) key
+    // (scr_dyn_dirent_finish, defined in scr_symbol.c).
+    symbol: (mod.records ?? []).some(isDirentShape),
     bigint: false,
     searchParams: false,
     qs: false,

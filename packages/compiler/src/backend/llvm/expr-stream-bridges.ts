@@ -10,6 +10,7 @@ import {
   SYMBOL_T,
   classDynViewSupported,
   isClassOwnEnumerableFieldName,
+  isDirentShape,
   isDynTypedRefType,
   isRefCounted,
   typeKey,
@@ -968,7 +969,10 @@ export function streamTypedRefMaterializeAdapter(
         ...shape.fields.filter((field) => !inOrder.has(field.name)),
       ];
       // Published before the field converters, like the array hooks below.
-      if (liveRecordOpsEligible(fields)) {
+      // A Dirent row reads through its finished view (the prototype and
+      // the non-enumerable %dtype).
+      const dirent = isDirentShape(shape);
+      if (!dirent && liveRecordOpsEligible(fields)) {
         adapter.recordOps = `@${snapshot}_rops`;
         liveRecordOps(host, t, snapshot, fields);
       }
@@ -1003,6 +1007,10 @@ export function streamTypedRefMaterializeAdapter(
           B.br(skip);
           B.startBlock(skip);
         }
+      }
+      if (dirent) {
+        host.declare(`declare void @scr_dyn_dirent_finish(ptr)`);
+        B.line(`call void @scr_dyn_dirent_finish(ptr ${out})`);
       }
       B.terminate(`ret ptr ${out}`);
     }

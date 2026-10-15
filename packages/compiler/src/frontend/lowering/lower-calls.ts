@@ -53,7 +53,13 @@ import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
 import { isGenericCallableMemberType, typeKey } from "../type-mapper.js";
 import { dynFallbackType, jsFuncNameOf, newFnCtx, staticImportNamespaceType } from "./lowerer.js";
-import { NARROW_FIRST, STRING_INDEX_METHODS, STR_METHODS, stdlibGlobalNameOf } from "./surfaces.js";
+import {
+  NARROW_FIRST,
+  STRING_INDEX_METHODS,
+  STR_METHODS,
+  UTIL_TYPES_KEYS,
+  stdlibGlobalNameOf,
+} from "./surfaces.js";
 import { dynStringReceiver } from "./containers/dynamic-receivers.js";
 import {
   lowerArrayConstructor,
@@ -7330,6 +7336,37 @@ function lowerObjectStaticCall(
   if (member !== "keys" && member !== "values" && member !== "entries") return null;
   if (call.arguments.length !== 1 || ts.isSpreadElement(call.arguments[0]!)) return null;
   const argNode = call.arguments[0]!;
+  // util.types and node:util/types list Node's pinned key census
+  // (UTIL_TYPES_KEYS): the object's own keys in Node's order, or the module
+  // namespace's export names sorted with "default". values/entries would
+  // include members that do not compile yet.
+  const probedModule = tryLowerExpression(lowerer, argNode);
+  if (
+    lowerer.builtinNamespaceModuleOf(argNode) === "util/types" ||
+    (probedModule?.type.kind === "moduleNs" && probedModule.type.moduleId === "builtin:util/types")
+  ) {
+    if (member !== "keys") {
+      lowerer.noLowering(
+        `Object.${member} over util.types`,
+        call,
+        "call the util.types predicates by name",
+      );
+    }
+    const symbol = ts.isIdentifier(argNode)
+      ? lowerer.checker.getSymbolAtLocation(argNode)
+      : undefined;
+    const namespace = symbol
+      ? lowerer.checker.declarationsOf(symbol).some((decl) => ts.isNamespaceImport(decl))
+      : false;
+    const names = namespace ? [...UTIL_TYPES_KEYS, "default"].sort() : UTIL_TYPES_KEYS;
+    const loc = locOf(call);
+    return {
+      kind: "arrayLit",
+      elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
+      type: arrayOf(STRING),
+      loc,
+    };
+  }
   // A compiled PROGRAM module namespace is a nominal token whose members
   // remain live bindings, but its enumerable key set is static and Node
   // sorts it in code-unit order. Materialize exactly those value-export
