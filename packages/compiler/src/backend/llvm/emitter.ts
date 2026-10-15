@@ -1,3 +1,4 @@
+import { type ArraySearchKind, emitArraySearchHelpers } from "./array-search.js";
 import { emitLlvmLayouts } from "./layouts.js";
 import { compileRegexMatcher, type RegexMatcherCode } from "./regex-matchers.js";
 import { CYC_BUF, CYC_HDR, FIRST_EMITTED_CYC_KIND, inlineAllocSupported } from "./alloc.js";
@@ -770,6 +771,8 @@ export class LlEmitter {
    * typeKey → thunk symbol. */
   readonly resolveThunks = new Map<string, string>();
   readonly resolveThunkDefs: string[] = [];
+  /** Inline array searches used by the module (array-search.ts). */
+  readonly arraySearchKinds = new Set<ArraySearchKind>();
   /** Typed-ref recipe constants by type key (lazy receivers). */
   readonly typedRefRecipes = new Map<string, string>();
   /** ReadableStream.from adapters keep typed arrays by reference and box
@@ -1977,6 +1980,7 @@ export class LlEmitter {
     // write/abort declarations).
     const helpers = [
       ...this.helperDefs(),
+      ...emitArraySearchHelpers(this.arraySearchKinds, this.sizeType, (line) => this.declare(line)),
       ...emitClassMembershipHelper(this.classMeta, this.sizeType),
       ...(this.publishWalkersCache?.defs() ?? []),
       ...this.publishedClassNamesDefs(),
