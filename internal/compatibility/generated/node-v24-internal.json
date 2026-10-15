@@ -326,9 +326,9 @@
       "apiEntries": 280,
       "static": {
         "supported": 7,
-        "partial": 128,
+        "partial": 131,
         "refused": 0,
-        "not-implemented": 145,
+        "not-implemented": 142,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -43746,6 +43746,11 @@
           "tests/corpus/3135-fs-file-handle-controls.ts",
           "tests/corpus/3136-fs-file-handle-options.ts",
           "tests/corpus/3137-fs-vector-callbacks.cjs",
+          "tests/corpus/5448-fs-glob-patterns.ts",
+          "tests/corpus/5449-fs-glob-options.ts",
+          "tests/corpus/5450-fs-glob-validation.js",
+          "tests/corpus/5451-fs-promises-glob.ts",
+          "tests/corpus/5452-fs-glob-callback.ts",
           "tests/corpus/5540-fs-callback-forms.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-native-realpath.ts",
@@ -43765,6 +43770,7 @@
           "tests/corpus/node24-fs-timestamps-promises.ts",
           "tests/corpus/node24-fs-timestamps-symlinks.ts",
           "tests/corpus/node24-fs-timestamps.ts",
+          "tests/fixtures/node-types/fs-glob.ts",
           "tests/fixtures/node-types/fs-links.ts",
           "tests/fixtures/node-types/fs-statfs.ts",
           "tests/fixtures/node-types/fs-timestamps.ts"
@@ -44792,8 +44798,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fsPromises.glob",
+        "tests": [
+          "tests/corpus/5448-fs-glob-patterns.ts",
+          "tests/corpus/5449-fs-glob-options.ts",
+          "tests/corpus/5450-fs-glob-validation.js",
+          "tests/corpus/5451-fs-promises-glob.ts",
+          "tests/corpus/5452-fs-glob-callback.ts",
+          "tests/fixtures/node-types/fs-glob.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -45951,8 +45965,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.glob",
+        "tests": [
+          "tests/corpus/5448-fs-glob-patterns.ts",
+          "tests/corpus/5449-fs-glob-options.ts",
+          "tests/corpus/5450-fs-glob-validation.js",
+          "tests/corpus/5451-fs-promises-glob.ts",
+          "tests/corpus/5452-fs-glob-callback.ts",
+          "tests/fixtures/node-types/fs-glob.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -47453,8 +47475,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.globSync",
+        "tests": [
+          "tests/corpus/5448-fs-glob-patterns.ts",
+          "tests/corpus/5449-fs-glob-options.ts",
+          "tests/corpus/5450-fs-glob-validation.js",
+          "tests/corpus/5451-fs-promises-glob.ts",
+          "tests/corpus/5452-fs-glob-callback.ts",
+          "tests/fixtures/node-types/fs-glob.ts"
+        ]
       },
       "anchorSource": "exact"
     },

@@ -381,6 +381,69 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.line(`call void @scr_watcher_close(ptr ${w.name})`);
     return { name: "", type: e.type };
   }
+  if (e.fn === "fs.globTypesSync" || e.fn === "fsp.globTypes") {
+    // Dirent rows from one glob snapshot (scr_glob.c): mode 1 is the
+    // globSync form, 3 the fs/promises form with resolved parent paths.
+    if (e.type.kind !== "array" || e.type.elem.kind !== "record") {
+      throw new InternalCompilerError(
+        `llvm emitter bug: ${e.fn} result is not a Dirent record array`,
+      );
+    }
+    const arrayT = e.type;
+    const recT = e.type.elem;
+    const pattern = host.emitExpr(e.args[0]!);
+    const options = host.emitExpr(e.args[1]!);
+    const mode = e.fn === "fsp.globTypes" ? "3.0" : "1.0";
+    host.declare(`declare ptr @scr_fs_glob(ptr, ptr, double)`);
+    host.declare(`declare ${host.sizeType} @scr_fs_glob_count(ptr)`);
+    host.declare(`declare ptr @scr_fs_glob_name(ptr, ${host.sizeType})`);
+    host.declare(`declare ptr @scr_fs_glob_parent(ptr, ${host.sizeType})`);
+    host.declare(`declare double @scr_fs_glob_type(ptr, ${host.sizeType})`);
+    host.declare(`declare void @scr_fs_glob_free(ptr)`);
+    const snap = B.tmp();
+    B.line(
+      `${snap} = call ptr @scr_fs_glob(ptr ${pattern.name}, ptr ${options.name}, double ${mode})`,
+    );
+    host.emitPendingCheck();
+    const cnt = B.tmp();
+    B.line(`${cnt} = call ${host.sizeType} @scr_fs_glob_count(ptr ${snap})`);
+    const arr = B.tmp();
+    B.line(`${arr} = ${arrNewCall(host.shapeHost, recT, cnt)}`);
+    const arrayOut = host.own({ name: arr, type: arrayT });
+    const iSlot = B.slot();
+    B.entryAllocas.push(`${iSlot} = alloca ${host.sizeType}`);
+    B.line(`store ${host.sizeType} 0, ptr ${iSlot}`);
+    const lc = B.newLabel("gl.c");
+    const lb = B.newLabel("gl.b");
+    const le = B.newLabel("gl.e");
+    B.br(lc);
+    B.startBlock(lc);
+    const i = B.tmp();
+    const cont = B.tmp();
+    B.line(`${i} = load ${host.sizeType}, ptr ${iSlot}`);
+    B.line(`${cont} = icmp ult ${host.sizeType} ${i}, ${cnt}`);
+    B.condBr(cont, lb, le);
+    B.startBlock(lb);
+    const row = B.tmp();
+    B.line(`${row} = call ptr @${mangleRecordNew(recT.shapeId)}()`);
+    const dt = B.tmp();
+    B.line(`${dt} = call double @scr_fs_glob_type(ptr ${snap}, ${host.sizeType} ${i})`);
+    host.storeField(host.recordFieldPtr(row, recT.shapeId, "%dtype").ptr, F64, dt, false);
+    const nm = B.tmp();
+    B.line(`${nm} = call ptr @scr_fs_glob_name(ptr ${snap}, ${host.sizeType} ${i}) ; +1`);
+    B.line(`store ptr ${nm}, ptr ${host.recordFieldPtr(row, recT.shapeId, "name").ptr}`);
+    const parent = B.tmp();
+    B.line(`${parent} = call ptr @scr_fs_glob_parent(ptr ${snap}, ${host.sizeType} ${i}) ; +1`);
+    B.line(`store ptr ${parent}, ptr ${host.recordFieldPtr(row, recT.shapeId, "parentPath").ptr}`);
+    host.arrPush(arr, "ref", row); // push takes ownership of the row
+    const i2 = B.tmp();
+    B.line(`${i2} = add ${host.sizeType} ${i}, 1`);
+    B.line(`store ${host.sizeType} ${i2}, ptr ${iSlot}`);
+    B.br(lc);
+    B.startBlock(le);
+    B.line(`call void @scr_fs_glob_free(ptr ${snap})`);
+    return arrayOut;
+  }
   if (e.fn === "fs.readdirTypesSync" || e.fn === "fsp.readdirTypes") {
     // Dirent rows assembled inline from one scandir snapshot — the C
     // emitter's flat loop. The sync form checks a scandir error before

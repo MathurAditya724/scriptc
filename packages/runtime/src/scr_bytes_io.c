@@ -23,13 +23,6 @@ static const ScrArrOps scr_bytes_io_bytes_ops = { scr_bytes_retain_v, scr_bytes_
 #ifndef O_SYNC
 #define O_SYNC 0 /* Windows CRT opens have no separate synchronous flag. */
 #endif
-/* Bionic added glob/globfree in API 28; Android packs target API 26. */
-#if !defined(_WIN32) && !defined(__wasi__) && (!defined(__ANDROID__) || __ANDROID_API__ >= 28)
-#include <glob.h>
-#define SCR_FS_HAS_GLOB 1
-#else
-#define SCR_FS_HAS_GLOB 0
-#endif
 #ifdef __APPLE__
 #include <sys/stat.h> /* lchmod(2) — the fs.lchmodSync ladder's real tail */
 #endif
@@ -554,7 +547,7 @@ static void scr_fs_cb_fire(ScrClosure *closure) {
 }
 #endif
 
-static void scr_fs_cb_schedule(const ScrDyn *callback, ScrDyn *result, const ScrDyn *buffer) {
+void scr_fs_cb_schedule(const ScrDyn *callback, ScrDyn *result, const ScrDyn *buffer) {
   ScrDyn *arguments = scr_dyn_new_arr();
   if (scr_exc_pending()) {
     ScrCaught *caught = scr_exc_take();
@@ -815,36 +808,10 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
       scr_dyn_release(force); scr_str_release(destination);
     }
   } else if (!strcmp(op, "glob")) {
-#if SCR_FS_HAS_GLOB
-    if (strstr(path->data, "**") || scr_fs_cb_option_bool(ARG(1), "withFileTypes")) {
-      const char *message = "Recursive glob patterns and Dirent results have no native lowering";
-      scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "SC2020");
-      goto done;
-    }
-    ScrDyn *cwd = scr_fs_cb_option(ARG(1), "cwd");
-    ScrDyn *exclude = scr_fs_cb_option(ARG(1), "exclude");
-    if (exclude && exclude->kind != SCR_DYN_UNDEF) {
-      const char *message = "fs.glob exclude options have no native lowering";
-      scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "SC2020");
-    } else {
-      ScrStr *pattern = cwd && cwd->kind == SCR_DYN_STR ? scr_fs_cb_join(cwd->v.str, path->data) : scr_str_retain(path);
-      glob_t matches = {0};
-      int rc = glob(pattern->data, 0, NULL, &matches);
-      if (rc && rc != GLOB_NOMATCH) scr_fs_throw(rc == GLOB_NOSPACE ? ENOMEM : EIO, "glob", path);
-      else {
-        result = scr_dyn_new_arr();
-        size_t prefix = cwd && cwd->kind == SCR_DYN_STR ? cwd->v.str->len + 1 : 0;
-        for (size_t i = 0; i < matches.gl_pathc; i++) {
-          const char *name = matches.gl_pathv[i] + prefix;
-          scr_dyn_arr_push(result, scr_fs_cb_string(scr_str_new(name, strlen(name))));
-        }
-      }
-      globfree(&matches); scr_str_release(pattern);
-    }
-    scr_dyn_release(cwd); scr_dyn_release(exclude);
-#else
-    scr_fs_throw(ENOSYS, "glob", path);
-#endif
+    /* Direct fs.glob calls lower to scr_fs_glob_callback (scr_glob.c); a
+     * stored fs.glob value is not supported. */
+    const char *message = "fs.glob stored as a value has no native lowering; call fs.glob directly";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "SC2020");
   } else if (!strcmp(op, "write") && ARG(1)->kind == SCR_DYN_STR) {
     /* write(fd, string[, position[, encoding]], callback): a non-number
      * position writes at the current offset; the encoding defaults to

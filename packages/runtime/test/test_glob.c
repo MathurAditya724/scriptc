@@ -15,6 +15,15 @@
 
 long scr_str_live_count(void); /* provided by scr_string.c */
 
+/* fs.glob's callback form (scr_glob.c) schedules through the filesystem
+ * callback queue in scr_bytes_io.c, which this binary does not link; the
+ * oracle never calls it. */
+void scr_fs_cb_schedule(const ScrDyn *callback, ScrDyn *result, const ScrDyn *buffer) {
+  (void)callback;
+  (void)buffer;
+  scr_dyn_release(result);
+}
+
 static int hex_val(char c) {
   if (c >= '0' && c <= '9') return c - '0';
   if (c >= 'a' && c <= 'f') return c - 'a' + 10;
