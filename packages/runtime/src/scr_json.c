@@ -867,7 +867,8 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
       }
       d->v.obj.source_identity = NULL;
       d->v.obj.source_access = NULL;
-    } else {
+    } else if (kind != SCR_DYN_NUM && kind != SCR_DYN_STR) {
+      /* Number and string boxes set their one payload word. */
       memset(&d->v, 0, sizeof d->v);
     }
     return d;
@@ -1030,6 +1031,18 @@ void scr_dyn_release(ScrDyn *d) {
       scr_cyc_released(d);
     return;
   }
+#ifndef SCR_RC_AUDIT
+  /* Number and string boxes own at most one string, are never cycle
+   * candidates and cannot be weak keys: return them to the free list. */
+  if ((d->kind == SCR_DYN_NUM || d->kind == SCR_DYN_STR) && !d->prototype &&
+      !d->symbol_properties && !d->symbol_keys && scr_dyn_free_count < SCR_DYN_FREE_MAX) {
+    if (d->kind == SCR_DYN_STR) scr_str_release(d->v.str);
+    d->v.str = (ScrStr *)scr_dyn_free_misc;
+    scr_dyn_free_misc = d;
+    scr_dyn_free_count++;
+    return;
+  }
+#endif
   scr_cyc_dead(d);
   scr_rc_destroy(d, scr_dyn_destroy);
 }
