@@ -722,6 +722,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.crypto.randomFill",
+      "kind": "node-builtin",
+      "name": "crypto.randomFill",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.randomFillSync",
       "kind": "node-builtin",
       "name": "crypto.randomFillSync",
@@ -737,6 +743,12 @@
       "id": "node-builtin.crypto.randomUUID",
       "kind": "node-builtin",
       "name": "crypto.randomUUID",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.crypto.randomUUIDv7",
+      "kind": "node-builtin",
+      "name": "crypto.randomUUIDv7",
       "status": "static"
     },
     {

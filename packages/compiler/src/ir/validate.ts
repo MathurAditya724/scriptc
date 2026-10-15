@@ -5036,6 +5036,23 @@ function validateFunction(
   }
 
   function checkLibSpecialCall(e: IrExpr & { kind: "libCall" }): boolean {
+    if (e.fn === "crypto.randomFillView" || e.fn === "crypto.randomFillViewRest") {
+      // The filled view is the result, at its own element type.
+      const view = e.args[0]?.type;
+      if (view?.kind !== "bytes" || !typeEquals(e.type, view)) {
+        err(`libCall ${e.fn} must return its view argument's type`, e.loc);
+      }
+      return true;
+    }
+    if (e.fn === "crypto.randomFillCb") {
+      if (e.args[0]?.type.kind !== "bytes") err(`libCall ${e.fn} buffer must be a view`, e.loc);
+      if (e.args[4]?.type.kind !== "func")
+        err(`libCall ${e.fn} callback must be a function`, e.loc);
+    }
+    if (e.fn === "crypto.randomFillCbDyn" || e.fn === "crypto.randomIntCb") {
+      const callback = e.args[e.args.length - 1]?.type;
+      if (callback?.kind !== "func") err(`libCall ${e.fn} callback must be a function`, e.loc);
+    }
     if (e.fn === "global.undefRead") {
       // Always throws — the result type is whatever the declared type
       // of the undefined global mapped to (never materialized).

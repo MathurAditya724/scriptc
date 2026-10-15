@@ -1,4 +1,4 @@
-import { lowerBuiltinByteInput, errorFirstBytesCallback } from "./arguments.js";
+import { lowerBuiltinByteInput, errorFirstBytesCallback, errorFirstCallback } from "./arguments.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
@@ -193,6 +193,13 @@ function isStringDigestEncoding(
       (value) => (value !== "" || emptyIsString) && cryptoEncodingName(value) !== undefined,
     )
   );
+}
+
+/** Whether every offset/size argument is statically a number; other
+ * values take the runtime checks, which throw Node's errors or apply its
+ * defaults. */
+function cryptoNumberArgs(lowerer: Lowerer, nodes: readonly ts.Expression[]): boolean {
+  return nodes.every((node) => lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "f64");
 }
 
 /** A view's bytes as the Uint8Array the byte-input libCalls take: other
@@ -463,49 +470,177 @@ export function lowerCryptoModuleCall(
     };
   }
   if (bi.member === "randomFillSync") {
-    if (args.length < 1 || args.length > 3) {
+    if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement)) {
       lowerer.noLowering(
         `crypto.randomFillSync with ${args.length} arguments`,
         expr,
         "randomFillSync(buffer[, offset[, size]]) is supported",
       );
     }
-    const buffer = lowerer.lowerExprExpecting(args[0]!, BYTES_U8);
-    const offset = args[1]
-      ? lowerer.lowerExprExpecting(args[1]!, F64)
-      : ({ kind: "numLit", value: 0, type: F64, loc } satisfies IrExpr);
-    if (args[2]) {
-      const size = lowerer.lowerExprExpecting(args[2]!, F64);
+    const buffer = lowerer.lowerExpr(args[0]!);
+    if (buffer.type.kind === "bytes" && cryptoNumberArgs(lowerer, args.slice(1))) {
+      // A view returns itself, at its own type.
+      const offset = args[1]
+        ? lowerer.lowerExprExpecting(args[1]!, F64)
+        : ({ kind: "numLit", value: 0, type: F64, loc } satisfies IrExpr);
+      if (args[2]) {
+        return {
+          kind: "libCall",
+          fn: "crypto.randomFillView",
+          args: [buffer, offset, lowerer.lowerExprExpecting(args[2]!, F64)],
+          type: buffer.type,
+          loc,
+        };
+      }
       return {
         kind: "libCall",
-        fn: "crypto.randomFill",
-        args: [buffer, offset, size],
-        type: BYTES_U8,
+        fn: "crypto.randomFillViewRest",
+        args: [buffer, offset],
+        type: buffer.type,
         loc,
       };
     }
+    // ArrayBuffers and other values take Node's checks at run time.
     return {
       kind: "libCall",
-      fn: "crypto.randomFillRest",
-      args: [buffer, offset],
-      type: BYTES_U8,
+      fn: "crypto.randomFillSyncDyn",
+      args: [
+        lowerer.coerceInto(args[0]!, buffer, DYN),
+        dynArg(lowerer, args[1], loc),
+        dynArg(lowerer, args[2], loc),
+      ],
+      type: DYN,
+      loc,
+    };
+  }
+  if (bi.member === "randomFill") {
+    if (args.length < 2 || args.length > 4 || args.some(ts.isSpreadElement)) {
+      lowerer.noLowering(
+        `crypto.randomFill with ${args.length} arguments`,
+        expr,
+        "randomFill(buffer[, offset[, size]], callback) is supported",
+      );
+    }
+    const form: IrExpr = { kind: "numLit", value: args.length - 1, type: F64, loc };
+    const buffer = lowerer.lowerExpr(args[0]!);
+    if (buffer.type.kind === "bytes" && cryptoNumberArgs(lowerer, args.slice(1, -1))) {
+      const view = buffer.type;
+      const offset =
+        args.length >= 3
+          ? lowerer.lowerExprExpecting(args[1]!, F64)
+          : ({ kind: "numLit", value: 0, type: F64, loc } satisfies IrExpr);
+      const size =
+        args.length === 4
+          ? lowerer.lowerExprExpecting(args[2]!, F64)
+          : ({ kind: "numLit", value: 0, type: F64, loc } satisfies IrExpr);
+      const callback = errorFirstCallback(
+        lowerer,
+        args[args.length - 1]!,
+        "crypto.randomFill",
+        (value) => value.kind === "bytes" && value.elem === view.elem,
+        "the buffer's own view",
+      );
+      return {
+        kind: "libCall",
+        fn: "crypto.randomFillCb",
+        args: [buffer, offset, size, form, callback],
+        type: VOID,
+        loc,
+      };
+    }
+    const callback = errorFirstCallback(
+      lowerer,
+      args[args.length - 1]!,
+      "crypto.randomFill",
+      () => false,
+      "unknown-typed",
+    );
+    return {
+      kind: "libCall",
+      fn: "crypto.randomFillCbDyn",
+      args: [
+        lowerer.coerceInto(args[0]!, buffer, DYN),
+        args.length >= 3 ? lowerer.lowerExprExpecting(args[1]!, DYN) : dynUndefinedExpr(loc),
+        args.length === 4 ? lowerer.lowerExprExpecting(args[2]!, DYN) : dynUndefinedExpr(loc),
+        form,
+        callback,
+      ],
+      type: VOID,
       loc,
     };
   }
   if (bi.member === "randomInt") {
-    if (args.length !== 1 && args.length !== 2) {
+    if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement)) {
       lowerer.noLowering(
         `crypto.randomInt with ${args.length} arguments`,
         expr,
-        "the synchronous randomInt(max) and randomInt(min, max) forms are supported",
+        "randomInt([min, ]max[, callback]) is supported",
       );
     }
+    const last = args[args.length - 1]!;
+    const lastType = lowerer.mapTypeOf(lowerer.typeOf(last));
+    const withCallback = args.length === 3 || (args.length === 2 && lastType?.kind === "func");
+    const numbers = withCallback ? args.slice(0, -1) : args;
     const min =
-      args.length === 1
+      numbers.length === 1
         ? ({ kind: "numLit", value: 0, type: F64, loc } satisfies IrExpr)
-        : lowerer.lowerExprExpecting(args[0]!, F64);
-    const max = lowerer.lowerExprExpecting(args[args.length - 1]!, F64);
-    return { kind: "libCall", fn: "crypto.randomInt", args: [min, max], type: F64, loc };
+        : lowerer.lowerExprExpecting(numbers[0]!, F64);
+    const max = lowerer.lowerExprExpecting(numbers[numbers.length - 1]!, F64);
+    if (!withCallback) {
+      if (numbers.length === 1)
+        return { kind: "libCall", fn: "crypto.randomIntMax", args: [max], type: F64, loc };
+      return { kind: "libCall", fn: "crypto.randomInt", args: [min, max], type: F64, loc };
+    }
+    const callback = errorFirstCallback(
+      lowerer,
+      last,
+      "crypto.randomInt",
+      (value) => value.kind === "f64",
+      "number",
+    );
+    const minGiven: IrExpr = {
+      kind: "numLit",
+      value: numbers.length === 2 ? 1 : 0,
+      type: F64,
+      loc,
+    };
+    return {
+      kind: "libCall",
+      fn: "crypto.randomIntCb",
+      args: [min, max, minGiven, callback],
+      type: VOID,
+      loc,
+    };
+  }
+  if (bi.member === "randomUUID" && args.length > 0) {
+    if (args.length > 1 || args.some(ts.isSpreadElement))
+      lowerer.noLowering(
+        `crypto.randomUUID with ${args.length} arguments`,
+        expr,
+        "randomUUID([options]) is supported",
+      );
+    return {
+      kind: "libCall",
+      fn: "crypto.randomUUIDOpts",
+      args: [dynArg(lowerer, args[0], loc)],
+      type: STRING,
+      loc,
+    };
+  }
+  if (bi.member === "randomUUIDv7") {
+    if (args.length > 1 || args.some(ts.isSpreadElement))
+      lowerer.noLowering(
+        `crypto.randomUUIDv7 with ${args.length} arguments`,
+        expr,
+        "randomUUIDv7([options]) is supported",
+      );
+    return {
+      kind: "libCall",
+      fn: "crypto.randomUUIDv7",
+      args: [dynArg(lowerer, args[0], loc)],
+      type: STRING,
+      loc,
+    };
   }
   if (bi.member === "pbkdf2Sync") {
     if (args.length !== 5) {

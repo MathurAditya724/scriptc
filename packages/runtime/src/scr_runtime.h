@@ -4349,6 +4349,15 @@ bool scr_crypto_timing_safe_equal(ScrBytes *left, ScrBytes *right);
 ScrBytes *scr_crypto_random_fill(ScrBytes *bytes, double offset, double size);
 ScrBytes *scr_crypto_random_fill_rest(ScrBytes *bytes, double offset);
 double scr_crypto_random_int(double min, double max);
+double scr_crypto_random_int_max(double max);
+ScrDyn *scr_crypto_random_fill_sync_dyn(ScrDyn *buf, ScrDyn *offset, ScrDyn *size);
+double scr_crypto_random_fill_args(ScrBytes *view, bool typed_array, double offset, double size,
+                                   int form);
+void scr_crypto_random_int_refill(void);
+bool scr_crypto_random_int_check(double min, double max, bool min_given, double *range);
+bool scr_crypto_random_int_try(double min, double range, double *out);
+ScrStr *scr_crypto_random_uuid_opts(ScrDyn *options);
+ScrStr *scr_crypto_random_uuid_v7(ScrDyn *options);
 ScrBytes *scr_crypto_pbkdf2(ScrBytes *password, ScrBytes *salt,
                             double iterations, double keylen, ScrStr *digest);
 ScrBytes *scr_crypto_pbkdf2_job(ScrBytes *password, ScrBytes *salt, double iterations,
@@ -4363,6 +4372,17 @@ ScrBytes *scr_crypto_scrypt_derive(ScrBytes *password, ScrBytes *salt, double ke
 typedef void (*ScrCryptoBytesFn)(ScrClosure *cb, ScrError *error /* borrowed */, ScrBytes *value /* moves */);
 void scr_crypto_defer_bytes(ScrBytes *value /* moves */, ScrError *error /* moves */, ScrClosure *cb /* moves */,
                             ScrCryptoBytesFn fn);
+void scr_crypto_defer_dyn(ScrDyn *value /* moves */, ScrError *error /* moves */, ScrClosure *cb /* moves */,
+                          ScrCryptoBytesFn fn);
+/* randomFill and randomInt with callbacks (scr_crypto_async.c). `form` is
+ * randomFill's argument count before the callback. */
+void scr_crypto_random_fill_async(ScrBytes *buf, double offset, double size, double form,
+                                  ScrClosure *cb, ScrCryptoBytesFn fn);
+void scr_crypto_random_fill_async_dyn(ScrDyn *buf, ScrDyn *offset, ScrDyn *size, double form,
+                                      ScrClosure *cb, ScrCryptoBytesFn fn);
+typedef void (*ScrCryptoIntFn)(ScrClosure *cb, double value);
+void scr_crypto_random_int_async(double min, double max, double min_given, ScrClosure *cb,
+                                 ScrCryptoIntFn fn);
 void scr_crypto_random_bytes_async(double size, ScrClosure *cb /* moves */,
                                    ScrCryptoBytesFn fn);
 void scr_crypto_pbkdf2_async(ScrBytes *password, ScrBytes *salt,

@@ -2214,7 +2214,11 @@ declare module "node:url" {
 
 /* node:crypto: the static hashing/MAC/random/key-derivation utility slice. */
 declare module "crypto" {
-  export function randomUUID(): string;
+  export interface RandomUUIDOptions {
+    disableEntropyCache?: boolean | undefined;
+  }
+  export function randomUUID(options?: RandomUUIDOptions): string;
+  export function randomUUIDv7(options?: RandomUUIDOptions): string;
   export function randomBytes(size: number): Buffer;
   export type BinaryToTextEncoding = "base64" | "base64url" | "hex" | "binary";
   export type CharacterEncoding = "utf8" | "utf-8" | "utf16le" | "utf-16le" | "latin1";
@@ -2268,13 +2272,37 @@ declare module "crypto" {
     options: OneShotDigestOptions | BinaryToTextEncoding | "buffer",
   ): string | Buffer;
   export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean;
-  export function randomFillSync<T extends Uint8Array>(
+  export function randomFillSync<T extends ArrayBufferView | ArrayBufferLike>(
     buffer: T,
     offset?: number,
     size?: number,
   ): T;
+  export function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
+    buffer: T,
+    callback: (err: Error | null, buf: T) => void,
+  ): void;
+  export function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
+    buffer: T,
+    offset: number,
+    callback: (err: Error | null, buf: T) => void,
+  ): void;
+  export function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
+    buffer: T,
+    offset: number,
+    size: number,
+    callback: (err: Error | null, buf: T) => void,
+  ): void;
   export function randomInt(max: number): number;
   export function randomInt(min: number, max: number): number;
+  export function randomInt(
+    max: number,
+    callback: (err: Error | null, value: number) => void,
+  ): void;
+  export function randomInt(
+    min: number,
+    max: number,
+    callback: (err: Error | null, value: number) => void,
+  ): void;
   export function pbkdf2Sync(
     password: string | Uint8Array,
     salt: string | Uint8Array,

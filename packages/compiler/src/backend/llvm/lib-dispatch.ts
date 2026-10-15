@@ -242,6 +242,39 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${result} = load i1, ptr ${slot}`);
     return { name: result, type: e.type };
   }
+  if (e.fn === "crypto.randomFillCb" || e.fn === "crypto.randomFillCbDyn") {
+    host.usesTimers = true;
+    const args = e.args.map((arg) => host.emitExpr(arg));
+    const cbT = e.args[4]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: randomFill callback not a func");
+    host.moveTemp(args[4]!);
+    const dyn = e.fn === "crypto.randomFillCbDyn";
+    const adapter = host.cryptoBytesThunkFor(cbT, false, dyn ? "dyn" : "view");
+    const symbol = dyn ? "scr_crypto_random_fill_async_dyn" : "scr_crypto_random_fill_async";
+    const position = dyn ? "ptr" : "double";
+    host.declare(`declare void @${symbol}(ptr, ${position}, ${position}, double, ptr, ptr)`);
+    B.line(
+      `call void @${symbol}(ptr ${args[0]!.name}, ${position} ${args[1]!.name}, ${position} ${args[2]!.name}, double ${args[3]!.name}, ptr ${args[4]!.name}, ptr @${adapter})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "crypto.randomIntCb") {
+    host.usesTimers = true;
+    const args = e.args.map((arg) => host.emitExpr(arg));
+    const cbT = e.args[3]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: randomInt callback not a func");
+    host.moveTemp(args[3]!);
+    const adapter = host.cryptoIntThunkFor(cbT);
+    host.declare(`declare void @scr_crypto_random_int_async(double, double, double, ptr, ptr)`);
+    B.line(
+      `call void @scr_crypto_random_int_async(double ${args[0]!.name}, double ${args[1]!.name}, double ${args[2]!.name}, ptr ${args[3]!.name}, ptr @${adapter})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (
     e.fn === "crypto.randomBytesCb" ||
     e.fn === "crypto.pbkdf2Cb" ||

@@ -3,19 +3,19 @@
   "nodeVersion": "24.22.0",
   "nodeCommit": "f14cd3aa7bf9ca8df2cc5b8bb14beb0f335b1d93",
   "summary": {
-    "taskCount": 3478,
-    "tierItemCount": 3478,
+    "taskCount": 3473,
+    "tierItemCount": 3473,
     "tiers": {
       "static": {
         "replace-refusal": 40,
-        "verify-gap": 2477,
-        "audit-partial": 874,
+        "verify-gap": 2475,
+        "audit-partial": 871,
         "classify": 2,
         "implement": 85
       }
     },
     "priorities": {
-      "high": 2295,
+      "high": 2290,
       "normal": 710,
       "low": 473
     }
@@ -7614,66 +7614,6 @@
       }
     },
     {
-      "id": "crypto:974195d3b725",
-      "chapter": "crypto",
-      "label": "crypto.randomFill(buffer[, offset][, size], callback)",
-      "signature": "`crypto.randomFill(buffer[, offset][, size], callback)`",
-      "apiSymbol": "crypto.randomFill",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/crypto.html#cryptorandomfillbuffer-offset-size-callback",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "crypto:9a954164ef2a",
-      "chapter": "crypto",
-      "label": "crypto.randomFillSync(buffer[, offset][, size])",
-      "signature": "`crypto.randomFillSync(buffer[, offset][, size])`",
-      "apiSymbol": "crypto.randomFillSync",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/crypto.html#cryptorandomfillsyncbuffer-offset-size",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "compiler-dedicated:crypto.randomFillSync",
-          "tests": [
-            "tests/corpus/2890-crypto-static-utility.ts",
-            "tests/corpus/node24-crypto-sha2.ts",
-            "tests/corpus/5435-crypto-hash-algorithms.ts",
-            "tests/corpus/5436-crypto-hash-names.js",
-            "tests/corpus/5437-crypto-hmac-algorithms.ts",
-            "tests/corpus/5438-crypto-kdf-digests.ts",
-            "tests/corpus/5440-crypto-hash-encodings.js",
-            "tests/corpus/5441-crypto-hash-output-length.ts",
-            "tests/harness/npm-static.test.ts"
-          ]
-        }
-      }
-    },
-    {
       "id": "crypto:a403de3874bc",
       "chapter": "crypto",
       "label": "crypto.randomInt([min, ]max[, callback])",
@@ -7695,76 +7635,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:crypto.randomInt",
           "tests": [
-            "tests/corpus/2890-crypto-static-utility.ts",
-            "tests/corpus/node24-crypto-sha2.ts",
-            "tests/corpus/5435-crypto-hash-algorithms.ts",
-            "tests/corpus/5436-crypto-hash-names.js",
-            "tests/corpus/5437-crypto-hmac-algorithms.ts",
-            "tests/corpus/5438-crypto-kdf-digests.ts",
-            "tests/corpus/5440-crypto-hash-encodings.js",
-            "tests/corpus/5441-crypto-hash-output-length.ts",
-            "tests/harness/npm-static.test.ts"
+            "tests/corpus/5442-crypto-random-values.ts",
+            "tests/corpus/2890-crypto-static-utility.ts"
           ]
-        }
-      }
-    },
-    {
-      "id": "crypto:0d3bcb43072b",
-      "chapter": "crypto",
-      "label": "crypto.randomUUID([options])",
-      "signature": "`crypto.randomUUID([options])`",
-      "apiSymbol": "crypto.randomUUID",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/crypto.html#cryptorandomuuidoptions",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.crypto.randomUUID",
-          "tests": [
-            "tests/corpus/1358-crypto-random.ts",
-            "tests/corpus/1534-crypto-hash-chain.ts",
-            "tests/corpus/2556-crypto-introspection.ts",
-            "tests/corpus/2890-crypto-static-utility.ts",
-            "tests/harness/npm-static.test.ts",
-            "tests/corpus/node24-crypto-sha2.ts",
-            "tests/corpus/node24-crypto-kdf.ts",
-            "tests/corpus/node24-crypto-kdf-errors.ts",
-            "tests/corpus/node24-crypto-kdf-options.ts"
-          ]
-        }
-      }
-    },
-    {
-      "id": "crypto:5fe8e4024b07",
-      "chapter": "crypto",
-      "label": "crypto.randomUUIDv7([options])",
-      "signature": "`crypto.randomUUIDv7([options])`",
-      "apiSymbol": "crypto.randomUUIDv7",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/crypto.html#cryptorandomuuidv7options",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
         }
       }
     },
@@ -80239,41 +80112,6 @@
           "confidence": "low",
           "source": "compiler-unmatched:webcrypto",
           "tests": []
-        }
-      }
-    },
-    {
-      "id": "webcrypto:35fd8cce482a",
-      "chapter": "webcrypto",
-      "label": "crypto.randomUUID()",
-      "signature": "`crypto.randomUUID()`",
-      "apiSymbol": "crypto.randomUUID",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/webcrypto.html#cryptorandomuuid",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.crypto.randomUUID",
-          "tests": [
-            "tests/corpus/1358-crypto-random.ts",
-            "tests/corpus/1534-crypto-hash-chain.ts",
-            "tests/corpus/2556-crypto-introspection.ts",
-            "tests/corpus/2890-crypto-static-utility.ts",
-            "tests/harness/npm-static.test.ts",
-            "tests/corpus/node24-crypto-sha2.ts",
-            "tests/corpus/node24-crypto-kdf.ts",
-            "tests/corpus/node24-crypto-kdf-errors.ts",
-            "tests/corpus/node24-crypto-kdf-options.ts"
-          ]
         }
       }
     },

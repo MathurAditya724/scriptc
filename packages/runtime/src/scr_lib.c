@@ -5702,21 +5702,6 @@ double scr_math_random(void) {
   return (double)(r >> 11) * 0x1.0p-53;
 }
 
-ScrStr *scr_crypto_random_uuid(void) {
-  unsigned char b[16];
-  arc4random_buf(b, sizeof b);
-  b[6] = (unsigned char)((b[6] & 0x0f) | 0x40); /* version 4 */
-  b[8] = (unsigned char)((b[8] & 0x3f) | 0x80); /* variant 10xx */
-  char out[37];
-  static const char hex[] = "0123456789abcdef";
-  size_t o = 0;
-  for (size_t i = 0; i < 16; i++) {
-    if (i == 4 || i == 6 || i == 8 || i == 10) out[o++] = '-';
-    out[o++] = hex[b[i] >> 4];
-    out[o++] = hex[b[i] & 0x0f];
-  }
-  return scr_str_new(out, 36);
-}
 
 /* randomBytes(n).toString(enc): n truncates like Node's (1.5 → 1 byte);
  * out-of-range n THROWS Node's RangeError verbatim. enc is "hex" or
@@ -7434,89 +7419,341 @@ bool scr_crypto_timing_safe_equal(ScrBytes *left, ScrBytes *right) {
   return diff == 0;
 }
 
-ScrBytes *scr_crypto_random_fill(ScrBytes *bytes, double offset, double size) {
-  double length = (double)(bytes->len * scr_bytes_elem_size(bytes->elem));
-  if (!isfinite(offset) || floor(offset) != offset || offset < 0 || offset > length) {
-    char value[64], msg[160];
-    size_t value_len = scr_f64_to_str(offset, value);
-    int n = snprintf(msg, sizeof msg,
-                     "The value of \"offset\" is out of range. It must be >= 0 && <= %.0f. Received %.*s",
-                     length, (int)value_len, value);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
-    return NULL;
+/* ERR_OUT_OF_RANGE's Received value: integers beyond 2^32 take Node's
+ * underscore separators. */
+static void scr_crypto_received(double value, char out[64]) {
+  if (isfinite(value) && floor(value) == value && fabs(value) > 4294967296.0) {
+    char digits[40];
+    snprintf(digits, sizeof digits, "%.0f", value);
+    size_t len = strlen(digits), o = 0, start = digits[0] == '-' ? 1 : 0;
+    for (size_t i = 0; i < len; i++) {
+      if (i > start && (len - i) % 3 == 0) out[o++] = '_';
+      out[o++] = digits[i];
+    }
+    out[o] = '\0';
+    return;
   }
-  double available = length - offset;
-  if (!isfinite(size) || floor(size) != size || size < 0 || size > 2147483647.0) {
-    char value[64], msg[160];
-    size_t value_len = scr_f64_to_str(size, value);
-    int n = snprintf(msg, sizeof msg,
-                     "The value of \"size\" is out of range. It must be >= 0 && <= 2147483647. Received %.*s",
-                     (int)value_len, value);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
-    return NULL;
+  size_t n = scr_f64_to_str(value, out);
+  out[n] = '\0';
+}
+
+static void scr_crypto_out_of_range(const char *name, const char *requirement, double value) {
+  char received[64], message[256];
+  scr_crypto_received(value, received);
+  int n = snprintf(message, sizeof message, "The value of \"%s\" is out of range. It must be %s. Received %s",
+                   name, requirement, received);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, message, (size_t)n, "ERR_OUT_OF_RANGE");
+}
+
+/* Node's assertOffset and assertSize: offset and size count elements and
+ * are checked and returned in bytes, truncated to uint32. */
+static bool scr_random_offset(double offset, double element, double length, double *out) {
+  offset *= element;
+  double max = length < 2147483647.0 ? length : 2147483647.0;
+  if (isnan(offset) || offset > max || offset < 0) {
+    char requirement[64];
+    snprintf(requirement, sizeof requirement, ">= 0 && <= %.0f", max);
+    scr_crypto_out_of_range("offset", requirement, offset);
+    return false;
   }
-  if (size > available) {
-    char value[64], msg[160];
-    double total = size + offset;
-    size_t value_len = scr_f64_to_str(total, value);
-    int n = snprintf(msg, sizeof msg,
-                     "The value of \"size + offset\" is out of range. It must be <= %.0f. Received %.*s",
-                     length, (int)value_len, value);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
-    return NULL;
+  *out = (double)(uint32_t)offset;
+  return true;
+}
+
+static bool scr_random_size(double size, double element, double offset, double length, double *out) {
+  size *= element;
+  if (isnan(size) || size > 2147483647.0 || size < 0) {
+    scr_crypto_out_of_range("size", ">= 0 && <= 2147483647", size);
+    return false;
   }
+  if (size + offset > length) {
+    char requirement[64];
+    snprintf(requirement, sizeof requirement, "<= %.0f", length);
+    scr_crypto_out_of_range("size + offset", requirement, size + offset);
+    return false;
+  }
+  *out = (double)(uint32_t)size;
+  return true;
+}
+
+/* Random bytes into [offset, offset + size) of a view's memory. */
+static void scr_random_write(ScrBytes *bytes, size_t offset, size_t size) {
+  if (size == 0) return;
   if (bytes->shared) {
-    uint8_t *random = malloc(size ? (size_t)size : 1);
+    uint8_t *random = malloc(size);
     if (!random) scr_trap("scriptc: out of memory\n");
-    arc4random_buf(random, (size_t)size);
-    scr_bytes_write(bytes, (size_t)offset, random, (size_t)size);
+    arc4random_buf(random, size);
+    scr_bytes_write(bytes, offset, random, size);
     free(random);
-  } else arc4random_buf(bytes->data + (size_t)offset, (size_t)size);
+  } else {
+    arc4random_buf(bytes->data + offset, size);
+  }
+}
+
+/* randomFillSync's checks and fill over a view; `size` NULL fills to the
+ * end. False with the error pending. */
+static bool scr_random_fill_view(ScrBytes *bytes, double offset, const double *size,
+                                 size_t *filled) {
+  double element = (double)scr_bytes_elem_size(bytes->elem);
+  double length = scr_bytes_byte_len(bytes);
+  double start, count;
+  if (!scr_random_offset(offset, element, length, &start)) return false;
+  if (size) {
+    if (!scr_random_size(*size, element, start, length, &count)) return false;
+  } else {
+    count = length - start;
+  }
+  scr_random_write(bytes, (size_t)start, (size_t)count);
+  if (filled) *filled = (size_t)count;
+  return true;
+}
+
+ScrBytes *scr_crypto_random_fill(ScrBytes *bytes, double offset, double size) {
+  if (!scr_random_fill_view(bytes, offset, &size, NULL)) return NULL;
   return scr_bytes_retain(bytes);
 }
 
 ScrBytes *scr_crypto_random_fill_rest(ScrBytes *bytes, double offset) {
-  double length = (double)(bytes->len * scr_bytes_elem_size(bytes->elem));
-  return scr_crypto_random_fill(bytes, offset, length - offset);
+  if (!scr_random_fill_view(bytes, offset, NULL, NULL)) return NULL;
+  return scr_bytes_retain(bytes);
 }
 
-double scr_crypto_random_int(double min, double max) {
+/* The view a randomFill buffer argument names: a TypedArray, DataView or
+ * Buffer, or a u8 view over an ArrayBuffer or SharedArrayBuffer. +1, or
+ * NULL with Node's ERR_INVALID_ARG_TYPE pending. */
+static ScrBytes *scr_random_buffer(const ScrDyn *buf) {
+  if (buf->kind == SCR_DYN_BYTES) return scr_bytes_retain(buf->v.bytes);
+  if (scr_buffer_storage_is(buf)) return scr_bytes_buffer_source(buf);
+  scr_dyn_arg_type_fail("buf", "an instance of ArrayBuffer or ArrayBufferView", buf);
+  return NULL;
+}
+
+/* validateNumber(value, name). */
+static bool scr_random_number(const ScrDyn *value, const char *name, double *out) {
+  if (value->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail(name, "of type number", value);
+    return false;
+  }
+  *out = value->v.num;
+  return true;
+}
+
+/* randomFillSync(buf, offset, size) over any values; returns buf. */
+ScrDyn *scr_crypto_random_fill_sync_dyn(ScrDyn *buf, ScrDyn *offset, ScrDyn *size) {
+  if (buf->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *value = scr_dyn_typed_ref_materialize(buf);
+    if (!value) return NULL;
+    ScrDyn *result = scr_crypto_random_fill_sync_dyn(value, offset, size);
+    scr_dyn_release(value);
+    return result;
+  }
+  ScrBytes *view = scr_random_buffer(buf);
+  if (!view) return NULL;
+  double start = 0, count = 0;
+  bool ok = (offset->kind == SCR_DYN_UNDEF || scr_random_number(offset, "offset", &start)) &&
+            (size->kind == SCR_DYN_UNDEF || scr_random_number(size, "size", &count)) &&
+            scr_random_fill_view(view, start, size->kind == SCR_DYN_UNDEF ? NULL : &count, NULL);
+  scr_bytes_release(view);
+  return ok ? scr_dyn_retain(buf) : NULL;
+}
+
+/* randomFill(buf[, offset[, size]], callback)'s arguments: `form` is the
+ * argument count before the callback (1, 2 or 3), or 4 for an offset with
+ * an undefined size, which fills to the end. Node sizes a fill whose
+ * callback takes the offset's place by buf.length (elements; a DataView
+ * or ArrayBuffer has none and fills to the end), and one whose callback
+ * takes the size's place by length minus offset. Returns the byte count,
+ * or -1 with the error pending. */
+double scr_crypto_random_fill_args(ScrBytes *view, bool typed_array, double offset, double size,
+                                   int form) {
+  double element = (double)scr_bytes_elem_size(view->elem);
+  double length = scr_bytes_byte_len(view);
+  double elements = typed_array ? (double)view->len : NAN;
+  bool has_size = true;
+  if (form == 1) {
+    offset = 0;
+    size = elements;
+    has_size = typed_array;
+  } else if (form == 2) {
+    size = (typed_array ? elements : length) - offset;
+  } else if (form == 4) {
+    has_size = false;
+  }
+  double start, count;
+  if (!scr_random_offset(offset, element, length, &start)) return -1;
+  if (has_size) {
+    if (!scr_random_size(size, element, start, length, &count)) return -1;
+  } else {
+    count = length - start;
+  }
+  scr_random_write(view, (size_t)start, (size_t)count);
+  return count;
+}
+
+/* ── randomInt ─────────────────────────────────────────────────────── */
+
+/* randomInt draws from a 6 KiB cache, six bytes per attempt, as Node's
+ * does: the sync form refills it in place, and the callback form waits
+ * for an asynchronous refill, so a callback settles on the next tick or
+ * after a refill when Node's does. Consumed bytes are cleared. */
+#define SCR_RANDOM_INT_CACHE 1024
+static SCR_TL unsigned char scr_random_int_cache[6 * SCR_RANDOM_INT_CACHE];
+static SCR_TL unsigned scr_random_int_left = 0;
+
+void scr_crypto_random_int_refill(void) {
+  arc4random_buf(scr_random_int_cache, sizeof scr_random_int_cache);
+  scr_random_int_left = SCR_RANDOM_INT_CACHE;
+}
+
+/* Node's validation. Sets the range; false with the error pending. */
+bool scr_crypto_random_int_check(double min, double max, bool min_given, double *range) {
   if (!isfinite(min) || floor(min) != min || fabs(min) > 9007199254740991.0) {
-    static const char msg[] = "The \"min\" argument must be a safe integer.";
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
-    return 0;
+    ScrDyn *value = scr_dyn_new_num(min);
+    scr_dyn_arg_type_fail("min", "a safe integer", value);
+    scr_dyn_release(value);
+    return false;
   }
   if (!isfinite(max) || floor(max) != max || fabs(max) > 9007199254740991.0) {
-    static const char msg[] = "The \"max\" argument must be a safe integer.";
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
-    return 0;
+    ScrDyn *value = scr_dyn_new_num(max);
+    scr_dyn_arg_type_fail("max", "a safe integer", value);
+    scr_dyn_release(value);
+    return false;
   }
   if (max <= min) {
-    char min_text[64], max_text[64], msg[192];
-    size_t min_len = scr_f64_to_str(min, min_text);
-    size_t max_len = scr_f64_to_str(max, max_text);
-    int n = snprintf(msg, sizeof msg,
-                     "The value of \"max\" is out of range. It must be greater than the value of \"min\" (%.*s). Received %.*s",
-                     (int)min_len, min_text, (int)max_len, max_text);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
-    return 0;
+    char min_text[64], requirement[96];
+    scr_crypto_received(min, min_text);
+    snprintf(requirement, sizeof requirement, "greater than the value of \"min\" (%s)", min_text);
+    scr_crypto_out_of_range("max", requirement, max);
+    return false;
   }
-  double range = max - min;
-  if (range > 281474976710656.0) {
-    static const char msg[] = "The value of \"max - min\" is out of range. It must be <= 281474976710656.";
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_OUT_OF_RANGE");
-    return 0;
+  *range = max - min;
+  if (!(*range <= 281474976710655.0)) {
+    scr_crypto_out_of_range(min_given ? "max - min" : "max", "<= 281474976710655", *range);
+    return false;
   }
+  return true;
+}
+
+/* Attempts from the cache until one is accepted (true) or the cache is
+ * empty (false). */
+bool scr_crypto_random_int_try(double min, double range, double *out) {
+  const uint64_t rand_max = (UINT64_C(1) << 48) - 1;
   const uint64_t span = (uint64_t)range;
-  const uint64_t ceiling = UINT64_C(1) << 48;
-  const uint64_t limit = ceiling - (ceiling % span);
-  uint64_t value;
-  do {
-    uint64_t random;
-    arc4random_buf(&random, sizeof random);
-    value = random >> 16;
-  } while (value >= limit);
-  return min + (double)(value % span);
+  const uint64_t limit = rand_max - (rand_max % span);
+  while (scr_random_int_left != 0) {
+    unsigned char *p = scr_random_int_cache + 6 * (SCR_RANDOM_INT_CACHE - scr_random_int_left);
+    scr_random_int_left--;
+    uint64_t x = 0;
+    for (int i = 0; i < 6; i++) x = (x << 8) | p[i];
+    scr_crypto_zero(p, 6);
+    if (x < limit) {
+      *out = (double)(x % span) + min;
+      return true;
+    }
+  }
+  return false;
+}
+
+static double scr_random_int_sync(double min, double max, bool min_given) {
+  double range, value;
+  if (!scr_crypto_random_int_check(min, max, min_given, &range)) return 0;
+  for (;;) {
+    if (scr_random_int_left == 0) scr_crypto_random_int_refill();
+    if (scr_crypto_random_int_try(min, range, &value)) return value;
+  }
+}
+
+double scr_crypto_random_int(double min, double max) { return scr_random_int_sync(min, max, true); }
+
+double scr_crypto_random_int_max(double max) { return scr_random_int_sync(0, max, false); }
+
+/* ── randomUUID / randomUUIDv7 ─────────────────────────────────────── */
+
+static ScrStr *scr_uuid_string(unsigned char b[16], unsigned char version) {
+  b[6] = (unsigned char)((b[6] & 0x0f) | version);
+  b[8] = (unsigned char)((b[8] & 0x3f) | 0x80); /* variant 10xx */
+  char out[37];
+  static const char hex[] = "0123456789abcdef";
+  size_t o = 0;
+  for (size_t i = 0; i < 16; i++) {
+    if (i == 4 || i == 6 || i == 8 || i == 10) out[o++] = '-';
+    out[o++] = hex[b[i] >> 4];
+    out[o++] = hex[b[i] & 0x0f];
+  }
+  return scr_str_new(out, 36);
+}
+
+/* randomUUID and randomUUIDv7 take 16 bytes at a time from a batch of
+ * 128 UUIDs' worth, as Node does; disableEntropyCache draws fresh bytes.
+ * Consumed bytes are cleared. */
+#define SCR_UUID_BATCH 128
+static SCR_TL unsigned char scr_uuid_batch[16 * SCR_UUID_BATCH];
+static SCR_TL unsigned scr_uuid_left = 0;
+
+static void scr_uuid_bytes(unsigned char out[16], bool cached) {
+  if (!cached) {
+    arc4random_buf(out, 16);
+    return;
+  }
+  if (scr_uuid_left == 0) {
+    arc4random_buf(scr_uuid_batch, sizeof scr_uuid_batch);
+    scr_uuid_left = SCR_UUID_BATCH;
+  }
+  unsigned char *p = scr_uuid_batch + 16 * (SCR_UUID_BATCH - scr_uuid_left);
+  scr_uuid_left--;
+  memcpy(out, p, 16);
+  scr_crypto_zero(p, 16);
+}
+
+ScrStr *scr_crypto_random_uuid(void) {
+  unsigned char b[16];
+  scr_uuid_bytes(b, true);
+  return scr_uuid_string(b, 0x40);
+}
+
+/* The options both UUID functions take: validateObject, then
+ * options.disableEntropyCache, which must be a boolean and bypasses the
+ * batch. */
+static bool scr_uuid_options(ScrDyn *options, bool *cached) {
+  *cached = true;
+  if (options->kind == SCR_DYN_UNDEF) return true;
+  if (options->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *value = scr_dyn_typed_ref_materialize(options);
+    if (!value) return false;
+    bool ok = scr_uuid_options(value, cached);
+    scr_dyn_release(value);
+    return ok;
+  }
+  if (options->kind == SCR_DYN_ARR || options->kind == SCR_DYN_NULL || !scr_crypto_is_object(options)) {
+    scr_dyn_arg_type_fail("options", "of type object", options);
+    return false;
+  }
+  ScrDyn *flag = scr_dyn_obj_read(options, "disableEntropyCache", 19);
+  bool ok = !flag || flag->kind == SCR_DYN_UNDEF || flag->kind == SCR_DYN_BOOL;
+  if (!ok) scr_dyn_prop_type_fail("options.disableEntropyCache", "of type boolean", flag);
+  if (ok && flag && flag->kind == SCR_DYN_BOOL && flag->v.b) *cached = false;
+  if (flag) scr_dyn_release(flag);
+  return ok;
+}
+
+ScrStr *scr_crypto_random_uuid_opts(ScrDyn *options) {
+  bool cached;
+  if (!scr_uuid_options(options, &cached)) return NULL;
+  unsigned char b[16];
+  scr_uuid_bytes(b, cached);
+  return scr_uuid_string(b, 0x40);
+}
+
+/* A version 7 UUID: the 48-bit Unix time in milliseconds, then random
+ * bits, as Node writes it. */
+ScrStr *scr_crypto_random_uuid_v7(ScrDyn *options) {
+  bool cached;
+  if (!scr_uuid_options(options, &cached)) return NULL;
+  unsigned char b[16];
+  scr_uuid_bytes(b, cached);
+  uint64_t now = (uint64_t)scr_date_now();
+  for (int i = 0; i < 6; i++) b[i] = (unsigned char)(now >> (40 - 8 * i));
+  return scr_uuid_string(b, 0x70);
 }
 
 static ScrBytes *scr_crypto_pbkdf2_raw(const unsigned char *password, size_t password_len,
