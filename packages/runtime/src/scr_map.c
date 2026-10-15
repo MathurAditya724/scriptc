@@ -258,7 +258,11 @@ static inline bool scr_map_lookup_eq(const ScrMap *m, uint64_t stored, uint64_t 
 /* Compact tables keep a hash fingerprint beside each 24-bit entry index.
  * Rejecting a collision here avoids loading an unrelated ordered entry.
  * Larger tables keep full-width indices; collection size remains limited
- * only by the allocator. Zero is empty in compact tables, so store index+1. */
+ * only by the allocator. Zero is empty in compact tables, so store index+1.
+ * The LLVM backend's inline number-key probe (sc_map_entry_f64_hashed)
+ * reads this encoding for tables of at most 1 << 24 buckets, hashes keys
+ * as scr_map_find_f64 does, and calls scr_map_entry_f64 for wider tables;
+ * only the runtime unit test builds a smaller bound. */
 #ifndef SCR_MAP_COMPACT_BUCKETS
 #define SCR_MAP_COMPACT_BUCKETS ((size_t)1 << 24)
 #endif

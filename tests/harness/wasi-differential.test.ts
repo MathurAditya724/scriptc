@@ -269,6 +269,8 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5317-map-iterate-while-mutating.ts",
     "5318-set-iterate-after-deletes.ts",
     "5319-map-iteration-values.ts",
+    // Hashed number-key lookups probe ScrMap through size_t-width fields.
+    "5710-map-number-keys-hashed.ts",
     // JSON writers read array slots as pointers.
     "5305-json-stringify-typed-arrays.ts",
     // Comparator sorts move 64-bit slots of 32-bit pointers.
