@@ -904,12 +904,21 @@ export function lowerFileHandleMethodCall(
   );
 }
 
-/** Method calls on Stats-typed receivers: isFile()/isDirectory()/
- * isSymbolicLink() are pure reads on the stat snapshot (a followed
- * statSync snapshot never answers true to isSymbolicLink — take
- * lstatSync's, Node's own split). Everything else @types/node declares
- * (mtime, mode, ...) fences member-qualified. Null for non-Stats
- * receivers. */
+/** The Stats type tests, each a read of the snapshot's mode. */
+export const STATS_TYPE_TESTS: Record<string, IrLibFn> = {
+  isFile: "stats.isFile",
+  isDirectory: "stats.isDirectory",
+  isSymbolicLink: "stats.isSymbolicLink",
+  isBlockDevice: "stats.isBlockDevice",
+  isCharacterDevice: "stats.isCharacterDevice",
+  isFIFO: "stats.isFIFO",
+  isSocket: "stats.isSocket",
+};
+
+/** Method calls on Stats-typed receivers: the type tests are pure reads on
+ * the stat snapshot (a followed statSync snapshot never answers true to
+ * isSymbolicLink — take lstatSync's, Node's own split). Anything else
+ * fences member-qualified. Null for non-Stats receivers. */
 export function lowerStatsMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -919,23 +928,15 @@ export function lowerStatsMethodCall(
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "stats") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
-  if (
-    (name === "isFile" || name === "isDirectory" || name === "isSymbolicLink") &&
-    call.arguments.length === 0
-  ) {
+  const fn = Object.hasOwn(STATS_TYPE_TESTS, name) ? STATS_TYPE_TESTS[name] : undefined;
+  if (fn && call.arguments.length === 0) {
     const receiver = lowerer.lowerExpr(access.expression);
-    const fn =
-      name === "isFile"
-        ? "stats.isFile"
-        : name === "isDirectory"
-          ? "stats.isDirectory"
-          : "stats.isSymbolicLink";
     return { kind: "libCall", fn, args: [receiver], type: BOOL, loc: locOf(call) };
   }
   lowerer.noLowering(
     `Stats.${name}`,
     call,
-    "isFile(), isDirectory(), isSymbolicLink(), dev, ino, size, blocks, nlink, atimeMs, mtimeMs, and ctimeMs are the supported Stats members",
+    "isFile(), isDirectory(), isSymbolicLink(), isBlockDevice(), isCharacterDevice(), isFIFO(), isSocket(), dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeMs, mtimeMs, ctimeMs, birthtimeMs, atime, mtime, ctime, and birthtime are the supported Stats members",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }

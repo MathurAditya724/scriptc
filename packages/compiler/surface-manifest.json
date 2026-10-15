@@ -930,6 +930,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.globSync",
+      "kind": "node-builtin",
+      "name": "fs.globSync",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.linkSync",
       "kind": "node-builtin",
       "name": "fs.linkSync",
@@ -976,6 +982,12 @@
       "id": "node-builtin.fs.promises.chmod",
       "kind": "node-builtin",
       "name": "fs/promises.chmod",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.promises.glob",
+      "kind": "node-builtin",
+      "name": "fs/promises.glob",
       "status": "static"
     },
     {

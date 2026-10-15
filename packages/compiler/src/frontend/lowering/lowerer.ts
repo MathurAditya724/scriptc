@@ -1819,6 +1819,9 @@ export class Lowerer {
   /** for-of loops over arrays that can hold neither holes nor undefined:
    * each pass reads the element payload directly. */
   readonly presentElementLoops = new Set<ts.ForOfStatement>();
+  /** The fs/promises glob() call lowerForOf is lowering as a for await
+   * head; other glob() calls have no lowering. */
+  fspGlobHead: ts.Node | null = null;
   /** Capture entries and their origin share one mutable box. Normalize each
    * entry to the origin so writes and flow proofs stay synchronized. */
   readonly runtimeOptionalRoots = new Map<IrLocal, IrLocal>();

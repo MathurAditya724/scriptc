@@ -444,6 +444,20 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * sorts), the directory's order on Windows; no "."/"..". Throws
    * Node's scandir errno error (may-throw seed set); fresh +1 array. */
   "fs.readdirTypesSync": { argTypes: [STRING], result: VOID },
+  /** fs.globSync / fs.glob / fs/promises glob (scr_glob.c, Node's
+   * lib/internal/fs/glob.js walk): pattern and options are dyn values the
+   * runtime validates in Node's order. The string forms answer string[];
+   * the Dirent forms answer the call site's Dirent record array (validated
+   * in validate.ts) assembled from the snapshot; fs.callbackGlob takes the
+   * argument vector and calls back with string[]. */
+  "fs.globSync": { argTypes: [DYN, DYN], result: arrayOf(STRING) },
+  "fs.globTypesSync": { argTypes: [DYN, DYN], result: VOID },
+  "fs.callbackGlob": { argTypes: [DYN], result: VOID },
+  "fsp.globStrings": { argTypes: [DYN, DYN], result: arrayOf(STRING) },
+  "fsp.globTypes": { argTypes: [DYN, DYN], result: VOID },
+  /** The error an fs/promises glob walk ended with (undefined when none),
+   * read once right after fsp.globStrings / fsp.globTypes. */
+  "fsp.globError": { argTypes: [], result: DYN },
   /** node:path (scr_path.c ports BOTH of Node's implementations
    * function-by-function): the `path.*` family is posix, the
    * `path.win32*` family is Node v24's path.win32 ported exactly — the
@@ -1007,6 +1021,21 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stats.atimeMs": { argTypes: [STATS_T], result: F64 },
   "stats.mtimeMs": { argTypes: [STATS_T], result: F64 },
   "stats.ctimeMs": { argTypes: [STATS_T], result: F64 },
+  "stats.birthtimeMs": { argTypes: [STATS_T], result: F64 },
+  "stats.mode": { argTypes: [STATS_T], result: F64 },
+  "stats.uid": { argTypes: [STATS_T], result: F64 },
+  "stats.gid": { argTypes: [STATS_T], result: F64 },
+  "stats.rdev": { argTypes: [STATS_T], result: F64 },
+  "stats.blksize": { argTypes: [STATS_T], result: F64 },
+  "stats.isBlockDevice": { argTypes: [STATS_T], result: BOOL },
+  "stats.isCharacterDevice": { argTypes: [STATS_T], result: BOOL },
+  "stats.isFIFO": { argTypes: [STATS_T], result: BOOL },
+  "stats.isSocket": { argTypes: [STATS_T], result: BOOL },
+  /** The Date fields: the *Ms value rounded (Node's dateFromMs). */
+  "stats.atime": { argTypes: [STATS_T], result: DATE_T },
+  "stats.mtime": { argTypes: [STATS_T], result: DATE_T },
+  "stats.ctime": { argTypes: [STATS_T], result: DATE_T },
+  "stats.birthtime": { argTypes: [STATS_T], result: DATE_T },
   // The wider sync fs slice (unlink/chmod/chown/copyfile and the
   // mode-carrying write/mkdir forms).
   /** The wider sync fs slice (scr_lib.c), all throwing catchably with

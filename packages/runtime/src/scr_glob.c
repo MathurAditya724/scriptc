@@ -19,9 +19,11 @@
 #include "scr_runtime.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 /* ── arena ───────────────────────────────────────────────────────────── */
 
@@ -943,6 +945,7 @@ struct Ast {
 typedef struct {
   Arena *a;
   bool nocase;
+  bool magic_only; /* nocaseMagicOnly */
 } Ctx;
 
 static void partv_push(Arena *a, PartV *pv, Part p) {
@@ -1601,6 +1604,19 @@ static bool throw_too_long(void) {
   return false;
 }
 
+/* glob.toUpperCase() !== glob.toLowerCase(): the segment holds a cased
+ * letter (ASCII, Latin-1, Greek and Cyrillic, the scripts with case that
+ * file names commonly use). */
+static bool s_has_case(S s) {
+  for (size_t i = 0; i < s.n; i++) {
+    uint16_t c = s.p[i];
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) return true;
+    if (c >= 0xc0 && c <= 0x24f && c != 0xd7 && c != 0xf7) return true;
+    if (c >= 0x370 && c <= 0x52f) return true;
+  }
+  return false;
+}
+
 /* Minimatch.parse for one segment. False after arming an exception. */
 static bool parse_segment(Ctx *x, S pattern, Pat *out) {
   memset(out, 0, sizeof *out);
@@ -1621,7 +1637,10 @@ static bool parse_segment(Ctx *x, S pattern, Pat *out) {
   ast_parse(x, pattern, ast, 0, 0);
   ast_to_string(x, ast);
   Source src = ast_to_regexp_source(x, ast, -1);
-  bool any_magic = src.has_magic || ast->has_magic == 1;
+  /* AST#toMMPattern: under nocase without nocaseMagicOnly, a segment whose
+   * upper and lower case differ is matched by a case-insensitive regex. */
+  bool any_magic = src.has_magic || ast->has_magic == 1 ||
+                   (x->nocase && !x->magic_only && s_has_case(pattern));
   if (!any_magic) {
     out->kind = PAT_STRING;
     out->str = src.body;
@@ -2022,27 +2041,39 @@ static bool match_pattern(Ctx *x, SV *ff, PatSlice pattern, bool windows) {
   return match_one_plain(x, &file, pattern, fi, pi);
 }
 
-/* The whole minimatch(path, pattern, options) call. False with an armed
- * exception on failure (*threw set). */
-static bool glob_match(Arena *a, S path, S pattern, bool windows, bool nocase, bool *threw) {
-  *threw = false;
-  if (pattern.n > 65536) {
-    *threw = true;
-    return throw_too_long();
-  }
-  Ctx x = { a, nocase };
+/* A compiled Minimatch: the pattern set (one segment list per brace
+ * expansion after the optimization phases) and the matching globParts
+ * strings, which fs.glob's walker uses for its cache keys. */
+typedef struct {
+  Ctx x;
+  bool windows;
+  bool empty; /* the empty pattern: matches only the empty path */
+  size_t n;
+  PatV *set;
+  SV *parts;
+} Matcher;
+
+/* new Minimatch(pattern, options): false with an armed exception on
+ * failure. magic_only is nocaseMagicOnly (literal segments stay exact
+ * strings under nocase). Everything lives in the arena. */
+static bool glob_compile(Arena *a, S pattern, bool windows, bool nocase, bool magic_only, Matcher *m) {
+  memset(m, 0, sizeof *m);
+  m->x = (Ctx){ a, nocase, magic_only };
+  m->windows = windows;
+  if (pattern.n > 65536) return throw_too_long();
+  Ctx x = m->x;
   /* windowsPathsNoEscape: backslashes are separators, never escapes. */
   B nb;
   b_init(&nb, a);
   for (size_t i = 0; i < pattern.n; i++) b_unit(&nb, pattern.p[i] == '\\' ? '/' : pattern.p[i]);
   S pat = b_done(&nb);
-  if (!pat.n) return path.n == 0;
+  if (!pat.n) {
+    m->empty = true;
+    return true;
+  }
   bool failed = false;
   SV expanded = brace_expand(a, pat, &failed);
-  if (failed) {
-    *threw = true;
-    return false;
-  }
+  if (failed) return false;
   /* [...new Set(...)] */
   SV glob_set = { NULL, 0, 0 };
   for (size_t i = 0; i < expanded.n; i++) {
@@ -2099,7 +2130,6 @@ static bool glob_match(Arena *a, S path, S pattern, bool windows, bool nocase, b
         p.kind = PAT_STRING;
         p.str = s->v[k];
       } else if (!parse_segment(&x, s->v[k], &p)) {
-        *threw = true;
         return false;
       }
       patv_push(a, &pv, p);
@@ -2118,20 +2148,42 @@ static bool glob_match(Arena *a, S path, S pattern, bool windows, bool nocase, b
       }
     }
   }
-  /* match(f) */
+  m->n = glob_parts.n;
+  m->set = set;
+  m->parts = glob_parts.v;
+  return true;
+}
+
+/* Minimatch#match(path): false with an armed exception on failure
+ * (*threw set). Scratch allocations go to the matcher's arena. */
+static bool glob_test(Matcher *m, S path, bool *threw) {
+  *threw = false;
+  if (m->empty) return path.n == 0;
+  Arena *a = m->x.a;
   B fb;
   b_init(&fb, a);
-  for (size_t i = 0; i < path.n; i++) b_unit(&fb, windows && path.p[i] == '\\' ? '/' : path.p[i]);
-  SV ff = slash_split(a, b_done(&fb), windows);
-  for (size_t g = 0; g < glob_parts.n; g++) {
-    PatSlice pattern = { set[g].v, set[g].n };
-    if (match_pattern(&x, &ff, pattern, windows)) return true;
+  for (size_t i = 0; i < path.n; i++) b_unit(&fb, m->windows && path.p[i] == '\\' ? '/' : path.p[i]);
+  SV ff = slash_split(a, b_done(&fb), m->windows);
+  for (size_t g = 0; g < m->n; g++) {
+    PatSlice pattern = { m->set[g].v, m->set[g].n };
+    if (match_pattern(&m->x, &ff, pattern, m->windows)) return true;
     if (scr_exc_pending()) {
       *threw = true;
       return false;
     }
   }
   return false;
+}
+
+/* The whole minimatch(path, pattern, options) call. False with an armed
+ * exception on failure (*threw set). */
+static bool glob_match(Arena *a, S path, S pattern, bool windows, bool nocase, bool *threw) {
+  Matcher m;
+  if (!glob_compile(a, pattern, windows, nocase, true, &m)) {
+    *threw = true;
+    return false;
+  }
+  return glob_test(&m, path, threw);
 }
 
 /* ── entry points ────────────────────────────────────────────────────── */
@@ -2160,4 +2212,1017 @@ bool scr_path_matches_glob(ScrStr *path, ScrStr *pattern) {
 
 bool scr_path_win32_matches_glob(ScrStr *path, ScrStr *pattern) {
   return scr_glob_match(path, pattern, true, scr_glob_host_nocase());
+}
+/* ── fs.glob / fs.globSync / fs/promises glob ────────────────────────────
+ * A port of Node 24.22's lib/internal/fs/glob.js Glob class: the same
+ * walk over a LIFO queue of (path, patterns) items, the same caches
+ * (lstat, stat, readdir, realpath, seen pattern suffixes), the same result
+ * set in insertion order, and the same exclusion checks. readdir listings
+ * come from scr_fs_scandir, which sorts them like libuv, so results come
+ * out in Node's order. All strings the walk creates are kept in one pool
+ * and released together. */
+
+#ifdef _WIN32
+#define GW_WINDOWS true
+#else
+#define GW_WINDOWS false
+#endif
+
+typedef struct {
+  ScrStr **v;
+  size_t n, cap;
+} GwPool;
+
+/* One lstat (or readdir entry) result: Node's Dirent kinds (1 file, 2 dir,
+ * 3 link, 0 other or unknown). */
+typedef struct {
+  ScrStr *name;
+  unsigned char kind;
+} GwStat;
+
+typedef struct {
+  ScrStr *key;
+  void *val;
+} GwSlot;
+
+/* A string-keyed map that keeps insertion order (JS Map semantics for
+ * iteration). */
+typedef struct {
+  GwSlot *slots;
+  size_t cap, n;
+  ScrStr **order;
+  size_t on, ocap;
+} GwMap;
+
+typedef struct {
+  size_t *v;
+  size_t n, cap;
+} GwIdx; /* a Set of indexes in insertion order */
+
+typedef struct {
+  ScrStr **v;
+  size_t n;
+} GwReal; /* realpaths seen on the way down (followSymlinks) */
+
+typedef struct {
+  const PatV *pat;
+  const SV *parts;
+  GwIdx indexes;
+  GwIdx symlinks;
+  const GwReal *realpaths;
+  long last;
+} GwPat;
+
+typedef struct {
+  GwPat **v;
+  size_t n, cap;
+} GwPats;
+
+typedef struct {
+  ScrStr *path;
+  GwPats pats;
+} GwItem;
+
+struct ScrFsGlob {
+  size_t n, cap;
+  ScrStr **paths;
+  ScrStr **names;
+  ScrStr **parents;
+  unsigned char *kinds;
+};
+
+typedef struct {
+  Arena a;
+  GwPool pool;
+  Ctx ctx; /* the include patterns' case mode, for segment tests */
+  ScrStr *root;
+  bool follow;
+  bool with_types;
+  bool async_types; /* fs/promises Dirents carry resolved parent paths */
+  ScrDyn *exclude_fn;
+  Matcher *exclude;
+  size_t nexclude;
+  GwPat **patterns;
+  size_t npatterns;
+  GwMap stats, follow_stats, readdirs, realpaths, seen, subpatterns;
+  GwMap result_set;
+  ScrStr **results;
+  size_t nresults, capresults;
+  GwItem *queue;
+  size_t nqueue, capqueue;
+} Gw;
+
+static void gw_oom(void) { scr_trap("scriptc: out of memory\n"); }
+
+/* The error an fs/promises glob walk ended with, held until the loop has
+ * consumed the matches found before it (scr_fsp_glob_error). */
+static SCR_TL ScrCaught *scr_fs_glob_deferred;
+
+static void *gw_grow(void *v, size_t *cap, size_t need, size_t size) {
+  if (need <= *cap) return v;
+  size_t c = *cap ? *cap * 2 : 8;
+  while (c < need) c *= 2;
+  void *g = realloc(v, c * size);
+  if (!g) gw_oom();
+  *cap = c;
+  return g;
+}
+
+static ScrStr *gw_keep(Gw *w, ScrStr *s) {
+  w->pool.v = gw_grow(w->pool.v, &w->pool.cap, w->pool.n + 1, sizeof *w->pool.v);
+  w->pool.v[w->pool.n++] = s;
+  return s;
+}
+
+static ScrStr *gw_cstr(Gw *w, const char *s) { return gw_keep(w, scr_str_new(s, strlen(s))); }
+
+static bool gw_eq_c(const ScrStr *s, const char *c) {
+  size_t n = strlen(c);
+  return s->len == n && memcmp(s->data, c, n) == 0;
+}
+
+/* ── path.join / resolve / dirname / basename / isAbsolute ────────────── */
+
+static ScrStr *gw_path2(Gw *w, ScrStr *x, ScrStr *y, bool resolve) {
+  ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 2);
+  scr_arr_push_ref(parts, scr_str_retain(x));
+  scr_arr_push_ref(parts, scr_str_retain(y));
+#ifdef _WIN32
+  ScrStr *out = resolve ? scr_path_win32_resolve(parts) : scr_path_win32_join(parts);
+#else
+  ScrStr *out = resolve ? scr_path_resolve(parts) : scr_path_join(parts);
+#endif
+  scr_arr_release(parts);
+  return gw_keep(w, out);
+}
+
+static ScrStr *gw_join(Gw *w, ScrStr *x, ScrStr *y) { return gw_path2(w, x, y, false); }
+
+static ScrStr *gw_resolve(Gw *w, ScrStr *x, ScrStr *y) { return gw_path2(w, x, y, true); }
+
+static ScrStr *gw_dirname(Gw *w, ScrStr *p) {
+#ifdef _WIN32
+  return gw_keep(w, scr_path_win32_dirname(p));
+#else
+  return gw_keep(w, scr_path_dirname(p));
+#endif
+}
+
+static ScrStr *gw_basename(Gw *w, ScrStr *p) {
+  ScrStr *none = scr_str_new("", 0);
+#ifdef _WIN32
+  ScrStr *out = scr_path_win32_basename(p, none);
+#else
+  ScrStr *out = scr_path_basename(p, none);
+#endif
+  scr_str_release(none);
+  return gw_keep(w, out);
+}
+
+static bool gw_is_absolute(ScrStr *p) {
+#ifdef _WIN32
+  return scr_path_win32_is_absolute(p);
+#else
+  return scr_path_is_absolute(p);
+#endif
+}
+
+/* ── maps ─────────────────────────────────────────────────────────────── */
+
+static size_t gw_hash(const ScrStr *k) {
+  size_t h = 1469598103934665603u;
+  for (size_t i = 0; i < k->len; i++) h = (h ^ (unsigned char)k->data[i]) * 1099511628211u;
+  return h;
+}
+
+static GwSlot *gw_slot(GwMap *m, const ScrStr *key) {
+  if (!m->cap) return NULL;
+  size_t i = gw_hash(key) & (m->cap - 1);
+  for (;;) {
+    GwSlot *s = &m->slots[i];
+    if (!s->key) return s;
+    if (s->key->len == key->len && memcmp(s->key->data, key->data, key->len) == 0) return s;
+    i = (i + 1) & (m->cap - 1);
+  }
+}
+
+static void **gw_get(GwMap *m, const ScrStr *key) {
+  GwSlot *s = gw_slot(m, key);
+  return s && s->key ? &s->val : NULL;
+}
+
+/* Map#set: replaces the value of an existing key, keeping its position. */
+static void gw_put(GwMap *m, ScrStr *key, void *val) {
+  if ((m->n + 1) * 2 > m->cap) {
+    size_t cap = m->cap ? m->cap * 2 : 16;
+    GwSlot *old = m->slots;
+    size_t oldcap = m->cap;
+    m->slots = calloc(cap, sizeof *m->slots);
+    if (!m->slots) gw_oom();
+    m->cap = cap;
+    for (size_t i = 0; i < oldcap; i++)
+      if (old[i].key) *gw_slot(m, old[i].key) = old[i];
+    free(old);
+  }
+  GwSlot *s = gw_slot(m, key);
+  if (!s->key) {
+    s->key = key;
+    m->n++;
+    m->order = gw_grow(m->order, &m->ocap, m->on + 1, sizeof *m->order);
+    m->order[m->on++] = key;
+  }
+  s->val = val;
+}
+
+static void gw_map_clear(GwMap *m) {
+  if (m->cap) memset(m->slots, 0, m->cap * sizeof *m->slots);
+  m->n = 0;
+  m->on = 0;
+}
+
+static void gw_map_free(GwMap *m) {
+  free(m->slots);
+  free(m->order);
+}
+
+/* ── index sets and patterns ──────────────────────────────────────────── */
+
+static bool gw_idx_has(const GwIdx *s, size_t i) {
+  for (size_t k = 0; k < s->n; k++)
+    if (s->v[k] == i) return true;
+  return false;
+}
+
+static void gw_idx_add(Gw *w, GwIdx *s, size_t i) {
+  if (gw_idx_has(s, i)) return;
+  if (s->n == s->cap) {
+    size_t cap = s->cap ? s->cap * 2 : 4;
+    size_t *v = ar_alloc(&w->a, cap * sizeof *v);
+    if (s->n) memcpy(v, s->v, s->n * sizeof *v);
+    s->v = v;
+    s->cap = cap;
+  }
+  s->v[s->n++] = i;
+}
+
+static GwIdx gw_idx_one(Gw *w, size_t i) {
+  GwIdx s = { NULL, 0, 0 };
+  gw_idx_add(w, &s, i);
+  return s;
+}
+
+static GwPat *gw_pat_child(Gw *w, const GwPat *p, GwIdx indexes, GwIdx symlinks, const GwReal *realpaths) {
+  GwPat *c = ar_alloc(&w->a, sizeof *c);
+  *c = *p;
+  c->indexes = indexes;
+  c->symlinks = symlinks;
+  c->realpaths = realpaths;
+  return c;
+}
+
+/* pattern.at(i), negative indexes from the end; NULL past either end. */
+static const Pat *gw_at(const GwPat *p, long i) {
+  long n = (long)p->pat->n;
+  if (i < 0) i += n;
+  return i >= 0 && i < n ? &p->pat->v[i] : NULL;
+}
+
+static bool gw_is_globstar(const Pat *p) { return p && p->kind == PAT_GLOBSTAR; }
+static bool gw_is_string(const Pat *p) { return p && p->kind == PAT_STRING; }
+static bool gw_is_str(const Pat *p, const char *c) { return gw_is_string(p) && s_eq_c(p->str, c); }
+
+static bool gw_has_seen_symlinks(const GwPat *p) {
+  for (size_t k = 0; k < p->indexes.n; k++)
+    if (!gw_idx_has(&p->symlinks, p->indexes.v[k])) return true;
+  return false;
+}
+
+static bool gw_is_last(const GwPat *p, bool is_directory) {
+  return gw_idx_has(&p->indexes, (size_t)p->last) ||
+         (gw_is_str(gw_at(p, -1), "") && is_directory && p->last >= 1 &&
+          gw_idx_has(&p->indexes, (size_t)(p->last - 1)) && gw_is_globstar(gw_at(p, -2)));
+}
+
+/* Pattern#test(index, name). */
+static bool gw_test(Gw *w, const GwPat *p, size_t index, ScrStr *name) {
+  const Pat *seg = gw_at(p, (long)index);
+  if (!seg) return false;
+  if (seg->kind == PAT_GLOBSTAR) return true;
+  S f = s_from_str(&w->a, name);
+  if (seg->kind == PAT_STRING) return s_eq(seg->str, f);
+  return pat_test(&w->ctx, seg, f);
+}
+
+/* Pattern#cacheKey(index): the glob strings from index on, '/'-joined. */
+static ScrStr *gw_cache_key(Gw *w, const GwPat *p, size_t index) {
+  B b;
+  b_init(&b, &w->a);
+  for (size_t i = index; i < p->parts->n; i++) {
+    b_s(&b, p->parts->v[i]);
+    if (i != p->parts->n - 1) b_unit(&b, '/');
+  }
+  return gw_keep(w, s_to_str(b_done(&b)));
+}
+
+/* ── the caches ───────────────────────────────────────────────────────── */
+
+static unsigned char gw_kind_of_mode(unsigned mode) {
+  if (S_ISREG(mode)) return 1;
+  if (S_ISDIR(mode)) return 2;
+#ifdef S_ISLNK
+  if (S_ISLNK(mode)) return 3;
+#endif
+  return 0;
+}
+
+/* Cache#statSync: the cached entry, else lstat (NULL when it fails). */
+static GwStat *gw_stat(Gw *w, ScrStr *path) {
+  void **hit = gw_get(&w->stats, path);
+  if (hit && *hit) return *hit;
+  struct stat st;
+#ifdef _WIN32
+  int rc = stat(path->data, &st);
+#else
+  int rc = lstat(path->data, &st);
+#endif
+  GwStat *s = NULL;
+  if (rc == 0) {
+    s = ar_alloc(&w->a, sizeof *s);
+    s->name = gw_basename(w, path);
+    s->kind = gw_kind_of_mode((unsigned)st.st_mode);
+  }
+  gw_put(&w->stats, path, s);
+  return s;
+}
+
+/* Cache#followStatSync: stat(2) through links; NULL when it fails. */
+static bool gw_follow_is_dir(Gw *w, ScrStr *path) {
+  void **hit = gw_get(&w->follow_stats, path);
+  if (hit) return *hit != NULL;
+  struct stat st;
+  bool dir = stat(path->data, &st) == 0 && S_ISDIR(st.st_mode);
+  gw_put(&w->follow_stats, path, dir ? (void *)1 : NULL);
+  return dir;
+}
+
+static ScrStr *gw_realpath(Gw *w, ScrStr *path) {
+  void **hit = gw_get(&w->realpaths, path);
+  if (hit) return *hit;
+  ScrStr *real = scr_fs_realpath(path);
+  if (!real) scr_exc_clear();
+  else gw_keep(w, real);
+  gw_put(&w->realpaths, path, real);
+  return real;
+}
+
+typedef struct {
+  GwStat *v;
+  size_t n;
+} GwDir;
+
+/* Cache#readdirSync: the sorted listing, or [] when it cannot be read. */
+static GwDir *gw_readdir(Gw *w, ScrStr *path) {
+  void **hit = gw_get(&w->readdirs, path);
+  if (hit) return *hit;
+  GwDir *d = ar_alloc(&w->a, sizeof *d);
+  d->v = NULL;
+  d->n = 0;
+  ScrScandir *scan = scr_fs_scandir(path);
+  if (!scan) {
+    scr_exc_clear();
+  } else {
+    d->n = scr_fs_scandir_count(scan);
+    d->v = ar_alloc(&w->a, (d->n ? d->n : 1) * sizeof *d->v);
+    for (size_t i = 0; i < d->n; i++) {
+      d->v[i].name = gw_keep(w, scr_fs_scandir_name(scan, i));
+      d->v[i].kind = (unsigned char)scr_fs_scandir_type(scan, i);
+    }
+    scr_fs_scandir_free(scan);
+  }
+  gw_put(&w->readdirs, path, d);
+  return d;
+}
+
+/* Cache#add: records the pattern's suffixes at path; true when some were
+ * already recorded. */
+static bool gw_seen_add(Gw *w, ScrStr *path, const GwPat *p) {
+  void **hit = gw_get(&w->seen, path);
+  GwMap *set;
+  if (hit) {
+    set = *hit;
+  } else {
+    set = ar_alloc(&w->a, sizeof *set);
+    memset(set, 0, sizeof *set);
+    gw_put(&w->seen, path, set);
+  }
+  size_t before = set->n;
+  for (size_t k = 0; k < p->indexes.n; k++) gw_put(set, gw_cache_key(w, p, p->indexes.v[k]), (void *)1);
+  return set->n != before + p->indexes.n;
+}
+
+static bool gw_seen(Gw *w, ScrStr *path, const GwPat *p, size_t index) {
+  void **hit = gw_get(&w->seen, path);
+  return hit && gw_get(*hit, gw_cache_key(w, p, index)) != NULL;
+}
+
+/* ── exclusion and results ────────────────────────────────────────────── */
+
+static bool gw_is_excluded(Gw *w, ScrStr *value) {
+  if (!w->nexclude) return false;
+  S f = s_from_str(&w->a, value);
+  for (size_t i = 0; i < w->nexclude; i++) {
+    bool threw;
+    if (glob_test(&w->exclude[i], f, &threw)) return true;
+    if (threw) return false;
+  }
+  return false;
+}
+
+/* The exclude callback on a path or entry name; false when it threw (the
+ * exception stays pending and ends the walk). */
+static bool gw_exclude_call(Gw *w, ScrStr *value) {
+  ScrDyn *arg = scr_dyn_new_str(value);
+  ScrDyn *out = scr_dyn_call(w->exclude_fn, &arg, 1, "options.exclude");
+  scr_dyn_release(arg);
+  if (!out) return false;
+  bool yes = scr_dyn_truthy(out);
+  scr_dyn_release(out);
+  return yes;
+}
+
+/* ResultSet#add. */
+static void gw_result(Gw *w, ScrStr *value) {
+  if (gw_is_excluded(w, gw_resolve(w, w->root, value))) return;
+  if (gw_get(&w->result_set, value)) return;
+  gw_put(&w->result_set, value, (void *)1);
+  w->results = gw_grow(w->results, &w->capresults, w->nresults + 1, sizeof *w->results);
+  w->results[w->nresults++] = value;
+}
+
+/* ── the walk ─────────────────────────────────────────────────────────── */
+
+static void gw_pats_push(GwPats *l, GwPat *p) {
+  l->v = gw_grow(l->v, &l->cap, l->n + 1, sizeof *l->v);
+  l->v[l->n++] = p;
+}
+
+/* #subpatterns.set(path, [pattern]) when replace, else push. */
+static void gw_sub(Gw *w, ScrStr *path, GwPat *p, bool replace) {
+  void **hit = gw_get(&w->subpatterns, path);
+  if (hit) {
+    GwPats *l = *hit;
+    if (replace) l->n = 0;
+    gw_pats_push(l, p);
+    return;
+  }
+  GwPats *l = ar_alloc(&w->a, sizeof *l);
+  memset(l, 0, sizeof *l);
+  gw_pats_push(l, p);
+  gw_put(&w->subpatterns, path, l);
+}
+
+/* #addSubpattern. */
+static void gw_add_subpattern(Gw *w, ScrStr *path, GwPat *p) {
+  if (gw_is_excluded(w, path)) return;
+  ScrStr *fullpath = gw_resolve(w, w->root, path);
+  if (w->nexclude) {
+    ScrStr *slash = gw_keep(w, scr_str_concat(fullpath, gw_cstr(w, "/")));
+    GwStat *st = gw_is_excluded(w, slash) ? gw_stat(w, fullpath) : NULL;
+    if (st && st->kind == 2) return;
+  }
+  if (w->exclude_fn) {
+    bool skip = gw_exclude_call(w, path);
+    if (scr_exc_pending() || skip) return;
+  }
+  gw_sub(w, path, p, false);
+}
+
+static bool gw_is_directory(Gw *w, ScrStr *path, const GwStat *st, const GwPat *p) {
+  if (st && st->kind == 2) return true;
+  if (!st || st->kind != 3) return false;
+  if (w->follow) return gw_follow_is_dir(w, path);
+  return gw_has_seen_symlinks(p);
+}
+
+static const GwReal *gw_next_realpaths(Gw *w, ScrStr *path, bool is_directory, const GwPat *p) {
+  if (!w->follow || !is_directory) return p->realpaths;
+  ScrStr *real = gw_realpath(w, path);
+  if (!real) return p->realpaths;
+  GwReal *next = ar_alloc(&w->a, sizeof *next);
+  next->n = p->realpaths->n + 1;
+  next->v = ar_alloc(&w->a, next->n * sizeof *next->v);
+  if (p->realpaths->n) memcpy(next->v, p->realpaths->v, p->realpaths->n * sizeof *next->v);
+  next->v[next->n - 1] = real;
+  return next;
+}
+
+static bool gw_is_cyclic(Gw *w, ScrStr *path, bool is_directory, const GwPat *p) {
+  if (!w->follow || !is_directory) return false;
+  ScrStr *real = gw_realpath(w, path);
+  if (!real) return false;
+  for (size_t i = 0; i < p->realpaths->n; i++)
+    if (scr_str_eq(p->realpaths->v[i], real)) return true;
+  return false;
+}
+
+static ScrStr *gw_str_of(Gw *w, S s) { return gw_keep(w, s_to_str(s)); }
+
+/* #addSubpatterns. */
+static void gw_add_subpatterns(Gw *w, ScrStr *path, GwPat *p) {
+  if (gw_seen_add(w, path, p)) return;
+  ScrStr *fullpath = gw_resolve(w, w->root, path);
+  GwStat *st = gw_stat(w, fullpath);
+  long last = p->last;
+  bool is_directory = gw_is_directory(w, fullpath, st, p);
+  bool is_last = gw_is_last(p, is_directory);
+  bool is_first = gw_idx_has(&p->indexes, 0);
+  if (gw_is_excluded(w, fullpath)) return;
+#ifdef _WIN32
+  if (is_first && gw_is_string(gw_at(p, 0)) && gw_at(p, 0)->str.n &&
+      gw_at(p, 0)->str.p[gw_at(p, 0)->str.n - 1] == ':') {
+    ScrStr *drive = gw_str_of(w, gw_at(p, 0)->str);
+    gw_add_subpattern(w, gw_keep(w, scr_str_concat(drive, gw_cstr(w, "\\"))),
+                      gw_pat_child(w, p, gw_idx_one(w, 1), (GwIdx){ 0 }, p->realpaths));
+    return;
+  }
+#endif
+  if (is_first && gw_is_str(gw_at(p, 0), "")) {
+    gw_add_subpattern(w, gw_cstr(w, "/"), gw_pat_child(w, p, gw_idx_one(w, 1), (GwIdx){ 0 }, p->realpaths));
+    return;
+  }
+  if (is_first && gw_is_str(gw_at(p, 0), "..")) {
+    gw_add_subpattern(w, gw_cstr(w, "../"), gw_pat_child(w, p, gw_idx_one(w, 1), (GwIdx){ 0 }, p->realpaths));
+    return;
+  }
+  if (is_first && gw_is_str(gw_at(p, 0), ".")) {
+    gw_add_subpattern(w, gw_cstr(w, "."), gw_pat_child(w, p, gw_idx_one(w, 1), (GwIdx){ 0 }, p->realpaths));
+    return;
+  }
+
+  if (is_last && gw_is_string(gw_at(p, -1))) {
+    ScrStr *tail = gw_str_of(w, gw_at(p, -1)->str);
+    GwStat *found = gw_stat(w, gw_join(w, fullpath, tail));
+    if (found && (tail->len || is_directory)) gw_result(w, gw_join(w, path, tail));
+    if (p->indexes.n == 1 && gw_idx_has(&p->indexes, (size_t)last)) return;
+  } else if (is_last && gw_is_globstar(gw_at(p, -1)) &&
+             (!gw_eq_c(path, ".") || gw_is_str(gw_at(p, 0), ".") || (last == 0 && st))) {
+    gw_result(w, path);
+  }
+  if (scr_exc_pending()) return;
+
+  if (!is_directory || gw_is_cyclic(w, fullpath, is_directory, p)) return;
+  const GwReal *next_realpaths = gw_next_realpaths(w, fullpath, is_directory, p);
+
+  GwStat one;
+  GwDir single = { &one, 1 };
+  GwDir *children;
+  const Pat *first = p->indexes.n == 1 ? gw_at(p, (long)p->indexes.v[0]) : NULL;
+  if (gw_is_string(first)) {
+    ScrStr *name = gw_str_of(w, first->str);
+    GwStat *found = gw_stat(w, gw_join(w, fullpath, name));
+    if (!found) return;
+    one.name = name;
+    one.kind = found->kind;
+    children = &single;
+  } else {
+    children = gw_readdir(w, fullpath);
+  }
+
+  for (size_t i = 0; i < children->n; i++) {
+    GwStat *entry = &children->v[i];
+    ScrStr *entry_path = gw_join(w, path, entry->name);
+    ScrStr *entry_full = gw_join(w, fullpath, entry->name);
+    GwStat *cached = ar_alloc(&w->a, sizeof *cached);
+    *cached = *entry;
+    gw_put(&w->stats, entry_full, cached);
+    bool entry_dir = entry->kind == 2 || (w->follow && entry->kind == 3 && gw_follow_is_dir(w, entry_full));
+
+    GwIdx sub = { NULL, 0, 0 };
+    GwIdx nsym = { NULL, 0, 0 };
+    for (size_t k = 0; k < p->indexes.n; k++) {
+      size_t index = p->indexes.v[k];
+      const Pat *current = gw_at(p, (long)index);
+      size_t next_index = index + 1;
+      const Pat *next = gw_at(p, (long)next_index);
+      bool from_symlink = !w->follow && gw_idx_has(&p->symlinks, index);
+
+      if (gw_is_globstar(current)) {
+        bool is_dot = entry->name->len && entry->name->data[0] == '.';
+        bool next_matches = gw_test(w, p, next_index, entry->name);
+        size_t next_non_glob = next_index;
+        while (gw_is_globstar(gw_at(p, (long)next_non_glob))) next_non_glob++;
+        bool matches_dot = is_dot && gw_test(w, p, next_non_glob, entry->name);
+        if (is_dot && !matches_dot) continue;
+        if (w->exclude_fn) {
+          bool skip = gw_exclude_call(w, entry->name);
+          if (scr_exc_pending()) return;
+          if (skip) continue;
+        }
+        if (!from_symlink && entry_dir) gw_idx_add(w, &sub, index);
+        else if (!from_symlink && (long)index == last) gw_result(w, entry_path);
+        if (next_matches && (long)next_index == last && !is_last) gw_result(w, entry_path);
+        else if (next_matches && entry_dir) gw_idx_add(w, &sub, index + 2);
+        if ((next_matches || gw_is_str(gw_at(p, 0), ".")) && entry_dir && !from_symlink) gw_idx_add(w, &sub, next_index);
+        if (!w->follow && entry->kind == 3) gw_idx_add(w, &nsym, index);
+        if (gw_is_str(next, "..") && entry_dir) {
+          ScrStr *parent = gw_join(w, path, gw_cstr(w, ".."));
+          if ((long)next_index < last) {
+            if (!gw_get(&w->subpatterns, path) && !gw_seen(w, path, p, next_index + 1))
+              gw_sub(w, path, gw_pat_child(w, p, gw_idx_one(w, next_index + 1), (GwIdx){ 0 }, p->realpaths), true);
+            if (!gw_get(&w->subpatterns, parent) && !gw_seen(w, parent, p, next_index + 1))
+              gw_sub(w, parent, gw_pat_child(w, p, gw_idx_one(w, next_index + 1), (GwIdx){ 0 }, p->realpaths), true);
+          } else {
+            if (!gw_seen(w, path, p, next_index)) {
+              gw_seen_add(w, path, gw_pat_child(w, p, gw_idx_one(w, next_index), (GwIdx){ 0 }, p->realpaths));
+              gw_result(w, path);
+            }
+            if (!gw_seen(w, path, p, next_index) || !gw_seen(w, parent, p, next_index)) {
+              gw_seen_add(w, parent, gw_pat_child(w, p, gw_idx_one(w, next_index), (GwIdx){ 0 }, p->realpaths));
+              gw_result(w, parent);
+            }
+          }
+        }
+      }
+      if (gw_is_string(current)) {
+        if (gw_test(w, p, index, entry->name) && (long)index != last) {
+          gw_idx_add(w, &sub, next_index);
+        } else if (gw_is_str(current, ".") && gw_test(w, p, next_index, entry->name)) {
+          if ((long)next_index == last) gw_result(w, entry_path);
+          else gw_idx_add(w, &sub, next_index + 1);
+        }
+      }
+      if (current && current->kind == PAT_REGEX && gw_test(w, p, index, entry->name)) {
+        if ((long)index == last) gw_result(w, entry_path);
+        else if (entry_dir) gw_idx_add(w, &sub, next_index);
+      }
+      if (scr_exc_pending()) return;
+    }
+    if (sub.n > 0) gw_add_subpattern(w, entry_path, gw_pat_child(w, p, sub, nsym, next_realpaths));
+    if (scr_exc_pending()) return;
+  }
+}
+
+static void gw_queue_push(Gw *w, ScrStr *path, GwPats pats) {
+  w->queue = gw_grow(w->queue, &w->capqueue, w->nqueue + 1, sizeof *w->queue);
+  w->queue[w->nqueue++] = (GwItem){ path, pats };
+}
+
+/* Glob#globSync's loop. */
+static void gw_run(Gw *w) {
+  GwPats all = { NULL, 0, 0 };
+  for (size_t i = 0; i < w->npatterns; i++) gw_pats_push(&all, w->patterns[i]);
+  gw_queue_push(w, gw_cstr(w, "."), all);
+  while (w->nqueue && !scr_exc_pending()) {
+    GwItem item = w->queue[--w->nqueue];
+    for (size_t i = 0; i < item.pats.n && !scr_exc_pending(); i++) gw_add_subpatterns(w, item.path, item.pats.v[i]);
+    free(item.pats.v);
+    for (size_t i = 0; i < w->subpatterns.on; i++) {
+      ScrStr *key = w->subpatterns.order[i];
+      GwPats *l = *gw_get(&w->subpatterns, key);
+      gw_queue_push(w, key, *l); /* the queue item owns the list now */
+    }
+    gw_map_clear(&w->subpatterns);
+  }
+  for (size_t i = 0; i < w->nqueue; i++) free(w->queue[i].pats.v);
+  w->nqueue = 0;
+}
+
+/* ── options, patterns and the entry points ───────────────────────────── */
+
+static bool gw_dyn_absent(const ScrDyn *d) { return !d || d->kind == SCR_DYN_UNDEF; }
+static bool gw_dyn_nullish(const ScrDyn *d) { return gw_dyn_absent(d) || d->kind == SCR_DYN_NULL; }
+
+static bool gw_dyn_is_array(const ScrDyn *d) {
+  return d->kind == SCR_DYN_ARR || (d->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(d));
+}
+
+/* The value as a plain dyn array (+1), materializing typed arrays. */
+static ScrDyn *gw_dyn_array(const ScrDyn *d) {
+  if (d->kind == SCR_DYN_ARR) return scr_dyn_retain((ScrDyn *)d);
+  return scr_dyn_typed_ref_materialize(d);
+}
+
+static ScrDyn *gw_option(const ScrDyn *options, const char *key) {
+  if (gw_dyn_nullish(options)) return scr_dyn_retain(scr_dyn_undefined());
+  if (options->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(options);
+    ScrDyn *value = view ? scr_dyn_obj_read(view, key, strlen(key)) : NULL;
+    scr_dyn_release(view);
+    return value;
+  }
+  return scr_dyn_obj_read(options, key, strlen(key));
+}
+
+/* validateObject(options, 'options') with Node's default flags. */
+static bool gw_options_ok(const ScrDyn *options) {
+  if (gw_dyn_absent(options)) return true;
+  bool object = options->kind == SCR_DYN_OBJ || options->kind == SCR_DYN_HANDLE ||
+                options->kind == SCR_DYN_BYTES || options->kind == SCR_DYN_PROXY ||
+                (options->kind == SCR_DYN_TYPED_REF && !scr_dyn_ref_is_array(options));
+  if (object) return true;
+  scr_dyn_arg_type_fail("options", "of type object", options);
+  return false;
+}
+
+/* The maps are keyed by pool strings, so they are freed before the pool. */
+static void gw_free(Gw *w) {
+  GwMap *maps[] = { &w->stats, &w->follow_stats, &w->readdirs, &w->realpaths, &w->seen, &w->subpatterns, &w->result_set };
+  for (size_t i = 0; i < w->seen.on; i++) {
+    GwMap *set = *gw_get(&w->seen, w->seen.order[i]);
+    gw_map_free(set);
+  }
+  for (size_t i = 0; i < sizeof maps / sizeof *maps; i++) gw_map_free(maps[i]);
+  for (size_t i = 0; i < w->pool.n; i++) scr_str_release(w->pool.v[i]);
+  free(w->pool.v);
+  free(w->results);
+  free(w->queue);
+  scr_dyn_release(w->exclude_fn);
+  ar_free(&w->a);
+}
+
+/* new Glob(pattern, options): Node's option reads (exclude, cwd,
+ * followSymlinks, withFileTypes), validations and matcher compilation, in
+ * Node's order. False with the exception pending. */
+static bool gw_begin(Gw *w, const ScrDyn *pattern, const ScrDyn *options, ScrDyn **cwd_out) {
+  if (!gw_options_ok(options)) return false;
+  ScrDyn *exclude = gw_option(options, "exclude");
+  if (!exclude) return false;
+  ScrDyn *cwd = gw_option(options, "cwd");
+  ScrDyn *follow = cwd ? gw_option(options, "followSymlinks") : NULL;
+  ScrDyn *types = follow ? gw_option(options, "withFileTypes") : NULL;
+  bool ok = types != NULL;
+  /* toPathIfFileURL(cwd) ?? '.' */
+  if (ok) {
+    if (gw_dyn_nullish(cwd)) {
+      w->root = gw_cstr(w, ".");
+    } else if (scr_dyn_native_url_is(cwd)) {
+      ScrStr *path = scr_url_to_path(cwd->v.handle.ptr);
+      ok = path != NULL;
+      if (ok) w->root = gw_keep(w, path);
+    } else if (cwd->kind == SCR_DYN_STR) {
+      w->root = gw_keep(w, scr_str_retain(cwd->v.str));
+    } else {
+      *cwd_out = scr_dyn_retain(cwd); /* resolve() rejects it when the walk starts */
+    }
+  }
+  if (ok && !gw_dyn_nullish(follow)) {
+    if (follow->kind != SCR_DYN_BOOL) {
+      scr_dyn_prop_type_fail("options.followSymlinks", "of type boolean", follow);
+      ok = false;
+    } else {
+      w->follow = follow->v.b;
+    }
+  }
+  if (ok) w->with_types = scr_dyn_truthy(types);
+  if (ok && !gw_dyn_nullish(exclude)) {
+    if (gw_dyn_is_array(exclude)) {
+      ScrDyn *list = gw_dyn_array(exclude);
+      ok = list != NULL;
+      for (size_t i = 0; ok && i < list->v.arr.len; i++) {
+        const ScrDyn *item = scr_dyn_arr_has_index(list, i) ? list->v.arr.items[i] : scr_dyn_undefined();
+        if (item->kind != SCR_DYN_STR) {
+          char name[48];
+          snprintf(name, sizeof name, "options.exclude[%zu]", i);
+          scr_dyn_prop_type_fail(name, "of type string", item);
+          ok = false;
+        }
+      }
+      if (ok && !w->root) {
+        /* The constructor's assert(typeof this.#root === 'string'). */
+        static const char message[] =
+            "This is caused by either a bug in Node.js or incorrect usage of Node.js internals.\n"
+            "Please open an issue with this stack trace at https://github.com/nodejs/node/issues\n";
+        scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "ERR_INTERNAL_ASSERTION");
+        ok = false;
+      }
+      if (ok) {
+        w->nexclude = list->v.arr.len;
+        w->exclude = ar_alloc(&w->a, (w->nexclude ? w->nexclude : 1) * sizeof *w->exclude);
+        for (size_t i = 0; ok && i < w->nexclude; i++) {
+          ScrStr *abs = gw_resolve(w, w->root, list->v.arr.items[i]->v.str);
+          ok = glob_compile(&w->a, s_from_str(&w->a, abs), GW_WINDOWS, scr_glob_host_nocase(), false, &w->exclude[i]);
+        }
+      }
+      scr_dyn_release(list);
+    } else if (exclude->kind == SCR_DYN_FUNC) {
+      w->exclude_fn = scr_dyn_retain(exclude);
+    } else {
+      scr_dyn_prop_type_fail("options.exclude", "of type function or string[]", exclude);
+      ok = false;
+    }
+  }
+  /* patterns: a string, or (typeof 'object') a string array. */
+  ScrDyn *list = NULL;
+  if (ok) {
+    if (pattern->kind == SCR_DYN_STR) {
+      list = scr_dyn_new_arr();
+      scr_dyn_arr_push(list, scr_dyn_retain((ScrDyn *)pattern));
+    } else if (pattern->kind == SCR_DYN_NULL || pattern->kind == SCR_DYN_OBJ || pattern->kind == SCR_DYN_HANDLE ||
+               pattern->kind == SCR_DYN_BYTES || pattern->kind == SCR_DYN_TYPED_REF || pattern->kind == SCR_DYN_ARR) {
+      if (!gw_dyn_is_array(pattern)) {
+        scr_dyn_arg_type_fail("patterns", "an instance of Array", pattern);
+        ok = false;
+      } else {
+        list = gw_dyn_array(pattern);
+        ok = list != NULL;
+        for (size_t i = 0; ok && i < list->v.arr.len; i++) {
+          const ScrDyn *item = scr_dyn_arr_has_index(list, i) ? list->v.arr.items[i] : scr_dyn_undefined();
+          if (item->kind != SCR_DYN_STR) {
+            char name[32];
+            snprintf(name, sizeof name, "patterns[%zu]", i);
+            scr_dyn_arg_type_fail(name, "of type string", item);
+            ok = false;
+          }
+        }
+      }
+    } else {
+      scr_dyn_arg_type_fail("patterns", "of type string", pattern);
+      ok = false;
+    }
+  }
+  w->ctx = (Ctx){ &w->a, scr_glob_host_nocase(), true };
+  for (size_t i = 0; ok && i < list->v.arr.len; i++) {
+    Matcher *m = ar_alloc(&w->a, sizeof *m);
+    ok = glob_compile(&w->a, s_from_str(&w->a, list->v.arr.items[i]->v.str), GW_WINDOWS, scr_glob_host_nocase(), true, m);
+    if (!ok || m->empty) continue;
+    GwPat **grown = ar_alloc(&w->a, (w->npatterns + m->n) * sizeof *grown);
+    if (w->npatterns) memcpy(grown, w->patterns, w->npatterns * sizeof *grown);
+    w->patterns = grown;
+    for (size_t g = 0; g < m->n; g++) {
+      GwPat *p = ar_alloc(&w->a, sizeof *p);
+      memset(p, 0, sizeof *p);
+      p->pat = &m->set[g];
+      p->parts = &m->parts[g];
+      p->indexes = gw_idx_one(w, 0);
+      GwReal *none = ar_alloc(&w->a, sizeof *none);
+      none->v = NULL;
+      none->n = 0;
+      p->realpaths = none;
+      p->last = (long)m->set[g].n - 1;
+      w->patterns[w->npatterns++] = p;
+    }
+  }
+  scr_dyn_release(list);
+  scr_dyn_release(exclude);
+  scr_dyn_release(cwd);
+  scr_dyn_release(follow);
+  scr_dyn_release(types);
+  return ok && !scr_exc_pending();
+}
+
+/* The walk and its result snapshot. mode bit 0: Dirent rows; bit 1: the
+ * fs/promises form (Dirents carry resolved parent paths). */
+static ScrFsGlob *gw_snapshot(Gw *w, bool types, bool resolved_parents) {
+  ScrFsGlob *g = calloc(1, sizeof *g);
+  if (!g) gw_oom();
+  g->n = w->nresults;
+  g->paths = malloc((g->n ? g->n : 1) * sizeof *g->paths);
+  if (!g->paths) gw_oom();
+  if (types) {
+    g->names = malloc((g->n ? g->n : 1) * sizeof *g->names);
+    g->parents = malloc((g->n ? g->n : 1) * sizeof *g->parents);
+    g->kinds = malloc(g->n ? g->n : 1);
+    if (!g->names || !g->parents || !g->kinds) gw_oom();
+  }
+  for (size_t i = 0; i < g->n; i++) {
+    ScrStr *path = w->results[i];
+    g->paths[i] = scr_str_retain(path);
+    if (!types) continue;
+    ScrStr *full = resolved_parents ? gw_resolve(w, w->root, path)
+                   : gw_is_absolute(path) ? path
+                                          : gw_join(w, w->root, path);
+    GwStat *st = gw_stat(w, full);
+    g->names[i] = scr_str_retain(gw_basename(w, full));
+    g->parents[i] = scr_str_retain(gw_dirname(w, full));
+    g->kinds[i] = st ? st->kind : 0;
+  }
+  return g;
+}
+
+ScrFsGlob *scr_fs_glob(const ScrDyn *pattern, const ScrDyn *options, double mode) {
+  Gw w;
+  memset(&w, 0, sizeof w);
+  ScrDyn *bad_cwd = NULL;
+  bool types = ((unsigned)mode & 1) != 0;
+  ScrFsGlob *out = NULL;
+  if (gw_begin(&w, pattern, options, &bad_cwd)) {
+    if (w.with_types != types) {
+      static const char message[] = "fs.glob withFileTypes must be a literal true or false that matches the result type";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    } else if (!w.root) {
+      scr_dyn_arg_type_fail("paths[0]", "of type string", bad_cwd);
+    } else if (types && w.exclude_fn) {
+      static const char message[] = "fs.glob exclude functions with withFileTypes have no native lowering";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    } else {
+      gw_run(&w);
+      bool async_form = ((unsigned)mode & 2) != 0;
+      if (scr_exc_pending() && async_form) {
+        /* The async iterator yields the matches found before the error,
+         * then throws it (scr_fsp_glob_error hands it to the loop). */
+        scr_caught_release(scr_fs_glob_deferred);
+        scr_fs_glob_deferred = scr_exc_take();
+      }
+      if (!scr_exc_pending()) out = gw_snapshot(&w, types, async_form);
+    }
+  }
+  scr_dyn_release(bad_cwd);
+  gw_free(&w);
+  return out;
+}
+
+ScrArr *scr_fsp_glob_strings(const ScrDyn *pattern, const ScrDyn *options) {
+  ScrFsGlob *g = scr_fs_glob(pattern, options, 2);
+  if (!g) return NULL;
+  ScrArr *arr = scr_arr_new(SCR_ELEM_STR, g->n);
+  for (size_t i = 0; i < g->n; i++) scr_arr_push_ref(arr, scr_str_retain(g->paths[i]));
+  scr_fs_glob_free(g);
+  return arr;
+}
+
+ScrDyn *scr_fsp_glob_error(void) {
+  if (!scr_fs_glob_deferred) return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *error = scr_caught_to_dyn(scr_fs_glob_deferred);
+  scr_caught_release(scr_fs_glob_deferred);
+  scr_fs_glob_deferred = NULL;
+  return error;
+}
+
+size_t scr_fs_glob_count(const ScrFsGlob *g) { return g ? g->n : 0; }
+ScrStr *scr_fs_glob_path(const ScrFsGlob *g, size_t i) { return scr_str_retain(g->paths[i]); }
+ScrStr *scr_fs_glob_name(const ScrFsGlob *g, size_t i) { return scr_str_retain(g->names[i]); }
+ScrStr *scr_fs_glob_parent(const ScrFsGlob *g, size_t i) { return scr_str_retain(g->parents[i]); }
+double scr_fs_glob_type(const ScrFsGlob *g, size_t i) { return (double)g->kinds[i]; }
+
+void scr_fs_glob_free(ScrFsGlob *g) {
+  if (!g) return;
+  for (size_t i = 0; i < g->n; i++) {
+    scr_str_release(g->paths[i]);
+    if (g->names) {
+      scr_str_release(g->names[i]);
+      scr_str_release(g->parents[i]);
+    }
+  }
+  free(g->paths);
+  free(g->names);
+  free(g->parents);
+  free(g->kinds);
+  free(g);
+}
+
+/* globSync(pattern, options) and the fs/promises string form: string[]. */
+ScrArr *scr_fs_glob_strings(const ScrDyn *pattern, const ScrDyn *options) {
+  ScrFsGlob *g = scr_fs_glob(pattern, options, 0);
+  if (!g) return NULL;
+  ScrArr *arr = scr_arr_new(SCR_ELEM_STR, g->n);
+  for (size_t i = 0; i < g->n; i++) scr_arr_push_ref(arr, scr_str_retain(g->paths[i]));
+  scr_fs_glob_free(g);
+  return arr;
+}
+
+/* fs.glob(pattern[, options], callback): Node checks the callback, then
+ * runs the constructor's validation synchronously; the walk's result or
+ * error reaches the callback later. `args` is the argument vector. */
+void scr_fs_glob_callback(ScrDyn *args) {
+  size_t argc = args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
+  ScrDyn *const *items = argc ? args->v.arr.items : NULL;
+  const ScrDyn *pattern = argc > 0 ? items[0] : scr_dyn_undefined();
+  const ScrDyn *options = argc > 1 ? items[1] : scr_dyn_undefined();
+  const ScrDyn *callback = argc > 2 ? items[2] : scr_dyn_undefined();
+  if (options->kind == SCR_DYN_FUNC) {
+    callback = options;
+    options = scr_dyn_undefined();
+  }
+  if (callback->kind != SCR_DYN_FUNC) {
+    scr_dyn_arg_type_fail("cb", "of type function", callback);
+    return;
+  }
+  Gw w;
+  memset(&w, 0, sizeof w);
+  ScrDyn *bad_cwd = NULL;
+  if (!gw_begin(&w, pattern, options, &bad_cwd)) {
+    scr_dyn_release(bad_cwd);
+    gw_free(&w);
+    return;
+  }
+  if (w.with_types) {
+    static const char message[] = "fs.glob callback Dirent results have no native lowering; use fs.globSync or fs/promises glob";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    scr_dyn_release(bad_cwd);
+    gw_free(&w);
+    return;
+  }
+  ScrDyn *result = NULL;
+  if (!w.root) {
+    scr_dyn_arg_type_fail("paths[0]", "of type string", bad_cwd);
+  } else {
+    gw_run(&w);
+    if (!scr_exc_pending()) {
+      result = scr_dyn_new_arr();
+      for (size_t i = 0; i < w.nresults; i++) scr_dyn_arr_push(result, scr_dyn_new_str(w.results[i]));
+    }
+  }
+  scr_dyn_release(bad_cwd);
+  gw_free(&w);
+  scr_fs_cb_schedule(callback, result, NULL);
 }
