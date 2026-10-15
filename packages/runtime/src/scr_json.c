@@ -925,6 +925,33 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
   return fresh;
 }
 
+/* Number and string nodes are most of the checked-dynamic churn: numbers
+ * boxed by dyn expressions and the leaves of parsed documents. They own no
+ * dyn edges, are never cycle candidates or weak keys, and never acquire a
+ * prototype or symbol table (only objects and arrays do), so they recycle
+ * through the misc pool without the generic disposal and reset. Every
+ * pooled node has a NULL prototype and symbol tables. */
+static inline ScrDyn *scr_dyn_leaf_alloc(ScrDynKind kind) {
+#ifndef SCR_RC_AUDIT
+  ScrDyn *d = scr_dyn_free_misc;
+  if (d) {
+    scr_dyn_free_misc = (ScrDyn *)d->v.str; /* freelist link */
+    scr_dyn_free_count--;
+    ScrCycHdr *header = scr_cyc_hdr(d);
+    scr_cyc_set_color(header, SCR_CYC_BLACK);
+    scr_cyc_set_gen(header, SCR_CYC_NURSERY);
+    d->rc = 1;
+    d->kind = kind;
+    d->buffer = false;
+    d->null_proto = false;
+    d->copied_from_native = false;
+    d->non_extensible = false;
+    return d;
+  }
+#endif
+  return scr_dyn_alloc(kind);
+}
+
 static void scr_dyn_handle_release(void *h, ScrDynHandleTag tag);
 static bool scr_dyn_to_primitive_result_is_object(const ScrDyn *d);
 
@@ -952,7 +979,8 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
   if (!collected) scr_dyn_release(d->prototype);
   if (!collected) scr_dyn_release(d->symbol_properties);
   if (!collected) scr_dyn_release(d->symbol_keys);
-  d->symbol_properties = d->symbol_keys = NULL;
+  /* Pooled nodes keep all three NULL (scr_dyn_leaf_alloc relies on it). */
+  d->prototype = d->symbol_properties = d->symbol_keys = NULL;
   switch (d->kind) {
   case SCR_DYN_SYMBOL:
     d->v.symbol.release(d->v.symbol.value);
@@ -1098,6 +1126,15 @@ void scr_dyn_release(ScrDyn *d) {
   }
 #endif
   scr_cyc_dead(d);
+#ifndef SCR_RC_AUDIT
+  if ((d->kind == SCR_DYN_NUM || d->kind == SCR_DYN_STR) && scr_dyn_free_count < SCR_DYN_FREE_MAX) {
+    if (d->kind == SCR_DYN_STR) scr_str_release(d->v.str);
+    d->v.str = (ScrStr *)scr_dyn_free_misc; /* see scr_dyn_leaf_alloc */
+    scr_dyn_free_misc = d;
+    scr_dyn_free_count++;
+    return;
+  }
+#endif
   scr_rc_destroy(d, scr_dyn_destroy);
 }
 
@@ -1593,13 +1630,13 @@ ScrDyn *scr_dyn_new_num(double n) {
     int value = (int)n;
     if ((double)value == n && (value != 0 || !signbit(n))) return &scr_dyn_small_ints[value + 128];
   }
-  ScrDyn *d = scr_dyn_alloc(SCR_DYN_NUM);
+  ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_NUM);
   d->v.num = n;
   return d;
 }
 
 ScrDyn *scr_dyn_new_str(ScrStr *s) {
-  ScrDyn *d = scr_dyn_alloc(SCR_DYN_STR);
+  ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_STR);
   d->v.str = scr_str_retain(s);
   return d;
 }
@@ -7355,7 +7392,7 @@ static ScrDyn *scr_json_value(ScrJsonP *p) {
   if (c == '"') {
     ScrStr *sv = scr_json_string_scr(p);
     if (!sv) return NULL;
-    ScrDyn *d = scr_dyn_alloc(SCR_DYN_STR);
+    ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_STR);
     d->v.str = sv;
     return d;
   }
