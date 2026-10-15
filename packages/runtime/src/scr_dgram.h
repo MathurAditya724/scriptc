@@ -1,0 +1,72 @@
+/* scriptc runtime — node:dgram and node:dns (scr_dgram.c). Included by
+ * scr_runtime.h, which says where new declarations go. */
+#ifndef SCR_DGRAM_H
+#define SCR_DGRAM_H
+
+#include "scr_http2.h"
+
+/* ── node:dgram + node:dns (scr_dgram.c — compiled only when the program
+ * uses either; design note atop the file). One lean refcounted handle
+ * kind (the netSocket ownership story: listeners MOVE in and drop at
+ * settlement); dns.lookup rides the same unit — getaddrinfo runs AT CALL
+ * TIME and the callback defers to the next loop turn. Self-contained: no
+ * symbol here requires scr_net.c to link. */
+typedef struct ScrDgramSocket ScrDgramSocket;
+/* The message adapter: msg and the rinfo parts arrive BORROWED (multiple
+ * listeners see the same datagram); adapters retain what they keep. */
+typedef void (*ScrDgramMsgFn)(ScrClosure *cb, ScrBytes *msg, ScrStr *addr, ScrStr *family, double port, double size);
+/* The dns.lookup adapter: errmsg is NULL on success; everything borrowed. */
+typedef void (*ScrDnsLookupFn)(ScrClosure *cb, ScrStr *errmsg, ScrStr *addr, double family);
+
+ScrDgramSocket *scr_dgram_retain(ScrDgramSocket *s);
+void scr_dgram_release(ScrDgramSocket *s);
+void *scr_dgram_retain_v(void *p);
+void scr_dgram_release_v(void *p);
+
+ScrDgramSocket *scr_dgram_create(bool reuse_addr); /* +1 */
+/* bind/connect: host borrowed; "" binds 0.0.0.0 (bind's Node default).
+ * The callback (nullable, moves) registers as once('listening') /
+ * once('connect'). Both THROW Node's state errors on a bound/connected/
+ * closed socket; runtime failures (EADDRINUSE) are the async 'error'. */
+void scr_dgram_bind(ScrDgramSocket *s, double port, ScrStr *host /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
+void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
+void scr_dgram_send_str(ScrDgramSocket *s, ScrStr *data /*borrowed*/, double port, ScrStr *host /*borrowed*/);
+void scr_dgram_send_bytes(ScrDgramSocket *s, ScrBytes *data /*borrowed*/, double port, ScrStr *host /*borrowed*/);
+/* The send argument-validation ladder over dyn arguments (Node's
+ * signature shuffle, slice bounds, list/type contracts, port/address
+ * validation, and the connected-state errors); a fully-validated
+ * unconnected single-payload send RUNS, the rest meet the fence. */
+void scr_dgram_send_chk(ScrDgramSocket *s, const ScrDyn *buffer, const ScrDyn *a1,
+                        const ScrDyn *a2, const ScrDyn *a3, const ScrDyn *a4,
+                        const ScrStr *fence);
+/* address() parts: ip THROWS "Not running" before bind/connect (+1
+ * otherwise); family/port are only called after ip succeeded. */
+ScrStr *scr_dgram_addr_ip(ScrDgramSocket *s);     /* +1, may throw */
+ScrStr *scr_dgram_addr_family(ScrDgramSocket *s); /* +1 */
+double scr_dgram_addr_port(ScrDgramSocket *s);
+void scr_dgram_close(ScrDgramSocket *s, ScrClosure *cb /*moves, nullable*/); /* throws on closed */
+void scr_dgram_unref(ScrDgramSocket *s);
+void scr_dgram_ref(ScrDgramSocket *s);
+void scr_dgram_on_message(ScrDgramSocket *s, ScrClosure *cb /*moves*/, ScrDgramMsgFn fn, bool once);
+void scr_dgram_on_error(ScrDgramSocket *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
+void scr_dgram_on_listening(ScrDgramSocket *s, ScrClosure *cb /*moves*/, bool once);
+void scr_dgram_on_close(ScrDgramSocket *s, ScrClosure *cb /*moves*/, bool once);
+void scr_dgram_on_connect(ScrDgramSocket *s, ScrClosure *cb /*moves*/, bool once);
+/* The runtime-provided message adapters (zero/one-param listeners; the
+ * two-param rinfo shape is emitted per record shape). */
+void scr_dgram_msg_thunk0(ScrClosure *cb, ScrBytes *msg, ScrStr *addr, ScrStr *family, double port, double size);
+void scr_dgram_msg_thunk1(ScrClosure *cb, ScrBytes *msg, ScrStr *addr, ScrStr *family, double port, double size);
+/* dns.lookup: hostname borrowed, family is 4 (AF_INET pinned by the
+ * frontend), the callback moves. getaddrinfo runs NOW (blocking —
+ * SEMANTICS.md); delivery defers to the next loop turn. */
+void scr_dns_lookup(ScrStr *hostname /*borrowed*/, double family, ScrClosure *cb /*moves*/, ScrDnsLookupFn fn);
+void scr_dns_thunk0(ScrClosure *cb, ScrStr *errmsg, ScrStr *addr, double family);
+void scr_dgram_install(void);
+#ifdef SCR_RC_AUDIT
+long scr_dgram_live_count(void);
+#endif
+/* The loop-side registration (scr_async.c, always linked) — the net
+ * hook's exact shape, one more nullable slot set. */
+void scr_loop_set_dgram(bool (*pending)(void), void (*dispatch)(void), int (*pollfd)(void));
+
+#endif /* SCR_DGRAM_H */

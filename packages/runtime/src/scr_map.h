@@ -1,0 +1,313 @@
+/* scriptc runtime — Map and Set (scr_map.c). Included by scr_runtime.h, which
+ * says where new declarations go. */
+#ifndef SCR_MAP_H
+#define SCR_MAP_H
+
+#include "scr_array.h"
+
+/* ── maps (scr_map.c) ───────────────────────────────────────────────
+ * ES Map<K, V> with the compact-dict layout: a dense, insertion-ordered
+ * entries array (deletions become tombstones; compaction happens on growth,
+ * and NEVER while an iteration is active) plus an open-addressing bucket
+ * table of entry indices. That is what gives JS's observable semantics for
+ * free: forEach visits in insertion order, entries added during iteration
+ * are visited (they append), deleted entries are skipped (tombstones), and
+ * a delete + re-add moves the key to the end (Node-verified).
+ *
+ * Primitive keys compare by value and reference keys by identity. Numbers
+ * use SameValueZero: NaN equals NaN and -0 is stored as +0. Union wrappers
+ * are representations, never identities; their arm descriptors select
+ * the primitive or reference comparison, including null and undefined.
+ *
+ * Values are one uniform kind per map (like ScrArr elements): f64, bool, or
+ * a refcounted pointer whose RC entry points arrive as function pointers at
+ * construction (the SCR_BOX_OBJ technique — the runtime cannot know
+ * per-class/per-record layouts). key_trace and val_trace are non-NULL when
+ * their respective types carry cycle headers. Either side can point back
+ * at its map, so either adapter requires a hidden collector header. Trace
+ * visits each live edge on the traced sides; collector teardown releases
+ * the untraced complement. Maps with neither adapter use a lean RC header.
+ *
+ * Ownership: set BORROWS the key (the map retains string/reference keys it stores)
+ * and OWNS the value (+1 moves in; replacing releases the old value).
+ * get/has/delete borrow the key; get returns +1 on ref values (NULL = not
+ * found) or fills an out-param and returns a found flag for scalars.
+ * delete releases the entry's key and value. iter_key_str/ref and iter_val_ref
+ * return +1. iter_enter/iter_exit bracket a forEach loop: while the depth
+ * is nonzero, growth keeps tombstones (indices stay stable) and clear only
+ * tombstones entries — live-iteration semantics stay exact.
+ */
+
+/* REF keys hash/compare pointer identity and carry their own RC adapters.
+ * UNION_REF owns the union wrapper but hashes/compares its reference payload;
+ * the frontend permits only unions of reference-identity arms for this kind.
+ * DYN owns a checked-value box and compares its JavaScript value using
+ * SameValueZero, including reference identity for object payloads.
+ * These key kinds serve both Maps and Sets. */
+typedef enum {
+  SCR_MAP_KEY_F64, SCR_MAP_KEY_STR, SCR_MAP_KEY_REF, SCR_MAP_KEY_UNION_REF, SCR_MAP_KEY_DYN,
+  SCR_MAP_KEY_BIGINT, SCR_MAP_KEY_BOOL, SCR_MAP_KEY_UNION_VALUE,
+  SCR_MAP_KEY_NULL, SCR_MAP_KEY_UNDEFINED /* tag-only union arms */
+} ScrMapKeyKind;
+typedef enum { SCR_MAP_VAL_F64, SCR_MAP_VAL_BOOL, SCR_MAP_VAL_REF } ScrMapValKind;
+
+typedef struct {
+  uint64_t key; /* double bits (normalized), ScrStr* (owned), or ref ptr (owned) */
+  uint64_t val; /* double bits, bool, or owned pointer */
+  uint64_t hash; /* nonzero cached hash; zero = tombstone (key/val released) */
+} ScrMapEntry;
+
+/* Checked views use the original storage. Slot converters borrow on reads
+ * and return owned references on writes, just like typed Map operations. */
+typedef struct {
+  const char *type;
+  struct ScrDyn *(*key_box)(uint64_t);
+  uint64_t (*key_unbox)(const struct ScrDyn *);
+  bool (*key_matches)(const struct ScrDyn *);
+  struct ScrDyn *(*val_box)(uint64_t);
+  uint64_t (*val_unbox)(const struct ScrDyn *);
+} ScrMapDynOps;
+
+typedef struct ScrMap {
+  size_t rc; /* SIZE_MAX = immortal (unused for maps; kept per convention) */
+  ScrMapKeyKind key_kind;
+  ScrMapValKind val_kind;
+  /* SCR_MAP_VAL_REF only; val_trace non-NULL iff the value type carries a
+   * cycle header. The map has a header when either trace is non-NULL. */
+  void *(*val_retain)(void *);
+  void (*val_release)(void *);
+  ScrTraceFn val_trace;
+  /* Reference-represented keys, including bigint and union values. */
+  void *(*key_retain)(void *);
+  void (*key_release)(void *);
+  ScrTraceFn key_trace;
+  size_t nentries; /* dense entries used, tombstones included */
+  size_t nlive;    /* live entries (Map.size) */
+  /* Two bits per inserted entry hash (scr_map.c scr_map_filter_bits): a
+   * lookup whose bits are not all set is absent without touching the index
+   * or the entries. Deletions leave their bits; compaction recomputes it. */
+  uint64_t filter;
+  size_t ecap;     /* entries capacity */
+  ScrMapEntry *entries;
+  size_t nbuckets;  /* zero for small linear maps; otherwise power of two >= 2 * nentries */
+  void *buckets;  /* compact tagged indices, or size_t indices for large tables */
+  size_t iter_depth; /* > 0: an iteration is active — no compaction */
+  const ScrMapDynOps *dyn_ops;
+  const uint8_t *union_keys; /* immutable key-kind table indexed by union tag */
+  /* Direct index for number keys (SCR_MAP_KEY_F64 only). While ndense is
+   * nonzero every live key is an integer in [0, ndense) and dense[k] holds
+   * its entry index + 1 (0 = absent); the map then keeps no bucket table.
+   * A key outside that shape moves the map to hashing; whenever the bucket
+   * table would grow, compact integer keys move it back. Iteration order is
+   * always the entries array's. */
+  uint32_t *dense;
+  size_t ndense;
+  /* Every entry below this index is a tombstone. A walk that starts at or
+   * below it advances it to the first live entry (scr_map_iter_skip);
+   * compaction and clear reset it. A map that deletes from the front (a
+   * queue, an LRU cache) then finds its first live entry without walking
+   * the whole deleted prefix again. */
+  size_t head;
+} ScrMap;
+/* The LLVM backend's inline retain/release read both trace slots through
+ * its %ScrMapRc prefix type (fields 5 and 8), mirroring scr_map_retain and
+ * scr_map_release's `key_trace || val_trace` header test. */
+_Static_assert(offsetof(ScrMap, val_trace) == sizeof(size_t) + 2 * sizeof(uint32_t) + 2 * sizeof(void *),
+               "inline RC fast paths read ScrMap.val_trace as %ScrMapRc field 5");
+_Static_assert(offsetof(ScrMap, key_trace) == offsetof(ScrMap, val_trace) + 3 * sizeof(void *),
+               "inline RC fast paths read ScrMap.key_trace as %ScrMapRc field 8");
+/* The LLVM backend's inline number-key lookup (sc_map_entry_f64) reads
+ * entries, dense and ndense through %ScrMapIx fields 13, 19 and 20, and
+ * entries as %ScrMapEntry { key, val, hash }; %ScrMapIx field 11 is the
+ * i64 filter. */
+_Static_assert(offsetof(ScrMap, filter) ==
+                   (offsetof(ScrMap, nlive) + sizeof(size_t) + _Alignof(uint64_t) - 1) / _Alignof(uint64_t) * _Alignof(uint64_t),
+               "%ScrMapIx field 11 is ScrMap.filter, directly after nlive");
+_Static_assert(offsetof(ScrMap, nlive) == sizeof(size_t) + 2 * sizeof(uint32_t) + 6 * sizeof(void *) + sizeof(size_t),
+               "%ScrMapIx field 10 is ScrMap.nlive");
+/* The inline iteration steps (sc_map_iter_entry) read the entry count as
+ * %ScrMapIx field 9 and test each entry's hash, the third field. */
+_Static_assert(offsetof(ScrMap, nentries) + sizeof(size_t) == offsetof(ScrMap, nlive),
+               "%ScrMapIx field 9 is ScrMap.nentries, directly before nlive");
+_Static_assert(offsetof(ScrMapEntry, hash) == 16, "inline iteration reads ScrMapEntry.hash at byte 16");
+_Static_assert(offsetof(ScrMap, entries) == offsetof(ScrMap, filter) + sizeof(uint64_t) + sizeof(size_t),
+               "inline number-key lookups read ScrMap.entries as %ScrMapIx field 13");
+_Static_assert(offsetof(ScrMap, dense) == offsetof(ScrMap, entries) + 6 * sizeof(void *),
+               "inline number-key lookups read ScrMap.dense as %ScrMapIx field 19");
+_Static_assert(offsetof(ScrMap, ndense) == offsetof(ScrMap, dense) + sizeof(void *),
+               "inline number-key lookups read ScrMap.ndense as %ScrMapIx field 20");
+_Static_assert(sizeof(ScrMapEntry) == 24 && offsetof(ScrMapEntry, val) == 8,
+               "inline number-key lookups read ScrMapEntry.val at byte 8");
+/* Entry for a number key, or NULL when absent. The pointer is valid until
+ * the next mutation; generated code reads the value slot through it. */
+const ScrMapEntry *scr_map_entry_f64(const ScrMap *m, double key);
+/* Entry for a string key, or NULL when absent, on the same terms. Typed
+ * reference reads retain the value with its static type's retain instead
+ * of the collection's adapter. */
+const ScrMapEntry *scr_map_entry_str(const ScrMap *m, const ScrStr *key);
+
+/* Called once on a fresh UNION_VALUE collection, before its first insert. */
+void scr_map_union_keys(ScrMap *map, const uint8_t *kinds);
+/* String-key lookups borrow an exact byte span. Reference results return
+ * +1; scalar outputs are written only on a hit, like the string getters. */
+bool scr_map_get_span_f64(const ScrMap *m, const char *bytes, size_t length, double *out);
+bool scr_map_get_span_bool(const ScrMap *m, const char *bytes, size_t length, bool *out);
+void *scr_map_get_span_ref(const ScrMap *m, const char *bytes, size_t length);
+
+/* Fresh shallow copies with compact storage and independent mutation.
+ * keys_only selects a Set; checked views materialize their boxed values. */
+ScrMap *scr_map_clone(const ScrMap *source, bool keys_only);
+ScrMap *scr_map_clone_dyn(const ScrMap *source, bool keys_only);
+void scr_map_values_into(ScrMap *set, const ScrMap *source, bool checked);
+
+void scr_map_dyn_attach(ScrMap *map, const ScrMapDynOps *ops);
+struct ScrDyn *scr_map_dyn_key(const ScrMap *map, double index);
+struct ScrDyn *scr_map_dyn_value(const ScrMap *map, double index);
+struct ScrDyn *scr_map_dyn_get(ScrMap *map, const struct ScrDyn *key);
+bool scr_map_dyn_has(ScrMap *map, const struct ScrDyn *key, bool remove);
+void scr_map_dyn_set(ScrMap *map, const struct ScrDyn *key, const struct ScrDyn *value, bool set);
+
+/* retain/release/trace are NULL for scalar value kinds; retain/release are
+ * required for SCR_MAP_VAL_REF; trace is non-NULL iff the value type is
+ * cycle-capable (the map then allocates with the collector header). */
+ScrMap *scr_map_new(ScrMapKeyKind key_kind, ScrMapValKind val_kind,
+                     void *(*val_retain)(void *), void (*val_release)(void *),
+                     ScrTraceFn val_trace); /* returns +1 */
+/* Typed identity keys retain their original representation for iteration.
+ * UNION_REF compares the wrapped reference, so reboxing cannot change key
+ * identity. The compiler admits only unions of identity-bearing arms.
+ * Either trace adapter requires a collector header on the map itself. */
+ScrMap *scr_map_new_typed(ScrMapKeyKind key_kind, ScrMapValKind val_kind,
+                         void *(*key_retain)(void *), void (*key_release)(void *),
+                         ScrTraceFn key_trace,
+                         void *(*val_retain)(void *), void (*val_release)(void *),
+                         ScrTraceFn val_trace);
+ScrMap *scr_map_retain(ScrMap *m);
+void scr_map_release(ScrMap *m); /* NULL-tolerant */
+void *scr_map_retain_v(void *m);
+void scr_map_release_v(void *m);
+void scr_map_trace_v(void *m, ScrTraceVisit visit, void *ctx);
+
+double scr_map_size(const ScrMap *m); /* live entries (Map.size) */
+void scr_map_clear(ScrMap *m);
+
+bool scr_map_has_f64(const ScrMap *m, double key);
+bool scr_map_has_bool(const ScrMap *m, bool key);
+bool scr_map_has_str(const ScrMap *m, const ScrStr *key);
+bool scr_map_has_ref(const ScrMap *m, const void *key);
+bool scr_map_delete_f64(ScrMap *m, double key);
+bool scr_map_delete_bool(ScrMap *m, bool key);
+bool scr_map_delete_str(ScrMap *m, const ScrStr *key);
+bool scr_map_delete_ref(ScrMap *m, const void *key);
+
+/* set: key borrowed (string/reference keys are retained when stored), value moves in
+ * for _ref (replacing releases the old value; the stored key is kept, like
+ * JS — only the value changes on overwrite). */
+void scr_map_set_f64_f64(ScrMap *m, double key, double v);
+void scr_map_set_f64_bool(ScrMap *m, double key, bool v);
+void scr_map_set_f64_ref(ScrMap *m, double key, void *v);
+void scr_map_set_bool_f64(ScrMap *m, bool key, double v);
+void scr_map_set_bool_bool(ScrMap *m, bool key, bool v);
+void scr_map_set_bool_ref(ScrMap *m, bool key, void *v);
+void scr_map_set_str_f64(ScrMap *m, ScrStr *key, double v);
+void scr_map_set_str_bool(ScrMap *m, ScrStr *key, bool v);
+void scr_map_set_str_ref(ScrMap *m, ScrStr *key, void *v);
+void scr_map_set_ref_f64(ScrMap *m, void *key, double v);
+void scr_map_set_ref_bool(ScrMap *m, void *key, bool v);
+void scr_map_set_ref_ref(ScrMap *m, void *key, void *v);
+
+/* get: scalar variants fill *out and return the found flag; ref variants
+ * return +1 or NULL (values are never NULL, so NULL means "absent"). The
+ * compiler wraps the result into the `V | undefined` union type-directedly
+ * (the runtime knows no tags). */
+bool scr_map_get_f64_f64(const ScrMap *m, double key, double *out);
+bool scr_map_get_f64_bool(const ScrMap *m, double key, bool *out);
+void *scr_map_get_f64_ref(const ScrMap *m, double key);
+bool scr_map_get_bool_f64(const ScrMap *m, bool key, double *out);
+bool scr_map_get_bool_bool(const ScrMap *m, bool key, bool *out);
+void *scr_map_get_bool_ref(const ScrMap *m, bool key);
+bool scr_map_get_str_f64(const ScrMap *m, const ScrStr *key, double *out);
+bool scr_map_get_str_bool(const ScrMap *m, const ScrStr *key, bool *out);
+void *scr_map_get_str_ref(const ScrMap *m, const ScrStr *key);
+bool scr_map_get_ref_f64(const ScrMap *m, const void *key, double *out);
+bool scr_map_get_ref_bool(const ScrMap *m, const void *key, bool *out);
+void *scr_map_get_ref_ref(const ScrMap *m, const void *key);
+
+/* Iteration primitives behind the compiler's forEach desugar: an index loop
+ * over the dense entries array, re-reading iter_count every pass (appends
+ * during iteration are visited) and skipping tombstones via iter_live.
+ * iter_key/iter_val on an out-of-range or dead index abort (the desugar
+ * guards with iter_live first — reaching one is a compiler bug). */
+double scr_map_iter_count(const ScrMap *m); /* entries incl. tombstones */
+bool scr_map_iter_live(const ScrMap *m, double i);
+/* The first live index at or after i, or iter_count when none is left.
+ * iter_start is the first live index of the map (for-of starts there). */
+double scr_map_iter_skip(ScrMap *m, double i);
+double scr_map_iter_start(ScrMap *m);
+double scr_map_iter_key_f64(const ScrMap *m, double i);
+bool scr_map_iter_key_bool(const ScrMap *m, double i);
+ScrStr *scr_map_iter_key_str(const ScrMap *m, double i); /* +1 */
+void *scr_map_iter_key_ref(const ScrMap *m, double i);     /* +1 */
+double scr_map_iter_val_f64(const ScrMap *m, double i);
+bool scr_map_iter_val_bool(const ScrMap *m, double i);
+void *scr_map_iter_val_ref(const ScrMap *m, double i); /* +1 */
+void scr_map_iter_enter(ScrMap *m);
+void scr_map_iter_exit(ScrMap *m);
+
+/* Seeded Set construction (`new Set(values)`): add() every element of one
+ * borrowed T[] in order — duplicates keep their first insertion position
+ * (SameValueZero, exactly JS). `set` is a set-shaped map (f64 value kind,
+ * stored values 0); the array's element kind matches the set's key kind. */
+void scr_set_add_all(ScrMap *set, ScrArr *values);
+
+/* `[...set]` (scr_lib.c): the live entries drained into a fresh +1 elem[]
+ * in insertion order. Borrows the set; string elements retained in. */
+ScrArr *scr_set_to_arr_f64(const ScrMap *s);
+ScrArr *scr_set_to_arr_bool(const ScrMap *s);
+ScrArr *scr_set_to_arr_str(const ScrMap *s);
+ScrArr *scr_set_to_arr_ref(const ScrMap *s, const ScrArrOps *ops);
+ScrArr *scr_set_to_arr_dyn(const ScrMap *s);
+
+/* REF-element Set construction: a set-shaped map whose keys are refcounted
+ * pointers under identity hashing (see SCR_MAP_KEY_REF above). The element
+ * type's `_v` adapters arrive once, as for arrays (scr_arr_new_ops). */
+ScrMap *scr_set_new_ref(void *(*elem_retain)(void *), void (*elem_release)(void *));
+
+/* The live STRING keys of a map in JS OWN-KEY ORDER (Object.keys/values/
+ * entries over an index-signature record's overflow): canonical array
+ * indices first in ascending numeric order, then the rest in insertion
+ * order. Fresh ScrStr* array (+1); the map is borrowed. */
+ScrArr *scr_map_keys_js_order(const ScrMap *m);
+
+#ifdef SCR_RC_AUDIT
+long scr_map_live_count(void);
+/* Publication makes objects immortal and never frees them, so the RC audit
+ * stops counting them (scr_message.c). */
+void scr_str_live_forget(void);
+void scr_dyn_live_forget(void);
+void scr_arr_live_forget(void);
+void scr_map_live_forget(void);
+void scr_union_live_forget(void);
+#endif
+
+/* For the same reason LeakSanitizer must not report a published object
+ * whose last reference is dropped (scr_message.c, scr_publish.c). Ignored
+ * chunks are leak-scan roots, so everything an immortal object reaches is
+ * covered and the verdict on the rest of the heap is unchanged. Weak: ASan
+ * runtimes without a leak checker leave it NULL; other builds compile the
+ * hook away. */
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define SCR_LSAN_IMMORTAL 1
+void __lsan_ignore_object(const void *p) __attribute__((weak));
+#endif
+#endif
+static inline void scr_lsan_immortal(const void *obj) {
+#ifdef SCR_LSAN_IMMORTAL
+  if (__lsan_ignore_object) __lsan_ignore_object(obj);
+#else
+  (void)obj;
+#endif
+}
+
+#endif /* SCR_MAP_H */
