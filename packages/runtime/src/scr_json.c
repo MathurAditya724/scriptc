@@ -237,9 +237,10 @@ void scr_jb_put_str(ScrJsonBuf *b, const ScrStr *s) {
 void scr_jb_puts(ScrJsonBuf *b, const char *s) { scr_jb_write(b, s, strlen(s)); }
 
 void scr_jb_put_number(ScrJsonBuf *b, double v) {
-  char buf[32];
-  size_t n = scr_f64_to_str(v, buf);
-  scr_jb_write_utf8(b, buf, n); /* number text is ASCII */
+  /* scr_f64_to_str writes at most 31 ASCII bytes and a NUL into the
+   * buffer's spare capacity; the NUL is not counted. */
+  scr_jb_grow(b, 32);
+  b->len += scr_f64_to_str(v, b->data + b->len);
 }
 
 void scr_jb_put_f64(ScrJsonBuf *b, double v) {
@@ -2517,8 +2518,25 @@ ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index) {
   return NULL;
 }
 
+SCR_TL const ScrEventRefHooks *scr_event_ref_hooks = NULL;
+
+ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
+  ScrDyn *view = scr_dyn_typed_ref_materialize(d);
+  const char *tag = scr_event_ref_hooks ? scr_event_ref_hooks->string_tag(d) : NULL;
+  if (!tag || view->kind != SCR_DYN_OBJ || scr_dyn_property_owner(view, "toString", 8)) return view;
+  scr_dyn_release(view);
+  ScrStr *text = scr_str_new(tag, strlen(tag));
+  ScrDyn *out = scr_dyn_new_str(text);
+  scr_str_release(text);
+  return out;
+}
+
 ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key) {
   if (d->v.typed_ref.record) return scr_typed_ref_record_get(d, key);
+  if (scr_event_ref_hooks) {
+    ScrDyn *inherited = scr_event_ref_hooks->get(d, key);
+    if (inherited) return inherited;
+  }
   if (!scr_dyn_typed_ref_array_ops(d)) return NULL;
   if (scr_typed_ref_is_length(key)) return scr_dyn_new_num((double)((ScrArr *)d->v.typed_ref.ptr)->len);
   size_t index;
@@ -2624,7 +2642,7 @@ bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
 /* Node's JavaScript wrappers have names/arity; engine-native probes are
  * anonymous with length zero. Keep their native closure identity intact. */
 ScrDyn *scr_dyn_util_type_value(const ScrDyn *value, const ScrStr *probe) {
-  static const char *const named[] = { "isTypedArray", "isUint8Array", "isUint8ClampedArray", "isUint16Array", "isUint32Array",
+  static const char *const named[] = { "isDataView", "isTypedArray", "isUint8Array", "isUint8ClampedArray", "isUint16Array", "isUint32Array",
     "isInt8Array", "isInt16Array", "isInt32Array", "isFloat32Array", "isFloat64Array" };
   const char *name = "";
   if (probe->len == 17 && memcmp(probe->data, "isArrayBufferView", 17) == 0) name = "isView";
@@ -3209,6 +3227,76 @@ const char *scr_dyn_inspect_lite(const ScrDyn *v, char *buf, size_t cap) {
   }
 }
 
+/* util.inspect's string rendering (inspect.js strEscape): single quotes
+ * unless the string contains one, then double quotes or backticks when the
+ * string has none of those; C0 controls, the active quote, backslashes,
+ * U+007F-U+009F, and unpaired surrogates are escaped. The ERR_INVALID_ARG_*
+ * messages print it truncated to 128 UTF-16 units plus "...". Lives in the
+ * dyn core so validators in optional units can render without the inspect
+ * unit. */
+ScrStr *scr_str_inspect_quoted(const ScrStr *s, bool truncate) {
+  static const char *const c0[32] = {
+    "\\x00", "\\x01", "\\x02", "\\x03", "\\x04", "\\x05", "\\x06", "\\x07",
+    "\\b",   "\\t",   "\\n",   "\\x0B", "\\f",   "\\r",   "\\x0E", "\\x0F",
+    "\\x10", "\\x11", "\\x12", "\\x13", "\\x14", "\\x15", "\\x16", "\\x17",
+    "\\x18", "\\x19", "\\x1A", "\\x1B", "\\x1C", "\\x1D", "\\x1E", "\\x1F",
+  };
+  const unsigned char *p = (const unsigned char *)s->data;
+  size_t n = s->len;
+  char quote = '\'';
+  if (memchr(p, '\'', n) != NULL) {
+    bool brace = false;
+    for (size_t i = 0; i + 1 < n && !brace; i++) brace = p[i] == '$' && p[i + 1] == '{';
+    if (memchr(p, '"', n) == NULL) quote = '"';
+    else if (memchr(p, '`', n) == NULL && !brace) quote = '`';
+  }
+  ScrJsonBuf out;
+  scr_jb_init(&out);
+  scr_jb_putc(&out, quote);
+  for (size_t i = 0; i < n;) {
+    unsigned char c = p[i];
+    char hex[8];
+    if (c < 0x20) {
+      scr_jb_puts(&out, c0[c]);
+      i++;
+    } else if (c == '\\') {
+      scr_jb_puts(&out, "\\\\");
+      i++;
+    } else if (c == '\'' && quote == '\'') {
+      scr_jb_puts(&out, "\\'");
+      i++;
+    } else if (c == 0x7f) {
+      scr_jb_puts(&out, "\\x7F");
+      i++;
+    } else if (c == 0xc2 && i + 1 < n && p[i + 1] >= 0x80 && p[i + 1] <= 0x9f) {
+      snprintf(hex, sizeof hex, "\\x%02X", p[i + 1]);
+      scr_jb_puts(&out, hex);
+      i += 2;
+    } else if (c == 0xed && i + 2 < n && p[i + 1] >= 0xa0 && p[i + 1] <= 0xbf) {
+      /* a WTF-8 surrogate code unit: paired surrogates arrive as one
+       * four-byte sequence, so this one is unpaired */
+      unsigned unit = 0xd000u | ((unsigned)(p[i + 1] & 0x3f) << 6) | (p[i + 2] & 0x3f);
+      snprintf(hex, sizeof hex, "\\u%04x", unit);
+      scr_jb_puts(&out, hex);
+      i += 3;
+    } else {
+      scr_jb_putc(&out, (char)c);
+      i++;
+    }
+  }
+  scr_jb_putc(&out, quote);
+  ScrStr *text = scr_jb_finish(&out);
+  if (truncate && scr_str_utf16_len(text) > 128) {
+    ScrStr *head = scr_str_slice(text, 0, 128);
+    ScrStr *dots = scr_str_new("...", 3);
+    scr_str_release(text);
+    text = scr_str_concat(head, dots);
+    scr_str_release(head);
+    scr_str_release(dots);
+  }
+  return text;
+}
+
 /* Node's ERR_INVALID_ARG_VALUE thrower: "The <argument|property> '<name>'
  * <reason>. Received <inspected>" — the argument/property choice follows
  * errors.js (a dotted name is a property path). `reason` defaults to
@@ -3760,7 +3848,7 @@ static ScrDyn *scr_native_iterator_value(ScrNativeIterator *iterator, bool *done
   if (scr_exc_pending()) { scr_dyn_release(view); scr_dyn_release(source); return NULL; }
   ScrDyn *items = view ? view : source;
   ScrMap *map = source && (iterator->kind == 2 || iterator->kind == 3) ? source->v.handle.ptr : NULL;
-  if (map) while (iterator->index < scr_map_iter_count(map) && !scr_map_iter_live(map, iterator->index)) iterator->index++;
+  if (map) iterator->index = scr_map_iter_skip(map, iterator->index);
   double length = !items ? 0 : iterator->array_like ? iterator->limit : map ? scr_map_iter_count(map) : items->kind == SCR_DYN_ARR ? (double)items->v.arr.len
     : items->kind == SCR_DYN_BYTES ? (double)items->v.bytes->len : scr_str_utf16_len(items->v.str);
   bool done = !source || iterator->index >= length;
@@ -5239,7 +5327,7 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
   }
 
   case SCR_DYN_TYPED_REF: {
-    ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
+    ScrDyn *materialized = scr_dyn_typed_ref_string_view(d);
     ScrStr *s = scr_dyn_to_string(materialized, enc);
     scr_dyn_release(materialized);
     return s;
@@ -5355,7 +5443,7 @@ ScrStr *scr_dyn_string_coerce_js(const ScrDyn *d) {
     return NULL;
   }
   if (d->kind == SCR_DYN_TYPED_REF) {
-    ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
+    ScrDyn *materialized = scr_dyn_typed_ref_string_view(d);
     ScrStr *out = scr_dyn_string_coerce_js(materialized);
     scr_dyn_release(materialized);
     return out;
@@ -6016,6 +6104,7 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   if (recv->kind == SCR_DYN_PROXY) { scr_dyn_proxy_set(recv, key, value); return; }
   if (recv->kind == SCR_DYN_TYPED_REF) {
     if (scr_typed_ref_array_set(recv, key, value)) return;
+    if (scr_event_ref_hooks && scr_event_ref_hooks->set(recv, key, value)) return;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(recv);
     scr_dyn_key_set(materialized, key, value);
     if (!scr_exc_pending()) scr_dyn_typed_ref_commit(recv);
@@ -7764,7 +7853,7 @@ void scr_sc_validate_options(const ScrDyn *options) {
   if (transferView) tr = transferView;
   if (tr->kind != SCR_DYN_ARR) {
     static const char msg[] =
-        "Failed to execute 'structuredClone': transfer in Options can not be converted to sequence.";
+        "Failed to execute 'structuredClone': transfer in Options cannot be converted to sequence.";
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
     scr_dyn_release(transferView);
     return;

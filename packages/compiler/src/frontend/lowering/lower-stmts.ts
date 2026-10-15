@@ -1,4 +1,5 @@
 import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
+import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { importMetaBindingSource } from "./import-meta.js";
 import { iteratorCanStep, iteratorValue } from "./iterator-consumption.js";
@@ -3627,7 +3628,7 @@ function classInstanceRestValue(
     );
   }
   for (let c: ClassInfo | null = info; c; c = c.base) {
-    if (c.builtinError || c.builtinEmitter || c.builtinStream) {
+    if (c.builtinError || c.builtinEmitter || c.builtinStream || c.builtinEventTarget) {
       lowerer.unsupported(
         "SC1031",
         blame,
@@ -6071,6 +6072,11 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       if (ts.isElementAccessExpression(expr.left)) return lowerer.lowerElementWrite(expr);
       if (ts.isPropertyAccessExpression(expr.left)) {
         fenceNodeModuleMutation(lowerer, expr.left, "assignment");
+        // The writable Event accessors on Event subclass instances.
+        {
+          const eventWrite = lowerEventObjectPropertyWrite(lowerer, expr.left, expr.right);
+          if (eventWrite) return { kind: "exprStmt", expr: eventWrite, loc: locOf(expr) };
+        }
         // Native arrays have a writable length property. The runtime grows
         // by creating holes and truncates with RC-aware removal; keep this
         // as a statement operation so invalid lengths can use the normal

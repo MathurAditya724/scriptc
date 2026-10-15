@@ -2380,7 +2380,7 @@ declare module "crypto" {
    * stance). Every ACCESS bakes as its literal at lowering; the object
    * itself never materializes (bare crypto.constants value uses fence). */
   export interface CryptoConstants {
-    readonly OPENSSL_VERSION_NUMBER: 810549328;
+    readonly OPENSSL_VERSION_NUMBER: 810549376;
     readonly SSL_OP_ALL: 2147485776;
     readonly SSL_OP_ALLOW_NO_DHE_KEX: 1024;
     readonly SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION: 262144;
@@ -2420,6 +2420,7 @@ declare module "crypto" {
     readonly DH_UNABLE_TO_CHECK_GENERATOR: 4;
     readonly DH_NOT_SUITABLE_GENERATOR: 8;
     readonly RSA_PKCS1_PADDING: 1;
+    readonly RSA_SSLV23_PADDING: 2;
     readonly RSA_NO_PADDING: 3;
     readonly RSA_PKCS1_OAEP_PADDING: 4;
     readonly RSA_X931_PADDING: 5;

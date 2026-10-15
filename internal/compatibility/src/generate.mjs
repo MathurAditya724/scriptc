@@ -1014,8 +1014,8 @@ function checkLocal() {
     );
   }
   const ctx = classificationContext();
-  if (snapshot.chapters.length !== 62)
-    throw new Error(`expected 62 pinned Node API chapters, found ${snapshot.chapters.length}`);
+  if (snapshot.chapters.length !== 63)
+    throw new Error(`expected 63 pinned Node API chapters, found ${snapshot.chapters.length}`);
   const ancestors = [];
   for (const row of snapshot.rows) {
     if (row.depth === 0) {

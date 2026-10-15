@@ -127,6 +127,7 @@ import { cjsModuleRef, cjsModuleRegistryPrelude } from "./lower-node-module.js";
 import { forkTargetPaths } from "../fork-target.js";
 import { workerTargetPaths } from "../worker-target.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
+import { handleEventReaderPrelude } from "./lower-event-target.js";
 
 /** One file's declarations, split for collection and init-body lowering. */
 export interface FileParts {
@@ -2971,7 +2972,10 @@ function rememberEvaluationError(
  * re-imports, re-requires) into a cache hit. */
 export function buildMain(lowerer: Lowerer): IrFunction {
   const loc: SrcLoc = { file: lowerer.entry.fileName, start: 0, end: 0 };
-  const body: IrStmt[] = [...cjsModuleRegistryPrelude(lowerer, loc)];
+  const body: IrStmt[] = [
+    ...cjsModuleRegistryPrelude(lowerer, loc),
+    ...handleEventReaderPrelude(lowerer, loc),
+  ];
   const roots = [lowerer.entry, ...lowerer.forkTargets, ...lowerer.workerTargets];
   const isAsync = roots.some((root) => lowerer.asyncInitFiles.has(root));
   const callRoot = (root: ts.SourceFile): IrStmt[] => {

@@ -1,4 +1,5 @@
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
+import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
   BOOL,
   DYN,
@@ -63,7 +64,7 @@ import { CaughtValueDispatch } from "./caught-value-dispatch.js";
 import { refreshDescriptorGuards } from "./class-descriptors.js";
 import { ClassConstructionDispatch } from "./class-construction.js";
 import { emitterRooted } from "./lower-event-emitter.js";
-import { protocolArm } from "./class-protocol-dispatch.js";
+import { protocolArm, protocolFieldArm } from "./class-protocol-dispatch.js";
 
 const STREAM_METHODS = new Set([
   "on",
@@ -2258,15 +2259,17 @@ export class ClassDynamicDispatch {
       for (const plan of this.propertyReceivers(lowerer)) {
         if (
           plan.info !== plan.capsule ||
-          !candidates(dispatch.method).includes(plan.info) ||
-          dispatch.classes.has(plan.key)
+          dispatch.classes.has(plan.key) ||
+          (!dispatch.field && !candidates(dispatch.method).includes(plan.info))
         )
           continue;
         dispatch.classes.add(plan.key);
         const loc = dispatch.fn.loc;
         const type: IrType = { kind: "object", className: plan.info.def.name };
         const receiver: IrExpr = { kind: "dynCheck", value: varRef("p.0", DYN, loc), type, loc };
-        const arm = protocolArm(lowerer, dispatch, plan.info, receiver, this.asyncFree);
+        const arm = dispatch.field
+          ? protocolFieldArm(lowerer, dispatch, plan.info, receiver)
+          : protocolArm(lowerer, dispatch, plan.info, receiver, this.asyncFree);
         if (!arm) continue;
         const condition = (): IrExpr => ({
           kind: "libCall",
@@ -2344,6 +2347,7 @@ export class ClassDynamicDispatch {
         if (
           !isClassOwnEnumerableFieldName(dispatch.name) ||
           (!(info.builtinStream !== undefined && streamProperty(dispatch.name)) &&
+            !eventTargetInheritedMember(info, dispatch.name) &&
             !findMethodOn(lowerer, info, dispatch.name) &&
             !findGenericMethodOn(lowerer, info, dispatch.name) &&
             dispatch.name !== "constructor" &&
@@ -2449,7 +2453,11 @@ export class ClassDynamicDispatch {
                 loc,
               },
             ];
-          if (info.builtinStream !== undefined && streamProperty(name) && dispatch.probe)
+          if (
+            ((info.builtinStream !== undefined && streamProperty(name)) ||
+              eventTargetInheritedMember(info, name)) &&
+            dispatch.probe
+          )
             return [
               {
                 kind: "return",
@@ -2665,6 +2673,8 @@ export class ClassDynamicDispatch {
         const names = new Set([...info.fields.keys()].filter(isClassOwnEnumerableFieldName));
         if (info.builtinStream)
           for (const name of [...STREAM_BOOL_PROPERTIES, ...STREAM_NUM_PROPERTIES]) names.add(name);
+        const inherited = eventTargetApiMembers(info);
+        if (inherited) for (const name of inherited) names.add(name);
 
         for (let owner: ClassInfo | null = info; owner; owner = owner.base) {
           const methodNames = [...owner.methods.keys()];
@@ -3422,6 +3432,48 @@ export class ClassDynamicDispatch {
   ): IrStmt[] {
     const { name, write } = dispatch;
     const loc = dispatch.fn.loc;
+    // The inherited EventTarget/Event members of a subclass instance: the
+    // runtime's capsule view answers the accessors and method values.
+    if (eventTargetInheritedMember(info, name)) {
+      const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+      if (!write)
+        return [
+          {
+            kind: "return",
+            value: {
+              kind: "dynKeyGet",
+              value: lowerer.coerceToExpected(receiver, DYN),
+              key,
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ];
+      if (name !== "returnValue" && name !== "cancelBubble")
+        return [
+          {
+            kind: "runtimeFence",
+            code: "SC2020",
+            message: `writing the inherited member '${name}' through an untyped value is not supported`,
+            loc,
+          },
+        ];
+      return [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "event.set",
+            args: [receiver, key, varRef("p.1", DYN, loc)],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+        { kind: "return", value: null, loc },
+      ];
+    }
     if (info.builtinStream !== undefined && streamProperty(name)) {
       if (write)
         return [

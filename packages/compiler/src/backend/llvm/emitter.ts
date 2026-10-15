@@ -36,6 +36,8 @@ import {
   isUnitType,
   POINTER_KINDS,
   RUNTIME_EMITTER_CLASS,
+  RUNTIME_EVENT_CLASS,
+  RUNTIME_EVENT_TARGET_CLASS,
   RUNTIME_ERROR_CLASSES,
   RUNTIME_STREAM_CLASSES,
   typeEquals,
@@ -310,7 +312,11 @@ import { LlWalkers } from "./walkers.js";
 import { isObjectArm, NULLABLE_ABSENT, NULLABLE_NULL, NullableUnions } from "./nullable-unions.js";
 import { emitNullablePresent, emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { literalCapWord, literalCapWord32 } from "./string-key-hash.js";
-import { NUMBER_MAP_ENTRY_DECL, STRING_MAP_ENTRY_DECL } from "./map-number-lookup.js";
+import {
+  MAP_ITER_DECL,
+  NUMBER_MAP_ENTRY_DECL,
+  STRING_MAP_ENTRY_DECL,
+} from "./map-number-lookup.js";
 import { STRING_READ_HELPERS, stringScanDecl } from "./string-reads.js";
 import {
   emitConcatInputs,
@@ -1148,6 +1154,7 @@ export class LlEmitter {
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),
       isErrorClass: (name) => this.classMeta.get(name)?.root.def.name === "%Error",
+      classRootOf: (name) => this.classMeta.get(name)?.root.def.name,
       classSubtypes: (name) => {
         const target = this.classMetaOf(name);
         const intervals = classMembershipIntervals(this.classMeta, target.def.name);
@@ -1181,14 +1188,17 @@ export class LlEmitter {
       if (g.tdz) this.tdzGlobals.set(g.id, g.name);
     }
     this.stableGlobals = stableGlobals(mod);
-    // Runtime error, EventEmitter, and stream classes have known layouts.
-    // Subclasses embed the ScrEmitter/ScrStream prefixes from classes.ts.
+    // Runtime error, EventEmitter, stream, EventTarget and Event classes
+    // have known layouts. Subclasses embed the runtime prefixes from
+    // classes.ts.
     const classes = mod.classes ?? [];
     for (const cls of classes) {
       if (
         cls.runtime &&
         !RUNTIME_ERROR_CLASSES.has(cls.name) &&
         cls.name !== RUNTIME_EMITTER_CLASS &&
+        cls.name !== RUNTIME_EVENT_TARGET_CLASS &&
+        cls.name !== RUNTIME_EVENT_CLASS &&
         !RUNTIME_STREAM_CLASSES.has(cls.name)
       ) {
         throw new LlvmUnsupportedError(`classDef:${cls.name}`, cls.loc);
@@ -2019,17 +2029,22 @@ export class LlEmitter {
         ? []
         : [`%ScrMapRc = type { ${this.sizeType}, i32, i32, ptr, ptr, ptr, ptr, ptr, ptr }`]),
       // The complete ScrMap and its { key, val, hash } entry, read by the
-      // inline number-key lookup (sc_map_entry_f64): field 11 is the i64
-      // absent-key filter, entries is field 13, the direct index and its
-      // length fields 19 and 20.
-      ...(this.decls.has(NUMBER_MAP_ENTRY_DECL) || this.decls.has(STRING_MAP_ENTRY_DECL)
+      // inline number-key lookup (sc_map_entry_f64) and the inline
+      // iteration steps (sc_map_iter_entry): field 9 is the entry count,
+      // field 11 the i64 absent-key filter, entries is field 13, the direct
+      // index and its length fields 19 and 20.
+      ...(this.decls.has(NUMBER_MAP_ENTRY_DECL) ||
+      this.decls.has(STRING_MAP_ENTRY_DECL) ||
+      this.decls.has(MAP_ITER_DECL)
         ? [
             `%ScrMapIx = type { ${this.sizeType}, i32, i32, ptr, ptr, ptr, ptr, ptr, ptr, ${this.sizeType}, ${this.sizeType}, i64, ${this.sizeType}, ptr, ${this.sizeType}, ptr, ${this.sizeType}, ptr, ptr, ptr, ${this.sizeType} }`,
           ]
         : []),
       // String-keyed reference reads load the value slot of the entry
       // scr_map_entry_str returns (map-number-lookup.ts).
-      ...(this.decls.has(NUMBER_MAP_ENTRY_DECL) || this.decls.has(STRING_MAP_ENTRY_DECL)
+      ...(this.decls.has(NUMBER_MAP_ENTRY_DECL) ||
+      this.decls.has(STRING_MAP_ENTRY_DECL) ||
+      this.decls.has(MAP_ITER_DECL)
         ? [`%ScrMapEntry = type { i64, i64, i64 }`]
         : []),
       // The runtime error prefix { rc, vt, name, message, code, cause } and the
@@ -2043,6 +2058,13 @@ export class LlEmitter {
       // The runtime stream layout { rc, vt, reg, cls, st } — one struct
       // for all five stream classes; stream subclasses embed it.
       `%ScrStream = type { ${this.sizeType}, ptr, ptr, ptr, ptr }`,
+      // The EventTarget and Event subclass prefixes { rc, vt, state, cls }.
+      ...(this.classMeta.has(RUNTIME_EVENT_TARGET_CLASS)
+        ? [`%ScrEventTargetObj = type { ${this.sizeType}, ptr, ptr, ptr }`]
+        : []),
+      ...(this.classMeta.has(RUNTIME_EVENT_CLASS)
+        ? [`%ScrEventObj = type { ${this.sizeType}, ptr, ptr, ptr }`]
+        : []),
       // The catch-binding snapshot box { rc, kind, f64, b, payload,
       // retain_fn, release_fn, trace_fn } — caughtTest kind reads and
       // caughtNarrow payload extraction GEP through it (offsets match
@@ -2936,6 +2958,48 @@ export class LlEmitter {
         `slow:`,
         `  %r = call ptr @scr_map_entry_f64(ptr %m, double %k)`,
         `  ret ptr %r`,
+        `}`,
+        ``,
+      );
+    }
+    // Map/Set iteration steps read the entries array inline: an index is
+    // live when it is below the entry count and its entry's cached hash is
+    // nonzero (a tombstone's is zero), as scr_map_iter_live decides. The
+    // entry count is read again at every step, so entries appended during
+    // the iteration are visited.
+    if (this.decls.has(MAP_ITER_DECL)) {
+      const sz = this.sizeType;
+      defs.push(
+        `define internal ptr @sc_map_iter_entry(ptr %m, double %i) ${FN_ATTRS} {`,
+        `entry:`,
+        `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 9`,
+        `  %n = load ${sz}, ptr %np`,
+        `  %nf = uitofp ${sz} %n to double`,
+        `  %lo = fcmp oge double %i, 0.0`,
+        `  %hi = fcmp olt double %i, %nf`,
+        `  %in = and i1 %lo, %hi`,
+        `  br i1 %in, label %load, label %none`,
+        `load:`,
+        `  %ix = fptoui double %i to ${sz}`,
+        `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 13`,
+        `  %entries = load ptr, ptr %ep`,
+        `  %e = getelementptr inbounds %ScrMapEntry, ptr %entries, ${sz} %ix`,
+        `  %hp = getelementptr inbounds %ScrMapEntry, ptr %e, i32 0, i32 2`,
+        `  %h = load i64, ptr %hp`,
+        `  %live = icmp ne i64 %h, 0`,
+        `  br i1 %live, label %yes, label %none`,
+        `yes:`,
+        `  ret ptr %e`,
+        `none:`,
+        `  ret ptr null`,
+        `}`,
+        ``,
+        `define internal double @sc_map_iter_count(ptr %m) ${FN_ATTRS} {`,
+        `entry:`,
+        `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 9`,
+        `  %n = load ${sz}, ptr %np`,
+        `  %nf = uitofp ${sz} %n to double`,
+        `  ret double %nf`,
         `}`,
         ``,
       );

@@ -625,7 +625,7 @@ ScrStr *scr_process_arch(void) {
  * is no Node under a compiled binary; this is the version whose semantics
  * SEMANTICS.md verifies the runtime against (divergence 60, the execPath
  * stance: answer for the world that actually exists). */
-#define SCR_NODE_COMPAT_VERSION "24.15.0"
+#define SCR_NODE_COMPAT_VERSION "24.22.0"
 ScrStr *scr_process_versions_node(void) {
   if (!scr_versions_node_str) {
     scr_versions_node_str =
@@ -644,7 +644,7 @@ ScrStr *scr_process_versions_node(void) {
  * sites). Reading undefined here made every hasCrypto test self-skip —
  * measuring nothing (SEMANTICS.md; the divergence entry documents that
  * the string names the compat target's OpenSSL, not a linked library). */
-#define SCR_OPENSSL_COMPAT_VERSION "3.5.5"
+#define SCR_OPENSSL_COMPAT_VERSION "3.5.8"
 ScrStr *scr_process_versions_openssl(void) {
   if (!scr_versions_openssl_str) {
     scr_versions_openssl_str =
@@ -3579,7 +3579,7 @@ static DWORD scr_fs_set_path_times(WCHAR *path, double atime, double mtime, bool
   return error;
 }
 #else
-/* Match the pinned libuv conversion: microsecond truncation, normalized
+/* Match the pinned libuv conversion: nanosecond truncation, normalized
  * negative fractions, and the special current/unchanged time sentinels. */
 static bool scr_fs_timespec(double time, struct timespec *out) {
   if (isinf(time)) { *out = (struct timespec){ 0, UTIME_NOW }; return true; }
@@ -3587,7 +3587,6 @@ static bool scr_fs_timespec(double time, struct timespec *out) {
   if (time < -9223372036854775808.0 || time >= 9223372036854775808.0) return false;
   out->tv_sec = (time_t)time;
   out->tv_nsec = (long)((time - (double)out->tv_sec) * 1000000000.0);
-  out->tv_nsec -= out->tv_nsec % 1000;
   if (out->tv_nsec < 0) { out->tv_nsec += 1000000000; out->tv_sec--; }
   return true;
 }
@@ -3968,8 +3967,26 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
     return 0;
   }
-  /* Node returns after offset's intrinsic validation when the requested
-   * length normalizes to zero: buffer-window bounds, position, and fd are
+  if (!(isfinite(position) && trunc(position) == position)) {
+    char recv[48];
+    scr_num_received(position, recv);
+    mlen = snprintf(msg, sizeof msg,
+                    "The value of \"position\" is out of range. It must be an integer. Received %s",
+                    recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  if (position < -1 || position > 9007199254740991.0) {
+    char recv[48];
+    scr_num_received(position, recv);
+    mlen = snprintf(msg, sizeof msg,
+                    "The value of \"position\" is out of range. It must be >= -1 && <= 9007199254740991. Received %s",
+                    recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  /* Node returns after the offset and position validation when the
+   * requested length normalizes to zero: buffer-window bounds and fd are
    * not consulted. Preserve the existing size_t coercion's [0, 1) case. */
   if (length >= 0 && length < 1) return 0;
   if (offset > (double)bytelen) {
@@ -3990,24 +4007,6 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
     return 0;
   }
   size_t want = (size_t)length;
-  if (!(isfinite(position) && trunc(position) == position)) {
-    char recv[48];
-    scr_num_received(position, recv);
-    mlen = snprintf(msg, sizeof msg,
-                    "The value of \"position\" is out of range. It must be an integer. Received %s",
-                    recv);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
-    return 0;
-  }
-  if (position < -1 || position > 9007199254740991.0) {
-    char recv[48];
-    scr_num_received(position, recv);
-    mlen = snprintf(msg, sizeof msg,
-                    "The value of \"position\" is out of range. It must be >= -1 && <= 9007199254740991. Received %s",
-                    recv);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
-    return 0;
-  }
   uint8_t *bounce = buf->shared ? malloc(want ? want : 1) : NULL;
   if (buf->shared && !bounce) scr_trap("scriptc: out of memory\n");
   uint8_t *destination = bounce ? bounce : buf->data + off;
@@ -5241,37 +5240,55 @@ void scr_fs_symlink(ScrStr *target, ScrStr *destination, int kind) {
 /* Keep the unsigned libuv statfs representation before selecting Number or
  * BigInt. Free-space counts are live snapshots, not cached volume metadata. */
 ScrDyn *scr_fs_statfs(ScrStr *path, bool bigint) {
-  uint64_t fields[7];
+  uint64_t fields[8];
 #if defined(_WIN32)
   ScrStr *syscall_path = scr_path_win32_to_namespaced_path(path);
   WCHAR *wide = scr_fs_win_wide(syscall_path);
   scr_str_release(syscall_path);
   if (!wide) { scr_fs_throw(scr_fs_win_errno(GetLastError()), "statfs", path); return NULL; }
-  DWORD sectors, bytes, free_clusters, total_clusters;
-  BOOL ok = GetDiskFreeSpaceW(wide, &sectors, &bytes, &free_clusters, &total_clusters);
-  DWORD error = ok ? 0 : GetLastError();
-  if (!ok && error == ERROR_DIRECTORY) {
-    /* libuv retries a file path's parent once, preserving the original path
-     * in errors. GetFullPathName also expands relative and drive paths. */
-    DWORD size = GetFullPathNameW(wide, 0, NULL, NULL);
-    WCHAR *absolute = size ? malloc((size_t)size * sizeof *absolute) : NULL;
-    if (size && !absolute) scr_trap("scriptc: out of memory\n");
-    WCHAR *part = NULL;
-    DWORD length = absolute ? GetFullPathNameW(wide, size, absolute, &part) : 0;
-    if (length && length < size) {
-      if (part) *part = L'\0';
-      ok = GetDiskFreeSpaceW(absolute, &sectors, &bytes, &free_clusters, &total_clusters);
-      if (!ok) error = GetLastError();
-    }
-    free(absolute);
-  }
+  /* libuv opens the path and reads FileFsFullSizeInformation from the
+   * volume that holds it; files and directories both resolve that way. */
+  HANDLE handle = CreateFileW(wide, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+    FILE_FLAG_BACKUP_SEMANTICS, NULL);
   free(wide);
-  if (!ok) { scr_fs_throw(scr_fs_win_errno(error), "statfs", path); return NULL; }
+  if (handle == INVALID_HANDLE_VALUE) {
+    scr_fs_throw(scr_fs_win_errno(GetLastError()), "statfs", path);
+    return NULL;
+  }
+  struct {
+    LARGE_INTEGER total;
+    LARGE_INTEGER caller_available;
+    LARGE_INTEGER actual_available;
+    ULONG sectors_per_unit;
+    ULONG bytes_per_sector;
+  } info;
+  struct {
+    union { LONG status; PVOID pointer; } u;
+    ULONG_PTR information;
+  } io_status;
+  typedef LONG(NTAPI * QueryVolumeFn)(HANDLE, void *, void *, ULONG, int);
+  typedef ULONG(NTAPI * StatusToDosFn)(LONG);
+  HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+  QueryVolumeFn query =
+    ntdll ? (QueryVolumeFn)(void *)GetProcAddress(ntdll, "NtQueryVolumeInformationFile") : NULL;
+  StatusToDosFn to_dos =
+    ntdll ? (StatusToDosFn)(void *)GetProcAddress(ntdll, "RtlNtStatusToDosError") : NULL;
+  /* FileFsFullSizeInformation is FS_INFORMATION_CLASS value 7. */
+  LONG status = query ? query(handle, &io_status, &info, (ULONG)sizeof info, 7) : (LONG)0xC0000002L;
+  CloseHandle(handle);
+  /* NT_ERROR: the two severity bits are both set. */
+  if (((ULONG)status >> 30) == 3) {
+    DWORD error = to_dos ? (DWORD)to_dos(status) : ERROR_NOT_SUPPORTED;
+    scr_fs_throw(scr_fs_win_errno(error), "statfs", path);
+    return NULL;
+  }
   fields[0] = 0;
-  fields[1] = (DWORD)(bytes * sectors);
-  fields[2] = total_clusters;
-  fields[3] = fields[4] = free_clusters;
-  fields[5] = fields[6] = 0;
+  fields[1] = fields[2] = (uint64_t)info.sectors_per_unit * info.bytes_per_sector;
+  fields[3] = (uint64_t)info.total.QuadPart;
+  fields[4] = (uint64_t)info.actual_available.QuadPart;
+  fields[5] = (uint64_t)info.caller_available.QuadPart;
+  fields[6] = fields[7] = 0;
 #elif defined(__wasi__)
   (void)path; (void)bigint;
   static const char message[] = "Filesystem capacity queries have no native WASI syscall";
@@ -5288,15 +5305,21 @@ ScrDyn *scr_fs_statfs(ScrStr *path, bool bigint) {
   fields[0] = 0;
 #endif
   fields[1] = (uint64_t)snapshot.f_bsize;
-  fields[2] = (uint64_t)snapshot.f_blocks;
-  fields[3] = (uint64_t)snapshot.f_bfree;
-  fields[4] = (uint64_t)snapshot.f_bavail;
-  fields[5] = (uint64_t)snapshot.f_files;
-  fields[6] = (uint64_t)snapshot.f_ffree;
+  /* libuv reports f_frsize on Linux and repeats f_bsize elsewhere. */
+#if defined(__linux__)
+  fields[2] = (uint64_t)snapshot.f_frsize;
+#else
+  fields[2] = (uint64_t)snapshot.f_bsize;
 #endif
-  static const char *names[] = { "type", "bsize", "blocks", "bfree", "bavail", "files", "ffree" };
+  fields[3] = (uint64_t)snapshot.f_blocks;
+  fields[4] = (uint64_t)snapshot.f_bfree;
+  fields[5] = (uint64_t)snapshot.f_bavail;
+  fields[6] = (uint64_t)snapshot.f_files;
+  fields[7] = (uint64_t)snapshot.f_ffree;
+#endif
+  static const char *names[] = { "type", "bsize", "frsize", "blocks", "bfree", "bavail", "files", "ffree" };
   ScrDyn *result = scr_dyn_new_obj();
-  for (size_t i = 0; i < 7; i++) {
+  for (size_t i = 0; i < 8; i++) {
     ScrDyn *value;
     if (bigint) {
       ScrBigInt *number = scr_bigint_from_u64(fields[i]);

@@ -204,7 +204,7 @@ export function NodeCompatibilityMatrix() {
   const verificationBases = snapshot?.verificationBases;
   const apiRowCount = useMemo(() => rows.filter((row) => row.scope === "api").length, [rows]);
   const chapterTitles = useMemo(() => new Map(chapters.map((item) => [item.slug, item.title])), [chapters]);
-  const base = `https://nodejs.org/docs/v${snapshot?.nodeVersion ?? "24.15.0"}/api/`;
+  const base = `https://nodejs.org/docs/v${snapshot?.nodeVersion ?? "24.22.0"}/api/`;
   const staticCounts = useMemo(() => statusCounts(rows, "static"), [rows]);
   const visibleStatuses = useMemo(() => statuses.filter((status) => staticCounts[status] > 0), [staticCounts]);
   const tree = useMemo(() => buildTree(rows), [rows]);

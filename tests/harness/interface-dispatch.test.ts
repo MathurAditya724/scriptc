@@ -79,6 +79,44 @@ describe("interface method dispatch", () => {
     expect(dispatch).toMatch(/call double @sc_bf__x25_Rect_scale\(ptr [^,]+, double/);
   });
 
+  test("arrays of interface values iterate natively and pass typed receivers", async () => {
+    const llvm = await emittedLlvm(
+      "array",
+      shapes(`function sum(list: Shape[]): number {
+  let t = 0;
+  for (const s of list) t += s.scale(2);
+  return t;
+}
+console.log(sum([circle, new Rect(1)]));`),
+    );
+    const sum = bodies(llvm, "sc_bf_sum");
+    expect(sum).toMatch(/call double @sc_bf__x25_dyn_class_protocol_\d+/);
+    expect(sum).not.toContain("@scr_dyn_iterator");
+    expect(sum).not.toContain("@sc_bf__x25_dyn_class_computed_");
+  });
+
+  test("property reads through an interface read the implementing field", async () => {
+    const llvm = await emittedLlvm(
+      "field",
+      `interface Sized {
+  size: number;
+}
+class Box implements Sized {
+  size = 3;
+}
+function size(s: Sized): number {
+  return s.size + 1;
+}
+console.log(size(new Box()));
+`,
+    );
+    expect(bodies(llvm, "sc_bf_size")).not.toContain("@sc_bf__x25_dyn_class_property_");
+    const helper = llvm.indexOf("; %dyn.class.protocol.0");
+    expect(llvm.slice(helper, llvm.indexOf("\n}\n", helper))).toMatch(
+      /getelementptr inbounds %sc_o_Box, ptr [^,]+, i64 0, i32 \d+/,
+    );
+  });
+
   test("a method an instance can replace keeps the checked dynamic call", async () => {
     const llvm = await emittedLlvm(
       "replaced",

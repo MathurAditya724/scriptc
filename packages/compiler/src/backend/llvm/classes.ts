@@ -7,6 +7,8 @@ import type { IrClassDef, IrFunction, IrModule, IrType, IrUnionDef } from "../..
 import {
   isRefCounted,
   RUNTIME_EMITTER_CLASS,
+  RUNTIME_EVENT_CLASS,
+  RUNTIME_EVENT_TARGET_CLASS,
   RUNTIME_ERROR_CLASSES,
   RUNTIME_STREAM_CLASSES,
 } from "../../ir/ir.js";
@@ -261,26 +263,74 @@ export function vtEntriesFor(meta: LlClassMeta): { slot: LlVtSlot; impl: LlClass
 export function classStructSym(className: string): string {
   if (RUNTIME_ERROR_CLASSES.has(className)) return "ScrError";
   if (className === RUNTIME_EMITTER_CLASS) return "ScrEmitter";
+  if (className === RUNTIME_EVENT_TARGET_CLASS) return "ScrEventTargetObj";
+  if (className === RUNTIME_EVENT_CLASS) return "ScrEventObj";
   if (RUNTIME_STREAM_CLASSES.has(className)) return "ScrStream";
   return mangleClassStruct(className);
 }
 
-/** True when the class descends from the runtime emitter class: its
- * struct embeds ScrEmitter's remaining prefix (the registry pointer and
- * the display-name slot) after the vtable word, so an upcast to
- * ScrEmitter* is the usual pointer reinterpret (shapes.ts's rule). */
-function emitterRooted(meta: LlClassMeta): boolean {
-  return meta.root.def.name === RUNTIME_EMITTER_CLASS;
+/** A runtime base whose prefix emitted subclasses embed after the vtable
+ * word: the state pointer at 2 (NULL in a fresh allocation) and the
+ * display-name slot at 3, then the subclass fields. The entries are the
+ * runtime's helpers for the state pointer: the teardown's drop, the
+ * collector's trace and its gcFree. */
+interface RuntimePrefix {
+  struct: string;
+  what: string;
+  drop: string;
+  trace: string;
+  gcFree: string;
+}
+
+const RUNTIME_PREFIXES: ReadonlyMap<string, RuntimePrefix> = new Map([
+  [
+    RUNTIME_EMITTER_CLASS,
+    {
+      struct: "ScrEmitter",
+      what: "EventEmitter prefix",
+      drop: "scr_emitter_reg_drop",
+      trace: "scr_emitter_reg_trace",
+      gcFree: "scr_emitter_reg_gcfree",
+    },
+  ],
+  [
+    RUNTIME_EVENT_TARGET_CLASS,
+    {
+      struct: "ScrEventTargetObj",
+      what: "EventTarget prefix",
+      drop: "scr_event_target_state_drop",
+      trace: "scr_event_target_state_trace",
+      gcFree: "scr_event_target_state_gcfree",
+    },
+  ],
+  [
+    RUNTIME_EVENT_CLASS,
+    {
+      struct: "ScrEventObj",
+      what: "Event prefix",
+      drop: "scr_event_state_drop",
+      trace: "scr_event_state_trace",
+      gcFree: "scr_event_state_gcfree",
+    },
+  ],
+]);
+
+/** The runtime prefix a class's struct embeds (its hierarchy root is the
+ * emitter, EventTarget or Event), so an upcast to the runtime struct is
+ * the usual pointer reinterpret (shapes.ts's rule); null otherwise. */
+function runtimePrefixOf(meta: LlClassMeta): RuntimePrefix | null {
+  if (!meta.hierarchy) return null;
+  return RUNTIME_PREFIXES.get(meta.root.def.name) ?? null;
 }
 
 /** The GEP index where a class's own fields start: rc at 0, the vtable
- * word at 1 on hierarchy members, then the emitter prefix (registry +
- * display name) on emitter-rooted classes, then the stream-state slot on
- * stream-rooted ones. */
+ * word at 1 on hierarchy members, then a runtime prefix (state + display
+ * name) on classes rooted at a runtime base, then the stream-state slot
+ * on stream-rooted ones. */
 function fieldBase(meta: LlClassMeta): number {
   if (!meta.hierarchy) return 1;
   if (streamRooted(meta)) return 5;
-  return emitterRooted(meta) ? 4 : 2;
+  return runtimePrefixOf(meta) ? 4 : 2;
 }
 
 /** Append the lexical environment after inherited fields to preserve base layouts. */
@@ -420,21 +470,23 @@ export function emitClassShapes(
         ? "i32"
         : llFieldType(f.type, host.inlineUnions.classField(cls.name, f.name)),
     );
-    // Emitter subclasses embed ScrEmitter's remaining prefix (the registry
+    // Subclasses of a runtime base embed its remaining prefix (the state
     // and display-name slots) between the vtable word and the field list;
-    // stream subclasses add the state pointer — upcasts to ScrEmitter* /
-    // ScrStream* are the usual pointer reinterprets.
+    // stream subclasses add the stream-state pointer — upcasts to
+    // ScrEmitter* / ScrStream* / ScrEventTargetObj* / ScrEventObj* are the
+    // usual pointer reinterprets.
+    const runtimePrefix = runtimePrefixOf(meta);
     const prefix = meta.hierarchy
       ? streamRooted(meta)
         ? ["ptr", "ptr", "ptr", "ptr"]
-        : emitterRooted(meta)
+        : runtimePrefix
           ? ["ptr", "ptr", "ptr"]
           : ["ptr"]
       : [];
     const members = [...prefix, ...fieldTys];
     typeDefs.push(
       `%${mangleClassStruct(cls.name)} = type { ${host.sizeType}${members.length ? ", " + members.join(", ") : ""} } ` +
-        `; class ${cls.name}${meta.hierarchy ? " (vt at 1)" : ""}${streamRooted(meta) ? " (ScrStream prefix at 2)" : emitterRooted(meta) ? " (ScrEmitter prefix at 2)" : ""} { ${cls.fields.map((f) => llvmCommentText(f.name)).join("; ")} }`,
+        `; class ${cls.name}${meta.hierarchy ? " (vt at 1)" : ""}${streamRooted(meta) ? " (ScrStream prefix at 2)" : runtimePrefix ? ` (${runtimePrefix.struct} prefix at 2)` : ""} { ${cls.fields.map((f) => llvmCommentText(f.name)).join("; ")} }`,
     );
   }
 
@@ -515,7 +567,7 @@ export function emitClassShapes(
     const struct = mangleClassStruct(cls.name);
     const lifetime = programLifetimeClass(host, meta);
     const traced = host.tracedShapes.has(`object:${cls.name}`);
-    const isEmitterRooted = emitterRooted(meta);
+    const runtimePrefix = runtimePrefixOf(meta);
     const isStreamRooted = streamRooted(meta);
     const fieldIndex = (i: number): number => fieldBase(meta) + i;
     // Teardown, trace and gcFree see each slot's storage type: a nullable
@@ -530,11 +582,11 @@ export function emitClassShapes(
     ];
     const refFields = indexedFields.filter((f) => isRefCounted(f.type));
     const bounded =
-      isEmitterRooted ||
+      runtimePrefix !== null ||
       isStreamRooted ||
       refFields.some((field) => needsBoundedRelease(field.type));
     const sizeOf = `ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 1) to ${host.sizeType})`;
-    // An embedded prefix slot (the emitter registry at 2, the stream
+    // An embedded prefix slot (the runtime base's state at 2, the stream
     // state at 4) handed to one of the runtime's prefix helpers —
     // teardown/trace/collector.
     const prefixCall = (
@@ -552,7 +604,7 @@ export function emitClassShapes(
       ];
     };
     const regCall = (tag: string, entry: string, tail: string): string[] =>
-      prefixCall(tag, 2, entry, tail, "EventEmitter prefix");
+      prefixCall(tag, 2, entry, tail, runtimePrefix?.what ?? "");
     const stCall = (tag: string, entry: string, tail: string): string[] =>
       prefixCall(tag, 4, entry, tail, "stream state (ScrStream prefix)");
 
@@ -586,7 +638,7 @@ export function emitClassShapes(
             `  call void ${releaseSym(host, f.type)}(ptr %v${t}) ; ${llvmCommentText(f.name)}`,
           );
       });
-      if (isEmitterRooted) lines.push(...regCall("td", "scr_emitter_reg_drop", ""));
+      if (runtimePrefix) lines.push(...regCall("td", runtimePrefix.drop, ""));
       if (isStreamRooted) lines.push(...stCall("tds", "scr_stream_st_release", ""));
       lines.push(...emitObjectFree(host, traced));
     };
@@ -738,16 +790,16 @@ export function emitClassShapes(
         `  store ptr @${mangleVtInstance(cls.name)}, ptr %vtp, !invariant.group !{}`,
       );
     }
-    if (isEmitterRooted) {
-      // The ScrEmitter prefix: registry stays NULL (zeroed allocation);
-      // the display name Node's leak warning prints ([My]) is the source
-      // class name, without the module qualifier (shapes.ts's rule).
+    if (runtimePrefix) {
+      // The runtime prefix: the state stays NULL (zeroed allocation); the
+      // display name Node's leak warnings and inspectors print is the
+      // source class name, without the module qualifier (shapes.ts's rule).
       const displayName = cls.name.includes(".")
         ? cls.name.slice(cls.name.lastIndexOf(".") + 1)
         : cls.name;
       nw.push(
         `  %clsp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 3`,
-        `  store ptr ${host.cstr(displayName)}, ptr %clsp ; EventEmitter prefix display name`,
+        `  store ptr ${host.cstr(displayName)}, ptr %clsp ; ${runtimePrefix.what} display name`,
       );
     }
     nw.push(...undefFieldInits(host, meta, nullable));
@@ -767,8 +819,7 @@ export function emitClassShapes(
         `define internal void @${mangleClassTrace(cls.name)}(ptr %o, ptr %visit, ptr %ctx) ${FN_ATTRS} { ; trace ${cls.name}`,
         `entry:`,
       ];
-      if (isEmitterRooted)
-        tr.push(...regCall("tr", "scr_emitter_reg_trace", ", ptr %visit, ptr %ctx"));
+      if (runtimePrefix) tr.push(...regCall("tr", runtimePrefix.trace, ", ptr %visit, ptr %ctx"));
       if (isStreamRooted)
         tr.push(...stCall("trs", "scr_stream_st_trace", ", ptr %visit, ptr %ctx"));
       tracedFields.forEach((f, i) => {
@@ -781,7 +832,7 @@ export function emitClassShapes(
         `define internal void @${mangleClassGcFree(cls.name)}(ptr %o) ${FN_ATTRS} { ; gcFree ${cls.name}`,
         `entry:`,
       ];
-      if (isEmitterRooted) gf.push(...regCall("gf", "scr_emitter_reg_gcfree", ""));
+      if (runtimePrefix) gf.push(...regCall("gf", runtimePrefix.gcFree, ""));
       if (isStreamRooted) gf.push(...stCall("gfs", "scr_stream_st_gcfree", ""));
       untracedRefFields.forEach((f, i) => {
         gf.push(

@@ -2,6 +2,8 @@ import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import {
   DYN,
   STRING,
+  isDynTypedRefType,
+  isUnitType,
   canConvertToDyn,
   canDynCheckTo,
   typeEquals,
@@ -11,11 +13,12 @@ import {
   type IrStmt,
   type IrType,
 } from "../../ir/ir.js";
-import { locOf } from "../program.js";
+import { isJsSourceFile, locOf } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import { type Lowerer } from "./lowerer.js";
 import { findMethodOn, upcastTo, type ClassInfo } from "./lower-classes.js";
 import { isClassCallback } from "./class-callbacks.js";
+import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 
 /** A method call through a class-backed protocol (`s.area()` with
  * `s: Shape`) that keeps its static signature. ClassDynamicDispatch adds
@@ -37,6 +40,9 @@ export interface ProtocolDispatch {
    * implementations may still return a value. */
   result: IrType;
   returnsVoid: boolean;
+  /** A property read (`s.name`) rather than a method call: arms read the
+   * implementing class's field. */
+  field: boolean;
   classes: Set<string>;
 }
 
@@ -330,6 +336,7 @@ export function lowerProtocolMethodCall(
       params,
       result,
       returnsVoid,
+      field: false,
       classes: new Set(),
     };
     lowerer.protocolDispatches.set(key, dispatch);
@@ -433,4 +440,147 @@ export function protocolArm(
   if (virtual) lowerer.noteVirtualEdge(owner, method);
   else lowerer.noteEdge(callee);
   return body;
+}
+
+/** Static results that the checked fallback converts without copying: the
+ * value keeps its identity whichever path produced it. */
+function identityResult(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "f64" || type.kind === "bool" || type.kind === "string") return true;
+  if (isDynTypedRefType(type)) return true;
+  if (type.kind !== "union") return false;
+  return (
+    lowerer.unions
+      .get(type.unionId)
+      ?.arms.every(
+        (arm) =>
+          arm.kind === "f64" ||
+          arm.kind === "bool" ||
+          arm.kind === "string" ||
+          isUnitType(arm) ||
+          isDynTypedRefType(arm),
+      ) ?? false
+  );
+}
+
+/** `s.name` on a class-backed protocol receiver, where `name` is a property
+ * signature: the read has the property's static type, and receivers that
+ * are instances of a boxed class declaring the field read it directly. */
+export function lowerProtocolPropertyRead(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (isJsSourceFile(access.getSourceFile())) return null;
+  const receiverType = lowerer.typeOf(access.expression);
+  if (!lowerer.classImplementedProtocol(receiverType)) return null;
+  const name = access.name.text;
+  const property = lowerer.checker.getPropertyOfType(receiverType, name);
+  const declarations = property ? lowerer.checker.declarationsOf(property) : [];
+  if (declarations.length === 0 || !declarations.every((decl) => ts.isPropertySignature(decl)))
+    return null;
+  const result = lowerer.mapTypeOf(lowerer.typeOf(access));
+  if (
+    !result ||
+    !identityResult(lowerer, result) ||
+    !canDynCheckTo(
+      result,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  )
+    return null;
+  const recv = tryLowerExpression(lowerer, access.expression);
+  if (recv?.type.kind !== "dyn") return null;
+  const loc = locOf(access);
+  const key = JSON.stringify(["get", name, typeKey(result)]);
+  let dispatch = lowerer.protocolDispatches.get(key);
+  if (!dispatch) {
+    const index = lowerer.protocolDispatches.size;
+    const params = [{ localId: "p.0", name: "receiver", type: DYN }];
+    const locals = () => [{ id: "p.0", name: "receiver", type: DYN, mutable: false }];
+    const read: IrExpr = {
+      kind: "dynKeyGet",
+      value: varRef("p.0", DYN, loc),
+      key: { kind: "strLit", value: name, type: STRING, loc },
+      type: DYN,
+      loc,
+    };
+    const fallback: IrFunction = {
+      name: `%dyn.class.protocol.fallback.${index}`,
+      params,
+      returnType: result,
+      locals: locals(),
+      body: [{ kind: "return", value: lowerer.coerceToExpected(read, result), loc }],
+      loc,
+    };
+    const fn: IrFunction = {
+      name: `%dyn.class.protocol.${index}`,
+      params,
+      returnType: result,
+      locals: locals(),
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "call",
+            callee: fallback.name,
+            args: [varRef("p.0", DYN, loc)],
+            type: result,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    };
+    dispatch = {
+      method: name,
+      fn,
+      fallback,
+      probe: null,
+      params: [],
+      result,
+      returnsVoid: false,
+      field: true,
+      classes: new Set(),
+    };
+    lowerer.protocolDispatches.set(key, dispatch);
+    lowerer.liftedFns.push(fn, fallback);
+  }
+  return { kind: "call", callee: dispatch.fn.name, args: [recv], type: result, loc };
+}
+
+/** The field arm for receivers of `info`: a declared field of the read's
+ * type. Accessors and fields of JavaScript classes, which an own property
+ * can replace, keep the checked read. */
+export function protocolFieldArm(
+  lowerer: Lowerer,
+  dispatch: ProtocolDispatch,
+  info: ClassInfo,
+  receiver: IrExpr,
+): IrStmt[] | null {
+  if (
+    info.def.runtime ||
+    info.builtinError ||
+    info.builtinEmitter ||
+    info.builtinStream ||
+    info.def.tracksOwnFields
+  )
+    return null;
+  const field = info.fields.get(dispatch.method);
+  if (!field || !typeEquals(field, dispatch.result)) return null;
+  const loc = dispatch.fn.loc;
+  return [
+    {
+      kind: "return",
+      value: {
+        kind: "fieldGet",
+        obj: receiver,
+        className: info.def.name,
+        field: dispatch.method,
+        type: field,
+        loc,
+      },
+      loc,
+    },
+  ];
 }

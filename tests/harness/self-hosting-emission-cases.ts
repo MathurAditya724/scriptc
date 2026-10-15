@@ -319,6 +319,20 @@ export function emissionCases(): EmissionCase[] {
     "@native_string_0",
   ]);
 
+  const eventTarget = emissionModule();
+  eventTarget.classes = [
+    { name: "%EventTarget", runtime: true, fields: [], loc },
+    { name: "Bus", base: "%EventTarget", fields: [], loc },
+    { name: "%Event", runtime: true, fields: [], loc },
+    { name: "Ping", base: "%Event", fields: [], loc },
+  ];
+  add("event target and event prefixes", eventTarget, [
+    "ScrEventTargetObj prefix at 2",
+    "@scr_event_target_state_drop",
+    "ScrEventObj prefix at 2",
+    "@scr_event_state_drop",
+  ]);
+
   const stream = emissionModule();
   stream.classes = [
     { name: "%EventEmitter", runtime: true, fields: [], loc },
@@ -369,7 +383,7 @@ export function emissionCases(): EmissionCase[] {
   add(
     "recursive JSON writers and indentation",
     writer,
-    ["@scr_jb_enter", "@scr_jb_put_f64"],
+    ["@scr_jb_enter", "@scr_jb_put_f64", "@scr_arr_dense_slots"],
     writerRequest,
   );
 

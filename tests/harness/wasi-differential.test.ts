@@ -139,6 +139,16 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "js-promise-all-values.js",
     "js-promise-catch-handler.js",
     "js-abort-portable.js",
+    "5240-event-target-subclass.ts",
+    "5241-event-subclass.ts",
+    "5242-event-target-subclass-hierarchy.ts",
+    "5243-event-target-subclass-dynamic.ts",
+    "5244-event-target-subclass.js",
+    "5245-event-target-subclass-signals.ts",
+    "5246-event-target-subclass-listener-throw.ts",
+    "5247-event-target-subclass-lifetimes.ts",
+    "5248-event-target-subclass-warnings.ts",
+    "5249-event-target-subclass-unconstructed.ts",
     "5130-event-target-dispatch.js",
     "5131-event-target-listener-errors.js",
     "5132-event-target-typed.ts",
@@ -233,6 +243,13 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "4905-bigint-fixed-width-fusion.ts",
     "4906-bigint-small-value-trees.ts",
     "4907-bigint-random-trees.ts",
+    // Map/Set iteration reads ScrMap through size_t-width fields.
+    "5315-map-iterate-after-front-deletes.ts",
+    "5317-map-iterate-while-mutating.ts",
+    "5318-set-iterate-after-deletes.ts",
+    "5319-map-iteration-values.ts",
+    // JSON writers read array slots as pointers.
+    "5305-json-stringify-typed-arrays.ts",
   ])("the LLVM target runs %s byte-identically to Node", async (fixture) => {
     const entry = join(repoRoot, "tests/corpus", fixture);
     const outDir = await mkdtemp("/tmp/scriptc-wasi-");

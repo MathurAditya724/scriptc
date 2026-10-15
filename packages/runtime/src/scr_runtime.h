@@ -2064,6 +2064,10 @@ void scr_arr_sort_values(ScrArr *a, double count, struct ScrClosure *f, uint32_t
  * published; the caller then sorts a compacted snapshot. Otherwise sorts
  * and returns true; a pending exception from `f` leaves a shared `a`
  * unwritten (an owned copy then holds a permutation of its values). */
+/* The borrowed 8-byte slots of `a` when every index below its length holds
+ * a value in dense storage (length in *len); NULL for holes, storage-level
+ * undefined, sparse tails, empty arrays and boolean elements. */
+const uint64_t *scr_arr_dense_slots(const ScrArr *a, size_t *len);
 bool scr_arr_sort_dense(ScrArr *a, struct ScrClosure *f, uint32_t arity, bool owned,
                         int32_t order, struct ScrClosure *key);
 
@@ -2310,6 +2314,12 @@ typedef struct ScrMap {
    * always the entries array's. */
   uint32_t *dense;
   size_t ndense;
+  /* Every entry below this index is a tombstone. A walk that starts at or
+   * below it advances it to the first live entry (scr_map_iter_skip);
+   * compaction and clear reset it. A map that deletes from the front (a
+   * queue, an LRU cache) then finds its first live entry without walking
+   * the whole deleted prefix again. */
+  size_t head;
 } ScrMap;
 /* The LLVM backend's inline retain/release read both trace slots through
  * its %ScrMapRc prefix type (fields 5 and 8), mirroring scr_map_retain and
@@ -2327,6 +2337,11 @@ _Static_assert(offsetof(ScrMap, filter) ==
                "%ScrMapIx field 11 is ScrMap.filter, directly after nlive");
 _Static_assert(offsetof(ScrMap, nlive) == sizeof(size_t) + 2 * sizeof(uint32_t) + 6 * sizeof(void *) + sizeof(size_t),
                "%ScrMapIx field 10 is ScrMap.nlive");
+/* The inline iteration steps (sc_map_iter_entry) read the entry count as
+ * %ScrMapIx field 9 and test each entry's hash, the third field. */
+_Static_assert(offsetof(ScrMap, nentries) + sizeof(size_t) == offsetof(ScrMap, nlive),
+               "%ScrMapIx field 9 is ScrMap.nentries, directly before nlive");
+_Static_assert(offsetof(ScrMapEntry, hash) == 16, "inline iteration reads ScrMapEntry.hash at byte 16");
 _Static_assert(offsetof(ScrMap, entries) == offsetof(ScrMap, filter) + sizeof(uint64_t) + sizeof(size_t),
                "inline number-key lookups read ScrMap.entries as %ScrMapIx field 13");
 _Static_assert(offsetof(ScrMap, dense) == offsetof(ScrMap, entries) + 6 * sizeof(void *),
@@ -2437,6 +2452,10 @@ void *scr_map_get_ref_ref(const ScrMap *m, const void *key);
  * guards with iter_live first — reaching one is a compiler bug). */
 double scr_map_iter_count(const ScrMap *m); /* entries incl. tombstones */
 bool scr_map_iter_live(const ScrMap *m, double i);
+/* The first live index at or after i, or iter_count when none is left.
+ * iter_start is the first live index of the map (for-of starts there). */
+double scr_map_iter_skip(ScrMap *m, double i);
+double scr_map_iter_start(ScrMap *m);
 double scr_map_iter_key_f64(const ScrMap *m, double i);
 bool scr_map_iter_key_bool(const ScrMap *m, double i);
 ScrStr *scr_map_iter_key_str(const ScrMap *m, double i); /* +1 */
@@ -5327,6 +5346,11 @@ bool scr_dyn_typed_ref_is_key(const ScrDyn *d, const ScrStr *type_key);
 void *scr_dyn_typed_ref_unbox(const ScrDyn *d); /* +1 */
 ScrDyn *scr_dyn_class_view_unavailable(void *ptr);
 ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d); /* +1 */
+/* What string conversion renders for a capsule (+1): its materialized
+ * view, or, for an EventTarget or Event subclass without its own
+ * toString, the "[object EventTarget]" / "[object Event]" string of its
+ * inherited @@toStringTag. */
+ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d);
 void scr_dyn_typed_ref_commit(ScrDyn *d);
 /* Attach per-element access to a live array capsule (idempotent). Indexed
  * reads, `length`, in-range writes, `in`, own-property probes, and array
@@ -5650,6 +5674,11 @@ typedef struct ScrEventTargetCore {
   ScrEtRoot *roots;        /* per event type, in first-add order */
   ScrEtHandler *handlers;  /* event-handler attributes (`onabort`) */
   ScrEtHook *hooks;        /* options.signal removal hooks aimed here (weak) */
+  /* A compiled subclass instance's own capsule (+1), kept from its first
+   * method call so every later `this` and event target is the same value.
+   * The instance holds the core, so this is a cycle the collector reclaims
+   * through the scr_event_target_state_* helpers. NULL otherwise. */
+  ScrDyn *self;
   double max_listeners;    /* 0 = no leak warning (AbortSignal) */
   bool warned;
   const char *cls;         /* the warning's target name ("EventTarget") */
@@ -5698,8 +5727,90 @@ bool scr_event_is(const ScrDyn *v, double kind);
  * signal's core and aborted flag, or NULL for a non-signal value.
  * Installed by the AbortSignal unit; NULL when no signal can exist. */
 extern SCR_TL ScrEventTargetCore *(*scr_et_signal_core_fn)(const ScrDyn *d, bool *aborted);
+/* The compiled `listener.handleEvent` read (dyn → dyn; the runtime keeps a
+ * reference), installed by %main when a program class declares
+ * handleEvent: dispatch reads a capsule listener's handleEvent through it,
+ * which reaches the class's compiled methods. Without it a capsule's own
+ * view answers. */
+void scr_event_handle_event_reader(ScrDyn *reader);
 /* events.addAbortListener(signal, listener): +1 disposable, or NULL. */
 ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener);
+
+/* Compiled subclasses (`class Bus extends EventTarget`, `class Ping
+ * extends Event`): an instance lays out like a compiler-emitted hierarchy
+ * class (rc, vt, then this prefix, then the subclass fields — the
+ * ScrEmitter arrangement). super() creates the engine state behind the
+ * prefix pointer; `cls` is the concrete class's name, stamped by the
+ * emitted allocation (the leak warning and util.inspect print it). The
+ * instances' checked-dynamic capsules carry the RC adapters below, which
+ * is how the engine recognizes them: a target's capsule is the `this` of
+ * its listeners and the events' target, and an event's capsule is what
+ * its listeners receive. */
+typedef struct ScrEventTargetObj {
+  size_t rc;
+  const ScrVt *vt;
+  ScrEventTargetCore *core; /* NULL until super() */
+  const char *cls;
+} ScrEventTargetObj;
+
+typedef struct ScrEventObj {
+  size_t rc;
+  const ScrVt *vt;
+  ScrEvent *ev; /* NULL until super() */
+  const char *cls;
+} ScrEventObj;
+
+void *scr_event_target_obj_retain_v(void *o);
+void scr_event_target_obj_release_v(void *o); /* dispatches through vt */
+void *scr_event_obj_retain_v(void *o);
+void scr_event_obj_release_v(void *o);
+void *scr_event_target_obj_retain(void *o);
+void scr_event_target_obj_release(void *o);
+void *scr_event_obj_retain(void *o);
+void scr_event_obj_release(void *o);
+/* super() / super(type, options): `args` is the argument vector as one
+ * dyn array (borrowed); a bad type or options value leaves Node's
+ * exception pending. */
+void scr_event_target_obj_init(void *obj);
+void scr_event_obj_init(void *obj, ScrDyn *args);
+void scr_event_obj_init_type(void *obj, ScrStr *type); /* super(type), type borrowed */
+/* The emitted teardown's and collector's prefix helpers (NULL-tolerant):
+ * trace visits the listener values, `on<type>` handlers and the cached
+ * capsule of a target, and the target and detail of an event; gcfree
+ * frees the state without releasing those traced edges. */
+void scr_event_target_state_drop(ScrEventTargetCore *core);
+void scr_event_target_state_trace(ScrEventTargetCore *core, ScrTraceVisit visit, void *ctx);
+void scr_event_target_state_gcfree(ScrEventTargetCore *core);
+void scr_event_state_drop(ScrEvent *ev);
+void scr_event_state_trace(ScrEvent *ev, ScrTraceVisit visit, void *ctx);
+void scr_event_state_gcfree(ScrEvent *ev);
+/* The inherited members on typed receivers: `method`/`key` name an
+ * EventTarget or Event member, `args` is the argument vector as one dyn
+ * array, `self` the target's own capsule (borrowed). +1 results, or NULL
+ * with the exception pending. */
+ScrDyn *scr_event_target_obj_call(void *obj, ScrDyn *self, ScrStr *method, ScrDyn *args);
+/* dispatchEvent(event): the bool result, false with the exception pending. */
+bool scr_event_target_obj_dispatch(void *obj, ScrDyn *self, ScrDyn *event);
+ScrDyn *scr_event_obj_call(void *obj, ScrStr *method, ScrDyn *args);
+ScrDyn *scr_event_obj_get(void *obj, ScrStr *key);
+void scr_event_obj_set(void *obj, ScrStr *key, ScrDyn *value);
+
+/* The same members through a capsule (property reads and writes, method
+ * calls, util.inspect, string conversion), installed by the EventTarget
+ * unit with its first value and NULL before. get answers +1 or NULL (not
+ * an inherited member); set and invoke answer whether they handled the
+ * member. */
+typedef struct ScrEventRefHooks {
+  ScrDyn *(*get)(const ScrDyn *d, const ScrStr *key);
+  bool (*set)(ScrDyn *d, const ScrStr *key, const ScrDyn *value);
+  bool (*invoke)(ScrDyn *d, const char *method, ScrDyn *const *args, size_t argc,
+                 const char *what, ScrDyn **out);
+  ScrDyn *(*inspect_view)(const ScrDyn *d, const char **cls);
+  /* Object.prototype.toString's answer with the inherited @@toStringTag
+   * ("[object EventTarget]", "[object Event]"), or NULL. */
+  const char *(*string_tag)(const ScrDyn *d);
+} ScrEventRefHooks;
+extern SCR_TL const ScrEventRefHooks *scr_event_ref_hooks;
 
 ScrDyn *scr_intl_segmenter_new(void);
 ScrStr *scr_process_builtin_id(ScrDyn *id, ScrArr *known);
@@ -5873,6 +5984,7 @@ SCR_COLD void scr_dyn_arg_value_fail(const char *name, const char *reason, const
 /* The ERR_INVALID_ARG_VALUE/%j "Received" renderer (inspect-lite:
  * strings quote, scalars print plain, deep shapes sketch). */
 const char *scr_dyn_inspect_lite(const ScrDyn *v, char *buf, size_t cap);
+ScrStr *scr_str_inspect_quoted(const ScrStr *s, bool truncate);
 /* A ladder's post-validation refuse: throws the compiler-rendered SC2020
  * statement-fence text verbatim (Node's validation errors run first). */
 SCR_COLD void scr_throw_lowering_fence(const ScrStr *msg);
@@ -5920,6 +6032,11 @@ typedef struct {
   size_t seen_len;
   size_t seen_cap;
 } ScrJsonBuf;
+/* Emitted JSON writers append constant text inline (llvm/walkers.ts
+ * appendBytes) through this prefix. */
+_Static_assert(offsetof(ScrJsonBuf, data) == 0 && offsetof(ScrJsonBuf, len) == sizeof(char *) &&
+                   offsetof(ScrJsonBuf, cap) == sizeof(char *) + sizeof(size_t),
+               "LLVM backend expects ScrJsonBuf to start with { data, len, cap }");
 
 void scr_jb_init(ScrJsonBuf *b);
 /* Append a borrowed byte span verbatim, including embedded NUL bytes. */
@@ -7674,6 +7791,8 @@ void scr_net_server_on_connection(ScrNetServer *s, ScrClosure *cb /*moves*/, Scr
  * server never fires it, like Node). */
 void scr_net_server_on_secure_connection(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrNetConnFn fn, bool once);
 ScrNetSocket *scr_net_connect(double port, ScrStr *host /*borrowed, nullable*/, ScrClosure *cb /*moves, nullable*/); /* +1 */
+ScrNetSocket *scr_net_connect_checked(double port, ScrStr *host /*borrowed, nullable*/, ScrClosure *cb /*moves, nullable*/); /* +1 */
+bool scr_net_host_chk(const ScrStr *host /*borrowed, nullable*/);
 /* connect with a validated autoSelectFamilyAttemptTimeout option: the
  * budget runs Node's validateInt32-from-1 ladder (ERR_OUT_OF_RANGE /
  * ERR_INVALID_ARG_TYPE) and is then inert — the single dial has nothing
@@ -8126,6 +8245,7 @@ ScrDyn *scr_http_res_get_headers(ScrHttpRes *r); /* +1 */
 bool scr_http_res_has_header_named(ScrHttpRes *r, ScrStr *name /*borrowed*/);
 void scr_http_res_remove_header(ScrHttpRes *r, ScrStr *name /*borrowed*/);
 void scr_http_res_on_finish(ScrHttpRes *r, ScrClosure *cb /*moves*/);
+void scr_http_res_on_end_callback(ScrHttpRes *r, ScrClosure *cb /*moves*/);
 /* createServer({ joinDuplicateHeaders: true }): repeated request-header
  * names read back joined ", " (Node's option; the default keeps first). */
 void scr_http_server_join_duplicate_headers(ScrNetServer *s);
