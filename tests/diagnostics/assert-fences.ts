@@ -1,5 +1,5 @@
-// The assert surface's honest fences: legacy deepEqual/notDeepEqual
-// (shallow equal/notEqual and assert/strict's same-named aliases lower),
+// The assert surface's honest fences: loose deep equality over recursive
+// types (equal/notEqual, deepEqual/notDeepEqual and assert/strict's aliases lower),
 // reference-equality strictEqual on objects,
 // union operands (narrow first), mismatched or uncomparable deep types
 // (typed arrays, class instances), namespace-object calls, unsupported
@@ -13,7 +13,7 @@ import * as assertNs from "node:assert";
 
 assert.equal(1, 1); // shallow legacy equality lowers for primitives
 assert.notEqual(1, 2);
-assert.deepEqual([1], [1]);
+assert.deepEqual([1], [1]); // loose deep equality lowers
 assert.notDeepEqual([1], [2]);
 
 const box = { n: 1 };
@@ -49,3 +49,10 @@ assert.ifError(new Map<string, number>()); // no honest ifError rendering for th
 
 const eq = assert.strictEqual; // assert functions as values
 eq(1, 1);
+
+interface Tree { label: string; kids: Tree[] }
+const tree: Tree = { label: "t", kids: [] };
+assert.deepEqual(tree, tree); // recursive type: the failure message needs a deep copy
+const handler = { run: () => 1 };
+assert.deepEqual(handler, handler); // functions inside a structure: the boxes carry no source names
+assert.partialDeepStrictEqual(tree, { label: "t" }); // recursive type: the failure message needs a deep copy

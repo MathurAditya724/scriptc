@@ -5206,7 +5206,11 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "assert.refEqBytes" || e.fn === "assert.bytesDeepEq") {
+    if (
+      e.fn === "assert.refEqBytes" ||
+      e.fn === "assert.bytesDeepEq" ||
+      e.fn === "assert.looseBytesEq"
+    ) {
       // Both value slots: ONE static bytes type (the frontend's
       // same-static-type gate — a u8/u32 mix would memcmp garbage).
       const a = e.args[0]?.type;

@@ -311,7 +311,7 @@ import {
   type LlClassMeta,
 } from "./classes.js";
 import { LifetimeRegions, REGION_TYPES } from "./regions.js";
-import { LlDyn, type DynHost } from "./dyn.js";
+import { LlDyn, recordDynKeepsIdentity, type DynHost } from "./dyn.js";
 import { VirtualBorrows } from "./virtual-borrows.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
@@ -1135,6 +1135,10 @@ export class LlEmitter {
       {
         record: (shapeId, field) => this.recordFieldInline(shapeId, field),
         classField: (className, field) => this.inlineUnions.classField(className, field),
+      },
+      (shapeId) => {
+        const shape = this.recordsById.get(shapeId);
+        return shape !== undefined && !recordDynKeepsIdentity(shape);
       },
     );
     this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes);

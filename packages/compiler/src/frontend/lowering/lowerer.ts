@@ -485,6 +485,7 @@ import {
   lowerTestCtxProperty,
 } from "./lower-test.js";
 import { lowerAssertModuleCall, lowerAssertDirectCall } from "./lower-assert.js";
+import type { AssertInstanceOptions } from "./assert-instances.js";
 import { lowerUtilModuleCall } from "./lower-inspect.js";
 import { lowerSystemErrorMapValue } from "./lower-system-errors.js";
 import {
@@ -2220,6 +2221,12 @@ export class Lowerer {
    * typeKey, throws wrappers keyed by callback type + expected class) —
    * the valueHelpers pattern with its own namespace. */
   readonly assertHelpers = new Map<string, string>();
+  /** Static node:assert Assert instances by declaration (assert-instances.ts);
+   * null for declarations that are not one. */
+  readonly assertInstances = new Map<ts.Node, AssertInstanceOptions | null>();
+  /** The options of the Assert instance whose method call is being lowered,
+   * or null for module calls. */
+  assertCallOptions: AssertInstanceOptions | null = null;
   /** util.inspect's per-type traversal helpers (%util.insp.N), interned
    * by typeKey — the assertHelpers pattern with its own namespace. */
   readonly inspectHelpers = new Map<string, string>();

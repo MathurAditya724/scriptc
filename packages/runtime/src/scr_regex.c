@@ -1835,14 +1835,16 @@ void scr_assert_match(ScrStr *s, ScrRegex *re, bool negated, ScrStr *msg,
 /* assert.throws(fn, /re/) whose thrown Error did not satisfy the regex:
  * Node tests String(actual) — Error.prototype.toString's "Name: message"
  * — and reports the mismatch with that string inspected. */
-void scr_assert_throws_regex(ScrRegex *re, ScrError *err, ScrStr *msg, bool has_msg) {
+void scr_assert_throws_regex(ScrRegex *re, ScrError *err, ScrStr *msg, bool has_msg,
+                             bool rejection) {
   ScrStr *str = scr_error_to_string(err);
   bool matched = scr_assert_regex_hits(re, str);
   if (matched) {
     scr_str_release(str);
     return;
   }
-  scr_assert_record(scr_dyn_from_error(err), scr_dyn_native_regex(re), "throws");
+  scr_assert_record(scr_dyn_from_error(err), scr_dyn_native_regex(re),
+                    rejection ? "rejects" : "throws");
   if (has_msg && msg->len > 0) {
     scr_str_release(str);
     scr_assert_fail(scr_str_retain(msg), false);
