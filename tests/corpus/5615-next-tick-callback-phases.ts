@@ -23,29 +23,44 @@ function done(label: string): void {
   log.length = 0;
 }
 
+// Each section starts from the previous one's last callback, so machine
+// speed cannot move a callback into another section's line.
 setImmediate(() => mark("immediate 1"));
 setImmediate(() => mark("immediate 2"));
-setImmediate(() => setImmediate(() => done("immediates")));
+setImmediate(() =>
+  setImmediate(() => {
+    done("immediates");
+    timers();
+  }),
+);
 
-setTimeout(() => {
+function timers(): void {
   setTimeout(() => mark("timer 1"), 1);
   setTimeout(() => mark("timer 2"), 1);
-  setTimeout(() => done("timers"), 30);
-}, 20);
+  setTimeout(() => {
+    done("timers");
+    io();
+  }, 30);
+}
 
-setTimeout(() => {
+function io(): void {
   readFile(self, "utf8", () => {
     mark("readFile 1");
     readFile(self, "utf8", () => {
       mark("readFile 2");
       setImmediate(() => mark("immediate after io"));
-      setTimeout(() => mark("timeout after io"), 0);
+      setTimeout(() => {
+        mark("timeout after io");
+        setImmediate(() => {
+          done("io");
+          setTimeout(tickOnly, 0);
+        });
+      }, 0);
     });
   });
-  setTimeout(() => done("io"), 60);
-}, 100);
+}
 
-setTimeout(() => {
+function tickOnly(): void {
   setTimeout(() => {
     log.push("tick-only timer 1");
     process.nextTick(() => log.push("timer 1 tick"));
@@ -57,4 +72,4 @@ setTimeout(() => {
   });
   setImmediate(() => log.push("tick-only immediate 2"));
   setTimeout(() => done("tick only"), 40);
-}, 200);
+}
