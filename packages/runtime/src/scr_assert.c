@@ -481,7 +481,8 @@ void scr_assert_deep_result(bool equal, bool negated, ScrStr *msg, bool has_msg)
  * by construction (the frontend's same-static-type gate), but the elem
  * check stays: a defensive answer beats a miscompare. */
 static bool scr_assert_bytes_content_eq(const ScrBytes *a, const ScrBytes *b) {
-  SCR_SHARED_GUARD(a, b);
+  SCR_BYTES_SNAPSHOT(a);
+  SCR_BYTES_SNAPSHOT(b);
   if (a->elem != b->elem || a->len != b->len) return false;
   size_t nbytes = a->len * scr_bytes_elem_size(a->elem);
   return nbytes == 0 || memcmp(a->data, b->data, nbytes) == 0;
@@ -1974,7 +1975,8 @@ static bool scr_assert_partial_bytes(const ScrBytes *x, const ScrBytes *y) {
   size_t la = x->len * scr_bytes_elem_size(x->elem), lb = y->len * scr_bytes_elem_size(y->elem);
   if (la == lb) return scr_assert_bytes_content_eq(x, y);
   if (la < lb) return false;
-  SCR_SHARED_GUARD(x, y);
+  SCR_BYTES_SNAPSHOT(x);
+  SCR_BYTES_SNAPSHOT(y);
   const uint8_t *pa = x->data, *pb = y->data;
   size_t offset_a = 0;
   for (size_t offset_b = 0; offset_b < lb; offset_b++) {
