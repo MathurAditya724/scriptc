@@ -1276,6 +1276,18 @@ ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
   return NULL;
 }
 
+/* Buffer.from over a checked value, with Node's pooling: strings take
+ * fromStringFast, typed arrays and array-likes fromArrayLike. */
+ScrBytes *scr_buffer_from_dyn_pooled(const ScrDyn *value, const ScrStr *encoding) {
+  if (value->kind == SCR_DYN_STR) return scr_buffer_from_str(value->v.str, encoding);
+  if (value->kind == SCR_DYN_BYTES && !value->v.bytes->is_data_view)
+    return scr_buffer_from_bytes(value->v.bytes);
+  ScrBytes *out = scr_buffer_from_dyn(value, encoding);
+  if (!out) return NULL;
+  out->is_buffer = true;
+  return scr_buffer_pool_adopt(out);
+}
+
 /* ── the checked-dynamic Buffer compare/equals validators ──────────────
  * Node's argument ladders for buf.equals / buf.compare / Buffer.compare
  * over dyn-boxed arguments (the invalid-input probes: string needles,

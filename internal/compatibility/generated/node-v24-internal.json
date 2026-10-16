@@ -71,9 +71,9 @@
       "apiEntries": 99,
       "static": {
         "supported": 16,
-        "partial": 6,
+        "partial": 7,
         "refused": 0,
-        "not-implemented": 77,
+        "not-implemented": 76,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -3144,6 +3144,9 @@
           "tests/corpus/5288-blob-validation.js",
           "tests/corpus/5289-blob-read-order.ts",
           "tests/corpus/5290-blob-dynamic.js",
+          "tests/corpus/5530-buffer-pool.ts",
+          "tests/corpus/5531-buffer-pool-first-slab.ts",
+          "tests/corpus/5532-buffer-pool-first-slab-untyped.mjs",
           "tests/corpus/node24-buffer-encoding-errors.ts",
           "tests/corpus/node24-buffer-encoding.ts",
           "tests/fixtures/node-types/blob-file.ts",
@@ -5432,8 +5435,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "partial",
+        "evidence": "compiler-feature:buffer.poolSize",
+        "tests": [
+          "tests/corpus/5530-buffer-pool.ts",
+          "tests/corpus/5531-buffer-pool-first-slab.ts",
+          "tests/corpus/5532-buffer-pool-first-slab-untyped.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },

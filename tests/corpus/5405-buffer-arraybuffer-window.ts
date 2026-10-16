@@ -1,8 +1,7 @@
-// Small Buffers own exact-size ArrayBuffers here, while Node allocates them
-// from a shared 64 KiB pool, so buf.buffer.byteLength and buf.byteOffset
-// differ. Reading a Buffer's window of its ArrayBuffer through byteOffset
-// and length gives the same bytes either way, and Buffer.alloc is never
-// pooled.
+// Small Buffers from Buffer.from, Buffer.concat and Buffer.allocUnsafe are
+// views into a shared pool slab. Reading a Buffer's window of its
+// ArrayBuffer through byteOffset and length gives its own bytes, and
+// Buffer.alloc is never pooled.
 const small = Buffer.from("hello");
 const copy = small.buffer.slice(small.byteOffset, small.byteOffset + small.length);
 console.log(copy.byteLength, new TextDecoder().decode(new Uint8Array(copy)));
