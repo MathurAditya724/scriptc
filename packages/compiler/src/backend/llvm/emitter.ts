@@ -1897,7 +1897,24 @@ export class LlEmitter {
         `  call void @scr_run_exit_listeners(double %${prefix}hd)`,
       ];
     };
-    const globalReleases = globalReleaseLines("g");
+    // The entry's exits release the module globals only where the thread
+    // frees its heap when its script ends (scr_exit_frees: workers, and
+    // builds that check for leaks); the main thread of other builds leaves
+    // it to the operating system.
+    const exitReleaseLines = (prefix: string): string[] => {
+      const releases = globalReleaseLines(prefix);
+      if (releases.length === 0) return releases;
+      this.declare(`declare zeroext i1 @scr_exit_frees()`);
+      return [
+        `  %${prefix}.frees = call zeroext i1 @scr_exit_frees()`,
+        `  br i1 %${prefix}.frees, label %${prefix}.release, label %${prefix}.kept`,
+        `${prefix}.release:`,
+        ...releases,
+        `  br label %${prefix}.kept`,
+        `${prefix}.kept:`,
+      ];
+    };
+    const globalReleases = exitReleaseLines("g");
     const asyncEntry = this.fnByName.get(this.mod.entry)?.async === true;
     const entryMayThrow = this.mayThrow.has(this.mod.entry);
     // The event loop runs when timers appeared OR any async/generator
@@ -1910,12 +1927,12 @@ export class LlEmitter {
       this.usesTimers ||
       this.ffiHasForeignCallback ||
       this.mod.functions.some((f) => f.async === true || f.generator !== undefined);
-    const uncaughtReleases = entryMayThrow && !asyncEntry ? globalReleaseLines("gu") : [];
-    const loopReleasesU = runsLoop ? globalReleaseLines("gl") : [];
-    const loopReleasesR = runsLoop ? globalReleaseLines("gr") : [];
-    const topRejectReleases = asyncEntry ? globalReleaseLines("gt") : [];
-    const topPendingReleases = asyncEntry ? globalReleaseLines("gp") : [];
-    const loopReportedReleases = runsLoop ? globalReleaseLines("gq") : [];
+    const uncaughtReleases = entryMayThrow && !asyncEntry ? exitReleaseLines("gu") : [];
+    const loopReleasesU = runsLoop ? exitReleaseLines("gl") : [];
+    const loopReleasesR = runsLoop ? exitReleaseLines("gr") : [];
+    const topRejectReleases = asyncEntry ? exitReleaseLines("gt") : [];
+    const topPendingReleases = asyncEntry ? exitReleaseLines("gp") : [];
+    const loopReportedReleases = runsLoop ? exitReleaseLines("gq") : [];
     // main's epilogues read the flag / the loop entry points — declared
     // HERE, before the extern block flushes. They run once, so they keep
     // the out-of-line scr_exc_pending call; per-call checks inline the

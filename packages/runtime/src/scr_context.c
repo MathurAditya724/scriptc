@@ -115,6 +115,13 @@ ScrArr *scr_context_env_pairs(void) {
 
 void scr_context_enter(uint64_t thread_id) { scr_context_id = thread_id; }
 bool scr_context_is_main(void) { return scr_context_id == 0; }
+
+/* When the thread's script ended: its first scr_exit_frees call. */
+static SCR_TL uint64_t scr_context_script_end;
+void scr_context_note_script_end(void) {
+  if (scr_context_script_end == 0) scr_context_script_end = scr_hrtime_ns();
+}
+uint64_t scr_context_script_end_ns(void) { return scr_context_script_end; }
 uint64_t scr_context_thread_id(void) { return scr_context_id; }
 double scr_context_thread_number(void) { return (double)scr_context_id; }
 
@@ -181,7 +188,7 @@ void scr_context_cleanup(void) {
     fn();
   }
   scr_exc_clear();
-  scr_cyc_context_cleanup();
+  if (scr_exit_frees()) scr_cyc_context_cleanup();
 }
 #else
 bool scr_context_is_main(void) { return true; }
