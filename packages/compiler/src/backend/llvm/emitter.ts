@@ -8,7 +8,9 @@ import { InternalCompilerError } from "../../errors.js";
 import { createHash } from "node:crypto";
 import {
   endsWithJump,
+  matchFieldSelfConcat,
   matchStringSelfConcat,
+  readsArraySlot,
   streamTypedRefEligible,
   undefinedArmTag,
 } from "../../ir/analysis.js";
@@ -166,7 +168,7 @@ import {
   type LocalArrayRead,
 } from "./local-array-reads.js";
 import { CheckedNarrows, emitCheckedNarrowReceiver } from "./checked-narrows.js";
-import { emitDenseArrayGet, emitDenseArraySet } from "./dense-array-access.js";
+import { emitDenseArrayGet, emitDenseArraySet, emitDenseSlotUnlink } from "./dense-array-access.js";
 import {
   emitStackMapRead,
   findMapReadLifetimes,
@@ -7083,6 +7085,7 @@ export class LlEmitter {
         // the replaced element itself). A local receiver that the index and
         // value cannot rebind is read in place, as for field stores; the
         // released element cannot reach that binding.
+        if (this.emitArraySelfConcat(s)) break;
         const arr = this.emitStableReceiver(s.arr, [s.index, s.value]);
         const idx = this.emitExpr(s.index);
         const v = this.emitExpr(s.value);
@@ -7201,6 +7204,7 @@ export class LlEmitter {
           this.storeInt32Field(ptr, v, s.value);
           break;
         }
+        if (this.emitFieldSelfConcat(s)) break;
         const obj = this.emitStableReceiver(s.obj, [s.value]);
         const v = this.emitFieldValue(
           s.value,
@@ -8531,6 +8535,128 @@ export class LlEmitter {
     if (packed?.kind !== "arrayLit" || packed.elems.length !== 1 || packed.spreads?.length)
       return null;
     return this.emitExpr(packed.elems[0]!);
+  }
+
+  /**
+   * Lower `recv.f = recv.f + suffix` on a plain string field like
+   * emitStringSelfConcatAssign does for locals. The field's old value is
+   * snapshotted (+1) and the suffix evaluated in JavaScript order; then the
+   * field unlinks and releases its CURRENT value, so the snapshot is unique
+   * unless a real alias exists and the concat appends in place instead of
+   * copying the whole string on every append. Returns false (emitting
+   * nothing) for every other store.
+   */
+  private emitFieldSelfConcat(s: Extract<IrStmt, { kind: "fieldSet" | "recordSet" }>): boolean {
+    const suffix = matchFieldSelfConcat(s);
+    if (!suffix || s.value.kind !== "strConcat") return false;
+    let fieldType: IrType | undefined;
+    if (s.kind === "fieldSet") {
+      if (
+        this.inlineUnions.classField(s.className, s.field) ||
+        this.classMeta.get(s.className)?.root.def.name === "%Error"
+      )
+        return false;
+      fieldType = classFieldIndex(this.classMetaOf(s.className), s.field).type;
+    } else {
+      fieldType = this.recordShape(s.shapeId).fields.find((f) => f.name === s.field)?.type;
+    }
+    if (fieldType?.kind !== "string") return false;
+    const B = this.B;
+    const obj = this.emitStableReceiver(s.obj, [s.value]);
+    const snapshot = this.emitExpr(s.value.left);
+    const parts = stringParts(suffix);
+    const mixed = parts.length > 1 || numberPart(parts[0]!) !== null;
+    const inputs = mixed ? emitConcatInputs(this, parts) : [];
+    const right = mixed ? null : this.emitExpr(suffix);
+    if (s.kind === "fieldSet") this.emitStoreGuard(obj.name, s);
+    else if (this.publishedTypes?.recordGuarded(s.shapeId) === true)
+      this.emitPublishedFieldGuard(obj.name, null, s.field);
+    const { ptr } =
+      s.kind === "fieldSet"
+        ? this.classFieldPtr(obj.name, s.className, s.field)
+        : this.recordFieldPtr(obj.name, s.shapeId, s.field);
+    // Unlink, then release: nothing between here and the store below can
+    // run user code or observe the field (the concat only traps on OOM).
+    // Only an owned snapshot may survive the field's release.
+    const owned = this.ownsSnapshot(snapshot.name);
+    if (owned) {
+      const old = this.loadField(ptr, fieldType, false);
+      this.storeField(ptr, fieldType, "null", false);
+      this.releaseValue(old, fieldType);
+    }
+    let raw: string;
+    if (right === null) {
+      raw = emitMixedConcat(this, snapshot.name, inputs);
+    } else {
+      this.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
+      raw = B.tmp();
+      B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right.name})`);
+    }
+    // The +1 result moves straight into the (now empty) field.
+    if (owned) this.storeField(ptr, fieldType, raw, false);
+    else this.replaceField(ptr, fieldType, false, this.own({ name: raw, type: fieldType }));
+    return true;
+  }
+
+  /** A snapshot the current statement frames own (+1), or an immortal
+   * value: it stays valid after its container releases the same string. */
+  private ownsSnapshot(name: string): boolean {
+    return (
+      this.isImmortal(name) || this.frames.some((f) => f.some((v) => v.name === name && !v.slot))
+    );
+  }
+
+  /**
+   * `a[i] = a[i] + suffix` on a string array (the canonical statement form
+   * of `a[i] += suffix`): the old element is snapshotted (+1) and the
+   * suffix evaluated in JavaScript order; then, when the slot still holds
+   * the snapshot, the array lets go of it (emitDenseSlotUnlink) so the
+   * concat can append in place, and the result is stored as usual.
+   */
+  private emitArraySelfConcat(s: Extract<IrStmt, { kind: "arraySet" }>): boolean {
+    const value = s.value;
+    if (
+      value.kind !== "strConcat" ||
+      value.type.kind !== "string" ||
+      value.left.type.kind !== "string" ||
+      value.right.type.kind !== "string" ||
+      s.arr.type.kind !== "array" ||
+      s.arr.type.elem.kind !== "string" ||
+      s.arr.kind !== "varRef" ||
+      s.index.kind !== "varRef" ||
+      !readsArraySlot(value.left, s.arr.localId, s.index.localId)
+    )
+      return false;
+    const elem = s.arr.type.elem;
+    const B = this.B;
+    const arr = this.emitStableReceiver(s.arr, [s.index, s.value]);
+    const idx = this.emitExpr(s.index);
+    const snapshot = this.emitExpr(value.left);
+    const parts = stringParts(value.right);
+    const mixed = parts.length > 1 || numberPart(parts[0]!) !== null;
+    const inputs = mixed ? emitConcatInputs(this, parts) : [];
+    const right = mixed ? null : this.emitExpr(value.right);
+    this.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
+    if (this.ownsSnapshot(snapshot.name))
+      emitDenseSlotUnlink(
+        this,
+        arr.name,
+        idx,
+        s.index,
+        snapshot.name,
+        this.internLiteral(""),
+        elem,
+      );
+    let raw: string;
+    if (right === null) {
+      raw = emitMixedConcat(this, snapshot.name, inputs);
+    } else {
+      this.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
+      raw = B.tmp();
+      B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right.name})`);
+    }
+    emitDenseArraySet(this, arr.name, idx, s.index, "ref", elem, raw);
+    return true;
   }
 
   /** `local = local + suffix` when the suffix cannot read or write the

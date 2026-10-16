@@ -68,6 +68,54 @@ export function matchStringSelfConcat(
   };
 }
 
+/** The suffix of a canonical string field append, `recv.f = recv.f + suffix`
+ * (the statement form of `recv.f += suffix`), where both sides name the
+ * same field through the same local receiver. Null for any other store. */
+export function matchFieldSelfConcat(
+  store: Extract<IrStmt, { kind: "fieldSet" | "recordSet" }>,
+): IrExpr | null {
+  const value = store.value;
+  if (
+    store.obj.kind !== "varRef" ||
+    value.kind !== "strConcat" ||
+    value.type.kind !== "string" ||
+    value.left.type.kind !== "string" ||
+    value.right.type.kind !== "string"
+  )
+    return null;
+  const left = value.left;
+  const sameField =
+    store.kind === "fieldSet"
+      ? left.kind === "fieldGet" && left.className === store.className
+      : left.kind === "recordGet" && left.shapeId === store.shapeId;
+  if (
+    !sameField ||
+    (left.kind !== "fieldGet" && left.kind !== "recordGet") ||
+    left.field !== store.field ||
+    left.obj.kind !== "varRef" ||
+    left.obj.localId !== store.obj.localId
+  )
+    return null;
+  return value.right;
+}
+
+/** Whether `value` reads element `arr[index]` of two locals directly or as
+ * one arm of a ternary (the `string[]` compound operand, which reads a hole
+ * as "undefined"). */
+export function readsArraySlot(value: IrExpr, arrId: string, indexId: string): boolean {
+  if (value.kind === "ternary")
+    return (
+      readsArraySlot(value.then, arrId, indexId) || readsArraySlot(value.else_, arrId, indexId)
+    );
+  return (
+    value.kind === "arrayGet" &&
+    value.arr.kind === "varRef" &&
+    value.arr.localId === arrId &&
+    value.index.kind === "varRef" &&
+    value.index.localId === indexId
+  );
+}
+
 /** Descendant tree needed by constructor queries. Parent links deliberately
  * stay out of this structural view: projecting them would revisit cycles. */
 export interface IrClassGraphNode {

@@ -7366,6 +7366,31 @@ export function lowerElementCompound(
   expr: ts.BinaryExpression,
   op: CompoundOp,
 ): IrExpr {
+  const lowered = lowerElementCompoundParts(lowerer, expr, op, false);
+  if (!lowered.expr)
+    throw new InternalCompilerError("a compound element value lowered to statements");
+  return lowered.expr;
+}
+
+/** `a[i] op= rhs` in statement position: a string array append becomes the
+ * canonical `a[i] = a[i] + rhs` store (receiver and index saved first),
+ * which the backend appends in place; other forms keep the value path. */
+export function lowerElementCompoundStatement(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  op: CompoundOp,
+): IrStmt {
+  const lowered = lowerElementCompoundParts(lowerer, expr, op, true);
+  if (lowered.stmts) return { kind: "block", body: lowered.stmts, loc: locOf(expr) };
+  return { kind: "exprStmt", expr: lowered.expr!, loc: locOf(expr) };
+}
+
+function lowerElementCompoundParts(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  op: CompoundOp,
+  statement: boolean,
+): { expr: IrExpr | null; stmts: IrStmt[] | null } {
   const target = expr.left as ts.ElementAccessExpression;
   fenceNodeModuleMutation(lowerer, target, "assignment");
   const loc = locOf(expr);
@@ -7403,7 +7428,7 @@ export function lowerElementCompound(
       },
       loc,
     });
-    return { kind: "seqExpr", stmts, result: value, type: DYN, loc };
+    return { expr: { kind: "seqExpr", stmts, result: value, type: DYN, loc }, stmts: null };
   }
   const receiverType =
     checked.type.kind === "array" || checked.type.kind === "bytes"
@@ -7470,6 +7495,29 @@ export function lowerElementCompound(
     elementType.kind === "union" && lowerer.armTag(elementType.unionId, UNDEFINED_T) >= 0
       ? lowerer.stripUndefinedArm(elementType)
       : elementType;
+  if (
+    statement &&
+    op === "+" &&
+    receiver.type.kind === "array" &&
+    receiver.type.elem.kind === "string"
+  ) {
+    // Receiver, index, old element (read inside the concat), rhs, write.
+    const appended: IrExpr = {
+      kind: "strConcat",
+      left: oldValue,
+      right: lowerer.ensureString(rhs, expr.right),
+      type: STRING,
+      loc,
+    };
+    return {
+      expr: null,
+      stmts: [
+        { kind: "varDecl", localId: receiverLocal.id, init: receiver, loc },
+        { kind: "varDecl", localId: indexLocal.id, init: index, loc },
+        { kind: "arraySet", arr: receiverRef(), index: indexRef(), value: appended, loc },
+      ],
+    };
+  }
   let computed: IrExpr;
   if (op === "+" && valueType.kind === "string") {
     computed = {
@@ -7509,17 +7557,20 @@ export function lowerElementCompound(
       ? arrayValueStore(lowerer, receiverRef(), indexRef(), resultRef(), receiver.type.elem, loc)
       : { kind: "bytesSet", arr: receiverRef(), index: indexRef(), value: resultRef(), loc };
   return {
-    kind: "seqExpr",
-    stmts: [
-      { kind: "varDecl", localId: receiverLocal.id, init: receiver, loc },
-      { kind: "varDecl", localId: indexLocal.id, init: index, loc },
-      { kind: "varDecl", localId: oldLocal.id, init: oldValue, loc },
-      { kind: "varDecl", localId: resultLocal.id, init: computed, loc },
-      write,
-    ],
-    result: resultRef(),
-    type: computed.type,
-    loc,
+    expr: {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: receiverLocal.id, init: receiver, loc },
+        { kind: "varDecl", localId: indexLocal.id, init: index, loc },
+        { kind: "varDecl", localId: oldLocal.id, init: oldValue, loc },
+        { kind: "varDecl", localId: resultLocal.id, init: computed, loc },
+        write,
+      ],
+      result: resultRef(),
+      type: computed.type,
+      loc,
+    },
+    stmts: null,
   };
 }
 
