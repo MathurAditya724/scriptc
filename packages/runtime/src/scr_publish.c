@@ -5,6 +5,7 @@
 
 #include "scr_runtime.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,17 +36,36 @@ typedef struct {
   uint8_t kind; /* SCR_PUB_KIND_*: leaves the RC audit's live count on success */
 } ScrPubLog;
 
+typedef struct {
+  void *v;
+  ScrPubFn fn;
+} ScrPubItem;
+
+/* Small graphs (an interned value whose children are already published)
+ * walk within the inline buffers and allocate nothing. */
+#define SCR_PUB_INLINE 32
+
 struct ScrPub {
-  struct { void *v; ScrPubFn fn; } *stack;
+  ScrPubItem *stack;
   size_t len, cap;
   ScrPubLog *log;
   size_t logged, log_cap;
   const char *refusal; /* first refusal message; the walk stops */
+  ScrPubItem stack_inline[SCR_PUB_INLINE];
+  ScrPubLog log_inline[SCR_PUB_INLINE];
 };
 
-static void *scr_pub_grow(void *p, size_t *cap, size_t size) {
+/* Doubles a buffer of *cap elements (256 when empty); `inline_buf` is the
+ * caller's fixed first buffer, which is copied rather than reallocated. */
+static void *scr_pub_grow(void *p, size_t *cap, size_t size, void *inline_buf) {
   size_t n = *cap ? *cap * 2 : 256;
-  void *q = realloc(p, n * size);
+  void *q;
+  if (p != NULL && p == inline_buf) {
+    q = malloc(n * size);
+    if (q) memcpy(q, p, *cap * size);
+  } else {
+    q = realloc(p, n * size);
+  }
   if (!q) scr_trap("scriptc: out of memory\n");
   *cap = n;
   return q;
@@ -59,7 +79,8 @@ void scr_pub_push(ScrPub *ctx, void *v, ScrPubFn fn) {
     scr_pub_str_fn(v, ctx);
     return;
   }
-  if (ctx->len == ctx->cap) ctx->stack = scr_pub_grow(ctx->stack, &ctx->cap, sizeof *ctx->stack);
+  if (ctx->len == ctx->cap)
+    ctx->stack = scr_pub_grow(ctx->stack, &ctx->cap, sizeof *ctx->stack, ctx->stack_inline);
   ctx->stack[ctx->len].v = v;
   ctx->stack[ctx->len].fn = fn;
   ctx->len++;
@@ -68,7 +89,8 @@ void scr_pub_push(ScrPub *ctx, void *v, ScrPubFn fn) {
 bool scr_pub_mark(ScrPub *ctx, void *obj, bool cyc, int kind) {
   size_t *rc = obj;
   if (*rc == SIZE_MAX || ctx->refusal) return false;
-  if (ctx->logged == ctx->log_cap) ctx->log = scr_pub_grow(ctx->log, &ctx->log_cap, sizeof *ctx->log);
+  if (ctx->logged == ctx->log_cap)
+    ctx->log = scr_pub_grow(ctx->log, &ctx->log_cap, sizeof *ctx->log, ctx->log_inline);
   ctx->log[ctx->logged++] = (ScrPubLog){obj, *rc, cyc, false, (uint8_t)kind};
   *rc = SIZE_MAX;
   return true;
@@ -195,7 +217,7 @@ void scr_pub_dyn_fn(void *v, ScrPub *ctx) {
     bool seen_ = false;                                                            \
     for (size_t j_ = 0; j_ < count && !seen_; j_++) seen_ = nodes[j_] == e_;       \
     if (!seen_) {                                                                  \
-      if (count == cap) nodes = scr_pub_grow(nodes, &cap, sizeof *nodes);          \
+      if (count == cap) nodes = scr_pub_grow(nodes, &cap, sizeof *nodes, NULL);    \
       nodes[count++] = e_;                                                         \
     }                                                                              \
   } while (0)
@@ -261,10 +283,25 @@ static void scr_pub_audit_forget(int kind) {
 }
 #endif
 
+/* SCRIPTC_PUBLISH_TRACE, read once: -1 until then. */
+static _Atomic int scr_pub_trace = -1;
+
 void scr_publish(void *root, ScrPubFn fn) {
   if (!root || *(size_t *)root == SIZE_MAX) return;
-  ScrPub ctx = {0};
-  bool trace = getenv("SCRIPTC_PUBLISH_TRACE") != NULL;
+  ScrPub ctx;
+  ctx.stack = ctx.stack_inline;
+  ctx.len = 0;
+  ctx.cap = SCR_PUB_INLINE;
+  ctx.log = ctx.log_inline;
+  ctx.logged = 0;
+  ctx.log_cap = SCR_PUB_INLINE;
+  ctx.refusal = NULL;
+  int traced = atomic_load_explicit(&scr_pub_trace, memory_order_relaxed);
+  if (traced < 0) {
+    traced = getenv("SCRIPTC_PUBLISH_TRACE") != NULL;
+    atomic_store_explicit(&scr_pub_trace, traced, memory_order_relaxed);
+  }
+  bool trace = traced != 0;
   uint64_t t0 = trace ? scr_hrtime_ns() : 0, t1 = 0;
   scr_pub_push(&ctx, root, fn);
   while (ctx.len > 0 && !ctx.refusal) {
@@ -291,8 +328,8 @@ void scr_publish(void *root, ScrPubFn fn) {
       fprintf(stderr, "scriptc: published %zu objects (walk %.1fms, commit %.1fms)\n", ctx.logged, walk, post);
     }
   }
-  free(ctx.stack);
-  free(ctx.log);
+  if (ctx.stack != ctx.stack_inline) free(ctx.stack);
+  if (ctx.log != ctx.log_inline) free(ctx.log);
 }
 
 /* Writes into published objects (the emitted guards' cold paths): Node's

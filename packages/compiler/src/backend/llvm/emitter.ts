@@ -174,7 +174,7 @@ import {
   type MapReadLifetimes,
 } from "./map-read-lifetimes.js";
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
-import { borrowableInputs, emitBorrowedInput } from "./borrowed-inputs.js";
+import { borrowableInputs, emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { analyzeWalks, findWalkBorrows, type WalkBorrowHost } from "./walk-borrows.js";
 import { findReboundParameters } from "./rebound-parameters.js";
 import { ReferenceEffects } from "./reference-effects.js";
@@ -8643,7 +8643,109 @@ export class LlEmitter {
       e.name === "region.release"
     )
       return this.emitRegionIntrinsic(e);
+    if (e.name.startsWith("itable.")) return this.emitInternTableIntrinsic(e);
     return emitIntrinsicExpr(this, e);
+  }
+
+  /** InternTable's runtime calls (scr_itable.c). Table and entry handles
+   * are f64 values carrying pointer bits; entry values are 64-bit slots
+   * (double bits, a bool, or a pointer to an immortal value) that the
+   * table neither retains nor releases. */
+  private emitInternTableIntrinsic(e: ExprOf<"intrinsic">): LlValue {
+    const B = this.B;
+    // The runtime copies keys and stores published values without counts,
+    // so every operand is borrowed.
+    const args = emitBorrowedInputs(this, e.args);
+    if (B.isTerminated()) return { name: "", type: e.type };
+    const toPtr = (handle: string): string => {
+      const bits = B.tmp(),
+        ptr = B.tmp();
+      B.line(`${bits} = bitcast double ${handle} to i64`);
+      B.line(`${ptr} = inttoptr i64 ${bits} to ptr`);
+      return ptr;
+    };
+    const toHandle = (ptr: string): LlValue => {
+      const bits = B.tmp(),
+        handle = B.tmp();
+      B.line(`${bits} = ptrtoint ptr ${ptr} to i64`);
+      B.line(`${handle} = bitcast i64 ${bits} to double`);
+      return { name: handle, type: e.type };
+    };
+    const keyCall = (op: "find" | "insert"): string => {
+      const key = e.args[1]!.type.kind === "string" ? "str" : "f64";
+      const keyTy = key === "str" ? "ptr" : "double";
+      const value = op === "insert" ? ", i64" : "";
+      this.declare(`declare ptr @scr_itable_${op}_${key}(ptr, ${keyTy}${value})`);
+      return `@scr_itable_${op}_${key}(ptr ${toPtr(args[0]!.name)}, ${keyTy} ${args[1]!.name}`;
+    };
+    switch (e.name) {
+      case "itable.open": {
+        this.declare(`declare ptr @scr_itable_open(ptr, i32)`);
+        const kind = B.tmp(),
+          table = B.tmp();
+        B.line(`${kind} = fptosi double ${args[1]!.name} to i32`);
+        B.line(`${table} = call ptr @scr_itable_open(ptr ${args[0]!.name}, i32 ${kind})`);
+        return toHandle(table);
+      }
+      case "itable.find": {
+        const call = keyCall("find");
+        const entry = B.tmp();
+        B.line(`${entry} = call ptr ${call})`);
+        return toHandle(entry);
+      }
+      case "itable.insert": {
+        const value = args[2]!;
+        const ty = this.llType(value.type);
+        let slot = value.name;
+        if (ty === "double") {
+          slot = B.tmp();
+          B.line(`${slot} = bitcast double ${value.name} to i64`);
+        } else if (ty === "i1") {
+          slot = B.tmp();
+          B.line(`${slot} = zext i1 ${value.name} to i64`);
+        } else if (ty === "ptr") {
+          slot = B.tmp();
+          B.line(`${slot} = ptrtoint ptr ${value.name} to i64`);
+        } else throw new InternalCompilerError(`llvm emitter bug: itable value of type ${ty}`);
+        const call = keyCall("insert");
+        const entry = B.tmp();
+        B.line(`${entry} = call ptr ${call}, i64 ${slot})`);
+        return toHandle(entry);
+      }
+      case "itable.value": {
+        // The handle's bits reach the address through memory: at -O0, x86
+        // FastISel folds inttoptr(bitcast double) into the load's address
+        // without moving the value out of its XMM register. Optimized
+        // builds turn the stack round trip back into one register move.
+        const carrier = B.slot();
+        B.entryAllocas.push(`${carrier} = alloca double`);
+        B.line(`store double ${args[0]!.name}, ptr ${carrier}`);
+        const bits = B.tmp(),
+          entry = B.tmp();
+        B.line(`${bits} = load i64, ptr ${carrier}`);
+        B.line(`${entry} = inttoptr i64 ${bits} to ptr`);
+        const slot = B.tmp();
+        B.line(`${slot} = load i64, ptr ${entry}, align 8`);
+        const ty = this.llType(e.type);
+        const result = B.tmp();
+        if (ty === "double") B.line(`${result} = bitcast i64 ${slot} to double`);
+        else if (ty === "i1") B.line(`${result} = trunc i64 ${slot} to i1`);
+        else if (ty === "ptr") B.line(`${result} = inttoptr i64 ${slot} to ptr`);
+        else throw new InternalCompilerError(`llvm emitter bug: itable value of type ${ty}`);
+        // Stored values are immortal: owning one adds no count.
+        return isRefCounted(e.type)
+          ? this.own({ name: result, type: e.type })
+          : { name: result, type: e.type };
+      }
+      case "itable.size": {
+        this.declare(`declare double @scr_itable_size(ptr)`);
+        const size = B.tmp();
+        B.line(`${size} = call double @scr_itable_size(ptr ${toPtr(args[0]!.name)})`);
+        return { name: size, type: e.type };
+      }
+      default:
+        throw new InternalCompilerError(`llvm emitter bug: unknown intrinsic ${e.name}`);
+    }
   }
 
   /** Lifetime regions in modules with lifetimeRegions (llvm/regions.ts).

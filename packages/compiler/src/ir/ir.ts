@@ -3470,7 +3470,21 @@ export type IrExpr =
         | "region.create"
         | "region.enter"
         | "region.leave"
-        | "region.release";
+        | "region.release"
+        /* InternTable (@scriptc/experimental; scr_itable.c):
+         * itable.open (string name, f64 key kind) → f64 table handle;
+         * itable.find (f64 table, K key) → f64 entry handle, 0 when the key
+         * has no entry; itable.insert (f64 table, K key, V value) → f64 the
+         * key's entry, storing the already published value when the key has
+         * none; itable.value (f64 entry) → V, the entry's immortal value;
+         * itable.size (f64 table) → f64. K is string or f64. Handles carry
+         * raw pointer bits and only reach toBool and these intrinsics.
+         * None of them throws. */
+        | "itable.open"
+        | "itable.find"
+        | "itable.insert"
+        | "itable.value"
+        | "itable.size";
       args: IrExpr[];
       type: IrType;
       loc: SrcLoc;

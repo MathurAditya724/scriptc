@@ -92,6 +92,42 @@
       ]
     },
     {
+      "name": "intern-table",
+      "entry": "workloads/intern-table.ts",
+      "args": [
+        "table",
+        "8",
+        "100000"
+      ]
+    },
+    {
+      "name": "intern-table-map",
+      "entry": "workloads/intern-table.ts",
+      "args": [
+        "map",
+        "8",
+        "100000"
+      ]
+    },
+    {
+      "name": "intern-table-1",
+      "entry": "workloads/intern-table.ts",
+      "args": [
+        "table",
+        "1",
+        "100000"
+      ]
+    },
+    {
+      "name": "intern-table-map-1",
+      "entry": "workloads/intern-table.ts",
+      "args": [
+        "map",
+        "1",
+        "100000"
+      ]
+    },
+    {
       "name": "value-objects",
       "entry": "workloads/value-objects.ts",
       "args": [

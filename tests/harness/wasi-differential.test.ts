@@ -280,6 +280,9 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     // Blob reads settle through the dyn promise path on 32-bit pointers.
     "5286-blob-readers.ts",
     "5289-blob-read-order.ts",
+    // InternTable handles carry 32-bit pointers in f64 slots.
+    "5720-intern-table-basics.ts",
+    "5721-intern-table-values.ts",
   ])("the LLVM target runs %s byte-identically to Node", async (fixture) => {
     const entry = join(repoRoot, "tests/corpus", fixture);
     const outDir = await mkdtemp("/tmp/scriptc-wasi-");

@@ -41,6 +41,7 @@ const BASE_RUNTIME_SOURCES = [
   "scr_cycle.c",
   "scr_publish.c",
   "scr_region.c",
+  "scr_itable.c",
   "scr_alloc.c",
 ];
 
