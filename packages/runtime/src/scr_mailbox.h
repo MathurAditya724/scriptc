@@ -25,4 +25,25 @@ bool scr_mailbox_pending(ScrMailbox *mailbox);
 void scr_mailbox_wait(ScrMailbox *mailbox, double milliseconds);
 int scr_mailbox_pollfd(const ScrMailbox *mailbox);
 
+/* A MessageChannel: two ends, each with its queue of incoming messages and
+ * the inbox of the thread that owns its port (NULL while the port is in
+ * transit). Posting and closing wake the receiving owner with a wake_kind
+ * event. Ends are thread-neutral, so a port can move between threads. */
+typedef struct ScrChannel ScrChannel;
+ScrChannel *scr_channel_new(void);
+ScrChannel *scr_channel_retain(ScrChannel *channel);
+void scr_channel_release(ScrChannel *channel);
+void scr_channel_set_owner(ScrChannel *channel, int side, ScrMailbox *owner, unsigned wake_kind);
+/* Consumes message; false when either end has closed (the message is dropped). */
+bool scr_channel_post(ScrChannel *channel, int side, ScrMessage *message, unsigned message_kind,
+                      unsigned wake_kind);
+/* close() stops posting both ways; notify_close, once the closed port's
+ * 'close' ran, tells the other end (after its queued messages). */
+void scr_channel_close(ScrChannel *channel, int side);
+void scr_channel_notify_close(ScrChannel *channel, int side, unsigned wake_kind);
+ScrMailEvent *scr_channel_take(ScrChannel *channel, int side);
+size_t scr_channel_count(ScrChannel *channel, int side);
+uint64_t scr_channel_peer_closed(ScrChannel *channel, int side); /* the notice's order, 0: none */
+void scr_channel_drop(ScrChannel *channel, int side);
+
 #endif

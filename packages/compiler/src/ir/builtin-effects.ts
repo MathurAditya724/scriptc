@@ -18,6 +18,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "worker.new",
   "worker.data",
   "worker.parentPort",
+  "worker.channel",
+  "worker.receiveMessageOnPort",
   "process.exit",
   "text.encodeInto",
   "buffer.isAscii",

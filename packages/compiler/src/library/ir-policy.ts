@@ -61,6 +61,8 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["urj.", "unhandled-rejection tracking"],
   ["dc.", "the diagnostics_channel surface"],
   ["worker.new", "native worker threads"],
+  ["worker.channel", "native worker threads"],
+  ["worker.receiveMessageOnPort", "native worker threads"],
 ];
 
 /** Value/type kinds whose mere presence means an excluded unit's code (or

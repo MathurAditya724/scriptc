@@ -3719,6 +3719,7 @@ void scr_loop_set_stream(bool (*pending)(void), void (*dispatch)(void)) {
 #ifdef SCR_WORKERS
 static SCR_TL bool (*scr_workers_pending_fn)(void);
 static SCR_TL void (*scr_workers_dispatch_fn)(void);
+static SCR_TL bool (*scr_workers_more_fn)(void);
 static SCR_TL int (*scr_workers_pollfd_fn)(void);
 static SCR_TL bool (*scr_workers_ready_fn)(void);
 static SCR_TL void (*scr_workers_wait_fn)(double);
@@ -3731,6 +3732,8 @@ void scr_loop_set_workers(bool (*pending)(void), bool (*ready)(void), void (*dis
   scr_workers_ready_fn = ready;
   scr_workers_wait_fn = wait;
 }
+
+void scr_loop_set_workers_more(bool (*more)(void)) { scr_workers_more_fn = more; }
 #endif
 
 static bool scr_workers_pending(void) {
@@ -3889,6 +3892,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     scr_workers_dispatch();
     if (scr_exc_pending()) return false;
     if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
+#ifdef SCR_WORKERS
+    if (scr_workers_more_fn != NULL && scr_workers_more_fn()) continue;
+#endif
     /* Event dispatch (scr_events.c, when linked): watched signals
      * delivered since the last turn fire their listeners now (macrotasks,
      * like timers), then stdin — while a consumer exists, probe fd 0 and

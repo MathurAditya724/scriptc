@@ -941,9 +941,9 @@
       "apiEntries": 66,
       "static": {
         "supported": 0,
-        "partial": 24,
+        "partial": 26,
         "refused": 0,
-        "not-implemented": 42,
+        "not-implemented": 40,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -112380,6 +112380,9 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/5793-worker-message-channel.ts",
+          "tests/corpus/5796-worker-message-channel.cjs",
+          "tests/corpus/5797-worker-message-port-transfer.ts",
           "tests/corpus/native-worker-clone-errors.ts",
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-delayed-messages.ts",
@@ -112648,8 +112651,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.MessageChannel",
+        "tests": [
+          "tests/corpus/5793-worker-message-channel.ts",
+          "tests/corpus/5796-worker-message-channel.cjs",
+          "tests/corpus/5797-worker-message-port-transfer.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -113720,8 +113728,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker_threads.receiveMessageOnPort",
+        "tests": [
+          "tests/corpus/5793-worker-message-channel.ts",
+          "tests/corpus/5796-worker-message-channel.cjs",
+          "tests/corpus/5797-worker-message-port-transfer.ts"
+        ]
       },
       "anchorSource": "exact"
     },

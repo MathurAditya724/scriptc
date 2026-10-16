@@ -21,7 +21,11 @@ typedef enum {
   /* A typed value published with @scriptc/threads (immortal), delivered as
    * a fresh typed-ref capsule over the same pointer. */
   SCR_MESSAGE_TYPED_REF,
+  /* A transferred MessagePort: its channel end (+1), the side in number. */
+  SCR_MESSAGE_PORT,
 } ScrMessageKind;
+
+const ScrMessagePortOps *scr_message_port_ops = NULL;
 
 typedef struct {
   char *key;
@@ -43,6 +47,7 @@ typedef struct {
   ScrBytesElem element;
   bool data_view;
   ScrDyn *published; /* SCR_MESSAGE_PUBLISHED: immortal root, owns nothing */
+  ScrChannel *channel; /* SCR_MESSAGE_PORT */
   /* SCR_MESSAGE_TYPED_REF: the capsule's process-wide adapters and type key
    * (vtables, adapters and type keys are shared by every thread). */
   struct {
@@ -85,7 +90,17 @@ typedef struct {
   size_t *stack;
   size_t depth;
   size_t stack_capacity;
+  const ScrDyn *transfer; /* the transfer list (a dyn array), or NULL */
 } ScrMessageEncoder;
+
+static bool scr_message_listed(const ScrMessageEncoder *encoder, const ScrDyn *value) {
+  if (!encoder->transfer) return false;
+  for (size_t i = 0; i < encoder->transfer->v.arr.len; i++) {
+    const ScrDyn *item = encoder->transfer->v.arr.items[i];
+    if (item && item->kind == SCR_DYN_HANDLE && item->v.handle.ptr == value->v.handle.ptr) return true;
+  }
+  return false;
+}
 
 static void *scr_message_alloc(size_t count, size_t size) {
   if (count > SIZE_MAX / size) scr_trap("scriptc: message too large\n");
@@ -303,6 +318,20 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
     break;
   case SCR_DYN_BYTES:
   case SCR_DYN_HANDLE: {
+    if (value->kind == SCR_DYN_HANDLE && scr_message_port_ops && scr_message_port_ops->is_port(value)) {
+      int side = 0;
+      ScrChannel *channel = scr_message_listed(encoder, value)
+          ? scr_message_port_ops->channel_of(value, &side) : NULL;
+      if (!channel) {
+        scr_throw_domex("DataCloneError",
+                        "Object that needs transfer was found in message but not listed in transferList");
+        return SIZE_MAX;
+      }
+      node->kind = SCR_MESSAGE_PORT;
+      node->channel = channel;
+      node->number = side;
+      break;
+    }
     bool buffer = scr_buffer_storage_is(value);
     if (value->kind == SCR_DYN_HANDLE && !buffer) goto unsupported;
     const ScrBytes *bytes = buffer ? value->v.handle.ptr : value->v.bytes;
@@ -491,11 +520,39 @@ static ScrMessage *scr_message_try_publish(const ScrDyn *value) {
   return message;
 }
 
-ScrMessage *scr_message_encode(const ScrDyn *value) {
-  ScrMessage *published = scr_message_try_publish(value);
+static ScrMessage *scr_message_encode_with(const ScrDyn *value, const ScrDyn *transfer);
+
+ScrMessage *scr_message_encode(const ScrDyn *value) { return scr_message_encode_with(value, NULL); }
+
+ScrMessage *scr_message_encode_transfer(const ScrDyn *value, const ScrDyn *transfer) {
+  if (!transfer || transfer->kind != SCR_DYN_ARR || transfer->v.arr.len == 0)
+    return scr_message_encode_with(value, NULL);
+  for (size_t i = 0; i < transfer->v.arr.len; i++) {
+    const ScrDyn *item = transfer->v.arr.items[i];
+    int side = 0;
+    ScrChannel *channel = item && item->kind == SCR_DYN_HANDLE && scr_message_port_ops
+        ? scr_message_port_ops->channel_of(item, &side) : NULL;
+    if (!channel) {
+      static const char text[] = "Transfer lists with values other than MessagePorts are not supported yet";
+      ScrStr *m = scr_str_new(text, sizeof text - 1);
+      scr_throw_lowering_fence(m);
+      scr_str_release(m);
+      return NULL;
+    }
+    scr_message_port_ops->release(channel);
+  }
+  ScrMessage *message = scr_message_encode_with(value, transfer);
+  if (!message) return NULL;
+  /* the listed ports now belong to the message */
+  for (size_t i = 0; i < transfer->v.arr.len; i++) scr_message_port_ops->detach(transfer->v.arr.items[i]);
+  return message;
+}
+
+static ScrMessage *scr_message_encode_with(const ScrDyn *value, const ScrDyn *transfer) {
+  ScrMessage *published = transfer ? NULL : scr_message_try_publish(value);
   if (published) return published;
   ScrMessage *message = scr_message_alloc(1, sizeof(*message));
-  ScrMessageEncoder encoder = {.message = message};
+  ScrMessageEncoder encoder = {.message = message, .transfer = transfer};
   if (scr_message_value(&encoder, value) == SIZE_MAX) goto done;
   while (encoder.depth && !scr_exc_pending()) {
     size_t id = encoder.stack[encoder.depth - 1];
@@ -598,6 +655,9 @@ ScrDyn *scr_message_decode(const ScrMessage *message) {
           node->typed.ptr, node->typed.retain, node->typed.release, node->typed.type_key,
           node->typed.type_key_len, node->typed.materialize, node->typed.commit);
       break;
+    case SCR_MESSAGE_PORT:
+      values[i] = scr_message_port_ops->adopt(node->channel, (int)node->number);
+      break;
     }
     if (!values[i] || scr_exc_pending()) goto done;
   }
@@ -643,6 +703,7 @@ void scr_message_free(ScrMessage *message) {
     free(node->properties);
     free(node->data);
     scr_shared_release(node->shared);
+    if (node->kind == SCR_MESSAGE_PORT) scr_message_port_ops->release(node->channel);
   }
   free(message->nodes);
   free(message);

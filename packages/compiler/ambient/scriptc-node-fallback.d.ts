@@ -5459,6 +5459,13 @@ declare module "worker_threads" {
     removeAllListeners(event?: string): this;
     listenerCount(event: string, listener?: (...args: any[]) => void): number;
   }
+  /* Two entangled ports; a port moves to another thread through a
+   * postMessage or workerData transferList. */
+  export class MessageChannel {
+    readonly port1: MessagePort;
+    readonly port2: MessagePort;
+  }
+  export function receiveMessageOnPort(port: MessagePort): { message: any } | undefined;
   export const parentPort: MessagePort | null;
   export const workerData: any;
 }
