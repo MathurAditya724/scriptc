@@ -378,6 +378,10 @@ static SCR_TL unsigned scr_gen_limit = SCR_CYC_OLD;
 #endif
 
 static size_t scr_cyc_pass(unsigned gen_limit);
+/* A limited pass (scr_cyc_collect_set) takes only the candidates in this
+ * set from the buffers up to `scr_cyc_take_gen`; NULL takes them all. */
+static SCR_TL const ScrCycSet *scr_cyc_take = NULL;
+static SCR_TL unsigned scr_cyc_take_gen = SCR_CYC_OLD;
 
 /* ── when to collect ──────────────────────────────────────────────────── */
 
@@ -1046,6 +1050,9 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit) {
     void *obj = scr_white.v[i];
     ScrCycHdr *h = scr_cyc_hdr(obj);
     if (scr_cyc_color(h) != SCR_CYC_WHITE) continue;
+    /* A limited pass can reach candidates it did not take: out of their
+     * buffers before they are freed. */
+    if (scr_cyc_take && scr_cyc_is_buffered(h)) scr_cyc_on_dead(obj);
     scr_cyc_set_color(h, SCR_CYC_DOOMED);
     if (gen_limit < SCR_CYC_OLD) scr_cyc_freed(scr_cyc_type(h), gen_limit);
     else scr_cyc_mature_dead += scr_cyc_gen(h) == SCR_CYC_MATURE;
@@ -1130,10 +1137,14 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit) {
   scr_xgen.n = 0;
   freed += scr_xg_freed;
 
-  if (gen_limit >= SCR_CYC_MATURE) scr_cyc_live_after[SCR_CYC_MATURE] = scr_cyc_live;
-  if (gen_limit >= SCR_CYC_OLD) {
-    scr_cyc_live_after[SCR_CYC_OLD] = scr_cyc_live;
-    scr_cyc_scheduled_mature_age = 0;
+  /* A limited pass walked only some of the candidates: the schedule's
+   * baselines stay those of the last pass over them all. */
+  if (scr_cyc_take == NULL) {
+    if (gen_limit >= SCR_CYC_MATURE) scr_cyc_live_after[SCR_CYC_MATURE] = scr_cyc_live;
+    if (gen_limit >= SCR_CYC_OLD) {
+      scr_cyc_live_after[SCR_CYC_OLD] = scr_cyc_live;
+      scr_cyc_scheduled_mature_age = 0;
+    }
   }
   /* markRoots drained buffers in bulk and teardowns moved the count around;
    * resync from the buffers themselves and re-arm. */
@@ -1156,7 +1167,27 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
    * can re-buffer underneath us. Candidates ABOVE the limit keep their
    * slots and wait for a pass at their own level. */
   scr_cands.n = 0;
-  for (unsigned g = 0; g <= gen_limit; g++) {
+  if (scr_cyc_take) {
+    /* A limited pass: only the set's candidates leave their buffers. The
+     * scan reads the buffers' pointers alone, so the candidates it leaves,
+     * which may be most of a large heap's, are not touched. */
+    for (unsigned g = 0; g <= scr_cyc_take_gen; g++) {
+      ScrVec *b = &scr_roots[g];
+      for (size_t i = 0; i < b->n;) {
+        void *obj = b->v[i];
+        if (!scr_cyc_set_has(scr_cyc_take, obj)) {
+          i++;
+          continue;
+        }
+        void *last = b->v[--b->n];
+        b->v[i] = last;
+        if (last != obj) scr_cyc_set_buffered(scr_cyc_hdr(last), (uint32_t)i);
+        scr_cyc_clear_buffered(scr_cyc_hdr(obj));
+        scr_cyc_push(&scr_cands, obj);
+      }
+    }
+  }
+  for (unsigned g = 0; g <= gen_limit && !scr_cyc_take; g++) {
     for (size_t i = 0; i < scr_roots[g].n; i++) {
       void *obj = scr_roots[g].v[i];
       ScrCycHdr *h = scr_cyc_hdr(obj);
@@ -1197,6 +1228,15 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
 /* Tests only: one pass at exactly `gen`, outside the schedule. */
 size_t scr_cyc_pass_at(unsigned gen) { return scr_cyc_pass(gen); }
 #endif
+
+size_t scr_cyc_collect_set(const ScrCycSet *set, unsigned gen) {
+  if (scr_collecting) return 0;
+  scr_cyc_take = set;
+  scr_cyc_take_gen = gen;
+  size_t freed = scr_cyc_pass(SCR_CYC_OLD);
+  scr_cyc_take = NULL;
+  return freed;
+}
 
 void scr_collect_cycles(void) {
   /* The full pass, run to a fixpoint. A teardown's releases can drop the
