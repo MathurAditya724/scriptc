@@ -140,6 +140,8 @@ export function generatorMeta(
  * - `...xs: T[]`: the ABI type is the array; call sites pack the surplus.
  */
 export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): ParamShape {
+  const stage = lowerer.stageSourceType(param.name);
+  if (stage) return { type: stage, mode: "required" };
   if (isJsSourceFile(param.getSourceFile()) && ts.isSetAccessorDeclaration(param.parent))
     return { type: DYN, mode: "required" };
   if (
@@ -344,6 +346,8 @@ export function paramShapes(
     return params.filter((p) => !isThisParameter(p)).map((param) => lowerer.paramShape(param));
   const symbols = signature.getParameters();
   return params.map((declParam, i) => {
+    const stage = lowerer.stageSourceType(declParam.name);
+    if (stage) return { type: stage, mode: "required" as const };
     const symbol = symbols[i];
     const tsType = symbol
       ? lowerer.checker.getTypeOfSymbol(symbol)

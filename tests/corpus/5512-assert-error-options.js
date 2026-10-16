@@ -1,0 +1,46 @@
+// AssertionError options validation, generatedMessage from the message's
+// truthiness, and the class reached through the default export.
+import assert, { AssertionError } from "node:assert";
+
+/** @param {string} label @param {() => unknown} fn */
+function show(label, fn) {
+  try {
+    console.log(label, fn());
+  } catch (e) {
+    const error = /** @type {any} */ (e);
+    console.log(label, "threw", error.name, error.code, JSON.stringify(error.message));
+  }
+}
+
+/** @param {unknown} options */
+const make = (options) => new AssertionError(/** @type {any} */ (options));
+show("undefined options", () => make(undefined));
+show("string options", () => make("x"));
+show("number options", () => make(5));
+show("null options", () => make(null));
+show("array options", () => make([]));
+show("function options", () => make(() => 1));
+show("object options", () => make({ actual: 1, expected: 1, operator: "notStrictEqual" }).message);
+
+const error = new AssertionError({ actual: 1, expected: 2, operator: "strictEqual" });
+show("default export instanceof", () => error instanceof assert.AssertionError);
+show("numeric message", () => {
+  const numeric = make({ message: 0, actual: 1, expected: 2 });
+  return [JSON.stringify(numeric.message), numeric.generatedMessage];
+});
+show("object message", () => {
+  const object = make({ message: { toString: () => "from toString" } });
+  return [JSON.stringify(object.message), object.generatedMessage];
+});
+show("caught", () => {
+  try {
+    assert.ok(false);
+  } catch (e) {
+    return [e instanceof AssertionError, /** @type {any} */ (e).code];
+  }
+});
+show("thrown and matched", () => {
+  assert.throws(() => { throw make({ message: "custom" }); }, AssertionError);
+  assert.throws(() => { throw make({ message: "custom" }); }, /custom/);
+  return "ok";
+});

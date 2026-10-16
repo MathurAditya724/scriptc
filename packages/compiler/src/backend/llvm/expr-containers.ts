@@ -35,6 +35,7 @@ import {
   emitNumberMapGetRef,
   emitNumberMapGetScalar,
   emitNumberMapHas,
+  emitNumberMapSetScalar,
   emitStringMapGetRef,
   emitStringMapGetScalar,
   emitStringMapHas,
@@ -1315,7 +1316,17 @@ export function emitMapLikeIntrinsic(
       const v = host.emitExpr(e.args[1]!);
       const vAcc = elemAccess(receiverType.value);
       if (vAcc === "ref") host.moveTemp(v);
-      host.mapSet(r.name, kAcc, vAcc, k.name, v.name);
+      if (kAcc === "f64" && vAcc !== "ref" && host.readNumberMapWrites.has(e)) {
+        const bits = B.tmp();
+        B.line(
+          vAcc === "f64"
+            ? `${bits} = bitcast double ${v.name} to i64`
+            : `${bits} = zext i1 ${v.name} to i64`,
+        );
+        emitNumberMapSetScalar(host, r.name, k.name, bits, () =>
+          host.mapSet(r.name, kAcc, vAcc, k.name, v.name),
+        );
+      } else host.mapSet(r.name, kAcc, vAcc, k.name, v.name);
       return { name: "", type: e.type };
     }
     case "add": {
@@ -1323,7 +1334,11 @@ export function emitMapLikeIntrinsic(
       // Element borrowed (the runtime retains stored strings); the unit
       // value is 0. Re-adding overwrites in place, preserving insertion.
       const k = emitBorrowedInput(host, e.args[0]!);
-      host.mapSet(r.name, kAcc, "f64", k.name, f64Lit(0));
+      if (kAcc === "f64" && host.readNumberMapWrites.has(e))
+        emitNumberMapSetScalar(host, r.name, k.name, null, () =>
+          host.mapSet(r.name, kAcc, "f64", k.name, f64Lit(0)),
+        );
+      else host.mapSet(r.name, kAcc, "f64", k.name, f64Lit(0));
       return { name: "", type: e.type };
     }
     case "has": {

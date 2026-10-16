@@ -28,7 +28,7 @@ import { resultIsDiscarded } from "./call-position.js";
 import type { Lowerer } from "./lowerer.js";
 import { jsFuncNameOf, own } from "./lowerer.js";
 import { NARROW_FIRST } from "./surfaces.js";
-import { inspectExpr, typeReachesItself } from "./lower-inspect.js";
+import { inspectExpr, typeReachesCycle, typeReachesItself } from "./lower-inspect.js";
 import { abstractEqualityExpr, abstractEqualitySupported } from "./abstract-equality.js";
 import {
   BOOL,
@@ -49,7 +49,7 @@ import {
   typeEquals,
   typeKey,
 } from "../../ir/ir.js";
-import { boolLit, countedFor, numLit, strLit, varRef } from "../../ir/build.js";
+import { boolLit, countedFor, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 
 /** node:assert/strict binds the loose NAMES to the strict comparisons —
  * Node's own aliasing (`strict.equal === assert.strictEqual`). */
@@ -65,6 +65,85 @@ const STRICT_ALIASES: Record<string, string | undefined> = {
 function canonicalAssertMember(module: string, member: string): string {
   if (module === "assert/strict") return own(STRICT_ALIASES, member) ?? member;
   return member;
+}
+
+/* Node's AssertionError carries actual, expected and operator. Where the
+ * verdict is computed in compiled code, the failure branch records them
+ * (assert.record) before the throwing call, so a passing assertion boxes
+ * nothing. Values without a checked-dynamic form record undefined, and so
+ * do values whose type can be cyclic: the checked-dynamic form is a deep
+ * copy, which a cyclic value does not have. */
+
+/** A value as the dyn the record carries. */
+function recordedValue(lowerer: Lowerer, value: IrExpr | null, loc: SrcLoc): IrExpr {
+  if (value === null) return dynUndefinedExpr(loc);
+  if (value.type.kind === "dyn") return value;
+  if (
+    value.kind === "unitLit" ||
+    (lowerer.dynConvertible(value.type) && !typeReachesCycle(lowerer, value.type))
+  ) {
+    return { kind: "dynFrom", value, type: DYN, loc };
+  }
+  return dynUndefinedExpr(loc);
+}
+
+/** `if (failing) assert.record(actual, expected, operator)`. */
+function recordOnFailure(
+  lowerer: Lowerer,
+  failing: IrExpr,
+  actual: IrExpr | null,
+  expected: IrExpr | null,
+  operator: string,
+  loc: SrcLoc,
+): IrStmt {
+  return {
+    kind: "if",
+    cond: failing,
+    then: [
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "assert.record",
+          args: [
+            recordedValue(lowerer, actual, loc),
+            recordedValue(lowerer, expected, loc),
+            strLit(operator, loc),
+          ],
+          type: VOID,
+          loc,
+        },
+        loc,
+      },
+    ],
+    else_: null,
+    loc,
+  };
+}
+
+/** A value held in a hidden local, so the verdict and the record read it once. */
+function stableValue(
+  lowerer: Lowerer,
+  stmts: IrStmt[],
+  value: IrExpr,
+  name: string,
+  loc: SrcLoc,
+): IrExpr {
+  if (
+    value.kind === "varRef" ||
+    value.kind === "unitLit" ||
+    value.kind === "boolLit" ||
+    value.kind === "numLit" ||
+    value.kind === "strLit"
+  )
+    return value;
+  const local = lowerer.declareHiddenLocal(name, value.type);
+  stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+  return varRef(local.id, value.type, loc);
+}
+
+function notExpr(value: IrExpr, loc: SrcLoc): IrExpr {
+  return { kind: "unary", op: "!", operand: value, type: BOOL, loc };
 }
 
 /** VOID/never results are usable as statements and concise arrow bodies
@@ -216,9 +295,26 @@ function lowerAssertLooseEqual(
   };
   const a = stable(left, "%assertLooseA");
   const b = stable(right, "%assertLooseB");
-  const equal = abstractEqualityExpr(lowerer, a, b, loc, true);
-  const actual = inspectExpr(lowerer, a.type, a, numLit(0, loc), numLit(2, loc), loc);
-  const expected = inspectExpr(lowerer, b.type, b, numLit(0, loc), numLit(2, loc), loc);
+  const equal = stableValue(
+    lowerer,
+    stmts,
+    abstractEqualityExpr(lowerer, a, b, loc, true),
+    "%assertLooseEqual",
+    loc,
+  );
+  const failing = negated ? equal : notExpr(equal, loc);
+  stmts.push(recordOnFailure(lowerer, failing, a, b, negated ? "!=" : "==", loc));
+  // The operands are inspected only for the failure message.
+  const inspectOnFailure = (value: IrExpr): IrExpr => ({
+    kind: "ternary",
+    cond: failing,
+    then: inspectExpr(lowerer, value.type, value, numLit(0, loc), numLit(2, loc), loc),
+    else_: strLit("", loc),
+    type: STRING,
+    loc,
+  });
+  const actual = inspectOnFailure(a);
+  const expected = inspectOnFailure(b);
   const { msg, hasMsg } = lowerMessageArg(lowerer, expr.arguments[2], loc);
   const result: IrExpr = {
     kind: "libCall",
@@ -272,19 +368,39 @@ function lowerAssertOk(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): 
     );
   }
   const valueNode = expr.arguments[0]!;
-  const pass = lowerer.ensureBool(lowerer.lowerExpr(valueNode), valueNode);
+  const stmts: IrStmt[] = [];
+  const value = stableValue(lowerer, stmts, lowerer.lowerExpr(valueNode), "%assertOkValue", loc);
+  const pass = stableValue(
+    lowerer,
+    stmts,
+    lowerer.ensureBool(value, valueNode),
+    "%assertOkPass",
+    loc,
+  );
   const msgNode = expr.arguments[1];
+  let msg: IrExpr;
+  let generated = false;
   if (!msgNode || (ts.isIdentifier(msgNode) && msgNode.text === "undefined")) {
     // Node reads the CALLSITE LINE and slices the expression out of it
     // (internal/errors/error_source.js) — a call spanning lines truncates
     // at the first newline, so the compile-time text does too.
     const source = expr.getText().split("\n", 1)[0]!;
-    const generated = `The expression evaluated to a falsy value:\n\n  ${source}\n`;
-    const msg: IrExpr = { kind: "strLit", value: generated, type: STRING, loc };
-    return { kind: "libCall", fn: "assert.ok", args: [pass, msg], type: VOID, loc };
+    const text = `The expression evaluated to a falsy value:\n\n  ${source}\n`;
+    msg = { kind: "strLit", value: text, type: STRING, loc };
+    generated = true;
+  } else {
+    msg = lowerMessageArg(lowerer, msgNode, loc).msg;
   }
-  const { msg } = lowerMessageArg(lowerer, msgNode, loc);
-  return { kind: "libCall", fn: "assert.ok", args: [pass, msg], type: VOID, loc };
+  // Node's actual is the value, expected true, operator "==".
+  stmts.push(recordOnFailure(lowerer, notExpr(pass, loc), value, boolLit(true, loc), "==", loc));
+  const result: IrExpr = {
+    kind: "libCall",
+    fn: "assert.ok",
+    args: [pass, msg, boolLit(generated, loc)],
+    type: VOID,
+    loc,
+  };
+  return { kind: "seqExpr", stmts, result, type: VOID, loc };
 }
 
 /** assert.fail([message]): an unconditional AssertionError — "Failed"
@@ -300,14 +416,41 @@ function lowerAssertFail(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc)
     );
   }
   let msg: IrExpr;
+  let generated: IrExpr;
   const msgNode = expr.arguments[0];
+  const stmts: IrStmt[] = [];
   if (!msgNode || (ts.isIdentifier(msgNode) && msgNode.text === "undefined")) {
     msg = { kind: "strLit", value: "Failed", type: STRING, loc };
+    generated = boolLit(true, loc);
   } else {
-    msg = lowerMessageArg(lowerer, msgNode, loc).msg;
+    // Node's AssertionError sets generatedMessage to !message, so an
+    // empty custom message counts as generated.
+    msg = stableValue(
+      lowerer,
+      stmts,
+      lowerMessageArg(lowerer, msgNode, loc).msg,
+      "%assertFailMessage",
+      loc,
+    );
+    generated = {
+      kind: "strEq",
+      negated: false,
+      left: msg,
+      right: strLit("", loc),
+      type: BOOL,
+      loc,
+    };
   }
   const falseLit: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
-  return { kind: "libCall", fn: "assert.ok", args: [falseLit, msg], type: VOID, loc };
+  stmts.push(recordOnFailure(lowerer, boolLit(true, loc), null, null, "fail", loc));
+  const result: IrExpr = {
+    kind: "libCall",
+    fn: "assert.ok",
+    args: [falseLit, msg, generated],
+    type: VOID,
+    loc,
+  };
+  return { kind: "seqExpr", stmts, result, type: VOID, loc };
 }
 
 /** The equality quartet. Scalars (number/string/boolean) compare with
@@ -491,20 +634,24 @@ function lowerAssertEqual(
         "Node's deep equality compares prototypes (a Buffer is never deep-equal to a plain Uint8Array) — annotate the value so its constructor is visible",
       );
     }
-    const verdict: IrExpr = {
-      kind: "libCall",
-      fn: "assert.bytesDeepEq",
-      args: [a, b, boolLit(brandA === brandB, loc)],
-      type: BOOL,
+    const sameBrand = brandA === brandB;
+    return deepCheckCall(
+      lowerer,
+      a,
+      b,
+      `bytes:${sameBrand}`,
+      (x, y) => ({
+        kind: "libCall",
+        fn: "assert.bytesDeepEq",
+        args: [x, y, boolLit(sameBrand, loc)],
+        type: BOOL,
+        loc,
+      }),
+      negated,
+      msg,
+      hasMsg,
       loc,
-    };
-    return {
-      kind: "libCall",
-      fn: "assert.deepResult",
-      args: [verdict, boolLit(negated, loc), msg, hasMsg],
-      type: VOID,
-      loc,
-    };
+    );
   }
   // Function values (ANY two static signatures — a tuple-typed
   // listeners() element against a prefix-declared handler): strictEqual
@@ -557,11 +704,78 @@ function lowerAssertEqual(
     lowerer.noLowering(`${surface} of '${lowerer.fmt(a.type)}' values`, expr, unsupported);
   }
   const helper = deepEqHelper(lowerer, a.type, loc);
-  const verdict: IrExpr = { kind: "call", callee: helper, args: [a, b], type: BOOL, loc };
+  return deepCheckCall(
+    lowerer,
+    a,
+    b,
+    "deep",
+    (x, y) => ({ kind: "call", callee: helper, args: [x, y], type: BOOL, loc }),
+    negated,
+    msg,
+    hasMsg,
+    loc,
+  );
+}
+
+/** `assert.deepResult(%assert.dcheck.<n>(a, b), negated, msg, hasMsg)`.
+ * The wrapper returns the verdict and, on failure, records actual and
+ * expected. The operands are its parameters, so the call site passes them
+ * as temporaries and a passing assertion holds no extra reference. */
+function deepCheckCall(
+  lowerer: Lowerer,
+  a: IrExpr,
+  b: IrExpr,
+  variant: string,
+  verdictOf: (a: IrExpr, b: IrExpr) => IrExpr,
+  negated: boolean,
+  msg: IrExpr,
+  hasMsg: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const key = `assert.dcheck:${variant}:${negated}:${typeKey(a.type)}:${typeKey(b.type)}`;
+  let name = lowerer.assertHelpers.get(key);
+  if (!name) {
+    name = `%assert.dcheck.${lowerer.assertHelpers.size}`;
+    lowerer.assertHelpers.set(key, name);
+    const pa = varRef("a.0", a.type, loc);
+    const pb = varRef("b.0", b.type, loc);
+    const verdict = varRef("v.0", BOOL, loc);
+    lowerer.liftedFns.push({
+      name,
+      params: [
+        { localId: "a.0", name: "a", type: a.type },
+        { localId: "b.0", name: "b", type: b.type },
+      ],
+      returnType: BOOL,
+      locals: [
+        { id: "a.0", name: "a", type: a.type, mutable: false },
+        { id: "b.0", name: "b", type: b.type, mutable: false },
+        { id: "v.0", name: "verdict", type: BOOL, mutable: false },
+      ],
+      body: [
+        { kind: "varDecl", localId: "v.0", init: verdictOf(pa, pb), loc },
+        recordOnFailure(
+          lowerer,
+          negated ? verdict : notExpr(verdict, loc),
+          pa,
+          pb,
+          negated ? "notDeepStrictEqual" : "deepStrictEqual",
+          loc,
+        ),
+        { kind: "return", value: verdict, loc },
+      ],
+      loc,
+    });
+  }
   return {
     kind: "libCall",
     fn: "assert.deepResult",
-    args: [verdict, boolLit(negated, loc), msg, hasMsg],
+    args: [
+      { kind: "call", callee: name, args: [a, b], type: BOOL, loc },
+      boolLit(negated, loc),
+      msg,
+      hasMsg,
+    ],
     type: VOID,
     loc,
   };
@@ -1161,7 +1375,20 @@ function assertThrowsHelper(
   let catchBody: IrStmt[];
   if (mode === "dnr" || mode === "dnt") {
     const actual = (): IrExpr => ({ kind: "caughtToDyn", value: caughtRef(), type: DYN, loc });
-    const unwanted = (): IrStmt =>
+    // Node's actual is the caught value.
+    const unwanted = (): IrStmt => ({
+      kind: "block",
+      body: [
+        lib("assert.record", [
+          actual(),
+          dynUndefinedExpr(loc),
+          strLit(mode === "dnr" ? "doesNotReject" : "doesNotThrow", loc),
+        ]),
+        unwantedCall(),
+      ],
+      loc,
+    });
+    const unwantedCall = (): IrStmt =>
       lib("assert.unwantedError", [
         {
           kind: "libCall",
@@ -1445,6 +1672,7 @@ function lowerAssertIfError(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcL
       args: [
         { kind: "boolLit", value: true, type: BOOL, loc },
         { kind: "strLit", value: "", type: STRING, loc },
+        { kind: "boolLit", value: true, type: BOOL, loc },
       ],
       type: VOID,
       loc,
@@ -1468,6 +1696,7 @@ function lowerAssertIfError(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcL
       args: [
         { kind: "boolLit", value: true, type: BOOL, loc },
         { kind: "strLit", value: "", type: STRING, loc },
+        { kind: "boolLit", value: true, type: BOOL, loc },
       ],
       type: VOID,
       loc,

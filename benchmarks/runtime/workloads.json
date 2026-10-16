@@ -64,6 +64,13 @@
       ]
     },
     {
+      "name": "cyclic-graphs",
+      "entry": "workloads/cyclic-graphs.ts",
+      "args": [
+        "3"
+      ]
+    },
+    {
       "name": "numeric-kernels",
       "entry": "workloads/numeric-kernels.ts",
       "args": [
