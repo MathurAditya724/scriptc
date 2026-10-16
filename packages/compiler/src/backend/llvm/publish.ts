@@ -449,8 +449,8 @@ export class PublishWalkers {
       `  store ptr ${v}, ptr %slot${id}`,
       `  %slotfn${id} = getelementptr inbounds { ptr, ptr }, ptr %slot${id}, i32 0, i32 1`,
       `  store ptr ${fn}, ptr %slotfn${id}`,
-      `  %len1${id} = add ${S} %len${id}, 1`,
-      `  store ${S} %len1${id}, ptr %lenp${id}`,
+      `  %lennext${id} = add ${S} %len${id}, 1`,
+      `  store ${S} %lennext${id}, ptr %lenp${id}`,
     ];
   }
 
