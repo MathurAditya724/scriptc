@@ -2492,6 +2492,12 @@ static bool scr_dyn_name_in_strs(const ScrStr *key, ScrStr *const *names, size_t
   return false;
 }
 
+bool scr_dyn_typed_ref_class_has(const ScrDyn *d, const ScrStr *key) {
+  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return false;
+  const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
+  return ops && scr_dyn_name_in_strs(key, ops->names, ops->count);
+}
+
 static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d) {
   if (!d->v.typed_ref.record || d->v.typed_ref.materialized) return NULL;
   return (const ScrDynTypedRecordOps *)(const void *)d->v.typed_ref.array;
@@ -3124,6 +3130,12 @@ const char *scr_dyn_specific_type(const ScrDyn *cb, char *detail, size_t cap) {
   case SCR_DYN_PROMISE: d = "an instance of Promise"; break;
 
   case SCR_DYN_TYPED_REF: {
+    /* A class instance's view has no prototype; Node names its class. */
+    const ScrStr *class_name = scr_dyn_typed_ref_class_name(cb);
+    if (class_name && class_name->len) {
+      snprintf(detail, cap, "an instance of %.*s", (int)class_name->len, class_name->data);
+      break;
+    }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(cb);
     const char *specific = scr_dyn_specific_type(materialized, detail, cap);
     if (specific != detail) snprintf(detail, cap, "%s", specific);

@@ -405,6 +405,20 @@ export function typeReachesCycle(lowerer: Lowerer, t: IrType): boolean {
   return walk(t);
 }
 
+/** True when a value of `t` can hold a function: `t` or any type
+ * reachable from it is a function type. */
+export function typeReachesFunction(lowerer: Lowerer, t: IrType): boolean {
+  const seen = new Set<string>();
+  const walk = (u: IrType): boolean => {
+    if (u.kind === "func") return true;
+    const k = typeKey(u);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return typeConstituents(lowerer, u).some(walk);
+  };
+  return walk(t);
+}
+
 /** The types a value of `u` holds directly. */
 function typeConstituents(lowerer: Lowerer, u: IrType): IrType[] {
   switch (u.kind) {

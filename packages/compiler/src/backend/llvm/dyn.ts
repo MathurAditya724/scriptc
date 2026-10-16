@@ -32,7 +32,7 @@ import { InternalCompilerError } from "../../errors.js";
  *               FUNC=8 HANDLE=9.
  *   ScrBytes { rc +0; len +8; elem +16; data +24 }.
  *   ScrDynPath { parent, key, index } — the %ScrDynPath type. */
-import type { IrType, IrUnionDef } from "../../ir/ir.js";
+import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
 import {
   DYN_HANDLE_KINDS,
   isDirentShape,
@@ -56,6 +56,18 @@ import {
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { WalkerHost } from "./walkers.js";
 import type { LlStreamTypedRefAdapter } from "./expr-context.js";
+
+/** Whether to-dyn of a record shape keeps the record itself: an empty shape
+ * and an event-listener record (a `handleEvent` function field) box their
+ * identity. Every other shape, tuples included, copies its fields into a
+ * fresh checked-dynamic value. */
+export function recordDynKeepsIdentity(shape: IrRecordShape): boolean {
+  if (shape.tuple) return false;
+  return (
+    (shape.fields.length === 0 && !shape.indexValue) ||
+    shape.fields.some((f) => f.name === "handleEvent" && f.type.kind === "func")
+  );
+}
 
 /** ScrDynKind values (scr_runtime.h). */
 /** ScrDynHandleTag numeric values (scr_runtime.h's enum order). */
@@ -2271,10 +2283,7 @@ export class LlDyn {
           break;
         }
         const d = B.tmp();
-        const carriesListenerIdentity = shape.fields.some(
-          (f) => f.name === "handleEvent" && f.type.kind === "func",
-        );
-        if ((shape.fields.length === 0 && !shape.indexValue) || carriesListenerIdentity) {
+        if (recordDynKeepsIdentity(shape)) {
           const rc = vAdapters(host, t);
           sourceAccessor = {
             name: `${name}_source_access`,

@@ -992,14 +992,22 @@ declare module "timers" {
 }
 
 /* node:timers/promises — the promisified pair the Node test harness leans
- * on (`await setTimeout(ms)` as a sleep). setTimeout's delay-only form and
- * setImmediate's bare form lower (a void promise the shared timer heap
- * settles); setInterval(delay, value) lowers to a typed async iterator.
- * Resolve values on the one-shot pair and AbortSignal options remain
- * declared surface that fences per site. */
+ * on (`await setTimeout(ms)` as a sleep). setTimeout and setImmediate
+ * settle with their resolve value (undefined without one) from the shared
+ * timer heap and the immediate queue; setInterval(delay, value) lowers to a
+ * typed async iterator. The options object takes `ref`; AbortSignal
+ * options remain declared surface that fences per site. */
 declare module "node:timers/promises" {
-  export function setTimeout(delay?: number): Promise<void>;
-  export function setImmediate(): Promise<void>;
+  export interface TimerOptions {
+    ref?: boolean;
+    signal?: AbortSignal;
+  }
+  export function setTimeout<T = void>(
+    delay?: number,
+    value?: T,
+    options?: TimerOptions,
+  ): Promise<T>;
+  export function setImmediate<T = void>(value?: T, options?: TimerOptions): Promise<T>;
   export function setInterval<T = unknown>(
     delay?: number,
     value?: T,
@@ -2442,6 +2450,95 @@ declare module "crypto" {
     callback: (error: Error | null, buffer: Buffer) => void,
   ): void;
   export type BinaryLike = string | ArrayBuffer | ArrayBufferView;
+  /* Cipheriv/Decipheriv: aes-128/192/256 in cbc, ctr, and gcm modes and
+   * chacha20-poly1305. The stream.Transform members are not declared. */
+  export type CipherGCMTypes = "aes-128-gcm" | "aes-192-gcm" | "aes-256-gcm";
+  export type CipherChaCha20Poly1305Types = "chacha20-poly1305";
+  export type CipherKey = BinaryLike | KeyObject;
+  export interface CipherGCMOptions {
+    authTagLength?: number;
+  }
+  export interface CipherChaCha20Poly1305Options {
+    authTagLength?: number;
+  }
+  export interface Cipheriv {
+    update(data: string | ArrayBufferView): Buffer;
+    update(data: string, inputEncoding: BufferEncoding): Buffer;
+    update(data: ArrayBufferView, inputEncoding: undefined, outputEncoding: BufferEncoding): string;
+    update(
+      data: string,
+      inputEncoding: BufferEncoding | undefined,
+      outputEncoding: BufferEncoding,
+    ): string;
+    final(): Buffer;
+    final(outputEncoding: BufferEncoding): string;
+    setAutoPadding(autoPadding?: boolean): this;
+  }
+  export interface CipherGCM extends Cipheriv {
+    setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
+    getAuthTag(): Buffer;
+  }
+  export interface CipherChaCha20Poly1305 extends Cipheriv {
+    setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
+    getAuthTag(): Buffer;
+  }
+  export interface Decipheriv {
+    update(data: ArrayBufferView): Buffer;
+    update(data: string, inputEncoding: BufferEncoding): Buffer;
+    update(data: ArrayBufferView, inputEncoding: undefined, outputEncoding: BufferEncoding): string;
+    update(
+      data: string,
+      inputEncoding: BufferEncoding | undefined,
+      outputEncoding: BufferEncoding,
+    ): string;
+    final(): Buffer;
+    final(outputEncoding: BufferEncoding): string;
+    setAutoPadding(autoPadding?: boolean): this;
+  }
+  export interface DecipherGCM extends Decipheriv {
+    setAuthTag(buffer: ArrayBufferView): this;
+    setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
+  }
+  export interface DecipherChaCha20Poly1305 extends Decipheriv {
+    setAuthTag(buffer: ArrayBufferView): this;
+    setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
+  }
+  export function createCipheriv(
+    algorithm: CipherGCMTypes,
+    key: CipherKey,
+    iv: BinaryLike,
+    options?: CipherGCMOptions,
+  ): CipherGCM;
+  export function createCipheriv(
+    algorithm: CipherChaCha20Poly1305Types,
+    key: CipherKey,
+    iv: BinaryLike,
+    options?: CipherChaCha20Poly1305Options,
+  ): CipherChaCha20Poly1305;
+  export function createCipheriv(
+    algorithm: string,
+    key: CipherKey,
+    iv: BinaryLike | null,
+    options?: { authTagLength?: number },
+  ): Cipheriv;
+  export function createDecipheriv(
+    algorithm: CipherGCMTypes,
+    key: CipherKey,
+    iv: BinaryLike,
+    options?: CipherGCMOptions,
+  ): DecipherGCM;
+  export function createDecipheriv(
+    algorithm: CipherChaCha20Poly1305Types,
+    key: CipherKey,
+    iv: BinaryLike,
+    options?: CipherChaCha20Poly1305Options,
+  ): DecipherChaCha20Poly1305;
+  export function createDecipheriv(
+    algorithm: string,
+    key: CipherKey,
+    iv: BinaryLike | null,
+    options?: { authTagLength?: number },
+  ): Decipheriv;
   export interface ScryptOptions {
     N?: number;
     r?: number;
@@ -3119,6 +3216,7 @@ declare module "assert" {
     function notStrictEqual(actual: unknown, expected: unknown, message?: string): void;
     function deepStrictEqual(actual: unknown, expected: unknown, message?: string): void;
     function notDeepStrictEqual(actual: unknown, expected: unknown, message?: string): void;
+    function partialDeepStrictEqual(actual: unknown, expected: unknown, message?: string): void;
     function equal(actual: unknown, expected: unknown, message?: string): void;
     function notEqual(actual: unknown, expected: unknown, message?: string): void;
     function deepEqual(actual: unknown, expected: unknown, message?: string): void;
@@ -3140,6 +3238,36 @@ declare module "assert" {
     function doesNotMatch(value: string, regExp: RegExp, message?: string): void;
     function ifError(value: unknown): void;
     const strict: typeof import("assert/strict");
+    interface AssertOptions {
+      diff?: "simple" | "full" | undefined;
+      strict?: boolean | undefined;
+      skipPrototype?: boolean | undefined;
+    }
+    type AssertMethodNames =
+      | "deepEqual"
+      | "deepStrictEqual"
+      | "doesNotMatch"
+      | "doesNotReject"
+      | "doesNotThrow"
+      | "equal"
+      | "fail"
+      | "ifError"
+      | "match"
+      | "notDeepEqual"
+      | "notDeepStrictEqual"
+      | "notEqual"
+      | "notStrictEqual"
+      | "ok"
+      | "partialDeepStrictEqual"
+      | "rejects"
+      | "strictEqual"
+      | "throws";
+    interface Assert extends Pick<typeof assert, AssertMethodNames> {}
+    interface AssertStrict extends Pick<typeof strict, AssertMethodNames> {}
+    const Assert: {
+      new (options?: AssertOptions & { strict?: true | undefined }): AssertStrict;
+      new (options: AssertOptions): Assert;
+    };
   }
   export = assert;
 }
@@ -3162,6 +3290,7 @@ declare module "assert/strict" {
     function notStrictEqual(actual: unknown, expected: unknown, message?: string): void;
     function deepStrictEqual(actual: unknown, expected: unknown, message?: string): void;
     function notDeepStrictEqual(actual: unknown, expected: unknown, message?: string): void;
+    function partialDeepStrictEqual(actual: unknown, expected: unknown, message?: string): void;
     function fail(message?: string): never;
     function throws(fn: () => unknown, expected?: unknown, message?: string): void;
     function doesNotThrow(fn: () => unknown, expected?: unknown, message?: string): void;
@@ -3179,6 +3308,10 @@ declare module "assert/strict" {
     function doesNotMatch(value: string, regExp: RegExp, message?: string): void;
     function ifError(value: unknown): void;
     const strict: typeof import("assert/strict");
+    type AssertOptions = import("assert").AssertOptions;
+    type Assert = import("assert").Assert;
+    type AssertStrict = import("assert").AssertStrict;
+    const Assert: typeof import("assert").Assert;
   }
   export = strict;
 }
@@ -5541,8 +5674,16 @@ declare module "stream" {
   /* Folds to the TARGET platform's default at compile time (win32 16384,
    * else 65536 — Node's own state.js split); literal argument only. */
   function getDefaultHighWaterMark(objectMode: boolean): number;
+  /* The promise pipeline's result: a last stage that is an async
+   * function resolves the promise with its value. */
+  type PipelinePromise<T extends unknown[]> = T extends [
+    ...unknown[],
+    (...args: any[]) => Promise<infer P>,
+  ]
+    ? Promise<P>
+    : Promise<void>;
   namespace promises {
-    function pipeline(...streams: unknown[]): Promise<void>;
+    function pipeline<T extends unknown[]>(...streams: T): PipelinePromise<T>;
     function finished(
       stream: unknown,
       options?: FinishedOptions & { cleanup?: boolean },
@@ -5582,8 +5723,11 @@ declare module "stream/promises" {
    * ERR_STREAM_PREMATURE_CLOSE on an early close). Stream arguments are
    * the lowered surface — iterables/generators/functions fence per site.
    * pipeline's trailing { signal, end } object and finished's options
-   * (readable, writable, error, cleanup, signal) are supported. */
-  function pipeline(...streams: unknown[]): Promise<void>;
+   * (readable, writable, error, cleanup, signal) are supported. A last
+   * stage that is an async function resolves the promise with its value. */
+  function pipeline<T extends unknown[]>(
+    ...streams: T
+  ): T extends [...unknown[], (...args: any[]) => Promise<infer P>] ? Promise<P> : Promise<void>;
   function finished(
     stream: unknown,
     options?: {

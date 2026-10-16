@@ -43,6 +43,7 @@ const BASE_RUNTIME_SOURCES = [
   "scr_cycle.c",
   "scr_publish.c",
   "scr_region.c",
+  "scr_itable.c",
   "scr_alloc.c",
 ];
 
@@ -102,6 +103,7 @@ const optional = [
   ["scr_test.c", "nodeTest"],
   ["scr_tls_ca.c", "tlsCaEffective"],
   ["scr_tls.c", "tlsEffective"],
+  ["scr_cipher.c", "cipher"],
   ["scr_fetch.c", "nativeFetch"],
 ];
 
@@ -137,7 +139,7 @@ export const RUNTIME_PACK_MATRIX = withLibraryRuntimeFlavors(
       { id: "quickjs", predicate: false },
       { id: "libregexp", predicate: "regex" },
       { id: "zlib", predicate: "zlibEffective" },
-      { id: "mbedtls", predicate: "tlsEffective" },
+      { id: "mbedtls", predicate: any("tlsEffective", "cipher") },
     ],
     system_libraries: [{ name: "System", predicate: true }],
   }),

@@ -11,6 +11,8 @@
  * the immediate queue fulfills (the armed entry keeps the loop alive
  * until it fires, like Node). Results +1; neither throws. */
 ScrPromise *scr_tp_set_timeout(double ms);
+ScrPromise *scr_tp_set_timeout_value(double ms, ScrPromise *value, bool ref);
+ScrPromise *scr_tp_set_immediate_value(ScrPromise *value, bool ref);
 ScrPromise *scr_tp_set_immediate(void);
 
 /* ── async: promises, fibers, event loop ────────────────────────────
@@ -219,6 +221,10 @@ void scr_promise_fulfill_str(ScrPromise *p, ScrStr *v); /* moves in */
  * fulfilled with a cycle-capable value is itself a cycle member candidate:
  * its trace visits the payload). */
 void scr_promise_fulfill_ref(ScrPromise *p, void *v, void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace);
+/* Fulfills p with src's fulfillment value (src fulfilled; its payload is
+ * retained), so a promise of the same inner type settles without a
+ * conversion. */
+void scr_promise_fulfill_like(ScrPromise *p, const ScrPromise *src);
 void scr_promise_fulfill_void(ScrPromise *p);
 
 void scr_promise_reject_pending(ScrPromise *p);

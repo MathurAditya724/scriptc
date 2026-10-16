@@ -164,6 +164,8 @@ typedef enum {
   SCR_DYNH_FILE,           /* ScrBlob with a name — new File() */
   SCR_DYNH_KEY_OBJECT,     /* node:crypto secret KeyObject (scr_lib.c) */
   SCR_DYNH_DIR,            /* fs.Dir (scr_lib.c) */
+  SCR_DYNH_CIPHER,         /* node:crypto Cipheriv (scr_cipher.c) */
+  SCR_DYNH_DECIPHER,       /* node:crypto Decipheriv (scr_cipher.c) */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
@@ -637,6 +639,9 @@ void scr_dyn_typed_ref_bind_class(ScrDyn *d, const ScrDynTypedClassOps *ops);
  * util.inspect; NULL when the capsule is not a bound class instance, its
  * class is anonymous, or its prototype was replaced. */
 const ScrStr *scr_dyn_typed_ref_class_name(const ScrDyn *d);
+/* Whether a class instance capsule's class prototype chain defines a
+ * method or accessor named key; false for other values. */
+bool scr_dyn_typed_ref_class_has(const ScrDyn *d, const ScrStr *key);
 /* Fast keyed read on a live array capsule: +1 value for `length` and for
  * present or explicitly-undefined elements; NULL when the answer needs the
  * snapshot (holes, out-of-range, non-index names, or no bound ops). */

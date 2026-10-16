@@ -234,4 +234,6 @@ Without `@scriptc/threads`, a scriptc executable also shares a message of untype
 
 `publish` visits each object of the graph once and marks it immortal, so publication takes time proportional to the graph. Published objects then cost nothing on later sends, and reference counting and the cycle collector skip them. Stores into the types a program publishes carry one extra load and branch.
 
+Threads that add to one shared collection of published values while they run can use an [`InternTable`](/docs/experimental#interntable) from `@scriptc/experimental`.
+
 See [published graphs](/docs/limitations#published-graphs) for remaining differences from Node.js.

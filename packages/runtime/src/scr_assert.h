@@ -19,10 +19,26 @@ void scr_assert_fail_msg(ScrStr *message); /* takes ownership; always throws */
 /* AssertionError properties: a failure path records actual, expected and
  * operator before it throws (scr_assert.c). */
 void scr_assert_fail(ScrStr *message, bool generated); /* takes ownership; always throws */
+/* The options of the node:assert Assert instance whose call is running:
+ * bit 1 is `diff: "full"`, bit 2 is `skipPrototype`. The next AssertionError
+ * consumes them; a passing call clears them. */
+void scr_assert_set_options(int options);
+void scr_assert_clear_options(void);
+bool scr_assert_diff_full(void);
+bool scr_assert_skip_prototype(void);
 void scr_assert_record(ScrDyn *actual, ScrDyn *expected, const char *op); /* values move in */
 void scr_assert_record_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *op); /* borrows */
 const char *scr_assert_eq_operator(bool negated, bool deep);
 ScrError *scr_assert_error_new(ScrDyn *options);
+/* deepEqual / notDeepEqual (Node's loose deep comparison). */
+void scr_assert_loose_deep_dyn(ScrDyn *a, ScrDyn *b, bool negated, ScrStr *msg, bool has_msg);
+void scr_assert_loose_deep_result(bool equal, bool negated, ScrStr *msg, bool has_msg);
+bool scr_assert_loose_bytes_eq(const ScrBytes *a, const ScrBytes *b);
+bool scr_assert_loose_f64_eq(double a, double b);
+/* partialDeepStrictEqual (Node's partial deep comparison). */
+void scr_assert_partial_deep_dyn(ScrDyn *a, ScrDyn *b, ScrStr *msg, bool has_msg);
+void scr_assert_partial_deep_result(bool equal, bool negated, ScrStr *msg, bool has_msg);
+bool scr_assert_partial_eq_dyn(const ScrDyn *a, const ScrDyn *b);
 ScrStr *scr_assert_inspect_str(const ScrStr *s); /* util.inspect quoting; +1 */
 void scr_assert_ok(bool pass, ScrStr *message, bool generated);
 bool scr_assert_same_value_f64(double a, double b); /* Object.is */
@@ -104,7 +120,7 @@ void scr_assert_expects_err_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *msg, b
 void scr_assert_throws_none(bool rejection, ScrStr *ename, bool has_ename,
                             ScrStr *msg, bool has_msg);
 void scr_assert_throws_mismatch(ScrStr *expected_name, ScrError *err,
-                                ScrStr *msg, bool has_msg);
+                                ScrStr *msg, bool has_msg, bool rejection);
 /* assert.throws(fn, <object shape>) — Node's expectedException over the
  * static error surface (name/message/code). A tiny per-call accumulator:
  * begin stashes the caught error, each slot call adds one expected key
@@ -121,7 +137,7 @@ void scr_assert_shape_begin(ScrError *err);
 void scr_assert_shape_str(int key, ScrStr *v);
 void scr_assert_shape_slot_re(int key, bool matched, ScrStr *rendered /* moves */);
 ScrStr *scr_assert_shape_actual(int key); /* borrowed; NULL = absent */
-void scr_assert_shape_end(ScrStr *msg, bool has_msg);
+void scr_assert_shape_end(ScrStr *msg, bool has_msg, bool rejection);
 /* assert.doesNotReject whose rejection MATCHED (or had no expected):
  * "Got unwanted rejection[: message].\nActual message: \"...\"". */
 void scr_assert_unwanted_rejection(ScrError *err, ScrStr *msg, bool has_msg);
@@ -150,7 +166,8 @@ void scr_assert_match(ScrStr *s, ScrRegex *re, bool negated, ScrStr *msg, bool h
 /* assert.throws(fn, /regex/) whose thrown ERROR did not match: Node tests
  * String(actual) ("Name: message") and reports the regex-mismatch message
  * with the input inspected (scr_regex.c). Passing calls return. */
-void scr_assert_throws_regex(ScrRegex *re, ScrError *err, ScrStr *msg, bool has_msg);
+void scr_assert_throws_regex(ScrRegex *re, ScrError *err, ScrStr *msg, bool has_msg,
+                             bool rejection);
 /* assert.throws(fn, {message: /re/, ...}): the regex-valued shape slot —
  * tests the stashed actual key eagerly, stores verdict + rendered
  * /source/flags into the accumulator (scr_regex.c). */

@@ -156,13 +156,25 @@ test("scope selection treats branch metadata as data, without executing it", () 
   expect(scopeScript).not.toContain("scripts/ci-stack-scope");
 });
 
+const full = "needs.validation_scope.outputs.full == 'true'";
+const laneOf = (name: string) =>
+  /needs\.lanes\.outputs\.(\w+) == 'true'/.exec(workflow.jobs[name]!.if ?? "")?.[1];
+
 test("every expensive CI job is gated and included in the required test check", () => {
   for (const name of heavyJobs) {
     const job = workflow.jobs[name]!;
     expect(job.needs, name).toContain("validation_scope");
-    expect(job.if, name).toBe("${{ needs.validation_scope.outputs.full == 'true' }}");
+    const lane = laneOf(name);
+    // The lane selector itself and ungated jobs follow the stack scope alone; lane jobs also need their lane.
+    if (lane === undefined) expect(job.if, name).toBe(`\${{ ${full} }}`);
+    else {
+      expect(job.if, name).toBe(`\${{ ${full} && needs.lanes.outputs.${lane} == 'true' }}`);
+      expect(job.needs, name).toContain("lanes");
+      expect(["linux", "macos", "effects", "bootstrap"], name).toContain(lane);
+    }
     expect(workflow.jobs.test!.needs, name).toContain(name);
   }
+  expect(workflow.jobs.lanes!.if).toBe(`\${{ ${full} }}`);
   expect(workflow.jobs.code_quality!.if).toBeUndefined();
   expect(workflow.jobs.test!.needs).toContain("validation_scope");
   expect(workflow.jobs.test!.needs).toContain("code_quality");
@@ -170,23 +182,36 @@ test("every expensive CI job is gated and included in the required test check", 
   expect(workflow.jobs.test!.if).toBe("${{ always() }}");
 });
 
-function runGate(full: string, results: Record<string, string> = {}) {
+function runGate(
+  full: string,
+  results: Record<string, string> = {},
+  lanes: Record<string, string> = {
+    linux: "true",
+    macos: "true",
+    effects: "true",
+    bootstrap: "true",
+  },
+) {
   const needs = Object.fromEntries(
-    (workflow.jobs.test!.needs as string[]).map((name) => [
-      name,
-      {
-        result:
-          results[name] ?? (full === "false" && heavyJobs.includes(name) ? "skipped" : "success"),
-        outputs: { full },
-      },
-    ]),
+    (workflow.jobs.test!.needs as string[]).map((name) => {
+      const lane = laneOf(name);
+      const skipped =
+        (full === "false" && heavyJobs.includes(name)) ||
+        (lane !== undefined && lanes[lane] === "false");
+      return [
+        name,
+        { result: results[name] ?? (skipped ? "skipped" : "success"), outputs: { full, ...lanes } },
+      ];
+    }),
   );
   const script = workflow.jobs
     .test!.steps!.find((step) => step.run)!
     .run!.replace(
-      /\$\{\{ needs\.(\w+)\.(result|outputs\.full) \}\}/g,
+      /\$\{\{ needs\.(\w+)\.(result|outputs\.\w+) \}\}/g,
       (_expression, name: string, field: string) =>
-        field === "result" ? needs[name]!.result : needs[name]!.outputs.full,
+        field === "result"
+          ? needs[name]!.result
+          : (needs[name]!.outputs as Record<string, string>)[field.slice("outputs.".length)]!,
     );
   expect(script).not.toContain("${{");
   return spawnSync("bash", ["-e", "-o", "pipefail", "-c", script], { encoding: "utf8" });
@@ -194,6 +219,12 @@ function runGate(full: string, results: Record<string, string> = {}) {
 
 test("the required test check passes only after full validation", () => {
   expect(runGate("true").status).toBe(0);
+  // A lane that is off may skip its jobs; a lane that is on may not.
+  const linuxOnly = { linux: "true", macos: "false", effects: "false", bootstrap: "false" };
+  expect(runGate("true", {}, linuxOnly).status).toBe(0);
+  expect(runGate("true", { tests_macos: "skipped" }).status).toBe(1);
+  expect(runGate("true", { effects: "failure" }, linuxOnly).status).toBe(1);
+  expect(runGate("true", { lanes: "failure" }).status).toBe(1);
   const deferred = runGate("false");
   expect(deferred.status).toBe(1);
   expect(deferred.stdout).toContain("Merge the stack from the bottom up");

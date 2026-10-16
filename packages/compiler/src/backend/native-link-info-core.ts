@@ -44,6 +44,9 @@ export interface NativeLinkFeatures {
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
+  /** crypto.createCipheriv/createDecipheriv: scr_cipher.c plus the mbedTLS
+   * archive. */
+  cipher: boolean;
   tlsCa: boolean;
 }
 

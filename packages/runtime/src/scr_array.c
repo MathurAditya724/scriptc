@@ -366,13 +366,17 @@ typedef enum {
 /* The small-object allocator rounds blocks up to their size class, so an
  * exactly sized array can use the whole block for slots: a one-element
  * literal keeps a 16-byte block rather than reserving 4 slots in a 40-byte
- * one. Growth keeps its own sequence (4, 8, 16, ...): rounding it as well
- * moves array storage into other size classes and measured slower. */
+ * one. The request is first rounded to 16 bytes, so arrays of 2, 4 and 6
+ * slots get one spare slot (a 2-element literal or copy holds 3 in a
+ * 32-byte block) and an append right after construction needs no
+ * reallocation. Growth keeps its own sequence (4, 8, 16, ...): rounding it
+ * as well moves array storage into other size classes and measured
+ * slower. */
 static size_t scr_arr_block_cap(size_t cap, bool bools) {
 #if SCR_SMALL_ALLOC
   size_t bytes = cap * (bools ? SCR_ARR_BOOL_SLOT_BYTES : SCR_ARR_SLOT_BYTES);
   if (bytes <= SCR_SA_MAX) {
-    size_t block = scr_sa_class_size(scr_sa_class(bytes));
+    size_t block = scr_sa_class_size(scr_sa_class((bytes + 15) & ~(size_t)15));
     return bools ? block / SCR_ARR_BOOL_SLOT_BYTES : block / SCR_ARR_SLOT_BYTES;
   }
 #else
@@ -387,8 +391,41 @@ static size_t scr_arr_block_cap(size_t cap, bool bools) {
  * invariant every reader (including emitted code) relies on: indices below
  * cap live in dense storage and sparse entries all lie at or above cap. New
  * capacity always starts as holes; slot payloads past len stay unwritten. */
-static void scr_arr_grow_dense_to(ScrArr *a, size_t need, ScrArrGrow mode) {
+static void scr_arr_grow_dense_slow(ScrArr *a, size_t need, ScrArrGrow mode);
+
+/* Arrays of 8-byte slots with their own storage block and no sparse entries,
+ * growing below the cutoff, take a path with a constant slot size and no
+ * sparse absorption; every other array takes scr_arr_grow_dense_slow. Both
+ * paths pick the same capacity. */
+static inline void scr_arr_grow_dense_to(ScrArr *a, size_t need, ScrArrGrow mode) {
   if (need <= a->cap) return;
+  if (a->elem == SCR_ELEM_BOOL || scr_arr_inline(a) || (a->ext && a->ext->sparse_len) ||
+      need > SCR_ARR_DENSE_LIMIT) {
+    scr_arr_grow_dense_slow(a, need, mode);
+    return;
+  }
+  size_t cap;
+  if (mode == SCR_ARR_GROW_EXACT) {
+    cap = scr_arr_block_cap(need, false);
+  } else {
+    cap = a->cap < SCR_ARR_MIN_GROWTH ? SCR_ARR_MIN_GROWTH : a->cap;
+    while (cap < need) cap += cap;
+    if (cap > SCR_ARR_DENSE_LIMIT) cap = SCR_ARR_DENSE_LIMIT;
+  }
+  size_t old = a->cap;
+  uint64_t *data = a->data ? scr_mem_realloc(a->data, cap * SCR_ARR_SLOT_BYTES)
+                           : scr_mem_alloc(cap * SCR_ARR_SLOT_BYTES);
+  if (!data) scr_arr_oom();
+  /* The states follow the values: move them past the larger value area. */
+  uint8_t *present = (uint8_t *)(data + cap);
+  if (old) memmove(present, (uint8_t *)(data + old), old);
+  memset(present + old, SCR_ARR_HOLE, cap - old);
+  a->data = data;
+  a->present = present;
+  a->cap = cap;
+}
+
+static void scr_arr_grow_dense_slow(ScrArr *a, size_t need, ScrArrGrow mode) {
   if (need > SCR_ARR_MAX_LENGTH) scr_arr_oom();
   bool bools = a->elem == SCR_ELEM_BOOL;
   size_t width = scr_arr_slot_width(a);
@@ -750,7 +787,11 @@ static void scr_arr_copy_dense(ScrArr *dst, size_t to, const ScrArr *src,
                                 bool materialize_holes) {
   if (count == 0) return;
   scr_arr_cut(dst, to);
-  if (!reverse) {
+  if (!reverse && dst->elem != SCR_ELEM_BOOL) {
+    /* 8-byte slots: a constant slot size. */
+    memcpy(dst->data + to, src->data + from, count * sizeof(uint64_t));
+    memcpy(dst->present + to, src->present + from, count);
+  } else if (!reverse) {
     memcpy(scr_arr_dense_at(dst, to), scr_arr_dense_at(src, from),
            count * scr_arr_slot_width(dst));
     memcpy(dst->present + to, src->present + from, count);

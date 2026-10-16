@@ -92,7 +92,8 @@ export function computeCycleMutability(
   // can store; a commit rewrites every field, reference fields possibly
   // with fresh conversions). Without any such store in the program,
   // crossing into checked-dynamic code writes nothing. FFI calls and
-  // intrinsics other than publish (which only marks objects immortal) stay
+  // intrinsics other than publish (which only marks objects immortal) and
+  // the intern-table operations (which store published values) stay
   // conservative.
   const dynStores = dynamicFieldStores(mod);
   const dynamicStores = dynStores.all || dynStores.names.size > 0;
@@ -100,7 +101,7 @@ export function computeCycleMutability(
   const boundaryWrites = (e: IrExpr): boolean =>
     dynamicStores ||
     e.kind === "ffiCall" ||
-    (e.kind === "intrinsic" && e.name !== "threads.publish");
+    (e.kind === "intrinsic" && e.name !== "threads.publish" && !e.name.startsWith("itable."));
 
   // Types that can become checked-dynamic values: mark their whole closure.
   const exposedTypes = new Set<string>();

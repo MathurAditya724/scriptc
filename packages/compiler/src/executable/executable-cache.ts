@@ -77,6 +77,7 @@ export interface EarlyExecutableNativeFeatures {
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
+  cipher: boolean;
   tlsCa: boolean;
 }
 
@@ -188,6 +189,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "nodeTest",
   "tls",
   "tlsCa",
+  "cipher",
 ] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];
 
 function validNativeFeatures(value: unknown): value is EarlyExecutableNativeFeatures {

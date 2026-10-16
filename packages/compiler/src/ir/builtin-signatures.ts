@@ -2354,6 +2354,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * finalizes the handle and returns either a Buffer or encoded string. */
   "crypto.native": { argTypes: [], result: DYN },
   "crypto.hashNew": { argTypes: [STRING], result: CRYPTOHASH_T },
+  /** createCipheriv (false) / createDecipheriv (true) over checked-dynamic
+   * cipher, key, iv and options arguments (scr_cipher.c): a native
+   * Cipheriv/Decipheriv handle whose methods dispatch through dynInvoke. */
+  "crypto.cipherNew": { argTypes: [BOOL, DYN, DYN, DYN, DYN], result: DYN },
   "crypto.hmacNewStr": { argTypes: [STRING, STRING], result: CRYPTOHMAC_T },
   "crypto.hmacNewBytes": { argTypes: [STRING, BYTES_U8], result: CRYPTOHMAC_T },
   "crypto.hashUpdateStr": { argTypes: [CRYPTOHASH_T, STRING], result: CRYPTOHASH_T },
@@ -3223,8 +3227,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stream.finishedDyn": { argTypes: [null, DYN], result: VOID },
   "stream.pipeline": { argTypes: [F64], result: VOID },
   "stream.pipelineDyn": { argTypes: [F64], result: VOID },
-  "stream.pipelineStages": { argTypes: [F64, F64, F64], result: VOID },
-  "stream.pipelineStagesDyn": { argTypes: [F64, F64, F64], result: VOID },
+  "stream.pipelineStages": { argTypes: [F64, F64, F64, F64, F64], result: VOID },
+  "stream.pipelineStagesDyn": { argTypes: [F64, F64, F64, F64, F64], result: VOID },
   /** stream.compose(count, s1..sn): the Duplex over a pipeline of the
    * streams (+1). MAY THROW (ERR_INVALID_ARG_VALUE for a stream that is
    * no longer readable or writable). */
@@ -3255,11 +3259,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stream.finishedOpts": { argTypes: [null, F64, F64, BOOL, null], result: VOID },
   "stream.finishedOptsSignal": { argTypes: [null, F64, F64, BOOL, DYN, null], result: VOID },
   "sp.pipeline": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
-  /** pipeline with a run of async generator stages: [n, at, k, s1..sn,
-   * stage1..stagek, next, read, return] (+ the callback for the stream.*
-   * forms): the user's stage functions, then the frontend's helpers over
-   * the last stage's generator (scr_stream_pipeline_stages). */
-  "sp.pipelineStages": { argTypes: [F64, F64, F64], result: { kind: "promise", inner: VOID } },
+  /** pipeline with a run of function stages: [n, at, k, flags, mask,
+   * s1..sn, stage1..stagek, (next, read, return)?, box?, (signal,
+   * abort)?] (+ the callback for the stream.* forms): the user's stage
+   * functions, the frontend's helpers over the pumped generator or a
+   * promise destination's box, and the pipeline's AbortSignal with its
+   * abort closure; flags names which groups are present
+   * (scr_stream_pipeline_stages). A promise destination's promise type is
+   * sp.pipelineStages' result. */
+  "sp.pipelineStages": {
+    argTypes: [F64, F64, F64, F64, F64],
+    result: { kind: "promise", inner: VOID },
+  },
   /** node:stream/consumers — the promise consumers over the readable
    * machinery: (s) → a pending promise settled at the terminal point
    * with the accumulated result (sc.text: the utf8 decode, sc.json: the
@@ -3442,6 +3453,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "assert.eqStr": { argTypes: [STRING, STRING, BOOL, BOOL, STRING, BOOL], result: VOID },
   "assert.eqBool": { argTypes: [BOOL, BOOL, BOOL, BOOL, STRING, BOOL], result: VOID },
   "assert.deepResult": { argTypes: [BOOL, BOOL, STRING, BOOL], result: VOID },
+  "assert.looseDeepResult": { argTypes: [BOOL, BOOL, STRING, BOOL], result: VOID },
+  "assert.looseDeepDyn": { argTypes: [DYN, DYN, BOOL, STRING, BOOL], result: VOID },
+  "assert.partialDeepDyn": { argTypes: [DYN, DYN, STRING, BOOL], result: VOID },
+  "assert.partialDeepResult": { argTypes: [BOOL, BOOL, STRING, BOOL], result: VOID },
+  "assert.partialEqDyn": { argTypes: [DYN, DYN], result: BOOL },
+  "assert.looseF64Eq": { argTypes: [F64, F64], result: BOOL },
   "assert.sameValue": { argTypes: [F64, F64], result: BOOL },
   // The deep-equality pair memo: both slots are program-dependent
   // (any cycle-capable record/array/map type).
@@ -3453,11 +3470,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "assert.match": { argTypes: [STRING, REGEX, BOOL, STRING, BOOL], result: VOID },
   "assert.throwsNone": { argTypes: [BOOL, STRING, BOOL, STRING, BOOL], result: VOID },
   "assert.throwsMismatch": {
-    argTypes: [STRING, { kind: "object", className: "%Error" }, STRING, BOOL],
+    argTypes: [STRING, { kind: "object", className: "%Error" }, STRING, BOOL, BOOL],
     result: VOID,
   },
   "assert.throwsRegex": {
-    argTypes: [REGEX, { kind: "object", className: "%Error" }, STRING, BOOL],
+    argTypes: [REGEX, { kind: "object", className: "%Error" }, STRING, BOOL, BOOL],
     result: VOID,
   },
   // Symbol strict equality (pointer identity; scr_symbol.c).
@@ -3475,7 +3492,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "assert.shapeBegin": { argTypes: [{ kind: "object", className: "%Error" }], result: VOID },
   "assert.shapeStr": { argTypes: [F64, STRING], result: VOID },
   "assert.shapeRe": { argTypes: [F64, REGEX], result: VOID },
-  "assert.shapeEnd": { argTypes: [STRING, BOOL], result: VOID },
+  "assert.shapeEnd": { argTypes: [STRING, BOOL, BOOL], result: VOID },
   "assert.regexErrTest": {
     argTypes: [REGEX, { kind: "object", className: "%Error" }],
     result: BOOL,
@@ -3507,6 +3524,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "assert.refEqBytes": { argTypes: [null, null, BOOL, BOOL, STRING, BOOL], result: VOID },
   "assert.refEqFn": { argTypes: [null, null, BOOL, STRING, BOOL], result: VOID },
   "assert.bytesDeepEq": { argTypes: [null, null, BOOL], result: BOOL },
+  "assert.looseBytesEq": { argTypes: [null, null], result: BOOL },
   // util.inspect: the error receiver is program-dependent (a builtin or
   // user error class — the error.toString precedent, null slot).
 
@@ -3605,6 +3623,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * turns, Node's check phase). Neither throws. */
   "tp.setTimeout": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
   "tp.setImmediate": { argTypes: [], result: { kind: "promise", inner: VOID } },
+  /** The resolve-value forms: [ms?, value, ref] → a pending promise of the
+   * value's type that copies the borrowed already-resolved `value` promise
+   * when the timer (or immediate) fires; ref false unrefs it. The result
+   * type follows the value promise. */
+  "tp.setTimeoutValue": { argTypes: [F64, null, BOOL], result: VOID },
+  "tp.setImmediateValue": { argTypes: [null, BOOL], result: VOID },
   /** node:diagnostics_channel (scr_dc.c, linked when any dc.* appears —
    * the zlib gating precedent): a process-global name→channel registry;
    * channel values are f64 handles (type-mapper.ts maps Channel to F64, the

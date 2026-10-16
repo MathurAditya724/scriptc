@@ -638,15 +638,24 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     e.fn === "stream.pipelineStages" ||
     e.fn === "stream.pipelineStagesDyn"
   ) {
-    // (n, at, k, s1..sn, stage1..stagek, next, read, return[, cb]):
-    // the streams and the stage closures ride stack arrays.
-    const [nArg, atArg, kArg] = e.args;
-    if (nArg?.kind !== "numLit" || atArg?.kind !== "numLit" || kArg?.kind !== "numLit")
+    // (n, at, k, flags, mask, s1..sn, stage1..stagek, (next, read,
+    // return)?, box?, (signal, abort)?[, cb]): the streams and the stage
+    // closures ride stack arrays; absent groups pass null.
+    const [nArg, atArg, kArg, flagsArg, maskArg] = e.args;
+    if (
+      nArg?.kind !== "numLit" ||
+      atArg?.kind !== "numLit" ||
+      kArg?.kind !== "numLit" ||
+      flagsArg?.kind !== "numLit" ||
+      maskArg?.kind !== "numLit"
+    )
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} counts not literals`);
     const n = nArg.value;
     const k = kArg.value;
+    const flags = flagsArg.value;
     const args = e.args.map((a) => host.emitExpr(a));
     const packed = (from: number, count: number): string => {
+      if (count === 0) return "null";
       const arr = B.slot();
       B.entryAllocas.push(`${arr} = alloca [${count} x ptr]`);
       for (let i = 0; i < count; i++) {
@@ -656,20 +665,28 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       }
       return arr;
     };
-    const streams = packed(3, n);
-    const stages = packed(3 + n, k);
-    const [next, read, ret] = [3 + n + k, 4 + n + k, 5 + n + k].map((i) => args[i]!.name);
-    const head = `double ${f64Lit(n)}, ptr ${streams}, double ${f64Lit(atArg.value)}, double ${f64Lit(k)}, ptr ${stages}, ptr ${next}, ptr ${read}, ptr ${ret}`;
+    const streams = packed(5, n);
+    const stages = packed(5 + n, k);
+    let at = 5 + n + k;
+    const take = (present: boolean): string => (present ? args[at++]!.name : "null");
+    const hasHelpers = (flags & 8) !== 0;
+    const next = take(hasHelpers);
+    const read = take(hasHelpers);
+    const ret = take(hasHelpers);
+    const box = take((flags & 16) !== 0);
+    const signal = take((flags & 32) !== 0);
+    const abort = take((flags & 32) !== 0);
+    const head =
+      `double ${f64Lit(n)}, ptr ${streams}, double ${f64Lit(atArg.value)}, double ${f64Lit(k)}, ` +
+      `ptr ${stages}, double ${f64Lit(flags)}, double ${f64Lit(maskArg.value)}, ` +
+      `ptr ${next}, ptr ${read}, ptr ${ret}, ptr ${box}, ptr ${signal}, ptr ${abort}`;
+    const params = "double, ptr, double, double, ptr, double, double, ptr, ptr, ptr, ptr, ptr, ptr";
     const t = B.tmp();
     if (e.fn === "sp.pipelineStages") {
-      host.declare(
-        `declare ptr @scr_sp_pipeline_stages(double, ptr, double, double, ptr, ptr, ptr, ptr)`,
-      );
+      host.declare(`declare ptr @scr_sp_pipeline_stages(${params})`);
       B.line(`${t} = call ptr @scr_sp_pipeline_stages(${head})`);
     } else if (e.fn === "stream.pipelineStagesDyn") {
-      host.declare(
-        `declare ptr @scr_stream_pipeline_stages_dyn(double, ptr, double, double, ptr, ptr, ptr, ptr, ptr)`,
-      );
+      host.declare(`declare ptr @scr_stream_pipeline_stages_dyn(${params}, ptr)`);
       B.line(
         `${t} = call ptr @scr_stream_pipeline_stages_dyn(${head}, ptr ${args[args.length - 1]!.name})`,
       );
@@ -681,9 +698,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
         );
       host.moveTemp(args[args.length - 1]!);
       const thunk = host.streamCbThunkFor("e", cbT);
-      host.declare(
-        `declare ptr @scr_stream_pipeline_stages(double, ptr, double, double, ptr, ptr, ptr, ptr, ptr, ptr)`,
-      );
+      host.declare(`declare ptr @scr_stream_pipeline_stages(${params}, ptr, ptr)`);
       B.line(
         `${t} = call ptr @scr_stream_pipeline_stages(${head}, ptr ${args[args.length - 1]!.name}, ptr @${thunk})`,
       );

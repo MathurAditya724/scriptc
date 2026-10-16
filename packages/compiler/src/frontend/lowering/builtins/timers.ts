@@ -10,8 +10,46 @@ import {
   type IrLocal,
   type IrType,
   type SrcLoc,
+  UNDEFINED_T,
   VOID,
+  isUnitType,
 } from "../../../ir/ir.js";
+import { genResultRecord } from "../../type-mapper.js";
+import { builtinImportOf } from "./module-bindings.js";
+
+/** The async generator type of a timers/promises setInterval call. The
+ * fallback declarations type it AsyncGenerator<T>; @types/node types it
+ * NodeJS.AsyncIterator<T>, which maps to no IR type, so the yielded type
+ * comes from its type argument. */
+function timersPromisesIntervalType(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+): (IrType & { kind: "generator" }) | null {
+  const callType = lowerer.typeOf(expr);
+  const mapped = lowerer.mapTypeOf(callType);
+  if (mapped?.kind === "generator" && mapped.async) return mapped;
+  const arg = lowerer.checker.getTypeArguments(callType as ts.TypeReference)[0];
+  const yieldT = arg ? lowerer.mapTypeOf(arg) : null;
+  if (!yieldT || yieldT.kind === "void" || isUnitType(yieldT)) return null;
+  if (!genResultRecord(yieldT, VOID, lowerer.shapes, lowerer.unions)) return null;
+  return { kind: "generator", async: true, yieldT, retT: VOID, nextT: UNDEFINED_T };
+}
+
+/** A timers/promises setInterval call, the head a `for await` loop
+ * consumes as an async generator. */
+export function isTimersPromisesIntervalCall(
+  lowerer: Lowerer,
+  node: ts.Expression,
+): node is ts.CallExpression {
+  if (!ts.isCallExpression(node) || node.questionDotToken) return false;
+  const callee = node.expression;
+  const bi = ts.isIdentifier(callee)
+    ? builtinImportOf(lowerer, callee)
+    : ts.isPropertyAccessExpression(callee) && !callee.questionDotToken
+      ? lowerer.builtinMemberOf(callee)
+      : null;
+  return bi?.module === "timers/promises" && bi.member === "setInterval";
+}
 
 /** timers/promises.setInterval(delay, value), the first Node API built on
  * the generic async-generator protocol. The supported form has an explicit
@@ -43,11 +81,8 @@ export function lowerTimersPromisesSetInterval(
       ? ({ kind: "numLit", value: 1, type: F64, loc } satisfies IrExpr)
       : lowerer.coerceInto(delayNode, delay, F64);
   const value = lowerer.lowerExpr(valueNode);
-  const callType = lowerer.mapTypeOf(lowerer.typeOf(expr));
-  if (callType?.kind !== "generator" || !callType.async) {
-    lowerer.badType(expr, lowerer.typeOf(expr));
-  }
-  const genT = callType;
+  const genT = timersPromisesIntervalType(lowerer, expr);
+  if (genT === null) lowerer.badType(expr, lowerer.typeOf(expr));
   const yielded = lowerer.coerceInto(valueNode, value, genT.yieldT);
   const fnName = `%fn${lowerer.lambdaCounter++}_tpInterval`;
   const msParam: IrLocal = { id: "%tp.ms", name: "delay", type: F64, mutable: false };
@@ -182,13 +217,14 @@ export function lowerTimeoutMethodCall(
   );
 }
 
-// node:timers/promises — setTimeout([delay]) and setImmediate(): void
-// promises the shared timer heap settles. The omitted delay completes
-// to Node's 1ms floor (scr_timer_coerce_ms clamps anyway; the literal
-// keeps the emitted call self-describing); the resolve-value and
-// options (AbortSignal) forms fence per shape — a promise that
-// ignored its cancellation signal would hold the loop open where
-// Node exits.
+// node:timers/promises — setTimeout([delay[, value[, options]]]) and
+// setImmediate([value[, options]]): promises the shared timer heap and the
+// immediate queue settle. The omitted delay completes to Node's 1ms floor
+// (scr_timer_coerce_ms clamps anyway; the literal keeps the emitted call
+// self-describing). A resolve value travels as an already-resolved promise
+// of its own type, whose settlement the result copies when it fires. The
+// options object takes `ref`; `signal` fences — a promise that ignored its
+// cancellation signal would hold the loop open where Node exits.
 export function lowerTimersPromisesCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -196,29 +232,93 @@ export function lowerTimersPromisesCall(
   loc: SrcLoc,
 ): IrExpr | null {
   const promiseVoid: IrType = { kind: "promise", inner: VOID };
-  if (bi.member === "setTimeout") {
-    if (expr.arguments.length > 1) {
-      lowerer.noLowering(
-        "timers/promises setTimeout with a resolve value or options",
-        expr.arguments[1]!,
-        "the lowered form is setTimeout(delay?) resolving undefined — resolve values and AbortSignal cancellation have no lowering",
-      );
-    }
-    const ms: IrExpr = expr.arguments[0]
+  if (bi.member !== "setTimeout" && bi.member !== "setImmediate") return null;
+  const timeout = bi.member === "setTimeout";
+  const [valueNode, optionsNode] = timeout ? expr.arguments.slice(1) : expr.arguments;
+  const ms: IrExpr | null = !timeout
+    ? null
+    : expr.arguments[0]
       ? lowerer.lowerExprExpecting(expr.arguments[0], F64)
       : { kind: "numLit", value: 1, type: F64, loc };
-    return { kind: "libCall", fn: "tp.setTimeout", args: [ms], type: promiseVoid, loc };
+  if (valueNode === undefined) {
+    return timeout
+      ? { kind: "libCall", fn: "tp.setTimeout", args: [ms!], type: promiseVoid, loc }
+      : { kind: "libCall", fn: "tp.setImmediate", args: [], type: promiseVoid, loc };
   }
-  if (bi.member === "setImmediate") {
-    if (expr.arguments.length > 0) {
+  const resultT = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const inner = resultT?.kind === "promise" ? resultT.inner : null;
+  if (inner === null) {
+    lowerer.noLowering(
+      `timers/promises ${bi.member} with a resolve value of this type`,
+      valueNode,
+      "the resolve value's type must be representable",
+    );
+    return null;
+  }
+  // An undefined resolve value settles the void promise; awaiting it
+  // yields undefined either way.
+  const voidValue = inner.kind === "void" || isUnitType(inner);
+  const value: IrExpr = voidValue
+    ? {
+        kind: "seqExpr",
+        stmts: [lowerer.lowerExprStatement(valueNode)],
+        result: { kind: "intrinsic", name: "promise.resolve", args: [], type: promiseVoid, loc },
+        type: promiseVoid,
+        loc,
+      }
+    : {
+        kind: "intrinsic",
+        name: "promise.resolve",
+        args: [lowerer.lowerExprExpecting(valueNode, inner)],
+        type: resultT!,
+        loc,
+      };
+  const ref = timersPromisesRef(lowerer, bi.member, optionsNode, loc);
+  return {
+    kind: "libCall",
+    fn: timeout ? "tp.setTimeoutValue" : "tp.setImmediateValue",
+    args: timeout ? [ms!, value, ref] : [value, ref],
+    type: voidValue ? promiseVoid : resultT!,
+    loc,
+  };
+}
+
+/** The `ref` option of a timers/promises options object literal (true when
+ * absent). `signal` and options that are not an object literal fence. */
+function timersPromisesRef(
+  lowerer: Lowerer,
+  member: string,
+  optionsNode: ts.Expression | undefined,
+  loc: SrcLoc,
+): IrExpr {
+  const absent: IrExpr = { kind: "boolLit", value: true, type: BOOL, loc };
+  if (optionsNode === undefined) return absent;
+  if (!ts.isObjectLiteralExpression(optionsNode)) {
+    lowerer.noLowering(
+      `timers/promises ${member} options that are not an object literal`,
+      optionsNode,
+      "pass the options as an object literal: { ref }",
+    );
+    return absent;
+  }
+  let ref: IrExpr = absent;
+  for (const prop of optionsNode.properties) {
+    const name = prop.name && ts.isIdentifier(prop.name) ? prop.name.text : null;
+    if (name === "signal") {
       lowerer.noLowering(
-        "timers/promises setImmediate with a resolve value",
-        expr.arguments[0]!,
-        "the lowered form is setImmediate() resolving undefined",
+        `timers/promises ${member} with an AbortSignal`,
+        prop,
+        "a promise that ignored its cancellation signal would keep the process alive where Node exits",
+      );
+    } else if (name === "ref" && ts.isPropertyAssignment(prop)) {
+      ref = lowerer.lowerExprExpecting(prop.initializer, BOOL);
+    } else {
+      lowerer.noLowering(
+        `timers/promises ${member} options other than ref`,
+        prop,
+        "the lowered options object takes ref: boolean",
       );
     }
-    return { kind: "libCall", fn: "tp.setImmediate", args: [], type: promiseVoid, loc };
   }
-
-  return null;
+  return ref;
 }

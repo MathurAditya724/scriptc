@@ -168,7 +168,11 @@ importers:
         specifier: workspace:*
         version: link:../runtime-win32-x64-msvc
 
-  packages/experimental: {}
+  packages/experimental:
+    dependencies:
+      '@scriptc/threads':
+        specifier: workspace:*
+        version: link:../threads
 
   packages/llvm-darwin-arm64: {}
 

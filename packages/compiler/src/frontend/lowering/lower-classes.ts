@@ -67,6 +67,7 @@ import {
   locOf,
 } from "../program.js";
 import { PoisonError, dynFallbackType, newFnCtx, own } from "./lowerer.js";
+import { isAssertClassNew } from "./assert-instances.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-methods.js";
 import { lowerObjectConstructor } from "./containers/indexed-objects.js";
@@ -484,6 +485,9 @@ export interface ClassInfo {
    * lifetime-regions.ts): its constructor is synthesized with the class,
    * and its methods lower at their call sites. */
   lifetimeRegion?: true;
+  /** The synthetic InternTable class (@scriptc/experimental,
+   * intern-tables.ts): synthesized like lifetimeRegion. */
+  internTable?: true;
   /** This class's own `emit` override in the FORWARDING SHAPE (the one
    * EventEmitter member a subclass may re-declare): never in `methods` —
    * emit calls keep routing through the emitter spoke, which lowers the
@@ -8458,6 +8462,15 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         type: { kind: "object", className: "%DOMException" },
         loc,
       };
+    }
+    // `new Assert(...)` that is not a static instance (assert-instances.ts):
+    // the instance would be a run-time value.
+    if (isAssertClassNew(lowerer, expr)) {
+      lowerer.noLowering(
+        "assert.Assert instances used as values",
+        expr,
+        "bind `new Assert(...)` with literal options to a const and only call methods on it (`const a = new Assert({ diff: 'full' }); a.strictEqual(x, y)`)",
+      );
     }
     if (errInfo && errInfo.def.name === "%AssertionError") {
       // new AssertionError(options): Node validates the options object and
