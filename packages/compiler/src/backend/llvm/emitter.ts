@@ -646,6 +646,8 @@ export class LlEmitter {
   /** Interned NUL-terminated C-string constants (scr_jb_puts labels, the
    * stringify indent text): UTF-8 text → { symbol, byte length }. */
   private readonly cstrs = new Map<string, { sym: string; len: number }>();
+  /** Interned ScrMapOps descriptors (scr_map.h): initializer → symbol. */
+  private readonly mapOpsConsts = new Map<string, string>();
   /** Type-directed walker functions (JSON serializers, the indent
    * rewriter, union ToString/join) — interned per typeKey/unionId, defs
    * flushed with the shape helpers. */
@@ -1179,6 +1181,7 @@ export class LlEmitter {
       needBadTag: () => this.needBadTag(),
       internLiteral: (text) => this.internLiteral(text),
       cstr: (text) => this.cstr(text),
+      mapOps: (operands) => this.mapOps(operands),
       unitInstanceRef: (unionId, tag) => this.unitInstanceRef(unionId, tag),
       retypeGuardRef: (unionId) => this.retypeGuardRef(unionId),
       fieldAbsentTestIn: (B, value, unionId) => this.fieldAbsentTestIn(B, value, unionId),
@@ -2075,22 +2078,20 @@ export class LlEmitter {
       // preserving the target object's identity.
       `%ScrArr = type { ${this.sizeType}, ${this.sizeType}, ${this.sizeType}, i8, i8, i16, i32, ptr, ptr, ptr, ptr }`,
       `%ScrArrOps = type { ptr, ptr, ptr }`,
-      // The ScrMap prefix { rc, key_kind, val_kind, val_retain, val_release,
-      // val_trace, key_retain, key_release, key_trace } — the inline RC
-      // fast paths test the two trace slots (shapes.ts).
-      ...(this.rcHelpers === null
-        ? []
-        : [`%ScrMapRc = type { ${this.sizeType}, i32, i32, ptr, ptr, ptr, ptr, ptr, ptr }`]),
+      // The ScrMap prefix { rc, key_kind, val_kind, traced } — the inline
+      // RC fast paths test the traced byte (shapes.ts).
+      ...(this.rcHelpers === null ? [] : [`%ScrMapRc = type { ${this.sizeType}, i8, i8, i8 }`]),
       // The complete ScrMap and its { key, val, hash } entry, read by the
       // inline number-key lookup (sc_map_entry_f64) and the inline
-      // iteration steps (sc_map_iter_entry): field 9 is the entry count,
-      // field 11 the i64 absent-key filter, entries is field 13, the direct
-      // index and its length fields 19 and 20.
+      // iteration steps (sc_map_iter_entry): field 8 is the i32 entry
+      // count, field 10 the i64 absent-key filter, entries is field 11,
+      // nbuckets and buckets fields 13 and 14, the direct index and its i32
+      // length fields 15 and 16.
       ...(this.decls.has(NUMBER_MAP_ENTRY_DECL) ||
       this.decls.has(STRING_MAP_ENTRY_DECL) ||
       this.decls.has(MAP_ITER_DECL)
         ? [
-            `%ScrMapIx = type { ${this.sizeType}, i32, i32, ptr, ptr, ptr, ptr, ptr, ptr, ${this.sizeType}, ${this.sizeType}, i64, ${this.sizeType}, ptr, ${this.sizeType}, ptr, ${this.sizeType}, ptr, ptr, ptr, ${this.sizeType} }`,
+            `%ScrMapIx = type { ${this.sizeType}, i8, i8, i8, i8, i32, ptr, ptr, i32, i32, i64, ptr, i32, i32, ptr, ptr, i32, i32 }`,
           ]
         : []),
       // String-keyed reference reads load the value slot of the entry
@@ -2314,6 +2315,10 @@ export class LlEmitter {
       out.push(`@${c.sym} = internal constant [${c.len + 1} x i8] c"${llStrBytes(text)}"`);
     }
     if (this.cstrs.size > 0) out.push(``);
+    for (const [body, sym] of this.mapOpsConsts) {
+      out.push(`@${sym} = internal constant { ptr, ptr, ptr, ptr, ptr, ptr, ptr } { ${body} }`);
+    }
+    if (this.mapOpsConsts.size > 0) out.push(``);
 
     for (const line of ffiCallbacks.globals) out.push(line);
     if (ffiCallbacks.globals.length > 0) out.push(``);
@@ -2985,8 +2990,10 @@ export class LlEmitter {
       defs.push(
         `define internal ptr @sc_map_entry_f64(ptr %m, double %k) ${FN_ATTRS} {`,
         `entry:`,
-        `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 20`,
-        `  %nd = load ${sz}, ptr %ndp`,
+        `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 16`,
+        ...(sz === "i64"
+          ? [`  %nd32 = load i32, ptr %ndp`, `  %nd = zext i32 %nd32 to i64`]
+          : [`  %nd = load i32, ptr %ndp`]),
         // A non-integral key inside the table is as absent as one outside it.
         ...mapIndex.lines.map((line) => `  ${line}`),
         `  br i1 ${mapIndex.ok}, label %slot, label %outside`,
@@ -2994,7 +3001,7 @@ export class LlEmitter {
         sz === "i64"
           ? `  %i = add i64 ${mapIndex.wide}, 0`
           : `  %i = trunc i64 ${mapIndex.wide} to ${sz}`,
-        `  %dp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 19`,
+        `  %dp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 15`,
         `  %dense = load ptr, ptr %dp`,
         `  %sp = getelementptr inbounds i32, ptr %dense, ${sz} %i`,
         `  %s = load i32, ptr %sp`,
@@ -3003,7 +3010,7 @@ export class LlEmitter {
         `hit:`,
         `  %e32 = sub i32 %s, 1`,
         sz === "i32" ? `  %e = add i32 %e32, 0` : `  %e = zext i32 %e32 to ${sz}`,
-        `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 13`,
+        `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
         `  %entries = load ptr, ptr %ep`,
         `  %found = getelementptr inbounds %ScrMapEntry, ptr %entries, ${sz} %e`,
         `  ret ptr %found`,
@@ -3043,22 +3050,26 @@ export class LlEmitter {
         `  %f2a = and i64 %f2s, 63`,
         `  %f2 = shl i64 1, %f2a`,
         `  %fb = or i64 %f1, %f2`,
-        `  %fp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
+        `  %fp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 10`,
         `  %filter = load i64, ptr %fp`,
         `  %fm = and i64 %filter, %fb`,
         `  %fin = icmp eq i64 %fm, %fb`,
         `  br i1 %fin, label %table, label %miss`,
         `table:`,
-        `  %nbp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 14`,
-        `  %nb = load ${sz}, ptr %nbp`,
-        `  %eps = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 13`,
+        `  %nbp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 13`,
+        ...(sz === "i64"
+          ? [`  %nb32 = load i32, ptr %nbp`, `  %nb = zext i32 %nb32 to i64`]
+          : [`  %nb = load i32, ptr %nbp`]),
+        `  %eps = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
         `  %ents = load ptr, ptr %eps`,
         `  %linear = icmp eq ${sz} %nb, 0`,
         `  br i1 %linear, label %scan, label %buckets`,
         // Small maps keep no bucket table: scan the cached entry hashes.
         `scan:`,
-        `  %nep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 9`,
-        `  %ne = load ${sz}, ptr %nep`,
+        `  %nep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
+        ...(sz === "i64"
+          ? [`  %ne32 = load i32, ptr %nep`, `  %ne = zext i32 %ne32 to i64`]
+          : [`  %ne = load i32, ptr %nep`]),
         `  br label %scan.loop`,
         `scan.loop:`,
         `  %si = phi ${sz} [ 0, %scan ], [ %si.next, %scan.next ]`,
@@ -3084,7 +3095,7 @@ export class LlEmitter {
         `  %wide = icmp ugt ${sz} %nb, 16777216`,
         `  br i1 %wide, label %runtime, label %probe`,
         `probe:`,
-        `  %bp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 15`,
+        `  %bp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 14`,
         `  %bk = load ptr, ptr %bp`,
         `  %mask = sub ${sz} %nb, 1`,
         `  %ht = lshr i64 %h, 32`,
@@ -3140,16 +3151,16 @@ export class LlEmitter {
       defs.push(
         `define internal ptr @sc_map_iter_entry(ptr %m, double %i) ${FN_ATTRS} {`,
         `entry:`,
-        `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 9`,
-        `  %n = load ${sz}, ptr %np`,
-        `  %nf = uitofp ${sz} %n to double`,
+        `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
+        `  %n = load i32, ptr %np`,
+        `  %nf = uitofp i32 %n to double`,
         `  %lo = fcmp oge double %i, 0.0`,
         `  %hi = fcmp olt double %i, %nf`,
         `  %in = and i1 %lo, %hi`,
         `  br i1 %in, label %load, label %none`,
         `load:`,
         `  %ix = fptoui double %i to ${sz}`,
-        `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 13`,
+        `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
         `  %entries = load ptr, ptr %ep`,
         `  %e = getelementptr inbounds %ScrMapEntry, ptr %entries, ${sz} %ix`,
         `  %hp = getelementptr inbounds %ScrMapEntry, ptr %e, i32 0, i32 2`,
@@ -3164,9 +3175,9 @@ export class LlEmitter {
         ``,
         `define internal double @sc_map_iter_count(ptr %m) ${FN_ATTRS} {`,
         `entry:`,
-        `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 9`,
-        `  %n = load ${sz}, ptr %np`,
-        `  %nf = uitofp ${sz} %n to double`,
+        `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
+        `  %n = load i32, ptr %np`,
+        `  %nf = uitofp i32 %n to double`,
         `  ret double %nf`,
         `}`,
         ``,
@@ -3186,7 +3197,7 @@ export class LlEmitter {
         `entry:`,
         ...(this.sizeType === "i64"
           ? [
-              `  %fp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
+              `  %fp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 10`,
               `  %filter = load i64, ptr %fp`,
               `  %capp = getelementptr inbounds %ScrStr, ptr %k, i32 0, i32 2`,
               `  %cap = load i64, ptr %capp`,
@@ -4183,6 +4194,18 @@ export class LlEmitter {
 
   needBadTag(): void {
     this.needsBadTag = true;
+  }
+
+  /** The ScrMapOps descriptor holding these operands (ShapeHost.mapOps). */
+  mapOps(operands: readonly string[]): string {
+    if (operands.every((op) => op === "null")) return "null";
+    const body = operands.map((op) => `ptr ${op}`).join(", ");
+    let sym = this.mapOpsConsts.get(body);
+    if (!sym) {
+      sym = this.contentSymbol("sc_map_ops_", body);
+      this.mapOpsConsts.set(body, sym);
+    }
+    return `@${sym}`;
   }
 
   /** The interned immortal instance for a UNIT arm of a union — asserts

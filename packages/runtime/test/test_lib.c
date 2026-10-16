@@ -52,7 +52,7 @@ static void expect_pending(const char *name) {
 
 static void test_large_set_materialization(void) {
   const size_t count = ((size_t)1 << 20) + 3;
-  ScrMap *set = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  ScrMap *set = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   for (size_t i = 0; i < count; i++) scr_map_set_f64_f64(set, (double)i, 0);
   scr_map_delete_f64(set, 1);
   ScrArr *values = scr_set_to_arr_f64(set);
