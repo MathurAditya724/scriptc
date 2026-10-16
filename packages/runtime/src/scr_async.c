@@ -171,13 +171,19 @@ struct ScrPromise {
   ScrPromiseIdentity *identity;
   int state;
   bool top_level_handled; /* uncaughtException handled entry evaluation */
+  /* Unhandled-rejection tracking: set when rejected, cleared on await. */
+  bool rejection_observed;
+  /* Set when the checkpoint report delivered THIS promise to
+   * 'unhandledRejection' listeners — a handler attached after that is
+   * Node's 'rejectionHandled' moment (scr_prom_observe below). */
+  bool reported_unhandled;
+  bool b; /* the boolean payload */
   /* Payload (fulfillment value or rejection reason), ScrExcCell-style.
    * trace_fn is non-NULL iff the REF payload type carries a cycle header
    * (a promise settled with a cycle-capable value can be a cycle member —
    * e.g. a closure that captures a box holding this very promise). */
   ScrExcKind payload_kind; /* NONE = void fulfillment */
   double f64;
-  bool b;
   void *payload;
   void *(*retain_fn)(void *);
   void (*release_fn)(void *);
@@ -204,13 +210,13 @@ struct ScrPromise {
     size_t job_at;
   } *cbs;
   size_t ncbs, cbs_cap;
-  /* Unhandled-rejection tracking: set when rejected, cleared on await. */
-  bool rejection_observed;
-  /* Set when the checkpoint report delivered THIS promise to
-   * 'unhandledRejection' listeners — a handler attached after that is
-   * Node's 'rejectionHandled' moment (scr_prom_observe below). */
-  bool reported_unhandled;
 };
+/* The flags share the word after `state`, so a promise and its cycle header
+ * take a 144-byte block rather than a 160-byte one (one per pending
+ * `await`). */
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(sizeof(ScrPromise) == 128, "ScrPromise packs its flags after state");
+#endif
 
 #ifdef SCR_RC_AUDIT
 static SCR_TL long scr_live_promises = 0;
@@ -249,7 +255,8 @@ static void scr_oom(void) {
 
 static void scr_promise_free_side(ScrPromise *p) {
   if (p->identity && --p->identity->rc == 0) free(p->identity);
-  if (p->waiters != &p->waiter_inline) free(p->waiters);
+  /* Most promises never park a fiber or a second waiter: skip the calls. */
+  if (p->waiters && p->waiters != &p->waiter_inline) free(p->waiters);
 }
 
 static void scr_promise_add_waiter(ScrPromise *p, ScrFiber *f) {
@@ -310,16 +317,16 @@ static void scr_promise_gcfree(void *o) {
     if (p->cbs[i].all) scr_promise_all_state_release(p->cbs[i].all);
   }
   scr_promise_free_side(p);
-  free(p->cbs);
+  if (p->cbs) free(p->cbs);
 #ifdef SCR_RC_AUDIT
   scr_live_promises--;
 #endif
-  scr_cyc_free(p);
+  scr_cyc_free_inline(p);
 }
 
 ScrPromise *scr_promise_new(void) {
   static ScrCycType cyc_type = { &scr_promise_trace, &scr_promise_gcfree, SCR_CYC_KIND_PROMISE };
-  ScrPromise *p = scr_cyc_alloc(sizeof *p, &cyc_type);
+  ScrPromise *p = scr_cyc_alloc_inline(sizeof *p, &cyc_type); /* constant size: zeroing inlines */
   p->rc = 1;
 #ifdef SCR_RC_AUDIT
   scr_live_promises++;
@@ -402,11 +409,11 @@ void scr_promise_release(ScrPromise *p) {
       scr_promise_release(p->cbs[i].dst);
       if (p->cbs[i].all) scr_promise_all_state_release(p->cbs[i].all);
     }
-    free(p->cbs);
+    if (p->cbs) free(p->cbs);
 #ifdef SCR_RC_AUDIT
     scr_live_promises--;
 #endif
-    scr_cyc_free(p);
+    scr_cyc_free_inline(p);
   } else if (scr_promise_has_traced_children(p)) {
     scr_cyc_released(p); /* possible cycle root; may collect — p is done */
   }

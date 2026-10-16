@@ -54,6 +54,9 @@ ScrNetSocket *scr_tls_connect_dyn(double port, ScrStr *host /*borrowed, nullable
  * session as a Buffer; `fn` is the data-listener adapter ABI). */
 bool scr_tls_sock_authorized(ScrNetSocket *s);
 ScrStr *scr_tls_sock_auth_error(ScrNetSocket *s); /* +1 or NULL */
+ScrDyn *scr_tls_sock_get_protocol(ScrNetSocket *s);  /* +1: string or null */
+ScrDyn *scr_tls_sock_get_cipher(ScrNetSocket *s);    /* +1: object, undefined or null */
+ScrDyn *scr_tls_sock_alpn_protocol(ScrNetSocket *s); /* +1: string, false or null */
 void scr_tls_sock_on_secure_connect(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
 void scr_tls_sock_on_session(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn, bool once);
 

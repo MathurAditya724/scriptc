@@ -136,10 +136,39 @@ static inline bool scr_bytes_all_ascii(const char *p, size_t n) {
   return (acc & high) == 0;
 }
 
+/* Length of a byte span's ASCII prefix: 32 bytes per step through long
+ * ASCII runs, then the chunk holding a high bit word by word. */
+static inline size_t scr_bytes_ascii_span(const char *p, size_t n) {
+  const uint64_t high = UINT64_C(0x8080808080808080);
+  size_t i = 0;
+  while (n - i >= 32) {
+    uint64_t w[4];
+    memcpy(w, p + i, sizeof w);
+    if ((w[0] | w[1] | w[2] | w[3]) & high) break;
+    i += 32;
+  }
+  while (n - i >= 8) {
+    uint64_t w;
+    memcpy(&w, p + i, 8);
+    if (w & high) break;
+    i += 8;
+  }
+  while (i < n && (unsigned char)p[i] < 0x80) i++;
+  return i;
+}
+
 ScrStr *scr_str_new(const char *bytes, size_t len); /* returns +1 */
 /* Native callback boundary: copy and WHATWG-decode a UTF-8 span, replacing
  * malformed subsequences with U+FFFD. NULL with len == 0 is an empty span. */
 ScrStr *scr_str_from_utf8_lossy(const uint8_t *bytes, size_t len); /* +1 */
+/* The same decode in place for bytes read straight into a uniquely owned
+ * raw string (file contents) whose first `ascii` bytes the caller already
+ * proved ASCII (0 when unknown): consumes `raw`, returns +1 (`raw` itself
+ * when it is well formed). */
+ScrStr *scr_str_adopt_utf8_lossy(ScrStr *raw, size_t ascii);
+/* A runtime encoding name Node decodes as UTF-8 ("utf8"/"utf-8", any
+ * ASCII case). */
+bool scr_bytes_encoding_is_utf8(const ScrStr *enc);
 
 /* Internal allocators for buffer builders: a +1 string with
  * UNINITIALIZED data (the builder fills bytes, then len and the NUL), and

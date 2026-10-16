@@ -223,10 +223,11 @@ export function integerRangeCases(): RangeCase[] {
         break;
     }
     // Where control flow is not followed, x keeps only the closed range: it
-    // enters as 3 and every write in the region is a non-negative int32, so
-    // both the int32 and the uint32 closure hold (the for-of loop binds x
-    // itself to unproven elements, so nothing survives).
-    const closed = [0, 2147483647] as const;
+    // enters as 3 and the region's only write is 11, so the closures narrow
+    // to their join. The for loop's `x = x` initializer evaluates to the
+    // whole bound the closure assumes (int32 and uint32 at once), and the
+    // for-of loop binds x itself to unproven elements, so nothing survives.
+    const closed = region === "for" ? ([0, 2147483647] as const) : ([3, 11] as const);
     const expected = [
       proof(inside, 11),
       region === "block"

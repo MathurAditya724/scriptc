@@ -1173,10 +1173,10 @@ ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
                       timeout_ms, (int)stdout_mode, (int)stderr_mode, false, NULL);
 }
 
-ScrSpawnRes *scr_exec_capture(ScrStr *cmd, ScrArr *args, ScrStr *cwd,
+ScrSpawnRes *scr_exec_capture(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *cwd,
                               bool has_env, ScrArr *env_pairs, double timeout_ms) {
   ScrStr *err_s = NULL;
-  ScrStr *out_s = scr_exec_run(cmd, args, false, NULL, cwd->len > 0 ? cwd : NULL,
+  ScrStr *out_s = scr_exec_run(cmd, args, shell, NULL, cwd->len > 0 ? cwd : NULL,
                                has_env ? env_pairs : NULL, timeout_ms, 1, 1,
                                true, &err_s);
   if (out_s == NULL) return NULL; /* exception pending; dummy result */
@@ -3432,16 +3432,17 @@ ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
   return scr_exec_sync_core(cmd, args, &o);
 }
 
-/* The promisified-execFile capture (cp.execCapture): the SAME exec core
+/* The promisified-execFile/exec capture (cp.execCapture; shell as for
+ * scr_exec_sync — the /bin/sh -c argv): the SAME exec core
  * in the async shape — both streams captured (no echo), Node's async
  * messages on the throw paths (the compiler's interned async helper turns
  * the throw into the rejection). Success answers a +1 ScrSpawnRes reusing
  * the spawnSync result container (status unused — a failure threw). */
-ScrSpawnRes *scr_exec_capture(ScrStr *cmd, ScrArr *args, ScrStr *cwd,
+ScrSpawnRes *scr_exec_capture(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *cwd,
                                bool has_env, ScrArr *env_pairs, double timeout_ms) {
   ScrStr *err_s = NULL;
   ScrExecOpts o = {
-      .shell = false,
+      .shell = shell,
       .input = NULL,
       .cwd = cwd->len > 0 ? cwd : NULL,
       .env_pairs = has_env ? env_pairs : NULL,

@@ -1,6 +1,19 @@
 import { expect, test } from "vitest";
-import { findInitializerBindings, withInitializerBindings } from "./initializer-bindings.js";
-import { BOOL, F64, VOID, type IrFunction, type IrModule, type IrStmt } from "./ir.js";
+import {
+  findInitializerBindings,
+  initializerLocalCandidates,
+  withInitializerBindings,
+  withInitializerLocals,
+} from "./initializer-bindings.js";
+import {
+  BOOL,
+  F64,
+  VOID,
+  type IrFunction,
+  type IrGlobal,
+  type IrModule,
+  type IrStmt,
+} from "./ir.js";
 import { analyzeIntegerRanges } from "./integer-ranges.js";
 
 const loc = { file: "test.ts", start: 0, end: 1 };
@@ -115,4 +128,25 @@ test("guards must return immediately and have exactly one write", () => {
     if (change === "tdz") mod.globals![1]!.tdz = true;
     expect(findInitializerBindings(mod).size, change).toBe(0);
   }
+});
+
+test("number bindings without an import-cycle flag may move into a local", () => {
+  const mod = fixture(),
+    fn = mod.functions[0]!;
+  const bindings = findInitializerBindings(mod).get(fn.name)!;
+  const flagged: IrGlobal = { id: "cyc", name: "cyc", type: F64, mutable: true, initFlag: "flag" };
+  const bytes: IrGlobal = {
+    id: "b",
+    name: "b",
+    type: { kind: "bytes", elem: "u8" },
+    mutable: true,
+  };
+  const candidates = initializerLocalCandidates([...bindings, flagged, bytes]);
+  expect(candidates.map((g) => g.id)).toEqual(["value"]);
+  // The view lists them as plain locals; parameters and body are unchanged.
+  const view = withInitializerLocals(fn, candidates);
+  expect(view.locals.map((l) => l.id)).toEqual(["value"]);
+  expect(view.params).toBe(fn.params);
+  expect(view.body).toBe(fn.body);
+  expect(withInitializerLocals(fn, [])).toBe(fn);
 });

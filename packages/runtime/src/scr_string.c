@@ -733,6 +733,21 @@ ScrStr *scr_str_concat_mixed_move(ScrStr *head, ScrStr *const *parts, const doub
 }
 
 ScrStr *scr_str_concat_f64(ScrStr *a, double x) {
+  /* A head that cannot grow in place (a literal or a shared string): the
+   * result is exactly its bytes and the number's. Digits complete no
+   * surrogate pair, so no seam needs joining. */
+  if (a->rc != 1) {
+    char text[SCR_F64_TEXT_MAX];
+    size_t n = scr_f64_to_str(x, text);
+    if (a->len > SCR_STR_MAX_CAP - n) scr_oom();
+    size_t len = a->len + n;
+    ScrStr *out = scr_str_alloc(len, len);
+    scr_copy_bytes(out->data, a->data, a->len);
+    scr_copy_bytes(out->data + a->len, text, n);
+    out->data[len] = '\0';
+    out->ascii = a->ascii;
+    return out;
+  }
   ScrStr *none = NULL;
   return scr_str_concat_mixed(a, &none, &x, 1);
 }
@@ -2683,13 +2698,16 @@ static double scr_digits_to_double(const char *p, size_t n, int radix) {
     } while (!done);
     return v;
   }
-  /* u64 fast path: exact while the accumulator fits. */
+  /* u64 fast path: exact while the accumulator fits. Stopping as soon as
+   * another digit might overflow is conservative (the bignum below takes
+   * over exactly), so the bound is computed once instead of dividing per
+   * digit. */
   uint64_t acc = 0;
   size_t i = 0;
+  const uint64_t limit = (UINT64_MAX - (uint64_t)(radix - 1)) / (uint64_t)radix;
   for (; i < n; i++) {
-    int dv = scr_digit_value(p[i]);
-    if (acc > (UINT64_MAX - (uint64_t)dv) / (uint64_t)radix) break;
-    acc = acc * (uint64_t)radix + (uint64_t)dv;
+    if (acc > limit) break;
+    acc = acc * (uint64_t)radix + (uint64_t)scr_digit_value(p[i]);
   }
   if (i == n) return (double)acc;
   /* Bignum path: base-2^32 limbs, little-endian, multiply-add per digit. */
@@ -2747,7 +2765,14 @@ double scr_parse_int(ScrStr *s, double radix) {
 }
 
 double scr_parse_int_bytes(const char *p, size_t n, double radix) {
-  double r32 = scr_to_int32_d(radix);
+  /* parseInt(digits, 10) of a short all-digit string (a numeric field or
+   * regex capture): exact in a u64 and in a double, with no whitespace,
+   * sign or prefix to resolve. Anything else takes the full algorithm. */
+  double fast;
+  if (radix == 10 && scr_parse_int_short_digits(p, n, &fast)) return fast;
+  /* Integral radixes in range are their own ToInt32. */
+  double r32 = radix >= 2 && radix <= 36 && radix == (double)(int)radix ? radix
+                                                                       : scr_to_int32_d(radix);
   size_t i = 0;
   while (i < n) {
     unsigned char c = (unsigned char)p[i];

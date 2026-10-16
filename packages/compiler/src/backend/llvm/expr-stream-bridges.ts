@@ -143,6 +143,9 @@ export function streamTypedRefCommitAdapter(
   t: IrType,
   snapshot: string,
 ): string {
+  // Only a runtime store into the view commits: without one in the program,
+  // class and record views need no commit (or its checked conversions).
+  if (host.liveViewsReadOnly && (isDynTypedRefType(t) || t.kind === "record")) return "null";
   if (t.kind === "bytes") {
     const commit = `${snapshot}_commit`;
     const check = host.dyn.dynCheckHelper(t);

@@ -2382,6 +2382,22 @@ function lowerNetSocketMethodCall(
       loc,
     };
   }
+  if ((name === "getProtocol" || name === "getCipher") && args.length === 0) {
+    // TLSSocket.getProtocol(): "TLSv1.2"/"TLSv1.3" or null;
+    // getCipher(): { name, standardName, version }.
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const value: IrExpr = {
+      kind: "libCall",
+      fn: name === "getProtocol" ? "tls.sockGetProtocol" : "tls.sockGetCipher",
+      args: [receiver],
+      type: DYN,
+      loc,
+    };
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(call));
+    return declared === null || declared.kind === "dyn"
+      ? value
+      : lowerer.coerceInto(call, value, declared);
+  }
   if (name === "destroySoon") {
     // end() now, destroy once the FIN actually flushed — Node's
     // 'finish'-then-destroy.
@@ -3469,6 +3485,26 @@ export function lowerServerProperty(
     // one meaning on a socket-kind receiver.
     const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
     return { kind: "libCall", fn: "tls.sockAuthorized", args: [receiver], type: BOOL, loc };
+  }
+  if (
+    recvKind === "netSocket" &&
+    lowerer.isStdlibMember(expr) &&
+    expr.name.text === "alpnProtocol"
+  ) {
+    // TLSSocket.alpnProtocol: null before the handshake, then the
+    // negotiated protocol or false.
+    const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
+    const value: IrExpr = {
+      kind: "libCall",
+      fn: "tls.sockAlpnProtocol",
+      args: [receiver],
+      type: DYN,
+      loc,
+    };
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    return declared === null || declared.kind === "dyn"
+      ? value
+      : lowerer.coerceInto(expr, value, declared);
   }
   if (recvKind === "netSocket" && expr.name.text === "authorizationError") {
     // TLSSocket.authorizationError — the verify-failure CODE STRING
