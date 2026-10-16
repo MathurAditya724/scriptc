@@ -5527,6 +5527,14 @@ declare module "stream" {
     signal?: AbortSignal;
   }
 
+  /* The operators' options: concurrency and highWaterMark bound map's
+   * in-flight callbacks and queued results. */
+  interface ArrayOptions {
+    concurrency?: number;
+    highWaterMark?: number;
+    signal?: AbortSignal;
+  }
+
   class Readable extends EventEmitter {
     constructor(opts?: ReadableOptions);
     /* The underscore-method surface (@types/node declares these on the
@@ -5557,6 +5565,51 @@ declare module "stream" {
     readonly destroyed: boolean;
     readonly errored: Error | null;
     static from(iterable: unknown, options?: ReadableOptions): Readable;
+    /* The Readable operators: chunks are strings or Buffers, map and
+     * flatMap callbacks return strings or Buffers (flatMap: arrays of
+     * them, or strings), and callbacks that declare the options argument
+     * are refused. */
+    map(
+      fn: (data: any, options?: Pick<ArrayOptions, "signal">) => any,
+      options?: ArrayOptions,
+    ): Readable;
+    filter(
+      fn: (data: any, options?: Pick<ArrayOptions, "signal">) => boolean | Promise<boolean>,
+      options?: ArrayOptions,
+    ): Readable;
+    forEach(
+      fn: (data: any, options?: Pick<ArrayOptions, "signal">) => void | Promise<void>,
+      options?: ArrayOptions,
+    ): Promise<void>;
+    toArray(options?: Pick<ArrayOptions, "signal">): Promise<any[]>;
+    some(
+      fn: (data: any, options?: Pick<ArrayOptions, "signal">) => boolean | Promise<boolean>,
+      options?: ArrayOptions,
+    ): Promise<boolean>;
+    find(
+      fn: (data: any, options?: Pick<ArrayOptions, "signal">) => boolean | Promise<boolean>,
+      options?: ArrayOptions,
+    ): Promise<any>;
+    every(
+      fn: (data: any, options?: Pick<ArrayOptions, "signal">) => boolean | Promise<boolean>,
+      options?: ArrayOptions,
+    ): Promise<boolean>;
+    flatMap(
+      fn: (data: any, options?: Pick<ArrayOptions, "signal">) => any,
+      options?: ArrayOptions,
+    ): Readable;
+    drop(limit: number, options?: Pick<ArrayOptions, "signal">): Readable;
+    take(limit: number, options?: Pick<ArrayOptions, "signal">): Readable;
+    reduce<T = any>(
+      fn: (previous: any, data: any, options?: Pick<ArrayOptions, "signal">) => T,
+      initial?: undefined,
+      options?: Pick<ArrayOptions, "signal">,
+    ): Promise<T>;
+    reduce<T = any>(
+      fn: (previous: T, data: any, options?: Pick<ArrayOptions, "signal">) => T,
+      initial: T,
+      options?: Pick<ArrayOptions, "signal">,
+    ): Promise<T>;
     on(event: "data", listener: (chunk: any) => void): this;
     on(event: "end" | "close" | "readable" | "pause" | "resume", listener: () => void): this;
     on(event: "error", listener: (err: Error) => void): this;
@@ -5773,6 +5826,9 @@ declare module "stream" {
   function addAbortSignal<T extends Readable | Writable>(signal: AbortSignal, stream: T): T;
   /* Declared so requires typecheck; each fences at its use site. */
   function pipeline(...streams: unknown[]): unknown;
+  /* compose(...streams): a Duplex that writes to the first stream and
+   * reads from the last, with the streams running as a pipeline. */
+  function compose(...streams: Array<Readable | Writable>): Duplex;
   /* finished's options: readable/writable choose which ends count,
    * error: false ignores 'error' events, signal aborts the wait. */
   interface FinishedOptions {
@@ -5808,6 +5864,7 @@ declare module "stream" {
     Stream,
     addAbortSignal,
     pipeline,
+    compose,
     finished,
     getDefaultHighWaterMark,
     promises,

@@ -80,6 +80,8 @@ const OPTIONAL = [
   ["scr_stream.c", "stream"],
   // The zlib stream classes reference both the zlib engine and the stream unit.
   ["scr_zlib_stream.c", all("zlib", "stream")],
+  // The Readable operators await through the dyn-async unit.
+  ["scr_stream_ops.c", all("stream", "dynAsync")],
   ["scr_loop_kqueue.c", any("netEffective", "dgram")],
   ["scr_loop_epoll.c", any("netEffective", "dgram")],
   ["scr_loop_wsapoll.c", any("netEffective", "dgram")],
