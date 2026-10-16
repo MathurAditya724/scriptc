@@ -191,6 +191,7 @@ import {
   matchMapRead,
   type MapReadLifetimes,
 } from "./map-read-lifetimes.js";
+import { findMapEntryFusions, type MapEntryFusion } from "./map-entry-fusion.js";
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
 import { borrowableInputs, emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { analyzeWalks, findWalkBorrows, type WalkBorrowHost } from "./walk-borrows.js";
@@ -728,6 +729,8 @@ export class LlEmitter {
   callArrayReads = new Map<IrExpr, LocalArrayRead>();
   mapReadLifetimes: MapReadLifetimes = { locals: new Map(), arguments: new Map() };
   readNumberMapWrites: ReadonlySet<IrExpr> = new Set();
+  /** The current function's fused string-key Map get-then-set pairs (map-entry-fusion.ts). */
+  mapEntryFusion: MapEntryFusion | null = null;
   readonly callLifetimes: CallLifetimes;
   readonly constantCallbacks: Map<string, Map<string, string>>;
   currentConstantCallbacks: ReadonlyMap<string, string> = new Map();
@@ -5474,7 +5477,11 @@ export class LlEmitter {
     }
     const g = this.globalTypes.get(id);
     if (!g) throw new InternalCompilerError(`llvm emitter bug: unknown binding ${id}`);
-    return { kind: "global", slot: `@${mangleGlobal(id)}`, type: g };
+    return {
+      kind: "global",
+      slot: `@${mangleGlobal(id)}`,
+      type: g,
+    };
   }
 
   private emitDebugLocal(local: IrLocal, slot: string, arg = 0, captured = false): void {
@@ -5945,6 +5952,7 @@ export class LlEmitter {
       this.debug === null ? findScalarStringSlices(fn, this.callLifetimes) : new Map();
     this.mapReadLifetimes = findMapReadLifetimes(fn, this.boxedUnionsById, this.callLifetimes);
     this.readNumberMapWrites = findReadNumberMapWrites(fn);
+    this.mapEntryFusion = this.debug === null ? findMapEntryFusions(fn) : null;
     this.localStackUnions = findLocalStackUnions(fn, this.callLifetimes, this.boxedUnionsById);
     this.localStackObjects = this.stackObjects
       ? findLocalStackObjects(this, fn, this.callLifetimes)

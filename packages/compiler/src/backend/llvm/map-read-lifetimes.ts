@@ -17,6 +17,7 @@ import {
   emitStringMapGetRef,
 } from "./map-number-lookup.js";
 import { mapKeyAccess, mapKeyParamType } from "./shapes.js";
+import { rememberMapEntry } from "./map-entry-fusion.js";
 
 function hasTypedCollectionReceiver(
   expr: IrExpr,
@@ -64,6 +65,8 @@ export function borrowsMapMutationReceiver(expr: IrExpr): boolean {
 }
 
 export interface LocalMapRead {
+  /** The Map.get expression itself. */
+  expr: IrExpr;
   type: IrType;
   receiver: IrExpr;
   key: IrExpr;
@@ -99,6 +102,7 @@ export function matchMapRead(
   const missingTag = arms.findIndex((arm) => arm.kind === "undefinedT");
   if (presentTag < 0 || missingTag < 0) return null;
   return {
+    expr,
     type: expr.type,
     receiver: expr.receiver,
     key: expr.args[0]!,
@@ -314,6 +318,7 @@ export function emitStackMapRead(host: LlvmEmitterContext, read: LocalMapRead): 
   } else if (string !== null && !isRefCounted(read.value)) {
     const scalar = emitStringMapGetScalar(host, receiver.name, string);
     found = scalar.found;
+    rememberMapEntry(host, read.expr, receiver.name, string, scalar.entry);
     B.line(`store i64 ${scalar.bits}, ptr ${payload}`);
   } else if (isRefCounted(read.value)) {
     const stringKey = entryStringKey(key);
