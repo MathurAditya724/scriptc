@@ -83,7 +83,7 @@ static void scr_perf_arm(void) {
 }
 
 static ScrMap *scr_perf_timing_map(void) {
-  if (!scr_perf_timings) scr_perf_timings = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  if (!scr_perf_timings) scr_perf_timings = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL);
   return scr_perf_timings;
 }
 

@@ -3401,7 +3401,7 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag) {
   d->v.handle.traced = tag == SCR_DYNH_WEAK_MAP || tag == SCR_DYNH_WEAK_SET ||
       tag == SCR_DYNH_WORKER || tag == SCR_DYNH_MESSAGE_PORT ||
       ((tag == SCR_DYNH_SET || tag == SCR_DYNH_MAP) &&
-       (((ScrMap *)h)->key_trace != NULL || ((ScrMap *)h)->val_trace != NULL));
+       ((ScrMap *)h)->traced != 0);
   return d;
 }
 
@@ -11286,8 +11286,7 @@ ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed) {
     items = scr_dyn_iter_pack(seed, NULL);
     if (!items) return NULL;
   }
-  ScrMap *set = scr_map_new_typed(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64,
-    scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v, NULL, NULL, NULL);
+  ScrMap *set = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64, &scr_map_dyn_set_ops);
   if (items) for (size_t i = 0; i < items->v.arr.len; i++) scr_map_set_ref_f64(set, items->v.arr.items[i], 0);
   ScrDyn *result = scr_dyn_native_set(set);
   scr_map_release(set);

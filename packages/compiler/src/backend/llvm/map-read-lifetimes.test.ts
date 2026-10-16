@@ -257,8 +257,8 @@ test("string-key lookups test the absent-key filter inline on 64-bit targets onl
     )![0];
   const wide = helper(64);
   // The cached hash is the capacity word's high half; the filter bits are its
-  // bits 44..55 (scr_map.c scr_map_filter_bits). %ScrMapIx field 11 is the filter.
-  expect(wide).toContain("getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11");
+  // bits 44..55 (scr_map.c scr_map_filter_bits). %ScrMapIx field 10 is the filter.
+  expect(wide).toContain("getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 10");
   expect(wide).toContain("icmp uge i64 %cap, 4294967296");
   expect(wide).toContain("lshr i64 %cap, 44");
   expect(wide).toContain("lshr i64 %cap, 50");
