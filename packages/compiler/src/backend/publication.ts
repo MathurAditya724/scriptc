@@ -74,7 +74,10 @@ export class PublishedTypes {
 export function computePublishedTypes(mod: IrModule): PublishedTypes | null {
   const roots: IrType[] = [];
   const visit = (e: IrExpr): boolean => {
-    if (e.kind === "intrinsic" && e.name === "threads.publish") roots.push(e.type);
+    // Values read from an InternTable were published by whichever thread
+    // stored them.
+    if (e.kind === "intrinsic" && (e.name === "threads.publish" || e.name === "itable.value"))
+      roots.push(e.type);
     return true;
   };
   for (const fn of mod.functions)

@@ -465,8 +465,14 @@ export class ReferenceWrites {
         } else sink.all();
         return;
       case "intrinsic":
-        // A TDZ test reads; publication only makes objects immortal.
-        if (e.name !== "module.tdzCheck" && e.name !== "threads.publish") sink.all();
+        // A TDZ test reads; publication only makes objects immortal; intern
+        // tables store published values and write no script object.
+        if (
+          e.name !== "module.tdzCheck" &&
+          e.name !== "threads.publish" &&
+          !e.name.startsWith("itable.")
+        )
+          sink.all();
         return;
       case "dynFrom":
       case "dynArrLit":
