@@ -5,6 +5,7 @@ import { lowerEventStaticProperty } from "./builtins/numbers.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
+import { lowerReadlineProperty } from "./builtins/readline.js";
 import { lowerBlobInstanceof } from "./builtins/blob.js";
 import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
 import { STATS_TYPE_TESTS } from "./builtins/filesystem.js";
@@ -2155,6 +2156,9 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       // diagnostics_channel Channel receivers — name/hasSubscribers
       // over the f64 channel handle.
       lowerer.lowerDiagnosticsChannelProperty(expr) ??
+      // readline Interface receivers — the history and option members
+      // over the f64 interface handle.
+      lowerReadlineProperty(lowerer, expr) ??
       // TracingChannel receivers — the five event channels and
       // hasSubscribers over the f64 tracing handle.
       lowerer.lowerTracingChannelProperty(expr) ??

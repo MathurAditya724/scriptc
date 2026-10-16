@@ -512,6 +512,12 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "rl.iterOpen",
   "rl.iterNext",
   "rl.iterReturn",
+  "rl.checkOptions",
+  "rl.checkCompleter",
+  "rl.setOptions",
+  "rl.setHistory",
+  "rl.history",
+  "rl.numProp",
 ]);
 
 /** True when the module uses the process-events surface — the link switch

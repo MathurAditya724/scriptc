@@ -392,6 +392,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "https.requestFn",
   "https.requestFnCb",
   "rl.question",
+  "rl.checkOptions",
+  "rl.checkCompleter",
   "readable.fromArr",
   "readable.fromDyn",
   "readable.fromGen",

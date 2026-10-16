@@ -3405,6 +3405,17 @@ declare module "readline" {
    * (scr_readline.c). Listener registrations are statements: chaining
    * on()/once() results has no lowering. */
   export interface Interface extends Disposable {
+    /* The non-terminal members: terminal is false and line ''; history
+     * is the history option itself (or the interface's own empty array),
+     * never recorded without a terminal. */
+    readonly terminal: boolean;
+    readonly line: string;
+    history: string[];
+    readonly historySize: number;
+    readonly historyIndex: number;
+    readonly crlfDelay: number;
+    readonly tabSize: number;
+    readonly escapeCodeTimeout: number;
     question(query: string, callback: (answer: string) => void): void;
     close(): void;
     pause(): this;
@@ -3416,12 +3427,15 @@ declare module "readline" {
     on(event: "line", listener: (input: string) => void): this;
     on(event: "close" | "pause" | "resume", listener: () => void): this;
     on(event: "error", listener: (err: Error) => void): this;
+    on(event: "history", listener: (history: string[]) => void): this;
     once(event: "line", listener: (input: string) => void): this;
     once(event: "close" | "pause" | "resume", listener: () => void): this;
     once(event: "error", listener: (err: Error) => void): this;
+    once(event: "history", listener: (history: string[]) => void): this;
     addListener(event: "line", listener: (input: string) => void): this;
     addListener(event: "close" | "pause" | "resume", listener: () => void): this;
     addListener(event: "error", listener: (err: Error) => void): this;
+    addListener(event: "history", listener: (history: string[]) => void): this;
     [Symbol.asyncIterator](): AsyncIterableIterator<string>;
     [Symbol.dispose](): void;
   }
@@ -3431,12 +3445,18 @@ declare module "readline" {
     terminal?: boolean;
     /* Node's crlfDelay: a \n arriving within this many ms (at least 100)
      * after a line ended by \r is dropped. completer and the history
-     * knobs fence by name (no interactive terminal). The options-record
+     * options are validated and kept; without a terminal neither is used.
+     * The options-record
      * stance (see http.RequestOptions) admits every key; the walk
      * decides. */
     crlfDelay?: number;
     completer?: unknown;
     signal?: AbortSignal;
+    history?: string[];
+    historySize?: number;
+    removeHistoryDuplicates?: boolean;
+    tabSize?: number;
+    escapeCodeTimeout?: number;
     [option: string]: unknown;
   }
   export function createInterface(options: ReadLineOptions): Interface;
@@ -3451,6 +3471,17 @@ declare module "readline/promises" {
    * the next line, rejects with an AbortError when options.signal aborts,
    * and with ERR_USE_AFTER_CLOSE after close(). */
   export interface Interface extends Disposable {
+    /* The non-terminal members: terminal is false and line ''; history
+     * is the history option itself (or the interface's own empty array),
+     * never recorded without a terminal. */
+    readonly terminal: boolean;
+    readonly line: string;
+    history: string[];
+    readonly historySize: number;
+    readonly historyIndex: number;
+    readonly crlfDelay: number;
+    readonly tabSize: number;
+    readonly escapeCodeTimeout: number;
     question(query: string, options?: { signal?: AbortSignal }): Promise<string>;
     close(): void;
     pause(): this;
@@ -3462,12 +3493,15 @@ declare module "readline/promises" {
     on(event: "line", listener: (input: string) => void): this;
     on(event: "close" | "pause" | "resume", listener: () => void): this;
     on(event: "error", listener: (err: Error) => void): this;
+    on(event: "history", listener: (history: string[]) => void): this;
     once(event: "line", listener: (input: string) => void): this;
     once(event: "close" | "pause" | "resume", listener: () => void): this;
     once(event: "error", listener: (err: Error) => void): this;
+    once(event: "history", listener: (history: string[]) => void): this;
     addListener(event: "line", listener: (input: string) => void): this;
     addListener(event: "close" | "pause" | "resume", listener: () => void): this;
     addListener(event: "error", listener: (err: Error) => void): this;
+    addListener(event: "history", listener: (history: string[]) => void): this;
     [Symbol.asyncIterator](): AsyncIterableIterator<string>;
     [Symbol.dispose](): void;
   }
