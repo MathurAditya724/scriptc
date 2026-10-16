@@ -21,5 +21,37 @@ typedef void (*ScrZlibBytesFn)(ScrClosure *cb, ScrError *err,
                               ScrBytes *value /* moves, NULL on error */);
 void scr_zlib_codec_async(const ScrBytes *data, double mode, bool compressing,
                           ScrClosure *cb /* moves */, ScrZlibBytesFn fn);
+/* The stream engine (Node's ZlibContext): one z_stream per zlib stream
+ * object, initialized on its first step. scr_zlib_engine_work runs on a
+ * worker thread and touches only the engine; every other entry runs on the
+ * main thread. The error entries answer true and fill *out (static or
+ * engine-owned strings) when Node would emit an error. */
+typedef struct ScrZlibEngine ScrZlibEngine;
+typedef struct {
+  const char *message;
+  const char *code;
+  int err;
+} ScrZlibError;
+ScrZlibEngine *scr_zlib_engine_new(int mode, int level, int window_bits, int mem_level,
+                                   int strategy, const unsigned char *dict, size_t dict_len,
+                                   bool reject_garbage);
+void scr_zlib_engine_work(ScrZlibEngine *e, int flush, const unsigned char *in, uint32_t in_len,
+                          unsigned char *out, uint32_t out_len);
+void scr_zlib_engine_offsets(const ScrZlibEngine *e, uint32_t *avail_in, uint32_t *avail_out);
+bool scr_zlib_engine_error(const ScrZlibEngine *e, ScrZlibError *out);
+bool scr_zlib_engine_reset(ScrZlibEngine *e, ScrZlibError *out);
+bool scr_zlib_engine_params(ScrZlibEngine *e, int level, int strategy, ScrZlibError *out);
+void scr_zlib_engine_free(ScrZlibEngine *e);
+/* zlib.Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw and Unzip
+ * (scr_zlib_stream.c — linked when the program uses both zlib and the
+ * stream surface): Transform streams over the engine. mode is Node's
+ * node_zlib_mode, opts the options value (undefined for none), validated
+ * with Node's ladder. The callbacks MOVE in and may be NULL. */
+ScrStream *scr_zlib_stream_new(double mode, ScrDyn *opts);
+double scr_zlib_stream_bytes_written(ScrStream *s);
+void scr_zlib_stream_flush(ScrStream *s, ScrDyn *kind, ScrClosure *cb);
+void scr_zlib_stream_params(ScrStream *s, ScrDyn *level, ScrDyn *strategy, ScrClosure *cb);
+void scr_zlib_stream_close(ScrStream *s, ScrClosure *cb);
+void scr_zlib_stream_reset(ScrStream *s);
 
 #endif /* SCR_ZLIB_H */

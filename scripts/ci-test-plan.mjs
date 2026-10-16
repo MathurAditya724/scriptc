@@ -19,15 +19,19 @@ export const isolatedFiles = [
   ["self-hosting", "tests/harness/self-hosting.test.ts"],
   ["self-hosting LLVM emitter", "tests/harness/self-hosting-llvm-emitter.test.ts"],
   ["fetch", "tests/harness/fetch.test.ts"],
-  ["npm static", "tests/harness/npm-static.test.ts"],
   ["surface manifest", "tests/harness/surface-manifest.test.ts"],
 ];
+// Suites that split their own tests across the shards (SCRIPTC_TEST_SHARD,
+// skipUnownedTest in tests/harness/shard.ts): every shard runs its share in
+// its own vitest process.
+export const caseShardedSideFiles = [["npm static", "tests/harness/npm-static.test.ts"]];
 export const fileExclusions = [
   ...corpusFiles,
   ...effectFiles,
   coverageFile,
   cacheFile,
   ...isolatedFiles.map(([, file]) => file),
+  ...caseShardedSideFiles.map(([, file]) => file),
   "tests/harness/self-hosting-native-driver.test.ts",
 ];
 
@@ -39,9 +43,12 @@ export const testCosts = JSON.parse(
 
 // The shard (1-based) of each measured side-queue file and isolated suite:
 // longest first to the shard with the least work so far, counting about a
-// second per file for vitest to import it. An isolated suite without a
-// measurement weighs as much as the median measured file. Files without a
-// measurement are left to vitest's --shard, which splits them by count.
+// second per file for vitest to import it. Ties go to the highest shard, so the
+// longest files start from the last shard while the cost-balanced corpus and
+// three.js cases (tests/harness/shard.ts) place their longest from the first.
+// An isolated suite without a measurement weighs as much as the median
+// measured file. Files without a measurement are left to vitest's --shard,
+// which splits them by count.
 export function sideOwners(flavor, count) {
   const costs = testCosts[flavor];
   const known = Object.values(costs).sort((a, b) => a - b);
@@ -52,8 +59,8 @@ export function sideOwners(flavor, count) {
   const loads = new Array(count).fill(0);
   const owners = new Map();
   for (const file of files) {
-    let lightest = 0;
-    for (let shard = 1; shard < count; shard++)
+    let lightest = count - 1;
+    for (let shard = count - 2; shard >= 0; shard--)
       if (loads[shard] < loads[lightest]) lightest = shard;
     loads[lightest] += weight(file);
     owners.set(file, lightest + 1);
@@ -149,6 +156,8 @@ export function ciTestPlan({ shard, flavor, workers = 4, suite = "full" }) {
     if (owners.get(file) === index)
       side.push({ name, args: ["test", file], env: { ...env, SCRIPTC_TEST_WORKERS: "1" } });
   }
+  for (const [name, file] of caseShardedSideFiles)
+    side.push({ name, args: ["test", file], env: { ...env, SCRIPTC_TEST_WORKERS: "1" } });
   // Frontend coverage and cache invalidation do not consume sanitizer state.
   if (flavor === "plain") {
     side.push({

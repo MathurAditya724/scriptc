@@ -31,7 +31,7 @@
 typedef struct {
   void *obj;
   size_t rc;
-  bool cyc;
+  uint32_t buf; /* a candidate taken out of its buffer: its index + 1, else 0 */
   bool dyn; /* a dyn container frozen on success */
   uint8_t kind; /* SCR_PUB_KIND_*: leaves the RC audit's live count on success */
 } ScrPubLog;
@@ -50,6 +50,8 @@ struct ScrPub {
   size_t len, cap;
   ScrPubLog *log;
   size_t logged, log_cap;
+  size_t taken; /* logged candidates taken out of their buffers */
+  size_t dyns; /* logged dyn containers */
   const char *refusal; /* first refusal message; the walk stops */
   ScrPubItem stack_inline[SCR_PUB_INLINE];
   ScrPubLog log_inline[SCR_PUB_INLINE];
@@ -86,12 +88,20 @@ void scr_pub_push(ScrPub *ctx, void *v, ScrPubFn fn) {
   ctx->len++;
 }
 
+/* Marks `obj` immortal and logs its count. A candidate leaves its buffer
+ * here, while its header is in cache, so committing the publish does not
+ * touch the objects again. */
 bool scr_pub_mark(ScrPub *ctx, void *obj, bool cyc, int kind) {
   size_t *rc = obj;
   if (*rc == SIZE_MAX || ctx->refusal) return false;
   if (ctx->logged == ctx->log_cap)
     ctx->log = scr_pub_grow(ctx->log, &ctx->log_cap, sizeof *ctx->log, ctx->log_inline);
-  ctx->log[ctx->logged++] = (ScrPubLog){obj, *rc, cyc, false, (uint8_t)kind};
+  ScrPubLog *e = &ctx->log[ctx->logged++];
+  *e = (ScrPubLog){obj, *rc, 0, false, (uint8_t)kind};
+  if (cyc && scr_cyc_is_buffered(scr_cyc_hdr(obj))) {
+    e->buf = scr_cyc_pub_take(obj) + 1;
+    ctx->taken++;
+  }
   *rc = SIZE_MAX;
   return true;
 }
@@ -118,11 +128,7 @@ void scr_pub_str_fn(void *v, ScrPub *ctx) {
   if (s->len <= SCR_PUB_HASH_PRIME_MAX) scr_str_hash_prime(s);
   /* Record proven ASCII now: an immortal string cannot record it later,
    * and every UTF-16 index mapper answers ASCII strings by identity. */
-  if (!s->ascii) {
-    bool ascii = true;
-    for (size_t i = 0; i < s->len && ascii; i++) ascii = (unsigned char)s->data[i] < 0x80;
-    if (ascii) s->ascii = 1;
-  }
+  if (!s->ascii && scr_bytes_all_ascii(s->data, s->len)) s->ascii = 1;
   scr_pub_mark(ctx, s, false, SCR_PUB_KIND_STRING);
 }
 
@@ -261,8 +267,10 @@ void scr_pub_dyn_fn(void *v, ScrPub *ctx) {
       else if (entry & SCR_PUB_BIGINT) scr_pub_leaf_fn(p, ctx);
       else {
         ScrDyn *d = p;
-        if (scr_pub_mark(ctx, d, true, SCR_PUB_KIND_DYN) && (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ))
+        if (scr_pub_mark(ctx, d, true, SCR_PUB_KIND_DYN) && (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ)) {
           ctx->log[ctx->logged - 1].dyn = true;
+          ctx->dyns++;
+        }
       }
     }
   free(nodes);
@@ -295,6 +303,8 @@ void scr_publish(void *root, ScrPubFn fn) {
   ctx.log = ctx.log_inline;
   ctx.logged = 0;
   ctx.log_cap = SCR_PUB_INLINE;
+  ctx.taken = 0;
+  ctx.dyns = 0;
   ctx.refusal = NULL;
   int traced = atomic_load_explicit(&scr_pub_trace, memory_order_relaxed);
   if (traced < 0) {
@@ -309,13 +319,24 @@ void scr_publish(void *root, ScrPubFn fn) {
     ctx.stack[ctx.len].fn(ctx.stack[ctx.len].v, &ctx);
   }
   if (ctx.refusal) {
-    for (size_t i = ctx.logged; i-- > 0;) *(size_t *)ctx.log[i].obj = ctx.log[i].rc;
+    for (size_t i = ctx.logged; i-- > 0;) {
+      *(size_t *)ctx.log[i].obj = ctx.log[i].rc;
+      if (ctx.log[i].buf) scr_cyc_pub_restore(ctx.log[i].obj, ctx.log[i].buf - 1);
+    }
+    if (ctx.taken) scr_cyc_pub_fill();
     scr_throw_error_msg(SCR_ERR_TYPE, ctx.refusal, strlen(ctx.refusal));
   } else {
     if (trace) t1 = scr_hrtime_ns();
-    /* Leave this thread's collector buffers: no pass may visit them. */
-    for (size_t i = 0; i < ctx.logged; i++) {
-      if (ctx.log[i].cyc) scr_cyc_on_dead(ctx.log[i].obj);
+    /* Close the candidate buffer slots the walk cleared, before anything
+     * can buffer or collect again: no pass may visit a published object. */
+    if (ctx.taken) scr_cyc_pub_fill();
+    /* Only dyn containers, the RC audit and LeakSanitizer need each object. */
+#if defined(SCR_RC_AUDIT) || defined(SCR_LSAN_IMMORTAL)
+    size_t each = ctx.logged;
+#else
+    size_t each = ctx.dyns ? ctx.logged : 0;
+#endif
+    for (size_t i = 0; i < each; i++) {
       if (ctx.log[i].dyn) scr_dyn_release(scr_dyn_freeze(ctx.log[i].obj));
 #ifdef SCR_RC_AUDIT
       scr_pub_audit_forget(ctx.log[i].kind);

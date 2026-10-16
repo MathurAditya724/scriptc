@@ -228,6 +228,8 @@ static void scr_worker_thread_run(ScrWorkerThread *worker) {
    * only once none of those operations can touch the worker's script heap. */
   scr_mailbox_post(worker->parent, scr_worker_event(SCR_WORKER_EXIT, worker->id, code, NULL));
   scr_worker_thread_release(worker);
+  /* Replaced InternTable indexes no longer wait for this thread. */
+  scr_itable_thread_exit();
   /* The next script thread continues this thread's allocator arena. */
   scr_sa_thread_park();
 }

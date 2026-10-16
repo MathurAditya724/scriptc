@@ -27,6 +27,7 @@ import {
   RUNTIME_EMITTER_CLASS,
   RUNTIME_ERROR_CLASSES,
   RUNTIME_STREAM_CLASSES,
+  ZLIB_STREAM_MODES,
   setOf,
   STRING,
   SYMBOL_T,
@@ -2721,6 +2722,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     ) {
       return { kind: "object", className: irName };
     }
+  }
+  // node:zlib's stream classes (the shipped fallback declarations): their
+  // instances are runtime Transform streams.
+  if (
+    psym !== undefined &&
+    ZLIB_STREAM_MODES.has(psym.name) &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          ts.isClassDeclaration(d) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          !isNodeTypesPath(d.getSourceFile().fileName) &&
+          isDeclaredInAmbientModule(d, "zlib"),
+      )
+  ) {
+    return { kind: "object", className: "%Transform" };
   }
   if (
     (psym?.name === "Readable" &&

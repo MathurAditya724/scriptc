@@ -8,9 +8,14 @@ import { EXECUTABLE_RUNTIME_SOURCES } from "../../compiler/src/backend/native-to
 
 const exec = promisify(execFile);
 
-test.skipIf(process.platform === "win32")(
-  "shared views serialize concurrent accesses and cancel parked waiters",
-  async () => {
+// Atomics operations take no lock, and every other access to shared bytes
+// is a relaxed atomic one; the ThreadSanitizer build checks that concurrent
+// element, bulk and Atomics accesses to the same bytes are race-free.
+test
+  .skipIf(process.platform === "win32")
+  .each([["-fsanitize=address,undefined"], ["-fsanitize=thread"]])(
+  "shared views keep concurrent accesses atomic and cancel parked waiters (%s)",
+  async (sanitize) => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-shared-"));
     try {
       const bin = join(dir, "shared");
@@ -20,7 +25,7 @@ test.skipIf(process.platform === "win32")(
         "-pthread",
         "-DSCR_WORKERS",
         "-DSCR_RC_AUDIT",
-        "-fsanitize=address,undefined",
+        sanitize,
         "-Wno-deprecated-declarations",
         ...(process.platform === "linux" ? ["-D_GNU_SOURCE"] : []),
         ...["scr_shared.test.c", ...EXECUTABLE_RUNTIME_SOURCES].map((name) =>
@@ -31,8 +36,8 @@ test.skipIf(process.platform === "win32")(
         bin,
       ]);
       const result = await exec(bin, [], {
-        timeout: 10000,
-        env: { ...process.env, UBSAN_OPTIONS: "halt_on_error=1" },
+        timeout: 30000,
+        env: { ...process.env, UBSAN_OPTIONS: "halt_on_error=1", TSAN_OPTIONS: "halt_on_error=1" },
       });
       expect(result.stdout).toBe(
         "shared views preserve atomic updates, wait queues and cancellation ownership\n",

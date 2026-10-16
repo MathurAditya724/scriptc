@@ -16,10 +16,7 @@ const OWNED_ATTEMPTS = [
   "2 freed",
   "3 freed",
   "4 kept",
-  "4 kept",
-  "4 kept",
   "5 freed",
-  "4 kept",
   "4 freed",
   "6 freed",
   "7 freed",
@@ -27,14 +24,15 @@ const OWNED_ATTEMPTS = [
   "8 freed",
   "9 freed",
   "10 kept",
-  "10 kept",
   "12 freed",
-  "10 kept",
-  "10 kept",
   "11 freed",
   "10 freed",
   "13 freed",
   "14 freed",
+  "15 kept",
+  "16 freed",
+  "15 freed",
+  "17 freed",
 ];
 const OWNED_STDOUT = [
   "an owned graph of every walked shape is freed with its region",
@@ -44,6 +42,7 @@ const OWNED_STDOUT = [
   "references the walk cannot explain keep a region",
   "regions in use or referenced by other regions are kept",
   "allocation continues per class across region switches",
+  "a kept region is attempted again after enough region allocation",
 ];
 const RETAINED_ATTEMPTS = ["1 kept", "1 freed", "2 freed", "3 pinned", "4 freed"];
 const RETAINED_STDOUT = [
@@ -112,8 +111,8 @@ describe.skipIf(process.platform === "win32")("counted lifetime regions", () => 
         ...(sanitized ? ["sanitized builds fault on any access to a freed region"] : []),
       ]);
       const ownedStats = attempts(owned.stderr);
-      expect(ownedStats.attempts).toEqual([...OWNED_ATTEMPTS, ...(sanitized ? ["15 freed"] : [])]);
-      const n = sanitized ? 15 : 14;
+      expect(ownedStats.attempts).toEqual([...OWNED_ATTEMPTS, ...(sanitized ? ["18 freed"] : [])]);
+      const n = sanitized ? 18 : 17;
       expect(ownedStats.summaries).toEqual([
         `scriptc regions: ${n} created, ${n} released, ${n} freed, 0 pinned, 0 kept`,
       ]);

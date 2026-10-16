@@ -128,10 +128,24 @@
       ]
     },
     {
+      "name": "atomics-contended",
+      "entry": "workloads/atomics-contended.ts",
+      "args": [
+        "2"
+      ]
+    },
+    {
       "name": "value-objects",
       "entry": "workloads/value-objects.ts",
       "args": [
         "2"
+      ]
+    },
+    {
+      "name": "region-builds",
+      "entry": "workloads/region-builds.ts",
+      "args": [
+        "1"
       ]
     },
     {
@@ -153,6 +167,13 @@
       "entry": "workloads/number-maps.ts",
       "args": [
         "4"
+      ]
+    },
+    {
+      "name": "published-graphs",
+      "entry": "workloads/published-graphs.ts",
+      "args": [
+        "1"
       ]
     },
     {

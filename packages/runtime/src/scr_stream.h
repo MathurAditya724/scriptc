@@ -412,6 +412,14 @@ void scr_stream_set_final(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
 void scr_stream_set_destroy(ScrStream *s, ScrClosure *cb, ScrStreamErrInv inv);
 void scr_stream_set_transform(ScrStream *s, ScrClosure *cb, ScrStreamChunkInv inv);
 void scr_stream_set_flush(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
+/* Runtime-built Transforms (scr_zlib_stream.c): the flush starts at
+ * 'prefinish' and 'finish' does not wait for it (a _final that completes
+ * at once). set_native moves one reference to the stream's own state,
+ * released when the stream is freed; scr_stream_native answers it
+ * (borrowed) when it was set with `release`, else NULL. */
+void scr_stream_set_flush_on_prefinish(ScrStream *s);
+void scr_stream_set_native(ScrStream *s, void *state, void (*release)(void *));
+void *scr_stream_native(ScrStream *s, void (*release)(void *));
 
 /* Completion entries for the compiler-emitted done closures (err/data
  * MOVE; NULLs = absent). */

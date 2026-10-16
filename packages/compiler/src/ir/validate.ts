@@ -3819,9 +3819,13 @@ function validateFunction(
       else if (
         (e.name === "itable.find" || e.name === "itable.insert") &&
         key!.type.kind !== "string" &&
-        key!.type.kind !== "f64"
+        key!.type.kind !== "f64" &&
+        !(
+          key!.type.kind === "array" &&
+          (key!.type.elem.kind === "f64" || key!.type.elem.kind === "string")
+        )
       )
-        err(`${e.name} key must be string or f64`, e.loc);
+        err(`${e.name} key must be string, f64, or an array of either`, e.loc);
       else if (e.name === "itable.insert" && !isSupportedMapValue(value!.type))
         err(`itable.insert value ${typeKey(value!.type)} is not a table value type`, e.loc);
       if (e.name === "itable.value") {
@@ -5255,6 +5259,25 @@ function validateFunction(
     fixedArgs: number,
     result: IrType,
   ): boolean {
+    if (e.fn.startsWith("zlib.stream")) {
+      // The zlib stream classes: streamNew answers a runtime Transform;
+      // the members take one as their receiver, and the Cb forms end in
+      // the () => void callback.
+      const isTransform = (t: IrType | undefined): boolean =>
+        t?.kind === "object" && t.className === "%Transform";
+      if (e.fn === "zlib.streamNew") {
+        if (!isTransform(e.type)) err(`libCall ${e.fn} must return a %Transform`, e.loc);
+        return true;
+      }
+      if (!isTransform(e.args[0]?.type)) {
+        err(`libCall ${e.fn} receiver must be a %Transform`, e.loc);
+      }
+      if (e.fn.endsWith("Cb") && e.args[e.args.length - 1]?.type.kind !== "func") {
+        err(`libCall ${e.fn} callback must be a func`, e.loc);
+      }
+      if (!typeEquals(e.type, result)) err(`libCall ${e.fn} result type mismatch`, e.loc);
+      return true;
+    }
     if (
       e.fn.startsWith("readable.") ||
       e.fn.startsWith("writable.") ||

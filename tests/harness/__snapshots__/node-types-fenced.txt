@@ -104,7 +104,7 @@ fenced.ts:54:1 - error SC2020: 'zlib.brotliCompressSync' is typed by @types/node
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   55 | /* The http2 compatibility slice's @types/node-world fences (divergence
 
-  hint: the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms plus crc32 are the lowered zlib surface
+  hint: Brotli needs a Brotli codec, which the static runtime does not vendor — the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface
 
 fenced.ts:63:71 - error SC2020: 'a createSecureServer SNICallback of 'undefined' values' is part of the standard library types but has no scriptc lowering yet
 

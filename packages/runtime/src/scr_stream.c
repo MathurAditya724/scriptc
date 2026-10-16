@@ -174,6 +174,14 @@ struct ScrStreamState {
   ScrStreamPlainInv flush_inv;
   bool flush_called;
   bool flush_pending; /* _flush called, its callback not yet run */
+  /* A _final that completes at once (zlib's ZlibBase): 'prefinish' starts
+   * the flush and 'finish' does not wait for it. */
+  bool flush_on_prefinish;
+  /* A runtime-built stream's own state (scr_zlib_stream.c): one owned
+   * reference, kept past 'close' until the stream is freed. The release
+   * function doubles as the state's type tag. */
+  void *native;
+  void (*native_release)(void *);
 
   /* destroy */
   ScrClosure *destroy_cb;
@@ -262,6 +270,7 @@ static void scr_stream_entry_release_kind(void *e, bool is_str) {
 static void scr_stream_state_drop(ScrStreamState *st, bool gc) {
   if (!st) return;
   if (st->errored) scr_error_release(st->errored);
+  if (st->native) st->native_release(st->native);
   for (size_t i = 0; i < st->r.n; i++) scr_stream_entry_release(st, st->r.buf[i]);
   free(st->r.buf);
   if (st->r.enc) scr_str_release(st->r.enc);
@@ -1748,6 +1757,18 @@ static void scr_stream_finish_maybe(ScrStream *s) {
      * pendingcb) */
     return;
   }
+  if (!st->w.prefinished && st->flush_on_prefinish) {
+    /* The Transform's own 'prefinish' listener (registered first) runs
+     * the flush; 'finish' follows on a tick. */
+    st->w.prefinished = true;
+    if (!st->flush_called) {
+      st->flush_called = true;
+      st->flush_inv(st->flush_cb, s);
+      if (scr_exc_pending()) return;
+    }
+    scr_stream_emit0(s, "prefinish");
+    if (scr_exc_pending()) return;
+  }
   if (!st->w.prefinished) {
     if ((st->is_transform || st->passthrough) && !st->flush_called) {
       st->flush_called = true;
@@ -2087,6 +2108,20 @@ void scr_stream_set_flush(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamPlain
   if (st->flush_cb) scr_closure_release(st->flush_cb);
   st->flush_cb = cb;
   st->flush_inv = inv;
+}
+
+void scr_stream_set_flush_on_prefinish(ScrStream *s) { s->st->flush_on_prefinish = true; }
+
+void scr_stream_set_native(ScrStream *s, void *state /*moves*/, void (*release)(void *)) {
+  ScrStreamState *st = s->st;
+  if (st->native) st->native_release(st->native);
+  st->native = state;
+  st->native_release = release;
+}
+
+void *scr_stream_native(ScrStream *s, void (*release)(void *)) {
+  ScrStreamState *st = s->st;
+  return st != NULL && st->native != NULL && st->native_release == release ? st->native : NULL;
 }
 
 /* ── dyn options (a checked-dynamic options record at construction) ─────
