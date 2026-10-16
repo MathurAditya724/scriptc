@@ -152,7 +152,7 @@ import {
   isMatchSliceType,
   lowerAbsenceProbe,
   lowerCompoundValueToTarget,
-  lowerElementCompound,
+  lowerElementCompoundStatement,
   lowerIncDec,
   lowerIncDecTarget,
   lowerGroupsProjection,
@@ -6601,11 +6601,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         if (symbolFieldInfo(lowerer, expr.left)) {
           return lowerer.lowerFieldCompound(expr.left, compound, expr.right, locOf(expr));
         }
-        return {
-          kind: "exprStmt",
-          expr: lowerElementCompound(lowerer, expr, compound),
-          loc: locOf(expr),
-        };
+        return lowerElementCompoundStatement(lowerer, expr, compound);
       }
       if (ts.isPropertyAccessExpression(expr.left)) {
         // `N.x += v` — the namespace-qualified spelling of a module-

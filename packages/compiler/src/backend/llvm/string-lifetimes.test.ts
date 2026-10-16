@@ -4,6 +4,7 @@ import {
   F64,
   STRING,
   VOID,
+  arrayOf,
   funcOf,
   type IrExpr,
   type IrFunction,
@@ -479,4 +480,86 @@ test("string comparisons decide identity, lengths and leading bytes before the r
     expect(units).toContain("%ascii = icmp sge i8 %bits, 0");
     expect(units).toContain("call i32 @scr_str_cmp_u16(ptr %a, ptr %b)");
   }
+});
+
+test("a string field or array-slot self-append lets the container go before the concat", () => {
+  const recordT = { kind: "record", shapeId: "buf" } as const;
+  const arrT = arrayOf(STRING);
+  const field: IrFunction = {
+    name: "field",
+    loc,
+    params: [
+      { localId: "r", name: "r", type: recordT },
+      { localId: "s", name: "s", type: STRING },
+    ],
+    locals: [
+      { id: "r", name: "r", type: recordT, mutable: false },
+      { id: "s", name: "s", type: STRING, mutable: false },
+    ],
+    returnType: VOID,
+    body: [
+      {
+        kind: "recordSet",
+        obj: ref("r", recordT),
+        shapeId: "buf",
+        field: "text",
+        value: concat(
+          {
+            kind: "recordGet",
+            obj: ref("r", recordT),
+            shapeId: "buf",
+            field: "text",
+            type: STRING,
+            loc,
+          },
+          ref("s"),
+        ),
+        loc,
+      },
+    ],
+  };
+  const slot: IrFunction = {
+    name: "slot",
+    loc,
+    params: [
+      { localId: "a", name: "a", type: arrT },
+      { localId: "i", name: "i", type: F64 },
+      { localId: "s", name: "s", type: STRING },
+    ],
+    locals: [
+      { id: "a", name: "a", type: arrT, mutable: false },
+      { id: "i", name: "i", type: F64, mutable: false },
+      { id: "s", name: "s", type: STRING, mutable: false },
+    ],
+    returnType: VOID,
+    body: [
+      {
+        kind: "arraySet",
+        arr: ref("a", arrT),
+        index: ref("i", F64),
+        value: concat(
+          { kind: "arrayGet", arr: ref("a", arrT), index: ref("i", F64), type: STRING, loc },
+          ref("s"),
+        ),
+        loc,
+      },
+    ],
+  };
+  const module: IrModule = {
+    ...mod(field, slot),
+    records: [{ id: "buf", fields: [{ name: "text", type: STRING }] }],
+  };
+  expect(validateModule(module)).toEqual([]);
+  const ir = emitLlvmModule(module, { pointerBits: 64 });
+  const define = (name: string): string =>
+    new RegExp(`^define internal [^\\n]*@sc_b?f_${name}\\([^]*?^}`, "m").exec(ir)![0];
+  const appendField = define("field");
+  const concatAt = appendField.indexOf("@scr_str_concat(");
+  expect(concatAt).toBeGreaterThan(0);
+  expect(appendField.slice(0, concatAt)).toMatch(/store ptr null, ptr %/);
+  expect(appendField.slice(0, concatAt)).toContain("@scr_str_release");
+  const appendSlot = define("slot");
+  const slotConcat = appendSlot.indexOf("@scr_str_concat(");
+  expect(appendSlot.slice(0, slotConcat)).toContain("arr.unlink.swap");
+  expect(appendSlot.slice(slotConcat)).toContain("arr.set");
 });

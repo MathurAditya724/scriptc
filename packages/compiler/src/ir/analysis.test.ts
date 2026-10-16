@@ -1,5 +1,11 @@
 import { expect, test } from "vitest";
-import { isStableReceiverOperand, matchStringSelfConcat, unionWideningTags } from "./analysis.js";
+import {
+  isStableReceiverOperand,
+  matchFieldSelfConcat,
+  matchStringSelfConcat,
+  readsArraySlot,
+  unionWideningTags,
+} from "./analysis.js";
 import {
   BOOL,
   F64,
@@ -10,6 +16,7 @@ import {
   bytesOf,
   type IrExpr,
   type IrLibFn,
+  type IrStmt,
 } from "./ir.js";
 
 const loc = { file: "analysis.ts", start: 0, end: 0 };
@@ -69,6 +76,83 @@ test("matchStringSelfConcat rejects non-canonical and non-string shapes", () => 
   expect(matchStringSelfConcat("acc", str("x"))).toBeNull();
   expect(matchStringSelfConcat("acc", concat(ref("acc", F64), str("x")))).toBeNull();
   expect(matchStringSelfConcat("acc", concat(ref("acc"), str("x"), F64))).toBeNull();
+});
+
+const objectT = { kind: "object", className: "Buf" } as const;
+const fieldGet = (obj: string, field = "text", className = "Buf"): IrExpr => ({
+  kind: "fieldGet",
+  obj: ref(obj, objectT),
+  className,
+  field,
+  type: STRING,
+  loc,
+});
+const fieldSet = (obj: string, value: IrExpr): Extract<IrStmt, { kind: "fieldSet" }> => ({
+  kind: "fieldSet",
+  obj: ref(obj, objectT),
+  className: "Buf",
+  field: "text",
+  value,
+  loc,
+});
+
+test("matchFieldSelfConcat recognizes a field append through one local receiver", () => {
+  const suffix = str("x");
+  expect(matchFieldSelfConcat(fieldSet("o", concat(fieldGet("o"), suffix)))).toBe(suffix);
+  const recordT = { kind: "record", shapeId: "r0" } as const;
+  const record: Extract<IrStmt, { kind: "recordSet" }> = {
+    kind: "recordSet",
+    obj: ref("r", recordT),
+    shapeId: "r0",
+    field: "text",
+    value: concat(
+      {
+        kind: "recordGet",
+        obj: ref("r", recordT),
+        shapeId: "r0",
+        field: "text",
+        type: STRING,
+        loc,
+      },
+      suffix,
+    ),
+    loc,
+  };
+  expect(matchFieldSelfConcat(record)).toBe(suffix);
+});
+
+test("matchFieldSelfConcat rejects other receivers, fields, classes, and prepends", () => {
+  expect(matchFieldSelfConcat(fieldSet("o", concat(fieldGet("p"), str("x"))))).toBeNull();
+  expect(matchFieldSelfConcat(fieldSet("o", concat(fieldGet("o", "other"), str("x"))))).toBeNull();
+  expect(
+    matchFieldSelfConcat(fieldSet("o", concat(fieldGet("o", "text", "Base"), str("x")))),
+  ).toBeNull();
+  expect(matchFieldSelfConcat(fieldSet("o", concat(str("x"), fieldGet("o"))))).toBeNull();
+  expect(matchFieldSelfConcat(fieldSet("o", fieldGet("o")))).toBeNull();
+});
+
+test("readsArraySlot accepts the element and the hole-reading ternary only", () => {
+  const arrT = arrayOf(STRING);
+  const get = (arr: string, index: string): IrExpr => ({
+    kind: "arrayGet",
+    arr: ref(arr, arrT),
+    index: ref(index, F64),
+    type: STRING,
+    loc,
+  });
+  const operand: IrExpr = {
+    kind: "ternary",
+    cond: { kind: "boolLit", value: true, type: BOOL, loc },
+    then: get("a", "i"),
+    else_: str("undefined"),
+    type: STRING,
+    loc,
+  };
+  expect(readsArraySlot(get("a", "i"), "a", "i")).toBe(true);
+  expect(readsArraySlot(operand, "a", "i")).toBe(true);
+  expect(readsArraySlot(get("a", "j"), "a", "i")).toBe(false);
+  expect(readsArraySlot(get("b", "i"), "a", "i")).toBe(false);
+  expect(readsArraySlot(str("a"), "a", "i")).toBe(false);
 });
 
 test("receiver borrowing accepts scalar index updates and stable byte reads", () => {
