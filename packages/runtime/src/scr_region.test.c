@@ -331,6 +331,30 @@ static void check_cursors(void) {
   puts("allocation continues per class across region switches");
 }
 
+/* Dropping an outside reference to an ordinary object the walk reaches
+ * leaves the region's count unchanged, so the retries at creation and
+ * release skip the kept region. It is attempted again once the thread has
+ * allocated SCR_RGN_RETRY_BYTES (8 MiB) in regions since its last attempt. */
+static void check_retry_schedule(void) {
+  double r = region();
+  scr_region_enter(r);
+  Node *root = build_graph(3);
+  scr_region_leave();
+  ScrArr *kids = scr_arr_retain(root->kids); /* owned by the region and held outside */
+  node_release(root);
+  scr_region_release(r);
+  scr_arr_release(kids); /* no counted reference changes */
+  scr_region_release(region()); /* skips r */
+  double big = region();
+  scr_region_enter(big);
+  for (size_t i = 0; i < ((size_t)9 << 20) / sizeof(Node); i++) node_release(node_new(0));
+  scr_region_leave();
+  scr_region_enter(big); /* past the allocation volume: attempts r */
+  scr_region_leave();
+  scr_region_release(big);
+  puts("a kept region is attempted again after enough region allocation");
+}
+
 static void check_poison(void) {
 #if defined(SCR_RC_AUDIT) && !defined(_WIN32)
   double r = region();
@@ -448,6 +472,7 @@ int main(int argc, char **argv) {
     check_unwalked();
     check_in_use();
     check_cursors();
+    check_retry_schedule();
     check_poison();
   } else if (!strcmp(mode, "retained")) {
     check_default_region();
