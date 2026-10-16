@@ -2372,6 +2372,18 @@ void scr_promise_fulfill_ref(ScrPromise *p, void *v, void *(*retain)(void *), vo
   p->trace_fn = trace;
   scr_promise_settle_wake(p);
 }
+void scr_promise_fulfill_like(ScrPromise *p, const ScrPromise *src) {
+  if (p->state != SCR_PROM_PENDING) return;
+  p->state = SCR_PROM_FULFILLED;
+  p->payload_kind = src->payload_kind;
+  p->f64 = src->f64;
+  p->b = src->b;
+  p->payload = src->payload && src->retain_fn ? src->retain_fn(src->payload) : src->payload;
+  p->retain_fn = src->retain_fn;
+  p->release_fn = src->release_fn;
+  p->trace_fn = src->trace_fn;
+  scr_promise_settle_wake(p);
+}
 void scr_promise_fulfill_void(ScrPromise *p) {
   if (p->state != SCR_PROM_PENDING) return;
   p->state = SCR_PROM_FULFILLED;
