@@ -28,13 +28,23 @@
  * whose emitted walker refuses) restores every logged count, so a publish
  * that throws leaves the graph unchanged, exactly like the Node.js
  * implementation, which validates before it freezes. */
+/* One logged mark, 16 bytes on 64-bit targets: the log is written once per
+ * object, so its size is most of the walk's memory traffic. `obj` carries
+ * SCR_PUB_DYN for a dyn container frozen on success. `rc` is the count
+ * before the mark, with two escapes on 64-bit targets: SCR_PUB_RC_LIFETIME
+ * for the program-lifetime count (2^63), SCR_PUB_RC_BIG for any other
+ * count of 32 bits or more, kept in order in ScrPub.big. */
 typedef struct {
-  void *obj;
-  size_t rc;
+  uintptr_t obj;
+  uint32_t rc;
   uint32_t buf; /* a candidate taken out of its buffer: its index + 1, else 0 */
-  bool dyn; /* a dyn container frozen on success */
-  uint8_t kind; /* SCR_PUB_KIND_*: leaves the RC audit's live count on success */
 } ScrPubLog;
+
+#define SCR_PUB_DYN ((uintptr_t)1)
+#define SCR_PUB_RC_LIFETIME UINT32_C(0xfffffffe)
+#define SCR_PUB_RC_BIG UINT32_C(0xffffffff)
+
+static inline void *scr_pub_log_obj(const ScrPubLog *e) { return (void *)(e->obj & ~SCR_PUB_DYN); }
 
 typedef struct {
   void *v;
@@ -45,17 +55,34 @@ typedef struct {
  * walk within the inline buffers and allocate nothing. */
 #define SCR_PUB_INLINE 32
 
+/* The emitted walkers (llvm/publish.ts) push onto `stack` and log their
+ * marks inline, through the leading word-sized fields: keep their order. */
 struct ScrPub {
   ScrPubItem *stack;
   size_t len, cap;
   ScrPubLog *log;
   size_t logged, log_cap;
+  const char *refusal; /* first refusal message; the walk stops */
   size_t taken; /* logged candidates taken out of their buffers */
   size_t dyns; /* logged dyn containers */
-  const char *refusal; /* first refusal message; the walk stops */
+  size_t *big; /* counts SCR_PUB_RC_BIG stands for, in log order */
+  size_t nbig, big_cap;
+#ifdef SCR_RC_AUDIT
+  uint8_t *kinds; /* per logged mark, SCR_PUB_KIND_*: leaves the audit's live count */
+  size_t kinds_cap;
+#endif
   ScrPubItem stack_inline[SCR_PUB_INLINE];
   ScrPubLog log_inline[SCR_PUB_INLINE];
 };
+
+_Static_assert(offsetof(ScrPub, stack) == 0 && offsetof(ScrPub, len) == sizeof(void *) &&
+                   offsetof(ScrPub, cap) == 2 * sizeof(void *) && offsetof(ScrPub, log) == 3 * sizeof(void *) &&
+                   offsetof(ScrPub, logged) == 4 * sizeof(void *) &&
+                   offsetof(ScrPub, log_cap) == 5 * sizeof(void *) &&
+                   offsetof(ScrPub, refusal) == 6 * sizeof(void *) &&
+                   offsetof(ScrPub, taken) == 7 * sizeof(void *) && sizeof(ScrPubItem) == 2 * sizeof(void *) &&
+                   offsetof(ScrPubLog, rc) == sizeof(void *) && sizeof(ScrPubLog) == sizeof(void *) + 8,
+               "llvm/publish.ts pushes and logs at these offsets");
 
 /* Doubles a buffer of *cap elements (256 when empty); `inline_buf` is the
  * caller's fixed first buffer, which is copied rather than reallocated. */
@@ -96,12 +123,31 @@ bool scr_pub_mark(ScrPub *ctx, void *obj, bool cyc, int kind) {
   if (*rc == SIZE_MAX || ctx->refusal) return false;
   if (ctx->logged == ctx->log_cap)
     ctx->log = scr_pub_grow(ctx->log, &ctx->log_cap, sizeof *ctx->log, ctx->log_inline);
+#ifdef SCR_RC_AUDIT
+  if (ctx->logged == ctx->kinds_cap) ctx->kinds = scr_pub_grow(ctx->kinds, &ctx->kinds_cap, 1, NULL);
+  ctx->kinds[ctx->logged] = (uint8_t)kind;
+#else
+  (void)kind;
+#endif
   ScrPubLog *e = &ctx->log[ctx->logged++];
-  *e = (ScrPubLog){obj, *rc, 0, false, (uint8_t)kind};
+  uint32_t buf = 0;
   if (cyc && scr_cyc_is_buffered(scr_cyc_hdr(obj))) {
-    e->buf = scr_cyc_pub_take(obj) + 1;
+    buf = scr_cyc_pub_take(obj) + 1;
     ctx->taken++;
   }
+  size_t count = *rc;
+  uint32_t logged = (uint32_t)count;
+#if SIZE_MAX > UINT32_MAX
+  if (count >= SCR_PUB_RC_LIFETIME) {
+    if (count == (size_t)1 << 63) logged = SCR_PUB_RC_LIFETIME;
+    else {
+      if (ctx->nbig == ctx->big_cap) ctx->big = scr_pub_grow(ctx->big, &ctx->big_cap, sizeof *ctx->big, NULL);
+      ctx->big[ctx->nbig++] = count;
+      logged = SCR_PUB_RC_BIG;
+    }
+  }
+#endif
+  *e = (ScrPubLog){(uintptr_t)obj, logged, buf};
   *rc = SIZE_MAX;
   return true;
 }
@@ -268,7 +314,7 @@ void scr_pub_dyn_fn(void *v, ScrPub *ctx) {
       else {
         ScrDyn *d = p;
         if (scr_pub_mark(ctx, d, true, SCR_PUB_KIND_DYN) && (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ)) {
-          ctx->log[ctx->logged - 1].dyn = true;
+          ctx->log[ctx->logged - 1].obj |= SCR_PUB_DYN;
           ctx->dyns++;
         }
       }
@@ -294,15 +340,64 @@ static void scr_pub_audit_forget(int kind) {
 /* SCRIPTC_PUBLISH_TRACE, read once: -1 until then. */
 static _Atomic int scr_pub_trace = -1;
 
+/* The stack and log of this thread's last publish, kept while they hold at
+ * most SCR_PUB_KEEP bytes: a thread that publishes many graphs (a file per
+ * parse) reuses them instead of allocating and faulting in a fresh log each
+ * time. Freed at thread (or process) exit. */
+#define SCR_PUB_KEEP ((size_t)16 << 20)
+typedef struct {
+  ScrPubItem *stack;
+  size_t cap;
+  ScrPubLog *log;
+  size_t log_cap;
+  bool registered;
+} ScrPubKeep;
+static SCR_TL ScrPubKeep scr_pub_keep;
+
+static void scr_pub_keep_free(void) {
+  free(scr_pub_keep.stack);
+  free(scr_pub_keep.log);
+  scr_pub_keep = (ScrPubKeep){0};
+  scr_pub_keep.registered = true; /* the cleanup ran; later publishes free their buffers */
+}
+
+/* Keeps a heap buffer of `bytes` for the next publish, or frees it. */
+static bool scr_pub_keep_ok(size_t bytes) {
+  if (bytes > SCR_PUB_KEEP) return false;
+  if (!scr_pub_keep.registered) {
+    scr_pub_keep.registered = true;
+    scr_atexit(scr_pub_keep_free);
+  }
+  return true;
+}
+
 void scr_publish(void *root, ScrPubFn fn) {
   if (!root || *(size_t *)root == SIZE_MAX) return;
   ScrPub ctx;
-  ctx.stack = ctx.stack_inline;
+  if (scr_pub_keep.stack) {
+    ctx.stack = scr_pub_keep.stack;
+    ctx.cap = scr_pub_keep.cap;
+    scr_pub_keep.stack = NULL;
+  } else {
+    ctx.stack = ctx.stack_inline;
+    ctx.cap = SCR_PUB_INLINE;
+  }
   ctx.len = 0;
-  ctx.cap = SCR_PUB_INLINE;
-  ctx.log = ctx.log_inline;
+  if (scr_pub_keep.log) {
+    ctx.log = scr_pub_keep.log;
+    ctx.log_cap = scr_pub_keep.log_cap;
+    scr_pub_keep.log = NULL;
+  } else {
+    ctx.log = ctx.log_inline;
+    ctx.log_cap = SCR_PUB_INLINE;
+  }
   ctx.logged = 0;
-  ctx.log_cap = SCR_PUB_INLINE;
+  ctx.big = NULL;
+  ctx.nbig = ctx.big_cap = 0;
+#ifdef SCR_RC_AUDIT
+  ctx.kinds = NULL;
+  ctx.kinds_cap = 0;
+#endif
   ctx.taken = 0;
   ctx.dyns = 0;
   ctx.refusal = NULL;
@@ -320,8 +415,15 @@ void scr_publish(void *root, ScrPubFn fn) {
   }
   if (ctx.refusal) {
     for (size_t i = ctx.logged; i-- > 0;) {
-      *(size_t *)ctx.log[i].obj = ctx.log[i].rc;
-      if (ctx.log[i].buf) scr_cyc_pub_restore(ctx.log[i].obj, ctx.log[i].buf - 1);
+      const ScrPubLog *e = &ctx.log[i];
+      void *obj = scr_pub_log_obj(e);
+      size_t rc = e->rc;
+#if SIZE_MAX > UINT32_MAX
+      if (e->rc == SCR_PUB_RC_LIFETIME) rc = (size_t)1 << 63;
+      else if (e->rc == SCR_PUB_RC_BIG) rc = ctx.big[--ctx.nbig];
+#endif
+      *(size_t *)obj = rc;
+      if (e->buf) scr_cyc_pub_restore(obj, e->buf - 1);
     }
     if (ctx.taken) scr_cyc_pub_fill();
     scr_throw_error_msg(SCR_ERR_TYPE, ctx.refusal, strlen(ctx.refusal));
@@ -337,11 +439,12 @@ void scr_publish(void *root, ScrPubFn fn) {
     size_t each = ctx.dyns ? ctx.logged : 0;
 #endif
     for (size_t i = 0; i < each; i++) {
-      if (ctx.log[i].dyn) scr_dyn_release(scr_dyn_freeze(ctx.log[i].obj));
+      void *obj = scr_pub_log_obj(&ctx.log[i]);
+      if (ctx.log[i].obj & SCR_PUB_DYN) scr_dyn_release(scr_dyn_freeze(obj));
 #ifdef SCR_RC_AUDIT
-      scr_pub_audit_forget(ctx.log[i].kind);
+      scr_pub_audit_forget(ctx.kinds[i]);
 #endif
-      scr_lsan_immortal(ctx.log[i].obj);
+      scr_lsan_immortal(obj);
     }
     if (trace) {
       uint64_t t2 = scr_hrtime_ns();
@@ -349,8 +452,22 @@ void scr_publish(void *root, ScrPubFn fn) {
       fprintf(stderr, "scriptc: published %zu objects (walk %.1fms, commit %.1fms)\n", ctx.logged, walk, post);
     }
   }
-  if (ctx.stack != ctx.stack_inline) free(ctx.stack);
-  if (ctx.log != ctx.log_inline) free(ctx.log);
+  if (ctx.stack != ctx.stack_inline) {
+    if (!scr_pub_keep.stack && scr_pub_keep_ok(ctx.cap * sizeof *ctx.stack)) {
+      scr_pub_keep.stack = ctx.stack;
+      scr_pub_keep.cap = ctx.cap;
+    } else free(ctx.stack);
+  }
+  if (ctx.log != ctx.log_inline) {
+    if (!scr_pub_keep.log && scr_pub_keep_ok(ctx.log_cap * sizeof *ctx.log)) {
+      scr_pub_keep.log = ctx.log;
+      scr_pub_keep.log_cap = ctx.log_cap;
+    } else free(ctx.log);
+  }
+  free(ctx.big);
+#ifdef SCR_RC_AUDIT
+  free(ctx.kinds);
+#endif
 }
 
 /* Writes into published objects (the emitted guards' cold paths): Node's

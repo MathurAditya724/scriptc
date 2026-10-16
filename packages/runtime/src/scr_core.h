@@ -347,6 +347,21 @@ struct ScrArr *scr_context_env_pairs(void);
 /* Also used by ordinary event-loop builds, where this always returns true. */
 bool scr_context_is_main(void);
 
+/* Whether the calling thread frees what the program still holds when its
+ * script ends: module globals, the final cycle collection, collector
+ * buffers. Worker threads do (a later thread reuses their arena), and so
+ * does every thread of a build that checks for leaks (the RC audit,
+ * AddressSanitizer) or of a process run with SCRIPTC_EXIT_FREE=1. The main
+ * thread of other builds leaves its heap to the operating system, which
+ * reclaims it at exit. Exit listeners and output flushing run either way. */
+bool scr_exit_frees(void);
+#ifdef SCR_WORKERS
+/* The time the calling thread's script ended (scr_hrtime_ns; 0 until then),
+ * recorded by scr_exit_frees for SCRIPTC_WORKER_STATS. */
+void scr_context_note_script_end(void);
+uint64_t scr_context_script_end_ns(void);
+#endif
+
 /* Native stack guard. Compiled functions that can recurse compare their
  * stack pointer against scr_stack_guard on entry and throw Node's catchable
  * RangeError below it. The guard sits a reserve above the lowest usable

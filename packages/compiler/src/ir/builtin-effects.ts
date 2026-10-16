@@ -457,6 +457,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.structuredClone",
   "dyn.cloneMissing",
   "dyn.cloneTransferFail",
+  "dyn.cloneTransferFailWith",
   // the dyn Object walks throw on null/undefined receivers
   "dyn.objKeys",
   "dyn.forInKeys",
@@ -633,6 +634,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.concatLen",
   "buffer.fromDyn",
   "buffer.fromStrChecked",
+  "buffer.alloc",
+  "buffer.allocUnsafe",
+  "buffer.allocUnsafeSlow",
+  "buffer.poolFromStr",
+  "buffer.poolFromStrChecked",
+  "buffer.poolFromBytes",
+  "buffer.poolFromArray",
+  "buffer.poolFromDyn",
   // The checked-dynamic compare/equals validators: Node's argument
   // ladders throw ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE catchably.
   "buffer.compareChk",

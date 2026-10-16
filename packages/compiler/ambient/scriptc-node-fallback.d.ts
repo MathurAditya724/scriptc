@@ -635,9 +635,12 @@ interface BufferConstructor {
   from(data: Uint8Array | readonly number[]): Buffer;
   alloc(size: number, fill?: string | number | Uint8Array, encoding?: BufferEncoding): Buffer;
   compare(buf1: Uint8Array, buf2: Uint8Array): number;
-  /* alloc without the zero-fill guarantee — the lowering zero-fills
-   * anyway (never handing out uninitialized memory costs one memset). */
+  /* alloc without the zero-fill guarantee. Below Buffer.poolSize >>> 1
+   * bytes it returns a view into the shared pool slab. */
   allocUnsafe(size: number): Buffer;
+  allocUnsafeSlow(size: number): Buffer;
+  /* The pool slab size for allocUnsafe, from, and concat. */
+  poolSize: number;
   concat(list: readonly Uint8Array[], totalLength?: number): Buffer;
   isBuffer(obj: unknown): obj is Buffer;
   byteLength(input: string | Uint8Array, encoding?: BufferEncoding): number;
