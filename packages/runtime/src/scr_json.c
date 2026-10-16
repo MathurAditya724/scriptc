@@ -1804,14 +1804,23 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
     scr_dyn_release(result);
     return scr_dyn_retain(object);
   }
+  if (object->kind == SCR_DYN_NULL || object->kind == SCR_DYN_UNDEF) {
+    static const char message[] = "Object.setPrototypeOf called on null or undefined";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
   bool typed = scr_dyn_typed_ref_prototype(prototype);
   if (scr_exc_pending()) return NULL;
-  if ((object->kind != SCR_DYN_OBJ && object->kind != SCR_DYN_ARR) ||
+  bool primitive = object->kind == SCR_DYN_BOOL || object->kind == SCR_DYN_NUM || object->kind == SCR_DYN_STR ||
+    object->kind == SCR_DYN_BIGINT || object->kind == SCR_DYN_SYMBOL;
+  if ((object->kind != SCR_DYN_OBJ && object->kind != SCR_DYN_ARR && !primitive) ||
       (prototype->kind != SCR_DYN_OBJ && prototype->kind != SCR_DYN_ARR && prototype->kind != SCR_DYN_FUNC && prototype->kind != SCR_DYN_NULL && !typed)) {
     static const char message[] = "Object prototype may only be an Object or null";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
   }
+  /* A primitive receiver is returned unchanged once the prototype is valid. */
+  if (primitive) return scr_dyn_retain(object);
   for (const ScrDyn *current = scr_dyn_chain_link(prototype); current;) {
     if (current->kind == SCR_DYN_FUNC) {
       ScrDyn *table = scr_dyn_fn_properties(current);
