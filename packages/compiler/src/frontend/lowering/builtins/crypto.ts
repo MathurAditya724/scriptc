@@ -403,7 +403,7 @@ export function lowerCryptoModuleCall(
     };
   }
   if (bi.member === "createHmac") {
-    if (args.length < 2 || args.length > 3 || args.some(ts.isSpreadElement)) {
+    if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement)) {
       lowerer.noLowering(
         `crypto.createHmac with ${args.length} arguments`,
         expr,
@@ -411,6 +411,17 @@ export function lowerCryptoModuleCall(
       );
     }
     const algorithm = cryptoAlgorithm(lowerer, args[0]!);
+    if (args.length === 1) {
+      // A missing key reads as undefined: Node's prepareSecretKey throws
+      // ERR_INVALID_ARG_TYPE.
+      return {
+        kind: "libCall",
+        fn: "crypto.hmacNewDyn",
+        args: [algorithm, dynUndefinedExpr(loc), dynUndefinedExpr(loc)],
+        type: CRYPTOHMAC_T,
+        loc,
+      };
+    }
     const key = lowerer.lowerExpr(args[1]!);
     if (args.length === 3 || (key.type.kind !== "string" && key.type.kind !== "bytes")) {
       // Views, ArrayBuffers, options.encoding and values of other types
