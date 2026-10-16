@@ -2607,6 +2607,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "zlib.gunzipCb": { argTypes: [BYTES_U8, null], result: VOID },
   "zlib.unzipCb": { argTypes: [BYTES_U8, null], result: VOID },
   "zlib.crc32": { argTypes: [BYTES_U8, F64], result: F64 },
+  /** The one-shot forms with an options value: node_zlib_mode, the input,
+   * the options (validated at runtime with Node's ladder). The Cb form
+   * takes the program-shaped (Error | null, Buffer) callback, which moves. */
+  "zlib.syncOpts": { argTypes: [F64, BYTES_U8, DYN], result: BYTES_U8 },
+  "zlib.cbOpts": { argTypes: [F64, BYTES_U8, DYN, null], result: VOID },
+  /** The checked-dynamic input twins (the JS lane's untyped data). */
+  "zlib.syncOptsDyn": { argTypes: [F64, DYN, DYN], result: BYTES_U8 },
+  "zlib.cbOptsDyn": { argTypes: [F64, DYN, DYN, null], result: VOID },
   /** The stream classes (scr_zlib_stream.c, linked with the stream unit):
    * streamNew takes Node's node_zlib_mode number and the options value
    * (undefined when absent), validates it with Node's ladder, and answers

@@ -42,6 +42,38 @@ bool scr_zlib_engine_error(const ScrZlibEngine *e, ScrZlibError *out);
 bool scr_zlib_engine_reset(ScrZlibEngine *e, ScrZlibError *out);
 bool scr_zlib_engine_params(ScrZlibEngine *e, int level, int strategy, ScrZlibError *out);
 void scr_zlib_engine_free(ScrZlibEngine *e);
+/* Node's Zlib() and ZlibBase() option ladder, shared by the stream classes
+ * and the one-shot forms with options: false with Node's error pending.
+ * `dict` is a +1 view (or NULL) that scr_zlib_options_drop releases.
+ * scr_zlib_check_range is checkRangesOrGetDefault (`prop` picks the
+ * "property" message flavor over "argument"). */
+typedef struct {
+  double window_bits, level, mem_level, strategy;
+  ScrBytes *dict;
+  bool reject_garbage, info;
+  double chunk_size, flush, finish_flush, max_output;
+} ScrZlibOptions;
+bool scr_zlib_options_parse(int mode, const ScrDyn *opts, ScrZlibOptions *out);
+void scr_zlib_options_drop(ScrZlibOptions *o);
+bool scr_zlib_check_range(const ScrDyn *v, const char *name, bool prop, double lower, double upper,
+                          double def, double *out);
+ScrZlibEngine *scr_zlib_engine_from_options(int mode, const ScrZlibOptions *o);
+ScrError *scr_zlib_error_new(const ScrZlibError *ze); /* +1 */
+/* deflateSync(data, options) and the other one-shot forms with an options
+ * value (undefined for none): Node's processChunkSync over the engine,
+ * throwing Node's errors (errno and code, ERR_BUFFER_TOO_LARGE,
+ * ERR_TRAILING_JUNK_AFTER_STREAM_END). The callback twin validates the
+ * options synchronously, runs on the worker pool, and moves cb. */
+ScrBytes *scr_zlib_sync_opts(double mode, const ScrBytes *data, ScrDyn *opts);
+void scr_zlib_codec_async_opts(const ScrBytes *data, double mode, ScrDyn *opts,
+                               ScrClosure *cb /* moves */, ScrZlibBytesFn fn);
+/* The checked-dynamic input twins (the JS lane's untyped data): after the
+ * options, strings encode as UTF-8, TypedArrays, DataViews and ArrayBuffers
+ * contribute their bytes, and other values throw Node's
+ * ERR_INVALID_ARG_TYPE ("buffer", or "chunk" for the callback forms). */
+ScrBytes *scr_zlib_sync_opts_dyn(double mode, ScrDyn *data, ScrDyn *opts);
+void scr_zlib_codec_async_opts_dyn(ScrDyn *data, double mode, ScrDyn *opts,
+                                   ScrClosure *cb /* moves */, ScrZlibBytesFn fn);
 /* zlib.Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw and Unzip
  * (scr_zlib_stream.c — linked when the program uses both zlib and the
  * stream surface): Transform streams over the engine. mode is Node's

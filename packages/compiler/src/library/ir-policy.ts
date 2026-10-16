@@ -28,6 +28,8 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["zlib.gzipCb", "the async node:zlib callback surface"],
   ["zlib.gunzipCb", "the async node:zlib callback surface"],
   ["zlib.unzipCb", "the async node:zlib callback surface"],
+  ["zlib.cbOpts", "the async node:zlib callback surface"],
+  ["zlib.stream", "the node:zlib stream classes"],
   ["process.stdoutWriteBytesCb", "process.stdout.write completion callbacks"],
   ["process.stderrWriteBytesCb", "process.stderr.write completion callbacks"],
   ["timers.", "the timers surface (setTimeout family)"],
