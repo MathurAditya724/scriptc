@@ -41,4 +41,4 @@ node-fallback-fence.ts:37:16 - error SC2020: 'zlib.brotliCompressSync' is part o
      |                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   38 | // The remaining imports continue the declared-but-not-lowered surface.
 
-  hint: the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms plus crc32 are the lowered zlib surface
+  hint: Brotli needs a Brotli codec, which the static runtime does not vendor — the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface

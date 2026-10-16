@@ -956,9 +956,9 @@
       "apiEntries": 94,
       "static": {
         "supported": 0,
-        "partial": 30,
-        "refused": 4,
-        "not-implemented": 60,
+        "partial": 52,
+        "refused": 12,
+        "not-implemented": 30,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -114099,7 +114099,15 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5376-zlib-constants.cjs",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -114582,8 +114590,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.zlib.BrotliCompress"
       },
       "anchorSource": "exact"
     },
@@ -114605,8 +114613,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.zlib.BrotliDecompress"
       },
       "anchorSource": "exact"
     },
@@ -114628,8 +114636,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.Deflate",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114651,8 +114668,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.DeflateRaw",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114674,8 +114700,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.Gunzip",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114697,8 +114732,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.Gzip",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114720,8 +114764,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.Inflate",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114743,8 +114796,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.InflateRaw",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114766,8 +114828,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.Unzip",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114789,8 +114860,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.ZlibBase",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114812,8 +114892,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.close",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114835,8 +114924,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.flush",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114858,8 +114956,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.params",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114881,8 +114988,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.reset",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114904,8 +115020,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.bytesWritten",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114978,7 +115103,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115001,8 +115129,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.zlib.createBrotliCompress"
       },
       "anchorSource": "exact"
     },
@@ -115024,8 +115152,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.zlib.createBrotliDecompress"
       },
       "anchorSource": "exact"
     },
@@ -115047,8 +115175,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createDeflate",
+        "tests": [
+          "tests/corpus/1404-zlib-crypto-bytes.ts",
+          "tests/corpus/2921-zlib-callbacks.ts",
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115070,8 +115206,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createDeflateRaw",
+        "tests": [
+          "tests/corpus/1404-zlib-crypto-bytes.ts",
+          "tests/corpus/2921-zlib-callbacks.ts",
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115093,8 +115237,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createGunzip",
+        "tests": [
+          "tests/corpus/1404-zlib-crypto-bytes.ts",
+          "tests/corpus/2921-zlib-callbacks.ts",
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115116,8 +115268,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createGzip",
+        "tests": [
+          "tests/corpus/1404-zlib-crypto-bytes.ts",
+          "tests/corpus/2921-zlib-callbacks.ts",
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115139,8 +115299,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createInflate",
+        "tests": [
+          "tests/corpus/1404-zlib-crypto-bytes.ts",
+          "tests/corpus/2921-zlib-callbacks.ts",
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115162,8 +115330,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createInflateRaw",
+        "tests": [
+          "tests/corpus/1404-zlib-crypto-bytes.ts",
+          "tests/corpus/2921-zlib-callbacks.ts",
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115185,8 +115361,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createUnzip",
+        "tests": [
+          "tests/corpus/1404-zlib-crypto-bytes.ts",
+          "tests/corpus/2921-zlib-callbacks.ts",
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115254,8 +115438,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.zlib.brotliCompress"
       },
       "anchorSource": "exact"
     },
@@ -115300,8 +115484,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.zlib.brotliDecompress"
       },
       "anchorSource": "exact"
     },
@@ -115351,7 +115535,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115379,7 +115566,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115407,7 +115597,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115435,7 +115628,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115463,7 +115659,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115491,7 +115690,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115519,7 +115721,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115547,7 +115752,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115575,7 +115783,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115603,7 +115814,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115631,7 +115845,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115659,7 +115876,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115687,7 +115907,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115715,7 +115938,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115830,8 +116056,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.constants",
+        "tests": [
+          "tests/corpus/5376-zlib-constants.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -116221,8 +116451,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.Options",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -116313,8 +116552,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.zlib.brotliCompress"
       },
       "anchorSource": "ancestor"
     },
@@ -116359,8 +116598,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.zlib.brotliDecompress"
       },
       "anchorSource": "ancestor"
     },
@@ -116410,7 +116649,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116438,7 +116680,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116466,7 +116711,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116494,7 +116742,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116522,7 +116773,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116550,7 +116804,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116578,7 +116835,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116606,7 +116866,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116634,7 +116897,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116662,7 +116928,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116690,7 +116959,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116718,7 +116990,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116746,7 +117021,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116774,7 +117052,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
