@@ -3603,6 +3603,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * turns, Node's check phase). Neither throws. */
   "tp.setTimeout": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
   "tp.setImmediate": { argTypes: [], result: { kind: "promise", inner: VOID } },
+  /** The resolve-value forms: [ms?, value, ref] → a pending promise of the
+   * value's type that copies the borrowed already-resolved `value` promise
+   * when the timer (or immediate) fires; ref false unrefs it. The result
+   * type follows the value promise. */
+  "tp.setTimeoutValue": { argTypes: [F64, null, BOOL], result: VOID },
+  "tp.setImmediateValue": { argTypes: [null, BOOL], result: VOID },
   /** node:diagnostics_channel (scr_dc.c, linked when any dc.* appears —
    * the zlib gating precedent): a process-global name→channel registry;
    * channel values are f64 handles (type-mapper.ts maps Channel to F64, the
