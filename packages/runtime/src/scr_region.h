@@ -50,6 +50,9 @@ typedef struct ScrRgnClass {
   void (*release_fields)(void *obj);         /* releases each reference field */
   const char *name;
   int32_t slot;
+  /* The names of the fields `visit` reports, in its order, NULL-terminated
+   * (SCRIPTC_REGION_DEBUG). */
+  const char *const *fields;
 } ScrRgnClass;
 
 /* The calling thread's allocation cursor for one class in its current
