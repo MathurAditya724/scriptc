@@ -793,6 +793,9 @@ void scr_dyn_throw(ScrDyn *d); /* moves; preserves boxed native Error classifica
 ScrDyn *scr_structured_clone(const ScrDyn *value, const ScrDyn *options);
 ScrDyn *scr_structured_clone_missing(void);
 ScrDyn *scr_structured_clone_transfer_fail(void); /* always throws DataCloneError */
+/* The same, naming a Buffer pool slab's ArrayBuffer as Node does when it is
+ * the transfer list's first member (borrowed). */
+ScrDyn *scr_structured_clone_transfer_fail_with(const ScrDyn *first);
 /* Validates a structuredClone options dyn value (throws on failure —
  * callers must check scr_exc_pending). Borrowed, NULL-tolerant. */
 void scr_sc_validate_options(const ScrDyn *options);
