@@ -620,7 +620,7 @@ void scr_fs_cb_schedule(const ScrDyn *callback, ScrDyn *result, const ScrDyn *bu
   closure->caps[1] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
   scr_box_set_ref(closure->caps[0], scr_dyn_retain((ScrDyn *)callback));
   scr_box_set_ref(closure->caps[1], arguments);
-  scr_set_timeout(closure, 0);
+  scr_loop_defer(closure);
 #else
   (void)callback;
   scr_dyn_release(arguments);
@@ -1565,7 +1565,7 @@ ScrDyn *scr_fs_exists_async(const ScrDyn *path, const ScrDyn *cb) {
   scr_box_set_ref(clo->caps[0], scr_dyn_retain((ScrDyn *)path));
   clo->caps[1] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, NULL);
   scr_box_set_ref(clo->caps[1], scr_dyn_retain((ScrDyn *)cb));
-  scr_set_timeout(clo, 0);
+  scr_loop_defer(clo);
   return scr_dyn_retain(scr_dyn_undefined());
 #endif
 }

@@ -321,6 +321,10 @@ bool scr_promise_await_settled(ScrPromise *p); /* park/hop; false = rethrown */
 void scr_promise_payload_release(const ScrPromise *p, void *v);
 
 void scr_set_timeout(ScrClosure *cb, double ms); /* cb ownership moves in */
+/* A native callback delivered on a later loop turn: FIFO, one per
+ * checkpoint (the fs error-first callbacks). cb moves in and is called as
+ * a zero-argument closure. */
+void scr_loop_defer(ScrClosure *cb);
 /* setInterval/clearInterval: the handle is the number the fallback
  * declarations promise (ids start at 1, so `if (handle)` narrows like
  * Node's Timeout truthiness). A live interval keeps the loop alive;
