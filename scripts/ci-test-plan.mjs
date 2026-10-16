@@ -19,15 +19,19 @@ export const isolatedFiles = [
   ["self-hosting", "tests/harness/self-hosting.test.ts"],
   ["self-hosting LLVM emitter", "tests/harness/self-hosting-llvm-emitter.test.ts"],
   ["fetch", "tests/harness/fetch.test.ts"],
-  ["npm static", "tests/harness/npm-static.test.ts"],
   ["surface manifest", "tests/harness/surface-manifest.test.ts"],
 ];
+// Suites that split their own tests across the shards (SCRIPTC_TEST_SHARD,
+// skipUnownedTest in tests/harness/shard.ts): every shard runs its share in
+// its own vitest process.
+export const caseShardedSideFiles = [["npm static", "tests/harness/npm-static.test.ts"]];
 export const fileExclusions = [
   ...corpusFiles,
   ...effectFiles,
   coverageFile,
   cacheFile,
   ...isolatedFiles.map(([, file]) => file),
+  ...caseShardedSideFiles.map(([, file]) => file),
   "tests/harness/self-hosting-native-driver.test.ts",
 ];
 
@@ -152,6 +156,8 @@ export function ciTestPlan({ shard, flavor, workers = 4, suite = "full" }) {
     if (owners.get(file) === index)
       side.push({ name, args: ["test", file], env: { ...env, SCRIPTC_TEST_WORKERS: "1" } });
   }
+  for (const [name, file] of caseShardedSideFiles)
+    side.push({ name, args: ["test", file], env: { ...env, SCRIPTC_TEST_WORKERS: "1" } });
   // Frontend coverage and cache invalidation do not consume sanitizer state.
   if (flavor === "plain") {
     side.push({

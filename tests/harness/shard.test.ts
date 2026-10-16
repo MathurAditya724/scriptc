@@ -13,6 +13,7 @@ import {
   shardOf,
   shardSelect,
   shardSuffix,
+  skipUnownedTest,
 } from "./shard.js";
 import corpusCosts from "./corpus-costs.json";
 import fixtureCosts from "./effect4-costs.json";
@@ -206,6 +207,41 @@ describe("balancedShardSelect", () => {
       ).toThrow(/weight/);
     }
   });
+});
+
+test("skipUnownedTest runs each test of a suite on exactly one shard, longest apart", () => {
+  // Two tests share a title, as test.each titles without parameters do.
+  const names = [...Array.from({ length: 39 }, (_, index) => `case ${index}`), "case 0"];
+  // Most tests measured at a second, two long ones, and the last five unmeasured.
+  const costs: Record<string, number> = Object.fromEntries(
+    names.slice(0, 35).map((name) => [name, 1_000]),
+  );
+  costs["case 3"] = 200_000;
+  costs["case 7"] = 150_000;
+  // One suite per process, as in a CI shard: the owners are computed once per suite.
+  const runs = (spec: { index: number; count: number } | undefined) => {
+    const suite = { tasks: [] as { name: string }[] };
+    suite.tasks = names.map((name) => ({ type: "test", name, suite }));
+    return suite.tasks
+      .filter((task) => {
+        let skipped = false;
+        skipUnownedTest(
+          { task, skip: () => (skipped = true) } as unknown as Parameters<
+            typeof skipUnownedTest
+          >[0],
+          costs,
+          spec,
+        );
+        return !skipped;
+      })
+      .map((task) => task.name);
+  };
+  expect(runs(undefined)).toEqual(names);
+  const shards = Array.from({ length: 5 }, (_, index) => runs({ index: index + 1, count: 5 }));
+  expect(shards.flat().toSorted()).toEqual(names.toSorted());
+  // The two long tests hold shards of their own.
+  expect(shards.find((shard) => shard.includes("case 3"))).toEqual(["case 3"]);
+  expect(shards.find((shard) => shard.includes("case 7"))).toEqual(["case 7"]);
 });
 
 describe("corpusSelect", () => {
