@@ -78,6 +78,10 @@ test("the side queue balances measured files across the twenty Linux shards", ()
     const shared = shards.filter((shard) => shard.files.length > 1).map((shard) => shard.load);
     expect(shared.length).toBeGreaterThan(10);
     expect(Math.max(...shared)).toBeLessThanOrEqual(Math.min(...shared) * 1.1);
+    // The longest file starts from the last shard, away from the longest
+    // corpus and three.js cases, which balance from the first.
+    const longest = [...owned].sort((a, b) => (costs[b] ?? 0) - (costs[a] ?? 0))[0]!;
+    expect(shards[19]!.files).toContain(longest);
   }
 });
 
