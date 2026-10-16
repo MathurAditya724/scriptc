@@ -1559,6 +1559,18 @@ export class ClassDynamicDispatch {
               sourceKey.type.kind === "f64" ||
               (sourceKey.kind === "dynFrom" && sourceKey.value.type.kind === "f64") ||
               (sourceKey.kind === "toString" && sourceKey.operand.type.kind === "f64");
+            // `value[i]` with a number `i`: the helper takes the number and
+            // reads a dense checked array element directly, formatting the
+            // property name only when that does not apply.
+            const indexKey =
+              computedRead &&
+              !reflect &&
+              !dynamicKey &&
+              !computedRead.optional &&
+              computedRead.key.kind === "toString" &&
+              computedRead.key.operand.type.kind === "f64"
+                ? computedRead.key
+                : null;
             const key = JSON.stringify([
               !!computedWrite,
               computedRead?.optional ?? false,
@@ -1566,13 +1578,16 @@ export class ClassDynamicDispatch {
               probe,
               numericKey,
               reflect,
+              !!indexKey,
             ]);
             let dispatch = this.computed.get(key);
             if (!dispatch) {
               const loc = expr.loc;
               const params = [
                 { localId: "p.0", name: "value", type: DYN },
-                { localId: "p.key", name: "key", type: dynamicKey ? DYN : STRING },
+                indexKey
+                  ? { localId: "p.index", name: "index", type: F64 }
+                  : { localId: "p.key", name: "key", type: dynamicKey ? DYN : STRING },
                 ...(computedWrite ? [{ localId: "p.1", name: "stored", type: DYN }] : []),
                 ...(reflect ? [{ localId: "p.reflectReceiver", name: "receiver", type: DYN }] : []),
               ];
@@ -1630,7 +1645,7 @@ export class ClassDynamicDispatch {
                     type: p.type,
                     mutable: false,
                   })),
-                  ...(dynamicKey
+                  ...(dynamicKey || indexKey
                     ? [{ id: keyLocal, name: "key", type: STRING, mutable: false }]
                     : []),
                 ],
@@ -1776,13 +1791,81 @@ export class ClassDynamicDispatch {
                     loc,
                   },
                 );
+              if (indexKey) {
+                // An integer index below a checked array's length names an
+                // element (-0 included: its property name is "0"); dyn.arrLen
+                // answers 0 for every other kind. Holes keep dyn.arrAt's
+                // ordinary named lookup.
+                const index = varRef("p.index", F64, loc);
+                const elementRead: IrStmt = {
+                  kind: "if",
+                  cond: { kind: "libCall", fn: "number.isInteger", args: [index], type: BOOL, loc },
+                  then: [
+                    {
+                      kind: "if",
+                      cond: {
+                        kind: "bin",
+                        op: ">=",
+                        left: index,
+                        right: { kind: "numLit", value: 0, type: F64, loc },
+                        type: BOOL,
+                        loc,
+                      },
+                      then: [
+                        {
+                          kind: "if",
+                          cond: {
+                            kind: "bin",
+                            op: "<",
+                            left: index,
+                            right: {
+                              kind: "libCall",
+                              fn: "dyn.arrLen",
+                              args: [varRef("p.0", DYN, loc)],
+                              type: F64,
+                              loc,
+                            },
+                            type: BOOL,
+                            loc,
+                          },
+                          then: [
+                            {
+                              kind: "return",
+                              value: {
+                                kind: "libCall",
+                                fn: "dyn.arrAt",
+                                args: [varRef("p.0", DYN, loc), index],
+                                type: DYN,
+                                loc,
+                              },
+                              loc,
+                            },
+                          ],
+                          else_: null,
+                          loc,
+                        },
+                      ],
+                      else_: null,
+                      loc,
+                    },
+                  ],
+                  else_: null,
+                  loc,
+                };
+                helper.body.unshift(elementRead, {
+                  kind: "varDecl",
+                  localId: keyLocal,
+                  init: { ...indexKey, operand: index },
+                  loc,
+                });
+              }
               dispatch = {
                 write: !!computedWrite,
                 reflect,
                 fn: helper,
                 classes: new Set(),
                 keyLocal,
-                branchIndex: dynamicKey ? 3 : 0,
+                branchIndex: dynamicKey ? 3 : indexKey ? 2 : 0,
                 dynamicKey,
                 numericKey,
                 probe,
@@ -1798,7 +1881,7 @@ export class ClassDynamicDispatch {
               args: reflect
                 ? (reflectRead ?? reflectWrite)!.args
                 : computedRead
-                  ? [computedRead.value, computedRead.key]
+                  ? [computedRead.value, indexKey ? indexKey.operand : computedRead.key]
                   : (computedWrite ?? computedProbe)!.args,
               type: dispatch.fn.returnType,
               loc: expr.loc,
@@ -2784,7 +2867,9 @@ export class ClassDynamicDispatch {
           ...dispatch.fn.params,
           { localId: "p.receiver", name: "receiver", type: receiverType },
         ];
-        if (dispatch.keyLocal !== "p.key")
+        // A derived key (a dynamic key's string, or an index's name) is a
+        // local of the dispatch helper; pass it along.
+        if (!dispatch.fn.params.some((param) => param.localId === dispatch.keyLocal))
           params.push({ localId: dispatch.keyLocal, name: "key", type: STRING });
         const helper: IrFunction = {
           name: `%dyn.class.keys.${lowerer.liftedFns.length}`,

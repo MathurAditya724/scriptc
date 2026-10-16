@@ -132,6 +132,46 @@ static void check_rejection(void) {
   scr_collect_cycles();
 }
 
+/* Plain JSON-shaped documents decode as an intact region (ScrDynRegion);
+ * a later back edge clears it, so the cycle is still collected. */
+static void check_documents(void) {
+  ScrDyn *root = scr_dyn_new_obj();
+  ScrDyn *child = scr_dyn_new_obj();
+  ScrDyn *list = scr_dyn_new_arr();
+  scr_dyn_arr_push(list, scr_dyn_new_num(1));
+  ScrStr *text = scr_str_new("x", 1);
+  scr_dyn_arr_push(list, scr_dyn_new_str(text));
+  scr_str_release(text);
+  scr_dyn_obj_set(child, "list", 4, list);
+  scr_dyn_obj_set(root, "child", 5, child);
+  scr_dyn_obj_set(root, "none", 4, scr_dyn_new_null());
+  ScrMessage *message = scr_message_encode(root);
+  assert(message && !scr_exc_pending());
+  scr_dyn_release(root);
+  ScrDyn *decoded = scr_message_decode(message);
+  assert(decoded && !scr_exc_pending());
+  ScrDyn *decoded_child = scr_dyn_obj_get(decoded, "child", 5);
+  const ScrDynRegion *region = scr_dyn_region_of(decoded);
+  assert(region && region->intact);
+  assert(scr_dyn_region_of(decoded_child) == region);
+  assert(scr_dyn_region_of(scr_dyn_obj_get(decoded_child, "list", 4)) == region);
+  scr_dyn_obj_set(decoded_child, "parent", 6, scr_dyn_retain(decoded));
+  assert(!region->intact);
+  scr_dyn_release(decoded);
+  scr_collect_cycles();
+  scr_message_free(message);
+
+  /* Shared subtrees and cycles (make_graph) stay untagged. */
+  ScrDyn *graph = make_graph();
+  message = scr_message_encode(graph);
+  scr_dyn_release(graph);
+  decoded = scr_message_decode(message);
+  assert(decoded && !scr_dyn_region_of(decoded));
+  scr_dyn_release(decoded);
+  scr_collect_cycles();
+  scr_message_free(message);
+}
+
 int main(void) {
   scr_init();
   scr_lib_init(0, NULL);
@@ -147,6 +187,7 @@ int main(void) {
   scr_message_free(message);
   check_getters();
   check_rejection();
+  check_documents();
   scr_context_cleanup();
   puts("message graphs preserve identity, sparse values, byte aliases and getter order");
 }

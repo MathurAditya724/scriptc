@@ -675,7 +675,13 @@ static void scr_dyn_key_release(char *key, size_t length) {
 #ifndef SCR_RC_AUDIT
 static SCR_TL ScrDyn *scr_dyn_free_arr, *scr_dyn_free_obj, *scr_dyn_free_misc;
 static SCR_TL size_t scr_dyn_free_count;
-#define SCR_DYN_FREE_MAX 8192
+/* Sized for whole documents: a parse/serialize loop over a 100k-record
+ * document frees ~400k nodes per round, and a pool capped below that sent
+ * most of them back through zeroing allocation and entry-buffer regrowth.
+ * The pool only keeps blocks the thread already allocated (the small-object
+ * arena never returns them to the system either), at the cost of reserving
+ * them, with their item/entry buffers, for dyn nodes. */
+#define SCR_DYN_FREE_MAX ((size_t)1 << 20)
 /* Recycled small objects may retain key bytes, but never values or an
  * unbounded document's keys. This budget applies across the whole pool. */
 static SCR_TL size_t scr_dyn_cached_key_bytes;
@@ -830,6 +836,38 @@ static void scr_typed_ref_exit(void) {
 
 static void scr_dyn_gcfree(void *ptr);
 
+/* Intact parse regions (scr_runtime.h, ScrDynRegion). */
+static ScrDynRegion *scr_dyn_region_new(void) {
+  ScrDynRegion *region = malloc(sizeof *region);
+  if (!region) scr_json_oom();
+  region->refs = 1;
+  region->intact = true;
+  return region;
+}
+
+static void scr_dyn_region_unref(ScrDynRegion *region) {
+  if (region && --region->refs == 0) free(region);
+}
+
+/* Tag a container the parser has just completed. Its members were stored
+ * while it had no region, so construction never trips the barrier. */
+static void scr_dyn_region_join(ScrDyn *d, ScrDynRegion *region) {
+  if (!region || (d->kind != SCR_DYN_ARR && d->kind != SCR_DYN_OBJ)) return;
+  region->refs++;
+  if (d->kind == SCR_DYN_ARR) d->v.arr.region = region;
+  else d->v.obj.region = region;
+}
+
+ScrDynRegion *scr_dyn_region_open(void) { return scr_dyn_region_new(); }
+void scr_dyn_region_tag(ScrDyn *d, ScrDynRegion *region) { scr_dyn_region_join(d, region); }
+void scr_dyn_region_close(ScrDynRegion *region) { scr_dyn_region_unref(region); }
+
+static void scr_dyn_region_leave(ScrDyn *d) {
+  ScrDynRegion **slot = d->kind == SCR_DYN_ARR ? &d->v.arr.region : &d->v.obj.region;
+  scr_dyn_region_unref(*slot);
+  *slot = NULL;
+}
+
 static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
 #ifndef SCR_RC_AUDIT
   ScrDyn **list = kind == SCR_DYN_ARR   ? &scr_dyn_free_arr
@@ -857,8 +895,10 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
       d->v.arr.sealed = false;
       d->v.arr.frozen = false;
       d->v.arr.presence = NULL;
+      d->v.arr.region = NULL;
     } else if (kind == SCR_DYN_OBJ) {
       d->v.obj.len = 0; /* cap/entries preserved */
+      d->v.obj.region = NULL;
       if (d->v.obj.cap <= SCR_DYN_KEY_CACHE_SLOTS) {
         for (size_t i = 0; i < d->v.obj.cap; i++) {
           ScrDynEntry *entry = &d->v.obj.entries[i];
@@ -889,6 +929,33 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
   return fresh;
 }
 
+/* Number and string nodes are most of the checked-dynamic churn: numbers
+ * boxed by dyn expressions and the leaves of parsed documents. They own no
+ * dyn edges, are never cycle candidates or weak keys, and never acquire a
+ * prototype or symbol table (only objects and arrays do), so they recycle
+ * through the misc pool without the generic disposal and reset. Every
+ * pooled node has a NULL prototype and symbol tables. */
+static inline ScrDyn *scr_dyn_leaf_alloc(ScrDynKind kind) {
+#ifndef SCR_RC_AUDIT
+  ScrDyn *d = scr_dyn_free_misc;
+  if (d) {
+    scr_dyn_free_misc = (ScrDyn *)d->v.str; /* freelist link */
+    scr_dyn_free_count--;
+    ScrCycHdr *header = scr_cyc_hdr(d);
+    scr_cyc_set_color(header, SCR_CYC_BLACK);
+    scr_cyc_set_gen(header, SCR_CYC_NURSERY);
+    d->rc = 1;
+    d->kind = kind;
+    d->buffer = false;
+    d->null_proto = false;
+    d->copied_from_native = false;
+    d->non_extensible = false;
+    return d;
+  }
+#endif
+  return scr_dyn_alloc(kind);
+}
+
 static void scr_dyn_handle_release(void *h, ScrDynHandleTag tag);
 static bool scr_dyn_to_primitive_result_is_object(const ScrDyn *d);
 
@@ -912,10 +979,12 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
     free(d->v.obj.index);
     d->v.obj.index = NULL;
   }
+  if (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ) scr_dyn_region_leave(d);
   if (!collected) scr_dyn_release(d->prototype);
   if (!collected) scr_dyn_release(d->symbol_properties);
   if (!collected) scr_dyn_release(d->symbol_keys);
-  d->symbol_properties = d->symbol_keys = NULL;
+  /* Pooled nodes keep all three NULL (scr_dyn_leaf_alloc relies on it). */
+  d->prototype = d->symbol_properties = d->symbol_keys = NULL;
   switch (d->kind) {
   case SCR_DYN_SYMBOL:
     d->v.symbol.release(d->v.symbol.value);
@@ -1017,10 +1086,17 @@ static void scr_dyn_gcfree(void *ptr) { scr_dyn_dispose(ptr, true); }
 
 static void scr_dyn_destroy(void *ptr) { scr_dyn_dispose(ptr, false); }
 
-/* The cycle bookkeeping of a capsule or handle that survives a release.
- * Compiled release fast paths decrement first and call this for the kinds
- * whose candidacy depends on per-value state, matching scr_dyn_release. */
+/* The cycle bookkeeping of a value that survives a release. Compiled
+ * release fast paths decrement first and call this for the kinds whose
+ * candidacy depends on per-value state, matching scr_dyn_release: arrays
+ * and objects not yet buffered (skipped while their document is intact,
+ * ScrDynRegion), capsules and handles. */
 void scr_dyn_release_survivor(ScrDyn *d) {
+  if (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ) {
+    const ScrDynRegion *region = scr_dyn_region_of(d);
+    if (!region || !region->intact) scr_cyc_released(d);
+    return;
+  }
   if ((d->kind == SCR_DYN_TYPED_REF &&
        (d->v.typed_ref.materialized || d->v.typed_ref.casts || d->v.typed_ref.traced ||
         d->prototype || d->symbol_properties || d->symbol_keys)) ||
@@ -1031,10 +1107,16 @@ void scr_dyn_release_survivor(ScrDyn *d) {
 void scr_dyn_release(ScrDyn *d) {
   if (!d || d->rc == SIZE_MAX) return;
   if (--d->rc != 0) {
+    /* A container of an intact parse region cannot lie on a cycle
+     * (ScrDynRegion). */
+    if (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ) {
+      ScrDynRegion *region = d->kind == SCR_DYN_ARR ? d->v.arr.region : d->v.obj.region;
+      if (!region || !region->intact) scr_cyc_released(d);
+      return;
+    }
     /* A capsule without a snapshot, casts or a traced referent has no
      * outgoing edge, so it cannot be part of a cycle until it gains one. */
-    if (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ || d->kind == SCR_DYN_FUNC ||
-        d->kind == SCR_DYN_PROXY ||
+    if (d->kind == SCR_DYN_FUNC || d->kind == SCR_DYN_PROXY ||
         (d->kind == SCR_DYN_TYPED_REF &&
          (d->v.typed_ref.materialized || d->v.typed_ref.casts || d->v.typed_ref.traced ||
           d->prototype || d->symbol_properties || d->symbol_keys)) ||
@@ -1055,6 +1137,15 @@ void scr_dyn_release(ScrDyn *d) {
   }
 #endif
   scr_cyc_dead(d);
+#ifndef SCR_RC_AUDIT
+  if ((d->kind == SCR_DYN_NUM || d->kind == SCR_DYN_STR) && scr_dyn_free_count < SCR_DYN_FREE_MAX) {
+    if (d->kind == SCR_DYN_STR) scr_str_release(d->v.str);
+    d->v.str = (ScrStr *)scr_dyn_free_misc; /* see scr_dyn_leaf_alloc */
+    scr_dyn_free_misc = d;
+    scr_dyn_free_count++;
+    return;
+  }
+#endif
   scr_rc_destroy(d, scr_dyn_destroy);
 }
 
@@ -1193,6 +1284,7 @@ bool scr_dyn_field_eq_bool(const ScrDyn *d, const ScrStr *key, bool value) {
 /* Public: the compiler-emitted static→dyn converters push through this
  * too. Ownership of the item moves in. */
 void scr_dyn_arr_push(ScrDyn *arr, ScrDyn *item) {
+  scr_dyn_region_store(arr, item);
   if (arr->v.arr.len == arr->v.arr.cap) {
     size_t cap = arr->v.arr.cap ? arr->v.arr.cap * 2 : 4;
     ScrDyn **items = scr_mem_realloc(arr->v.arr.items, cap * sizeof *items);
@@ -1423,6 +1515,7 @@ ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key) {
  * original spelling/storage and insertion position; the later value wins.
  * A recycled entry can reuse equal key bytes without a malloc/free pair. */
 static void scr_dyn_obj_put(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value) {
+  scr_dyn_region_store(obj, value);
   /* Construction usually appends an absent name. Avoid a read hint that
    * repeats comparisons on compact objects; wide objects use their index. */
   ScrDynEntry *existing = obj->v.obj.index ? scr_dyn_find_entry(obj, key, key_len)
@@ -1548,13 +1641,13 @@ ScrDyn *scr_dyn_new_num(double n) {
     int value = (int)n;
     if ((double)value == n && (value != 0 || !signbit(n))) return &scr_dyn_small_ints[value + 128];
   }
-  ScrDyn *d = scr_dyn_alloc(SCR_DYN_NUM);
+  ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_NUM);
   d->v.num = n;
   return d;
 }
 
 ScrDyn *scr_dyn_new_str(ScrStr *s) {
-  ScrDyn *d = scr_dyn_alloc(SCR_DYN_STR);
+  ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_STR);
   d->v.str = scr_str_retain(s);
   return d;
 }
@@ -1730,6 +1823,7 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
     return NULL;
   }
   ScrDyn *replacement = prototype->kind == SCR_DYN_NULL ? NULL : scr_dyn_retain(prototype);
+  scr_dyn_region_store(object, replacement ? replacement : scr_dyn_undefined());
   scr_dyn_release(object->prototype);
   object->prototype = replacement;
   object->null_proto = replacement ? false : true;
@@ -3817,6 +3911,7 @@ ScrDynEntry *scr_dyn_own_symbol_entry(const ScrDyn *object, const ScrDyn *key) {
 ScrStr *scr_dyn_symbol_storage_name(const ScrDyn *key) { return scr_dyn_symbol_storage_key(key); }
 
 void scr_dyn_symbol_init_own(ScrDyn *object, ScrDyn *key, const ScrStr *storage, ScrDyn *value) {
+  scr_dyn_region_store(object, NULL); /* intact containers have no symbol tables */
   object->symbol_properties = scr_dyn_new_obj_null_proto();
   scr_dyn_obj_set(object->symbol_properties, storage->data, storage->len, scr_dyn_retain(value));
   object->symbol_keys = scr_dyn_new_arr();
@@ -3824,6 +3919,8 @@ void scr_dyn_symbol_init_own(ScrDyn *object, ScrDyn *key, const ScrStr *storage,
 }
 
 static void scr_dyn_symbol_table(ScrDyn *receiver) {
+  /* The tables are separate nodes that later hold arbitrary values. */
+  scr_dyn_region_store(receiver, NULL);
   if (!receiver->symbol_properties) receiver->symbol_properties = scr_dyn_new_obj_null_proto();
   if (!receiver->symbol_keys) receiver->symbol_keys = scr_dyn_new_arr();
   receiver->symbol_properties->non_extensible = receiver->non_extensible;
@@ -4521,6 +4618,9 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
 
 
   if (scr_exc_pending()) return NULL;
+  /* Values, accessors and array property tables: any of them may close a
+   * cycle, and definitions are rare enough to invalidate conservatively. */
+  scr_dyn_region_store(target, NULL);
   if (target->kind == SCR_DYN_FUNC) {
     if (scr_dyn_class_reflection_fence(target)) return NULL;
     ScrStr *name = scr_dyn_property_key(key);
@@ -6299,13 +6399,17 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       while (recv->v.arr.len <= idx) {
         scr_dyn_arr_push_hole(recv);
       }
+      scr_dyn_region_store(recv, value);
       ScrDyn *old = recv->v.arr.items[idx];
       recv->v.arr.items[idx] = scr_dyn_retain(value);
       if (recv->v.arr.presence) recv->v.arr.presence[idx] = 1;
       scr_dyn_release(old);
       return;
     }
-    if (!recv->v.arr.properties) recv->v.arr.properties = scr_dyn_new_obj();
+    if (!recv->v.arr.properties) {
+      scr_dyn_region_store(recv, NULL); /* a table that later holds anything */
+      recv->v.arr.properties = scr_dyn_new_obj();
+    }
     recv->v.arr.properties->non_extensible = recv->non_extensible;
     scr_dyn_key_set(recv->v.arr.properties, key, value);
     return;
@@ -6836,6 +6940,7 @@ typedef struct {
   size_t pos;
   int depth;
   bool quiet; /* schema fast path: report failure without throwing */
+  ScrDynRegion *region; /* tags completed containers (ScrDynRegion); may be NULL */
 } ScrJsonP;
 
 static void scr_json_throw(const ScrJsonP *p, const char *msg) {
@@ -7293,12 +7398,13 @@ static ScrDyn *scr_json_value(ScrJsonP *p) {
     }
     ScrDyn *d = c == '{' ? scr_json_object(p) : scr_json_array(p);
     p->depth--;
+    if (d) scr_dyn_region_join(d, p->region);
     return d;
   }
   if (c == '"') {
     ScrStr *sv = scr_json_string_scr(p);
     if (!sv) return NULL;
-    ScrDyn *d = scr_dyn_alloc(SCR_DYN_STR);
+    ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_STR);
     d->v.str = sv;
     return d;
   }
@@ -7326,7 +7432,10 @@ ScrDyn *scr_json_parse(ScrStr *text) {
     scr_json_throw(&p, "Unexpected end of JSON input");
     return NULL;
   }
+  /* Documents with a container start intact (ScrDynRegion). */
+  if (p.s[p.pos] == '{' || p.s[p.pos] == '[') p.region = scr_dyn_region_new();
   ScrDyn *d = scr_json_value(&p);
+  scr_dyn_region_unref(p.region); /* the parser's own reference */
   if (!d) return NULL;
   scr_json_ws(&p);
   if (p.pos < p.len) {
@@ -7831,6 +7940,7 @@ static ScrDyn *scr_json_revive(ScrDyn *holder, const ScrStr *key,
       }
       while (value->v.arr.len <= i) scr_dyn_arr_push(value, scr_dyn_retain(scr_dyn_undefined()));
       ScrDyn *old = value->v.arr.items[i];
+      if (replacement != old) scr_dyn_region_store(value, replacement);
       value->v.arr.items[i] = replacement;
       scr_dyn_release(old);
     }
@@ -7847,6 +7957,7 @@ static ScrDyn *scr_json_revive(ScrDyn *holder, const ScrStr *key,
         ScrDynEntry *entry = scr_dyn_entry(value, name);
         if (entry) {
           ScrDyn *old = entry->value;
+          if (replacement != old) scr_dyn_region_store(value, replacement);
           entry->value = replacement;
           scr_dyn_release(old);
         } else {
@@ -7970,10 +8081,23 @@ static bool scr_json_plain_value(const ScrDyn *value) {
  * replacer or executable children, entries cannot change and borrowed names
  * need neither a key snapshot nor repeated lookups. Numeric property names
  * keep the ordinary sorted-key walk; sparse/accessor arrays keep Get. This
- * proof is repeated per call, so later mutations never leave a stale fact. */
+ * proof is repeated per call, so later mutations never leave a stale fact.
+ *
+ * A container of an intact parse region (ScrDynRegion) holds only JSON
+ * primitives, undefined and containers of its own region, which have no
+ * prototype, accessors or toJSON function (a toJSON member there is never
+ * callable, which SerializeJSONProperty ignores). So its members need no
+ * inspection, which also keeps the proof from touching every member node:
+ * writing a member subtree runs no program code that could mutate this
+ * container mid-walk, and no cycle passes through it (the circular-structure
+ * check has nothing to find). Each member container is still written through
+ * scr_json_replaced_write, which proves it afresh. */
 static bool scr_json_plain_container(const ScrDyn *value) {
+  const ScrDynRegion *region = scr_dyn_region_of(value);
+  bool intact = region && region->intact;
   if (value->kind == SCR_DYN_ARR) {
     if (value->v.arr.presence || value->v.arr.properties) return false;
+    if (intact) return true;
     for (size_t i = 0; i < value->v.arr.len; i++)
       if (!scr_json_plain_value(value->v.arr.items[i])) return false;
     return true;
@@ -7983,14 +8107,21 @@ static bool scr_json_plain_container(const ScrDyn *value) {
     const ScrDynEntry *entry = &value->v.obj.entries[i];
     if (!entry->enumerable) continue;
     double index;
-    if (entry->accessor || !scr_json_plain_value(entry->value) ||
+    if (entry->accessor || (!intact && !scr_json_plain_value(entry->value)) ||
         scr_dyn_key_is_index(entry->key, entry->key_len, &index)) return false;
   }
   return true;
 }
 
-static bool scr_json_plain_write(ScrJsonBuf *buffer, const ScrDyn *value,
-                                 const ScrStr *gap, size_t depth) {
+static bool scr_json_replaced_write(ScrJsonBuf *buffer, const ScrDyn *value,
+                                   const ScrDyn *replacer, const ScrDyn *properties,
+                                   const ScrStr *gap, size_t depth);
+
+/* Out of line so the protocol walk's frame stays as small as it was: deep
+ * documents recurse through one of the two, and plain nesting recurses
+ * here directly, one small frame per level. */
+static __attribute__((noinline)) bool scr_json_plain_write(ScrJsonBuf *buffer, const ScrDyn *value,
+                                                           const ScrStr *gap, size_t depth) {
   bool array = value->kind == SCR_DYN_ARR;
   size_t length = array ? value->v.arr.len : value->v.obj.len;
   scr_jb_putc(buffer, array ? '[' : '{');
@@ -8011,7 +8142,15 @@ static bool scr_json_plain_write(ScrJsonBuf *buffer, const ScrDyn *value,
       if (gap->len) scr_jb_putc(buffer, ' ');
     }
     if (omitted) scr_jb_puts(buffer, "null");
-    else scr_dyn_json_write(buffer, child);
+    else if (child->kind == SCR_DYN_ARR || child->kind == SCR_DYN_OBJ) {
+      /* Only an intact region admits these (scr_json_plain_container); its
+       * members are never capsules, so a member that is not plain itself
+       * (holes, index-like names) only needs the protocol walk. */
+      bool ok = scr_json_plain_container(child)
+          ? scr_json_plain_write(buffer, child, gap, depth + 1)
+          : scr_json_replaced_write(buffer, child, scr_dyn_undefined(), NULL, gap, depth + 1);
+      if (!ok) return false;
+    } else scr_dyn_json_write(buffer, child);
   }
   if (!first) scr_json_gap(buffer, gap, depth);
   scr_jb_putc(buffer, array ? ']' : '}');
@@ -8382,7 +8521,10 @@ typedef struct ScrScParent {
   const struct ScrScParent *up;
 } ScrScParent;
 
-static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
+/* The clone is a fresh tree (shared inputs are copied per path, cycles
+ * throw), so it is tagged like a parse result (ScrDynRegion); a leaf the
+ * region may not hold clears it. */
+static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion *region) {
   if (v->kind == SCR_DYN_PROXY) {
     scr_throw_domex("DataCloneError", "#<Object> could not be cloned.");
     return NULL;
@@ -8406,6 +8548,7 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
   case SCR_DYN_BOOL:
     return scr_dyn_new_bool(v->v.b);
   case SCR_DYN_BIGINT:
+    region->intact = false;
     return scr_dyn_new_bigint(v->v.bigint);
   case SCR_DYN_NUM:
     return scr_dyn_new_num(v->v.num);
@@ -8416,6 +8559,7 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
      * of a Buffer answers a plain Uint8Array). A typed array view over a
      * larger ArrayBuffer, such as a pooled Buffer, clones the whole
      * ArrayBuffer and keeps its offset and length, as Node does. */
+    region->intact = false;
     ScrBytes *src = v->v.bytes;
     ScrBytes *copy;
     if (src->backing && !src->is_data_view && !src->shared) {
@@ -8445,36 +8589,41 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
       ScrDyn *out = scr_dyn_new_arr();
       for (size_t i = 0; i < v->v.arr.len; i++) {
         if (!scr_dyn_arr_has_index(v, i)) { scr_dyn_arr_push_hole(out); continue; }
-        ScrDyn *c = scr_sc_clone(v->v.arr.items[i], &self);
+        ScrDyn *c = scr_sc_clone(v->v.arr.items[i], &self, region);
         if (c == NULL) { /* threw */
           scr_dyn_release(out);
           return NULL;
         }
         scr_dyn_arr_push(out, c); /* ownership moves */
       }
+      scr_dyn_region_join(out, region);
       return out;
     }
     ScrDyn *out = scr_dyn_new_obj();
     for (size_t i = 0; i < v->v.obj.len; i++) {
       const ScrDynEntry *e = &v->v.obj.entries[i];
-      ScrDyn *c = scr_sc_clone(e->value, &self);
+      ScrDyn *c = scr_sc_clone(e->value, &self, region);
       if (c == NULL) {
         scr_dyn_release(out);
         return NULL;
       }
       scr_dyn_obj_set(out, e->key, e->key_len, c); /* ownership moves */
     }
+    scr_dyn_region_join(out, region);
     return out;
   }
 
   case SCR_DYN_TYPED_REF: {
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
-    ScrDyn *out = scr_sc_clone(materialized, up);
+    ScrDyn *out = scr_sc_clone(materialized, up, region);
     scr_dyn_release(materialized);
     return out;
   }
   case SCR_DYN_HANDLE:
-    if (scr_dyn_handle_ops_of(v)->clone) return scr_dyn_handle_ops_of(v)->clone(v->v.handle.ptr);
+    if (scr_dyn_handle_ops_of(v)->clone) {
+      region->intact = false; /* a handle is not a leaf the region may hold */
+      return scr_dyn_handle_ops_of(v)->clone(v->v.handle.ptr);
+    }
     /* fall through */
   case SCR_DYN_FUNC:
   default: {
@@ -8502,7 +8651,10 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
 ScrDyn *scr_structured_clone(const ScrDyn *value, const ScrDyn *options) {
   scr_sc_validate_options(options);
   if (scr_exc_pending()) return NULL;
-  return scr_sc_clone(value, NULL);
+  ScrDynRegion *region = scr_dyn_region_new();
+  ScrDyn *out = scr_sc_clone(value, NULL, region);
+  scr_dyn_region_unref(region); /* the clone's own reference */
+  return out;
 }
 
 ScrDyn *scr_structured_clone_transfer_fail(void) {
@@ -8727,6 +8879,7 @@ bool scr_dyn_reflect_define(ScrDyn *receiver, ScrDyn *raw_key, ScrDyn *value) {
     ok = scr_dyn_reflect_define(table, key, value);
     scr_dyn_release(table);
   } else {
+    scr_dyn_region_store(receiver, value);
     ScrDyn *symbols = key->kind == SCR_DYN_SYMBOL ? scr_dyn_symbol_receiver(receiver) : NULL;
     ScrDynEntry *entry = key->kind == SCR_DYN_SYMBOL ? (symbols ? scr_dyn_symbol_entry(symbols, key, true) : NULL)
       : receiver->kind == SCR_DYN_OBJ ? scr_dyn_entry(receiver, key->v.str)

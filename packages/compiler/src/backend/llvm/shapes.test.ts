@@ -144,7 +144,11 @@ describe("LLVM runtime RC symbols", () => {
     // The dyn fast path buffers surviving values by kind, as scr_dyn_release does.
     const ir = emitInlineRcHelpers(host).join("\n");
     expect(ir).toContain("call void @scr_dyn_release_survivor(ptr %o)");
-    expect(ir).toMatch(/switch i32 %kind, label %done \[ i32 4, label %root/);
+    expect(ir).toMatch(
+      /switch i32 %kind, label %done \[ i32 4, label %container i32 5, label %container i32 8, label %root/,
+    );
+    // Arrays and objects not yet buffered ask the runtime, which skips intact documents.
+    expect(ir).toMatch(/br i1 %cqueued, label %done, label %survivor/);
   });
 
   test("sanitized builds call the fast-path helpers out of line", () => {

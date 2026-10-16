@@ -342,6 +342,7 @@ static void scr_dirent_init(void) {
 
 void scr_dyn_dirent_finish(ScrDyn *obj) {
   scr_dirent_init();
+  scr_dyn_region_store(obj, NULL); /* a prototype store (ScrDynRegion) */
   scr_dyn_release(obj->prototype);
   obj->prototype = scr_dyn_retain(scr_dirent_prototype);
   for (size_t i = 0; i < obj->v.obj.len; i++) {
