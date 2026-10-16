@@ -712,6 +712,22 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dgram.address",
   "dgram.close",
   "dgram.closeCb",
+  // the socket options: errno errors, Node's value checks, and the
+  // TypeError after close()
+  "dgram.setBroadcast",
+  "dgram.setTTL",
+  "dgram.setMulticastTTL",
+  "dgram.setMulticastLoopback",
+  "dgram.setMulticastInterface",
+  "dgram.addMembership",
+  "dgram.dropMembership",
+  "dgram.getRecvBufferSize",
+  "dgram.getSendBufferSize",
+  "dgram.setRecvBufferSize",
+  "dgram.setSendBufferSize",
+  "dgram.getSendQueueSize",
+  "dgram.getSendQueueCount",
+  "dgram.disconnect",
   // The assert surface: every entry point except sameValue, bytesDeepEq,
   // looseF64Eq, looseBytesEq, partialEqDyn,
   // and the shape accumulator's begin/slot/test calls throws the

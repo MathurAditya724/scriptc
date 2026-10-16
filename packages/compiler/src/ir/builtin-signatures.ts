@@ -1326,6 +1326,22 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   },
   "dgram.unref": { argTypes: [DGRAMSOCK_T], result: VOID },
   "dgram.ref": { argTypes: [DGRAMSOCK_T], result: VOID },
+  /** The socket options (scr_dgram.c): the membership calls take the
+   * interface and whether it was given. May-throw. */
+  "dgram.setBroadcast": { argTypes: [DGRAMSOCK_T, BOOL], result: VOID },
+  "dgram.setTTL": { argTypes: [DGRAMSOCK_T, F64], result: F64 },
+  "dgram.setMulticastTTL": { argTypes: [DGRAMSOCK_T, F64], result: F64 },
+  "dgram.setMulticastLoopback": { argTypes: [DGRAMSOCK_T, BOOL], result: BOOL },
+  "dgram.setMulticastInterface": { argTypes: [DGRAMSOCK_T, STRING], result: VOID },
+  "dgram.addMembership": { argTypes: [DGRAMSOCK_T, STRING, STRING, BOOL], result: VOID },
+  "dgram.dropMembership": { argTypes: [DGRAMSOCK_T, STRING, STRING, BOOL], result: VOID },
+  "dgram.getRecvBufferSize": { argTypes: [DGRAMSOCK_T], result: F64 },
+  "dgram.getSendBufferSize": { argTypes: [DGRAMSOCK_T], result: F64 },
+  "dgram.setRecvBufferSize": { argTypes: [DGRAMSOCK_T, F64], result: VOID },
+  "dgram.setSendBufferSize": { argTypes: [DGRAMSOCK_T, F64], result: VOID },
+  "dgram.getSendQueueSize": { argTypes: [DGRAMSOCK_T], result: F64 },
+  "dgram.getSendQueueCount": { argTypes: [DGRAMSOCK_T], result: F64 },
+  "dgram.disconnect": { argTypes: [DGRAMSOCK_T], result: VOID },
   "dgram.onMessage": { argTypes: [DGRAMSOCK_T, null, BOOL], result: VOID },
   "dgram.onError": { argTypes: [DGRAMSOCK_T, null, BOOL], result: VOID },
   "dgram.onListening": {
