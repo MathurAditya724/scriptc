@@ -82,3 +82,21 @@ test("32-bit walkers log the count without the 64-bit escapes", () => {
   expect(fn).not.toContain("4294967294");
   expect(fn).toContain("getelementptr inbounds { ptr, i32, i32 }, ptr %mlog, i32 %mlogged");
 });
+
+test("walkers of classes with more than ten pushed fields keep their value names distinct", () => {
+  const wide: IrModule = {
+    ...mod,
+    classes: [
+      {
+        name: "Node",
+        fields: Array.from({ length: 12 }, (_, i) => ({ name: `link${i}`, type: node })),
+        methods: [],
+        loc,
+      },
+    ],
+  };
+  const fn = walker(emitLlvmModule(wide, { pointerBits: 64, objectAudit: false }));
+  const defined = [...fn.matchAll(/^ {2}(%[\w.]+) = /gm)].map((m) => m[1]);
+  expect(defined.length).toBeGreaterThan(12 * 8);
+  expect(new Set(defined).size).toBe(defined.length);
+});
