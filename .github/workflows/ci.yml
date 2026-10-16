@@ -141,7 +141,7 @@ jobs:
   tests:
     needs: [validation_scope, lanes, native_linux]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
-    name: test (Linux, ${{ matrix.flavor }}, ${{ matrix.shard }}/10)
+    name: test (Linux, ${{ matrix.flavor }}, ${{ matrix.shard }}/20)
     # The full suite runs on Linux x64, whose hosted runners start without the
     # macOS queue. tests_macos keeps the darwin clang/libc oracles.
     runs-on: ubuntu-24.04
@@ -149,7 +149,9 @@ jobs:
       fail-fast: false
       matrix:
         flavor: [plain, san]
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        # Twenty shards keep each job near six minutes of tests (the corpus
+        # programs are balanced by measured cost, tests/harness/shard.ts).
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     env:
       # Capped workers: the shared runner's cores oversubscribe under the
       # corpus compile fan-out, and vitest's worker RPC times out ("Timeout
@@ -164,12 +166,12 @@ jobs:
       ASAN_OPTIONS: detect_leaks=0
       # Within-file partition for the large case-driven harnesses
       # (differential, llvm-differential, npm, server, Test262, coverage, and
-      # Vercel E2E): partition stable case names into slice i of 10
-      # (tests/harness/shard.ts). The ten shards' unions run every case
+      # Vercel E2E): partition stable case names into slice i of 20
+      # (tests/harness/shard.ts). The twenty shards' unions run every case
       # exactly once. vitest's own --shard is FILE-granular and cannot split
       # these monster files (differential.test.ts alone is ~9 min
       # sequential), hence the case-sharded steps below.
-      SCRIPTC_TEST_SHARD: ${{ matrix.shard }}/10
+      SCRIPTC_TEST_SHARD: ${{ matrix.shard }}/20
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
