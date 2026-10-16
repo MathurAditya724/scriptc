@@ -81,6 +81,17 @@ async function main(): Promise<void> {
   await fh5.close();
   console.log("closed under stream", fh5.fd, busy.destroyed);
 
+  // A handle stream refused by its options leaves the handle's reference
+  // count as it was: the handle still closes, and nothing leaks.
+  const fh6 = await open(file);
+  try {
+    fh6.createReadStream({ encoding: "nope" as BufferEncoding });
+  } catch (err) {
+    console.log("handle stream refused", (err as NodeJS.ErrnoException).code);
+  }
+  await fh6.close();
+  console.log("refused handle closed", fh6.fd);
+
   try {
     fs.createReadStream(file, { start: 3, end: 1 });
   } catch (err) {

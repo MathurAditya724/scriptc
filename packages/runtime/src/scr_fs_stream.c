@@ -487,9 +487,12 @@ static bool scr_fss_refuse_overrides(const ScrDyn *o) {
 
 static ScrStream *scr_fss_new(const ScrDyn *path, const ScrDyn *opts_in, bool readable,
                               int owner_fd, void *owner, const ScrFsStreamOwnerOps *owner_ops) {
-  if (!scr_fs_stream_opts_valid(owner ? NULL : path, opts_in)) return NULL;
-  ScrDyn *o = scr_fss_options(opts_in);
-  if (!o) return NULL;
+  ScrDyn *o = scr_fs_stream_opts_valid(owner ? NULL : path, opts_in) ? scr_fss_options(opts_in) : NULL;
+  if (!o) {
+    /* The owner moves in, so a refused stream releases it too. */
+    if (owner) owner_ops->release(owner);
+    return NULL;
+  }
   ScrStream *s = NULL;
   ScrFsStream *f = calloc(1, sizeof *f);
   if (!f) scr_fss_oom();
