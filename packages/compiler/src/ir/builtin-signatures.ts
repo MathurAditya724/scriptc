@@ -1449,6 +1449,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // resGetHeader answers the interned `string | undefined` union — the
   // reqHeader/envGet sentinel pattern (VOID here, checked specially).
   "http.resGetHeader": { argTypes: [HTTPRES_T, STRING], result: VOID },
+  /** getHeader as Node answers it: the number, string or string[] that was
+   * set, or undefined, as a checked-dynamic value. */
+  "http.resGetHeaderDyn": { argTypes: [HTTPRES_T, STRING], result: DYN },
   "http.resGetHeaderNames": { argTypes: [HTTPRES_T], result: arrayOf(STRING) },
   "http.resGetRawHeaderNames": { argTypes: [HTTPRES_T], result: arrayOf(STRING) },
   "http.resGetHeaders": { argTypes: [HTTPRES_T], result: DYN },
@@ -1474,6 +1477,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     result: VOID,
   },
   "http.resSetHeader": { argTypes: [HTTPRES_T, STRING, STRING], result: VOID },
+  /** setHeader / appendHeader with a number, string or array value; the
+   * stored value keeps its type for getHeader/getHeaders. MAY THROW. */
+  "http.resSetHeaderDyn": { argTypes: [HTTPRES_T, STRING, DYN], result: VOID },
+  "http.resAppendHeader": { argTypes: [HTTPRES_T, STRING, DYN], result: VOID },
   "http.resWriteHead": { argTypes: [HTTPRES_T, F64], result: VOID },
   "http.resWriteHeadN": {
     argTypes: [HTTPRES_T, F64, arrayOf(STRING), arrayOf(STRING)],
@@ -1532,6 +1539,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * ...] pairs in arrival order — the interned %headers.snapshot helper
    * builds the record over it, exactly the process.envPairs pattern. */
   "http.reqHeaderPairs": { argTypes: [HTTPREQ_T], result: arrayOf(STRING) },
+  /** Every value of one header in arrival order (empty when absent): the
+   * set-cookie array of a `{ ...req.headers }` snapshot. */
+  "http.reqHeaderList": { argTypes: [HTTPREQ_T, STRING], result: arrayOf(STRING) },
   "http.reqRawTrailers": { argTypes: [HTTPREQ_T], result: arrayOf(STRING) },
   "http.reqTrailerPairs": { argTypes: [HTTPREQ_T], result: arrayOf(STRING) },
   "net.sockDestroyed": { argTypes: [NETSOCKET_T], result: BOOL },
@@ -3222,6 +3232,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stream.finishedDyn": { argTypes: [null, DYN], result: VOID },
   "stream.pipeline": { argTypes: [F64], result: VOID },
   "stream.pipelineDyn": { argTypes: [F64], result: VOID },
+  "stream.pipelineStages": { argTypes: [F64, F64, F64], result: VOID },
+  "stream.pipelineStagesDyn": { argTypes: [F64, F64, F64], result: VOID },
   /** stream.compose(count, s1..sn): the Duplex over a pipeline of the
    * streams (+1). MAY THROW (ERR_INVALID_ARG_VALUE for a stream that is
    * no longer readable or writable). */
@@ -3252,6 +3264,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stream.finishedOpts": { argTypes: [null, F64, F64, BOOL, null], result: VOID },
   "stream.finishedOptsSignal": { argTypes: [null, F64, F64, BOOL, DYN, null], result: VOID },
   "sp.pipeline": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
+  /** pipeline with a run of async generator stages: [n, at, k, s1..sn,
+   * stage1..stagek, next, read, return] (+ the callback for the stream.*
+   * forms): the user's stage functions, then the frontend's helpers over
+   * the last stage's generator (scr_stream_pipeline_stages). */
+  "sp.pipelineStages": { argTypes: [F64, F64, F64], result: { kind: "promise", inner: VOID } },
   /** node:stream/consumers — the promise consumers over the readable
    * machinery: (s) → a pending promise settled at the terminal point
    * with the accumulated result (sc.text: the utf8 decode, sc.json: the
@@ -3315,6 +3332,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "readable.nextChunkDyn": { argTypes: [null], result: VOID },
   "readable.fromArr": { argTypes: [null, F64, F64], result: VOID },
   "readable.fromDyn": { argTypes: [DYN, DYN], result: VOID },
+  /** Readable.from over a compiled generator: [generator, next, return,
+   * throw, flags, highWaterMark] (sync) or [generator, next, read,
+   * return, throw, flags, highWaterMark] (async), the helpers being the
+   * frontend's interned closures. readable.fromDone is the done marker
+   * the helpers answer. */
+  "readable.fromGen": { argTypes: [null, null, null, null, F64, F64], result: VOID },
+  "readable.fromAsyncGen": { argTypes: [null, null, null, null, null, F64, F64], result: VOID },
+  "readable.fromDone": { argTypes: [], result: DYN },
   /** The Readable operators (scr_stream_ops.c): [stream, ...] with every
    * other argument a checked-dynamic value (the callback, the count, the
    * options). map/filter/flatMap/drop/take answer the object-mode output
@@ -3416,7 +3441,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * the value's inspection) — the frontend routes null/undefined to a
    * no-op and everything else here (Node throws for falsy values too).
    * All arguments are borrowed. */
-  "assert.ok": { argTypes: [BOOL, STRING], result: VOID },
+  "assert.ok": { argTypes: [BOOL, STRING, BOOL], result: VOID },
+  /** The next AssertionError's actual, expected and operator, recorded on
+   * a failure branch. */
+  "assert.record": { argTypes: [DYN, DYN, STRING], result: VOID },
+  "assert.errorNew": { argTypes: [DYN], result: { kind: "object", className: "%AssertionError" } },
   "assert.eqF64": { argTypes: [F64, F64, BOOL, BOOL, STRING, BOOL], result: VOID },
   "assert.eqBigInt": { argTypes: [BIGINT_T, BIGINT_T, BOOL, BOOL, STRING, BOOL], result: VOID },
   "assert.eqStr": { argTypes: [STRING, STRING, BOOL, BOOL, STRING, BOOL], result: VOID },

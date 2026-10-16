@@ -378,36 +378,7 @@ export function typeReachesItself(lowerer: Lowerer, t: IrType): boolean {
   const root = typeKey(t);
   const seen = new Set<string>();
   const walk = (u: IrType): boolean => {
-    const constituents: IrType[] = [];
-    switch (u.kind) {
-      case "record": {
-        const shape = lowerer.shapes.get(u.shapeId);
-        if (!shape) return false;
-        constituents.push(...shape.fields.map((f) => f.type));
-        if (shape.indexValue) constituents.push(shape.indexValue);
-        break;
-      }
-      case "array":
-      case "set":
-        constituents.push(u.elem);
-        break;
-      case "map":
-        constituents.push(u.key, u.value);
-        break;
-      case "union": {
-        const def = lowerer.unions.get(u.unionId);
-        if (def) constituents.push(...def.arms);
-        break;
-      }
-      case "object": {
-        const info = lowerer.classes.get(u.className);
-        if (info) constituents.push(...info.def.fields.map((f) => f.type));
-        break;
-      }
-      default:
-        return false;
-    }
-    for (const c of constituents) {
+    for (const c of typeConstituents(lowerer, u)) {
       const k = typeKey(c);
       if (k === root) return true;
       if (!seen.has(k)) {
@@ -418,6 +389,43 @@ export function typeReachesItself(lowerer: Lowerer, t: IrType): boolean {
     return false;
   };
   return walk(t);
+}
+
+/** True when a value of `t` can be cyclic: `t` or any type reachable from
+ * it reaches itself. */
+export function typeReachesCycle(lowerer: Lowerer, t: IrType): boolean {
+  const seen = new Set<string>();
+  const walk = (u: IrType): boolean => {
+    const k = typeKey(u);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    if (typeReachesItself(lowerer, u)) return true;
+    return typeConstituents(lowerer, u).some(walk);
+  };
+  return walk(t);
+}
+
+/** The types a value of `u` holds directly. */
+function typeConstituents(lowerer: Lowerer, u: IrType): IrType[] {
+  switch (u.kind) {
+    case "record": {
+      const shape = lowerer.shapes.get(u.shapeId);
+      if (!shape) return [];
+      const fields = shape.fields.map((f) => f.type);
+      return shape.indexValue ? [...fields, shape.indexValue] : fields;
+    }
+    case "array":
+    case "set":
+      return [u.elem];
+    case "map":
+      return [u.key, u.value];
+    case "union":
+      return lowerer.unions.get(u.unionId)?.arms.slice() ?? [];
+    case "object":
+      return lowerer.classes.get(u.className)?.def.fields.map((f) => f.type) ?? [];
+    default:
+      return [];
+  }
 }
 
 /* ── the interned per-type helper ────────────────────────────────────── */

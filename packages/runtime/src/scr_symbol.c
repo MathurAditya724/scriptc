@@ -162,6 +162,7 @@ void scr_assert_eq_sym(ScrSym *a, ScrSym *b, bool negated, bool deep,
                        ScrStr *msg, bool has_msg) {
   bool same = a == b;
   if ((negated && !same) || (!negated && same)) return;
+  scr_assert_record(scr_dyn_new_symbol(a), scr_dyn_new_symbol(b), scr_assert_eq_operator(negated, deep));
   ScrStr *ia = scr_sym_to_string(a);
   if (negated) {
     scr_assert_neq_fail(ia->data, ia->len, deep, msg, has_msg);

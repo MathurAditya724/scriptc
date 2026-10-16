@@ -33,7 +33,7 @@ static const char *const scr_error_names[SCR_ERR_COUNT] = {
     /* DOMException's DEFAULT name is "Error" too (WebIDL: the name
      * parameter defaults to "Error"); the class identity lives in the
      * vtable, never the name. */
-    "Error", "ReferenceError", "EvalError", "URIError", "AggregateError"};
+    "Error", "ReferenceError", "EvalError", "URIError", "AggregateError", "AssertionError"};
 
 void scr_error_trace(void *e, ScrTraceVisit visit, void *ctx) {
   /* name/message are strings — never collector-headered; nothing to visit. */
@@ -162,6 +162,7 @@ SCR_TL ScrVt scr_error_vts[SCR_ERR_COUNT] = {
     {6, 6, &scr_error_reld}, /* EvalError */
     {7, 7, &scr_error_reld}, /* URIError */
     {8, 8, &scr_aggregate_reld}, /* AggregateError */
+    {9, 9, &scr_error_reld}, /* AssertionError */
 };
 
 ScrError *scr_error_retain(ScrError *e) {
@@ -345,6 +346,31 @@ void scr_throw_error_msg(int kind, const char *message, size_t len) {
 void scr_error_set_code(ScrError *e, const char *code) {
   scr_str_release(e->code); /* NULL-safe; replace is Node's assignment */
   e->code = scr_str_new(code, strlen(code));
+}
+
+/* The code Node attaches to the runtime's event-error messages whose text
+ * carries no errno name: connResetException's "socket hang up" and
+ * "aborted", the HTTP parser's header overflow, and the TLS verification
+ * failures (the openssl reason Node reports as the code). NULL for any
+ * other message. */
+const char *scr_error_message_code(const ScrStr *msg) {
+  static const struct { const char *prefix; bool whole; const char *code; } known[] = {
+    { "socket hang up", true, "ECONNRESET" },
+    { "aborted", true, "ECONNRESET" },
+    { "Parse Error: Header overflow", true, "HPE_HEADER_OVERFLOW" },
+    { "certificate has expired", true, "CERT_HAS_EXPIRED" },
+    { "self-signed certificate in certificate chain", true, "SELF_SIGNED_CERT_IN_CHAIN" },
+    { "self-signed certificate", false, "DEPTH_ZERO_SELF_SIGNED_CERT" },
+    { "unable to verify the first certificate", false, "UNABLE_TO_VERIFY_LEAF_SIGNATURE" },
+    { "Hostname/IP does not match certificate's altnames", false, "ERR_TLS_CERT_ALTNAME_INVALID" },
+  };
+  for (size_t i = 0; i < sizeof known / sizeof known[0]; i++) {
+    size_t n = strlen(known[i].prefix);
+    if (msg->len < n || memcmp(msg->data, known[i].prefix, n) != 0) continue;
+    if (known[i].whole ? msg->len == n : (msg->len == n || msg->data[n] == ';' || msg->data[n] == ':'))
+      return known[i].code;
+  }
+  return NULL;
 }
 
 ScrStr *scr_error_code(ScrError *e) {

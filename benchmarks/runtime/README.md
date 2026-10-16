@@ -13,6 +13,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `async-pipeline` | cpu | `async`/`await`, `Promise.all` fan-out |
 | `word-graph` | cpu | string-keyed Map/Set, BFS |
 | `alloc-trees` | cpu | allocation-heavy trees, immutable object-spread updates |
+| `cyclic-graphs` | cpu | object graphs with back references built and dropped: trees with parent and sibling links, rings of records sharing a long-lived registry, closures capturing their owner |
 | `numeric-kernels` | cpu | sieve, hashing, `number[][]` matmul, `Float64Array` |
 | `typed-array-scan`, `typed-array-scan-workers` | cpu | element-by-element scan loops over `Uint8Array`, `Uint16Array`, `Int32Array` and `Float64Array`; the second entry is a worker-enabled executable (it can start a worker), so each access also checks for shared storage |
 | `value-objects` | cpu | small immutable records and class instances: vector helpers, method chains, particle updates |

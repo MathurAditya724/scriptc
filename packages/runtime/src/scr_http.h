@@ -115,6 +115,7 @@ ScrStr *scr_http_req_method(ScrHttpReq *r);   /* +1 */
 ScrStr *scr_http_req_header(ScrHttpReq *r, ScrStr *name /*borrowed*/); /* +1 or NULL (undefined arm) */
 ScrStr *scr_http_req_trailer(ScrHttpReq *r, ScrStr *name /*borrowed*/); /* +1 or NULL */
 ScrArr *scr_http_req_header_values(ScrHttpReq *r, ScrStr *name /*borrowed*/); /* +1 or NULL */
+ScrArr *scr_http_req_header_list(ScrHttpReq *r, ScrStr *name /*borrowed*/); /* +1, empty when absent */
 ScrArr *scr_http_req_trailer_values(ScrHttpReq *r, ScrStr *name /*borrowed*/); /* +1 or NULL */
 void scr_http_req_on_data(ScrHttpReq *r, ScrClosure *cb /*moves*/, ScrNetDataFn fn, bool once);
 /* req.pipe(dest): the IncomingMessage body streams into the destination;
@@ -124,6 +125,10 @@ void scr_http_req_pipe_res(ScrHttpReq *r, ScrHttpRes *dst /*borrowed*/);
 void scr_http_req_pipe_sock(ScrHttpReq *r, ScrNetSocket *dst /*borrowed*/);
 void scr_http_req_on_end(ScrHttpReq *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_set_header(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrStr *value /*borrowed*/);
+/* setHeader/appendHeader with a number, string or array value (borrowed);
+ * may throw ERR_HTTP_INVALID_HEADER_VALUE. */
+void scr_http_res_set_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrDyn *value /*borrowed*/);
+void scr_http_res_append_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrDyn *value /*borrowed*/);
 void scr_http_res_write_head(ScrHttpRes *r, double status);
 void scr_http_res_write_head_n(ScrHttpRes *r, double status, ScrArr *names /*borrowed*/, ScrArr *values /*borrowed*/);
 void scr_http_res_write_continue(ScrHttpRes *r);
@@ -163,6 +168,7 @@ void scr_http_res_status_set(ScrHttpRes *r, double status);
 ScrStr *scr_http_res_status_msg_get(ScrHttpRes *r); /* +1 */
 void scr_http_res_status_msg_set(ScrHttpRes *r, ScrStr *msg /*borrowed*/);
 ScrStr *scr_http_res_get_header(ScrHttpRes *r, ScrStr *name /*borrowed*/); /* +1 or NULL */
+ScrDyn *scr_http_res_get_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/); /* +1, undefined when absent */
 ScrArr *scr_http_res_get_header_names(ScrHttpRes *r); /* +1 */
 ScrArr *scr_http_res_get_raw_header_names(ScrHttpRes *r); /* +1 */
 ScrDyn *scr_http_res_get_headers(ScrHttpRes *r); /* +1 */
@@ -186,6 +192,7 @@ void scr_http_server_on_connect(ScrNetServer *s, ScrClosure *cb /*moves*/,
 void scr_http_server_on_upgrade(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once);
 ScrArr *scr_http_req_raw_headers(ScrHttpReq *r); /* +1 — [name, value, ...], arrival order/case */
 ScrArr *scr_http_req_header_pairs(ScrHttpReq *r); /* +1 — lowercased names, the headers snapshot */
+ScrArr *scr_http_req_header_lines(ScrHttpReq *r); /* +1 — every line, lowercased names */
 ScrArr *scr_http_req_raw_trailers(ScrHttpReq *r); /* +1 — wire order/case after end */
 ScrArr *scr_http_req_trailer_pairs(ScrHttpReq *r); /* +1 — lowercased, joined snapshot after end */
 ScrStr *scr_http_req_status_message(ScrHttpReq *r); /* +1 or NULL (undefined arm: server request) */

@@ -140,6 +140,9 @@ bool scr_net_server_listening(ScrNetServer *s);
 void scr_net_sock_set_ref(ScrNetSocket *s, bool ref);
 void scr_net_server_set_ref(ScrNetServer *s, bool ref);
 bool scr_net_sock_has_ref(ScrNetSocket *s);
+double scr_net_server_keep_alive_ms(ScrNetServer *s);
+double scr_net_server_keep_alive_timeout(ScrNetServer *s);
+double scr_net_server_idle_ms(ScrNetServer *s);
 /* Writable http.Server timeout property storage. `field` is the compiler
  * ABI selector: timeout, keepAliveTimeout, headersTimeout, requestTimeout,
  * keepAliveTimeoutBuffer. Typed reads validate that no dynamic write left

@@ -6,7 +6,15 @@
 import { globSync } from "node:fs";
 import { basename, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { balancedShardSelect, parseShardSpec, shardOf, shardSelect, shardSuffix } from "./shard.js";
+import {
+  balancedShardSelect,
+  corpusSelect,
+  parseShardSpec,
+  shardOf,
+  shardSelect,
+  shardSuffix,
+} from "./shard.js";
+import corpusCosts from "./corpus-costs.json";
 import fixtureCosts from "./effect4-costs.json";
 import effectCosts from "./effect-costs.json";
 
@@ -197,5 +205,42 @@ describe("balancedShardSelect", () => {
         ),
       ).toThrow(/weight/);
     }
+  });
+});
+
+describe("corpusSelect", () => {
+  const programs = ["ts", "js", "mjs", "cjs"]
+    .flatMap((ext) => [
+      ...globSync(join(corpusDir, `*.${ext}`)),
+      ...globSync(join(corpusDir, `*/main.${ext}`)),
+    ])
+    .map((file) => file.slice(corpusDir.length + 1))
+    .sort();
+
+  test.each([false, true])(
+    "every corpus program runs exactly once over the 10 shards (sanitize %s)",
+    (san) => {
+      const shards = Array.from({ length: 10 }, (_, i) =>
+        corpusSelect(programs, (k) => k, san, { index: i + 1, count: 10 }),
+      );
+      const union = shards.flat();
+      expect(union.length).toBe(programs.length);
+      expect(new Set(union)).toEqual(new Set(programs));
+      // Both corpus harnesses call corpusSelect with the same keys, so they agree on each shard.
+      expect(corpusSelect(programs, (k) => k, san, { index: 3, count: 10 })).toEqual(shards[2]);
+    },
+  );
+
+  test("measured costs cover the corpus and balance the shards", () => {
+    const costs = corpusCosts.plain as Record<string, number>;
+    const measured = programs.filter((k) => costs[k] !== undefined).length;
+    expect(measured / programs.length).toBeGreaterThan(0.9);
+    const loads = Array.from({ length: 10 }, (_, i) =>
+      corpusSelect(programs, (k) => k, false, { index: i + 1, count: 10 }).reduce(
+        (sum, k) => sum + (costs[k] ?? 0),
+        0,
+      ),
+    );
+    expect(Math.max(...loads) / Math.min(...loads)).toBeLessThan(1.1);
   });
 });

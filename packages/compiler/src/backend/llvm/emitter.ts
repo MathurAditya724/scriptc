@@ -169,6 +169,7 @@ import { emitDenseArrayGet, emitDenseArraySet } from "./dense-array-access.js";
 import {
   emitStackMapRead,
   findMapReadLifetimes,
+  findReadNumberMapWrites,
   matchMapRead,
   type MapReadLifetimes,
 } from "./map-read-lifetimes.js";
@@ -688,6 +689,7 @@ export class LlEmitter {
   readonly checkedNarrows: CheckedNarrows;
   callArrayReads = new Map<IrExpr, LocalArrayRead>();
   mapReadLifetimes: MapReadLifetimes = { locals: new Map(), arguments: new Map() };
+  readNumberMapWrites: ReadonlySet<IrExpr> = new Set();
   readonly callLifetimes: CallLifetimes;
   readonly constantCallbacks: Map<string, Map<string, string>>;
   currentConstantCallbacks: ReadonlyMap<string, string> = new Map();
@@ -5828,6 +5830,7 @@ export class LlEmitter {
     this.scalarStringSlices =
       this.debug === null ? findScalarStringSlices(fn, this.callLifetimes) : new Map();
     this.mapReadLifetimes = findMapReadLifetimes(fn, this.boxedUnionsById, this.callLifetimes);
+    this.readNumberMapWrites = findReadNumberMapWrites(fn);
     this.localStackUnions = findLocalStackUnions(fn, this.callLifetimes, this.boxedUnionsById);
     this.localStackObjects = this.stackObjects
       ? findLocalStackObjects(this, fn, this.callLifetimes)

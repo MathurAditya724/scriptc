@@ -1384,6 +1384,10 @@ export const RUNTIME_ERROR_CLASSES: ReadonlyMap<
   // (the DOMException arrangement), read through error.aggregateErrors, so
   // user `extends AggregateError` is fenced too.
   ["%AggregateError", { lib: "AggregateError", kind: 8, base: "%Error" }],
+  // node:assert's AssertionError — every assertion failure and its own
+  // constructor. The Error layout; actual, expected, operator,
+  // generatedMessage and diff are properties of the error's dyn view.
+  ["%AssertionError", { lib: "AssertionError", kind: 9, base: "%Error" }],
 ]);
 
 /** The runtime-provided node:events EventEmitter class (ScrEmitter /
@@ -1563,6 +1567,11 @@ export interface IrFunction {
   /** Generated reflection dispatch contains speculative source-member edges.
    * Target-only host operations behind those edges retain runtime refusals. */
   speculativeDispatch?: boolean;
+  /** A read helper the backend can answer directly for dyn arrays and live
+   * array capsules, calling the helper only when that read has no answer.
+   * `index`: a computed read `(value, key)` whose callers pass a number
+   * converted to a string as the key. */
+  fastRead?: "index";
   params: IrParam[];
   returnType: IrType;
   /** All locals including params, pre-collected and scope-flat: ids are
