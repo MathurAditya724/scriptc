@@ -428,6 +428,12 @@ void scr_rc_destroy(void *obj, void (*destroy)(void *));
  * that walks it finds it externally referenced. */
 void scr_cyc_on_release(void *obj);
 void scr_cyc_on_dead(void *obj);
+/* Publication's buffer hooks (scr_publish.c): take a buffered object out
+ * of its buffer (returns its index), put it back at `index`, and close the
+ * slots taken since the last fill that are still empty. */
+uint32_t scr_cyc_pub_take(void *obj);
+void scr_cyc_pub_restore(void *obj, uint32_t index);
+void scr_cyc_pub_fill(void);
 
 /* Inline halves of the hooks for runtime release paths, mirroring the
  * emitted ones (llvm/shapes.ts): a release of an already-buffered

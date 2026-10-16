@@ -156,6 +156,13 @@
       ]
     },
     {
+      "name": "published-graphs",
+      "entry": "workloads/published-graphs.ts",
+      "args": [
+        "1"
+      ]
+    },
+    {
       "name": "validate-errors",
       "entry": "workloads/validate-errors.ts",
       "args": [

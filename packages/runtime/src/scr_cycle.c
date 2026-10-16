@@ -186,6 +186,7 @@ typedef struct {
   ScrVec xgen;
   ScrVec xgen_edges;
   void *gray_holder;
+  ScrVec pub_holes[SCR_CYC_NGENS];
   unsigned gen_limit;
   size_t live_after[SCR_CYC_NGENS];
   unsigned char growth_shift[SCR_CYC_NGENS];
@@ -216,6 +217,7 @@ static _Thread_local ScrCycThread scr_cyc_thread = {.gen_limit = SCR_CYC_OLD};
 #define scr_xgen (scr_cyc_thread.xgen)
 #define scr_xgen_edges (scr_cyc_thread.xgen_edges)
 #define scr_gray_holder (scr_cyc_thread.gray_holder)
+#define scr_pub_holes (scr_cyc_thread.pub_holes)
 #define scr_gen_limit (scr_cyc_thread.gen_limit)
 #define scr_cyc_live_after (scr_cyc_thread.live_after)
 #define scr_cyc_growth_shift (scr_cyc_thread.growth_shift)
@@ -803,6 +805,60 @@ void scr_cyc_on_dead(void *obj) {
     scr_cyc_scheduled_mature_age = 0;
 }
 
+/* Publication (scr_publish.c) takes buffered objects out of their candidate
+ * buffers while it walks them, when their headers are in cache: the slot is
+ * cleared, the header unbuffered and the slot's index recorded in
+ * scr_pub_holes. Nothing buffers or collects during the walk, so the slots
+ * stay where they are until the publish ends and scr_cyc_pub_fill closes
+ * the ones still empty. A refused publish first puts each object back
+ * (scr_cyc_pub_restore). */
+#ifndef SCR_WORKERS
+static SCR_TL ScrVec scr_pub_holes[SCR_CYC_NGENS];
+#endif
+
+uint32_t scr_cyc_pub_take(void *obj) {
+  ScrCycHdr *h = scr_cyc_hdr(obj);
+  unsigned gen = scr_cyc_gen(h);
+  uint32_t index = scr_cyc_buf_index(h);
+  scr_roots[gen].v[index] = NULL;
+  scr_cyc_clear_buffered(h);
+  scr_cyc_push(&scr_pub_holes[gen], (void *)(uintptr_t)index);
+  return index;
+}
+
+void scr_cyc_pub_restore(void *obj, uint32_t index) {
+  ScrCycHdr *h = scr_cyc_hdr(obj);
+  scr_cyc_set_buffered(h, index);
+  scr_roots[scr_cyc_gen(h)].v[index] = obj;
+}
+
+/* Each empty slot takes the buffer's last entry, after the empty slots at
+ * the end are dropped: one move or drop per slot, with scr_cyc_on_dead's
+ * accounting for each. */
+void scr_cyc_pub_fill(void) {
+  bool older = false;
+  for (unsigned gen = 0; gen < SCR_CYC_NGENS; gen++) {
+    ScrVec *holes = &scr_pub_holes[gen], *b = &scr_roots[gen];
+    size_t before = b->n;
+    for (size_t k = 0; k < holes->n; k++) {
+      size_t i = (uintptr_t)holes->v[k];
+      while (b->n > 0 && b->v[b->n - 1] == NULL) b->n--;
+      if (i < b->n && b->v[i] == NULL) {
+        void *last = b->v[--b->n];
+        b->v[i] = last;
+        scr_cyc_set_buffered(scr_cyc_hdr(last), (uint32_t)i);
+      }
+    }
+    holes->n = 0;
+    size_t closed = before - b->n;
+    scr_cyc_nbuffered -= closed;
+    /* A death must not consume room reserved for a future candidate. */
+    scr_cyc_trigger -= closed;
+    if (closed && gen != SCR_CYC_NURSERY) older = true;
+  }
+  if (older && !scr_cyc_older_backlog()) scr_cyc_scheduled_mature_age = 0;
+}
+
 /* Every release that leaves an unbuffered object alive lands here (the
  * emitted and inline release paths test `buffered` first), so it stays what
  * it has always been: buffer inline, then one compare. */
@@ -1160,7 +1216,8 @@ void scr_collect_cycles(void) {
 void scr_cyc_context_cleanup(void) {
   scr_collect_cycles();
   ScrVec *vectors[] = {&scr_roots[SCR_CYC_NURSERY], &scr_roots[SCR_CYC_MATURE],
-    &scr_roots[SCR_CYC_OLD], &scr_cands, &scr_promote, &scr_pending, &scr_restore_pending, &scr_white, &scr_xgen, &scr_xgen_edges};
+    &scr_roots[SCR_CYC_OLD], &scr_cands, &scr_promote, &scr_pending, &scr_restore_pending, &scr_white, &scr_xgen, &scr_xgen_edges,
+    &scr_pub_holes[SCR_CYC_NURSERY], &scr_pub_holes[SCR_CYC_MATURE], &scr_pub_holes[SCR_CYC_OLD]};
   for (size_t i = 0; i < sizeof vectors / sizeof vectors[0]; i++) {
     free(vectors[i]->v);
     *vectors[i] = (ScrVec){0};

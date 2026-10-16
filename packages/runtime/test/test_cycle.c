@@ -59,12 +59,11 @@ static void node_free(void *obj) {
   scr_cyc_free(obj);
 }
 
-static Node *make_ring(size_t count) {
+static Node *make_ring_of(size_t count, ScrCycType *type) {
   Node **nodes = calloc(count, sizeof(*nodes));
   if (!nodes) scr_trap("cycle test: out of memory\n");
   for (size_t i = 0; i < count; i++) {
-    static ScrCycType cyc_type = { &node_trace, &node_free, 0 };
-    nodes[i] = scr_cyc_alloc(sizeof(*nodes[i]), &cyc_type);
+    nodes[i] = scr_cyc_alloc(sizeof(*nodes[i]), type);
     nodes[i]->rc = 1; /* the ring edge that will point at this node */
   }
   for (size_t i = 0; i < count; i++)
@@ -74,6 +73,11 @@ static Node *make_ring(size_t count) {
   root->rc++; /* external owner */
   free(nodes);
   return root;
+}
+
+static Node *make_ring(size_t count) {
+  static ScrCycType cyc_type = { &node_trace, &node_free, 0 };
+  return make_ring_of(count, &cyc_type);
 }
 
 static void release_live(Node *node) {
@@ -1040,6 +1044,61 @@ static void check_allocation_growth_runs_passes(void) {
   check(freed - before == dropped, "dead rings survived a full collection");
 }
 
+/* Publication takes its objects out of the candidate buffers while it
+ * walks them (scr_cyc_pub_take) and closes the slots when it ends
+ * (scr_cyc_pub_fill); a refused publish puts its objects back first
+ * (scr_cyc_pub_restore). The rings here are dropped before the publish, so
+ * only their buffer entries keep them collectable. Rings taken and made
+ * immortal are never walked again; rings put back are collected, like the
+ * rings that were never taken. */
+static size_t immortal_traced;
+
+static void published_ring_trace(void *obj, ScrTraceVisit visit, void *ctx) {
+  if (((Node *)obj)->rc == SIZE_MAX) immortal_traced++;
+  node_trace(obj, visit, ctx);
+}
+
+static void check_publication_takes_candidates(void) {
+  enum { RINGS = 40, NODES_PER_RING = 8 };
+  static ScrCycType cyc_type = { &published_ring_trace, &node_free, 0 };
+  Node *roots[RINGS];
+  uint32_t taken[RINGS];
+  size_t before = freed;
+  for (size_t i = 0; i < RINGS; i++) {
+    roots[i] = make_ring_of(NODES_PER_RING, &cyc_type);
+    roots[i]->rc++;
+    release_live(roots[i]); /* buffered, still externally owned */
+  }
+  for (size_t i = 0; i < RINGS; i++)
+    if (i % 3 != 0) release_live(roots[i]); /* garbage now */
+  /* Low thresholds run passes while the rings are built, which can leave a
+   * published root unbuffered: publication takes only buffered objects. */
+  bool buffered[RINGS];
+  for (size_t i = 0; i < RINGS; i++) {
+    buffered[i] = i % 3 != 2 && scr_cyc_is_buffered(scr_cyc_hdr(roots[i]));
+    if (buffered[i]) taken[i] = scr_cyc_pub_take(roots[i]);
+  }
+  for (size_t i = 0; i < RINGS; i++) {
+    if (i % 3 == 0) { /* published: every node becomes immortal */
+      Node *node = roots[i];
+      do {
+        Node *next = node->next;
+        node->rc = SIZE_MAX;
+        node = next;
+      } while (node != roots[i]);
+    } else if (i % 3 == 1 && buffered[i]) {
+      scr_cyc_pub_restore(roots[i], taken[i]); /* refused */
+    }
+  }
+  scr_cyc_pub_fill();
+  scr_collect_cycles();
+  size_t dropped = 0;
+  for (size_t i = 0; i < RINGS; i++) dropped += i % 3 != 0;
+  check(freed - before == dropped * NODES_PER_RING,
+        "publication left the dropped rings uncollected, or collected a published one");
+  check(immortal_traced == 0, "a pass walked a published ring");
+}
+
 int main(void) {
   check_old_garbage_reclaimed_while_growing();
   check_older_rings_into_old();
@@ -1065,6 +1124,7 @@ int main(void) {
   check_probe_sees_candidate_rings();
   check_rebuffer_past_mature();
   check_allocation_growth_runs_passes();
+  check_publication_takes_candidates();
   printf("cycle collection checks passed: threshold=%zu growth_cap=%zu\n",
          configured_nursery_threshold(), configured_growth_cap());
   return 0;
