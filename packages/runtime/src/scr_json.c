@@ -1017,6 +1017,17 @@ static void scr_dyn_gcfree(void *ptr) { scr_dyn_dispose(ptr, true); }
 
 static void scr_dyn_destroy(void *ptr) { scr_dyn_dispose(ptr, false); }
 
+/* The cycle bookkeeping of a capsule or handle that survives a release.
+ * Compiled release fast paths decrement first and call this for the kinds
+ * whose candidacy depends on per-value state, matching scr_dyn_release. */
+void scr_dyn_release_survivor(ScrDyn *d) {
+  if ((d->kind == SCR_DYN_TYPED_REF &&
+       (d->v.typed_ref.materialized || d->v.typed_ref.casts || d->v.typed_ref.traced ||
+        d->prototype || d->symbol_properties || d->symbol_keys)) ||
+      (d->kind == SCR_DYN_HANDLE && d->v.handle.traced))
+    scr_cyc_released(d);
+}
+
 void scr_dyn_release(ScrDyn *d) {
   if (!d || d->rc == SIZE_MAX) return;
   if (--d->rc != 0) {
@@ -3188,7 +3199,8 @@ void scr_dyn_arg_type_fail(const char *argname, const char *expected, const ScrD
   scr_jb_init(&b);
   scr_jb_puts(&b, "The \"");
   scr_jb_puts(&b, argname);
-  scr_jb_puts(&b, "\" argument must be ");
+  /* Node names a dotted name (options.mode) a property. */
+  scr_jb_puts(&b, strchr(argname, '.') ? "\" property must be " : "\" argument must be ");
   scr_jb_puts(&b, expected);
   scr_jb_puts(&b, ". Received ");
   scr_jb_puts(&b, d);
@@ -9947,6 +9959,8 @@ static ScrDyn *scr_array_buffer_get(void *h, const char *key, size_t len) {
   if (len == 8 && !memcmp(key, "growable", len) && ((ScrBytes *)h)->shared) return scr_dyn_new_bool(false);
   if (!((ScrBytes *)h)->shared && ((len == 9 && memcmp(key, "resizable", len) == 0) ||
       (len == 8 && memcmp(key, "detached", len) == 0))) return scr_dyn_new_bool(false);
+  if (len == 11 && !memcmp(key, "constructor", len) && !((ScrBytes *)h)->shared)
+    return scr_array_buffer_constructor();
   return NULL;
 }
 

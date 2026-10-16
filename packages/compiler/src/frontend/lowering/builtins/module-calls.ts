@@ -16,6 +16,7 @@ import {
   lowerFsEncodedRead,
   lowerFsPromisesEncodedRead,
   lowerFsMkdirSyncCall,
+  lowerFsOpendirCall,
   lowerFsPromisesMkdirCall,
   lowerFsRemoveCall,
   lowerFsWriteBytesCall,
@@ -239,6 +240,12 @@ export function lowerBuiltinModuleCall(
     lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[0]!))?.kind === "f64"
   ) {
     return lowerFsReadDescriptorCall(lowerer, expr, loc);
+  }
+  if (
+    (bi.module === "fs" && bi.member === "opendirSync") ||
+    (bi.module === "fs/promises" && bi.member === "opendir")
+  ) {
+    return lowerFsOpendirCall(lowerer, expr, fn, bi.member, loc);
   }
   if (bi.module === "fs" && bi.member === "mkdirSync" && expr.arguments.length === 2) {
     return lowerFsMkdirSyncCall(lowerer, expr, loc);

@@ -17,7 +17,7 @@
  * publish it to emitted code.
  */
 
-import { exactIndexLines } from "./common.js";
+import { exactIndexLines, sizeToDouble } from "./common.js";
 
 export const STRING_UTF16_LEN_DECL = "declare double @scr_str_utf16_len(ptr)";
 export const STRING_CHAR_CODE_AT_DECL = "declare double @scr_str_char_code_at(ptr, double)";
@@ -100,7 +100,7 @@ export const STRING_READ_HELPERS: readonly StringReadHelper[] = [
       `  br i1 %ascii, label %fast, label %${scan ? "wide" : "slow"}`,
       `fast:`,
       ...loadLength(sz),
-      `  %n = sitofp ${sz} %len to double`,
+      `  %n = ${sizeToDouble(sz)} ${sz} %len to double`,
       `  ret double %n`,
       ...(scan
         ? [

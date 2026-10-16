@@ -98,6 +98,7 @@ import { lowerCipherMethodCall, lowerCryptoHashMethodCall } from "./builtins/cry
 import {
   lowerDirentMethodCall,
   lowerFileHandleMethodCall,
+  lowerDirMethodCall,
   lowerWatcherMethodCall,
 } from "./builtins/filesystem.js";
 import {
@@ -1250,6 +1251,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerCryptoHashMethodCall(lowerer, expr, expr.expression) ??
       lowerCipherMethodCall(lowerer, expr, expr.expression) ??
       lowerFileHandleMethodCall(lowerer, expr, expr.expression) ??
+      lowerDirMethodCall(lowerer, expr, expr.expression) ??
       lowerer.lowerChildMethodCall(expr, expr.expression) ??
       // Piped child-output stream receivers — on/once("data" | "end").
       lowerChildStreamMethodCall(lowerer, expr, expr.expression) ??

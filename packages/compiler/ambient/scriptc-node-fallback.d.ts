@@ -1357,6 +1357,21 @@ declare module "node:fs" {
     options: GlobOptions,
     callback: (err: NodeJS.ErrnoException | null, matches?: string[]) => void,
   ): void;
+  /* fs.Dir: an open directory stream (opendirSync, fs.promises.opendir)
+   * read one Dirent at a time in OS order; utf8 names, no recursive walk. */
+  export interface Dir {
+    readonly path: string;
+    readSync(): Dirent | null;
+    read(): Promise<Dirent | null>;
+    closeSync(): void;
+    close(): Promise<void>;
+    [Symbol.asyncIterator](): AsyncIterableIterator<Dirent>;
+  }
+  export interface OpenDirOptions {
+    encoding?: "utf8" | "utf-8";
+    bufferSize?: number;
+  }
+  export function opendirSync(path: string, options?: OpenDirOptions): Dir;
   export function accessSync(path: string, mode?: number): void;
   export function mkdtempSync(prefix: string): string;
   export const constants: {
@@ -1759,6 +1774,10 @@ declare module "fs/promises" {
   export function mkdtemp(prefix: string): Promise<string>;
   export function rmdir(path: string): Promise<void>;
   export function rename(oldPath: string, newPath: string): Promise<void>;
+  export function opendir(
+    path: string,
+    options?: import("node:fs").OpenDirOptions,
+  ): Promise<import("node:fs").Dir>;
 }
 declare module "node:fs/promises" {
   export * from "fs/promises";

@@ -272,9 +272,8 @@ static uint32_t scr_bytes_to_u32(double v) {
   return scr_numeric_to_u32(v);
 }
 
-double scr_bytes_get(const ScrBytes *b, double i) {
-  SCR_SHARED_GUARD(b, NULL);
-  size_t idx = scr_bytes_check_index(b, i);
+/* The element at a valid index, as a number. */
+static double scr_bytes_load(const ScrBytes *b, size_t idx) {
   switch (b->elem) {
     case SCR_BYTES_U8: case SCR_BYTES_U8C:
       return (double)b->data[idx];
@@ -317,6 +316,11 @@ double scr_bytes_get(const ScrBytes *b, double i) {
   return 0; /* unreachable */
 }
 
+double scr_bytes_get(const ScrBytes *b, double i) {
+  SCR_SHARED_GUARD(b, NULL);
+  return scr_bytes_load(b, scr_bytes_check_index(b, i));
+}
+
 /* The numeric view of an ordinary typed-array read: Node answers undefined
  * for an index that is not an integer in [0, length), which ToNumber turns
  * into NaN. Never touches storage out of bounds. */
@@ -325,10 +329,8 @@ double scr_bytes_get_or_nan(const ScrBytes *b, double i) {
   return scr_bytes_get(b, i);
 }
 
-void scr_bytes_set(ScrBytes *b, double i, double v) {
-  SCR_SHARED_GUARD(b, NULL);
-  if (!(i >= 0) || i != trunc(i) || i >= (double)b->len) return;
-  size_t idx = (size_t)i;
+/* Store v at a valid index with the element type's JS conversion. */
+static void scr_bytes_store(ScrBytes *b, size_t idx, double v) {
   switch (b->elem) {
     case SCR_BYTES_U8: case SCR_BYTES_I8:
       b->data[idx] = (uint8_t)scr_bytes_to_u32(v);
@@ -363,6 +365,56 @@ void scr_bytes_set(ScrBytes *b, double i, double v) {
       break;
     }
   }
+}
+
+void scr_bytes_set(ScrBytes *b, double i, double v) {
+  SCR_SHARED_GUARD(b, NULL);
+  if (!(i >= 0) || i != trunc(i) || i >= (double)b->len) return;
+  scr_bytes_store(b, (size_t)i, v);
+}
+
+/* Compiled code validates the index against the view's length, which never
+ * changes, before it takes these shared-view paths; they only add the
+ * shared-memory lock around the element access. */
+int32_t scr_bytes_shared_get_int(const ScrBytes *b, size_t i) {
+  SCR_SHARED_GUARD(b, NULL);
+  switch (b->elem) {
+    case SCR_BYTES_U8: case SCR_BYTES_U8C:
+      return b->data[i];
+    case SCR_BYTES_I8: {
+      int8_t v;
+      memcpy(&v, b->data + i, 1);
+      return v;
+    }
+    case SCR_BYTES_U16: {
+      uint16_t v;
+      memcpy(&v, b->data + i * 2, 2);
+      return v;
+    }
+    case SCR_BYTES_I16: {
+      int16_t v;
+      memcpy(&v, b->data + i * 2, 2);
+      return v;
+    }
+    case SCR_BYTES_U32: case SCR_BYTES_I32: {
+      int32_t v;
+      memcpy(&v, b->data + i * 4, 4);
+      return v;
+    }
+    case SCR_BYTES_F32: case SCR_BYTES_F64:
+      break;
+  }
+  scr_trap("scriptc: integer read of a float typed array\n");
+}
+
+double scr_bytes_shared_get_f64(const ScrBytes *b, size_t i) {
+  SCR_SHARED_GUARD(b, NULL);
+  return scr_bytes_load(b, i);
+}
+
+void scr_bytes_shared_set(ScrBytes *b, size_t i, double v) {
+  SCR_SHARED_GUARD(b, NULL);
+  scr_bytes_store(b, i, v);
 }
 
 /* Dispatch once per bounded block, not once per element. Loads and stores

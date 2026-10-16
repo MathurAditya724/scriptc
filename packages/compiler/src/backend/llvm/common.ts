@@ -67,6 +67,14 @@ export function exactIndexLines(
 /** User-controlled text embedded after an LLVM `;` comment marker. Preserve
  * ordinary output unchanged, but encode control and line-separator code
  * units so a property name can never inject a line or invalid source byte. */
+/** The conversion of a size_t (a length, a count or an in-range index) to
+ * a number. Array lengths reach 2^32 - 1, past a 32-bit size_t's sign bit,
+ * so wasm32 converts unsigned; a 64-bit size_t never reaches its sign bit
+ * and keeps the signed conversion, which x86-64 does in one instruction. */
+export function sizeToDouble(sizeType: string): "uitofp" | "sitofp" {
+  return sizeType === "i32" ? "uitofp" : "sitofp";
+}
+
 export function llvmCommentText(text: string): string {
   return commentText(text);
 }

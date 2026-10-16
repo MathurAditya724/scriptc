@@ -8,6 +8,7 @@ import type {
   CompileRequestOptions,
 } from "../compile-types.js";
 import { emitLlvmModule } from "../backend/llvm/emitter.js";
+import { inlineRcOption } from "../backend/llvm/shapes.js";
 import { executableLinkFeatures } from "../backend/executable-features.js";
 import type { NativeLinkFeatures } from "../backend/native-link-info-core.js";
 import { prepareExecutableModule } from "../executable/prepare.js";
@@ -282,7 +283,7 @@ export function prepareNativeExecutable(
           wasi: toolchain.target.platform === "wasi",
           runtimeAbiMarker: outputKind === "obj" || outputKind === "exe",
           objectAudit: options.sanitize === true,
-          ...(options.optimization === "speed" ? { inlineRc: true } : {}),
+          ...inlineRcOption(options.optimization, options.sanitize === true),
           ...(options.detachedExit === true && outputKind === "exe" ? { detachedExit: true } : {}),
           ...(options.optimization === "dev" && !options.strip
             ? { debugSources: prepared.sourceTexts }
@@ -394,7 +395,7 @@ export function prepareNativeLibrary(
     pointerBits: toolchain.target.pointerBits,
     wasi: toolchain.target.platform === "wasi",
     objectAudit: options.sanitize === true,
-    ...(profile.optimization === "speed" ? { inlineRc: true } : {}),
+    ...inlineRcOption(profile.optimization, options.sanitize === true),
   });
   timing("llvm-emit");
   const input: NativeExecutableInput = {

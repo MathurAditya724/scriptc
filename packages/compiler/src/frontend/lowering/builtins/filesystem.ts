@@ -12,6 +12,7 @@ import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../opti
 import {
   BOOL,
   BYTES_U8,
+  DIR_T,
   DYN,
   F64,
   FILEHANDLE_T,
@@ -196,6 +197,28 @@ export function lowerFsToUnixTimestampCall(
   };
 }
 
+/** True when opendirSync's arguments fit lowerFsOpendirCall: a string
+ * path and no options, or an object literal whose members are a numeric
+ * bufferSize and a utf8 encoding. */
+function opendirLowers(lowerer: Lowerer, args: readonly ts.Expression[]): boolean {
+  if (args.length < 1 || args.length > 2) return false;
+  if (lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind !== "string") return false;
+  const options = args[1];
+  if (!options || (ts.isIdentifier(options) && options.text === "undefined")) return true;
+  if (!ts.isObjectLiteralExpression(options)) return false;
+  return options.properties.every((property) => {
+    const option = optionMember(property);
+    if (!option) return false;
+    if (option.name === "bufferSize")
+      return lowerer.mapTypeOf(lowerer.typeOf(option.value))?.kind === "f64";
+    if (option.name !== "encoding") return false;
+    const encoding = lowerer.typeOf(option.value);
+    return (
+      encoding.isStringLiteralType() && (encoding.value === "utf8" || encoding.value === "utf-8")
+    );
+  });
+}
+
 /** The fs validation-ladder spoke (checked-dynamic lane, JS sources
  * only — TypeScript keeps its compile fences): implemented-namespace
  * calls whose misuse Node rejects with typed errors lower to fs.*Chk
@@ -335,6 +358,10 @@ export function lowerFsLadderCall(
       );
     }
     case "opendirSync": {
+      // A string path with no options or a literal { bufferSize, encoding:
+      // "utf8" } takes the real lowering; anything else keeps Node's
+      // validation ladder and its fence.
+      if (opendirLowers(lowerer, args)) return null;
       const a = dynArgs([args[0], args[1]]);
       return (
         a && chk("fs.opendirChk", [...a, ladderFenceExpr(lowerer, "fs.opendirSync", expr)], resultT)
@@ -900,6 +927,66 @@ export function lowerFileHandleMethodCall(
     `FileHandle.${name}`,
     call,
     "fd, close(), read(), write(), readv(), writev(), readFile(), writeFile(), appendFile(), stat(), sync(), datasync(), truncate(), and chmod() are the supported FileHandle members",
+    lowerer.checker.getSymbolAtLocation(access.name),
+  );
+}
+
+/** fs.Dir's members: path, and the sync and promise read/close forms (the
+ * callback overloads have no lowering; for-await lowers in
+ * lower-async-iteration.ts). */
+export const DIR_METHODS = new Set(["readSync", "read", "closeSync", "close"]);
+export const DIR_MEMBERS =
+  "path, readSync(), read(), closeSync(), close(), and for-await iteration are the supported Dir members (no callbacks)";
+
+/** Method calls on Dir-typed receivers. readSync answers the call site's
+ * `Dirent | null` (the emitter builds the row); read is its promise twin.
+ * Null for non-Dir receivers. */
+export function lowerDirMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (call.questionDotToken || access.questionDotToken) return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "dir") return null;
+  if (!lowerer.isStdlibMember(access)) return null;
+  const name = access.name.text;
+  const loc = locOf(call);
+  if (DIR_METHODS.has(name) && call.arguments.length === 0) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, DIR_T);
+    if (name === "closeSync")
+      return { kind: "libCall", fn: "dir.closeSync", args: [receiver], type: VOID, loc };
+    if (name === "close") {
+      return {
+        kind: "libCall",
+        fn: "dir.close",
+        args: [receiver],
+        type: { kind: "promise", inner: VOID },
+        loc,
+      };
+    }
+    const type = lowerer.mapTypeOf(lowerer.typeOf(call));
+    const entry = type?.kind === "promise" ? type.inner : type;
+    const arms = entry?.kind === "union" ? lowerer.unions.get(entry.unionId)?.arms : undefined;
+    if (
+      type &&
+      arms?.length === 2 &&
+      arms.some((arm) => arm.kind === "record") &&
+      arms.some((arm) => arm.kind === "nullT") &&
+      (name === "read") === (type.kind === "promise")
+    ) {
+      return {
+        kind: "libCall",
+        fn: name === "read" ? "dir.read" : "dir.readSync",
+        args: [receiver],
+        type,
+        loc,
+      };
+    }
+  }
+  return lowerer.noLowering(
+    `Dir.${name}`,
+    call,
+    DIR_MEMBERS,
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }
