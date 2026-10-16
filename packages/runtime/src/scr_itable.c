@@ -5,9 +5,12 @@
  * key's 64-bit hash pick the segment and the low bits the first slot of a
  * linear probe in the segment's index. Number tables keep each key and its
  * value in the index slot itself, so a lookup touches one slot per probe.
- * String tables keep entries (value, hash and key bytes) in chunks owned by
- * the segment; their slots hold the entry pointer with a tag of hash bits
- * 50..57 in bits 48..55, so a probe reads an entry only when the tags match.
+ * String and array tables keep entries (value, hash and key bytes) in
+ * chunks owned by the segment; their slots hold the entry pointer with a
+ * tag of hash bits 50..57 in bits 48..55, so a probe reads an entry only
+ * when the tags match. An array key is stored as one byte string that
+ * encodes its elements (scr_itable_encode), so array keys compare by
+ * their elements.
  *
  * Readers load the segment's index pointer, then slots with acquire order,
  * and never write. Writers hold the segment's lock: they probe again, grow
@@ -15,13 +18,12 @@
  * value (and the entry), and store the slot's last word with release order.
  * A grown index is complete before its pointer is stored with release
  * order, and a reader that still holds the previous one sees every key
- * stored before the growth. Replaced indexes are kept on the segment's
- * retired list, because readers may still be probing them (and number
- * handles point into them); their total size stays below the current
- * index's.
+ * stored before the growth. A replaced index is retired and freed once no
+ * thread can still be probing it (see "retired indexes" below).
  *
- * Nothing here is freed. Every allocation is reachable from the static
- * registry, so leak checkers report none of it. */
+ * Tables, their entries and their current indexes are never freed. Every
+ * such allocation is reachable from the static registry, so leak checkers
+ * report none of it. */
 
 #include "scr_runtime.h"
 #include "scr_itable.h"
@@ -50,17 +52,22 @@
 #define SCR_ITABLE_TAG_MASK ((uint64_t)0xff << SCR_ITABLE_TAG_SHIFT)
 
 /* Number slots are { value, key }, with the key stored as its normalized
- * bits XOR this NaN pattern, which normalization never produces: a zero
- * key word is an empty slot. */
+ * bits XOR this NaN pattern, which normalization never produces (so no
+ * stored key is 0), and a tag byte of hash bits 48..55 (0 mapped to 1). */
 #define SCR_ITABLE_F64_FLIP UINT64_C(0x7ff4000000000001)
 
 typedef struct ScrITableIndex {
   uint64_t mask;                  /* slots - 1 */
-  struct ScrITableIndex *retired; /* the index this one replaced */
+  struct ScrITableIndex *retired; /* the retired list's next index */
+  uint64_t epoch;                 /* the epoch it was retired in */
+  /* Number indexes: one tag byte per slot (0: empty), after the words. A
+   * probe reads the dense tags first, so a miss rarely touches a pair. */
+  _Atomic uint8_t *tags;
   _Atomic uint64_t words[];       /* one word per string slot, two per number slot */
 } ScrITableIndex;
 
-/* A string table entry: the value slot first (scr_itable.h). */
+/* A string or array table entry: the value slot first (scr_itable.h),
+ * then the key's bytes. */
 typedef struct {
   uint64_t value;
   uint64_t hash;
@@ -125,6 +132,92 @@ static void scr_itable_unlock(atomic_uint *lock) {
   atomic_store_explicit(lock, 0, memory_order_release);
 }
 
+/* ── retired indexes ─────────────────────────────────────────────────
+ * A thread that loaded a segment's index pointer before the index grew may
+ * still be probing the old index (or about to read a number entry handle
+ * that points into it). Every thread that uses a table has a reader record:
+ * at the start of each lookup and insert it records the global epoch it
+ * reads there, with release order. Growth publishes the new index, retires
+ * the old one under the current epoch and advances the epoch. A retired
+ * index is freed once every registered reader has recorded a later epoch:
+ * such a reader began its current operation after the growth, so it reads
+ * the new pointer, and the operations before, which may have read the old
+ * one, are complete. Entry handles are used before the thread's next lookup
+ * or insert, so the same rule covers them. A thread that stops using tables
+ * keeps its last epoch, and with it later retirements, until it uses a
+ * table again or exits (scr_itable_thread_exit). */
+typedef struct ScrITableReader {
+  _Atomic uint64_t seen; /* SCR_ITABLE_IDLE: the record is unused */
+  struct ScrITableReader *next;
+} ScrITableReader;
+
+#define SCR_ITABLE_IDLE UINT64_MAX
+
+static _Atomic uint64_t scr_itable_epoch = 1;
+static ScrITableReader *_Atomic scr_itable_readers;
+static SCR_TL ScrITableReader *scr_itable_reader;
+static atomic_uint scr_itable_retired_lock;
+static ScrITableIndex *scr_itable_retired; /* newest first */
+
+static ScrITableReader *scr_itable_reader_new(void) {
+  /* Reuse the record of an exited thread, else add one. */
+  for (ScrITableReader *r = atomic_load_explicit(&scr_itable_readers, memory_order_acquire); r; r = r->next) {
+    uint64_t idle = SCR_ITABLE_IDLE;
+    if (atomic_compare_exchange_strong_explicit(&r->seen, &idle, 0, memory_order_acq_rel, memory_order_relaxed))
+      return r;
+  }
+  ScrITableReader *r = calloc(1, sizeof *r);
+  if (!r) scr_itable_oom();
+  r->next = atomic_load_explicit(&scr_itable_readers, memory_order_relaxed);
+  while (!atomic_compare_exchange_weak_explicit(&scr_itable_readers, &r->next, r, memory_order_release,
+                                                memory_order_relaxed)) {
+  }
+  return r;
+}
+
+/* The start of a lookup or insert: the calling thread holds nothing it
+ * read before. */
+static inline void scr_itable_enter(void) {
+  ScrITableReader *r = scr_itable_reader;
+  if (__builtin_expect(r == NULL, 0)) r = scr_itable_reader = scr_itable_reader_new();
+  uint64_t epoch = atomic_load_explicit(&scr_itable_epoch, memory_order_acquire);
+  if (atomic_load_explicit(&r->seen, memory_order_relaxed) != epoch)
+    atomic_store_explicit(&r->seen, epoch, memory_order_release);
+}
+
+void scr_itable_thread_exit(void) {
+  ScrITableReader *r = scr_itable_reader;
+  if (!r) return;
+  scr_itable_reader = NULL;
+  atomic_store_explicit(&r->seen, SCR_ITABLE_IDLE, memory_order_release);
+}
+
+/* Retires `index` (the caller has published its replacement) and frees
+ * the retired indexes no reader can still hold. */
+static void scr_itable_retire(ScrITableIndex *index) {
+  scr_itable_lock(&scr_itable_retired_lock);
+  index->epoch = atomic_fetch_add_explicit(&scr_itable_epoch, 1, memory_order_acq_rel);
+  index->retired = scr_itable_retired;
+  scr_itable_retired = index;
+  uint64_t oldest = SCR_ITABLE_IDLE;
+  for (ScrITableReader *r = atomic_load_explicit(&scr_itable_readers, memory_order_acquire); r; r = r->next) {
+    uint64_t seen = atomic_load_explicit(&r->seen, memory_order_acquire);
+    if (seen < oldest) oldest = seen;
+  }
+  /* Free every index retired before the oldest recorded epoch. */
+  ScrITableIndex **link = &scr_itable_retired;
+  while (*link) {
+    ScrITableIndex *old = *link;
+    if (old->epoch < oldest) {
+      *link = old->retired;
+      free(old);
+    } else {
+      link = &old->retired;
+    }
+  }
+  scr_itable_unlock(&scr_itable_retired_lock);
+}
+
 /* ── keys and hashes ─────────────────────────────────────────────────── */
 
 static inline uint64_t scr_itable_f64_bits(double k) {
@@ -161,6 +254,11 @@ static inline ScrITableSegment *scr_itable_segment(ScrITable *t, uint64_t hash) 
   return &t->segments[hash >> (64 - SCR_ITABLE_SEGMENT_BITS)];
 }
 
+static inline uint8_t scr_itable_tag8(uint64_t hash) {
+  uint8_t tag = (uint8_t)(hash >> 48);
+  return tag ? tag : 1;
+}
+
 static inline uint64_t scr_itable_tag(uint64_t hash) {
   return ((hash >> 50) & 0xff) << SCR_ITABLE_TAG_SHIFT;
 }
@@ -171,8 +269,8 @@ static inline const ScrITableStrEntry *scr_itable_slot_entry(uint64_t slot) {
 
 /* ── lookups ─────────────────────────────────────────────────────────── */
 
-static const ScrITableStrEntry *scr_itable_probe_str(const ScrITableIndex *index, uint64_t hash,
-                                                     const ScrStr *key) {
+static const ScrITableStrEntry *scr_itable_probe_bytes(const ScrITableIndex *index, uint64_t hash,
+                                                       const char *bytes, size_t len) {
   if (!index) return NULL;
   uint64_t tag = scr_itable_tag(hash);
   for (uint64_t i = hash & index->mask;; i = (i + 1) & index->mask) {
@@ -180,28 +278,32 @@ static const ScrITableStrEntry *scr_itable_probe_str(const ScrITableIndex *index
     if (slot == 0) return NULL;
     if ((slot & SCR_ITABLE_TAG_MASK) != tag) continue;
     const ScrITableStrEntry *e = scr_itable_slot_entry(slot);
-    if (e->hash == hash && e->len == key->len && scr_key_equal(e->data, key->data, key->len)) return e;
+    if (e->hash == hash && e->len == len && scr_key_equal(e->data, bytes, len)) return e;
   }
 }
 
 /* The { value, key } pair of a stored number key, or NULL. */
 static _Atomic uint64_t *scr_itable_probe_f64(ScrITableIndex *index, uint64_t hash, uint64_t stored) {
   if (!index) return NULL;
+  uint8_t tag = scr_itable_tag8(hash);
   for (uint64_t i = hash & index->mask;; i = (i + 1) & index->mask) {
-    uint64_t key = atomic_load_explicit(&index->words[2 * i + 1], memory_order_acquire);
-    if (key == stored) return &index->words[2 * i];
-    if (key == 0) return NULL;
+    uint8_t seen = atomic_load_explicit(&index->tags[i], memory_order_acquire);
+    if (seen == 0) return NULL;
+    if (seen == tag && atomic_load_explicit(&index->words[2 * i + 1], memory_order_relaxed) == stored)
+      return &index->words[2 * i];
   }
 }
 
 const ScrITableEntry *scr_itable_find_str(ScrITable *t, const ScrStr *key) {
+  scr_itable_enter();
   uint64_t hash = scr_itable_str_hash(key);
   ScrITableSegment *seg = scr_itable_segment(t, hash);
-  return (const ScrITableEntry *)scr_itable_probe_str(
-      atomic_load_explicit(&seg->index, memory_order_acquire), hash, key);
+  return (const ScrITableEntry *)scr_itable_probe_bytes(
+      atomic_load_explicit(&seg->index, memory_order_acquire), hash, key->data, key->len);
 }
 
 const ScrITableEntry *scr_itable_find_f64(ScrITable *t, double key) {
+  scr_itable_enter();
   uint64_t stored = scr_itable_f64_bits(key) ^ SCR_ITABLE_F64_FLIP;
   uint64_t hash = scr_itable_f64_hash(stored);
   ScrITableSegment *seg = scr_itable_segment(t, hash);
@@ -211,11 +313,19 @@ const ScrITableEntry *scr_itable_find_f64(ScrITable *t, double key) {
 
 /* ── inserts (the segment lock held) ─────────────────────────────────── */
 
-static ScrITableIndex *scr_itable_index_new(uint64_t slots, unsigned words) {
-  ScrITableIndex *index = calloc(1, sizeof(ScrITableIndex) + slots * words * sizeof(uint64_t));
+static ScrITableIndex *scr_itable_index_new(uint64_t slots, bool numbers) {
+  size_t words = slots * (numbers ? 2 : 1) * sizeof(uint64_t);
+  ScrITableIndex *index = calloc(1, sizeof(ScrITableIndex) + words + (numbers ? slots : 0));
   if (!index) scr_itable_oom();
   index->mask = slots - 1;
+  if (numbers) index->tags = (_Atomic uint8_t *)((char *)index->words + words);
   return index;
+}
+
+/* Whether slot `i` holds a key (the caller holds the segment lock). */
+static inline bool scr_itable_used(const ScrITableIndex *index, uint64_t i, bool numbers) {
+  if (numbers) return atomic_load_explicit(&index->tags[i], memory_order_relaxed) != 0;
+  return atomic_load_explicit(&index->words[i], memory_order_relaxed) != 0;
 }
 
 /* Makes room for one more key: the segment's index, created or grown so
@@ -223,34 +333,35 @@ static ScrITableIndex *scr_itable_index_new(uint64_t slots, unsigned words) {
 static ScrITableIndex *scr_itable_reserve(ScrITableSegment *seg, bool numbers) {
   ScrITableIndex *index = atomic_load_explicit(&seg->index, memory_order_relaxed);
   uint64_t count = atomic_load_explicit(&seg->count, memory_order_relaxed);
-  unsigned words = numbers ? 2 : 1;
   if (index && (count + 1) * 2 <= index->mask + 1) return index;
-  ScrITableIndex *grown = scr_itable_index_new(index ? (index->mask + 1) * 2 : SCR_ITABLE_FIRST_SLOTS, words);
+  ScrITableIndex *grown = scr_itable_index_new(index ? (index->mask + 1) * 2 : SCR_ITABLE_FIRST_SLOTS, numbers);
   if (index) {
     for (uint64_t i = 0; i <= index->mask; i++) {
-      uint64_t last = atomic_load_explicit(&index->words[i * words + words - 1], memory_order_relaxed);
-      if (last == 0) continue;
+      if (!scr_itable_used(index, i, numbers)) continue;
+      uint64_t last = atomic_load_explicit(&index->words[numbers ? 2 * i + 1 : i], memory_order_relaxed);
       uint64_t hash = numbers ? scr_itable_f64_hash(last) : scr_itable_slot_entry(last)->hash;
       uint64_t j = hash & grown->mask;
-      while (atomic_load_explicit(&grown->words[j * words + words - 1], memory_order_relaxed) != 0)
-        j = (j + 1) & grown->mask;
-      if (numbers)
+      while (scr_itable_used(grown, j, numbers)) j = (j + 1) & grown->mask;
+      if (numbers) {
         atomic_store_explicit(&grown->words[2 * j],
                               atomic_load_explicit(&index->words[2 * i], memory_order_relaxed),
                               memory_order_relaxed);
-      atomic_store_explicit(&grown->words[j * words + words - 1], last, memory_order_relaxed);
+        atomic_store_explicit(&grown->words[2 * j + 1], last, memory_order_relaxed);
+        atomic_store_explicit(&grown->tags[j], scr_itable_tag8(hash), memory_order_relaxed);
+      } else {
+        atomic_store_explicit(&grown->words[j], last, memory_order_relaxed);
+      }
     }
-    grown->retired = index;
   }
   atomic_store_explicit(&seg->index, grown, memory_order_release);
+  if (index) scr_itable_retire(index);
   return grown;
 }
 
 /* The first empty slot of the key's probe (the key is known to be absent). */
-static uint64_t scr_itable_free_slot(const ScrITableIndex *index, uint64_t hash, unsigned words) {
+static uint64_t scr_itable_free_slot(const ScrITableIndex *index, uint64_t hash, bool numbers) {
   uint64_t i = hash & index->mask;
-  while (atomic_load_explicit(&index->words[i * words + words - 1], memory_order_relaxed) != 0)
-    i = (i + 1) & index->mask;
+  while (scr_itable_used(index, i, numbers)) i = (i + 1) & index->mask;
   return i;
 }
 
@@ -279,21 +390,23 @@ static void *scr_itable_alloc(ScrITableSegment *seg, size_t size) {
   return p;
 }
 
-const ScrITableEntry *scr_itable_insert_str(ScrITable *t, const ScrStr *key, uint64_t value) {
-  if (key->len > UINT32_MAX) scr_trap("scriptc: InternTable key is too long\n");
-  uint64_t hash = scr_itable_str_hash(key);
+/* Stores `value` under a byte key (a string's bytes or an encoded array)
+ * unless the key has an entry. */
+static const ScrITableEntry *scr_itable_insert_bytes(ScrITable *t, uint64_t hash, const char *bytes,
+                                                     size_t len, uint64_t value) {
+  if (len > UINT32_MAX) scr_trap("scriptc: InternTable key is too long\n");
   ScrITableSegment *seg = scr_itable_segment(t, hash);
   scr_itable_lock(&seg->lock);
   const ScrITableStrEntry *found =
-      scr_itable_probe_str(atomic_load_explicit(&seg->index, memory_order_relaxed), hash, key);
+      scr_itable_probe_bytes(atomic_load_explicit(&seg->index, memory_order_relaxed), hash, bytes, len);
   if (!found) {
     ScrITableIndex *index = scr_itable_reserve(seg, false);
-    ScrITableStrEntry *entry = scr_itable_alloc(seg, sizeof(ScrITableStrEntry) + key->len);
+    ScrITableStrEntry *entry = scr_itable_alloc(seg, sizeof(ScrITableStrEntry) + len);
     entry->value = value;
     entry->hash = hash;
-    entry->len = (uint32_t)key->len;
-    memcpy(entry->data, key->data, key->len);
-    uint64_t i = scr_itable_free_slot(index, hash, 1);
+    entry->len = (uint32_t)len;
+    memcpy(entry->data, bytes, len);
+    uint64_t i = scr_itable_free_slot(index, hash, false);
     atomic_store_explicit(&index->words[i], (uint64_t)(uintptr_t)entry | scr_itable_tag(hash),
                           memory_order_release);
     scr_itable_counted(seg);
@@ -303,7 +416,13 @@ const ScrITableEntry *scr_itable_insert_str(ScrITable *t, const ScrStr *key, uin
   return (const ScrITableEntry *)found;
 }
 
+const ScrITableEntry *scr_itable_insert_str(ScrITable *t, const ScrStr *key, uint64_t value) {
+  scr_itable_enter();
+  return scr_itable_insert_bytes(t, scr_itable_str_hash(key), key->data, key->len, value);
+}
+
 const ScrITableEntry *scr_itable_insert_f64(ScrITable *t, double key, uint64_t value) {
+  scr_itable_enter();
   uint64_t stored = scr_itable_f64_bits(key) ^ SCR_ITABLE_F64_FLIP;
   uint64_t hash = scr_itable_f64_hash(stored);
   ScrITableSegment *seg = scr_itable_segment(t, hash);
@@ -312,14 +431,113 @@ const ScrITableEntry *scr_itable_insert_f64(ScrITable *t, double key, uint64_t v
       scr_itable_probe_f64(atomic_load_explicit(&seg->index, memory_order_relaxed), hash, stored);
   if (!found) {
     ScrITableIndex *index = scr_itable_reserve(seg, true);
-    uint64_t i = scr_itable_free_slot(index, hash, 2);
+    uint64_t i = scr_itable_free_slot(index, hash, true);
     atomic_store_explicit(&index->words[2 * i], value, memory_order_relaxed);
-    atomic_store_explicit(&index->words[2 * i + 1], stored, memory_order_release);
+    atomic_store_explicit(&index->words[2 * i + 1], stored, memory_order_relaxed);
+    atomic_store_explicit(&index->tags[i], scr_itable_tag8(hash), memory_order_release);
     scr_itable_counted(seg);
     found = &index->words[2 * i];
   }
   scr_itable_unlock(&seg->lock);
   return (const ScrITableEntry *)found;
+}
+
+/* ── array keys ──────────────────────────────────────────────────────── */
+
+/* The state and slot of element `i` of `a` (i < a->len). */
+static ScrArrState scr_itable_element(const ScrArr *a, size_t i, uint64_t *slot) {
+  if (i < a->filled) {
+    *slot = a->data[i];
+    return SCR_ARR_VALUE;
+  }
+  if (i < a->cap) {
+    *slot = a->data[i];
+    return (ScrArrState)a->present[i];
+  }
+  if (a->ext)
+    for (size_t j = 0; j < a->ext->sparse_len; j++)
+      if (a->ext->sparse[j].index == i) {
+        *slot = a->ext->sparse[j].slot;
+        return (ScrArrState)a->ext->sparse[j].state;
+      }
+  return SCR_ARR_HOLE;
+}
+
+/* An array key as bytes: per number element its normalized bits, per
+ * string element a 32-bit length and the bytes; a hole or undefined
+ * element is the bits of a NaN that normalization never produces, or the
+ * length 0xffffffff. Answers the encoded length; writes at most `cap`
+ * bytes into `out`. */
+#define SCR_ITABLE_ABSENT_F64 UINT64_C(0x7ff4000000000002)
+#define SCR_ITABLE_ABSENT_STR UINT32_C(0xffffffff)
+
+static size_t scr_itable_encode(const ScrArr *key, int kind, char *out, size_t cap) {
+  size_t n = 0;
+  for (size_t i = 0; i < key->len; i++) {
+    uint64_t slot = 0;
+    bool present = scr_itable_element(key, i, &slot) == SCR_ARR_VALUE;
+    if (kind == SCR_ITABLE_KEY_F64S) {
+      uint64_t bits = SCR_ITABLE_ABSENT_F64;
+      if (present) {
+        double d;
+        memcpy(&d, &slot, sizeof d);
+        bits = scr_itable_f64_bits(d);
+      }
+      if (n + 8 <= cap) memcpy(out + n, &bits, 8);
+      n += 8;
+    } else {
+      const ScrStr *s = present ? (const ScrStr *)(uintptr_t)slot : NULL;
+      if (s && s->len >= SCR_ITABLE_ABSENT_STR) scr_trap("scriptc: InternTable key is too long\n");
+      uint32_t len = s ? (uint32_t)s->len : SCR_ITABLE_ABSENT_STR;
+      if (n + 4 <= cap) memcpy(out + n, &len, 4);
+      n += 4;
+      if (s) {
+        if (n + s->len <= cap) memcpy(out + n, s->data, s->len);
+        n += s->len;
+      }
+    }
+  }
+  return n;
+}
+
+static inline uint64_t scr_itable_bytes_hash(const char *bytes, size_t len) {
+  return scr_key_mix(scr_key_hash(bytes, len) ^ ((uint64_t)len << 1));
+}
+
+/* Encodes `key` into `stack` when it fits, else into a heap buffer the
+ * caller frees. */
+static char *scr_itable_encoded(const ScrITable *t, const ScrArr *key, char *stack, size_t cap, size_t *len) {
+  *len = scr_itable_encode(key, t->key_kind, stack, cap);
+  if (*len <= cap) return stack;
+  char *heap = malloc(*len);
+  if (!heap) scr_itable_oom();
+  scr_itable_encode(key, t->key_kind, heap, *len);
+  return heap;
+}
+
+#define SCR_ITABLE_STACK_KEY 256
+
+const ScrITableEntry *scr_itable_find_arr(ScrITable *t, const ScrArr *key) {
+  scr_itable_enter();
+  char stack[SCR_ITABLE_STACK_KEY];
+  size_t len;
+  char *bytes = scr_itable_encoded(t, key, stack, sizeof stack, &len);
+  uint64_t hash = scr_itable_bytes_hash(bytes, len);
+  ScrITableSegment *seg = scr_itable_segment(t, hash);
+  const ScrITableEntry *found = (const ScrITableEntry *)scr_itable_probe_bytes(
+      atomic_load_explicit(&seg->index, memory_order_acquire), hash, bytes, len);
+  if (bytes != stack) free(bytes);
+  return found;
+}
+
+const ScrITableEntry *scr_itable_insert_arr(ScrITable *t, const ScrArr *key, uint64_t value) {
+  scr_itable_enter();
+  char stack[SCR_ITABLE_STACK_KEY];
+  size_t len;
+  char *bytes = scr_itable_encoded(t, key, stack, sizeof stack, &len);
+  const ScrITableEntry *entry = scr_itable_insert_bytes(t, scr_itable_bytes_hash(bytes, len), bytes, len, value);
+  if (bytes != stack) free(bytes);
+  return entry;
 }
 
 double scr_itable_size(const ScrITable *t) {

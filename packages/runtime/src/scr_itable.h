@@ -3,7 +3,7 @@
 #ifndef SCR_ITABLE_H
 #define SCR_ITABLE_H
 
-#include "scr_string.h"
+#include "scr_array.h"
 
 /* ── shared intern tables (scr_itable.c) ──────────────────────────────
  * InternTable (@scriptc/experimental): named, append-only tables of
@@ -23,7 +23,10 @@
  * which emitted code reads directly. A handle stays valid, and its slot
  * unchanged, for the life of the process. */
 
-enum { SCR_ITABLE_KEY_STR = 0, SCR_ITABLE_KEY_F64 = 1 };
+/* Key kinds: strings, numbers, and arrays of numbers or of strings, which
+ * compare by their elements (holes and undefined elements are equal to
+ * each other and to nothing else). */
+enum { SCR_ITABLE_KEY_STR = 0, SCR_ITABLE_KEY_F64 = 1, SCR_ITABLE_KEY_F64S = 2, SCR_ITABLE_KEY_STRS = 3 };
 
 typedef struct ScrITable ScrITable;
 
@@ -38,13 +41,17 @@ ScrITable *scr_itable_open(const ScrStr *name, int key_kind);
 /* The entry of `key`, or NULL. */
 const ScrITableEntry *scr_itable_find_str(ScrITable *t, const ScrStr *key);
 const ScrITableEntry *scr_itable_find_f64(ScrITable *t, double key);
+const ScrITableEntry *scr_itable_find_arr(ScrITable *t, const ScrArr *key);
 /* Stores `value` under `key` unless the key has an entry already; answers
  * the key's entry either way. `value` must already be immortal (or a
- * scalar): the table neither retains nor releases it. String keys are
- * copied. */
+ * scalar): the table neither retains nor releases it. Keys are copied. */
 const ScrITableEntry *scr_itable_insert_str(ScrITable *t, const ScrStr *key, uint64_t value);
 const ScrITableEntry *scr_itable_insert_f64(ScrITable *t, double key, uint64_t value);
+const ScrITableEntry *scr_itable_insert_arr(ScrITable *t, const ScrArr *key, uint64_t value);
 /* The number of entries. */
 double scr_itable_size(const ScrITable *t);
+/* The calling thread uses no table again (worker exit): replaced indexes
+ * no longer wait for it. */
+void scr_itable_thread_exit(void);
 
 #endif /* SCR_ITABLE_H */

@@ -8672,8 +8672,9 @@ export class LlEmitter {
       return { name: handle, type: e.type };
     };
     const keyCall = (op: "find" | "insert"): string => {
-      const key = e.args[1]!.type.kind === "string" ? "str" : "f64";
-      const keyTy = key === "str" ? "ptr" : "double";
+      const kind = e.args[1]!.type.kind;
+      const key = kind === "string" ? "str" : kind === "array" ? "arr" : "f64";
+      const keyTy = key === "f64" ? "double" : "ptr";
       const value = op === "insert" ? ", i64" : "";
       this.declare(`declare ptr @scr_itable_${op}_${key}(ptr, ${keyTy}${value})`);
       return `@scr_itable_${op}_${key}(ptr ${toPtr(args[0]!.name)}, ${keyTy} ${args[1]!.name}`;

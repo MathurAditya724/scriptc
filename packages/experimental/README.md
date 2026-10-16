@@ -55,7 +55,7 @@ function unionOf(members: readonly Type[]): Type {
 ```
 
 - `new InternTable<K, V>(name)` opens the table called `name`. Within one thread, every construction with the same name refers to the same table. In scriptc builds the table is shared by every thread of the process; under Node.js each thread has its own.
-- Keys are strings or numbers and compare like `Map` keys: strings by content, numbers by SameValueZero.
+- Keys are strings, numbers, or arrays of numbers or of strings. Strings and numbers compare like `Map` keys: strings by content, numbers by SameValueZero. Arrays compare by their elements in the same way, so a freshly built `[a.id, b.id]` finds the value stored under an equal array; holes are equal to each other and to no number or string.
 - `get(key)`, `has(key)` and `size` read the table.
 - `getOrInsert(key, value)` returns the value stored under `key`. When there is none, it publishes `value`, stores it and returns it.
 - `getOrInsertComputed(key, callback)` returns the value stored under `key`. When there is none, it calls `callback(key)`, publishes the result and stores it, unless a value was stored under `key` meanwhile (by the callback, or in scriptc builds by another thread), and returns the stored value.
@@ -70,6 +70,6 @@ Programs that behave identically under scriptc and Node.js follow the `@scriptc/
 2. Identity and ids are not compared across threads. Ids assigned inside callbacks are unique in both runtimes but differ between them.
 3. A thread does not depend on another thread's inserts. `size` and `has` reflect every thread's inserts in scriptc and the calling thread's under Node.js.
 
-Per-thread state about a shared value (lazily computed results, caches) belongs in thread-local state, for example a module-level `Map` keyed by the value: module state is per thread in both runtimes.
+Per-thread state about a shared value (lazily computed results, caches) belongs in thread-local state, for example a module-level `Map` keyed by the value, or an array indexed by an id the value carries: module state is per thread in both runtimes. In scriptc an array indexed by a dense id is the fastest of these.
 
 In scriptc builds stored values are immortal: they stay allocated until the process exits, including values a callback computed for a key that another thread stored first.

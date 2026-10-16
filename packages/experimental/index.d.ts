@@ -24,13 +24,18 @@ export declare class LifetimeRegion {
  * publishes it, so stored values and everything they reach are immutable.
  * scriptc requires the name to be a string literal and every construction
  * of one name to use the same type arguments. */
-export declare class InternTable<K extends string | number, V> {
+export declare class InternTable<
+  K extends string | number | readonly number[] | readonly string[],
+  V,
+> {
   /** Opens the table called `name`. */
   constructor(name: string);
   /** The number of entries. */
   readonly size: number;
-  /** The value stored under `key`, or undefined. Keys compare like Map
-   * keys: strings by content, numbers by SameValueZero. */
+  /** The value stored under `key`, or undefined. String and number keys
+   * compare like Map keys: strings by content, numbers by SameValueZero.
+   * Array keys compare by their elements in the same way; a hole and an
+   * undefined element are equal. */
   get(key: K): V | undefined;
   /** Whether `key` has a value. */
   has(key: K): boolean;
