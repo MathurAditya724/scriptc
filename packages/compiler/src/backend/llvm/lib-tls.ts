@@ -82,6 +82,12 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       ]);
     case "tls.sockAuthorized":
       return finishRuntimeCall(host, e, "scr_tls_sock_authorized", a);
+    case "tls.sockGetProtocol":
+      return finishRuntimeCall(host, e, "scr_tls_sock_get_protocol", a);
+    case "tls.sockGetCipher":
+      return finishRuntimeCall(host, e, "scr_tls_sock_get_cipher", a);
+    case "tls.sockAlpnProtocol":
+      return finishRuntimeCall(host, e, "scr_tls_sock_alpn_protocol", a);
     case "tls.sockAuthError": {
       const result = callRuntime(host, "scr_tls_sock_auth_error", "ptr", a);
       return nullableReference(host, e.type, result, "string", "nullT");

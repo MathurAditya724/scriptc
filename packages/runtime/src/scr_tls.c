@@ -1715,6 +1715,95 @@ ScrStr *scr_tls_sock_auth_error(ScrNetSocket *s) {
   return scr_str_new(code, strlen(code));
 }
 
+/* tlsSocket.getProtocol(): the negotiated version ("TLSv1.2",
+ * "TLSv1.3"); before the handshake the highest version on offer, as
+ * OpenSSL answers, and null after close. +1. */
+ScrDyn *scr_tls_sock_get_protocol(ScrNetSocket *s) {
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || scr_net_sock_destroyed(s)) return scr_dyn_new_null();
+  const char *v = t->established ? mbedtls_ssl_get_version(&t->ssl) : "TLSv1.3";
+  ScrStr *str = scr_str_new(v, strlen(v));
+  ScrDyn *d = scr_dyn_new_str(str);
+  scr_str_release(str);
+  return d;
+}
+
+/* OpenSSL's names for the suites mbedTLS negotiates, keyed by the IANA
+ * name. TLS 1.3 suites share theirs. */
+static const char *scr_tls_openssl_cipher_name(const char *iana) {
+  static const char *const map[][2] = {
+    { "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "ECDHE-RSA-AES128-GCM-SHA256" },
+    { "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384", "ECDHE-RSA-AES256-GCM-SHA384" },
+    { "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256", "ECDHE-ECDSA-AES128-GCM-SHA256" },
+    { "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384", "ECDHE-ECDSA-AES256-GCM-SHA384" },
+    { "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256", "ECDHE-RSA-CHACHA20-POLY1305" },
+    { "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256", "ECDHE-ECDSA-CHACHA20-POLY1305" },
+    { "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256", "ECDHE-RSA-AES128-SHA256" },
+    { "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384", "ECDHE-RSA-AES256-SHA384" },
+    { "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256", "ECDHE-ECDSA-AES128-SHA256" },
+    { "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384", "ECDHE-ECDSA-AES256-SHA384" },
+  };
+  if (strncmp(iana, "TLS_AES_", 8) == 0 || strncmp(iana, "TLS_CHACHA20_", 13) == 0) return iana;
+  for (size_t i = 0; i < sizeof map / sizeof map[0]; i++) {
+    if (strcmp(map[i][0], iana) == 0) return map[i][1];
+  }
+  return NULL;
+}
+
+/* tlsSocket.getCipher(): { name, standardName, version } for the
+ * negotiated suite (OpenSSL's name, the IANA name, and the suite's
+ * minimum protocol version as OpenSSL reports it), undefined before the
+ * handshake and null after close. A suite without a known OpenSSL name
+ * throws the "not supported yet" error. +1. */
+ScrDyn *scr_tls_sock_get_cipher(ScrNetSocket *s) {
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || scr_net_sock_destroyed(s)) return scr_dyn_new_null();
+  if (!t->established) return scr_dyn_retain(scr_dyn_undefined());
+  const char *suite = mbedtls_ssl_get_ciphersuite(&t->ssl);
+  if (suite == NULL) return scr_dyn_retain(scr_dyn_undefined());
+  /* mbedTLS spells "TLS1-3-AES-128-GCM-SHA256" and
+   * "TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256"; the IANA names use '_' */
+  char iana[128];
+  const char *src = strncmp(suite, "TLS1-3-", 7) == 0 ? suite + 7 : suite;
+  int n = snprintf(iana, sizeof iana, "%s%s", src == suite ? "" : "TLS_", src);
+  for (int i = 0; i < n; i++)
+    if (iana[i] == '-') iana[i] = '_';
+  const char *name = scr_tls_openssl_cipher_name(iana);
+  if (name == NULL) {
+    char msg[192];
+    int len = snprintf(msg, sizeof msg, "tlsSocket.getCipher() for %s is not supported yet", iana);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)len, "SC2020");
+    return NULL;
+  }
+  bool v13 = strncmp(suite, "TLS1-3-", 7) == 0;
+  ScrDyn *out = scr_dyn_new_obj();
+  ScrStr *a = scr_str_new(name, strlen(name));
+  scr_dyn_obj_set(out, "name", 4, scr_dyn_new_str(a));
+  scr_str_release(a);
+  ScrStr *b = scr_str_new(iana, strlen(iana));
+  scr_dyn_obj_set(out, "standardName", 12, scr_dyn_new_str(b));
+  scr_str_release(b);
+  /* OpenSSL's SSL_CIPHER_get_version: the suite's minimum protocol */
+  const char *version = v13 ? "TLSv1.3" : "TLSv1.2";
+  ScrStr *c = scr_str_new(version, strlen(version));
+  scr_dyn_obj_set(out, "version", 7, scr_dyn_new_str(c));
+  scr_str_release(c);
+  return out;
+}
+
+/* tlsSocket.alpnProtocol: null before the handshake, then the
+ * negotiated protocol or false. +1. */
+ScrDyn *scr_tls_sock_alpn_protocol(ScrNetSocket *s) {
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || !t->established) return scr_dyn_new_null();
+  const char *p = mbedtls_ssl_get_alpn_protocol(&t->ssl);
+  if (p == NULL) return scr_dyn_new_bool(false);
+  ScrStr *str = scr_str_new(p, strlen(p));
+  ScrDyn *d = scr_dyn_new_str(str);
+  scr_str_release(str);
+  return d;
+}
+
 void scr_tls_sock_on_secure_connect(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once) {
   if (scr_tls_sock_of(s) == NULL) {
     scr_closure_release(cb); /* a plain socket never fires it, like Node */
@@ -1740,6 +1829,10 @@ static bool scr_tls_dynh_get(ScrNetSocket *s, const char *key, ScrDyn **out) {
     bool a = t->established && t->cli != NULL && t->cli->verify_recorded &&
              mbedtls_ssl_get_verify_result(&t->ssl) == 0;
     *out = scr_dyn_new_bool(a);
+    return true;
+  }
+  if (strcmp(key, "alpnProtocol") == 0) {
+    *out = scr_tls_sock_alpn_protocol(s);
     return true;
   }
   if (strcmp(key, "authorizationError") == 0) {
@@ -1782,8 +1875,16 @@ static bool scr_tls_dynh_invoke(ScrNetSocket *s, const char *method, ScrDyn *con
   (void)args;
   (void)argc;
   if (scr_tls_sock_of(s) == NULL) return false;
+  if (strcmp(method, "getProtocol") == 0) {
+    *out = scr_tls_sock_get_protocol(s);
+    return true;
+  }
+  if (strcmp(method, "getCipher") == 0) {
+    *out = scr_tls_sock_get_cipher(s);
+    return true;
+  }
   static const char *const tls_methods[] = {
-    "getPeerCertificate", "getCertificate", "getCipher", "getProtocol", "getSession",
+    "getPeerCertificate", "getCertificate", "getSession",
     "getTLSTicket", "getEphemeralKeyInfo", "getFinished", "getPeerFinished",
     "getSharedSigalgs", "getPeerX509Certificate", "getX509Certificate",
     "exportKeyingMaterial", "isSessionReused", "renegotiate", "setMaxSendFragment",

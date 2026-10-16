@@ -1817,6 +1817,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * the 'session' registration (fires once with the serialized session —
    * a Buffer; the received-ticket event). */
   "tls.sockAuthorized": { argTypes: [NETSOCKET_T], result: BOOL },
+  /** getProtocol() (string | null), getCipher() (CipherNameAndProtocol,
+   * undefined before the handshake, null after close) and alpnProtocol
+   * (string | false | null), as dyn values. */
+  "tls.sockGetProtocol": { argTypes: [NETSOCKET_T], result: DYN },
+  "tls.sockGetCipher": { argTypes: [NETSOCKET_T], result: DYN },
+  "tls.sockAlpnProtocol": { argTypes: [NETSOCKET_T], result: DYN },
   "tls.sockAuthError": { argTypes: [NETSOCKET_T], result: VOID },
   "tls.sockOnSecureConnect": {
     argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
