@@ -3116,6 +3116,7 @@ declare module "node:test" {
   }
   interface TestContext {
     readonly name: string;
+    readonly fullName: string;
     readonly assert: TestContextAssert;
     test(name: string, fn?: TestFn): Promise<void>;
     test(name: string, options: TestOptions, fn?: TestFn): Promise<void>;

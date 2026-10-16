@@ -7,8 +7,8 @@
     "tierItemCount": 3472,
     "tiers": {
       "static": {
-        "audit-partial": 990,
-        "verify-gap": 2363,
+        "audit-partial": 1005,
+        "verify-gap": 2348,
         "replace-refusal": 32,
         "classify": 2,
         "implement": 85
@@ -67320,12 +67320,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.before",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-hooks.ts",
+            "tests/fixtures/node-test/cases/ctx-plan.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67345,12 +67349,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.beforeEach",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-hooks.ts",
+            "tests/fixtures/node-test/cases/ctx-plan.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67370,12 +67378,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.after",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-hooks.ts",
+            "tests/fixtures/node-test/cases/ctx-plan.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67395,12 +67407,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.afterEach",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-hooks.ts",
+            "tests/fixtures/node-test/cases/ctx-plan.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67472,12 +67488,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.plan",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-hooks.ts",
+            "tests/fixtures/node-test/cases/ctx-plan.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67730,12 +67750,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.fullName",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-hooks.ts",
+            "tests/fixtures/node-test/cases/ctx-plan.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68209,12 +68233,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.suite.skip",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68234,12 +68263,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.suite.todo",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68259,12 +68293,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.suite.only",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68419,12 +68458,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.describe.skip",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68444,12 +68488,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.describe.todo",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68469,12 +68518,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.describe.only",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68521,12 +68575,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.it.skip",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68546,12 +68605,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.it.todo",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68571,12 +68635,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.it.only",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },

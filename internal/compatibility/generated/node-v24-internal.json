@@ -746,9 +746,9 @@
       "apiEntries": 117,
       "static": {
         "supported": 0,
-        "partial": 20,
+        "partial": 35,
         "refused": 0,
-        "not-implemented": 97,
+        "not-implemented": 82,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -90532,6 +90532,11 @@
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
           "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -92751,8 +92756,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.before",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92774,8 +92784,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.beforeEach",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92797,8 +92812,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.after",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92820,8 +92840,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.afterEach",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92892,8 +92917,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.plan",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93134,8 +93164,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.fullName",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93577,8 +93612,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.suite.skip",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93600,8 +93641,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.suite.todo",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93623,8 +93670,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.suite.only",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93776,8 +93829,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.describe.skip",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93799,8 +93858,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.describe.todo",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93822,8 +93887,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.describe.only",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93871,8 +93942,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.it.skip",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93894,8 +93971,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.it.todo",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93917,8 +94000,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.it.only",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
