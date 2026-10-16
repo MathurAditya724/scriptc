@@ -107,6 +107,20 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
     "dgram.sendChk": "scr_dgram_send_chk",
     "dgram.ref": "scr_dgram_ref",
     "dgram.unref": "scr_dgram_unref",
+    "dgram.setBroadcast": "scr_dgram_set_broadcast",
+    "dgram.setTTL": "scr_dgram_set_ttl",
+    "dgram.setMulticastTTL": "scr_dgram_set_multicast_ttl",
+    "dgram.setMulticastLoopback": "scr_dgram_set_multicast_loopback",
+    "dgram.setMulticastInterface": "scr_dgram_set_multicast_interface",
+    "dgram.addMembership": "scr_dgram_add_membership",
+    "dgram.dropMembership": "scr_dgram_drop_membership",
+    "dgram.getRecvBufferSize": "scr_dgram_get_recv_buffer_size",
+    "dgram.getSendBufferSize": "scr_dgram_get_send_buffer_size",
+    "dgram.setRecvBufferSize": "scr_dgram_set_recv_buffer_size",
+    "dgram.setSendBufferSize": "scr_dgram_set_send_buffer_size",
+    "dgram.getSendQueueSize": "scr_dgram_get_send_queue_size",
+    "dgram.getSendQueueCount": "scr_dgram_get_send_queue_count",
+    "dgram.disconnect": "scr_dgram_disconnect",
   };
   const symbol = direct[e.fn];
   if (symbol !== undefined) return finishRuntimeCall(host, e, symbol, a);

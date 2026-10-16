@@ -61,6 +61,7 @@
  * holds the loop like an in-flight request. */
 #include "scr_platform.h"
 #include "scr_runtime.h"
+#include "scr_system_errors.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -75,6 +76,7 @@
 #include <process.h> /* _getpid */
 #else
 #include <netdb.h>
+#include <net/if.h> /* if_nametoindex */
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -113,6 +115,9 @@ static int scr_dgram_w32_map_err(int e) {
   case WSAENETUNREACH: return ENETUNREACH;
   case WSAEMSGSIZE: return EMSGSIZE;
   case WSAEINVAL: return EINVAL;
+  case WSAENOPROTOOPT: return ENOPROTOOPT;
+  case WSAEAFNOSUPPORT: return EAFNOSUPPORT;
+  case WSAENOBUFS: return ENOBUFS;
   default: return e;
   }
 }
@@ -165,6 +170,17 @@ static int scr_dgram_w32_setsockopt(int fd, int level, int name, const void *val
   return 0;
 }
 
+static int scr_dgram_w32_getsockopt(int fd, int level, int name, void *val, socklen_t *len) {
+  int ilen = (int)*len;
+  int rc = getsockopt((SOCKET)fd, level, name, (char *)val, &ilen);
+  *len = (socklen_t)ilen;
+  if (rc != 0) {
+    scr_dgram_w32_seterr();
+    return -1;
+  }
+  return 0;
+}
+
 static ssize_t scr_dgram_w32_sendto(int fd, const void *buf, size_t len, int flags,
                                      const struct sockaddr *sa, socklen_t salen) {
   int n = sendto((SOCKET)fd, (const char *)buf, len > 0x40000000 ? 0x40000000 : (int)len, flags,
@@ -196,6 +212,7 @@ static int scr_dgram_w32_close(int fd) {
 #define connect(fd, sa, len) scr_dgram_w32_connect((fd), (sa), (len))
 #define getsockname(fd, sa, len) scr_dgram_w32_getsockname((fd), (sa), (len))
 #define setsockopt(fd, l, n, v, len) scr_dgram_w32_setsockopt((fd), (l), (n), (v), (len))
+#define getsockopt(fd, l, n, v, len) scr_dgram_w32_getsockopt((fd), (l), (n), (v), (len))
 #define sendto(fd, buf, len, fl, sa, salen) scr_dgram_w32_sendto((fd), (buf), (len), (fl), (sa), (salen))
 #define recvfrom(fd, buf, len, fl, sa, salen) scr_dgram_w32_recvfrom((fd), (buf), (len), (fl), (sa), (salen))
 #define close(fd) scr_dgram_w32_close(fd)
@@ -235,6 +252,13 @@ static const char *scr_dgram_errname(int err) {
   case ENETUNREACH: return "ENETUNREACH";
   case EMSGSIZE: return "EMSGSIZE";
   case EINVAL: return "EINVAL";
+  case EBADF: return "EBADF";
+  case ENOPROTOOPT: return "ENOPROTOOPT";
+  case EAFNOSUPPORT: return "EAFNOSUPPORT";
+  case ENOBUFS: return "ENOBUFS";
+  case ENOMEM: return "ENOMEM";
+  case EPERM: return "EPERM";
+  case ENODEV: return "ENODEV";
   default: return "EUNKNOWN";
   }
 }
@@ -711,6 +735,318 @@ void scr_dgram_close(ScrDgramSocket *s, ScrClosure *cb) {
 
 void scr_dgram_unref(ScrDgramSocket *s) { s->unrefed = true; }
 void scr_dgram_ref(ScrDgramSocket *s) { s->unrefed = false; }
+
+/* ── socket options (dgram.Socket's setters and getters) ───────────────
+ * Each follows Node's dgram.js plus the libuv call under it: the value
+ * checks run first, then the option goes to the descriptor, so a socket
+ * that has no descriptor yet (never bound) answers EBADF. After close()
+ * Node's handle is null, so most members throw the TypeError reading a
+ * property of null; the ones that call healthCheck() throw "Not running". */
+
+typedef struct { int value; const char *name; const char *message; } ScrDgramUvError;
+#define SCR_DGRAM_UV_ERROR(name, message) { SCR_NODE_UV__##name, #name, message },
+static const ScrDgramUvError scr_dgram_uv_errors[] = { SCR_NODE_UV_ERRNO_MAP(SCR_DGRAM_UV_ERROR) };
+#undef SCR_DGRAM_UV_ERROR
+
+/* The libuv name, number and message for an errno value (by name, so
+ * the win32 arm's translated errno values find the same entries). */
+static const ScrDgramUvError *scr_dgram_uv_error(int err) {
+  static const ScrDgramUvError unknown = { SCR_NODE_UV__UNKNOWN, "UNKNOWN", "unknown error" };
+  const char *name = scr_dgram_errname(err);
+  for (size_t i = 0; i < sizeof scr_dgram_uv_errors / sizeof scr_dgram_uv_errors[0]; i++) {
+    if (strcmp(scr_dgram_uv_errors[i].name, name) == 0) return &scr_dgram_uv_errors[i];
+  }
+  return &unknown;
+}
+
+/* Node's ErrnoException: "<syscall> <CODE>" with code, errno and syscall. */
+static void scr_dgram_throw_errno(int err, const char *syscall) {
+  const ScrDgramUvError *uv = scr_dgram_uv_error(err);
+  char text[96];
+  int n = snprintf(text, sizeof text, "%s %s", syscall, uv->name);
+  ScrStr *msg = scr_str_new(text, n < 0 ? 0 : (size_t)n);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+  scr_str_release(msg);
+  scr_error_set_code(e, uv->name);
+  e->system_errno = uv->value;
+  e->system_call = scr_str_new(syscall, strlen(syscall));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* Node's ERR_SOCKET_BUFFER_SIZE SystemError for a failed libuv buffer
+ * size call. */
+static void scr_dgram_throw_buffer_size(int err, const char *syscall) {
+  const ScrDgramUvError *uv = scr_dgram_uv_error(err);
+  char text[192];
+  int n = snprintf(text, sizeof text, "Could not get or set buffer size: %s returned %s (%s)", syscall,
+                   uv->name, uv->message);
+  ScrStr *msg = scr_str_new(text, n < 0 ? 0 : (size_t)n);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+  scr_str_release(msg);
+  scr_str_release(e->name);
+  e->name = scr_str_new("SystemError", 11);
+  scr_error_set_code(e, "ERR_SOCKET_BUFFER_SIZE");
+  e->system_errno = uv->value;
+  e->system_call = scr_str_new(syscall, strlen(syscall));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* After close() Node's handle is null: the member read throws. */
+static bool scr_dgram_handle_gone(const ScrDgramSocket *s, const char *member) {
+  if (!s->closing && !s->close_emitted) return false;
+  char text[96];
+  int n = snprintf(text, sizeof text, "Cannot read properties of null (reading '%s')", member);
+  scr_throw_error_msg(SCR_ERR_TYPE, text, n < 0 ? 0 : (size_t)n);
+  return true;
+}
+
+/* healthCheck(): "Not running" once close() was called. */
+static bool scr_dgram_not_running(const ScrDgramSocket *s) {
+  if (!s->closing && !s->close_emitted) return false;
+  scr_dgram_throw("Not running");
+  return true;
+}
+
+/* V8's ToInt32, the conversion Node's binding applies to the value. */
+static int scr_dgram_to_int32(double v) {
+  if (!isfinite(v)) return 0;
+  double t = fmod(trunc(v), 4294967296.0);
+  if (t < 0) t += 4294967296.0;
+  return (int)(int32_t)(uint32_t)t;
+}
+
+/* An int option on the descriptor; false (errno set) on failure. */
+static bool scr_dgram_setopt_int(const ScrDgramSocket *s, int level, int name, int value) {
+  if (s->fd < 0) {
+    errno = EBADF;
+    return false;
+  }
+  return setsockopt(s->fd, level, name, (const void *)&value, sizeof value) == 0;
+}
+
+void scr_dgram_set_broadcast(ScrDgramSocket *s, bool flag) {
+  if (scr_dgram_handle_gone(s, "setBroadcast")) return;
+  if (!scr_dgram_setopt_int(s, SOL_SOCKET, SO_BROADCAST, flag ? 1 : 0))
+    scr_dgram_throw_errno(errno, "setBroadcast");
+}
+
+double scr_dgram_set_ttl(ScrDgramSocket *s, double ttl) {
+  if (scr_dgram_handle_gone(s, "setTTL")) return ttl;
+  int value = scr_dgram_to_int32(ttl);
+  if (value < 1 || value > 255) {
+    scr_dgram_throw_errno(EINVAL, "setTTL");
+  } else if (!scr_dgram_setopt_int(s, IPPROTO_IP, IP_TTL, value)) {
+    scr_dgram_throw_errno(errno, "setTTL");
+  }
+  return ttl;
+}
+
+double scr_dgram_set_multicast_ttl(ScrDgramSocket *s, double ttl) {
+  if (scr_dgram_handle_gone(s, "setMulticastTTL")) return ttl;
+  int value = scr_dgram_to_int32(ttl);
+  if (value < 0 || value > 255) {
+    scr_dgram_throw_errno(EINVAL, "setMulticastTTL");
+  } else if (!scr_dgram_setopt_int(s, IPPROTO_IP, IP_MULTICAST_TTL, value)) {
+    scr_dgram_throw_errno(errno, "setMulticastTTL");
+  }
+  return ttl;
+}
+
+bool scr_dgram_set_multicast_loopback(ScrDgramSocket *s, bool flag) {
+  if (scr_dgram_handle_gone(s, "setMulticastLoopback")) return flag;
+  if (!scr_dgram_setopt_int(s, IPPROTO_IP, IP_MULTICAST_LOOP, flag ? 1 : 0))
+    scr_dgram_throw_errno(errno, "setMulticastLoopback");
+  return flag;
+}
+
+/* A NUL-terminated copy of a borrowed string, NULL when it is too long
+ * to be an address (the caller answers EINVAL). */
+static const char *scr_dgram_cstr(const ScrStr *v, char *buf, size_t cap) {
+  if (v->len >= cap || memchr(v->data, '\0', v->len) != NULL) return NULL;
+  memcpy(buf, v->data, v->len);
+  buf[v->len] = '\0';
+  return buf;
+}
+
+/* uv_ip6_addr: an IPv6 literal with an optional %scope (an interface
+ * name or number). */
+static bool scr_dgram_ip6(const char *text, struct in6_addr *addr, unsigned *scope) {
+  char host[64];
+  const char *pct = strchr(text, '%');
+  size_t len = pct != NULL ? (size_t)(pct - text) : strlen(text);
+  if (len >= sizeof host) return false;
+  memcpy(host, text, len);
+  host[len] = '\0';
+  if (inet_pton(AF_INET6, host, addr) != 1) return false;
+  *scope = 0;
+  if (pct != NULL) {
+#ifndef _WIN32
+    *scope = if_nametoindex(pct + 1);
+#endif
+    if (*scope == 0) *scope = (unsigned)atoi(pct + 1);
+  }
+  return true;
+}
+
+void scr_dgram_set_multicast_interface(ScrDgramSocket *s, ScrStr *iface /*borrowed*/) {
+  if (scr_dgram_not_running(s)) return;
+  char buf[96];
+  const char *text = scr_dgram_cstr(iface, buf, sizeof buf);
+  struct in_addr a4;
+  struct in6_addr a6;
+  unsigned scope = 0;
+  bool ok;
+  if (text != NULL && inet_pton(AF_INET, text, &a4) == 1) {
+    ok = s->fd >= 0 && setsockopt(s->fd, IPPROTO_IP, IP_MULTICAST_IF, (const void *)&a4, sizeof a4) == 0;
+  } else if (text != NULL && scr_dgram_ip6(text, &a6, &scope)) {
+    ok = s->fd >= 0 &&
+         setsockopt(s->fd, IPPROTO_IPV6, IPV6_MULTICAST_IF, (const void *)&scope, sizeof scope) == 0;
+  } else {
+    scr_dgram_throw_errno(EINVAL, "setMulticastInterface");
+    return;
+  }
+  if (s->fd < 0) errno = EBADF;
+  if (!ok) scr_dgram_throw_errno(errno, "setMulticastInterface");
+}
+
+/* addMembership / dropMembership. Node's libuv binds a socket that has
+ * no descriptor yet to an ephemeral port first; that implicit bind has
+ * no lowering. iface is NULL when the argument is omitted. */
+static void scr_dgram_membership(ScrDgramSocket *s, ScrStr *group, ScrStr *iface, bool join) {
+  const char *syscall = join ? "addMembership" : "dropMembership";
+  if (scr_dgram_not_running(s)) return;
+  if (group->len == 0) {
+    static const char msg[] = "The \"multicastAddress\" argument must be specified";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_MISSING_ARGS");
+    return;
+  }
+  char gbuf[96], ibuf[96];
+  const char *gtext = scr_dgram_cstr(group, gbuf, sizeof gbuf);
+  const char *itext = iface != NULL ? scr_dgram_cstr(iface, ibuf, sizeof ibuf) : NULL;
+  struct in_addr g4;
+  struct in6_addr g6;
+  unsigned gscope = 0;
+  bool v4 = gtext != NULL && inet_pton(AF_INET, gtext, &g4) == 1;
+  if (!v4 && (gtext == NULL || !scr_dgram_ip6(gtext, &g6, &gscope))) {
+    scr_dgram_throw_errno(EINVAL, syscall);
+    return;
+  }
+  if (s->fd < 0) {
+    char text[96];
+    int n = snprintf(text, sizeof text, "dgram.Socket.%s before bind() is not supported yet", syscall);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, text, n < 0 ? 0 : (size_t)n, "SC2020");
+    return;
+  }
+  int rc;
+  if (v4) {
+    struct ip_mreq mreq;
+    memset(&mreq, 0, sizeof mreq);
+    mreq.imr_multiaddr = g4;
+    mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+    if (iface != NULL && (itext == NULL || inet_pton(AF_INET, itext, &mreq.imr_interface) != 1)) {
+      scr_dgram_throw_errno(EINVAL, syscall);
+      return;
+    }
+    rc = setsockopt(s->fd, IPPROTO_IP, join ? IP_ADD_MEMBERSHIP : IP_DROP_MEMBERSHIP,
+                    (const void *)&mreq, sizeof mreq);
+  } else {
+    struct ipv6_mreq mreq;
+    memset(&mreq, 0, sizeof mreq);
+    mreq.ipv6mr_multiaddr = g6;
+    if (iface != NULL) {
+      struct in6_addr i6;
+      unsigned iscope = 0;
+      if (itext == NULL || !scr_dgram_ip6(itext, &i6, &iscope)) {
+        scr_dgram_throw_errno(EINVAL, syscall);
+        return;
+      }
+      mreq.ipv6mr_interface = iscope;
+    }
+    rc = setsockopt(s->fd, IPPROTO_IPV6, join ? IPV6_JOIN_GROUP : IPV6_LEAVE_GROUP,
+                    (const void *)&mreq, sizeof mreq);
+  }
+  if (rc != 0) scr_dgram_throw_errno(errno, syscall);
+}
+
+void scr_dgram_add_membership(ScrDgramSocket *s, ScrStr *group, ScrStr *iface, bool has_iface) {
+  scr_dgram_membership(s, group, has_iface ? iface : NULL, true);
+}
+
+void scr_dgram_drop_membership(ScrDgramSocket *s, ScrStr *group, ScrStr *iface, bool has_iface) {
+  scr_dgram_membership(s, group, has_iface ? iface : NULL, false);
+}
+
+/* Node's bufferSize(): the size must be a uint32 (TypeError otherwise,
+ * checked before the handle), 0 reads the current size, and a size past
+ * the int32 range fails as EINVAL. */
+static double scr_dgram_buffer_size(ScrDgramSocket *s, double size, bool recv) {
+  if (!(size >= 0 && size <= 4294967295.0 && trunc(size) == size)) {
+    static const char msg[] = "Buffer size must be a positive integer";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_SOCKET_BAD_BUFFER_SIZE");
+    return 0;
+  }
+  if (scr_dgram_handle_gone(s, "bufferSize")) return 0;
+  const char *syscall = recv ? "uv_recv_buffer_size" : "uv_send_buffer_size";
+  if (size > 2147483647.0) {
+    scr_dgram_throw_buffer_size(EINVAL, syscall);
+    return 0;
+  }
+  int value = (int)size;
+  int name = recv ? SO_RCVBUF : SO_SNDBUF;
+  bool ok;
+  if (s->fd < 0) {
+    errno = EBADF;
+    ok = false;
+  } else if (value == 0) {
+    socklen_t len = sizeof value;
+    ok = getsockopt(s->fd, SOL_SOCKET, name, (void *)&value, &len) == 0;
+  } else {
+    ok = setsockopt(s->fd, SOL_SOCKET, name, (const void *)&value, sizeof value) == 0;
+  }
+  if (!ok) {
+    scr_dgram_throw_buffer_size(errno, syscall);
+    return 0;
+  }
+  return value;
+}
+
+double scr_dgram_get_recv_buffer_size(ScrDgramSocket *s) { return scr_dgram_buffer_size(s, 0, true); }
+double scr_dgram_get_send_buffer_size(ScrDgramSocket *s) { return scr_dgram_buffer_size(s, 0, false); }
+void scr_dgram_set_recv_buffer_size(ScrDgramSocket *s, double size) { (void)scr_dgram_buffer_size(s, size, true); }
+void scr_dgram_set_send_buffer_size(ScrDgramSocket *s, double size) { (void)scr_dgram_buffer_size(s, size, false); }
+
+/* Sends go out synchronously, so nothing waits in a send queue. */
+double scr_dgram_get_send_queue_size(ScrDgramSocket *s) {
+  (void)scr_dgram_handle_gone(s, "getSendQueueSize");
+  return 0;
+}
+
+double scr_dgram_get_send_queue_count(ScrDgramSocket *s) {
+  (void)scr_dgram_handle_gone(s, "getSendQueueCount");
+  return 0;
+}
+
+/* disconnect(): only a socket whose connect completed ('connect' was
+ * emitted) is connected, and that check comes before the handle's. An
+ * AF_UNSPEC connect dissolves the association; EAFNOSUPPORT (macOS) and
+ * EINVAL count as success, as in libuv. */
+void scr_dgram_disconnect(ScrDgramSocket *s) {
+  if (!s->connected || s->emit_connect) {
+    static const char msg[] = "Not connected";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_SOCKET_DGRAM_NOT_CONNECTED");
+    return;
+  }
+  if (scr_dgram_handle_gone(s, "disconnect")) return;
+  struct sockaddr_storage addr;
+  memset(&addr, 0, sizeof addr);
+  addr.ss_family = AF_UNSPEC;
+  if (connect(s->fd, (const struct sockaddr *)&addr, sizeof addr) != 0 && errno != EAFNOSUPPORT &&
+      errno != EINVAL) {
+    scr_dgram_throw_errno(errno, "connect");
+    return;
+  }
+  s->connected = false;
+}
 
 void scr_dgram_on_message(ScrDgramSocket *s, ScrClosure *cb, ScrDgramMsgFn fn, bool once) {
   if (s->close_emitted) {

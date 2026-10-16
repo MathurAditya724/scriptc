@@ -5309,8 +5309,9 @@ declare module "node:http2" {
  * Buffer datagram with an explicit port + address (the connected-send
  * and callback forms have no lowering); address() returns the real
  * {address, family, port} record and THROWS "Not running" before bind,
- * like Node. 'error' with no listener exits 1 (the unhandled
- * EventEmitter 'error' behavior). Multicast has no lowering. */
+ * like Node. The socket options throw Node's errors (EBADF before bind);
+ * add/dropMembership before bind is refused at run time (SC2020). 'error'
+ * with no listener exits 1 (the unhandled EventEmitter 'error' behavior). */
 declare module "dgram" {
   export interface AddressInfo {
     address: string;
@@ -5329,8 +5330,22 @@ declare module "dgram" {
     send(msg: string | Uint8Array, port: number, address: string): void;
     address(): AddressInfo;
     close(callback?: () => void): void;
+    disconnect(): void;
     unref(): void;
     ref(): void;
+    setBroadcast(flag: boolean): void;
+    setTTL(ttl: number): number;
+    setMulticastTTL(ttl: number): number;
+    setMulticastLoopback(flag: boolean): boolean;
+    setMulticastInterface(multicastInterface: string): void;
+    addMembership(multicastAddress: string, multicastInterface?: string): void;
+    dropMembership(multicastAddress: string, multicastInterface?: string): void;
+    getRecvBufferSize(): number;
+    getSendBufferSize(): number;
+    setRecvBufferSize(size: number): void;
+    setSendBufferSize(size: number): void;
+    getSendQueueSize(): number;
+    getSendQueueCount(): number;
     on(event: "message", listener: (msg: Buffer, rinfo: RemoteInfo) => void): void;
     on(event: "listening" | "close" | "connect", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
