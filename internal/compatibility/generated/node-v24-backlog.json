@@ -7,8 +7,8 @@
     "tierItemCount": 3472,
     "tiers": {
       "static": {
-        "audit-partial": 1029,
-        "verify-gap": 2316,
+        "audit-partial": 1036,
+        "verify-gap": 2309,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -66095,12 +66095,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.ctx.callCount",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66120,12 +66123,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.ctx.mockImplementation",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66145,12 +66151,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.ctx.mockImplementationOnce",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66170,12 +66179,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.ctx.resetCalls",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66195,12 +66207,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.ctx.restore",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66220,12 +66235,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.calls",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66495,12 +66513,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.mock.fn",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },

@@ -3118,6 +3118,7 @@ declare module "node:test" {
     readonly name: string;
     readonly fullName: string;
     readonly assert: TestContextAssert;
+    readonly mock: MockTracker;
     test(name: string, fn?: TestFn): Promise<void>;
     test(name: string, options: TestOptions, fn?: TestFn): Promise<void>;
     skip(message?: string): void;
@@ -3167,10 +3168,45 @@ declare module "node:test" {
   function after(fn: HookFn): void;
   function beforeEach(fn: HookFn): void;
   function afterEach(fn: HookFn): void;
+  /* The mock function surface: mock.fn and t.mock.fn, with the calls log
+   * and the implementation controls on fn.mock. */
+  interface MockFunctionCall<
+    F extends Function,
+    ReturnType = F extends (...args: any) => infer T ? T : unknown,
+    Args = F extends (...args: infer Y) => any ? Y : unknown[],
+  > {
+    arguments: Args;
+    error: unknown | undefined;
+    result: ReturnType | undefined;
+    this: unknown;
+  }
+  interface MockFunctionContext<F extends Function> {
+    readonly calls: MockFunctionCall<F>[];
+    callCount(): number;
+    mockImplementation(implementation: F): void;
+    mockImplementationOnce(implementation: F, onCall?: number): void;
+    resetCalls(): void;
+    restore(): void;
+  }
+  type Mock<F extends Function> = F & { mock: MockFunctionContext<F> };
+  interface MockTracker {
+    fn<F extends Function = (...args: any[]) => undefined>(original?: F): Mock<F>;
+    fn<F extends Function = (...args: any[]) => undefined, Implementation extends Function = F>(
+      original?: F,
+      implementation?: Implementation,
+    ): Mock<F | Implementation>;
+    method<MockedObject extends object>(
+      object: MockedObject,
+      methodName: keyof MockedObject,
+      implementation?: Function,
+    ): Mock<Function>;
+    reset(): void;
+    restoreAll(): void;
+  }
+  const mock: MockTracker;
   /* Declared for typechecking only — every use fences (no lowering).
    * `assert` is the module-level custom-assertion registry (v24's
    * `const { assert } = require('node:test')`), not TestContext.assert. */
-  const mock: unknown;
   const assert: { register(name: string, fn: (...args: unknown[]) => unknown): void };
   function run(options?: unknown): unknown;
   function snapshot(...args: unknown[]): unknown;
@@ -3189,6 +3225,10 @@ declare module "node:test" {
     snapshot,
     TestContext,
     TestOptions,
+    Mock,
+    MockFunctionContext,
+    MockFunctionCall,
+    MockTracker,
   };
   export default test;
 }

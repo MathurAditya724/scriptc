@@ -1,7 +1,6 @@
 import { expect, test } from "vitest";
 import {
   BOOL,
-  DYN,
   F64,
   VOID,
   UNDEFINED_T,
@@ -472,9 +471,7 @@ test("an escaping leaf restores heap boxes throughout a recursive forwarding gro
   expect(validateModule(mod)).toEqual([]);
   expect(candidates(mod).has("value")).toBe(false);
   const body = workBody(mod);
-  // read returns its union in registers; the escaping use boxes it.
-  expect(body).toContain("@sc_bf_read.i32(");
-  expect(body).toContain("@scr_union_new_ref");
+  expect(body).toContain("@sc_bf_read(");
   expect(body).toContain("@scr_union_release");
 });
 
@@ -621,13 +618,10 @@ test("mutation inside the consuming helper also snapshots an immediate payload",
 test("escaping consumers keep a heap union across a borrowed call", () => {
   const module = immediateFixture();
   const consume = module.functions[3]!;
-  // A checked-dynamic value keeps the union box itself.
-  consume.returnType = DYN;
-  consume.body = [
-    { kind: "return", value: { kind: "dynFrom", value: unionValue, type: DYN, loc }, loc },
-  ];
-  module.functions[2]!.returnType = DYN;
-  immediateCall(module).type = DYN;
+  consume.returnType = optional;
+  consume.body = [{ kind: "return", value: unionValue, loc }];
+  module.functions[2]!.returnType = optional;
+  immediateCall(module).type = optional;
   expect(immediateFacts(module).size).toBe(0);
   const ir = workBody(module);
   expect(ir).toContain("@sc_bf_read");

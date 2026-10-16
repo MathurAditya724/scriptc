@@ -99,7 +99,6 @@ function facts(mod: IrModule) {
     inlineField: () => false,
     arrayRead: () => false,
     scalarCall: () => false,
-    ownedCall: () => false,
   });
 }
 function body(mod: IrModule, pointerBits: 32 | 64): string {

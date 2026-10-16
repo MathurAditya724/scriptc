@@ -3321,6 +3321,76 @@ void scr_crypto_defer_dyn(ScrDyn *value, ScrError *error, ScrClosure *cb, ScrCry
   scr_crypto_bytes_last->value_is_dyn = true;
 }
 
+/* Deferred native callbacks: the fs error-first callbacks (and fs.exists)
+ * do their work synchronously and deliver the callback on a later loop
+ * turn. The queue is FIFO and its callbacks are macrotasks, one per
+ * checkpoint like the worker-pool completions, so nextTicks and microtasks
+ * drain between them. Before this queue they rode zero-delay timers,
+ * whose 1 ms floor made every callback wait for a timer turn. */
+typedef struct ScrLoopDeferred {
+  ScrClosure *cb;
+  struct ScrLoopDeferred *next;
+} ScrLoopDeferred;
+
+static SCR_TL ScrLoopDeferred *scr_loop_deferred_head = NULL;
+static SCR_TL ScrLoopDeferred **scr_loop_deferred_tail = NULL;
+static SCR_TL size_t scr_loop_deferred_count = 0;
+/* Callbacks this turn may deliver: the queue as it stood when the turn's
+ * timers ran (libuv's poll phase runs the callbacks that were ready when
+ * it began), so a callback that queues another cannot starve timers and
+ * immediates. */
+static SCR_TL size_t scr_loop_deferred_ready = 0;
+static SCR_TL bool scr_loop_deferred_cleanup_registered = false;
+
+static void scr_loop_deferred_shutdown(void) {
+  while (scr_loop_deferred_head != NULL) {
+    ScrLoopDeferred *d = scr_loop_deferred_head;
+    scr_loop_deferred_head = d->next;
+    scr_closure_release(d->cb);
+    free(d);
+  }
+  scr_loop_deferred_tail = &scr_loop_deferred_head;
+  scr_loop_deferred_count = 0;
+  scr_loop_deferred_ready = 0;
+}
+
+static bool scr_loop_deferred_pending(void) { return scr_loop_deferred_count != 0; }
+
+static bool scr_loop_deferred_dispatch(void) {
+  ScrLoopDeferred *d = scr_loop_deferred_head;
+  if (d == NULL || scr_loop_deferred_ready == 0) return false;
+  scr_loop_deferred_ready--;
+  scr_loop_deferred_head = d->next;
+  if (scr_loop_deferred_head == NULL) scr_loop_deferred_tail = &scr_loop_deferred_head;
+  scr_loop_deferred_count--;
+  ScrClosure *cb = d->cb;
+  free(d);
+  ((void (*)(ScrClosure *))cb->fn)(cb);
+  scr_closure_release(cb);
+  return true;
+}
+
+void scr_loop_defer(ScrClosure *cb) {
+  if (!scr_loop_deferred_cleanup_registered) {
+    if (scr_atexit(scr_loop_deferred_shutdown) != 0) {
+      scr_closure_release(cb);
+      scr_trap("scriptc: could not register deferred callback cleanup\n");
+    }
+    scr_loop_deferred_cleanup_registered = true;
+    scr_loop_deferred_tail = &scr_loop_deferred_head;
+  }
+  ScrLoopDeferred *d = malloc(sizeof *d);
+  if (!d) {
+    scr_closure_release(cb);
+    scr_trap("scriptc: out of memory\n");
+  }
+  d->cb = cb;
+  d->next = NULL;
+  *scr_loop_deferred_tail = d;
+  scr_loop_deferred_tail = &d->next;
+  scr_loop_deferred_count++;
+}
+
 /* ── node:timers/promises ────────────────────────────────────────────
  * The promisified pair: a PENDING void promise a one-shot heap timer
  * (setTimeout) or the immediate queue (setImmediate) fulfills — the
@@ -3794,6 +3864,11 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       if (scr_exc_pending()) return false;
       if (dispatched) continue;
     }
+    if (scr_loop_deferred_pending()) {
+      bool dispatched = scr_loop_deferred_dispatch();
+      if (scr_exc_pending()) return false;
+      if (dispatched) continue;
+    }
     /* Foreign native callbacks are macrotasks. Deliver one, then restart at
      * the microtask checkpoint before considering the next queued post. */
     if (scr_ffi_dispatch_fn != NULL && scr_ffi_dispatch_fn()) {
@@ -3871,7 +3946,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
           (scr_dgram_pending_fn != NULL && scr_dgram_pending_fn()) ||
           (scr_watch_pending_fn != NULL && scr_watch_pending_fn()) ||
           (scr_ffi_pending_fn != NULL && scr_ffi_pending_fn()) ||
-          scr_fs_renames_pending() || scr_crypto_bytes_pending() || scr_workers_pending();
+          scr_fs_renames_pending() || scr_crypto_bytes_pending() || scr_loop_deferred_pending() ||
+          scr_workers_pending();
       if (held) {
         scr_children_poll();
         if (scr_exc_pending()) return false; /* uncaught throw in a listener */
@@ -3894,7 +3970,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     bool watch = scr_watch_pending_fn != NULL && scr_watch_pending_fn();
     bool ffi = scr_ffi_pending_fn != NULL && scr_ffi_pending_fn();
     bool renames = scr_fs_renames_pending();
-    bool crypto = scr_crypto_bytes_pending();
+    bool crypto = scr_crypto_bytes_pending() || scr_loop_deferred_pending();
     bool workers = scr_workers_pending();
     /* Timer liveness counts only REF'd timers: an unref'd timer stays in
      * the heap (and fires if the loop runs on for other reasons) but does
@@ -3936,6 +4012,12 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     /* Pending immediates are always-ready work: no sleep — run due timers
      * (Node's timers phase precedes check), then the check phase below. */
     if (scr_pending_immediates > 0) due = now;
+    /* Queued native callbacks are ready work: no sleep. The next turn
+     * delivers the ones queued so far. */
+    if (scr_loop_deferred_pending()) {
+      due = now;
+      scr_loop_deferred_ready = scr_loop_deferred_count;
+    }
     /* Child polling can drain a pipe into the IPC queue after its dispatch
      * station has run. Completed sends and disconnects can also become ready
      * during that turn. No fd will wake us for this userspace work: return to
