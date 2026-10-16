@@ -2806,7 +2806,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   util: {
     promisify:
-      "the lowered shapes are const bindings over child_process.execFile, child_process.exec and fs.readFile; call the bound function directly",
+      "the lowered shapes are const bindings over child_process.execFile, child_process.exec and the fs callback functions with an fs/promises counterpart; call the bound function directly",
   },
   "stream/consumers": {
     blob:
