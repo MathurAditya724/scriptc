@@ -139,10 +139,132 @@ export class LlDyn {
   private dynToStrFn: string | null = null;
   private caughtToDynFn: string | null = null;
   private readonly helperMemo = new Map<string, string>();
+  private readonly recursiveShapes = new Map<string, boolean>();
+  private readonly holdsRecursiveShapes = new Map<string, boolean>();
   /** Emitted function definitions, in interning order. */
   readonly defs: string[] = [];
 
   constructor(private readonly host: DynHost) {}
+
+  /** The types a dyn matcher or builder for `t` checks structurally: record
+   * fields and index values, array elements and union arms. */
+  private structuralChildren(t: IrType): readonly IrType[] {
+    switch (t.kind) {
+      case "record": {
+        const shape = this.host.recordsById.get(t.shapeId);
+        if (!shape) return [];
+        const fields = shape.fields.map((f) => f.type);
+        return shape.indexValue ? [...fields, shape.indexValue] : fields;
+      }
+      case "array":
+        return [t.elem];
+      case "union":
+        return this.host.unionsById.get(t.unionId)?.arms ?? [];
+      default:
+        return [];
+    }
+  }
+
+  /** A record or array type that reaches itself through its fields,
+   * elements or union arms. Only these can describe a cyclic dyn value, so
+   * only their matchers and builders track visited values. */
+  private isRecursiveShape(t: IrType): boolean {
+    if (t.kind !== "record" && t.kind !== "array") return false;
+    const key = typeKey(t);
+    const known = this.recursiveShapes.get(key);
+    if (known !== undefined) return known;
+    const seen = new Set<string>();
+    const pending = [...this.structuralChildren(t)];
+    let recursive = false;
+    while (pending.length > 0 && !recursive) {
+      const next = pending.pop()!;
+      const nextKey = typeKey(next);
+      if (nextKey === key) recursive = true;
+      else if (!seen.has(nextKey)) {
+        seen.add(nextKey);
+        pending.push(...this.structuralChildren(next));
+      }
+    }
+    this.recursiveShapes.set(key, recursive);
+    return recursive;
+  }
+
+  /** A type with a recursive shape among the types it reaches. Its matcher
+   * and builder keep one visit session open for all of its members, so a
+   * dyn value reached through two of them converts once. */
+  private holdsRecursiveShape(t: IrType): boolean {
+    const key = typeKey(t);
+    const known = this.holdsRecursiveShapes.get(key);
+    if (known !== undefined) return known;
+    const seen = new Set<string>([key]);
+    const pending = [...this.structuralChildren(t)];
+    let holds = false;
+    while (pending.length > 0 && !holds) {
+      const next = pending.pop()!;
+      const nextKey = typeKey(next);
+      if (seen.has(nextKey)) continue;
+      seen.add(nextKey);
+      if (this.isRecursiveShape(next)) holds = true;
+      else pending.push(...this.structuralChildren(next));
+    }
+    this.holdsRecursiveShapes.set(key, holds);
+    return holds;
+  }
+
+  /** `name` around the structural body `${name}_body`, inside one visit
+   * session of the runtime. A recursive shape's matcher ("match") answers
+   * true for a (value, matcher) pair it is already checking further up the
+   * stack. A recursive shape's builder ("build") answers the value it
+   * already built for the same dyn value in the session, so cycles and
+   * shared values keep their identity. Matchers ("visit") and builders
+   * ("memo") of types holding recursive shapes only keep the session open
+   * across their members. */
+  private emitVisitWrapper(
+    name: string,
+    t: IrType,
+    mode: "match" | "visit" | "build" | "memo",
+  ): void {
+    const host = this.host;
+    const what = mode === "match" || mode === "build" ? "visits tracked" : "one visit session";
+    if (mode === "match" || mode === "visit") {
+      host.declare(`declare zeroext i1 @scr_dyn_match_visit(ptr, ptr, ptr)`);
+      this.defs.push(
+        `define internal zeroext i1 @${name}(ptr %d) ${FN_ATTRS} { ; matches ${llvmCommentText(typeKey(t))}, ${what}`,
+        `entry:`,
+        `  %ok = call zeroext i1 @scr_dyn_match_visit(ptr %d, ptr ${mode === "match" ? `@${name}` : "null"}, ptr @${name}_body)`,
+        `  ret i1 %ok`,
+        `}`,
+        ``,
+      );
+      return;
+    }
+    const retain = mode === "build" ? vAdapters(host, t).retain : "null";
+    host.declare(`declare ptr @scr_dyn_build_visit(ptr, ptr, ptr, ptr, ptr)`);
+    this.defs.push(
+      `define internal ptr @${name}(ptr %d, ptr %path) ${FN_ATTRS} { ; check ${llvmCommentText(typeKey(t))}, ${what}`,
+      `entry:`,
+      `  %r = call ptr @scr_dyn_build_visit(ptr %d, ptr %path, ptr ${mode === "build" ? `@${name}` : "null"}, ptr @${name}_body, ptr ${retain})`,
+      `  ret ptr %r`,
+      `}`,
+      ``,
+    );
+  }
+
+  /** The runtime call that gives a matcher or builder body a capsule's
+   * dyn view: inside a visit session (`wrapped`), a capsule keeps the view
+   * it was first given, so an outer visit can keep reading it. */
+  private viewFn(wrapped: boolean): string {
+    const fn = wrapped ? "scr_dyn_visit_view" : "scr_dyn_typed_ref_materialize";
+    this.host.declare(`declare ptr @${fn}(ptr)`);
+    return fn;
+  }
+
+  /** In a recursive shape's builder body: record `value`, just allocated
+   * for %d, before its members are built. */
+  private recordBuilt(B: BlockBuilder, name: string, value: string): void {
+    this.host.declare(`declare void @scr_dyn_build_add(ptr, ptr, ptr)`);
+    B.line(`call void @scr_dyn_build_add(ptr %d, ptr @${name}, ptr ${value})`);
+  }
 
   /** Branch to a variant only after its literal discriminator and complete
    * structure match. Use the same path for predicates and builders. */
@@ -464,13 +586,25 @@ export class LlDyn {
   }
 
   /** Ordinary property lookup, including inherited data and accessors (+1). */
-  private objReadLit(B: BlockBuilder, d: string, key: string): string {
-    this.host.declare(`declare ptr @scr_dyn_obj_read(ptr, ptr, ${this.S})`);
+  private objReadLit(B: BlockBuilder, d: string, key: string, held = false): string {
+    const read = held ? "scr_dyn_obj_read_held" : "scr_dyn_obj_read";
+    this.host.declare(`declare ptr @${read}(ptr, ptr, ${this.S})`);
     const value = B.tmp();
     B.line(
-      `${value} = call ptr @scr_dyn_obj_read(ptr ${d}, ptr ${this.host.cstr(key)}, ${this.S} ${Buffer.byteLength(key, "utf8")})`,
+      `${value} = call ptr @${read}(ptr ${d}, ptr ${this.host.cstr(key)}, ${this.S} ${Buffer.byteLength(key, "utf8")})`,
     );
     return value;
+  }
+
+  /** A member read for a matcher or builder of `t`: values that can reach a
+   * recursive shape go through the runtime's held read, so its visit
+   * tracking does not count the read's reference. Returns the value and
+   * the matching release. */
+  private memberRead(B: BlockBuilder, key: string, t: IrType): { value: string; release: string } {
+    const held = this.isRecursiveShape(t) || this.holdsRecursiveShape(t);
+    const release = held ? "scr_dyn_release_held" : "scr_dyn_release";
+    this.host.declare(`declare void @${release}(ptr)`);
+    return { value: this.objReadLit(B, "%d", key, held), release };
   }
 
   /** Appends a borrowed string, preserving its full byte length. */
@@ -604,6 +738,8 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_dm_${this.dynMatchers.size}`;
     this.dynMatchers.set(matcherKey, name);
+    const recursive = this.isRecursiveShape(t);
+    const wrapped = recursive || this.holdsRecursiveShape(t);
     const B = new BlockBuilder();
     if (isRefCounted(t) && t.kind !== "dyn") {
       const matched = this.typedRefMatches(B, t);
@@ -615,7 +751,7 @@ export class LlDyn {
       B.startBlock(lNext);
     }
     if (t.kind !== "dyn") {
-      this.host.declare(`declare ptr @scr_dyn_typed_ref_materialize(ptr)`);
+      const view = this.viewFn(wrapped);
       this.host.declare(`declare void @scr_dyn_release_v(ptr)`);
       const kind = this.kindOf(B, "%d");
       const capsule = B.tmp();
@@ -629,7 +765,7 @@ export class LlDyn {
       } else {
         const materialized = B.tmp();
         const matched = B.tmp();
-        B.line(`${materialized} = call ptr @scr_dyn_typed_ref_materialize(ptr %d)`);
+        B.line(`${materialized} = call ptr @${view}(ptr %d)`);
         B.line(`${matched} = call zeroext i1 @${name}(ptr ${materialized})`);
         B.line(`call void @scr_dyn_release_v(ptr ${materialized})`);
         B.terminate(`ret i1 ${matched}`);
@@ -818,18 +954,17 @@ export class LlDyn {
         // dyn ('unknown') fields match ANY value, present or missing.
         for (const f of shape.fields) {
           if (f.type.kind === "dyn") continue;
-          const m = this.objReadLit(B, "%d", f.name);
+          const { value: m, release } = this.memberRead(B, f.name, f.type);
           const lNext = B.newLabel("dm.n");
-          this.host.declare(`declare void @scr_dyn_release(ptr)`);
           this.pendingBail(
             B,
             "dm.read",
-            () => B.line(`call void @scr_dyn_release(ptr ${m})`),
+            () => B.line(`call void @${release}(ptr ${m})`),
             "i1 false",
           );
           const ok = B.tmp();
           B.line(`${ok} = call zeroext i1 @${this.dynMatchHelper(f.type, preserveRefs)}(ptr ${m})`);
-          B.line(`call void @scr_dyn_release(ptr ${m})`);
+          B.line(`call void @${release}(ptr ${m})`);
           B.condBr(ok, lNext, fail);
           B.startBlock(lNext);
         }
@@ -955,11 +1090,12 @@ export class LlDyn {
       }
     }
     this.defs.push(
-      `define internal zeroext i1 @${name}(ptr %d) ${FN_ATTRS} { ; matches ${key}`,
+      `define internal zeroext i1 @${wrapped ? `${name}_body` : name}(ptr %d) ${FN_ATTRS} { ; matches ${key}`,
       B.render(),
       `}`,
       ``,
     );
+    if (wrapped) this.emitVisitWrapper(name, t, recursive ? "match" : "visit");
     return name;
   }
 
@@ -1124,6 +1260,8 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_dc_${this.dynBuilders.size}`;
     this.dynBuilders.set(builderKey, name);
+    const recursive = this.isRecursiveShape(t);
+    const memo = !recursive && this.holdsRecursiveShape(t) && this.valTy(t) === "ptr";
     const host = this.host;
     const retTy = this.valTy(t);
     const dummy =
@@ -1185,7 +1323,7 @@ export class LlDyn {
         B.terminate(`ret ${dummy}`);
         B.startBlock(plain);
       } else if (t.kind !== "union") {
-        host.declare(`declare ptr @scr_dyn_typed_ref_materialize(ptr)`);
+        const view = this.viewFn(recursive || memo);
         host.declare(`declare ptr @scr_dyn_typed_ref_cached_cast(ptr, ptr, ${host.sizeType})`);
         host.declare(
           `declare void @scr_dyn_typed_ref_cache_cast(ptr, ptr, ${host.sizeType}, ptr, ptr, ptr, i1)`,
@@ -1205,6 +1343,13 @@ export class LlDyn {
         );
         const hasCached = B.tmp();
         B.line(`${hasCached} = icmp ne ptr ${cached}, null`);
+        if (recursive) {
+          // A cached record keeps its identity: the refresh below rewrites
+          // it in place. Later visits of this capsule in the session answer
+          // it, instead of refreshing it while this visit rebuilds it.
+          host.declare(`declare void @scr_dyn_build_note(ptr, ptr, ptr)`);
+          B.line(`call void @scr_dyn_build_note(ptr %d, ptr @${name}, ptr ${cached})`);
+        }
         if (t.kind !== "record" && t.kind !== "array") {
           const lCached = B.newLabel("dc.tr.hit");
           const lMaterialize = B.newLabel("dc.tr.mat");
@@ -1215,7 +1360,7 @@ export class LlDyn {
         }
         const materialized = B.tmp();
         const checked = B.tmp();
-        B.line(`${materialized} = call ptr @scr_dyn_typed_ref_materialize(ptr %d)`);
+        B.line(`${materialized} = call ptr @${view}(ptr %d)`);
         B.line(`${checked} = call ${retTy} @${name}(ptr ${materialized}, ptr %path)`);
         B.line(`call void @scr_dyn_release_v(ptr ${materialized})`);
         const ok = B.tmp();
@@ -1300,6 +1445,14 @@ export class LlDyn {
             // array keeps its own match metadata.
             host.declare("declare void @scr_arr_swap_indexed_ext(ptr, ptr)");
             B.line(`call void @scr_arr_swap_indexed_ext(ptr ${cached}, ptr ${checked})`);
+          }
+          if (recursive) {
+            // The memo recorded the record built for the view: later visits
+            // in the session answer the cached record that now holds it.
+            host.declare(`declare void @scr_dyn_build_rekey(ptr, ptr, ptr)`);
+            B.line(
+              `call void @scr_dyn_build_rekey(ptr ${materialized}, ptr @${name}, ptr ${cached})`,
+            );
           }
           B.line(`call void ${releaseSym(host, t)}(ptr ${checked})`);
           B.terminate(`ret ptr ${cached}`);
@@ -1585,6 +1738,7 @@ export class LlDyn {
           B.terminate(`ret ptr null`);
           B.startBlock(lGo);
           B.line(`%r0 = call ptr @${mangleRecordNew(t.shapeId)}()`);
+          if (recursive) this.recordBuilt(B, name, "%r0");
           const items = this.itemsOf(B, "%d");
           byIndex.forEach((f, i) => {
             setPath(null, `${i}`);
@@ -1635,14 +1789,14 @@ export class LlDyn {
           B.startBlock(lCopy);
         }
         B.line(`%r0 = call ptr @${mangleRecordNew(t.shapeId)}()`);
+        if (recursive) this.recordBuilt(B, name, "%r0");
         for (const f of shape.fields) {
-          const m = this.objReadLit(B, "%d", f.name);
-          host.declare(`declare void @scr_dyn_release(ptr)`);
+          const { value: m, release } = this.memberRead(B, f.name, f.type);
           this.pendingBail(
             B,
             "dcr.read",
             () => {
-              B.line(`call void @scr_dyn_release(ptr ${m})`);
+              B.line(`call void @${release}(ptr ${m})`);
               releaseR();
             },
             "ptr null",
@@ -1652,7 +1806,7 @@ export class LlDyn {
           B.line(
             `${value} = call ${this.valTy(f.type)} @${this.dynCheckHelper(f.type, preserveRefs)}(ptr ${m}, ptr ${pathSlot})`,
           );
-          B.line(`call void @scr_dyn_release(ptr ${m})`);
+          B.line(`call void @${release}(ptr ${m})`);
           storeInto(f.name, f.type, value);
           this.pendingBail(
             B,
@@ -1747,6 +1901,7 @@ export class LlDyn {
         const n = this.lenOf(B, "%d");
         const a = B.tmp();
         B.line(`${a} = ${arrNewCall(host, elem, n)}`);
+        if (recursive) this.recordBuilt(B, name, a);
         const items = this.itemsOf(B, "%d");
         const pathSlot = "%dcp";
         B.entryAllocas.push(`${pathSlot} = alloca %ScrDynPath`);
@@ -1865,7 +2020,7 @@ export class LlDyn {
         // retry the union against the ordinary copy-based structural
         // snapshot (the compiler's width-coercion stance, rather than a
         // live narrowed alias).
-        host.declare(`declare ptr @scr_dyn_typed_ref_materialize(ptr)`);
+        const view = this.viewFn(recursive || memo);
         host.declare(`declare ptr @scr_dyn_typed_ref_cached_cast(ptr, ptr, ${host.sizeType})`);
         host.declare(
           `declare void @scr_dyn_typed_ref_cache_cast(ptr, ptr, ${host.sizeType}, ptr, ptr, ptr, i1)`,
@@ -1886,7 +2041,7 @@ export class LlDyn {
           // pending exception rather than a NULL result.
           const materialized = B.tmp();
           const checked = B.tmp();
-          B.line(`${materialized} = call ptr @scr_dyn_typed_ref_materialize(ptr %d)`);
+          B.line(`${materialized} = call ptr @${view}(ptr %d)`);
           B.line(`${checked} = call ptr @${name}(ptr ${materialized}, ptr %path)`);
           B.line(`call void @scr_dyn_release_v(ptr ${materialized})`);
           B.terminate(`ret ptr ${checked}`);
@@ -1903,7 +2058,7 @@ export class LlDyn {
         B.line(`${hasCached} = icmp ne ptr ${cached}, null`);
         const materialized = B.tmp();
         const checked = B.tmp();
-        B.line(`${materialized} = call ptr @scr_dyn_typed_ref_materialize(ptr %d)`);
+        B.line(`${materialized} = call ptr @${view}(ptr %d)`);
         B.line(`${checked} = call ptr @${name}(ptr ${materialized}, ptr %path)`);
         B.line(`call void @scr_dyn_release_v(ptr ${materialized})`);
         const ok = B.tmp();
@@ -2061,11 +2216,12 @@ export class LlDyn {
       }
     }
     this.defs.push(
-      `define internal ${retTy === "i1" ? "zeroext i1" : retTy} @${name}(ptr %d, ptr %path) ${FN_ATTRS} { ; check ${key}`,
+      `define internal ${retTy === "i1" ? "zeroext i1" : retTy} @${recursive || memo ? `${name}_body` : name}(ptr %d, ptr %path) ${FN_ATTRS} { ; check ${key}`,
       B.render(),
       `}`,
       ``,
     );
+    if (recursive || memo) this.emitVisitWrapper(name, t, recursive ? "build" : "memo");
     return name;
   }
 

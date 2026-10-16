@@ -892,6 +892,41 @@ ScrClassObj *scr_dyn_class_check(const ScrDyn *value, const char *type_key, cons
  * scriptc-specific behavior — JS `as` never checks (SEMANTICS.md). */
 void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *got);
 
+/* Matchers and builders of recursive shapes (records and arrays whose type
+ * reaches itself) track the dyn values they visit, so cyclic values match
+ * and convert without unbounded recursion. Every matcher and builder of a
+ * type holding a recursive shape runs its generated body through
+ * scr_dyn_match_visit or scr_dyn_build_visit; the outermost call forms one
+ * visit session. Only values with more than one reference are tracked: a
+ * value reached twice has at least two. A member read through
+ * scr_dyn_obj_read_held marks the reference it returns until
+ * scr_dyn_release_held, and that reference is not counted.
+ *   scr_dyn_match_visit: true without running `body` when `matcher`
+ *     (non-NULL) is already checking `d` further up the stack (the outer
+ *     check decides); otherwise body(d).
+ *   scr_dyn_build_visit: the value `builder` (non-NULL) already built for
+ *     `d` in the session, retained, so a cycle in the input is a cycle in
+ *     the output and shared values stay shared; otherwise body(d, path).
+ *     The body calls scr_dyn_build_add with the value it allocated for d
+ *     before building its members. When the body fails (an exception is
+ *     pending), the values it recorded are dropped.
+ *   scr_dyn_build_note records a value for (d, builder) whatever d's
+ *     reference count (a capsule's cached record, which keeps its identity
+ *     when refreshed); scr_dyn_build_rekey replaces a recorded value.
+ *   scr_dyn_visit_view: scr_dyn_typed_ref_materialize for a capsule, except
+ *     that a capsule materialized earlier in the session answers the same
+ *     view without refreshing it (+1). */
+ScrDyn *scr_dyn_obj_read_held(const ScrDyn *d, const char *key, size_t key_len);
+void scr_dyn_release_held(ScrDyn *d);
+bool scr_dyn_match_visit(const ScrDyn *d, const void *matcher, bool (*body)(const ScrDyn *));
+void *scr_dyn_build_visit(const ScrDyn *d, const ScrDynPath *path, const void *builder,
+                          void *(*body)(const ScrDyn *, const ScrDynPath *),
+                          void *(*retain)(void *));
+void scr_dyn_build_add(const ScrDyn *d, const void *builder, void *value);
+void scr_dyn_build_note(const ScrDyn *d, const void *builder, void *value);
+void scr_dyn_build_rekey(const ScrDyn *d, const void *builder, void *value);
+ScrDyn *scr_dyn_visit_view(const ScrDyn *capsule);
+
 /* ── native handles in the checked-dynamic tree (SCR_DYN_HANDLE) ────────────────────────
  * Per-tag dispatch ops, registered by the handle's owning unit
  * (scr_http_dyn_install / scr_net_dyn_install — emitted main() calls
