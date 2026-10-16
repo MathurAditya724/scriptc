@@ -85,11 +85,12 @@ describe.skipIf(process.platform === "win32")("counted lifetime regions", () => 
     ]);
     return bin;
   };
-  const run = async (bin: string, mode: string) =>
+  const run = async (bin: string, mode: string, extra: Record<string, string> = {}) =>
     exec(bin, [mode], {
       timeout: 60000,
       env: {
         ...process.env,
+        ...extra,
         SCRIPTC_REGION_STATS: "1",
         ASAN_OPTIONS: "halt_on_error=1",
         TSAN_OPTIONS: "halt_on_error=1",
@@ -118,6 +119,35 @@ describe.skipIf(process.platform === "win32")("counted lifetime regions", () => 
       ]);
       // No RC audit line: every region was freed, so the strict exit audit ran.
       expect(ownedStats.other).toEqual([]);
+
+      // Optimized runtimes leave the reports out (RC-audit ones keep them)
+      // and say so once.
+      if (!sanitized) {
+        const optimized = await run(bin, "debug", { SCRIPTC_REGION_DEBUG: "1" });
+        expect(optimized.stderr).toContain(
+          "scriptc: SCRIPTC_REGION_DEBUG reports need a build with --optimization=dev\n",
+        );
+      }
+      const debugBin = sanitized
+        ? bin
+        : await build(dir, "region-debug", [...flags, "-DSCR_RGN_DEBUG"]);
+      const debug = await run(debugBin, "debug", { SCRIPTC_REGION_DEBUG: "1" });
+      expect(debug.stdout.trim()).toBe("the debug report names what keeps a region");
+      const report = debug.stderr
+        .split("\n")
+        .filter((line) => !line.startsWith("scriptc region") || line.endsWith("keep it:"));
+      expect(
+        report.filter(
+          (line) =>
+            line !== "" &&
+            !line.startsWith("scriptc regions:") &&
+            !line.startsWith("scriptc RC audit"),
+        ),
+      ).toEqual([
+        "scriptc region 1: 2 references from outside keep it:",
+        "  1 not found by the walk, to objects in a chunk holding Node",
+        "  an array held by Node.kids, with 2 references, 1 of them from what the region owns",
+      ]);
 
       const retained = await run(bin, "retained");
       expect(retained.stdout.trim().split("\n")).toEqual(RETAINED_STDOUT);

@@ -123,7 +123,8 @@ static void node_release_fields(void *p) {
   node_release(n->other);
 }
 
-static ScrRgnClass node_cls = {sizeof(Node), node_visit, node_release_fields, "Node", -1};
+static const char *const node_fields[] = {"parent", "kids", "names", "tag", "fn", "data", "plain", "other", NULL};
+static ScrRgnClass node_cls = {sizeof(Node), node_visit, node_release_fields, "Node", -1, node_fields};
 static TEST_TL ScrRgnCursor node_cursor;
 
 /* The emitted constructor: the inline fast path, else the runtime. */
@@ -355,6 +356,28 @@ static void check_retry_schedule(void) {
   puts("a kept region is attempted again after enough region allocation");
 }
 
+/* SCRIPTC_REGION_DEBUG names what keeps a region: references the walk
+ * does not find, by the classes of the chunk they point into, and owned
+ * objects referenced from outside, by the field that holds them. */
+static void check_debug_report(void) {
+  double r = region();
+  scr_region_enter(r);
+  Node *root = node_new(1);
+  root->kids = node_array();
+  Node *child = node_new(2);
+  child->parent = node_retain(root);
+  scr_arr_push_ref(root->kids, child);
+  Node *held = node_new(3);
+  scr_region_leave();
+  ScrArr *kids = scr_arr_retain(root->kids); /* owned by `root` and held outside */
+  node_release(root);
+  scr_region_release(r); /* kept by `held` and `kids` */
+  scr_arr_release(kids);
+  node_release(held);
+  scr_region_release(region());
+  puts("the debug report names what keeps a region");
+}
+
 static void check_poison(void) {
 #if defined(SCR_RC_AUDIT) && !defined(_WIN32)
   double r = region();
@@ -474,6 +497,8 @@ int main(int argc, char **argv) {
     check_cursors();
     check_retry_schedule();
     check_poison();
+  } else if (!strcmp(mode, "debug")) {
+    check_debug_report();
   } else if (!strcmp(mode, "retained")) {
     check_default_region();
     check_published();

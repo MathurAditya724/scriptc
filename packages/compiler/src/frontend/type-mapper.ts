@@ -1,4 +1,5 @@
 import { InternalCompilerError } from "../errors.js";
+import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
 import type { IrRecordShape, IrType, IrUnionDef, IrUnionDiscriminant } from "../ir/ir.js";
@@ -2795,6 +2796,27 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       )
   ) {
     return { kind: "testCtx" };
+  }
+  // node:test's MockFunctionContext<F> and MockFunctionCall<F>: compiler
+  // records built from F (mock-shapes.ts). Mock<F> then maps as the hybrid
+  // { %call: F, mock } record through mapHybridCallableIntersection.
+  if (
+    (psym?.name === "MockFunctionContext" || psym?.name === "MockFunctionCall") &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          ts.isInterfaceDeclaration(d) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          isDeclaredInAmbientModule(d, "test"),
+      )
+  ) {
+    const fnTs = checker.getTypeArguments(widened as ts.TypeReference)[0];
+    const fn = fnTs ? mapType(fnTs, ctx) : null;
+    if (!fn || fn.kind !== "func") return null;
+    return psym.name === "MockFunctionContext"
+      ? mockContextType(fn, ctx)
+      : mockCallRecordType(fn, ctx);
   }
   // NodeJS.ErrnoException: @types/node's `interface ErrnoException extends
   // Error` (dns/fs callback error types). It IS an Error at runtime — map

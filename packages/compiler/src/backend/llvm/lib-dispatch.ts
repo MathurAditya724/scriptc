@@ -14,6 +14,7 @@ import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./
 import { ASSERT_VERDICT_LIB_FNS, LIB_FN_SYMS, USES_TIMERS_LIB_FNS } from "./lib-shared.js";
 import { DYN_KIND } from "./dyn.js";
 import { rawBytes } from "./lib-abi.js";
+import { emitInlineAtomicsOp } from "./expr-bytes.js";
 
 export function emitAssertInspectLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -542,6 +543,10 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   // loop runs even when nothing awaits the promise: a pending ref'd timer
   // keeps the process alive, as in Node.
   if (e.fn.startsWith("tp.")) host.usesTimers = true;
+  if (e.fn === "atomics.op") {
+    const inline = emitInlineAtomicsOp(host, e);
+    if (inline) return inline;
+  }
   const prefix = e.fn.slice(0, e.fn.indexOf(".")) as LibCallPrefix;
   switch (prefix) {
     case "fetch":
