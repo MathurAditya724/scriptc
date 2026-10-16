@@ -304,6 +304,21 @@ test("node-types: callback execFile uses the typed error-first overload", async 
   expect(stdout).toBe("typed-execfile true\n");
 });
 
+test("node-types: promisified exec and execFile results under PromiseWithChild", async () => {
+  const dir = outDirFor("node-child-promisify-exec");
+  const entry = join(nodeTypesDir, "child-promisify-exec.ts");
+  const result = await compile(entry, {
+    outPath: join(dir, "child-promisify-exec"),
+    outDir: dir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const { stdout, stderr } = await execFileAsync(result.binaryPath);
+  expect(stdout).toBe('typed-exec err typed-execfile true\n"Command failed: exit 2\\n"\n');
+  expect(stderr).toBe("");
+});
+
 test("node-types: unsupported child stdin forms remain named fences", async () => {
   const dir = outDirFor("node-child-stdin-fences");
   const entry = join(nodeTypesDir, "child-stdin-fences.ts");
