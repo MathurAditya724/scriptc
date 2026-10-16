@@ -135,6 +135,19 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     );
     return { name: "", type: e.type };
   }
+  if (e.fn === "http.clientSignal") {
+    // [request, signal]: events.addAbortListener comes from the
+    // event-target unit (runtime-features links it for this call).
+    const request = host.emitExpr(e.args[0]!);
+    const signal = host.emitExpr(e.args[1]!);
+    host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+    host.declare(`declare void @scr_http_client_add_abort_signal(ptr, ptr, ptr)`);
+    B.line(
+      `call void @scr_http_client_add_abort_signal(ptr ${request.name}, ptr ${signal.name}, ptr @scr_events_add_abort_listener)`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (e.fn === "net.serverAddress") {
     // The AddressInfo record from the three runtime reads.
     if (e.type.kind !== "record")
@@ -258,7 +271,8 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     e.fn === "http.clientOnTimeout" ||
     e.fn === "http.clientOnClose" ||
     e.fn === "http.clientOnFinish" ||
-    e.fn === "http.clientOnAbort"
+    e.fn === "http.clientOnAbort" ||
+    e.fn === "http.clientOnContinue"
   ) {
     // Adapter-free registrations: (recv, cb /moves/, once).
     const entry = {
@@ -278,6 +292,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       "http.clientOnClose": "scr_http_client_on_close",
       "http.clientOnFinish": "scr_http_client_on_finish",
       "http.clientOnAbort": "scr_http_client_on_abort",
+      "http.clientOnContinue": "scr_http_client_on_continue",
     }[e.fn]!;
     const args = e.args.map((a) => host.emitExpr(a));
     host.moveTemp(args[1]!);
@@ -534,10 +549,10 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     B.line(`${t} = call ptr @scr_http_create_server(ptr ${cb}, ptr ${adapter})`);
     return host.own({ name: t, type: e.type });
   }
-  if (e.fn === "http.serverOnRequest") {
+  if (e.fn === "http.serverOnRequest" || e.fn === "http.serverOnCheck") {
     const cbT = e.args[1]!.type;
     if (cbT.kind !== "func")
-      throw new InternalCompilerError("llvm emitter bug: http.serverOnRequest handler not a func");
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} handler not a func`);
     const args = e.args.map((a) => host.emitExpr(a));
     host.moveTemp(args[1]!);
     const adapter =
@@ -547,6 +562,13 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
           ? "scr_http_handler_thunk1"
           : "scr_http_handler_thunk0";
     host.declare(`declare void @${adapter}(ptr, ptr, ptr)`);
+    if (e.fn === "http.serverOnCheck") {
+      host.declare(`declare void @scr_http_server_on_check(ptr, ptr, ptr, i1 zeroext, i1 zeroext)`);
+      B.line(
+        `call void @scr_http_server_on_check(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name}, i1 ${args[3]!.name})`,
+      );
+      return { name: "", type: e.type };
+    }
     host.declare(`declare void @scr_http_server_on_request(ptr, ptr, ptr, i1 zeroext)`);
     B.line(
       `call void @scr_http_server_on_request(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,

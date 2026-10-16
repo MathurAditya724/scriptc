@@ -190,6 +190,12 @@ void scr_http_server_on_connect(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                  ScrHttpUpgradeFn h1_fn, ScrHttpConnectH2Fn h2_fn,
                                  bool once);
 void scr_http_server_on_upgrade(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once);
+/* server.on('checkContinue' | 'checkExpectation', listener). */
+void scr_http_server_on_check(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpReqFn fn, bool once,
+                              bool expectation);
+/* The maxHeaderSize option of createServer / http.request; throws Node's
+ * ERR_OUT_OF_RANGE for a negative or non-integer value. */
+void scr_http_server_max_header_size(ScrNetServer *s, double value);
 ScrArr *scr_http_req_raw_headers(ScrHttpReq *r); /* +1 — [name, value, ...], arrival order/case */
 ScrArr *scr_http_req_header_pairs(ScrHttpReq *r); /* +1 — lowercased names, the headers snapshot */
 ScrArr *scr_http_req_header_lines(ScrHttpReq *r); /* +1 — every line, lowercased names */
@@ -286,6 +292,13 @@ void scr_http_client_write_dynv(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*
 void scr_http_client_end_dynv(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/);
 void scr_http_client_set_timeout(ScrHttpClientReq *c, double ms);
 void scr_http_client_destroy(ScrHttpClientReq *c);
+/* req.destroy(err): err (borrowed) becomes the request's 'error'. */
+void scr_http_client_destroy_error(ScrHttpClientReq *c, ScrError *err);
+void scr_http_client_max_header_size(ScrHttpClientReq *c, double value); /* see the server form */
+/* http.request's `signal` option (borrowed); `add` is
+ * events.addAbortListener. May throw ERR_INVALID_ARG_TYPE. */
+void scr_http_client_add_abort_signal(ScrHttpClientReq *c, ScrDyn *signal,
+                                      ScrDyn *(*add)(ScrDyn *signal, ScrDyn *listener));
 void scr_http_client_abort(ScrHttpClientReq *c);
 bool scr_http_client_aborted(ScrHttpClientReq *c);
 bool scr_http_client_destroyed(ScrHttpClientReq *c);
@@ -293,6 +306,7 @@ void scr_http_client_on_response(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, 
 void scr_http_client_on_socket(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrNetConnFn fn, bool once);
 void scr_http_client_on_finish(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
 void scr_http_client_on_abort(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
+void scr_http_client_on_continue(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
 void scr_http_client_on_error(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http_client_on_timeout(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
 void scr_http_client_on_close(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);

@@ -1658,6 +1658,24 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * accounting is real: over-limit requests defer their dial and queue.
    * MAY THROW. */
   "http.agentNew": { argTypes: [BOOL, BOOL, F64, F64, F64, F64, F64], result: DYN },
+  /** http.request's `signal` option over the fresh request: an aborted
+   * signal destroys it with Node's AbortError now, a later abort event
+   * does the same. A falsy value is ignored; a non-signal throws
+   * ERR_INVALID_ARG_TYPE. */
+  "http.clientSignal": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
+  /** https.request's servername option: the TLS name sent and verified.
+   * The "https." prefix keeps the TLS unit linked. */
+  "https.clientServername": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
+  /** The maxHeaderSize option of createServer / http.request: Node's
+   * validateInteger (ERR_OUT_OF_RANGE) then the header size bound.
+   * MAY THROW. */
+  "http.serverMaxHeaderSize": { argTypes: [NETSERVER_T, F64], result: VOID },
+  "http.clientMaxHeaderSize": { argTypes: [HTTPCLIENTREQ_T, F64], result: VOID },
+  /** req.destroy(err): err becomes the request's 'error'. */
+  "http.clientDestroyError": {
+    argTypes: [HTTPCLIENTREQ_T, { kind: "object", className: "%Error" }],
+    result: VOID,
+  },
   /** The agent-threaded request rows: the http.request/https.request
    * shape with a trailing `agent` dyn argument (an Agent handle, false —
    * the one-shot Connection: close dial — or null/undefined for the
@@ -1880,6 +1898,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * h2-only split). args are (cert, key) — PEM strings or Buffers. */
   "http2.createSecureServerH2": { argTypes: [null, null, BOOL], result: NETSERVER_T },
   "http.serverOnRequest": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
+  /** server.on('checkContinue' | 'checkExpectation', (req, res)): the
+   * 'request' listener shape; the last argument picks checkExpectation. */
+  "http.serverOnCheck": { argTypes: [NETSERVER_T, null, BOOL, BOOL], result: VOID },
   "http2.serverOnSessionError": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
   /** The guarded absent-session compatibility call remains a no-op. */
   "http2.streamNoop": { argTypes: [], result: VOID },
@@ -2090,6 +2111,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     result: VOID,
   },
   "http.clientOnAbort": {
+    argTypes: [HTTPCLIENTREQ_T, { kind: "func", params: [], ret: VOID }, BOOL],
+    result: VOID,
+  },
+  "http.clientOnContinue": {
     argTypes: [HTTPCLIENTREQ_T, { kind: "func", params: [], ret: VOID }, BOOL],
     result: VOID,
   },

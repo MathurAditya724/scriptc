@@ -4204,7 +4204,7 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "http.serverOnRequest") {
+    if (e.fn === "http.serverOnRequest" || e.fn === "http.serverOnCheck") {
       // The 'request' listener: the same shape as http.createServer's
       // handler — void, at most (req, res) in order.
       const cbT = e.args[1]?.type;

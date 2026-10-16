@@ -2472,6 +2472,10 @@ static const char *scr_err_msg_code(const ScrStr *msg) {
 }
 
 void scr_child_err_thunk_error(ScrClosure *cb, ScrStr *msg) {
+  if (scr_event_error_payload != NULL) {
+    ((void (*)(ScrClosure *, ScrError *))cb->fn)(cb, scr_error_retain(scr_event_error_payload));
+    return;
+  }
   ScrError *e = scr_error_new(0 /* Error */, msg);
   if (scr_child_err_code != NULL) {
     scr_error_set_code(e, scr_child_err_code);
@@ -5170,6 +5174,10 @@ static const char *scr_err_msg_code(const ScrStr *msg) {
  * settle context (spawn failures) or the message's own embedded errno name
  * (net/http/dgram 'error' events — see scr_err_msg_code). */
 void scr_child_err_thunk_error(ScrClosure *cb, ScrStr *msg) {
+  if (scr_event_error_payload != NULL) {
+    ((void (*)(ScrClosure *, ScrError *))cb->fn)(cb, scr_error_retain(scr_event_error_payload));
+    return;
+  }
   ScrError *e = scr_error_new(0 /* Error */, msg);
   if (scr_child_err_code != NULL) {
     scr_error_set_code(e, scr_child_err_code);

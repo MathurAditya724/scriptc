@@ -1661,6 +1661,24 @@ static ScrTlsSock *scr_tls_sock_of(ScrNetSocket *s) {
   return (ScrTlsSock *)scr_net_sock_transport_ctx_for(s, &SCR_TLS_OPS);
 }
 
+/* https.request's `servername` option: the TLS name the handshake sends
+ * (SNI) and verifies the certificate against, in place of the host. The
+ * handshake starts once the dial connects, after this runs. */
+void scr_https_client_servername(ScrHttpClientReq *c, ScrStr *name /*borrowed*/) {
+  ScrNetSocket *sock = scr_http_client_socket(c);
+  if (sock == NULL) return;
+  ScrTlsSock *t = scr_tls_sock_of(sock);
+  if (t != NULL) {
+    char *z = malloc(name->len + 1);
+    if (!z) scr_tls_oom();
+    memcpy(z, name->data, name->len);
+    z[name->len] = '\0';
+    (void)mbedtls_ssl_set_hostname(&t->ssl, name->len > 0 ? z : NULL);
+    free(z);
+  }
+  scr_net_sock_release(sock);
+}
+
 /* The client 'session' event: fires ONCE per socket with the serialized
  * mbedTLS session — a real ticket where one arrived (the 1.3 receipt
  * path), the established session otherwise (1.2). Node fires per
