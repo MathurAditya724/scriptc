@@ -210,7 +210,7 @@ void scr_publish_refuse(const char *message) {
 
 void scr_pub_map(void *v, ScrPub *ctx, ScrPubFn key, ScrPubFn val) {
   ScrMap *m = v;
-  if (!scr_pub_mark(ctx, m, m->key_trace || m->val_trace, SCR_PUB_KIND_MAP)) return;
+  if (!scr_pub_mark(ctx, m, m->traced != 0, SCR_PUB_KIND_MAP)) return;
   ScrPubFn kfn = m->key_kind == SCR_MAP_KEY_STR ? scr_pub_str_fn
       : m->key_kind == SCR_MAP_KEY_DYN ? scr_pub_dyn_fn
       : m->key_kind == SCR_MAP_KEY_REF || m->key_kind == SCR_MAP_KEY_UNION_REF ||

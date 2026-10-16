@@ -121,7 +121,7 @@ static double random_key(unsigned flavor, size_t step) {
 static void fuzz(unsigned flavor) {
   static Model model;
   model.n = 0;
-  ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   size_t dense_steps = 0, hashed_steps = 0;
   for (size_t step = 0; step < 40000; step++) {
     dense_steps += map->ndense != 0;
@@ -149,7 +149,7 @@ static void fuzz(unsigned flavor) {
   if (flavor >= 2) assert(hashed_steps > 1000);
   if (flavor == 0) assert(hashed_steps == 0);
   /* Copies keep order and lookups, and stay independent. */
-  ScrMap *copy = scr_map_clone(map, false);
+  ScrMap *copy = scr_map_clone(map, false, NULL);
   check_same(copy, &model);
   for (size_t i = 0; i < 400; i++) probe(copy, &model, (double)i);
   scr_map_set_f64_f64(copy, 7, -1);
@@ -161,7 +161,7 @@ static void fuzz(unsigned flavor) {
 /* Removing and re-adding keys during an iteration: indices stay stable and
  * appended keys are visited, as Map.prototype.forEach requires. */
 static void iterate_while_mutating(void) {
-  ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   for (int i = 0; i < 64; i++) scr_map_set_f64_f64(map, i, i);
   assert(map->ndense);
   scr_map_iter_enter(map);
@@ -183,7 +183,7 @@ static void iterate_while_mutating(void) {
 }
 
 static void modes(void) {
-  ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   for (int i = 1; i <= 4; i++) scr_map_set_f64_f64(map, i, i);
   assert(!map->ndense && !map->nbuckets); /* still a linear scan */
   scr_map_set_f64_f64(map, 5, 5);
@@ -208,7 +208,7 @@ static void modes(void) {
   scr_map_release(map);
 
   /* A key far beyond the live count hashes instead of allocating for it. */
-  map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   for (int i = 0; i < 5; i++) scr_map_set_f64_f64(map, i, i);
   assert(map->ndense);
   scr_map_set_f64_f64(map, 100000, 1);
@@ -217,17 +217,17 @@ static void modes(void) {
 
   /* Keys that start far from zero hash until the live count makes a table
    * covering them compact, then switch to it. */
-  map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
-  for (int i = 0; i < 5; i++) scr_map_set_f64_f64(map, 5000 + i, i);
+  map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
+  for (int i = 0; i < 9; i++) scr_map_set_f64_f64(map, 5000 + i, i);
   assert(!map->ndense && map->nbuckets);
-  for (int i = 5; i < 2000; i++) scr_map_set_f64_f64(map, 5000 + i, i);
+  for (int i = 9; i < 2000; i++) scr_map_set_f64_f64(map, 5000 + i, i);
   assert(map->ndense && !map->nbuckets);
   for (int i = 0; i < 2000; i++) assert(scr_map_get_f64_f64(map, 5000 + i, &out) && out == i);
   assert(!scr_map_has_f64(map, 4999) && !scr_map_has_f64(map, 0));
   scr_map_release(map);
 
   /* Sparse keys from the start never enter the direct index. */
-  map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   for (int i = 0; i < 10; i++) scr_map_set_f64_f64(map, i * 100000.0, i);
   assert(!map->ndense && map->nbuckets);
   scr_map_release(map);
@@ -235,11 +235,31 @@ static void modes(void) {
   /* Sets built from an array use the same index. */
   ScrArr *values = scr_arr_new(SCR_ELEM_F64, 0);
   for (int i = 0; i < 50; i++) scr_arr_push_f64(values, (double)(i % 20));
-  ScrMap *set = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  ScrMap *set = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   scr_set_add_all(set, values);
   assert(set->ndense && scr_map_size(set) == 20);
   scr_arr_release(values);
   scr_map_release(set);
+}
+
+/* Small maps keep compact storage: the entries array starts with one slot
+ * and grows to four, and maps of up to 8 entries keep no bucket table. */
+static void small_storage(void) {
+  ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
+  assert(!map->entries && map->ecap == 0);
+  scr_map_set_f64_f64(map, 100000, 1);
+  assert(map->ecap == 1);
+  scr_map_set_f64_f64(map, 200000, 2);
+  assert(map->ecap == 4);
+  for (int i = 3; i <= 8; i++) scr_map_set_f64_f64(map, i * 100000.0, i);
+  assert(map->ecap == 8 && !map->nbuckets && !map->ndense);
+  double out;
+  for (int i = 1; i <= 8; i++) assert(scr_map_get_f64_f64(map, i * 100000.0, &out) && out == i);
+  assert(!scr_map_has_f64(map, 50000) && !scr_map_has_f64(map, 0));
+  scr_map_set_f64_f64(map, 900000, 9);
+  assert(map->nbuckets && scr_map_size(map) == 9);
+  for (int i = 1; i <= 9; i++) assert(scr_map_get_f64_f64(map, i * 100000.0, &out) && out == i);
+  scr_map_release(map);
 }
 
 /* clear() and delete must cost time proportional to the entries they
@@ -294,12 +314,12 @@ static void number_round(ScrMap *map, size_t round, void *ctx) {
 }
 
 static void clear_cost_numbers(unsigned keys) {
-  ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   for (size_t i = 0; i < BIG_KEYS; i++) scr_map_set_f64_f64(map, cost_key(keys, i), (double)i);
   assert(keys == 0 ? map->ndense >= BIG_KEYS : map->nbuckets >= 2 * BIG_KEYS);
   scr_map_clear(map);
   assert(scr_map_size(map) == 0 && scr_map_iter_count(map) == 0 && !scr_map_has_f64(map, cost_key(keys, 1)));
-  ScrMap *fresh = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  ScrMap *fresh = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   expect_proportional(keys == 0 ? "dense clear" : "hashed clear", fresh, map, number_round, &keys);
   scr_map_release(fresh);
   /* Storage sized for the old peak is gone; the map is reusable. */
@@ -337,11 +357,11 @@ static void clear_cost_strings(void) {
   ScrStr **keys = malloc(STRING_KEYS * sizeof *keys);
   assert(keys);
   for (size_t i = 0; i < STRING_KEYS; i++) keys[i] = key_str(i);
-  ScrMap *map = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  ScrMap *map = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL);
   for (size_t i = 0; i < STRING_KEYS; i++) scr_map_set_str_f64(map, keys[i], (double)i);
   assert(map->nbuckets >= 2 * STRING_KEYS);
   scr_map_clear(map);
-  ScrMap *fresh = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  ScrMap *fresh = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL);
   expect_proportional("string clear", fresh, map, string_round, keys);
   scr_map_release(fresh);
   assert(map->nbuckets <= 256 && map->ecap <= 256);
@@ -364,8 +384,8 @@ static void iterate_round(ScrMap *map, size_t round, void *ctx) {
  * iteration costs O(live), and keys left far apart move back to hashing
  * instead of keeping a huge direct index. */
 static void delete_shrinks(void) {
-  ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
-  ScrMap *fresh = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
+  ScrMap *fresh = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   for (size_t i = 0; i < BIG_KEYS; i++) scr_map_set_f64_f64(map, (double)i, (double)i);
   for (size_t i = 0; i + 10 < BIG_KEYS; i++) assert(scr_map_delete_f64(map, (double)i));
   for (size_t i = BIG_KEYS - 10; i < BIG_KEYS; i++) scr_map_set_f64_f64(fresh, (double)i, (double)i);
@@ -380,7 +400,7 @@ static void delete_shrinks(void) {
   scr_map_release(map);
 
   /* Small survivors keep a direct index sized for them. */
-  map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   for (size_t i = 0; i < BIG_KEYS; i++) scr_map_set_f64_f64(map, (double)i, (double)i);
   for (size_t i = BIG_KEYS; i-- > 20;) assert(scr_map_delete_f64(map, (double)i));
   assert(scr_map_size(map) == 20 && map->ndense && map->ndense <= 64);
@@ -389,11 +409,11 @@ static void delete_shrinks(void) {
 
   /* A copy indexes its own keys, not the source's peak (here a quarter of
    * the entries survive, too many to compact the source yet). */
-  map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   for (size_t i = 0; i < 4096; i++) scr_map_set_f64_f64(map, (double)i, (double)i);
   for (size_t i = 1024; i < 4096; i++) assert(scr_map_delete_f64(map, (double)i));
   assert(map->ndense == 4096 && scr_map_iter_count(map) == 4096);
-  ScrMap *copy = scr_map_clone(map, false);
+  ScrMap *copy = scr_map_clone(map, false, NULL);
   assert(copy->ndense == 1024 && scr_map_size(copy) == 1024);
   double out;
   for (size_t i = 0; i < 1100; i++) {
@@ -420,7 +440,7 @@ static double drain_key(unsigned flavor, size_t cycle, size_t i) {
 static void fuzz_drain(unsigned flavor) {
   static Model model;
   model.n = 0;
-  ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   for (size_t cycle = 0; cycle < 16; cycle++) {
     size_t grow = 1 + next() % 3000;
     for (size_t i = 0; i < grow; i++) {
@@ -483,7 +503,7 @@ static void fuzz_drain(unsigned flavor) {
 /* A queue that deletes its oldest entry: each walk from the start finds the
  * first live entry, inside and outside an iteration and after clear(). */
 static void front_deletes(void) {
-  ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   double oldest = 0, next_key = 0;
   for (int round = 0; round < 3000; round++) {
     for (int j = 0; j < 3; j++) scr_map_set_f64_f64(map, next_key * 7, next_key), next_key++;
@@ -506,7 +526,7 @@ static void front_deletes(void) {
   assert(map->head == 0 && scr_map_iter_count(map) == 0 && scr_map_iter_skip(map, 0) == 0);
   scr_map_release(map);
 
-  ScrMap *names = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  ScrMap *names = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL);
   char text[32];
   for (int i = 0; i < 500; i++) {
     snprintf(text, sizeof text, "key%d", i);
@@ -530,6 +550,7 @@ static void front_deletes(void) {
 
 int main(void) {
   modes();
+  small_storage();
   front_deletes();
   iterate_while_mutating();
   for (unsigned flavor = 0; flavor < 5; flavor++) fuzz(flavor);

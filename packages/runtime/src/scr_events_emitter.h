@@ -57,6 +57,12 @@ void scr_emitter_reg_gcfree(ScrEeReg *reg);
 /* on/once/prependListener/prependOnceListener: cb MOVES, name borrowed;
  * returns em +1 (the `return this` chaining value). 'newListener' fires
  * BEFORE the add; the leak warning prints at the crossing add. */
+/* events.once(emitter, name) over typed listeners (scr_events_emitter.c). */
+typedef struct ScrPromise ScrPromise;
+ScrPromise *scr_events_once(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, void *adapter,
+                            ScrEeInvoke inv, ScrClosure *err_boxer, void *err_adapter,
+                            ScrEeInvoke err_inv);
+void scr_events_once_fire(ScrClosure *cb, ScrArr *args);
 ScrEmitter *scr_emitter_on(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*moves*/,
                             ScrEeInvoke inv, bool once, bool prepend);
 /* The dyn-adapted registration family (JS-lane checked-dynamic

@@ -589,8 +589,8 @@ int main(void) {
     long before_maps = scr_map_live_count();
     long before_dyns = scr_dyn_live_count();
 #endif
-    ScrMap *numbers = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL, NULL, NULL);
-    ScrMap *strings = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+    ScrMap *numbers = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
+    ScrMap *strings = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL);
     scr_map_set_f64_f64(numbers, 42, 1);
     ScrStr *text = scr_str_new("kept", 4);
     scr_map_set_str_f64(strings, text, 1);

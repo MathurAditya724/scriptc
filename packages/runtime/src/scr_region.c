@@ -726,9 +726,9 @@ static void scr_rgn_walk_map(ScrRgnWalk *w, ScrMap *m) {
   bool valref = m->val_kind == SCR_MAP_VAL_REF;
   if (!keyref && !keydyn && !valref) return;
   ScrRgnSlotKind kk = keydyn ? (ScrRgnSlotKind){SCR_RGN_W_DYN, NULL}
-                    : keyref ? scr_rgn_slot_kind(m->key_release)
+                    : keyref ? scr_rgn_slot_kind(m->ops->key_release)
                              : (ScrRgnSlotKind){SCR_RGN_S_NONE, NULL};
-  ScrRgnSlotKind vk = valref ? scr_rgn_slot_kind(m->val_release) : (ScrRgnSlotKind){SCR_RGN_S_NONE, NULL};
+  ScrRgnSlotKind vk = valref ? scr_rgn_slot_kind(m->ops->val_release) : (ScrRgnSlotKind){SCR_RGN_S_NONE, NULL};
   for (size_t i = 0; i < m->nentries; i++) {
     const ScrMapEntry *e = &m->entries[i];
     if (!e->hash) continue; /* tombstone */

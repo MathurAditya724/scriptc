@@ -80,15 +80,14 @@ function emitted(mod: IrModule, bits: 32 | 64): { work: string; module: string }
 
 test("iteration steps read the entries array inline on both ABIs", () => {
   for (const bits of [32, 64] as const) {
-    const sz = bits === 64 ? "i64" : "i32";
     const { work, module } = emitted(fixture(STRING, F64, "value"), bits);
-    // Field 9 is the entry count and 13 the entries array; a zero hash
+    // Field 8 is the entry count and 11 the entries array; a zero hash
     // (entry field 2) marks a tombstone.
     expect(module).toMatch(/^define internal ptr @sc_map_iter_entry\(ptr %m, double %i\)/m);
-    expect(module).toContain(`getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 9`);
-    expect(module).toContain(`getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 13`);
+    expect(module).toContain(`getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`);
+    expect(module).toContain(`getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`);
     expect(module).toContain(`getelementptr inbounds %ScrMapEntry, ptr %e, i32 0, i32 2`);
-    expect(module).toContain(`%n = load ${sz}, ptr %np`);
+    expect(module).toContain(`%n = load i32, ptr %np`);
     // The walk's start comes from the runtime, which skips a deleted prefix.
     expect(work).toContain("call double @scr_map_iter_start(");
     expect(work).toContain("call double @sc_map_iter_count(");
@@ -169,12 +168,12 @@ test("hashed number-key lookups probe inline and call the runtime only for wide 
     expect(hashed).toContain("select i1 %nan, i64 9221120237041090560, i64 %kzb");
     expect(hashed).toContain("mul i64 %x1, -4658895280553007687");
     expect(hashed).toContain("mul i64 %x3, -7723592293110705685");
-    // Filter (field 11), small-map scan of the entry count (field 9), and
-    // compact buckets (fields 14 and 15) tagged with the hash's top byte.
-    expect(hashed).toContain("getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11");
-    expect(hashed).toContain(`%ne = load ${sz}, ptr %nep`);
-    expect(hashed).toContain(`%nb = load ${sz}, ptr %nbp`);
-    expect(hashed).toContain("getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 15");
+    // Filter (field 10), small-map scan of the entry count (field 8), and
+    // compact buckets (fields 13 and 14) tagged with the hash's top byte.
+    expect(hashed).toContain("getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 10");
+    expect(hashed).toContain(`load i32, ptr %nep`);
+    expect(hashed).toContain(`load i32, ptr %nbp`);
+    expect(hashed).toContain("getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 14");
     expect(hashed).toContain("and i32 %ht32, -16777216");
     expect(hashed).toContain(`icmp ugt ${sz} %nb, 16777216`);
     expect(hashed).toContain(

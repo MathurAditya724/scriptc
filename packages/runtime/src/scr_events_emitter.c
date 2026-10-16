@@ -440,6 +440,123 @@ ScrEmitter *scr_emitter_on(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*moves*
   return scr_ee_add(em, name, cb, NULL, inv, NULL, NULL, once, prepend);
 }
 
+/* events.once(emitter, name): a pending promise of the event's arguments
+ * as an array. Two one-shot typed listeners share the state below: the
+ * event's, which fulfills with the array its compiler-built boxer makes,
+ * and (unless the event is 'error') an 'error' listener, which rejects with
+ * the error. Whichever fires first settles the promise and removes the
+ * other, like Node. The emitter and the two closures are weak here: the
+ * closures live in the emitter's listener entries, so neither can outlive
+ * it, and holding them strongly would cycle through the entries. Each
+ * closure's caps[0] is its boxer and caps[1] the shared state. */
+static void scr_ee_unadd(ScrEmitter *em, ScrStr *name, ScrClosure *cb);
+
+typedef struct ScrEeOnce {
+  size_t rc;
+  ScrPromise *promise;
+  ScrEmitter *em;
+  ScrStr *name;
+  ScrClosure *event_cb;
+  ScrClosure *error_cb;
+  bool settled;
+} ScrEeOnce;
+
+static void *scr_ee_once_retain(void *p) {
+  ((ScrEeOnce *)p)->rc++;
+  return p;
+}
+
+static void scr_ee_once_release(void *p) {
+  ScrEeOnce *st = p;
+  if (--st->rc > 0) return;
+  scr_promise_release(st->promise);
+  scr_str_release(st->name);
+  free(st);
+}
+
+static ScrClosure *scr_ee_once_closure(void *adapter, ScrClosure *boxer, ScrEeOnce *st) {
+  ScrClosure *c = scr_closure_new(adapter, 2);
+  ScrBox *bx = scr_box_new(SCR_BOX_FUNC);
+  scr_box_set_ref(bx, scr_closure_retain(boxer));
+  c->caps[0] = bx;
+  ScrBox *sb = scr_box_new_obj(scr_ee_once_retain, scr_ee_once_release, NULL);
+  scr_box_set_ref(sb, scr_ee_once_retain(st));
+  c->caps[1] = sb;
+  return c;
+}
+
+/* boxer and err_boxer are borrowed; the result is +1. err_boxer is NULL
+ * when the awaited event is 'error' itself. */
+ScrPromise *scr_events_once(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, void *adapter,
+                            ScrEeInvoke inv, ScrClosure *err_boxer, void *err_adapter,
+                            ScrEeInvoke err_inv) {
+  ScrEeOnce *st = calloc(1, sizeof *st);
+  if (!st) scr_ee_oom();
+  st->rc = 1;
+  st->promise = scr_promise_new();
+  st->em = em;
+  st->name = scr_str_retain(name);
+  st->event_cb = scr_ee_once_closure(adapter, boxer, st);
+  if (err_boxer != NULL) st->error_cb = scr_ee_once_closure(err_adapter, err_boxer, st);
+  /* Node registers both inside the promise's executor: a throwing
+   * 'newListener' listener rejects the promise instead of throwing, and the
+   * listener it announced is never added (the event's listener stays when
+   * only the 'error' announcement throws). */
+  ScrCaught *thrown = NULL;
+  scr_emitter_release(scr_ee_add(em, name, st->event_cb, NULL, inv, NULL, NULL, true, false));
+  if (scr_exc_pending()) {
+    thrown = scr_exc_take();
+    scr_ee_unadd(em, name, st->event_cb);
+    if (st->error_cb != NULL) scr_closure_release(st->error_cb); /* never registered */
+    st->event_cb = st->error_cb = NULL;
+  } else if (st->error_cb != NULL) {
+    ScrStr *error = scr_str_new("error", 5);
+    scr_emitter_release(scr_ee_add(em, error, st->error_cb, NULL, err_inv, NULL, NULL, true, false));
+    if (scr_exc_pending()) {
+      thrown = scr_exc_take();
+      scr_ee_unadd(em, error, st->error_cb);
+      st->error_cb = NULL;
+    }
+    scr_str_release(error);
+  }
+  if (thrown != NULL) {
+    st->settled = true;
+    scr_rethrow(thrown);
+    scr_caught_release(thrown);
+    scr_promise_reject_pending(st->promise);
+  }
+  ScrPromise *p = scr_promise_retain(st->promise);
+  scr_ee_once_release(st);
+  return p;
+}
+
+/* The adapter's tail: `cb` is the firing listener closure, `args` the
+ * boxed event arguments (moves in). */
+void scr_events_once_fire(ScrClosure *cb, ScrArr *args) {
+  ScrEeOnce *st = (ScrEeOnce *)scr_box_get_ref(cb->caps[1]);
+  if (!st->settled) {
+    st->settled = true;
+    bool error = cb == st->error_cb;
+    /* The other listener leaves the emitter (its once entry has not fired). */
+    ScrClosure *other = error ? st->event_cb : st->error_cb;
+    if (other != NULL) {
+      ScrStr *other_name = error ? scr_str_retain(st->name) : scr_str_new("error", 5);
+      scr_emitter_release(scr_emitter_off(st->em, other_name, other));
+      scr_str_release(other_name);
+    }
+    if (error) {
+      ScrDyn *reason = (ScrDyn *)scr_arr_get_ref(args, 0);
+      scr_dyn_throw(reason); /* moves reason */
+      scr_promise_reject_pending(st->promise);
+    } else {
+      scr_promise_fulfill_ref(st->promise, scr_arr_retain(args), scr_arr_retain_v,
+                              scr_arr_release_v, args->cyc ? scr_arr_trace_v : NULL);
+    }
+  }
+  scr_arr_release(args);
+  scr_ee_once_release(st);
+}
+
 /* The dyn-adapted registration (JS-lane checked-dynamic listeners): the
  * ADAPTER closure (compiler-built — boxes the event tuple to dyn and
  * calls the original through the checked-dynamic machinery) is what emit
@@ -518,7 +635,7 @@ void *scr_ee_arg_next(void *cursor) {
  * 'removeListener' meta event AFTER the removal, Node's order. Drops the
  * bucket when emptied — except in shape mode, where the emptied name
  * keeps its rank (Node's events[type] = undefined). */
-static void scr_ee_remove_at(ScrEmitter *em, ScrEeBucket *b, size_t i) {
+static void scr_ee_remove_at_quiet(ScrEmitter *em, ScrEeBucket *b, size_t i) {
   ScrEeEntry *e = b->ls[i];
   memmove(b->ls + i, b->ls + i + 1, (b->n - i - 1) * sizeof *b->ls);
   b->n--;
@@ -526,8 +643,28 @@ static void scr_ee_remove_at(ScrEmitter *em, ScrEeBucket *b, size_t i) {
   if (b->n == 0) scr_ee_observe(em, name, false);
   if (b->n == 0 && !em->reg->shape) scr_ee_bucket_drop(em->reg, b);
   scr_ee_entry_unref(e);
+  scr_str_release(name);
+}
+
+static void scr_ee_remove_at(ScrEmitter *em, ScrEeBucket *b, size_t i) {
+  ScrStr *name = scr_str_retain(b->name);
+  scr_ee_remove_at_quiet(em, b, i);
   scr_ee_emit_meta(em, "removeListener", name);
   scr_str_release(name);
+}
+
+/* Takes back the listener closure `cb` that scr_ee_add just registered
+ * under `name`, without a 'removeListener' event: its 'newListener'
+ * announcement threw, and Node never adds such a listener. */
+static void scr_ee_unadd(ScrEmitter *em, ScrStr *name, ScrClosure *cb) {
+  ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
+  if (!b) return;
+  for (size_t i = b->n; i-- > 0;) {
+    if (b->ls[i]->cb == cb) {
+      scr_ee_remove_at_quiet(em, b, i);
+      return;
+    }
+  }
 }
 
 /* removeListener/off: the LAST matching occurrence leaves (Node searches

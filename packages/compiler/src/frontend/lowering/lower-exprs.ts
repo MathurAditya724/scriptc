@@ -808,6 +808,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       const projection = sym ? lowerer.staticCallables.get(sym) : undefined;
       if (
         projection?.kind === "promisified-exec-file" ||
+        projection?.kind === "promisified-exec" ||
         projection?.kind === "promisified-builtin"
       ) {
         lowerer.unsupported(

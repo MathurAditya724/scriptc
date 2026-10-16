@@ -733,6 +733,21 @@ ScrStr *scr_str_concat_mixed_move(ScrStr *head, ScrStr *const *parts, const doub
 }
 
 ScrStr *scr_str_concat_f64(ScrStr *a, double x) {
+  /* A head that cannot grow in place (a literal or a shared string): the
+   * result is exactly its bytes and the number's. Digits complete no
+   * surrogate pair, so no seam needs joining. */
+  if (a->rc != 1) {
+    char text[SCR_F64_TEXT_MAX];
+    size_t n = scr_f64_to_str(x, text);
+    if (a->len > SCR_STR_MAX_CAP - n) scr_oom();
+    size_t len = a->len + n;
+    ScrStr *out = scr_str_alloc(len, len);
+    scr_copy_bytes(out->data, a->data, a->len);
+    scr_copy_bytes(out->data + a->len, text, n);
+    out->data[len] = '\0';
+    out->ascii = a->ascii;
+    return out;
+  }
   ScrStr *none = NULL;
   return scr_str_concat_mixed(a, &none, &x, 1);
 }

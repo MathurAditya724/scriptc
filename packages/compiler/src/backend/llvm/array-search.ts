@@ -63,7 +63,7 @@ export function emitArraySearchHelpers(
       `define internal double @${arraySearchHelperName(kind)}(ptr %a, ptr %v) ${FN_ATTRS} {`,
       `entry:`,
       `  %lenp = getelementptr inbounds %ScrArr, ptr %a, i32 0, i32 1`,
-      `  %len = load ${sz}, ptr %lenp`,
+      `  %len = load ${sz}, ptr %lenp${sz === "i64" ? ", !range !{i64 0, i64 4294967296}" : ""}`,
       `  %fp = getelementptr inbounds %ScrArr, ptr %a, i32 0, i32 6`,
       `  %f32 = load i32, ptr %fp`,
       widen,

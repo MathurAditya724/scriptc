@@ -115,6 +115,10 @@ const WINDOWS_SKIPS: Record<string, string> = {
     "posix-shaped: the unlistened sh spawn failure crashes both sides, rendered differently",
   "1473-promisify-execfile.ts":
     "posix-shaped: the unhandled spawn-ENOENT rejection crashes both sides, rendered differently",
+  "5625-promisify-exec.ts":
+    "posix-shaped: promisified exec runs /bin/sh -c (execSync's static shell lowering); Windows Node runs cmd.exe",
+  "5626-promisify-forms.ts":
+    "posix-shaped: printf and /bin/sh are ENOENT on Windows Node too; the rejections go unhandled on both sides, rendered differently",
   "1482-spawnsync-error.ts":
     'posix-shaped: /bin/sh fails ENOENT on Windows Node too — its null stdout .trim() crashes the oracle where the documented "" stance carries on',
   "1522-spawnsync-options.ts":
