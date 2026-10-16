@@ -332,6 +332,9 @@ typedef struct ScrPromise ScrPromise; /* full section further down */
 
 ScrStats *scr_fs_stat(ScrStr *path);  /* +1, or throws */
 ScrStats *scr_fs_lstat(ScrStr *path); /* +1, or throws; NO follow (lstat) */
+/* { throwIfNoEntry }: +1, or throws; with false, NULL when the entry is
+ * missing (ENOENT/ENOTDIR) */
+ScrStats *scr_fs_stat_probe(ScrStr *path, bool no_follow, bool throw_if_no_entry);
 ScrStats *scr_fs_fstat(double fd); /* +1, or throws */
 void scr_fs_fchmod(double fd, double mode);
 void scr_fs_fsync(double fd);

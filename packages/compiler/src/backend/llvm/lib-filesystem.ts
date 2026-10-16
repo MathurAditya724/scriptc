@@ -1,7 +1,7 @@
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
-import { DYN, F64, STRING } from "../../ir/ir.js";
+import { DYN, F64, STATS_T, STRING } from "../../ir/ir.js";
 import { mangleRecordNew } from "../mangle.js";
 import { arrNewCall, traceArg, vAdapters } from "./shapes.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
@@ -496,6 +496,27 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.startBlock(le);
     B.line(`call void @scr_fs_glob_free(ptr ${snap})`);
     return arrayOut;
+  }
+  if (e.fn === "fs.statProbeSync" || e.fn === "fs.lstatProbeSync") {
+    // `Stats | undefined` — the runtime answers a +1 Stats, or NULL for a
+    // missing entry when throwIfNoEntry is false (other failures throw).
+    if (e.type.kind !== "union")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
+    const def = host.unionsById.get(e.type.unionId);
+    const statsTag = def ? def.arms.findIndex((a) => a.kind === "stats") : -1;
+    const undefTag = undefinedArmTag(e.type, host.unionsById);
+    if (statsTag < 0 || undefTag < 0)
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
+    const path = host.emitExpr(e.args[0]!);
+    const throws = host.emitExpr(e.args[1]!);
+    host.declare(`declare ptr @scr_fs_stat_probe(ptr, i1 zeroext, i1 zeroext)`);
+    const raw = B.tmp();
+    const noFollow = e.fn === "fs.lstatProbeSync" ? "true" : "false";
+    B.line(
+      `${raw} = call ptr @scr_fs_stat_probe(ptr ${path.name}, i1 zeroext ${noFollow}, i1 zeroext ${throws.name})`,
+    );
+    host.emitPendingCheck();
+    return host.wrapNullable(raw, raw, STATS_T, statsTag, e.type, undefTag);
   }
   if (e.fn === "fs.readdirTypesSync" || e.fn === "fsp.readdirTypes") {
     // Dirent rows assembled inline from one scandir snapshot — the C

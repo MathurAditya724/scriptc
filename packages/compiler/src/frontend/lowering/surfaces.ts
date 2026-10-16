@@ -1936,6 +1936,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     rmSync: ["fs.rmOptsSync", "fs.rmRetrySync"],
     // The { withFileTypes: true } Dirent form.
     readdirSync: ["fs.readdirTypesSync"],
+    // The { throwIfNoEntry } probe form.
+    statSync: ["fs.statProbeSync"],
+    lstatSync: ["fs.lstatProbeSync"],
     globSync: ["fs.globTypesSync"],
     // The JS-source validation-ladder variant (lowerFsLadderCall): the
     // real mkdtemp runs when the options leave utf8 semantics.

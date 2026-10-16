@@ -961,6 +961,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * calls); the stats.* getters are pure reads on it. */
   "fs.statSync": { argTypes: [STRING], result: STATS_T },
   "fs.lstatSync": { argTypes: [STRING], result: STATS_T },
+  // statSync / lstatSync(path, { throwIfNoEntry }): arg 1 is the flag.
+  // Result is the interned `Stats | undefined` union (the runtime answers
+  // +1-or-NULL; the backend builds the arms).
+  "fs.statProbeSync": { argTypes: [STRING, BOOL], result: VOID },
+  "fs.lstatProbeSync": { argTypes: [STRING, BOOL], result: VOID },
   "fs.fstatSync": { argTypes: [F64], result: STATS_T },
   "fs.fchmodSync": { argTypes: [F64, F64], result: VOID },
   "fs.fsyncSync": { argTypes: [F64], result: VOID },

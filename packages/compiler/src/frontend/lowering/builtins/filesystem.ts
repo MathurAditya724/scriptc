@@ -21,6 +21,7 @@ import {
   type IrLibFn,
   type IrStmt,
   type IrType,
+  STATS_T,
   STRING,
   type SrcLoc,
   VOID,
@@ -29,6 +30,7 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { optionMember, lowerBuiltinOptionalDefault } from "./arguments.js";
+import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 
 type FsSyncBufferWindowSource =
   | { kind: "options"; node: ts.Expression | undefined }
@@ -1011,7 +1013,14 @@ export function lowerStatsMethodCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
+  // `stat?.isFile()` on a `Stats | undefined` receiver: the optional-chain
+  // lowering guards the receiver, then re-enters here with it narrowed.
+  if (
+    (call.questionDotToken && !lowerer.chainHandled.has(call)) ||
+    (access.questionDotToken && !lowerer.chainHandled.has(access))
+  ) {
+    return null;
+  }
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "stats") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
@@ -1301,6 +1310,171 @@ export function lowerFsReaddirTypesCall(
     fn: promiseForm ? "fsp.readdirTypes" : "fs.readdirTypesSync",
     args: [path],
     type: callType,
+    loc,
+  };
+}
+
+/** fs.statSync / fs.lstatSync's documented option keys. */
+const FS_STAT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set(["bigint", "throwIfNoEntry"]);
+
+/** fs.statSync / fs.lstatSync(path, options). The options are an object
+ * literal, where throwIfNoEntry takes any boolean and bigint must be a
+ * literal false (BigIntStats has no lowering), or a stored record whose
+ * only member is a boolean throwIfNoEntry. When the call's type is
+ * `Stats | undefined`, the call lowers to the probe, which answers
+ * undefined for a missing entry without building the error. An explicitly
+ * undefined options argument is the one-argument form. */
+export function lowerFsStatOptionsCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+  noFollow: boolean,
+): IrExpr {
+  const spelling = noFollow ? "lstatSync" : "statSync";
+  const plainFn: IrLibFn = noFollow ? "fs.lstatSync" : "fs.statSync";
+  const optsNode = call.arguments[1]!;
+  const path = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
+  // The path binds first, then the options' effects, then the stat runs.
+  const plainAfter = (effect: IrExpr | null): IrExpr => {
+    if (effect === null) return { kind: "libCall", fn: plainFn, args: [path], type: STATS_T, loc };
+    const pathLocal = lowerer.declareHiddenLocal("%statPath", STRING);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc },
+        { kind: "exprStmt", expr: effect, loc: effect.loc },
+      ],
+      result: {
+        kind: "libCall",
+        fn: plainFn,
+        args: [varRef(pathLocal.id, STRING, loc)],
+        type: STATS_T,
+        loc,
+      },
+      type: STATS_T,
+      loc,
+    };
+  };
+  const undefinedOptions = lowerStaticallyUndefinedArgument(lowerer, optsNode);
+  if (undefinedOptions !== null) {
+    return plainAfter(isSafeToDiscard(undefinedOptions) ? null : undefinedOptions);
+  }
+  let throwIfNoEntry: IrExpr | null = null;
+  if (!ts.isObjectLiteralExpression(optsNode)) {
+    // A stored options record (`const statSyncOptions = { throwIfNoEntry:
+    // false }`): the flag is read from it at the call, as Node reads
+    // options.throwIfNoEntry.
+    const optsType = lowerer.mapTypeOf(lowerer.typeOf(optsNode));
+    const shape = optsType?.kind === "record" ? lowerer.shapes.get(optsType.shapeId) : undefined;
+    const field = shape?.fields.find((f) => f.name === "throwIfNoEntry");
+    if (
+      optsType?.kind !== "record" ||
+      !shape ||
+      shape.tuple ||
+      shape.indexValue ||
+      shape.fields.length !== 1 ||
+      field?.type.kind !== "bool"
+    ) {
+      lowerer.noLowering(
+        `${spelling} with this options value`,
+        optsNode,
+        `pass an object literal, or a record whose only member is a boolean throwIfNoEntry: ${spelling}(path, { throwIfNoEntry: false })`,
+      );
+    }
+    const opts = lowerer.lowerExpr(optsNode);
+    if (opts.type.kind === "record") {
+      throwIfNoEntry = {
+        kind: "recordGet",
+        obj: opts,
+        shapeId: opts.type.shapeId,
+        field: "throwIfNoEntry",
+        type: BOOL,
+        loc,
+      };
+    } else if (opts.type.kind === "dyn") {
+      // A JavaScript binding held as a dynamic value: Node keeps throwing
+      // unless the member is exactly false.
+      throwIfNoEntry = {
+        kind: "dynScalarEq",
+        left: {
+          kind: "dynKeyGet",
+          key: { kind: "strLit", value: "throwIfNoEntry", type: STRING, loc },
+          optional: true,
+          value: opts,
+          type: DYN,
+          loc,
+        },
+        right: boolLit(false, loc),
+        negated: true,
+        type: BOOL,
+        loc,
+      };
+    } else {
+      lowerer.noLowering(`${spelling} with this options value`, optsNode, "pass an object literal");
+    }
+  }
+  for (const p of ts.isObjectLiteralExpression(optsNode) ? optsNode.properties : []) {
+    const m = optionMember(p);
+    if (!m) {
+      lowerer.noLowering(
+        `${spelling} with this options shape`,
+        p,
+        "spreads and computed keys have no lowering — write each member inline",
+      );
+    }
+    if (m.name === "throwIfNoEntry") {
+      throwIfNoEntry = lowerer.lowerExprExpecting(m.value, BOOL);
+    } else if (m.name === "bigint") {
+      const t = lowerer.typeOf(m.value);
+      if (!(t.flags & ts.TypeFlags.BooleanLiteral) || lowerer.checker.typeToString(t) !== "false") {
+        lowerer.noLowering(
+          `${spelling} with bigint: true`,
+          m.value,
+          "BigIntStats has no lowering; omit bigint for Stats",
+        );
+      }
+    } else {
+      fenceOrDropOptionKey(
+        lowerer,
+        p,
+        m.name,
+        spelling,
+        FS_STAT_DOCUMENTED_OPTIONS,
+        "throwIfNoEntry and bigint: false are the supported options",
+      );
+    }
+  }
+  const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (callType?.kind === "stats") {
+    // A runtime flag that is false answers undefined, which a Stats result
+    // cannot hold.
+    if (throwIfNoEntry !== null && !(throwIfNoEntry.kind === "boolLit" && throwIfNoEntry.value)) {
+      lowerer.noLowering(
+        `${spelling} with a runtime-valued throwIfNoEntry where the result is typed Stats`,
+        call,
+        "the result must be Stats | undefined when throwIfNoEntry may be false",
+      );
+    }
+    return plainAfter(null);
+  }
+  const def = callType?.kind === "union" ? lowerer.unions.get(callType.unionId) : undefined;
+  if (
+    !def ||
+    def.arms.length !== 2 ||
+    !def.arms.some((a) => a.kind === "stats") ||
+    !def.arms.some((a) => a.kind === "undefinedT")
+  ) {
+    lowerer.noLowering(
+      `${spelling}(path, options) where the result is not Stats or Stats | undefined`,
+      call,
+      `${spelling}(path, { throwIfNoEntry: false }) answers Stats | undefined`,
+    );
+  }
+  return {
+    kind: "libCall",
+    fn: noFollow ? "fs.lstatProbeSync" : "fs.statProbeSync",
+    args: [path, throwIfNoEntry ?? boolLit(true, loc)],
+    type: callType!,
     loc,
   };
 }

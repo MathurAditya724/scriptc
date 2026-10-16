@@ -4646,6 +4646,18 @@ function validateFunction(
   }
 
   function checkLibFileCall(e: IrExpr & { kind: "libCall" }): boolean {
+    if (e.fn === "fs.statProbeSync" || e.fn === "fs.lstatProbeSync") {
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "stats") &&
+        def.arms.some((a) => a.kind === "undefinedT");
+      if (!ok) {
+        err(`libCall ${e.fn} must return the 'Stats | undefined' union`, e.loc);
+      }
+      return true;
+    }
     if (
       e.fn === "zlib.deflateCb" ||
       e.fn === "zlib.inflateCb" ||
