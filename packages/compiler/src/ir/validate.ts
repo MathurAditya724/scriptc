@@ -3961,6 +3961,9 @@ function validateFunction(
       e.fn === "stream.pipeline" ||
       e.fn === "stream.pipelineDyn" ||
       e.fn === "stream.compose" ||
+      e.fn === "stream.pipelineStages" ||
+      e.fn === "stream.pipelineStagesDyn" ||
+      e.fn === "sp.pipelineStages" ||
       e.fn === "sp.pipeline" ||
       e.fn === "sp.pipelineOpts" ||
       e.fn === "sp.pipelineOptsSignal" ||
@@ -5222,6 +5225,8 @@ function validateFunction(
       e.fn === "stream.pipeline" ||
       e.fn === "stream.pipelineDyn" ||
       e.fn === "stream.compose" ||
+      e.fn === "stream.pipelineStages" ||
+      e.fn === "stream.pipelineStagesDyn" ||
       e.fn === "stream.addAbortSignal" ||
       e.fn === "stream.addAbortSignalFn" ||
       e.fn === "stream.finishedOpts" ||
@@ -5326,6 +5331,28 @@ function validateFunction(
           }
         }
         if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream`, e.loc);
+        return true;
+      }
+      if (e.fn === "stream.pipelineStages" || e.fn === "stream.pipelineStagesDyn") {
+        // (n, at, k, s1..sn, stage1..stagek, next, read, return, cb)
+        const [n, at, k] = e.args.slice(0, 3).map((a) => (a?.kind === "numLit" ? a.value : -1));
+        if (n! < 2 || at! < 1 || at! >= n! || k! < 1 || e.args.length !== 3 + n! + k! + 3 + 1) {
+          err(`libCall ${e.fn} count/arity mismatch`, e.loc);
+          return true;
+        }
+        for (let i = 3; i < 3 + n!; i++) {
+          if (!isStreamObject(e.args[i]?.type)) {
+            err(`libCall ${e.fn} stage ${i - 3} must be a stream-hierarchy object`, e.loc);
+          }
+        }
+        for (let i = 3 + n!; i < e.args.length - 1; i++) {
+          if (e.args[i]?.type.kind !== "func")
+            err(`libCall ${e.fn} helper ${i} must be a func`, e.loc);
+        }
+        const cbK = e.args[e.args.length - 1]?.type.kind;
+        if (e.fn === "stream.pipelineStages" ? cbK !== "func" : cbK !== "dyn") {
+          err(`libCall ${e.fn} callback has the wrong kind`, e.loc);
+        }
         return true;
       }
       if (e.fn === "stream.pipeline" || e.fn === "stream.pipelineDyn") {

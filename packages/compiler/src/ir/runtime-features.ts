@@ -221,6 +221,8 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn === "stream.errored" ||
         fn === "sp.finished" ||
         fn === "sp.pipeline" ||
+        fn === "sp.pipelineStages" ||
+        fn.startsWith("stream.pipelineStages") ||
         fn === "console.bind" ||
         fn === "stream.addAbortSignal" ||
         fn === "stream.addAbortSignalFn" ||
