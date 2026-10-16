@@ -1,5 +1,5 @@
-import type { IrFunction, IrGlobal, IrModule } from "./ir.js";
-import { everyStmtList } from "./traverse.js";
+import type { IrExpr, IrFunction, IrGlobal, IrModule, IrStmt } from "./ir.js";
+import { everyExprChild, everyStmtChild, everyStmtList } from "./traverse.js";
 
 /** Globals private to a guarded, synchronous initializer have local numeric
  * dataflow: no other function can replace their slots, and reentrant module
@@ -102,6 +102,82 @@ export function initializerLocalCandidates(bindings: readonly IrGlobal[]): IrGlo
 export function withInitializerLocals(fn: IrFunction, bindings: readonly IrGlobal[]): IrFunction {
   if (!bindings.length) return fn;
   return { ...fn, locals: [...fn.locals, ...bindings] };
+}
+
+/** Bindings some loop writes only on a path its iteration may skip: inside
+ * an `if` or `switch` arm, a conditional expression arm or a short-circuit
+ * operand of that loop's body. Kept in a register, such an update becomes a
+ * select that every iteration waits on; kept in memory, only the taken path
+ * pays. Writes directly in a nested loop's body count against that loop. */
+export function conditionalLoopWrites(body: readonly IrStmt[]): Set<string> {
+  const out = new Set<string>();
+  // `conditional` is only meaningful inside a loop.
+  const expr = (e: IrExpr, inLoop: boolean, conditional: boolean): void => {
+    if ((e.kind === "assignExpr" || e.kind === "incDec") && inLoop && conditional)
+      out.add(e.localId);
+    const branches =
+      e.kind === "ternary" ||
+      e.kind === "logical" ||
+      e.kind === "nullish" ||
+      e.kind === "orDefault";
+    let first = true;
+    everyExprChild(
+      e,
+      (child) => {
+        // The condition / left operand always runs; the rest may not.
+        expr(child, inLoop, conditional || (branches && !first));
+        first = false;
+        return true;
+      },
+      (s) => (stmt(s, inLoop, conditional), true),
+    );
+  };
+  const list = (stmts: readonly IrStmt[], inLoop: boolean, conditional: boolean): void => {
+    for (const s of stmts) stmt(s, inLoop, conditional);
+  };
+  const stmt = (s: IrStmt, inLoop: boolean, conditional: boolean): void => {
+    switch (s.kind) {
+      case "assign":
+        if (inLoop && conditional) out.add(s.localId);
+        expr(s.value, inLoop, conditional);
+        return;
+      case "if":
+        expr(s.cond, inLoop, conditional);
+        list(s.then, inLoop, true);
+        if (s.else_) list(s.else_, inLoop, true);
+        return;
+      case "switch":
+        expr(s.disc, inLoop, conditional);
+        for (const c of s.cases) {
+          if (c.test) expr(c.test, inLoop, true);
+          list(c.body, inLoop, true);
+        }
+        return;
+      case "while":
+      case "doWhile":
+        expr(s.cond, true, false);
+        list(s.body, true, false);
+        return;
+      case "for":
+        if (s.init) stmt(s.init, inLoop, conditional);
+        if (s.cond) expr(s.cond, true, false);
+        if (s.update) stmt(s.update, true, false);
+        list(s.body, true, false);
+        return;
+      case "forOf":
+        expr(s.iterable, inLoop, conditional);
+        list(s.body, true, false);
+        return;
+      default:
+        everyStmtChild(
+          s,
+          (e) => (expr(e, inLoop, conditional), true),
+          (child) => (stmt(child, inLoop, conditional), true),
+        );
+    }
+  };
+  list(body, false, false);
+  return out;
 }
 
 /** An analysis view only: parameters seed numeric-view initialization, not

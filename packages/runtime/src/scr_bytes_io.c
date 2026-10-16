@@ -1832,17 +1832,42 @@ void scr_fs_read_chk(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offse
 /* createReadStream/createWriteStream(path, options?): getOptions'
  * assertEncoding, the fd member's FileHandle-or-integer contract when
  * present, the path contract otherwise; the stream machinery fences. */
-void scr_fs_stream_opts_chk(const ScrDyn *path, const ScrDyn *opts, const ScrStr *fence) {
-  if (!scr_fs_encoding_chk(opts)) return;
+bool scr_fs_stream_opts_valid(const ScrDyn *path, const ScrDyn *opts) {
+  if (!scr_fs_encoding_chk(opts)) return false;
+  if (path == NULL) return true; /* a FileHandle's stream: options.fd is the handle */
   const ScrDyn *fd = opts->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(opts, "fd", 2) : NULL;
   if (fd != NULL && !scr_fs_dyn_absent(fd)) {
     if (fd->kind != SCR_DYN_NUM) {
       scr_dyn_prop_type_fail("options.fd", "of type number or an instance of FileHandle", fd);
-      return;
+      return false;
     }
-    if (!scr_fs_int_range_chk(fd, "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return;
-  } else if (!scr_fs_path_chk(path, "path")) {
-    return;
+    return scr_fs_int_range_chk(fd, "fd", 0, 2147483647.0, ">= 0 && <= 2147483647");
   }
-  scr_throw_lowering_fence(fence);
+  return scr_fs_path_chk(path, "path");
+}
+
+void scr_fs_stream_opts_chk(const ScrDyn *path, const ScrDyn *opts, const ScrStr *fence) {
+  if (scr_fs_stream_opts_valid(path, opts)) scr_throw_lowering_fence(fence);
+}
+
+ScrStr *scr_fs_stream_path(const ScrDyn *value) { return scr_fs_checked_path(value, "path"); }
+
+int scr_fs_stream_flags(const ScrDyn *flag, const char *fallback) {
+  const char *f = scr_fs_dyn_absent(flag) ? fallback : flag->kind == SCR_DYN_STR ? flag->v.str->data : NULL;
+  if (!f) {
+    static const char message[] = "Runtime numeric filesystem flags have no portable native lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return -1;
+  }
+  int bits = scr_fs_flag_bits(f);
+  if (bits < 0) scr_fs_flag_invalid(f);
+  return bits;
+}
+
+bool scr_fs_stream_mode(const ScrDyn *value, double *mode) {
+  if (scr_fs_dyn_absent(value)) {
+    *mode = 0666;
+    return true;
+  }
+  return scr_fs_cb_file_mode(value, "mode", mode);
 }

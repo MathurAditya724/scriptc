@@ -8,6 +8,7 @@ import {
   fenceOrDropOptionKey,
 } from "../surfaces.js";
 import { voidizedCallback } from "../lower-server.js";
+import { fsStreamCreateExpr } from "./fs-streams.js";
 import {
   BYTES_U8,
   DYN,
@@ -734,6 +735,23 @@ export function lowerFsOpendirCall(
     }
   }
   return { kind: "libCall", fn: fn.fn, args: [path, bufferSize], type: fn.result, loc };
+}
+
+/** fs.createReadStream / fs.createWriteStream(path[, options]). */
+export function lowerFsStreamCreate(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: "createReadStream" | "createWriteStream",
+  loc: SrcLoc,
+): IrExpr {
+  return fsStreamCreateExpr(
+    lowerer,
+    expr.arguments,
+    member === "createReadStream",
+    `fs.${member}`,
+    expr,
+    loc,
+  );
 }
 
 // mkdirSync(p, options): the lowered options form is a literal

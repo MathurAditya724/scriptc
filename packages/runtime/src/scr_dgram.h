@@ -47,6 +47,24 @@ double scr_dgram_addr_port(ScrDgramSocket *s);
 void scr_dgram_close(ScrDgramSocket *s, ScrClosure *cb /*moves, nullable*/); /* throws on closed */
 void scr_dgram_unref(ScrDgramSocket *s);
 void scr_dgram_ref(ScrDgramSocket *s);
+/* Socket options: Node's checks and errors (ErrnoException "<syscall>
+ * <CODE>", ERR_SOCKET_BAD_BUFFER_SIZE, ERR_SOCKET_BUFFER_SIZE, the
+ * TypeError after close()). The TTL setters and setMulticastLoopback
+ * answer their argument; group and iface are borrowed. */
+void scr_dgram_set_broadcast(ScrDgramSocket *s, bool flag);
+double scr_dgram_set_ttl(ScrDgramSocket *s, double ttl);
+double scr_dgram_set_multicast_ttl(ScrDgramSocket *s, double ttl);
+bool scr_dgram_set_multicast_loopback(ScrDgramSocket *s, bool flag);
+void scr_dgram_set_multicast_interface(ScrDgramSocket *s, ScrStr *iface);
+void scr_dgram_add_membership(ScrDgramSocket *s, ScrStr *group, ScrStr *iface, bool has_iface);
+void scr_dgram_drop_membership(ScrDgramSocket *s, ScrStr *group, ScrStr *iface, bool has_iface);
+double scr_dgram_get_recv_buffer_size(ScrDgramSocket *s);
+double scr_dgram_get_send_buffer_size(ScrDgramSocket *s);
+void scr_dgram_set_recv_buffer_size(ScrDgramSocket *s, double size);
+void scr_dgram_set_send_buffer_size(ScrDgramSocket *s, double size);
+double scr_dgram_get_send_queue_size(ScrDgramSocket *s);
+double scr_dgram_get_send_queue_count(ScrDgramSocket *s);
+void scr_dgram_disconnect(ScrDgramSocket *s);
 void scr_dgram_on_message(ScrDgramSocket *s, ScrClosure *cb /*moves*/, ScrDgramMsgFn fn, bool once);
 void scr_dgram_on_error(ScrDgramSocket *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_dgram_on_listening(ScrDgramSocket *s, ScrClosure *cb /*moves*/, bool once);

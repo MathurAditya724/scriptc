@@ -7,8 +7,8 @@
     "tierItemCount": 3472,
     "tiers": {
       "static": {
-        "audit-partial": 1038,
-        "verify-gap": 2307,
+        "audit-partial": 1058,
+        "verify-gap": 2287,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -25397,12 +25397,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.filehandle.createReadStream",
+          "tests": [
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -25422,12 +25424,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.filehandle.createWriteStream",
+          "tests": [
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -25661,12 +25665,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.filehandle.readLines",
+          "tests": [
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -27187,12 +27193,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.createReadStream",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -27212,12 +27222,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.createWriteStream",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -30679,12 +30693,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.ReadStream",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -30704,12 +30722,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.bytesRead",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -30729,12 +30751,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.path",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -30754,12 +30780,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.pending",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -30779,12 +30809,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.'close'",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -30804,12 +30838,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.'open'",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -30829,12 +30867,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.'ready'",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -32393,12 +32435,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.WriteStream",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -32418,12 +32464,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.writeStream.close",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -32443,12 +32493,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.writeStream.bytesWritten",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -32468,12 +32522,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.writeStream.path",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -32493,12 +32551,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.pending",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -32518,12 +32580,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.'close'",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -32543,12 +32609,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.'open'",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },
@@ -32568,12 +32638,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.'ready'",
+          "tests": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+          ]
         }
       }
     },

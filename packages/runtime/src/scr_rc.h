@@ -16,8 +16,10 @@
  * object WITHOUT releasing traced children) and the trial-deletion
  * bookkeeping (color, generation and candidate-root buffer state). Types
  * that can never be in a cycle — strings above all, plus arrays of scalar/
- * string/bytes elements, dyn trees, and shapes whose fields are all acyclic
- * — keep the lean 1-word `rc` header and pay nothing. Arrays and maps are
+ * string/bytes elements and shapes whose fields are all acyclic — keep the
+ * lean 1-word `rc` header and pay nothing. Heap dyn nodes all carry the
+ * header (one uniform tracing ABI for unknown values); parsed documents
+ * avoid candidate buffering through intact regions instead (ScrDynRegion). Arrays and maps are
  * cycle-capable exactly when their element/value type is (a record element
  * can point back at the array holding it).
  *

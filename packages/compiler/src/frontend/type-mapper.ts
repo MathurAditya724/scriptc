@@ -2755,6 +2755,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "object", className: "%Transform" };
   }
+  // fs.ReadStream / fs.WriteStream (the shipped fallback declarations):
+  // their instances are runtime Readable / Writable streams
+  // (scr_fs_stream.c).
+  if (
+    (psym?.name === "ReadStream" || psym?.name === "WriteStream") &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          ts.isClassDeclaration(d) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          !isNodeTypesPath(d.getSourceFile().fileName) &&
+          isDeclaredInAmbientModule(d, "fs"),
+      )
+  ) {
+    return { kind: "object", className: psym.name === "ReadStream" ? "%Readable" : "%Writable" };
+  }
   if (
     (psym?.name === "Readable" &&
       checker

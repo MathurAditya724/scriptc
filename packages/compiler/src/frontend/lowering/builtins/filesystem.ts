@@ -402,7 +402,19 @@ export function lowerFsLadderCall(
     }
     case "createReadStream":
     case "createWriteStream": {
+      // The runtime streams (scr_fs_stream.c) run Node's checks; a third
+      // argument keeps the ladder's fence.
       const a = dynArgs([args[0], args[1]]);
+      if (a && args.length <= 2) {
+        const readable = bi.member === "createReadStream";
+        return {
+          kind: "libCall",
+          fn: readable ? "fs.createReadStream" : "fs.createWriteStream",
+          args: a,
+          type: { kind: "object", className: readable ? "%Readable" : "%Writable" },
+          loc,
+        };
+      }
       return (
         a &&
         chk("fs.streamOptsChk", [...a, ladderFenceExpr(lowerer, `fs.${bi.member}`, expr)], resultT)
@@ -522,6 +534,9 @@ export function lowerFileHandleMethodCall(
   const loc = locOf(call);
   const receiver = (): IrExpr => lowerer.lowerExprExpecting(access.expression, FILEHANDLE_T);
   const promise = (inner: IrType): IrType => ({ kind: "promise", inner });
+  if (name === "createReadStream" || name === "createWriteStream" || name === "readLines") {
+    return lowerFileHandleStreamCall(lowerer, call, name, receiver(), loc);
+  }
   const num = (
     node: ts.Expression | undefined,
     dflt: number,
@@ -929,6 +944,59 @@ export function lowerFileHandleMethodCall(
     "fd, close(), read(), write(), readv(), writev(), readFile(), writeFile(), appendFile(), stat(), sync(), datasync(), truncate(), and chmod() are the supported FileHandle members",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
+}
+
+/** FileHandle.createReadStream / createWriteStream(options?) and
+ * readLines(options?): the options cross as one dyn value (the runtime
+ * spreads an options object, as Node's `{ ...options, fd: this }` does).
+ * readLines is `new readline.Interface({ input: createReadStream(options),
+ * crlfDelay: Infinity })`. */
+function lowerFileHandleStreamCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  name: "createReadStream" | "createWriteStream" | "readLines",
+  receiver: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const args = call.arguments;
+  if (args.some(ts.isSpreadElement) || args.length > 1) {
+    lowerer.noLowering(`FileHandle.${name} with ${args.length} arguments`, call);
+  }
+  let options: IrExpr = dynUndefinedExpr(loc);
+  if (args[0] !== undefined) {
+    const raw = lowerer.lowerExpr(args[0]);
+    if (raw.type.kind === "dyn") options = raw;
+    else if (raw.kind === "unitLit" || lowerer.dynConvertible(raw.type)) {
+      options = { kind: "dynFrom", value: raw, type: DYN, loc };
+    } else {
+      lowerer.noLowering(
+        `FileHandle.${name} with a '${lowerer.fmt(raw.type)}' options value`,
+        args[0],
+        "the options are a plain object",
+      );
+    }
+  }
+  const writable = name === "createWriteStream";
+  const stream: IrExpr = {
+    kind: "libCall",
+    fn: writable ? "fileHandle.createWriteStream" : "fileHandle.createReadStream",
+    args: [receiver, options],
+    type: { kind: "object", className: writable ? "%Writable" : "%Readable" },
+    loc,
+  };
+  if (name !== "readLines") return stream;
+  // rl.create's mode 1: an input stream, no output, then crlfDelay.
+  return {
+    kind: "libCall",
+    fn: "rl.create",
+    args: [
+      { kind: "numLit", value: 1, type: F64, loc },
+      stream,
+      { kind: "numLit", value: Infinity, type: F64, loc },
+    ],
+    type: F64,
+    loc,
+  };
 }
 
 /** fs.Dir's members: path, and the sync and promise read/close forms (the
