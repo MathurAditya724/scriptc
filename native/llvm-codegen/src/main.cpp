@@ -75,6 +75,8 @@ int main(int Argc, char **Argv) {
     return version(Argc, Argv);
   if (Argc >= 2 && StringRef(Argv[1]) == "runtime-unit")
     return scriptc::runtimeUnit(Argc, Argv);
+  if (Argc >= 2 && StringRef(Argv[1]) == "prune-import")
+    return scriptc::pruneImport(Argc, Argv);
   if (Argc >= 2 && StringRef(Argv[1]) == "emit") {
     std::optional<scriptc::EmitOptions> Options =
         scriptc::parseEmitOptions(Argc, Argv);
@@ -88,5 +90,6 @@ int main(int Argc, char **Argv) {
     return scriptc::emit(*Options);
   }
   return scriptc::reportError("usage",
-                              "expected 'version --format=json', 'emit', or 'runtime-unit'");
+                              "expected 'version --format=json', 'emit', 'runtime-unit', or "
+                              "'prune-import'");
 }
