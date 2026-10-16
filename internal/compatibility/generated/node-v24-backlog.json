@@ -76123,7 +76123,9 @@
             "tests/corpus/1573-promisify-execfile-env-spread.ts",
             "tests/corpus/2912-promisify-fs-readfile.ts",
             "tests/corpus/5625-promisify-exec.ts",
-            "tests/corpus/5626-promisify-forms.ts"
+            "tests/corpus/5626-promisify-forms.ts",
+            "tests/fixtures/node-types/promisify-fs.ts",
+            "tests/harness/project-config.test.ts"
           ]
         }
       }
