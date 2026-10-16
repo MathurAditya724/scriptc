@@ -75,10 +75,15 @@ _Static_assert(sizeof(ScrRgnChunk) <= SCR_RGN_HDR, "the chunk header fits before
  * pay a 2 MiB fault, large ones do not pay 512 small ones. */
 #define SCR_RGN_HUGE_AFTER 4
 
-/* Pressure retries: a thread that has condemned regions retries them at a
- * region entry once it has allocated this many bytes (or the condemned
- * size, if larger) since the last attempt, doubling after each attempt
- * that freed nothing. */
+/* Retries. A condemned region is attempted at the first retry after its
+ * release. An attempt that keeps it records the references counted to it;
+ * later retries attempt it again once that count changes, or once the
+ * thread has allocated this many bytes in regions (or the kept region's
+ * size, if larger) since the attempt, doubling after each attempt that
+ * found the count unchanged: references from ordinary objects the walk
+ * reaches can go away without changing the count. Retries run at region
+ * creation, at release, and at a region entry after this many bytes of
+ * region allocation. */
 #define SCR_RGN_RETRY_BYTES ((size_t)8 << 20)
 #define SCR_RGN_MAX_BACKOFF 6
 
@@ -101,6 +106,12 @@ typedef struct ScrRegion {
   size_t ncur;
   size_t bytes;
   ScrRgnChunk *spare; /* the next chunk, mapped and faulted in ahead of use */
+  /* After an attempt that kept the region: the references counted then,
+   * and when it is attempted regardless (see SCR_RGN_RETRY_BYTES). */
+  bool kept;
+  int64_t kept_counted;
+  size_t retry_at;
+  unsigned backoff;
 } ScrRegion;
 
 typedef struct {
@@ -157,8 +168,8 @@ typedef struct {
   size_t nregions, cap_regions;
   ScrRgnFrame *stack;
   size_t depth, cap_stack;
-  size_t since_attempt;
-  unsigned backoff;
+  size_t allocated; /* bytes of region segments this thread has allocated */
+  size_t checked;   /* `allocated` at the last retry */
   ScrRgnWalk walk;
   bool exit_registered;
   double cycle_ms; /* the cycle pass before the next attempt (stats) */
@@ -342,7 +353,7 @@ static ScrRgnSeg *scr_rgn_seg_new(ScrRegion *r, const ScrRgnClass *cls) {
   s->next = r->segs;
   r->segs = s;
   r->bytes += need;
-  scr_rgn.since_attempt += need;
+  scr_rgn.allocated += need;
   return s;
 }
 
@@ -765,6 +776,12 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r) {
   int64_t explained = w->internal + scr_rgn_settle(w, &black);
   uint64_t t1 = stats ? scr_hrtime_ns() : 0;
   if (explained != counted) {
+    if (r->kept && counted == r->kept_counted) {
+      if (r->backoff < SCR_RGN_MAX_BACKOFF) r->backoff++;
+    } else r->backoff = 0;
+    r->kept = true;
+    r->kept_counted = counted;
+    r->retry_at = t->allocated + ((r->bytes > SCR_RGN_RETRY_BYTES ? r->bytes : SCR_RGN_RETRY_BYTES) << r->backoff);
     if (stats)
       fprintf(stderr,
               "scriptc region %llu: kept: %lld references counted, %lld explained; %zu of %zu owned objects referenced from outside; cycles %.1f ms, walk %.1f ms\n",
@@ -808,15 +825,18 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r) {
   return true;
 }
 
+/* A condemned region not in use, never attempted, or kept by an attempt
+ * whose outcome may have changed since (see SCR_RGN_RETRY_BYTES). */
 static bool scr_rgn_due(const ScrRegion *r, const ScrRgnThread *t) {
-  return r->state == SCR_RGN_CONDEMNED && r->depth == 0 && r != t->current;
+  if (r->state != SCR_RGN_CONDEMNED || r->depth != 0 || r == t->current) return false;
+  return !r->kept || t->allocated >= r->retry_at || scr_rgn_counted(r) != r->kept_counted;
 }
 
-/* Tries every condemned region that is not in use. */
+/* Tries every condemned region that is due. */
 static void scr_rgn_retry(ScrRgnThread *t) {
   bool any = false;
   for (size_t i = 0; i < t->nregions && !any; i++) any = scr_rgn_due(t->regions[i], t);
-  t->since_attempt = 0;
+  t->checked = t->allocated;
   if (!any) return;
   if (atomic_load_explicit(&scr_rgn_index_state, memory_order_acquire) != 2) scr_rgn_index_build();
   /* Dead cycles of ordinary objects can hold counted references into a
@@ -824,18 +844,16 @@ static void scr_rgn_retry(ScrRgnThread *t) {
   uint64_t t0 = scr_rgn_stats() ? scr_hrtime_ns() : 0;
   scr_collect_cycles();
   if (t0) t->cycle_ms = scr_rgn_ms(t0, scr_hrtime_ns());
-  bool freed = false;
   for (size_t i = 0; i < t->nregions;) {
     ScrRegion *r = t->regions[i];
     if (scr_rgn_due(r, t) && scr_rgn_try_free(t, r)) {
-      freed = true;
-      i = 0; /* the table shrank; freeing may have unblocked another region */
+      /* The table shrank, and the freed region's references may have kept
+       * another one: the regions it held now count fewer references. */
+      i = 0;
       continue;
     }
     i++;
   }
-  if (freed) t->backoff = 0;
-  else if (t->backoff < SCR_RGN_MAX_BACKOFF) t->backoff++;
 }
 
 /* ── program-facing entry points ─────────────────────────────────────── */
@@ -858,7 +876,7 @@ void scr_region_enter(double id) {
   ScrRgnThread *t = scr_rgn_thread();
   ScrRegion *r = scr_rgn_lookup(t, id);
   if (!r || r->state != SCR_RGN_LIVE) r = t->dflt; /* released regions take no new objects */
-  if (t->nregions && t->since_attempt >= (SCR_RGN_RETRY_BYTES << t->backoff)) scr_rgn_retry(t);
+  if (t->nregions && t->allocated - t->checked >= SCR_RGN_RETRY_BYTES) scr_rgn_retry(t);
   if (t->depth == t->cap_stack) t->stack = scr_rgn_grow(t->stack, &t->cap_stack, sizeof *t->stack, 16);
   t->stack[t->depth++] = (ScrRgnFrame){t->current, r};
   r->depth++;

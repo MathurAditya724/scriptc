@@ -39,6 +39,7 @@ export interface RuntimeFeatures {
   http2: boolean;
   tls: boolean;
   tlsCa: boolean;
+  cipher: boolean;
 }
 
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
@@ -165,6 +166,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     http2: false,
     tls: false,
     tlsCa: false,
+    cipher: false,
   };
   const keepGoing = (): boolean => stopAt === undefined || !features[stopAt];
   const expr = (node: IrExpr): boolean => {
@@ -229,8 +231,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn.startsWith("sp.finishedOpts") ||
         fn.startsWith("sp.pipelineOpts") ||
         fn.startsWith("stream.finishedOpts")
-      )
+      ) {
+        // the stream unit emits through the emitter unit, also when the
+        // program constructs no stream (a pipeline of functions)
         features.stream = true;
+        features.emitter = true;
+      }
       if (fn.startsWith("zlib.")) features.zlib = true;
       // The Readable operators and Readable.from over a compiled generator
       // or a checked-dynamic iterator (scr_stream_ops.c) await through the
@@ -319,6 +325,14 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       if (fn.startsWith("test.")) features.nodeTest = true;
       if (fn.startsWith("dgram.") || fn.startsWith("dns.")) features.dgram = true;
       if (fn.startsWith("tlsca.")) features.tlsCa = true;
+      // scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
+      // process-warning unit, and unknown output encodings render through
+      // the inspect unit.
+      if (fn === "crypto.cipherNew") {
+        features.cipher = true;
+        features.dynAsync = true;
+        features.inspect = true;
+      }
     } else {
       switch (node.kind) {
         case "regexLit":

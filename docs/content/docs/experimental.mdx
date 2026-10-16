@@ -159,7 +159,7 @@ worker: square: 4 lines, 3 shapes
 
 <dl>
   <dt><code>new InternTable&lt;K, V&gt;(name)</code></dt>
-  <dd>Opens the table called <code>name</code>. Within one thread every construction with the same name refers to the same table. In scriptc builds every thread of the process shares it; under Node.js each thread has its own. Keys are strings or numbers and compare like <code>Map</code> keys.</dd>
+  <dd>Opens the table called <code>name</code>. Within one thread every construction with the same name refers to the same table. In scriptc builds every thread of the process shares it; under Node.js each thread has its own. Keys are strings, numbers, or arrays of numbers or of strings. Strings and numbers compare like <code>Map</code> keys; arrays compare by their elements in the same way and can have at most 65536 elements.</dd>
   <dt><code>table.get(key)</code>, <code>table.has(key)</code>, <code>table.size</code></dt>
   <dd>Read the table.</dd>
   <dt><code>table.getOrInsert(key, value)</code></dt>
@@ -180,7 +180,7 @@ No lock is held while a callback runs. Two threads that miss the same key at the
 2. It does not compare identities or ids across threads.
 3. A thread does not depend on another thread's inserts: `size` and `has` reflect every thread's inserts in scriptc and the calling thread's under Node.js.
 
-State that a thread computes about a shared value later (lazily resolved members, caches) belongs in thread-local state, such as a module-level `Map` keyed by the value: module state is per thread in both runtimes.
+State that a thread computes about a shared value later (lazily resolved members, caches) belongs in thread-local state, such as a module-level `Map` keyed by the value or an array indexed by an id the value carries: module state is per thread in both runtimes. In scriptc an array indexed by a dense id is the fastest of these.
 
 ### Memory
 

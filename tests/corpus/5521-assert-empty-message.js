@@ -41,6 +41,11 @@ function runAll(kind, message) {
   report("notDeepStrictEqual bytes", () =>
     assert.notDeepStrictEqual(new Uint8Array([1]), new Uint8Array([1]), message),
   );
+  report("deepEqual", () => assert.deepEqual({ a: 1 }, { a: 2 }, message));
+  report("notDeepEqual", () => assert.notDeepEqual({ a: 1 }, { a: 1 }, message));
+  report("partialDeepStrictEqual", () =>
+    assert.partialDeepStrictEqual({ a: 1, b: 2 }, { a: 2 }, message),
+  );
   report("match", () => assert.match("abc", /x/, message));
   report("doesNotMatch", () => assert.doesNotMatch("abc", /a/, message));
   report("throws none", () => assert.throws(() => {}, message));

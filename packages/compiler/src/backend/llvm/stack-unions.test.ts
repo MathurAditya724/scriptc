@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import {
   BOOL,
+  DYN,
   F64,
   STRING,
   VOID,
@@ -249,16 +250,18 @@ test("a shared argument expression gets a stack box only at a projection-only po
     fn = mod.functions[1]!;
   fn.params.push({ localId: "saved", name: "saved", type: optional });
   fn.locals.push({ id: "saved", name: "saved", type: optional, mutable: true });
-  fn.returnType = optional;
-  fn.body = [effect(narrow(ref("value"), record)), ret(ref("saved"))];
+  // A checked-dynamic result keeps the second argument's box.
+  fn.returnType = DYN;
+  fn.body = [
+    effect(narrow(ref("value"), record)),
+    ret({ kind: "dynFrom", value: ref("saved"), type: DYN, loc }),
+  ];
   const argument = wrap(fresh());
-  mod.functions[0]!.body.push(effect(call("read", [argument, argument], optional)));
+  mod.functions[0]!.body.push(effect(call("read", [argument, argument], DYN)));
   const ir = emit(mod),
     main = body(ir, "sc_f_main");
   expect(main.match(/call ptr @scr_union_new_ref/g)).toHaveLength(1);
   expect(main.match(/alloca %ScrUnion/g)).toHaveLength(1);
-  expect(body(ir, "sc_bf_read")).toContain("@scr_union_retain_v");
-  expect(body(ir, "sc_bf_read")).not.toContain("@scr_union_release");
   expect(body(ir, "sc_f_read")).toContain("@scr_union_release(ptr %p1)");
 });
 

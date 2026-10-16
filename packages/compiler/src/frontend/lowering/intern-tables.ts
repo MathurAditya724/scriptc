@@ -18,7 +18,8 @@
  *   publication analysis guards stores into the value's types), and reads
  *   the entry's value (itable.value). `getOrInsertComputed` with a
  *   function expression lowers in place instead, and creates the callback
- *   only when the key has no entry.
+ *   only when the key has no entry; an arrow function with an expression
+ *   body is not created at all: its body is lowered in place.
  * The entry handles that itable.find and itable.insert answer stay inside
  * these lowerings: f64 locals that only reach toBool and itable.value.
  * Any other use of the class or its members as values is refused. */
@@ -41,8 +42,15 @@ const TABLE_FIELD = "#table";
 
 const BUILTIN_LOC: SrcLoc = { file: "<builtin>", start: 0, end: 0 };
 
-/** Runtime key kinds (scr_itable.h SCR_ITABLE_KEY_*). */
-const KEY_KIND: Record<string, number> = { string: 0, f64: 1 };
+/** The runtime key kind of a key type (scr_itable.h SCR_ITABLE_KEY_*):
+ * strings, numbers, and arrays of numbers or of strings. */
+function keyKind(key: IrType): number | null {
+  if (key.kind === "string") return 0;
+  if (key.kind === "f64") return 1;
+  if (key.kind === "array" && key.elem.kind === "f64") return 2;
+  if (key.kind === "array" && key.elem.kind === "string") return 3;
+  return null;
+}
 
 /** Value types a table stores: the publishable Map value types. */
 const VALUE_KINDS = new Set<IrType["kind"]>([
@@ -138,12 +146,12 @@ function tableTypes(lowerer: Lowerer, type: ts.Type, blame: ts.Node): TableTypes
   const args = table ? lowerer.checker.getTypeArguments(table as ts.TypeReference) : [];
   if (args.length !== 2) lowerer.noLowering("InternTable without type arguments", blame);
   const key = lowerer.mapTypeOf(args[0]!);
-  if (key === null || (key.kind !== "string" && key.kind !== "f64"))
+  if (key === null || keyKind(key) === null)
     lowerer.unsupported(
       "SC1090",
       blame,
       `'${lowerer.checker.typeToString(args[0]!)}' as an InternTable key type`,
-      "use string or number keys",
+      "use string or number keys, or arrays of numbers or of strings",
     );
   const value = lowerer.mapTypeOf(args[1]!);
   if (value === null || !VALUE_KINDS.has(value.kind))
@@ -189,7 +197,7 @@ export function lowerInternTableNew(lowerer: Lowerer, expr: ts.NewExpression): I
     className: INTERN_TABLE_CLASS,
     args: [
       { kind: "strLit", value: name, type: STRING, loc },
-      { kind: "numLit", value: KEY_KIND[types.key.kind]!, type: F64, loc },
+      { kind: "numLit", value: keyKind(types.key)!, type: F64, loc },
     ],
     type: internTableType(lowerer),
     loc,
@@ -300,7 +308,9 @@ export function lowerInternTableCall(lowerer: Lowerer, expr: ts.CallExpression):
  *     e ? itable.value(e) : itable.value(itable.insert(t.#table, k, publish(callback(k))))
  *
  * Creating a function has no observable effect, so the callback's closure
- * is created only when the key has no entry, and a hit allocates nothing. */
+ * is created only when the key has no entry, and a hit allocates nothing.
+ * An arrow function with an expression body is lowered in place instead
+ * (inlineArrowBody). */
 function lowerComputedInline(
   lowerer: Lowerer,
   table: IrExpr,
@@ -316,10 +326,14 @@ function lowerComputedInline(
   const entryLocal = lowerer.declareHiddenLocal("%internEntry", F64);
   const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
   const handle = (): IrExpr => handleOf(ref(tableLocal.id, tableT), loc);
-  const callback = lowerer.coerceInto(callbackNode, lowerer.lowerExpr(callbackNode), callbackType);
-  const computed: IrExpr = {
+  const computed: IrExpr = inlineArrowBody(
+    lowerer,
+    callbackNode,
+    ref(keyLocal.id, types.key),
+    types.value,
+  ) ?? {
     kind: "callValue",
-    callee: callback,
+    callee: lowerer.coerceInto(callbackNode, lowerer.lowerExpr(callbackNode), callbackType),
     args: [ref(keyLocal.id, types.key)],
     type: types.value,
     loc,
@@ -365,6 +379,64 @@ function lowerComputedInline(
     type: types.value,
     loc,
   };
+}
+
+/** Whether `node` contains a function or class, whose captures of the
+ * inlined parameter would need a closure after all. */
+function containsFunction(node: ts.Node): boolean {
+  if (ts.isFunctionLike(node) || ts.isClassLikeDeclaration(node)) return true;
+  return ts.forEachChild(node, (child) => (containsFunction(child) ? true : undefined)) === true;
+}
+
+/** The body of `() => value` or `(k) => value`, lowered where the callback
+ * would be called, with the parameter bound to the key. Calling a fresh
+ * arrow function at once is evaluating its body there with its parameter
+ * bound, so no closure is created. Other callbacks answer null. */
+function inlineArrowBody(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  key: IrExpr,
+  value: IrType,
+): IrExpr | null {
+  if (!ts.isArrowFunction(node) || ts.isBlock(node.body)) return null;
+  if (node.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return null;
+  const param = node.parameters[0];
+  if (
+    node.parameters.length > 1 ||
+    (param !== undefined &&
+      (!ts.isIdentifier(param.name) ||
+        param.initializer !== undefined ||
+        param.dotDotDotToken !== undefined))
+  )
+    return null;
+  if (containsFunction(node.body)) return null;
+  const body = node.body;
+  const loc = locOf(node);
+  lowerer.scopes.push(new Map());
+  try {
+    const stmts: IrStmt[] = [];
+    if (param !== undefined) {
+      const paramTs = lowerer.typeOf(param);
+      const paramType = lowerer.mapTypeOf(paramTs);
+      if (paramType === null) lowerer.badType(param, paramTs);
+      const local = lowerer.declareLocal(
+        param.name,
+        (param.name as ts.Identifier).text,
+        paramType!,
+        false,
+      );
+      stmts.push({
+        kind: "varDecl",
+        localId: local.id,
+        init: lowerer.coerceToExpected(key, paramType!),
+        loc,
+      });
+    }
+    const result = lowerer.coerceInto(body, lowerer.lowerExpr(body), value);
+    return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: value, loc };
+  } finally {
+    lowerer.scopes.pop();
+  }
 }
 
 function helperName(lowerer: Lowerer, member: InternTableMember, signature: string): string | null {

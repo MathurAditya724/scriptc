@@ -3481,9 +3481,12 @@ export type IrExpr =
          * has no entry; itable.insert (f64 table, K key, V value) → f64 the
          * key's entry, storing the already published value when the key has
          * none; itable.value (f64 entry) → V, the entry's immortal value;
-         * itable.size (f64 table) → f64. K is string or f64. Handles carry
-         * raw pointer bits and only reach toBool and these intrinsics.
-         * None of them throws. */
+         * itable.size (f64 table) → f64. K is string, f64, or an array of
+         * f64 or of strings (compared by elements); find and insert throw
+         * a TypeError for array keys of more than 65536 elements or whose
+         * encoding exceeds 2^31 - 1 bytes; nothing else throws. Handles
+         * carry raw pointer bits and only reach toBool and these
+         * intrinsics. */
         | "itable.open"
         | "itable.find"
         | "itable.insert"
@@ -3512,6 +3515,12 @@ export type IrExpr =
       type: IrType;
       loc: SrcLoc;
       prototypeIdentityOnly?: true;
+      /** An assertion call made through a node:assert Assert instance: the
+       * instance options the runtime applies to this call. Backends set
+       * them right before the runtime call, after its arguments are
+       * evaluated; the AssertionError constructor consumes them, and a
+       * call that passes clears them. */
+      assertOptions?: { diff?: "full"; skipPrototype?: true };
     }
   /** `JSON.stringify(v)` — type-DIRECTED serialization: `value`'s static IR
    * type must be JSON-safe (f64/string/bool/record/array/union of those,

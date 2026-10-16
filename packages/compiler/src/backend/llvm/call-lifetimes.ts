@@ -87,11 +87,17 @@ export interface InlineFieldTest {
 
 const NO_INLINE_FIELDS: InlineFieldTest = { record: () => false, classField: () => false };
 
+/** Record shapes whose to-dyn conversion copies the fields into a fresh
+ * checked-dynamic value (dyn.ts recordDynKeepsIdentity): the conversion
+ * reads the record and keeps no reference to it. */
+export type RecordDynCopyTest = (shapeId: string) => boolean;
+
 function collectUses(
   fn: IrFunction,
   nullableField: NullableFieldTest,
   registerReturn: boolean,
   inlineField: InlineFieldTest,
+  recordDynCopy: RecordDynCopyTest,
 ): Uses {
   const uses: Uses = {
     invalid: new Set(),
@@ -154,6 +160,16 @@ function collectUses(
       case "fieldGet":
       case "recordGet":
         if (node.obj.kind === "varRef") return true;
+        break;
+      case "dynFrom":
+        // A copied record converts field by field; a live capsule keeps it.
+        if (
+          !node.liveRef &&
+          node.value.kind === "varRef" &&
+          node.value.type.kind === "record" &&
+          recordDynCopy(node.value.type.shapeId)
+        )
+          return true;
         break;
       case "recordLit":
         if (node.type.kind !== "record") break;
@@ -315,6 +331,7 @@ export function analyzeCallLifetimes(
    * (Int32Abi.union): `return x` only projects `x`. */
   registerReturns: ReadonlySet<string> = new Set(),
   inlineField: InlineFieldTest = NO_INLINE_FIELDS,
+  recordDynCopy: RecordDynCopyTest = () => false,
 ): CallLifetimes {
   const usesByFunction = new Map<string, Uses>();
   const lazyCaptures = new LazyCaptures(functions);
@@ -329,7 +346,13 @@ export function analyzeCallLifetimes(
   };
   for (const fn of functions.values()) {
     if (fn.async || fn.generator) continue;
-    const uses = collectUses(fn, nullableField, registerReturns.has(fn.name), inlineField);
+    const uses = collectUses(
+      fn,
+      nullableField,
+      registerReturns.has(fn.name),
+      inlineField,
+      recordDynCopy,
+    );
     usesByFunction.set(fn.name, uses);
     // Class-capturing bodies get only local facts (computed below from
     // their uses; class captures are already invalid). Binding and
