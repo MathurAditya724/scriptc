@@ -1367,7 +1367,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "test.register": { argTypes: [STRING, F64, STRING, null, F64, STRING], result: VOID },
   "test.registerEmpty": { argTypes: [STRING, F64, STRING, F64, STRING], result: VOID },
   "test.suite": {
-    argTypes: [STRING, F64, STRING, { kind: "func", params: [], ret: VOID }, STRING],
+    argTypes: [STRING, F64, STRING, { kind: "func", params: [], ret: VOID }, STRING, F64],
     result: VOID,
   },
   "test.hook": { argTypes: [F64, null, F64], result: VOID },
@@ -1380,6 +1380,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "test.ctxTodo": { argTypes: [TESTCTX_T, STRING], result: VOID },
   "test.ctxDiagnostic": { argTypes: [TESTCTX_T, STRING], result: VOID },
   "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
+  "test.ctxFullName": { argTypes: [TESTCTX_T], result: STRING },
+  // t.before/t.after/t.beforeEach/t.afterEach (which: 0 before, 1 after,
+  // 2 beforeEach, 3 afterEach); a throwing t.before is captured on the test.
+  "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
+  // t.plan(count), and the count of one t.assert call.
+  "test.ctxPlan": { argTypes: [TESTCTX_T, F64], result: VOID },
+  "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
   // node:http (scr_http.c over scr_net.c). The handler and the data
   // listeners are program-dependent closures (null slots, checked in the
   // libCall case); reqHeader's result is the interned string|undefined
@@ -2533,6 +2540,21 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "zlib.gunzipCb": { argTypes: [BYTES_U8, null], result: VOID },
   "zlib.unzipCb": { argTypes: [BYTES_U8, null], result: VOID },
   "zlib.crc32": { argTypes: [BYTES_U8, F64], result: F64 },
+  /** The stream classes (scr_zlib_stream.c, linked with the stream unit):
+   * streamNew takes Node's node_zlib_mode number and the options value
+   * (undefined when absent), validates it with Node's ladder, and answers
+   * the +1 %Transform stream. flush takes the kind value, params the level
+   * and strategy values; the Cb forms move their () => void callback. The
+   * receivers are borrowed. */
+  "zlib.streamNew": { argTypes: [F64, DYN], result: VOID },
+  "zlib.streamBytesWritten": { argTypes: [null], result: F64 },
+  "zlib.streamFlush": { argTypes: [null, DYN], result: VOID },
+  "zlib.streamFlushCb": { argTypes: [null, DYN, null], result: VOID },
+  "zlib.streamParams": { argTypes: [null, DYN, DYN], result: VOID },
+  "zlib.streamParamsCb": { argTypes: [null, DYN, DYN, null], result: VOID },
+  "zlib.streamClose": { argTypes: [null], result: VOID },
+  "zlib.streamCloseCb": { argTypes: [null, null], result: VOID },
+  "zlib.streamReset": { argTypes: [null], result: VOID },
   /** The Buffer overloads of the raw stream writes — same promptly
    * submitted streams as process.stdoutWrite/stderrWrite, constantly true.
    * The encoding arg is evaluated but ignored for bytes, like Node. The Cb

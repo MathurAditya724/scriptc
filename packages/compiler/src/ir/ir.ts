@@ -1440,6 +1440,20 @@ export const RUNTIME_STREAM_CLASSES: ReadonlyMap<
 export const RUNTIME_EVENT_TARGET_CLASS = "%EventTarget";
 export const RUNTIME_EVENT_CLASS = "%Event";
 
+/** node:zlib's stream classes and their node_zlib_mode numbers. Instances
+ * are runtime Transform streams (`%Transform` values built by the
+ * zlib.streamNew libCall, scr_zlib_stream.c); the class name only sets
+ * the display name. */
+export const ZLIB_STREAM_MODES: ReadonlyMap<string, number> = new Map([
+  ["Deflate", 1],
+  ["Inflate", 2],
+  ["Gzip", 3],
+  ["Gunzip", 4],
+  ["DeflateRaw", 5],
+  ["InflateRaw", 6],
+  ["Unzip", 7],
+]);
+
 export interface IrRecordShape {
   /** Frontend-assigned shape id (`r0`, `r1`, ...). */
   id: string;

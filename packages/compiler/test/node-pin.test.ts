@@ -8,6 +8,7 @@ import { expect, test } from "vitest";
 import { NODE24_FETCH_COMPAT_PROFILE } from "../src/compat/fetch-profile.js";
 import { NODE_COMPAT_VERSION } from "../src/frontend/lowering/builtins/process.js";
 import { CRYPTO_CONSTANTS } from "../src/frontend/lowering/crypto-tables.js";
+import { ZLIB_CONSTANTS } from "../src/frontend/lowering/zlib-constants.js";
 
 const repoRoot = join(import.meta.dirname, "../../..");
 const read = (path: string): string => readFileSync(join(repoRoot, path), "utf8");
@@ -42,4 +43,17 @@ test("the crypto.constants declaration matches the baked table", () => {
     ]),
   );
   expect(declared).toEqual(CRYPTO_CONSTANTS);
+});
+
+test("the zlib.constants declaration matches the baked table", () => {
+  const dts = read("packages/compiler/ambient/scriptc-node-fallback.d.ts");
+  const start = dts.indexOf("export interface ZlibConstants {");
+  const body = dts.slice(start, dts.indexOf("\n  }\n", start));
+  const declared = Object.fromEntries(
+    [...body.matchAll(/readonly (\w+): (-?\d+|number);/g)].map(([, name, value]) => [
+      name!,
+      value === "number" ? Infinity : Number(value),
+    ]),
+  );
+  expect(declared).toEqual(ZLIB_CONSTANTS);
 });

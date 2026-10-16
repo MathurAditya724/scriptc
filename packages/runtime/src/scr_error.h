@@ -101,7 +101,8 @@ typedef struct ScrError {
   bool name_enumerable;
   ScrStr *stack_frames; /* captured native source frames */
   ScrStr *stack; /* lazily formatted, cached stack */
-  double system_errno; /* present exactly when system_call is non-NULL */
+  double system_errno; /* present when system_call is non-NULL or this is
+                        * nonzero (zlib errors carry errno without syscall) */
   ScrStr *system_call;
   ScrStr *system_path;
   ScrStr *system_dest;

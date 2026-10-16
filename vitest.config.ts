@@ -1,7 +1,6 @@
 import { chmodSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
-import { BaseSequencer, type TestSpecification } from "vitest/node";
 
 // Compiled-binary + oracle caches for the test lanes (see cc.ts's cache block
 // and tests/harness/README.md). Workers inherit SCRIPTC_CACHE_DIR from here;
@@ -30,20 +29,6 @@ const workers = process.env["SCRIPTC_TEST_WORKERS"];
 const effectConcurrency = process.env["SCRIPTC_EFFECT_TEST_CONCURRENCY"];
 if (effectConcurrency !== undefined && effectConcurrency !== "1" && effectConcurrency !== "2") {
   throw new Error("SCRIPTC_EFFECT_TEST_CONCURRENCY must be 1 or 2");
-}
-
-// Without recorded results vitest starts larger files first. three.test.ts is
-// small but its shard can hold one long case (the "nodes" fixture takes 4-6
-// minutes in CI), so it starts first and overlaps the corpus files instead of
-// running after them.
-const longCaseFiles = ["tests/harness/three.test.ts"];
-class LongCasesFirst extends BaseSequencer {
-  override async sort(files: TestSpecification[]): Promise<TestSpecification[]> {
-    const sorted = await super.sort(files);
-    const first = (file: TestSpecification) =>
-      longCaseFiles.some((name) => file.moduleId.endsWith("/" + name));
-    return [...sorted.filter(first), ...sorted.filter((file) => !first(file))];
-  }
 }
 
 export default defineConfig({
@@ -96,6 +81,5 @@ export default defineConfig({
       ? { maxWorkers: Number(workers), minWorkers: 1 }
       : {}),
     globalSetup: ["./tests/harness/suite-lock.mjs"],
-    sequence: { sequencer: LongCasesFirst },
   },
 });

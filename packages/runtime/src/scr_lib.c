@@ -983,7 +983,7 @@ void scr_fs_invalid_named_path(const ScrDyn *value, const ScrStr *path, const ch
   scr_jb_puts(&b, "' must be a string, Uint8Array, or URL without null bytes. Received ");
   if (value->kind == SCR_DYN_BYTES) {
     const ScrBytes *bytes = value->v.bytes;
-    SCR_SHARED_GUARD(bytes, NULL);
+    SCR_BYTES_SNAPSHOT(bytes);
     if (value->buffer) {
       scr_jb_puts(&b, "<Buffer");
       for (size_t i = 0; i < bytes->len; i++) {
@@ -8286,7 +8286,8 @@ ScrDyn *scr_crypto_hash_oneshot(ScrStr *alg, ScrDyn *input, ScrDyn *options) {
 }
 
 bool scr_crypto_timing_safe_equal(ScrBytes *left, ScrBytes *right) {
-  SCR_SHARED_GUARD(left, right);
+  SCR_BYTES_SNAPSHOT(left);
+  SCR_BYTES_SNAPSHOT(right);
   size_t left_len = left->len * scr_bytes_elem_size(left->elem);
   size_t right_len = right->len * scr_bytes_elem_size(right->elem);
   if (left_len != right_len) {
