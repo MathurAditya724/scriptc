@@ -190,6 +190,9 @@ ScrArr *scr_arr_new_ops(const ScrArrOps *ops, size_t initial_cap);
  * scr_arr_new_ops(ops, 0). Returns +1. */
 ScrArr *scr_arr_new_small(ScrElemKind elem);
 ScrArr *scr_arr_new_ops_small(const ScrArrOps *ops);
+/* scr_arr_new(elem, cap) for a known final length: the `cap` slots share
+ * the array's own block (one allocation). Returns +1. */
+ScrArr *scr_arr_new_inline(ScrElemKind elem, size_t cap);
 
 static inline ScrArr *scr_arr_retain(ScrArr *a) {
   if (a->rc != SIZE_MAX) {
