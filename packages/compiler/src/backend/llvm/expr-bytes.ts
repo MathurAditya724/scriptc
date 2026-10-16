@@ -927,3 +927,114 @@ export function emitBytesIntrinsic(
     }
   }
 }
+
+/** The `atomicrmw` operation of each Atomics read-modify-write
+ * (frontend/lowering/builtins/atomics.ts numbering). */
+const ATOMIC_RMW: Readonly<Record<number, string>> = {
+  2: "xchg",
+  4: "add",
+  5: "sub",
+  6: "and",
+  7: "or",
+  8: "xor",
+};
+
+/** `Atomics.load/store/exchange/compareExchange/add/sub/and/or/xor` on an
+ * integer typed array as one sequentially consistent atomic instruction on
+ * the element. Arguments evaluate first, in order, as for the runtime call.
+ * An index that is not an integer in [0, length) takes scr_atomics_op,
+ * which applies ToIndex and raises its errors. Returns null for forms the
+ * runtime handles. */
+export function emitInlineAtomicsOp(
+  host: LlvmEmitterContext,
+  e: IrExpr & { kind: "libCall" },
+): LlValue | null {
+  const [array, index, value, replacement, operation] = e.args;
+  if (
+    !array ||
+    !index ||
+    !value ||
+    !replacement ||
+    operation?.kind !== "numLit" ||
+    array.type.kind !== "bytes" ||
+    !["i8", "u8", "i16", "u16", "i32", "u32"].includes(array.type.elem)
+  )
+    return null;
+  const op = operation.value;
+  if (op !== 0 && op !== 1 && op !== 3 && ATOMIC_RMW[op] === undefined) return null;
+  const elem = array.type.elem;
+  const B = host.B;
+  const receiver = host.emitExpr(array).name;
+  const idxValue = host.emitExpr(index);
+  const operand = host.emitExpr(value);
+  const swap = host.emitExpr(replacement);
+  const slow = B.newLabel("atomics.slow");
+  const idx = emitBytesIndex(host, receiver, idxValue, index, slow);
+  const size = BYTES_ELEMENT_SIZE[elem];
+  const ty = `i${size * 8}`;
+  const signed = elem === "i8" || elem === "i16" || elem === "i32";
+  const p = B.tmp();
+  B.line(
+    `${p} = getelementptr inbounds ${ty}, ptr ${host.emitBytesData(receiver)}, ${host.sizeType} ${idx}`,
+  );
+  const narrow = (v: LlValue, expr: IrExpr): string => {
+    const u32 = emitToUint32(host, v.name, expr, v.uint32);
+    if (size === 4) return u32;
+    const t = B.tmp();
+    B.line(`${t} = trunc i32 ${u32} to ${ty}`);
+    return t;
+  };
+  let fast: string;
+  let fastU32: string | undefined;
+  if (op === 1) {
+    B.line(`store atomic ${ty} ${narrow(operand, value)}, ptr ${p} seq_cst, align ${size}`);
+    // store answers ToIntegerOrInfinity of the value (NaN and -0 are 0).
+    const whole = B.tmp(),
+      nonzero = B.tmp();
+    fast = B.tmp();
+    host.declare(`declare double @llvm.trunc.f64(double)`);
+    B.line(`${whole} = call double @llvm.trunc.f64(double ${operand.name})`);
+    B.line(`${nonzero} = fcmp one double ${whole}, ${f64Lit(0)}`);
+    B.line(`${fast} = select i1 ${nonzero}, double ${whole}, double ${f64Lit(0)}`);
+  } else {
+    const old = B.tmp();
+    if (op === 0) B.line(`${old} = load atomic ${ty}, ptr ${p} seq_cst, align ${size}`);
+    else if (op === 3) {
+      const pair = B.tmp();
+      B.line(
+        `${pair} = cmpxchg ptr ${p}, ${ty} ${narrow(operand, value)}, ${ty} ${narrow(swap, replacement)} seq_cst seq_cst, align ${size}`,
+      );
+      B.line(`${old} = extractvalue { ${ty}, i1 } ${pair}, 0`);
+    } else
+      B.line(
+        `${old} = atomicrmw ${ATOMIC_RMW[op]} ptr ${p}, ${ty} ${narrow(operand, value)} seq_cst, align ${size}`,
+      );
+    fastU32 = old;
+    if (size < 4) {
+      fastU32 = B.tmp();
+      B.line(`${fastU32} = ${signed ? "sext" : "zext"} ${ty} ${old} to i32`);
+    }
+    fast = B.tmp();
+    B.line(`${fast} = ${signed ? "sitofp" : "uitofp"} i32 ${fastU32} to double`);
+  }
+  const fastDone = B.newLabel("atomics.fast.done");
+  B.br(fastDone);
+  B.startBlock(fastDone);
+  const join = B.newLabel("atomics.join");
+  B.br(join);
+  B.startBlock(slow);
+  host.declare(`declare double @scr_atomics_op(ptr, double, double, double, double)`);
+  const called = B.tmp();
+  B.line(
+    `${called} = call double @scr_atomics_op(ptr ${receiver}, double ${idxValue.name}, double ${operand.name}, double ${swap.name}, double ${f64Lit(op)}) cold`,
+  );
+  host.emitPendingCheck();
+  const slowDone = B.newLabel("atomics.slow.done");
+  B.br(slowDone);
+  B.startBlock(slowDone);
+  B.br(join);
+  B.startBlock(join);
+  const out = B.tmp();
+  B.line(`${out} = phi double [ ${fast}, %${fastDone} ], [ ${called}, %${slowDone} ]`);
+  return { name: out, type: F64 };
+}
