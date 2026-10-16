@@ -52,6 +52,8 @@ SCR_TL ScrExcCell *scr_exc_active;
 #define SCR_EXC_CUR() (scr_exc_active ? scr_exc_active : &scr_main_exc)
 #else
 ScrExcCell *scr_exc_active = &scr_main_exc;
+/* What scr_exc_swap_cell(NULL) selects; the inline swap reads it. */
+ScrExcCell *const scr_exc_main_cell = &scr_main_exc;
 #define SCR_EXC_CUR() (scr_exc_active)
 #endif
 
@@ -158,7 +160,7 @@ void scr_exc_cell_changed(void) {}
 
 /* Fiber switching (scr_async.c) points the exception machinery at the
  * incoming fiber's cell; returns the previous cell. */
-ScrExcCell *scr_exc_swap_cell(ScrExcCell *cell) {
+ScrExcCell *(scr_exc_swap_cell)(ScrExcCell *cell) {
   ScrExcCell *prev = SCR_EXC_CUR();
   scr_exc_active = cell ? cell : &scr_main_exc;
   scr_exc_cell_changed();
