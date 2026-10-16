@@ -180,6 +180,17 @@ export function speculativeReads(e: IrExpr, out: IrExpr[] = []): IrExpr[] {
   return out;
 }
 
+/** `x = x + y` or `x = x - y` with a step that is not a literal, as in a
+ * sieve's `j += i`: the double copy pays a conversion of every index and
+ * the step's own latency, while counters stepping by a literal usually
+ * have a static proof or too little work to repay a second copy. */
+function isVariableStep(localId: string, e: IrExpr): boolean {
+  if (e.kind !== "bin" || (e.op !== "+" && e.op !== "-")) return false;
+  const self = (x: IrExpr): boolean => x.kind === "varRef" && x.localId === localId;
+  const step = self(e.left) ? e.right : e.op === "+" && self(e.right) ? e.left : null;
+  return step !== null && step.kind !== "numLit";
+}
+
 function hasProduct(e: IrExpr): boolean {
   if (e.kind === "bin")
     return e.op === "*" || e.op === "%" || hasProduct(e.left) || hasProduct(e.right);
@@ -382,8 +393,11 @@ export function planSpeculativeLoop(
   const heavy =
     [...locals.keys()].some((id) => multiplied.has(id)) ||
     [...speculated].some((s) => {
-      const value = speculativeWriteTarget(s)!.value;
-      return value !== null && hasProduct(value);
+      const target = speculativeWriteTarget(s)!;
+      return (
+        target.value !== null &&
+        (hasProduct(target.value) || isVariableStep(target.localId, target.value))
+      );
     });
   if (!heavy) return null;
   return { locals, writes: speculated, observerFree };

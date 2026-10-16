@@ -182,6 +182,9 @@ test("invariants may come from bindings no shadow could be written to", () => {
 test("loops that only count and compare keep one copy", () => {
   const counter = loop([increment("i")]);
   expect(planSpeculativeLoop(counter as never, all)).toBeNull();
+  // A variable step (a sieve's `j += i`) is worth a copy.
+  const sieve = loop([assign("i", bin("+", ref("i"), ref("step")))]);
+  expect(planSpeculativeLoop(sieve as never, all)?.locals.has("i")).toBe(true);
   const scaled = loop([
     assign("j", bin("+", ref("j"), bin("*", ref("i"), ref("n")))),
     increment("i"),
