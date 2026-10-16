@@ -695,6 +695,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dgram.close",
   "dgram.closeCb",
   // The assert surface: every entry point except sameValue, bytesDeepEq,
+  // looseF64Eq, looseBytesEq, partialEqDyn,
   // and the shape accumulator's begin/slot/test calls throws the
   // catchable AssertionError on failure.
   "assert.ok",
@@ -707,6 +708,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "assert.eqDyn",
   "assert.looseResult",
   "assert.deepResult",
+  "assert.looseDeepResult",
+  "assert.looseDeepDyn",
+  "assert.partialDeepDyn",
+  "assert.partialDeepResult",
   "assert.match",
   "assert.refEqBytes",
   "assert.refEqFn",

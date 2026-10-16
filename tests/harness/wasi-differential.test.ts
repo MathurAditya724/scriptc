@@ -174,12 +174,28 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5444-crypto-timing-safe-equal.js",
     "5445-crypto-secret-key-objects.ts",
     "5446-crypto-secret-key-errors.js",
+    // Record literal operands and passing assertions in loops.
+    "5520-assert-record-literal-failures.ts",
     // Empty custom messages.
     "5521-assert-empty-message.js",
+    // throws and rejects failure properties.
+    "5522-assert-throws-failure-properties.ts",
+    // The Assert class.
+    "5523-assert-class-options.js",
+    "5524-assert-class-skip-prototype.ts",
     // AssertionError properties, the class, and its options.
     "5510-assert-error-properties.js",
     "5511-assert-error-class.ts",
     "5512-assert-error-options.js",
+    // Loose deep equality and the typed deep messages.
+    "5513-assert-deep-equal-loose.js",
+    "5514-assert-deep-equal-typed.ts",
+    "5515-assert-deep-strict-typed-messages.ts",
+    "5516-assert-deep-equal-edges.js",
+    // partialDeepStrictEqual.
+    "5517-assert-partial-deep-equal.js",
+    "5518-assert-partial-deep-typed.ts",
+    "5519-assert-partial-deep-typed-edges.ts",
     "4031-event-emitter-long-tuples.ts",
     "2700-wasi-core.ts",
     "local-union-storage.ts",

@@ -123,6 +123,7 @@ import { isClassCallback, lowerClassCallbackAssign } from "./class-callbacks.js"
 import { classForInHasKey, classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import { genericIfaceBindingKeepsClass } from "./lower-classes.js";
 import { lowerStreamUnderscoreAssign, streamClassAliasDecl } from "./lower-stream.js";
+import { staticAssertInstanceDecl } from "./assert-instances.js";
 import {
   lowerHttpResPropertyAssignment,
   lowerHttpServerTimeoutAssignment,
@@ -4132,6 +4133,13 @@ export function lowerVarDecl(
   // namespace binding: alias plumbing, no storage (uses resolve through
   // builtinStreamInfoOf's alias following).
   if (!isLet && streamClassAliasDecl(lowerer, decl.name, decl.initializer)) return null;
+
+  // `const a = new Assert(<literal options>)` used only for method calls:
+  // a static instance whose calls lower with its options (assert-instances.ts);
+  // the declaration emits nothing (collectGlobals skipped its global by the
+  // same test).
+  if (!isLet && staticAssertInstanceDecl(lowerer, decl.name, decl.initializer) !== null)
+    return null;
 
   // `const process = globalThis.process` — a stdlib-global snapshot:
   // alias plumbing (see stdlibGlobalAliasDecl), no storage, no code.

@@ -3447,6 +3447,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "assert.eqStr": { argTypes: [STRING, STRING, BOOL, BOOL, STRING, BOOL], result: VOID },
   "assert.eqBool": { argTypes: [BOOL, BOOL, BOOL, BOOL, STRING, BOOL], result: VOID },
   "assert.deepResult": { argTypes: [BOOL, BOOL, STRING, BOOL], result: VOID },
+  "assert.looseDeepResult": { argTypes: [BOOL, BOOL, STRING, BOOL], result: VOID },
+  "assert.looseDeepDyn": { argTypes: [DYN, DYN, BOOL, STRING, BOOL], result: VOID },
+  "assert.partialDeepDyn": { argTypes: [DYN, DYN, STRING, BOOL], result: VOID },
+  "assert.partialDeepResult": { argTypes: [BOOL, BOOL, STRING, BOOL], result: VOID },
+  "assert.partialEqDyn": { argTypes: [DYN, DYN], result: BOOL },
+  "assert.looseF64Eq": { argTypes: [F64, F64], result: BOOL },
   "assert.sameValue": { argTypes: [F64, F64], result: BOOL },
   // The deep-equality pair memo: both slots are program-dependent
   // (any cycle-capable record/array/map type).
@@ -3458,11 +3464,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "assert.match": { argTypes: [STRING, REGEX, BOOL, STRING, BOOL], result: VOID },
   "assert.throwsNone": { argTypes: [BOOL, STRING, BOOL, STRING, BOOL], result: VOID },
   "assert.throwsMismatch": {
-    argTypes: [STRING, { kind: "object", className: "%Error" }, STRING, BOOL],
+    argTypes: [STRING, { kind: "object", className: "%Error" }, STRING, BOOL, BOOL],
     result: VOID,
   },
   "assert.throwsRegex": {
-    argTypes: [REGEX, { kind: "object", className: "%Error" }, STRING, BOOL],
+    argTypes: [REGEX, { kind: "object", className: "%Error" }, STRING, BOOL, BOOL],
     result: VOID,
   },
   // Symbol strict equality (pointer identity; scr_symbol.c).
@@ -3480,7 +3486,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "assert.shapeBegin": { argTypes: [{ kind: "object", className: "%Error" }], result: VOID },
   "assert.shapeStr": { argTypes: [F64, STRING], result: VOID },
   "assert.shapeRe": { argTypes: [F64, REGEX], result: VOID },
-  "assert.shapeEnd": { argTypes: [STRING, BOOL], result: VOID },
+  "assert.shapeEnd": { argTypes: [STRING, BOOL, BOOL], result: VOID },
   "assert.regexErrTest": {
     argTypes: [REGEX, { kind: "object", className: "%Error" }],
     result: BOOL,
@@ -3512,6 +3518,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "assert.refEqBytes": { argTypes: [null, null, BOOL, BOOL, STRING, BOOL], result: VOID },
   "assert.refEqFn": { argTypes: [null, null, BOOL, STRING, BOOL], result: VOID },
   "assert.bytesDeepEq": { argTypes: [null, null, BOOL], result: BOOL },
+  "assert.looseBytesEq": { argTypes: [null, null], result: BOOL },
   // util.inspect: the error receiver is program-dependent (a builtin or
   // user error class — the error.toString precedent, null slot).
 

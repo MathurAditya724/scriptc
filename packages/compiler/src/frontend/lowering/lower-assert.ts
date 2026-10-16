@@ -28,7 +28,12 @@ import { resultIsDiscarded } from "./call-position.js";
 import type { Lowerer } from "./lowerer.js";
 import { jsFuncNameOf, own } from "./lowerer.js";
 import { NARROW_FIRST } from "./surfaces.js";
-import { inspectExpr, typeReachesCycle, typeReachesItself } from "./lower-inspect.js";
+import {
+  inspectExpr,
+  typeReachesCycle,
+  typeReachesFunction,
+  typeReachesItself,
+} from "./lower-inspect.js";
 import { abstractEqualityExpr, abstractEqualitySupported } from "./abstract-equality.js";
 import {
   BOOL,
@@ -71,8 +76,9 @@ function canonicalAssertMember(module: string, member: string): string {
  * verdict is computed in compiled code, the failure branch records them
  * (assert.record) before the throwing call, so a passing assertion boxes
  * nothing. Values without a checked-dynamic form record undefined, and so
- * do values whose type can be cyclic: the checked-dynamic form is a deep
- * copy, which a cyclic value does not have. */
+ * do values whose type can be cyclic (the checked-dynamic form is a deep
+ * copy, which a cyclic value does not have) or can hold functions (their
+ * boxes carry no source names, which the failure message prints). */
 
 /** A value as the dyn the record carries. */
 function recordedValue(lowerer: Lowerer, value: IrExpr | null, loc: SrcLoc): IrExpr {
@@ -80,7 +86,9 @@ function recordedValue(lowerer: Lowerer, value: IrExpr | null, loc: SrcLoc): IrE
   if (value.type.kind === "dyn") return value;
   if (
     value.kind === "unitLit" ||
-    (lowerer.dynConvertible(value.type) && !typeReachesCycle(lowerer, value.type))
+    (lowerer.dynConvertible(value.type) &&
+      !typeReachesCycle(lowerer, value.type) &&
+      !typeReachesFunction(lowerer, value.type))
   ) {
     return { kind: "dynFrom", value, type: DYN, loc };
   }
@@ -207,6 +215,12 @@ export function lowerAssertModuleCall(
       return lowerAssertEqual(lowerer, expr, loc, false, true);
     case "notDeepStrictEqual":
       return lowerAssertEqual(lowerer, expr, loc, true, true);
+    case "deepEqual":
+      return lowerAssertLooseDeep(lowerer, expr, loc, false);
+    case "notDeepEqual":
+      return lowerAssertLooseDeep(lowerer, expr, loc, true);
+    case "partialDeepStrictEqual":
+      return lowerAssertPartialDeep(lowerer, expr, loc);
     case "fail":
       return lowerAssertFail(lowerer, expr, loc);
     case "match":
@@ -324,6 +338,520 @@ function lowerAssertLooseEqual(
     loc,
   };
   return { kind: "seqExpr", stmts, result, type: VOID, loc };
+}
+
+/** The two compared operands. A context-free EMPTY array literal on
+ * either side has no element type of its own (`deepStrictEqual(
+ * ee.listeners('x'), [])` — the checker says any[]): it adopts the OTHER
+ * side's array type. Literals have no side effects, so lowering order is
+ * unobservable. */
+function lowerComparedOperands(
+  lowerer: Lowerer,
+  aNode: ts.Expression,
+  bNode: ts.Expression,
+  loc: SrcLoc,
+): { a: IrExpr; b: IrExpr } {
+  const emptyArrayLit = (n: ts.Expression): boolean =>
+    ts.isArrayLiteralExpression(n) && n.elements.length === 0;
+  const emptyOf = (t: IrType): IrExpr => ({ kind: "arrayLit", elems: [], type: t, loc });
+  // A dyn other side adopts number[] — the dyn array a boxed empty
+  // literal builds is elementless, so any elem type serves.
+  const adoptedEmpty = (other: IrType): IrExpr | null =>
+    other.kind === "array"
+      ? emptyOf(other)
+      : other.kind === "dyn"
+        ? emptyOf({ kind: "array", elem: F64 })
+        : null;
+  if (emptyArrayLit(aNode) && !emptyArrayLit(bNode)) {
+    const b = lowerer.lowerExpr(bNode);
+    return { a: adoptedEmpty(b.type) ?? lowerer.lowerExpr(aNode), b };
+  }
+  const a = lowerer.lowerExpr(aNode);
+  const b = emptyArrayLit(bNode)
+    ? (adoptedEmpty(a.type) ?? lowerer.lowerExpr(bNode))
+    : lowerer.lowerExpr(bNode);
+  return { a, b };
+}
+
+/** True when a union occurs anywhere in `t`'s value structure. */
+function typeHasUnion(lowerer: Lowerer, t: IrType, visiting: Set<string>): boolean {
+  switch (t.kind) {
+    case "union":
+      return true;
+    case "array":
+    case "set":
+      return typeHasUnion(lowerer, t.elem, visiting);
+    case "map":
+      return typeHasUnion(lowerer, t.key, visiting) || typeHasUnion(lowerer, t.value, visiting);
+    case "record": {
+      if (visiting.has(t.shapeId)) return false;
+      visiting.add(t.shapeId);
+      const shape = lowerer.shapes.get(t.shapeId);
+      return shape?.fields.some((f) => typeHasUnion(lowerer, f.type, visiting)) ?? false;
+    }
+    default:
+      return false;
+  }
+}
+
+/** assert.deepEqual / notDeepEqual: Node's loose deep comparison. Two
+ * operands of one union-free static type compare through the per-type
+ * helper in its loose mode (numbers under ==, typed arrays without the
+ * Buffer brand); everything else crosses into the checked-dynamic tree
+ * and compares there. Types that can be cyclic are refused: the failure
+ * message renders the values, which needs their checked-dynamic copy. */
+function lowerAssertLooseDeep(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+  negated: boolean,
+): IrExpr {
+  const surface = negated ? "assert.notDeepEqual" : "assert.deepEqual";
+  requireStatementPosition(lowerer, expr, surface);
+  if (expr.arguments.length < 2 || expr.arguments.length > 3) {
+    lowerer.noLowering(`${surface} with ${expr.arguments.length} arguments`, expr);
+  }
+  const aNode = expr.arguments[0]!;
+  const bNode = expr.arguments[1]!;
+  const { a, b } = lowerComparedOperands(lowerer, aNode, bNode, loc);
+  const { msg, hasMsg } = lowerMessageArg(lowerer, expr.arguments[2], loc);
+  refuseUnrenderedDeepOperands(
+    lowerer,
+    surface,
+    [
+      [a, aNode],
+      [b, bNode],
+    ],
+    "loose",
+  );
+  if (
+    typeEquals(a.type, b.type) &&
+    a.type.kind !== "dyn" &&
+    // Functions box with their source names for the message.
+    a.type.kind !== "func" &&
+    !isUnitType(a.type) &&
+    deepUnsupportedReason(lowerer, a.type, new Set()) === null &&
+    !typeHasUnion(lowerer, a.type, new Set())
+  ) {
+    const verdictOf =
+      a.type.kind === "bytes"
+        ? (x: IrExpr, y: IrExpr): IrExpr => ({
+            kind: "libCall",
+            fn: "assert.looseBytesEq",
+            args: [x, y],
+            type: BOOL,
+            loc,
+          })
+        : (x: IrExpr, y: IrExpr): IrExpr => ({
+            kind: "call",
+            callee: deepEqHelper(lowerer, a.type, loc, true),
+            args: [x, y],
+            type: BOOL,
+            loc,
+          });
+    return deepCheckCall(lowerer, a, b, "loose", verdictOf, negated, msg, hasMsg, loc, "loose");
+  }
+  return {
+    kind: "libCall",
+    fn: "assert.looseDeepDyn",
+    args: [
+      boxDeepOperand(lowerer, surface, a, aNode, a, b),
+      boxDeepOperand(lowerer, surface, b, bNode, a, b),
+      boolLit(negated, loc),
+      msg,
+      hasMsg,
+    ],
+    type: VOID,
+    loc,
+  };
+}
+
+/** The operand types the checked-dynamic deep comparisons refuse: types
+ * that can be cyclic, and structures holding functions. Their failure
+ * messages render the checked-dynamic copy, which a cyclic value does not
+ * have and in which a nested function loses its source name. */
+function refuseUnrenderedDeepOperands(
+  lowerer: Lowerer,
+  surface: string,
+  operands: readonly (readonly [IrExpr, ts.Expression])[],
+  hintFor: "loose" | "partial",
+): void {
+  for (const [value, node] of operands) {
+    if (value.type.kind !== "dyn" && typeReachesCycle(lowerer, value.type)) {
+      lowerer.noLowering(
+        `${surface} of '${lowerer.fmt(value.type)}' values`,
+        node,
+        `recursive types have no ${hintFor} deep comparison — deepStrictEqual compares them`,
+      );
+    }
+    if (value.type.kind !== "func" && typeReachesFunction(lowerer, value.type)) {
+      lowerer.noLowering(
+        `${surface} of '${lowerer.fmt(value.type)}' values`,
+        node,
+        `structures holding functions have no ${hintFor} deep comparison — compare the functions with strictEqual`,
+      );
+    }
+  }
+}
+
+/** An operand as the checked-dynamic value the runtime comparisons take;
+ * a function boxes with its source name for the message. */
+function boxDeepOperand(
+  lowerer: Lowerer,
+  surface: string,
+  e: IrExpr,
+  node: ts.Expression,
+  a: IrExpr,
+  b: IrExpr,
+): IrExpr {
+  if (e.type.kind === "dyn") return e;
+  const convertible =
+    e.kind === "unitLit" ||
+    (e.type.kind === "object" && e.type.className === "%Error") ||
+    lowerer.dynConvertible(e.type);
+  if (!convertible) {
+    lowerer.noLowering(
+      `${surface} of '${lowerer.fmt(a.type)}' and '${lowerer.fmt(b.type)}' values`,
+      node,
+      "both sides must convert into the checked-dynamic tree (primitives, functions, arrays, records, Maps, Sets, typed arrays and errors)",
+    );
+  }
+  const fnName = e.type.kind === "func" ? jsFuncNameOf(node) : null;
+  return {
+    kind: "dynFrom",
+    value: e,
+    ...(fnName !== null ? { fnName } : {}),
+    type: DYN,
+    loc: e.loc,
+  };
+}
+
+/** assert.partialDeepStrictEqual: Node's partial deep comparison (the
+ * expected value contained in the actual one), over the checked-dynamic
+ * copies of both operands. */
+function lowerAssertPartialDeep(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const surface = "assert.partialDeepStrictEqual";
+  requireStatementPosition(lowerer, expr, surface);
+  if (expr.arguments.length < 2 || expr.arguments.length > 3) {
+    lowerer.noLowering(`${surface} with ${expr.arguments.length} arguments`, expr);
+  }
+  const aNode = expr.arguments[0]!;
+  const bNode = expr.arguments[1]!;
+  const { a, b } = lowerComparedOperands(lowerer, aNode, bNode, loc);
+  const { msg, hasMsg } = lowerMessageArg(lowerer, expr.arguments[2], loc);
+  refuseUnrenderedDeepOperands(
+    lowerer,
+    surface,
+    [
+      [a, aNode],
+      [b, bNode],
+    ],
+    "partial",
+  );
+  const boxedA = boxDeepOperand(lowerer, surface, a, aNode, a, b);
+  const boxedB = boxDeepOperand(lowerer, surface, b, bNode, a, b);
+  // Functions box with their source names for the message.
+  if (
+    a.type.kind !== "dyn" &&
+    b.type.kind !== "dyn" &&
+    a.type.kind !== "func" &&
+    b.type.kind !== "func"
+  ) {
+    // Statically typed operands compare through the typed partial
+    // comparison; only subtrees it does not cover cross into the
+    // checked-dynamic tree.
+    return deepCheckCall(
+      lowerer,
+      a,
+      b,
+      "partial",
+      (x, y) => partialEqExpr(lowerer, x, y, loc),
+      false,
+      msg,
+      hasMsg,
+      loc,
+      "partial",
+    );
+  }
+  return {
+    kind: "libCall",
+    fn: "assert.partialDeepDyn",
+    args: [boxedA, boxedB, msg, hasMsg],
+    type: VOID,
+    loc,
+  };
+}
+
+const SCALAR_KINDS: ReadonlySet<string> = new Set(["f64", "string", "bool", "bigint", "symbol"]);
+
+/** Node's partial deep comparison of `x` (actual) and `y` (expected), two
+ * side-effect-free reads of statically typed values. Scalars compare by
+ * Object.is, mismatched primitive kinds are unequal, unions dispatch on
+ * their tags, and arrays and records compare through the lifted helper;
+ * every other pair compares as checked-dynamic values. */
+function partialEqExpr(lowerer: Lowerer, x: IrExpr, y: IrExpr, loc: SrcLoc): IrExpr {
+  const ta = x.type;
+  const tb = y.type;
+  const helperCall = (): IrExpr => ({
+    kind: "call",
+    callee: partialEqHelper(lowerer, ta, tb, loc),
+    args: [x, y],
+    type: BOOL,
+    loc,
+  });
+  // A unit value against a union: equal exactly when the union holds it.
+  const unitAgainstUnion = (unit: IrType, union: IrType, value: IrExpr): IrExpr | null => {
+    if (!isUnitType(unit) || union.kind !== "union") return null;
+    const tag = lowerer.armTag(union.unionId, unit);
+    if (tag < 0) return boolLit(false, loc);
+    return {
+      kind: "unionIsTag",
+      unionId: union.unionId,
+      tag,
+      negated: false,
+      value,
+      type: BOOL,
+      loc,
+    };
+  };
+  const unitCase = unitAgainstUnion(ta, tb, y) ?? unitAgainstUnion(tb, ta, x);
+  if (unitCase) return unitCase;
+  if (ta.kind === "union" || tb.kind === "union") return helperCall();
+  if (isUnitType(ta) || isUnitType(tb)) return boolLit(ta.kind === tb.kind, loc);
+  if (SCALAR_KINDS.has(ta.kind) && SCALAR_KINDS.has(tb.kind)) {
+    if (ta.kind !== tb.kind) return boolLit(false, loc);
+    switch (ta.kind) {
+      case "f64":
+        return { kind: "libCall", fn: "assert.sameValue", args: [x, y], type: BOOL, loc };
+      case "bigint":
+        return { kind: "libCall", fn: "bigint.eq", args: [x, y], type: BOOL, loc };
+      case "string":
+        return { kind: "strEq", negated: false, left: x, right: y, type: BOOL, loc };
+      default:
+        return { kind: "bin", op: "===", left: x, right: y, type: BOOL, loc };
+    }
+  }
+  const composite = (t: IrType): boolean => t.kind === "array" || t.kind === "record";
+  if (
+    (ta.kind === "array" && tb.kind === "array") ||
+    (ta.kind === "record" &&
+      tb.kind === "record" &&
+      lowerer.shapes.get(ta.shapeId)?.indexValue === undefined &&
+      lowerer.shapes.get(tb.shapeId)?.indexValue === undefined)
+  ) {
+    return helperCall();
+  }
+  // A primitive never partially equals an array or a record.
+  if (
+    (SCALAR_KINDS.has(ta.kind) && composite(tb)) ||
+    (composite(ta) && SCALAR_KINDS.has(tb.kind))
+  ) {
+    return boolLit(false, loc);
+  }
+  return {
+    kind: "libCall",
+    fn: "assert.partialEqDyn",
+    args: [
+      x.type.kind === "dyn" ? x : { kind: "dynFrom", value: x, type: DYN, loc },
+      y.type.kind === "dyn" ? y : { kind: "dynFrom", value: y, type: DYN, loc },
+    ],
+    type: BOOL,
+    loc,
+  };
+}
+
+/** The interned `%assert.pdeq.<n>(a, b): boolean` for one pair of static
+ * types: union tag dispatch, ordered-subsequence arrays (partialArrayEquiv),
+ * or records compared over the expected shape's present fields. */
+function partialEqHelper(lowerer: Lowerer, ta: IrType, tb: IrType, loc: SrcLoc): string {
+  const key = `assert.pdeq:${typeKey(ta)}|${typeKey(tb)}`;
+  const existing = lowerer.assertHelpers.get(key);
+  if (existing) return existing;
+  const name = `%assert.pdeq.${lowerer.assertHelpers.size}`;
+  lowerer.assertHelpers.set(key, name);
+  const a = (): IrExpr => varRef("a.0", ta, loc);
+  const b = (): IrExpr => varRef("b.0", tb, loc);
+  const ret = (value: IrExpr): IrStmt => ({ kind: "return", value, loc });
+  const not = (operand: IrExpr): IrExpr => notExpr(operand, loc);
+  const bailIf = (cond: IrExpr): IrStmt => ({
+    kind: "if",
+    cond,
+    then: [ret(boolLit(false, loc))],
+    else_: null,
+    loc,
+  });
+  const locals: { id: string; name: string; type: IrType; mutable: boolean }[] = [
+    { id: "a.0", name: "a", type: ta, mutable: false },
+    { id: "b.0", name: "b", type: tb, mutable: false },
+  ];
+  let body: IrStmt[];
+  const unionDispatch = (side: "a" | "b"): IrStmt[] => {
+    const t = side === "a" ? ta : tb;
+    if (t.kind !== "union")
+      throw new InternalCompilerError("partial union dispatch over a non-union");
+    const def = lowerer.unions.get(t.unionId);
+    if (!def) throw new InternalCompilerError(`partial deep-equal of unknown union ${t.unionId}`);
+    const value = side === "a" ? a() : b();
+    const stmts: IrStmt[] = def.arms.map((arm, tag) => {
+      const narrowed: IrExpr = {
+        kind: "unionNarrow",
+        unionId: t.unionId,
+        tag,
+        value,
+        type: arm,
+        loc,
+      };
+      return {
+        kind: "if",
+        cond: {
+          kind: "unionIsTag",
+          unionId: t.unionId,
+          tag,
+          negated: false,
+          value,
+          type: BOOL,
+          loc,
+        },
+        then: [
+          ret(
+            side === "a"
+              ? partialEqExpr(lowerer, narrowed, b(), loc)
+              : partialEqExpr(lowerer, a(), narrowed, loc),
+          ),
+        ],
+        else_: null,
+        loc,
+      };
+    });
+    stmts.push(ret(boolLit(false, loc)));
+    return stmts;
+  };
+  if (ta.kind === "union") {
+    body = unionDispatch("a");
+  } else if (tb.kind === "union") {
+    body = unionDispatch("b");
+  } else if (ta.kind === "array" && tb.kind === "array") {
+    const len = (arr: IrExpr): IrExpr => ({
+      kind: "arrIntrinsic",
+      method: "length",
+      receiver: arr,
+      args: [],
+      type: F64,
+      loc,
+    });
+    const pos = (): IrExpr => varRef("pos.0", F64, loc);
+    const bump: IrStmt = {
+      kind: "assign",
+      localId: "pos.0",
+      value: { kind: "bin", op: "+", left: pos(), right: numLit(1, loc), type: F64, loc },
+      loc,
+    };
+    locals.push(
+      { id: "i.0", name: "i", type: F64, mutable: true },
+      { id: "pos.0", name: "pos", type: F64, mutable: true },
+    );
+    body = [
+      bailIf({ kind: "bin", op: "<", left: len(a()), right: len(b()), type: BOOL, loc }),
+      { kind: "varDecl", localId: "pos.0", init: numLit(0, loc), loc },
+      countedFor(loc, len(b()), (i) => [
+        {
+          kind: "while",
+          cond: not(
+            partialEqExpr(
+              lowerer,
+              { kind: "arrayGet", arr: a(), index: pos(), type: ta.elem, loc },
+              { kind: "arrayGet", arr: b(), index: i, type: tb.elem, loc },
+              loc,
+            ),
+          ),
+          body: [
+            bump,
+            // pos > la - lb + i: the rest of b no longer fits in a.
+            bailIf({
+              kind: "bin",
+              op: ">",
+              left: pos(),
+              right: {
+                kind: "bin",
+                op: "+",
+                left: { kind: "bin", op: "-", left: len(a()), right: len(b()), type: F64, loc },
+                right: i,
+                type: F64,
+                loc,
+              },
+              type: BOOL,
+              loc,
+            }),
+          ],
+          loc,
+        },
+        bump,
+      ]),
+      ret(boolLit(true, loc)),
+    ];
+  } else if (ta.kind === "record" && tb.kind === "record") {
+    const shapeA = lowerer.shapes.get(ta.shapeId);
+    const shapeB = lowerer.shapes.get(tb.shapeId);
+    if (!shapeA || !shapeB)
+      throw new InternalCompilerError("partial deep-equal of an unknown shape");
+    body = [];
+    for (const fb of shapeB.fields) {
+      const presentB = lowerer.recordFieldPresent(b(), tb.shapeId, fb.name, loc);
+      const fa = shapeA.fields.find((f) => f.name === fb.name);
+      const checks: IrStmt[] = [];
+      if (!fa) {
+        checks.push(ret(boolLit(false, loc)));
+      } else {
+        const presentA = lowerer.recordFieldPresent(a(), ta.shapeId, fa.name, loc);
+        if (presentA.kind !== "boolLit") checks.push(bailIf(not(presentA)));
+        checks.push(
+          bailIf(
+            not(
+              partialEqExpr(
+                lowerer,
+                {
+                  kind: "recordGet",
+                  obj: a(),
+                  shapeId: ta.shapeId,
+                  field: fa.name,
+                  type: fa.type,
+                  loc,
+                },
+                {
+                  kind: "recordGet",
+                  obj: b(),
+                  shapeId: tb.shapeId,
+                  field: fb.name,
+                  type: fb.type,
+                  loc,
+                },
+                loc,
+              ),
+            ),
+          ),
+        );
+      }
+      if (presentB.kind === "boolLit") body.push(...checks);
+      else body.push({ kind: "if", cond: presentB, then: checks, else_: null, loc });
+    }
+    body.push(ret(boolLit(true, loc)));
+  } else {
+    throw new InternalCompilerError(
+      `partial deep-equal helper over ${typeKey(ta)} and ${typeKey(tb)}`,
+    );
+  }
+  lowerer.liftedFns.push({
+    name,
+    params: [
+      { localId: "a.0", name: "a", type: ta },
+      { localId: "b.0", name: "b", type: tb },
+    ],
+    returnType: BOOL,
+    locals,
+    body,
+    loc,
+  });
+  return name;
 }
 
 /** The callable-module form: `assert(x)` where the callee identifier IS
@@ -471,35 +999,47 @@ function lowerAssertEqual(
   if (expr.arguments.length < 2 || expr.arguments.length > 3) {
     lowerer.noLowering(`${surface} with ${expr.arguments.length} arguments`, expr);
   }
-  // A context-free EMPTY array literal on either side has no element type
-  // of its own (`deepStrictEqual(ee.listeners('x'), [])` — the checker
-  // says any[]): it adopts the OTHER side's array type. Literals have no
-  // side effects, so lowering order is unobservable.
   const aNode = expr.arguments[0]!;
   const bNode = expr.arguments[1]!;
-  const emptyArrayLit = (n: ts.Expression): boolean =>
-    ts.isArrayLiteralExpression(n) && n.elements.length === 0;
-  const emptyOf = (t: IrType): IrExpr => ({ kind: "arrayLit", elems: [], type: t, loc });
-  // A dyn other side adopts number[] — the dyn array a boxed empty
-  // literal builds is elementless, so any elem type serves.
-  const adoptedEmpty = (other: IrType): IrExpr | null =>
-    other.kind === "array"
-      ? emptyOf(other)
-      : other.kind === "dyn"
-        ? emptyOf({ kind: "array", elem: F64 })
-        : null;
-  let a: IrExpr;
-  let b: IrExpr;
-  if (emptyArrayLit(aNode) && !emptyArrayLit(bNode)) {
-    b = lowerer.lowerExpr(bNode);
-    a = adoptedEmpty(b.type) ?? lowerer.lowerExpr(aNode);
-  } else {
-    a = lowerer.lowerExpr(aNode);
-    b = emptyArrayLit(bNode)
-      ? (adoptedEmpty(a.type) ?? lowerer.lowerExpr(bNode))
-      : lowerer.lowerExpr(bNode);
-  }
+  const { a, b } = lowerComparedOperands(lowerer, aNode, bNode, loc);
   const { msg, hasMsg } = lowerMessageArg(lowerer, expr.arguments[2], loc);
+  // An Assert instance with skipPrototype: Node compares own properties
+  // without the prototype check, so operands of different static types (two
+  // classes, a class and a record) can be equal. They compare as
+  // checked-dynamic values, and so do class instances, which have no typed
+  // deep comparison; the runtime walk skips the prototype check for the
+  // call (assert-instances.ts). Other same-typed operands keep their typed
+  // comparison.
+  const skipPrototype = deep && lowerer.assertCallOptions?.skipPrototype === true;
+  if (
+    skipPrototype &&
+    a.type.kind !== "dyn" &&
+    b.type.kind !== "dyn" &&
+    (!typeEquals(a.type, b.type) || deepUnsupportedReason(lowerer, a.type, new Set()) !== null)
+  ) {
+    const box = (e: IrExpr, node: ts.Expression): IrExpr => {
+      if (
+        e.kind !== "unitLit" &&
+        (!lowerer.dynConvertible(e.type) ||
+          typeReachesCycle(lowerer, e.type) ||
+          typeReachesFunction(lowerer, e.type))
+      ) {
+        lowerer.noLowering(
+          `${surface} with skipPrototype of '${lowerer.fmt(a.type)}' and '${lowerer.fmt(b.type)}' values`,
+          node,
+          "operands of different static types compare as checked-dynamic values, which this operand does not convert to",
+        );
+      }
+      return { kind: "dynFrom", value: e, type: DYN, loc: e.loc };
+    };
+    return {
+      kind: "libCall",
+      fn: "assert.eqDyn",
+      args: [box(a, aNode), box(b, bNode), boolLit(negated, loc), boolLit(true, loc), msg, hasMsg],
+      type: VOID,
+      loc,
+    };
+  }
 
   // CHECKED-DYNAMIC operands (dyn-vs-dyn, dyn-vs-static): both sides
   // cross into the checked-dynamic tree and one runtime entry answers the whole quartet —
@@ -541,7 +1081,10 @@ function lowerAssertEqual(
         // same). The deep walk compares the retained error data without
         // re-encoding and losing identity (SEMANTICS.md).
         (k === "object" && e.type.kind === "object" && e.type.className === "%Error") ||
-        (deep && k !== "bytes" && k !== "object" && lowerer.dynConvertible(e.type));
+        (deep && k !== "bytes" && k !== "object" && lowerer.dynConvertible(e.type)) ||
+        // Under skipPrototype the prototype a class instance or Buffer
+        // brand would carry is not compared.
+        (skipPrototype && lowerer.dynConvertible(e.type));
       if (!ok) {
         const hint =
           !deep && (k === "record" || k === "array" || k === "map" || k === "set" || k === "union")
@@ -627,14 +1170,15 @@ function lowerAssertEqual(
         loc,
       };
     }
-    if (brandA === null || brandB === null) {
+    if (!skipPrototype && (brandA === null || brandB === null)) {
       lowerer.noLowering(
         `${surface} of typed-array values whose constructor is not in the static type`,
         brandA === null ? expr.arguments[0]! : expr.arguments[1]!,
         "Node's deep equality compares prototypes (a Buffer is never deep-equal to a plain Uint8Array) — annotate the value so its constructor is visible",
       );
     }
-    const sameBrand = brandA === brandB;
+    // The brand is the prototype; skipPrototype ignores it.
+    const sameBrand = skipPrototype || brandA === brandB;
     return deepCheckCall(
       lowerer,
       a,
@@ -731,6 +1275,7 @@ function deepCheckCall(
   msg: IrExpr,
   hasMsg: IrExpr,
   loc: SrcLoc,
+  mode: "strict" | "loose" | "partial" = "strict",
 ): IrExpr {
   const key = `assert.dcheck:${variant}:${negated}:${typeKey(a.type)}:${typeKey(b.type)}`;
   let name = lowerer.assertHelpers.get(key);
@@ -759,7 +1304,15 @@ function deepCheckCall(
           negated ? verdict : notExpr(verdict, loc),
           pa,
           pb,
-          negated ? "notDeepStrictEqual" : "deepStrictEqual",
+          mode === "partial"
+            ? "partialDeepStrictEqual"
+            : mode === "loose"
+              ? negated
+                ? "notDeepEqual"
+                : "deepEqual"
+              : negated
+                ? "notDeepStrictEqual"
+                : "deepStrictEqual",
           loc,
         ),
         { kind: "return", value: verdict, loc },
@@ -769,7 +1322,12 @@ function deepCheckCall(
   }
   return {
     kind: "libCall",
-    fn: "assert.deepResult",
+    fn:
+      mode === "partial"
+        ? "assert.partialDeepResult"
+        : mode === "loose"
+          ? "assert.looseDeepResult"
+          : "assert.deepResult",
     args: [
       { kind: "call", callee: name, args: [a, b], type: BOOL, loc },
       boolLit(negated, loc),
@@ -1506,6 +2064,7 @@ function assertThrowsHelper(
               narrowed(),
               m(),
               hm(),
+              boolLit(mode === "rejects", loc),
             ]),
           ]),
           // A non-Error thrown value: propagate (SEMANTICS.md 104; the
@@ -1517,7 +2076,13 @@ function assertThrowsHelper(
       case "regex":
         catchBody = [
           ifStmt(isInstance("%Error"), [
-            lib("assert.throwsRegex", [varRef("re.0", REGEX, loc), narrowed(), m(), hm()]),
+            lib("assert.throwsRegex", [
+              varRef("re.0", REGEX, loc),
+              narrowed(),
+              m(),
+              hm(),
+              boolLit(mode === "rejects", loc),
+            ]),
             doReturn,
           ]),
           rethrow,
@@ -1527,7 +2092,7 @@ function assertThrowsHelper(
         catchBody = [
           ifStmt(isInstance("%Error"), [
             ...shapeSlotStmts(),
-            lib("assert.shapeEnd", [m(), hm()]),
+            lib("assert.shapeEnd", [m(), hm(), boolLit(mode === "rejects", loc)]),
             doReturn,
           ]),
           rethrow,
@@ -1891,11 +2456,14 @@ function deepUnsupportedReason(lowerer: Lowerer, t: IrType, visiting: Set<string
  * tag+payload unions, SameValueZero-keyed Maps with deep values, scalar
  * Sets by membership. Registered in the cache BEFORE the body builds, so
  * recursive record shapes call themselves by name. */
-function deepEqHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
-  const key = `assert.deq:${typeKey(t)}`;
+function deepEqHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc, loose = false): string {
+  // The loose mode (deepEqual over one union-free type) differs only in
+  // numbers: == with NaN equal to NaN.
+  const prefix = loose ? "ldeq" : "deq";
+  const key = `assert.${prefix}:${typeKey(t)}`;
   const existing = lowerer.assertHelpers.get(key);
   if (existing) return existing;
-  const name = `%assert.deq.${lowerer.assertHelpers.size}`;
+  const name = `%assert.${prefix}.${lowerer.assertHelpers.size}`;
   lowerer.assertHelpers.set(key, name);
 
   const a = (): IrExpr => varRef("a.0", t, loc);
@@ -1923,7 +2491,13 @@ function deepEqHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
   const deq = (elemT: IrType, x: IrExpr, y: IrExpr): IrExpr =>
     isUnitType(elemT)
       ? boolLit(true, loc)
-      : { kind: "call", callee: deepEqHelper(lowerer, elemT, loc), args: [x, y], type: BOOL, loc };
+      : {
+          kind: "call",
+          callee: deepEqHelper(lowerer, elemT, loc, loose),
+          args: [x, y],
+          type: BOOL,
+          loc,
+        };
 
   let locals: { id: string; name: string; type: IrType; mutable: boolean }[] = [
     { id: "a.0", name: "a", type: t, mutable: false },
@@ -1933,7 +2507,15 @@ function deepEqHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
 
   switch (t.kind) {
     case "f64":
-      body = [ret({ kind: "libCall", fn: "assert.sameValue", args: [a(), b()], type: BOOL, loc })];
+      body = [
+        ret({
+          kind: "libCall",
+          fn: loose ? "assert.looseF64Eq" : "assert.sameValue",
+          args: [a(), b()],
+          type: BOOL,
+          loc,
+        }),
+      ];
       break;
     case "bigint":
       body = [ret({ kind: "libCall", fn: "bigint.eq", args: [a(), b()], type: BOOL, loc })];

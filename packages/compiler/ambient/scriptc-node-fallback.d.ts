@@ -3216,6 +3216,7 @@ declare module "assert" {
     function notStrictEqual(actual: unknown, expected: unknown, message?: string): void;
     function deepStrictEqual(actual: unknown, expected: unknown, message?: string): void;
     function notDeepStrictEqual(actual: unknown, expected: unknown, message?: string): void;
+    function partialDeepStrictEqual(actual: unknown, expected: unknown, message?: string): void;
     function equal(actual: unknown, expected: unknown, message?: string): void;
     function notEqual(actual: unknown, expected: unknown, message?: string): void;
     function deepEqual(actual: unknown, expected: unknown, message?: string): void;
@@ -3237,6 +3238,36 @@ declare module "assert" {
     function doesNotMatch(value: string, regExp: RegExp, message?: string): void;
     function ifError(value: unknown): void;
     const strict: typeof import("assert/strict");
+    interface AssertOptions {
+      diff?: "simple" | "full" | undefined;
+      strict?: boolean | undefined;
+      skipPrototype?: boolean | undefined;
+    }
+    type AssertMethodNames =
+      | "deepEqual"
+      | "deepStrictEqual"
+      | "doesNotMatch"
+      | "doesNotReject"
+      | "doesNotThrow"
+      | "equal"
+      | "fail"
+      | "ifError"
+      | "match"
+      | "notDeepEqual"
+      | "notDeepStrictEqual"
+      | "notEqual"
+      | "notStrictEqual"
+      | "ok"
+      | "partialDeepStrictEqual"
+      | "rejects"
+      | "strictEqual"
+      | "throws";
+    interface Assert extends Pick<typeof assert, AssertMethodNames> {}
+    interface AssertStrict extends Pick<typeof strict, AssertMethodNames> {}
+    const Assert: {
+      new (options?: AssertOptions & { strict?: true | undefined }): AssertStrict;
+      new (options: AssertOptions): Assert;
+    };
   }
   export = assert;
 }
@@ -3259,6 +3290,7 @@ declare module "assert/strict" {
     function notStrictEqual(actual: unknown, expected: unknown, message?: string): void;
     function deepStrictEqual(actual: unknown, expected: unknown, message?: string): void;
     function notDeepStrictEqual(actual: unknown, expected: unknown, message?: string): void;
+    function partialDeepStrictEqual(actual: unknown, expected: unknown, message?: string): void;
     function fail(message?: string): never;
     function throws(fn: () => unknown, expected?: unknown, message?: string): void;
     function doesNotThrow(fn: () => unknown, expected?: unknown, message?: string): void;
@@ -3276,6 +3308,10 @@ declare module "assert/strict" {
     function doesNotMatch(value: string, regExp: RegExp, message?: string): void;
     function ifError(value: unknown): void;
     const strict: typeof import("assert/strict");
+    type AssertOptions = import("assert").AssertOptions;
+    type Assert = import("assert").Assert;
+    type AssertStrict = import("assert").AssertStrict;
+    const Assert: typeof import("assert").Assert;
   }
   export = strict;
 }

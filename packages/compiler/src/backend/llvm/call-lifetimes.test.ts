@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import {
   BOOL,
+  DYN,
   F64,
   UNDEFINED_T,
   funcOf,
@@ -689,4 +690,36 @@ test("stores into inline union fields project the stored union and keep the obje
       fn.name,
     ),
   ).toEqual(new Set([0]));
+});
+
+test("to-dyn of a copied record projects it, while live and identity conversions keep it", () => {
+  const cls: IrType = { kind: "object", className: "Cell" };
+  const convert = (type: IrType, liveRef?: true): IrStmt => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "dynFrom",
+      value: ref("value", type),
+      ...(liveRef === undefined ? {} : { liveRef }),
+      type: DYN,
+      loc,
+    },
+    loc,
+  });
+  const fn = helper("record");
+  fn.params[0]!.type = fn.locals[0]!.type = record;
+  fn.body = [convert(record), ret(num())];
+  const functions = new Map([[fn.name, fn]]);
+  const copies = (shapeId: string) => shapeId === "cell";
+  const analyzeWith = (copy: (shapeId: string) => boolean) =>
+    analyzeCallLifetimes(functions, undefined, undefined, undefined, undefined, copy).parameters;
+  // A shape that keeps its identity boxes the record itself.
+  expect(analyzeWith(() => false).get(fn.name)).toBeUndefined();
+  expect(analyzeWith(copies).get(fn.name)).toEqual(new Set([0]));
+  // A live capsule keeps the reference even for a copying shape.
+  fn.body = [convert(record, true), ret(num())];
+  expect(analyzeWith(copies).get(fn.name)).toBeUndefined();
+  // Class instances always convert to a typed capsule.
+  fn.params[0]!.type = fn.locals[0]!.type = cls;
+  fn.body = [convert(cls), ret(num())];
+  expect(analyzeWith(copies).get(fn.name)).toBeUndefined();
 });
