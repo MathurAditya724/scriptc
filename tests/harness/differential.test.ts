@@ -21,7 +21,7 @@ import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
-import { shardSelect, shardSuffix } from "./shard.js";
+import { corpusSelect, shardSuffix } from "./shard.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -34,14 +34,16 @@ const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 // scriptc compiles them through checkJs inference.
 // SCRIPTC_TEST_SHARD="i/n" (CI's matrix) keeps only this shard's slice of
 // the corpus — the file is this suite's wall-time monster, so vitest's
-// file-granular --shard alone cannot split it. Unset = everything.
+// file-granular --shard alone cannot split it. Slices are balanced by each
+// program's measured cost (corpus-costs.json). Unset = everything.
 const ENTRY_EXTS = ["ts", "js", "mjs", "cjs"];
-const files = shardSelect(
+const files = corpusSelect(
   ENTRY_EXTS.flatMap((ext) => [
     ...globSync(join(corpusDir, `*.${ext}`)),
     ...globSync(join(corpusDir, `*/main.${ext}`)),
   ]).sort(),
   (f) => f.slice(corpusDir.length + 1),
+  process.env["SCRIPTC_SAN"] === "1",
 );
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 const laneOptimization = process.env["SCRIPTC_TEST_OPTIMIZATION"];
