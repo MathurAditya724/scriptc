@@ -110,6 +110,7 @@ import {
 } from "./integer-clones.js";
 import { exactInteger, narrowInteger } from "./integer-values.js";
 import {
+  conditionalLoopWrites,
   findInitializerBindings,
   initializerLocalCandidates,
   withInitializerBindings,
@@ -948,6 +949,9 @@ export class LlEmitter {
   private byteWindowEntries: ReturnType<typeof findInitializedByteLoopBindings> = new Map();
   bytesBounds: ReadonlySet<IrExpr | IrStmt> = new Set();
   integerViews = new Map<string, string>();
+  /** Module globals the current function owns outright (initializer
+   * bindings): their function-local slot, which stands in for the global. */
+  private privateGlobalSlots = new Map<string, string>();
   /** Number locals of the current function stored only as an i32
    * (int32-locals.ts); their slots are `alloca i32`. */
   int32Locals = new Map<string, Int32Local>();
@@ -5479,7 +5483,7 @@ export class LlEmitter {
     if (!g) throw new InternalCompilerError(`llvm emitter bug: unknown binding ${id}`);
     return {
       kind: "global",
-      slot: `@${mangleGlobal(id)}`,
+      slot: this.privateGlobalSlots.get(id) ?? `@${mangleGlobal(id)}`,
       type: g,
     };
   }
@@ -6066,6 +6070,30 @@ export class LlEmitter {
       B.line(`${value} = load double, ptr @${mangleGlobal(global.id)}`);
       this.storeIntegerView(global.id, { name: value, type: global.type });
     }
+    // A number global only its guarded, synchronous initializer reads or
+    // writes (findInitializerBindings) is invisible to every other function,
+    // and reentry returns before reaching it, so a local slot can stand in
+    // for it: LLVM keeps it in a register across calls and loops that would
+    // otherwise force a store and reload per iteration. The global's
+    // storage is never read again, so nothing writes the slot back. Bindings
+    // proven int32 already live in an i32 local (localizedGlobals above);
+    // this covers the remaining doubles.
+    this.privateGlobalSlots.clear();
+    if (this.debug === null && this.currentCoro === null && !fn.async && !fn.generator) {
+      const conditional = initializerLocals.length ? conditionalLoopWrites(fn.body) : null;
+      for (const global of initializerLocals) {
+        if (localizedGlobals.has(global.id)) continue;
+        // A conditional update in a loop stays a memory update (see
+        // conditionalLoopWrites).
+        if (conditional?.has(global.id)) continue;
+        const slot = B.slot();
+        const value = B.tmp();
+        B.entryAllocas.push(`${slot} = alloca double ; module binding ${global.name}`);
+        B.line(`${value} = load double, ptr @${mangleGlobal(global.id)}`);
+        B.line(`store double ${value}, ptr ${slot}`);
+        this.privateGlobalSlots.set(global.id, slot);
+      }
+    }
     for (const local of this.currentLocals.values()) {
       // Boxed locals' slots hold their capture BOX (a ptr); captured
       // (env-borrowed) locals bind the incoming box below. A caught-typed
@@ -6294,6 +6322,7 @@ export class LlEmitter {
     if (fn.name.startsWith(RESULT_ENTRY_PREFIX)) attrs = `inlinehint ${attrs}`;
     const debug = this.debugScope === null ? "" : ` !dbg ${this.debugScope}`;
     const symbol = borrowed ? mangleBorrowedFunction(fn.name) : mangleFunction(fn.name);
+    this.privateGlobalSlots.clear();
     let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${debug} { ; ${fn.name}\n${B.render()}\n}`;
     if (int32Abi) body += "\n" + this.emitInt32AbiWrapper(fn, symbol, int32Abi);
     if (this.integerClones.members.has(fn.name)) {
