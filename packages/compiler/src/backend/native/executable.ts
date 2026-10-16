@@ -549,6 +549,9 @@ export async function compileCInternal(
       ? [rt(join(rtDir, "scr_util_callable.c"))]
       : []),
     ...(opts.stream ? [rt(join(rtDir, "scr_stream.c")), rt(join(rtDir, "scr_fs_stream.c"))] : []),
+    // The zlib stream classes reference both the zlib engine and the
+    // stream unit.
+    ...(opts.zlib && opts.stream ? [rt(join(rtDir, "scr_zlib_stream.c"))] : []),
     ...(opts.stream && opts.dynAsync ? [rt(join(rtDir, "scr_stream_ops.c"))] : []),
     // FileHandle streams reference both the stream unit and FileHandle.
     ...(opts.stream && opts.fileHandle ? [rt(join(rtDir, "scr_fs_stream_fh.c"))] : []),

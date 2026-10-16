@@ -5171,7 +5171,9 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     d->v.obj.entries[d->v.obj.len - 1].enumerable = e->message_enumerable;
   }
   if (e->stack) scr_dyn_obj_set(d, "stack", 5, scr_dyn_new_str(e->stack));
-  if (e->system_call) scr_dyn_obj_set(d, "errno", 5, scr_dyn_new_num(e->system_errno));
+  /* errno rides fs errors (with syscall) and zlib errors (without). */
+  if (e->system_call || e->system_errno != 0)
+    scr_dyn_obj_set(d, "errno", 5, scr_dyn_new_num(e->system_errno));
   if (e->code) scr_dyn_obj_set(d, "code", 4, scr_dyn_new_str(e->code));
   if (e->system_call) scr_dyn_obj_set(d, "syscall", 7, scr_dyn_new_str(e->system_call));
   if (e->system_path) scr_dyn_obj_set(d, "path", 4, scr_dyn_new_str(e->system_path));

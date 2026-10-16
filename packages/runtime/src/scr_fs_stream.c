@@ -54,7 +54,9 @@ static void scr_fss_free(void *p) {
   free(f);
 }
 
-static ScrFsStream *scr_fss_of(ScrStream *s) { return scr_stream_native(s); }
+/* The stream's fs state, or NULL for other streams (the release function
+ * is the state's type tag). */
+static ScrFsStream *scr_fss_of(ScrStream *s) { return scr_stream_native(s, &scr_fss_free); }
 
 static const ScrStreamNativeOps scr_fss_ops; /* defined at the end */
 
@@ -578,7 +580,8 @@ static ScrStream *scr_fss_new(const ScrDyn *path, const ScrDyn *opts_in, bool re
   f->owner = owner;
   f->owner_ops = owner_ops;
   owner = NULL;
-  scr_stream_set_native(s, f, &scr_fss_ops);
+  scr_stream_set_native(s, f, &scr_fss_free);
+  scr_stream_set_native_ops(s, &scr_fss_ops);
   f = NULL;
   if (readable) {
     scr_stream_set_read(s, scr_fss_hook((void *)&scr_fss_read), &scr_fss_read);
@@ -724,5 +727,5 @@ static ScrError *scr_fss_aggregate(ScrError *inner, ScrError *outer) {
 }
 
 static const ScrStreamNativeOps scr_fss_ops = {
-  &scr_fss_free, &scr_fss_view, &scr_fs_stream_close, &scr_fss_aggregate,
+  &scr_fss_view, &scr_fs_stream_close, &scr_fss_aggregate,
 };

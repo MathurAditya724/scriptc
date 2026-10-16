@@ -1,4 +1,5 @@
 import { InternalCompilerError } from "../errors.js";
+import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
 import type { IrRecordShape, IrType, IrUnionDef, IrUnionDiscriminant } from "../ir/ir.js";
@@ -27,6 +28,7 @@ import {
   RUNTIME_EMITTER_CLASS,
   RUNTIME_ERROR_CLASSES,
   RUNTIME_STREAM_CLASSES,
+  ZLIB_STREAM_MODES,
   setOf,
   STRING,
   SYMBOL_T,
@@ -2722,6 +2724,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       return { kind: "object", className: irName };
     }
   }
+  // node:zlib's stream classes (the shipped fallback declarations): their
+  // instances are runtime Transform streams.
+  if (
+    psym !== undefined &&
+    ZLIB_STREAM_MODES.has(psym.name) &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          ts.isClassDeclaration(d) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          !isNodeTypesPath(d.getSourceFile().fileName) &&
+          isDeclaredInAmbientModule(d, "zlib"),
+      )
+  ) {
+    return { kind: "object", className: "%Transform" };
+  }
   // fs.ReadStream / fs.WriteStream (the shipped fallback declarations):
   // their instances are runtime Readable / Writable streams
   // (scr_fs_stream.c).
@@ -2794,6 +2813,27 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       )
   ) {
     return { kind: "testCtx" };
+  }
+  // node:test's MockFunctionContext<F> and MockFunctionCall<F>: compiler
+  // records built from F (mock-shapes.ts). Mock<F> then maps as the hybrid
+  // { %call: F, mock } record through mapHybridCallableIntersection.
+  if (
+    (psym?.name === "MockFunctionContext" || psym?.name === "MockFunctionCall") &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          ts.isInterfaceDeclaration(d) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          isDeclaredInAmbientModule(d, "test"),
+      )
+  ) {
+    const fnTs = checker.getTypeArguments(widened as ts.TypeReference)[0];
+    const fn = fnTs ? mapType(fnTs, ctx) : null;
+    if (!fn || fn.kind !== "func") return null;
+    return psym.name === "MockFunctionContext"
+      ? mockContextType(fn, ctx)
+      : mockCallRecordType(fn, ctx);
   }
   // NodeJS.ErrnoException: @types/node's `interface ErrnoException extends
   // Error` (dns/fs callback error types). It IS an Error at runtime — map

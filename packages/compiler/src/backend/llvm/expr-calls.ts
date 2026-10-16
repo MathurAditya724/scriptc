@@ -65,11 +65,8 @@ export function emitCallExpr(
   >,
   awaitEntry: false | "await" | "adopt" = false,
   /** A projection consumes a scalar union result (Int32Abi.union): answer
-   * a private stack box instead of a heap box. `discard`: the statement
-   * drops the result, releasing an owned payload from the registers.
-   * `pair`: answer the register pair itself, whose payload reference
-   * passes to the caller. */
-  stackResult: boolean | "discard" | "pair" = false,
+   * a private stack box instead of a heap box. */
+  stackResult = false,
   /** The frame storage a result-slot entry (record-results.ts) writes:
    * passed after the call's own arguments. */
   resultSlot?: LlValue,
@@ -140,7 +137,7 @@ export function emitCallExpr(
               isScalarOptionalSource(a, host.unionSources)
             )
               return emitScalarOptional(host, a);
-            if (a.kind === "call" && host.registerResultCall(a))
+            if (a.kind === "call" && host.scalarResultCall(a))
               return emitCallExpr(host, a, false, true);
             if (host.stackObjects && canStackObject(host, a)) return emitStackObject(host, a);
             if (host.nullableFieldGet(a))
@@ -203,17 +200,7 @@ export function emitCallExpr(
         B.line(`${t} = call ${SCALAR_UNION_RESULT} ${target}(${argList})`);
         if (host.mayThrow.has(e.callee)) host.emitPendingCheck();
         if (borrowed) host.releaseFrame(host.frames.pop()!);
-        if (stackResult === "pair") return { name: t, type: e.type };
-        if (stackResult === "discard") {
-          if (abi.owned) host.releaseUnionPairPayload(t, e.type);
-          return { name: "", type: e.type };
-        }
-        if (stackResult) {
-          const box = host.stackScalarUnion(t, e.type);
-          // The statement frame owns an owned pair's reference payload.
-          if (abi.owned) host.ownUnionPayload(box);
-          return box;
-        }
+        if (stackResult) return host.stackScalarUnion(t, e.type);
         return host.own({ name: host.boxScalarUnion(t, e.type), type: e.type });
       }
       if (abi?.result) {

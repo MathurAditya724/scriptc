@@ -26,6 +26,7 @@ import {
   isUnitType,
 } from "../../ir/ir.js";
 import { numLit, strLit } from "../../ir/build.js";
+import { lowerMockContextCall, lowerMockContextProperty, lowerMockFn } from "./lower-mock.js";
 
 const TEST_FN_HINT = "test bodies take () or (t: TestContext) and return void or Promise<void>";
 const TESTCTX_SURFACE_HINT =
@@ -418,6 +419,9 @@ export function lowerTestMethodCall(
   if (call.questionDotToken || access.questionDotToken) return null;
   const loc = locOf(call);
   const member = access.name.text;
+  // fn.mock.callCount() and the other mock context members.
+  const mockContextCall = lowerMockContextCall(lowerer, call, access);
+  if (mockContextCall) return mockContextCall;
   // test.skip / it.only / describe.todo on a NAMED import binding: the
   // receiver resolves to the module member the binding imported.
   if (ts.isIdentifier(access.expression)) {
@@ -448,11 +452,12 @@ export function lowerTestMethodCall(
           member === "skip" ? 1 : member === "todo" ? 2 : 3,
         );
       }
+      if (bi.member === "mock" && member === "fn") return lowerMockFn(lowerer, call, "mock.fn");
       if (bi.member === "mock") {
         lowerer.noLowering(
-          "test.mock",
+          `test.mock.${member}`,
           call,
-          "mocking has no lowering",
+          "mock.fn and t.mock.fn are the supported mock members",
           lowerer.checker.getSymbolAtLocation(access.name),
         );
       }
@@ -463,6 +468,17 @@ export function lowerTestMethodCall(
         lowerer.checker.getSymbolAtLocation(access.name),
       );
     }
+  }
+  // t.mock.fn(...): the test's mock tracker.
+  if (
+    member === "fn" &&
+    ts.isPropertyAccessExpression(access.expression) &&
+    !access.expression.questionDotToken &&
+    access.expression.name.text === "mock" &&
+    lowerer.mapTypeOf(lowerer.typeOf(access.expression.expression))?.kind === "testCtx" &&
+    lowerer.isStdlibMember(access.expression)
+  ) {
+    return lowerMockFn(lowerer, call, "t.mock.fn");
   }
   // t.assert.strictEqual(...) — the callee's receiver is `t.assert` on a
   // TestContext: Node's t.assert methods ARE the assert functions (bound
@@ -594,6 +610,8 @@ export function lowerTestCtxProperty(
   expr: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (expr.questionDotToken) return null;
+  const mockCalls = lowerMockContextProperty(lowerer, expr);
+  if (mockCalls) return mockCalls;
   if (lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind !== "testCtx") return null;
   if (!lowerer.isStdlibMember(expr)) return null;
   const loc = locOf(expr);

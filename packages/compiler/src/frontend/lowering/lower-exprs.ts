@@ -24,6 +24,7 @@ import { literalUnionArm } from "../union-discriminants.js";
  * (FieldTarget). */
 import { isFsStreamMember, lowerFsStreamProperty } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
+import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "./builtins/compression.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { dirname } from "node:path";
 import * as posix from "node:path/posix";
@@ -15161,6 +15162,9 @@ function lowerStreamObjectProperty(
   if (recvT?.kind !== "object") return null;
   const info = lowerer.classes.get(recvT.className);
   if (!info || streamSidesOf(lowerer, info) === null) return null;
+  if (expr.name.text === "bytesWritten" && isZlibStreamMember(lowerer, expr)) {
+    return lowerZlibStreamBytesWritten(lowerer, expr);
+  }
   if (isFsStreamMember(lowerer, expr)) {
     const member = lowerFsStreamProperty(lowerer, expr);
     if (member) return member;

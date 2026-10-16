@@ -57,17 +57,14 @@ typedef struct ScrBytes {
   ScrSharedBytes *shared; /* Neutral backing, borrowed by views from their local owner. */
 } ScrBytes;
 
-/* Internal scoped locking is only for leaf memory operations. Never hold this
- * guard across a script callback, blocking I/O, or a fiber suspension. */
-void scr_shared_enter(void);
-void scr_shared_leave(void);
-bool scr_shared_guard(const ScrBytes *, const ScrBytes *);
-void scr_shared_guard_release(bool *);
-#if defined(SCR_WORKERS) || (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
-#define SCR_SHARED_GUARD(a, b) bool scr_shared_held __attribute__((cleanup(scr_shared_guard_release))) = scr_shared_guard(a, b)
-#else
-#define SCR_SHARED_GUARD(a, b) ((void)0)
-#endif
+/* Copies out of and into shared storage, made of relaxed atomic accesses
+ * (aligned 8-byte words, single bytes at unaligned edges). Lock-free
+ * Atomics operations and element accesses on the same bytes stay free of
+ * data races; a copy that overlaps a concurrent write may observe either
+ * value of each word or byte, which ECMA-262 permits for non-atomic
+ * accesses. */
+void scr_shared_load(void *dst, const void *src, size_t n);
+void scr_shared_store(void *dst, const void *src, size_t n);
 ScrSharedBytes *scr_shared_retain(ScrSharedBytes *);
 void scr_shared_release(ScrSharedBytes *);
 void scr_bytes_make_shared(ScrBytes *);
@@ -79,8 +76,9 @@ ScrBytes *scr_bytes_snapshot(const ScrBytes *);
 void scr_bytes_snapshot_release(ScrBytes **);
 ScrBytes *scr_bytes_local_copy(ScrBytes *); /* +1; shared inputs are copied */
 void scr_bytes_require_unshared(const ScrBytes *);
-/* Snapshot before passing byte pointers to I/O or callback-capable consumers.
- * The copy is local, so neither a lock nor shared raw memory escapes. */
+/* Snapshot before reading shared bytes in bulk or passing byte pointers to
+ * I/O or callback-capable consumers. The copy is local and read with
+ * scr_shared_load, so no shared raw memory escapes. */
 #if defined(SCR_WORKERS) || (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
 #define SCR_BYTES_SNAPSHOT(name) \
   ScrBytes *scr_snapshot_##name __attribute__((cleanup(scr_bytes_snapshot_release))) = scr_bytes_snapshot(name); \
@@ -222,8 +220,8 @@ double scr_bytes_get(const ScrBytes *b, double i);
 double scr_bytes_get_or_nan(const ScrBytes *b, double i); /* NaN when the index is invalid */
 void scr_bytes_set(ScrBytes *b, double i, double v);
 /* Shared-view element access at an index the caller has checked against
- * the length (0 <= i < len). Each takes the shared-memory lock around the
- * access. Integer elements read as their value in 32 bits, sign- or
+ * the length (0 <= i < len). Each accesses the element as one relaxed
+ * atomic access of its width. Integer elements read as their value in 32 bits, sign- or
  * zero-extended, with Uint32 elements as their bit pattern; float elements
  * read as a double. Writes coerce like scr_bytes_set. Compiled code calls
  * these only from a view's shared branch. */

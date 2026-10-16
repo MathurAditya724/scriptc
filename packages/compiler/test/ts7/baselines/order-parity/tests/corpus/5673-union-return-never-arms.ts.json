@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/5673-union-return-never-arms.ts"
- ],
- "diags": []
-}

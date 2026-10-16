@@ -231,6 +231,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn.startsWith("sp.finishedOpts") ||
         fn.startsWith("sp.pipelineOpts") ||
         fn.startsWith("stream.finishedOpts") ||
+        fn.startsWith("zlib.stream") ||
         fn === "fs.createReadStream" ||
         fn === "fs.createWriteStream" ||
         fn === "fileHandle.createReadStream" ||

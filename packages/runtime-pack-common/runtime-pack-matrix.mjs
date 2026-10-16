@@ -79,6 +79,8 @@ const OPTIONAL = [
   ["scr_util_style.c", all("parseArgs", "inspect", "dynAsync")],
   ["scr_util_callable.c", all("parseArgs", "inspect", "dynAsync", "dynInvoke", "regex")],
   ["scr_stream.c", "stream"],
+  // The zlib stream classes reference both the zlib engine and the stream unit.
+  ["scr_zlib_stream.c", all("zlib", "stream")],
   // The Readable operators await through the dyn-async unit.
   ["scr_stream_ops.c", all("stream", "dynAsync")],
   // fs.ReadStream / fs.WriteStream reference only the stream unit and base units.

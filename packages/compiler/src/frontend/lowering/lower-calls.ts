@@ -15,6 +15,7 @@ import { objectEnumerationReceiver } from "./object-enumeration-receiver.js";
 import { InternalCompilerError } from "../../errors.js";
 import { isFsStreamMember, lowerFsStreamMethodCall } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
+import { isZlibStreamMember, lowerZlibStreamMethodCall } from "./builtins/compression.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerGenMethodCall } from "./lower-generators.js";
 import { lowerClassSymbolMethodCall } from "./symbol-methods.js";
@@ -194,6 +195,8 @@ import {
   objLitGenericFnInfoOf,
   genericCallInstance,
 } from "./generic-functions.js";
+
+const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
@@ -8578,6 +8581,16 @@ export function lowerObjectMethodCall(
   const info = lowerer.classes.get(receiverIr.className);
   if (!info) lowerer.flushDeferredClass(receiverIr.className);
   const found = info ? lowerer.findMethodOn(info, access.name.text) : null;
+  // The zlib stream members (flush/params/close/reset) are declared on
+  // the zlib classes; their receivers are runtime Transform streams.
+  if (
+    info &&
+    !found &&
+    ZLIB_STREAM_METHODS.has(access.name.text) &&
+    isZlibStreamMember(lowerer, access)
+  ) {
+    return lowerZlibStreamMethodCall(lowerer, call, access);
+  }
   // fs.ReadStream / fs.WriteStream's close(cb?): declared on the fs
   // classes; their receivers are runtime Readable / Writable streams.
   if (info && !found && isFsStreamMember(lowerer, access)) {

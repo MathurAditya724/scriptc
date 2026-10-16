@@ -2632,12 +2632,793 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.zlib.BrotliCompress",
+      "kind": "node-builtin",
+      "name": "zlib.BrotliCompress",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+    },
+    {
+      "id": "node-builtin.zlib.BrotliDecompress",
+      "kind": "node-builtin",
+      "name": "zlib.BrotliDecompress",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+    },
+    {
+      "id": "node-builtin.zlib.DEFLATE",
+      "kind": "node-builtin",
+      "name": "zlib.DEFLATE",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.DEFLATERAW",
+      "kind": "node-builtin",
+      "name": "zlib.DEFLATERAW",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.GUNZIP",
+      "kind": "node-builtin",
+      "name": "zlib.GUNZIP",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.GZIP",
+      "kind": "node-builtin",
+      "name": "zlib.GZIP",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.INFLATE",
+      "kind": "node-builtin",
+      "name": "zlib.INFLATE",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.INFLATERAW",
+      "kind": "node-builtin",
+      "name": "zlib.INFLATERAW",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.UNZIP",
+      "kind": "node-builtin",
+      "name": "zlib.UNZIP",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZLIB_VERNUM",
+      "kind": "node-builtin",
+      "name": "zlib.ZLIB_VERNUM",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_CLEVEL_DEFAULT",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_CLEVEL_DEFAULT",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_COMPRESS",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_COMPRESS",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_DECOMPRESS",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_DECOMPRESS",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_btlazy2",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_btlazy2",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_btopt",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_btopt",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_btultra",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_btultra",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_btultra2",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_btultra2",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_chainLog",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_chainLog",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_checksumFlag",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_checksumFlag",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_compressionLevel",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_compressionLevel",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_contentSizeFlag",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_contentSizeFlag",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_dictIDFlag",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_dictIDFlag",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_enableLongDistanceMatching",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_enableLongDistanceMatching",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_hashLog",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_hashLog",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_jobSize",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_jobSize",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_ldmBucketSizeLog",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_ldmBucketSizeLog",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_ldmHashLog",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_ldmHashLog",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_ldmHashRateLog",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_ldmHashRateLog",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_ldmMinMatch",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_ldmMinMatch",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_minMatch",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_minMatch",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_nbWorkers",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_nbWorkers",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_overlapLog",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_overlapLog",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_searchLog",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_searchLog",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_strategy",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_strategy",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_targetLength",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_targetLength",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_c_windowLog",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_c_windowLog",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_d_windowLogMax",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_d_windowLogMax",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_dfast",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_dfast",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_e_continue",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_e_continue",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_e_end",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_e_end",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_e_flush",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_e_flush",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_GENERIC",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_GENERIC",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_checksum_wrong",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_checksum_wrong",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_corruption_detected",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_corruption_detected",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_dictionaryCreation_failed",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_dictionaryCreation_failed",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_dictionary_corrupted",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_dictionary_corrupted",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_dictionary_wrong",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_dictionary_wrong",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_dstBuffer_null",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_dstBuffer_null",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_dstSize_tooSmall",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_dstSize_tooSmall",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_frameParameter_unsupported",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_frameParameter_unsupported",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_frameParameter_windowTooLarge",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_frameParameter_windowTooLarge",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_init_missing",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_init_missing",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_literals_headerWrong",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_literals_headerWrong",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_maxSymbolValue_tooLarge",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_maxSymbolValue_tooLarge",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_maxSymbolValue_tooSmall",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_maxSymbolValue_tooSmall",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_memory_allocation",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_memory_allocation",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_noForwardProgress_destFull",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_noForwardProgress_destFull",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_noForwardProgress_inputEmpty",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_noForwardProgress_inputEmpty",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_no_error",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_no_error",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_parameter_combination_unsupported",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_parameter_combination_unsupported",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_parameter_outOfBound",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_parameter_outOfBound",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_parameter_unsupported",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_parameter_unsupported",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_prefix_unknown",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_prefix_unknown",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_srcSize_wrong",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_srcSize_wrong",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_stabilityCondition_notRespected",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_stabilityCondition_notRespected",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_stage_wrong",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_stage_wrong",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_tableLog_tooLarge",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_tableLog_tooLarge",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_version_unsupported",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_version_unsupported",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_error_workSpace_tooSmall",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_error_workSpace_tooSmall",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_fast",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_fast",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_greedy",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_greedy",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_lazy",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_lazy",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.ZSTD_lazy2",
+      "kind": "node-builtin",
+      "name": "zlib.ZSTD_lazy2",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_BEST_COMPRESSION",
+      "kind": "node-builtin",
+      "name": "zlib.Z_BEST_COMPRESSION",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_BEST_SPEED",
+      "kind": "node-builtin",
+      "name": "zlib.Z_BEST_SPEED",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_BLOCK",
+      "kind": "node-builtin",
+      "name": "zlib.Z_BLOCK",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_BUF_ERROR",
+      "kind": "node-builtin",
+      "name": "zlib.Z_BUF_ERROR",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_DATA_ERROR",
+      "kind": "node-builtin",
+      "name": "zlib.Z_DATA_ERROR",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_DEFAULT_CHUNK",
+      "kind": "node-builtin",
+      "name": "zlib.Z_DEFAULT_CHUNK",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_DEFAULT_COMPRESSION",
+      "kind": "node-builtin",
+      "name": "zlib.Z_DEFAULT_COMPRESSION",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_DEFAULT_LEVEL",
+      "kind": "node-builtin",
+      "name": "zlib.Z_DEFAULT_LEVEL",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_DEFAULT_MEMLEVEL",
+      "kind": "node-builtin",
+      "name": "zlib.Z_DEFAULT_MEMLEVEL",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_DEFAULT_STRATEGY",
+      "kind": "node-builtin",
+      "name": "zlib.Z_DEFAULT_STRATEGY",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_DEFAULT_WINDOWBITS",
+      "kind": "node-builtin",
+      "name": "zlib.Z_DEFAULT_WINDOWBITS",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_ERRNO",
+      "kind": "node-builtin",
+      "name": "zlib.Z_ERRNO",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_FILTERED",
+      "kind": "node-builtin",
+      "name": "zlib.Z_FILTERED",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_FINISH",
+      "kind": "node-builtin",
+      "name": "zlib.Z_FINISH",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_FIXED",
+      "kind": "node-builtin",
+      "name": "zlib.Z_FIXED",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_FULL_FLUSH",
+      "kind": "node-builtin",
+      "name": "zlib.Z_FULL_FLUSH",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_HUFFMAN_ONLY",
+      "kind": "node-builtin",
+      "name": "zlib.Z_HUFFMAN_ONLY",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_MAX_CHUNK",
+      "kind": "node-builtin",
+      "name": "zlib.Z_MAX_CHUNK",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_MAX_LEVEL",
+      "kind": "node-builtin",
+      "name": "zlib.Z_MAX_LEVEL",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_MAX_MEMLEVEL",
+      "kind": "node-builtin",
+      "name": "zlib.Z_MAX_MEMLEVEL",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_MAX_WINDOWBITS",
+      "kind": "node-builtin",
+      "name": "zlib.Z_MAX_WINDOWBITS",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_MEM_ERROR",
+      "kind": "node-builtin",
+      "name": "zlib.Z_MEM_ERROR",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_MIN_CHUNK",
+      "kind": "node-builtin",
+      "name": "zlib.Z_MIN_CHUNK",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_MIN_LEVEL",
+      "kind": "node-builtin",
+      "name": "zlib.Z_MIN_LEVEL",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_MIN_MEMLEVEL",
+      "kind": "node-builtin",
+      "name": "zlib.Z_MIN_MEMLEVEL",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_MIN_WINDOWBITS",
+      "kind": "node-builtin",
+      "name": "zlib.Z_MIN_WINDOWBITS",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_NEED_DICT",
+      "kind": "node-builtin",
+      "name": "zlib.Z_NEED_DICT",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_NO_COMPRESSION",
+      "kind": "node-builtin",
+      "name": "zlib.Z_NO_COMPRESSION",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_NO_FLUSH",
+      "kind": "node-builtin",
+      "name": "zlib.Z_NO_FLUSH",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_OK",
+      "kind": "node-builtin",
+      "name": "zlib.Z_OK",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_PARTIAL_FLUSH",
+      "kind": "node-builtin",
+      "name": "zlib.Z_PARTIAL_FLUSH",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_RLE",
+      "kind": "node-builtin",
+      "name": "zlib.Z_RLE",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_STREAM_END",
+      "kind": "node-builtin",
+      "name": "zlib.Z_STREAM_END",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_STREAM_ERROR",
+      "kind": "node-builtin",
+      "name": "zlib.Z_STREAM_ERROR",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_SYNC_FLUSH",
+      "kind": "node-builtin",
+      "name": "zlib.Z_SYNC_FLUSH",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.Z_VERSION_ERROR",
+      "kind": "node-builtin",
+      "name": "zlib.Z_VERSION_ERROR",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.zlib.brotliCompress",
+      "kind": "node-builtin",
+      "name": "zlib.brotliCompress",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+    },
+    {
       "id": "node-builtin.zlib.brotliCompressSync",
       "kind": "node-builtin",
       "name": "zlib.brotliCompressSync",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms plus crc32 are the lowered zlib surface"
+      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+    },
+    {
+      "id": "node-builtin.zlib.brotliDecompress",
+      "kind": "node-builtin",
+      "name": "zlib.brotliDecompress",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
     },
     {
       "id": "node-builtin.zlib.brotliDecompressSync",
@@ -2645,12 +3426,70 @@
       "name": "zlib.brotliDecompressSync",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms plus crc32 are the lowered zlib surface"
+      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
     },
     {
       "id": "node-builtin.zlib.crc32",
       "kind": "node-builtin",
       "name": "zlib.crc32",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.zlib.createBrotliCompress",
+      "kind": "node-builtin",
+      "name": "zlib.createBrotliCompress",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+    },
+    {
+      "id": "node-builtin.zlib.createBrotliDecompress",
+      "kind": "node-builtin",
+      "name": "zlib.createBrotliDecompress",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+    },
+    {
+      "id": "node-builtin.zlib.createDeflate",
+      "kind": "node-builtin",
+      "name": "zlib.createDeflate",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.zlib.createDeflateRaw",
+      "kind": "node-builtin",
+      "name": "zlib.createDeflateRaw",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.zlib.createGunzip",
+      "kind": "node-builtin",
+      "name": "zlib.createGunzip",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.zlib.createGzip",
+      "kind": "node-builtin",
+      "name": "zlib.createGzip",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.zlib.createInflate",
+      "kind": "node-builtin",
+      "name": "zlib.createInflate",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.zlib.createInflateRaw",
+      "kind": "node-builtin",
+      "name": "zlib.createInflateRaw",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.zlib.createUnzip",
+      "kind": "node-builtin",
+      "name": "zlib.createUnzip",
       "status": "static"
     },
     {

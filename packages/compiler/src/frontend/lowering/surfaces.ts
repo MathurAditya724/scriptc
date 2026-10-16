@@ -23,6 +23,10 @@ import {
   arrayOf,
 } from "../../ir/ir.js";
 import { isNodeTypesPath, requireSpecOf } from "../program.js";
+import { ZLIB_CONSTANTS } from "./zlib-constants.js";
+
+/** zlib stream instances: runtime Transform streams (scr_zlib_stream.c). */
+const ZLIB_STREAM: IrType = { kind: "object", className: "%Transform" };
 
 /** Statement-level constructs rejected wholesale, keyed by syntax kind. */
 export const UNSUPPORTED_STMT: Partial<
@@ -1538,6 +1542,15 @@ export const BUILTIN_MODULE_FNS: Record<
     unzip: { fn: "zlib.unzipCb", params: [], result: VOID },
     unzipSync: { fn: "zlib.unzipSync", params: [BYTES_U8], result: BYTES_U8 },
     crc32: { fn: "zlib.crc32", params: [], result: F64 },
+    // The stream factories (special-cased in lowerZlibModuleCall): each
+    // answers a runtime Transform stream over the zlib engine.
+    createDeflate: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+    createInflate: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+    createGzip: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+    createGunzip: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+    createDeflateRaw: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+    createInflateRaw: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+    createUnzip: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
   },
   url: {
     fileURLToPath: {
@@ -1883,6 +1896,11 @@ export const BUILTIN_MODULE_CONSTS: Record<
   os: { EOL: "\n", devNull: "/dev/null" },
   worker_threads: { isMainThread: true, threadId: 0 },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
+  // zlib's module-level copies of its constants (every member outside
+  // BROTLI_*, Node's own loop over zlib.constants).
+  zlib: Object.fromEntries(
+    Object.entries(ZLIB_CONSTANTS).filter(([name]) => !name.startsWith("BROTLI")),
+  ),
 };
 
 /** ALTERNATE libCall spellings of tabled builtin members: lowerings the
@@ -2753,7 +2771,12 @@ export function builtinModulesArrayLit(loc: { file: string; start: number; end: 
  * no lowering. The default-options one-shot zlib/deflate-raw/gzip codecs
  * lower for strings and Buffers; the remaining surface points at them. */
 const ZLIB_HINT =
-  "the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms plus crc32 are the lowered zlib surface";
+  "the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms, crc32, " +
+  "and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface";
+/** Brotli has no codec in the static runtime (zlib is the only vendored
+ * compression library). */
+const BROTLI_HINT =
+  "Brotli needs a Brotli codec, which the static runtime does not vendor — " + ZLIB_HINT;
 
 const ASSERT_MODULE_HINTS: Record<string, string | undefined> = {
   ifError:
@@ -2845,8 +2868,14 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
       "randomBytes, and the createHash chain",
   },
   zlib: {
-    brotliCompressSync: ZLIB_HINT,
-    brotliDecompressSync: ZLIB_HINT,
+    brotliCompressSync: BROTLI_HINT,
+    brotliDecompressSync: BROTLI_HINT,
+    brotliCompress: BROTLI_HINT,
+    brotliDecompress: BROTLI_HINT,
+    createBrotliCompress: BROTLI_HINT,
+    createBrotliDecompress: BROTLI_HINT,
+    BrotliCompress: BROTLI_HINT,
+    BrotliDecompress: BROTLI_HINT,
   },
   http2: {
     connect:

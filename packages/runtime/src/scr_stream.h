@@ -412,6 +412,14 @@ void scr_stream_set_final(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
 void scr_stream_set_destroy(ScrStream *s, ScrClosure *cb, ScrStreamErrInv inv);
 void scr_stream_set_transform(ScrStream *s, ScrClosure *cb, ScrStreamChunkInv inv);
 void scr_stream_set_flush(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
+/* Runtime-built Transforms (scr_zlib_stream.c): the flush starts at
+ * 'prefinish' and 'finish' does not wait for it (a _final that completes
+ * at once). set_native moves one reference to the stream's own state,
+ * released when the stream is freed; scr_stream_native answers it
+ * (borrowed) when it was set with `release`, else NULL. */
+void scr_stream_set_flush_on_prefinish(ScrStream *s);
+void scr_stream_set_native(ScrStream *s, void *state, void (*release)(void *));
+void *scr_stream_native(ScrStream *s, void (*release)(void *));
 
 /* Completion entries for the compiler-emitted done closures (err/data
  * MOVE; NULLs = absent). */
@@ -427,24 +435,21 @@ void scr_stream_flush_done(ScrStream *s, ScrError *err, ScrBytes *data, ScrStr *
  *   the finish path and _destroy wait. cb moves; done's err moves.
  * - set_writev_concat: Node's _writev. More than one buffered chunk is
  *   written as one chunk holding their concatenation.
- * - native: an owned payload released with the stream state (it outlives
- *   'close', which drops the hooks). */
+ * - native_ops: the extra operations of a stream's native state (set with
+ *   scr_stream_set_native above). */
 void scr_stream_construct(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
 void scr_stream_construct_done(ScrStream *s, ScrError *err);
 void scr_stream_set_writev_concat(ScrStream *s);
-/* The native payload's operations: release frees it; view adds its
- * members to the stream's untyped view and close is the view's close()
- * (both NULL when absent); aggregate builds aggregateTwoErrors' +1
- * AggregateError from the construct and destroy errors (NULL: the destroy
- * error is used). */
+/* The native state's extra operations: view adds its members to the
+ * stream's untyped view and close is the view's close() (both NULL when
+ * absent); aggregate builds aggregateTwoErrors' +1 AggregateError from the
+ * construct and destroy errors (NULL: the destroy error is used). */
 typedef struct ScrStreamNativeOps {
-  void (*release)(void *native);
   void (*view)(ScrStream *s, ScrDyn *view);
   void (*close)(ScrStream *s);
   ScrError *(*aggregate)(ScrError *inner, ScrError *outer);
 } ScrStreamNativeOps;
-void scr_stream_set_native(ScrStream *s, void *native, const ScrStreamNativeOps *ops);
-void *scr_stream_native(ScrStream *s); /* borrowed, NULL when unset */
+void scr_stream_set_native_ops(ScrStream *s, const ScrStreamNativeOps *ops);
 /* errorOrDestroy (err borrowed), and fs.WriteStream.close(cb) (cb moves,
  * NULL = absent). */
 void scr_stream_fail(ScrStream *s, ScrError *err);
