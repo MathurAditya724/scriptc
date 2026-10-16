@@ -3167,7 +3167,7 @@ static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file) {
     } else scr_fs_throw(error, "read", path);
     return NULL;
   }
-  return out.text;
+  return scr_str_settle_utf8(out.text);
 }
 
 ScrBytes *scr_fs_read_file_bytes(ScrStr *path) {
@@ -3180,6 +3180,9 @@ ScrBytes *scr_fs_read_file_bytes(ScrStr *path) {
   return scr_bytes_take_data(out.bytes, out.len);
 }
 
+/* readFile's utf8 forms: the file is read straight into the result
+ * string, which stays as read when it is valid UTF-8 (one allocation, no
+ * copy) and is repaired as toString('utf8') does otherwise. */
 ScrStr *scr_fs_read_file(ScrStr *path) {
   return scr_fs_read_file_core(path, false);
 }
@@ -4769,7 +4772,7 @@ ScrStr *scr_fs_read_fd(double fd) {
   ScrFileRead out;
   int error = scr_file_read_all(NULL, (int)fd, true, &out);
   if (error) { scr_fs_throw_nopath(error, "read"); return NULL; }
-  return out.text;
+  return scr_str_settle_utf8(out.text);
 }
 
 ScrBytes *scr_fs_read_fd_bytes(double fd) {

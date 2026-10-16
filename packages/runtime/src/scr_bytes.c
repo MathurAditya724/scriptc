@@ -1137,6 +1137,31 @@ ScrStr *scr_str_from_utf8_lossy(const uint8_t *bytes, size_t len) {
   return scr_bytes_decode_utf8(bytes, len);
 }
 
+/* A string whose storage holds bytes read as UTF-8 (the fs utf8 reads):
+ * valid UTF-8 is kept as read, with the ASCII bit scr_str_new would prove;
+ * other input is repaired into a new string exactly as toString('utf8')
+ * does. raw moves; +1. */
+ScrStr *scr_str_settle_utf8(ScrStr *raw) {
+  const uint8_t *in = (const uint8_t *)raw->data;
+  size_t n = raw->len;
+  if (scr_bytes_ascii_prefix(in, n) == n) {
+    raw->ascii = 1;
+    return raw;
+  }
+  size_t next;
+  size_t prefix = scr_bytes_utf8_prefix(in, n, &next);
+  if (prefix == n) {
+    raw->ascii = 0;
+    return raw;
+  }
+  size_t length = scr_bytes_utf8_repair(in, n, prefix, next, NULL);
+  ScrStr *s = scr_str_alloc_raw(length, length);
+  scr_bytes_utf8_repair(in, n, prefix, next, s->data);
+  s->data[length] = '\0';
+  scr_str_release(raw);
+  return s;
+}
+
 /* WHATWG TextDecoder.decode (utf-8, default options): the SAME maximal-
  * subpart replacement decode as toString("utf8") above, with one
  * difference — a leading UTF-8 BOM is stripped (ignoreBOM defaults to

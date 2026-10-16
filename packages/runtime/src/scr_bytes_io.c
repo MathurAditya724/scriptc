@@ -53,13 +53,29 @@ static ScrStr *scr_fs_decode_read(ScrBytes *bytes, ScrStr *encoding) {
   return text;
 }
 
+/* The default and utf8/utf-8 spellings (any ASCII case), which read
+ * straight into the result string. */
+static bool scr_fs_encoding_utf8(const ScrStr *encoding) {
+  if (encoding->len == 0) return true;
+  if (encoding->len != 4 && encoding->len != 5) return false;
+  char lower[5];
+  for (size_t i = 0; i < encoding->len; i++) {
+    char c = encoding->data[i];
+    lower[i] = c >= 'A' && c <= 'Z' ? (char)(c + ('a' - 'A')) : c;
+  }
+  return (encoding->len == 4 && memcmp(lower, "utf8", 4) == 0) ||
+         (encoding->len == 5 && memcmp(lower, "utf-8", 5) == 0);
+}
+
 ScrStr *scr_fs_read_file_encoded(ScrStr *path, ScrStr *encoding) {
   if (!scr_fs_read_encoding_valid(encoding)) return NULL;
+  if (scr_fs_encoding_utf8(encoding)) return scr_fs_read_file(path);
   return scr_fs_decode_read(scr_fs_read_file_bytes(path), encoding);
 }
 
 ScrStr *scr_fs_read_fd_encoded(double fd, ScrStr *encoding) {
   if (!scr_fs_read_encoding_valid(encoding)) return NULL;
+  if (scr_fs_encoding_utf8(encoding)) return scr_fs_read_fd(fd);
   return scr_fs_decode_read(scr_fs_read_fd_bytes(fd), encoding);
 }
 

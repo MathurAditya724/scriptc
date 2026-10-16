@@ -140,6 +140,9 @@ ScrStr *scr_str_new(const char *bytes, size_t len); /* returns +1 */
 /* Native callback boundary: copy and WHATWG-decode a UTF-8 span, replacing
  * malformed subsequences with U+FFFD. NULL with len == 0 is an empty span. */
 ScrStr *scr_str_from_utf8_lossy(const uint8_t *bytes, size_t len); /* +1 */
+/* The same decode over a string whose storage already holds the raw bytes
+ * (scr_bytes.c): kept as is when valid, repaired otherwise. raw moves; +1. */
+ScrStr *scr_str_settle_utf8(ScrStr *raw);
 
 /* Internal allocators for buffer builders: a +1 string with
  * UNINITIALIZED data (the builder fills bytes, then len and the NUL), and
