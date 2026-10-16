@@ -4060,6 +4060,11 @@ declare module "net" {
     setKeepAlive(enable?: boolean, initialDelay?: number): Socket;
     /* end() now, destroy once the FIN actually flushed. */
     destroySoon(): void;
+    /* An RST instead of a FIN; a connecting socket resets once it
+     * connects. Throws ERR_INVALID_HANDLE_TYPE on a TLS socket. */
+    resetAndDestroy(): Socket;
+    /* The local address, or {} while connecting and once destroyed. */
+    address(): AddressInfo | {};
     /* setEncoding('utf8'): 'data' delivers strings — the IncomingMessage
      * twin's contract. */
     setEncoding(encoding: string): void;
@@ -4119,6 +4124,8 @@ declare module "net" {
     /* Connections past this many are closed with a 'drop' event;
      * undefined (the default) or null lifts the cap. */
     maxConnections: number | undefined;
+    /* Node reads it only in cluster mode: a stored value here. */
+    dropMaxConnection: boolean | undefined;
     /* cb(null, count) on the next tick. */
     getConnections(callback: (error: Error | null, count: number) => void): Server;
     /* Node answers the server itself (`return this` chaining). */

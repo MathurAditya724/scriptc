@@ -1726,6 +1726,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "net.sockResume": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
   "net.sockSetNoDelay": { argTypes: [NETSOCKET_T, BOOL], result: NETSOCKET_T },
   "net.sockDestroySoon": { argTypes: [NETSOCKET_T], result: VOID },
+  /** RST close, answers the socket; throws ERR_INVALID_HANDLE_TYPE on TLS. */
+  "net.sockResetAndDestroy": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
+  /** socket.address(): { address, family, port } or {} as a dyn. */
+  "net.sockAddress": { argTypes: [NETSOCKET_T], result: DYN },
   "net.sockBytesWritten": { argTypes: [NETSOCKET_T], result: F64 },
   /** remotePort (0), remoteFamily (1), localAddress (2), localPort (3),
    * localFamily (4): dyn values, undefined when unknown. */
@@ -1757,6 +1761,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "net.isIPv6": { argTypes: [DYN], result: BOOL },
   "net.serverMaxConnectionsGet": { argTypes: [NETSERVER_T], result: DYN },
   "net.serverMaxConnectionsSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
+  "net.serverDropMaxConnectionGet": { argTypes: [NETSERVER_T], result: DYN },
+  "net.serverDropMaxConnectionSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
   "net.serverOnDrop": { argTypes: [NETSERVER_T, DYN, BOOL], result: VOID },
   "net.serverGetConnections": { argTypes: [NETSERVER_T, DYN], result: VOID },
   "net.sockReadable": { argTypes: [NETSOCKET_T], result: BOOL },
