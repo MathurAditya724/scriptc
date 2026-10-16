@@ -130,10 +130,13 @@ enum {
 };
 
 typedef struct {
-  size_t entry;
+  size_t entry; /* SCR_RGN_SINGLE: walked like the region's own objects */
+  void *obj;
   int kind;
   void (*walk)(void *, ScrRgnWalk *);
 } ScrRgnWork;
+
+#define SCR_RGN_SINGLE SIZE_MAX
 
 struct ScrRgnWalk {
   ScrRegion *region;
@@ -141,6 +144,7 @@ struct ScrRgnWalk {
   size_t src;       /* entry index + 1 being walked; 0 = a region object */
   ScrRgnEntry *ents;
   size_t nents, cap_ents;
+  size_t singles; /* owned objects walked without an entry */
   size_t *hash; /* open addressing: entry index + 1 */
   size_t cap_hash;
   ScrRgnEdge *edges;
@@ -467,10 +471,30 @@ static void scr_rgn_rehash(ScrRgnWalk *w) {
   for (size_t i = 0; i < w->nents; i++) w->hash[scr_rgn_find(w, w->ents[i].obj)] = i + 1;
 }
 
+static void scr_rgn_queue(ScrRgnWalk *w, size_t entry, void *p, int kind, void (*walk)(void *, ScrRgnWalk *)) {
+  if (w->nwork == w->cap_work) w->work = scr_rgn_grow(w->work, &w->cap_work, sizeof *w->work, 4096);
+  w->work[w->nwork++] = (ScrRgnWork){entry, p, kind, walk};
+}
+
 /* One more reference to the ordinary object `p`, from the object being
- * walked; queues `p`'s own walk when it is first reached. */
+ * walked; queues `p`'s own walk when it is first reached.
+ *
+ * An object with a single reference, found from one of the region's own
+ * objects (or from an object walked like them), has no other referrer, so
+ * it can never be referenced from outside: it gets no entry and no edges,
+ * and it is walked like the region's own objects, its references into the
+ * region counted as explained. RC-audit builds still enter it, and stop if
+ * the walk reaches it twice. */
 static void scr_rgn_enter(ScrRgnWalk *w, void *p, int kind, void (*walk)(void *, ScrRgnWalk *)) {
   if (!p || *(size_t *)p == SIZE_MAX) return; /* immortal: never freed, not walked */
+  bool single = w->src == 0 && *(size_t *)p == 1;
+#ifndef SCR_RC_AUDIT
+  if (single) {
+    w->singles++;
+    scr_rgn_queue(w, SCR_RGN_SINGLE, p, kind, walk);
+    return;
+  }
+#endif
   if ((w->nents + 1) * 2 > w->cap_hash) scr_rgn_rehash(w);
   size_t j = scr_rgn_find(w, p);
   size_t idx = w->hash[j];
@@ -478,8 +502,10 @@ static void scr_rgn_enter(ScrRgnWalk *w, void *p, int kind, void (*walk)(void *,
     if (w->nents == w->cap_ents) w->ents = scr_rgn_grow(w->ents, &w->cap_ents, sizeof *w->ents, 4096);
     w->ents[w->nents] = (ScrRgnEntry){p, 0, 0, false};
     idx = w->hash[j] = ++w->nents;
-    if (w->nwork == w->cap_work) w->work = scr_rgn_grow(w->work, &w->cap_work, sizeof *w->work, 4096);
-    w->work[w->nwork++] = (ScrRgnWork){idx - 1, kind, walk};
+    scr_rgn_queue(w, single ? SCR_RGN_SINGLE : idx - 1, p, kind, walk);
+  } else if (single) {
+    fprintf(stderr, "scriptc: internal error: the region walk reached an object with one reference twice\n");
+    abort();
   }
   w->ents[idx - 1].found++;
   if (w->src) {
@@ -530,19 +556,39 @@ static void scr_rgn_index_build(void) {
   atomic_store_explicit(&scr_rgn_index_state, 2, memory_order_release);
 }
 
+/* How the walk treats a value stored with a release entry point: a
+ * container kind, an ordinary object with an emitted walker, a reference
+ * into a region (SCR_RGN_S_REF), or nothing it can walk (SCR_RGN_S_NONE,
+ * its references stay unexplained). Containers resolve it once for all
+ * their elements. */
+enum { SCR_RGN_S_NONE = -1, SCR_RGN_S_REF = -2 };
+typedef struct {
+  int kind;
+  void (*walk)(void *, ScrRgnWalk *);
+} ScrRgnSlotKind;
+
+static ScrRgnSlotKind scr_rgn_slot_kind(void (*release)(void *)) {
+  if (!release) return (ScrRgnSlotKind){SCR_RGN_S_NONE, NULL};
+  if (release == scr_arr_release_v) return (ScrRgnSlotKind){SCR_RGN_W_ARR, NULL};
+  if (release == scr_map_release_v) return (ScrRgnSlotKind){SCR_RGN_W_MAP, NULL};
+  if (release == scr_union_release_v) return (ScrRgnSlotKind){SCR_RGN_W_UNION, NULL};
+  if (release == scr_closure_release_v) return (ScrRgnSlotKind){SCR_RGN_W_CLOSURE, NULL};
+  if (release == scr_dyn_release_v) return (ScrRgnSlotKind){SCR_RGN_W_DYN, NULL};
+  const ScrRgnType *ty = scr_rgn_type_of(release);
+  if (!ty) return (ScrRgnSlotKind){SCR_RGN_S_NONE, NULL};
+  if (!ty->walk) return (ScrRgnSlotKind){SCR_RGN_S_REF, NULL};
+  return (ScrRgnSlotKind){SCR_RGN_W_EMITTED, ty->walk};
+}
+
+static void scr_rgn_slot_as(ScrRgnWalk *w, void *obj, ScrRgnSlotKind k) {
+  if (!obj || k.kind == SCR_RGN_S_NONE) return;
+  if (k.kind == SCR_RGN_S_REF) scr_region_ref(w, obj);
+  else scr_rgn_enter(w, obj, k.kind, k.walk);
+}
+
 void scr_region_slot(ScrRgnWalk *w, void *obj, void (*release)(void *)) {
   if (!obj || !release) return;
-  if (release == scr_arr_release_v) scr_rgn_enter(w, obj, SCR_RGN_W_ARR, NULL);
-  else if (release == scr_map_release_v) scr_rgn_enter(w, obj, SCR_RGN_W_MAP, NULL);
-  else if (release == scr_union_release_v) scr_rgn_enter(w, obj, SCR_RGN_W_UNION, NULL);
-  else if (release == scr_closure_release_v) scr_rgn_enter(w, obj, SCR_RGN_W_CLOSURE, NULL);
-  else if (release == scr_dyn_release_v) scr_rgn_enter(w, obj, SCR_RGN_W_DYN, NULL);
-  else {
-    const ScrRgnType *ty = scr_rgn_type_of(release);
-    if (!ty) return; /* not walkable: its references stay unexplained */
-    if (!ty->walk) scr_region_ref(w, obj);
-    else scr_rgn_enter(w, obj, SCR_RGN_W_EMITTED, ty->walk);
-  }
+  scr_rgn_slot_as(w, obj, scr_rgn_slot_kind(release));
 }
 
 static void *scr_rgn_slot_ptr(uint64_t slot) {
@@ -551,21 +597,18 @@ static void *scr_rgn_slot_ptr(uint64_t slot) {
   return p;
 }
 
-static void scr_rgn_walk_elem(ScrRgnWalk *w, const ScrArr *a, uint64_t slot) {
-  if (a->elem == SCR_ELEM_REF) scr_region_slot(w, scr_rgn_slot_ptr(slot), a->ops ? a->ops->release : NULL);
-  else if (a->elem == SCR_ELEM_ARR) scr_rgn_enter(w, scr_rgn_slot_ptr(slot), SCR_RGN_W_ARR, NULL);
-}
-
 static void scr_rgn_walk_arr(ScrRgnWalk *w, ScrArr *a) {
   if (a->elem != SCR_ELEM_REF && a->elem != SCR_ELEM_ARR) return;
+  ScrRgnSlotKind k = a->elem == SCR_ELEM_ARR ? (ScrRgnSlotKind){SCR_RGN_W_ARR, NULL}
+                                             : scr_rgn_slot_kind(a->ops ? a->ops->release : NULL);
   size_t dense = a->len < a->cap ? a->len : a->cap;
   for (size_t i = 0; i < dense; i++)
-    if (!a->present || a->present[i] == SCR_ARR_VALUE) scr_rgn_walk_elem(w, a, a->data[i]);
+    if (!a->present || a->present[i] == SCR_ARR_VALUE) scr_rgn_slot_as(w, scr_rgn_slot_ptr(a->data[i]), k);
   if (!a->ext) return;
   for (size_t i = 0; i < a->ext->sparse_len; i++)
-    if (a->ext->sparse[i].state == SCR_ARR_VALUE) scr_rgn_walk_elem(w, a, a->ext->sparse[i].slot);
+    if (a->ext->sparse[i].state == SCR_ARR_VALUE) scr_rgn_slot_as(w, scr_rgn_slot_ptr(a->ext->sparse[i].slot), k);
   for (size_t i = 0; i < a->ext->prop_len; i++)
-    if (a->ext->props[i].state == SCR_ARR_VALUE) scr_rgn_walk_elem(w, a, a->ext->props[i].slot);
+    if (a->ext->props[i].state == SCR_ARR_VALUE) scr_rgn_slot_as(w, scr_rgn_slot_ptr(a->ext->props[i].slot), k);
   scr_rgn_enter(w, a->ext->metadata, SCR_RGN_W_DYN, NULL);
 }
 
@@ -575,12 +618,15 @@ static void scr_rgn_walk_map(ScrRgnWalk *w, ScrMap *m) {
   bool keydyn = m->key_kind == SCR_MAP_KEY_DYN;
   bool valref = m->val_kind == SCR_MAP_VAL_REF;
   if (!keyref && !keydyn && !valref) return;
+  ScrRgnSlotKind kk = keydyn ? (ScrRgnSlotKind){SCR_RGN_W_DYN, NULL}
+                    : keyref ? scr_rgn_slot_kind(m->key_release)
+                             : (ScrRgnSlotKind){SCR_RGN_S_NONE, NULL};
+  ScrRgnSlotKind vk = valref ? scr_rgn_slot_kind(m->val_release) : (ScrRgnSlotKind){SCR_RGN_S_NONE, NULL};
   for (size_t i = 0; i < m->nentries; i++) {
     const ScrMapEntry *e = &m->entries[i];
     if (!e->hash) continue; /* tombstone */
-    if (keyref) scr_region_slot(w, scr_rgn_slot_ptr(e->key), m->key_release);
-    else if (keydyn) scr_rgn_enter(w, scr_rgn_slot_ptr(e->key), SCR_RGN_W_DYN, NULL);
-    if (valref) scr_region_slot(w, scr_rgn_slot_ptr(e->val), m->val_release);
+    scr_rgn_slot_as(w, scr_rgn_slot_ptr(e->key), kk);
+    scr_rgn_slot_as(w, scr_rgn_slot_ptr(e->val), vk);
   }
 }
 
@@ -637,8 +683,8 @@ static void scr_rgn_walk_dyn(ScrRgnWalk *w, ScrDyn *d) {
 static void scr_rgn_drain(ScrRgnWalk *w) {
   while (w->nwork) {
     ScrRgnWork job = w->work[--w->nwork];
-    void *p = w->ents[job.entry].obj;
-    w->src = job.entry + 1;
+    void *p = job.obj;
+    w->src = job.entry == SCR_RGN_SINGLE ? 0 : job.entry + 1;
     switch (job.kind) {
     case SCR_RGN_W_EMITTED: job.walk(p, w); break;
     case SCR_RGN_W_ARR: scr_rgn_walk_arr(w, p); break;
@@ -744,7 +790,7 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r) {
   w->region = r;
   w->internal = 0;
   w->src = 0;
-  w->nents = w->nedges = w->nwork = 0;
+  w->nents = w->nedges = w->nwork = w->singles = 0;
   if (w->hash) memset(w->hash, 0, w->cap_hash * sizeof *w->hash);
   for (ScrRgnChunk *c = r->chunks; c; c = c->next) c->found = 0;
   size_t objects = 0;
@@ -768,7 +814,7 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r) {
     if (stats)
       fprintf(stderr,
               "scriptc region %llu: kept: %lld references counted, %lld explained; %zu of %zu owned objects referenced from outside; cycles %.1f ms, walk %.1f ms\n",
-              (unsigned long long)r->id, (long long)counted, (long long)explained, black, w->nents, cycles, scr_rgn_ms(t0, t1));
+              (unsigned long long)r->id, (long long)counted, (long long)explained, black, w->nents + w->singles, cycles, scr_rgn_ms(t0, t1));
     return false;
   }
   /* Free: drop weak entries keyed by the instances, then release every
@@ -803,7 +849,7 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r) {
   if (stats)
     fprintf(stderr,
             "scriptc region %llu: freed %zu objects, %zu owned objects, %zu chunks (%.1f MiB); cycles %.1f ms, walk %.1f ms, free %.1f ms\n",
-            (unsigned long long)id, objects, w->nents, nchunks, (double)bytes / 1048576.0, cycles, scr_rgn_ms(t0, t1),
+            (unsigned long long)id, objects, w->nents + w->singles, nchunks, (double)bytes / 1048576.0, cycles, scr_rgn_ms(t0, t1),
             scr_rgn_ms(t1, scr_hrtime_ns()));
   return true;
 }
