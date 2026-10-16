@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/5671-union-return-lifetimes.ts"
- ],
- "diags": []
-}
