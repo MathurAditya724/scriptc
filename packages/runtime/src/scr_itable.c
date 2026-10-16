@@ -10,7 +10,8 @@
  * tag of hash bits 50..57 in bits 48..55, so a probe reads an entry only
  * when the tags match. An array key is stored as one byte string that
  * encodes its elements (scr_itable_encode), so array keys compare by
- * their elements.
+ * their elements; keys longer or larger than a table accepts are refused
+ * with a TypeError before anything is encoded.
  *
  * Readers load the segment's index pointer, then slots with acquire order,
  * and never write. Writers hold the segment's lock: they probe again, grow
@@ -44,6 +45,12 @@
 #define SCR_ITABLE_FIRST_SLOTS 8u
 #define SCR_ITABLE_FIRST_CHUNK ((size_t)512)
 #define SCR_ITABLE_MAX_CHUNK ((size_t)64 << 10)
+/* Keys whose bytes (a string's, or an array key's encoding) exceed this
+ * are refused, which keeps every entry size representable on 32-bit
+ * targets. Array keys of more than SCR_ITABLE_MAX_KEY_ELEMENTS elements are
+ * refused too; the Node.js implementation applies the same limit. */
+#define SCR_ITABLE_MAX_KEY_BYTES ((size_t)SCR_STR_MAX_CAP)
+#define SCR_ITABLE_MAX_KEY_ELEMENTS 65536u
 
 /* String slots: 0 is empty; otherwise the entry pointer with the tag in
  * bits 48..55, which no supported target uses for user-space addresses
@@ -314,7 +321,10 @@ const ScrITableEntry *scr_itable_find_f64(ScrITable *t, double key) {
 /* ── inserts (the segment lock held) ─────────────────────────────────── */
 
 static ScrITableIndex *scr_itable_index_new(uint64_t slots, bool numbers) {
-  size_t words = slots * (numbers ? 2 : 1) * sizeof(uint64_t);
+  /* Bytes per slot: the words and, for numbers, the tag byte. */
+  size_t per = (numbers ? 2 : 1) * sizeof(uint64_t) + (numbers ? 1 : 0);
+  if (slots > (SIZE_MAX - sizeof(ScrITableIndex)) / per) scr_itable_oom();
+  size_t words = (size_t)slots * (numbers ? 2 : 1) * sizeof(uint64_t);
   ScrITableIndex *index = calloc(1, sizeof(ScrITableIndex) + words + (numbers ? slots : 0));
   if (!index) scr_itable_oom();
   index->mask = slots - 1;
@@ -394,7 +404,7 @@ static void *scr_itable_alloc(ScrITableSegment *seg, size_t size) {
  * unless the key has an entry. */
 static const ScrITableEntry *scr_itable_insert_bytes(ScrITable *t, uint64_t hash, const char *bytes,
                                                      size_t len, uint64_t value) {
-  if (len > UINT32_MAX) scr_trap("scriptc: InternTable key is too long\n");
+  if (len > SCR_ITABLE_MAX_KEY_BYTES) scr_trap("scriptc: InternTable key is too long\n");
   ScrITableSegment *seg = scr_itable_segment(t, hash);
   scr_itable_lock(&seg->lock);
   const ScrITableStrEntry *found =
@@ -444,8 +454,16 @@ const ScrITableEntry *scr_itable_insert_f64(ScrITable *t, double key, uint64_t v
 
 /* ── array keys ──────────────────────────────────────────────────────── */
 
-/* The state and slot of element `i` of `a` (i < a->len). */
-static ScrArrState scr_itable_element(const ScrArr *a, size_t i, uint64_t *slot) {
+/* A walk over the elements of an array in index order. Sparse entries
+ * are sorted by index (scr_array.h), so one pass visits each once. */
+typedef struct {
+  const ScrArr *a;
+  size_t sparse;
+} ScrITableElements;
+
+/* The state and slot of element `i` (i < len, increasing across calls). */
+static ScrArrState scr_itable_element(ScrITableElements *w, size_t i, uint64_t *slot) {
+  const ScrArr *a = w->a;
   if (i < a->filled) {
     *slot = a->data[i];
     return SCR_ARR_VALUE;
@@ -454,28 +472,65 @@ static ScrArrState scr_itable_element(const ScrArr *a, size_t i, uint64_t *slot)
     *slot = a->data[i];
     return (ScrArrState)a->present[i];
   }
-  if (a->ext)
-    for (size_t j = 0; j < a->ext->sparse_len; j++)
-      if (a->ext->sparse[j].index == i) {
-        *slot = a->ext->sparse[j].slot;
-        return (ScrArrState)a->ext->sparse[j].state;
-      }
+  if (a->ext) {
+    while (w->sparse < a->ext->sparse_len && a->ext->sparse[w->sparse].index < i) w->sparse++;
+    if (w->sparse < a->ext->sparse_len && a->ext->sparse[w->sparse].index == i) {
+      *slot = a->ext->sparse[w->sparse].slot;
+      return (ScrArrState)a->ext->sparse[w->sparse].state;
+    }
+  }
   return SCR_ARR_HOLE;
 }
 
 /* An array key as bytes: per number element its normalized bits, per
  * string element a 32-bit length and the bytes; a hole or undefined
  * element is the bits of a NaN that normalization never produces, or the
- * length 0xffffffff. Answers the encoded length; writes at most `cap`
- * bytes into `out`. */
+ * length 0xffffffff. */
 #define SCR_ITABLE_ABSENT_F64 UINT64_C(0x7ff4000000000002)
 #define SCR_ITABLE_ABSENT_STR UINT32_C(0xffffffff)
 
-static size_t scr_itable_encode(const ScrArr *key, int kind, char *out, size_t cap) {
+static void scr_itable_refuse(const char *message) {
+  scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+}
+
+/* The encoded size of `key`, or false (with a pending TypeError) when the
+ * key is longer or larger than a table accepts. Every sum stays at most
+ * SCR_ITABLE_MAX_KEY_BYTES, so none can wrap. */
+static bool scr_itable_encoded_size(const ScrArr *key, int kind, size_t *out) {
+  if (key->len > SCR_ITABLE_MAX_KEY_ELEMENTS) {
+    scr_itable_refuse("InternTable array keys can have at most 65536 elements");
+    return false;
+  }
   size_t n = 0;
+  ScrITableElements walk = {key, 0};
+  for (size_t i = 0; i < key->len; i++) {
+    size_t add = kind == SCR_ITABLE_KEY_F64S ? 8 : 4;
+    if (kind != SCR_ITABLE_KEY_F64S) {
+      uint64_t slot = 0;
+      if (scr_itable_element(&walk, i, &slot) == SCR_ARR_VALUE) {
+        const ScrStr *s = (const ScrStr *)(uintptr_t)slot;
+        if (s->len > SCR_ITABLE_MAX_KEY_BYTES - add) add = SCR_ITABLE_MAX_KEY_BYTES + 1;
+        else add += s->len;
+      }
+    }
+    if (add > SCR_ITABLE_MAX_KEY_BYTES - n) {
+      scr_itable_refuse("InternTable array keys can encode at most 2147483647 bytes");
+      return false;
+    }
+    n += add;
+  }
+  *out = n;
+  return true;
+}
+
+/* Writes the encoding of `key` into `out`, which holds exactly the size
+ * scr_itable_encoded_size answered. */
+static void scr_itable_encode(const ScrArr *key, int kind, char *out) {
+  size_t n = 0;
+  ScrITableElements walk = {key, 0};
   for (size_t i = 0; i < key->len; i++) {
     uint64_t slot = 0;
-    bool present = scr_itable_element(key, i, &slot) == SCR_ARR_VALUE;
+    bool present = scr_itable_element(&walk, i, &slot) == SCR_ARR_VALUE;
     if (kind == SCR_ITABLE_KEY_F64S) {
       uint64_t bits = SCR_ITABLE_ABSENT_F64;
       if (present) {
@@ -483,21 +538,19 @@ static size_t scr_itable_encode(const ScrArr *key, int kind, char *out, size_t c
         memcpy(&d, &slot, sizeof d);
         bits = scr_itable_f64_bits(d);
       }
-      if (n + 8 <= cap) memcpy(out + n, &bits, 8);
+      memcpy(out + n, &bits, 8);
       n += 8;
     } else {
       const ScrStr *s = present ? (const ScrStr *)(uintptr_t)slot : NULL;
-      if (s && s->len >= SCR_ITABLE_ABSENT_STR) scr_trap("scriptc: InternTable key is too long\n");
       uint32_t len = s ? (uint32_t)s->len : SCR_ITABLE_ABSENT_STR;
-      if (n + 4 <= cap) memcpy(out + n, &len, 4);
+      memcpy(out + n, &len, 4);
       n += 4;
       if (s) {
-        if (n + s->len <= cap) memcpy(out + n, s->data, s->len);
+        memcpy(out + n, s->data, s->len);
         n += s->len;
       }
     }
   }
-  return n;
 }
 
 static inline uint64_t scr_itable_bytes_hash(const char *bytes, size_t len) {
@@ -505,14 +558,16 @@ static inline uint64_t scr_itable_bytes_hash(const char *bytes, size_t len) {
 }
 
 /* Encodes `key` into `stack` when it fits, else into a heap buffer the
- * caller frees. */
+ * caller frees; NULL (with a pending TypeError) for a refused key. */
 static char *scr_itable_encoded(const ScrITable *t, const ScrArr *key, char *stack, size_t cap, size_t *len) {
-  *len = scr_itable_encode(key, t->key_kind, stack, cap);
-  if (*len <= cap) return stack;
-  char *heap = malloc(*len);
-  if (!heap) scr_itable_oom();
-  scr_itable_encode(key, t->key_kind, heap, *len);
-  return heap;
+  if (!scr_itable_encoded_size(key, t->key_kind, len)) return NULL;
+  char *bytes = stack;
+  if (*len > cap) {
+    bytes = malloc(*len);
+    if (!bytes) scr_itable_oom();
+  }
+  scr_itable_encode(key, t->key_kind, bytes);
+  return bytes;
 }
 
 #define SCR_ITABLE_STACK_KEY 256
@@ -522,6 +577,7 @@ const ScrITableEntry *scr_itable_find_arr(ScrITable *t, const ScrArr *key) {
   char stack[SCR_ITABLE_STACK_KEY];
   size_t len;
   char *bytes = scr_itable_encoded(t, key, stack, sizeof stack, &len);
+  if (!bytes) return NULL;
   uint64_t hash = scr_itable_bytes_hash(bytes, len);
   ScrITableSegment *seg = scr_itable_segment(t, hash);
   const ScrITableEntry *found = (const ScrITableEntry *)scr_itable_probe_bytes(
@@ -535,6 +591,7 @@ const ScrITableEntry *scr_itable_insert_arr(ScrITable *t, const ScrArr *key, uin
   char stack[SCR_ITABLE_STACK_KEY];
   size_t len;
   char *bytes = scr_itable_encoded(t, key, stack, sizeof stack, &len);
+  if (!bytes) return NULL;
   const ScrITableEntry *entry = scr_itable_insert_bytes(t, scr_itable_bytes_hash(bytes, len), bytes, len, value);
   if (bytes != stack) free(bytes);
   return entry;

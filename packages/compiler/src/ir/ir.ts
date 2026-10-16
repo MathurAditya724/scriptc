@@ -3482,9 +3482,11 @@ export type IrExpr =
          * key's entry, storing the already published value when the key has
          * none; itable.value (f64 entry) → V, the entry's immortal value;
          * itable.size (f64 table) → f64. K is string, f64, or an array of
-         * f64 or of strings (compared by elements). Handles carry
-         * raw pointer bits and only reach toBool and these intrinsics.
-         * None of them throws. */
+         * f64 or of strings (compared by elements); find and insert throw
+         * a TypeError for array keys of more than 65536 elements or whose
+         * encoding exceeds 2^31 - 1 bytes; nothing else throws. Handles
+         * carry raw pointer bits and only reach toBool and these
+         * intrinsics. */
         | "itable.open"
         | "itable.find"
         | "itable.insert"

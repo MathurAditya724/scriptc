@@ -8,10 +8,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The table unit needs only scr_trap from the rest of the runtime. */
+/* The table unit needs only scr_trap and scr_throw_error_msg from the
+ * rest of the runtime; refusals are recorded here. */
 _Noreturn void scr_trap(const char *msg) {
   fputs(msg, stderr);
   abort();
+}
+
+static char refused[128];
+void scr_throw_error_msg(int kind, const char *msg, size_t len) {
+  assert(kind == SCR_ERR_TYPE && len < sizeof refused);
+  memcpy(refused, msg, len);
+  refused[len] = 0;
 }
 
 enum { THREADS = 8, KEYS = 20000, ROUNDS = 3 };
@@ -161,6 +169,19 @@ int main(void) {
   big->data = calloc(100, sizeof(uint64_t));
   for (unsigned i = 0; i < 100; i++) memcpy(&big->data[i], &(double){i}, sizeof(double));
   assert(scr_itable_insert_arr(lists, big, 6)->value == 6 && scr_itable_find_arr(lists, big)->value == 6);
+  /* Keys of more than 65536 elements are refused before anything is read,
+   * however long their sparse length. */
+  ScrArr *longest = make_f64s(NULL, 0);
+  longest->len = 65536;
+  assert(scr_itable_insert_arr(lists, longest, 7)->value == 7 && !refused[0]);
+  ScrArr *huge = make_f64s(NULL, 0);
+  huge->len = (size_t)1 << 29;
+  assert(!scr_itable_find_arr(lists, huge) && !strcmp(refused, "InternTable array keys can have at most 65536 elements"));
+  refused[0] = 0;
+  longest->len = 65537;
+  assert(!scr_itable_insert_arr(lists, longest, 8) && refused[0]);
+  refused[0] = 0;
+  assert(scr_itable_size(lists) == 6);
   ScrITable *paths = scr_itable_open(paths_name, SCR_ITABLE_KEY_STRS);
   ScrStr *ab = make_str("ab"), *c = make_str("c"), *a = make_str("a"), *bc = make_str("bc");
   ScrArr *p1 = make_strs((ScrStr *[]){ab, c}, 2), *p2 = make_strs((ScrStr *[]){a, bc}, 2);
@@ -168,7 +189,17 @@ int main(void) {
   const ScrITableEntry *e1 = scr_itable_insert_arr(paths, p1, 7);
   assert(scr_itable_insert_arr(paths, p2, 8) != e1 && scr_itable_find_arr(paths, p3) == e1);
   assert(scr_itable_size(paths) == 2);
-  ScrArr *arrays[] = {one, same, shorter, holed, empty_list, big, p1, p2, p3};
+  /* String keys whose encoding exceeds 2^31 - 1 bytes are refused. */
+  ScrStr *wide = calloc(1, sizeof(ScrStr) + 1);
+  assert(wide);
+  wide->rc = 1;
+  wide->len = (size_t)0x7fffffff - 2;
+  ScrArr *heavy = make_strs((ScrStr *[]){wide, wide}, 2);
+  assert(!scr_itable_find_arr(paths, heavy) &&
+         !strcmp(refused, "InternTable array keys can encode at most 2147483647 bytes"));
+  refused[0] = 0;
+  free(wide);
+  ScrArr *arrays[] = {one, same, shorter, holed, empty_list, big, longest, huge, p1, p2, p3, heavy};
   for (unsigned i = 0; i < sizeof arrays / sizeof *arrays; i++) {
     free(arrays[i]->data);
     free(arrays[i]->present);

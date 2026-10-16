@@ -24,9 +24,12 @@ const tables = new Map();
 
 /** The Map key of a table key: strings and numbers as they are, arrays as a
  * string that encodes each element (numbers by SameValueZero, strings by
- * content, holes and undefined elements alike). */
+ * content, holes and undefined elements alike). Arrays of more than 65536
+ * elements are refused, as in scriptc builds. */
 function keyOf(key) {
   if (!Array.isArray(key)) return key;
+  if (key.length > 65536)
+    throw new TypeError("InternTable array keys can have at most 65536 elements");
   let text = "";
   for (let i = 0; i < key.length; i++) {
     const element = key[i];

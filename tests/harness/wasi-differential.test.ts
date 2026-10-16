@@ -289,6 +289,8 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     // InternTable handles carry 32-bit pointers in f64 slots.
     "5720-intern-table-basics.ts",
     "5721-intern-table-values.ts",
+    // Array key sizes are checked in 32-bit size_t arithmetic.
+    "5726-intern-table-key-limits.ts",
   ])("the LLVM target runs %s byte-identically to Node", async (fixture) => {
     const entry = join(repoRoot, "tests/corpus", fixture);
     const outDir = await mkdtemp("/tmp/scriptc-wasi-");

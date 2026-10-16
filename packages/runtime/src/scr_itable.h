@@ -38,7 +38,9 @@ typedef struct ScrITableEntry {
 /* The table called `name`, created on first use. Traps when the name is
  * already open with another key kind. Never returns NULL. */
 ScrITable *scr_itable_open(const ScrStr *name, int key_kind);
-/* The entry of `key`, or NULL. */
+/* The entry of `key`, or NULL. The array variants refuse keys of more
+ * than 65536 elements, or whose encoding exceeds 2^31 - 1 bytes, with a
+ * pending TypeError (and answer NULL). */
 const ScrITableEntry *scr_itable_find_str(ScrITable *t, const ScrStr *key);
 const ScrITableEntry *scr_itable_find_f64(ScrITable *t, double key);
 const ScrITableEntry *scr_itable_find_arr(ScrITable *t, const ScrArr *key);

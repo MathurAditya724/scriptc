@@ -35,7 +35,8 @@ export declare class InternTable<
   /** The value stored under `key`, or undefined. String and number keys
    * compare like Map keys: strings by content, numbers by SameValueZero.
    * Array keys compare by their elements in the same way; a hole and an
-   * undefined element are equal. */
+   * undefined element are equal. Every method throws a TypeError for an
+   * array key of more than 65536 elements. */
   get(key: K): V | undefined;
   /** Whether `key` has a value. */
   has(key: K): boolean;
