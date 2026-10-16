@@ -135,7 +135,12 @@ test("number bindings without an import-cycle flag may move into a local", () =>
     fn = mod.functions[0]!;
   const bindings = findInitializerBindings(mod).get(fn.name)!;
   const flagged: IrGlobal = { id: "cyc", name: "cyc", type: F64, mutable: true, initFlag: "flag" };
-  const bytes: IrGlobal = { id: "b", name: "b", type: { kind: "bytes", elem: "u8" }, mutable: true };
+  const bytes: IrGlobal = {
+    id: "b",
+    name: "b",
+    type: { kind: "bytes", elem: "u8" },
+    mutable: true,
+  };
   const candidates = initializerLocalCandidates([...bindings, flagged, bytes]);
   expect(candidates.map((g) => g.id)).toEqual(["value"]);
   // The view lists them as plain locals; parameters and body are unchanged.
