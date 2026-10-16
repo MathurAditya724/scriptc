@@ -8833,7 +8833,8 @@ export class LlEmitter {
   /** InternTable's runtime calls (scr_itable.c). Table and entry handles
    * are f64 values carrying pointer bits; entry values are 64-bit slots
    * (double bits, a bool, or a pointer to an immortal value) that the
-   * table neither retains nor releases. */
+   * table neither retains nor releases. Lookups and inserts of array keys
+   * throw a TypeError for keys longer than a table accepts. */
   private emitInternTableIntrinsic(e: ExprOf<"intrinsic">): LlValue {
     const B = this.B;
     // The runtime copies keys and stores published values without counts,
@@ -8855,8 +8856,9 @@ export class LlEmitter {
       return { name: handle, type: e.type };
     };
     const keyCall = (op: "find" | "insert"): string => {
-      const key = e.args[1]!.type.kind === "string" ? "str" : "f64";
-      const keyTy = key === "str" ? "ptr" : "double";
+      const kind = e.args[1]!.type.kind;
+      const key = kind === "string" ? "str" : kind === "array" ? "arr" : "f64";
+      const keyTy = key === "f64" ? "double" : "ptr";
       const value = op === "insert" ? ", i64" : "";
       this.declare(`declare ptr @scr_itable_${op}_${key}(ptr, ${keyTy}${value})`);
       return `@scr_itable_${op}_${key}(ptr ${toPtr(args[0]!.name)}, ${keyTy} ${args[1]!.name}`;
@@ -8874,6 +8876,8 @@ export class LlEmitter {
         const call = keyCall("find");
         const entry = B.tmp();
         B.line(`${entry} = call ptr ${call})`);
+        // Array keys longer than a table accepts throw a TypeError.
+        if (e.args[1]!.type.kind === "array") this.emitPendingCheck();
         return toHandle(entry);
       }
       case "itable.insert": {
@@ -8893,6 +8897,7 @@ export class LlEmitter {
         const call = keyCall("insert");
         const entry = B.tmp();
         B.line(`${entry} = call ptr ${call}, i64 ${slot})`);
+        if (e.args[1]!.type.kind === "array") this.emitPendingCheck();
         return toHandle(entry);
       }
       case "itable.value": {

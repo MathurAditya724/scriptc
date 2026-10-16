@@ -42,6 +42,19 @@ test("InternTable's intrinsics call the runtime and read value slots directly", 
     intrinsic("itable.value", [inserted], STRING),
     intrinsic("itable.size", [table], F64),
     intrinsic("itable.find", [intrinsic("itable.open", [str("n"), num(1)], F64), num(1)], F64),
+    intrinsic(
+      "itable.find",
+      [
+        intrinsic("itable.open", [str("a"), num(2)], F64),
+        {
+          kind: "arrayLit",
+          elems: [num(1), num(2)],
+          type: { kind: "array", elem: F64 },
+          loc,
+        } as IrExpr,
+      ],
+      F64,
+    ),
   ];
   expect(validateModule(module(calls))).toEqual([]);
   const main = body(emitLlvmModule(module(calls), { pointerBits: 64 }), "sc_f_main");
@@ -50,6 +63,7 @@ test("InternTable's intrinsics call the runtime and read value slots directly", 
   expect(main).toMatch(/call ptr @scr_itable_insert_str\(ptr %\S+, ptr @\S+, i64 %\S+\)/);
   expect(main).toMatch(/call ptr @scr_itable_find_f64\(ptr %\S+, double \S+\)/);
   expect(main).toMatch(/call double @scr_itable_size\(ptr %\S+\)/);
+  expect(main).toMatch(/call ptr @scr_itable_find_arr\(ptr %\S+, ptr %\S+\)/);
   // Entry handles reach their load through memory (x86 FastISel folds
   // inttoptr of a bitcast double into the address without moving it out
   // of its XMM register at -O0).
@@ -68,7 +82,7 @@ test("the validator checks InternTable intrinsic operands", () => {
   ];
   expect(validateModule(module(bad)).map((e) => e.message)).toEqual([
     "in main: itable.open takes a string name and an f64 key kind",
-    "in main: itable.find key must be string or f64",
+    "in main: itable.find key must be string, f64, or an array of either",
     "in main: itable.insert takes 3 arguments",
     "in main: itable.size has type f64",
   ]);

@@ -23,7 +23,7 @@ intern-table-fences.ts:11:15 - error SC1090: 'string | number' as an InternTable
      |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   12 | const callbacks = new InternTable<string, () => number>("fences.callbacks");
 
-  hint: use string or number keys
+  hint: use string or number keys, or arrays of numbers or of strings
 
 intern-table-fences.ts:12:19 - error SC1090: '() => number' as an InternTable value type is not supported yet
 

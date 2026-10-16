@@ -12,8 +12,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
 import { analyze, compile } from "@scriptc/compiler";
+import { skipUnownedTest } from "./shard.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -21,6 +22,13 @@ const fixturesRoot = join(repoRoot, "tests/fixtures");
 const pilotRoot = join(fixturesRoot, "npm-static");
 const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
+// Measured milliseconds per test on a CI runner (scripts/ci-test-costs.mjs).
+const testCosts = (
+  JSON.parse(readFileSync(new URL("./npm-static-costs.json", import.meta.url), "utf8")) as {
+    plain: Record<string, number>;
+    san: Record<string, number>;
+  }
+)[sanitize ? "san" : "plain"];
 
 interface RunResult {
   stdout: Buffer;
@@ -99,6 +107,9 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
 }
 
 describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
+  // CI runs this file on every Linux shard; each runs its share of the tests.
+  beforeEach((context) => skipUnownedTest(context, testCosts));
+
   test.each([
     ["effect4-shape-string-constructor.ts", "effect4-shapes"],
     ["effect4-shape-prototype-factory.ts", "effect4-shapes"],

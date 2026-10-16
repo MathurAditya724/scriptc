@@ -319,7 +319,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         features.regex = true;
       }
       if (fn.startsWith("fs.watch") || fn.startsWith("watcher.")) features.fsWatch = true;
-      if (fn.startsWith("test.")) features.nodeTest = true;
+      // scr_test.c renders thrown strings in the failing-tests section with
+      // the inspect unit's string formatting.
+      if (fn.startsWith("test.")) {
+        features.nodeTest = true;
+        features.inspect = true;
+      }
       if (fn.startsWith("dgram.") || fn.startsWith("dns.")) features.dgram = true;
       if (fn.startsWith("tlsca.")) features.tlsCa = true;
       // scr_cipher.c over the mbedTLS archive; DEP0182 reports through the

@@ -17,6 +17,7 @@
  */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import type { Suite, Test, TestContext } from "vitest";
 
 export interface ShardSpec {
   /** 1-based shard index. */
@@ -121,4 +122,45 @@ export function corpusSelect<T>(
  * ", shard 2/3" under a spec, "" otherwise. */
 export function shardSuffix(spec: ShardSpec | undefined = parseShardSpec()): string {
   return spec === undefined ? "" : `, shard ${spec.index}/${spec.count}`;
+}
+
+const ownedTests = new WeakMap<Suite, Set<Test>>();
+
+/** For a suite of independent tests, called from beforeEach: skips the tests
+ * this shard does not own. The suite's tests are balanced across the shards
+ * by their measured cost (`costs`: milliseconds by test name; a test without
+ * a measurement weighs as much as the median measured one), so every shard
+ * runs a similar share and the union of the shards runs each test once. */
+export function skipUnownedTest(
+  context: TestContext,
+  costs: Readonly<Record<string, number>>,
+  spec: ShardSpec | undefined = parseShardSpec(),
+): void {
+  const suite = context.task.suite;
+  if (spec === undefined || spec.count === 1 || suite === undefined) return;
+  let owned = ownedTests.get(suite);
+  if (owned === undefined) {
+    const known = Object.values(costs).sort((a, b) => a - b);
+    const median = known.length === 0 ? 1 : known[Math.floor(known.length / 2)]!;
+    const tests = suite.tasks.filter((task): task is Test => task.type === "test");
+    // test.each titles without their parameters repeat; later repeats get "#2", "#3"... as their key.
+    const seen = new Map<string, number>();
+    const keys = new Map(
+      tests.map((test) => {
+        const count = (seen.get(test.name) ?? 0) + 1;
+        seen.set(test.name, count);
+        return [test, count === 1 ? test.name : `${test.name} #${count}`];
+      }),
+    );
+    owned = new Set(
+      balancedShardSelect(
+        tests,
+        (test) => keys.get(test)!,
+        (test) => Math.max(1, costs[test.name] ?? median),
+        spec,
+      ),
+    );
+    ownedTests.set(suite, owned);
+  }
+  if (!owned.has(context.task)) context.skip();
 }

@@ -8,10 +8,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The table unit needs only scr_trap from the rest of the runtime. */
+/* The table unit needs only scr_trap and scr_throw_error_msg from the
+ * rest of the runtime; refusals are recorded here. */
 _Noreturn void scr_trap(const char *msg) {
   fputs(msg, stderr);
   abort();
+}
+
+static char refused[128];
+void scr_throw_error_msg(int kind, const char *msg, size_t len) {
+  assert(kind == SCR_ERR_TYPE && len < sizeof refused);
+  memcpy(refused, msg, len);
+  refused[len] = 0;
 }
 
 enum { THREADS = 8, KEYS = 20000, ROUNDS = 3 };
@@ -32,6 +40,29 @@ static ScrStr *make_str(const char *text) {
   s->cap = len;
   memcpy(s->data, text, len + 1);
   return s;
+}
+
+static ScrArr *make_f64s(const double *values, size_t n) {
+  ScrArr *a = calloc(1, sizeof(ScrArr));
+  assert(a);
+  a->rc = 1;
+  a->len = a->cap = n;
+  a->filled = (uint32_t)n;
+  a->elem = SCR_ELEM_F64;
+  a->data = calloc(n ? n : 1, sizeof(uint64_t));
+  for (size_t i = 0; i < n; i++) memcpy(&a->data[i], &values[i], sizeof(double));
+  return a;
+}
+
+static ScrArr *make_strs(ScrStr *const *values, size_t n) {
+  ScrArr *a = make_f64s(NULL, 0);
+  a->len = a->cap = n;
+  a->filled = (uint32_t)n;
+  a->elem = SCR_ELEM_STR;
+  free(a->data);
+  a->data = calloc(n, sizeof(uint64_t));
+  for (size_t i = 0; i < n; i++) a->data[i] = (uint64_t)(uintptr_t)values[i];
+  return a;
 }
 
 static void key_text(char *out, size_t size, uint64_t k) { snprintf(out, size, "key-%llu", (unsigned long long)k); }
@@ -81,6 +112,7 @@ static void *run(void *arg) {
       assert(!scr_itable_find_f64(numbers, (double)KEYS + 0.5 + n));
     }
   }
+  scr_itable_thread_exit();
   return NULL;
 }
 
@@ -110,6 +142,75 @@ int main(void) {
   free(zeros_name);
   free(other);
   free(name);
+
+  /* Array keys compare by their elements: numbers by SameValueZero,
+   * strings by content, holes like undefined elements. */
+  ScrStr *lists_name = make_str("lists"), *paths_name = make_str("paths");
+  ScrITable *lists = scr_itable_open(lists_name, SCR_ITABLE_KEY_F64S);
+  ScrArr *one = make_f64s((double[]){1, -0.0, 0.0 / 0.0}, 3);
+  ScrArr *same = make_f64s((double[]){1, 0.0, -(0.0 / 0.0)}, 3);
+  ScrArr *shorter = make_f64s((double[]){1, 0.0}, 2);
+  ScrArr *holed = make_f64s((double[]){1, 0.0, 0.0}, 3);
+  holed->filled = 1;
+  holed->present = calloc(3, 1);
+  holed->present[0] = SCR_ARR_VALUE;
+  holed->present[1] = SCR_ARR_VALUE;
+  holed->present[2] = SCR_ARR_HOLE;
+  ScrArr *empty_list = make_f64s(NULL, 0);
+  const ScrITableEntry *l1 = scr_itable_insert_arr(lists, one, 1);
+  assert(scr_itable_find_arr(lists, same) == l1 && scr_itable_insert_arr(lists, same, 2) == l1);
+  assert(!scr_itable_find_arr(lists, shorter) && !scr_itable_find_arr(lists, holed));
+  assert(scr_itable_insert_arr(lists, holed, 3)->value == 3 && scr_itable_insert_arr(lists, shorter, 4)->value == 4);
+  assert(scr_itable_insert_arr(lists, empty_list, 5)->value == 5 && scr_itable_find_arr(lists, empty_list)->value == 5);
+  assert(scr_itable_size(lists) == 4);
+  ScrArr *big = make_f64s(NULL, 0);
+  big->len = big->cap = big->filled = 100;
+  free(big->data);
+  big->data = calloc(100, sizeof(uint64_t));
+  for (unsigned i = 0; i < 100; i++) memcpy(&big->data[i], &(double){i}, sizeof(double));
+  assert(scr_itable_insert_arr(lists, big, 6)->value == 6 && scr_itable_find_arr(lists, big)->value == 6);
+  /* Keys of more than 65536 elements are refused before anything is read,
+   * however long their sparse length. */
+  ScrArr *longest = make_f64s(NULL, 0);
+  longest->len = 65536;
+  assert(scr_itable_insert_arr(lists, longest, 7)->value == 7 && !refused[0]);
+  ScrArr *huge = make_f64s(NULL, 0);
+  huge->len = (size_t)1 << 29;
+  assert(!scr_itable_find_arr(lists, huge) && !strcmp(refused, "InternTable array keys can have at most 65536 elements"));
+  refused[0] = 0;
+  longest->len = 65537;
+  assert(!scr_itable_insert_arr(lists, longest, 8) && refused[0]);
+  refused[0] = 0;
+  assert(scr_itable_size(lists) == 6);
+  ScrITable *paths = scr_itable_open(paths_name, SCR_ITABLE_KEY_STRS);
+  ScrStr *ab = make_str("ab"), *c = make_str("c"), *a = make_str("a"), *bc = make_str("bc");
+  ScrArr *p1 = make_strs((ScrStr *[]){ab, c}, 2), *p2 = make_strs((ScrStr *[]){a, bc}, 2);
+  ScrArr *p3 = make_strs((ScrStr *[]){ab, c}, 2);
+  const ScrITableEntry *e1 = scr_itable_insert_arr(paths, p1, 7);
+  assert(scr_itable_insert_arr(paths, p2, 8) != e1 && scr_itable_find_arr(paths, p3) == e1);
+  assert(scr_itable_size(paths) == 2);
+  /* String keys whose encoding exceeds 2^31 - 1 bytes are refused. */
+  ScrStr *wide = calloc(1, sizeof(ScrStr) + 1);
+  assert(wide);
+  wide->rc = 1;
+  wide->len = (size_t)0x7fffffff - 2;
+  ScrArr *heavy = make_strs((ScrStr *[]){wide, wide}, 2);
+  assert(!scr_itable_find_arr(paths, heavy) &&
+         !strcmp(refused, "InternTable array keys can encode at most 2147483647 bytes"));
+  refused[0] = 0;
+  free(wide);
+  ScrArr *arrays[] = {one, same, shorter, holed, empty_list, big, longest, huge, p1, p2, p3, heavy};
+  for (unsigned i = 0; i < sizeof arrays / sizeof *arrays; i++) {
+    free(arrays[i]->data);
+    free(arrays[i]->present);
+    free(arrays[i]);
+  }
+  free(ab);
+  free(c);
+  free(a);
+  free(bc);
+  free(lists_name);
+  free(paths_name);
 
   pthread_t threads[THREADS];
   for (unsigned i = 0; i < THREADS; i++)

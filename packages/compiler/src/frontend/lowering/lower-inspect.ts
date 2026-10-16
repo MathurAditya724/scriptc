@@ -14,6 +14,7 @@ import {
   type IrType,
   RUNTIME_ERROR_CLASSES,
   STRING,
+  isUnitType,
   UNDEFINED_T,
   VOID,
   type SrcLoc,
@@ -26,7 +27,7 @@ import {
   typeKey,
 } from "../../ir/ir.js";
 import type { ClassInfo } from "./lower-classes.js";
-import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
+import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { symbolFieldDisplayName } from "./symbol-fields.js";
 import { eventTargetRootOf } from "./lower-event-target.js";
 import { lowerSystemErrorMap } from "./lower-system-errors.js";
@@ -1934,6 +1935,67 @@ export function lowerFormatCall(
         }
         return { kind: "jsonStringify", value, type: STRING, loc };
       }
+      case 102: {
+        // %f — parseFloat(String(arg)) formatted: a number keeps its value
+        // except -0, which String() prints as "0"; strings parse with the
+        // global parseFloat; booleans and unit values (void calls and
+        // null | undefined unions included) parse to NaN.
+        const value = lowerer.lowerExpr(node);
+        const format = (number: IrExpr): IrExpr => ({
+          kind: "libCall",
+          fn: "insp.f64",
+          args: [number],
+          type: STRING,
+          loc,
+        });
+        const parse = (text: IrExpr): IrExpr =>
+          format({ kind: "libCall", fn: "num.parseFloat", args: [text], type: F64, loc });
+        if (value.type.kind === "f64")
+          return format({
+            kind: "bin",
+            op: "+",
+            left: value,
+            right: numLit(0, loc),
+            type: F64,
+            loc,
+          });
+        if (value.type.kind === "string") return parse(value);
+        if (value.type.kind === "dyn") {
+          return parse({
+            kind: "libCall",
+            fn: "dyn.toStringCoerce",
+            args: [value],
+            type: STRING,
+            loc,
+          });
+        }
+        const unitArms = (t: IrType): boolean =>
+          t.kind === "union" && (lowerer.unions.get(t.unionId)?.arms.every(isUnitType) ?? false);
+        if (
+          value.type.kind === "bool" ||
+          value.type.kind === "void" ||
+          isUnitType(value.type) ||
+          unitArms(value.type)
+        ) {
+          // The argument still evaluates once, for its effects: the value
+          // already lowered, as a statement (never a second lowering of the
+          // node, whose lifted helpers and closures would be built twice).
+          if (isSafeToDiscard(value)) return strLit("NaN", loc);
+          return {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: value, loc }],
+            result: strLit("NaN", loc),
+            type: STRING,
+            loc,
+          };
+        }
+        lowerer.noLowering(
+          `util.format %f of '${lowerer.fmt(value.type)}' values`,
+          node,
+          "pass a number, string or boolean, or convert the argument with String() first",
+        );
+        return strLit("NaN", loc);
+      }
       case 79: // %O — inspect at the defaults
         return formatOArg(lowerer, node, 2, loc);
       case 111: // %o — showHidden semantics; depth 4
@@ -1952,6 +2014,7 @@ export function lowerFormatCall(
           case 100: // d
           case 79: // O
           case 111: // o
+          case 102: // f
           case 105: {
             // i
             const node = args[++a]!;
@@ -1960,9 +2023,6 @@ export function lowerFormatCall(
             lastPos = i + 1;
             continue;
           }
-          case 102: // f — parseFloat's full grammar has no static lowering
-            lowerer.noLowering("util.format %f", expr, "parseFloat has no native lowering");
-            break;
           case 99: // c — consumes its argument, contributes nothing
             a += 1;
             if (lastPos !== i - 1) parts.push(strLit(fmt.slice(lastPos, i - 1), loc));

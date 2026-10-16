@@ -196,6 +196,12 @@ export function computeMayThrow(
           if (rec.name === "module.tdzCheck") f.throws = true;
           // publish() throws on an unpublishable dyn value.
           if (rec.name === "threads.publish") f.throws = true;
+          // An InternTable array key longer than a table accepts.
+          if (
+            (rec.name === "itable.find" || rec.name === "itable.insert") &&
+            rec.args[1]?.type.kind === "array"
+          )
+            f.throws = true;
           break;
         case "yieldExpr":
           // A consumer .throw() surfaces at the yield (and .return()'s

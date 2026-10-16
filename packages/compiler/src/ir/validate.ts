@@ -3819,9 +3819,13 @@ function validateFunction(
       else if (
         (e.name === "itable.find" || e.name === "itable.insert") &&
         key!.type.kind !== "string" &&
-        key!.type.kind !== "f64"
+        key!.type.kind !== "f64" &&
+        !(
+          key!.type.kind === "array" &&
+          (key!.type.elem.kind === "f64" || key!.type.elem.kind === "string")
+        )
       )
-        err(`${e.name} key must be string or f64`, e.loc);
+        err(`${e.name} key must be string, f64, or an array of either`, e.loc);
       else if (e.name === "itable.insert" && !isSupportedMapValue(value!.type))
         err(`itable.insert value ${typeKey(value!.type)} is not a table value type`, e.loc);
       if (e.name === "itable.value") {
