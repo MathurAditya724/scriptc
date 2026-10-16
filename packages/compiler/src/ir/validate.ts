@@ -5455,6 +5455,16 @@ function validateFunction(
         }
         return true;
       }
+      if (e.fn === "readable.fromIter" || e.fn === "readable.fromAsyncIter") {
+        if (
+          e.args[0]?.type.kind !== "dyn" ||
+          e.args[1]?.kind !== "numLit" ||
+          !isStreamObject(e.type)
+        ) {
+          err(`libCall ${e.fn} must take an iterator object and the flags`, e.loc);
+        }
+        return true;
+      }
       if (e.fn === "readable.fromArr" || e.fn === "readable.fromDyn") {
         // No receiver: the source leads; the result is the class.
         const src = e.fn === "readable.fromArr" ? "array" : "dyn";

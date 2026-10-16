@@ -31,7 +31,14 @@ import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { dynFallbackType } from "./lowerer.js";
-import type { ClassInfo } from "./lower-classes.js";
+import {
+  accessorCall,
+  classIteratorNextCall,
+  classIteratorOf,
+  classIteratorOpenCall,
+  type ClassInfo,
+  type ClassIteratorInfo,
+} from "./lower-classes.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { newFnCtx, own } from "./lowerer.js";
 import { appendImplicitUndefinedReturn } from "./function-returns.js";
@@ -49,6 +56,7 @@ import {
   type IrExpr,
   type IrFunction,
   type IrLibFn,
+  type IrLocal,
   type IrStmt,
   type IrType,
   RUNTIME_STREAM_CLASSES,
@@ -1433,20 +1441,67 @@ export function lowerStreamStaticCall(
   const single = typedElem(srcT);
   const elem = srcT?.kind === "array" ? typedElem(srcT.elem) : null;
   const opts = optsNode ? fromOptions(lowerer, optsNode) : { flags: 0, hwm: null };
-  if (srcNode && srcT?.kind === "generator" && opts && fromGenChunk(lowerer, srcT.yieldT)) {
+  // A class whose [Symbol.iterator]() or [Symbol.asyncIterator]() is a
+  // generator method: from.js calls the method when the stream is built,
+  // then reads the generator like any other.
+  const genMethod = srcT?.kind === "object" ? classGeneratorMethodOf(lowerer, srcT) : null;
+  const genT = srcT?.kind === "generator" ? srcT : (genMethod?.gen ?? null);
+  if (srcNode && genT && opts && fromGenChunk(lowerer, genT.yieldT)) {
     // A compiled generator: the runtime pulls it through interned helpers.
-    const gen = lowerer.lowerExpr(srcNode);
-    const helpers = fromGenHelpers(lowerer, srcT, loc);
+    const recv = lowerer.lowerExpr(srcNode);
+    const gen =
+      genMethod && srcT?.kind === "object"
+        ? accessorCall(lowerer, srcT.className, genMethod.method, recv, [], genT, loc)
+        : recv;
+    const helpers = fromGenHelpers(lowerer, genT, loc);
     if (helpers) {
       const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
       return {
         kind: "libCall",
-        fn: srcT.async ? "readable.fromAsyncGen" : "readable.fromGen",
+        fn: genT.async ? "readable.fromAsyncGen" : "readable.fromGen",
         args: [gen, ...helpers, numLit(opts.flags, loc), hwm],
         type,
         loc,
       };
     }
+  }
+  // from.js prefers Symbol.asyncIterator: a class declaring one takes the
+  // async route.
+  const asyncOpen =
+    srcT?.kind === "object" &&
+    lowerer.classes.has(srcT.className) &&
+    lowerer.findMethodOn(lowerer.classes.get(srcT.className)!, "sym:asyncIterator") !== null;
+  const cit = srcT?.kind === "object" && !asyncOpen ? classIteratorOf(lowerer, srcT) : null;
+  if (srcNode && cit && opts && fromGenChunk(lowerer, cit.valueT)) {
+    // A class iterable: from.js takes the iterator when the stream is
+    // built (the typed [Symbol.iterator]() call here), and the runtime
+    // pulls it through a checked-dynamic { next } object. Class iterators
+    // declare no return() or throw(), so destroy calls neither.
+    const recv = lowerer.lowerExpr(srcNode);
+    const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
+    return {
+      kind: "libCall",
+      fn: "readable.fromIter",
+      args: [
+        classIteratorObject(lowerer, cit, classIteratorOpenCall(lowerer, cit, recv, loc), loc),
+        numLit(opts.flags, loc),
+        hwm,
+      ],
+      type,
+      loc,
+    };
+  }
+  const acit = srcT?.kind === "object" && asyncOpen ? classAsyncIteratorOf(lowerer, srcT) : null;
+  if (srcNode && acit && opts && fromGenChunk(lowerer, acit.valueT)) {
+    const recv = lowerer.lowerExpr(srcNode);
+    const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
+    return {
+      kind: "libCall",
+      fn: "readable.fromAsyncIter",
+      args: [classAsyncIteratorObject(lowerer, acit, recv, loc), numLit(opts.flags, loc), hwm],
+      type,
+      loc,
+    };
   }
   if (srcNode && (single || elem) && opts) {
     const v = lowerer.lowerExpr(srcNode);
@@ -1465,6 +1520,7 @@ export function lowerStreamStaticCall(
   }
   const anySrc =
     srcT?.kind === "dyn" ||
+    (srcT?.kind === "set" && typedElem(srcT.elem) !== null) ||
     (srcNode !== undefined &&
       srcT === null &&
       (lowerer.typeOf(srcNode).flags & ts.TypeFlags.Any) !== 0);
@@ -1485,7 +1541,7 @@ export function lowerStreamStaticCall(
   lowerer.noLowering(
     `Readable.from over a '${srcT ? lowerer.fmt(srcT) : "?"}' source`,
     srcNode ?? call,
-    "string[] / Buffer[] arrays (and a single string or Buffer) are the supported sources — generators and async iterables have no lowering yet",
+    "the supported sources are a string or Buffer, and arrays, Sets, generators and class iterables of strings or Buffers",
   );
 }
 
@@ -1631,6 +1687,249 @@ function fromGenHelpers(
     define("return", [g], DYN, viaRecord("return"), [r]),
     define("throw", [g, e], DYN, viaRecord("throw"), [r]),
   ];
+}
+
+/** `{ next() { const r = it.next(); return { value: r.value, done: r.done }; } }`
+ * over a class iterator `it`, as a checked-dynamic object: an interned
+ * lifted function per iterator class takes the iterator and answers the
+ * object, whose `next` closure captures it. */
+function classIteratorObject(
+  lowerer: Lowerer,
+  cit: ClassIteratorInfo,
+  iter: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const key = `streamFromIter:${cit.iterT.className}`;
+  let name = lowerer.valueHelpers.get(key);
+  if (!name) {
+    name = `%stream.fromIter.${lowerer.valueHelpers.size}`;
+    lowerer.valueHelpers.set(key, name);
+    const nextName = `${name}.next`;
+    const nextT = funcOf([], DYN);
+    const it: IrLocal = { id: "it.0", name: "it", type: cit.iterT, mutable: false, boxed: true };
+    const r: IrLocal = { id: "res.0", name: "res", type: cit.resultT, mutable: false };
+    const field = (f: string, t: IrType): IrExpr => ({
+      kind: "recordGet",
+      obj: varRef(r.id, cit.resultT, loc),
+      shapeId: cit.resultT.shapeId,
+      field: f,
+      type: t,
+      loc,
+    });
+    const str = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
+    lowerer.liftedFns.push({
+      name: nextName,
+      params: [],
+      returnType: DYN,
+      captures: [{ localId: it.id, name: it.name, type: it.type }],
+      locals: [it, r],
+      body: [
+        {
+          kind: "varDecl",
+          localId: r.id,
+          init: classIteratorNextCall(lowerer, cit, varRef(it.id, cit.iterT, loc), loc),
+          loc,
+        },
+        {
+          kind: "return",
+          value: {
+            kind: "dynObjLit",
+            fields: [
+              {
+                key: str("value"),
+                value: lowerer.coerceToExpected(field("value", cit.valueT), DYN),
+              },
+              {
+                key: str("done"),
+                value: {
+                  kind: "dynFrom",
+                  value: cit.hasDone ? field("done", BOOL) : boolLit(false, loc),
+                  type: DYN,
+                  loc,
+                },
+              },
+            ],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: it.id, name: it.name, type: it.type }],
+      returnType: DYN,
+      locals: [it],
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "dynObjLit",
+            fields: [
+              {
+                key: str("next"),
+                value: {
+                  kind: "dynFrom",
+                  value: { kind: "closure", fnName: nextName, captures: [it.id], type: nextT, loc },
+                  type: DYN,
+                  loc,
+                },
+              },
+            ],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: [iter], type: DYN, loc };
+}
+
+/** A class's zero-parameter `[Symbol.asyncIterator]()` (checked first, as
+ * from.js does) or `[Symbol.iterator]()` method that returns a generator,
+ * with its method slot. */
+function classGeneratorMethodOf(
+  lowerer: Lowerer,
+  t: IrType & { kind: "object" },
+): { method: string; gen: IrType & { kind: "generator" } } | null {
+  const info = lowerer.classes.get(t.className);
+  if (!info) return null;
+  for (const method of ["sym:asyncIterator", "sym:iterator"]) {
+    const m = lowerer.findMethodOn(info, method);
+    if (!m) continue;
+    const ret = m.sig.ret;
+    if (m.sig.abstract === true || m.sig.params.length !== 0 || ret.kind !== "generator")
+      return null;
+    return { method, gen: ret };
+  }
+  return null;
+}
+
+/** An async class iterable's protocol, statically resolved: the receiver's
+ * zero-parameter `[Symbol.asyncIterator]()` returns a class whose
+ * `next()` returns a promise of a `{ value, done? }` record, and whose
+ * optional `return()` does the same. */
+interface ClassAsyncIteratorInfo {
+  className: string;
+  iterT: IrType & { kind: "object" };
+  resultT: IrType & { kind: "record" };
+  valueT: IrType;
+  hasReturn: boolean;
+}
+
+function classAsyncIteratorOf(
+  lowerer: Lowerer,
+  t: IrType & { kind: "object" },
+): ClassAsyncIteratorInfo | null {
+  const info = lowerer.classes.get(t.className);
+  const open = info ? lowerer.findMethodOn(info, "sym:asyncIterator") : null;
+  if (!open || open.sig.abstract === true || open.sig.params.length !== 0) return null;
+  const iterT = open.sig.ret;
+  if (iterT.kind !== "object") return null;
+  const itInfo = lowerer.classes.get(iterT.className);
+  if (!itInfo || lowerer.findMethodOn(itInfo, "throw")) return null;
+  const record = (name: string): (IrType & { kind: "record" }) | null => {
+    const m = lowerer.findMethodOn(itInfo, name);
+    if (!m || m.sig.abstract === true || m.sig.params.length !== 0) return null;
+    const ret = m.sig.ret;
+    return ret.kind === "promise" && ret.inner.kind === "record" ? ret.inner : null;
+  };
+  const resultT = record("next");
+  if (!resultT) return null;
+  const shape = lowerer.shapes.get(resultT.shapeId);
+  const value = shape?.fields.find((f) => f.name === "value");
+  const done = shape?.fields.find((f) => f.name === "done");
+  if (!value || (done && done.type.kind !== "bool")) return null;
+  const hasReturn = lowerer.findMethodOn(itInfo, "return") !== null;
+  if (hasReturn && !record("return")) return null;
+  return { className: t.className, iterT, resultT, valueT: value.type, hasReturn };
+}
+
+/** The checked-dynamic iterator object over an async class iterable:
+ * `recv[Symbol.asyncIterator]()` runs when the stream is built, and the
+ * object's `next` (and `return`, when the class declares one) answer the
+ * iterator's own promises boxed. */
+function classAsyncIteratorObject(
+  lowerer: Lowerer,
+  cit: ClassAsyncIteratorInfo,
+  recv: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const key = `streamFromAsyncIter:${cit.className}`;
+  let name = lowerer.valueHelpers.get(key);
+  if (!name) {
+    name = `%stream.fromAsyncIter.${lowerer.valueHelpers.size}`;
+    lowerer.valueHelpers.set(key, name);
+    const it: IrLocal = { id: "it.0", name: "it", type: cit.iterT, mutable: false, boxed: true };
+    const src: IrLocal = {
+      id: "src.0",
+      name: "src",
+      type: { kind: "object", className: cit.className },
+      mutable: false,
+    };
+    const str = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
+    const method = (m: string): { key: IrExpr; value: IrExpr } => {
+      const fnName = `${name}.${m}`;
+      const call = accessorCall(
+        lowerer,
+        cit.iterT.className,
+        m,
+        varRef(it.id, cit.iterT, loc),
+        [],
+        { kind: "promise", inner: cit.resultT },
+        loc,
+      );
+      lowerer.liftedFns.push({
+        name: fnName,
+        params: [],
+        returnType: DYN,
+        captures: [{ localId: it.id, name: it.name, type: it.type }],
+        locals: [it],
+        body: [{ kind: "return", value: { kind: "dynFrom", value: call, type: DYN, loc }, loc }],
+        loc,
+      });
+      return {
+        key: str(m),
+        value: {
+          kind: "dynFrom",
+          value: { kind: "closure", fnName, captures: [it.id], type: funcOf([], DYN), loc },
+          type: DYN,
+          loc,
+        },
+      };
+    };
+    const fields = [method("next"), ...(cit.hasReturn ? [method("return")] : [])];
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: src.id, name: src.name, type: src.type }],
+      returnType: DYN,
+      locals: [src, it],
+      body: [
+        {
+          kind: "varDecl",
+          localId: it.id,
+          init: accessorCall(
+            lowerer,
+            cit.className,
+            "sym:asyncIterator",
+            varRef(src.id, src.type, loc),
+            [],
+            cit.iterT,
+            loc,
+          ),
+          loc,
+        },
+        { kind: "return", value: { kind: "dynObjLit", fields, type: DYN, loc }, loc },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: [recv], type: DYN, loc };
 }
 
 /** Readable.from's typed options: an object literal of `objectMode`

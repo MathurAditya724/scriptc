@@ -536,6 +536,15 @@ ScrDyn *scr_dyn_iterator_optional(const ScrDyn *value);
 /* from.js's probe: 2 when value[Symbol.asyncIterator] is set, 1 when
  * value[Symbol.iterator] is, 0 for neither, -1 with an error pending. */
 int scr_dyn_iterable_kind(const ScrDyn *value);
+/* from.js's iterator: value[Symbol.asyncIterator]() when that method is
+ * set (*kind 2), else value[Symbol.iterator]() (*kind 1), reading each
+ * method once. +1 iterator; NULL with *kind 0 when neither is set, or
+ * with *kind -1 and the error pending (also for a compiled generator,
+ * which only typed code can step). */
+ScrDyn *scr_dyn_from_iterator(const ScrDyn *value, int *kind);
+/* One field of an iterator result object (value, done), read the way the
+ * for-of protocol reads it. +1, or NULL with the error pending. */
+ScrDyn *scr_dyn_iterator_result_get(const ScrDyn *result, const char *key, size_t len);
 void scr_dyn_install_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key);
 ScrDyn *scr_dyn_array_values_function(void);

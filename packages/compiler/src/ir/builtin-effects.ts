@@ -392,6 +392,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "rl.question",
   "readable.fromArr",
   "readable.fromDyn",
+  "readable.fromIter",
+  "readable.fromAsyncIter",
   "readable.fromGen",
   "readable.fromAsyncGen",
   "readable.opMap",
