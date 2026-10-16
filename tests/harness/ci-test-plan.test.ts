@@ -8,6 +8,7 @@ import {
   darwinFiles,
   effectFiles,
   fileExclusions,
+  caseShardedSideFiles,
   isolatedFiles,
   testCosts,
 } from "../../scripts/ci-test-plan.mjs";
@@ -31,10 +32,12 @@ test.for([1, 3, 5, 10, 20])(
           !file.includes("coverage") &&
           !file.includes("native-toolchain"),
       )) {
+        // A suite that splits its own tests runs on every shard; the others on one.
+        const everyShard = caseShardedSideFiles.some(([, sharded]) => sharded === file);
         expect(
           sideFiles.filter((selected) => selected === file),
           file,
-        ).toHaveLength(1);
+        ).toHaveLength(everyShard ? count : 1);
       }
       // Each measured file runs on exactly one shard, outside vitest's file shard.
       const isolated = new Set(isolatedFiles.map(([, file]) => file));
