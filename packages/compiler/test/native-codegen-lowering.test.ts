@@ -19,6 +19,9 @@ function diagnostics(source: string) {
   }
 }
 
+// The one-shot zlib forms accept any options value and validate it at run
+// time with Node's ladder (corpus 5378 covers the thrown errors), so none
+// of these refuse at compile time.
 for (const options of [
   "{ level: 10 }",
   "{ level: -2 }",
@@ -30,27 +33,32 @@ for (const options of [
   "{ ...{ level: 9 } }",
   "{ ['level']: 9 }",
 ]) {
-  test(`static zlib refuses unmodeled options ${options}`, () => {
+  test(`zlib options lower for run-time validation ${options}`, () => {
     const diags = diagnostics(`
       import { deflateRawSync } from "node:zlib";
       const level = 9;
       console.log(deflateRawSync("payload", ${options}).length);
     `);
-    expect(diags).toHaveLength(1);
-    expect(diags[0]!.code).toBe("SC2020");
-    expect(diags[0]!.message).toContain("deflateRawSync with these options");
-    expect(diags[0]!.hint).toContain("integer literal from -1 through 9");
+    expect(diags).toEqual([]);
   });
 }
 
-test("compression-level support reports SC2020 for decompression options", () => {
+test("decompression options lower for run-time validation", () => {
   const diags = diagnostics(`
     import { inflateRawSync } from "node:zlib";
     console.log(inflateRawSync(Buffer.from([3, 0]), { windowBits: 15 }).length);
   `);
+  expect(diags).toEqual([]);
+});
+
+test("Brotli keeps its SC2020 refusal", () => {
+  const diags = diagnostics(`
+    import { brotliCompressSync } from "node:zlib";
+    console.log(brotliCompressSync("payload").length);
+  `);
   expect(diags).toHaveLength(1);
   expect(diags[0]!.code).toBe("SC2020");
-  expect(diags[0]!.message).toContain("inflateRawSync with explicit options");
+  expect(diags[0]!.message).toContain("brotliCompressSync");
 });
 
 test("union writes keep the refusal for incompatible field storage", () => {
