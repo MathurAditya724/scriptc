@@ -283,7 +283,8 @@ interface InlineRcFamily {
  *
  * The dyn release buffers a surviving value by kind (scr_dyn_release):
  * the fast path decides the always and never cases and calls
- * scr_dyn_release_survivor for kinds whose candidacy is per value.
+ * scr_dyn_release_survivor for kinds whose candidacy is per value,
+ * including arrays and objects of intact documents (ScrDynRegion).
  *
  * Releases stay plain calls for:
  * - arr: array releases are the most numerous release sites and the
@@ -552,12 +553,19 @@ function releaseHelper(host: ShapeHost, family: string, row: InlineRcFamily): st
       : family === "dyn"
         ? [
             // scr_dyn_release buffers a surviving value by kind: always for
-            // arrays, objects, functions and proxies, per value for capsules
-            // and handles (scr_dyn_release_survivor), never for scalars.
+            // functions and proxies, per value for arrays and objects (not
+            // while their document is intact, ScrDynRegion), capsules and
+            // handles (scr_dyn_release_survivor), never for scalars. An
+            // array or object already in a candidate buffer stays inline.
             `  %kp = getelementptr i8, ptr %o, ${S} ${S === "i64" ? 8 : 4} ; ScrDyn.kind`,
             `  %kind = load i32, ptr %kp`,
             // SCR_DYN_ARR 4, OBJ 5, FUNC 8, PROXY 13; HANDLE 9, TYPED_REF 12.
-            `  switch i32 %kind, label %done [ i32 4, label %root i32 5, label %root i32 8, label %root i32 13, label %root i32 9, label %survivor i32 12, label %survivor ]`,
+            `  switch i32 %kind, label %done [ i32 4, label %container i32 5, label %container i32 8, label %root i32 13, label %root i32 9, label %survivor i32 12, label %survivor ]`,
+            `container:`,
+            `  %cbufp = getelementptr i8, ptr %o, ${S} -${host.cycleBufOffset}`,
+            `  %cbuf = load i32, ptr %cbufp`,
+            `  %cqueued = icmp slt i32 %cbuf, 0`,
+            `  br i1 %cqueued, label %done, label %survivor`,
             `survivor:`,
             `  call void @scr_dyn_release_survivor(ptr %o)`,
             `  br label %done`,

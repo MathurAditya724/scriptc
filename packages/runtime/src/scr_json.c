@@ -1086,10 +1086,17 @@ static void scr_dyn_gcfree(void *ptr) { scr_dyn_dispose(ptr, true); }
 
 static void scr_dyn_destroy(void *ptr) { scr_dyn_dispose(ptr, false); }
 
-/* The cycle bookkeeping of a capsule or handle that survives a release.
- * Compiled release fast paths decrement first and call this for the kinds
- * whose candidacy depends on per-value state, matching scr_dyn_release. */
+/* The cycle bookkeeping of a value that survives a release. Compiled
+ * release fast paths decrement first and call this for the kinds whose
+ * candidacy depends on per-value state, matching scr_dyn_release: arrays
+ * and objects not yet buffered (skipped while their document is intact,
+ * ScrDynRegion), capsules and handles. */
 void scr_dyn_release_survivor(ScrDyn *d) {
+  if (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ) {
+    const ScrDynRegion *region = scr_dyn_region_of(d);
+    if (!region || !region->intact) scr_cyc_released(d);
+    return;
+  }
   if ((d->kind == SCR_DYN_TYPED_REF &&
        (d->v.typed_ref.materialized || d->v.typed_ref.casts || d->v.typed_ref.traced ||
         d->prototype || d->symbol_properties || d->symbol_keys)) ||
@@ -3904,6 +3911,7 @@ ScrDynEntry *scr_dyn_own_symbol_entry(const ScrDyn *object, const ScrDyn *key) {
 ScrStr *scr_dyn_symbol_storage_name(const ScrDyn *key) { return scr_dyn_symbol_storage_key(key); }
 
 void scr_dyn_symbol_init_own(ScrDyn *object, ScrDyn *key, const ScrStr *storage, ScrDyn *value) {
+  scr_dyn_region_store(object, NULL); /* intact containers have no symbol tables */
   object->symbol_properties = scr_dyn_new_obj_null_proto();
   scr_dyn_obj_set(object->symbol_properties, storage->data, storage->len, scr_dyn_retain(value));
   object->symbol_keys = scr_dyn_new_arr();
