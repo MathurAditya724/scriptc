@@ -99,6 +99,7 @@ async function main(): Promise<number> {
               foreignFfi: false,
               nodeTest: false,
               tls: false,
+              cipher: false,
               tlsCa: false,
             },
             options.optimization ?? "release",

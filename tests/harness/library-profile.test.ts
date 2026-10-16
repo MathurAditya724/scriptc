@@ -433,7 +433,7 @@ describe("library profile fences", () => {
           remediations: { SC2012: "the explicit map key wins" },
           fences: [
             { id: "stdlib.number.toPrecision", remediation: "request it as an effect" },
-            { id: "node-builtin.crypto.createCipheriv", remediation: "ciphers come from the host" },
+            { id: "node-builtin.crypto.createSign", remediation: "signatures come from the host" },
           ],
         },
       }),
@@ -443,9 +443,9 @@ describe("library profile fences", () => {
     // Explicit remediations keys win over fence-supplied text.
     expect(profileRemediation(r.profile, "SC2012")).toBe("the explicit map key wins");
     // A fence's remediation answers for its covered entries' codes
-    // (crypto.createCipheriv is SC2020) — spec §3's "in a fence entry or a
+    // (crypto.createSign is SC2020) — spec §3's "in a fence entry or a
     // remediations map", one lookup either way.
-    expect(profileRemediation(r.profile, "SC2020")).toBe("ciphers come from the host");
+    expect(profileRemediation(r.profile, "SC2020")).toBe("signatures come from the host");
     expect(profileRemediation(r.profile, "SC4014")).toBeUndefined();
   });
 

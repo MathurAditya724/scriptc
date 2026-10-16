@@ -19,6 +19,7 @@ process.env.SCRIPTC_RUNTIME_PACK_CONFIG = JSON.stringify({
     "scr_watch.c",
     "scr_tls_ca.c",
     "scr_tls.c",
+    "scr_cipher.c",
     "scr_fetch.c",
   ],
   omitArchives: ["mbedtls"],

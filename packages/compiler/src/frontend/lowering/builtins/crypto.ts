@@ -1,9 +1,10 @@
 import { lowerBuiltinByteInput, errorFirstBytesCallback, errorFirstCallback } from "./arguments.js";
 import { isKeyObjectValue } from "./key-object.js";
-import { dynUndefinedExpr } from "../../../ir/build.js";
+import { boolLit, dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { locOf } from "../../program.js";
+import { CIPHER_TYPE_NAMES } from "../../type-mapper.js";
 import { CRYPTO_CIPHERS, CRYPTO_CURVES, CRYPTO_HASHES } from "../crypto-tables.js";
 import {
   BOOL,
@@ -14,6 +15,7 @@ import {
   F64,
   type IrExpr,
   type IrLibFn,
+  type IrStmt,
   STRING,
   type SrcLoc,
   VOID,
@@ -372,6 +374,31 @@ export function lowerCryptoModuleCall(
       fn: "crypto.hashNewOpts",
       args: [algorithm, lowerer.lowerExprExpecting(args[1]!, DYN)],
       type: CRYPTOHASH_T,
+      loc,
+    };
+  }
+  if (bi.member === "createCipheriv" || bi.member === "createDecipheriv") {
+    const algorithm = args[0];
+    if (algorithm) checkCipherName(lowerer, algorithm, `crypto.${bi.member}`);
+    const stmts: IrStmt[] = [];
+    const values: IrExpr[] = [boolLit(bi.member === "createDecipheriv", loc)];
+    // Every argument is evaluated, left to right, before the runtime
+    // checks them; surplus arguments are evaluated and dropped.
+    for (let i = 0; i < 4; i++) {
+      const input: IrExpr = args[i]
+        ? lowerer.lowerExprExpecting(args[i]!, DYN)
+        : dynUndefinedExpr(loc);
+      const saved = lowerer.declareHiddenLocal("%cipherInput", DYN);
+      stmts.push({ kind: "varDecl", localId: saved.id, init: input, loc });
+      values.push(varRef(saved.id, DYN, loc));
+    }
+    for (const arg of args.slice(4))
+      stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc });
+    return {
+      kind: "seqExpr",
+      stmts,
+      result: { kind: "libCall", fn: "crypto.cipherNew", args: values, type: DYN, loc },
+      type: DYN,
       loc,
     };
   }
@@ -791,6 +818,102 @@ export function lowerCryptoModuleCall(
     kind: "arrayLit",
     elems: list!.map((s): IrExpr => ({ kind: "strLit", value: s, type: STRING, loc })),
     type: arrayOf(STRING),
+    loc,
+  };
+}
+
+/** The implemented cipher names and OpenSSL's aliases for them,
+ * lower-cased (scr_cipher.c's table). */
+const IMPLEMENTED_CIPHERS = new Set([
+  "aes-128-cbc",
+  "aes-192-cbc",
+  "aes-256-cbc",
+  "aes128",
+  "aes192",
+  "aes256",
+  "aes-128-ctr",
+  "aes-192-ctr",
+  "aes-256-ctr",
+  "aes-128-gcm",
+  "aes-192-gcm",
+  "aes-256-gcm",
+  "id-aes128-gcm",
+  "id-aes192-gcm",
+  "id-aes256-gcm",
+  "chacha20-poly1305",
+]);
+
+const SUPPORTED_CIPHERS_HINT =
+  "the supported ciphers are aes-128-cbc, aes-192-cbc, aes-256-cbc, aes-128-ctr, aes-192-ctr, " +
+  "aes-256-ctr, aes-128-gcm, aes-192-gcm, aes-256-gcm, and chacha20-poly1305";
+
+/** A literal cipher name that Node knows but the runtime does not
+ * implement is refused at compile time. Unknown literal names keep Node's
+ * runtime ERR_CRYPTO_UNKNOWN_CIPHER. */
+function checkCipherName(lowerer: Lowerer, node: ts.Expression, use: string): void {
+  const type = lowerer.typeOf(node);
+  if (!type.isStringLiteralType()) return;
+  const name = type.value.toLowerCase();
+  if (IMPLEMENTED_CIPHERS.has(name) || !CRYPTO_CIPHERS.includes(name)) return;
+  lowerer.noLowering(`${use} with cipher '${type.value}'`, node, SUPPORTED_CIPHERS_HINT);
+}
+
+/** Whether a checker type is node:crypto's Cipheriv/Decipheriv family. */
+export function isCipherType(lowerer: Lowerer, type: ts.Type): boolean {
+  const symbol = type.getAliasSymbol() ?? type.getSymbol();
+  return (
+    !!symbol &&
+    CIPHER_TYPE_NAMES.has(symbol.name) &&
+    lowerer.checker.declarationsOf(symbol).some((d) => lowerer.isStdlibFile(d.getSourceFile()))
+  );
+}
+
+const CIPHER_METHODS = new Set([
+  "update",
+  "final",
+  "setAAD",
+  "setAutoPadding",
+  "getAuthTag",
+  "setAuthTag",
+]);
+
+/** V8's spelling of a callee in "is not a function" messages: call
+ * arguments render as "(...)". */
+function v8CalleeText(node: ts.Expression): string {
+  if (ts.isPropertyAccessExpression(node))
+    return `${v8CalleeText(node.expression)}.${node.name.text}`;
+  if (ts.isCallExpression(node)) return `${v8CalleeText(node.expression)}(...)`;
+  return node.getText();
+}
+
+/** Calls on native Cipheriv/Decipheriv handles dispatch through the
+ * handle's methods with checked-dynamic arguments. The stream.Transform
+ * members the classes inherit are refused. */
+export function lowerCipherMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (call.questionDotToken || access.questionDotToken) return null;
+  if (!isCipherType(lowerer, lowerer.typeOf(access.expression))) return null;
+  const name = access.name.text;
+  if (!CIPHER_METHODS.has(name)) {
+    lowerer.noLowering(
+      `Cipheriv/Decipheriv.${name}`,
+      call,
+      "update(), final(), setAAD(), setAutoPadding(), getAuthTag(), and setAuthTag() are supported; cipher streams are not",
+    );
+  }
+  if (call.arguments.some(ts.isSpreadElement))
+    lowerer.noLowering(`Cipheriv/Decipheriv.${name} with spread arguments`, call);
+  const loc = locOf(call);
+  return {
+    kind: "dynInvoke",
+    recv: lowerer.lowerExprExpecting(access.expression, DYN),
+    method: name,
+    calleeName: v8CalleeText(access),
+    args: call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    type: DYN,
     loc,
   };
 }

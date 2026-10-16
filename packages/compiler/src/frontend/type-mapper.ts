@@ -150,6 +150,20 @@ export const FETCH_AMBIENT_TYPES = [
   "FileOptions",
 ] as const;
 
+/** node:crypto's Cipheriv and Decipheriv names in @types/node. */
+export const CIPHER_TYPE_NAMES: ReadonlySet<string> = new Set([
+  "Cipheriv",
+  "Decipheriv",
+  "CipherCCM",
+  "CipherGCM",
+  "CipherOCB",
+  "CipherChaCha20Poly1305",
+  "DecipherCCM",
+  "DecipherGCM",
+  "DecipherOCB",
+  "DecipherChaCha20Poly1305",
+]);
+
 /** node:util.parseArgs's public and @types/node helper type names, plus
  * util.debuglog's DebugLogger (a native function value with an `enabled`
  * accessor) and the DebugLoggerFunction its callback receives. Values
@@ -2249,6 +2263,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     checker
       .declarationsOf(psym)
       .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
+  ) {
+    return DYN;
+  }
+  // node:crypto Cipheriv/Decipheriv values (and @types/node's per-mode
+  // interfaces over them) are native handles carried by the checked-dynamic
+  // representation; lowerCipherMethodCall dispatches their methods.
+  if (
+    psym !== undefined &&
+    CIPHER_TYPE_NAMES.has(psym.name) &&
+    checker.declarationsOf(psym).some((d) => ctx.isStdlibFile(d.getSourceFile()))
   ) {
     return DYN;
   }
