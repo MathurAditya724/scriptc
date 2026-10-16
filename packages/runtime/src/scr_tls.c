@@ -488,6 +488,9 @@ typedef struct ScrTlsSock {
   bool vrfy_chain_self;
   bool vrfy_expired;
   bool vrfy_cn_mismatch;
+  /* servername: "" on a client: no SNI goes out, so mbedTLS has no name
+   * to check, and the verify callback checks cli->hostname itself */
+  bool vrfy_host_without_sni;
   /* SNI pre-parse state (server side with an SNI callback only) */
   int sni_state;
   bool in_handshake;   /* a synchronous cb answer must not re-pump */
@@ -498,10 +501,20 @@ typedef struct ScrTlsSock {
 
 /* The client verify callback: records WHERE verification failed and how
  * the presented chain is shaped, per certificate (depth 0 = leaf), so
- * the failure message can be Node's exact split. Never overrides flags —
- * the verdict stays mbedTLS's. */
+ * the failure message can be Node's exact split. The verdict stays
+ * mbedTLS's, except that a client sending no SNI adds the host name
+ * check mbedTLS skipped: mbedtls_x509_crt_verify runs the same name rules
+ * on the leaf alone, and only its CN_MISMATCH bit is kept. */
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
+  if (depth == 0 && t->vrfy_host_without_sni && t->cli != NULL && t->cli->hostname != NULL) {
+    mbedtls_x509_crt *chain = crt->next;
+    uint32_t name_flags = 0;
+    crt->next = NULL; /* the name check needs the leaf only */
+    (void)mbedtls_x509_crt_verify(crt, NULL, NULL, t->cli->hostname, &name_flags, NULL, NULL);
+    crt->next = chain;
+    *flags |= name_flags & MBEDTLS_X509_BADCERT_CN_MISMATCH;
+  }
   bool self = crt->issuer_raw.len == crt->subject_raw.len &&
               memcmp(crt->issuer_raw.p, crt->subject_raw.p, crt->subject_raw.len) == 0;
   if (*flags & MBEDTLS_X509_BADCERT_EXPIRED) t->vrfy_expired = true;
@@ -1662,8 +1675,10 @@ static ScrTlsSock *scr_tls_sock_of(ScrNetSocket *s) {
 }
 
 /* https.request's `servername` option: the TLS name the handshake sends
- * (SNI) and verifies the certificate against, in place of the host. The
- * handshake starts once the dial connects, after this runs. */
+ * (SNI) and verifies the certificate against, in place of the host. An
+ * empty servername sends no SNI, and the certificate is still checked
+ * against the host, as Node's checkServerIdentity does. The handshake
+ * starts once the dial connects, after this runs. */
 void scr_https_client_servername(ScrHttpClientReq *c, ScrStr *name /*borrowed*/) {
   ScrNetSocket *sock = scr_http_client_socket(c);
   if (sock == NULL) return;
@@ -1675,6 +1690,7 @@ void scr_https_client_servername(ScrHttpClientReq *c, ScrStr *name /*borrowed*/)
     z[name->len] = '\0';
     (void)mbedtls_ssl_set_hostname(&t->ssl, name->len > 0 ? z : NULL);
     free(z);
+    t->vrfy_host_without_sni = name->len == 0;
   }
   scr_net_sock_release(sock);
 }
