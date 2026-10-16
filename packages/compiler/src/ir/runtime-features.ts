@@ -230,7 +230,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn === "stream.addAbortSignalFn" ||
         fn.startsWith("sp.finishedOpts") ||
         fn.startsWith("sp.pipelineOpts") ||
-        fn.startsWith("stream.finishedOpts")
+        fn.startsWith("stream.finishedOpts") ||
+        fn === "fs.createReadStream" ||
+        fn === "fs.createWriteStream" ||
+        fn === "fileHandle.createReadStream" ||
+        fn === "fileHandle.createWriteStream" ||
+        fn.startsWith("fs.fsStream")
       ) {
         // the stream unit emits through the emitter unit, also when the
         // program constructs no stream (a pipeline of functions)

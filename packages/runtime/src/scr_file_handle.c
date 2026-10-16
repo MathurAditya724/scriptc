@@ -32,6 +32,17 @@
 struct ScrFileHandle {
   size_t rc;
   int fd;
+  /* Node's kRefs: the handle itself counts 1, every stream over it one
+   * more. close() resolves once the count reaches zero. */
+  size_t refs;
+  ScrFileHandleHook *hooks; /* 'close' listeners (the streams' close()) */
+  ScrPromise *close_wait;   /* close() waiting for the streams, or NULL */
+};
+
+struct ScrFileHandleHook {
+  void (*fn)(void *ctx);
+  void *ctx;
+  ScrFileHandleHook *next;
 };
 
 typedef struct {
@@ -229,10 +240,11 @@ ScrFileHandle *scr_file_handle_open(ScrStr *path, ScrStr *flags, double mode) {
     scr_fs_throw(errno, "open", path);
     return NULL;
   }
-  ScrFileHandle *h = malloc(sizeof(ScrFileHandle));
+  ScrFileHandle *h = calloc(1, sizeof(ScrFileHandle));
   if (!h) scr_trap("scriptc: out of memory\n");
   h->rc = 1;
   h->fd = fd;
+  h->refs = 1;
   return h;
 }
 
@@ -245,6 +257,12 @@ void scr_file_handle_release(ScrFileHandle *h) {
   if (!h || h->rc == SIZE_MAX) return;
   if (--h->rc != 0) return;
   if (h->fd >= 0) (void)close(h->fd);
+  while (h->hooks) {
+    ScrFileHandleHook *next = h->hooks->next;
+    free(h->hooks);
+    h->hooks = next;
+  }
+  if (h->close_wait) scr_promise_release(h->close_wait);
   free(h);
 }
 
@@ -265,6 +283,81 @@ void scr_file_handle_close(ScrFileHandle *h) {
   int fd = h->fd;
   h->fd = -1;
   scr_fs_close((double)fd);
+}
+
+/* FileHandle.close() with Node's reference count: the last reference
+ * closes the descriptor; while streams hold the handle the promise waits
+ * for them. Either way 'close' runs the streams' close(). */
+static ScrPromise *scr_file_handle_close_refs(ScrFileHandle *h, int *detached) {
+  if (h->fd < 0) return scr_promise_settled_void();
+  if (h->close_wait) return scr_promise_retain(h->close_wait);
+  ScrPromise *out;
+  if (h->refs > 0) h->refs--;
+  if (h->refs == 0) {
+    if (detached) {
+      *detached = h->fd; /* the stream closes it on the worker pool */
+      h->fd = -1;
+    } else {
+      scr_file_handle_close(h);
+      if (scr_exc_pending()) return NULL;
+    }
+    out = scr_promise_settled_void();
+  } else {
+    h->close_wait = scr_promise_new();
+    out = scr_promise_retain(h->close_wait);
+  }
+  scr_file_handle_retain(h);
+  for (ScrFileHandleHook *k = h->hooks; k && !scr_exc_pending();) {
+    ScrFileHandleHook *next = k->next;
+    k->fn(k->ctx);
+    k = next;
+  }
+  scr_file_handle_release(h);
+  return out;
+}
+
+void scr_file_handle_ref(ScrFileHandle *h) { h->refs++; }
+
+/* kUnref then close() for a stream over the handle: answers the
+ * descriptor the caller closes, or -1 while other references remain. */
+int scr_file_handle_stream_unref(ScrFileHandle *h) {
+  if (h->fd < 0) return -1;
+  if (h->refs > 0) h->refs--;
+  if (h->refs == 0) {
+    int fd = h->fd;
+    h->fd = -1;
+    if (h->close_wait) {
+      ScrPromise *w = h->close_wait;
+      h->close_wait = NULL;
+      scr_promise_fulfill_void(w);
+      scr_promise_release(w);
+    }
+    return fd;
+  }
+  int fd = -1;
+  ScrPromise *p = scr_file_handle_close_refs(h, &fd);
+  if (p) scr_promise_release(p);
+  return fd;
+}
+
+ScrFileHandleHook *scr_file_handle_on_close(ScrFileHandle *h, void (*fn)(void *ctx), void *ctx) {
+  ScrFileHandleHook *k = malloc(sizeof *k);
+  if (!k) scr_trap("scriptc: out of memory\n");
+  k->fn = fn;
+  k->ctx = ctx;
+  k->next = h->hooks;
+  h->hooks = k;
+  return k;
+}
+
+void scr_file_handle_off_close(ScrFileHandle *h, ScrFileHandleHook *hook) {
+  for (ScrFileHandleHook **p = &h->hooks; *p; p = &(*p)->next) {
+    if (*p == hook) {
+      *p = hook->next;
+      free(hook);
+      return;
+    }
+  }
 }
 
 double scr_file_handle_read(ScrFileHandle *h, ScrBytes *buf, double offset,
@@ -380,8 +473,8 @@ ScrPromise *scr_fsp_open(ScrStr *path, ScrStr *flags, double mode) {
 }
 
 ScrPromise *scr_file_handle_close_promise(ScrFileHandle *h) {
-  scr_file_handle_close(h);
-  return scr_promise_settled_void();
+  ScrPromise *p = scr_file_handle_close_refs(h, NULL);
+  return p ? p : scr_promise_settled_void();
 }
 
 ScrPromise *scr_file_handle_sync_promise(ScrFileHandle *h) {
@@ -472,10 +565,12 @@ static ScrDyn *scr_file_handle_dyn_invoke(
   (void)argc;
   (void)what;
   if (strcmp(method, "close") == 0) {
-    scr_file_handle_close(h);
+    ScrPromise *closing = scr_file_handle_close_refs(h, NULL);
+    if (closing == NULL) return NULL;
     ScrPromise *p = scr_promise_settled_ref(
         scr_dyn_retain(scr_dyn_undefined()), &scr_dyn_retain_v,
         &scr_dyn_release_v, NULL);
+    scr_promise_release(closing);
     ScrDyn *out = scr_dyn_new_promise(p);
     scr_promise_release(p);
     return out;

@@ -326,9 +326,9 @@
       "apiEntries": 280,
       "static": {
         "supported": 7,
-        "partial": 175,
+        "partial": 195,
         "refused": 0,
-        "not-implemented": 98,
+        "not-implemented": 78,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -44008,8 +44008,11 @@
           "tests/corpus/5543-fs-promises-typed.ts",
           "tests/corpus/5544-fs-opendir.cjs",
           "tests/corpus/5545-fs-options-encoding.cjs",
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
           "tests/corpus/5548-fs-callback-arguments.cjs",
           "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
@@ -44274,8 +44277,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.filehandle.createReadStream",
+        "tests": [
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44297,8 +44303,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.filehandle.createWriteStream",
+        "tests": [
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44523,8 +44532,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.filehandle.readLines",
+        "tests": [
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -46030,8 +46042,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.createReadStream",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -46053,8 +46070,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.createWriteStream",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49541,8 +49563,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.ReadStream",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49564,8 +49591,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.bytesRead",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -49587,8 +49619,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.path",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -49610,8 +49647,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.pending",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -49633,8 +49675,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.'close'",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49656,8 +49703,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.'open'",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49679,8 +49731,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.'ready'",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51373,8 +51430,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.WriteStream",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51396,8 +51458,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.writeStream.close",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51419,8 +51486,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.writeStream.bytesWritten",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51442,8 +51514,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.writeStream.path",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51465,8 +51542,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.pending",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -51488,8 +51570,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.'close'",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51511,8 +51598,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.'open'",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51534,8 +51626,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.'ready'",
+        "tests": [
+          "tests/corpus/5546-fs-read-stream.cjs",
+          "tests/corpus/5547-fs-write-stream.cjs",
+          "tests/corpus/5554-fs-streams-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },

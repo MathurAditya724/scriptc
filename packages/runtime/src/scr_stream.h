@@ -421,6 +421,58 @@ void scr_stream_destroy_done(ScrStream *s, ScrError *err);
 void scr_stream_transform_done(ScrStream *s, ScrError *err, ScrBytes *data, ScrStr *data_str);
 void scr_stream_flush_done(ScrStream *s, ScrError *err, ScrBytes *data, ScrStr *data_str);
 
+/* Runtime-backed streams (the fs streams in scr_fs_stream.c).
+ * - construct: Node's _construct. The hook runs on a tick after
+ *   construction; until construct_done's tick, reads, buffered writes,
+ *   the finish path and _destroy wait. cb moves; done's err moves.
+ * - set_writev_concat: Node's _writev. More than one buffered chunk is
+ *   written as one chunk holding their concatenation.
+ * - native: an owned payload released with the stream state (it outlives
+ *   'close', which drops the hooks). */
+void scr_stream_construct(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
+void scr_stream_construct_done(ScrStream *s, ScrError *err);
+void scr_stream_set_writev_concat(ScrStream *s);
+/* The native payload's operations: release frees it; view adds its
+ * members to the stream's untyped view and close is the view's close()
+ * (both NULL when absent); aggregate builds aggregateTwoErrors' +1
+ * AggregateError from the construct and destroy errors (NULL: the destroy
+ * error is used). */
+typedef struct ScrStreamNativeOps {
+  void (*release)(void *native);
+  void (*view)(ScrStream *s, ScrDyn *view);
+  void (*close)(ScrStream *s);
+  ScrError *(*aggregate)(ScrError *inner, ScrError *outer);
+} ScrStreamNativeOps;
+void scr_stream_set_native(ScrStream *s, void *native, const ScrStreamNativeOps *ops);
+void *scr_stream_native(ScrStream *s); /* borrowed, NULL when unset */
+/* errorOrDestroy (err borrowed), and fs.WriteStream.close(cb) (cb moves,
+ * NULL = absent). */
+void scr_stream_fail(ScrStream *s, ScrError *err);
+void scr_stream_close_writable(ScrStream *s, ScrClosure *cb);
+/* fs.ReadStream / fs.WriteStream (scr_fs_stream.c, linked with this
+ * unit). The constructors take the path and options values (borrowed)
+ * and answer +1 or NULL with the exception pending. bytes is bytesRead or
+ * bytesWritten; path_value is +1 (undefined for the fd form); close_cb
+ * borrows its callback. */
+ScrStream *scr_fs_read_stream_new(ScrDyn *path, ScrDyn *options);
+ScrStream *scr_fs_write_stream_new(ScrDyn *path, ScrDyn *options);
+double scr_fs_stream_bytes(ScrStream *s);
+bool scr_fs_stream_pending(ScrStream *s);
+ScrDyn *scr_fs_stream_path_value(ScrStream *s);
+ScrDyn *scr_fs_stream_prop_dyn(ScrStream *s, ScrStr *name); /* untyped reads, +1 */
+/* A stream over a descriptor its owner holds (FileHandle.createReadStream
+ * / createWriteStream, scr_fs_stream_fh.c): detach answers the descriptor
+ * to close when the stream closes (-1 while the owner keeps it); release
+ * runs when the stream is freed. owner moves; options borrowed. */
+typedef struct ScrFsStreamOwnerOps {
+  int (*detach)(void *owner);
+  void (*release)(void *owner);
+} ScrFsStreamOwnerOps;
+ScrStream *scr_fs_stream_new_owned(ScrDyn *options, bool readable, int fd, void *owner,
+                                   const ScrFsStreamOwnerOps *ops);
+void scr_fs_stream_close(ScrStream *s);
+void scr_fs_stream_close_cb(ScrStream *s, ScrClosure *cb);
+
 /* RC / trace / install (the emitter-unit shapes). */
 ScrStream *scr_stream_retain(ScrStream *s);
 void scr_stream_release(ScrStream *s);

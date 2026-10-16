@@ -7,6 +7,7 @@ import { InternalCompilerError } from "../../errors.js";
  * synthesized derived ctors and field initializers, super calls and super
  * accessor access, upcasts, `new` expressions, and the builtin Error
  * hierarchy registration. */
+import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
 import type { FnCtx, Lowerer } from "./lowerer.js";
 import {
@@ -8297,6 +8298,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     }
     // `new stream.Readable({...})` — the namespace-member (and CJS
     // `require('stream').Readable`) construction form.
+    const fsStreamNs = fsStreamClassOf(lowerer, resolved);
+    if (fsStreamNs) return lowerFsStreamNew(lowerer, expr, fsStreamNs);
     const streamInfoNs = builtinStreamInfoOf(lowerer, resolved);
     if (streamInfoNs) return lowerStreamNew(lowerer, expr, streamInfoNs);
     // `new N.C(...)` / `new a.Point(...)` — construction through a
@@ -8533,6 +8536,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     }
     // `new Readable({...})` and the other stream classes: the options
     // object parses structurally in the stream spoke.
+    const fsStream = fsStreamClassOf(lowerer, symbol);
+    if (fsStream) return lowerFsStreamNew(lowerer, expr, fsStream);
     const streamInfo = builtinStreamInfoOf(lowerer, symbol);
     if (streamInfo) return lowerStreamNew(lowerer, expr, streamInfo);
     // `new URL(input)`: the WHATWG URL class (stdlib/@types provenance —

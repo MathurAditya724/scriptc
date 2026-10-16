@@ -91,6 +91,10 @@ const optional = [
   ["scr_stream.c", "stream"],
   // The Readable operators await through the dyn-async unit.
   ["scr_stream_ops.c", all("stream", "dynAsync")],
+  // fs.ReadStream / fs.WriteStream reference only the stream unit and base units.
+  ["scr_fs_stream.c", "stream"],
+  // FileHandle streams reference both the stream unit and FileHandle.
+  ["scr_fs_stream_fh.c", all("stream", "fileHandle")],
   ["scr_loop_kqueue.c", any("netEffective", "dgram")],
   ["scr_loop_epoll.c", any("netEffective", "dgram")],
   ["scr_loop_wsapoll.c", any("netEffective", "dgram")],

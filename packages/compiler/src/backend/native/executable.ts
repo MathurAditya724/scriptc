@@ -548,8 +548,10 @@ export async function compileCInternal(
     ...(opts.parseArgs && opts.inspect && opts.dynAsync && opts.dynInvoke && regex
       ? [rt(join(rtDir, "scr_util_callable.c"))]
       : []),
-    ...(opts.stream ? [rt(join(rtDir, "scr_stream.c"))] : []),
+    ...(opts.stream ? [rt(join(rtDir, "scr_stream.c")), rt(join(rtDir, "scr_fs_stream.c"))] : []),
     ...(opts.stream && opts.dynAsync ? [rt(join(rtDir, "scr_stream_ops.c"))] : []),
+    // FileHandle streams reference both the stream unit and FileHandle.
+    ...(opts.stream && opts.fileHandle ? [rt(join(rtDir, "scr_fs_stream_fh.c"))] : []),
     // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,
     // epoll on Linux, WSAPoll on Windows — each TU is empty off its
     // platform, so all three link whenever a poller-using unit does and

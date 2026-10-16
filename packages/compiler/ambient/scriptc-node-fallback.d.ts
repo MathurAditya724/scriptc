@@ -1198,6 +1198,7 @@ interface ImportMeta {
  * directory, open 'x'"). `rmSync` removes FILES only (like Node without
  * `recursive`); empty directories go through `rmdirSync`. */
 declare module "node:fs" {
+  import { Readable, Writable } from "stream";
   export function readFileSync(path: string | number, encoding: BufferEncoding): string;
   export function readFileSync(
     path: string | number,
@@ -1380,6 +1381,47 @@ declare module "node:fs" {
     bufferSize?: number;
   }
   export function opendirSync(path: string, options?: OpenDirOptions): Dir;
+  /* fs.ReadStream / fs.WriteStream: runtime Readable and Writable streams
+   * over a file (scr_fs_stream.c). The options are checked at runtime
+   * with Node's rules; flags and mode are checked when the file opens, so
+   * their errors arrive as 'error' events. Instances also emit 'open'
+   * (with the fd) and 'ready'. */
+  export interface StreamOptions {
+    flags?: string;
+    encoding?: BufferEncoding;
+    fd?: number;
+    mode?: number | string;
+    autoClose?: boolean;
+    emitClose?: boolean;
+    start?: number;
+    highWaterMark?: number;
+  }
+  export interface ReadStreamOptions extends StreamOptions {
+    end?: number;
+  }
+  export interface WriteStreamOptions extends StreamOptions {
+    flush?: boolean;
+  }
+  export class ReadStream extends Readable {
+    readonly bytesRead: number;
+    readonly path: string | Buffer;
+    readonly pending: boolean;
+    close(callback?: () => void): void;
+  }
+  export class WriteStream extends Writable {
+    readonly bytesWritten: number;
+    readonly path: string | Buffer;
+    readonly pending: boolean;
+    close(callback?: () => void): void;
+  }
+  export function createReadStream(
+    path: string | Buffer | URL,
+    options?: BufferEncoding | ReadStreamOptions,
+  ): ReadStream;
+  export function createWriteStream(
+    path: string | Buffer | URL,
+    options?: BufferEncoding | WriteStreamOptions,
+  ): WriteStream;
   export function accessSync(path: string, mode?: number): void;
   export function mkdtempSync(prefix: string): string;
   export const constants: {
@@ -1632,9 +1674,31 @@ declare module "fs/promises" {
     length?: number | null;
     position?: number | null;
   }
+  /* The streams over a FileHandle (createReadStream, createWriteStream,
+   * readLines): fs streams that hold the handle until they close; closing
+   * the stream closes the handle unless autoClose is false. */
+  export interface CreateReadStreamOptions {
+    encoding?: BufferEncoding | null;
+    autoClose?: boolean;
+    emitClose?: boolean;
+    start?: number;
+    end?: number;
+    highWaterMark?: number;
+  }
+  export interface CreateWriteStreamOptions {
+    encoding?: BufferEncoding | null;
+    autoClose?: boolean;
+    emitClose?: boolean;
+    start?: number;
+    highWaterMark?: number;
+    flush?: boolean;
+  }
   export interface FileHandle extends AsyncDisposable {
     readonly fd: number;
     close(): Promise<void>;
+    createReadStream(options?: CreateReadStreamOptions): import("node:fs").ReadStream;
+    createWriteStream(options?: CreateWriteStreamOptions): import("node:fs").WriteStream;
+    readLines(options?: CreateReadStreamOptions): import("node:readline").Interface;
     sync(): Promise<void>;
     datasync(): Promise<void>;
     truncate(len?: number): Promise<void>;
