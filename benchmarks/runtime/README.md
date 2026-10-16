@@ -21,6 +21,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `optional-fields` | cpu | records and class instances with `number \| undefined` and other scalar-union fields |
 | `record-boundaries` | cpu | records built from unchecked array reads passed to and returned from annotated functions |
 | `number-maps` | cpu | number-keyed Map/Set: a dense-id table, sparse ids in many small maps, get/has/set mixes |
+| `published-graphs` | cpu | syntax trees with parent links and a symbol table, published with `@scriptc/threads` and then read |
 | `validate-errors` | cpu | throw/catch on a fraction of inputs, small call chains |
 | `csv-numbers` | cpu | `split`, `Number`, `parseInt`, `toFixed` |
 | `log-lines` | cpu | 200k immediate `console.log`/`process.stdout.write` lines into the runner's pipe |

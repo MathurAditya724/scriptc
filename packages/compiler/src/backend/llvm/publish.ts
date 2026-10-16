@@ -206,7 +206,7 @@ export class PublishWalkers {
         // hold time-value bits that no walker may push.
         if (def.arms.some((arm) => scalarRefusal(arm)))
           throw new LlvmUnsupportedError(`publish of ${typeKey(t)}`, loc);
-        const live = arms.filter((a) => a.fn !== null);
+        const live = arms.flatMap((a) => (a.fn === null ? [] : [{ tag: a.tag, fn: a.fn }]));
         const lines = [
           head,
           `entry:`,
@@ -227,7 +227,7 @@ export class PublishWalkers {
           for (const a of live)
             lines.push(
               `arm${a.tag}:`,
-              `  call void @scr_pub_push(ptr %ctx, ptr %slot, ptr ${a.fn})`,
+              ...this.push("%slot", a.fn, `u${a.tag}`),
               `  br label %done`,
             );
         }
@@ -326,6 +326,26 @@ export class PublishWalkers {
     );
   }
 
+  /** Lines pushing the reference `v` with the walker `fn`. Null and
+   * immortal references (the parent links of a tree, values published
+   * before) are the ones scr_pub_push skips: they are tested here, without
+   * the call. The lines end in a fresh block labelled `pushed${id}`. */
+  private push(v: string, fn: string, id: string): string[] {
+    const size = this.host.sizeType;
+    return [
+      `  %null${id} = icmp eq ptr ${v}, null`,
+      `  br i1 %null${id}, label %pushed${id}, label %live${id}`,
+      `live${id}:`,
+      `  %rc${id} = load ${size}, ptr ${v}`,
+      `  %immortal${id} = icmp eq ${size} %rc${id}, -1`,
+      `  br i1 %immortal${id}, label %pushed${id}, label %push${id}`,
+      `push${id}:`,
+      `  call void @scr_pub_push(ptr %ctx, ptr ${v}, ptr ${fn})`,
+      `  br label %pushed${id}`,
+      `pushed${id}:`,
+    ];
+  }
+
   private objectBody(
     head: string,
     struct: string,
@@ -351,9 +371,9 @@ export class PublishWalkers {
         continue;
       }
       lines.push(
-        `  %f${n} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${member.index}`,
+        `  %f${n} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${member.index} ; ${llvmComment(member.name)}`,
         `  %v${n} = load ptr, ptr %f${n}`,
-        `  call void @scr_pub_push(ptr %ctx, ptr %v${n}, ptr ${fn}) ; ${llvmComment(member.name)}`,
+        ...this.push(`%v${n}`, fn, `${n}`),
       );
       n++;
     }
