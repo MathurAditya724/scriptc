@@ -49,6 +49,7 @@ import {
   type IrExpr,
   type IrFunction,
   type IrLibFn,
+  type IrLocal,
   type IrStmt,
   type IrType,
   RUNTIME_STREAM_CLASSES,
@@ -58,6 +59,7 @@ import {
   arrayOf,
   BYTES_U8,
   canBoxFuncIntoDyn,
+  canConvertToDyn,
   funcOf,
   typeEquals,
   typeKey,
@@ -2035,13 +2037,14 @@ export function lowerStreamModuleCall(
           );
         }
         const staged = lowerPipelineStages(lowerer, stageArgs, loc);
-        return {
+        // A promise destination's value settles the result (same type).
+        return staged.wrap({
           kind: "libCall",
           fn: "sp.pipelineStages",
           args: staged.args,
-          type: { kind: "promise", inner: VOID },
+          type: staged.destPromise ?? { kind: "promise", inner: VOID },
           loc,
-        };
+        });
       }
       let streams: IrExpr[];
       try {
@@ -2219,19 +2222,39 @@ export function lowerStreamModuleCall(
     }
     if (args.slice(0, -1).some(isPipelineFunctionStage)) {
       const staged = lowerPipelineStages(lowerer, args.slice(0, -1), loc);
+      if (staged.dest !== 0) {
+        // callback(err, value): the destination's value reaches the
+        // callback through the checked-dynamic path. Node answers an
+        // object-mode PassThrough here; reading it has no lowering.
+        if (!ts.isExpressionStatement(call.parent)) {
+          lowerer.noLowering(
+            "using the PassThrough that pipeline() answers for a function destination",
+            call,
+            "read the destination's value in the callback",
+          );
+        }
+        const cb = lowerer.lowerExprExpecting(args[args.length - 1]!, DYN);
+        return staged.wrap({
+          kind: "libCall",
+          fn: "stream.pipelineStagesDyn",
+          args: [...staged.args, cb],
+          type: staged.last,
+          loc,
+        });
+      }
       const { cb, dyn } = lowerEosCallback(
         lowerer,
         "pipeline",
         args[args.length - 1]!,
         staged.last,
       );
-      return {
+      return staged.wrap({
         kind: "libCall",
         fn: dyn ? "stream.pipelineStagesDyn" : "stream.pipelineStages",
         args: [...staged.args, cb],
         type: staged.last,
         loc,
-      };
+      });
     }
     let streams: IrExpr[];
     try {
@@ -2262,18 +2285,34 @@ function isPipelineFunctionStage(node: ts.Expression): boolean {
   return ts.isFunctionExpression(node) || ts.isArrowFunction(node);
 }
 
-/** pipeline(s1, ..., stage1, ..., stagek, ..., sn): one run of async
- * generator function stages between node streams (pipeline.js). Each
- * stage's `source` parameter is typed as what the pipeline passes it:
- * makeAsyncIterable answers the previous stream itself (a Readable is
- * async iterable) or the previous stage's generator. Answers the libcall
- * head [n, at, k, streams..., stages..., next, read, return] and the last
- * stream's type. */
+/** The lowered function stages of a pipeline: the libcall head [n, at, k,
+ * flags, mask, streams..., stages..., (next, read, return)?, box?,
+ * (signal, abort)?], the destination's type (the last stream, or the
+ * PassThrough a function destination answers), the destination kind
+ * (SCR_PIPE_DEST_*), a promise destination's promise type, and a wrapper
+ * that binds the pipeline's AbortController around the call when a
+ * stage takes `{ signal }`. */
+interface PipelineStagesLowering {
+  args: IrExpr[];
+  last: IrType;
+  dest: 0 | 2;
+  destPromise: (IrType & { kind: "promise" }) | null;
+  wrap: (call: IrExpr) => IrExpr;
+}
+
+/** pipeline(...) with one run of function stages (pipeline.js). The run
+ * may start the pipeline (a source function, called with `{ signal }`)
+ * and may end it (a destination function: an async generator pumped into
+ * a PassThrough, or an async function whose promise's value reaches the
+ * callback or the promise). Each stage's `source` parameter is typed as
+ * what the pipeline passes it: makeAsyncIterable answers the previous
+ * stream itself (a Readable is async iterable) or the previous stage's
+ * generator. */
 function lowerPipelineStages(
   lowerer: Lowerer,
   stageArgs: readonly ts.Expression[],
   loc: SrcLoc,
-): { args: IrExpr[]; last: IrType } {
+): PipelineStagesLowering {
   const first = stageArgs.findIndex(isPipelineFunctionStage);
   let end = first;
   while (end < stageArgs.length && isPipelineFunctionStage(stageArgs[end]!)) end++;
@@ -2281,23 +2320,11 @@ function lowerPipelineStages(
     lowerer.noLowering(
       "pipeline with function stages separated by streams",
       stageArgs[end]!,
-      "one run of function stages between two streams is supported",
+      "one run of function stages is supported",
     );
   }
-  if (first === 0) {
-    lowerer.noLowering(
-      "pipeline with a function as its source",
-      stageArgs[0]!,
-      "the source must be a stream; Readable.from(generator()) turns a generator into one",
-    );
-  }
-  if (end === stageArgs.length) {
-    lowerer.noLowering(
-      "pipeline with a function as its destination",
-      stageArgs[end - 1]!,
-      "the destination must be a stream",
-    );
-  }
+  const source = first === 0;
+  const destFn = end === stageArgs.length;
   const before: IrExpr[] = [];
   const after: IrExpr[] = [];
   try {
@@ -2307,31 +2334,64 @@ function lowerPipelineStages(
       lowerer.noLowering("pipeline over this value", stageArgs[0]!);
     throw e;
   }
-  let srcT: IrType = before[before.length - 1]!.type;
+  let srcT: IrType | null = source ? null : before[before.length - 1]!.type;
   const stages: IrExpr[] = [];
-  for (const node of stageArgs.slice(first, end)) {
-    const fn = node as ts.FunctionExpression | ts.ArrowFunction;
-    const isAsyncGen =
-      ts.isFunctionExpression(fn) &&
-      fn.asteriskToken !== undefined &&
-      (fn.modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
-    if (!isAsyncGen) {
+  let mask = 0;
+  let dest: 0 | 2 = 0;
+  let destPromise: (IrType & { kind: "promise" }) | null = null;
+  for (let i = first; i < end; i++) {
+    const fn = stageArgs[i] as ts.FunctionExpression | ts.ArrowFunction;
+    const isLast = destFn && i === end - 1;
+    const isAsync = (fn.modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
+    const isGen = ts.isFunctionExpression(fn) && fn.asteriskToken !== undefined;
+    if (isLast && isGen) {
+      // pipeline() pumps it into an object-mode PassThrough, whose
+      // buffering decides when the pipeline finishes
       lowerer.noLowering(
-        "pipeline stages that are not async generator functions",
+        "a pipeline destination that is an async generator function",
+        fn,
+        "end the pipeline with a stream or an async function (source) { for await (const chunk of source) ... }",
+      );
+    }
+    if (!isAsync || (!isGen && !isLast)) {
+      lowerer.noLowering(
+        isLast
+          ? "a pipeline destination that is not an async function"
+          : srcT === null
+            ? "a pipeline source function that is not an async generator function"
+            : "pipeline stages that are not async generator functions",
         fn,
         "write the stage as async function* (source) { for await (const chunk of source) ... }",
       );
     }
-    if (fn.parameters.length > 1) {
+    const optionsAt = srcT === null ? 0 : 1;
+    if (fn.parameters.length > optionsAt + 1) {
       lowerer.noLowering(
-        "pipeline stages that declare the options argument",
-        fn.parameters[1]!,
-        "the { signal } argument has no lowering — take only the source",
+        "pipeline stages with parameters after the options argument",
+        fn.parameters[optionsAt + 1]!,
+        "a stage takes the source and { signal }",
       );
     }
     const lowered = lowerStageFunction(lowerer, fn, srcT);
+    const params = lowered.closure.type.kind === "func" ? lowered.closure.type.params : [];
+    if (params.length > optionsAt) {
+      if (params[optionsAt]!.kind !== "dyn") {
+        lowerer.noLowering(
+          "a pipeline stage's options argument with this type",
+          fn.parameters[optionsAt]!,
+          "type it as { signal: AbortSignal }",
+        );
+      }
+      mask |= 1 << (i - first);
+    }
     stages.push(lowered.closure);
-    srcT = lowered.out;
+    if (lowered.out.kind === "promise") {
+      dest = 2;
+      destPromise = lowered.out;
+      srcT = null;
+    } else {
+      srcT = lowered.out;
+    }
   }
   try {
     for (const a of stageArgs.slice(end)) after.push(lowerStreamArg(lowerer, a, "pipeline"));
@@ -2340,42 +2400,189 @@ function lowerPipelineStages(
       lowerer.noLowering("pipeline over this value", stageArgs[end]!);
     throw e;
   }
-  const lastGen = srcT as IrType & { kind: "generator" };
-  if (!fromGenChunk(lowerer, lastGen.yieldT)) {
-    lowerer.noLowering(
-      `a pipeline stage yielding '${lowerer.fmt(lastGen.yieldT)}'`,
-      stageArgs[end - 1]!,
-      "stage values written to a stream are strings or Buffers",
-    );
+  const helperArgs: IrExpr[] = [];
+  if (dest !== 2) {
+    // the generator pumped into the next stream or the PassThrough
+    const lastGen = srcT as IrType & { kind: "generator" };
+    if (!fromGenChunk(lowerer, lastGen.yieldT)) {
+      lowerer.noLowering(
+        `a pipeline stage yielding '${lowerer.fmt(lastGen.yieldT)}'`,
+        stageArgs[end - 1]!,
+        "stage values written to a stream are strings or Buffers",
+      );
+    }
+    const helpers = fromGenHelpers(lowerer, lastGen, loc);
+    if (!helpers)
+      lowerer.noLowering("a pipeline stage with this generator type", stageArgs[end - 1]!);
+    helperArgs.push(helpers![0]!, helpers![1]!, helpers![2]!);
+  } else {
+    const valueT = destPromise!.inner;
+    if (
+      valueT.kind !== "void" &&
+      !canConvertToDyn(
+        valueT,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      )
+    ) {
+      lowerer.noLowering(
+        `a pipeline destination resolving to '${lowerer.fmt(valueT)}'`,
+        stageArgs[end - 1]!,
+      );
+    }
+    helperArgs.push(pipelineBoxHelper(lowerer, destPromise!, loc));
   }
-  const helpers = fromGenHelpers(lowerer, lastGen, loc);
-  if (!helpers)
-    lowerer.noLowering("a pipeline stage with this generator type", stageArgs[end - 1]!);
   const streams = [...before, ...after];
+  // SCR_PIPE_* flags: bit 0 a source function, bits 1-2 the destination,
+  // bit 3 the helpers, bit 4 the box, bit 5 the signal and abort.
+  const flags = (source ? 1 : 0) | (dest << 1) | (dest !== 2 ? 8 : 16) | (mask !== 0 ? 32 : 0);
+  const head: IrExpr[] = [
+    numLit(streams.length, loc),
+    numLit(before.length, loc),
+    numLit(stages.length, loc),
+    numLit(flags, loc),
+    numLit(mask, loc),
+    ...streams,
+    ...stages,
+    ...helperArgs,
+  ];
+  const last: IrType = destFn
+    ? { kind: "object", className: "%PassThrough" }
+    : streams[streams.length - 1]!.type;
+  if (mask === 0) return { args: head, last, dest, destPromise, wrap: (call) => call };
+  // const ac = new AbortController(): its signal goes to the stages, and
+  // finishImpl's ac.abort() runs through the abort closure.
+  const ac = lowerer.declareHiddenLocal("%pipelineAbort", DYN);
+  const acRef: IrExpr = { kind: "varRef", localId: ac.id, type: DYN, loc };
+  const signal: IrExpr = {
+    kind: "dynKeyGet",
+    value: acRef,
+    key: { kind: "strLit", value: "signal", type: STRING, loc },
+    type: DYN,
+    loc,
+  };
   return {
-    args: [
-      numLit(streams.length, loc),
-      numLit(before.length, loc),
-      numLit(stages.length, loc),
-      ...streams,
-      ...stages,
-      helpers![0]!,
-      helpers![1]!,
-      helpers![2]!,
-    ],
-    last: streams[streams.length - 1]!.type,
+    args: [...head, signal, pipelineAbortHelper(lowerer, acRef, loc)],
+    last,
+    dest,
+    destPromise,
+    wrap: (call) => ({
+      kind: "seqExpr",
+      stmts: [
+        {
+          kind: "varDecl",
+          localId: ac.id,
+          init: { kind: "libCall", fn: "fetch.abortControllerNew", args: [], type: DYN, loc },
+          loc,
+        },
+      ],
+      result: call,
+      type: call.type,
+      loc,
+    }),
   };
 }
 
-/** An async generator stage, lowered with its `source` parameter typed
- * as what the pipeline passes (a stream or the previous stage's
- * generator). The parameter may only head `for await` loops. */
+/** `(p) => p` boxed: a promise destination's promise as a checked-dynamic
+ * promise, whose payload converts when the destination settles. Interned
+ * per promise type. */
+function pipelineBoxHelper(
+  lowerer: Lowerer,
+  promiseT: IrType & { kind: "promise" },
+  loc: SrcLoc,
+): IrExpr {
+  const key = `pipelineBox:${typeKey(promiseT)}`;
+  let name = lowerer.valueHelpers.get(key);
+  if (!name) {
+    name = `%stream.pipelineBox.${lowerer.valueHelpers.size}`;
+    lowerer.valueHelpers.set(key, name);
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "p.0", name: "p", type: promiseT }],
+      returnType: DYN,
+      locals: [{ id: "p.0", name: "p", type: promiseT, mutable: false }],
+      body: [
+        {
+          kind: "return",
+          value: { kind: "dynFrom", value: varRef("p.0", promiseT, loc), type: DYN, loc },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "closure", fnName: name, captures: [], type: funcOf([promiseT], DYN), loc };
+}
+
+/** `() => ac.abort()` over the pipeline's AbortController: an interned
+ * lifted function takes the controller and answers the closure. */
+function pipelineAbortHelper(lowerer: Lowerer, ac: IrExpr, loc: SrcLoc): IrExpr {
+  const key = "pipelineAbort";
+  let name = lowerer.valueHelpers.get(key);
+  const abortT = funcOf([], VOID);
+  if (!name) {
+    name = `%stream.pipelineAbort.${lowerer.valueHelpers.size}`;
+    lowerer.valueHelpers.set(key, name);
+    const acLocal: IrLocal = { id: "ac.0", name: "ac", type: DYN, mutable: false, boxed: true };
+    const acRef = varRef(acLocal.id, DYN, loc);
+    lowerer.liftedFns.push({
+      name: `${name}.abort`,
+      params: [],
+      returnType: VOID,
+      captures: [{ localId: acLocal.id, name: acLocal.name, type: DYN }],
+      locals: [acLocal],
+      body: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "dynInvoke",
+            recv: acRef,
+            method: "abort",
+            calleeName: "ac.abort",
+            args: [],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: acLocal.id, name: acLocal.name, type: DYN }],
+      returnType: abortT,
+      locals: [acLocal],
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "closure",
+            fnName: `${name}.abort`,
+            captures: [acLocal.id],
+            type: abortT,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: [ac], type: abortT, loc };
+}
+
+/** A function stage, lowered with its `source` parameter (absent for a
+ * source function, srcT null) typed as what the pipeline passes (a
+ * stream or the previous stage's generator). The source may only head
+ * `for await` loops. Answers the closure and what it returns: an async
+ * generator, or a promise for a destination async function. */
 function lowerStageFunction(
   lowerer: Lowerer,
-  fn: ts.FunctionExpression,
-  srcT: IrType,
-): { closure: IrExpr; out: IrType & { kind: "generator" } } {
-  const param = fn.parameters[0];
+  fn: ts.FunctionExpression | ts.ArrowFunction,
+  srcT: IrType | null,
+): { closure: IrExpr; out: IrType & ({ kind: "generator" } | { kind: "promise" }) } {
+  const param = srcT === null ? undefined : fn.parameters[0];
   const symbol =
     param && ts.isIdentifier(param.name)
       ? lowerer.checker.getSymbolAtLocation(param.name)
@@ -2414,14 +2621,14 @@ function lowerStageFunction(
     };
     visit(fn.body);
   }
-  if (symbol) lowerer.stageSourceTypes.set(symbol, srcT);
+  if (symbol) lowerer.stageSourceTypes.set(symbol, srcT!);
   try {
     const closure = lowerer.lowerExpr(fn);
     const out = closure.type.kind === "func" ? closure.type.ret : null;
-    if (out?.kind !== "generator" || !out.async) {
+    if (!(out?.kind === "generator" && out.async) && out?.kind !== "promise") {
       lowerer.noLowering("a pipeline stage that does not return an async generator", fn);
     }
-    return { closure, out: out as IrType & { kind: "generator" } };
+    return { closure, out: out as IrType & ({ kind: "generator" } | { kind: "promise" }) };
   } finally {
     if (symbol) lowerer.stageSourceTypes.delete(symbol);
   }

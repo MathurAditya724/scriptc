@@ -61818,7 +61818,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -61851,7 +61853,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -61884,7 +61888,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -61917,7 +61923,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -61950,7 +61958,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -61983,7 +61993,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62402,7 +62414,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62460,7 +62474,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62493,7 +62509,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62526,7 +62544,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62559,7 +62579,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62592,7 +62614,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63011,7 +63035,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63094,7 +63120,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63154,7 +63182,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63187,7 +63217,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63220,7 +63252,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63278,7 +63312,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63816,7 +63852,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63849,7 +63887,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63882,7 +63922,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63915,7 +63957,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63948,7 +63992,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63981,7 +64027,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -64014,7 +64062,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -64047,7 +64097,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -64080,7 +64132,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -65374,7 +65428,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -65532,7 +65588,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -65565,7 +65623,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }

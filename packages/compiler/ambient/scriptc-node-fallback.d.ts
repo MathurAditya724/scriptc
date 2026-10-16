@@ -5625,8 +5625,16 @@ declare module "stream" {
   /* Folds to the TARGET platform's default at compile time (win32 16384,
    * else 65536 — Node's own state.js split); literal argument only. */
   function getDefaultHighWaterMark(objectMode: boolean): number;
+  /* The promise pipeline's result: a last stage that is an async
+   * function resolves the promise with its value. */
+  type PipelinePromise<T extends unknown[]> = T extends [
+    ...unknown[],
+    (...args: any[]) => Promise<infer P>,
+  ]
+    ? Promise<P>
+    : Promise<void>;
   namespace promises {
-    function pipeline(...streams: unknown[]): Promise<void>;
+    function pipeline<T extends unknown[]>(...streams: T): PipelinePromise<T>;
     function finished(
       stream: unknown,
       options?: FinishedOptions & { cleanup?: boolean },
@@ -5666,8 +5674,11 @@ declare module "stream/promises" {
    * ERR_STREAM_PREMATURE_CLOSE on an early close). Stream arguments are
    * the lowered surface — iterables/generators/functions fence per site.
    * pipeline's trailing { signal, end } object and finished's options
-   * (readable, writable, error, cleanup, signal) are supported. */
-  function pipeline(...streams: unknown[]): Promise<void>;
+   * (readable, writable, error, cleanup, signal) are supported. A last
+   * stage that is an async function resolves the promise with its value. */
+  function pipeline<T extends unknown[]>(
+    ...streams: T
+  ): T extends [...unknown[], (...args: any[]) => Promise<infer P>] ? Promise<P> : Promise<void>;
   function finished(
     stream: unknown,
     options?: {

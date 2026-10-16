@@ -5269,6 +5269,7 @@ function validateFunction(
       e.fn === "stream.compose" ||
       e.fn === "stream.pipelineStages" ||
       e.fn === "stream.pipelineStagesDyn" ||
+      e.fn === "sp.pipelineStages" ||
       e.fn === "stream.addAbortSignal" ||
       e.fn === "stream.addAbortSignalFn" ||
       e.fn === "stream.finishedOpts" ||
@@ -5375,25 +5376,62 @@ function validateFunction(
         if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream`, e.loc);
         return true;
       }
-      if (e.fn === "stream.pipelineStages" || e.fn === "stream.pipelineStagesDyn") {
-        // (n, at, k, s1..sn, stage1..stagek, next, read, return, cb)
-        const [n, at, k] = e.args.slice(0, 3).map((a) => (a?.kind === "numLit" ? a.value : -1));
-        if (n! < 2 || at! < 1 || at! >= n! || k! < 1 || e.args.length !== 3 + n! + k! + 3 + 1) {
+      if (
+        e.fn === "stream.pipelineStages" ||
+        e.fn === "stream.pipelineStagesDyn" ||
+        e.fn === "sp.pipelineStages"
+      ) {
+        // (n, at, k, flags, mask, s1..sn, stage1..stagek, (next, read,
+        // return)?, box?, (signal, abort)?[, cb]): flags bit 0 a source
+        // function, bits 1-2 the destination, bits 3/4/5 the groups.
+        const [n, at, k, flags] = e.args
+          .slice(0, 4)
+          .map((a) => (a?.kind === "numLit" ? a.value : -1));
+        const source = (flags! & 1) !== 0;
+        const destKind = (flags! >> 1) & 3;
+        const groups = (flags! & 8 ? 3 : 0) + (flags! & 16 ? 1 : 0) + (flags! & 32 ? 2 : 0);
+        const cbArgs = e.fn === "sp.pipelineStages" ? 0 : 1;
+        if (
+          flags! < 0 ||
+          n! < 0 ||
+          k! < 1 ||
+          (source ? at !== 0 : at! < 1) ||
+          (destKind === 0 ? at! + 0 >= n! : at! !== n!) ||
+          n! + k! < 2 ||
+          e.args.length !== 5 + n! + k! + groups + cbArgs
+        ) {
           err(`libCall ${e.fn} count/arity mismatch`, e.loc);
           return true;
         }
-        for (let i = 3; i < 3 + n!; i++) {
+        for (let i = 5; i < 5 + n!; i++) {
           if (!isStreamObject(e.args[i]?.type)) {
-            err(`libCall ${e.fn} stage ${i - 3} must be a stream-hierarchy object`, e.loc);
+            err(`libCall ${e.fn} stage ${i - 5} must be a stream-hierarchy object`, e.loc);
           }
         }
-        for (let i = 3 + n!; i < e.args.length - 1; i++) {
+        let at2 = 5 + n!;
+        for (let i = at2; i < at2 + k!; i++) {
+          if (e.args[i]?.type.kind !== "func")
+            err(`libCall ${e.fn} stage function ${i} must be a func`, e.loc);
+        }
+        at2 += k!;
+        const helpers = (flags! & 8 ? 3 : 0) + (flags! & 16 ? 1 : 0);
+        for (let i = at2; i < at2 + helpers; i++) {
           if (e.args[i]?.type.kind !== "func")
             err(`libCall ${e.fn} helper ${i} must be a func`, e.loc);
         }
-        const cbK = e.args[e.args.length - 1]?.type.kind;
-        if (e.fn === "stream.pipelineStages" ? cbK !== "func" : cbK !== "dyn") {
-          err(`libCall ${e.fn} callback has the wrong kind`, e.loc);
+        at2 += helpers;
+        if (flags! & 32) {
+          if (e.args[at2]?.type.kind !== "dyn" || e.args[at2 + 1]?.type.kind !== "func")
+            err(`libCall ${e.fn} signal and abort must be a dyn and a func`, e.loc);
+        }
+        if (cbArgs) {
+          const cbK = e.args[e.args.length - 1]?.type.kind;
+          if (e.fn === "stream.pipelineStages" ? cbK !== "func" : cbK !== "dyn") {
+            err(`libCall ${e.fn} callback has the wrong kind`, e.loc);
+          }
+          if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream`, e.loc);
+        } else if (e.type.kind !== "promise") {
+          err(`libCall ${e.fn} must return a promise`, e.loc);
         }
         return true;
       }
