@@ -54,6 +54,7 @@ typedef struct ScrBytes {
   bool is_buffer; /* Buffer brand belongs to the view, not its backing. */
   bool is_data_view; /* DataView is distinct from a numeric typed array. */
   bool external; /* Root aliases foreign memory; releasing it never frees data. */
+  bool untransferable; /* A Buffer pool slab: its ArrayBuffer cannot be transferred. */
   ScrSharedBytes *shared; /* Neutral backing, borrowed by views from their local owner. */
 } ScrBytes;
 
@@ -334,6 +335,30 @@ ScrStr *scr_text_decode_legacy(const ScrBytes *b, double encoding);
  * "utf16le" writes LE code units, surrogate pairs included. Borrows
  * both; +1 u8 result. Never throws. */
 ScrBytes *scr_bytes_from_str(const ScrStr *s, const ScrStr *enc);
+/* The Buffer pool (Node's lib/buffer.js allocate/fromStringFast/
+ * fromArrayLike): Buffer.allocUnsafe, Buffer.from of strings, arrays and
+ * array-likes, and Buffer.concat return views into a per-thread slab of
+ * Buffer.poolSize bytes when the size is below poolSize >>> 1. Views start
+ * at 8-byte aligned offsets; a request that does not fit starts a new
+ * slab. A slab lives while any of its views does. All return +1 Buffers. */
+double scr_buffer_pool_size(void);
+void scr_buffer_set_pool_size(double size);
+ScrBytes *scr_buffer_alloc(double size);             /* zeroed, never pooled */
+ScrBytes *scr_buffer_alloc_unsafe(double size);      /* pooled */
+ScrBytes *scr_buffer_alloc_unsafe_slow(double size); /* never pooled */
+ScrBytes *scr_buffer_from_str(const ScrStr *s, const ScrStr *enc);
+ScrBytes *scr_buffer_from_str_checked(const ScrStr *s, const ScrStr *enc);
+ScrBytes *scr_buffer_from_bytes(const ScrBytes *src); /* a copy of any typed array's values */
+ScrBytes *scr_buffer_from_arr(const ScrArr *arr);     /* number[] */
+ScrBytes *scr_buffer_from_dyn_pooled(const ScrDyn *value, const ScrStr *encoding);
+ScrBytes *scr_buffer_concat(const ScrArr *list);
+ScrBytes *scr_buffer_concat_len(const ScrArr *list, double total);
+/* Drops the pool's slab reference and restores Buffer.poolSize (process
+ * exit audits and library session resets). */
+void scr_buffer_pool_reset(void);
+/* A pooled copy of an unpooled u8 Buffer below the pool threshold; others
+ * are returned as they are. Consumes `b`. */
+ScrBytes *scr_buffer_pool_adopt(ScrBytes *b);
 ScrBytes *scr_bytes_from_str_checked(const ScrStr *s, const ScrStr *enc);
 
 /* Buffer.byteLength(string, enc) — enc NORMALIZED like from_str — and

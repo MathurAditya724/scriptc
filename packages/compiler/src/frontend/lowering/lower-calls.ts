@@ -549,6 +549,30 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           ts.isArrayLiteralExpression(tr.initializer) &&
           tr.initializer.elements.length > 0
         ) {
+          // An ArrayBuffer first member may be a Buffer pool slab, which
+          // Node reports as untransferable.
+          const first = tr.initializer.elements[0]!;
+          const firstType = ts.isSpreadElement(first) ? undefined : lowerer.typeOf(first);
+          const parts = !firstType
+            ? []
+            : firstType.isUnionType()
+              ? ts.constituentTypes(firstType)
+              : [firstType];
+          const isStorage =
+            parts.length > 0 &&
+            parts.every((part) => {
+              const name = part.getSymbol()?.name;
+              return name === "ArrayBuffer" || name === "SharedArrayBuffer";
+            });
+          if (isStorage) {
+            return {
+              kind: "libCall",
+              fn: "dyn.cloneTransferFailWith",
+              args: [toDynArg(first)],
+              type: DYN,
+              loc,
+            };
+          }
           return { kind: "libCall", fn: "dyn.cloneTransferFail", args: [], type: DYN, loc };
         }
       }

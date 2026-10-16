@@ -7,8 +7,8 @@
     "tierItemCount": 3472,
     "tiers": {
       "static": {
-        "audit-partial": 1054,
-        "verify-gap": 2291,
+        "audit-partial": 1055,
+        "verify-gap": 2290,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -3733,12 +3733,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:buffer",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:buffer.poolSize",
+          "tests": [
+            "tests/corpus/5530-buffer-pool.ts",
+            "tests/corpus/5531-buffer-pool-first-slab.ts",
+            "tests/corpus/5532-buffer-pool-first-slab-untyped.mjs"
+          ]
         }
       }
     },

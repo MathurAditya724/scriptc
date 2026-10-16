@@ -1,5 +1,5 @@
 import type { IrExpr, IrFunction, IrModule, IrStmt, IrType } from "../ir/ir.js";
-import { RUNTIME_EMITTER_CLASS, RUNTIME_STREAM_CLASSES } from "../ir/ir.js";
+import { RUNTIME_EMITTER_CLASS, RUNTIME_STREAM_CLASSES, typeKey } from "../ir/ir.js";
 import { dynamicFieldStores } from "../ir/int32-slots.js";
 import { everyExprChild, everyStmtChild, everyTypeChild } from "../ir/traverse.js";
 
@@ -32,6 +32,11 @@ import { everyExprChild, everyStmtChild, everyTypeChild } from "../ir/traverse.j
  *   store into a dynamic value at all (int32-slots' dynamicFieldStores),
  *   in which case no commit can happen; FFI operands and intrinsics other
  *   than publish always count;
+ * - a `dynCheck` converts a dynamic value into its target type, and the
+ *   builder of a record shape that reaches itself stores into the record
+ *   after converting its members, which may be the record itself or an
+ *   ancestor when the dynamic value is cyclic: every such record shape in
+ *   the target's type closure is mutable;
  * - runtime-rooted hierarchies (errors, emitters, streams) are mutable;
  * - library builds disable the refinement.
  *
@@ -138,6 +143,57 @@ export function computeCycleMutability(
     }
   };
 
+  // Record shapes a dynCheck conversion can build with a cycle: those
+  // that reach themselves through fields, index values, union arms and
+  // containers.
+  const children = (t: IrType): IrType[] => {
+    if (t.kind === "record") {
+      const shape = recordsById.get(t.shapeId);
+      const fields = (shape?.fields ?? []).map((f) => f.type);
+      return shape?.indexValue !== undefined ? [...fields, shape.indexValue] : fields;
+    }
+    if (t.kind === "union") return [...(unionsById.get(t.unionId)?.arms ?? [])];
+    const out: IrType[] = [];
+    everyTypeChild(t, (child) => {
+      out.push(child);
+      return true;
+    });
+    return out;
+  };
+  const selfReaching = new Map<string, boolean>();
+  const reachesItself = (shapeId: string): boolean => {
+    const known = selfReaching.get(shapeId);
+    if (known !== undefined) return known;
+    const root: IrType = { kind: "record", shapeId };
+    const key = typeKey(root);
+    const seen = new Set<string>();
+    const stack = children(root);
+    let found = false;
+    while (stack.length > 0 && !found) {
+      const t = stack.pop()!;
+      const k = typeKey(t);
+      if (k === key) found = true;
+      else if (!seen.has(k)) {
+        seen.add(k);
+        stack.push(...children(t));
+      }
+    }
+    selfReaching.set(shapeId, found);
+    return found;
+  };
+  const checkedTypes = new Set<string>();
+  const checkInto = (root: IrType): void => {
+    const stack: IrType[] = [root];
+    while (stack.length > 0) {
+      const t = stack.pop()!;
+      const k = typeKey(t);
+      if (checkedTypes.has(k)) continue;
+      checkedTypes.add(k);
+      if (t.kind === "record" && reachesItself(t.shapeId)) result.units.add(`record:${t.shapeId}`);
+      stack.push(...children(t));
+    }
+  };
+
   // Constructor stores are construction-only until `this` first escapes:
   // stores from the escaping statement on, and every store of a
   // constructor whose ancestor constructor already let `this` escape, are
@@ -200,6 +256,9 @@ export function computeCycleMutability(
         );
       }
       switch (e.kind) {
+        case "dynCheck":
+          checkInto(e.type);
+          break;
         case "fieldIncDec":
           result.fields.add(fieldKey(unitOfClass(e.className), e.field));
           break;

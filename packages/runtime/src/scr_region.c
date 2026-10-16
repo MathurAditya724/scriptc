@@ -149,6 +149,24 @@ typedef struct {
 
 #define SCR_RGN_SINGLE SIZE_MAX
 
+/* SCRIPTC_REGION_DEBUG reports (scr_rgn_report) are compiled into
+ * unoptimized runtimes (the dev flavor, --optimization=dev) and RC-audit
+ * builds; release and speed runtimes walk without the bookkeeping. */
+#if !defined(SCR_RGN_DEBUG) && (!defined(__OPTIMIZE__) || defined(SCR_RC_AUDIT))
+#define SCR_RGN_DEBUG 1
+#endif
+
+#ifdef SCR_RGN_DEBUG
+/* Where the walk first reached an entry: from the entry `parent` (index +
+ * 1), or, when 0, from field `field` of an object of class `cls`. */
+typedef struct {
+  const ScrRgnClass *cls;
+  uint32_t field;
+  int kind;
+  size_t parent;
+} ScrRgnFrom;
+#endif
+
 struct ScrRgnWalk {
   ScrRegion *region;
   int64_t internal; /* references found from the region's own objects */
@@ -162,6 +180,15 @@ struct ScrRgnWalk {
   size_t nedges, cap_edges;
   ScrRgnWork *work;
   size_t nwork, cap_work;
+#ifdef SCR_RGN_DEBUG
+  /* SCRIPTC_REGION_DEBUG: the region object being visited and the index
+   * of its next reported field, and where each entry was reached. */
+  bool debug;
+  const ScrRgnClass *vcls;
+  uint32_t vfield;
+  ScrRgnFrom *from;
+  size_t cap_from;
+#endif
 };
 
 typedef struct {
@@ -203,6 +230,23 @@ static bool scr_rgn_stats(void) {
     atomic_store_explicit(&scr_rgn_stats_mode, mode, memory_order_relaxed);
   }
   return mode != 0;
+}
+
+/* SCRIPTC_REGION_DEBUG: the lines scr_rgn_report prints per kept attempt
+ * (0: off). 1 prints up to 10; a larger number sets the limit. Runtimes
+ * built without the reports say so once instead. */
+static _Atomic(long) scr_rgn_debug_mode = -1;
+
+static size_t scr_rgn_debug(void) {
+  long mode = atomic_load_explicit(&scr_rgn_debug_mode, memory_order_relaxed);
+  if (mode < 0) {
+    const char *env = scr_getenv("SCRIPTC_REGION_DEBUG");
+    mode = env ? strtol(env, NULL, 10) : 0;
+    if (mode < 0) mode = 0;
+    if (mode == 1) mode = 10;
+    atomic_store_explicit(&scr_rgn_debug_mode, mode, memory_order_relaxed);
+  }
+  return (size_t)mode;
 }
 
 static void *scr_rgn_grow(void *p, size_t *cap, size_t size, size_t first) {
@@ -498,7 +542,11 @@ static void scr_rgn_queue(ScrRgnWalk *w, size_t entry, void *p, int kind, void (
  * the walk reaches it twice. */
 static void scr_rgn_enter(ScrRgnWalk *w, void *p, int kind, void (*walk)(void *, ScrRgnWalk *)) {
   if (!p || *(size_t *)p == SIZE_MAX) return; /* immortal: never freed, not walked */
+#ifdef SCR_RGN_DEBUG
+  bool single = w->src == 0 && *(size_t *)p == 1 && !w->debug;
+#else
   bool single = w->src == 0 && *(size_t *)p == 1;
+#endif
 #ifndef SCR_RC_AUDIT
   if (single) {
     w->singles++;
@@ -513,6 +561,12 @@ static void scr_rgn_enter(ScrRgnWalk *w, void *p, int kind, void (*walk)(void *,
     if (w->nents == w->cap_ents) w->ents = scr_rgn_grow(w->ents, &w->cap_ents, sizeof *w->ents, 4096);
     w->ents[w->nents] = (ScrRgnEntry){p, 0, 0, false};
     idx = w->hash[j] = ++w->nents;
+#ifdef SCR_RGN_DEBUG
+    if (w->debug) {
+      if (w->nents > w->cap_from) w->from = scr_rgn_grow(w->from, &w->cap_from, sizeof *w->from, 4096);
+      w->from[idx - 1] = (ScrRgnFrom){w->src ? NULL : w->vcls, w->src ? 0 : w->vfield - 1, kind, w->src};
+    }
+#endif
     scr_rgn_queue(w, single ? SCR_RGN_SINGLE : idx - 1, p, kind, walk);
   } else if (single) {
     fprintf(stderr, "scriptc: internal error: the region walk reached an object with one reference twice\n");
@@ -525,7 +579,7 @@ static void scr_rgn_enter(ScrRgnWalk *w, void *p, int kind, void (*walk)(void *,
   }
 }
 
-void scr_region_ref(ScrRgnWalk *w, void *obj) {
+static void scr_rgn_ref(ScrRgnWalk *w, void *obj) {
   if (!obj) return;
   ScrRgnChunk *c = scr_rgn_chunk_of(obj);
   if (c->region != w->region) return; /* another region's: counted there */
@@ -593,11 +647,24 @@ static ScrRgnSlotKind scr_rgn_slot_kind(void (*release)(void *)) {
 
 static void scr_rgn_slot_as(ScrRgnWalk *w, void *obj, ScrRgnSlotKind k) {
   if (!obj || k.kind == SCR_RGN_S_NONE) return;
-  if (k.kind == SCR_RGN_S_REF) scr_region_ref(w, obj);
+  if (k.kind == SCR_RGN_S_REF) scr_rgn_ref(w, obj);
   else scr_rgn_enter(w, obj, k.kind, k.walk);
 }
 
+/* The emitted visits and walkers report each field through these, so
+ * SCRIPTC_REGION_DEBUG numbers a region object's fields in the order of its
+ * class's `fields` names. */
+void scr_region_ref(ScrRgnWalk *w, void *obj) {
+#ifdef SCR_RGN_DEBUG
+  if (w->vcls) w->vfield++;
+#endif
+  scr_rgn_ref(w, obj);
+}
+
 void scr_region_slot(ScrRgnWalk *w, void *obj, void (*release)(void *)) {
+#ifdef SCR_RGN_DEBUG
+  if (w->vcls) w->vfield++;
+#endif
   if (!obj || !release) return;
   scr_rgn_slot_as(w, obj, scr_rgn_slot_kind(release));
 }
@@ -790,6 +857,86 @@ static void scr_rgn_free_region(ScrRgnThread *t, ScrRegion *r) {
   free(r);
 }
 
+#ifdef SCR_RGN_DEBUG
+static const char *scr_rgn_kind_name(int kind) {
+  switch (kind) {
+  case SCR_RGN_W_ARR: return "an array";
+  case SCR_RGN_W_MAP: return "a map or set";
+  case SCR_RGN_W_UNION: return "a union value";
+  case SCR_RGN_W_CLOSURE: return "a closure";
+  case SCR_RGN_W_BOX: return "a captured variable";
+  case SCR_RGN_W_DYN: return "a dynamic value";
+  default: return "an object";
+  }
+}
+
+/* The name of field `i` in a class's visit order. */
+static const char *scr_rgn_field_name(const ScrRgnClass *cls, uint32_t i) {
+  if (!cls->fields) return "?";
+  for (uint32_t k = 0; k < i; k++)
+    if (!cls->fields[k]) return "?";
+  return cls->fields[i] ? cls->fields[i] : "?";
+}
+
+/* SCRIPTC_REGION_DEBUG: why an attempt kept `r`, in at most `lines` lines.
+ * References into a chunk that the walk did not find come from outside it
+ * (variables, other regions, objects it does not walk); the walk knows
+ * only the chunk, so the line names the classes the chunk holds. Owned
+ * objects referenced from outside are named by how the walk reached them,
+ * from a field of one of the region's objects. */
+static void scr_rgn_report(const ScrRegion *r, const ScrRgnWalk *w, int64_t unexplained, size_t lines) {
+  fprintf(stderr, "scriptc region %llu: %lld references from outside keep it:\n", (unsigned long long)r->id,
+          (long long)unexplained);
+  size_t printed = 0, more = 0;
+  for (const ScrRgnChunk *c = r->chunks; c; c = c->next) {
+    int64_t objects = 0;
+    const char *names[4];
+    size_t nnames = 0;
+    bool others = false;
+    for (const ScrRgnSeg *s = r->segs; s; s = s->next) {
+      if (scr_rgn_chunk_of(s->start) != c) continue;
+      objects += (int64_t)((size_t)(s->end - s->start) / scr_rgn_stride(s->cls));
+      if (s->end == s->start) continue;
+      bool seen = false;
+      for (size_t k = 0; k < nnames; k++) seen |= names[k] == s->cls->name;
+      if (seen) continue;
+      if (nnames < 4) names[nnames++] = s->cls->name;
+      else others = true;
+    }
+    int64_t missing = c->count + objects - c->found;
+    if (missing <= 0) continue;
+    if (printed == lines) {
+      more++;
+      continue;
+    }
+    printed++;
+    fprintf(stderr, "  %lld not found by the walk, to objects in a chunk holding", (long long)missing);
+    for (size_t k = 0; k < nnames; k++) fprintf(stderr, "%s %s", k ? "," : "", names[k]);
+    fprintf(stderr, "%s\n", others ? ", and other classes" : "");
+  }
+  for (size_t i = 0; i < w->nents; i++) {
+    const ScrRgnEntry *x = &w->ents[i];
+    if (*(size_t *)x->obj == (size_t)x->found) continue; /* not referenced from outside itself */
+    if (printed == lines) {
+      more++;
+      continue;
+    }
+    printed++;
+    fprintf(stderr, "  %s", scr_rgn_kind_name(w->from[i].kind));
+    size_t at = i;
+    while (w->from[at].parent) {
+      at = w->from[at].parent - 1;
+      fprintf(stderr, " in %s", scr_rgn_kind_name(w->from[at].kind));
+    }
+    const ScrRgnFrom *f = &w->from[at];
+    fprintf(stderr, " held by %s.%s, with %zu references, %lld of them from what the region owns\n",
+            f->cls ? f->cls->name : "?", f->cls ? scr_rgn_field_name(f->cls, f->field) : "?", *(size_t *)x->obj,
+            (long long)x->found);
+  }
+  if (more) fprintf(stderr, "  %zu more\n", more);
+}
+#endif
+
 /* One release attempt; true when `r` was freed. */
 static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r) {
   bool stats = scr_rgn_stats();
@@ -802,6 +949,11 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r) {
   w->internal = 0;
   w->src = 0;
   w->nents = w->nedges = w->nwork = w->singles = 0;
+#ifdef SCR_RGN_DEBUG
+  size_t debug = scr_rgn_debug();
+  w->debug = debug != 0;
+  w->vcls = NULL;
+#endif
   if (w->hash) memset(w->hash, 0, w->cap_hash * sizeof *w->hash);
   for (ScrRgnChunk *c = r->chunks; c; c = c->next) c->found = 0;
   size_t objects = 0;
@@ -813,9 +965,18 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r) {
       if (stats) fprintf(stderr, "scriptc region %llu: pinned: it holds a published object\n", (unsigned long long)r->id);
       return false;
     }
+#ifdef SCR_RGN_DEBUG
+    if (debug) {
+      w->vcls = s->cls;
+      w->vfield = 0;
+    }
+#endif
     s->cls->visit(o, w);
     objects++;
   }
+#ifdef SCR_RGN_DEBUG
+  w->vcls = NULL;
+#endif
   scr_rgn_drain(w);
   int64_t counted = scr_rgn_counted(r);
   size_t black = 0;
@@ -832,6 +993,13 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r) {
       fprintf(stderr,
               "scriptc region %llu: kept: %lld references counted, %lld explained; %zu of %zu owned objects referenced from outside; cycles %.1f ms, walk %.1f ms\n",
               (unsigned long long)r->id, (long long)counted, (long long)explained, black, w->nents + w->singles, cycles, scr_rgn_ms(t0, t1));
+#ifdef SCR_RGN_DEBUG
+    if (debug) scr_rgn_report(r, w, counted - explained, debug);
+#else
+    static _Atomic(bool) told = false;
+    if (scr_rgn_debug() && !atomic_exchange_explicit(&told, true, memory_order_relaxed))
+      fprintf(stderr, "scriptc: SCRIPTC_REGION_DEBUG reports need a build with --optimization=dev\n");
+#endif
     return false;
   }
   /* Free: drop weak entries keyed by the instances, then release every
@@ -976,6 +1144,9 @@ static void scr_rgn_thread_exit(void) {
   free(t->walk.hash);
   free(t->walk.edges);
   free(t->walk.work);
+#ifdef SCR_RGN_DEBUG
+  free(t->walk.from);
+#endif
   memset(t, 0, sizeof *t);
   t->exit_registered = true; /* the cleanup ran; a late allocation keeps its memory */
 }

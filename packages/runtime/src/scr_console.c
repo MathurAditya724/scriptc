@@ -35,6 +35,25 @@
 static SCR_TL long scr_abandoned_fibers = 0;
 void scr_note_abandoned_fibers(long n) { scr_abandoned_fibers = n; }
 
+bool scr_exit_frees(void) {
+#if defined(SCR_RC_AUDIT) || defined(SCR_LSAN_IMMORTAL)
+  return true;
+#else
+  if (!scr_context_is_main()) {
+#ifdef SCR_WORKERS
+    scr_context_note_script_end();
+#endif
+    return true;
+  }
+  static int forced = -1; /* the main thread reads it, once */
+  if (forced < 0) {
+    const char *value = getenv("SCRIPTC_EXIT_FREE");
+    forced = value != NULL && value[0] == '1';
+  }
+  return forced != 0;
+#endif
+}
+
 #ifndef SCR_LIB
 #ifdef SCR_RC_AUDIT
 extern long scr_str_live_count(void);     /* scr_string.c */
@@ -49,6 +68,7 @@ extern long scr_dyn_live_count(void);     /* scr_json.c */
 extern long scr_bytes_live_count(void);   /* scr_bytes.c */
 
 static void scr_rc_audit_at_exit(void) {
+  scr_buffer_pool_reset(); /* the pool's own slab reference */
   /* Fibers suspended forever at loop exhaustion (awaits nobody resolves —
    * Node exits 0 there too) still hold their stacks and owned values by
    * design; a strict audit would only report that deliberate abandonment. */
@@ -91,7 +111,9 @@ static void scr_rc_audit_at_exit(void) {
 
 static void scr_flush_at_exit(void) { fflush(stdout); }
 
-static void scr_collect_cycles_at_exit(void) { scr_collect_cycles(); }
+static void scr_collect_cycles_at_exit(void) {
+  if (scr_exit_frees()) scr_collect_cycles();
+}
 
 #ifdef _WIN32
 static UINT scr_original_console_output_cp = 0;

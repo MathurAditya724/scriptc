@@ -535,6 +535,9 @@ struct ScrNetSocket {
    * unconsumed stream). resume() clears user_paused and sets flowing. */
   bool user_paused;
   bool flowing;
+  /* EOF arrived while the socket buffered for a consumer it does not have
+   * yet: 'end' waits until one drains the buffer (Node's readable state) */
+  bool eof_pending;
   /* destroySoon(): end() now, destroy once the FIN actually went out */
   bool destroy_on_finish;
   /* socket.bytesWritten: every byte accepted by the write paths (user
@@ -893,6 +896,10 @@ static ScrNetSocket *scr_net_sock_new(void) {
 
 /* Consumer-driven read arming (the stdin discipline: never read a byte
  * nobody consumes — the socket buffer is the backpressure). */
+/* Node's readableHighWaterMark for sockets: with no consumer the stream
+ * still reads ahead this far, so a peer's close is seen. */
+#define SCR_NET_READ_AHEAD 65536u
+
 static void scr_net_sock_update_read(ScrNetSocket *s) {
   bool want = s->fd >= 0 && !s->connecting && !s->rd_eof && !s->user_paused &&
               (s->data_ls.n > 0 || s->pipe_dst != NULL || s->native_data != NULL ||
@@ -907,7 +914,10 @@ static void scr_net_sock_update_read(ScrNetSocket *s) {
                                 * paused-mode path's */ ||
                s->wr_done /* FIN sent: drain to EOF so the peer's close is
                            * seen even with no consumer — Node resumes a
-                           * finished socket the same way */);
+                           * finished socket the same way */ ||
+               (!s->eof_pending && s->rlen - s->rhead < SCR_NET_READ_AHEAD)
+               /* no consumer yet: read ahead into the buffer, as Node's
+                * stream does up to its high-water mark */);
   if (want && !s->read_armed) {
     scr_net_watch_read(s->fd, s, true);
     s->read_armed = true;
@@ -1202,12 +1212,16 @@ static void scr_net_sock_read(ScrNetSocket *s) {
       scr_net_sock_update_read(s);
       continue;
     }
-    if (s->rd_eof || (!flowing && s->readable_ls.n == 0 && !s->wr_done &&
-                      !(s->tops != NULL && s->t_est))) {
-      /* No consumer: stay paused — except through an ESTABLISHED
-       * transport, which must keep processing protocol frames (close
-       * alerts, 1.3 tickets) so a peer's close reaches the teardown
-       * (the handler-less TLS server whose client hangs up). */
+    if (s->rd_eof) return;
+    /* No consumer: read ahead into the buffer up to the high-water mark,
+     * as Node's stream does, so a peer's close is seen. An ESTABLISHED
+     * transport keeps processing protocol frames (close alerts, 1.3
+     * tickets) and drops app data, as a finished socket does. */
+    bool read_ahead = !flowing && s->readable_ls.n == 0 && !s->wr_done &&
+                      !(s->tops != NULL && s->t_est);
+    if (read_ahead && (s->tops != NULL || s->eof_pending ||
+                       s->rlen - s->rhead >= SCR_NET_READ_AHEAD)) {
+      scr_net_sock_update_read(s);
       return;
     }
     char buf[65536];
@@ -1223,6 +1237,13 @@ static void scr_net_sock_read(ScrNetSocket *s) {
       return;
     }
     if (n == 0) {
+      if (read_ahead && s->rlen > s->rhead) {
+        /* bytes nobody has read yet: 'end' waits for a consumer to
+         * drain them (the next read after the drain sees EOF again) */
+        s->eof_pending = true;
+        scr_net_sock_update_read(s);
+        return;
+      }
       /* EOF announces 'readable' first (Node: a read() there answers
        * null — the demux's dead-peer arm), then 'end' and the teardown */
       scr_net_fire0_this(&s->readable_ls, s, SCR_DYNH_NET_SOCKET);
@@ -1234,6 +1255,8 @@ static void scr_net_sock_read(ScrNetSocket *s) {
     s->bytes_read += (size_t)n;
     if (flowing) {
       if (!scr_net_sock_deliver(s, buf, (size_t)n)) return;
+    } else if (read_ahead) {
+      scr_net_sock_append_rbuf(s, buf, (size_t)n);
     } else if (s->readable_ls.n == 0) {
       /* the drain-to-EOF modes (wr_done, or an established transport
        * with no consumer): bytes arriving with nobody listening drop —

@@ -2436,6 +2436,22 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * opaque reference inputs retain explicit runtime refusals. */
   "buffer.fromDyn": { argTypes: [DYN, STRING], result: BYTES_U8 },
   "buffer.concat": { argTypes: [arrayOf(BYTES_U8)], result: BYTES_U8 },
+  /** The pooled Buffer factories (Node's allocate/fromStringFast/
+   * fromArrayLike): allocUnsafe, Buffer.from of strings, Uint8Arrays,
+   * number[] and checked values, and concat return views into the
+   * per-thread pool slab below Buffer.poolSize >>> 1 bytes. alloc and
+   * allocUnsafeSlow never pool. The size forms validate like Node
+   * (ERR_OUT_OF_RANGE). poolSize reads and writes Buffer.poolSize. */
+  "buffer.alloc": { argTypes: [F64], result: BYTES_U8 },
+  "buffer.allocUnsafe": { argTypes: [F64], result: BYTES_U8 },
+  "buffer.allocUnsafeSlow": { argTypes: [F64], result: BYTES_U8 },
+  "buffer.poolFromStr": { argTypes: [STRING, STRING], result: BYTES_U8 },
+  "buffer.poolFromStrChecked": { argTypes: [STRING, STRING], result: BYTES_U8 },
+  "buffer.poolFromBytes": { argTypes: [BYTES_U8], result: BYTES_U8 },
+  "buffer.poolFromArray": { argTypes: [arrayOf(F64)], result: BYTES_U8 },
+  "buffer.poolFromDyn": { argTypes: [DYN, STRING], result: BYTES_U8 },
+  "buffer.poolSize": { argTypes: [], result: F64 },
+  "buffer.setPoolSize": { argTypes: [F64], result: VOID },
   /** Buffer.byteLength(string, enc) — enc a NORMALIZED literal like
    * fromStr's — and Buffer.isEncoding(name) over a runtime string
    * (case-insensitive against Node's alias set). Pure; never throw. */
@@ -3109,6 +3125,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * lowered directly (the list's values need no dyn representation to
    * fail). */
   "dyn.cloneTransferFail": { argTypes: [], result: DYN },
+  /** The same refusal given the transfer list's first member, an
+   * ArrayBuffer: a Buffer pool slab gets Node's untransferable message. */
+  "dyn.cloneTransferFailWith": { argTypes: [DYN], result: DYN },
   /** `new RegExp(pattern, flags?)` (scr_regex.c): a heap regex over the
    * same libregexp engine the literals use. The pattern compiles EAGERLY
    * so an invalid pattern (or an unknown flag letter) throws Node's

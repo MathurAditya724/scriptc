@@ -337,9 +337,13 @@ export class LifetimeRegions {
       );
     rel.push(`  ret void`, `}`, ``);
     const S = this.host.sizeType;
+    // The names of the fields the visit reports, in its order (reportLines).
+    const reported = fields.filter((f) => isRefCounted(f.type) && this.reaches(f.type));
+    const names = `@${struct}.rfields`;
     return [
       `${this.cursor(cls.name)} = internal ${tl}global { ptr, ptr } zeroinitializer`,
-      `${this.descriptor(cls.name)} = internal global { ${S}, ptr, ptr, ptr, i32 } { ${S} ${sizeOf}, ptr ${visit}, ptr ${release}, ptr ${this.host.cstr(cls.name.replace(/^%(m\d+\.)?/, ""))}, i32 -1 } ; region class ${llvmCommentText(cls.name)}`,
+      `${names} = internal constant [${reported.length + 1} x ptr] [ ${[...reported.map((f) => `ptr ${this.host.cstr(f.name)}`), "ptr null"].join(", ")} ]`,
+      `${this.descriptor(cls.name)} = internal global { ${S}, ptr, ptr, ptr, i32, ptr } { ${S} ${sizeOf}, ptr ${visit}, ptr ${release}, ptr ${this.host.cstr(cls.name.replace(/^%(m\d+\.)?/, ""))}, i32 -1, ptr ${names} } ; region class ${llvmCommentText(cls.name)}`,
       ...this.reportBody(
         `define internal void ${visit}(ptr %o, ptr %w) ${FN_ATTRS} { ; region visit ${llvmCommentText(cls.name)}`,
         struct,
