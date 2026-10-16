@@ -1,4 +1,4 @@
-import type { IrExpr, IrModule, IrType } from "./ir.js";
+import type { IrExpr, IrModule, IrRecordShape, IrType, IrUnionDef } from "./ir.js";
 import type { IrLibFn } from "./builtin-signatures.js";
 import {
   isDirentShape,
@@ -124,6 +124,43 @@ export function moduleRuntimeFeatures(mod: IrModule): RuntimeFeatures {
   return scanRuntimeFeatures(mod);
 }
 
+/** The module's record shapes and unions by id. */
+interface TypeTables {
+  records: Map<string, IrRecordShape>;
+  unions: Map<string, IrUnionDef>;
+}
+
+/** Whether boxing a value of type `t` as dyn boxes a promise, which goes
+ * through scr_async_dyn.c: a promise, a function returning one, or a
+ * record, array, tuple, union, Map or Set that holds either. */
+function boxesPromise(t: IrType, tables: TypeTables, seen: Set<string>): boolean {
+  switch (t.kind) {
+    case "promise":
+      return true;
+    case "func":
+      return t.ret.kind === "promise";
+    case "array":
+    case "set":
+      return boxesPromise(t.elem, tables, seen);
+    case "map":
+      return boxesPromise(t.key, tables, seen) || boxesPromise(t.value, tables, seen);
+    case "record": {
+      if (seen.has(t.shapeId)) return false;
+      seen.add(t.shapeId);
+      const shape = tables.records.get(t.shapeId);
+      return shape?.fields.some((f) => boxesPromise(f.type, tables, seen)) ?? false;
+    }
+    case "union": {
+      if (seen.has(t.unionId)) return false;
+      seen.add(t.unionId);
+      const def = tables.unions.get(t.unionId);
+      return def?.arms.some((a) => boxesPromise(a, tables, seen)) ?? false;
+    }
+    default:
+      return false;
+  }
+}
+
 function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): RuntimeFeatures {
   const features: RuntimeFeatures = {
     regex: false,
@@ -169,6 +206,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     cipher: false,
   };
   const keepGoing = (): boolean => stopAt === undefined || !features[stopAt];
+  let tables: TypeTables | undefined;
+  const typeTables = (): TypeTables =>
+    (tables ??= {
+      records: new Map((mod.records ?? []).map((r) => [r.id, r])),
+      unions: new Map((mod.unions ?? []).map((u) => [u.id, u])),
+    });
   const expr = (node: IrExpr): boolean => {
     if (node.kind === "libCall") {
       const fn = node.fn;
@@ -384,12 +427,10 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
           if (node.name === "promise.allSettled" || node.name === "promise.any")
             features.dynAsync = true;
           break;
-        case "dynFrom": {
-          const boxed = node.value.type;
-          if (boxed.kind === "promise" || (boxed.kind === "func" && boxed.ret.kind === "promise"))
+        case "dynFrom":
+          if (!features.dynAsync && boxesPromise(node.value.type, typeTables(), new Set()))
             features.dynAsync = true;
           break;
-        }
       }
     }
     return keepGoing();
