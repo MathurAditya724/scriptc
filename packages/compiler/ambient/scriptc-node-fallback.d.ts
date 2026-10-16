@@ -2880,7 +2880,8 @@ declare module "child_process" {
   ): unknown;
   /* The async shell form — declared surface without full lowering (the
    * type-level tolerance story): harness code on paths tests don't reach
-   * must typecheck; a reached call fences at its site. */
+   * must typecheck; a reached call fences at its site. util.promisify
+   * recognizes it statically, as it does execFile. */
   export function exec(
     command: string,
     options?: ExecSyncOptions | ((error: Error | null, stdout: string, stderr: string) => void),
@@ -2891,9 +2892,10 @@ declare module "node:child_process" {
   export * from "child_process";
 }
 
-/* node:util — compile-time projections for child_process.execFile and
- * fs.readFile. The former retains Node's custom { stdout, stderr } result;
- * the latter resolves the callback's data argument. Other targets and bare
+/* node:util — compile-time projections for child_process.execFile,
+ * child_process.exec and fs.readFile. The first two retain Node's custom
+ * { stdout, stderr } result; the last resolves the callback's data
+ * argument. Other targets and bare
  * promisify values fence per site. */
 declare module "util" {
   export * as types from "util/types";
@@ -2975,6 +2977,18 @@ declare module "util" {
   ): (
     file: string,
     args?: string[],
+    options?: {
+      encoding?: "utf8" | "utf-8";
+      cwd?: string;
+      env?: { [k: string]: string | undefined };
+      timeout?: number;
+      maxBuffer?: number;
+      killSignal?: string;
+      windowsHide?: boolean;
+    },
+  ) => Promise<{ stdout: string; stderr: string }>;
+  export function promisify(fn: typeof import("node:child_process").exec): (
+    command: string,
     options?: {
       encoding?: "utf8" | "utf-8";
       cwd?: string;
