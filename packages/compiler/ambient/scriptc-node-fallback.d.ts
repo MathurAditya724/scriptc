@@ -3187,6 +3187,22 @@ declare module "node:test" {
 declare module "assert" {
   function assert(value: unknown, message?: string): void;
   namespace assert {
+    interface AssertionErrorOptions {
+      message?: string | undefined;
+      actual?: unknown;
+      expected?: unknown;
+      operator?: string | undefined;
+      stackStartFn?: Function | undefined;
+      diff?: "simple" | "full" | undefined;
+    }
+    class AssertionError extends Error {
+      constructor(options: AssertionErrorOptions);
+      actual: unknown;
+      expected: unknown;
+      generatedMessage: boolean;
+      code: "ERR_ASSERTION";
+      operator: string;
+    }
     function ok(value: unknown, message?: string): void;
     function strictEqual(actual: unknown, expected: unknown, message?: string): void;
     function notStrictEqual(actual: unknown, expected: unknown, message?: string): void;

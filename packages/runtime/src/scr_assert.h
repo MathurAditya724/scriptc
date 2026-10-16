@@ -16,8 +16,15 @@
  * distinguishes an omitted user message from an empty one (Node treats
  * them differently per operator). */
 void scr_assert_fail_msg(ScrStr *message); /* takes ownership; always throws */
+/* AssertionError properties: a failure path records actual, expected and
+ * operator before it throws (scr_assert.c). */
+void scr_assert_fail(ScrStr *message, bool generated); /* takes ownership; always throws */
+void scr_assert_record(ScrDyn *actual, ScrDyn *expected, const char *op); /* values move in */
+void scr_assert_record_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *op); /* borrows */
+const char *scr_assert_eq_operator(bool negated, bool deep);
+ScrError *scr_assert_error_new(ScrDyn *options);
 ScrStr *scr_assert_inspect_str(const ScrStr *s); /* util.inspect quoting; +1 */
-void scr_assert_ok(bool pass, ScrStr *message);
+void scr_assert_ok(bool pass, ScrStr *message, bool generated);
 bool scr_assert_same_value_f64(double a, double b); /* Object.is */
 /* deepStrictEqual over cyclic values: pair memo (enter answers true for
  * a pair already being compared — Node's coinductive memo; leave pops).

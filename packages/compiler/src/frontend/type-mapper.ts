@@ -1906,6 +1906,15 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   for (const [irName, rec] of RUNTIME_ERROR_CLASSES) {
     if (isStdlibInterface(rec.lib)) return { kind: "object", className: irName };
   }
+  // node:assert's AssertionError is declared as a class (in the shipped
+  // fallback and in @types/node), not as a lib interface.
+  if (
+    psym?.name === "AssertionError" &&
+    checker
+      .declarationsOf(psym)
+      .some((d) => ts.isClassDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
+  )
+    return { kind: "object", className: "%AssertionError" };
   // The lib's `Object` interface is a TOP type: tsc admits every
   // non-nullish value into an `Object` slot (`const x: Object = "s"`), so
   // it lowers like `unknown` (the dyn) — the same rule as `object` and
