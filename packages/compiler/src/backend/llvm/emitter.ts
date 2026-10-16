@@ -6314,6 +6314,9 @@ export class LlEmitter {
    * the pair its own reference (Int32Abi.owned). */
   retainUnionPairPayload(pair: string, type: IrType): void {
     const B = this.B;
+    // A value that always throws (a `never` call) ends the block: there is
+    // no pair to own.
+    if (B.isTerminated()) return;
     const unionId = type.kind === "union" ? type.unionId : "";
     const arms = this.unionsById.get(unionId)!.arms;
     const refs = arms.flatMap((arm, tag) => (isRefCounted(arm) ? [tag] : []));
@@ -6358,10 +6361,15 @@ export class LlEmitter {
         this.frames.push([]);
         const pair = this.emitOwnedUnionPair(arm);
         this.releaseFrame(this.frames.pop()!);
-        incoming.push(`[ ${pair}, %${B.currentLabel()} ]`);
+        // An arm that always throws does not reach the join.
+        if (!B.isTerminated()) incoming.push(`[ ${pair}, %${B.currentLabel()} ]`);
         B.br(join);
       }
       B.startBlock(join);
+      if (incoming.length === 0) {
+        B.terminate("unreachable");
+        return "{ i32 -1, i64 0 }";
+      }
       const pair = B.tmp();
       B.line(`${pair} = phi ${SCALAR_UNION_RESULT} ${incoming.join(", ")}`);
       return pair;
