@@ -20,6 +20,10 @@ export interface LocalUnionStorageProof {
   /** At most one reference arm gives the local one nullable payload owner.
    * Scalars and unit arms clear that owner independently of the data bits. */
   ownerType: IrType | null;
+  /** Several reference arms: the box's own tag and payload are the owner,
+   * released by tag. Every write is a wrap or an owned register result,
+   * which hands over its payload's reference. */
+  payloadOwner?: true;
 }
 
 /** A union source the local can snapshot with its own payload owner:
@@ -48,8 +52,12 @@ export interface UnionSources {
   inlineField: CopiedUnionSource;
   /** Optional array element reads (OptionalArrayReads). */
   arrayRead: CopiedUnionSource;
-  /** Direct calls returning a scalar union in registers (Int32Abi.union). */
+  /** Direct calls returning a union in registers (Int32Abi.union); with
+   * Int32Abi.owned the snapshot takes the payload's reference. */
   scalarCall: CopiedUnionSource;
+  /** Direct calls returning a union with an owned reference payload in
+   * registers (Int32Abi.owned). */
+  ownedCall: CopiedUnionSource;
 }
 
 /** Every arm is a number, a boolean or a unit value: the box owns nothing,
@@ -137,14 +145,25 @@ export function findLocalUnionStorage(
     if (!arms) continue;
     const refs = arms.filter(isRefCounted);
     if (refs.length <= 1) result.set(local.id, { ownerType: refs[0] ?? null });
+    else result.set(local.id, { ownerType: local.type, payloadOwner: true });
   }
+  const handsOver = (expr: IrExpr): boolean =>
+    expr.kind === "ternary"
+      ? handsOver(expr.then) && handsOver(expr.else_)
+      : canStackUnion(expr, unions) || sources.ownedCall(expr);
   everyStmtList(fn.body, {
     expr: () => true,
     stmt: (stmt) => {
       if (stmt.kind === "varDecl" || stmt.kind === "assign") {
         const value = stmt.kind === "varDecl" ? stmt.init : stmt.value;
         const type = types.get(stmt.localId);
-        if (!value || !type || !supportedSource(value, type, sources)) result.delete(stmt.localId);
+        if (
+          !value ||
+          !type ||
+          !supportedSource(value, type, sources) ||
+          (result.get(stmt.localId)?.payloadOwner === true && !handsOver(value))
+        )
+          result.delete(stmt.localId);
       }
       return true;
     },
@@ -158,6 +177,8 @@ export interface LocalUnionStorage {
   payload: string;
   owner: string | null;
   ownerType: IrType | null;
+  /** The box owns its reference payload (LocalUnionStorageProof). */
+  payloadOwner: boolean;
 }
 
 export function allocateLocalUnion(
@@ -171,12 +192,15 @@ export function allocateLocalUnion(
   B.entryAllocas.push(`${box} = alloca %ScrUnion`);
   B.entryAllocas.push(`${tag} = getelementptr inbounds %ScrUnion, ptr ${box}, i32 0, i32 1`);
   B.entryAllocas.push(`${payload} = getelementptr inbounds %ScrUnion, ptr ${box}, i32 0, i32 5`);
-  const owner = proof.ownerType ? B.slot() : null;
+  const payloadOwner = proof.payloadOwner === true;
+  // A payload-owning box starts with no arm (tag -1), which owns nothing.
+  if (payloadOwner) B.line(`store i32 -1, ptr ${tag}`);
+  const owner = proof.ownerType && !payloadOwner ? B.slot() : null;
   if (owner) {
     B.entryAllocas.push(`${owner} = alloca ptr`);
     B.line(`store ptr null, ptr ${owner}`);
   }
-  return { box, tag, payload, owner, ownerType: proof.ownerType };
+  return { box, tag, payload, owner, ownerType: proof.ownerType, payloadOwner };
 }
 
 /** Evaluate the new snapshot before touching the previous owner, so a
@@ -233,7 +257,23 @@ export function storeLocalUnion(
     expr.kind === "arrIntrinsic"
   ) {
     // Scalar optional sources and register results: a private stack box.
-    source = host.emitReadReceiver(expr).name;
+    const box = host.emitReadReceiver(expr);
+    source = box.name;
+    if (expr.kind === "call" && storage.payloadOwner) {
+      // An owned register result: the box takes the payload's reference.
+      host.moveTemp(box);
+    } else if (expr.kind === "call" && !host.scalarResultCall(expr) && storage.ownerType) {
+      // An owned register result: the binding takes the reference the
+      // statement frame holds for the payload.
+      host.moveTemp(box);
+      const def = host.unionsById.get(unionId)!;
+      const isRef = B.tmp();
+      B.line(
+        `${isRef} = icmp eq i32 ${host.unionTag(source, unionId)}, ${def.arms.findIndex(isRefCounted)}`,
+      );
+      owner = B.tmp();
+      B.line(`${owner} = select i1 ${isRef}, ptr ${host.unionPeek(source, unionId)}, ptr null`);
+    }
   } else if (host.inlineFieldGet(expr)) {
     // A private stack copy of the slot's tag and bits; nothing is owned.
     source = host.emitReadReceiver(expr).name;
@@ -270,7 +310,8 @@ export function storeLocalUnion(
   } else if (canStackUnion(expr, host.boxedUnionsById)) {
     const wrapped = emitStackUnion(host, expr);
     source = wrapped.value.name;
-    if (wrapped.payload) {
+    if (wrapped.payload && storage.payloadOwner) host.moveTemp(wrapped.payload);
+    else if (wrapped.payload) {
       owner = wrapped.payload.name;
       host.moveTemp(wrapped.payload);
     }
@@ -288,8 +329,15 @@ export function storeLocalUnion(
     bits = B.tmp();
   B.line(`${slot} = getelementptr inbounds %ScrUnion, ptr ${source}, i32 0, i32 5`);
   B.line(`${bits} = load i64, ptr ${slot}`);
+  let previous: { tag: string; payload: string } | null = null;
+  if (storage.payloadOwner) {
+    previous = { tag: B.tmp(), payload: B.tmp() };
+    B.line(`${previous.tag} = load i32, ptr ${storage.tag}`);
+    B.line(`${previous.payload} = load ptr, ptr ${storage.payload}`);
+  }
   B.line(`store i32 ${tag}, ptr ${storage.tag}`);
   B.line(`store i64 ${bits}, ptr ${storage.payload}`);
+  if (previous) host.releaseUnionPayloadOf(previous.tag, previous.payload, expr.type);
   if (storage.owner && storage.ownerType) {
     const old = B.tmp();
     B.line(`${old} = load ptr, ptr ${storage.owner}`);

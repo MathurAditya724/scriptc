@@ -396,6 +396,8 @@ function ffiCallbackDummyLl(callback: IrFfiCallbackParam["callback"]): string {
 interface LlScopeEntry {
   slot: string;
   type: IrType;
+  /** `slot` is a private stack union box owning its reference payload. */
+  unionPayload?: boolean;
   boxed?: boolean;
   /** A lazily created box: the slot stays null on paths that build no
    * environment, which skip the release call. */
@@ -928,6 +930,8 @@ export class LlEmitter {
   /** The function's i32 entry returns its scalar union result as tag and
    * payload bits (Int32Abi.union). */
   private currentUnionResult = false;
+  /** The current union result's reference payload is owned (Int32Abi.owned). */
+  private currentOwnedUnionResult = false;
   /** Active only while emitting a body lowered with LLVM's
    * switched-coroutine intrinsics (wasm32 async bodies and generators,
    * native synchronous generators; see coroLowered). */
@@ -976,7 +980,10 @@ export class LlEmitter {
     this.constantNumericTables = findConstantNumericTables(mod);
     this.initializerBindings = findInitializerBindings(mod);
     this.int32Slots = analyzeInt32Slots(mod);
-    this.int32Abis = this.debug === null ? findInt32Abis(mod, this.int32Slots) : new Map();
+    this.int32Abis =
+      this.debug === null
+        ? findInt32Abis(mod, this.int32Slots, (unionId) => this.nullableUnions.has(unionId))
+        : new Map();
     this.immortalGlobals = new Set(mod.contracts?.immortalGlobals ?? []);
     this.programLifetime = new Set(mod.contracts?.programLifetime ?? []);
     this.finalFields = analyzeFinalFields(mod);
@@ -1062,7 +1069,8 @@ export class LlEmitter {
       nullableField: (e) => this.nullableFieldGet(e) !== null,
       inlineField: (e) => this.inlineFieldGet(e),
       arrayRead: (e) => this.optionalArrayReads.get(e) !== null,
-      scalarCall: (e) => this.scalarResultCall(e),
+      scalarCall: (e) => this.registerResultCall(e),
+      ownedCall: (e) => e.kind === "call" && this.int32Abis.get(e.callee)?.owned === true,
     };
     this.checkedNarrows = new CheckedNarrows(this.fnByName);
     this.referenceEffects = new ReferenceEffects(
@@ -4298,6 +4306,12 @@ export class LlEmitter {
     if (isRefCounted(type)) this.currentFrame().push({ name: slot, type, slot: true });
   }
 
+  /** Registers a private stack union box whose reference payload the
+   * current statement frame owns. */
+  ownUnionPayload(box: LlValue): void {
+    this.currentFrame().push({ ...box, unionPayload: true });
+  }
+
   /** Strike a refcounted temp from its frame: ownership is being moved. */
   moveTemp(v: LlValue): void {
     if (!isRefCounted(v.type) || this.isImmortal(v.name)) return;
@@ -4331,7 +4345,9 @@ export class LlEmitter {
 
   releaseFrame(frame: LlValue[]): void {
     for (const v of frame) {
-      if (v.slot) {
+      if (v.unionPayload) {
+        this.releaseUnionPayload(v.name, v.type);
+      } else if (v.slot) {
         const t = this.B.tmp();
         this.B.line(`${t} = load ptr, ptr ${v.name}`);
         if (v.boxed) {
@@ -4347,6 +4363,10 @@ export class LlEmitter {
 
   private releaseScope(scope: LlScopeEntry[]): void {
     for (const e of scope) {
+      if (e.unionPayload) {
+        this.releaseUnionPayload(e.slot, e.type);
+        continue;
+      }
       const t = this.B.tmp();
       this.B.line(`${t} = load ptr, ptr ${e.slot}`);
       if (e.boxed && e.lazy) {
@@ -4477,7 +4497,7 @@ export class LlEmitter {
     for (let i = this.scopes.length - 1; i >= scopeDepth; i--) {
       for (const entry of this.scopes[i]!) {
         entries.push(entry);
-        key += `\0${entry.slot}\0${entry.boxed ? "@scr_box_release" : releaseSym(this.shapeHost, entry.type)}`;
+        key += `\0${entry.slot}\0${entry.boxed ? "@scr_box_release" : entry.unionPayload ? "payload" : releaseSym(this.shapeHost, entry.type)}`;
       }
     }
     if (entries.length === 0) {
@@ -5866,6 +5886,7 @@ export class LlEmitter {
     const int32Abi = this.int32Abis.get(fn.name);
     this.currentInt32Result = int32Abi?.result === true;
     this.currentUnionResult = int32Abi?.union === true;
+    this.currentOwnedUnionResult = int32Abi?.owned === true;
     this.currentGenerator = fn.generator ?? null;
     this.currentAsyncGenerator = fn.async === true && fn.generator !== undefined;
     this.currentBorrowedReturn = this.borrowedReturns.has(fn.name);
@@ -6239,7 +6260,149 @@ export class LlEmitter {
 
   /** A direct call whose i32 entry returns its scalar union in registers. */
   scalarResultCall(e: IrExpr): boolean {
+    if (e.kind !== "call") return false;
+    const abi = this.int32Abis.get(e.callee);
+    return abi?.union === true && abi.owned !== true;
+  }
+
+  /** A direct call whose i32 entry returns its union in registers, scalar
+   * or with an owned reference payload. */
+  registerResultCall(e: IrExpr): boolean {
     return e.kind === "call" && this.int32Abis.get(e.callee)?.union === true;
+  }
+
+  /** Release the reference payload of a private stack union box by tag;
+   * scalar and unit arms own nothing. */
+  releaseUnionPayload(box: string, type: IrType): void {
+    if (this.B.isTerminated()) return;
+    const unionId = type.kind === "union" ? type.unionId : "";
+    this.releaseUnionPayloadOf(this.unionTag(box, unionId), this.unionPeek(box, unionId), type);
+  }
+
+  /** Release a reference payload given its union tag; scalar and unit
+   * arms, and tag -1, own nothing. */
+  releaseUnionPayloadOf(tag: string, payload: string, type: IrType): void {
+    const B = this.B;
+    if (B.isTerminated()) return;
+    const unionId = type.kind === "union" ? type.unionId : "";
+    const arms = this.unionsById.get(unionId)!.arms;
+    const refs = arms.flatMap((arm, armTag) => (isRefCounted(arm) ? [armTag] : []));
+    if (refs.length === 0) return;
+    const join = B.newLabel("union.drop.join");
+    const labels = refs.map(() => B.newLabel("union.drop"));
+    B.terminate(
+      `switch i32 ${tag}, label %${join} [ ${refs.map((armTag, i) => `i32 ${armTag}, label %${labels[i]}`).join(" ")} ]`,
+    );
+    refs.forEach((armTag, i) => {
+      B.startBlock(labels[i]!);
+      this.releaseValue(payload, arms[armTag]!);
+      B.br(join);
+    });
+    B.startBlock(join);
+  }
+
+  /** Release the reference payload of a union result pair by tag. */
+  releaseUnionPairPayload(pair: string, type: IrType): void {
+    const B = this.B;
+    const tag = B.tmp(),
+      bits = B.tmp(),
+      payload = B.tmp();
+    B.line(`${tag} = extractvalue ${SCALAR_UNION_RESULT} ${pair}, 0`);
+    B.line(`${bits} = extractvalue ${SCALAR_UNION_RESULT} ${pair}, 1`);
+    B.line(`${payload} = inttoptr i64 ${bits} to ptr`);
+    this.releaseUnionPayloadOf(tag, payload, type);
+  }
+
+  /** Retain the reference payload of a union result pair by tag, giving
+   * the pair its own reference (Int32Abi.owned). */
+  retainUnionPairPayload(pair: string, type: IrType): void {
+    const B = this.B;
+    // A value that always throws (a `never` call) ends the block: there is
+    // no pair to own.
+    if (B.isTerminated()) return;
+    const unionId = type.kind === "union" ? type.unionId : "";
+    const arms = this.unionsById.get(unionId)!.arms;
+    const refs = arms.flatMap((arm, tag) => (isRefCounted(arm) ? [tag] : []));
+    if (refs.length === 0) return;
+    const tag = B.tmp(),
+      bits = B.tmp(),
+      payload = B.tmp();
+    B.line(`${tag} = extractvalue ${SCALAR_UNION_RESULT} ${pair}, 0`);
+    B.line(`${bits} = extractvalue ${SCALAR_UNION_RESULT} ${pair}, 1`);
+    B.line(`${payload} = inttoptr i64 ${bits} to ptr`);
+    const join = B.newLabel("union.own.join");
+    const labels = refs.map(() => B.newLabel("union.own"));
+    B.terminate(
+      `switch i32 ${tag}, label %${join} [ ${refs.map((armTag, i) => `i32 ${armTag}, label %${labels[i]}`).join(" ")} ]`,
+    );
+    refs.forEach((armTag, i) => {
+      B.startBlock(labels[i]!);
+      this.retainValue(payload, arms[armTag]!);
+      B.br(join);
+    });
+    B.startBlock(join);
+  }
+
+  /** The register pair an owned-union return hands to its caller (+1 on a
+   * reference payload). A wrap moves its payload into the pair, and a
+   * conditional builds the pair of the arm it takes; any other value is
+   * projected and its payload retained. */
+  emitOwnedUnionPair(e: IrExpr): string {
+    const B = this.B;
+    if (e.kind === "ternary" && e.type.kind === "union") {
+      const cond = this.emitExpr(e.cond);
+      const yes = B.newLabel("union.pair.then"),
+        no = B.newLabel("union.pair.else"),
+        join = B.newLabel("union.pair.join");
+      B.condBr(cond.name, yes, no);
+      const incoming: string[] = [];
+      for (const [label, arm] of [
+        [yes, e.then],
+        [no, e.else_],
+      ] as const) {
+        B.startBlock(label);
+        this.frames.push([]);
+        const pair = this.emitOwnedUnionPair(arm);
+        this.releaseFrame(this.frames.pop()!);
+        // An arm that always throws does not reach the join.
+        if (!B.isTerminated()) incoming.push(`[ ${pair}, %${B.currentLabel()} ]`);
+        B.br(join);
+      }
+      B.startBlock(join);
+      if (incoming.length === 0) {
+        B.terminate("unreachable");
+        return "{ i32 -1, i64 0 }";
+      }
+      const pair = B.tmp();
+      B.line(`${pair} = phi ${SCALAR_UNION_RESULT} ${incoming.join(", ")}`);
+      return pair;
+    }
+    if (canStackUnion(e, this.boxedUnionsById)) {
+      const type = e.value.type;
+      let bits = "0";
+      if (!isUnitType(type)) {
+        const value = this.emitExpr(e.value);
+        bits = B.tmp();
+        if (isRefCounted(type)) {
+          this.moveTemp(value);
+          B.line(`${bits} = ptrtoint ptr ${value.name} to i64`);
+        } else if (type.kind === "bool") B.line(`${bits} = zext i1 ${value.name} to i64`);
+        else B.line(`${bits} = bitcast double ${value.name} to i64`);
+      }
+      const partial = B.tmp(),
+        pair = B.tmp();
+      B.line(`${partial} = insertvalue ${SCALAR_UNION_RESULT} poison, i32 ${e.tag}, 0`);
+      B.line(`${pair} = insertvalue ${SCALAR_UNION_RESULT} ${partial}, i64 ${bits}, 1`);
+      return pair;
+    }
+    // Another owned register result passes its pair, and its reference,
+    // straight through.
+    if (e.kind === "call" && this.int32Abis.get(e.callee)?.owned === true)
+      return emitCallExpr(this, e, false, "pair").name;
+    const box = this.emitUnionProjection(e);
+    const pair = this.scalarUnionPair(box.name, e.type);
+    this.retainUnionPairPayload(pair, e.type);
+    return pair;
   }
 
   /** A fresh heap box (+1) for a SCALAR_UNION_RESULT pair of `type`; the
@@ -6279,7 +6442,9 @@ export class LlEmitter {
       if (isUnitType(arm)) value = this.unitInstanceRef(unionId, armTag);
       else {
         const payload = B.tmp();
-        if (arm.kind === "bool") B.line(`${payload} = trunc i64 ${bits} to i1`);
+        // A reference payload moves its reference into the box.
+        if (isRefCounted(arm)) B.line(`${payload} = inttoptr i64 ${bits} to ptr`);
+        else if (arm.kind === "bool") B.line(`${payload} = trunc i64 ${bits} to i1`);
         else B.line(`${payload} = bitcast i64 ${bits} to double`);
         value = this.unionNewOwned(unionId, armTag, { name: payload, type: arm });
       }
@@ -6834,7 +6999,13 @@ export class LlEmitter {
           this.localUnionStorage.set(s.localId, storage);
           storeLocalUnion(this, storage, s.init);
           B.line(`store ptr ${storage.box}, ptr ${b.slot}`);
-          if (storage.owner && storage.ownerType)
+          if (storage.payloadOwner)
+            this.scopes[this.scopes.length - 1]!.push({
+              slot: storage.box,
+              type: s.init.type,
+              unionPayload: true,
+            });
+          else if (storage.owner && storage.ownerType)
             this.scopes[this.scopes.length - 1]!.push({
               slot: storage.owner,
               type: storage.ownerType,
@@ -7892,7 +8063,10 @@ export class LlEmitter {
           this.finallyStack.length === 0 && !this.currentUnionResult
             ? this.movableReturn(s.value)
             : null;
-        if (s.value !== null && this.currentUnionResult) {
+        if (s.value !== null && this.currentOwnedUnionResult) {
+          // The pair carries the reference a heap box would own.
+          v = { name: this.emitOwnedUnionPair(s.value), type: s.value.type };
+        } else if (s.value !== null && this.currentUnionResult) {
           // The tag and payload bits leave in registers; a heap box the
           // value needed is released with its frame below.
           const box = this.emitUnionProjection(s.value);
@@ -8332,6 +8506,7 @@ export class LlEmitter {
         type: local.type,
         slot: true,
         ...(local.boxed ? { boxed: true } : {}),
+        ...(local.unionPayload ? { unionPayload: true } : {}),
       });
     }
     return result;
@@ -8381,6 +8556,10 @@ export class LlEmitter {
       this.emitSequence(() => {
         for (const s of e.stmts) this.emitStmt(s);
       });
+      return;
+    }
+    if (e.kind === "call" && this.registerResultCall(e)) {
+      emitCallExpr(this, e, false, "discard");
       return;
     }
     this.emitExpr(e);
@@ -9104,7 +9283,7 @@ export class LlEmitter {
       isScalarOptionalSource(e, this.unionSources)
     )
       return emitScalarOptional(this, e);
-    if (e.kind === "call" && this.scalarResultCall(e)) return emitCallExpr(this, e, false, true);
+    if (e.kind === "call" && this.registerResultCall(e)) return emitCallExpr(this, e, false, true);
     if (e.kind === "call" && this.canBorrowReceiver(e)) return emitBorrowedResultCall(this, e);
     return this.emitExpr(e);
   }
@@ -9134,7 +9313,7 @@ export class LlEmitter {
       matchMapRead(e, this.boxedUnionsById) !== null ||
       this.optionalArrayReads.get(e) !== null ||
       isScalarOptionalSource(e, this.unionSources) ||
-      this.scalarResultCall(e) ||
+      this.registerResultCall(e) ||
       this.inlineFieldGet(e)
     );
   }
