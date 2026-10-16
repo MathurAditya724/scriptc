@@ -154,6 +154,10 @@ static void scr_cyc_oom(void) {
 typedef struct {
   void **v;
   size_t n, cap;
+  /* The most entries a pass held, for the work vectors a pass fills
+   * (scr_cyc_push_work); scr_cyc_pass_done frees a large vector that the
+   * pass used little of. */
+  size_t used;
 } ScrVec;
 
 typedef struct {
@@ -321,9 +325,16 @@ static void scr_cyc_grow(ScrVec *vec) {
   vec->v = grown;
 }
 
-static void scr_cyc_push(ScrVec *vec, void *obj) {
+static __attribute__((noinline)) void scr_cyc_push(ScrVec *vec, void *obj) {
   if (vec->n == vec->cap) scr_cyc_grow(vec);
   vec->v[vec->n++] = obj;
+}
+
+/* A push onto a vector that a pass fills and leaves empty, recording how
+ * many entries the pass held at most. */
+static inline void scr_cyc_push_work(ScrVec *vec, void *obj) {
+  scr_cyc_push(vec, obj);
+  if (vec->n > vec->used) vec->used = vec->n;
 }
 
 /* ── the candidate-root buffers (one per generation) ──────────────────── */
@@ -900,8 +911,8 @@ static void scr_mark_gray(void *obj, uintptr_t depth);
 static void scr_mg_visit(void *child, void *ctx) {
   if (child == NULL || SCR_RC(child) == SIZE_MAX) return;
   if (scr_cyc_gen(scr_cyc_hdr(child)) > scr_gen_limit) {
-    scr_cyc_push(&scr_xgen_edges, scr_gray_holder);
-    scr_cyc_push(&scr_xgen_edges, child);
+    scr_cyc_push_work(&scr_xgen_edges, scr_gray_holder);
+    scr_cyc_push_work(&scr_xgen_edges, child);
     return;
   }
   size_t rc = --SCR_RC(child);
@@ -915,10 +926,10 @@ static void scr_mark_gray(void *obj, uintptr_t depth) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
   if (scr_cyc_color(h) == SCR_CYC_GRAY) return;
   scr_cyc_set_color(h, SCR_CYC_GRAY);
-  if (scr_white.n < SCR_CYC_GRAY_LIST_MAX) scr_cyc_push(&scr_white, obj);
+  if (scr_white.n < SCR_CYC_GRAY_LIST_MAX) scr_cyc_push_work(&scr_white, obj);
   if (SCR_RC(obj) > 0) scr_gray_referenced++;
   if (depth == SCR_CYC_WALK_DEPTH) {
-    scr_cyc_push(&scr_pending, obj);
+    scr_cyc_push_work(&scr_pending, obj);
     return;
   }
   void *holder = scr_gray_holder;
@@ -937,9 +948,9 @@ static void scr_sb_visit(void *child, void *ctx) {
 static void scr_scan_black(void *obj, uintptr_t depth) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
   scr_cyc_set_color(h, SCR_CYC_BLACK);
-  if (scr_cyc_gen(h) < SCR_CYC_OLD) scr_cyc_push(&scr_promote, obj);
+  if (scr_cyc_gen(h) < SCR_CYC_OLD) scr_cyc_push_work(&scr_promote, obj);
   if (depth == SCR_CYC_WALK_DEPTH) {
-    scr_cyc_push(&scr_restore_pending, obj);
+    scr_cyc_push_work(&scr_restore_pending, obj);
     return;
   }
   scr_cyc_type(h)->trace(obj, scr_sb_visit, (void *)(depth + 1));
@@ -964,9 +975,9 @@ static void scr_scan(void *obj, uintptr_t depth) {
   scr_cyc_set_color(h, SCR_CYC_WHITE);
   /* Record each whitened object once. A later outside root can restore it;
    * filter the list only after every scan finishes. No gather trace needed. */
-  scr_cyc_push(&scr_white, obj);
+  scr_cyc_push_work(&scr_white, obj);
   if (depth == SCR_CYC_WALK_DEPTH) {
-    scr_cyc_push(&scr_pending, obj);
+    scr_cyc_push_work(&scr_pending, obj);
     return;
   }
   scr_cyc_type(h)->trace(obj, scr_scan_visit, (void *)(depth + 1));
@@ -1068,7 +1079,7 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit) {
     if (scr_cyc_color(scr_cyc_hdr(scr_xgen_edges.v[i])) != SCR_CYC_DOOMED) continue;
     void *target = scr_xgen_edges.v[i + 1];
     SCR_RC(target) += 1; /* pin across the teardowns */
-    scr_cyc_push(&scr_xgen, target);
+    scr_cyc_push_work(&scr_xgen, target);
   }
   scr_xgen_edges.n = 0;
 
@@ -1155,6 +1166,39 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit) {
   return freed;
 }
 
+/* A work vector that holds more than this many entries is freed at the end
+ * of a pass that used less than a quarter of it, so a spike in one pass
+ * does not keep its buffers for the rest of the program, while passes of a
+ * steady size keep reusing theirs. */
+#define SCR_CYC_KEEP_VECTOR 65536
+
+static SCR_CYC_COMPACT void scr_cyc_trim(ScrVec *vec) {
+  if (vec->n == 0 && vec->cap > SCR_CYC_KEEP_VECTOR && vec->used < vec->cap / 4) {
+    free(vec->v);
+    vec->v = NULL;
+    vec->cap = 0;
+  }
+  vec->used = 0;
+}
+
+/* The end of every pass. The candidate list keeps its count, which the
+ * scheduler reads; its buffer goes when this pass's candidates filled
+ * less than a quarter of it. */
+static size_t scr_cyc_pass_done(size_t freed) {
+  if (scr_cands.cap > SCR_CYC_KEEP_VECTOR && scr_cands.n < scr_cands.cap / 4) {
+    free(scr_cands.v);
+    scr_cands.v = NULL;
+    scr_cands.cap = 0;
+  }
+  scr_cyc_trim(&scr_pending);
+  scr_cyc_trim(&scr_white);
+  scr_cyc_trim(&scr_promote);
+  scr_cyc_trim(&scr_restore_pending);
+  scr_cyc_trim(&scr_xgen);
+  scr_cyc_trim(&scr_xgen_edges);
+  return freed;
+}
+
 static size_t scr_cyc_pass(unsigned gen_limit) {
   if (scr_collecting) return 0;
   scr_collecting = true;
@@ -1166,8 +1210,8 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
    * before walking: tracing only adjusts counts and worklists, so nothing
    * can re-buffer underneath us. Candidates ABOVE the limit keep their
    * slots and wait for a pass at their own level. */
-  scr_cands.n = 0;
   if (scr_cyc_take) {
+    scr_cands.n = 0;
     /* A limited pass: only the set's candidates leave their buffers. The
      * scan reads the buffers' pointers alone, so the candidates it leaves,
      * which may be most of a large heap's, are not touched. */
@@ -1185,6 +1229,23 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
         scr_cyc_clear_buffered(scr_cyc_hdr(obj));
         scr_cyc_push(&scr_cands, obj);
       }
+    }
+  } else {
+    /* A full pass: the fullest root buffer becomes the candidate list
+     * instead of being copied into it, so a pass never holds two buffers
+     * of every candidate; the generation gets the previous candidate
+     * buffer, empty. The other buffers are appended after it. */
+    unsigned largest = 0;
+    for (unsigned g = 1; g <= gen_limit; g++)
+      if (scr_roots[g].n > scr_roots[largest].n) largest = g;
+    ScrVec previous = scr_cands;
+    scr_cands = scr_roots[largest];
+    scr_roots[largest] = previous;
+    scr_roots[largest].n = 0;
+    for (size_t i = 0; i < scr_cands.n; i++) {
+      ScrCycHdr *h = scr_cyc_hdr(scr_cands.v[i]);
+      scr_cyc_clear_buffered(h);
+      if (gen_limit < SCR_CYC_OLD) scr_cyc_walked(scr_cyc_type(h), gen_limit);
     }
   }
   for (unsigned g = 0; g <= gen_limit && !scr_cyc_take; g++) {
@@ -1208,7 +1269,7 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
   }
   if (scr_gray_referenced == 0 && scr_white.n < SCR_CYC_GRAY_LIST_MAX) {
     for (size_t i = 0; i < scr_white.n; i++) scr_cyc_set_color(scr_cyc_hdr(scr_white.v[i]), SCR_CYC_WHITE);
-    return scr_cyc_settle(gen_limit);
+    return scr_cyc_pass_done(scr_cyc_settle(gen_limit));
   }
 
   scr_white.n = 0;
@@ -1221,7 +1282,7 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
       scr_cyc_type(scr_cyc_hdr(obj))->trace(obj, scr_scan_visit, NULL);
   }
 
-  return scr_cyc_settle(gen_limit);
+  return scr_cyc_pass_done(scr_cyc_settle(gen_limit));
 }
 
 #ifdef SCR_CYC_TESTING
