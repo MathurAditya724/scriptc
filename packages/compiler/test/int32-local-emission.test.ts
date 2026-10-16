@@ -81,7 +81,18 @@ function contract(seed: Int32, steps: Int32): Int32 {
 function fibo(n: number): number {
   return n < 2 ? n : fibo(n - 1) + fibo(n - 2);
 }
+function modular(times: number): number {
+  let v = 7;
+  for (let i = 0; i < times; i++) v = (v * 31 + 3) % 1000003;
+  return v;
+}
+function strides(marks: Uint8Array): number {
+  let count = 0;
+  for (let i = 2; i <= 1000; i++) for (let j = i * 2; j <= 1000; j += i) count += marks[j & 3];
+  return count;
+}
 const bytes = new Uint8Array([1, 2, 3, 250]);
+console.log(modular(100), strides(bytes));
 console.log(rsync(bytes), mix("abcd"), counters(), unsigned(new Uint32Array([4294967295, 7])));
 console.log(fraction(5), mixed(3), captured(["ab", "c"]), capturedParam(3)());
 console.log([...frames(["ab", "cd"])].join(" "), contract(7, 20), fibo(10));
@@ -190,6 +201,21 @@ test("int32-closed locals are stored as i32 and keep doubles only for floating c
       expect(carriers(unsigned)).toEqual([]);
       expect(unsigned).toMatch(/ = uitofp i32 %\w+ to double\n\s+ret double/);
 
+      // A remainder of exact non-negative arithmetic closes the local in a
+      // non-negative int32: 32-bit multiply, add and remainder, no checked
+      // floating remainder.
+      const modular = body(ll, "modular");
+      expect(modular).toMatch(/alloca i32 ; v\n/);
+      expect(carriers(modular)).toEqual([]);
+      expect(loopOf(modular)).toMatch(/ = mul nsw i32 /);
+      expect(loopOf(modular)).toMatch(/ = urem i32 /);
+      expect(modular).not.toContain("frem");
+
+      // A counter stepped by a loop-invariant positive int32 is one.
+      const strides = body(ll, "strides");
+      expect(strides).toMatch(/alloca i32 ; j\n/);
+      expect(strides).not.toMatch(/alloca double ; j\n/);
+
       // Locals that leave int32, or hold both int32 and uint32 values.
       expect(body(ll, "fraction")).toMatch(/alloca double ; h\n/);
       expect(body(ll, "mixed")).toMatch(/alloca double ; m\n/);
@@ -236,6 +262,54 @@ test("int32-closed locals are stored as i32 and keep doubles only for floating c
     expect(debug).not.toMatch(/alloca i32 ; (?:s1|h|acc)\n/);
     expect(debug).toMatch(/alloca double ; s1\n/);
     expect(debug).toContain("@llvm.dbg.declare");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+const moduleSource = `
+function step(x: number, n: number): number {
+  return (x * 31 + n) % 1000003;
+}
+let v = 1;
+for (let r = 0; r < 3; r++) for (let n = 0; n < 1000; n++) v = step(v, n);
+let shared = 0;
+function readShared(): number {
+  return shared * 2;
+}
+for (let i = 0; i < 10; i++) shared = (shared + i) % 7;
+console.log(v, shared, readShared());
+`;
+
+test("module numbers private to the initializer keep an i32 local there", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-int32-globals-"));
+  try {
+    await symlink(join(repoRoot, "node_modules"), join(dir, "node_modules"));
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(entry, moduleSource);
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    const ll = emitLlvmModule(mod);
+    const init = body(ll, "_x25_init_0");
+    // `v` lives in an i32 local that starts at the global's zero value; the
+    // loop never touches the global's double.
+    expect(init).toMatch(/alloca i32 ; v\n/);
+    expect(init).toMatch(/store i32 0, ptr %sc_l__x25_g_\w+_v\n/);
+    expect(ll).not.toMatch(/(?:load double, ptr|store double [^,]+, ptr) @sc_g_\w*_v\b/);
+    expect(carriers(init)).toEqual([]);
+    // Another function reads `shared`: it keeps its global.
+    expect(init).not.toMatch(/alloca i32 ; shared\n/);
+    expect(init).toMatch(/store double [^,]+, ptr @sc_g_\w*_shared\b/);
+    // The narrowed parameter and result facts keep step in i32 arithmetic.
+    expect(body(ll, "step")).toMatch(/ = urem i32 /);
+    expect(body(ll, "step")).not.toMatch(/ = urem i64 /);
+
+    // Debug builds keep the global for the variable view.
+    const debug = emitLlvmModule(mod, { debugSources: new Map([[entry, moduleSource]]) });
+    expect(debug).not.toMatch(/alloca i32 ; v\n/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

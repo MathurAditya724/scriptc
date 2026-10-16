@@ -776,9 +776,9 @@
       "apiEntries": 67,
       "static": {
         "supported": 0,
-        "partial": 7,
+        "partial": 9,
         "refused": 4,
-        "not-implemented": 56,
+        "not-implemented": 54,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -96898,8 +96898,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.tls.DEFAULT_MAX_VERSION",
+        "tests": [
+          "tests/corpus/2331-tls-server-options-typed.ts",
+          "tests/corpus/2557-tls-ca-store.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -96921,8 +96925,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.tls.DEFAULT_MIN_VERSION",
+        "tests": [
+          "tests/corpus/2331-tls-server-options-typed.ts",
+          "tests/corpus/2557-tls-ca-store.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -100540,6 +100548,8 @@
           "tests/corpus/5472-strip-vt-random.cjs",
           "tests/corpus/5473-strip-vt-unterminated.cjs",
           "tests/corpus/5474-strip-vt-surrogates.ts",
+          "tests/corpus/5625-promisify-exec.ts",
+          "tests/corpus/5626-promisify-forms.ts",
           "tests/corpus/node24-deep-equality-properties.js",
           "tests/corpus/node24-deep-equality.cjs",
           "tests/corpus/node24-deep-equality.ts",
@@ -102189,7 +102199,9 @@
         "tests": [
           "tests/corpus/1473-promisify-execfile.ts",
           "tests/corpus/1573-promisify-execfile-env-spread.ts",
-          "tests/corpus/2912-promisify-fs-readfile.ts"
+          "tests/corpus/2912-promisify-fs-readfile.ts",
+          "tests/corpus/5625-promisify-exec.ts",
+          "tests/corpus/5626-promisify-forms.ts"
         ]
       },
       "anchorSource": "exact"

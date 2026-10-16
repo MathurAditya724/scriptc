@@ -1890,6 +1890,9 @@ export const BUILTIN_MODULE_CONSTS: Record<
   Record<string, string | number | boolean | undefined> | undefined
 > = {
   http: { maxHeaderSize: 16384 },
+  // Node's default protocol range, the TLS 1.2 to 1.3 range the bundled
+  // mbedTLS negotiates
+  tls: { DEFAULT_MIN_VERSION: "TLSv1.2", DEFAULT_MAX_VERSION: "TLSv1.3" },
   path: { sep: "/", delimiter: ":" },
   "path/posix": { sep: "/", delimiter: ":" },
   "path/win32": { sep: "\\", delimiter: ";" },
@@ -2803,7 +2806,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   util: {
     promisify:
-      "the lowered shapes are const bindings over child_process.execFile and fs.readFile; call the bound function directly",
+      "the lowered shapes are const bindings over child_process.execFile, child_process.exec and fs.readFile; call the bound function directly",
   },
   "stream/consumers": {
     blob:

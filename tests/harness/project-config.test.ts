@@ -147,6 +147,20 @@ test("node-types: util.styleText supports stored calls and standard streams unde
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: events.once over typed EventEmitter listeners under @types/node", async () => {
+  const outDir = outDirFor("events-once");
+  const entry = join(nodeTypesDir, "events-once.ts");
+  const result = await compile(entry, { outPath: join(outDir, "events-once"), outDir, sanitize });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: timers/promises resolve values and setInterval iteration under @types/node", async () => {
   const outDir = outDirFor("timers-promises");
   const entry = join(nodeTypesDir, "timers-promises.ts");
@@ -302,6 +316,21 @@ test("node-types: callback execFile uses the typed error-first overload", async 
   if (!result.ok) return;
   const { stdout } = await execFileAsync(result.binaryPath);
   expect(stdout).toBe("typed-execfile true\n");
+});
+
+test("node-types: promisified exec and execFile results under PromiseWithChild", async () => {
+  const dir = outDirFor("node-child-promisify-exec");
+  const entry = join(nodeTypesDir, "child-promisify-exec.ts");
+  const result = await compile(entry, {
+    outPath: join(dir, "child-promisify-exec"),
+    outDir: dir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const { stdout, stderr } = await execFileAsync(result.binaryPath);
+  expect(stdout).toBe('typed-exec err typed-execfile true\n"Command failed: exit 2\\n"\n');
+  expect(stderr).toBe("");
 });
 
 test("node-types: unsupported child stdin forms remain named fences", async () => {

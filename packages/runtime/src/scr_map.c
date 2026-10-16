@@ -161,7 +161,7 @@ static bool scr_map_dyn_eq(const ScrDyn *a, const ScrDyn *b) {
 }
 
 static uint64_t scr_map_hash_union(const ScrMap *m, const ScrUnion *key) {
-  ScrMapKeyKind kind = (ScrMapKeyKind)m->union_keys[key->tag];
+  ScrMapKeyKind kind = (ScrMapKeyKind)m->ops->union_keys[key->tag];
   switch (kind) {
   case SCR_MAP_KEY_STR: return scr_map_hash_str(scr_union_peek(key));
   case SCR_MAP_KEY_BIGINT: return scr_bigint_hash(scr_union_peek(key));
@@ -173,8 +173,8 @@ static uint64_t scr_map_hash_union(const ScrMap *m, const ScrUnion *key) {
 }
 
 static bool scr_map_union_eq(const ScrMap *m, const ScrUnion *a, const ScrUnion *b) {
-  ScrMapKeyKind kind = (ScrMapKeyKind)m->union_keys[a->tag];
-  if (kind != (ScrMapKeyKind)m->union_keys[b->tag]) return false;
+  ScrMapKeyKind kind = (ScrMapKeyKind)m->ops->union_keys[a->tag];
+  if (kind != (ScrMapKeyKind)m->ops->union_keys[b->tag]) return false;
   switch (kind) {
   case SCR_MAP_KEY_STR: return scr_str_eq(scr_union_peek(a), scr_union_peek(b));
   case SCR_MAP_KEY_BIGINT: return scr_bigint_eq(scr_union_peek(a), scr_union_peek(b));
@@ -339,7 +339,8 @@ static inline __attribute__((always_inline)) size_t scr_map_probe_entry_with(
   }
 }
 
-#define SCR_MAP_LINEAR_LIMIT 4
+/* Up to this many entries a map keeps no bucket table. */
+#define SCR_MAP_LINEAR_LIMIT 8
 
 /* Small collections keep only their ordered entries. Cached hashes make
  * the bounded scan cheap without allocating a separate bucket table. */
@@ -458,7 +459,7 @@ bool scr_map_get_span_bool(const ScrMap *m, const char *bytes, size_t length, bo
 
 void *scr_map_get_span_ref(const ScrMap *m, const char *bytes, size_t length) {
   size_t e = scr_map_find_span(m, bytes, length);
-  return e == SCR_MAP_EMPTY ? NULL : m->val_retain(scr_map_slot_to_ptr(m->entries[e].val));
+  return e == SCR_MAP_EMPTY ? NULL : m->ops->val_retain(scr_map_slot_to_ptr(m->entries[e].val));
 }
 
 /* Rebuild the bucket table (size must be a power of two >= 2 * nentries):
@@ -471,7 +472,7 @@ static void scr_map_rebuild_buckets(ScrMap *m, size_t nbuckets) {
   memset(buckets, compact ? 0 : 0xff, bytes);
   scr_mem_free(m->buckets);
   m->buckets = buckets;
-  m->nbuckets = nbuckets;
+  m->nbuckets = (uint32_t)nbuckets;
   size_t mask = nbuckets - 1;
   for (size_t e = 0; e < m->nentries; e++) {
     uint64_t hash = m->entries[e].hash;
@@ -498,20 +499,22 @@ static size_t scr_map_dense_size(size_t top) {
   return n;
 }
 
-/* The exclusive key bound a table may cover once it holds `live` entries. */
+/* The exclusive key bound a table may cover once it holds `live` entries.
+ * Entry indices are stored as uint32_t + 1, and the table's length (a
+ * power of two above every covered key) fits ScrMap.ndense. */
+#define SCR_MAP_DENSE_MAX ((size_t)1 << 31)
 static size_t scr_map_dense_limit(size_t live) {
-  if (live > SIZE_MAX / SCR_MAP_DENSE_SPREAD) return SIZE_MAX;
+  if (live > SIZE_MAX / SCR_MAP_DENSE_SPREAD) return SCR_MAP_DENSE_MAX;
   size_t limit = SCR_MAP_DENSE_SPREAD * live;
   if (limit < SCR_MAP_DENSE_FLOOR) limit = SCR_MAP_DENSE_FLOOR;
-  /* Entry indices are stored as uint32_t + 1. */
-  return limit < UINT32_MAX ? limit : UINT32_MAX;
+  return limit < SCR_MAP_DENSE_MAX ? limit : SCR_MAP_DENSE_MAX;
 }
 
 static void scr_map_dense_alloc(ScrMap *m, size_t n) {
   uint32_t *dense = scr_mem_realloc(m->dense, n * sizeof *dense);
   if (!dense) scr_map_oom();
   m->dense = dense;
-  m->ndense = n;
+  m->ndense = (uint32_t)n;
 }
 
 /* Called when a number-key map's linear scan or bucket table would grow to
@@ -582,7 +585,7 @@ static void scr_map_compact(ScrMap *m, bool reindex) {
     filter |= scr_map_filter_bits(m->entries[r].hash);
     m->entries[w++] = m->entries[r];
   }
-  m->nentries = w;
+  m->nentries = (uint32_t)w;
   m->filter = filter;
   m->head = 0;
   if (m->nbuckets > 0) {
@@ -610,16 +613,21 @@ static void scr_map_compact(ScrMap *m, bool reindex) {
   scr_map_fill_dense(m);
 }
 
+/* The most entries a map holds, tombstones included: its 32-bit counts and
+ * its bucket count (a power of two at least twice the entries) stay in
+ * range. */
+#define SCR_MAP_MAX_ENTRIES ((size_t)1 << 30)
+
+/* The first entry gets an array of one, so a one-entry map keeps no unused
+ * slots; the second grows it to four, and capacity doubles after that. */
 static void scr_map_grow_entries(ScrMap *m) {
-  size_t cap = m->ecap ? m->ecap : 4;
-  while (cap < m->nentries + 1) {
-    if (cap > SIZE_MAX / 2 / sizeof(ScrMapEntry)) scr_map_oom();
-    cap *= 2;
-  }
+  size_t cap = m->ecap == 0 ? 1 : m->ecap < 4 ? 4 : m->ecap;
+  while (cap < m->nentries + 1) cap *= 2;
+  if (cap > SCR_MAP_MAX_ENTRIES) scr_map_oom();
   ScrMapEntry *entries = scr_mem_realloc(m->entries, cap * sizeof *entries);
   if (!entries) scr_map_oom();
   m->entries = entries;
-  m->ecap = cap;
+  m->ecap = (uint32_t)cap;
 }
 
 /* Make room to append one entry. Prefers compaction (tombstone-heavy maps
@@ -663,26 +671,23 @@ static void scr_map_release_key(ScrMap *m, uint64_t key) {
   if (m->key_kind == SCR_MAP_KEY_STR) {
     scr_str_release((ScrStr *)scr_map_slot_to_ptr(key));
   } else if (scr_map_ref_key(m->key_kind)) {
-    m->key_release(scr_map_slot_to_ptr(key));
+    m->ops->key_release(scr_map_slot_to_ptr(key));
   }
 }
 
 static void scr_map_release_val(ScrMap *m, uint64_t val) {
-  if (m->val_kind == SCR_MAP_VAL_REF) m->val_release(scr_map_slot_to_ptr(val));
+  if (m->val_kind == SCR_MAP_VAL_REF) m->ops->val_release(scr_map_slot_to_ptr(val));
 }
 
 /* ── lifecycle ─────────────────────────────────────────────────────────── */
 
-void scr_map_union_keys(ScrMap *map, const uint8_t *kinds) {
-  map->union_keys = kinds;
-}
-
 static void scr_map_trace(void *o, ScrTraceVisit visit, void *ctx) {
   ScrMap *m = (ScrMap *)o;
+  bool keys = m->traced & SCR_MAP_TRACED_KEY, vals = m->traced & SCR_MAP_TRACED_VAL;
   for (size_t e = 0; e < m->nentries; e++) {
     if (!m->entries[e].hash) continue;
-    if (m->key_trace) visit(scr_map_slot_to_ptr(m->entries[e].key), ctx);
-    if (m->val_trace) visit(scr_map_slot_to_ptr(m->entries[e].val), ctx);
+    if (keys) visit(scr_map_slot_to_ptr(m->entries[e].key), ctx);
+    if (vals) visit(scr_map_slot_to_ptr(m->entries[e].val), ctx);
   }
 }
 
@@ -690,11 +695,12 @@ static void scr_map_trace(void *o, ScrTraceVisit visit, void *ctx) {
  * an identity-key map may trace keys, values, or both independently. */
 static void scr_map_gcfree(void *o) {
   ScrMap *m = (ScrMap *)o;
+  bool keys = m->traced & SCR_MAP_TRACED_KEY, vals = m->traced & SCR_MAP_TRACED_VAL;
   scr_weak_dispose(m);
   for (size_t e = 0; e < m->nentries; e++) {
     if (!m->entries[e].hash) continue;
-    if (!m->key_trace) scr_map_release_key(m, m->entries[e].key);
-    if (!m->val_trace) scr_map_release_val(m, m->entries[e].val);
+    if (!keys) scr_map_release_key(m, m->entries[e].key);
+    if (!vals) scr_map_release_val(m, m->entries[e].val);
   }
   scr_mem_free(m->entries);
   scr_mem_free(m->buckets);
@@ -705,25 +711,19 @@ static void scr_map_gcfree(void *o) {
   scr_cyc_free(m);
 }
 
-ScrMap *scr_map_new(ScrMapKeyKind key_kind, ScrMapValKind val_kind,
-                     void *(*val_retain)(void *), void (*val_release)(void *),
-                     ScrTraceFn val_trace) {
-  return scr_map_new_typed(key_kind, val_kind, NULL, NULL, NULL, val_retain, val_release, val_trace);
-}
-
 /* Map construction inlines into its callers; keeping the header allocation
  * out of line keeps those call sites as small as the libc call they had. */
 static __attribute__((noinline)) ScrMap *scr_map_alloc_plain(void) {
   return scr_mem_calloc(sizeof(ScrMap));
 }
 
-ScrMap *scr_map_new_typed(ScrMapKeyKind key_kind, ScrMapValKind val_kind,
-                         void *(*key_retain)(void *), void (*key_release)(void *),
-                         ScrTraceFn key_trace,
-                         void *(*val_retain)(void *), void (*val_release)(void *),
-                         ScrTraceFn val_trace) {
+static const ScrMapOps scr_map_no_ops = {0};
+
+ScrMap *scr_map_new(ScrMapKeyKind key_kind, ScrMapValKind val_kind, const ScrMapOps *ops) {
+  if (!ops) ops = &scr_map_no_ops;
+  unsigned traced = (ops->key_trace ? SCR_MAP_TRACED_KEY : 0) | (ops->val_trace ? SCR_MAP_TRACED_VAL : 0);
   ScrMap *m;
-  if (key_trace || val_trace) {
+  if (traced) {
     /* Either side can point back: collector header + trace. */
     static ScrCycType cyc_type = { &scr_map_trace, &scr_map_gcfree, SCR_CYC_KIND_MAP };
     m = scr_cyc_alloc(sizeof *m, &cyc_type);
@@ -732,14 +732,10 @@ ScrMap *scr_map_new_typed(ScrMapKeyKind key_kind, ScrMapValKind val_kind,
     if (!m) scr_map_oom();
   }
   m->rc = 1;
-  m->key_kind = key_kind;
-  m->val_kind = val_kind;
-  m->val_retain = val_retain;
-  m->val_release = val_release;
-  m->val_trace = val_trace;
-  m->key_retain = key_retain;
-  m->key_release = key_release;
-  m->key_trace = key_trace;
+  m->key_kind = (uint8_t)key_kind;
+  m->val_kind = (uint8_t)val_kind;
+  m->traced = (uint8_t)traced;
+  m->ops = ops;
 #ifdef SCR_RC_AUDIT
   scr_live_maps++;
 #endif
@@ -767,16 +763,16 @@ static void scr_map_destroy(void *object) {
 #ifdef SCR_RC_AUDIT
   scr_live_maps--;
 #endif
-  if (m->key_trace || m->val_trace) scr_cyc_free(m);
+  if (m->traced) scr_cyc_free(m);
   else scr_mem_free(m);
 }
 
 void scr_map_release(ScrMap *m) {
   if (!m || m->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--m->rc == 0) {
-    if (m->key_trace || m->val_trace) scr_cyc_dead(m);
+    if (m->traced) scr_cyc_dead(m);
     scr_rc_destroy(m, scr_map_destroy);
-  } else if (m->key_trace || m->val_trace) {
+  } else if (m->traced) {
     scr_cyc_released(m); /* possible cycle root; may collect — m is done */
   }
 }
@@ -817,7 +813,7 @@ void scr_map_clear(ScrMap *m) {
   }
   m->nlive = 0;
   m->filter = 0;
-  m->head = walked;
+  m->head = (uint32_t)walked;
   if (m->iter_depth == 0) {
     /* Full reset; an active iteration instead keeps the (now all-dead)
      * entries so its indices stay stable — entries added by the callback
@@ -943,16 +939,16 @@ static void scr_map_append(ScrMap *m, uint64_t hash, uint64_t key, uint64_t val,
        * mutate the caller's shared box while normalizing a stored key. */
       m->entries[idx].key = scr_map_slot_from_ptr(scr_dyn_new_num(0));
     } else {
-      m->key_retain(scr_map_slot_to_ptr(key));
+      m->ops->key_retain(scr_map_slot_to_ptr(key));
     }
   } else if (m->key_kind == SCR_MAP_KEY_UNION_VALUE &&
-             m->union_keys[((ScrUnion *)scr_map_slot_to_ptr(key))->tag] == SCR_MAP_KEY_F64 &&
+             m->ops->union_keys[((ScrUnion *)scr_map_slot_to_ptr(key))->tag] == SCR_MAP_KEY_F64 &&
              ((ScrUnion *)scr_map_slot_to_ptr(key))->slot == UINT64_C(0x8000000000000000)) {
     /* Normalize stored -0 without mutating the caller's immutable box. */
     ScrUnion *u = scr_map_slot_to_ptr(key);
     m->entries[idx].key = scr_map_slot_from_ptr(scr_union_new_f64(u->tag, 0));
   } else if (scr_map_ref_key(m->key_kind)) {
-    m->key_retain(scr_map_slot_to_ptr(key)); /* key is borrowed */
+    m->ops->key_retain(scr_map_slot_to_ptr(key)); /* key is borrowed */
   }
   if (m->nbuckets) scr_map_bucket_set(m, slot, idx, hash);
 }
@@ -989,26 +985,35 @@ static __attribute__((noinline)) void scr_map_set_word(ScrMap *m, uint64_t hash,
   scr_map_set_with(m, hash, key, val, SCR_MAP_LOOKUP_WORD);
 }
 
+/* A number-key map with at least this many entries moves to the direct
+ * index when its keys allow it, so small integer keys are indexed before
+ * the linear scan ends. */
+#define SCR_MAP_DENSE_AFTER 4
+
 /* Whether appending one more entry would grow the lookup index rather than
  * reuse tombstones: scr_map_reserve_append compacts a linear map with a
  * dead entry, or a bucket table at most half live, whenever no iteration
- * is active. Only real growth may move a number-key map to the direct
+ * is active. A linear map counts as growing from SCR_MAP_DENSE_AFTER
+ * entries. Only real growth may move a number-key map to the direct
  * index; churn on a small map keeps its compact storage. */
 static inline bool scr_map_append_grows_index(const ScrMap *m) {
   bool compacts = m->iter_depth == 0 && m->nentries > 0;
   if (m->nbuckets == 0)
-    return m->nentries >= SCR_MAP_LINEAR_LIMIT && !(compacts && m->nlive < m->nentries);
+    return m->nentries >= SCR_MAP_DENSE_AFTER && !(compacts && m->nlive < m->nentries);
   return m->nbuckets < 2 * (m->nentries + 1) && !(compacts && m->nlive <= m->nentries / 2);
 }
 
 /* Number keys arrive normalized (+0 for -0, canonical NaN). A directly
  * indexed map overwrites or appends through its table; a key the table
  * cannot hold converts it to hashing first. When an append would grow a
- * hashed map's index, the lookup that decides whether the key is new also
- * overwrites a key that is already present. */
+ * hashed map's index and the key could be indexed directly, the lookup that
+ * decides whether the key is new also overwrites a key that is already
+ * present. */
 static void scr_map_set_f64_slot(ScrMap *m, uint64_t key, uint64_t val) {
   double k = scr_map_slot_to_f64(key);
-  if (!m->ndense && scr_map_append_grows_index(m)) {
+  size_t slot;
+  if (!m->ndense && scr_map_append_grows_index(m) &&
+      scr_map_dense_slot(k, scr_map_dense_limit(m->nlive + 1), &slot)) {
     size_t e = scr_map_find_f64(m, k);
     if (e != SCR_MAP_EMPTY) {
       uint64_t old = m->entries[e].val;
@@ -1016,7 +1021,7 @@ static void scr_map_set_f64_slot(ScrMap *m, uint64_t key, uint64_t val) {
       scr_map_release_val(m, old);
       return;
     }
-    scr_map_enter_dense(m, k); /* the append would grow the index */
+    scr_map_enter_dense(m, k); /* the append would grow the index; the key fits a table */
   }
   if (m->ndense) {
     size_t i;
@@ -1105,10 +1110,6 @@ void scr_map_set_ref_ref(ScrMap *m, void *key, void *v) {
   scr_map_set(m, scr_map_hash_key(m, k), k, scr_map_slot_from_ptr(v));
 }
 
-ScrMap *scr_set_new_ref(void *(*elem_retain)(void *), void (*elem_release)(void *)) {
-  return scr_map_new_typed(SCR_MAP_KEY_REF, SCR_MAP_VAL_F64, elem_retain, elem_release, NULL, NULL, NULL, NULL);
-}
-
 /* ── get ───────────────────────────────────────────────────────────────── */
 
 bool scr_map_get_f64_f64(const ScrMap *m, double key, double *out) {
@@ -1128,7 +1129,7 @@ bool scr_map_get_f64_bool(const ScrMap *m, double key, bool *out) {
 void *scr_map_get_f64_ref(const ScrMap *m, double key) {
   size_t e = scr_map_find_f64(m, key);
   if (e == SCR_MAP_EMPTY) return NULL;
-  return m->val_retain(scr_map_slot_to_ptr(m->entries[e].val)); /* +1 */
+  return m->ops->val_retain(scr_map_slot_to_ptr(m->entries[e].val)); /* +1 */
 }
 
 bool scr_map_get_str_f64(const ScrMap *m, const ScrStr *key, double *out) {
@@ -1204,7 +1205,7 @@ const ScrMapEntry *scr_map_entry_str(const ScrMap *m, const ScrStr *key) {
 void *scr_map_get_str_ref(const ScrMap *m, const ScrStr *key) {
   size_t e = scr_map_find_str(m, key);
   if (e == SCR_MAP_EMPTY) return NULL;
-  return m->val_retain(scr_map_slot_to_ptr(m->entries[e].val)); /* +1 */
+  return m->ops->val_retain(scr_map_slot_to_ptr(m->entries[e].val)); /* +1 */
 }
 
 bool scr_map_get_ref_f64(const ScrMap *m, const void *key, double *out) {
@@ -1224,7 +1225,7 @@ bool scr_map_get_ref_bool(const ScrMap *m, const void *key, bool *out) {
 void *scr_map_get_ref_ref(const ScrMap *m, const void *key) {
   size_t e = scr_map_find_ref(m, key);
   if (e == SCR_MAP_EMPTY) return NULL;
-  return m->val_retain(scr_map_slot_to_ptr(m->entries[e].val));
+  return m->ops->val_retain(scr_map_slot_to_ptr(m->entries[e].val));
 }
 
 /* Boolean keys use unboxed 0/1 slots and the same probe path. */
@@ -1271,7 +1272,7 @@ bool scr_map_get_bool_bool(const ScrMap *m, bool key, bool *out) {
 void *scr_map_get_bool_ref(const ScrMap *m, bool key) {
   size_t entry = scr_map_find_bool(m, key);
   if (entry == SCR_MAP_EMPTY) return NULL;
-  return m->val_retain(scr_map_slot_to_ptr(m->entries[entry].val));
+  return m->ops->val_retain(scr_map_slot_to_ptr(m->entries[entry].val));
 }
 
 /* ── iteration primitives (the forEach desugar) ────────────────────────── */
@@ -1292,7 +1293,7 @@ double scr_map_iter_skip(ScrMap *m, double i) {
   bool from_head = !(i > (double)m->head);
   size_t e = from_head ? m->head : (size_t)i;
   while (e < m->nentries && !m->entries[e].hash) e++;
-  if (from_head && m->rc != SIZE_MAX) m->head = e;
+  if (from_head && m->rc != SIZE_MAX) m->head = (uint32_t)e;
   return e == (size_t)i ? i : (double)e;
 }
 
@@ -1320,7 +1321,7 @@ ScrStr *scr_map_iter_key_str(const ScrMap *m, double i) {
 }
 
 void *scr_map_iter_key_ref(const ScrMap *m, double i) {
-  return m->key_retain(scr_map_slot_to_ptr(scr_map_iter_at(m, i)->key)); /* +1 */
+  return m->ops->key_retain(scr_map_slot_to_ptr(scr_map_iter_at(m, i)->key)); /* +1 */
 }
 
 double scr_map_iter_val_f64(const ScrMap *m, double i) {
@@ -1378,18 +1379,16 @@ void scr_map_dyn_set(ScrMap *map, const ScrDyn *key, const ScrDyn *value, bool s
 
 /* Copy only live entries. The source is borrowed, contains unique keys,
  * and runs no user code while traversed, so cached hashes remain valid. */
-ScrMap *scr_map_clone(const ScrMap *source, bool keys_only) {
-  ScrMap *out = scr_map_new_typed(source->key_kind, keys_only ? SCR_MAP_VAL_F64 : source->val_kind,
-    source->key_retain, source->key_release, source->key_trace,
-    keys_only ? NULL : source->val_retain, keys_only ? NULL : source->val_release,
-    keys_only ? NULL : source->val_trace);
-  out->union_keys = source->union_keys;
+ScrMap *scr_map_clone(const ScrMap *source, bool keys_only, const ScrMapOps *ops) {
+  ScrMap *out = scr_map_new((ScrMapKeyKind)source->key_kind,
+                            keys_only ? SCR_MAP_VAL_F64 : (ScrMapValKind)source->val_kind,
+                            ops ? ops : source->ops);
   size_t count = source->nlive;
   if (!count) return out;
   if (count > SIZE_MAX / sizeof(ScrMapEntry) || count > SIZE_MAX / 2 / sizeof(size_t)) scr_map_oom();
   out->entries = scr_mem_alloc(count * sizeof(ScrMapEntry));
   if (!out->entries) scr_map_oom();
-  out->ecap = count;
+  out->ecap = (uint32_t)count;
   size_t top = 0;
   for (size_t i = 0; i < source->nentries; i++) {
     const ScrMapEntry *entry = &source->entries[i];
@@ -1401,11 +1400,11 @@ ScrMap *scr_map_clone(const ScrMap *source, bool keys_only) {
     ScrMapEntry *copy = &out->entries[out->nentries++];
     *copy = *entry;
     if (out->key_kind == SCR_MAP_KEY_STR) scr_str_retain(scr_map_slot_to_ptr(copy->key));
-    else if (scr_map_ref_key(out->key_kind)) out->key_retain(scr_map_slot_to_ptr(copy->key));
+    else if (scr_map_ref_key(out->key_kind)) out->ops->key_retain(scr_map_slot_to_ptr(copy->key));
     if (keys_only) copy->val = 0;
-    else if (out->val_kind == SCR_MAP_VAL_REF) out->val_retain(scr_map_slot_to_ptr(copy->val));
+    else if (out->val_kind == SCR_MAP_VAL_REF) out->ops->val_retain(scr_map_slot_to_ptr(copy->val));
   }
-  out->nlive = count;
+  out->nlive = (uint32_t)count;
   out->filter = source->filter;
   /* Size the copy's direct index for its own keys, not for the source's
    * peak; keys that are sparse for their count hash instead. */
@@ -1424,13 +1423,19 @@ ScrMap *scr_map_clone(const ScrMap *source, bool keys_only) {
   return out;
 }
 
+const ScrMapOps scr_map_dyn_set_ops = {
+  scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v, NULL, NULL, NULL, NULL
+};
+static const ScrMapOps scr_map_dyn_map_ops = {
+  scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v,
+  scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v, NULL
+};
+
 /* A generic view can be backed by typed slots. Its copy must accept new
  * JavaScript values independently of that backing's narrower adapters. */
 ScrMap *scr_map_clone_dyn(const ScrMap *source, bool keys_only) {
-  ScrMap *out = scr_map_new_typed(SCR_MAP_KEY_DYN, keys_only ? SCR_MAP_VAL_F64 : SCR_MAP_VAL_REF,
-    scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v,
-    keys_only ? NULL : scr_dyn_retain_v, keys_only ? NULL : scr_dyn_release_v,
-    keys_only ? NULL : scr_dyn_trace_v);
+  ScrMap *out = keys_only ? scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64, &scr_map_dyn_set_ops)
+                          : scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_REF, &scr_map_dyn_map_ops);
   for (size_t i = 0; i < source->nentries; i++) {
     if (!source->entries[i].hash) continue;
     ScrDyn *key = scr_map_dyn_key(source, (double)i);
@@ -1461,7 +1466,7 @@ ScrArr *scr_set_to_arr_dyn(const ScrMap *map) {
 }
 
 void *scr_map_iter_val_ref(const ScrMap *m, double i) {
-  return m->val_retain(scr_map_slot_to_ptr(scr_map_iter_at(m, i)->val)); /* +1 */
+  return m->ops->val_retain(scr_map_slot_to_ptr(scr_map_iter_at(m, i)->val)); /* +1 */
 }
 
 /* A published (immortal) map never changes, so iterating it needs no
@@ -1505,7 +1510,7 @@ void scr_set_add_all(ScrMap *set, ScrArr *values) {
     } else if (scr_map_ref_key(set->key_kind)) {
       void *p = scr_arr_get_ref(values, (double)i); /* +1 */
       scr_map_set_ref_f64(set, p, 0);               /* borrows; retains stored copy */
-      set->key_release(p);
+      set->ops->key_release(p);
     } else if (set->key_kind == SCR_MAP_KEY_BOOL) {
       scr_map_set_bool_f64(set, scr_arr_get_bool(values, (double)i), 0);
     } else {
@@ -1527,7 +1532,8 @@ static bool scr_map_key_array_index(const ScrStr *key, uint32_t *out) {
  * order. Scratch entries refer to stable map indices, not copied strings. */
 ScrArr *scr_map_keys_js_order(const ScrMap *m) {
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, m->nlive);
-  if (m->nlive > SIZE_MAX / sizeof(ScrKeyIndex)) scr_map_oom();
+  size_t live = m->nlive;
+  if (live > SIZE_MAX / sizeof(ScrKeyIndex)) scr_map_oom();
   ScrKeyIndex *indices = NULL;
   size_t count = 0;
   for (size_t i = 0; i < m->nentries; i++) {

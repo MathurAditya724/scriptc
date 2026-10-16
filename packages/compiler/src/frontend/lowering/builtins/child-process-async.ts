@@ -16,14 +16,17 @@ import {
   arrayOf,
 } from "../../../ir/ir.js";
 import { optionMember } from "./arguments.js";
+import { execResultShape } from "../../type-mapper.js";
 
 /** A call THROUGH a promisified-execFile binding:
  * `execFileAsync(file, args?, options?)` → one call of the interned
- * %execFileAsync helper — an ASYNC IR function (a throw becomes a rejection
- * automatically) that runs the exec core synchronously and returns
- * `{ stdout, stderr }`, exactly Node's promisified execFile behind an
- * already-settled promise (the fs/promises stance, divergence 23).
- * Options are the exec-sync slice minus stdio (the async form always
+ * %execFileAsync helper (with `shell`, a promisified-exec binding:
+ * `execAsync(command, options?)` → %execAsync, the command line run by
+ * /bin/sh -c as execSync runs it) — an ASYNC IR function (a throw
+ * becomes a rejection automatically) that runs the exec core
+ * synchronously and returns `{ stdout, stderr }`, exactly Node's
+ * promisified execFile/exec behind an already-settled promise (the
+ * fs/promises stance, divergence 23). Options are the exec-sync slice minus stdio (the async form always
  * captures both streams, no echo): encoding must spell utf8, cwd/env/
  * timeout lower, maxBuffer/windowsHide are accepted no-ops, killSignal
  * only as its SIGTERM default. Rejections carry Node's async messages
@@ -35,24 +38,39 @@ export function lowerExecFileAsyncCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   loc: SrcLoc,
+  shell = false,
 ): IrExpr {
+  const what = shell ? "the promisified exec" : "the promisified execFile";
   if (
     expr.arguments.length < 1 ||
-    expr.arguments.length > 3 ||
+    expr.arguments.length > (shell ? 2 : 3) ||
     expr.arguments.some(ts.isSpreadElement)
   ) {
     lowerer.noLowering(
-      "the promisified execFile with this argument shape",
+      `${what} with this argument shape`,
       expr,
-      "the supported form is execFileAsync(file, args?, options?)",
+      shell
+        ? "the supported form is execAsync(command, options?)"
+        : "the supported form is execFileAsync(file, args?, options?)",
     );
   }
-  const cmd = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
-  const argv = lowerChildArgsArg(lowerer, expr.arguments[1], loc);
-  const optsNode = expr.arguments[2];
+  const command = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+  // exec: /bin/sh -c <command>, execSync's lowering (the command string
+  // rides as the argv[1] the failure display reads); execFile: file + its
+  // args list.
+  const cmd: IrExpr = shell ? { kind: "strLit", value: "/bin/sh", type: STRING, loc } : command;
+  const argv: IrExpr = shell
+    ? {
+        kind: "arrayLit",
+        elems: [{ kind: "strLit", value: "-c", type: STRING, loc }, command],
+        type: arrayOf(STRING),
+        loc,
+      }
+    : lowerChildArgsArg(lowerer, expr.arguments[1], loc);
+  const optsNode = expr.arguments[shell ? 1 : 2];
 
   const emptyStr: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
-  const helper = execFileAsyncHelper(lowerer, loc);
+  const helper = execFileAsyncHelper(lowerer, loc, shell);
   const envRecT: IrType = { kind: "record", shapeId: helper.envShapeId };
   const envRec = (has: boolean, pairs: IrExpr): IrExpr => ({
     kind: "recordLit",
@@ -70,7 +88,7 @@ export function lowerExecFileAsyncCall(
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
       lowerer.noLowering(
-        "the promisified execFile with a non-literal options argument",
+        `${what} with a non-literal options argument`,
         optsNode,
         "pass the options inline so each member can be checked",
       );
@@ -108,7 +126,7 @@ export function lowerExecFileAsyncCall(
           continue;
         }
         lowerer.noLowering(
-          "the promisified execFile with this options spread",
+          `${what} with this options spread`,
           p,
           "the one supported spread is the conditional `...(c ? { env: ... } : {})` (either orientation) — write other members inline",
         );
@@ -116,7 +134,7 @@ export function lowerExecFileAsyncCall(
       const m = optionMember(p);
       if (!m) {
         lowerer.noLowering(
-          "the promisified execFile with this options shape",
+          `${what} with this options shape`,
           p,
           "spreads and computed keys have no lowering — write each member inline",
         );
@@ -126,7 +144,7 @@ export function lowerExecFileAsyncCall(
           const t = lowerer.typeOf(m.value);
           if (!t.isStringLiteralType() || (t.value !== "utf8" && t.value !== "utf-8")) {
             lowerer.noLowering(
-              "the promisified execFile with a non-utf8 encoding",
+              `${what} with a non-utf8 encoding`,
               m.value,
               'outputs are captured as utf8 — pass { encoding: "utf8" } (Node\'s own default here)',
             );
@@ -152,7 +170,7 @@ export function lowerExecFileAsyncCall(
           const t = lowerer.typeOf(m.value);
           if (!t.isStringLiteralType() || t.value !== "SIGTERM") {
             lowerer.noLowering(
-              "the promisified execFile with a non-default killSignal",
+              `${what} with a non-default killSignal`,
               m.value,
               "only the SIGTERM default is implemented for the timeout kill",
             );
@@ -161,7 +179,7 @@ export function lowerExecFileAsyncCall(
         }
         default:
           lowerer.noLowering(
-            `the promisified execFile option '${m.name}'`,
+            `${what} option '${m.name}'`,
             p,
             "encoding, cwd, env, timeout, and maxBuffer are the supported options",
           );
@@ -178,19 +196,18 @@ export function lowerExecFileAsyncCall(
 }
 
 /** The interned `%execFileAsync` helper behind promisified-execFile
- * calls: an ASYNC IR function (params: cmd, argv, cwd, hasEnv, envPairs,
- * timeoutMs) whose body runs the may-throw cp.execCapture libCall — the
- * async machinery turns a throw into the rejection, Node's promisified
+ * calls (`%execAsync`, with `shell`, behind promisified-exec ones): an
+ * ASYNC IR function (params: cmd, argv, cwd, env {has, pairs}, timeoutMs)
+ * whose body runs the may-throw cp.execCapture libCall — the async
+ * machinery turns a throw into the rejection, Node's promisified
  * behavior — and returns the `{ stdout, stderr }` record built from the
- * capture. One helper per program (the shape is fixed). */
+ * capture. One helper per program and form (the shape is fixed). */
 function execFileAsyncHelper(
   lowerer: Lowerer,
   loc: SrcLoc,
+  shell: boolean,
 ): { name: string; shapeId: string; envShapeId: string } {
-  const shapeId = lowerer.shapes.intern([
-    { name: "stderr", type: STRING },
-    { name: "stdout", type: STRING },
-  ]);
+  const shapeId = execResultShape(lowerer.shapes);
   // The env choice travels as ONE {has, pairs} record so a conditional
   // env spread's condition evaluates exactly once at the call site (has
   // and pairs both derive from it).
@@ -198,10 +215,10 @@ function execFileAsyncHelper(
     { name: "has", type: BOOL },
     { name: "pairs", type: arrayOf(STRING) },
   ]);
-  const key = "execFileAsync";
+  const key = shell ? "execAsync" : "execFileAsync";
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return { name: existing, shapeId, envShapeId };
-  const name = `%execFileAsync.${lowerer.valueHelpers.size}`;
+  const name = `%${key}.${lowerer.valueHelpers.size}`;
   lowerer.valueHelpers.set(key, name);
   const recT: IrType = { kind: "record", shapeId };
   const envRecT: IrType = { kind: "record", shapeId: envShapeId };
@@ -217,6 +234,7 @@ function execFileAsyncHelper(
         args: [
           varRef("cmd.0", STRING, loc),
           varRef("argv.0", strArrT, loc),
+          boolLit(shell, loc),
           varRef("cwd.0", STRING, loc),
           {
             kind: "recordGet",

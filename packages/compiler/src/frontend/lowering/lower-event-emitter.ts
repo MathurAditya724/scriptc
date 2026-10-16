@@ -2143,3 +2143,109 @@ function emitDispatchExpr(
   }
   return { kind: "call", callee: helper, args: [receiver, ...payload], type: BOOL, loc };
 }
+
+/** The function that boxes one event tuple into the any[] that
+ * events.once fulfills with: a capture-free module function per tuple,
+ * registered as the typed listener's payload builder. */
+function eventsOnceBoxer(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  tuple: IrType[],
+  arrayT: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  const fnType: IrType = { kind: "func", params: tuple, ret: arrayT };
+  const key = `eventsOnce:${typeKey(fnType)}`;
+  let name = lowerer.valueHelpers.get(key);
+  if (name === undefined) {
+    name = `%events.onceArgs.${lowerer.valueHelpers.size}`;
+    lowerer.valueHelpers.set(key, name);
+    const params: IrParam[] = tuple.map((type, i) => ({
+      localId: `%once.a${i}`,
+      name: `arg${i}`,
+      type,
+    }));
+    const getRecord = (id: string) => lowerer.shapes.get(id);
+    const getUnion = (id: string) => lowerer.unions.get(id);
+    for (const type of tuple) {
+      if (type.kind !== "dyn" && !canConvertToDyn(type, getRecord, getUnion)) {
+        lowerer.noLowering(
+          `events.once of an event whose arguments include '${lowerer.fmt(type)}' values`,
+          call,
+          "the awaited arguments arrive as any[], so each must convert to a checked-dynamic value",
+        );
+      }
+    }
+    const elems = params.map((p) => lowerer.coerceInto(call, varRef(p.localId, p.type, loc), DYN));
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: arrayT,
+      locals: params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+      body: [{ kind: "return", value: { kind: "arrayLit", elems, type: arrayT, loc }, loc }],
+      loc,
+    });
+  }
+  return { kind: "closure", fnName: name, captures: [], type: fnType, loc };
+}
+
+/** events.once(emitter, name): a promise of the next `name` event's
+ * arguments as an array, rejected by an earlier 'error' event (unless the
+ * awaited event is 'error'). The emitter's listeners are typed by the
+ * program-wide event table, so the runtime registers one-shot typed
+ * listeners whose compiler-built boxers turn the event's tuple into the
+ * array. EventTarget and stream receivers, computed names and options are
+ * refused. */
+export function lowerEventsOnce(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const args = call.arguments;
+  if (args.length < 2 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering("events.once without an emitter and an event name", call);
+  }
+  if (args.length > 2) {
+    lowerer.noLowering(
+      "events.once with options",
+      args[2]!,
+      "the lowered form is events.once(emitter, name); AbortSignal options are not supported yet",
+    );
+  }
+  // Node's Promise<any[]>: the arguments array of checked-dynamic values.
+  const arrayT = arrayOf(DYN);
+  const resultT: IrType = { kind: "promise", inner: arrayT };
+  const receiver = lowerer.lowerExpr(args[0]!);
+  const info =
+    receiver.type.kind === "object" ? lowerer.classes.get(receiver.type.className) : undefined;
+  if (!emitterRooted(lowerer, info) || streamSidesOf(lowerer, info) !== null) {
+    lowerer.noLowering(
+      "events.once over this value",
+      args[0]!,
+      "the emitter must be an EventEmitter instance; EventTarget and stream receivers are not supported yet",
+    );
+  }
+  const name = literalEventName(lowerer, args[1]!);
+  if (name === null || META_EVENTS.has(name) || name === ERROR_MONITOR_EVENT) {
+    lowerer.noLowering(
+      "events.once with a computed or meta event name",
+      args[1]!,
+      "name the awaited event with a string literal",
+    );
+  }
+  const event = name ?? "";
+  const table = emitterEvents(lowerer);
+  if (event !== "error" && flexibleJsEvent(event, table.get(event))) {
+    lowerer.noLowering(
+      `events.once of the event '${event}', which is emitted with computed names or checked-dynamic listeners`,
+      args[1]!,
+    );
+  }
+  const tuple = tupleOf(lowerer, table, event, call);
+  const errorTuple: IrType[] = [{ kind: "object", className: "%Error" }];
+  const boxer = eventsOnceBoxer(lowerer, call, tuple, arrayT, loc);
+  const errorBoxer = eventsOnceBoxer(lowerer, call, errorTuple, arrayT, loc);
+  return {
+    kind: "libCall",
+    fn: "events.once",
+    args: [receiver, eventNameExpr(event, loc), boxer, errorBoxer, boolLit(event !== "error", loc)],
+    type: resultT,
+    loc,
+  };
+}

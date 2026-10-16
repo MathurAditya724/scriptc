@@ -34,6 +34,7 @@ try {
   const request = JSON.parse(readFileSync(process.argv[3]!, "utf8")) as Request;
   const declarations = new Set<string>();
   const strings: string[] = [];
+  const mapOps: string[] = [];
   const literals: string[] = [];
   const units: { union: string; tag: number }[] = [];
   let needsOom = false;
@@ -92,6 +93,13 @@ try {
       if (index === -1) { index = strings.length; strings.push(text); }
       return `@native_string_${index}`;
     },
+    mapOps: (operands) => {
+      if (operands.every((op) => op === "null")) return "null";
+      const body = operands.join(", ");
+      let index = mapOps.indexOf(body);
+      if (index === -1) { index = mapOps.length; mapOps.push(body); }
+      return `@native_map_ops_${index}`;
+    },
   };
   const functions = new Map(mod.functions.map((fn) => [fn.name, fn]));
   const graph = buildClassGraph(mod, functions);
@@ -147,7 +155,7 @@ try {
     blocks.line("unreachable text must be dropped");
   });
   blocks.terminate("ret void");
-  console.log(JSON.stringify({ layouts, classes, declarations: [...declarations], strings, literals, units, needsOom, needsBadTag, needsUnionNone, helpers, walkers: walkers.defs, bindings, debug: debug.render(), block: blocks.render() }));
+  console.log(JSON.stringify({ layouts, classes, declarations: [...declarations], strings, mapOps, literals, units, needsOom, needsBadTag, needsUnionNone, helpers, walkers: walkers.defs, bindings, debug: debug.render(), block: blocks.render() }));
 } catch (error) {
   if (error instanceof Error) console.log(error.name + ": " + error.message);
   else console.log("unexpected thrown value");

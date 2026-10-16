@@ -2944,7 +2944,8 @@ declare module "child_process" {
   ): unknown;
   /* The async shell form — declared surface without full lowering (the
    * type-level tolerance story): harness code on paths tests don't reach
-   * must typecheck; a reached call fences at its site. */
+   * must typecheck; a reached call fences at its site. util.promisify
+   * recognizes it statically, as it does execFile. */
   export function exec(
     command: string,
     options?: ExecSyncOptions | ((error: Error | null, stdout: string, stderr: string) => void),
@@ -2955,9 +2956,10 @@ declare module "node:child_process" {
   export * from "child_process";
 }
 
-/* node:util — compile-time projections for child_process.execFile and
- * fs.readFile. The former retains Node's custom { stdout, stderr } result;
- * the latter resolves the callback's data argument. Other targets and bare
+/* node:util — compile-time projections for child_process.execFile,
+ * child_process.exec and fs.readFile. The first two retain Node's custom
+ * { stdout, stderr } result; the last resolves the callback's data
+ * argument. Other targets and bare
  * promisify values fence per site. */
 declare module "util" {
   export * as types from "util/types";
@@ -3039,6 +3041,18 @@ declare module "util" {
   ): (
     file: string,
     args?: string[],
+    options?: {
+      encoding?: "utf8" | "utf-8";
+      cwd?: string;
+      env?: { [k: string]: string | undefined };
+      timeout?: number;
+      maxBuffer?: number;
+      killSignal?: string;
+      windowsHide?: boolean;
+    },
+  ) => Promise<{ stdout: string; stderr: string }>;
+  export function promisify(fn: typeof import("node:child_process").exec): (
+    command: string,
     options?: {
       encoding?: "utf8" | "utf-8";
       cwd?: string;
@@ -4575,7 +4589,7 @@ declare module "tls" {
   }
   export function createServer(
     options: TlsOptions,
-    secureConnectionListener?: (socket: Socket) => void,
+    secureConnectionListener?: (socket: TLSSocket) => void,
   ): Server;
   /** TLSSocket — post-handshake it IS a net socket to every lowered
    * member (the mapping collapses it onto the socket kind; the
@@ -4586,7 +4600,20 @@ declare module "tls" {
   export interface TLSSocket extends Socket {
     authorized: boolean;
     authorizationError: string | null;
+    /* null before the handshake, then the negotiated protocol or false */
+    readonly alpnProtocol: string | false | null;
+    /* "TLSv1.2" or "TLSv1.3"; null before the handshake and after close */
+    getProtocol(): string | null;
+    /* OpenSSL's suite name, the IANA name and the suite's version */
+    getCipher(): CipherNameAndProtocol;
   }
+  export interface CipherNameAndProtocol {
+    name: string;
+    standardName: string;
+    version: string;
+  }
+  export const DEFAULT_MIN_VERSION: string;
+  export const DEFAULT_MAX_VERSION: string;
   /** tls.connect options — the RUNTIME options record (members read at
    * runtime; port/host/rejectUnauthorized/ca/servername are the
    * honestly-implemented set, every other documented member throws the
@@ -5662,7 +5689,12 @@ declare module "events" {
     // The class under its own name, so `import { EventEmitter }` resolves
     // (the @types/node namespace-alias pattern).
     export { internal as EventEmitter };
-    export function once(emitter: EventEmitter, eventName: string): Promise<any[]>;
+    // The event's arguments, as checked-dynamic values.
+    export function once(
+      emitter: EventEmitter,
+      eventName: string,
+      options?: { signal?: AbortSignal },
+    ): Promise<unknown[]>;
   }
   export = EventEmitter;
 }

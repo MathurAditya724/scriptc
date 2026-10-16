@@ -2229,6 +2229,20 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.tls.DEFAULT_MAX_VERSION",
+      "kind": "node-builtin",
+      "name": "tls.DEFAULT_MAX_VERSION",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.tls.DEFAULT_MIN_VERSION",
+      "kind": "node-builtin",
+      "name": "tls.DEFAULT_MIN_VERSION",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
       "id": "node-builtin.tls.connect",
       "kind": "node-builtin",
       "name": "tls.connect",
@@ -2412,7 +2426,7 @@
       "name": "util.promisify",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the lowered shapes are const bindings over child_process.execFile and fs.readFile; call the bound function directly"
+      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec and fs.readFile; call the bound function directly"
     },
     {
       "id": "node-builtin.util.stripVTControlCharacters",

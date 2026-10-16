@@ -802,6 +802,66 @@ export function emitterFixedAdapter(
   return { fn: sym, shim };
 }
 
+/** The typed listener adapter for an events.once boxer of type `boxerT`
+ * (the event's tuple to any[]): the runtime-built listener closure holds
+ * the boxer in caps[0], so the adapter calls it with the event's typed
+ * arguments, as emitterFixedAdapter calls a listener, and hands the array
+ * to scr_events_once_fire. */
+export function emitterOnceAdapter(
+  host: LlvmEmitterContext,
+  boxerT: IrType & { kind: "func" },
+): { fn: string; shim: string } {
+  const cursor = boxerT.params.length > 4;
+  const shim = cursor ? "scr_ee_inv_args" : `scr_ee_inv_fixed${boxerT.params.length}`;
+  if (cursor) host.declare("declare ptr @scr_ee_arg_next(ptr)");
+  host.declare(`declare void @${shim}(ptr, ptr)`);
+  const key = `eeOnce:${typeKey(boxerT)}`;
+  let sym = host.resolveThunks.get(key);
+  if (sym) return { fn: sym, shim };
+  sym = `sc_ee_once_${host.resolveThunks.size}`;
+  host.resolveThunks.set(key, sym);
+  host.declare(`declare ptr @scr_box_get_ref(ptr)`);
+  host.declare(`declare void @scr_closure_release(ptr)`);
+  host.declare(`declare void @scr_events_once_fire(ptr, ptr)`);
+  const params = cursor ? "ptr %args" : boxerT.params.map((_, i) => `ptr %a${i}`).join(", ");
+  const d: string[] = [
+    `define internal void @${sym}(ptr %cb${params ? ", " + params : ""}) ${FN_ATTRS} { ; events.once adapter ${typeKey(boxerT)}`,
+    `entry:`,
+    `  %capsp = getelementptr inbounds %ScrClosure, ptr %cb, i64 1`,
+    `  %bx = load ptr, ptr %capsp`,
+    `  %boxer = call ptr @scr_box_get_ref(ptr %bx) ; +1`,
+  ];
+  const passed: string[] = ["ptr %boxer"];
+  boxerT.params.forEach((p, i) => {
+    if (cursor) d.push(`  %a${i} = call ptr @scr_ee_arg_next(ptr %args)`);
+    const ty = host.llType(p);
+    if (ty === "double") {
+      d.push(`  %d${i} = load double, ptr %a${i}`);
+      passed.push(`double %d${i}`);
+    } else if (ty === "i1") {
+      d.push(`  %b${i} = load i1, ptr %a${i}`);
+      passed.push(`i1 %b${i}`);
+    } else if (isRefCounted(p)) {
+      d.push(`  %r${i} = call ptr ${retainSym(host.shapeHost, p)}(ptr %a${i})`);
+      passed.push(`ptr %r${i}`);
+    } else {
+      passed.push(`ptr %a${i}`);
+    }
+  });
+  d.push(
+    `  %fnp = getelementptr inbounds %ScrClosure, ptr %boxer, i64 0, i32 1`,
+    `  %fn = load ptr, ptr %fnp`,
+    `  %arr = call ptr %fn(${passed.join(", ")}) ; the boxed arguments, +1`,
+    `  call void @scr_closure_release(ptr %boxer)`,
+    `  call void @scr_events_once_fire(ptr %cb, ptr %arr) ; moves %arr`,
+    `  ret void`,
+    `}`,
+    ``,
+  );
+  host.resolveThunkDefs.push(...d);
+  return { fn: sym, shim };
+}
+
 export function wrapEmitterListener(
   host: LlvmEmitterContext,
   target: string,

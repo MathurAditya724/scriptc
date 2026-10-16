@@ -86,6 +86,24 @@ export function findInitializerBindings(mod: IrModule): ReadonlyMap<string, IrGl
   return result;
 }
 
+/** The candidates for local storage: number bindings whose slots the
+ * initializer could keep in a local of its own. No other code reads or
+ * writes them (that is what makes them initializer bindings), and the
+ * guard runs the initializer's body at most once, so a local that starts at
+ * the global's zero value is indistinguishable from the global. Import-cycle
+ * bindings keep their global: their initialization flag is checked by code
+ * outside the initializer. */
+export function initializerLocalCandidates(bindings: readonly IrGlobal[]): IrGlobal[] {
+  return bindings.filter((g) => g.type.kind === "f64" && g.initFlag === undefined);
+}
+
+/** An analysis view that lists bindings as plain locals: their writes, not
+ * an incoming value, decide their storage (see initializerLocalCandidates). */
+export function withInitializerLocals(fn: IrFunction, bindings: readonly IrGlobal[]): IrFunction {
+  if (!bindings.length) return fn;
+  return { ...fn, locals: [...fn.locals, ...bindings] };
+}
+
 /** An analysis view only: parameters seed numeric-view initialization, not
  * integer ranges. Code generation still uses the original ABI and globals. */
 export function withInitializerBindings(fn: IrFunction, bindings: readonly IrGlobal[]): IrFunction {

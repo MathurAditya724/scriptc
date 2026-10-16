@@ -830,7 +830,7 @@ void scr_env_unset(const ScrStr *name) {
 #endif
 }
 
-static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file);
+static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file, size_t *ascii);
 
 /* Node's dotenv parser trims ASCII space/tab/newline and removes every CR,
  * including CR inside quoted values. Quoted values can span lines; only
@@ -1045,7 +1045,7 @@ void scr_process_load_env_file(const ScrDyn *value) {
     scr_str_release(path);
     return;
   }
-  ScrStr *content = scr_fs_read_file_core(path, true);
+  ScrStr *content = scr_fs_read_file_core(path, true, NULL);
   scr_str_release(path);
   if (!content) return;
   ScrDyn *entries = scr_env_parse_content(content, false);
@@ -3055,6 +3055,7 @@ typedef struct {
   ScrStr *text;
   uint8_t *bytes;
   size_t len, cap;
+  size_t ascii; /* text: length of the proven-ASCII prefix */
 } ScrFileRead;
 
 static size_t scr_file_read_hint(FILE *stream, int fd) {
@@ -3128,7 +3129,12 @@ static int scr_file_read_all(FILE *stream, int fd, bool text, ScrFileRead *out) 
       if (full) {
         scr_file_read_grow(out);
         scr_file_read_data(out)[out->len] = extra;
+        dest = scr_file_read_data(out) + out->len;
       }
+      /* Text reads scan each chunk for ASCII while it is still in cache,
+       * so a whole-file UTF-8 check usually has nothing left to do. */
+      if (out->text && out->ascii == out->len)
+        out->ascii += scr_bytes_ascii_span((const char *)dest, count);
       out->len += count;
     }
     if (error == EINTR) {
@@ -3157,7 +3163,7 @@ static int scr_file_read_all(FILE *stream, int fd, bool text, ScrFileRead *out) 
   return 0;
 }
 
-static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file) {
+static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file, size_t *ascii) {
   FILE *f = scr_fs_fopen(path, "rb");
   if (!f) {
     scr_fs_throw(errno, "open", path);
@@ -3179,6 +3185,7 @@ static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file) {
     } else scr_fs_throw(error, "read", path);
     return NULL;
   }
+  if (ascii) *ascii = out.ascii;
   return out.text;
 }
 
@@ -3192,8 +3199,13 @@ ScrBytes *scr_fs_read_file_bytes(ScrStr *path) {
   return scr_bytes_take_data(out.bytes, out.len);
 }
 
+/* readFileSync(path, "utf8") and fs.promises.readFile(path, "utf8"): the
+ * file is read straight into string storage and decoded in place (Node's
+ * Buffer utf8 decode: U+FFFD per malformed subpart, a BOM is kept). */
 ScrStr *scr_fs_read_file(ScrStr *path) {
-  return scr_fs_read_file_core(path, false);
+  size_t ascii = 0;
+  ScrStr *raw = scr_fs_read_file_core(path, false, &ascii);
+  return raw ? scr_str_adopt_utf8_lossy(raw, ascii) : NULL;
 }
 
 static ScrStr *scr_fs_realpath_common(ScrStr *path, const char *op) {
@@ -4811,7 +4823,7 @@ ScrStr *scr_fs_read_fd(double fd) {
   ScrFileRead out;
   int error = scr_file_read_all(NULL, (int)fd, true, &out);
   if (error) { scr_fs_throw_nopath(error, "read"); return NULL; }
-  return out.text;
+  return scr_str_adopt_utf8_lossy(out.text, out.ascii);
 }
 
 ScrBytes *scr_fs_read_fd_bytes(double fd) {

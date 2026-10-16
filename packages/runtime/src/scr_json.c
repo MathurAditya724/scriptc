@@ -3401,7 +3401,7 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag) {
   d->v.handle.traced = tag == SCR_DYNH_WEAK_MAP || tag == SCR_DYNH_WEAK_SET ||
       tag == SCR_DYNH_WORKER || tag == SCR_DYNH_MESSAGE_PORT ||
       ((tag == SCR_DYNH_SET || tag == SCR_DYNH_MAP) &&
-       (((ScrMap *)h)->key_trace != NULL || ((ScrMap *)h)->val_trace != NULL));
+       ((ScrMap *)h)->traced != 0);
   return d;
 }
 
@@ -7117,6 +7117,44 @@ static bool scr_json_lit(ScrJsonP *p, const char *word, size_t n) {
   return false;
 }
 
+/* JSON.parse builds arrays and objects by appending, which leaves up to
+ * half of their storage unused; the parsed tree is usually kept as it is.
+ * When an array or object closes, its storage moves to a block of its
+ * length (shrinking in place would keep the block's size class). A table
+ * recycled from the free list may hold keys past its length; they are
+ * released first. */
+static void *scr_json_fit_block(void *block, size_t bytes) {
+  void *fitted = scr_mem_alloc(bytes);
+  if (!fitted) return NULL;
+  memcpy(fitted, block, bytes);
+  scr_mem_free(block);
+  return fitted;
+}
+
+static void scr_json_fit_array(ScrDyn *arr) {
+  size_t len = arr->v.arr.len;
+  if (len == 0 || len == arr->v.arr.cap || arr->v.arr.presence) return;
+  ScrDyn **items = scr_json_fit_block(arr->v.arr.items, len * sizeof *items);
+  if (!items) return; /* keep the larger block */
+  arr->v.arr.items = items;
+  arr->v.arr.cap = len;
+}
+
+static void scr_json_fit_object(ScrDyn *obj) {
+  size_t len = obj->v.obj.len, cap = obj->v.obj.cap;
+  if (len == 0 || len == cap) return;
+  for (size_t i = len; i < cap; i++) {
+    ScrDynEntry *entry = &obj->v.obj.entries[i];
+    scr_dyn_key_release(entry->key, entry->key_len);
+    entry->key = NULL;
+    entry->key_len = 0;
+  }
+  ScrDynEntry *entries = scr_json_fit_block(obj->v.obj.entries, len * sizeof *entries);
+  if (!entries) return; /* keep the larger block; its tail holds no keys */
+  obj->v.obj.entries = entries;
+  obj->v.obj.cap = len;
+}
+
 static ScrDyn *scr_json_array(ScrJsonP *p) {
   p->pos++; /* '[' */
   ScrDyn *arr = scr_dyn_alloc(SCR_DYN_ARR);
@@ -7144,6 +7182,7 @@ static ScrDyn *scr_json_array(ScrJsonP *p) {
     }
     if (p->s[p->pos] == ']') {
       p->pos++;
+      scr_json_fit_array(arr);
       return arr;
     }
     scr_dyn_release(arr);
@@ -7228,6 +7267,7 @@ static ScrDyn *scr_json_object(ScrJsonP *p) {
     }
     if (p->s[p->pos] == '}') {
       p->pos++;
+      scr_json_fit_object(obj);
       return obj;
     }
     scr_dyn_release(obj);
@@ -11246,8 +11286,7 @@ ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed) {
     items = scr_dyn_iter_pack(seed, NULL);
     if (!items) return NULL;
   }
-  ScrMap *set = scr_map_new_typed(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64,
-    scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v, NULL, NULL, NULL);
+  ScrMap *set = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64, &scr_map_dyn_set_ops);
   if (items) for (size_t i = 0; i < items->v.arr.len; i++) scr_map_set_ref_f64(set, items->v.arr.items[i], 0);
   ScrDyn *result = scr_dyn_native_set(set);
   scr_map_release(set);

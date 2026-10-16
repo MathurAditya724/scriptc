@@ -326,6 +326,45 @@ export function classForInHasKey(
 ): IrExpr {
   const name = "%dyn.class.forInHasKey";
   if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    // The read-only table: a recheck never creates an instance's table, which
+    // is undefined while the instance has no own dynamic properties.
+    const bagHas = "%dyn.class.forInBagHas";
+    const bag = varRef("bag", DYN, loc);
+    lowerer.liftedFns.push({
+      name: bagHas,
+      params: [
+        { localId: "bag", name: "bag", type: DYN },
+        { localId: "key", name: "key", type: STRING },
+      ],
+      returnType: BOOL,
+      locals: [
+        { id: "bag", name: "bag", type: DYN, mutable: false },
+        { id: "key", name: "key", type: STRING, mutable: false },
+      ],
+      body: [
+        {
+          kind: "if",
+          cond: { kind: "dynTest", test: "undefined", value: bag, type: BOOL, loc },
+          then: [
+            { kind: "return", value: { kind: "boolLit", value: false, type: BOOL, loc }, loc },
+          ],
+          else_: null,
+          loc,
+        },
+        {
+          kind: "return",
+          value: {
+            kind: "libCall",
+            fn: "dyn.hasKey",
+            args: [bag, varRef("key", STRING, loc)],
+            type: BOOL,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
     lowerer.liftedFns.push({
       name,
       params: [
@@ -344,12 +383,12 @@ export function classForInHasKey(
             kind: "logical",
             op: "||",
             left: {
-              kind: "libCall",
-              fn: "dyn.hasKey",
+              kind: "call",
+              callee: bagHas,
               args: [
                 {
                   kind: "call",
-                  callee: classPropertiesHelper(lowerer, loc).name,
+                  callee: classPropertiesHelper(lowerer, loc, true).name,
                   args: [varRef("value", DYN, loc)],
                   type: DYN,
                   loc,

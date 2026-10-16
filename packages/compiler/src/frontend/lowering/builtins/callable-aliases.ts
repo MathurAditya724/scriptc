@@ -12,8 +12,13 @@ export function isPromisifyCall(lowerer: Lowerer, init: ts.Expression): ts.CallE
   let e: ts.Expression = init;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (!ts.isCallExpression(e) || e.questionDotToken) return null;
-  if (!ts.isIdentifier(e.expression)) return null;
-  const bi = lowerer.builtinImportOf(e.expression);
+  // `promisify(...)` over a named import, `util.promisify(...)` over a
+  // namespace or default import.
+  const bi = ts.isIdentifier(e.expression)
+    ? lowerer.builtinImportOf(e.expression)
+    : ts.isPropertyAccessExpression(e.expression)
+      ? lowerer.builtinMemberOf(e.expression)
+      : null;
   if (!bi || bi.module !== "util" || bi.member !== "promisify") return null;
   return e;
 }
@@ -73,18 +78,28 @@ export function registerPromisifiedBuiltinDecl(
   const e = isPromisifyCall(lowerer, init);
   if (!e) return false;
   const argNode = e.arguments.length === 1 ? e.arguments[0]! : null;
-  const target = argNode && ts.isIdentifier(argNode) ? lowerer.builtinImportOf(argNode) : null;
+  // `promisify(exec)` over a named import, or `promisify(cp.exec)` over a
+  // namespace import.
+  const target = !argNode
+    ? null
+    : ts.isIdentifier(argNode)
+      ? lowerer.builtinImportOf(argNode)
+      : ts.isPropertyAccessExpression(argNode)
+        ? lowerer.builtinMemberOf(argNode)
+        : null;
   const projection =
     target?.module === "child_process" && target.member === "execFile"
       ? { kind: "promisified-exec-file" as const }
-      : target?.module === "fs" && target.member === "readFile"
-        ? { kind: "promisified-builtin" as const, module: "fs/promises", member: "readFile" }
-        : null;
+      : target?.module === "child_process" && target.member === "exec"
+        ? { kind: "promisified-exec" as const }
+        : target?.module === "fs" && target.member === "readFile"
+          ? { kind: "promisified-builtin" as const, module: "fs/promises", member: "readFile" }
+          : null;
   if (!projection) {
     lowerer.noLowering(
       "util.promisify of this target",
       argNode ?? e,
-      "child_process.execFile and fs.readFile are the supported targets",
+      "child_process.exec, child_process.execFile and fs.readFile are the supported targets",
     );
   }
   const symbol = lowerer.checker.getSymbolAtLocation(nameNode);

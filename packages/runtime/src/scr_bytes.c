@@ -1049,15 +1049,7 @@ static void scr_td_invalid(const char *encoding) {
 
 /* Stop before the first non-ASCII byte; every word load stays in the span. */
 static size_t scr_bytes_ascii_prefix(const uint8_t *data, size_t len) {
-  size_t i = 0;
-  while (len - i >= sizeof(uint64_t)) {
-    uint64_t word;
-    memcpy(&word, data + i, sizeof word);
-    if (word & UINT64_C(0x8080808080808080)) break;
-    i += sizeof word;
-  }
-  while (i < len && data[i] < 0x80) i++;
-  return i;
+  return scr_bytes_ascii_span((const char *)data, len);
 }
 
 /* Length of the well-formed prefix. On failure, next skips exactly the
@@ -1135,6 +1127,44 @@ static ScrStr *scr_bytes_decode_utf8(const uint8_t *in, size_t n) {
 
 ScrStr *scr_str_from_utf8_lossy(const uint8_t *bytes, size_t len) {
   return scr_bytes_decode_utf8(bytes, len);
+}
+
+/* The WHATWG decode above for bytes already read into string storage (file
+ * contents): well-formed input, by far the common case, keeps its storage
+ * and records whether it is all ASCII, so the read needs neither an
+ * intermediate buffer nor a copy. Only malformed input is repaired into a
+ * new string. Consumes the uniquely owned `raw`; returns +1. */
+ScrStr *scr_str_adopt_utf8_lossy(ScrStr *raw, size_t ascii) {
+  const uint8_t *in = (const uint8_t *)raw->data;
+  size_t n = raw->len;
+  if (ascii > n) ascii = n;
+  ascii += scr_bytes_ascii_prefix(in + ascii, n - ascii);
+  if (ascii == n) {
+    scr_str_note_ascii(raw);
+    return raw;
+  }
+  size_t next;
+  size_t prefix = ascii + scr_bytes_utf8_prefix(in + ascii, n - ascii, &next);
+  if (prefix == n) return raw;
+  next += ascii;
+  size_t length = scr_bytes_utf8_repair(in, n, prefix, next, NULL);
+  ScrStr *s = scr_str_alloc_raw(length, length);
+  scr_bytes_utf8_repair(in, n, prefix, next, s->data);
+  s->data[length] = '\0';
+  scr_str_release(raw);
+  return s;
+}
+
+/* Whether a validated runtime encoding name decodes as UTF-8: Node's ASCII
+ * case-insensitive "utf8" / "utf-8" spellings. */
+bool scr_bytes_encoding_is_utf8(const ScrStr *enc) {
+  if (enc->len != 4 && enc->len != 5) return false;
+  char name[5];
+  for (size_t i = 0; i < enc->len; i++) {
+    char c = enc->data[i];
+    name[i] = c >= 'A' && c <= 'Z' ? (char)(c + ('a' - 'A')) : c;
+  }
+  return enc->len == 4 ? memcmp(name, "utf8", 4) == 0 : memcmp(name, "utf-8", 5) == 0;
 }
 
 /* WHATWG TextDecoder.decode (utf-8, default options): the SAME maximal-

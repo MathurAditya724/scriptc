@@ -25,6 +25,9 @@ interface Stats {
   summaries: string[];
   /** SCRIPTC_REGION_DEBUG's report lines, in order. */
   report: string[];
+  /** Per thread, the cycle-collector passes over its heap that releases
+   * needed, sorted. */
+  heapPasses: number[];
   stdout: string;
 }
 
@@ -48,11 +51,13 @@ async function run(
       env: { ...process.env, SCRIPTC_REGION_STATS: "1", ...env },
       timeout: 120_000,
     });
-    const stats: Stats = { attempts: [], summaries: [], report: [], stdout };
+    const stats: Stats = { attempts: [], summaries: [], report: [], heapPasses: [], stdout };
     for (const line of stderr.split("\n")) {
       if (line === "" || line.startsWith("scriptc RC audit skipped:")) continue;
       const attempt = /^scriptc region (\d+): (freed|kept|pinned)\b/.exec(line);
+      const passes = /^scriptc region heap passes: (\d+)$/.exec(line);
       if (attempt) stats.attempts.push(`${attempt[1]} ${attempt[2]}`);
+      else if (passes) stats.heapPasses.push(Number(passes[1]));
       else if (line.startsWith("scriptc regions: ")) stats.summaries.push(line.slice(17));
       else if (
         /^scriptc region \d+: -?\d+ references from outside keep it:$/.test(line) ||
@@ -64,6 +69,7 @@ async function run(
         throw new Error(`unexpected stderr line: ${line}`);
     }
     stats.summaries.sort();
+    stats.heapPasses.sort((a, b) => a - b);
     return stats;
   } finally {
     await rm(outDir, { recursive: true, force: true });
@@ -129,6 +135,12 @@ describe.skipIf(process.platform === "win32")("lifetime regions", { timeout: 240
       expect(stats.attempts, program).toEqual(
         Array.from({ length: regions }, (_, i) => `${i + 1} freed`),
       );
+      // Owned cycles go without a pass over the heap. In 5017 each region is
+      // also referred to by a dead cycle outside it, which only such a pass
+      // finds.
+      expect(stats.heapPasses, program).toEqual([
+        program === "5017-lifetime-region-cycles.ts" ? regions : 0,
+      ]);
     }
   });
 
@@ -158,5 +170,6 @@ describe.skipIf(process.platform === "win32")("lifetime regions", { timeout: 240
     expect(publish.attempts).toContain("1 pinned");
     const workers = await run("5022-lifetime-region-workers.ts");
     expect(workers.summaries).toEqual([summary(6, 6), summary(8, 8), summary(8, 8), summary(8, 8)]);
+    expect(workers.heapPasses).toEqual([0, 0, 0, 0]);
   });
 });

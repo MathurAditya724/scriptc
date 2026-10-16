@@ -66,7 +66,11 @@ test("module-private numeric proofs retain global ownership and exclude shared b
     const mod = deserializeModule(await readFile(outPath, "utf8"));
     for (const pointerBits of [32, 64] as const) {
       const ll = emitLlvmModule(mod, { pointerBits, wasi: pointerBits === 32 });
-      expect(ll).toContain("integer view checksum");
+      // Every write of checksum is a proven uint32, so the initializer keeps it
+      // in an i32 local of its own instead of a double global with a view.
+      expect(ll).toMatch(/%sc_l_\w*checksum = alloca i32 ; checksum/);
+      expect(ll).not.toContain("integer view checksum");
+      expect(ll).not.toMatch(/load double, ptr @sc_g_\w*checksum/);
       expect(ll).toContain("integer view state");
       expect(ll).toContain("integer induction offset");
       expect(ll).not.toContain("integer view sharedNumber");
