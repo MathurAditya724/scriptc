@@ -16,6 +16,7 @@
  * everything: local runs are unchanged.
  */
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 export interface ShardSpec {
   /** 1-based shard index. */
@@ -90,6 +91,30 @@ export function balancedShardSelect<T>(
     owners[item.index] = slice + 1;
   }
   return items.filter((_, index) => owners[index] === spec.index);
+}
+
+/** Measured milliseconds per corpus program and flavor (corpus-costs.json): its differential plus
+ * llvm-differential case on a CI runner. */
+type CorpusCosts = { plain: Record<string, number>; san: Record<string, number> };
+let corpusCostTable: CorpusCosts | undefined;
+
+/** The corpus programs this shard owns, balanced by measured cost. differential.test.ts and
+ * llvm-differential.test.ts both select with this, so a shard owns the same programs in both lanes and their
+ * compile cache serves both. A program without a measurement weighs as much as the median measured one, so
+ * new programs spread evenly; the union of the shards still runs every program exactly once. */
+export function corpusSelect<T>(
+  items: readonly T[],
+  keyOf: (item: T) => string,
+  sanitize: boolean,
+  spec: ShardSpec | undefined = parseShardSpec(),
+): T[] {
+  corpusCostTable ??= JSON.parse(
+    readFileSync(new URL("./corpus-costs.json", import.meta.url), "utf8"),
+  ) as CorpusCosts;
+  const costs = sanitize ? corpusCostTable.san : corpusCostTable.plain;
+  const known = Object.values(costs).sort((a, b) => a - b);
+  const median = known.length === 0 ? 1 : known[Math.floor(known.length / 2)]!;
+  return balancedShardSelect(items, keyOf, (item) => costs[keyOf(item)] ?? median, spec);
 }
 
 /** Suffix for describe titles so shard membership is visible in CI logs:
