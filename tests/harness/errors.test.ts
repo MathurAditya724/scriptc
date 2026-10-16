@@ -789,3 +789,113 @@ console.log(\`\${register(7)}\`);
     expect(r.stderr).toBe("");
   });
 });
+
+// A cipher name Node lists in crypto.getCiphers() but the runtime does not
+// implement throws a coded SC2020 error naming the cipher when the name is
+// computed; literal names are refused at compile time (node-types-fenced).
+describe("unimplemented cipher names", () => {
+  test("a computed cipher name throws SC2020 naming the cipher", async () => {
+    const r = await compileAndRun(
+      "cipher-computed-name",
+      `import { createCipheriv } from "node:crypto";
+const mode = ["c", "c", "m"].join("");
+try {
+  createCipheriv("aes-128-" + mode, Buffer.alloc(16), Buffer.alloc(12));
+} catch (error) {
+  const e = error as Error & { code?: string };
+  console.log(e.name, e.code, e.message);
+}
+try {
+  createCipheriv("aes-128-" + mode.slice(1), Buffer.alloc(16), Buffer.alloc(12));
+} catch (error) {
+  const e = error as Error & { code?: string };
+  console.log(e.name, e.code, e.message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Error SC2020 The cipher 'aes-128-ccm' has no native implementation; the supported ciphers are " +
+        "aes-128-cbc, aes-192-cbc, aes-256-cbc, aes-128-ctr, aes-192-ctr, aes-256-ctr, aes-128-gcm, " +
+        "aes-192-gcm, aes-256-gcm and chacha20-poly1305\n" +
+        "Error ERR_CRYPTO_UNKNOWN_CIPHER Unknown cipher\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+});
+
+// Node formats an unknown output encoding with %s, which prints a
+// function's source text and calls a toString the encoding's class
+// defines. The cipher runtime has neither, so both throw a coded SC2020
+// error.
+describe("cipher output encodings that print through source text or a class toString", () => {
+  test("update() and final() throw SC2020", async () => {
+    const r = await compileAndRun(
+      "cipher-encoding-class-to-string",
+      `import { createCipheriv } from "node:crypto";
+class Encoding {
+  name: string;
+  constructor(name: string) {
+    this.name = name;
+  }
+  toString(): string {
+    return this.name;
+  }
+}
+const instance: any = new Encoding("nope");
+const fn: any = () => "nope";
+try {
+  createCipheriv("aes-128-ctr", Buffer.alloc(16), Buffer.alloc(16)).final(instance);
+} catch (error) {
+  const e = error as Error & { code?: string };
+  console.log(e.name, e.code, e.message);
+}
+try {
+  createCipheriv("aes-128-ctr", Buffer.alloc(16), Buffer.alloc(16)).update("abc", "utf8", fn);
+} catch (error) {
+  const e = error as Error & { code?: string };
+  console.log(e.name, e.code, e.message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    const message =
+      "Error SC2020 An output encoding that is a function or an instance of a class defining toString has no lowering; " +
+      "pass the encoding name as a string\n";
+    expect(r.stdout).toBe(message + message);
+    expect(r.stderr).toBe("");
+  });
+});
+
+// Node 24.22 skips the chacha20-poly1305 tag check when neither
+// setAuthTag() nor authTagLength was used, and returns unverified
+// plaintext. scriptc keeps Node 24.15's behavior: final() fails.
+describe("chacha20-poly1305 decryption without a tag", () => {
+  test("final() fails instead of returning unverified plaintext", async () => {
+    const r = await compileAndRun(
+      "cipher-chacha-no-tag",
+      `import { createCipheriv, createDecipheriv } from "node:crypto";
+const key = Buffer.alloc(32, 1);
+const iv = Buffer.alloc(12, 2);
+const cipher = createCipheriv("chacha20-poly1305", key, iv);
+const ciphertext = Buffer.concat([cipher.update("secret"), cipher.final()]);
+for (const input of [ciphertext, Buffer.from("forged data"), Buffer.alloc(0)]) {
+  const decipher = createDecipheriv("chacha20-poly1305", key, iv);
+  const text = decipher.update(input);
+  try {
+    decipher.final();
+    console.log("accepted", text.toString("hex"));
+  } catch (error) {
+    const e = error as Error & { code?: string };
+    console.log(e.name, e.code, e.message);
+  }
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Error undefined Unsupported state or unable to authenticate data\n".repeat(3),
+    );
+    expect(r.stderr).toBe("");
+  });
+});

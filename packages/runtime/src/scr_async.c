@@ -3205,6 +3205,43 @@ ScrPromise *scr_tp_set_immediate(void) {
   return p;
 }
 
+/* setTimeout(delay, value[, { ref }]) and setImmediate(value[, { ref }]):
+ * the value arrives as an already-settled promise of its own type (the
+ * Promise.resolve lowering, borrowed), whose settlement the result copies
+ * when the timer or immediate fires. `ref: false` unrefs it, so it no
+ * longer keeps the loop alive, as in Node. */
+static void scr_tp_settle_thunk(ScrClosure *self) {
+  ScrPromise *dst = (ScrPromise *)scr_box_get_ref(self->caps[0]);
+  ScrPromise *src = (ScrPromise *)scr_box_get_ref(self->caps[1]);
+  scr_promise_settle_from(dst, src);
+  scr_promise_release(dst);
+  scr_promise_release(src);
+}
+
+static ScrClosure *scr_tp_settle_closure(ScrPromise *dst, ScrPromise *src) {
+  ScrClosure *c = scr_closure_new((void *)&scr_tp_settle_thunk, 2);
+  for (int i = 0; i < 2; i++) {
+    ScrBox *b = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
+    scr_box_set_ref(b, scr_promise_retain(i == 0 ? dst : src));
+    c->caps[i] = b;
+  }
+  return c;
+}
+
+ScrPromise *scr_tp_set_timeout_value(double ms, ScrPromise *value, bool ref) {
+  ScrPromise *p = scr_promise_new();
+  double handle = scr_set_timeout_handle(scr_tp_settle_closure(p, value), ms);
+  if (!ref) scr_timer_unref(handle);
+  return p;
+}
+
+ScrPromise *scr_tp_set_immediate_value(ScrPromise *value, bool ref) {
+  ScrPromise *p = scr_promise_new();
+  double handle = scr_set_immediate(scr_tp_settle_closure(p, value));
+  if (!ref) scr_immediate_unref(handle);
+  return p;
+}
+
 /* ── setImmediate as a first-class dyn value ─────────────────────────
  * The global passed AS A FUNCTION VALUE into untyped code (the Node-suite
  * traceCallback shape: `channel.traceCallback(setImmediate, 0, ctx, null,
@@ -3510,10 +3547,49 @@ static int scr_workers_pollfd(void) {
 #endif
 }
 
-/* Dispatch hooks yield between event batches when fibers are already
- * queued, so promise jobs interleave with event delivery (Node's
- * microtask checkpoints between macrotasks). */
-bool scr_loop_has_ready(void) { return scr_ready_len > 0; }
+/* Dispatch hooks yield between event batches when process.nextTick
+ * callbacks or fibers are already queued, so ticks and promise jobs
+ * interleave with event delivery (Node's checkpoint after each
+ * macrotask). */
+bool scr_loop_has_ready(void) { return scr_ready_len > 0 || scr_nt_head != NULL; }
+
+/* The process.nextTick queue to exhaustion, ticks queued meanwhile
+ * included. false: a tick threw (uncaught, pending). */
+static bool scr_loop_run_ticks(void) {
+  while (scr_nt_head != NULL) {
+    ScrNtick *t = scr_nt_head;
+    scr_nt_head = t->next;
+    if (scr_nt_head == NULL) scr_nt_tail = NULL;
+    ScrClosure *cb = t->cb;
+    ScrFsRenameFn error_cb = t->error_cb;
+    void (*raw)(void) = t->raw;
+    free(t);
+    if (cb) {
+      if (error_cb) error_cb(cb, NULL);
+      else ((void (*)(ScrClosure *))cb->fn)(cb);
+      scr_closure_release(cb);
+    } else {
+      raw(); /* one stream tick, FIFO with the user ticks around it */
+    }
+    if (scr_exc_pending()) return false;
+  }
+  return true;
+}
+
+/* The checkpoint after a macrotask callback (processTicksAndRejections):
+ * ticks to exhaustion, then promise jobs to exhaustion, and back while
+ * either has work. false: a tick threw (uncaught, pending). */
+static bool scr_loop_run_checkpoint(void) {
+  while (scr_nt_head != NULL || scr_ready_len > 0) {
+    if (!scr_loop_run_ticks()) return false;
+    while (scr_ready_len > 0) {
+      ScrFiber *f = scr_ready[scr_ready_head++];
+      scr_ready_len--;
+      scr_resume_fiber(f);
+    }
+  }
+  return true;
+}
 
 static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
   /* The FIRST checkpoint after the synchronous main body runs promise
@@ -3531,25 +3607,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * nextTick runs before the turn proceeds, but never preempts the
      * microtask queue mid-drain (V8 drains it fully). A tick's uncaught
      * throw ends the loop like any listener's (main reports it). */
-    if (!first_checkpoint) {
-      while (scr_nt_head != NULL) {
-        ScrNtick *t = scr_nt_head;
-        scr_nt_head = t->next;
-        if (scr_nt_head == NULL) scr_nt_tail = NULL;
-        ScrClosure *cb = t->cb;
-        ScrFsRenameFn error_cb = t->error_cb;
-        void (*raw)(void) = t->raw;
-        free(t);
-        if (cb) {
-          if (error_cb) error_cb(cb, NULL);
-          else ((void (*)(ScrClosure *))cb->fn)(cb);
-          scr_closure_release(cb);
-        } else {
-          raw(); /* one stream tick, FIFO with the user ticks around it */
-        }
-        if (scr_exc_pending()) return false;
-      }
-    }
+    if (!first_checkpoint && !scr_loop_run_ticks()) return false;
     /* Microtasks to exhaustion (Node: promise jobs before timers). */
     while (scr_ready_len > 0) {
       ScrFiber *f = scr_ready[scr_ready_head++];
@@ -3612,12 +3670,12 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_stream_dispatch_fn != NULL) {
       scr_stream_dispatch_fn();
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
-      if (scr_ready_len > 0) continue;
+      if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
       if (scr_stream_pending_fn != NULL && scr_stream_pending_fn()) continue;
     }
     scr_workers_dispatch();
     if (scr_exc_pending()) return false;
-    if (scr_ready_len > 0) continue;
+    if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
     /* Event dispatch (scr_events.c, when linked): watched signals
      * delivered since the last turn fire their listeners now (macrotasks,
      * like timers), then stdin — while a consumer exists, probe fd 0 and
@@ -3626,7 +3684,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_events_dispatch_fn != NULL) {
       scr_events_dispatch_fn();
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
-      if (scr_ready_len > 0) continue;
+      if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
     }
     /* Net dispatch (scr_net.c, when linked): accepts, arrived data,
      * connect completions, and the deferred listening/error/close emits
@@ -3635,7 +3693,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_net_dispatch_fn != NULL) {
       scr_net_dispatch_fn();
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
-      if (scr_ready_len > 0) continue;
+      if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
     }
     /* Dgram dispatch (scr_dgram.c, when linked): arrived datagrams and
      * the deferred listening/connect/error/close emits (plus pending
@@ -3643,7 +3701,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_dgram_dispatch_fn != NULL) {
       scr_dgram_dispatch_fn();
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
-      if (scr_ready_len > 0) continue;
+      if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
     }
     /* Watch dispatch (scr_watch.c, when linked): file events queued on
      * the unit's event backend fire their FSWatcher listeners now — the
@@ -3651,7 +3709,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_watch_dispatch_fn != NULL) {
       scr_watch_dispatch_fn();
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
-      if (scr_ready_len > 0) continue;
+      if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
     }
     /* Reap spawned children and fire their listeners (before timers,
      * like Node's nextTick-ish spawn-failure "error"). A callback may
@@ -3679,7 +3737,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       if (held) {
         scr_children_poll();
         if (scr_exc_pending()) return false; /* uncaught throw in a listener */
-        if (scr_ready_len > 0) continue;
+        if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
       }
     }
     /* Deferred stream ticks are always-ready work: never sleep or exit
@@ -3913,16 +3971,17 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       }
       scr_firing_id = 0;
       if (scr_exc_pending()) return false; /* uncaught throw in a callback: main handles it */
-      if (scr_ready_len > 0) break; /* drain microtasks before more timers */
+      if (scr_ready_len > 0 || scr_nt_head != NULL) break; /* drain ticks and microtasks before more timers */
     }
     /* The check phase: immediates queued BEFORE this phase started run
      * now, FIFO; ones a callback queues wait for the next turn (the end
      * snapshot — Node's once-per-turn rule, so a setImmediate chain can't
-     * starve the loop). Cleared slots (cb NULL) skip. Microtasks drain
-     * between callbacks, like Node's inter-macrotask checkpoints; a woken
-     * fiber restarts the turn first (the timer loop's break above), so the
-     * phase only runs on a drained queue. */
-    if (scr_ready_len == 0 && scr_pending_immediates > 0) {
+     * starve the loop). Cleared slots (cb NULL) skip. Ticks, then
+     * microtasks, drain after each callback, like Node's checkpoint after
+     * every macrotask; pending ticks or a woken fiber restart the turn
+     * first (the timer loop's break above), so the phase only runs on a
+     * drained checkpoint. */
+    if (scr_ready_len == 0 && scr_nt_head == NULL && scr_pending_immediates > 0) {
       size_t end = scr_nimmediates;
       while (scr_immediates_head < end) {
         size_t i = scr_immediates_head++;
@@ -3937,11 +3996,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         ((void (*)(ScrClosure *))cb->fn)(cb);
         scr_closure_release(cb);
         if (scr_exc_pending()) return false; /* uncaught throw: main handles it */
-        while (scr_ready_len > 0) {
-          ScrFiber *f = scr_ready[scr_ready_head++];
-          scr_ready_len--;
-          scr_resume_fiber(f);
-        }
+        if (!scr_loop_run_checkpoint()) return false;
         if (top_level != NULL && top_level->state == SCR_PROM_REJECTED) break;
       }
       /* Fully drained: reset the cursor so the array reuses its slots. */

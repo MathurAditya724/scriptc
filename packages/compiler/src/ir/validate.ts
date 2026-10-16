@@ -3795,6 +3795,41 @@ function validateFunction(
         err(`${e.name} has type ${e.name === "region.create" ? "f64" : "void"}`, e.loc);
       return;
     }
+    if (
+      e.name === "itable.open" ||
+      e.name === "itable.find" ||
+      e.name === "itable.insert" ||
+      e.name === "itable.value" ||
+      e.name === "itable.size"
+    ) {
+      for (const a of e.args) checkExpr(a);
+      const [first, key, value] = e.args;
+      const arity = {
+        "itable.open": 2,
+        "itable.find": 2,
+        "itable.insert": 3,
+        "itable.value": 1,
+        "itable.size": 1,
+      }[e.name];
+      if (e.args.length !== arity) err(`${e.name} takes ${arity} arguments`, e.loc);
+      else if (e.name === "itable.open") {
+        if (first!.type.kind !== "string" || key!.type.kind !== "f64")
+          err("itable.open takes a string name and an f64 key kind", e.loc);
+      } else if (first!.type.kind !== "f64") err(`${e.name} handle must be f64`, e.loc);
+      else if (
+        (e.name === "itable.find" || e.name === "itable.insert") &&
+        key!.type.kind !== "string" &&
+        key!.type.kind !== "f64"
+      )
+        err(`${e.name} key must be string or f64`, e.loc);
+      else if (e.name === "itable.insert" && !isSupportedMapValue(value!.type))
+        err(`itable.insert value ${typeKey(value!.type)} is not a table value type`, e.loc);
+      if (e.name === "itable.value") {
+        if (!isSupportedMapValue(e.type))
+          err(`itable.value type ${typeKey(e.type)} is not a table value type`, e.loc);
+      } else if (e.type.kind !== "f64") err(`${e.name} has type f64`, e.loc);
+      return;
+    }
     if (e.name === "threads.publish") {
       if (e.args.length !== 1) err("threads.publish takes exactly one argument", e.loc);
       for (const a of e.args) {
@@ -4022,6 +4057,13 @@ function validateFunction(
   }
 
   function checkLibValueCall(e: IrExpr & { kind: "libCall" }): boolean {
+    if (e.fn === "tp.setTimeoutValue" || e.fn === "tp.setImmediateValue") {
+      const value = e.args[e.fn === "tp.setTimeoutValue" ? 1 : 0];
+      if (value?.type.kind !== "promise" || !typeEquals(e.type, value.type)) {
+        err(`libCall ${e.fn} must be the value's promise type`, e.loc);
+      }
+      return true;
+    }
     if (
       e.fn === "fileHandle.read" ||
       e.fn === "fileHandle.writeBytes" ||

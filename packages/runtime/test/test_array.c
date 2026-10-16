@@ -1256,6 +1256,18 @@ static void test_exact_construction(void) {
   check(!scr_arr_has(one, 6) && !scr_arr_has(one, (double)one->cap - 1),
         "spare capacity after growth from an exact size reads as holes");
   scr_arr_release(one);
+#if SCR_SMALL_ALLOC
+  /* Requests round to 16 bytes before the size class: two slots (18
+   * bytes) get a 32-byte block, so one append needs no reallocation. */
+  ScrArr *two = scr_arr_new(SCR_ELEM_F64, 2);
+  scr_arr_push_f64(two, 1);
+  scr_arr_push_f64(two, 2);
+  uint64_t *before = two->data;
+  scr_arr_push_f64(two, 3);
+  check(two->cap == 3 && two->data == before && scr_arr_get_number(two, 2) == 3,
+        "an exact two-slot construction has room for one append");
+  scr_arr_release(two);
+#endif
 
   ScrArr *refs = scr_arr_new(SCR_ELEM_STR, 3);
   scr_arr_push_ref(refs, scr_str_new("a", 1));

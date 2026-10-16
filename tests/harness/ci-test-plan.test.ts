@@ -8,10 +8,12 @@ import {
   darwinFiles,
   effectFiles,
   fileExclusions,
+  isolatedFiles,
+  testCosts,
 } from "../../scripts/ci-test-plan.mjs";
 import { runCiTestPlan } from "../../scripts/ci-test.mjs";
 
-test.for([1, 3, 5, 10])(
+test.for([1, 3, 5, 10, 20])(
   "CI retains every suite with %i shards without mixing partition axes",
   (count) => {
     for (const flavor of ["plain", "san"]) {
@@ -34,10 +36,20 @@ test.for([1, 3, 5, 10])(
           file,
         ).toHaveLength(1);
       }
+      // Each measured file runs on exactly one shard, outside vitest's file shard.
+      const isolated = new Set(isolatedFiles.map(([, file]) => file));
+      const balanced = plans.flatMap((plan) =>
+        plan.side
+          .filter((task) => task.name === "cost-balanced tests")
+          .flatMap((task) => task.args.slice(2)),
+      );
+      const measured = Object.keys(testCosts[flavor]).filter((file) => !isolated.has(file));
+      expect(measured.length).toBeGreaterThan(0);
+      expect(balanced.toSorted()).toEqual(measured.toSorted());
       for (const plan of plans) {
         expect(plan.corpus.args).toEqual(["test", ...corpusFiles]);
         expect(plan.side[0]!.args).toContain(`--shard=${plan.corpus.env.SCRIPTC_TEST_SHARD}`);
-        for (const file of fileExclusions)
+        for (const file of [...fileExclusions, ...Object.keys(testCosts[flavor])])
           expect(plan.side[0]!.args).toContain(`--exclude=${file}`);
         const cache = plan.side.find((task) => task.name === "native-cache correctness");
         expect(Boolean(cache)).toBe(flavor === "plain");
@@ -50,6 +62,24 @@ test.for([1, 3, 5, 10])(
     }
   },
 );
+
+test("the side queue balances measured files across the twenty Linux shards", () => {
+  for (const flavor of ["plain", "san"] as const) {
+    const costs = testCosts[flavor] as Record<string, number>;
+    const owned = new Set([...Object.keys(costs), ...isolatedFiles.map(([, file]) => file)]);
+    const shards = Array.from({ length: 20 }, (_, index) => {
+      const files = ciTestPlan({ shard: `${index + 1}/20`, flavor })
+        .side.slice(1)
+        .flatMap((task) => task.args.filter((arg) => owned.has(arg)));
+      return { files, load: files.reduce((sum, file) => sum + (costs[file] ?? 0) + 1000, 0) };
+    });
+    // A file heavier than an even share holds a shard alone; the shards
+    // sharing several files are within 10% of each other.
+    const shared = shards.filter((shard) => shard.files.length > 1).map((shard) => shard.load);
+    expect(shared.length).toBeGreaterThan(10);
+    expect(Math.max(...shared)).toBeLessThanOrEqual(Math.min(...shared) * 1.1);
+  }
+});
 
 test.for([1, 2, 4, 8])(
   "CI overlaps reserved lanes within a budget of %i workers",
@@ -150,8 +180,8 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   const macos = jobs["tests_macos"]!;
   expect(linux["runs-on"]).toBe("ubuntu-24.04");
   expect(linux.needs).toContain("native_linux");
-  expect(linux.strategy.matrix.shard).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-  expect(linux.env["SCRIPTC_TEST_SHARD"]).toBe("${{ matrix.shard }}/10");
+  expect(linux.strategy.matrix.shard).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+  expect(linux.env["SCRIPTC_TEST_SHARD"]).toBe("${{ matrix.shard }}/20");
   expect(linux.env["SCRIPTC_CI_SUITE"]).toBeUndefined();
   expect(linux.steps.some((step) => step.uses === "./.github/actions/llvm-linux")).toBe(true);
   expect(

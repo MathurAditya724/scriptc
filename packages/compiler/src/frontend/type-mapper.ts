@@ -151,6 +151,20 @@ export const FETCH_AMBIENT_TYPES = [
   "FileOptions",
 ] as const;
 
+/** node:crypto's Cipheriv and Decipheriv names in @types/node. */
+export const CIPHER_TYPE_NAMES: ReadonlySet<string> = new Set([
+  "Cipheriv",
+  "Decipheriv",
+  "CipherCCM",
+  "CipherGCM",
+  "CipherOCB",
+  "CipherChaCha20Poly1305",
+  "DecipherCCM",
+  "DecipherGCM",
+  "DecipherOCB",
+  "DecipherChaCha20Poly1305",
+]);
+
 /** node:util.parseArgs's public and @types/node helper type names, plus
  * util.debuglog's DebugLogger (a native function value with an `enabled`
  * accessor) and the DebugLoggerFunction its callback receives. Values
@@ -1035,6 +1049,9 @@ export interface TypeMapperCtx {
   /** The LifetimeRegion instance type (@scriptc/experimental), when `decl`
    * is that package's class declaration (lowering/lifetime-regions.ts). */
   lifetimeRegionClass?: (decl: ts.ClassDeclaration) => IrType | null;
+  /** The InternTable instance type (@scriptc/experimental), when `decl` is
+   * that package's class declaration (lowering/intern-tables.ts). */
+  internTableClass?: (decl: ts.ClassDeclaration) => IrType | null;
 }
 /** A generator type's normalized value channels (Generator<T, TReturn,
  * TNext> and the IteratorResult alias share this):
@@ -1549,15 +1566,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       return hasStr ? STRING : F64;
     }
   }
-  // @scriptc/experimental's LifetimeRegion: a synthetic program class,
-  // provenance-checked by the package's declaration file.
+  // @scriptc/experimental's LifetimeRegion and InternTable: synthetic
+  // program classes, provenance-checked by the package's declaration file.
   {
-    const regionSym = widened.getSymbol();
-    if (regionSym?.name === "LifetimeRegion") {
-      for (const d of checker.declarationsOf(regionSym)) {
+    const classSym = widened.getSymbol();
+    const name = classSym?.name;
+    if (name === "LifetimeRegion" || name === "InternTable") {
+      for (const d of checker.declarationsOf(classSym!)) {
         if (!ts.isClassDeclaration(d)) continue;
-        const region = ctx.lifetimeRegionClass?.(d);
-        if (region) return region;
+        const synthetic =
+          name === "LifetimeRegion" ? ctx.lifetimeRegionClass?.(d) : ctx.internTableClass?.(d);
+        if (synthetic) return synthetic;
       }
     }
   }
@@ -2245,6 +2264,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     checker
       .declarationsOf(psym)
       .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
+  ) {
+    return DYN;
+  }
+  // node:crypto Cipheriv/Decipheriv values (and @types/node's per-mode
+  // interfaces over them) are native handles carried by the checked-dynamic
+  // representation; lowerCipherMethodCall dispatches their methods.
+  if (
+    psym !== undefined &&
+    CIPHER_TYPE_NAMES.has(psym.name) &&
+    checker.declarationsOf(psym).some((d) => ctx.isStdlibFile(d.getSourceFile()))
   ) {
     return DYN;
   }

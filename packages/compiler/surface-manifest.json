@@ -493,17 +493,13 @@
       "id": "node-builtin.crypto.createCipheriv",
       "kind": "node-builtin",
       "name": "crypto.createCipheriv",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "symmetric ciphers need a cipher stack the static runtime does not vendor — the lowered crypto surface is hashing, randomness, and the introspection statics"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.createDecipheriv",
       "kind": "node-builtin",
       "name": "crypto.createDecipheriv",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "symmetric ciphers need a cipher stack the static runtime does not vendor — the lowered crypto surface is hashing, randomness, and the introspection statics"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.createDiffieHellman",
@@ -621,7 +617,7 @@
       "name": "crypto.getCipherInfo",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "symmetric ciphers need a cipher stack the static runtime does not vendor — the lowered crypto surface is hashing, randomness, and the introspection statics"
+      "note": "cipher metadata has no lowering — createCipheriv and createDecipheriv support aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305"
     },
     {
       "id": "node-builtin.crypto.getDiffieHellman",

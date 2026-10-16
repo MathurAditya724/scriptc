@@ -499,6 +499,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.hashDigestBytes": "scr_crypto_hash_digest_bytes",
   "crypto.native": "scr_crypto_native",
   "crypto.hashNew": "scr_crypto_hash_new",
+  "crypto.cipherNew": "scr_crypto_cipher_new",
   "crypto.hmacNewStr": "scr_crypto_hmac_new_str",
   "crypto.hmacNewBytes": "scr_crypto_hmac_new_bytes",
   "crypto.hashUpdateStr": "scr_crypto_hash_update_str",
@@ -1134,6 +1135,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // generic shapes; the throwing members ride the pending check.
   "tp.setTimeout": "scr_tp_set_timeout",
   "tp.setImmediate": "scr_tp_set_immediate",
+  "tp.setTimeoutValue": "scr_tp_set_timeout_value",
+  "tp.setImmediateValue": "scr_tp_set_immediate_value",
   // stream/promises' finished form (+1 promise; may-throw pending check;
   // the pipeline form needs the stream-array compound and emits below).
   "sp.finished": "scr_sp_finished",
@@ -1281,6 +1284,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
 
 export const USES_TIMERS_LIB_FNS = new Set<string>([
   "process.emitWarning",
+  // Decipheriv.setAuthTag reports DEP0182 on the next tick.
+  "crypto.cipherNew",
   "process.emitWarningText",
   // The legacy url entries queue DEP0169/DEP0170 on the next tick.
   "url.legacyParse",

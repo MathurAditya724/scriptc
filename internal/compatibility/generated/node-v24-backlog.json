@@ -7,9 +7,9 @@
     "tierItemCount": 3472,
     "tiers": {
       "static": {
-        "audit-partial": 994,
-        "verify-gap": 2347,
-        "replace-refusal": 44,
+        "audit-partial": 1008,
+        "verify-gap": 2335,
+        "replace-refusal": 42,
         "classify": 2,
         "implement": 85
       }
@@ -6513,12 +6513,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.crypto.createCipheriv",
-          "tests": []
+          "source": "surface-manifest:node-builtin.crypto.createCipheriv",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -6538,12 +6550,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.crypto.createDecipheriv",
-          "tests": []
+          "source": "surface-manifest:node-builtin.crypto.createDecipheriv",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8055,12 +8079,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:Cipheriv",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8080,12 +8116,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:cipher.final",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8105,12 +8153,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:cipher.getAuthTag",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8130,12 +8190,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:cipher.setAAD",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8155,12 +8227,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:cipher.setAutoPadding",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8180,12 +8264,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:cipher.update",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8205,12 +8301,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:Decipheriv",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8230,12 +8338,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:decipher.final",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8255,12 +8375,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:decipher.setAAD",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8280,12 +8412,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:decipher.setAuthTag",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8305,12 +8449,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:decipher.setAutoPadding",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8330,12 +8486,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:decipher.update",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },

@@ -2348,6 +2348,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * finalizes the handle and returns either a Buffer or encoded string. */
   "crypto.native": { argTypes: [], result: DYN },
   "crypto.hashNew": { argTypes: [STRING], result: CRYPTOHASH_T },
+  /** createCipheriv (false) / createDecipheriv (true) over checked-dynamic
+   * cipher, key, iv and options arguments (scr_cipher.c): a native
+   * Cipheriv/Decipheriv handle whose methods dispatch through dynInvoke. */
+  "crypto.cipherNew": { argTypes: [BOOL, DYN, DYN, DYN, DYN], result: DYN },
   "crypto.hmacNewStr": { argTypes: [STRING, STRING], result: CRYPTOHMAC_T },
   "crypto.hmacNewBytes": { argTypes: [STRING, BYTES_U8], result: CRYPTOHMAC_T },
   "crypto.hashUpdateStr": { argTypes: [CRYPTOHASH_T, STRING], result: CRYPTOHASH_T },
@@ -3614,6 +3618,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * turns, Node's check phase). Neither throws. */
   "tp.setTimeout": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
   "tp.setImmediate": { argTypes: [], result: { kind: "promise", inner: VOID } },
+  /** The resolve-value forms: [ms?, value, ref] → a pending promise of the
+   * value's type that copies the borrowed already-resolved `value` promise
+   * when the timer (or immediate) fires; ref false unrefs it. The result
+   * type follows the value promise. */
+  "tp.setTimeoutValue": { argTypes: [F64, null, BOOL], result: VOID },
+  "tp.setImmediateValue": { argTypes: [null, BOOL], result: VOID },
   /** node:diagnostics_channel (scr_dc.c, linked when any dc.* appears —
    * the zlib gating precedent): a process-global name→channel registry;
    * channel values are f64 handles (type-mapper.ts maps Channel to F64, the

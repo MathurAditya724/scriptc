@@ -456,6 +456,10 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     const fused = emitBigIntWrap(host, e);
     if (fused) return fused;
   }
+  // timers/promises arms the timer heap or the immediate queue, so the
+  // loop runs even when nothing awaits the promise: a pending ref'd timer
+  // keeps the process alive, as in Node.
+  if (e.fn.startsWith("tp.")) host.usesTimers = true;
   const prefix = e.fn.slice(0, e.fn.indexOf(".")) as LibCallPrefix;
   switch (prefix) {
     case "fetch":

@@ -39,6 +39,7 @@ export interface RuntimeFeatures {
   http2: boolean;
   tls: boolean;
   tlsCa: boolean;
+  cipher: boolean;
 }
 
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
@@ -165,6 +166,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     http2: false,
     tls: false,
     tlsCa: false,
+    cipher: false,
   };
   const keepGoing = (): boolean => stopAt === undefined || !features[stopAt];
   const expr = (node: IrExpr): boolean => {
@@ -316,6 +318,14 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       if (fn.startsWith("test.")) features.nodeTest = true;
       if (fn.startsWith("dgram.") || fn.startsWith("dns.")) features.dgram = true;
       if (fn.startsWith("tlsca.")) features.tlsCa = true;
+      // scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
+      // process-warning unit, and unknown output encodings render through
+      // the inspect unit.
+      if (fn === "crypto.cipherNew") {
+        features.cipher = true;
+        features.dynAsync = true;
+        features.inspect = true;
+      }
     } else {
       switch (node.kind) {
         case "regexLit":

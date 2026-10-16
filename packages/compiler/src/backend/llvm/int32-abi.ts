@@ -14,14 +14,16 @@ import { everyStmtList } from "../../ir/traverse.js";
 export interface Int32Abi {
   params: readonly boolean[];
   result: boolean;
-  /** The result is a union of numbers, booleans and unit values (such as
-   * `number | undefined`), returned as SCALAR_UNION_RESULT instead of a
-   * heap box. */
+  /** The result is a union returned as SCALAR_UNION_RESULT instead of a
+   * heap box: of numbers, booleans and unit values (such as `number |
+   * undefined`), or with `owned`, also of plain references. */
   union: boolean;
+  /** A reference arm's payload is a pointer the caller owns (+1). */
+  owned?: boolean;
 }
 
-/** The register pair of a scalar union result: the union tag and the
- * payload bits of the `%ScrUnion` box it replaces. */
+/** The register pair of a union result: the union tag and the payload
+ * bits of the `%ScrUnion` box it replaces (a reference arm's pointer). */
 export const SCALAR_UNION_RESULT = "{ i32, i64 }";
 
 /** The result of an entry that left a pending exception: no arm has tag
@@ -48,7 +50,12 @@ export const INT32_ABI_SUFFIX = ".i32";
  * A scalar union result (every arm a number, a boolean or a unit value)
  * owns no reference, so the entry returns its tag and payload bits in
  * registers. Callers that only project it never build the heap box; the
- * others box it at the call, as the double-ABI wrapper does.
+ * others box it at the call, as the double-ABI wrapper does. A union whose
+ * other arms are class instances, strings, records or arrays is returned
+ * the same way (`owned`), its reference payload carrying the reference the
+ * box would hold. Unions with a nullable-pointer representation are one
+ * pointer already. Functions with a `finally` block keep the boxed result,
+ * because a finally that throws or returns would drop a pending pair.
  *
  * Only direct `call` and `new` sites use the i32 entry. Every other way to
  * reach the function (closure and virtual-dispatch entries, constructor
@@ -56,14 +63,19 @@ export const INT32_ABI_SUFFIX = ".i32";
  * a thin wrapper that converts and calls the i32 entry. Async functions and
  * generators keep their own entries; library builds (no slot facts) and
  * debug builds (numbers stay doubles for the debugger) select none. */
-export function findInt32Abis(mod: IrModule, slots: Int32Slots): Map<string, Int32Abi> {
+export function findInt32Abis(
+  mod: IrModule,
+  slots: Int32Slots,
+  nullableUnion: (unionId: string) => boolean = () => false,
+): Map<string, Int32Abi> {
   const result = new Map<string, Int32Abi>();
   const unions = new Map((mod.unions ?? []).map((def) => [def.id, def.arms]));
   for (const fn of mod.functions) {
     if (fn.async || fn.generator || fn.captures !== undefined || !slots.called.has(fn.name))
       continue;
     const ret = fn.returnType.kind === "f64" && slots.hasReturn(fn.name);
-    const union = scalarUnionResult(fn, unions);
+    const owned = !scalarUnionResult(fn, unions) && ownedUnionResult(fn, unions, nullableUnion);
+    const union = owned || scalarUnionResult(fn, unions);
     let params = fn.params.map(
       (param) => param.type.kind === "f64" && slots.hasParam(fn.name, param.localId),
     );
@@ -71,7 +83,8 @@ export function findInt32Abis(mod: IrModule, slots: Int32Slots): Map<string, Int
       const returned = returnedLocals(fn);
       params = params.map((i32, index) => i32 && !returned.has(fn.params[index]!.localId));
     }
-    if (ret || union || params.includes(true)) result.set(fn.name, { params, result: ret, union });
+    if (ret || union || params.includes(true))
+      result.set(fn.name, { params, result: ret, union, ...(owned ? { owned } : {}) });
   }
   return result;
 }
@@ -86,6 +99,35 @@ function scalarUnionResult(
     arms !== undefined &&
     arms.every((arm) => arm.kind === "f64" || arm.kind === "bool" || isUnitType(arm))
   );
+}
+
+/** A union result of scalar, unit and plain-reference arms, with at least
+ * one reference arm, from a body without `finally`. */
+function ownedUnionResult(
+  fn: IrFunction,
+  unions: ReadonlyMap<string, readonly IrType[]>,
+  nullableUnion: (unionId: string) => boolean,
+): boolean {
+  if (fn.returnType.kind !== "union" || nullableUnion(fn.returnType.unionId)) return false;
+  const arms = unions.get(fn.returnType.unionId);
+  if (
+    arms === undefined ||
+    !arms.every(
+      (arm) =>
+        arm.kind === "f64" ||
+        arm.kind === "bool" ||
+        isUnitType(arm) ||
+        arm.kind === "object" ||
+        arm.kind === "string" ||
+        arm.kind === "record" ||
+        arm.kind === "array",
+    )
+  )
+    return false;
+  return everyStmtList(fn.body, {
+    stmt: (s) => s.kind !== "tryCatch" || s.finallyBody === null,
+    expr: () => true,
+  });
 }
 
 /** Locals some `return` hands back as its value (directly or as an arm of

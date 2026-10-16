@@ -1505,6 +1505,10 @@ export const BUILTIN_MODULE_FNS: Record<
     hkdf: { fn: "crypto.hkdfCb", params: [], result: VOID },
     scryptSync: { fn: "crypto.scrypt", params: [BYTES_U8, BYTES_U8, F64, DYN], result: BYTES_U8 },
     scrypt: { fn: "crypto.scryptCb", params: [], result: VOID },
+    // Checked-dynamic arguments; the result is a native Cipheriv or
+    // Decipheriv handle (lowerCryptoModuleCall).
+    createCipheriv: { fn: "crypto.cipherNew", params: [BOOL, DYN, DYN, DYN, DYN], result: DYN },
+    createDecipheriv: { fn: "crypto.cipherNew", params: [BOOL, DYN, DYN, DYN, DYN], result: DYN },
   },
   zlib: {
     // The default-options convenience family is special-cased in
@@ -2829,10 +2833,10 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
       ]),
     ),
     ...Object.fromEntries(
-      ["createCipheriv", "createDecipheriv", "getCipherInfo"].map((m) => [
+      ["getCipherInfo"].map((m) => [
         m,
-        "symmetric ciphers need a cipher stack the static runtime does not vendor — " +
-          "the lowered crypto surface is hashing, randomness, and the introspection statics",
+        "cipher metadata has no lowering — createCipheriv and createDecipheriv support " +
+          "aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305",
       ]),
     ),
     setFips:

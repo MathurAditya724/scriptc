@@ -485,6 +485,9 @@ export interface ClassInfo {
    * lifetime-regions.ts): its constructor is synthesized with the class,
    * and its methods lower at their call sites. */
   lifetimeRegion?: true;
+  /** The synthetic InternTable class (@scriptc/experimental,
+   * intern-tables.ts): synthesized like lifetimeRegion. */
+  internTable?: true;
   /** This class's own `emit` override in the FORWARDING SHAPE (the one
    * EventEmitter member a subclass may re-declare): never in `methods` —
    * emit calls keep routing through the emitter spoke, which lowers the

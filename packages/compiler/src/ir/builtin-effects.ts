@@ -8,6 +8,8 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * seed on `dynCheck` and `awaitExpr` nodes, which throw on validation
  * failure / promise rejection). */
 export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  // Node's argument, cipher-name, IV, tag-length and key-length errors.
+  "crypto.cipherNew",
   "console.write",
   "console.label",
   "console.countReset",

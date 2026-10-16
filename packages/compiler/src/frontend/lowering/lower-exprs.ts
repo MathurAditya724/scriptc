@@ -10,6 +10,7 @@ import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
 import { STATS_TYPE_TESTS } from "./builtins/filesystem.js";
 import { threadsImportOf } from "../threads-import.js";
 import { experimentalImportOf, lifetimeRegionMemberOf } from "../experimental-import.js";
+import { lowerInternTableProperty } from "./intern-tables.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 import { SYMBOL_T } from "../../ir/ir.js";
@@ -1127,6 +1128,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           expr,
           "construct regions with new LifetimeRegion()",
         );
+      if (experimentalImportOf(lowerer.program, expr) === "InternTable")
+        lowerer.noLowering(
+          "InternTable (@scriptc/experimental) as a value",
+          expr,
+          'open tables with new InternTable("name")',
+        );
     }
     {
       const bi = lowerer.builtinImportOf(expr);
@@ -1739,6 +1746,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           expr,
           `call region.${member}(${member === "run" ? "fn" : ""}) directly`,
         );
+    }
+    {
+      const table = lowerInternTableProperty(lowerer, expr);
+      if (table) return table;
     }
     // Expando statics may still be absent even when JS inference sees
     // the eventual assignment's scalar type. Preserve the checked value.

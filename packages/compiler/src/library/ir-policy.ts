@@ -47,6 +47,7 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["dgram.", "the node:dgram surface"],
   ["dns.", "the node:dns surface"],
   ["tls.", "the node:tls surface"],
+  ["crypto.cipherNew", "crypto.createCipheriv and createDecipheriv"],
   ["fs.watch", "fs.watch"],
   ["watcher.", "fs.watch"],
   ["test.", "the node:test surface"],

@@ -28,3 +28,48 @@ function rebuild(): Program {
 Under Node.js, `run(fn)` returns `fn()` and `release()` does nothing.
 
 In scriptc builds, `SCRIPTC_REGION_STATS=1` reports every release attempt on stderr.
+
+## InternTable
+
+An `InternTable` is a named, append-only table of published values (`@scriptc/threads`) that every thread of a scriptc program shares. Threads that build the same cache (interned types, strings, resolved modules) fill and read one table instead of one copy each.
+
+```ts
+import { InternTable } from "@scriptc/experimental";
+
+class Type {
+  readonly id: number;
+  readonly members: readonly Type[];
+  constructor(id: number, members: readonly Type[]) {
+    this.id = id;
+    this.members = members;
+  }
+}
+
+// Module scope: every thread that evaluates this line opens the same table.
+const unions = new InternTable<string, Type>("checker.unions");
+
+function unionOf(members: readonly Type[]): Type {
+  const key = members.map((m) => m.id).join(",");
+  return unions.getOrInsertComputed(key, () => new Type(nextId(), members));
+}
+```
+
+- `new InternTable<K, V>(name)` opens the table called `name`. Within one thread, every construction with the same name refers to the same table. In scriptc builds the table is shared by every thread of the process; under Node.js each thread has its own.
+- Keys are strings or numbers and compare like `Map` keys: strings by content, numbers by SameValueZero.
+- `get(key)`, `has(key)` and `size` read the table.
+- `getOrInsert(key, value)` returns the value stored under `key`. When there is none, it publishes `value`, stores it and returns it.
+- `getOrInsertComputed(key, callback)` returns the value stored under `key`. When there is none, it calls `callback(key)`, publishes the result and stores it, unless a value was stored under `key` meanwhile (by the callback, or in scriptc builds by another thread), and returns the stored value.
+- A key's value never changes once stored, and there is no `set` or `delete`. Stored values and everything they reach are immutable; a value that `publish` refuses makes the call throw the same `TypeError` and stores nothing.
+- No lock is held while a callback runs. Threads that miss one key at the same time may each call the callback; one result is stored and every call returns it.
+
+scriptc requires the name to be a string literal, and every construction of one name in a program to use the same type arguments. Values must be numbers, booleans, strings, bigints, arrays, `Map`s, `Set`s, objects or class instances.
+
+Programs that behave identically under scriptc and Node.js follow the `@scriptc/threads` rules and three more:
+
+1. A stored value does not depend on which thread created it. In scriptc a value may come from another thread's callback.
+2. Identity and ids are not compared across threads. Ids assigned inside callbacks are unique in both runtimes but differ between them.
+3. A thread does not depend on another thread's inserts. `size` and `has` reflect every thread's inserts in scriptc and the calling thread's under Node.js.
+
+Per-thread state about a shared value (lazily computed results, caches) belongs in thread-local state, for example a module-level `Map` keyed by the value: module state is per thread in both runtimes.
+
+In scriptc builds stored values are immortal: they stay allocated until the process exits, including values a callback computed for a key that another thread stored first.

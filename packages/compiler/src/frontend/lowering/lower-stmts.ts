@@ -131,6 +131,7 @@ import {
 } from "./lower-server.js";
 import { lowerUrlAssignment } from "./builtins/url.js";
 import { isFspGlobCall, lowerFspGlobForAwait } from "./builtins/fs-glob.js";
+import { isTimersPromisesIntervalCall } from "./builtins/timers.js";
 import {
   isNativeFfiRequire,
   builtinMemberRequireDecl,
@@ -7844,6 +7845,17 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     let head: ts.Expression = stmt.expression;
     while (ts.isParenthesizedExpression(head)) head = head.expression;
     if (isFspGlobCall(lowerer, head)) return lowerFspGlobForAwait(lowerer, stmt, head);
+    if (isTimersPromisesIntervalCall(lowerer, head)) {
+      const iterable = lowerer.lowerExpr(head);
+      if (iterable.type.kind === "generator" && iterable.type.async) {
+        return lowerForAwaitGenerator(
+          lowerer,
+          stmt,
+          iterable as IrExpr & { type: GenType },
+          labels,
+        );
+      }
+    }
   }
   const awaitArray =
     !!stmt.awaitModifier && lowerer.mapTypeOf(lowerer.typeOf(stmt.expression))?.kind === "array";

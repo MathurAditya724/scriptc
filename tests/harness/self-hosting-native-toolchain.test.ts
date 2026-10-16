@@ -41,6 +41,7 @@ const features: NativeLinkFeatures = {
   nodeTest: false,
   tls: false,
   tlsCa: false,
+  cipher: false,
 };
 
 test("native toolchain configuration, staging and helper validation are static", async () => {
