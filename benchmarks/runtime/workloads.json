@@ -135,6 +135,13 @@
       ]
     },
     {
+      "name": "region-builds",
+      "entry": "workloads/region-builds.ts",
+      "args": [
+        "1"
+      ]
+    },
+    {
       "name": "optional-fields",
       "entry": "workloads/optional-fields.ts",
       "args": [
