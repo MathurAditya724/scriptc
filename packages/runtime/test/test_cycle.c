@@ -1099,6 +1099,46 @@ static void check_publication_takes_candidates(void) {
   check(immortal_traced == 0, "a pass walked a published ring");
 }
 
+/* A full pass whose fullest candidate buffer is the old generation's (more
+ * entries than a pass keeps between passes), with nursery candidates
+ * beside it: every dead ring in either buffer is reclaimed, the live rings
+ * keep their counts, and a second round collects through the buffers the
+ * first one left behind. */
+static void check_large_old_buffer_with_nursery_candidates(void) {
+  enum { OLD = 70000, YOUNG = 300, RING = 2 };
+  static Node *old[OLD];
+  Node *young[YOUNG];
+  for (int round = 0; round < 2; round++) {
+    for (size_t i = 0; i < OLD; i++) {
+      old[i] = make_ring(RING);
+      read_live(old[i]);
+    }
+    scr_collect_cycles();
+    for (size_t i = 0; i < OLD; i++) read_live(old[i]);
+    scr_collect_cycles();
+    check(scr_cyc_gen(scr_cyc_hdr(old[OLD - 1])) == SCR_CYC_OLD, "rings did not reach the old generation");
+    size_t before = freed;
+    for (size_t i = 0; i < OLD; i++)
+      if (i % 2) release_live(old[i]); /* dead: only the ring edge remains */
+      else read_live(old[i]);          /* live candidate */
+    for (size_t i = 0; i < YOUNG; i++) {
+      young[i] = make_ring(RING);
+      if (i % 3) release_live(young[i]);
+      else read_live(young[i]);
+    }
+    scr_collect_cycles();
+    size_t young_dead = YOUNG - (YOUNG + 2) / 3;
+    check(freed - before == (OLD / 2 + young_dead) * RING, "a dead ring was not reclaimed");
+    for (size_t i = 0; i < OLD; i += 2) check(old[i]->rc == 2, "a live old ring lost a count");
+    for (size_t i = 0; i < YOUNG; i += 3) check(young[i]->rc == 2, "a live young ring lost a count");
+    before = freed;
+    for (size_t i = 0; i < OLD; i += 2) release_live(old[i]);
+    for (size_t i = 0; i < YOUNG; i += 3) release_live(young[i]);
+    scr_collect_cycles();
+    check(freed - before == (OLD / 2 + (YOUNG + 2) / 3) * RING, "the remaining rings were not reclaimed");
+  }
+}
+
 int main(void) {
   check_old_garbage_reclaimed_while_growing();
   check_older_rings_into_old();
@@ -1125,6 +1165,7 @@ int main(void) {
   check_rebuffer_past_mature();
   check_allocation_growth_runs_passes();
   check_publication_takes_candidates();
+  check_large_old_buffer_with_nursery_candidates();
   printf("cycle collection checks passed: threshold=%zu growth_cap=%zu\n",
          configured_nursery_threshold(), configured_growth_cap());
   return 0;
