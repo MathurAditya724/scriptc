@@ -22,6 +22,24 @@ export class LifetimeRegion {
 /** This thread's tables, by name. */
 const tables = new Map();
 
+/** The Map key of a table key: strings and numbers as they are, arrays as a
+ * string that encodes each element (numbers by SameValueZero, strings by
+ * content, holes and undefined elements alike). Arrays of more than 65536
+ * elements are refused, as in scriptc builds. */
+function keyOf(key) {
+  if (!Array.isArray(key)) return key;
+  if (key.length > 65536)
+    throw new TypeError("InternTable array keys can have at most 65536 elements");
+  let text = "";
+  for (let i = 0; i < key.length; i++) {
+    const element = key[i];
+    if (typeof element === "number") text += `n${Object.is(element, -0) ? 0 : element};`;
+    else if (typeof element === "string") text += `s${element.length}:${element}`;
+    else text += "u;";
+  }
+  return text;
+}
+
 export class InternTable {
   #entries;
 
@@ -40,21 +58,22 @@ export class InternTable {
 
   /** The value stored under `key`, or undefined. */
   get(key) {
-    return this.#entries.get(key);
+    return this.#entries.get(keyOf(key));
   }
 
   /** Whether `key` has a value. */
   has(key) {
-    return this.#entries.has(key);
+    return this.#entries.has(keyOf(key));
   }
 
   /** The value stored under `key`; when there is none, publishes `value`,
    * stores it and returns it. */
   getOrInsert(key, value) {
     const entries = this.#entries;
-    if (entries.has(key)) return entries.get(key);
+    const k = keyOf(key);
+    if (entries.has(k)) return entries.get(k);
     publish(value);
-    entries.set(key, value);
+    entries.set(k, value);
     return value;
   }
 
@@ -63,10 +82,11 @@ export class InternTable {
    * `key` itself. Returns the stored value. */
   getOrInsertComputed(key, callback) {
     const entries = this.#entries;
-    if (entries.has(key)) return entries.get(key);
+    const k = keyOf(key);
+    if (entries.has(k)) return entries.get(k);
     const value = publish(callback(key));
-    if (entries.has(key)) return entries.get(key);
-    entries.set(key, value);
+    if (entries.has(k)) return entries.get(k);
+    entries.set(k, value);
     return value;
   }
 }
