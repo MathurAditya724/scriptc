@@ -86,6 +86,7 @@ import { unshareNodes } from "../../ir/unshare.js";
 import { analyzeInt32Slots, dynamicFieldStores, type Int32Slots } from "../../ir/int32-slots.js";
 import { analyzeFinalFields, constructorClass, type FinalFields } from "../../ir/final-fields.js";
 import { foldConstantGlobals } from "../../ir/constant-globals.js";
+import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
 import { findIntegerViews } from "./integer-views.js";
 import {
   findInt32Abis,
@@ -443,7 +444,12 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
   return new LlEmitter(
     options.debugSources === undefined
       ? addRecordResultEntries(
-          scalarizeNumericRecords(specializeNumericCalls(foldConstantGlobals(mod), mangleFunction)),
+          scalarizeNumericRecords(
+            specializeNumericCalls(
+              foldConstantGlobals(dropUnwrittenPropertyBags(mod)),
+              mangleFunction,
+            ),
+          ),
         )
       : mod,
     options,
@@ -459,7 +465,12 @@ export function emitLlvmModuleSource(
   const parts = new LlEmitter(
     options.debugSources === undefined
       ? addRecordResultEntries(
-          scalarizeNumericRecords(specializeNumericCalls(foldConstantGlobals(mod), mangleFunction)),
+          scalarizeNumericRecords(
+            specializeNumericCalls(
+              foldConstantGlobals(dropUnwrittenPropertyBags(mod)),
+              mangleFunction,
+            ),
+          ),
         )
       : mod,
     options,
