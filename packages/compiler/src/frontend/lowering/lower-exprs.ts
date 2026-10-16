@@ -12073,13 +12073,15 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   if (left.type.kind === "union") {
     const unionId = left.type.unionId;
     const arms = lowerer.unions.get(unionId)?.arms;
-    // Ordinary records and scalar values do not carry a class prototype.
-    // Dynamic/opaque runtime objects keep their existing instanceof fences.
+    // Ordinary records, arrays and scalar values do not carry a class
+    // prototype (no program class extends Array). Dynamic/opaque runtime
+    // objects keep their existing instanceof fences.
     if (
       arms?.every(
         (arm) =>
           arm.kind === "object" ||
           arm.kind === "record" ||
+          arm.kind === "array" ||
           arm.kind === "f64" ||
           arm.kind === "string" ||
           arm.kind === "bool" ||
@@ -12141,6 +12143,14 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       }
       return { kind: "call", callee: helper, args: [left], type: BOOL, loc };
     }
+    // A class arm could hold an instance: the test cannot be decided
+    // statically.
+    if (arms?.some((arm) => arm.kind === "object"))
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "'instanceof' on a union of class instances and values without a class prototype test",
+      );
   }
   if (left.type.kind !== "object") {
     return readsClassAfter(lowerer, target, expr.right, [{ kind: "exprStmt", expr: left, loc }], {
