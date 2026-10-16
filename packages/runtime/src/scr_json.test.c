@@ -381,6 +381,108 @@ static void checked_number_storage(void) {
 #endif
 }
 
+/* ── intact parse regions ───────────────────────────────────────────── */
+
+static bool buffered(ScrDyn *d) { return scr_cyc_is_buffered(scr_cyc_hdr(d)); }
+
+/* Drop a temporary reference the way member reads do. */
+static bool buffered_after_read(ScrDyn *d) {
+  scr_dyn_release(scr_dyn_retain(d));
+  return buffered(d);
+}
+
+static ScrDyn *parse_text(const char *text) {
+  ScrStr *input = scr_str_new(text, strlen(text));
+  ScrDyn *parsed = scr_json_parse(input);
+  scr_str_release(input);
+  assert(parsed && !scr_exc_pending());
+  return parsed;
+}
+
+static const char region_doc[] = "{\"a\":{\"b\":[1,{\"c\":2}],\"s\":\"text\"},\"n\":300}";
+
+/* Store a reference to `root` into a member of its own document through one
+ * of the barriered writers. */
+static void close_cycle(ScrDyn *root, int writer) {
+  ScrDyn *a = scr_dyn_obj_get(root, "a", 1);
+  ScrDyn *b = scr_dyn_obj_get(a, "b", 1);
+  switch (writer) {
+  case 0: scr_dyn_obj_set(a, "parent", 6, scr_dyn_retain(root)); break;
+  case 1: scr_dyn_arr_push(b, scr_dyn_retain(root)); break;
+  case 2: {
+    ScrStr *key = scr_str_new("0", 1);
+    scr_dyn_key_set(b, key, root);
+    scr_str_release(key);
+    break;
+  }
+  case 3: {
+    ScrStr *key = scr_str_new("extra", 5);
+    scr_dyn_key_set(b, key, root);
+    scr_str_release(key);
+    break;
+  }
+  case 4: scr_dyn_release(scr_dyn_set_prototype(a, root)); break;
+  case 5: {
+    ScrDyn *descriptor = scr_dyn_new_obj();
+    scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_retain(root));
+    ScrStr *text = scr_str_new("p", 1);
+    ScrDyn *key = scr_dyn_new_str(text);
+    scr_str_release(text);
+    scr_dyn_release(scr_dyn_define_property(a, key, descriptor));
+    scr_dyn_release(key);
+    scr_dyn_release(descriptor);
+    break;
+  }
+  }
+  assert(!scr_exc_pending());
+}
+
+static void json_intact_regions(void) {
+#ifdef SCR_RC_AUDIT
+  long before = scr_dyn_live_count();
+#endif
+  /* Member reads of an intact document buffer nothing, and primitive
+   * stores keep it intact. */
+  ScrDyn *root = parse_text(region_doc);
+  ScrDyn *a = scr_dyn_obj_get(root, "a", 1);
+  ScrDyn *b = scr_dyn_obj_get(a, "b", 1);
+  assert(!buffered_after_read(root) && !buffered_after_read(a) && !buffered_after_read(b));
+  assert(!buffered_after_read(b->v.arr.items[1]));
+  scr_dyn_obj_set(a, "n", 1, scr_dyn_new_num(1000.5));
+  scr_dyn_arr_push(b, scr_dyn_new_null());
+  scr_dyn_obj_set(a, "u", 1, scr_dyn_retain(scr_dyn_undefined()));
+  assert(!buffered_after_read(a) && !buffered_after_read(b));
+
+  /* A store of another document's node invalidates only the written one. */
+  ScrDyn *other = parse_text(region_doc);
+  scr_dyn_obj_set(a, "other", 5, scr_dyn_retain(other));
+  assert(!buffered_after_read(scr_dyn_obj_get(other, "a", 1)));
+  assert(buffered_after_read(root));
+  scr_dyn_release(other);
+  scr_dyn_release(root);
+  scr_collect_cycles();
+#ifdef SCR_RC_AUDIT
+  assert(scr_dyn_live_count() == before);
+#endif
+
+  /* The cycle runs through the root, which was never written. A pass while
+   * the root is still referenced finds everything alive and drains the
+   * candidates; the later release of the root alone must buffer it again. */
+  for (int writer = 0; writer < 6; writer++) {
+    root = parse_text(region_doc);
+    close_cycle(root, writer);
+    assert(buffered_after_read(scr_dyn_obj_get(root, "a", 1)));
+    scr_collect_cycles();
+    assert(root->rc == 2);
+    scr_dyn_release(root);
+    assert(buffered(root));
+    scr_collect_cycles();
+#ifdef SCR_RC_AUDIT
+    assert(scr_dyn_live_count() == before);
+#endif
+  }
+}
+
 /* ── schema-directed parse ──────────────────────────────────────────── */
 
 typedef struct {
@@ -412,6 +514,7 @@ static void test_item_release(void *ptr) {
   scr_str_release(item->sku);
   scr_arr_release(item->tags);
   test_items_live--;
+  scr_weak_dispose(item); /* emitted record frees notify the dispose hook */
   free(item);
 }
 
@@ -465,6 +568,7 @@ static void test_pair_release(void *ptr) {
   TestPair *pair = ptr;
   if (!pair || --pair->rc) return;
   test_pairs_live--;
+  scr_weak_dispose(pair); /* emitted record frees notify the dispose hook */
   free(pair);
 }
 static const ScrJsonSchemaField test_pair_fields[] = {
@@ -487,6 +591,7 @@ static void json_schema_special_names(void) {
   test_pair_release(pair);
   pair = pair_parse("{\"c\\\\d\":4,\"a\\u0022b\":3}");
   assert(pair && pair->quoted == 3 && pair->slashed == 4);
+  assert(scr_record_source_has(pair)); /* members out of declaration order */
   test_pair_release(pair);
   /* Raw bytes equal to a name are not that name: the key ends at the
    * quote, and a lone backslash starts an escape. */
@@ -514,9 +619,23 @@ static void json_schema_parse(void) {
   TestItem *second = scr_arr_get_ref(list, 1);
   assert(second->qty == 0 && signbit(second->qty) && second->ok == 0 && second->tags->len == 0);
   assert(str_is(second->sku, "\xF0\x9F\x98\x80"));
+  /* The undeclared key and the reordered members stay beside the record in
+   * source order; the record in declaration order keeps nothing. */
+  assert(!scr_record_source_has(first));
+  assert(scr_record_source_has(second));
+  const ScrDyn *view = scr_record_source_view(second);
+  static const char *const order[] = {"tags", "ok", "extra", "qty", "sku"};
+  assert(view->kind == SCR_DYN_OBJ && view->v.obj.len == 5);
+  for (size_t i = 0; i < 5; i++) {
+    assert(view->v.obj.entries[i].key_len == strlen(order[i]));
+    assert(memcmp(view->v.obj.entries[i].key, order[i], strlen(order[i])) == 0);
+  }
+  assert(scr_dyn_obj_get(view, "extra", 5)->kind == SCR_DYN_OBJ);
   test_item_release(second);
+  assert(scr_record_source_has(second)); /* the list still holds it */
   scr_arr_release(list);
   assert(test_items_live == 0);
+  assert(!scr_record_source_has(second)); /* released with the record */
 
   list = schema_parse("[]");
   assert(list && list->len == 0);
@@ -554,7 +673,7 @@ static void json_schema_parse(void) {
   }
 
   /* Nesting beyond the checked parser's limit declines (it reports the
-   * RangeError); nesting within it is skipped. */
+   * RangeError); nesting within it is kept beside the record. */
   for (int depth = 999; depth <= 1001; depth++) {
     char text[2200];
     size_t n = 0;
@@ -580,6 +699,7 @@ int main(void) {
   shared_property_keys();
   checked_leaf_cycles();
   checked_number_storage();
+  json_intact_regions();
   json_schema_parse();
   json_schema_special_names();
   /* Native Set boxes may own headerless scalar/string maps. Collecting an

@@ -1173,6 +1173,18 @@ export const BUILTIN_MODULE_FNS: Record<
     // opendirSync's options (a literal { bufferSize, encoding: "utf8" })
     // lower in lowerBuiltinModuleCall; the row routes the dispatch.
     opendirSync: { fn: "fs.opendirSync", params: [STRING, F64], result: DIR_T },
+    // createReadStream/createWriteStream lower in lowerBuiltinModuleCall
+    // (path and options cross as dyn values); the rows route the dispatch.
+    createReadStream: {
+      fn: "fs.createReadStream",
+      params: [DYN, DYN],
+      result: { kind: "object", className: "%Readable" },
+    },
+    createWriteStream: {
+      fn: "fs.createWriteStream",
+      params: [DYN, DYN],
+      result: { kind: "object", className: "%Writable" },
+    },
     lstatSync: { fn: "fs.lstatSync", params: [STRING], result: STATS_T },
     fstatSync: {
       fn: "fs.fstatSync",
@@ -1928,6 +1940,23 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // The bytes-data form and the { mode } options form.
     writeFileSync: ["fs.writeFileSyncBytes", "fs.writeFileModeSync"],
     appendFileSync: ["fs.appendFileSyncBytes"],
+    // The fs stream members (bytesRead/bytesWritten, pending, path, close).
+    createReadStream: [
+      "fs.fsStreamBytes",
+      "fs.fsStreamPending",
+      "fs.fsStreamPath",
+      "fs.fsStreamPropDyn",
+      "fs.fsStreamClose",
+      "fs.fsStreamCloseCb",
+    ],
+    createWriteStream: [
+      "fs.fsStreamBytes",
+      "fs.fsStreamPending",
+      "fs.fsStreamPath",
+      "fs.fsStreamPropDyn",
+      "fs.fsStreamClose",
+      "fs.fsStreamCloseCb",
+    ],
     // The utf8 string overload; the table row is the Buffer-window form.
     writeSync: ["fs.writeStrSync"],
     // The { recursive, mode } option lowerings.

@@ -35,6 +35,7 @@ import {
   TESTCTX_T,
   URL_T,
   VOID,
+  funcOf,
 } from "./ir.js";
 
 /** Runtime call slots. A null argument accepts a program-dependent type;
@@ -1330,6 +1331,22 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   },
   "dgram.unref": { argTypes: [DGRAMSOCK_T], result: VOID },
   "dgram.ref": { argTypes: [DGRAMSOCK_T], result: VOID },
+  /** The socket options (scr_dgram.c): the membership calls take the
+   * interface and whether it was given. May-throw. */
+  "dgram.setBroadcast": { argTypes: [DGRAMSOCK_T, BOOL], result: VOID },
+  "dgram.setTTL": { argTypes: [DGRAMSOCK_T, F64], result: F64 },
+  "dgram.setMulticastTTL": { argTypes: [DGRAMSOCK_T, F64], result: F64 },
+  "dgram.setMulticastLoopback": { argTypes: [DGRAMSOCK_T, BOOL], result: BOOL },
+  "dgram.setMulticastInterface": { argTypes: [DGRAMSOCK_T, STRING], result: VOID },
+  "dgram.addMembership": { argTypes: [DGRAMSOCK_T, STRING, STRING, BOOL], result: VOID },
+  "dgram.dropMembership": { argTypes: [DGRAMSOCK_T, STRING, STRING, BOOL], result: VOID },
+  "dgram.getRecvBufferSize": { argTypes: [DGRAMSOCK_T], result: F64 },
+  "dgram.getSendBufferSize": { argTypes: [DGRAMSOCK_T], result: F64 },
+  "dgram.setRecvBufferSize": { argTypes: [DGRAMSOCK_T, F64], result: VOID },
+  "dgram.setSendBufferSize": { argTypes: [DGRAMSOCK_T, F64], result: VOID },
+  "dgram.getSendQueueSize": { argTypes: [DGRAMSOCK_T], result: F64 },
+  "dgram.getSendQueueCount": { argTypes: [DGRAMSOCK_T], result: F64 },
+  "dgram.disconnect": { argTypes: [DGRAMSOCK_T], result: VOID },
   "dgram.onMessage": { argTypes: [DGRAMSOCK_T, null, BOOL], result: VOID },
   "dgram.onError": { argTypes: [DGRAMSOCK_T, null, BOOL], result: VOID },
   "dgram.onListening": {
@@ -2516,6 +2533,32 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fsp.lchmodChk": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
   "fs.readChk": { argTypes: [DYN, DYN, DYN, DYN, DYN, STRING], result: VOID },
   "fs.streamOptsChk": { argTypes: [DYN, DYN, STRING], result: VOID },
+  /** fs.ReadStream / fs.WriteStream (scr_fs_stream.c): the constructors
+   * take the path and options as dyn values and throw Node's option
+   * errors; the members read bytesRead/bytesWritten, pending and the path
+   * value, and close() / close(cb) (a `() => void` callback). */
+  "fs.createReadStream": {
+    argTypes: [DYN, DYN],
+    result: { kind: "object", className: "%Readable" },
+  },
+  "fs.createWriteStream": {
+    argTypes: [DYN, DYN],
+    result: { kind: "object", className: "%Writable" },
+  },
+  "fs.fsStreamBytes": { argTypes: [null], result: F64 },
+  "fs.fsStreamPending": { argTypes: [null], result: BOOL },
+  "fs.fsStreamPath": { argTypes: [null], result: DYN },
+  "fs.fsStreamPropDyn": { argTypes: [null, STRING], result: DYN },
+  "fileHandle.createReadStream": {
+    argTypes: [FILEHANDLE_T, DYN],
+    result: { kind: "object", className: "%Readable" },
+  },
+  "fileHandle.createWriteStream": {
+    argTypes: [FILEHANDLE_T, DYN],
+    result: { kind: "object", className: "%Writable" },
+  },
+  "fs.fsStreamClose": { argTypes: [null], result: VOID },
+  "fs.fsStreamCloseCb": { argTypes: [null, funcOf([], VOID)], result: VOID },
   /** The compiler-resolved ERR_INVALID_ARG_TYPE throw with a RUNTIME-
    * rendered Received tail: args [argname, "of type ..." clause, the
    * offending dyn value]. ALWAYS THROWS; polymorphic result (the
@@ -3600,6 +3643,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "insp.seenPush": { argTypes: [null], result: VOID },
   "insp.refWrap": { argTypes: [null, STRING], result: STRING },
   "insp.circular": { argTypes: [F64], result: STRING },
+  /* Whether a closed declared-field record kept the undeclared properties
+   * of its checked source (scr_record_source_note): reflective surfaces
+   * (inspect, Object.keys/values/entries) then answer through its live
+   * checked view. The receiver is any such record type. Never throws. */
+  "record.sourceHas": { argTypes: [null], result: BOOL },
   "insp.key": { argTypes: [STRING], result: STRING },
   "insp.moreItems": { argTypes: [F64], result: STRING },
   "insp.end": { argTypes: [STRING, STRING, STRING, F64, BOOL, BOOL], result: STRING },

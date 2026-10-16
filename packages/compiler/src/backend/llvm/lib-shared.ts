@@ -592,6 +592,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.seenPush": "scr_insp_seen_push",
   "insp.refWrap": "scr_insp_ref_wrap",
   "insp.circular": "scr_insp_circular",
+  // Undeclared source properties kept beside a checked record (scr_json.c).
+  "record.sourceHas": "scr_record_source_has",
   // WHATWG URL + URLSearchParams (scr_url.c / scr_url_params.c):
   // constructions +1; url.new, the fileURLToPath pair, the win32
   // pathToFileURL flavor, and sp.fromPairs throw catchably (may-throw).
@@ -722,6 +724,16 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fsp.realpath": "scr_fsp_realpath",
   "fsp.lstat": "scr_fsp_lstat",
   "fs.opendirSync": "scr_fs_opendir",
+  "fs.createReadStream": "scr_fs_read_stream_new",
+  "fs.createWriteStream": "scr_fs_write_stream_new",
+  "fs.fsStreamBytes": "scr_fs_stream_bytes",
+  "fs.fsStreamPending": "scr_fs_stream_pending",
+  "fs.fsStreamPath": "scr_fs_stream_path_value",
+  "fs.fsStreamPropDyn": "scr_fs_stream_prop_dyn",
+  "fileHandle.createReadStream": "scr_file_handle_read_stream",
+  "fileHandle.createWriteStream": "scr_file_handle_write_stream",
+  "fs.fsStreamClose": "scr_fs_stream_close",
+  "fs.fsStreamCloseCb": "scr_fs_stream_close_cb",
   "fsp.opendir": "scr_fsp_opendir",
   "dir.path": "scr_dir_path",
   "dir.closeSync": "scr_dir_close",
@@ -1347,6 +1359,11 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "fetch.streamNew",
   "fetch.streamFrom",
   "readable.new",
+  // fs.ReadStream / fs.WriteStream open, read and write on the worker pool.
+  "fs.createReadStream",
+  "fs.createWriteStream",
+  "fileHandle.createReadStream",
+  "fileHandle.createWriteStream",
   "writable.new",
   "duplex.new",
   "transform.new",

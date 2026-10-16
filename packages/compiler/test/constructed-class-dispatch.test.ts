@@ -22,6 +22,10 @@ async function emitLlvm(source: string): Promise<string> {
 const slotLoad = (method: string): RegExp => new RegExp(`= load ptr, ptr %t\\d+ ; ${method}\\n`);
 const directCall = (cls: string, method: string): RegExp =>
   new RegExp(`call double @sc_bf__x25_${cls}_${method}\\(`);
+/** A closed set's test of the loaded slot against one implementation. */
+const slotTest = (cls: string, method: string): RegExp =>
+  new RegExp(`icmp eq ptr %t\\d+, @sc_bf__x25_${cls}_${method}\\n`);
+const indirectCall = /call double %t\d+\(/;
 
 const loop = `
 function run(s: Shape, n: number): number {
@@ -56,7 +60,7 @@ console.log(run(make(), 1000));
   expect(llvm).not.toMatch(slotLoad("area"));
 });
 
-test("two constructed implementations keep the vtable call", async () => {
+test("two constructed implementations test the slot and call each directly", async () => {
   const llvm = await emitLlvm(`
 abstract class Shape { abstract area(x: number): number; }
 class Circle extends Shape { r = 2; area(x: number): number { return x * this.r + 1; } }
@@ -65,9 +69,13 @@ ${loop}
 console.log(run(new Circle(), 1000), run(new Square(), 1000));
 `);
   expect(llvm).toMatch(slotLoad("area"));
+  expect(llvm).toMatch(slotTest("Circle", "area"));
+  expect(llvm).toMatch(directCall("Circle", "area"));
+  expect(llvm).toMatch(directCall("Square", "area"));
+  expect(llvm).not.toMatch(indirectCall);
 });
 
-test("a constructed concrete base keeps the vtable call", async () => {
+test("a constructed concrete base joins the closed set", async () => {
   const llvm = await emitLlvm(`
 class Shape { f = 1; area(x: number): number { return x * this.f; } }
 class Circle extends Shape { r = 2; area(x: number): number { return x * this.r + 1; } }
@@ -75,6 +83,24 @@ ${loop}
 console.log(run(new Circle(), 1000), run(new Shape(), 1000));
 `);
   expect(llvm).toMatch(slotLoad("area"));
+  expect(llvm).toMatch(directCall("Shape", "area"));
+  expect(llvm).toMatch(directCall("Circle", "area"));
+  expect(llvm).not.toMatch(indirectCall);
+});
+
+test("more than four implementations keep the vtable call", async () => {
+  const classes = [1, 2, 3, 4, 5]
+    .map((k) => `class S${k} extends Shape { area(x: number): number { return x * ${k}; } }`)
+    .join("\n");
+  const llvm = await emitLlvm(`
+abstract class Shape { abstract area(x: number): number; }
+${classes}
+${loop}
+console.log(run(new S1(), 9), run(new S2(), 9), run(new S3(), 9), run(new S4(), 9), run(new S5(), 9));
+`);
+  expect(llvm).toMatch(slotLoad("area"));
+  expect(llvm).toMatch(indirectCall);
+  expect(llvm).not.toMatch(slotTest("S1", "area"));
 });
 
 test("a class value of a subclass keeps the vtable call", async () => {
@@ -126,6 +152,8 @@ export function result(): number { return run(new Circle(), 10) + measure(new Le
     if (!result.ok) return;
     const llvm = await readFile(result.llvmPath, "utf8");
     expect(llvm).toMatch(slotLoad("area"));
+    // The host may construct exported classes: no closed set.
+    expect(llvm).toMatch(indirectCall);
     expect(llvm).not.toMatch(slotLoad("size"));
     expect(llvm).toMatch(directCall("Leaf", "size"));
   } finally {

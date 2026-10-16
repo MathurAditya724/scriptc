@@ -593,6 +593,38 @@ static size_t scr_message_array_index(const char *key, size_t length, size_t lim
   return index < limit ? index : SIZE_MAX;
 }
 
+/* A decoded message that is plain JSON-shaped data is tagged like a parse
+ * result (ScrDynRegion), so dropping the decoder's references does not
+ * make every container a cycle candidate. Encoder ids are assigned when a
+ * value is first reached, parents first; requiring every container edge to
+ * lead to a higher id proves the graph acyclic (a subtree reached again
+ * from a later node, or a cycle, leaves the document untagged). Leaves
+ * must be inert and arrays free of named properties. */
+static void scr_message_tag_document(const ScrMessage *message, ScrDyn **values) {
+  for (size_t i = 0; i < message->count; i++) {
+    const ScrMessageNode *node = &message->nodes[i];
+    switch (node->kind) {
+    case SCR_MESSAGE_UNDEFINED: case SCR_MESSAGE_NULL: case SCR_MESSAGE_BOOL:
+    case SCR_MESSAGE_NUMBER: case SCR_MESSAGE_STRING:
+      continue;
+    case SCR_MESSAGE_ARRAY: case SCR_MESSAGE_OBJECT:
+      break;
+    default:
+      return;
+    }
+    if (node->kind == SCR_MESSAGE_ARRAY && values[i]->v.arr.properties) return;
+    for (size_t j = 0; j < node->count; j++) {
+      size_t target = node->properties[j].value;
+      ScrMessageKind kind = message->nodes[target].kind;
+      if ((kind == SCR_MESSAGE_ARRAY || kind == SCR_MESSAGE_OBJECT) && target <= i) return;
+    }
+  }
+  if (message->nodes[0].kind != SCR_MESSAGE_ARRAY && message->nodes[0].kind != SCR_MESSAGE_OBJECT) return;
+  ScrDynRegion *region = scr_dyn_region_open();
+  for (size_t i = 0; i < message->count; i++) scr_dyn_region_tag(values[i], region);
+  scr_dyn_region_close(region);
+}
+
 ScrDyn *scr_message_decode(const ScrMessage *message) {
   if (message->count == 1 && message->nodes[0].kind == SCR_MESSAGE_PUBLISHED)
     return scr_dyn_retain(message->nodes[0].published);
@@ -684,6 +716,7 @@ ScrDyn *scr_message_decode(const ScrMessage *message) {
       scr_error_release(error);
     }
   }
+  scr_message_tag_document(message, values);
 done:;
   ScrDyn *result = !scr_exc_pending() ? scr_dyn_retain(values[0]) : NULL;
   for (size_t i = 0; i < message->count; i++) {

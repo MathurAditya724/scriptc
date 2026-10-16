@@ -675,7 +675,13 @@ static void scr_dyn_key_release(char *key, size_t length) {
 #ifndef SCR_RC_AUDIT
 static SCR_TL ScrDyn *scr_dyn_free_arr, *scr_dyn_free_obj, *scr_dyn_free_misc;
 static SCR_TL size_t scr_dyn_free_count;
-#define SCR_DYN_FREE_MAX 8192
+/* Sized for whole documents: a parse/serialize loop over a 100k-record
+ * document frees ~400k nodes per round, and a pool capped below that sent
+ * most of them back through zeroing allocation and entry-buffer regrowth.
+ * The pool only keeps blocks the thread already allocated (the small-object
+ * arena never returns them to the system either), at the cost of reserving
+ * them, with their item/entry buffers, for dyn nodes. */
+#define SCR_DYN_FREE_MAX ((size_t)1 << 20)
 /* Recycled small objects may retain key bytes, but never values or an
  * unbounded document's keys. This budget applies across the whole pool. */
 static SCR_TL size_t scr_dyn_cached_key_bytes;
@@ -830,6 +836,38 @@ static void scr_typed_ref_exit(void) {
 
 static void scr_dyn_gcfree(void *ptr);
 
+/* Intact parse regions (scr_runtime.h, ScrDynRegion). */
+static ScrDynRegion *scr_dyn_region_new(void) {
+  ScrDynRegion *region = malloc(sizeof *region);
+  if (!region) scr_json_oom();
+  region->refs = 1;
+  region->intact = true;
+  return region;
+}
+
+static void scr_dyn_region_unref(ScrDynRegion *region) {
+  if (region && --region->refs == 0) free(region);
+}
+
+/* Tag a container the parser has just completed. Its members were stored
+ * while it had no region, so construction never trips the barrier. */
+static void scr_dyn_region_join(ScrDyn *d, ScrDynRegion *region) {
+  if (!region || (d->kind != SCR_DYN_ARR && d->kind != SCR_DYN_OBJ)) return;
+  region->refs++;
+  if (d->kind == SCR_DYN_ARR) d->v.arr.region = region;
+  else d->v.obj.region = region;
+}
+
+ScrDynRegion *scr_dyn_region_open(void) { return scr_dyn_region_new(); }
+void scr_dyn_region_tag(ScrDyn *d, ScrDynRegion *region) { scr_dyn_region_join(d, region); }
+void scr_dyn_region_close(ScrDynRegion *region) { scr_dyn_region_unref(region); }
+
+static void scr_dyn_region_leave(ScrDyn *d) {
+  ScrDynRegion **slot = d->kind == SCR_DYN_ARR ? &d->v.arr.region : &d->v.obj.region;
+  scr_dyn_region_unref(*slot);
+  *slot = NULL;
+}
+
 static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
 #ifndef SCR_RC_AUDIT
   ScrDyn **list = kind == SCR_DYN_ARR   ? &scr_dyn_free_arr
@@ -857,8 +895,10 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
       d->v.arr.sealed = false;
       d->v.arr.frozen = false;
       d->v.arr.presence = NULL;
+      d->v.arr.region = NULL;
     } else if (kind == SCR_DYN_OBJ) {
       d->v.obj.len = 0; /* cap/entries preserved */
+      d->v.obj.region = NULL;
       if (d->v.obj.cap <= SCR_DYN_KEY_CACHE_SLOTS) {
         for (size_t i = 0; i < d->v.obj.cap; i++) {
           ScrDynEntry *entry = &d->v.obj.entries[i];
@@ -889,8 +929,43 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
   return fresh;
 }
 
+/* Number and string nodes are most of the checked-dynamic churn: numbers
+ * boxed by dyn expressions and the leaves of parsed documents. They own no
+ * dyn edges, are never cycle candidates or weak keys, and never acquire a
+ * prototype or symbol table (only objects and arrays do), so they recycle
+ * through the misc pool without the generic disposal and reset. Every
+ * pooled node has a NULL prototype and symbol tables. */
+static inline ScrDyn *scr_dyn_leaf_alloc(ScrDynKind kind) {
+#ifndef SCR_RC_AUDIT
+  ScrDyn *d = scr_dyn_free_misc;
+  if (d) {
+    scr_dyn_free_misc = (ScrDyn *)d->v.str; /* freelist link */
+    scr_dyn_free_count--;
+    ScrCycHdr *header = scr_cyc_hdr(d);
+    scr_cyc_set_color(header, SCR_CYC_BLACK);
+    scr_cyc_set_gen(header, SCR_CYC_NURSERY);
+    d->rc = 1;
+    d->kind = kind;
+    d->buffer = false;
+    d->null_proto = false;
+    d->copied_from_native = false;
+    d->non_extensible = false;
+    return d;
+  }
+#endif
+  return scr_dyn_alloc(kind);
+}
+
 static void scr_dyn_handle_release(void *h, ScrDynHandleTag tag);
 static bool scr_dyn_to_primitive_result_is_object(const ScrDyn *d);
+
+/* Pooled dyn nodes report their disposal to weak collections only: they
+ * are never the native records the kept-source table is keyed by. */
+static SCR_TL bool scr_weak_observing;
+static void scr_weak_disposed(void *key);
+static inline void scr_dyn_weak_dispose(ScrDyn *d) {
+  if (scr_weak_observing) scr_weak_disposed(d);
+}
 
 static void scr_dyn_dispose(ScrDyn *d, bool collected) {
 #ifndef SCR_RC_AUDIT
@@ -901,7 +976,7 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
       scr_dyn_free_count < SCR_DYN_FREE_MAX) {
     scr_typed_ref_forget(d);
     d->v.typed_ref.release(d->v.typed_ref.ptr);
-    scr_weak_dispose(d);
+    scr_dyn_weak_dispose(d);
     d->v.str = (ScrStr *)scr_dyn_free_misc;
     scr_dyn_free_misc = d;
     scr_dyn_free_count++;
@@ -912,10 +987,12 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
     free(d->v.obj.index);
     d->v.obj.index = NULL;
   }
+  if (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ) scr_dyn_region_leave(d);
   if (!collected) scr_dyn_release(d->prototype);
   if (!collected) scr_dyn_release(d->symbol_properties);
   if (!collected) scr_dyn_release(d->symbol_keys);
-  d->symbol_properties = d->symbol_keys = NULL;
+  /* Pooled nodes keep all three NULL (scr_dyn_leaf_alloc relies on it). */
+  d->prototype = d->symbol_properties = d->symbol_keys = NULL;
   switch (d->kind) {
   case SCR_DYN_SYMBOL:
     d->v.symbol.release(d->v.symbol.value);
@@ -995,7 +1072,7 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
     if (d->kind == SCR_DYN_OBJ) scr_dyn_obj_drop_keys(d, true);
     /* Pooled blocks retain their headers and count toward the bounded
      * allocated heap, but never remain in a candidate buffer. */
-    scr_weak_dispose(d);
+    scr_dyn_weak_dispose(d);
     ScrDyn **list = d->kind == SCR_DYN_ARR   ? &scr_dyn_free_arr
                     : d->kind == SCR_DYN_OBJ ? &scr_dyn_free_obj
                                              : &scr_dyn_free_misc;
@@ -1017,10 +1094,17 @@ static void scr_dyn_gcfree(void *ptr) { scr_dyn_dispose(ptr, true); }
 
 static void scr_dyn_destroy(void *ptr) { scr_dyn_dispose(ptr, false); }
 
-/* The cycle bookkeeping of a capsule or handle that survives a release.
- * Compiled release fast paths decrement first and call this for the kinds
- * whose candidacy depends on per-value state, matching scr_dyn_release. */
+/* The cycle bookkeeping of a value that survives a release. Compiled
+ * release fast paths decrement first and call this for the kinds whose
+ * candidacy depends on per-value state, matching scr_dyn_release: arrays
+ * and objects not yet buffered (skipped while their document is intact,
+ * ScrDynRegion), capsules and handles. */
 void scr_dyn_release_survivor(ScrDyn *d) {
+  if (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ) {
+    const ScrDynRegion *region = scr_dyn_region_of(d);
+    if (!region || !region->intact) scr_cyc_released(d);
+    return;
+  }
   if ((d->kind == SCR_DYN_TYPED_REF &&
        (d->v.typed_ref.materialized || d->v.typed_ref.casts || d->v.typed_ref.traced ||
         d->prototype || d->symbol_properties || d->symbol_keys)) ||
@@ -1031,10 +1115,16 @@ void scr_dyn_release_survivor(ScrDyn *d) {
 void scr_dyn_release(ScrDyn *d) {
   if (!d || d->rc == SIZE_MAX) return;
   if (--d->rc != 0) {
+    /* A container of an intact parse region cannot lie on a cycle
+     * (ScrDynRegion). */
+    if (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ) {
+      ScrDynRegion *region = d->kind == SCR_DYN_ARR ? d->v.arr.region : d->v.obj.region;
+      if (!region || !region->intact) scr_cyc_released(d);
+      return;
+    }
     /* A capsule without a snapshot, casts or a traced referent has no
      * outgoing edge, so it cannot be part of a cycle until it gains one. */
-    if (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ || d->kind == SCR_DYN_FUNC ||
-        d->kind == SCR_DYN_PROXY ||
+    if (d->kind == SCR_DYN_FUNC || d->kind == SCR_DYN_PROXY ||
         (d->kind == SCR_DYN_TYPED_REF &&
          (d->v.typed_ref.materialized || d->v.typed_ref.casts || d->v.typed_ref.traced ||
           d->prototype || d->symbol_properties || d->symbol_keys)) ||
@@ -1055,6 +1145,15 @@ void scr_dyn_release(ScrDyn *d) {
   }
 #endif
   scr_cyc_dead(d);
+#ifndef SCR_RC_AUDIT
+  if ((d->kind == SCR_DYN_NUM || d->kind == SCR_DYN_STR) && scr_dyn_free_count < SCR_DYN_FREE_MAX) {
+    if (d->kind == SCR_DYN_STR) scr_str_release(d->v.str);
+    d->v.str = (ScrStr *)scr_dyn_free_misc; /* see scr_dyn_leaf_alloc */
+    scr_dyn_free_misc = d;
+    scr_dyn_free_count++;
+    return;
+  }
+#endif
   scr_rc_destroy(d, scr_dyn_destroy);
 }
 
@@ -1193,6 +1292,7 @@ bool scr_dyn_field_eq_bool(const ScrDyn *d, const ScrStr *key, bool value) {
 /* Public: the compiler-emitted static→dyn converters push through this
  * too. Ownership of the item moves in. */
 void scr_dyn_arr_push(ScrDyn *arr, ScrDyn *item) {
+  scr_dyn_region_store(arr, item);
   if (arr->v.arr.len == arr->v.arr.cap) {
     size_t cap = arr->v.arr.cap ? arr->v.arr.cap * 2 : 4;
     ScrDyn **items = scr_mem_realloc(arr->v.arr.items, cap * sizeof *items);
@@ -1423,6 +1523,7 @@ ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key) {
  * original spelling/storage and insertion position; the later value wins.
  * A recycled entry can reuse equal key bytes without a malloc/free pair. */
 static void scr_dyn_obj_put(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value) {
+  scr_dyn_region_store(obj, value);
   /* Construction usually appends an absent name. Avoid a read hint that
    * repeats comparisons on compact objects; wide objects use their index. */
   ScrDynEntry *existing = obj->v.obj.index ? scr_dyn_find_entry(obj, key, key_len)
@@ -1548,13 +1649,13 @@ ScrDyn *scr_dyn_new_num(double n) {
     int value = (int)n;
     if ((double)value == n && (value != 0 || !signbit(n))) return &scr_dyn_small_ints[value + 128];
   }
-  ScrDyn *d = scr_dyn_alloc(SCR_DYN_NUM);
+  ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_NUM);
   d->v.num = n;
   return d;
 }
 
 ScrDyn *scr_dyn_new_str(ScrStr *s) {
-  ScrDyn *d = scr_dyn_alloc(SCR_DYN_STR);
+  ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_STR);
   d->v.str = scr_str_retain(s);
   return d;
 }
@@ -1730,6 +1831,7 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
     return NULL;
   }
   ScrDyn *replacement = prototype->kind == SCR_DYN_NULL ? NULL : scr_dyn_retain(prototype);
+  scr_dyn_region_store(object, replacement ? replacement : scr_dyn_undefined());
   scr_dyn_release(object->prototype);
   object->prototype = replacement;
   object->null_proto = replacement ? false : true;
@@ -2239,6 +2341,314 @@ ScrDyn *scr_dyn_new_buffer(const ScrBytes *b) {
   return d;
 }
 
+/* ── Undeclared properties of checked records ──────────────────────────
+ * A checked conversion from an ordinary object into a closed record layout
+ * stores only the declared fields natively. In Node the other own
+ * properties stay on the same object, where JSON.stringify, untyped reads,
+ * Object.keys and util.inspect still observe them in insertion order. When
+ * the source carries undeclared keys, the conversion keeps a shallow copy of
+ * the source's own properties here, keyed by the native record and released
+ * when the record is freed (the native dispose hook). The copy fixes the
+ * own-key order; declared keys hold placeholders, because the record stays
+ * the source of truth for their values. It is also the record's checked
+ * view: every capsule for the record adopts it, so properties written
+ * through untyped references persist after the capsule is gone, and the
+ * typed serializers of such a record go through its capsule. */
+typedef struct {
+  void *rec;
+  ScrDyn *view;
+  /* The shape's declared names in declaration order, as static strided
+   * tables: the compiler's name/length arrays, or a JSON schema's fields. */
+  const char *names;
+  const char *lens;
+  size_t name_stride, len_stride, count;
+} ScrRecordSource;
+static SCR_TL ScrRecordSource *scr_record_sources;
+static SCR_TL size_t scr_record_source_capacity, scr_record_source_count;
+/* Deleted slots keep this marker so probe runs stay intact without moving
+ * entries (records free in conversion order, so a backward shift would
+ * rescan the same run on every deletion); insertion reuses them and the
+ * rehash drops them. */
+#define SCR_RECORD_SOURCE_DELETED ((void *)1)
+static SCR_TL size_t scr_record_source_deleted;
+/* Every native object free reports to the dispose hook, and most freed
+ * objects have no entry: a bit filter over the entry keys (cleared when the
+ * table empties) answers those without probing the table. */
+#define SCR_RECORD_SOURCE_FILTER_BITS 20
+static SCR_TL uint64_t *scr_record_source_filter;
+
+static size_t scr_record_source_filter_bit(const void *rec) {
+  return (size_t)(((uint64_t)(uintptr_t)rec >> 4) * UINT64_C(0x9E3779B97F4A7C15) >>
+                  (64 - SCR_RECORD_SOURCE_FILTER_BITS));
+}
+
+/* Records converted together are usually allocated together, and are
+ * then serialized and freed in that order: keys within one 1 KiB region
+ * keep their order in a 64-slot run, and the runs scatter by a mix of the
+ * region, so sequential work touches neighboring slots. */
+static size_t scr_record_source_bucket(const void *rec) {
+  uint64_t key = (uint64_t)(uintptr_t)rec >> 4;
+  uint64_t run = (key >> 6) * UINT64_C(0x9E3779B97F4A7C15);
+  run ^= run >> 29;
+  return (size_t)((run << 6) | (key & 63)) & (scr_record_source_capacity - 1);
+}
+
+static ScrRecordSource *scr_record_source_find(const void *rec) {
+  if (!scr_record_source_count) return NULL;
+  size_t mask = scr_record_source_capacity - 1;
+  for (size_t slot = scr_record_source_bucket(rec); scr_record_sources[slot].rec;
+       slot = (slot + 1) & mask) {
+    if (scr_record_sources[slot].rec == rec) return &scr_record_sources[slot];
+  }
+  return NULL;
+}
+
+/* The retained view of a record with undeclared keys (borrowed), or NULL. */
+ScrDyn *scr_record_source_view(const void *rec) {
+  ScrRecordSource *entry = scr_record_source_find(rec);
+  return entry ? entry->view : NULL;
+}
+
+bool scr_record_source_has(const void *rec) {
+  return scr_record_source_count && scr_record_source_find(rec) != NULL;
+}
+
+static void scr_record_source_disposed(void *rec) {
+  size_t bit = scr_record_source_filter_bit(rec);
+  if (!(scr_record_source_filter[bit >> 6] & (UINT64_C(1) << (bit & 63)))) return;
+  ScrRecordSource *found = scr_record_source_find(rec);
+  if (!found) return;
+  ScrDyn *view = found->view;
+  *found = (ScrRecordSource){ .rec = SCR_RECORD_SOURCE_DELETED };
+  scr_record_source_count--;
+  scr_record_source_deleted++;
+  /* The table no longer refers to the view, so a nested disposal that
+   * re-enters this hook sees a consistent table. */
+  scr_dyn_release(view);
+}
+
+/* The single native dispose hook serves weak collections and the table
+ * above; each observer runs only while it has entries to forget. */
+static void scr_dispose_observers(void *object) {
+  if (scr_weak_observing) scr_weak_disposed(object);
+  if (scr_record_source_count) scr_record_source_disposed(object);
+}
+
+/* Keeps live entries plus deleted markers at most half the table: grows
+ * when live entries fill a quarter, otherwise rehashes in place to drop the
+ * markers. A large rehash also rebuilds the dispose filter, so stale bits
+ * of freed records stop costing probes (amortized over the deletions). */
+static void scr_record_source_reserve(void) {
+  size_t used = scr_record_source_count + scr_record_source_deleted;
+  if (scr_record_source_capacity && used < scr_record_source_capacity / 2) return;
+  size_t old_capacity = scr_record_source_capacity;
+  ScrRecordSource *old = scr_record_sources;
+  scr_record_source_capacity =
+      !old_capacity ? 256
+      : scr_record_source_count >= old_capacity / 4 ? old_capacity * 2
+                                                    : old_capacity;
+  scr_record_sources = calloc(scr_record_source_capacity, sizeof *scr_record_sources);
+  if (!scr_record_sources) scr_json_oom();
+  bool refilter = scr_record_source_filter && old_capacity >= 16384;
+  if (refilter) {
+    memset(scr_record_source_filter, 0, ((size_t)1 << SCR_RECORD_SOURCE_FILTER_BITS) / 8);
+  }
+  for (size_t i = 0; i < old_capacity; i++) {
+    if (!old[i].rec || old[i].rec == SCR_RECORD_SOURCE_DELETED) continue;
+    size_t slot = scr_record_source_bucket(old[i].rec);
+    while (scr_record_sources[slot].rec) slot = (slot + 1) & (scr_record_source_capacity - 1);
+    scr_record_sources[slot] = old[i];
+    if (refilter) {
+      size_t bit = scr_record_source_filter_bit(old[i].rec);
+      scr_record_source_filter[bit >> 6] |= UINT64_C(1) << (bit & 63);
+    }
+  }
+  scr_record_source_deleted = 0;
+  free(old);
+}
+
+/* The key's position in the shape's declaration order, or count. */
+static size_t scr_record_source_index(const ScrRecordSource *source, const char *key,
+                                      size_t key_len) {
+  for (size_t i = 0; i < source->count; i++) {
+    size_t len;
+    memcpy(&len, source->lens + i * source->len_stride, sizeof len);
+    if (len != key_len) continue;
+    const char *name;
+    memcpy(&name, source->names + i * source->name_stride, sizeof name);
+    if (memcmp(name, key, key_len) == 0) return i;
+  }
+  return source->count;
+}
+
+static bool scr_record_source_declared(const ScrRecordSource *source, const char *key,
+                                       size_t key_len) {
+  return scr_record_source_index(source, key, key_len) < source->count;
+}
+
+/* Inserts the entry of a record the caller just built; the table takes
+ * the entry's view. A fresh record has no entry: the previous owner of its
+ * address left the table when it was freed (the dispose hook). */
+static void scr_record_source_put(const ScrRecordSource *entry) {
+  scr_record_source_reserve();
+  if (!scr_record_source_filter) {
+    scr_record_source_filter = calloc(((size_t)1 << SCR_RECORD_SOURCE_FILTER_BITS) / 64,
+                                      sizeof *scr_record_source_filter);
+    if (!scr_record_source_filter) scr_json_oom();
+  }
+  size_t bit = scr_record_source_filter_bit(entry->rec);
+  scr_record_source_filter[bit >> 6] |= UINT64_C(1) << (bit & 63);
+  /* Take the first deleted slot of the key's probe run, or the empty slot
+   * that ends it. */
+  size_t mask = scr_record_source_capacity - 1;
+  size_t slot = scr_record_source_bucket(entry->rec);
+  while (scr_record_sources[slot].rec && scr_record_sources[slot].rec != SCR_RECORD_SOURCE_DELETED)
+    slot = (slot + 1) & mask;
+  if (scr_record_sources[slot].rec == SCR_RECORD_SOURCE_DELETED) scr_record_source_deleted--;
+  scr_record_sources[slot] = *entry;
+  scr_record_source_count++;
+  scr_weak_dispose_hook = &scr_dispose_observers;
+}
+
+/* Called by the checked record builder after it filled `rec` from `src`;
+ * `names` lists the shape's fields in declaration order. Keeps nothing
+ * unless the source has an own property the shape does not declare, or
+ * holds the declared ones in another order than the record serializes
+ * them. Borrows both. */
+void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *names,
+                            const size_t *lens, size_t count) {
+  if (!rec || !src || src->kind != SCR_DYN_OBJ || src->v.obj.source_identity) return;
+  ScrRecordSource probe = { rec, NULL, (const char *)names, (const char *)lens,
+                            sizeof *names, sizeof *lens, count };
+  bool keep = false;
+  size_t next = 0;
+  for (size_t i = 0; i < src->v.obj.len && !keep; i++) {
+    const ScrDynEntry *entry = &src->v.obj.entries[i];
+    size_t index = scr_record_source_index(&probe, entry->key, entry->key_len);
+    keep = index == count || index < next;
+    next = index + 1;
+  }
+  if (!keep) return;
+  ScrDyn *view = scr_dyn_new_obj();
+  for (size_t i = 0; i < src->v.obj.len; i++) {
+    const ScrDynEntry *entry = &src->v.obj.entries[i];
+    if (scr_record_source_declared(&probe, entry->key, entry->key_len)) {
+      scr_dyn_obj_set(view, entry->key, entry->key_len, scr_dyn_retain(scr_dyn_undefined()));
+    } else if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable) {
+      scr_dyn_obj_set(view, entry->key, entry->key_len, scr_dyn_retain(entry->value));
+    } else {
+      ScrStr *name = scr_str_new(entry->key, entry->key_len);
+      ScrDyn *key = scr_dyn_new_str(name);
+      ScrDyn *descriptor = scr_dyn_own_descriptor(src, name);
+      ScrDyn *defined = descriptor ? scr_dyn_define_property(view, key, descriptor) : NULL;
+      scr_dyn_release(defined);
+      scr_dyn_release(descriptor);
+      scr_dyn_release(key);
+      scr_str_release(name);
+    }
+  }
+  probe.view = view;
+  scr_record_source_put(&probe);
+}
+
+/* Refreshes a retained record view: the view's own-key order, declared
+ * values from the native snapshot (a declared key the record no longer has
+ * drops), every other property as the view holds it, then declared fields
+ * the view had not seen yet. Returns a fresh object (+1). */
+static ScrDyn *scr_record_source_merge(const ScrRecordSource *source, const ScrDyn *cached,
+                                       const ScrDyn *fresh) {
+  ScrDyn *out = scr_dyn_new_obj();
+  for (size_t i = 0; i < cached->v.obj.len; i++) {
+    const ScrDynEntry *entry = &cached->v.obj.entries[i];
+    ScrDyn *value = scr_dyn_obj_get(fresh, entry->key, entry->key_len);
+    if (value) {
+      scr_dyn_obj_set(out, entry->key, entry->key_len, scr_dyn_retain(value));
+      continue;
+    }
+    if (scr_record_source_declared(source, entry->key, entry->key_len)) continue;
+    if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable) {
+      scr_dyn_obj_set(out, entry->key, entry->key_len, scr_dyn_retain(entry->value));
+      continue;
+    }
+    ScrStr *name = scr_str_new(entry->key, entry->key_len);
+    ScrDyn *key = scr_dyn_new_str(name);
+    ScrDyn *descriptor = scr_dyn_own_descriptor(cached, name);
+    ScrDyn *defined = descriptor ? scr_dyn_define_property(out, key, descriptor) : NULL;
+    scr_dyn_release(defined);
+    scr_dyn_release(descriptor);
+    scr_dyn_release(key);
+    scr_str_release(name);
+  }
+  for (size_t i = 0; i < fresh->v.obj.len; i++) {
+    const ScrDynEntry *entry = &fresh->v.obj.entries[i];
+    if (scr_dyn_obj_get(out, entry->key, entry->key_len)) continue;
+    scr_dyn_obj_set(out, entry->key, entry->key_len, scr_dyn_retain(entry->value));
+  }
+  return out;
+}
+
+/* A fresh, unshared record→dyn snapshot from the copying converter:
+ * consumes it and returns the snapshot merged through the record's
+ * retained view (+1), or the snapshot itself when there is none. */
+ScrDyn *scr_record_source_apply(ScrDyn *snapshot, const void *rec) {
+  ScrRecordSource *source = scr_record_source_find(rec);
+  if (!source || !snapshot || snapshot->kind != SCR_DYN_OBJ) return snapshot;
+  ScrDyn *merged = scr_record_source_merge(source, source->view, snapshot);
+  scr_dyn_release(snapshot);
+  return merged;
+}
+
+/* JSON for a record that kept a source: the view's own-key order, declared
+ * fields through the compiled writer (`field` writes the separator, key
+ * and value of field `index` unless the record lacks it, and answers
+ * whether it wrote), every other enumerable property through the dyn
+ * writer with JSON.stringify's member rules, then declared fields the view
+ * had not seen. May leave an exception pending (a BigInt property). */
+void scr_jb_put_record_source(ScrJsonBuf *b, void *rec,
+                              bool (*field)(ScrJsonBuf *, void *, size_t, bool)) {
+  if (!scr_jb_try_record_source(b, rec, field)) scr_jb_puts(b, "{}");
+}
+
+/* The same in one lookup: writes the record and answers true when it kept
+ * a source, otherwise writes nothing and answers false. */
+bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
+                              bool (*field)(ScrJsonBuf *, void *, size_t, bool)) {
+  ScrRecordSource *source = scr_record_source_find(rec);
+  if (!source) return false;
+  scr_jb_putc(b, '{');
+  bool first = true;
+  {
+    size_t count = source->count;
+    bool small[64] = { false };
+    bool *seen = count <= 64 ? small : calloc(count, sizeof *seen);
+    if (!seen) scr_json_oom();
+    const ScrDyn *view = source->view;
+    for (size_t i = 0; i < view->v.obj.len && !scr_exc_pending(); i++) {
+      const ScrDynEntry *entry = &view->v.obj.entries[i];
+      size_t index = scr_record_source_index(source, entry->key, entry->key_len);
+      if (index < count) {
+        if (!seen[index] && field(b, rec, index, first)) first = false;
+        seen[index] = true;
+        continue;
+      }
+      if (!entry->enumerable || entry->accessor) continue;
+      ScrDynKind kind = entry->value->kind;
+      if (kind == SCR_DYN_UNDEF || kind == SCR_DYN_FUNC || kind == SCR_DYN_SYMBOL) continue;
+      if (!first) scr_jb_putc(b, ',');
+      first = false;
+      scr_jb_put_json_span(b, entry->key, entry->key_len);
+      scr_jb_putc(b, ':');
+      scr_jb_put_dyn(b, entry->value);
+    }
+    for (size_t index = 0; index < count && !scr_exc_pending(); index++) {
+      if (!seen[index] && field(b, rec, index, first)) first = false;
+    }
+    if (seen != small) free(seen);
+  }
+  scr_jb_putc(b, '}');
+  return true;
+}
+
 /* The flags are written with the rest of the capsule: setting a flag bit
  * afterwards is a byte store that the next read of the flag word (the
  * live-view bind right after construction) cannot forward from. */
@@ -2269,6 +2679,13 @@ static ScrDyn *scr_dyn_typed_ref_new(
   d->v.typed_ref.commit = commit;
   d->v.typed_ref.array = NULL;
   d->v.typed_ref.materialized = NULL;
+  /* A record with undeclared properties starts from its retained view
+   * (refreshed on first use), which also keeps the declared-field fast
+   * paths off for it. */
+  if (scr_record_source_count && type_key_len >= 7 && memcmp(type_key, "record:", 7) == 0) {
+    ScrDyn *view = scr_record_source_view(ptr);
+    if (view) d->v.typed_ref.materialized = scr_dyn_retain(view);
+  }
   d->v.typed_ref.casts = NULL;
   d->v.typed_ref.traced = traced;
   d->v.typed_ref.observed = observed;
@@ -2386,9 +2803,16 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
     /* Record layouts cannot store properties added through a checked
      * view. Keep those descriptors in the view across native refreshes. */
     ScrDyn *cached = capsule->v.typed_ref.materialized;
-    if (fresh->kind == SCR_DYN_OBJ && cached->kind == SCR_DYN_OBJ &&
-        capsule->v.typed_ref.type_key_len >= 7 &&
-        memcmp(capsule->v.typed_ref.type_key, "record:", 7) == 0) {
+    bool record_view = fresh->kind == SCR_DYN_OBJ && cached->kind == SCR_DYN_OBJ &&
+                       capsule->v.typed_ref.type_key_len >= 7 &&
+                       memcmp(capsule->v.typed_ref.type_key, "record:", 7) == 0;
+    ScrRecordSource *source = record_view ? scr_record_source_find(capsule->v.typed_ref.ptr) : NULL;
+    if (source) {
+      /* Undeclared source properties keep their own-key position. */
+      ScrDyn *ordered = scr_record_source_merge(source, cached, fresh);
+      scr_dyn_release(fresh);
+      fresh = ordered;
+    } else if (record_view) {
       for (size_t i = 0; i < cached->v.obj.len; i++) {
         ScrDynEntry *entry = &cached->v.obj.entries[i];
         if (scr_dyn_obj_get(fresh, entry->key, entry->key_len)) continue;
@@ -3817,6 +4241,7 @@ ScrDynEntry *scr_dyn_own_symbol_entry(const ScrDyn *object, const ScrDyn *key) {
 ScrStr *scr_dyn_symbol_storage_name(const ScrDyn *key) { return scr_dyn_symbol_storage_key(key); }
 
 void scr_dyn_symbol_init_own(ScrDyn *object, ScrDyn *key, const ScrStr *storage, ScrDyn *value) {
+  scr_dyn_region_store(object, NULL); /* intact containers have no symbol tables */
   object->symbol_properties = scr_dyn_new_obj_null_proto();
   scr_dyn_obj_set(object->symbol_properties, storage->data, storage->len, scr_dyn_retain(value));
   object->symbol_keys = scr_dyn_new_arr();
@@ -3824,6 +4249,8 @@ void scr_dyn_symbol_init_own(ScrDyn *object, ScrDyn *key, const ScrStr *storage,
 }
 
 static void scr_dyn_symbol_table(ScrDyn *receiver) {
+  /* The tables are separate nodes that later hold arbitrary values. */
+  scr_dyn_region_store(receiver, NULL);
   if (!receiver->symbol_properties) receiver->symbol_properties = scr_dyn_new_obj_null_proto();
   if (!receiver->symbol_keys) receiver->symbol_keys = scr_dyn_new_arr();
   receiver->symbol_properties->non_extensible = receiver->non_extensible;
@@ -4521,6 +4948,9 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
 
 
   if (scr_exc_pending()) return NULL;
+  /* Values, accessors and array property tables: any of them may close a
+   * cycle, and definitions are rare enough to invalidate conservatively. */
+  scr_dyn_region_store(target, NULL);
   if (target->kind == SCR_DYN_FUNC) {
     if (scr_dyn_class_reflection_fence(target)) return NULL;
     ScrStr *name = scr_dyn_property_key(key);
@@ -6299,13 +6729,17 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       while (recv->v.arr.len <= idx) {
         scr_dyn_arr_push_hole(recv);
       }
+      scr_dyn_region_store(recv, value);
       ScrDyn *old = recv->v.arr.items[idx];
       recv->v.arr.items[idx] = scr_dyn_retain(value);
       if (recv->v.arr.presence) recv->v.arr.presence[idx] = 1;
       scr_dyn_release(old);
       return;
     }
-    if (!recv->v.arr.properties) recv->v.arr.properties = scr_dyn_new_obj();
+    if (!recv->v.arr.properties) {
+      scr_dyn_region_store(recv, NULL); /* a table that later holds anything */
+      recv->v.arr.properties = scr_dyn_new_obj();
+    }
     recv->v.arr.properties->non_extensible = recv->non_extensible;
     scr_dyn_key_set(recv->v.arr.properties, key, value);
     return;
@@ -6836,6 +7270,7 @@ typedef struct {
   size_t pos;
   int depth;
   bool quiet; /* schema fast path: report failure without throwing */
+  ScrDynRegion *region; /* tags completed containers (ScrDynRegion); may be NULL */
 } ScrJsonP;
 
 static void scr_json_throw(const ScrJsonP *p, const char *msg) {
@@ -7293,12 +7728,13 @@ static ScrDyn *scr_json_value(ScrJsonP *p) {
     }
     ScrDyn *d = c == '{' ? scr_json_object(p) : scr_json_array(p);
     p->depth--;
+    if (d) scr_dyn_region_join(d, p->region);
     return d;
   }
   if (c == '"') {
     ScrStr *sv = scr_json_string_scr(p);
     if (!sv) return NULL;
-    ScrDyn *d = scr_dyn_alloc(SCR_DYN_STR);
+    ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_STR);
     d->v.str = sv;
     return d;
   }
@@ -7326,7 +7762,10 @@ ScrDyn *scr_json_parse(ScrStr *text) {
     scr_json_throw(&p, "Unexpected end of JSON input");
     return NULL;
   }
+  /* Documents with a container start intact (ScrDynRegion). */
+  if (p.s[p.pos] == '{' || p.s[p.pos] == '[') p.region = scr_dyn_region_new();
   ScrDyn *d = scr_json_value(&p);
+  scr_dyn_region_unref(p.region); /* the parser's own reference */
   if (!d) return NULL;
   scr_json_ws(&p);
   if (p.pos < p.len) {
@@ -7345,9 +7784,11 @@ ScrDyn *scr_json_parse(ScrStr *text) {
  * layout the compiler describes in a ScrJsonSchema. It accepts only input
  * for which the checked-dynamic route (scr_json_parse + the generated
  * dynCheck builder) would succeed with the same value: every declared key
- * present exactly once with a value of its declared kind, undeclared keys
- * syntactically valid and ignored. Anything else — a syntax error, a kind
- * mismatch, a missing or repeated declared key, excessive nesting —
+ * present exactly once with a value of its declared kind; undeclared keys,
+ * or declared keys out of declaration order, are kept beside the record in
+ * source order (scr_record_source_note's contract). Anything else — a
+ * syntax error, a kind mismatch, a missing or repeated key, excessive
+ * nesting —
  * releases the partial value and returns NULL WITHOUT throwing; the
  * compiler-emitted caller then reruns the checked-dynamic route, which
  * produces the exact SyntaxError/TypeError/RangeError. JSON.parse without
@@ -7490,6 +7931,105 @@ static inline size_t scr_jschema_key_direct(const ScrJsonP *p, const ScrJsonSche
   return (special & high & bytes) ? 0 : len + 2;
 }
 
+/* A record's own-key view, started at the first member that leaves the
+ * layout's declaration order: placeholders for the declared members read so
+ * far, which arrived in that order. */
+static ScrDyn *scr_jschema_view(const ScrJsonSchema *s, uint64_t seen) {
+  ScrDyn *view = scr_dyn_new_obj();
+  for (size_t i = 0; i < s->nfields; i++) {
+    if (!(seen & ((uint64_t)1 << i))) continue;
+    scr_dyn_obj_set(view, s->fields[i].name, s->fields[i].name_len,
+                    scr_dyn_retain(scr_dyn_undefined()));
+  }
+  return view;
+}
+
+/* The rest of a record whose source the record keeps (scr_record_source_note's
+ * contract): entered at the member after `key` when that member is undeclared
+ * (idx == nfields) or arrives before the previous match. Declared values still
+ * parse into the layout; the view holds the source's own keys in order, with
+ * placeholders for the declared ones. Takes `rec` and `decoded`. */
+static __attribute__((noinline, cold)) bool scr_jschema_record_kept(
+    ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *out, char *rec, uint64_t seen,
+    size_t guess, size_t idx, const char *key, size_t key_len, ScrStr *decoded) {
+  const size_t n = s->nfields;
+  const uint64_t all = n == 64 ? ~(uint64_t)0 : (((uint64_t)1 << n) - 1);
+  ScrDyn *view = scr_jschema_view(s, seen);
+  for (;;) {
+    scr_json_ws(p);
+    if (p->pos >= p->len || p->s[p->pos] != ':') goto fail;
+    p->pos++;
+    if (idx < n) {
+      const ScrJsonSchemaField *f = &s->fields[idx];
+      uint64_t bit = (uint64_t)1 << idx;
+      if (seen & bit) goto fail; /* duplicate: last-wins stays on the checked route */
+      seen |= bit;
+      guess = idx + 1;
+      ScrJsonSlot v;
+      if (!scr_jschema_member(p, f->type, &v)) goto fail;
+      char *slot = rec + f->offset;
+      switch (f->type->kind) {
+      case SCR_JSCHEMA_F64: memcpy(slot, &v.f, sizeof v.f); break;
+      case SCR_JSCHEMA_BOOL: *(uint8_t *)slot = v.b ? 1 : 0; break;
+      default: memcpy(slot, &v.ptr, sizeof v.ptr); break; /* zeroed slot; moves in */
+      }
+      scr_dyn_obj_set(view, key, key_len, scr_dyn_retain(scr_dyn_undefined()));
+    } else {
+      /* A repeated undeclared key stays on the checked route too. */
+      if (scr_dyn_obj_get(view, key, key_len)) goto fail;
+      /* Validate quietly first: the dyn parser throws past the depth cap. */
+      scr_json_ws(p);
+      size_t start = p->pos;
+      int depth = p->depth;
+      if (!scr_jschema_skip(p)) goto fail;
+      p->pos = start;
+      p->depth = depth;
+      ScrDyn *value = scr_json_value(p);
+      if (!value) goto fail;
+      scr_dyn_obj_set(view, key, key_len, value);
+    }
+    scr_str_release(decoded);
+    decoded = NULL;
+    scr_json_ws(p);
+    if (p->pos >= p->len) goto fail;
+    if (p->s[p->pos] == '}') {
+      p->pos++;
+      break;
+    }
+    if (p->s[p->pos] != ',') goto fail;
+    p->pos++;
+    scr_json_ws(p);
+    if (p->pos >= p->len || p->s[p->pos] != '"') goto fail;
+    int r = scr_json_string_span(p, &key, &key_len);
+    if (r < 0) goto fail;
+    if (r == 0) {
+      decoded = scr_json_string_slow(p, key_len);
+      if (!decoded) goto fail;
+      key = decoded->data;
+      key_len = decoded->len;
+    }
+    idx = n;
+    for (size_t i = 0; i < n; i++) {
+      if (s->fields[i].name_len == key_len && scr_key_equal(s->fields[i].name, key, key_len)) {
+        idx = i;
+        break;
+      }
+    }
+  }
+  if (seen != all) goto fail;
+  ScrRecordSource entry = { rec, view, (const char *)&s->fields[0].name,
+                            (const char *)&s->fields[0].name_len, sizeof *s->fields,
+                            sizeof *s->fields, n };
+  scr_record_source_put(&entry);
+  out->ptr = rec;
+  return true;
+fail:
+  scr_str_release(decoded);
+  scr_dyn_release(view);
+  s->release(rec);
+  return false;
+}
+
 static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *out) {
   p->pos++; /* '{' */
   char *rec = s->rec_new();
@@ -7530,14 +8070,16 @@ static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot 
           break;
         }
       }
+      /* An undeclared member, or one before the previous match, keeps the
+       * source beside the record: the rest of the object parses there. */
+      if (idx == n || idx + 1 < guess)
+        return scr_jschema_record_kept(p, s, out, rec, seen, guess, idx, key, key_len, decoded);
       scr_str_release(decoded);
     }
     scr_json_ws(p);
     if (p->pos >= p->len || p->s[p->pos] != ':') goto fail;
     p->pos++;
-    if (idx == n) {
-      if (!scr_jschema_skip(p)) goto fail;
-    } else {
+    {
       const ScrJsonSchemaField *f = &s->fields[idx];
       uint64_t bit = (uint64_t)1 << idx;
       if (seen & bit) goto fail; /* duplicate: last-wins stays on the checked route */
@@ -7831,6 +8373,7 @@ static ScrDyn *scr_json_revive(ScrDyn *holder, const ScrStr *key,
       }
       while (value->v.arr.len <= i) scr_dyn_arr_push(value, scr_dyn_retain(scr_dyn_undefined()));
       ScrDyn *old = value->v.arr.items[i];
+      if (replacement != old) scr_dyn_region_store(value, replacement);
       value->v.arr.items[i] = replacement;
       scr_dyn_release(old);
     }
@@ -7847,6 +8390,7 @@ static ScrDyn *scr_json_revive(ScrDyn *holder, const ScrStr *key,
         ScrDynEntry *entry = scr_dyn_entry(value, name);
         if (entry) {
           ScrDyn *old = entry->value;
+          if (replacement != old) scr_dyn_region_store(value, replacement);
           entry->value = replacement;
           scr_dyn_release(old);
         } else {
@@ -7970,10 +8514,23 @@ static bool scr_json_plain_value(const ScrDyn *value) {
  * replacer or executable children, entries cannot change and borrowed names
  * need neither a key snapshot nor repeated lookups. Numeric property names
  * keep the ordinary sorted-key walk; sparse/accessor arrays keep Get. This
- * proof is repeated per call, so later mutations never leave a stale fact. */
+ * proof is repeated per call, so later mutations never leave a stale fact.
+ *
+ * A container of an intact parse region (ScrDynRegion) holds only JSON
+ * primitives, undefined and containers of its own region, which have no
+ * prototype, accessors or toJSON function (a toJSON member there is never
+ * callable, which SerializeJSONProperty ignores). So its members need no
+ * inspection, which also keeps the proof from touching every member node:
+ * writing a member subtree runs no program code that could mutate this
+ * container mid-walk, and no cycle passes through it (the circular-structure
+ * check has nothing to find). Each member container is still written through
+ * scr_json_replaced_write, which proves it afresh. */
 static bool scr_json_plain_container(const ScrDyn *value) {
+  const ScrDynRegion *region = scr_dyn_region_of(value);
+  bool intact = region && region->intact;
   if (value->kind == SCR_DYN_ARR) {
     if (value->v.arr.presence || value->v.arr.properties) return false;
+    if (intact) return true;
     for (size_t i = 0; i < value->v.arr.len; i++)
       if (!scr_json_plain_value(value->v.arr.items[i])) return false;
     return true;
@@ -7983,14 +8540,21 @@ static bool scr_json_plain_container(const ScrDyn *value) {
     const ScrDynEntry *entry = &value->v.obj.entries[i];
     if (!entry->enumerable) continue;
     double index;
-    if (entry->accessor || !scr_json_plain_value(entry->value) ||
+    if (entry->accessor || (!intact && !scr_json_plain_value(entry->value)) ||
         scr_dyn_key_is_index(entry->key, entry->key_len, &index)) return false;
   }
   return true;
 }
 
-static bool scr_json_plain_write(ScrJsonBuf *buffer, const ScrDyn *value,
-                                 const ScrStr *gap, size_t depth) {
+static bool scr_json_replaced_write(ScrJsonBuf *buffer, const ScrDyn *value,
+                                   const ScrDyn *replacer, const ScrDyn *properties,
+                                   const ScrStr *gap, size_t depth);
+
+/* Out of line so the protocol walk's frame stays as small as it was: deep
+ * documents recurse through one of the two, and plain nesting recurses
+ * here directly, one small frame per level. */
+static __attribute__((noinline)) bool scr_json_plain_write(ScrJsonBuf *buffer, const ScrDyn *value,
+                                                           const ScrStr *gap, size_t depth) {
   bool array = value->kind == SCR_DYN_ARR;
   size_t length = array ? value->v.arr.len : value->v.obj.len;
   scr_jb_putc(buffer, array ? '[' : '{');
@@ -8011,7 +8575,15 @@ static bool scr_json_plain_write(ScrJsonBuf *buffer, const ScrDyn *value,
       if (gap->len) scr_jb_putc(buffer, ' ');
     }
     if (omitted) scr_jb_puts(buffer, "null");
-    else scr_dyn_json_write(buffer, child);
+    else if (child->kind == SCR_DYN_ARR || child->kind == SCR_DYN_OBJ) {
+      /* Only an intact region admits these (scr_json_plain_container); its
+       * members are never capsules, so a member that is not plain itself
+       * (holes, index-like names) only needs the protocol walk. */
+      bool ok = scr_json_plain_container(child)
+          ? scr_json_plain_write(buffer, child, gap, depth + 1)
+          : scr_json_replaced_write(buffer, child, scr_dyn_undefined(), NULL, gap, depth + 1);
+      if (!ok) return false;
+    } else scr_dyn_json_write(buffer, child);
   }
   if (!first) scr_json_gap(buffer, gap, depth);
   scr_jb_putc(buffer, array ? ']' : '}');
@@ -8382,7 +8954,10 @@ typedef struct ScrScParent {
   const struct ScrScParent *up;
 } ScrScParent;
 
-static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
+/* The clone is a fresh tree (shared inputs are copied per path, cycles
+ * throw), so it is tagged like a parse result (ScrDynRegion); a leaf the
+ * region may not hold clears it. */
+static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion *region) {
   if (v->kind == SCR_DYN_PROXY) {
     scr_throw_domex("DataCloneError", "#<Object> could not be cloned.");
     return NULL;
@@ -8406,6 +8981,7 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
   case SCR_DYN_BOOL:
     return scr_dyn_new_bool(v->v.b);
   case SCR_DYN_BIGINT:
+    region->intact = false;
     return scr_dyn_new_bigint(v->v.bigint);
   case SCR_DYN_NUM:
     return scr_dyn_new_num(v->v.num);
@@ -8416,6 +8992,7 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
      * of a Buffer answers a plain Uint8Array). A typed array view over a
      * larger ArrayBuffer, such as a pooled Buffer, clones the whole
      * ArrayBuffer and keeps its offset and length, as Node does. */
+    region->intact = false;
     ScrBytes *src = v->v.bytes;
     ScrBytes *copy;
     if (src->backing && !src->is_data_view && !src->shared) {
@@ -8445,36 +9022,41 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
       ScrDyn *out = scr_dyn_new_arr();
       for (size_t i = 0; i < v->v.arr.len; i++) {
         if (!scr_dyn_arr_has_index(v, i)) { scr_dyn_arr_push_hole(out); continue; }
-        ScrDyn *c = scr_sc_clone(v->v.arr.items[i], &self);
+        ScrDyn *c = scr_sc_clone(v->v.arr.items[i], &self, region);
         if (c == NULL) { /* threw */
           scr_dyn_release(out);
           return NULL;
         }
         scr_dyn_arr_push(out, c); /* ownership moves */
       }
+      scr_dyn_region_join(out, region);
       return out;
     }
     ScrDyn *out = scr_dyn_new_obj();
     for (size_t i = 0; i < v->v.obj.len; i++) {
       const ScrDynEntry *e = &v->v.obj.entries[i];
-      ScrDyn *c = scr_sc_clone(e->value, &self);
+      ScrDyn *c = scr_sc_clone(e->value, &self, region);
       if (c == NULL) {
         scr_dyn_release(out);
         return NULL;
       }
       scr_dyn_obj_set(out, e->key, e->key_len, c); /* ownership moves */
     }
+    scr_dyn_region_join(out, region);
     return out;
   }
 
   case SCR_DYN_TYPED_REF: {
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
-    ScrDyn *out = scr_sc_clone(materialized, up);
+    ScrDyn *out = scr_sc_clone(materialized, up, region);
     scr_dyn_release(materialized);
     return out;
   }
   case SCR_DYN_HANDLE:
-    if (scr_dyn_handle_ops_of(v)->clone) return scr_dyn_handle_ops_of(v)->clone(v->v.handle.ptr);
+    if (scr_dyn_handle_ops_of(v)->clone) {
+      region->intact = false; /* a handle is not a leaf the region may hold */
+      return scr_dyn_handle_ops_of(v)->clone(v->v.handle.ptr);
+    }
     /* fall through */
   case SCR_DYN_FUNC:
   default: {
@@ -8502,7 +9084,10 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
 ScrDyn *scr_structured_clone(const ScrDyn *value, const ScrDyn *options) {
   scr_sc_validate_options(options);
   if (scr_exc_pending()) return NULL;
-  return scr_sc_clone(value, NULL);
+  ScrDynRegion *region = scr_dyn_region_new();
+  ScrDyn *out = scr_sc_clone(value, NULL, region);
+  scr_dyn_region_unref(region); /* the clone's own reference */
+  return out;
 }
 
 ScrDyn *scr_structured_clone_transfer_fail(void) {
@@ -8727,6 +9312,7 @@ bool scr_dyn_reflect_define(ScrDyn *receiver, ScrDyn *raw_key, ScrDyn *value) {
     ok = scr_dyn_reflect_define(table, key, value);
     scr_dyn_release(table);
   } else {
+    scr_dyn_region_store(receiver, value);
     ScrDyn *symbols = key->kind == SCR_DYN_SYMBOL ? scr_dyn_symbol_receiver(receiver) : NULL;
     ScrDynEntry *entry = key->kind == SCR_DYN_SYMBOL ? (symbols ? scr_dyn_symbol_entry(symbols, key, true) : NULL)
       : receiver->kind == SCR_DYN_OBJ ? scr_dyn_entry(receiver, key->v.str)
@@ -11012,7 +11598,8 @@ static ScrDyn *scr_weak_collection_new(ScrDyn *seed, bool is_set) {
     &scr_weak_map_get, &scr_weak_map_write, NULL, NULL,
   };
   ScrDynHandleTag tag = is_set ? SCR_DYNH_WEAK_SET : SCR_DYNH_WEAK_MAP;
-  scr_weak_dispose_hook = &scr_weak_disposed;
+  scr_weak_observing = true;
+  scr_weak_dispose_hook = &scr_dispose_observers;
   scr_dyn_handle_install(tag, is_set ? &set_ops : &map_ops);
   static ScrCycType cyc_type = { &scr_weak_map_trace, &scr_weak_map_gcfree, SCR_CYC_KIND_WEAK_MAP };
   ScrWeakMap *map = scr_cyc_alloc(sizeof *map, &cyc_type);

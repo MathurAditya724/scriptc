@@ -4,4 +4,6 @@ Typed records with declared fields, indexed records, and arrays retain identity 
 
 `Object.keys`, `Object.values`, `Object.entries`, and `JSON.stringify` use a record's declaration order rather than per-object insertion order. Their order matches Node.js when objects are built in declaration order. `SC6002` reports object literals whose order differs where the program observes it.
 
+A record converted from a checked value, such as `const rows: { score: number }[] = JSON.parse(text)`, keeps the properties its type does not declare. `JSON.stringify`, `Object.keys`, `Object.values`, `Object.entries`, `util.inspect`, and untyped views of the record see them, together with the declared fields, in the source object's key order. `Object.values` and `Object.entries` check those values against their static result type and throw a `TypeError` if one does not fit. Copies of such a record made by object spread, `Object.assign`, rest destructuring, or conversion to another record type contain only the declared fields. Index-signature records list declared fields before the other keys.
+
 Optional fields and properties added through a record's `unknown` view can be deleted. A required field has no absent state, so deleting it through the view throws `TypeError: Cannot delete property 'x' of #<Object>` and leaves the record unchanged, where Node.js removes the property.

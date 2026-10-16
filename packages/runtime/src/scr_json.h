@@ -126,6 +126,13 @@ void scr_jb_put_json_str(ScrJsonBuf *b, const ScrStr *s);
  * dyn leaves the compiler cannot type: object members holding undefined
  * DROP, array slots holding undefined print null (exactly Node). */
 void scr_jb_put_dyn(ScrJsonBuf *b, const ScrDyn *d);
+/* Typed JSON for a record that kept a source: the kept key order, declared
+ * fields through the compiled per-field writer. `try` writes nothing and
+ * answers false for a record without one. */
+void scr_jb_put_record_source(ScrJsonBuf *b, void *rec,
+                              bool (*field)(ScrJsonBuf *, void *, size_t, bool));
+bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
+                              bool (*field)(ScrJsonBuf *, void *, size_t, bool));
 ScrStr *scr_jb_finish(ScrJsonBuf *b); /* returns +1; frees the buffer */
 /* Reformat compiler-produced compact JSON with an already resolved gap.
  * Borrows both inputs; gap_len is a byte length, including embedded NUL.

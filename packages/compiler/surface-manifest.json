@@ -868,6 +868,18 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.createReadStream",
+      "kind": "node-builtin",
+      "name": "fs.createReadStream",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.createWriteStream",
+      "kind": "node-builtin",
+      "name": "fs.createWriteStream",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.existsSync",
       "kind": "node-builtin",
       "name": "fs.existsSync",
