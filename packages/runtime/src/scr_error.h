@@ -101,7 +101,8 @@ typedef struct ScrError {
   bool name_enumerable;
   ScrStr *stack_frames; /* captured native source frames */
   ScrStr *stack; /* lazily formatted, cached stack */
-  double system_errno; /* present exactly when system_call is non-NULL */
+  double system_errno; /* present when system_call is non-NULL or this is
+                        * nonzero (zlib errors carry errno without syscall) */
   ScrStr *system_call;
   ScrStr *system_path;
   ScrStr *system_dest;
@@ -117,7 +118,8 @@ enum {
   SCR_ERR_EVAL = 6,
   SCR_ERR_URI = 7,
   SCR_ERR_AGGREGATE = 8, /* AggregateError — ScrAggregateError, the wider layout */
-  SCR_ERR_COUNT = 9,
+  SCR_ERR_ASSERTION = 9, /* node:assert's AssertionError — the Error layout */
+  SCR_ERR_COUNT = 10,
 };
 
 extern SCR_TL ScrVt scr_error_vts[SCR_ERR_COUNT]; /* indexed by SCR_ERR_*; main() stamps pre/post */
@@ -256,6 +258,7 @@ SCR_COLD void scr_undef_global_read(ScrStr *name);
  * +1 or NULL when absent (the compiler's undefined arm). The _msg_code
  * thrower is scr_throw_error_msg with the code stamped on the payload. */
 void scr_error_set_code(ScrError *e, const char *code);
+const char *scr_error_message_code(const ScrStr *msg);
 ScrStr *scr_error_code(ScrError *e);
 SCR_COLD void scr_throw_error_msg_code(int kind, const char *message, size_t len, const char *code);
 /* The compiler-resolved Node-parity throw (error.nodeThrow): builtin

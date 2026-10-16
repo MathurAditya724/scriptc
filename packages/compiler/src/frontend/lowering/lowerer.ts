@@ -3,6 +3,7 @@ import {
   lowerLifetimeRegionCall,
   lowerLifetimeRegionNew,
 } from "./lifetime-regions.js";
+import { internTableType, lowerInternTableCall, lowerInternTableNew } from "./intern-tables.js";
 import { isExperimentalDeclarationFile } from "../experimental-import.js";
 import {
   checkCycleBindingAccesses,
@@ -484,6 +485,7 @@ import {
   lowerTestCtxProperty,
 } from "./lower-test.js";
 import { lowerAssertModuleCall, lowerAssertDirectCall } from "./lower-assert.js";
+import type { AssertInstanceOptions } from "./assert-instances.js";
 import { lowerUtilModuleCall } from "./lower-inspect.js";
 import { lowerSystemErrorMapValue } from "./lower-system-errors.js";
 import {
@@ -1801,6 +1803,11 @@ export class Lowerer {
    * prepass. This includes explicit annotations: unchecked TS annotations do
    * not prove that an array property read produced a value. */
   readonly runtimeOptionalBindingTypes = new Map<ts.Symbol, IrType>();
+  /** A pipeline() function stage's `source` parameter: the IR type of what
+   * the pipeline passes it (the previous stage as an async iterable), set
+   * while the stage lowers. Parameter typing and `for await` heads read
+   * it before the checker's `AsyncIterable<T>`. */
+  readonly stageSourceTypes = new Map<ts.Symbol, IrType>();
   /** Set when a match result lowers to execGroups/matchGroups, the inputs
    * of regex span folding. */
   regexGroupResults = false;
@@ -2214,6 +2221,12 @@ export class Lowerer {
    * typeKey, throws wrappers keyed by callback type + expected class) —
    * the valueHelpers pattern with its own namespace. */
   readonly assertHelpers = new Map<string, string>();
+  /** Static node:assert Assert instances by declaration (assert-instances.ts);
+   * null for declarations that are not one. */
+  readonly assertInstances = new Map<ts.Node, AssertInstanceOptions | null>();
+  /** The options of the Assert instance whose method call is being lowered,
+   * or null for module calls. */
+  assertCallOptions: AssertInstanceOptions | null = null;
   /** util.inspect's per-type traversal helpers (%util.insp.N), interned
    * by typeKey — the assertHelpers pattern with its own namespace. */
   readonly inspectHelpers = new Map<string, string>();
@@ -2412,6 +2425,10 @@ export class Lowerer {
   readonly experimentalFiles = new Map<string, boolean>();
   /** Interned LifetimeRegion.run helpers, by callback type key. */
   readonly regionRunHelpers = new Map<string, string>();
+  /** Interned InternTable helpers, by member and type keys (intern-tables.ts). */
+  readonly internTableHelpers = new Map<string, string>();
+  /** Each InternTable name's type arguments and first construction site. */
+  readonly internTableNames = new Map<string, { key: string; node: ts.Node }>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -2763,6 +2780,10 @@ export class Lowerer {
       lifetimeRegionClass: (decl) =>
         isExperimentalDeclarationFile(decl.getSourceFile(), this.experimentalFiles)
           ? lifetimeRegionType(this)
+          : null,
+      internTableClass: (decl) =>
+        isExperimentalDeclarationFile(decl.getSourceFile(), this.experimentalFiles)
+          ? internTableType(this)
           : null,
       moduleNamespaceId: (type) => this.moduleNamespaceIdOfType(type),
     };
@@ -6298,7 +6319,7 @@ export class Lowerer {
     }
     for (const info of this.classes.values()) {
       if (info.builtinError) continue; // runtime-provided; nothing lowers
-      if (info.lifetimeRegion) continue; // synthesized with the class
+      if (info.lifetimeRegion || info.internTable) continue; // synthesized with the class
       // Generic-class INSTANTIATIONS (and mixin instantiations) are
       // demand-driven, not units: their members lower unconditionally in
       // the instance drain below — the generic-fn instance rule.
@@ -9029,6 +9050,16 @@ export class Lowerer {
     return paramShape(this, param);
   }
 
+  /** The pipeline stage source type bound to `node` (a parameter name or
+   * a reference to it), or null. */
+  stageSourceType(node: ts.Node): IrType | null {
+    if (this.stageSourceTypes.size === 0) return null;
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    if (!ts.isIdentifier(node)) return null;
+    const symbol = this.checker.getSymbolAtLocation(node);
+    return (symbol && this.stageSourceTypes.get(symbol)) ?? null;
+  }
+
   checkDefaultParamBodyType(param: ts.ParameterDeclaration, bodyType: IrType): void {
     return checkDefaultParamBodyType(this, param, bodyType);
   }
@@ -10683,6 +10714,7 @@ export class Lowerer {
     // identifier path matches.
     return (
       lowerLifetimeRegionCall(this, expr) ??
+      lowerInternTableCall(this, expr) ??
       lowerFfiCall(this, expr) ??
       lowerFetchCall(this, expr) ??
       lowerStaticFetchCompanionCall(this, expr) ??
@@ -10906,6 +10938,7 @@ export class Lowerer {
   lowerNew(expr: ts.NewExpression): IrExpr {
     const builtin =
       lowerLifetimeRegionNew(this, expr) ??
+      lowerInternTableNew(this, expr) ??
       lowerAbortControllerNew(this, expr) ??
       lowerEventTargetNew(this, expr) ??
       lowerFetchWebNew(this, expr) ??

@@ -171,6 +171,35 @@ ScrStream *scr_stream_pipeline(double n, ScrStream **streams, ScrClosure *cb, Sc
  * mustCall wrappers; borrowed). */
 ScrClosure *scr_stream_finished_dyn(ScrStream *s, struct ScrDyn *cb);
 ScrStream *scr_stream_pipeline_dyn(double n, ScrStream **streams, struct ScrDyn *cb);
+/* pipeline(...[, cb]) with one run of function stages (pipeline.js): the
+ * run starts at streams[at] (count functions). flags bit 0: the first
+ * stage is a source function, called with only its options; bits 1-2:
+ * the last stage is a function destination (2: an async function whose
+ * promise, boxed through box, carries the value to the callback), and
+ * pipeline() answers a PassThrough. Other
+ * stages get the previous stream itself or the previous stage's async
+ * generator. mask bit i: stage i takes { signal } (the pipeline's own
+ * AbortSignal, aborted through abort when the pipeline finishes). The
+ * last generator before a stream or a PassThrough is pumped
+ * (pumpToNode) through its helpers: next/ret answer the resume's
+ * promise, read maps its IteratorResult to the value or
+ * scr_stream_from_done. Streams and closures borrowed (helpers, box,
+ * signal and abort NULL when unused); cb moves. */
+ScrStream *scr_stream_pipeline_stages(double n, ScrStream **streams, double at, double count,
+                                      ScrClosure **stages, double flags, double mask,
+                                      ScrClosure *next, ScrClosure *read, ScrClosure *ret,
+                                      ScrClosure *box, struct ScrDyn *signal, ScrClosure *abort,
+                                      ScrClosure *cb, ScrStreamErrInv inv);
+ScrStream *scr_stream_pipeline_stages_dyn(double n, ScrStream **streams, double at, double count,
+                                          ScrClosure **stages, double flags, double mask,
+                                          ScrClosure *next, ScrClosure *read, ScrClosure *ret,
+                                          ScrClosure *box, struct ScrDyn *signal,
+                                          ScrClosure *abort, struct ScrDyn *cb);
+struct ScrPromise *scr_sp_pipeline_stages(double n, ScrStream **streams, double at, double count,
+                                          ScrClosure **stages, double flags, double mask,
+                                          ScrClosure *next, ScrClosure *read, ScrClosure *ret,
+                                          ScrClosure *box, struct ScrDyn *signal,
+                                          ScrClosure *abort);
 /* stream.compose(s1..sn): a pipeline over the streams and a Duplex that
  * writes to the first and reads from the last (compose.js). One stream
  * answers itself (Duplex.from of a duplex). +1, or NULL with
@@ -270,6 +299,30 @@ ScrStream *scr_stream_from_arr(ScrArr *arr, double flags, double hwm);
  * arrays of them; options objectMode and highWaterMark. +1, or NULL with
  * the error pending (ERR_INVALID_ARG_TYPE for a non-iterable). Borrows. */
 ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts);
+/* One checked-dynamic value into a Readable.from stream: a whole entry in
+ * object mode, a chunk in byte mode. null, values other than strings and
+ * Buffers in object mode, and byte mode's chunk errors destroy the stream
+ * and answer -1; otherwise push()'s answer. Borrows v. */
+int scr_stream_from_push(ScrStream *s, const ScrDyn *v);
+/* The from.js stream around native read/destroy callbacks (moved), with
+ * SCR_FROM_* option flags: +1, or NULL with ERR_INVALID_ARG_VALUE
+ * pending for a bad highWaterMark. */
+ScrStream *scr_stream_new_from_readable(ScrClosure *read, ScrStreamReadInv read_inv,
+                                        ScrClosure *destroy, ScrStreamErrInv destroy_inv,
+                                        double flags, double hwm);
+struct ScrGen;
+/* Readable.from over a compiled generator (scr_stream_ops.c). The
+ * compiler's helpers (borrowed) take the generator: next/ret answer the
+ * next value or the done marker (scr_stream_from_done) and thr takes the
+ * error as a checked-dynamic value; for an async generator they answer
+ * the resume's promise and `read` turns its IteratorResult into the value
+ * or the marker. g borrowed; +1, or NULL with the error pending. */
+ScrStream *scr_stream_from_gen(struct ScrGen *g, ScrClosure *next, ScrClosure *ret, ScrClosure *thr,
+                               double flags, double hwm);
+ScrStream *scr_stream_from_async_gen(struct ScrGen *g, ScrClosure *next, ScrClosure *read,
+                                     ScrClosure *ret, ScrClosure *thr, double flags,
+                                     double hwm);
+ScrDyn *scr_stream_from_done(void); /* +1, the process-lived marker (scr_stream.c) */
 ScrStream *scr_stream_pause(ScrStream *s);            /* recv +1 */
 ScrStream *scr_stream_resume(ScrStream *s);           /* recv +1 */
 bool scr_stream_is_paused(ScrStream *s);
@@ -359,6 +412,14 @@ void scr_stream_set_final(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
 void scr_stream_set_destroy(ScrStream *s, ScrClosure *cb, ScrStreamErrInv inv);
 void scr_stream_set_transform(ScrStream *s, ScrClosure *cb, ScrStreamChunkInv inv);
 void scr_stream_set_flush(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
+/* Runtime-built Transforms (scr_zlib_stream.c): the flush starts at
+ * 'prefinish' and 'finish' does not wait for it (a _final that completes
+ * at once). set_native moves one reference to the stream's own state,
+ * released when the stream is freed; scr_stream_native answers it
+ * (borrowed) when it was set with `release`, else NULL. */
+void scr_stream_set_flush_on_prefinish(ScrStream *s);
+void scr_stream_set_native(ScrStream *s, void *state, void (*release)(void *));
+void *scr_stream_native(ScrStream *s, void (*release)(void *));
 
 /* Completion entries for the compiler-emitted done closures (err/data
  * MOVE; NULLs = absent). */

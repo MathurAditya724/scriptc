@@ -232,6 +232,10 @@ Without `@scriptc/threads`, a scriptc executable also shares a message of untype
 
 ## Cost
 
+Starting a worker thread takes tens of microseconds plus the worker's own module initialization, since every worker initializes the program's modules again, as in Node.js. A worker that exits frees its heap first, which takes time proportional to what it still holds. `SCRIPTC_WORKER_STATS=1` prints, as each worker exits, how long it took to start, to run its script and to exit.
+
 `publish` visits each object of the graph once and marks it immortal, so publication takes time proportional to the graph. Published objects then cost nothing on later sends, and reference counting and the cycle collector skip them. Stores into the types a program publishes carry one extra load and branch.
+
+Threads that add to one shared collection of published values while they run can use an [`InternTable`](/docs/experimental#interntable) from `@scriptc/experimental`.
 
 See [published graphs](/docs/limitations#published-graphs) for remaining differences from Node.js.

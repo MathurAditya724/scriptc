@@ -23,6 +23,10 @@ import {
   arrayOf,
 } from "../../ir/ir.js";
 import { isNodeTypesPath, requireSpecOf } from "../program.js";
+import { ZLIB_CONSTANTS } from "./zlib-constants.js";
+
+/** zlib stream instances: runtime Transform streams (scr_zlib_stream.c). */
+const ZLIB_STREAM: IrType = { kind: "object", className: "%Transform" };
 
 /** Statement-level constructs rejected wholesale, keyed by syntax kind. */
 export const UNSUPPORTED_STMT: Partial<
@@ -285,6 +289,29 @@ export const AGENT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
   "maxTotalSockets",
   "noDelay",
   "path",
+]);
+
+/** new https.Agent(options) also takes tls.connect's client-side options,
+ * which Node merges into every request made through the agent. None lower
+ * yet, so each fences by name. */
+export const HTTPS_AGENT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
+  ...AGENT_DOCUMENTED_OPTIONS,
+  "ca",
+  "cert",
+  "ciphers",
+  "crl",
+  "ecdhCurve",
+  "key",
+  "maxCachedSessions",
+  "maxVersion",
+  "minVersion",
+  "passphrase",
+  "pfx",
+  "rejectUnauthorized",
+  "secureOptions",
+  "secureProtocol",
+  "servername",
+  "sessionIdContext",
 ]);
 
 /** https.request adds tls.connect's client-side TLS knobs. */
@@ -1478,6 +1505,10 @@ export const BUILTIN_MODULE_FNS: Record<
     hkdf: { fn: "crypto.hkdfCb", params: [], result: VOID },
     scryptSync: { fn: "crypto.scrypt", params: [BYTES_U8, BYTES_U8, F64, DYN], result: BYTES_U8 },
     scrypt: { fn: "crypto.scryptCb", params: [], result: VOID },
+    // Checked-dynamic arguments; the result is a native Cipheriv or
+    // Decipheriv handle (lowerCryptoModuleCall).
+    createCipheriv: { fn: "crypto.cipherNew", params: [BOOL, DYN, DYN, DYN, DYN], result: DYN },
+    createDecipheriv: { fn: "crypto.cipherNew", params: [BOOL, DYN, DYN, DYN, DYN], result: DYN },
   },
   zlib: {
     // The default-options convenience family is special-cased in
@@ -1499,6 +1530,15 @@ export const BUILTIN_MODULE_FNS: Record<
     unzip: { fn: "zlib.unzipCb", params: [], result: VOID },
     unzipSync: { fn: "zlib.unzipSync", params: [BYTES_U8], result: BYTES_U8 },
     crc32: { fn: "zlib.crc32", params: [], result: F64 },
+    // The stream factories (special-cased in lowerZlibModuleCall): each
+    // answers a runtime Transform stream over the zlib engine.
+    createDeflate: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+    createInflate: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+    createGzip: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+    createGunzip: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+    createDeflateRaw: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+    createInflateRaw: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+    createUnzip: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
   },
   url: {
     fileURLToPath: {
@@ -1844,6 +1884,11 @@ export const BUILTIN_MODULE_CONSTS: Record<
   os: { EOL: "\n", devNull: "/dev/null" },
   worker_threads: { isMainThread: true, threadId: 0 },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
+  // zlib's module-level copies of its constants (every member outside
+  // BROTLI_*, Node's own loop over zlib.constants).
+  zlib: Object.fromEntries(
+    Object.entries(ZLIB_CONSTANTS).filter(([name]) => !name.startsWith("BROTLI")),
+  ),
 };
 
 /** ALTERNATE libCall spellings of tabled builtin members: lowerings the
@@ -2697,17 +2742,14 @@ export function builtinModulesArrayLit(loc: { file: string; start: number; end: 
  * no lowering. The default-options one-shot zlib/deflate-raw/gzip codecs
  * lower for strings and Buffers; the remaining surface points at them. */
 const ZLIB_HINT =
-  "the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms plus crc32 are the lowered zlib surface";
-
-/** The legacy deep pair remains fenced. The shallow equal/notEqual pair
- * lowers through the static Abstract Equality kernel in lower-assert. */
-const ASSERT_LOOSE_DEEP_HINT =
-  "legacy deep equality has no lowering yet — deepStrictEqual and " +
-  "notDeepStrictEqual compare structures with Node's modern semantics";
+  "the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms, crc32, " +
+  "and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface";
+/** Brotli has no codec in the static runtime (zlib is the only vendored
+ * compression library). */
+const BROTLI_HINT =
+  "Brotli needs a Brotli codec, which the static runtime does not vendor — " + ZLIB_HINT;
 
 const ASSERT_MODULE_HINTS: Record<string, string | undefined> = {
-  deepEqual: ASSERT_LOOSE_DEEP_HINT,
-  notDeepEqual: ASSERT_LOOSE_DEEP_HINT,
   ifError:
     "test explicitly instead: assert.strictEqual(err, null) / " +
     "assert.strictEqual(err, undefined)",
@@ -2715,9 +2757,6 @@ const ASSERT_MODULE_HINTS: Record<string, string | undefined> = {
     "await the promise inside assert.throws's callback story instead: " +
     'try { await p; assert.fail("expected rejection") } catch { ... }',
   doesNotReject: "await the promise directly — an unexpected rejection already fails the test",
-  AssertionError:
-    "the class itself has no lowering — catch and test err.name === " +
-    '"AssertionError" or err.code === "ERR_ASSERTION"',
 };
 
 export const BUILTIN_MODULE_FENCE_HINTS: Record<
@@ -2732,7 +2771,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
     ifError: ASSERT_MODULE_HINTS["ifError"],
     rejects: ASSERT_MODULE_HINTS["rejects"],
     doesNotReject: ASSERT_MODULE_HINTS["doesNotReject"],
-    AssertionError: ASSERT_MODULE_HINTS["AssertionError"],
   },
   util: {
     promisify:
@@ -2787,10 +2825,10 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
       ]),
     ),
     ...Object.fromEntries(
-      ["createCipheriv", "createDecipheriv", "getCipherInfo"].map((m) => [
+      ["getCipherInfo"].map((m) => [
         m,
-        "symmetric ciphers need a cipher stack the static runtime does not vendor — " +
-          "the lowered crypto surface is hashing, randomness, and the introspection statics",
+        "cipher metadata has no lowering — createCipheriv and createDecipheriv support " +
+          "aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305",
       ]),
     ),
     setFips:
@@ -2801,8 +2839,14 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
       "randomBytes, and the createHash chain",
   },
   zlib: {
-    brotliCompressSync: ZLIB_HINT,
-    brotliDecompressSync: ZLIB_HINT,
+    brotliCompressSync: BROTLI_HINT,
+    brotliDecompressSync: BROTLI_HINT,
+    brotliCompress: BROTLI_HINT,
+    brotliDecompress: BROTLI_HINT,
+    createBrotliCompress: BROTLI_HINT,
+    createBrotliDecompress: BROTLI_HINT,
+    BrotliCompress: BROTLI_HINT,
+    BrotliDecompress: BROTLI_HINT,
   },
   http2: {
     connect:

@@ -8,10 +8,13 @@ import {
   darwinFiles,
   effectFiles,
   fileExclusions,
+  caseShardedSideFiles,
+  isolatedFiles,
+  testCosts,
 } from "../../scripts/ci-test-plan.mjs";
 import { runCiTestPlan } from "../../scripts/ci-test.mjs";
 
-test.for([1, 3, 5, 10])(
+test.for([1, 3, 5, 10, 20])(
   "CI retains every suite with %i shards without mixing partition axes",
   (count) => {
     for (const flavor of ["plain", "san"]) {
@@ -29,15 +32,27 @@ test.for([1, 3, 5, 10])(
           !file.includes("coverage") &&
           !file.includes("native-toolchain"),
       )) {
+        // A suite that splits its own tests runs on every shard; the others on one.
+        const everyShard = caseShardedSideFiles.some(([, sharded]) => sharded === file);
         expect(
           sideFiles.filter((selected) => selected === file),
           file,
-        ).toHaveLength(1);
+        ).toHaveLength(everyShard ? count : 1);
       }
+      // Each measured file runs on exactly one shard, outside vitest's file shard.
+      const isolated = new Set(isolatedFiles.map(([, file]) => file));
+      const balanced = plans.flatMap((plan) =>
+        plan.side
+          .filter((task) => task.name === "cost-balanced tests")
+          .flatMap((task) => task.args.slice(2)),
+      );
+      const measured = Object.keys(testCosts[flavor]).filter((file) => !isolated.has(file));
+      expect(measured.length).toBeGreaterThan(0);
+      expect(balanced.toSorted()).toEqual(measured.toSorted());
       for (const plan of plans) {
         expect(plan.corpus.args).toEqual(["test", ...corpusFiles]);
         expect(plan.side[0]!.args).toContain(`--shard=${plan.corpus.env.SCRIPTC_TEST_SHARD}`);
-        for (const file of fileExclusions)
+        for (const file of [...fileExclusions, ...Object.keys(testCosts[flavor])])
           expect(plan.side[0]!.args).toContain(`--exclude=${file}`);
         const cache = plan.side.find((task) => task.name === "native-cache correctness");
         expect(Boolean(cache)).toBe(flavor === "plain");
@@ -50,6 +65,28 @@ test.for([1, 3, 5, 10])(
     }
   },
 );
+
+test("the side queue balances measured files across the twenty Linux shards", () => {
+  for (const flavor of ["plain", "san"] as const) {
+    const costs = testCosts[flavor] as Record<string, number>;
+    const owned = new Set([...Object.keys(costs), ...isolatedFiles.map(([, file]) => file)]);
+    const shards = Array.from({ length: 20 }, (_, index) => {
+      const files = ciTestPlan({ shard: `${index + 1}/20`, flavor })
+        .side.slice(1)
+        .flatMap((task) => task.args.filter((arg) => owned.has(arg)));
+      return { files, load: files.reduce((sum, file) => sum + (costs[file] ?? 0) + 1000, 0) };
+    });
+    // A file heavier than an even share holds a shard alone; the shards
+    // sharing several files are within 10% of each other.
+    const shared = shards.filter((shard) => shard.files.length > 1).map((shard) => shard.load);
+    expect(shared.length).toBeGreaterThan(10);
+    expect(Math.max(...shared)).toBeLessThanOrEqual(Math.min(...shared) * 1.1);
+    // The longest file starts from the last shard, away from the longest
+    // corpus and three.js cases, which balance from the first.
+    const longest = [...owned].sort((a, b) => (costs[b] ?? 0) - (costs[a] ?? 0))[0]!;
+    expect(shards[19]!.files).toContain(longest);
+  }
+});
 
 test.for([1, 2, 4, 8])(
   "CI overlaps reserved lanes within a budget of %i workers",
@@ -115,17 +152,28 @@ test.for([1, 2, 3])("the darwin suite retains every darwin file with %i shards",
     const plans = Array.from({ length: count }, (_, index) =>
       ciTestPlan({ shard: `${index + 1}/${count}`, flavor, suite: "darwin" }),
     );
-    for (const plan of plans) {
-      expect(plan.corpus.args).toEqual(["test", ...darwinCorpusFiles]);
-      expect(plan.corpus.env.SCRIPTC_SAN).toBe(flavor === "san" ? "1" : "");
-      expect(plan.side).toHaveLength(1);
+    const caseShards: string[] = [];
+    plans.forEach((plan, index) => {
+      const halves = [plan.corpus, plan.side[1]!];
+      expect(plan.side).toHaveLength(2);
+      for (const half of halves) {
+        expect(half.args).toEqual(["test", ...darwinCorpusFiles]);
+        expect(half.env.SCRIPTC_SAN).toBe(flavor === "san" ? "1" : "");
+        expect(half.env.SCRIPTC_TEST_WORKERS).toBe("1");
+        caseShards.push(half.env.SCRIPTC_TEST_SHARD!);
+      }
       expect(plan.side[0]!.args).toEqual([
         "test",
         "--passWithNoTests",
-        `--shard=${plan.corpus.env.SCRIPTC_TEST_SHARD}`,
+        `--shard=${index + 1}/${count}`,
         ...darwinFiles,
       ]);
-    }
+    });
+    // The halves of all slices are the case shards of twice as many slices,
+    // each run once.
+    expect(caseShards).toEqual(
+      Array.from({ length: 2 * count }, (_, index) => `${index + 1}/${2 * count}`),
+    );
   }
   // The full suite still runs every darwin file through its file shards.
   for (const file of [...darwinCorpusFiles, ...darwinFiles]) {
@@ -134,6 +182,24 @@ test.for([1, 2, 3])("the darwin suite retains every darwin file with %i shards",
   }
   expect(corpusFiles).toEqual(expect.arrayContaining(darwinCorpusFiles));
 });
+
+/** Expands the ${{ }} expressions of a workflow value for one event: string
+ * literals, ==, !=, !, &&, || and fromJSON, with matrix.shard left as
+ * "{shard}". A value that is a single expression returns its result. */
+function expand(value: string, context: { event: string; macosFull: boolean | null }): unknown {
+  const evaluate = (expression: string): unknown =>
+    new Function(
+      `return (${expression
+        .replaceAll("github.event_name", JSON.stringify(context.event))
+        .replaceAll("inputs.macos_full", JSON.stringify(context.macosFull))
+        .replaceAll("fromJSON", "JSON.parse")});`,
+    )();
+  const single = /^\$\{\{(.*)\}\}$/s.exec(value);
+  if (single && !single[1]!.includes("}}")) return evaluate(single[1]!);
+  return value.replace(/\$\{\{(.*?)\}\}/g, (_match, expression: string) =>
+    expression.trim() === "matrix.shard" ? "{shard}" : String(evaluate(expression)),
+  );
+}
 
 test("pull requests run the full suite on Linux and the darwin suite on macOS", () => {
   type Job = {
@@ -150,8 +216,8 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   const macos = jobs["tests_macos"]!;
   expect(linux["runs-on"]).toBe("ubuntu-24.04");
   expect(linux.needs).toContain("native_linux");
-  expect(linux.strategy.matrix.shard).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-  expect(linux.env["SCRIPTC_TEST_SHARD"]).toBe("${{ matrix.shard }}/10");
+  expect(linux.strategy.matrix.shard).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+  expect(linux.env["SCRIPTC_TEST_SHARD"]).toBe("${{ matrix.shard }}/20");
   expect(linux.env["SCRIPTC_CI_SUITE"]).toBeUndefined();
   expect(linux.steps.some((step) => step.uses === "./.github/actions/llvm-linux")).toBe(true);
   expect(
@@ -159,15 +225,26 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   ).toBe("native-linux-x64-gnu");
   expect(macos["runs-on"]).toBe("macos-15");
   expect(macos.needs).toContain("native_macos");
-  expect(macos.strategy.matrix.shard).toBe(
-    "${{ fromJSON(github.event_name == 'pull_request' && '[1, 2, 3]' || '[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]') }}",
-  );
-  expect(macos.env["SCRIPTC_TEST_SHARD"]).toBe(
-    "${{ matrix.shard }}/${{ github.event_name == 'pull_request' && '3' || '10' }}",
-  );
-  expect(macos.env["SCRIPTC_CI_SUITE"]).toBe(
-    "${{ github.event_name == 'pull_request' && 'darwin' || 'full' }}",
-  );
+  // Pull requests, pushes to main and plain manual runs run the darwin suite in
+  // three slices; the nightly sweep and manual runs with macos_full run the
+  // complete suite in ten.
+  for (const [event, macosFull, full] of [
+    ["pull_request", null, false],
+    ["push", null, false],
+    ["workflow_dispatch", false, false],
+    ["workflow_dispatch", true, true],
+    ["schedule", null, true],
+  ] as const) {
+    const context = { event, macosFull };
+    const label = `${event} ${macosFull}`;
+    expect(expand(String(macos.strategy.matrix.shard), context), label).toEqual(
+      full ? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] : [1, 2, 3],
+    );
+    expect(expand(macos.env["SCRIPTC_TEST_SHARD"]!, context), label).toBe(
+      full ? "{shard}/10" : "{shard}/3",
+    );
+    expect(expand(macos.env["SCRIPTC_CI_SUITE"]!, context), label).toBe(full ? "full" : "darwin");
+  }
   // Expected aborts must not stream cores through Ubuntu's piped handler.
   const coreStep = linux.steps.findIndex(
     (step) => step.run === "sudo sysctl -w kernel.core_pattern=core",

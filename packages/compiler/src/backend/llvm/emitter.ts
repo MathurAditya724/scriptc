@@ -169,11 +169,12 @@ import { emitDenseArrayGet, emitDenseArraySet } from "./dense-array-access.js";
 import {
   emitStackMapRead,
   findMapReadLifetimes,
+  findReadNumberMapWrites,
   matchMapRead,
   type MapReadLifetimes,
 } from "./map-read-lifetimes.js";
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
-import { borrowableInputs, emitBorrowedInput } from "./borrowed-inputs.js";
+import { borrowableInputs, emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { analyzeWalks, findWalkBorrows, type WalkBorrowHost } from "./walk-borrows.js";
 import { findReboundParameters } from "./rebound-parameters.js";
 import { ReferenceEffects } from "./reference-effects.js";
@@ -311,7 +312,7 @@ import {
   type LlClassMeta,
 } from "./classes.js";
 import { LifetimeRegions, REGION_TYPES } from "./regions.js";
-import { LlDyn, type DynHost } from "./dyn.js";
+import { LlDyn, recordDynKeepsIdentity, type DynHost } from "./dyn.js";
 import { VirtualBorrows } from "./virtual-borrows.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
@@ -689,6 +690,7 @@ export class LlEmitter {
   readonly checkedNarrows: CheckedNarrows;
   callArrayReads = new Map<IrExpr, LocalArrayRead>();
   mapReadLifetimes: MapReadLifetimes = { locals: new Map(), arguments: new Map() };
+  readNumberMapWrites: ReadonlySet<IrExpr> = new Set();
   readonly callLifetimes: CallLifetimes;
   readonly constantCallbacks: Map<string, Map<string, string>>;
   currentConstantCallbacks: ReadonlyMap<string, string> = new Map();
@@ -1126,6 +1128,10 @@ export class LlEmitter {
       {
         record: (shapeId, field) => this.recordFieldInline(shapeId, field),
         classField: (className, field) => this.inlineUnions.classField(className, field),
+      },
+      (shapeId) => {
+        const shape = this.recordsById.get(shapeId);
+        return shape !== undefined && !recordDynKeepsIdentity(shape);
       },
     );
     this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes);
@@ -1892,7 +1898,24 @@ export class LlEmitter {
         `  call void @scr_run_exit_listeners(double %${prefix}hd)`,
       ];
     };
-    const globalReleases = globalReleaseLines("g");
+    // The entry's exits release the module globals only where the thread
+    // frees its heap when its script ends (scr_exit_frees: workers, and
+    // builds that check for leaks); the main thread of other builds leaves
+    // it to the operating system.
+    const exitReleaseLines = (prefix: string): string[] => {
+      const releases = globalReleaseLines(prefix);
+      if (releases.length === 0) return releases;
+      this.declare(`declare zeroext i1 @scr_exit_frees()`);
+      return [
+        `  %${prefix}.frees = call zeroext i1 @scr_exit_frees()`,
+        `  br i1 %${prefix}.frees, label %${prefix}.release, label %${prefix}.kept`,
+        `${prefix}.release:`,
+        ...releases,
+        `  br label %${prefix}.kept`,
+        `${prefix}.kept:`,
+      ];
+    };
+    const globalReleases = exitReleaseLines("g");
     const asyncEntry = this.fnByName.get(this.mod.entry)?.async === true;
     const entryMayThrow = this.mayThrow.has(this.mod.entry);
     // The event loop runs when timers appeared OR any async/generator
@@ -1905,12 +1928,12 @@ export class LlEmitter {
       this.usesTimers ||
       this.ffiHasForeignCallback ||
       this.mod.functions.some((f) => f.async === true || f.generator !== undefined);
-    const uncaughtReleases = entryMayThrow && !asyncEntry ? globalReleaseLines("gu") : [];
-    const loopReleasesU = runsLoop ? globalReleaseLines("gl") : [];
-    const loopReleasesR = runsLoop ? globalReleaseLines("gr") : [];
-    const topRejectReleases = asyncEntry ? globalReleaseLines("gt") : [];
-    const topPendingReleases = asyncEntry ? globalReleaseLines("gp") : [];
-    const loopReportedReleases = runsLoop ? globalReleaseLines("gq") : [];
+    const uncaughtReleases = entryMayThrow && !asyncEntry ? exitReleaseLines("gu") : [];
+    const loopReleasesU = runsLoop ? exitReleaseLines("gl") : [];
+    const loopReleasesR = runsLoop ? exitReleaseLines("gr") : [];
+    const topRejectReleases = asyncEntry ? exitReleaseLines("gt") : [];
+    const topPendingReleases = asyncEntry ? exitReleaseLines("gp") : [];
+    const loopReportedReleases = runsLoop ? exitReleaseLines("gq") : [];
     // main's epilogues read the flag / the loop entry points — declared
     // HERE, before the extern block flushes. They run once, so they keep
     // the out-of-line scr_exc_pending call; per-call checks inline the
@@ -2098,7 +2121,7 @@ export class LlEmitter {
       // typed-array access GEPs through this directly: the IR type already
       // fixes elem, so the hot path needs neither a runtime kind load nor
       // the generic scr_bytes_get/set call.
-      `%ScrBytes = type { ${this.sizeType}, ${this.sizeType}, i32, ptr, ptr, i8, i8, i8, ptr }`,
+      `%ScrBytes = type { ${this.sizeType}, ${this.sizeType}, i32, ptr, ptr, i8, i8, i8, i8, ptr }`,
       // The capture box { rc, kind, obj_retain, obj_release, obj_trace,
       // slot } — TDZ reads peek the payload slot (offset 40) directly.
       `%ScrBox = type { ${this.sizeType}, i32, ptr, ptr, ptr, i64 }`,
@@ -5829,6 +5852,7 @@ export class LlEmitter {
     this.scalarStringSlices =
       this.debug === null ? findScalarStringSlices(fn, this.callLifetimes) : new Map();
     this.mapReadLifetimes = findMapReadLifetimes(fn, this.boxedUnionsById, this.callLifetimes);
+    this.readNumberMapWrites = findReadNumberMapWrites(fn);
     this.localStackUnions = findLocalStackUnions(fn, this.callLifetimes, this.boxedUnionsById);
     this.localStackObjects = this.stackObjects
       ? findLocalStackObjects(this, fn, this.callLifetimes)
@@ -8641,7 +8665,114 @@ export class LlEmitter {
       e.name === "region.release"
     )
       return this.emitRegionIntrinsic(e);
+    if (e.name.startsWith("itable.")) return this.emitInternTableIntrinsic(e);
     return emitIntrinsicExpr(this, e);
+  }
+
+  /** InternTable's runtime calls (scr_itable.c). Table and entry handles
+   * are f64 values carrying pointer bits; entry values are 64-bit slots
+   * (double bits, a bool, or a pointer to an immortal value) that the
+   * table neither retains nor releases. Lookups and inserts of array keys
+   * throw a TypeError for keys longer than a table accepts. */
+  private emitInternTableIntrinsic(e: ExprOf<"intrinsic">): LlValue {
+    const B = this.B;
+    // The runtime copies keys and stores published values without counts,
+    // so every operand is borrowed.
+    const args = emitBorrowedInputs(this, e.args);
+    if (B.isTerminated()) return { name: "", type: e.type };
+    const toPtr = (handle: string): string => {
+      const bits = B.tmp(),
+        ptr = B.tmp();
+      B.line(`${bits} = bitcast double ${handle} to i64`);
+      B.line(`${ptr} = inttoptr i64 ${bits} to ptr`);
+      return ptr;
+    };
+    const toHandle = (ptr: string): LlValue => {
+      const bits = B.tmp(),
+        handle = B.tmp();
+      B.line(`${bits} = ptrtoint ptr ${ptr} to i64`);
+      B.line(`${handle} = bitcast i64 ${bits} to double`);
+      return { name: handle, type: e.type };
+    };
+    const keyCall = (op: "find" | "insert"): string => {
+      const kind = e.args[1]!.type.kind;
+      const key = kind === "string" ? "str" : kind === "array" ? "arr" : "f64";
+      const keyTy = key === "f64" ? "double" : "ptr";
+      const value = op === "insert" ? ", i64" : "";
+      this.declare(`declare ptr @scr_itable_${op}_${key}(ptr, ${keyTy}${value})`);
+      return `@scr_itable_${op}_${key}(ptr ${toPtr(args[0]!.name)}, ${keyTy} ${args[1]!.name}`;
+    };
+    switch (e.name) {
+      case "itable.open": {
+        this.declare(`declare ptr @scr_itable_open(ptr, i32)`);
+        const kind = B.tmp(),
+          table = B.tmp();
+        B.line(`${kind} = fptosi double ${args[1]!.name} to i32`);
+        B.line(`${table} = call ptr @scr_itable_open(ptr ${args[0]!.name}, i32 ${kind})`);
+        return toHandle(table);
+      }
+      case "itable.find": {
+        const call = keyCall("find");
+        const entry = B.tmp();
+        B.line(`${entry} = call ptr ${call})`);
+        // Array keys longer than a table accepts throw a TypeError.
+        if (e.args[1]!.type.kind === "array") this.emitPendingCheck();
+        return toHandle(entry);
+      }
+      case "itable.insert": {
+        const value = args[2]!;
+        const ty = this.llType(value.type);
+        let slot = value.name;
+        if (ty === "double") {
+          slot = B.tmp();
+          B.line(`${slot} = bitcast double ${value.name} to i64`);
+        } else if (ty === "i1") {
+          slot = B.tmp();
+          B.line(`${slot} = zext i1 ${value.name} to i64`);
+        } else if (ty === "ptr") {
+          slot = B.tmp();
+          B.line(`${slot} = ptrtoint ptr ${value.name} to i64`);
+        } else throw new InternalCompilerError(`llvm emitter bug: itable value of type ${ty}`);
+        const call = keyCall("insert");
+        const entry = B.tmp();
+        B.line(`${entry} = call ptr ${call}, i64 ${slot})`);
+        if (e.args[1]!.type.kind === "array") this.emitPendingCheck();
+        return toHandle(entry);
+      }
+      case "itable.value": {
+        // The handle's bits reach the address through memory: at -O0, x86
+        // FastISel folds inttoptr(bitcast double) into the load's address
+        // without moving the value out of its XMM register. Optimized
+        // builds turn the stack round trip back into one register move.
+        const carrier = B.slot();
+        B.entryAllocas.push(`${carrier} = alloca double`);
+        B.line(`store double ${args[0]!.name}, ptr ${carrier}`);
+        const bits = B.tmp(),
+          entry = B.tmp();
+        B.line(`${bits} = load i64, ptr ${carrier}`);
+        B.line(`${entry} = inttoptr i64 ${bits} to ptr`);
+        const slot = B.tmp();
+        B.line(`${slot} = load i64, ptr ${entry}, align 8`);
+        const ty = this.llType(e.type);
+        const result = B.tmp();
+        if (ty === "double") B.line(`${result} = bitcast i64 ${slot} to double`);
+        else if (ty === "i1") B.line(`${result} = trunc i64 ${slot} to i1`);
+        else if (ty === "ptr") B.line(`${result} = inttoptr i64 ${slot} to ptr`);
+        else throw new InternalCompilerError(`llvm emitter bug: itable value of type ${ty}`);
+        // Stored values are immortal: owning one adds no count.
+        return isRefCounted(e.type)
+          ? this.own({ name: result, type: e.type })
+          : { name: result, type: e.type };
+      }
+      case "itable.size": {
+        this.declare(`declare double @scr_itable_size(ptr)`);
+        const size = B.tmp();
+        B.line(`${size} = call double @scr_itable_size(ptr ${toPtr(args[0]!.name)})`);
+        return { name: size, type: e.type };
+      }
+      default:
+        throw new InternalCompilerError(`llvm emitter bug: unknown intrinsic ${e.name}`);
+    }
   }
 
   /** Lifetime regions in modules with lifetimeRegions (llvm/regions.ts).
@@ -8687,6 +8818,7 @@ export class LlEmitter {
       declare: (decl) => this.declare(decl),
       cstr: (text) => this.cstr(text),
       sizeType: this.sizeType,
+      rcAudit: this.shapeHost.objectAudit !== false,
       tracedShapes: this.tracedShapes,
       unionsById: this.unionsById,
       recordsById: this.recordsById,

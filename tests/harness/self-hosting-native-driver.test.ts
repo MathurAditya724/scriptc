@@ -311,6 +311,31 @@ test(
           JSON.parse(readFileSync(expectedArchive + ".contract.json", "utf8")),
         );
 
+        // Integer-slot checking walks every library call's argument types,
+        // including bytes and arrays, inside the native compiler itself.
+        const intProfile = join(root, "tests/library-mode/contract-int-libcall/profile.json");
+        const intArchive = join(directory, "contract-int.a");
+        const expectedIntArchive = join(directory, "contract-int-node.a");
+        await exec(
+          process.execPath,
+          [
+            join(root, "packages/cli/dist/main.js"),
+            "build",
+            "--lib",
+            "--profile",
+            intProfile,
+            "-o",
+            expectedIntArchive,
+          ],
+          options,
+        );
+        await invoke(probe, ["build", "--lib", "--profile", intProfile, "-o", intArchive]);
+        const intContract = JSON.parse(readFileSync(intArchive + ".contract.json", "utf8"));
+        expect(intContract.integer_slots).toEqual([{ slot: "Model.phase", class: "i64" }]);
+        expect(intContract).toEqual(
+          JSON.parse(readFileSync(expectedIntArchive + ".contract.json", "utf8")),
+        );
+
         // The unmodified package exercises deep validator traversals. Compile it
         // through the installed CLI, including its async command boundary.
         const threeProfile = join(root, "tests/library-mode/wasm/three.json");

@@ -7,9 +7,9 @@
     "tierItemCount": 3472,
     "tiers": {
       "static": {
-        "replace-refusal": 37,
-        "verify-gap": 2377,
-        "audit-partial": 971,
+        "audit-partial": 1035,
+        "verify-gap": 2310,
+        "replace-refusal": 40,
         "classify": 2,
         "implement": 85
       }
@@ -37,12 +37,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.assert.AssertionError",
-          "tests": []
+          "source": "compiler-dedicated:assert.AssertionError",
+          "tests": [
+            "tests/corpus/5510-assert-error-properties.js",
+            "tests/corpus/5511-assert-error-class.ts",
+            "tests/corpus/5512-assert-error-options.js"
+          ]
         }
       }
     },
@@ -62,12 +66,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:assert",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:assert.Assert",
+          "tests": [
+            "tests/corpus/5523-assert-class-options.js",
+            "tests/corpus/5524-assert-class-skip-prototype.ts",
+            "tests/diagnostics/assert-class-fences.ts"
+          ]
         }
       }
     },
@@ -247,7 +255,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -268,12 +277,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.assert.deepEqual",
-          "tests": []
+          "source": "compiler-dedicated:assert.deepEqual",
+          "tests": [
+            "tests/corpus/5513-assert-deep-equal-loose.js",
+            "tests/corpus/5514-assert-deep-equal-typed.ts",
+            "tests/corpus/5516-assert-deep-equal-edges.js"
+          ]
         }
       }
     },
@@ -303,7 +316,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -334,7 +348,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -427,7 +442,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -458,7 +474,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -489,7 +506,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -520,7 +538,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -551,7 +570,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -572,12 +592,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.assert.notDeepEqual",
-          "tests": []
+          "source": "compiler-dedicated:assert.notDeepEqual",
+          "tests": [
+            "tests/corpus/5513-assert-deep-equal-loose.js",
+            "tests/corpus/5514-assert-deep-equal-typed.ts",
+            "tests/corpus/5516-assert-deep-equal-edges.js"
+          ]
         }
       }
     },
@@ -607,7 +631,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -638,7 +663,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -669,7 +695,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -700,7 +727,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -731,7 +759,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -762,7 +791,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -793,7 +823,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -814,12 +845,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:assert",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:assert.partialDeepStrictEqual",
+          "tests": [
+            "tests/corpus/5517-assert-partial-deep-equal.js",
+            "tests/corpus/5518-assert-partial-deep-typed.ts",
+            "tests/corpus/5519-assert-partial-deep-typed-edges.ts"
+          ]
         }
       }
     },
@@ -3698,12 +3733,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:buffer",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:buffer.poolSize",
+          "tests": [
+            "tests/corpus/5530-buffer-pool.ts",
+            "tests/corpus/5531-buffer-pool-first-slab.ts",
+            "tests/corpus/5532-buffer-pool-first-slab-untyped.mjs"
+          ]
         }
       }
     },
@@ -6509,12 +6548,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.crypto.createCipheriv",
-          "tests": []
+          "source": "surface-manifest:node-builtin.crypto.createCipheriv",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -6534,12 +6585,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.crypto.createDecipheriv",
-          "tests": []
+          "source": "surface-manifest:node-builtin.crypto.createDecipheriv",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8051,12 +8114,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:Cipheriv",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8076,12 +8151,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:cipher.final",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8101,12 +8188,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:cipher.getAuthTag",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8126,12 +8225,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:cipher.setAAD",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8151,12 +8262,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:cipher.setAutoPadding",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8176,12 +8299,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:cipher.update",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8201,12 +8336,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:Decipheriv",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8226,12 +8373,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:decipher.final",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8251,12 +8410,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:decipher.setAAD",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8276,12 +8447,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:decipher.setAuthTag",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8301,12 +8484,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:decipher.setAutoPadding",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -8326,12 +8521,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:decipher.update",
+          "tests": [
+            "tests/corpus/5250-cipher-aes-gcm.ts",
+            "tests/corpus/5251-cipher-aes-cbc.ts",
+            "tests/corpus/5252-cipher-aes-ctr.ts",
+            "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+            "tests/corpus/5254-cipher-errors.js",
+            "tests/corpus/5255-cipher-encodings.cjs",
+            "tests/corpus/5256-cipher-deprecation.cjs",
+            "tests/corpus/5257-cipher-vectors.ts",
+            "tests/corpus/5258-cipher-handles.js",
+            "tests/corpus/5259-cipher-chunked.ts",
+            "tests/fixtures/node-types/cipher.ts"
+          ]
         }
       }
     },
@@ -61644,7 +61851,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -61675,7 +61886,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -61706,7 +61921,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -61737,7 +61956,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -61768,7 +61991,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -61799,7 +62026,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -61955,7 +62186,9 @@
           "source": "compiler-feature:stream.stream.Readable.from",
           "tests": [
             "tests/corpus/5340-readable-from-options.ts",
-            "tests/corpus/5341-readable-from-dynamic.cjs"
+            "tests/corpus/5341-readable-from-dynamic.cjs",
+            "tests/corpus/5420-readable-from-generators.ts",
+            "tests/corpus/5421-readable-from-generators.cjs"
           ]
         }
       }
@@ -62214,7 +62447,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62270,7 +62507,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62301,7 +62542,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62332,7 +62577,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62363,7 +62612,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62394,7 +62647,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62550,7 +62807,9 @@
           "source": "compiler-feature:stream.stream.Readable.from",
           "tests": [
             "tests/corpus/5340-readable-from-options.ts",
-            "tests/corpus/5341-readable-from-dynamic.cjs"
+            "tests/corpus/5341-readable-from-dynamic.cjs",
+            "tests/corpus/5420-readable-from-generators.ts",
+            "tests/corpus/5421-readable-from-generators.cjs"
           ]
         }
       }
@@ -62809,7 +63068,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62890,7 +63153,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62948,7 +63215,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62979,7 +63250,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63010,7 +63285,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63066,7 +63345,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63602,7 +63885,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63633,7 +63920,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63664,7 +63955,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63695,7 +63990,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63726,7 +64025,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63757,7 +64060,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63788,7 +64095,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63819,7 +64130,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63850,7 +64165,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -65142,7 +65461,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -65298,7 +65621,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -65329,7 +65656,11 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -65521,7 +65852,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -65767,12 +66099,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.ctx.callCount",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -65792,12 +66127,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.ctx.mockImplementation",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -65817,12 +66155,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.ctx.mockImplementationOnce",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -65842,12 +66183,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.ctx.resetCalls",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -65867,12 +66211,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.ctx.restore",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -65892,12 +66239,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.calls",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66167,12 +66517,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.mock.fn",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66992,12 +67345,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.before",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-hooks.ts",
+            "tests/fixtures/node-test/cases/ctx-plan.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67017,12 +67374,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.beforeEach",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-hooks.ts",
+            "tests/fixtures/node-test/cases/ctx-plan.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67042,12 +67403,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.after",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-hooks.ts",
+            "tests/fixtures/node-test/cases/ctx-plan.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67067,12 +67432,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.afterEach",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-hooks.ts",
+            "tests/fixtures/node-test/cases/ctx-plan.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67144,12 +67513,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.plan",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-hooks.ts",
+            "tests/fixtures/node-test/cases/ctx-plan.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67402,12 +67775,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.fullName",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-hooks.ts",
+            "tests/fixtures/node-test/cases/ctx-plan.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67881,12 +68258,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.suite.skip",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67906,12 +68288,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.suite.todo",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67931,12 +68318,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.suite.only",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68091,12 +68483,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.describe.skip",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68116,12 +68513,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.describe.todo",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68141,12 +68543,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.describe.only",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68193,12 +68600,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.it.skip",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68218,12 +68630,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.it.todo",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68243,12 +68660,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.it.only",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-variants.ts",
+            "tests/fixtures/node-test/cases/only-nested.ts",
+            "tests/fixtures/node-test/cases/todo-suites.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -85377,11 +85799,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.zlib.BrotliCompress",
           "tests": []
         }
       }
@@ -85402,11 +85824,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.zlib.BrotliDecompress",
           "tests": []
         }
       }
@@ -85427,12 +85849,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.Deflate",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85452,12 +85882,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.DeflateRaw",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85477,12 +85915,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.Gunzip",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85502,12 +85948,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.Gzip",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85527,12 +85981,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.Inflate",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85552,12 +86014,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.InflateRaw",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85577,12 +86047,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.Unzip",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85602,12 +86080,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.ZlibBase",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85627,12 +86113,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.close",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85652,12 +86146,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.flush",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85677,12 +86179,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.params",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85702,12 +86212,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.reset",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85727,12 +86245,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.bytesWritten",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -85810,7 +86336,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -85831,11 +86360,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.zlib.createBrotliCompress",
           "tests": []
         }
       }
@@ -85856,11 +86385,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.zlib.createBrotliDecompress",
           "tests": []
         }
       }
@@ -85881,12 +86410,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.zlib.createDeflate",
+          "tests": [
+            "tests/corpus/1404-zlib-crypto-bytes.ts",
+            "tests/corpus/2921-zlib-callbacks.ts",
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
+          ]
         }
       }
     },
@@ -85906,12 +86442,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.zlib.createDeflateRaw",
+          "tests": [
+            "tests/corpus/1404-zlib-crypto-bytes.ts",
+            "tests/corpus/2921-zlib-callbacks.ts",
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
+          ]
         }
       }
     },
@@ -85931,12 +86474,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.zlib.createGunzip",
+          "tests": [
+            "tests/corpus/1404-zlib-crypto-bytes.ts",
+            "tests/corpus/2921-zlib-callbacks.ts",
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
+          ]
         }
       }
     },
@@ -85956,12 +86506,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.zlib.createGzip",
+          "tests": [
+            "tests/corpus/1404-zlib-crypto-bytes.ts",
+            "tests/corpus/2921-zlib-callbacks.ts",
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
+          ]
         }
       }
     },
@@ -85981,12 +86538,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.zlib.createInflate",
+          "tests": [
+            "tests/corpus/1404-zlib-crypto-bytes.ts",
+            "tests/corpus/2921-zlib-callbacks.ts",
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
+          ]
         }
       }
     },
@@ -86006,12 +86570,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.zlib.createInflateRaw",
+          "tests": [
+            "tests/corpus/1404-zlib-crypto-bytes.ts",
+            "tests/corpus/2921-zlib-callbacks.ts",
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
+          ]
         }
       }
     },
@@ -86031,12 +86602,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.zlib.createUnzip",
+          "tests": [
+            "tests/corpus/1404-zlib-crypto-bytes.ts",
+            "tests/corpus/2921-zlib-callbacks.ts",
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
+          ]
         }
       }
     },
@@ -86106,11 +86684,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.zlib.brotliCompress",
           "tests": []
         }
       }
@@ -86156,11 +86734,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.zlib.brotliDecompress",
           "tests": []
         }
       }
@@ -86214,7 +86792,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86243,7 +86824,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86272,7 +86856,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86301,7 +86888,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86330,7 +86920,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86359,7 +86952,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86388,7 +86984,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86417,7 +87016,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86446,7 +87048,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86475,7 +87080,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86504,7 +87112,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86533,7 +87144,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86562,7 +87176,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86591,7 +87208,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86712,12 +87332,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.zlib.constants",
+          "tests": [
+            "tests/corpus/5376-zlib-constants.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts"
+          ]
         }
       }
     },
@@ -86737,12 +87360,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:zlib.Options",
+          "tests": [
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5372-zlib-stream-errors.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5374-zlib-stream-flush-params.ts",
+            "tests/corpus/5375-zlib-stream-promises.ts",
+            "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          ]
         }
       }
     },
@@ -86812,11 +87443,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.zlib.brotliCompress",
           "tests": []
         }
       }
@@ -86862,11 +87493,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:zlib",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.zlib.brotliDecompress",
           "tests": []
         }
       }
@@ -86920,7 +87551,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86949,7 +87583,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -86978,7 +87615,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87007,7 +87647,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87036,7 +87679,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87065,7 +87711,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87094,7 +87743,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87123,7 +87775,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87152,7 +87807,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87181,7 +87839,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87210,7 +87871,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87239,7 +87903,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87268,7 +87935,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }
@@ -87297,7 +87967,10 @@
           "tests": [
             "tests/corpus/1404-zlib-crypto-bytes.ts",
             "tests/corpus/2921-zlib-callbacks.ts",
-            "tests/corpus/3115-zlib-static-compression-levels.ts"
+            "tests/corpus/3115-zlib-static-compression-levels.ts",
+            "tests/corpus/5370-zlib-stream-roundtrip.ts",
+            "tests/corpus/5371-zlib-stream-chunking.cjs",
+            "tests/corpus/5373-zlib-stream-options.cjs"
           ]
         }
       }

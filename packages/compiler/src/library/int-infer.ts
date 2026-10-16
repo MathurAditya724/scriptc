@@ -640,7 +640,10 @@ function globalEffectsOf(mod: IrModule): GlobalEffects {
   const calls = new Map<string, Set<string>>();
   const unknown = new Set<string>();
 
-  const typeHasFunc = (t: { kind: string }): boolean => JSON.stringify(t).includes('"func"');
+  // The full IrType, not a structural `{ kind: string }`: the native
+  // compiler would extract that one record arm and trap on bytes, array
+  // and every other arm that carries more fields.
+  const typeHasFunc = (t: IrType): boolean => JSON.stringify(t).includes('"func"');
 
   for (const fn of mod.functions) {
     const w = new Set<string>();

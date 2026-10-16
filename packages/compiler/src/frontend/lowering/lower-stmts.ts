@@ -123,6 +123,7 @@ import { isClassCallback, lowerClassCallbackAssign } from "./class-callbacks.js"
 import { classForInHasKey, classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import { genericIfaceBindingKeepsClass } from "./lower-classes.js";
 import { lowerStreamUnderscoreAssign, streamClassAliasDecl } from "./lower-stream.js";
+import { staticAssertInstanceDecl } from "./assert-instances.js";
 import {
   lowerHttpResPropertyAssignment,
   lowerHttpServerTimeoutAssignment,
@@ -131,6 +132,7 @@ import {
 } from "./lower-server.js";
 import { lowerUrlAssignment } from "./builtins/url.js";
 import { isFspGlobCall, lowerFspGlobForAwait } from "./builtins/fs-glob.js";
+import { isTimersPromisesIntervalCall } from "./builtins/timers.js";
 import {
   isNativeFfiRequire,
   builtinMemberRequireDecl,
@@ -4132,6 +4134,13 @@ export function lowerVarDecl(
   // builtinStreamInfoOf's alias following).
   if (!isLet && streamClassAliasDecl(lowerer, decl.name, decl.initializer)) return null;
 
+  // `const a = new Assert(<literal options>)` used only for method calls:
+  // a static instance whose calls lower with its options (assert-instances.ts);
+  // the declaration emits nothing (collectGlobals skipped its global by the
+  // same test).
+  if (!isLet && staticAssertInstanceDecl(lowerer, decl.name, decl.initializer) !== null)
+    return null;
+
   // `const process = globalThis.process` — a stdlib-global snapshot:
   // alias plumbing (see stdlibGlobalAliasDecl), no storage, no code.
   const stableStdlibAlias =
@@ -6347,6 +6356,18 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         }
         if (
           !expr.left.questionDotToken &&
+          lowerer.stdlibGlobalMember(expr.left, "Buffer") === "poolSize"
+        ) {
+          const loc = locOf(expr);
+          const value = lowerer.lowerExprExpecting(expr.right, F64);
+          return {
+            kind: "exprStmt",
+            expr: { kind: "libCall", fn: "buffer.setPoolSize", args: [value], type: VOID, loc },
+            loc,
+          };
+        }
+        if (
+          !expr.left.questionDotToken &&
           lowerer.stdlibGlobalMember(expr.left, "process") === "exitCode"
         ) {
           const loc = locOf(expr);
@@ -7844,12 +7865,25 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     let head: ts.Expression = stmt.expression;
     while (ts.isParenthesizedExpression(head)) head = head.expression;
     if (isFspGlobCall(lowerer, head)) return lowerFspGlobForAwait(lowerer, stmt, head);
+    if (isTimersPromisesIntervalCall(lowerer, head)) {
+      const iterable = lowerer.lowerExpr(head);
+      if (iterable.type.kind === "generator" && iterable.type.async) {
+        return lowerForAwaitGenerator(
+          lowerer,
+          stmt,
+          iterable as IrExpr & { type: GenType },
+          labels,
+        );
+      }
+    }
   }
   const awaitArray =
     !!stmt.awaitModifier && lowerer.mapTypeOf(lowerer.typeOf(stmt.expression))?.kind === "array";
   if (stmt.awaitModifier && !awaitArray) {
     {
-      const genT = lowerer.mapTypeOf(lowerer.typeOf(stmt.expression));
+      const genT =
+        lowerer.stageSourceType(stmt.expression) ??
+        lowerer.mapTypeOf(lowerer.typeOf(stmt.expression));
       if (genT?.kind === "generator" && genT.async) {
         const iterable = lowerer.lowerExpr(stmt.expression);
         if (iterable.type.kind === "generator" && iterable.type.async) {

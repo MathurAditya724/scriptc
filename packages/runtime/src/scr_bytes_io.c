@@ -620,7 +620,7 @@ void scr_fs_cb_schedule(const ScrDyn *callback, ScrDyn *result, const ScrDyn *bu
   closure->caps[1] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
   scr_box_set_ref(closure->caps[0], scr_dyn_retain((ScrDyn *)callback));
   scr_box_set_ref(closure->caps[1], arguments);
-  scr_set_timeout(closure, 0);
+  scr_loop_defer(closure);
 #else
   (void)callback;
   scr_dyn_release(arguments);
@@ -1276,6 +1276,18 @@ ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
   return NULL;
 }
 
+/* Buffer.from over a checked value, with Node's pooling: strings take
+ * fromStringFast, typed arrays and array-likes fromArrayLike. */
+ScrBytes *scr_buffer_from_dyn_pooled(const ScrDyn *value, const ScrStr *encoding) {
+  if (value->kind == SCR_DYN_STR) return scr_buffer_from_str(value->v.str, encoding);
+  if (value->kind == SCR_DYN_BYTES && !value->v.bytes->is_data_view)
+    return scr_buffer_from_bytes(value->v.bytes);
+  ScrBytes *out = scr_buffer_from_dyn(value, encoding);
+  if (!out) return NULL;
+  out->is_buffer = true;
+  return scr_buffer_pool_adopt(out);
+}
+
 /* ── the checked-dynamic Buffer compare/equals validators ──────────────
  * Node's argument ladders for buf.equals / buf.compare / Buffer.compare
  * over dyn-boxed arguments (the invalid-input probes: string needles,
@@ -1565,7 +1577,7 @@ ScrDyn *scr_fs_exists_async(const ScrDyn *path, const ScrDyn *cb) {
   scr_box_set_ref(clo->caps[0], scr_dyn_retain((ScrDyn *)path));
   clo->caps[1] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, NULL);
   scr_box_set_ref(clo->caps[1], scr_dyn_retain((ScrDyn *)cb));
-  scr_set_timeout(clo, 0);
+  scr_loop_defer(clo);
   return scr_dyn_retain(scr_dyn_undefined());
 #endif
 }

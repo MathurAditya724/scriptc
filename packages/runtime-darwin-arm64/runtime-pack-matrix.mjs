@@ -43,6 +43,7 @@ const BASE_RUNTIME_SOURCES = [
   "scr_cycle.c",
   "scr_publish.c",
   "scr_region.c",
+  "scr_itable.c",
   "scr_alloc.c",
 ];
 
@@ -88,6 +89,8 @@ const optional = [
   ["scr_util_style.c", all("parseArgs", "inspect", "dynAsync")],
   ["scr_util_callable.c", all("parseArgs", "inspect", "dynAsync", "dynInvoke", "regex")],
   ["scr_stream.c", "stream"],
+  // The zlib stream classes reference both the zlib engine and the stream unit.
+  ["scr_zlib_stream.c", all("zlib", "stream")],
   // The Readable operators await through the dyn-async unit.
   ["scr_stream_ops.c", all("stream", "dynAsync")],
   ["scr_loop_kqueue.c", any("netEffective", "dgram")],
@@ -102,6 +105,7 @@ const optional = [
   ["scr_test.c", "nodeTest"],
   ["scr_tls_ca.c", "tlsCaEffective"],
   ["scr_tls.c", "tlsEffective"],
+  ["scr_cipher.c", "cipher"],
   ["scr_fetch.c", "nativeFetch"],
 ];
 
@@ -137,7 +141,7 @@ export const RUNTIME_PACK_MATRIX = withLibraryRuntimeFlavors(
       { id: "quickjs", predicate: false },
       { id: "libregexp", predicate: "regex" },
       { id: "zlib", predicate: "zlibEffective" },
-      { id: "mbedtls", predicate: "tlsEffective" },
+      { id: "mbedtls", predicate: any("tlsEffective", "cipher") },
     ],
     system_libraries: [{ name: "System", predicate: true }],
   }),

@@ -4029,7 +4029,7 @@ static void sf_on_response(ScrClosure *cb, ScrHttpReq *res) {
   response->rc = 1;
   response->body = sf_stream_retain(body);
   response->headers =
-      sf_headers_new_response(scr_http_req_header_pairs(res));
+      sf_headers_new_response(scr_http_req_header_lines(res));
   response->url = sf_url_serialize(t->url);
   ScrStr *raw_status_text = scr_http_req_status_message(res);
   response->status_text =

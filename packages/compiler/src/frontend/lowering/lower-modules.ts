@@ -102,6 +102,7 @@ import {
 } from "./lower-stmts.js";
 import { objectFactoryGlobalType } from "./object-factory-new.js";
 import { streamClassAliasDecl } from "./lower-stream.js";
+import { isAssertClassNew } from "./assert-instances.js";
 import { stdlibGlobalAliasDecl, stdlibGlobalAliasNameOf, stdlibGlobalNameOf } from "./surfaces.js";
 import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
 import {
@@ -1780,6 +1781,14 @@ export function collectGlobals(
       // global storage (the statement lowering skips it by the same
       // test).
       if (isConst && streamClassAliasDecl(lowerer, decl.name, decl.initializer)) continue;
+      // `new Assert(...)`: a static instance has no global storage, and any
+      // other instance is refused where its declaration lowers.
+      if (
+        decl.initializer !== undefined &&
+        ts.isNewExpression(stripTypeCasts(decl.initializer)) &&
+        isAssertClassNew(lowerer, stripTypeCasts(decl.initializer))
+      )
+        continue;
       // `const process = globalThis.process` at file scope: a stdlib-
       // global snapshot — alias plumbing, no global storage (see
       // stdlibGlobalAliasDecl; the statement lowering skips it by the

@@ -3795,6 +3795,45 @@ function validateFunction(
         err(`${e.name} has type ${e.name === "region.create" ? "f64" : "void"}`, e.loc);
       return;
     }
+    if (
+      e.name === "itable.open" ||
+      e.name === "itable.find" ||
+      e.name === "itable.insert" ||
+      e.name === "itable.value" ||
+      e.name === "itable.size"
+    ) {
+      for (const a of e.args) checkExpr(a);
+      const [first, key, value] = e.args;
+      const arity = {
+        "itable.open": 2,
+        "itable.find": 2,
+        "itable.insert": 3,
+        "itable.value": 1,
+        "itable.size": 1,
+      }[e.name];
+      if (e.args.length !== arity) err(`${e.name} takes ${arity} arguments`, e.loc);
+      else if (e.name === "itable.open") {
+        if (first!.type.kind !== "string" || key!.type.kind !== "f64")
+          err("itable.open takes a string name and an f64 key kind", e.loc);
+      } else if (first!.type.kind !== "f64") err(`${e.name} handle must be f64`, e.loc);
+      else if (
+        (e.name === "itable.find" || e.name === "itable.insert") &&
+        key!.type.kind !== "string" &&
+        key!.type.kind !== "f64" &&
+        !(
+          key!.type.kind === "array" &&
+          (key!.type.elem.kind === "f64" || key!.type.elem.kind === "string")
+        )
+      )
+        err(`${e.name} key must be string, f64, or an array of either`, e.loc);
+      else if (e.name === "itable.insert" && !isSupportedMapValue(value!.type))
+        err(`itable.insert value ${typeKey(value!.type)} is not a table value type`, e.loc);
+      if (e.name === "itable.value") {
+        if (!isSupportedMapValue(e.type))
+          err(`itable.value type ${typeKey(e.type)} is not a table value type`, e.loc);
+      } else if (e.type.kind !== "f64") err(`${e.name} has type f64`, e.loc);
+      return;
+    }
     if (e.name === "threads.publish") {
       if (e.args.length !== 1) err("threads.publish takes exactly one argument", e.loc);
       for (const a of e.args) {
@@ -3961,6 +4000,9 @@ function validateFunction(
       e.fn === "stream.pipeline" ||
       e.fn === "stream.pipelineDyn" ||
       e.fn === "stream.compose" ||
+      e.fn === "stream.pipelineStages" ||
+      e.fn === "stream.pipelineStagesDyn" ||
+      e.fn === "sp.pipelineStages" ||
       e.fn === "sp.pipeline" ||
       e.fn === "sp.pipelineOpts" ||
       e.fn === "sp.pipelineOptsSignal" ||
@@ -4031,6 +4073,13 @@ function validateFunction(
         !boxes(errorBoxer)
       ) {
         err(`libCall events.once must box its event tuples into the promised array`, e.loc);
+      }
+      return true;
+    }
+    if (e.fn === "tp.setTimeoutValue" || e.fn === "tp.setImmediateValue") {
+      const value = e.args[e.fn === "tp.setTimeoutValue" ? 1 : 0];
+      if (value?.type.kind !== "promise" || !typeEquals(e.type, value.type)) {
+        err(`libCall ${e.fn} must be the value's promise type`, e.loc);
       }
       return true;
     }
@@ -5176,7 +5225,11 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "assert.refEqBytes" || e.fn === "assert.bytesDeepEq") {
+    if (
+      e.fn === "assert.refEqBytes" ||
+      e.fn === "assert.bytesDeepEq" ||
+      e.fn === "assert.looseBytesEq"
+    ) {
       // Both value slots: ONE static bytes type (the frontend's
       // same-static-type gate — a u8/u32 mix would memcmp garbage).
       const a = e.args[0]?.type;
@@ -5221,6 +5274,25 @@ function validateFunction(
     fixedArgs: number,
     result: IrType,
   ): boolean {
+    if (e.fn.startsWith("zlib.stream")) {
+      // The zlib stream classes: streamNew answers a runtime Transform;
+      // the members take one as their receiver, and the Cb forms end in
+      // the () => void callback.
+      const isTransform = (t: IrType | undefined): boolean =>
+        t?.kind === "object" && t.className === "%Transform";
+      if (e.fn === "zlib.streamNew") {
+        if (!isTransform(e.type)) err(`libCall ${e.fn} must return a %Transform`, e.loc);
+        return true;
+      }
+      if (!isTransform(e.args[0]?.type)) {
+        err(`libCall ${e.fn} receiver must be a %Transform`, e.loc);
+      }
+      if (e.fn.endsWith("Cb") && e.args[e.args.length - 1]?.type.kind !== "func") {
+        err(`libCall ${e.fn} callback must be a func`, e.loc);
+      }
+      if (!typeEquals(e.type, result)) err(`libCall ${e.fn} result type mismatch`, e.loc);
+      return true;
+    }
     if (
       e.fn.startsWith("readable.") ||
       e.fn.startsWith("writable.") ||
@@ -5237,6 +5309,9 @@ function validateFunction(
       e.fn === "stream.pipeline" ||
       e.fn === "stream.pipelineDyn" ||
       e.fn === "stream.compose" ||
+      e.fn === "stream.pipelineStages" ||
+      e.fn === "stream.pipelineStagesDyn" ||
+      e.fn === "sp.pipelineStages" ||
       e.fn === "stream.addAbortSignal" ||
       e.fn === "stream.addAbortSignalFn" ||
       e.fn === "stream.finishedOpts" ||
@@ -5343,6 +5418,65 @@ function validateFunction(
         if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream`, e.loc);
         return true;
       }
+      if (
+        e.fn === "stream.pipelineStages" ||
+        e.fn === "stream.pipelineStagesDyn" ||
+        e.fn === "sp.pipelineStages"
+      ) {
+        // (n, at, k, flags, mask, s1..sn, stage1..stagek, (next, read,
+        // return)?, box?, (signal, abort)?[, cb]): flags bit 0 a source
+        // function, bits 1-2 the destination, bits 3/4/5 the groups.
+        const [n, at, k, flags] = e.args
+          .slice(0, 4)
+          .map((a) => (a?.kind === "numLit" ? a.value : -1));
+        const source = (flags! & 1) !== 0;
+        const destKind = (flags! >> 1) & 3;
+        const groups = (flags! & 8 ? 3 : 0) + (flags! & 16 ? 1 : 0) + (flags! & 32 ? 2 : 0);
+        const cbArgs = e.fn === "sp.pipelineStages" ? 0 : 1;
+        if (
+          flags! < 0 ||
+          n! < 0 ||
+          k! < 1 ||
+          (source ? at !== 0 : at! < 1) ||
+          (destKind === 0 ? at! + 0 >= n! : at! !== n!) ||
+          n! + k! < 2 ||
+          e.args.length !== 5 + n! + k! + groups + cbArgs
+        ) {
+          err(`libCall ${e.fn} count/arity mismatch`, e.loc);
+          return true;
+        }
+        for (let i = 5; i < 5 + n!; i++) {
+          if (!isStreamObject(e.args[i]?.type)) {
+            err(`libCall ${e.fn} stage ${i - 5} must be a stream-hierarchy object`, e.loc);
+          }
+        }
+        let at2 = 5 + n!;
+        for (let i = at2; i < at2 + k!; i++) {
+          if (e.args[i]?.type.kind !== "func")
+            err(`libCall ${e.fn} stage function ${i} must be a func`, e.loc);
+        }
+        at2 += k!;
+        const helpers = (flags! & 8 ? 3 : 0) + (flags! & 16 ? 1 : 0);
+        for (let i = at2; i < at2 + helpers; i++) {
+          if (e.args[i]?.type.kind !== "func")
+            err(`libCall ${e.fn} helper ${i} must be a func`, e.loc);
+        }
+        at2 += helpers;
+        if (flags! & 32) {
+          if (e.args[at2]?.type.kind !== "dyn" || e.args[at2 + 1]?.type.kind !== "func")
+            err(`libCall ${e.fn} signal and abort must be a dyn and a func`, e.loc);
+        }
+        if (cbArgs) {
+          const cbK = e.args[e.args.length - 1]?.type.kind;
+          if (e.fn === "stream.pipelineStages" ? cbK !== "func" : cbK !== "dyn") {
+            err(`libCall ${e.fn} callback has the wrong kind`, e.loc);
+          }
+          if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream`, e.loc);
+        } else if (e.type.kind !== "promise") {
+          err(`libCall ${e.fn} must return a promise`, e.loc);
+        }
+        return true;
+      }
       if (e.fn === "stream.pipeline" || e.fn === "stream.pipelineDyn") {
         // (count, s1..sn, cb) → the destination's type.
         const count = e.args[0];
@@ -5386,6 +5520,25 @@ function validateFunction(
         const want = [DYN, F64, BOOL, STRING][kind];
         if (!isStreamObject(e.args[0]?.type) || !inner || !want || !typeEquals(inner, want)) {
           err(`libCall readable.opReduce must return the promise its kind names`, e.loc);
+        }
+        return true;
+      }
+      if (e.fn === "readable.fromDone") {
+        if (e.args.length !== 0 || e.type.kind !== "dyn")
+          err(`libCall ${e.fn} takes no arguments`, e.loc);
+        return true;
+      }
+      if (e.fn === "readable.fromGen" || e.fn === "readable.fromAsyncGen") {
+        const g = e.args[0]?.type;
+        const helpers = e.fn === "readable.fromGen" ? 3 : 4;
+        if (
+          g?.kind !== "generator" ||
+          (g.async === true) !== (e.fn === "readable.fromAsyncGen") ||
+          !e.args.slice(1, 1 + helpers).every((a) => a.kind === "closure") ||
+          e.args[1 + helpers]?.kind !== "numLit" ||
+          !isStreamObject(e.type)
+        ) {
+          err(`libCall ${e.fn} must take a generator, its helpers and the flags`, e.loc);
         }
         return true;
       }

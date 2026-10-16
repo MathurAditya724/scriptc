@@ -1,4 +1,5 @@
 import { InternalCompilerError } from "../errors.js";
+import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
 import type { IrRecordShape, IrType, IrUnionDef, IrUnionDiscriminant } from "../ir/ir.js";
@@ -27,6 +28,7 @@ import {
   RUNTIME_EMITTER_CLASS,
   RUNTIME_ERROR_CLASSES,
   RUNTIME_STREAM_CLASSES,
+  ZLIB_STREAM_MODES,
   setOf,
   STRING,
   SYMBOL_T,
@@ -149,6 +151,20 @@ export const FETCH_AMBIENT_TYPES = [
   "BlobOptions",
   "FileOptions",
 ] as const;
+
+/** node:crypto's Cipheriv and Decipheriv names in @types/node. */
+export const CIPHER_TYPE_NAMES: ReadonlySet<string> = new Set([
+  "Cipheriv",
+  "Decipheriv",
+  "CipherCCM",
+  "CipherGCM",
+  "CipherOCB",
+  "CipherChaCha20Poly1305",
+  "DecipherCCM",
+  "DecipherGCM",
+  "DecipherOCB",
+  "DecipherChaCha20Poly1305",
+]);
 
 /** node:util.parseArgs's public and @types/node helper type names, plus
  * util.debuglog's DebugLogger (a native function value with an `enabled`
@@ -1034,6 +1050,9 @@ export interface TypeMapperCtx {
   /** The LifetimeRegion instance type (@scriptc/experimental), when `decl`
    * is that package's class declaration (lowering/lifetime-regions.ts). */
   lifetimeRegionClass?: (decl: ts.ClassDeclaration) => IrType | null;
+  /** The InternTable instance type (@scriptc/experimental), when `decl` is
+   * that package's class declaration (lowering/intern-tables.ts). */
+  internTableClass?: (decl: ts.ClassDeclaration) => IrType | null;
 }
 /** A generator type's normalized value channels (Generator<T, TReturn,
  * TNext> and the IteratorResult alias share this):
@@ -1548,15 +1567,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       return hasStr ? STRING : F64;
     }
   }
-  // @scriptc/experimental's LifetimeRegion: a synthetic program class,
-  // provenance-checked by the package's declaration file.
+  // @scriptc/experimental's LifetimeRegion and InternTable: synthetic
+  // program classes, provenance-checked by the package's declaration file.
   {
-    const regionSym = widened.getSymbol();
-    if (regionSym?.name === "LifetimeRegion") {
-      for (const d of checker.declarationsOf(regionSym)) {
+    const classSym = widened.getSymbol();
+    const name = classSym?.name;
+    if (name === "LifetimeRegion" || name === "InternTable") {
+      for (const d of checker.declarationsOf(classSym!)) {
         if (!ts.isClassDeclaration(d)) continue;
-        const region = ctx.lifetimeRegionClass?.(d);
-        if (region) return region;
+        const synthetic =
+          name === "LifetimeRegion" ? ctx.lifetimeRegionClass?.(d) : ctx.internTableClass?.(d);
+        if (synthetic) return synthetic;
       }
     }
   }
@@ -1892,6 +1913,15 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   for (const [irName, rec] of RUNTIME_ERROR_CLASSES) {
     if (isStdlibInterface(rec.lib)) return { kind: "object", className: irName };
   }
+  // node:assert's AssertionError is declared as a class (in the shipped
+  // fallback and in @types/node), not as a lib interface.
+  if (
+    psym?.name === "AssertionError" &&
+    checker
+      .declarationsOf(psym)
+      .some((d) => ts.isClassDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
+  )
+    return { kind: "object", className: "%AssertionError" };
   // The lib's `Object` interface is a TOP type: tsc admits every
   // non-nullish value into an `Object` slot (`const x: Object = "s"`), so
   // it lowers like `unknown` (the dyn) — the same rule as `object` and
@@ -2235,6 +2265,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     checker
       .declarationsOf(psym)
       .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
+  ) {
+    return DYN;
+  }
+  // node:crypto Cipheriv/Decipheriv values (and @types/node's per-mode
+  // interfaces over them) are native handles carried by the checked-dynamic
+  // representation; lowerCipherMethodCall dispatches their methods.
+  if (
+    psym !== undefined &&
+    CIPHER_TYPE_NAMES.has(psym.name) &&
+    checker.declarationsOf(psym).some((d) => ctx.isStdlibFile(d.getSourceFile()))
   ) {
     return DYN;
   }
@@ -2684,6 +2724,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       return { kind: "object", className: irName };
     }
   }
+  // node:zlib's stream classes (the shipped fallback declarations): their
+  // instances are runtime Transform streams.
+  if (
+    psym !== undefined &&
+    ZLIB_STREAM_MODES.has(psym.name) &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          ts.isClassDeclaration(d) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          !isNodeTypesPath(d.getSourceFile().fileName) &&
+          isDeclaredInAmbientModule(d, "zlib"),
+      )
+  ) {
+    return { kind: "object", className: "%Transform" };
+  }
   if (
     (psym?.name === "Readable" &&
       checker
@@ -2739,6 +2796,27 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       )
   ) {
     return { kind: "testCtx" };
+  }
+  // node:test's MockFunctionContext<F> and MockFunctionCall<F>: compiler
+  // records built from F (mock-shapes.ts). Mock<F> then maps as the hybrid
+  // { %call: F, mock } record through mapHybridCallableIntersection.
+  if (
+    (psym?.name === "MockFunctionContext" || psym?.name === "MockFunctionCall") &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          ts.isInterfaceDeclaration(d) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          isDeclaredInAmbientModule(d, "test"),
+      )
+  ) {
+    const fnTs = checker.getTypeArguments(widened as ts.TypeReference)[0];
+    const fn = fnTs ? mapType(fnTs, ctx) : null;
+    if (!fn || fn.kind !== "func") return null;
+    return psym.name === "MockFunctionContext"
+      ? mockContextType(fn, ctx)
+      : mockCallRecordType(fn, ctx);
   }
   // NodeJS.ErrnoException: @types/node's `interface ErrnoException extends
   // Error` (dns/fs callback error types). It IS an Error at runtime — map

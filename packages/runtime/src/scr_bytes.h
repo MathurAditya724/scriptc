@@ -54,20 +54,18 @@ typedef struct ScrBytes {
   bool is_buffer; /* Buffer brand belongs to the view, not its backing. */
   bool is_data_view; /* DataView is distinct from a numeric typed array. */
   bool external; /* Root aliases foreign memory; releasing it never frees data. */
+  bool untransferable; /* A Buffer pool slab: its ArrayBuffer cannot be transferred. */
   ScrSharedBytes *shared; /* Neutral backing, borrowed by views from their local owner. */
 } ScrBytes;
 
-/* Internal scoped locking is only for leaf memory operations. Never hold this
- * guard across a script callback, blocking I/O, or a fiber suspension. */
-void scr_shared_enter(void);
-void scr_shared_leave(void);
-bool scr_shared_guard(const ScrBytes *, const ScrBytes *);
-void scr_shared_guard_release(bool *);
-#if defined(SCR_WORKERS) || (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
-#define SCR_SHARED_GUARD(a, b) bool scr_shared_held __attribute__((cleanup(scr_shared_guard_release))) = scr_shared_guard(a, b)
-#else
-#define SCR_SHARED_GUARD(a, b) ((void)0)
-#endif
+/* Copies out of and into shared storage, made of relaxed atomic accesses
+ * (aligned 8-byte words, single bytes at unaligned edges). Lock-free
+ * Atomics operations and element accesses on the same bytes stay free of
+ * data races; a copy that overlaps a concurrent write may observe either
+ * value of each word or byte, which ECMA-262 permits for non-atomic
+ * accesses. */
+void scr_shared_load(void *dst, const void *src, size_t n);
+void scr_shared_store(void *dst, const void *src, size_t n);
 ScrSharedBytes *scr_shared_retain(ScrSharedBytes *);
 void scr_shared_release(ScrSharedBytes *);
 void scr_bytes_make_shared(ScrBytes *);
@@ -79,8 +77,9 @@ ScrBytes *scr_bytes_snapshot(const ScrBytes *);
 void scr_bytes_snapshot_release(ScrBytes **);
 ScrBytes *scr_bytes_local_copy(ScrBytes *); /* +1; shared inputs are copied */
 void scr_bytes_require_unshared(const ScrBytes *);
-/* Snapshot before passing byte pointers to I/O or callback-capable consumers.
- * The copy is local, so neither a lock nor shared raw memory escapes. */
+/* Snapshot before reading shared bytes in bulk or passing byte pointers to
+ * I/O or callback-capable consumers. The copy is local and read with
+ * scr_shared_load, so no shared raw memory escapes. */
 #if defined(SCR_WORKERS) || (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
 #define SCR_BYTES_SNAPSHOT(name) \
   ScrBytes *scr_snapshot_##name __attribute__((cleanup(scr_bytes_snapshot_release))) = scr_bytes_snapshot(name); \
@@ -222,8 +221,8 @@ double scr_bytes_get(const ScrBytes *b, double i);
 double scr_bytes_get_or_nan(const ScrBytes *b, double i); /* NaN when the index is invalid */
 void scr_bytes_set(ScrBytes *b, double i, double v);
 /* Shared-view element access at an index the caller has checked against
- * the length (0 <= i < len). Each takes the shared-memory lock around the
- * access. Integer elements read as their value in 32 bits, sign- or
+ * the length (0 <= i < len). Each accesses the element as one relaxed
+ * atomic access of its width. Integer elements read as their value in 32 bits, sign- or
  * zero-extended, with Uint32 elements as their bit pattern; float elements
  * read as a double. Writes coerce like scr_bytes_set. Compiled code calls
  * these only from a view's shared branch. */
@@ -336,6 +335,30 @@ ScrStr *scr_text_decode_legacy(const ScrBytes *b, double encoding);
  * "utf16le" writes LE code units, surrogate pairs included. Borrows
  * both; +1 u8 result. Never throws. */
 ScrBytes *scr_bytes_from_str(const ScrStr *s, const ScrStr *enc);
+/* The Buffer pool (Node's lib/buffer.js allocate/fromStringFast/
+ * fromArrayLike): Buffer.allocUnsafe, Buffer.from of strings, arrays and
+ * array-likes, and Buffer.concat return views into a per-thread slab of
+ * Buffer.poolSize bytes when the size is below poolSize >>> 1. Views start
+ * at 8-byte aligned offsets; a request that does not fit starts a new
+ * slab. A slab lives while any of its views does. All return +1 Buffers. */
+double scr_buffer_pool_size(void);
+void scr_buffer_set_pool_size(double size);
+ScrBytes *scr_buffer_alloc(double size);             /* zeroed, never pooled */
+ScrBytes *scr_buffer_alloc_unsafe(double size);      /* pooled */
+ScrBytes *scr_buffer_alloc_unsafe_slow(double size); /* never pooled */
+ScrBytes *scr_buffer_from_str(const ScrStr *s, const ScrStr *enc);
+ScrBytes *scr_buffer_from_str_checked(const ScrStr *s, const ScrStr *enc);
+ScrBytes *scr_buffer_from_bytes(const ScrBytes *src); /* a copy of any typed array's values */
+ScrBytes *scr_buffer_from_arr(const ScrArr *arr);     /* number[] */
+ScrBytes *scr_buffer_from_dyn_pooled(const ScrDyn *value, const ScrStr *encoding);
+ScrBytes *scr_buffer_concat(const ScrArr *list);
+ScrBytes *scr_buffer_concat_len(const ScrArr *list, double total);
+/* Drops the pool's slab reference and restores Buffer.poolSize (process
+ * exit audits and library session resets). */
+void scr_buffer_pool_reset(void);
+/* A pooled copy of an unpooled u8 Buffer below the pool threshold; others
+ * are returned as they are. Consumes `b`. */
+ScrBytes *scr_buffer_pool_adopt(ScrBytes *b);
 ScrBytes *scr_bytes_from_str_checked(const ScrStr *s, const ScrStr *enc);
 
 /* Buffer.byteLength(string, enc) — enc NORMALIZED like from_str — and

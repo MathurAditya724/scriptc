@@ -241,11 +241,15 @@ export class LifetimeRegions {
    * chunks of freeable regions have an owner: the default regions' objects
    * are never freed, so their references need no count. Worker executables
    * count only their own chunks; a published instance other threads read
-   * is never counted by them. */
+   * is never counted by them. The counting path is marked unlikely: speed
+   * builds inline these bodies into every use of an instance, and in
+   * programs that never create a region the path is never taken, so it is
+   * laid out away from the callers' hot code. */
   countBody(fnName: string, ret: "ptr" | "void", comment: string): string[] {
     const count = this.tag("count");
     const workers = this.host.threadLocalAlloc === true;
     this.host.declare(`@scr_region_counting = external global i8`);
+    this.host.declare(`declare i1 @llvm.expect.i1(i1, i1)`);
     // Worker threads set and read the flag concurrently: an unordered
     // atomic load, which LLVM may still hoist like a plain one.
     const flag = workers
@@ -257,7 +261,8 @@ export class LifetimeRegions {
       `  %on = ${flag}${this.tag("counting")}`,
       `  %idle = icmp eq i8 %on, 0`,
       `  %isnull = icmp eq ptr %o, null`,
-      `  %skip = or i1 %idle, %isnull`,
+      `  %skip0 = or i1 %idle, %isnull`,
+      `  %skip = call i1 @llvm.expect.i1(i1 %skip0, i1 true)`,
       `  br i1 %skip, label %done, label %chunk`,
       `chunk:`,
       ...this.chunkLines("c", "%o"),
@@ -332,9 +337,13 @@ export class LifetimeRegions {
       );
     rel.push(`  ret void`, `}`, ``);
     const S = this.host.sizeType;
+    // The names of the fields the visit reports, in its order (reportLines).
+    const reported = fields.filter((f) => isRefCounted(f.type) && this.reaches(f.type));
+    const names = `@${struct}.rfields`;
     return [
       `${this.cursor(cls.name)} = internal ${tl}global { ptr, ptr } zeroinitializer`,
-      `${this.descriptor(cls.name)} = internal global { ${S}, ptr, ptr, ptr, i32 } { ${S} ${sizeOf}, ptr ${visit}, ptr ${release}, ptr ${this.host.cstr(cls.name.replace(/^%(m\d+\.)?/, ""))}, i32 -1 } ; region class ${llvmCommentText(cls.name)}`,
+      `${names} = internal constant [${reported.length + 1} x ptr] [ ${[...reported.map((f) => `ptr ${this.host.cstr(f.name)}`), "ptr null"].join(", ")} ]`,
+      `${this.descriptor(cls.name)} = internal global { ${S}, ptr, ptr, ptr, i32, ptr } { ${S} ${sizeOf}, ptr ${visit}, ptr ${release}, ptr ${this.host.cstr(cls.name.replace(/^%(m\d+\.)?/, ""))}, i32 -1, ptr ${names} } ; region class ${llvmCommentText(cls.name)}`,
       ...this.reportBody(
         `define internal void ${visit}(ptr %o, ptr %w) ${FN_ATTRS} { ; region visit ${llvmCommentText(cls.name)}`,
         struct,

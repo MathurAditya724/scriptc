@@ -23,30 +23,42 @@ interface Stats {
   attempts: string[];
   /** Per-thread summaries, sorted. */
   summaries: string[];
+  /** SCRIPTC_REGION_DEBUG's report lines, in order. */
+  report: string[];
   stdout: string;
 }
 
-async function run(program: string): Promise<Stats> {
+async function run(
+  program: string,
+  env: Record<string, string> = {},
+  optimization?: "dev",
+): Promise<Stats> {
   const outDir = await mkdtemp(join(tmpdir(), "scriptc-regions-"));
   try {
     const result = await compile(join(corpus, program), {
       backend: "llvm",
       sanitize,
+      ...(optimization ? { optimization } : {}),
       outDir,
       outPath: join(outDir, "program"),
     });
     expect(result.ok, JSON.stringify(result.diagnostics)).toBe(true);
     if (!result.ok) throw new Error("compile failed");
     const { stdout, stderr } = await exec(result.binaryPath, [], {
-      env: { ...process.env, SCRIPTC_REGION_STATS: "1" },
+      env: { ...process.env, SCRIPTC_REGION_STATS: "1", ...env },
       timeout: 120_000,
     });
-    const stats: Stats = { attempts: [], summaries: [], stdout };
+    const stats: Stats = { attempts: [], summaries: [], report: [], stdout };
     for (const line of stderr.split("\n")) {
       if (line === "" || line.startsWith("scriptc RC audit skipped:")) continue;
       const attempt = /^scriptc region (\d+): (freed|kept|pinned)\b/.exec(line);
       if (attempt) stats.attempts.push(`${attempt[1]} ${attempt[2]}`);
       else if (line.startsWith("scriptc regions: ")) stats.summaries.push(line.slice(17));
+      else if (
+        /^scriptc region \d+: -?\d+ references from outside keep it:$/.test(line) ||
+        line.startsWith("  ")
+      )
+        stats.report.push(line);
       // A region whose free left counted references would print here.
       else if (!/^==\d+==WARNING: ASan doesn't fully support makecontext/.test(line))
         throw new Error(`unexpected stderr line: ${line}`);
@@ -71,6 +83,24 @@ function keptThenFreed(attempts: string[], regions: number[]): void {
 }
 
 describe.skipIf(process.platform === "win32")("lifetime regions", { timeout: 240_000 }, () => {
+  test("SCRIPTC_REGION_DEBUG names the field holding an owned object referenced from outside", async () => {
+    // The reports are compiled into dev runtimes (and RC-audit ones).
+    const stats = await run("5703-lifetime-region-debug.ts", { SCRIPTC_REGION_DEBUG: "1" }, "dev");
+    expect(stats.stdout).toBe("s1 2 3 3 s0,s1,s2\n2\n");
+    keptThenFreed(stats.attempts, [1]);
+    expect(stats.report[0]).toMatch(/^scriptc region 1: \d+ references from outside keep it:$/);
+    // `held` refers to a symbol directly: the walk sees only the chunk.
+    expect(stats.report).toContainEqual(
+      expect.stringMatching(
+        /^ {2}\d+ not found by the walk, to objects in a chunk holding \w+(, \w+)*$/,
+      ),
+    );
+    // `maps` holds the map the region's Unit owns.
+    expect(stats.report).toContain(
+      "  a map or set held by Unit.byName, with 2 references, 1 of them from what the region owns",
+    );
+  });
+
   test("generations free each released file and checker region once unreferenced", async () => {
     const stats = await run("5010-lifetime-region-generations.ts");
     // The module's file table still holds the last generation's files.

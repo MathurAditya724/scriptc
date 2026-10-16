@@ -156,6 +156,37 @@ export function emitNumberMapHas(host: LlvmEmitterContext, map: string, key: str
   return found;
 }
 
+/** Map.set / Set.add of a scalar value under a number key: a found entry
+ * takes the value in its slot (a Set entry's unit value is already there);
+ * a new key appends through `append`, the runtime set. */
+export function emitNumberMapSetScalar(
+  host: LlvmEmitterContext,
+  map: string,
+  key: string,
+  bits: string | null,
+  append: () => void,
+): void {
+  const B = host.B;
+  const entry = emitNumberMapEntry(host, map, key);
+  const found = B.tmp();
+  B.line(`${found} = icmp ne ptr ${entry}, null`);
+  const hit = B.newLabel("mapn.set.hit"),
+    miss = B.newLabel("mapn.set.miss"),
+    join = B.newLabel("mapn.set.join");
+  B.condBr(found, hit, miss);
+  B.startBlock(hit);
+  if (bits !== null) {
+    const slot = B.tmp();
+    B.line(`${slot} = getelementptr inbounds %ScrMapEntry, ptr ${entry}, i32 0, i32 1`);
+    B.line(`store i64 ${bits}, ptr ${slot}`);
+  }
+  B.br(join);
+  B.startBlock(miss);
+  append();
+  B.br(join);
+  B.startBlock(join);
+}
+
 /** Declared by the inline Map/Set iteration steps; its presence makes the
  * emitter define sc_map_iter_entry and sc_map_iter_count (emitter.ts). */
 export const MAP_ITER_DECL = "declare zeroext i1 @scr_map_iter_live(ptr, double)";

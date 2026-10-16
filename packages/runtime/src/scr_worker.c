@@ -2,6 +2,7 @@
 
 #ifdef SCR_WORKERS
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
 #ifdef _WIN32
@@ -63,6 +64,7 @@ struct ScrWorkerThread {
   int argc;
   char **argv;
   bool joined;
+  uint64_t spawned_ns; /* SCRIPTC_WORKER_STATS only */
 #ifdef _WIN32
   HANDLE thread;
 #else
@@ -73,6 +75,21 @@ struct ScrWorkerThread {
 static atomic_uint_fast64_t scr_worker_next_id = 1;
 static SCR_TL ScrWorkerThread *scr_worker_current;
 static SCR_TL ScrDyn *scr_worker_local_data;
+
+/* SCRIPTC_WORKER_STATS=1 reports, as each worker thread exits, how long it
+ * took to start, to run its script (runtime and module initialization
+ * included) and to exit (freeing its heap). -1 until read. */
+static _Atomic int scr_worker_stats_mode = -1;
+
+static bool scr_worker_stats(void) {
+  int mode = atomic_load_explicit(&scr_worker_stats_mode, memory_order_relaxed);
+  if (mode < 0) {
+    const char *value = getenv("SCRIPTC_WORKER_STATS");
+    mode = value != NULL && value[0] == '1';
+    atomic_store_explicit(&scr_worker_stats_mode, mode, memory_order_relaxed);
+  }
+  return mode != 0;
+}
 
 static ScrMailEvent *scr_worker_event(unsigned kind, uint64_t source,
                                      int code, ScrMessage *message) {
@@ -197,6 +214,8 @@ static void scr_worker_report_error(void) {
 }
 
 static void scr_worker_thread_run(ScrWorkerThread *worker) {
+  bool stats = scr_worker_stats();
+  uint64_t started_ns = stats ? scr_hrtime_ns() : 0;
   scr_context_enter(worker->id);
 #ifdef SCR_EXC_FLAG
   pthread_mutex_lock(&worker->flag_lock);
@@ -213,8 +232,15 @@ static void scr_worker_thread_run(ScrWorkerThread *worker) {
   scr_context_report_error = scr_worker_report_error;
   scr_mailbox_post(worker->parent, scr_worker_event(SCR_WORKER_ONLINE, worker->id, 0, NULL));
   int code = worker->entry(worker->root);
+  scr_context_note_script_end(); /* when the program frees nothing at exit */
   scr_mailbox_close(worker->inbox);
   scr_context_cleanup();
+  if (stats) {
+    uint64_t now = scr_hrtime_ns();
+    fprintf(stderr, "scriptc worker %llu: started %.2f ms after spawn, script %.2f ms, exit %.2f ms\n",
+            (unsigned long long)worker->id, (double)(started_ns - worker->spawned_ns) / 1e6,
+            (double)(scr_context_script_end_ns() - started_ns) / 1e6, (double)(now - scr_context_script_end_ns()) / 1e6);
+  }
   scr_worker_current = NULL;
   scr_exc_alert_thread_exit();
 #ifdef SCR_EXC_FLAG
@@ -228,6 +254,8 @@ static void scr_worker_thread_run(ScrWorkerThread *worker) {
    * only once none of those operations can touch the worker's script heap. */
   scr_mailbox_post(worker->parent, scr_worker_event(SCR_WORKER_EXIT, worker->id, code, NULL));
   scr_worker_thread_release(worker);
+  /* Replaced InternTable indexes no longer wait for this thread. */
+  scr_itable_thread_exit();
   /* The next script thread continues this thread's allocator arena. */
   scr_sa_thread_park();
 }
@@ -279,6 +307,7 @@ ScrWorkerThread *scr_worker_thread_start(ScrWorkerEntry entry, uint32_t root,
   }
   worker->inbox = scr_mailbox_new();
   if (!worker->inbox) goto failed;
+  if (scr_worker_stats()) worker->spawned_ns = scr_hrtime_ns();
 #ifdef _WIN32
   worker->thread = (HANDLE)_beginthreadex(NULL, 0, scr_worker_thread_main, worker, 0, NULL);
   if (!worker->thread) goto failed;

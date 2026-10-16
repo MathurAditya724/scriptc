@@ -350,3 +350,235 @@ bool scr_zlib_inflate_exact(const unsigned char *src, size_t src_len,
   inflateEnd(&zs);
   return ok;
 }
+
+/* ── the stream engine (Node's ZlibContext, node_zlib.cc) ───────────────
+ * One z_stream per zlib.Gzip/Deflate/... instance. scr_zlib_stream.c owns
+ * the Transform side and submits every write step to the worker pool;
+ * scr_zlib_engine_work runs on the worker and touches only the z_stream.
+ * Modes are Node's node_zlib_mode numbers (DEFLATE 1 ... UNZIP 7). */
+struct ScrZlibEngine {
+  z_stream strm;
+  int mode;
+  int level, window_bits, mem_level, strategy;
+  int flush;
+  int err;
+  int gzip_id_bytes_read;
+  bool init_done;
+  bool reject_garbage;
+  unsigned char *dict;
+  size_t dict_len;
+};
+
+enum { SCR_Z_DEFLATE = 1, SCR_Z_INFLATE, SCR_Z_GZIP, SCR_Z_GUNZIP, SCR_Z_DEFLATERAW,
+       SCR_Z_INFLATERAW, SCR_Z_UNZIP };
+
+ScrZlibEngine *scr_zlib_engine_new(int mode, int level, int window_bits, int mem_level,
+                                   int strategy, const unsigned char *dict, size_t dict_len,
+                                   bool reject_garbage) {
+  ScrZlibEngine *e = calloc(1, sizeof *e);
+  if (!e) scr_zlib_oom();
+  e->mode = mode;
+  e->level = level;
+  e->mem_level = mem_level;
+  e->strategy = strategy;
+  e->reject_garbage = reject_garbage;
+  e->flush = Z_NO_FLUSH;
+  e->err = Z_OK;
+  e->window_bits = window_bits;
+  if (mode == SCR_Z_GZIP || mode == SCR_Z_GUNZIP) e->window_bits += 16;
+  if (mode == SCR_Z_UNZIP) e->window_bits += 32;
+  if (mode == SCR_Z_DEFLATERAW || mode == SCR_Z_INFLATERAW) e->window_bits *= -1;
+  if (dict && dict_len > 0) {
+    e->dict = malloc(dict_len);
+    if (!e->dict) scr_zlib_oom();
+    memcpy(e->dict, dict, dict_len);
+    e->dict_len = dict_len;
+  }
+  return e;
+}
+
+static bool scr_zlib_engine_deflating(const ScrZlibEngine *e) {
+  return e->mode == SCR_Z_DEFLATE || e->mode == SCR_Z_GZIP || e->mode == SCR_Z_DEFLATERAW;
+}
+
+/* SetDictionary: deflate modes and raw inflate load it up front; the
+ * other inflate modes load it when inflate() asks (Z_NEED_DICT). */
+static bool scr_zlib_engine_set_dict(ScrZlibEngine *e) {
+  if (!e->dict) return true;
+  e->err = Z_OK;
+  if (e->mode == SCR_Z_DEFLATE || e->mode == SCR_Z_DEFLATERAW) {
+    e->err = deflateSetDictionary(&e->strm, e->dict, (uInt)e->dict_len);
+  } else if (e->mode == SCR_Z_INFLATERAW) {
+    e->err = inflateSetDictionary(&e->strm, e->dict, (uInt)e->dict_len);
+  }
+  return e->err == Z_OK;
+}
+
+/* InitZlib: lazy, on the first step. True when this call initialized. */
+static bool scr_zlib_engine_init(ScrZlibEngine *e) {
+  if (e->init_done) return false;
+  e->strm.msg = NULL;
+  if (scr_zlib_engine_deflating(e)) {
+    e->err = deflateInit2(&e->strm, e->level, Z_DEFLATED, e->window_bits, e->mem_level,
+                          e->strategy);
+  } else {
+    e->err = inflateInit2(&e->strm, e->window_bits);
+  }
+  if (e->err != Z_OK) {
+    free(e->dict);
+    e->dict = NULL;
+    e->dict_len = 0;
+    e->mode = 0;
+    return true;
+  }
+  scr_zlib_engine_set_dict(e);
+  e->init_done = true;
+  return true;
+}
+
+static int scr_zlib_engine_reset_stream(ScrZlibEngine *e) {
+  if (scr_zlib_engine_init(e) && e->err != Z_OK) return 1;
+  e->err = Z_OK;
+  switch (e->mode) {
+  case SCR_Z_DEFLATE:
+  case SCR_Z_DEFLATERAW:
+  case SCR_Z_GZIP: e->err = deflateReset(&e->strm); break;
+  case SCR_Z_INFLATE:
+  case SCR_Z_INFLATERAW:
+  case SCR_Z_GUNZIP: e->err = inflateReset(&e->strm); break;
+  default: break;
+  }
+  if (e->err != Z_OK) return 2;
+  return scr_zlib_engine_set_dict(e) ? 0 : 3;
+}
+
+void scr_zlib_engine_work(ScrZlibEngine *e, int flush, const unsigned char *in, uint32_t in_len,
+                          unsigned char *out, uint32_t out_len) {
+  e->strm.avail_in = in_len;
+  e->strm.next_in = (Bytef *)(uintptr_t)in;
+  e->strm.avail_out = out_len;
+  e->strm.next_out = out;
+  e->flush = flush;
+  if (scr_zlib_engine_init(e) && e->err != Z_OK) return;
+  switch (e->mode) {
+  case SCR_Z_DEFLATE:
+  case SCR_Z_GZIP:
+  case SCR_Z_DEFLATERAW:
+    e->err = deflate(&e->strm, flush);
+    return;
+  case SCR_Z_UNZIP: {
+    /* The gzip magic decides GUNZIP vs INFLATE, possibly across steps. */
+    const Bytef *next = e->strm.avail_in > 0 ? e->strm.next_in : NULL;
+    if (e->gzip_id_bytes_read == 0 && next != NULL) {
+      if (*next == 0x1f) {
+        e->gzip_id_bytes_read = 1;
+        next++;
+        if (e->strm.avail_in == 1) next = NULL;
+      } else {
+        e->mode = SCR_Z_INFLATE;
+        next = NULL;
+      }
+    }
+    if (e->gzip_id_bytes_read == 1 && next != NULL && e->mode == SCR_Z_UNZIP) {
+      if (*next == 0x8b) {
+        e->gzip_id_bytes_read = 2;
+        e->mode = SCR_Z_GUNZIP;
+      } else {
+        e->mode = SCR_Z_INFLATE;
+      }
+    }
+  }
+  /* fallthrough */
+  case SCR_Z_INFLATE:
+  case SCR_Z_GUNZIP:
+  case SCR_Z_INFLATERAW:
+    e->err = inflate(&e->strm, flush);
+    if (e->mode != SCR_Z_INFLATERAW && e->err == Z_NEED_DICT && e->dict) {
+      e->err = inflateSetDictionary(&e->strm, e->dict, (uInt)e->dict_len);
+      if (e->err == Z_OK) e->err = inflate(&e->strm, flush);
+      else if (e->err == Z_DATA_ERROR) e->err = Z_NEED_DICT;
+    }
+    /* Another gzip member may follow; trailing zero bytes are padding. */
+    while (e->strm.avail_in > 0 && e->mode == SCR_Z_GUNZIP && e->err == Z_STREAM_END &&
+           !e->reject_garbage && e->strm.next_in[0] != 0x00) {
+      scr_zlib_engine_reset_stream(e);
+      e->err = inflate(&e->strm, flush);
+    }
+    return;
+  default:
+    return;
+  }
+}
+
+void scr_zlib_engine_offsets(const ScrZlibEngine *e, uint32_t *avail_in, uint32_t *avail_out) {
+  *avail_in = e->strm.avail_in;
+  *avail_out = e->strm.avail_out;
+}
+
+static const char *scr_zlib_strerror(int err) {
+  switch (err) {
+  case Z_OK: return "Z_OK";
+  case Z_STREAM_END: return "Z_STREAM_END";
+  case Z_NEED_DICT: return "Z_NEED_DICT";
+  case Z_ERRNO: return "Z_ERRNO";
+  case Z_STREAM_ERROR: return "Z_STREAM_ERROR";
+  case Z_DATA_ERROR: return "Z_DATA_ERROR";
+  case Z_MEM_ERROR: return "Z_MEM_ERROR";
+  case Z_BUF_ERROR: return "Z_BUF_ERROR";
+  case Z_VERSION_ERROR: return "Z_VERSION_ERROR";
+  default: return "Z_UNKNOWN_ERROR";
+  }
+}
+
+static bool scr_zlib_engine_fail(const ScrZlibEngine *e, const char *message, ScrZlibError *out) {
+  out->message = e->strm.msg ? e->strm.msg : message;
+  out->code = scr_zlib_strerror(e->err);
+  out->err = e->err;
+  return true;
+}
+
+bool scr_zlib_engine_error(const ScrZlibEngine *e, ScrZlibError *out) {
+  switch (e->err) {
+  case Z_OK:
+  case Z_BUF_ERROR:
+    if (e->strm.avail_out != 0 && e->flush == Z_FINISH)
+      return scr_zlib_engine_fail(e, "unexpected end of file", out);
+    return false;
+  case Z_STREAM_END: return false;
+  case Z_NEED_DICT:
+    return scr_zlib_engine_fail(e, e->dict ? "Bad dictionary" : "Missing dictionary", out);
+  default: return scr_zlib_engine_fail(e, "Zlib error", out);
+  }
+}
+
+bool scr_zlib_engine_reset(ScrZlibEngine *e, ScrZlibError *out) {
+  switch (scr_zlib_engine_reset_stream(e)) {
+  case 0: return false;
+  case 1: return scr_zlib_engine_fail(e, "Failed to init stream before reset", out);
+  case 2: return scr_zlib_engine_fail(e, "Failed to reset stream", out);
+  default: return scr_zlib_engine_fail(e, "Failed to set dictionary", out);
+  }
+}
+
+/* SetParams: deflateParams for DEFLATE and DEFLATERAW only (Node's
+ * switch leaves GZIP's level and strategy unchanged). */
+bool scr_zlib_engine_params(ScrZlibEngine *e, int level, int strategy, ScrZlibError *out) {
+  if (scr_zlib_engine_init(e) && e->err != Z_OK)
+    return scr_zlib_engine_fail(e, "Failed to init stream before set parameters", out);
+  e->err = Z_OK;
+  if (e->mode == SCR_Z_DEFLATE || e->mode == SCR_Z_DEFLATERAW)
+    e->err = deflateParams(&e->strm, level, strategy);
+  if (e->err != Z_OK && e->err != Z_BUF_ERROR)
+    return scr_zlib_engine_fail(e, "Failed to set parameters", out);
+  return false;
+}
+
+void scr_zlib_engine_free(ScrZlibEngine *e) {
+  if (!e) return;
+  if (e->init_done) {
+    if (scr_zlib_engine_deflating(e)) deflateEnd(&e->strm);
+    else inflateEnd(&e->strm);
+  }
+  free(e->dict);
+  free(e);
+}

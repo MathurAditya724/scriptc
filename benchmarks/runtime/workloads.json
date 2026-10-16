@@ -64,6 +64,13 @@
       ]
     },
     {
+      "name": "cyclic-graphs",
+      "entry": "workloads/cyclic-graphs.ts",
+      "args": [
+        "3"
+      ]
+    },
+    {
       "name": "numeric-kernels",
       "entry": "workloads/numeric-kernels.ts",
       "args": [
@@ -85,10 +92,60 @@
       ]
     },
     {
+      "name": "intern-table",
+      "entry": "workloads/intern-table.ts",
+      "args": [
+        "table",
+        "8",
+        "100000"
+      ]
+    },
+    {
+      "name": "intern-table-map",
+      "entry": "workloads/intern-table.ts",
+      "args": [
+        "map",
+        "8",
+        "100000"
+      ]
+    },
+    {
+      "name": "intern-table-1",
+      "entry": "workloads/intern-table.ts",
+      "args": [
+        "table",
+        "1",
+        "100000"
+      ]
+    },
+    {
+      "name": "intern-table-map-1",
+      "entry": "workloads/intern-table.ts",
+      "args": [
+        "map",
+        "1",
+        "100000"
+      ]
+    },
+    {
+      "name": "atomics-contended",
+      "entry": "workloads/atomics-contended.ts",
+      "args": [
+        "2"
+      ]
+    },
+    {
       "name": "value-objects",
       "entry": "workloads/value-objects.ts",
       "args": [
         "2"
+      ]
+    },
+    {
+      "name": "region-builds",
+      "entry": "workloads/region-builds.ts",
+      "args": [
+        "1"
       ]
     },
     {
@@ -110,6 +167,13 @@
       "entry": "workloads/number-maps.ts",
       "args": [
         "4"
+      ]
+    },
+    {
+      "name": "published-graphs",
+      "entry": "workloads/published-graphs.ts",
+      "args": [
+        "1"
       ]
     },
     {

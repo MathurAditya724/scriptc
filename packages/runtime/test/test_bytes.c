@@ -26,6 +26,7 @@ long scr_bytes_live_count(void);
 static long total = 0, failed = 0;
 
 void scr_bytes_test_bulk_storage(void);
+void scr_bytes_test_buffer_pool(void);
 
 static void check(bool ok, const char *what) {
   total++;
@@ -405,6 +406,7 @@ int main(int argc, char **argv) {
   test_coercion_matrix();
   test_slice_set_copy();
   scr_bytes_test_bulk_storage();
+  scr_bytes_test_buffer_pool();
   test_encodings();
   test_concat_and_u32be();
   test_from_arr_and_random();

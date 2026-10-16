@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 // Case-sharded harnesses run in every job without Vitest file sharding.
 export const effectFiles = ["tests/harness/effect.test.ts", "tests/harness/effect4.test.ts"];
 export const corpusFiles = [
@@ -10,31 +12,69 @@ export const corpusFiles = [
 ];
 const coverageFile = "tests/harness/coverage.test.ts";
 const cacheFile = "packages/compiler/src/backend/native-toolchain.test.ts";
-// Expensive integration suites keep their existing owners and run serially
+// Expensive integration suites run in their own vitest process, serially
 // beside the corpus, avoiding worker contention between large compilations.
-const isolatedFiles = [
-  ["self-hosting serialization", "tests/harness/self-hosting-serialization.test.ts", 5],
-  ["self-hosting", "tests/harness/self-hosting.test.ts", 1],
-  ["self-hosting LLVM emitter", "tests/harness/self-hosting-llvm-emitter.test.ts", 2],
-  ["fetch", "tests/harness/fetch.test.ts", 3],
-  ["npm static", "tests/harness/npm-static.test.ts", 4],
-  ["surface manifest", "tests/harness/surface-manifest.test.ts", 5],
+export const isolatedFiles = [
+  ["self-hosting serialization", "tests/harness/self-hosting-serialization.test.ts"],
+  ["self-hosting", "tests/harness/self-hosting.test.ts"],
+  ["self-hosting LLVM emitter", "tests/harness/self-hosting-llvm-emitter.test.ts"],
+  ["fetch", "tests/harness/fetch.test.ts"],
+  ["surface manifest", "tests/harness/surface-manifest.test.ts"],
 ];
+// Suites that split their own tests across the shards (SCRIPTC_TEST_SHARD,
+// skipUnownedTest in tests/harness/shard.ts): every shard runs its share in
+// its own vitest process.
+export const caseShardedSideFiles = [["npm static", "tests/harness/npm-static.test.ts"]];
 export const fileExclusions = [
   ...corpusFiles,
   ...effectFiles,
   coverageFile,
   cacheFile,
   ...isolatedFiles.map(([, file]) => file),
+  ...caseShardedSideFiles.map(([, file]) => file),
   "tests/harness/self-hosting-native-driver.test.ts",
 ];
 
-// Pull requests run the full suite on Linux. Their macOS lane keeps the
-// darwin clang/libc/kqueue oracles: the Node differential corpus, plus every
-// file whose assertions run only on darwin or take darwin-specific branches
-// (including the Mach-O library localization arm and the arm64 runtime
-// string oracle).
-// Pushes to main and the nightly schedule still run the full suite on macOS.
+// Milliseconds each side-queue file takes on a CI runner, per flavor, from the
+// logs of green main runs (scripts/ci-test-costs.mjs refreshes it).
+export const testCosts = JSON.parse(
+  readFileSync(new URL("./ci-test-costs.json", import.meta.url), "utf8"),
+);
+
+// The shard (1-based) of each measured side-queue file and isolated suite:
+// longest first to the shard with the least work so far, counting about a
+// second per file for vitest to import it. Ties go to the highest shard, so the
+// longest files start from the last shard while the cost-balanced corpus and
+// three.js cases (tests/harness/shard.ts) place their longest from the first.
+// An isolated suite without a measurement weighs as much as the median
+// measured file. Files without a measurement are left to vitest's --shard,
+// which splits them by count.
+export function sideOwners(flavor, count) {
+  const costs = testCosts[flavor];
+  const known = Object.values(costs).sort((a, b) => a - b);
+  const median = known.length === 0 ? 0 : known[Math.floor(known.length / 2)];
+  const weight = (file) => (costs[file] ?? median) + 1000;
+  const files = [...new Set([...Object.keys(costs), ...isolatedFiles.map(([, file]) => file)])];
+  files.sort((a, b) => weight(b) - weight(a) || (a < b ? -1 : a > b ? 1 : 0));
+  const loads = new Array(count).fill(0);
+  const owners = new Map();
+  for (const file of files) {
+    let lightest = count - 1;
+    for (let shard = count - 2; shard >= 0; shard--)
+      if (loads[shard] < loads[lightest]) lightest = shard;
+    loads[lightest] += weight(file);
+    owners.set(file, lightest + 1);
+  }
+  return owners;
+}
+
+// Pull requests and pushes to main run the full suite on Linux. Their macOS
+// lane runs the darwin suite, which keeps the darwin clang/libc/kqueue
+// oracles: the Node differential corpus, plus every file whose assertions run
+// only on darwin or take darwin-specific branches (including the Mach-O
+// library localization arm and the arm64 runtime string oracle).
+// The nightly schedule and manual runs with macos_full run the full suite on
+// macOS.
 export const darwinCorpusFiles = ["tests/harness/differential.test.ts"];
 export const darwinFiles = [
   "packages/cli/test/bootstrap.test.ts",
@@ -73,22 +113,38 @@ export function ciTestPlan({ shard, flavor, workers = 4, suite = "full" }) {
     count = Number(match[2]);
   const sideWorkers = workers === 1 ? 0 : 1;
   const env = { SCRIPTC_TEST_SHARD: shard, SCRIPTC_SAN: flavor === "san" ? "1" : "" };
-  if (suite === "darwin")
+  if (suite === "darwin") {
+    // vitest runs one file's cases in sequence, so the shard's corpus cases
+    // run as two halves in separate processes: case shards 2i-1 and 2i of
+    // 2n. The second half follows the darwin contracts in the side queue.
+    const half = (part) => ({
+      name: `case-sharded differential corpus ${part}/2`,
+      args: ["test", ...darwinCorpusFiles],
+      env: {
+        ...env,
+        SCRIPTC_TEST_SHARD: `${2 * index - 2 + part}/${2 * count}`,
+        SCRIPTC_TEST_WORKERS: "1",
+      },
+    });
     return {
       sideWorkers,
-      corpus: {
-        name: "case-sharded differential corpus",
-        args: ["test", ...darwinCorpusFiles],
-        env: { ...env, SCRIPTC_TEST_WORKERS: String(workers - sideWorkers) },
-      },
+      corpus: half(1),
       side: [
         {
           name: "darwin contracts",
           args: ["test", "--passWithNoTests", "--shard=" + shard, ...darwinFiles],
           env: { ...env, SCRIPTC_TEST_WORKERS: "1" },
         },
+        half(2),
       ],
     };
+  }
+  const owners = sideOwners(flavor, count);
+  const isolated = new Set(isolatedFiles.map(([, file]) => file));
+  const balanced = [...owners]
+    .filter(([file, owner]) => owner === index && !isolated.has(file))
+    .map(([file]) => file)
+    .sort();
   const side = [
     {
       name: "file-sharded tests",
@@ -96,15 +152,23 @@ export function ciTestPlan({ shard, flavor, workers = 4, suite = "full" }) {
         "test",
         "--passWithNoTests",
         "--shard=" + shard,
-        ...fileExclusions.map((file) => "--exclude=" + file),
+        ...[...new Set([...fileExclusions, ...owners.keys()])].map((file) => "--exclude=" + file),
       ],
       env: { ...env, SCRIPTC_TEST_WORKERS: "1" },
     },
   ];
-  for (const [name, file, owner] of isolatedFiles) {
-    if (((owner - 1) % count) + 1 === index)
+  if (balanced.length > 0)
+    side.push({
+      name: "cost-balanced tests",
+      args: ["test", "--passWithNoTests", ...balanced],
+      env: { ...env, SCRIPTC_TEST_WORKERS: "1" },
+    });
+  for (const [name, file] of isolatedFiles) {
+    if (owners.get(file) === index)
       side.push({ name, args: ["test", file], env: { ...env, SCRIPTC_TEST_WORKERS: "1" } });
   }
+  for (const [name, file] of caseShardedSideFiles)
+    side.push({ name, args: ["test", file], env: { ...env, SCRIPTC_TEST_WORKERS: "1" } });
   // Frontend coverage and cache invalidation do not consume sanitizer state.
   if (flavor === "plain") {
     side.push({

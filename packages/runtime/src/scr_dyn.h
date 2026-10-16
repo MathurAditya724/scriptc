@@ -164,6 +164,8 @@ typedef enum {
   SCR_DYNH_FILE,           /* ScrBlob with a name — new File() */
   SCR_DYNH_KEY_OBJECT,     /* node:crypto secret KeyObject (scr_lib.c) */
   SCR_DYNH_DIR,            /* fs.Dir (scr_lib.c) */
+  SCR_DYNH_CIPHER,         /* node:crypto Cipheriv (scr_cipher.c) */
+  SCR_DYNH_DECIPHER,       /* node:crypto Decipheriv (scr_cipher.c) */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
@@ -637,6 +639,9 @@ void scr_dyn_typed_ref_bind_class(ScrDyn *d, const ScrDynTypedClassOps *ops);
  * util.inspect; NULL when the capsule is not a bound class instance, its
  * class is anonymous, or its prototype was replaced. */
 const ScrStr *scr_dyn_typed_ref_class_name(const ScrDyn *d);
+/* Whether a class instance capsule's class prototype chain defines a
+ * method or accessor named key; false for other values. */
+bool scr_dyn_typed_ref_class_has(const ScrDyn *d, const ScrStr *key);
 /* Fast keyed read on a live array capsule: +1 value for `length` and for
  * present or explicitly-undefined elements; NULL when the answer needs the
  * snapshot (holes, out-of-range, non-index names, or no bound ops). */
@@ -644,6 +649,12 @@ ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key);
 /* +1 view of an own element of a bound live array capsule; NULL for a hole
  * or an index at or past its length. */
 ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index);
+/* d[index] for a numeric index (+1) when the receiver answers it without
+ * the property-key string: an in-range element of a dyn array, or a present
+ * or explicitly undefined element of a live array capsule. NULL otherwise
+ * (other receivers, holes, out-of-range and non-index numbers), and the
+ * caller takes the keyed path. Never throws. */
+ScrDyn *scr_dyn_index_get(const ScrDyn *d, double index);
 void *scr_dyn_typed_ref_cached_cast(
     const ScrDyn *d, const char *type_key, size_t type_key_len); /* +1/NULL */
 void scr_dyn_typed_ref_cache_cast(
@@ -782,6 +793,9 @@ void scr_dyn_throw(ScrDyn *d); /* moves; preserves boxed native Error classifica
 ScrDyn *scr_structured_clone(const ScrDyn *value, const ScrDyn *options);
 ScrDyn *scr_structured_clone_missing(void);
 ScrDyn *scr_structured_clone_transfer_fail(void); /* always throws DataCloneError */
+/* The same, naming a Buffer pool slab's ArrayBuffer as Node does when it is
+ * the transfer list's first member (borrowed). */
+ScrDyn *scr_structured_clone_transfer_fail_with(const ScrDyn *first);
 /* Validates a structuredClone options dyn value (throws on failure —
  * callers must check scr_exc_pending). Borrowed, NULL-tolerant. */
 void scr_sc_validate_options(const ScrDyn *options);
@@ -880,6 +894,41 @@ ScrClassObj *scr_dyn_class_check(const ScrDyn *value, const char *type_key, cons
  * prints as "Uncaught TypeError: ..." and exits 1). This is
  * scriptc-specific behavior — JS `as` never checks (SEMANTICS.md). */
 void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *got);
+
+/* Matchers and builders of recursive shapes (records and arrays whose type
+ * reaches itself) track the dyn values they visit, so cyclic values match
+ * and convert without unbounded recursion. Every matcher and builder of a
+ * type holding a recursive shape runs its generated body through
+ * scr_dyn_match_visit or scr_dyn_build_visit; the outermost call forms one
+ * visit session. Only values with more than one reference are tracked: a
+ * value reached twice has at least two. A member read through
+ * scr_dyn_obj_read_held marks the reference it returns until
+ * scr_dyn_release_held, and that reference is not counted.
+ *   scr_dyn_match_visit: true without running `body` when `matcher`
+ *     (non-NULL) is already checking `d` further up the stack (the outer
+ *     check decides); otherwise body(d).
+ *   scr_dyn_build_visit: the value `builder` (non-NULL) already built for
+ *     `d` in the session, retained, so a cycle in the input is a cycle in
+ *     the output and shared values stay shared; otherwise body(d, path).
+ *     The body calls scr_dyn_build_add with the value it allocated for d
+ *     before building its members. When the body fails (an exception is
+ *     pending), the values it recorded are dropped.
+ *   scr_dyn_build_note records a value for (d, builder) whatever d's
+ *     reference count (a capsule's cached record, which keeps its identity
+ *     when refreshed); scr_dyn_build_rekey replaces a recorded value.
+ *   scr_dyn_visit_view: scr_dyn_typed_ref_materialize for a capsule, except
+ *     that a capsule materialized earlier in the session answers the same
+ *     view without refreshing it (+1). */
+ScrDyn *scr_dyn_obj_read_held(const ScrDyn *d, const char *key, size_t key_len);
+void scr_dyn_release_held(ScrDyn *d);
+bool scr_dyn_match_visit(const ScrDyn *d, const void *matcher, bool (*body)(const ScrDyn *));
+void *scr_dyn_build_visit(const ScrDyn *d, const ScrDynPath *path, const void *builder,
+                          void *(*body)(const ScrDyn *, const ScrDynPath *),
+                          void *(*retain)(void *));
+void scr_dyn_build_add(const ScrDyn *d, const void *builder, void *value);
+void scr_dyn_build_note(const ScrDyn *d, const void *builder, void *value);
+void scr_dyn_build_rekey(const ScrDyn *d, const void *builder, void *value);
+ScrDyn *scr_dyn_visit_view(const ScrDyn *capsule);
 
 /* ── native handles in the checked-dynamic tree (SCR_DYN_HANDLE) ────────────────────────
  * Per-tag dispatch ops, registered by the handle's owning unit

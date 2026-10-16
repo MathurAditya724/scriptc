@@ -1367,7 +1367,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "test.register": { argTypes: [STRING, F64, STRING, null, F64, STRING], result: VOID },
   "test.registerEmpty": { argTypes: [STRING, F64, STRING, F64, STRING], result: VOID },
   "test.suite": {
-    argTypes: [STRING, F64, STRING, { kind: "func", params: [], ret: VOID }, STRING],
+    argTypes: [STRING, F64, STRING, { kind: "func", params: [], ret: VOID }, STRING, F64],
     result: VOID,
   },
   "test.hook": { argTypes: [F64, null, F64], result: VOID },
@@ -1380,6 +1380,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "test.ctxTodo": { argTypes: [TESTCTX_T, STRING], result: VOID },
   "test.ctxDiagnostic": { argTypes: [TESTCTX_T, STRING], result: VOID },
   "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
+  "test.ctxFullName": { argTypes: [TESTCTX_T], result: STRING },
+  // t.before/t.after/t.beforeEach/t.afterEach (which: 0 before, 1 after,
+  // 2 beforeEach, 3 afterEach); a throwing t.before is captured on the test.
+  "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
+  // t.plan(count), and the count of one t.assert call.
+  "test.ctxPlan": { argTypes: [TESTCTX_T, F64], result: VOID },
+  "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
   // node:http (scr_http.c over scr_net.c). The handler and the data
   // listeners are program-dependent closures (null slots, checked in the
   // libCall case); reqHeader's result is the interned string|undefined
@@ -1449,6 +1456,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // resGetHeader answers the interned `string | undefined` union — the
   // reqHeader/envGet sentinel pattern (VOID here, checked specially).
   "http.resGetHeader": { argTypes: [HTTPRES_T, STRING], result: VOID },
+  /** getHeader as Node answers it: the number, string or string[] that was
+   * set, or undefined, as a checked-dynamic value. */
+  "http.resGetHeaderDyn": { argTypes: [HTTPRES_T, STRING], result: DYN },
   "http.resGetHeaderNames": { argTypes: [HTTPRES_T], result: arrayOf(STRING) },
   "http.resGetRawHeaderNames": { argTypes: [HTTPRES_T], result: arrayOf(STRING) },
   "http.resGetHeaders": { argTypes: [HTTPRES_T], result: DYN },
@@ -1474,6 +1484,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     result: VOID,
   },
   "http.resSetHeader": { argTypes: [HTTPRES_T, STRING, STRING], result: VOID },
+  /** setHeader / appendHeader with a number, string or array value; the
+   * stored value keeps its type for getHeader/getHeaders. MAY THROW. */
+  "http.resSetHeaderDyn": { argTypes: [HTTPRES_T, STRING, DYN], result: VOID },
+  "http.resAppendHeader": { argTypes: [HTTPRES_T, STRING, DYN], result: VOID },
   "http.resWriteHead": { argTypes: [HTTPRES_T, F64], result: VOID },
   "http.resWriteHeadN": {
     argTypes: [HTTPRES_T, F64, arrayOf(STRING), arrayOf(STRING)],
@@ -1532,6 +1546,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * ...] pairs in arrival order — the interned %headers.snapshot helper
    * builds the record over it, exactly the process.envPairs pattern. */
   "http.reqHeaderPairs": { argTypes: [HTTPREQ_T], result: arrayOf(STRING) },
+  /** Every value of one header in arrival order (empty when absent): the
+   * set-cookie array of a `{ ...req.headers }` snapshot. */
+  "http.reqHeaderList": { argTypes: [HTTPREQ_T, STRING], result: arrayOf(STRING) },
   "http.reqRawTrailers": { argTypes: [HTTPREQ_T], result: arrayOf(STRING) },
   "http.reqTrailerPairs": { argTypes: [HTTPREQ_T], result: arrayOf(STRING) },
   "net.sockDestroyed": { argTypes: [NETSOCKET_T], result: BOOL },
@@ -2338,6 +2355,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * finalizes the handle and returns either a Buffer or encoded string. */
   "crypto.native": { argTypes: [], result: DYN },
   "crypto.hashNew": { argTypes: [STRING], result: CRYPTOHASH_T },
+  /** createCipheriv (false) / createDecipheriv (true) over checked-dynamic
+   * cipher, key, iv and options arguments (scr_cipher.c): a native
+   * Cipheriv/Decipheriv handle whose methods dispatch through dynInvoke. */
+  "crypto.cipherNew": { argTypes: [BOOL, DYN, DYN, DYN, DYN], result: DYN },
   "crypto.hmacNewStr": { argTypes: [STRING, STRING], result: CRYPTOHMAC_T },
   "crypto.hmacNewBytes": { argTypes: [STRING, BYTES_U8], result: CRYPTOHMAC_T },
   "crypto.hashUpdateStr": { argTypes: [CRYPTOHASH_T, STRING], result: CRYPTOHASH_T },
@@ -2414,6 +2435,22 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * opaque reference inputs retain explicit runtime refusals. */
   "buffer.fromDyn": { argTypes: [DYN, STRING], result: BYTES_U8 },
   "buffer.concat": { argTypes: [arrayOf(BYTES_U8)], result: BYTES_U8 },
+  /** The pooled Buffer factories (Node's allocate/fromStringFast/
+   * fromArrayLike): allocUnsafe, Buffer.from of strings, Uint8Arrays,
+   * number[] and checked values, and concat return views into the
+   * per-thread pool slab below Buffer.poolSize >>> 1 bytes. alloc and
+   * allocUnsafeSlow never pool. The size forms validate like Node
+   * (ERR_OUT_OF_RANGE). poolSize reads and writes Buffer.poolSize. */
+  "buffer.alloc": { argTypes: [F64], result: BYTES_U8 },
+  "buffer.allocUnsafe": { argTypes: [F64], result: BYTES_U8 },
+  "buffer.allocUnsafeSlow": { argTypes: [F64], result: BYTES_U8 },
+  "buffer.poolFromStr": { argTypes: [STRING, STRING], result: BYTES_U8 },
+  "buffer.poolFromStrChecked": { argTypes: [STRING, STRING], result: BYTES_U8 },
+  "buffer.poolFromBytes": { argTypes: [BYTES_U8], result: BYTES_U8 },
+  "buffer.poolFromArray": { argTypes: [arrayOf(F64)], result: BYTES_U8 },
+  "buffer.poolFromDyn": { argTypes: [DYN, STRING], result: BYTES_U8 },
+  "buffer.poolSize": { argTypes: [], result: F64 },
+  "buffer.setPoolSize": { argTypes: [F64], result: VOID },
   /** Buffer.byteLength(string, enc) — enc a NORMALIZED literal like
    * fromStr's — and Buffer.isEncoding(name) over a runtime string
    * (case-insensitive against Node's alias set). Pure; never throw. */
@@ -2519,6 +2556,21 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "zlib.gunzipCb": { argTypes: [BYTES_U8, null], result: VOID },
   "zlib.unzipCb": { argTypes: [BYTES_U8, null], result: VOID },
   "zlib.crc32": { argTypes: [BYTES_U8, F64], result: F64 },
+  /** The stream classes (scr_zlib_stream.c, linked with the stream unit):
+   * streamNew takes Node's node_zlib_mode number and the options value
+   * (undefined when absent), validates it with Node's ladder, and answers
+   * the +1 %Transform stream. flush takes the kind value, params the level
+   * and strategy values; the Cb forms move their () => void callback. The
+   * receivers are borrowed. */
+  "zlib.streamNew": { argTypes: [F64, DYN], result: VOID },
+  "zlib.streamBytesWritten": { argTypes: [null], result: F64 },
+  "zlib.streamFlush": { argTypes: [null, DYN], result: VOID },
+  "zlib.streamFlushCb": { argTypes: [null, DYN, null], result: VOID },
+  "zlib.streamParams": { argTypes: [null, DYN, DYN], result: VOID },
+  "zlib.streamParamsCb": { argTypes: [null, DYN, DYN, null], result: VOID },
+  "zlib.streamClose": { argTypes: [null], result: VOID },
+  "zlib.streamCloseCb": { argTypes: [null, null], result: VOID },
+  "zlib.streamReset": { argTypes: [null], result: VOID },
   /** The Buffer overloads of the raw stream writes — same promptly
    * submitted streams as process.stdoutWrite/stderrWrite, constantly true.
    * The encoding arg is evaluated but ignored for bytes, like Node. The Cb
@@ -3046,6 +3098,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * lowered directly (the list's values need no dyn representation to
    * fail). */
   "dyn.cloneTransferFail": { argTypes: [], result: DYN },
+  /** The same refusal given the transfer list's first member, an
+   * ArrayBuffer: a Buffer pool slab gets Node's untransferable message. */
+  "dyn.cloneTransferFailWith": { argTypes: [DYN], result: DYN },
   /** `new RegExp(pattern, flags?)` (scr_regex.c): a heap regex over the
    * same libregexp engine the literals use. The pattern compiles EAGERLY
    * so an invalid pattern (or an unknown flag letter) throws Node's
@@ -3207,6 +3262,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stream.finishedDyn": { argTypes: [null, DYN], result: VOID },
   "stream.pipeline": { argTypes: [F64], result: VOID },
   "stream.pipelineDyn": { argTypes: [F64], result: VOID },
+  "stream.pipelineStages": { argTypes: [F64, F64, F64, F64, F64], result: VOID },
+  "stream.pipelineStagesDyn": { argTypes: [F64, F64, F64, F64, F64], result: VOID },
   /** stream.compose(count, s1..sn): the Duplex over a pipeline of the
    * streams (+1). MAY THROW (ERR_INVALID_ARG_VALUE for a stream that is
    * no longer readable or writable). */
@@ -3237,6 +3294,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stream.finishedOpts": { argTypes: [null, F64, F64, BOOL, null], result: VOID },
   "stream.finishedOptsSignal": { argTypes: [null, F64, F64, BOOL, DYN, null], result: VOID },
   "sp.pipeline": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
+  /** pipeline with a run of function stages: [n, at, k, flags, mask,
+   * s1..sn, stage1..stagek, (next, read, return)?, box?, (signal,
+   * abort)?] (+ the callback for the stream.* forms): the user's stage
+   * functions, the frontend's helpers over the pumped generator or a
+   * promise destination's box, and the pipeline's AbortSignal with its
+   * abort closure; flags names which groups are present
+   * (scr_stream_pipeline_stages). A promise destination's promise type is
+   * sp.pipelineStages' result. */
+  "sp.pipelineStages": {
+    argTypes: [F64, F64, F64, F64, F64],
+    result: { kind: "promise", inner: VOID },
+  },
   /** node:stream/consumers — the promise consumers over the readable
    * machinery: (s) → a pending promise settled at the terminal point
    * with the accumulated result (sc.text: the utf8 decode, sc.json: the
@@ -3300,6 +3369,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "readable.nextChunkDyn": { argTypes: [null], result: VOID },
   "readable.fromArr": { argTypes: [null, F64, F64], result: VOID },
   "readable.fromDyn": { argTypes: [DYN, DYN], result: VOID },
+  /** Readable.from over a compiled generator: [generator, next, return,
+   * throw, flags, highWaterMark] (sync) or [generator, next, read,
+   * return, throw, flags, highWaterMark] (async), the helpers being the
+   * frontend's interned closures. readable.fromDone is the done marker
+   * the helpers answer. */
+  "readable.fromGen": { argTypes: [null, null, null, null, F64, F64], result: VOID },
+  "readable.fromAsyncGen": { argTypes: [null, null, null, null, null, F64, F64], result: VOID },
+  "readable.fromDone": { argTypes: [], result: DYN },
   /** The Readable operators (scr_stream_ops.c): [stream, ...] with every
    * other argument a checked-dynamic value (the callback, the count, the
    * options). map/filter/flatMap/drop/take answer the object-mode output
@@ -3401,12 +3478,22 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * the value's inspection) — the frontend routes null/undefined to a
    * no-op and everything else here (Node throws for falsy values too).
    * All arguments are borrowed. */
-  "assert.ok": { argTypes: [BOOL, STRING], result: VOID },
+  "assert.ok": { argTypes: [BOOL, STRING, BOOL], result: VOID },
+  /** The next AssertionError's actual, expected and operator, recorded on
+   * a failure branch. */
+  "assert.record": { argTypes: [DYN, DYN, STRING], result: VOID },
+  "assert.errorNew": { argTypes: [DYN], result: { kind: "object", className: "%AssertionError" } },
   "assert.eqF64": { argTypes: [F64, F64, BOOL, BOOL, STRING, BOOL], result: VOID },
   "assert.eqBigInt": { argTypes: [BIGINT_T, BIGINT_T, BOOL, BOOL, STRING, BOOL], result: VOID },
   "assert.eqStr": { argTypes: [STRING, STRING, BOOL, BOOL, STRING, BOOL], result: VOID },
   "assert.eqBool": { argTypes: [BOOL, BOOL, BOOL, BOOL, STRING, BOOL], result: VOID },
   "assert.deepResult": { argTypes: [BOOL, BOOL, STRING, BOOL], result: VOID },
+  "assert.looseDeepResult": { argTypes: [BOOL, BOOL, STRING, BOOL], result: VOID },
+  "assert.looseDeepDyn": { argTypes: [DYN, DYN, BOOL, STRING, BOOL], result: VOID },
+  "assert.partialDeepDyn": { argTypes: [DYN, DYN, STRING, BOOL], result: VOID },
+  "assert.partialDeepResult": { argTypes: [BOOL, BOOL, STRING, BOOL], result: VOID },
+  "assert.partialEqDyn": { argTypes: [DYN, DYN], result: BOOL },
+  "assert.looseF64Eq": { argTypes: [F64, F64], result: BOOL },
   "assert.sameValue": { argTypes: [F64, F64], result: BOOL },
   // The deep-equality pair memo: both slots are program-dependent
   // (any cycle-capable record/array/map type).
@@ -3418,11 +3505,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "assert.match": { argTypes: [STRING, REGEX, BOOL, STRING, BOOL], result: VOID },
   "assert.throwsNone": { argTypes: [BOOL, STRING, BOOL, STRING, BOOL], result: VOID },
   "assert.throwsMismatch": {
-    argTypes: [STRING, { kind: "object", className: "%Error" }, STRING, BOOL],
+    argTypes: [STRING, { kind: "object", className: "%Error" }, STRING, BOOL, BOOL],
     result: VOID,
   },
   "assert.throwsRegex": {
-    argTypes: [REGEX, { kind: "object", className: "%Error" }, STRING, BOOL],
+    argTypes: [REGEX, { kind: "object", className: "%Error" }, STRING, BOOL, BOOL],
     result: VOID,
   },
   // Symbol strict equality (pointer identity; scr_symbol.c).
@@ -3440,7 +3527,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "assert.shapeBegin": { argTypes: [{ kind: "object", className: "%Error" }], result: VOID },
   "assert.shapeStr": { argTypes: [F64, STRING], result: VOID },
   "assert.shapeRe": { argTypes: [F64, REGEX], result: VOID },
-  "assert.shapeEnd": { argTypes: [STRING, BOOL], result: VOID },
+  "assert.shapeEnd": { argTypes: [STRING, BOOL, BOOL], result: VOID },
   "assert.regexErrTest": {
     argTypes: [REGEX, { kind: "object", className: "%Error" }],
     result: BOOL,
@@ -3472,6 +3559,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "assert.refEqBytes": { argTypes: [null, null, BOOL, BOOL, STRING, BOOL], result: VOID },
   "assert.refEqFn": { argTypes: [null, null, BOOL, STRING, BOOL], result: VOID },
   "assert.bytesDeepEq": { argTypes: [null, null, BOOL], result: BOOL },
+  "assert.looseBytesEq": { argTypes: [null, null], result: BOOL },
   // util.inspect: the error receiver is program-dependent (a builtin or
   // user error class — the error.toString precedent, null slot).
 
@@ -3574,6 +3662,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * errorBoxer, listenForError] → a pending promise of any[]; the boxers
    * turn the event's and the 'error' tuple into that array. */
   "events.once": { argTypes: [null, STRING, null, null, BOOL], result: VOID },
+  /** The resolve-value forms: [ms?, value, ref] → a pending promise of the
+   * value's type that copies the borrowed already-resolved `value` promise
+   * when the timer (or immediate) fires; ref false unrefs it. The result
+   * type follows the value promise. */
+  "tp.setTimeoutValue": { argTypes: [F64, null, BOOL], result: VOID },
+  "tp.setImmediateValue": { argTypes: [null, BOOL], result: VOID },
   /** node:diagnostics_channel (scr_dc.c, linked when any dc.* appears —
    * the zlib gating precedent): a process-global name→channel registry;
    * channel values are f64 handles (type-mapper.ts maps Channel to F64, the

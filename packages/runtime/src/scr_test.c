@@ -97,7 +97,10 @@ struct ScrTestCtx {
   struct ScrTestCtx *parent; /* borrowed back-edge */
   struct ScrTestCtx **children; /* owned refs */
   size_t nchildren, ccap;
-  ScrTestHooks hooks[4]; /* suites and root only */
+  ScrTestHooks hooks[4]; /* suites and root; tests through t.after/t.beforeEach/t.afterEach */
+  ScrCaught *before_err; /* owned; a throwing t.before, which fails the test and later subtests */
+  int plan;              /* t.plan count, -1 without a plan */
+  int plan_count;        /* t.assert calls and subtests counted against the plan */
 };
 
 static SCR_TL ScrTestCtx *scr_test_root = NULL;
@@ -135,6 +138,7 @@ void scr_testctx_release(ScrTestCtx *t) {
   scr_str_release(t->at);
   scr_closure_release(t->cb);
   scr_caught_release(t->err);
+  scr_caught_release(t->before_err);
   for (size_t i = 0; i < t->ndiags; i++) scr_str_release(t->diags[i]);
   free(t->diags);
   for (size_t i = 0; i < t->nchildren; i++) scr_testctx_release(t->children[i]);
@@ -164,6 +168,7 @@ static ScrTestCtx *scr_test_node_new(ScrStr *name /*borrowed*/, int mode,
   t->mode = mode;
   t->flags = flags;
   t->is_suite = is_suite;
+  t->plan = -1;
 #ifdef SCR_RC_AUDIT
   scr_testctx_live++;
 #endif
@@ -177,6 +182,10 @@ static void scr_test_child_add(ScrTestCtx *parent, ScrTestCtx *child /*moves*/) 
     if (!parent->children) scr_test_oom();
   }
   child->parent = parent;
+  /* Node's todo inheritance: tests and suites under a todo suite or test
+   * are todo themselves, with a bare TODO directive, unless they carry
+   * their own skip or todo. */
+  if (child->mode == SCR_TEST_RUN && parent->mode == SCR_TEST_TODO) child->mode = SCR_TEST_TODO;
   parent->children[parent->nchildren++] = child;
 }
 
@@ -308,9 +317,18 @@ static void scr_test_run_each_hooks(ScrTestCtx *t, int which, bool outermost_fir
   }
 }
 
+/* A test or suite marked only, or one with a marked descendant. */
+static bool scr_test_has_only(const ScrTestCtx *t) {
+  if (t->flags & SCR_TEST_F_ONLY) return true;
+  for (size_t i = 0; i < t->nchildren; i++) {
+    if (scr_test_has_only(t->children[i])) return true;
+  }
+  return false;
+}
+
 static bool scr_test_any_only(ScrTestCtx *parent) {
   for (size_t i = 0; i < parent->nchildren; i++) {
-    if (parent->children[i]->flags & SCR_TEST_F_ONLY) return true;
+    if (scr_test_has_only(parent->children[i])) return true;
   }
   return false;
 }
@@ -318,12 +336,13 @@ static bool scr_test_any_only(ScrTestCtx *parent) {
 static void scr_test_run_node(ScrTestCtx *t);
 
 static void scr_test_run_children(ScrTestCtx *t) {
-  /* `only: true` among the siblings: run only the marked ones — the
-   * others are dropped entirely (Node reports nothing for them). */
+  /* `only` at this level: when a child is marked, or contains a marked
+   * test or suite, only those children run. The others are dropped entirely
+   * (Node reports nothing for them). */
   bool only = scr_test_any_only(t);
   for (size_t i = 0; i < t->nchildren; i++) {
     ScrTestCtx *c = t->children[i];
-    if (only && !(c->flags & SCR_TEST_F_ONLY)) {
+    if (only && !scr_test_has_only(c)) {
       continue; /* filtered: never run, never reported, never counted */
     }
     /* Subtests t.test already ran INLINE at their call site. */
@@ -362,9 +381,14 @@ static void scr_test_run_node(ScrTestCtx *t) {
     }
     t->dur_ms = scr_now_ms() - start;
     if (t->err) scr_test_suite_hook_failed = true;
-    t->state = t->err            ? SCR_TS_FAIL
-               : scr_test_subtree_failed(t) ? SCR_TS_CHILDFAIL
-                                            : SCR_TS_PASS;
+    if (t->mode == SCR_TEST_TODO) {
+      /* A todo suite reports its directive; its children are todo too. */
+      t->state = t->err ? SCR_TS_TODO_FAIL : SCR_TS_TODO_PASS;
+    } else {
+      t->state = t->err                     ? SCR_TS_FAIL
+                 : scr_test_subtree_failed(t) ? SCR_TS_CHILDFAIL
+                                              : SCR_TS_PASS;
+    }
     scr_test_report_result(t);
     return;
   }
@@ -389,7 +413,31 @@ static void scr_test_run_node(ScrTestCtx *t) {
    * the body): run them now, before the parent completes — Node holds
    * the parent open for its pending subtests. */
   if (!failed) scr_test_run_children(t);
+  if (!failed && t->before_err) {
+    t->err = scr_caught_retain(t->before_err);
+    failed = true;
+  }
+  /* t.plan: the t.assert calls and subtests the test made. Node reports the
+   * mismatch as a string failure. */
+  if (!failed && t->plan >= 0 && t->plan_count != t->plan) {
+    char buf[96];
+    int n = snprintf(buf, sizeof buf, "plan expected %d assertions but received %d", t->plan,
+                     t->plan_count);
+    scr_throw_str(scr_str_new(buf, (size_t)n));
+    t->err = scr_exc_take();
+    failed = true;
+  }
   scr_test_run_each_hooks(t, SCR_HOOK_AFTER_EACH, false);
+  if (scr_exc_pending()) {
+    if (!failed && !t->err) {
+      t->err = scr_exc_take();
+      failed = true;
+    } else {
+      scr_exc_clear();
+    }
+  }
+  /* t.after hooks run once the test and its afterEach chain finish. */
+  scr_test_run_hooks_of(t, SCR_HOOK_AFTER);
   if (scr_exc_pending()) {
     if (!failed && !t->err) {
       t->err = scr_exc_take();
@@ -482,7 +530,9 @@ static void scr_test_print_failure(ScrTestCtx *t) {
   }
   fputc('\n', stdout);
   if (t->err) {
-    ScrStr *msg = scr_caught_to_string(t->err);
+    /* Node prints the failure inspected: a thrown string is quoted. */
+    ScrStr *msg = t->err->kind == SCR_EXC_STR ? scr_insp_str(t->err->payload)
+                                              : scr_caught_to_string(t->err);
     if (msg) {
       const char *p = msg->data;
       const char *end = msg->data + msg->len;
@@ -504,8 +554,11 @@ static void scr_test_print_failure(ScrTestCtx *t) {
  * bodies threw (todo throwers included); parents failed by descendants
  * and suites never appear. */
 static void scr_test_print_failures(ScrTestCtx *t, bool *any) {
+  /* Completion order, as Node lists them: a test completes after its
+   * subtests, so they print first. */
   for (size_t i = 0; i < t->nchildren; i++) {
     ScrTestCtx *c = t->children[i];
+    scr_test_print_failures(c, any);
     if (!c->is_suite && (c->state == SCR_TS_FAIL || c->state == SCR_TS_TODO_FAIL) && c->err) {
       if (!*any) {
         *any = true;
@@ -513,7 +566,6 @@ static void scr_test_print_failures(ScrTestCtx *t, bool *any) {
       }
       scr_test_print_failure(c);
     }
-    scr_test_print_failures(c, any);
   }
 }
 
@@ -572,14 +624,15 @@ void scr_test_register(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*bor
 }
 
 void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrowed*/,
-                     ScrClosure *cb /*moves, may be NULL*/, ScrStr *at /*borrowed*/) {
+                     ScrClosure *cb /*moves, may be NULL*/, ScrStr *at /*borrowed*/,
+                     double flags) {
   scr_test_ensure_root();
   scr_test_ensure_runner();
   if (scr_test_run_done) {
     scr_closure_release(cb);
     return;
   }
-  ScrTestCtx *t = scr_test_node_new(name, (int)mode, msg, NULL, 0, at, true);
+  ScrTestCtx *t = scr_test_node_new(name, (int)mode, msg, NULL, (int)flags, at, true);
   scr_test_child_add(scr_test_reg_parent, t);
   /* The suite body runs NOW (Node's collection phase) — its test()/it()
    * calls attach here. Skipped suites keep their bodies unrun. */
@@ -615,6 +668,17 @@ ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name /*borrowed*/, double mode,
                           double flags, ScrStr *at /*borrowed*/) {
   ScrTestCtx *sub = scr_test_node_new(name, (int)mode, msg, cb, (int)flags, at, false);
   scr_test_child_add(t, sub);
+  t->plan_count++;
+  if (t->before_err) {
+    /* A throwing t.before fails the subtests that follow: their bodies and
+     * beforeEach hooks do not run, their afterEach hooks do. */
+    sub->err = scr_caught_retain(t->before_err);
+    sub->state = SCR_TS_FAIL;
+    scr_test_run_each_hooks(sub, SCR_HOOK_AFTER_EACH, false);
+    if (scr_exc_pending()) scr_exc_clear();
+    scr_test_report_result(sub);
+    return scr_promise_settled_void();
+  }
   scr_test_run_node(sub);
   return scr_promise_settled_void();
 }
@@ -635,6 +699,33 @@ void scr_test_ctx_todo(ScrTestCtx *t, ScrStr *msg /*borrowed*/) {
   }
 }
 
+/* t.before/t.after/t.beforeEach/t.afterEach. t.before runs at once (the
+ * test is already running); a throw fails the test and the subtests that
+ * follow. The others attach to the test: beforeEach and afterEach wrap
+ * each descendant subtest, and after runs once the test finishes. */
+void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb /*moves*/, double flags) {
+  if ((int)which == SCR_HOOK_BEFORE) {
+    scr_test_call(cb, (int)flags, NULL);
+    scr_closure_release(cb);
+    if (scr_exc_pending() && !t->before_err) t->before_err = scr_exc_take();
+    else if (scr_exc_pending()) scr_exc_clear();
+    return;
+  }
+  ScrTestHooks *h = &t->hooks[(int)which];
+  if (h->n == h->cap) {
+    h->cap = h->cap ? h->cap * 2 : 2;
+    h->v = realloc(h->v, h->cap * sizeof *h->v);
+    if (!h->v) scr_test_oom();
+  }
+  h->v[h->n].cb = cb;
+  h->v[h->n].flags = (int)flags;
+  h->n++;
+}
+
+void scr_test_ctx_plan(ScrTestCtx *t, double count) { t->plan = (int)count; }
+
+void scr_test_ctx_count(ScrTestCtx *t) { t->plan_count++; }
+
 void scr_test_ctx_diagnostic(ScrTestCtx *t, ScrStr *msg /*borrowed*/) {
   if (t->ndiags == t->dcap) {
     t->dcap = t->dcap ? t->dcap * 2 : 2;
@@ -646,6 +737,32 @@ void scr_test_ctx_diagnostic(ScrTestCtx *t, ScrStr *msg /*borrowed*/) {
 
 ScrStr *scr_test_ctx_name(ScrTestCtx *t) {
   return t->name ? scr_str_retain(t->name) : scr_str_new("", 0);
+}
+
+/* t.fullName: the names from the outermost suite or test down to this one,
+ * joined with " > ". */
+ScrStr *scr_test_ctx_full_name(ScrTestCtx *t) {
+  const ScrTestCtx *chain[64];
+  int n = 0;
+  for (const ScrTestCtx *p = t; p && p->parent && n < 64; p = p->parent) chain[n++] = p;
+  size_t len = 0;
+  for (int i = 0; i < n; i++) len += (chain[i]->name ? chain[i]->name->len : 0) + (i ? 3 : 0);
+  char *buf = malloc(len ? len : 1);
+  if (!buf) scr_test_oom();
+  size_t at = 0;
+  for (int i = n - 1; i >= 0; i--) {
+    if (i != n - 1) {
+      memcpy(buf + at, " > ", 3);
+      at += 3;
+    }
+    if (chain[i]->name) {
+      memcpy(buf + at, chain[i]->name->data, chain[i]->name->len);
+      at += chain[i]->name->len;
+    }
+  }
+  ScrStr *out = scr_str_new(buf, at);
+  free(buf);
+  return out;
 }
 
 int scr_test_exit_code(void) {

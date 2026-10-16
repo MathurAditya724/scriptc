@@ -1384,6 +1384,10 @@ export const RUNTIME_ERROR_CLASSES: ReadonlyMap<
   // (the DOMException arrangement), read through error.aggregateErrors, so
   // user `extends AggregateError` is fenced too.
   ["%AggregateError", { lib: "AggregateError", kind: 8, base: "%Error" }],
+  // node:assert's AssertionError — every assertion failure and its own
+  // constructor. The Error layout; actual, expected, operator,
+  // generatedMessage and diff are properties of the error's dyn view.
+  ["%AssertionError", { lib: "AssertionError", kind: 9, base: "%Error" }],
 ]);
 
 /** The runtime-provided node:events EventEmitter class (ScrEmitter /
@@ -1435,6 +1439,20 @@ export const RUNTIME_STREAM_CLASSES: ReadonlyMap<
  * the runtime RC adapters, which is how the engine recognizes them. */
 export const RUNTIME_EVENT_TARGET_CLASS = "%EventTarget";
 export const RUNTIME_EVENT_CLASS = "%Event";
+
+/** node:zlib's stream classes and their node_zlib_mode numbers. Instances
+ * are runtime Transform streams (`%Transform` values built by the
+ * zlib.streamNew libCall, scr_zlib_stream.c); the class name only sets
+ * the display name. */
+export const ZLIB_STREAM_MODES: ReadonlyMap<string, number> = new Map([
+  ["Deflate", 1],
+  ["Inflate", 2],
+  ["Gzip", 3],
+  ["Gunzip", 4],
+  ["DeflateRaw", 5],
+  ["InflateRaw", 6],
+  ["Unzip", 7],
+]);
 
 export interface IrRecordShape {
   /** Frontend-assigned shape id (`r0`, `r1`, ...). */
@@ -1549,6 +1567,11 @@ export interface IrFunction {
   /** Generated reflection dispatch contains speculative source-member edges.
    * Target-only host operations behind those edges retain runtime refusals. */
   speculativeDispatch?: boolean;
+  /** A read helper the backend can answer directly for dyn arrays and live
+   * array capsules, calling the helper only when that read has no answer.
+   * `index`: a computed read `(value, key)` whose callers pass a number
+   * converted to a string as the key. */
+  fastRead?: "index";
   params: IrParam[];
   returnType: IrType;
   /** All locals including params, pre-collected and scope-flat: ids are
@@ -3465,7 +3488,24 @@ export type IrExpr =
         | "region.create"
         | "region.enter"
         | "region.leave"
-        | "region.release";
+        | "region.release"
+        /* InternTable (@scriptc/experimental; scr_itable.c):
+         * itable.open (string name, f64 key kind) → f64 table handle;
+         * itable.find (f64 table, K key) → f64 entry handle, 0 when the key
+         * has no entry; itable.insert (f64 table, K key, V value) → f64 the
+         * key's entry, storing the already published value when the key has
+         * none; itable.value (f64 entry) → V, the entry's immortal value;
+         * itable.size (f64 table) → f64. K is string, f64, or an array of
+         * f64 or of strings (compared by elements); find and insert throw
+         * a TypeError for array keys of more than 65536 elements or whose
+         * encoding exceeds 2^31 - 1 bytes; nothing else throws. Handles
+         * carry raw pointer bits and only reach toBool and these
+         * intrinsics. */
+        | "itable.open"
+        | "itable.find"
+        | "itable.insert"
+        | "itable.value"
+        | "itable.size";
       args: IrExpr[];
       type: IrType;
       loc: SrcLoc;
@@ -3489,6 +3529,12 @@ export type IrExpr =
       type: IrType;
       loc: SrcLoc;
       prototypeIdentityOnly?: true;
+      /** An assertion call made through a node:assert Assert instance: the
+       * instance options the runtime applies to this call. Backends set
+       * them right before the runtime call, after its arguments are
+       * evaluated; the AssertionError constructor consumes them, and a
+       * call that passes clears them. */
+      assertOptions?: { diff?: "full"; skipPrototype?: true };
     }
   /** `JSON.stringify(v)` — type-DIRECTED serialization: `value`'s static IR
    * type must be JSON-safe (f64/string/bool/record/array/union of those,

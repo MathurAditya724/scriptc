@@ -102,3 +102,86 @@ Each thread has its own regions and its own default region. A region belongs to 
 Programs that never construct a `LifetimeRegion` compile exactly as they would without the package. In programs that do, every retain and release of a `ProgramLifetime` instance that belongs to a region updates a count of the region chunk that holds it. Instances of the default region are not counted, and until the program creates its first region, a retain or release only tests whether counting has started. Freeing a region visits each of its instances and the ordinary objects they own.
 
 `SCRIPTC_REGION_STATS=1` prints one line per release attempt, freed, `kept` (with the number of references the check could not explain) or `pinned` (published), and a summary per thread at exit.
+
+## InternTable
+
+Programs that run the same work on several [worker threads](/docs/threads) often build the same cache on every thread: interned types, strings, resolved modules. An `InternTable` is one named table of [published](/docs/threads) values that every thread of a scriptc program shares, so each value is created once and every thread reads the same object.
+
+```ts:intern.ts
+import { Worker, isMainThread, parentPort } from "node:worker_threads";
+import { InternTable } from "@scriptc/experimental";
+
+class Shape {
+  readonly name: string;
+  readonly parts: readonly Shape[];
+  constructor(name: string, parts: readonly Shape[]) {
+    this.name = name;
+    this.parts = parts;
+  }
+}
+
+// Module scope: every thread that evaluates this line opens the same table.
+const shapes = new InternTable<string, Shape>("example.shapes");
+
+function shape(name: string, parts: readonly Shape[] = []): Shape {
+  return shapes.getOrInsertComputed(name, () => new Shape(name, parts));
+}
+
+function build(): string {
+  const point = shape("point");
+  const line = shape("line", [point, point]);
+  const square = shape("square", [line, line, line, line]);
+  return `${square.name}: ${square.parts.length} lines, ${shapes.size} shapes`;
+}
+
+if (isMainThread) {
+  for (let i = 0; i < 2; i++) {
+    new Worker(new URL(import.meta.url)).on("message", (text: string) => console.log(text));
+  }
+} else {
+  parentPort!.postMessage(`worker: ${build()}`);
+}
+```
+
+Each thread that evaluates `new InternTable(...)` opens the same table. Under Node.js every thread has its own table, so each worker builds its own three shapes; in the scriptc executable both workers use one table and read the same shape objects. Both print the same:
+
+```console
+$ node intern.ts
+worker: square: 4 lines, 3 shapes
+worker: square: 4 lines, 3 shapes
+$ scriptc build intern.ts -o intern >/dev/null
+$ ./intern
+worker: square: 4 lines, 3 shapes
+worker: square: 4 lines, 3 shapes
+```
+
+### Methods
+
+<dl>
+  <dt><code>new InternTable&lt;K, V&gt;(name)</code></dt>
+  <dd>Opens the table called <code>name</code>. Within one thread every construction with the same name refers to the same table. In scriptc builds every thread of the process shares it; under Node.js each thread has its own. Keys are strings, numbers, or arrays of numbers or of strings. Strings and numbers compare like <code>Map</code> keys; arrays compare by their elements in the same way and can have at most 65536 elements.</dd>
+  <dt><code>table.get(key)</code>, <code>table.has(key)</code>, <code>table.size</code></dt>
+  <dd>Read the table.</dd>
+  <dt><code>table.getOrInsert(key, value)</code></dt>
+  <dd>Returns the value stored under <code>key</code>. When there is none, publishes <code>value</code>, stores it and returns it.</dd>
+  <dt><code>table.getOrInsertComputed(key, callback)</code></dt>
+  <dd>Returns the value stored under <code>key</code>. When there is none, calls <code>callback(key)</code>, publishes its result and stores it, unless a value was stored under <code>key</code> meanwhile (by the callback, or in scriptc builds by another thread), and returns the stored value.</dd>
+</dl>
+
+A key's value never changes once stored, and there is no `set` or `delete`. Stored values and everything they reach are immutable in both runtimes. A value that `publish` refuses makes the call throw the same `TypeError` and stores nothing.
+
+scriptc requires the name to be a string literal and every construction of one name to use the same type arguments, since all threads share the table's layout. Values are numbers, booleans, strings, bigints, arrays, `Map`s, `Set`s, objects and class instances.
+
+### Thread behavior
+
+No lock is held while a callback runs. Two threads that miss the same key at the same time may both call the callback; one result is stored, and both calls return it. A program behaves the same under scriptc and Node.js when:
+
+1. A stored value does not depend on which thread created it, for example because the callback computes it from the key and other stored values.
+2. It does not compare identities or ids across threads.
+3. A thread does not depend on another thread's inserts: `size` and `has` reflect every thread's inserts in scriptc and the calling thread's under Node.js.
+
+State that a thread computes about a shared value later (lazily resolved members, caches) belongs in thread-local state, such as a module-level `Map` keyed by the value or an array indexed by an id the value carries: module state is per thread in both runtimes. In scriptc an array indexed by a dense id is the fastest of these.
+
+### Memory
+
+Lookups take no lock and write nothing. Inserts lock one of 64 segments of the table for a probe and a few stores. Stored values are immortal in scriptc builds: they stay allocated until the process exits, including a value a callback computed for a key that another thread stored first. Programs that never construct an `InternTable` do not run any of its code.

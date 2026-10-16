@@ -3,7 +3,6 @@
  * the SC2020-family fence naming @types/node instead of a raw TS error
  * or a binary that runs with the wrong behavior. */
 console.log(process.hasUncaughtExceptionCaptureCallback()); // the process introspection statics lower now; the capture-callback probe does not
-console.log(Buffer.poolSize);
 /* setInterval lowers, and under @types/node its Timeout RETURN now maps
  * to the numeric handle — holding one and unref()/ref()/hasRef()/refresh()
  * all compile. The Timeout surface BEYOND that (close, [Symbol.toPrimitive],
@@ -75,7 +74,7 @@ http2.connect("https://localhost");
  * prime checks theirs, and setFips the FIPS truth (getFips() lowers to 0). */
 import { checkPrimeSync, createCipheriv, generateKeyPair, setFips } from "node:crypto";
 generateKeyPair("rsa", { modulusLength: 2048 }, () => {});
-createCipheriv("aes-128-cbc", Buffer.alloc(16), Buffer.alloc(16));
+createCipheriv("aes-128-ccm", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });
 checkPrimeSync(7n);
 setFips(false);
 fetch("https://example.invalid/", {
@@ -94,4 +93,8 @@ void inspectReadableStream;
 import { callbackify } from "node:util";
 const callbackified = callbackify(async (n: number) => n);
 void callbackified;
+/* Cipheriv values support update(), final(), setAAD(), setAutoPadding(),
+ * getAuthTag(), and setAuthTag(); the stream.Transform members are fenced. */
+const cipherStream = createCipheriv("aes-128-cbc", Buffer.alloc(16), Buffer.alloc(16));
+cipherStream.on("data", () => {});
 // End of the declared-but-not-lowered surface.

@@ -16,12 +16,21 @@ import * as ts from "../ts7/adapter.js";
 import { resultIsDiscarded } from "./call-position.js";
 import type { Lowerer } from "./lowerer.js";
 import { locOf } from "../program.js";
-import { type IrExpr, type IrType, type SrcLoc, STRING, VOID, isUnitType } from "../../ir/ir.js";
+import {
+  type IrExpr,
+  type IrType,
+  type SrcLoc,
+  F64,
+  STRING,
+  VOID,
+  isUnitType,
+} from "../../ir/ir.js";
 import { numLit, strLit } from "../../ir/build.js";
+import { lowerMockContextCall, lowerMockContextProperty, lowerMockFn } from "./lower-mock.js";
 
 const TEST_FN_HINT = "test bodies take () or (t: TestContext) and return void or Promise<void>";
 const TESTCTX_SURFACE_HINT =
-  "t.test, t.skip, t.todo, t.diagnostic, t.name, and t.assert.* are the supported TestContext members";
+  "t.test, t.skip, t.todo, t.diagnostic, t.plan, t.before, t.after, t.beforeEach, t.afterEach, t.name, t.fullName, and t.assert.* are the supported TestContext members";
 
 /** Registration calls return Node's Promise<void>, but the promise only
  * resolves through the runner — consuming it outside `await t.test(...)`
@@ -268,7 +277,15 @@ function lowerSuite(
   const at = strLit(atStringOf(expr), loc);
   const mode = numLit(opts.mode, loc);
   const msg = opts.msg ?? strLit("", loc);
-  return { kind: "libCall", fn: "test.suite", args: [name, mode, msg, cb, at], type: VOID, loc };
+  // describe.only and { only: true } mark the suite (flag 4, as for tests).
+  const flags = numLit(methodMode === 3 || opts.only ? 4 : 0, loc);
+  return {
+    kind: "libCall",
+    fn: "test.suite",
+    args: [name, mode, msg, cb, at, flags],
+    type: VOID,
+    loc,
+  };
 }
 
 /** before/after/beforeEach/afterEach — hooks on the enclosing suite
@@ -402,6 +419,9 @@ export function lowerTestMethodCall(
   if (call.questionDotToken || access.questionDotToken) return null;
   const loc = locOf(call);
   const member = access.name.text;
+  // fn.mock.callCount() and the other mock context members.
+  const mockContextCall = lowerMockContextCall(lowerer, call, access);
+  if (mockContextCall) return mockContextCall;
   // test.skip / it.only / describe.todo on a NAMED import binding: the
   // receiver resolves to the module member the binding imported.
   if (ts.isIdentifier(access.expression)) {
@@ -429,14 +449,15 @@ export function lowerTestMethodCall(
           call,
           `${bi.member}.${member}(...)`,
           loc,
-          member === "skip" ? 1 : member === "todo" ? 2 : 0,
+          member === "skip" ? 1 : member === "todo" ? 2 : 3,
         );
       }
+      if (bi.member === "mock" && member === "fn") return lowerMockFn(lowerer, call, "mock.fn");
       if (bi.member === "mock") {
         lowerer.noLowering(
-          "test.mock",
+          `test.mock.${member}`,
           call,
-          "mocking has no lowering",
+          "mock.fn and t.mock.fn are the supported mock members",
           lowerer.checker.getSymbolAtLocation(access.name),
         );
       }
@@ -447,6 +468,17 @@ export function lowerTestMethodCall(
         lowerer.checker.getSymbolAtLocation(access.name),
       );
     }
+  }
+  // t.mock.fn(...): the test's mock tracker.
+  if (
+    member === "fn" &&
+    ts.isPropertyAccessExpression(access.expression) &&
+    !access.expression.questionDotToken &&
+    access.expression.name.text === "mock" &&
+    lowerer.mapTypeOf(lowerer.typeOf(access.expression.expression))?.kind === "testCtx" &&
+    lowerer.isStdlibMember(access.expression)
+  ) {
+    return lowerMockFn(lowerer, call, "t.mock.fn");
   }
   // t.assert.strictEqual(...) — the callee's receiver is `t.assert` on a
   // TestContext: Node's t.assert methods ARE the assert functions (bound
@@ -460,7 +492,27 @@ export function lowerTestMethodCall(
     lowerer.isStdlibMember(access.expression)
   ) {
     const served = lowerer.lowerAssertModuleCall(call, { module: "assert", member }, loc);
-    if (served) return served;
+    // Each t.assert call counts against the test's plan (t.plan).
+    if (served)
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "test.ctxCount",
+              args: [lowerer.lowerExpr(access.expression.expression)],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ],
+        result: served,
+        type: served.type,
+        loc,
+      };
     lowerer.noLowering(
       `t.assert.${member}`,
       call,
@@ -495,6 +547,40 @@ export function lowerTestMethodCall(
       loc,
     };
   }
+  const hook = HOOK_WHICH[member];
+  if (hook !== undefined) {
+    const what = `t.${member}(...)`;
+    requireStatementPosition(lowerer, call, what);
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `t.${member} with ${args.length} arguments`,
+        call,
+        "the supported form is one zero-parameter function (hook options have no lowering)",
+      );
+    }
+    const receiver = lowerer.lowerExpr(access.expression);
+    const { cb, flags } = lowerBodyArg(lowerer, args[0]!, what, false);
+    return {
+      kind: "libCall",
+      fn: "test.ctxHook",
+      args: [receiver, numLit(hook, loc), cb, numLit(flags, loc)],
+      type: VOID,
+      loc,
+    };
+  }
+  if (member === "plan") {
+    requireStatementPosition(lowerer, call, "t.plan(...)");
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `t.plan with ${args.length} arguments`,
+        call,
+        "the supported form is t.plan(count) (plan options have no lowering)",
+      );
+    }
+    const receiver = lowerer.lowerExpr(access.expression);
+    const count = lowerer.lowerExprExpecting(args[0]!, F64);
+    return { kind: "libCall", fn: "test.ctxPlan", args: [receiver, count], type: VOID, loc };
+  }
   if (member === "diagnostic") {
     requireStatementPosition(lowerer, call, "t.diagnostic(...)");
     if (args.length !== 1) {
@@ -524,12 +610,20 @@ export function lowerTestCtxProperty(
   expr: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (expr.questionDotToken) return null;
+  const mockCalls = lowerMockContextProperty(lowerer, expr);
+  if (mockCalls) return mockCalls;
   if (lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind !== "testCtx") return null;
   if (!lowerer.isStdlibMember(expr)) return null;
   const loc = locOf(expr);
-  if (expr.name.text === "name") {
+  if (expr.name.text === "name" || expr.name.text === "fullName") {
     const receiver = lowerer.lowerExpr(expr.expression);
-    return { kind: "libCall", fn: "test.ctxName", args: [receiver], type: STRING, loc };
+    return {
+      kind: "libCall",
+      fn: expr.name.text === "name" ? "test.ctxName" : "test.ctxFullName",
+      args: [receiver],
+      type: STRING,
+      loc,
+    };
   }
   if (expr.name.text === "assert") return null; // claimed by the call path
   lowerer.noLowering(

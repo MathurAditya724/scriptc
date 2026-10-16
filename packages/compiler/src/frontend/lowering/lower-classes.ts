@@ -8,6 +8,7 @@ import { InternalCompilerError } from "../../errors.js";
  * accessor access, upcasts, `new` expressions, and the builtin Error
  * hierarchy registration. */
 import * as ts from "../ts7/adapter.js";
+import { lowerZlibStreamNew, zlibStreamModeOf } from "./builtins/compression.js";
 import type { FnCtx, Lowerer } from "./lowerer.js";
 import {
   BOOL,
@@ -67,6 +68,7 @@ import {
   locOf,
 } from "../program.js";
 import { PoisonError, dynFallbackType, newFnCtx, own } from "./lowerer.js";
+import { isAssertClassNew } from "./assert-instances.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-methods.js";
 import { lowerObjectConstructor } from "./containers/indexed-objects.js";
@@ -484,6 +486,9 @@ export interface ClassInfo {
    * lifetime-regions.ts): its constructor is synthesized with the class,
    * and its methods lower at their call sites. */
   lifetimeRegion?: true;
+  /** The synthetic InternTable class (@scriptc/experimental,
+   * intern-tables.ts): synthesized like lifetimeRegion. */
+  internTable?: true;
   /** This class's own `emit` override in the FORWARDING SHAPE (the one
    * EventEmitter member a subclass may re-declare): never in `methods` —
    * emit calls keep routing through the emitter spoke, which lowers the
@@ -2012,6 +2017,13 @@ export function collectClassShapeInner(
           "SC1090",
           t,
           "extending AggregateError (its runtime layout carries a hidden errors slot a subclass would overlap — extend Error and keep the list in a field)",
+        );
+      }
+      if (lowerer.builtinErrorInfoOf(symbol)?.def.name === "%AssertionError") {
+        lowerer.unsupported(
+          "SC1090",
+          t,
+          "extending AssertionError (its constructor takes an options object the subclass constructor would have to forward — extend Error, or construct AssertionError directly)",
         );
       }
       const named =
@@ -8288,6 +8300,12 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // `require('stream').Readable`) construction form.
     const streamInfoNs = builtinStreamInfoOf(lowerer, resolved);
     if (streamInfoNs) return lowerStreamNew(lowerer, expr, streamInfoNs);
+    // `new zlib.Gzip(options?)` — the zlib stream classes.
+    const zlibModeNs = zlibStreamModeOf(lowerer, resolved);
+    if (zlibModeNs !== null) {
+      const what = `new zlib.${expr.expression.name.text}`;
+      return lowerZlibStreamNew(lowerer, expr.arguments ?? [], zlibModeNs, what, expr, loc);
+    }
     // `new N.C(...)` / `new a.Point(...)` — construction through a
     // USER namespace qualifier (import= alias chains included): the
     // member resolves to the registered program class, guarded by the
@@ -8452,6 +8470,30 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         loc,
       };
     }
+    // `new Assert(...)` that is not a static instance (assert-instances.ts):
+    // the instance would be a run-time value.
+    if (isAssertClassNew(lowerer, expr)) {
+      lowerer.noLowering(
+        "assert.Assert instances used as values",
+        expr,
+        "bind `new Assert(...)` with literal options to a const and only call methods on it (`const a = new Assert({ diff: 'full' }); a.strictEqual(x, y)`)",
+      );
+    }
+    if (errInfo && errInfo.def.name === "%AssertionError") {
+      // new AssertionError(options): Node validates the options object and
+      // generates the message from operator, actual and expected.
+      const args = expr.arguments ?? [];
+      if (args.length > 1 || args.some(ts.isSpreadElement)) {
+        lowerer.noLowering(`new AssertionError with this argument list`, expr);
+      }
+      return {
+        kind: "libCall",
+        fn: "assert.errorNew",
+        args: [args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynUndefinedExpr(loc)],
+        type: { kind: "object", className: "%AssertionError" },
+        loc,
+      };
+    }
     if (errInfo && errInfo.def.name === "%AggregateError") {
       const args = expr.arguments ?? [];
       if (args.length > 3 || args.some(ts.isSpreadElement)) {
@@ -8500,6 +8542,11 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // object parses structurally in the stream spoke.
     const streamInfo = builtinStreamInfoOf(lowerer, symbol);
     if (streamInfo) return lowerStreamNew(lowerer, expr, streamInfo);
+    const zlibMode = zlibStreamModeOf(lowerer, symbol);
+    if (zlibMode !== null) {
+      const what = `new zlib.${symbol!.name}`;
+      return lowerZlibStreamNew(lowerer, expr.arguments ?? [], zlibMode, what, expr, loc);
+    }
     // `new URL(input)`: the WHATWG URL class (stdlib/@types provenance —
     // a user's own `class URL` resolves through classBySymbol below).
     // Invalid input or base throws a catchable TypeError ("Invalid URL").

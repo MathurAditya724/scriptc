@@ -14,6 +14,7 @@ import {
 import { objectEnumerationReceiver } from "./object-enumeration-receiver.js";
 import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
+import { isZlibStreamMember, lowerZlibStreamMethodCall } from "./builtins/compression.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerGenMethodCall } from "./lower-generators.js";
 import { lowerClassSymbolMethodCall } from "./symbol-methods.js";
@@ -50,6 +51,7 @@ import {
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
+import { lowerAssertInstanceCall } from "./assert-instances.js";
 import { isGenericCallableMemberType, typeKey } from "../type-mapper.js";
 import { dynFallbackType, jsFuncNameOf, newFnCtx, staticImportNamespaceType } from "./lowerer.js";
 import {
@@ -94,7 +96,7 @@ import {
   lowerImportMetaResolveCall,
   lowerRequireResolveCall,
 } from "./builtins/module-resolution.js";
-import { lowerCryptoHashMethodCall } from "./builtins/crypto.js";
+import { lowerCipherMethodCall, lowerCryptoHashMethodCall } from "./builtins/crypto.js";
 import {
   lowerDirentMethodCall,
   lowerFileHandleMethodCall,
@@ -192,6 +194,8 @@ import {
   objLitGenericFnInfoOf,
   genericCallInstance,
 } from "./generic-functions.js";
+
+const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
@@ -544,6 +548,30 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           ts.isArrayLiteralExpression(tr.initializer) &&
           tr.initializer.elements.length > 0
         ) {
+          // An ArrayBuffer first member may be a Buffer pool slab, which
+          // Node reports as untransferable.
+          const first = tr.initializer.elements[0]!;
+          const firstType = ts.isSpreadElement(first) ? undefined : lowerer.typeOf(first);
+          const parts = !firstType
+            ? []
+            : firstType.isUnionType()
+              ? ts.constituentTypes(firstType)
+              : [firstType];
+          const isStorage =
+            parts.length > 0 &&
+            parts.every((part) => {
+              const name = part.getSymbol()?.name;
+              return name === "ArrayBuffer" || name === "SharedArrayBuffer";
+            });
+          if (isStorage) {
+            return {
+              kind: "libCall",
+              fn: "dyn.cloneTransferFailWith",
+              args: [toDynArg(first)],
+              type: DYN,
+              loc,
+            };
+          }
           return { kind: "libCall", fn: "dyn.cloneTransferFail", args: [], type: DYN, loc };
         }
       }
@@ -1219,6 +1247,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // as named builtin imports — before anything below tries to lower
       // the namespace object itself as a receiver.
       lowerer.lowerNamespaceBuiltinCall(expr, expr.expression) ??
+      // Method calls on a static node:assert Assert instance.
+      lowerAssertInstanceCall(lowerer, expr, expr.expression, locOf(expr)) ??
       // The node:perf_hooks spoke: performance.now() and its
       // .bind(performance) function value over the runtime's
       // process-start-anchored monotonic clock.
@@ -1250,6 +1280,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.lowerSearchParamsMethodCall(expr, expr.expression) ??
       lowerer.lowerStatsMethodCall(expr, expr.expression) ??
       lowerCryptoHashMethodCall(lowerer, expr, expr.expression) ??
+      lowerCipherMethodCall(lowerer, expr, expr.expression) ??
       lowerFileHandleMethodCall(lowerer, expr, expr.expression) ??
       lowerDirMethodCall(lowerer, expr, expr.expression) ??
       lowerer.lowerChildMethodCall(expr, expr.expression) ??
@@ -8573,6 +8604,16 @@ export function lowerObjectMethodCall(
   const info = lowerer.classes.get(receiverIr.className);
   if (!info) lowerer.flushDeferredClass(receiverIr.className);
   const found = info ? lowerer.findMethodOn(info, access.name.text) : null;
+  // The zlib stream members (flush/params/close/reset) are declared on
+  // the zlib classes; their receivers are runtime Transform streams.
+  if (
+    info &&
+    !found &&
+    ZLIB_STREAM_METHODS.has(access.name.text) &&
+    isZlibStreamMember(lowerer, access)
+  ) {
+    return lowerZlibStreamMethodCall(lowerer, call, access);
+  }
   // The stream surface: API-named calls on stream-rooted receivers
   // lower through the stream spoke (checked before the emitter surface
   // — the two member sets are disjoint, but streams root at the emitter

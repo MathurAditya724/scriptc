@@ -16,10 +16,7 @@ const OWNED_ATTEMPTS = [
   "2 freed",
   "3 freed",
   "4 kept",
-  "4 kept",
-  "4 kept",
   "5 freed",
-  "4 kept",
   "4 freed",
   "6 freed",
   "7 freed",
@@ -27,14 +24,15 @@ const OWNED_ATTEMPTS = [
   "8 freed",
   "9 freed",
   "10 kept",
-  "10 kept",
   "12 freed",
-  "10 kept",
-  "10 kept",
   "11 freed",
   "10 freed",
   "13 freed",
   "14 freed",
+  "15 kept",
+  "16 freed",
+  "15 freed",
+  "17 freed",
 ];
 const OWNED_STDOUT = [
   "an owned graph of every walked shape is freed with its region",
@@ -44,6 +42,7 @@ const OWNED_STDOUT = [
   "references the walk cannot explain keep a region",
   "regions in use or referenced by other regions are kept",
   "allocation continues per class across region switches",
+  "a kept region is attempted again after enough region allocation",
 ];
 const RETAINED_ATTEMPTS = ["1 kept", "1 freed", "2 freed", "3 pinned", "4 freed"];
 const RETAINED_STDOUT = [
@@ -86,11 +85,12 @@ describe.skipIf(process.platform === "win32")("counted lifetime regions", () => 
     ]);
     return bin;
   };
-  const run = async (bin: string, mode: string) =>
+  const run = async (bin: string, mode: string, extra: Record<string, string> = {}) =>
     exec(bin, [mode], {
       timeout: 60000,
       env: {
         ...process.env,
+        ...extra,
         SCRIPTC_REGION_STATS: "1",
         ASAN_OPTIONS: "halt_on_error=1",
         TSAN_OPTIONS: "halt_on_error=1",
@@ -112,13 +112,42 @@ describe.skipIf(process.platform === "win32")("counted lifetime regions", () => 
         ...(sanitized ? ["sanitized builds fault on any access to a freed region"] : []),
       ]);
       const ownedStats = attempts(owned.stderr);
-      expect(ownedStats.attempts).toEqual([...OWNED_ATTEMPTS, ...(sanitized ? ["15 freed"] : [])]);
-      const n = sanitized ? 15 : 14;
+      expect(ownedStats.attempts).toEqual([...OWNED_ATTEMPTS, ...(sanitized ? ["18 freed"] : [])]);
+      const n = sanitized ? 18 : 17;
       expect(ownedStats.summaries).toEqual([
         `scriptc regions: ${n} created, ${n} released, ${n} freed, 0 pinned, 0 kept`,
       ]);
       // No RC audit line: every region was freed, so the strict exit audit ran.
       expect(ownedStats.other).toEqual([]);
+
+      // Optimized runtimes leave the reports out (RC-audit ones keep them)
+      // and say so once.
+      if (!sanitized) {
+        const optimized = await run(bin, "debug", { SCRIPTC_REGION_DEBUG: "1" });
+        expect(optimized.stderr).toContain(
+          "scriptc: SCRIPTC_REGION_DEBUG reports need a build with --optimization=dev\n",
+        );
+      }
+      const debugBin = sanitized
+        ? bin
+        : await build(dir, "region-debug", [...flags, "-DSCR_RGN_DEBUG"]);
+      const debug = await run(debugBin, "debug", { SCRIPTC_REGION_DEBUG: "1" });
+      expect(debug.stdout.trim()).toBe("the debug report names what keeps a region");
+      const report = debug.stderr
+        .split("\n")
+        .filter((line) => !line.startsWith("scriptc region") || line.endsWith("keep it:"));
+      expect(
+        report.filter(
+          (line) =>
+            line !== "" &&
+            !line.startsWith("scriptc regions:") &&
+            !line.startsWith("scriptc RC audit"),
+        ),
+      ).toEqual([
+        "scriptc region 1: 2 references from outside keep it:",
+        "  1 not found by the walk, to objects in a chunk holding Node",
+        "  an array held by Node.kids, with 2 references, 1 of them from what the region owns",
+      ]);
 
       const retained = await run(bin, "retained");
       expect(retained.stdout.trim().split("\n")).toEqual(RETAINED_STDOUT);

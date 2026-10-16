@@ -75,10 +75,15 @@ _Static_assert(sizeof(ScrRgnChunk) <= SCR_RGN_HDR, "the chunk header fits before
  * pay a 2 MiB fault, large ones do not pay 512 small ones. */
 #define SCR_RGN_HUGE_AFTER 4
 
-/* Pressure retries: a thread that has condemned regions retries them at a
- * region entry once it has allocated this many bytes (or the condemned
- * size, if larger) since the last attempt, doubling after each attempt
- * that freed nothing. */
+/* Retries. A condemned region is attempted at the first retry after its
+ * release. An attempt that keeps it records the references counted to it;
+ * later retries attempt it again once that count changes, or once the
+ * thread has allocated this many bytes in regions (or the kept region's
+ * size, if larger) since the attempt, doubling after each attempt that
+ * found the count unchanged: references from ordinary objects the walk
+ * reaches can go away without changing the count. Retries run at region
+ * creation, at release, and at a region entry after this many bytes of
+ * region allocation. */
 #define SCR_RGN_RETRY_BYTES ((size_t)8 << 20)
 #define SCR_RGN_MAX_BACKOFF 6
 
@@ -101,6 +106,12 @@ typedef struct ScrRegion {
   size_t ncur;
   size_t bytes;
   ScrRgnChunk *spare; /* the next chunk, mapped and faulted in ahead of use */
+  /* After an attempt that kept the region: the references counted then,
+   * and when it is attempted regardless (see SCR_RGN_RETRY_BYTES). */
+  bool kept;
+  int64_t kept_counted;
+  size_t retry_at;
+  unsigned backoff;
 } ScrRegion;
 
 typedef struct {
@@ -130,10 +141,31 @@ enum {
 };
 
 typedef struct {
-  size_t entry;
+  size_t entry; /* SCR_RGN_SINGLE: walked like the region's own objects */
+  void *obj;
   int kind;
   void (*walk)(void *, ScrRgnWalk *);
 } ScrRgnWork;
+
+#define SCR_RGN_SINGLE SIZE_MAX
+
+/* SCRIPTC_REGION_DEBUG reports (scr_rgn_report) are compiled into
+ * unoptimized runtimes (the dev flavor, --optimization=dev) and RC-audit
+ * builds; release and speed runtimes walk without the bookkeeping. */
+#if !defined(SCR_RGN_DEBUG) && (!defined(__OPTIMIZE__) || defined(SCR_RC_AUDIT))
+#define SCR_RGN_DEBUG 1
+#endif
+
+#ifdef SCR_RGN_DEBUG
+/* Where the walk first reached an entry: from the entry `parent` (index +
+ * 1), or, when 0, from field `field` of an object of class `cls`. */
+typedef struct {
+  const ScrRgnClass *cls;
+  uint32_t field;
+  int kind;
+  size_t parent;
+} ScrRgnFrom;
+#endif
 
 struct ScrRgnWalk {
   ScrRegion *region;
@@ -141,12 +173,22 @@ struct ScrRgnWalk {
   size_t src;       /* entry index + 1 being walked; 0 = a region object */
   ScrRgnEntry *ents;
   size_t nents, cap_ents;
+  size_t singles; /* owned objects walked without an entry */
   size_t *hash; /* open addressing: entry index + 1 */
   size_t cap_hash;
   ScrRgnEdge *edges;
   size_t nedges, cap_edges;
   ScrRgnWork *work;
   size_t nwork, cap_work;
+#ifdef SCR_RGN_DEBUG
+  /* SCRIPTC_REGION_DEBUG: the region object being visited and the index
+   * of its next reported field, and where each entry was reached. */
+  bool debug;
+  const ScrRgnClass *vcls;
+  uint32_t vfield;
+  ScrRgnFrom *from;
+  size_t cap_from;
+#endif
 };
 
 typedef struct {
@@ -157,8 +199,8 @@ typedef struct {
   size_t nregions, cap_regions;
   ScrRgnFrame *stack;
   size_t depth, cap_stack;
-  size_t since_attempt;
-  unsigned backoff;
+  size_t allocated; /* bytes of region segments this thread has allocated */
+  size_t checked;   /* `allocated` at the last retry */
   ScrRgnWalk walk;
   bool exit_registered;
   double cycle_ms; /* the cycle pass before the next attempt (stats) */
@@ -188,6 +230,23 @@ static bool scr_rgn_stats(void) {
     atomic_store_explicit(&scr_rgn_stats_mode, mode, memory_order_relaxed);
   }
   return mode != 0;
+}
+
+/* SCRIPTC_REGION_DEBUG: the lines scr_rgn_report prints per kept attempt
+ * (0: off). 1 prints up to 10; a larger number sets the limit. Runtimes
+ * built without the reports say so once instead. */
+static _Atomic(long) scr_rgn_debug_mode = -1;
+
+static size_t scr_rgn_debug(void) {
+  long mode = atomic_load_explicit(&scr_rgn_debug_mode, memory_order_relaxed);
+  if (mode < 0) {
+    const char *env = scr_getenv("SCRIPTC_REGION_DEBUG");
+    mode = env ? strtol(env, NULL, 10) : 0;
+    if (mode < 0) mode = 0;
+    if (mode == 1) mode = 10;
+    atomic_store_explicit(&scr_rgn_debug_mode, mode, memory_order_relaxed);
+  }
+  return (size_t)mode;
 }
 
 static void *scr_rgn_grow(void *p, size_t *cap, size_t size, size_t first) {
@@ -342,7 +401,7 @@ static ScrRgnSeg *scr_rgn_seg_new(ScrRegion *r, const ScrRgnClass *cls) {
   s->next = r->segs;
   r->segs = s;
   r->bytes += need;
-  scr_rgn.since_attempt += need;
+  scr_rgn.allocated += need;
   return s;
 }
 
@@ -467,10 +526,34 @@ static void scr_rgn_rehash(ScrRgnWalk *w) {
   for (size_t i = 0; i < w->nents; i++) w->hash[scr_rgn_find(w, w->ents[i].obj)] = i + 1;
 }
 
+static void scr_rgn_queue(ScrRgnWalk *w, size_t entry, void *p, int kind, void (*walk)(void *, ScrRgnWalk *)) {
+  if (w->nwork == w->cap_work) w->work = scr_rgn_grow(w->work, &w->cap_work, sizeof *w->work, 4096);
+  w->work[w->nwork++] = (ScrRgnWork){entry, p, kind, walk};
+}
+
 /* One more reference to the ordinary object `p`, from the object being
- * walked; queues `p`'s own walk when it is first reached. */
+ * walked; queues `p`'s own walk when it is first reached.
+ *
+ * An object with a single reference, found from one of the region's own
+ * objects (or from an object walked like them), has no other referrer, so
+ * it can never be referenced from outside: it gets no entry and no edges,
+ * and it is walked like the region's own objects, its references into the
+ * region counted as explained. RC-audit builds still enter it, and stop if
+ * the walk reaches it twice. */
 static void scr_rgn_enter(ScrRgnWalk *w, void *p, int kind, void (*walk)(void *, ScrRgnWalk *)) {
   if (!p || *(size_t *)p == SIZE_MAX) return; /* immortal: never freed, not walked */
+#ifdef SCR_RGN_DEBUG
+  bool single = w->src == 0 && *(size_t *)p == 1 && !w->debug;
+#else
+  bool single = w->src == 0 && *(size_t *)p == 1;
+#endif
+#ifndef SCR_RC_AUDIT
+  if (single) {
+    w->singles++;
+    scr_rgn_queue(w, SCR_RGN_SINGLE, p, kind, walk);
+    return;
+  }
+#endif
   if ((w->nents + 1) * 2 > w->cap_hash) scr_rgn_rehash(w);
   size_t j = scr_rgn_find(w, p);
   size_t idx = w->hash[j];
@@ -478,8 +561,16 @@ static void scr_rgn_enter(ScrRgnWalk *w, void *p, int kind, void (*walk)(void *,
     if (w->nents == w->cap_ents) w->ents = scr_rgn_grow(w->ents, &w->cap_ents, sizeof *w->ents, 4096);
     w->ents[w->nents] = (ScrRgnEntry){p, 0, 0, false};
     idx = w->hash[j] = ++w->nents;
-    if (w->nwork == w->cap_work) w->work = scr_rgn_grow(w->work, &w->cap_work, sizeof *w->work, 4096);
-    w->work[w->nwork++] = (ScrRgnWork){idx - 1, kind, walk};
+#ifdef SCR_RGN_DEBUG
+    if (w->debug) {
+      if (w->nents > w->cap_from) w->from = scr_rgn_grow(w->from, &w->cap_from, sizeof *w->from, 4096);
+      w->from[idx - 1] = (ScrRgnFrom){w->src ? NULL : w->vcls, w->src ? 0 : w->vfield - 1, kind, w->src};
+    }
+#endif
+    scr_rgn_queue(w, single ? SCR_RGN_SINGLE : idx - 1, p, kind, walk);
+  } else if (single) {
+    fprintf(stderr, "scriptc: internal error: the region walk reached an object with one reference twice\n");
+    abort();
   }
   w->ents[idx - 1].found++;
   if (w->src) {
@@ -488,7 +579,7 @@ static void scr_rgn_enter(ScrRgnWalk *w, void *p, int kind, void (*walk)(void *,
   }
 }
 
-void scr_region_ref(ScrRgnWalk *w, void *obj) {
+static void scr_rgn_ref(ScrRgnWalk *w, void *obj) {
   if (!obj) return;
   ScrRgnChunk *c = scr_rgn_chunk_of(obj);
   if (c->region != w->region) return; /* another region's: counted there */
@@ -530,19 +621,52 @@ static void scr_rgn_index_build(void) {
   atomic_store_explicit(&scr_rgn_index_state, 2, memory_order_release);
 }
 
+/* How the walk treats a value stored with a release entry point: a
+ * container kind, an ordinary object with an emitted walker, a reference
+ * into a region (SCR_RGN_S_REF), or nothing it can walk (SCR_RGN_S_NONE,
+ * its references stay unexplained). Containers resolve it once for all
+ * their elements. */
+enum { SCR_RGN_S_NONE = -1, SCR_RGN_S_REF = -2 };
+typedef struct {
+  int kind;
+  void (*walk)(void *, ScrRgnWalk *);
+} ScrRgnSlotKind;
+
+static ScrRgnSlotKind scr_rgn_slot_kind(void (*release)(void *)) {
+  if (!release) return (ScrRgnSlotKind){SCR_RGN_S_NONE, NULL};
+  if (release == scr_arr_release_v) return (ScrRgnSlotKind){SCR_RGN_W_ARR, NULL};
+  if (release == scr_map_release_v) return (ScrRgnSlotKind){SCR_RGN_W_MAP, NULL};
+  if (release == scr_union_release_v) return (ScrRgnSlotKind){SCR_RGN_W_UNION, NULL};
+  if (release == scr_closure_release_v) return (ScrRgnSlotKind){SCR_RGN_W_CLOSURE, NULL};
+  if (release == scr_dyn_release_v) return (ScrRgnSlotKind){SCR_RGN_W_DYN, NULL};
+  const ScrRgnType *ty = scr_rgn_type_of(release);
+  if (!ty) return (ScrRgnSlotKind){SCR_RGN_S_NONE, NULL};
+  if (!ty->walk) return (ScrRgnSlotKind){SCR_RGN_S_REF, NULL};
+  return (ScrRgnSlotKind){SCR_RGN_W_EMITTED, ty->walk};
+}
+
+static void scr_rgn_slot_as(ScrRgnWalk *w, void *obj, ScrRgnSlotKind k) {
+  if (!obj || k.kind == SCR_RGN_S_NONE) return;
+  if (k.kind == SCR_RGN_S_REF) scr_rgn_ref(w, obj);
+  else scr_rgn_enter(w, obj, k.kind, k.walk);
+}
+
+/* The emitted visits and walkers report each field through these, so
+ * SCRIPTC_REGION_DEBUG numbers a region object's fields in the order of its
+ * class's `fields` names. */
+void scr_region_ref(ScrRgnWalk *w, void *obj) {
+#ifdef SCR_RGN_DEBUG
+  if (w->vcls) w->vfield++;
+#endif
+  scr_rgn_ref(w, obj);
+}
+
 void scr_region_slot(ScrRgnWalk *w, void *obj, void (*release)(void *)) {
+#ifdef SCR_RGN_DEBUG
+  if (w->vcls) w->vfield++;
+#endif
   if (!obj || !release) return;
-  if (release == scr_arr_release_v) scr_rgn_enter(w, obj, SCR_RGN_W_ARR, NULL);
-  else if (release == scr_map_release_v) scr_rgn_enter(w, obj, SCR_RGN_W_MAP, NULL);
-  else if (release == scr_union_release_v) scr_rgn_enter(w, obj, SCR_RGN_W_UNION, NULL);
-  else if (release == scr_closure_release_v) scr_rgn_enter(w, obj, SCR_RGN_W_CLOSURE, NULL);
-  else if (release == scr_dyn_release_v) scr_rgn_enter(w, obj, SCR_RGN_W_DYN, NULL);
-  else {
-    const ScrRgnType *ty = scr_rgn_type_of(release);
-    if (!ty) return; /* not walkable: its references stay unexplained */
-    if (!ty->walk) scr_region_ref(w, obj);
-    else scr_rgn_enter(w, obj, SCR_RGN_W_EMITTED, ty->walk);
-  }
+  scr_rgn_slot_as(w, obj, scr_rgn_slot_kind(release));
 }
 
 static void *scr_rgn_slot_ptr(uint64_t slot) {
@@ -551,21 +675,18 @@ static void *scr_rgn_slot_ptr(uint64_t slot) {
   return p;
 }
 
-static void scr_rgn_walk_elem(ScrRgnWalk *w, const ScrArr *a, uint64_t slot) {
-  if (a->elem == SCR_ELEM_REF) scr_region_slot(w, scr_rgn_slot_ptr(slot), a->ops ? a->ops->release : NULL);
-  else if (a->elem == SCR_ELEM_ARR) scr_rgn_enter(w, scr_rgn_slot_ptr(slot), SCR_RGN_W_ARR, NULL);
-}
-
 static void scr_rgn_walk_arr(ScrRgnWalk *w, ScrArr *a) {
   if (a->elem != SCR_ELEM_REF && a->elem != SCR_ELEM_ARR) return;
+  ScrRgnSlotKind k = a->elem == SCR_ELEM_ARR ? (ScrRgnSlotKind){SCR_RGN_W_ARR, NULL}
+                                             : scr_rgn_slot_kind(a->ops ? a->ops->release : NULL);
   size_t dense = a->len < a->cap ? a->len : a->cap;
   for (size_t i = 0; i < dense; i++)
-    if (!a->present || a->present[i] == SCR_ARR_VALUE) scr_rgn_walk_elem(w, a, a->data[i]);
+    if (!a->present || a->present[i] == SCR_ARR_VALUE) scr_rgn_slot_as(w, scr_rgn_slot_ptr(a->data[i]), k);
   if (!a->ext) return;
   for (size_t i = 0; i < a->ext->sparse_len; i++)
-    if (a->ext->sparse[i].state == SCR_ARR_VALUE) scr_rgn_walk_elem(w, a, a->ext->sparse[i].slot);
+    if (a->ext->sparse[i].state == SCR_ARR_VALUE) scr_rgn_slot_as(w, scr_rgn_slot_ptr(a->ext->sparse[i].slot), k);
   for (size_t i = 0; i < a->ext->prop_len; i++)
-    if (a->ext->props[i].state == SCR_ARR_VALUE) scr_rgn_walk_elem(w, a, a->ext->props[i].slot);
+    if (a->ext->props[i].state == SCR_ARR_VALUE) scr_rgn_slot_as(w, scr_rgn_slot_ptr(a->ext->props[i].slot), k);
   scr_rgn_enter(w, a->ext->metadata, SCR_RGN_W_DYN, NULL);
 }
 
@@ -575,12 +696,15 @@ static void scr_rgn_walk_map(ScrRgnWalk *w, ScrMap *m) {
   bool keydyn = m->key_kind == SCR_MAP_KEY_DYN;
   bool valref = m->val_kind == SCR_MAP_VAL_REF;
   if (!keyref && !keydyn && !valref) return;
+  ScrRgnSlotKind kk = keydyn ? (ScrRgnSlotKind){SCR_RGN_W_DYN, NULL}
+                    : keyref ? scr_rgn_slot_kind(m->key_release)
+                             : (ScrRgnSlotKind){SCR_RGN_S_NONE, NULL};
+  ScrRgnSlotKind vk = valref ? scr_rgn_slot_kind(m->val_release) : (ScrRgnSlotKind){SCR_RGN_S_NONE, NULL};
   for (size_t i = 0; i < m->nentries; i++) {
     const ScrMapEntry *e = &m->entries[i];
     if (!e->hash) continue; /* tombstone */
-    if (keyref) scr_region_slot(w, scr_rgn_slot_ptr(e->key), m->key_release);
-    else if (keydyn) scr_rgn_enter(w, scr_rgn_slot_ptr(e->key), SCR_RGN_W_DYN, NULL);
-    if (valref) scr_region_slot(w, scr_rgn_slot_ptr(e->val), m->val_release);
+    scr_rgn_slot_as(w, scr_rgn_slot_ptr(e->key), kk);
+    scr_rgn_slot_as(w, scr_rgn_slot_ptr(e->val), vk);
   }
 }
 
@@ -637,8 +761,8 @@ static void scr_rgn_walk_dyn(ScrRgnWalk *w, ScrDyn *d) {
 static void scr_rgn_drain(ScrRgnWalk *w) {
   while (w->nwork) {
     ScrRgnWork job = w->work[--w->nwork];
-    void *p = w->ents[job.entry].obj;
-    w->src = job.entry + 1;
+    void *p = job.obj;
+    w->src = job.entry == SCR_RGN_SINGLE ? 0 : job.entry + 1;
     switch (job.kind) {
     case SCR_RGN_W_EMITTED: job.walk(p, w); break;
     case SCR_RGN_W_ARR: scr_rgn_walk_arr(w, p); break;
@@ -733,6 +857,86 @@ static void scr_rgn_free_region(ScrRgnThread *t, ScrRegion *r) {
   free(r);
 }
 
+#ifdef SCR_RGN_DEBUG
+static const char *scr_rgn_kind_name(int kind) {
+  switch (kind) {
+  case SCR_RGN_W_ARR: return "an array";
+  case SCR_RGN_W_MAP: return "a map or set";
+  case SCR_RGN_W_UNION: return "a union value";
+  case SCR_RGN_W_CLOSURE: return "a closure";
+  case SCR_RGN_W_BOX: return "a captured variable";
+  case SCR_RGN_W_DYN: return "a dynamic value";
+  default: return "an object";
+  }
+}
+
+/* The name of field `i` in a class's visit order. */
+static const char *scr_rgn_field_name(const ScrRgnClass *cls, uint32_t i) {
+  if (!cls->fields) return "?";
+  for (uint32_t k = 0; k < i; k++)
+    if (!cls->fields[k]) return "?";
+  return cls->fields[i] ? cls->fields[i] : "?";
+}
+
+/* SCRIPTC_REGION_DEBUG: why an attempt kept `r`, in at most `lines` lines.
+ * References into a chunk that the walk did not find come from outside it
+ * (variables, other regions, objects it does not walk); the walk knows
+ * only the chunk, so the line names the classes the chunk holds. Owned
+ * objects referenced from outside are named by how the walk reached them,
+ * from a field of one of the region's objects. */
+static void scr_rgn_report(const ScrRegion *r, const ScrRgnWalk *w, int64_t unexplained, size_t lines) {
+  fprintf(stderr, "scriptc region %llu: %lld references from outside keep it:\n", (unsigned long long)r->id,
+          (long long)unexplained);
+  size_t printed = 0, more = 0;
+  for (const ScrRgnChunk *c = r->chunks; c; c = c->next) {
+    int64_t objects = 0;
+    const char *names[4];
+    size_t nnames = 0;
+    bool others = false;
+    for (const ScrRgnSeg *s = r->segs; s; s = s->next) {
+      if (scr_rgn_chunk_of(s->start) != c) continue;
+      objects += (int64_t)((size_t)(s->end - s->start) / scr_rgn_stride(s->cls));
+      if (s->end == s->start) continue;
+      bool seen = false;
+      for (size_t k = 0; k < nnames; k++) seen |= names[k] == s->cls->name;
+      if (seen) continue;
+      if (nnames < 4) names[nnames++] = s->cls->name;
+      else others = true;
+    }
+    int64_t missing = c->count + objects - c->found;
+    if (missing <= 0) continue;
+    if (printed == lines) {
+      more++;
+      continue;
+    }
+    printed++;
+    fprintf(stderr, "  %lld not found by the walk, to objects in a chunk holding", (long long)missing);
+    for (size_t k = 0; k < nnames; k++) fprintf(stderr, "%s %s", k ? "," : "", names[k]);
+    fprintf(stderr, "%s\n", others ? ", and other classes" : "");
+  }
+  for (size_t i = 0; i < w->nents; i++) {
+    const ScrRgnEntry *x = &w->ents[i];
+    if (*(size_t *)x->obj == (size_t)x->found) continue; /* not referenced from outside itself */
+    if (printed == lines) {
+      more++;
+      continue;
+    }
+    printed++;
+    fprintf(stderr, "  %s", scr_rgn_kind_name(w->from[i].kind));
+    size_t at = i;
+    while (w->from[at].parent) {
+      at = w->from[at].parent - 1;
+      fprintf(stderr, " in %s", scr_rgn_kind_name(w->from[at].kind));
+    }
+    const ScrRgnFrom *f = &w->from[at];
+    fprintf(stderr, " held by %s.%s, with %zu references, %lld of them from what the region owns\n",
+            f->cls ? f->cls->name : "?", f->cls ? scr_rgn_field_name(f->cls, f->field) : "?", *(size_t *)x->obj,
+            (long long)x->found);
+  }
+  if (more) fprintf(stderr, "  %zu more\n", more);
+}
+#endif
+
 /* One release attempt; true when `r` was freed. */
 static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r) {
   bool stats = scr_rgn_stats();
@@ -744,7 +948,12 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r) {
   w->region = r;
   w->internal = 0;
   w->src = 0;
-  w->nents = w->nedges = w->nwork = 0;
+  w->nents = w->nedges = w->nwork = w->singles = 0;
+#ifdef SCR_RGN_DEBUG
+  size_t debug = scr_rgn_debug();
+  w->debug = debug != 0;
+  w->vcls = NULL;
+#endif
   if (w->hash) memset(w->hash, 0, w->cap_hash * sizeof *w->hash);
   for (ScrRgnChunk *c = r->chunks; c; c = c->next) c->found = 0;
   size_t objects = 0;
@@ -756,19 +965,41 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r) {
       if (stats) fprintf(stderr, "scriptc region %llu: pinned: it holds a published object\n", (unsigned long long)r->id);
       return false;
     }
+#ifdef SCR_RGN_DEBUG
+    if (debug) {
+      w->vcls = s->cls;
+      w->vfield = 0;
+    }
+#endif
     s->cls->visit(o, w);
     objects++;
   }
+#ifdef SCR_RGN_DEBUG
+  w->vcls = NULL;
+#endif
   scr_rgn_drain(w);
   int64_t counted = scr_rgn_counted(r);
   size_t black = 0;
   int64_t explained = w->internal + scr_rgn_settle(w, &black);
   uint64_t t1 = stats ? scr_hrtime_ns() : 0;
   if (explained != counted) {
+    if (r->kept && counted == r->kept_counted) {
+      if (r->backoff < SCR_RGN_MAX_BACKOFF) r->backoff++;
+    } else r->backoff = 0;
+    r->kept = true;
+    r->kept_counted = counted;
+    r->retry_at = t->allocated + ((r->bytes > SCR_RGN_RETRY_BYTES ? r->bytes : SCR_RGN_RETRY_BYTES) << r->backoff);
     if (stats)
       fprintf(stderr,
               "scriptc region %llu: kept: %lld references counted, %lld explained; %zu of %zu owned objects referenced from outside; cycles %.1f ms, walk %.1f ms\n",
-              (unsigned long long)r->id, (long long)counted, (long long)explained, black, w->nents, cycles, scr_rgn_ms(t0, t1));
+              (unsigned long long)r->id, (long long)counted, (long long)explained, black, w->nents + w->singles, cycles, scr_rgn_ms(t0, t1));
+#ifdef SCR_RGN_DEBUG
+    if (debug) scr_rgn_report(r, w, counted - explained, debug);
+#else
+    static _Atomic(bool) told = false;
+    if (scr_rgn_debug() && !atomic_exchange_explicit(&told, true, memory_order_relaxed))
+      fprintf(stderr, "scriptc: SCRIPTC_REGION_DEBUG reports need a build with --optimization=dev\n");
+#endif
     return false;
   }
   /* Free: drop weak entries keyed by the instances, then release every
@@ -803,20 +1034,23 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r) {
   if (stats)
     fprintf(stderr,
             "scriptc region %llu: freed %zu objects, %zu owned objects, %zu chunks (%.1f MiB); cycles %.1f ms, walk %.1f ms, free %.1f ms\n",
-            (unsigned long long)id, objects, w->nents, nchunks, (double)bytes / 1048576.0, cycles, scr_rgn_ms(t0, t1),
+            (unsigned long long)id, objects, w->nents + w->singles, nchunks, (double)bytes / 1048576.0, cycles, scr_rgn_ms(t0, t1),
             scr_rgn_ms(t1, scr_hrtime_ns()));
   return true;
 }
 
+/* A condemned region not in use, never attempted, or kept by an attempt
+ * whose outcome may have changed since (see SCR_RGN_RETRY_BYTES). */
 static bool scr_rgn_due(const ScrRegion *r, const ScrRgnThread *t) {
-  return r->state == SCR_RGN_CONDEMNED && r->depth == 0 && r != t->current;
+  if (r->state != SCR_RGN_CONDEMNED || r->depth != 0 || r == t->current) return false;
+  return !r->kept || t->allocated >= r->retry_at || scr_rgn_counted(r) != r->kept_counted;
 }
 
-/* Tries every condemned region that is not in use. */
+/* Tries every condemned region that is due. */
 static void scr_rgn_retry(ScrRgnThread *t) {
   bool any = false;
   for (size_t i = 0; i < t->nregions && !any; i++) any = scr_rgn_due(t->regions[i], t);
-  t->since_attempt = 0;
+  t->checked = t->allocated;
   if (!any) return;
   if (atomic_load_explicit(&scr_rgn_index_state, memory_order_acquire) != 2) scr_rgn_index_build();
   /* Dead cycles of ordinary objects can hold counted references into a
@@ -824,18 +1058,16 @@ static void scr_rgn_retry(ScrRgnThread *t) {
   uint64_t t0 = scr_rgn_stats() ? scr_hrtime_ns() : 0;
   scr_collect_cycles();
   if (t0) t->cycle_ms = scr_rgn_ms(t0, scr_hrtime_ns());
-  bool freed = false;
   for (size_t i = 0; i < t->nregions;) {
     ScrRegion *r = t->regions[i];
     if (scr_rgn_due(r, t) && scr_rgn_try_free(t, r)) {
-      freed = true;
-      i = 0; /* the table shrank; freeing may have unblocked another region */
+      /* The table shrank, and the freed region's references may have kept
+       * another one: the regions it held now count fewer references. */
+      i = 0;
       continue;
     }
     i++;
   }
-  if (freed) t->backoff = 0;
-  else if (t->backoff < SCR_RGN_MAX_BACKOFF) t->backoff++;
 }
 
 /* ── program-facing entry points ─────────────────────────────────────── */
@@ -858,7 +1090,7 @@ void scr_region_enter(double id) {
   ScrRgnThread *t = scr_rgn_thread();
   ScrRegion *r = scr_rgn_lookup(t, id);
   if (!r || r->state != SCR_RGN_LIVE) r = t->dflt; /* released regions take no new objects */
-  if (t->nregions && t->since_attempt >= (SCR_RGN_RETRY_BYTES << t->backoff)) scr_rgn_retry(t);
+  if (t->nregions && t->allocated - t->checked >= SCR_RGN_RETRY_BYTES) scr_rgn_retry(t);
   if (t->depth == t->cap_stack) t->stack = scr_rgn_grow(t->stack, &t->cap_stack, sizeof *t->stack, 16);
   t->stack[t->depth++] = (ScrRgnFrame){t->current, r};
   r->depth++;
@@ -912,6 +1144,9 @@ static void scr_rgn_thread_exit(void) {
   free(t->walk.hash);
   free(t->walk.edges);
   free(t->walk.work);
+#ifdef SCR_RGN_DEBUG
+  free(t->walk.from);
+#endif
   memset(t, 0, sizeof *t);
   t->exit_registered = true; /* the cleanup ran; a late allocation keeps its memory */
 }

@@ -10,6 +10,7 @@ import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
 import { STATS_TYPE_TESTS } from "./builtins/filesystem.js";
 import { threadsImportOf } from "../threads-import.js";
 import { experimentalImportOf, lifetimeRegionMemberOf } from "../experimental-import.js";
+import { lowerInternTableProperty } from "./intern-tables.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 import { SYMBOL_T } from "../../ir/ir.js";
@@ -22,6 +23,7 @@ import { literalUnionArm } from "../union-discriminants.js";
  * ToBoolean/ToString coercion helpers, and field/element reads and writes
  * (FieldTarget). */
 import * as ts from "../ts7/adapter.js";
+import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "./builtins/compression.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { dirname } from "node:path";
 import * as posix from "node:path/posix";
@@ -1126,6 +1128,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           expr,
           "construct regions with new LifetimeRegion()",
         );
+      if (experimentalImportOf(lowerer.program, expr) === "InternTable")
+        lowerer.noLowering(
+          "InternTable (@scriptc/experimental) as a value",
+          expr,
+          'open tables with new InternTable("name")',
+        );
     }
     {
       const bi = lowerer.builtinImportOf(expr);
@@ -1738,6 +1746,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           expr,
           `call region.${member}(${member === "run" ? "fn" : ""}) directly`,
         );
+    }
+    {
+      const table = lowerInternTableProperty(lowerer, expr);
+      if (table) return table;
     }
     // Expando statics may still be absent even when JS inference sees
     // the eventual assignment's scalar type. Preserve the checked value.
@@ -4891,6 +4903,8 @@ export function lowerIntrinsicProperty(
   const numberMember = lowerer.stdlibGlobalMember(expr, "Number");
   if (numberMember === "parseInt" || numberMember === "parseFloat")
     return lowerNumberParserValue(lowerer, numberMember, locOf(expr));
+  if (lowerer.stdlibGlobalMember(expr, "Buffer") === "poolSize")
+    return { kind: "libCall", fn: "buffer.poolSize", args: [], type: F64, loc: locOf(expr) };
   if (lowerer.stdlibGlobalMember(expr, "Buffer") === "isBuffer")
     return lowerCheckedPredicateValue(lowerer, "Buffer.isBuffer", "buffer", locOf(expr));
   if (lowerer.stdlibGlobalMember(expr, "Date") === "now")
@@ -15149,6 +15163,9 @@ function lowerStreamObjectProperty(
   if (recvT?.kind !== "object") return null;
   const info = lowerer.classes.get(recvT.className);
   if (!info || streamSidesOf(lowerer, info) === null) return null;
+  if (expr.name.text === "bytesWritten" && isZlibStreamMember(lowerer, expr)) {
+    return lowerZlibStreamBytesWritten(lowerer, expr);
+  }
   return lowerStreamProperty(lowerer, expr, info);
 }
 

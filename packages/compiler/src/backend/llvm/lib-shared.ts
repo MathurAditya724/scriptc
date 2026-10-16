@@ -23,6 +23,18 @@ export function emitAlwaysThrowLibCall(
   return out;
 }
 
+/** Assertion result calls that return at once when the assertion passes
+ * (scr_assert.c). The first argument is the verdict; the value is the index
+ * of the `negated` flag, or null when the call fails exactly when the
+ * verdict is false. A passing assertion branches around the call. */
+export const ASSERT_VERDICT_LIB_FNS: ReadonlyMap<string, number | null> = new Map([
+  ["assert.ok", null],
+  ["assert.looseResult", 1],
+  ["assert.deepResult", 1],
+  ["assert.looseDeepResult", 1],
+  ["assert.partialDeepResult", null],
+]);
+
 export const LIB_FN_SYMS: Record<string, string> = {
   "assert.expectsErrDyn": "scr_assert_expects_err_dyn",
   "insp.jsonDyn": "scr_dyn_format_j",
@@ -339,6 +351,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // node:assert (scr_assert.c): all args borrowed; failures throw the
   // catchable AssertionError. The never-throwing members ride along.
   "assert.ok": "scr_assert_ok",
+  "assert.record": "scr_assert_record_dyn",
+  "assert.errorNew": "scr_assert_error_new",
   "assert.eqF64": "scr_assert_eq_f64",
   "assert.eqBigInt": "scr_assert_eq_bigint",
   "assert.eqStr": "scr_assert_eq_str",
@@ -347,6 +361,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "assert.eqDyn": "scr_assert_eq_dyn",
   "assert.looseResult": "scr_assert_loose_result",
   "assert.deepResult": "scr_assert_deep_result",
+  "assert.looseDeepResult": "scr_assert_loose_deep_result",
+  "assert.looseDeepDyn": "scr_assert_loose_deep_dyn",
+  "assert.partialDeepDyn": "scr_assert_partial_deep_dyn",
+  "assert.partialDeepResult": "scr_assert_partial_deep_result",
+  "assert.partialEqDyn": "scr_assert_partial_eq_dyn",
+  "assert.looseF64Eq": "scr_assert_loose_f64_eq",
   "assert.sameValue": "scr_assert_same_value_f64",
   "assert.deqEnter": "scr_assert_deq_enter",
   "assert.deqLeave": "scr_assert_deq_leave",
@@ -370,6 +390,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "assert.refEqFn": "scr_assert_ref_eq_fn",
   "assert.refEqBytes": "scr_assert_ref_eq_bytes",
   "assert.bytesDeepEq": "scr_assert_bytes_deep_eq",
+  "assert.looseBytesEq": "scr_assert_loose_bytes_eq",
   // The Buffer statics and bytes-adjacent members (scr_bytes.c /
   // scr_bytes_io.c / scr_zlib.c / scr_crypto): fromStr decodes Node-
   // leniently (never throws), concat copies its borrowed list; the sync
@@ -378,8 +399,18 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.fromStrChecked": "scr_bytes_from_str_checked",
   "buffer.brand": "scr_bytes_as_buffer",
   "buffer.fromDyn": "scr_buffer_from_dyn",
-  "buffer.concat": "scr_bytes_concat",
-  "buffer.concatLen": "scr_bytes_concat_len",
+  "buffer.concat": "scr_buffer_concat",
+  "buffer.concatLen": "scr_buffer_concat_len",
+  "buffer.alloc": "scr_buffer_alloc",
+  "buffer.allocUnsafe": "scr_buffer_alloc_unsafe",
+  "buffer.allocUnsafeSlow": "scr_buffer_alloc_unsafe_slow",
+  "buffer.poolFromStr": "scr_buffer_from_str",
+  "buffer.poolFromStrChecked": "scr_buffer_from_str_checked",
+  "buffer.poolFromBytes": "scr_buffer_from_bytes",
+  "buffer.poolFromArray": "scr_buffer_from_arr",
+  "buffer.poolFromDyn": "scr_buffer_from_dyn_pooled",
+  "buffer.poolSize": "scr_buffer_pool_size",
+  "buffer.setPoolSize": "scr_buffer_set_pool_size",
   "buffer.byteLenDyn": "scr_buffer_byte_length_dyn",
   "buffer.byteLenStr": "scr_bytes_byte_length_str",
   "buffer.isEncoding": "scr_bytes_is_encoding",
@@ -497,6 +528,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.hashDigestBytes": "scr_crypto_hash_digest_bytes",
   "crypto.native": "scr_crypto_native",
   "crypto.hashNew": "scr_crypto_hash_new",
+  "crypto.cipherNew": "scr_crypto_cipher_new",
   "crypto.hmacNewStr": "scr_crypto_hmac_new_str",
   "crypto.hmacNewBytes": "scr_crypto_hmac_new_bytes",
   "crypto.hashUpdateStr": "scr_crypto_hash_update_str",
@@ -942,6 +974,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "readable.nextChunkDyn": "scr_stream_next_chunk_dyn",
   "readable.fromArr": "scr_stream_from_arr",
   "readable.fromDyn": "scr_stream_from_dyn",
+  "readable.fromGen": "scr_stream_from_gen",
+  "readable.fromAsyncGen": "scr_stream_from_async_gen",
+  "readable.fromDone": "scr_stream_from_done",
   // The Readable operators: borrowed operands; +1 stream or promise.
   "readable.opMap": "scr_stream_op_map",
   "readable.opFilter": "scr_stream_op_filter",
@@ -1027,6 +1062,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.reqRawHeaders": "scr_http_req_raw_headers",
   "http.reqRawTrailers": "scr_http_req_raw_trailers",
   "http.reqHeaderPairs": "scr_http_req_header_pairs",
+  "http.reqHeaderList": "scr_http_req_header_list",
   "http.reqTrailerPairs": "scr_http_req_trailer_pairs",
   "http.reqPipeRes": "scr_http_req_pipe_res",
   "http.reqPipeClient": "scr_http_req_pipe_client",
@@ -1035,6 +1071,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.reqDestroy": "scr_http_req_destroy",
   "http.reqSetEncoding": "scr_http_req_set_encoding",
   "http.resSetHeader": "scr_http_res_set_header",
+  "http.resSetHeaderDyn": "scr_http_res_set_header_dyn",
+  "http.resAppendHeader": "scr_http_res_append_header_dyn",
+  "http.resGetHeaderDyn": "scr_http_res_get_header_dyn",
   "http.resGetHeaderNames": "scr_http_res_get_header_names",
   "http.resGetRawHeaderNames": "scr_http_res_get_raw_header_names",
   "http.resGetHeaders": "scr_http_res_get_headers",
@@ -1125,6 +1164,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // generic shapes; the throwing members ride the pending check.
   "tp.setTimeout": "scr_tp_set_timeout",
   "tp.setImmediate": "scr_tp_set_immediate",
+  "tp.setTimeoutValue": "scr_tp_set_timeout_value",
+  "tp.setImmediateValue": "scr_tp_set_immediate_value",
   // stream/promises' finished form (+1 promise; may-throw pending check;
   // the pipeline form needs the stream-array compound and emits below).
   "sp.finished": "scr_sp_finished",
@@ -1255,6 +1296,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.structuredClone": "scr_structured_clone",
   "dyn.cloneMissing": "scr_structured_clone_missing",
   "dyn.cloneTransferFail": "scr_structured_clone_transfer_fail",
+  "dyn.cloneTransferFailWith": "scr_structured_clone_transfer_fail_with",
   "regex.new": "scr_regex_new",
   "regex.resetLastIndex": "scr_regex_reset_last_index",
   "regex.newChecked": "scr_regex_new_checked",
@@ -1272,6 +1314,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
 
 export const USES_TIMERS_LIB_FNS = new Set<string>([
   "process.emitWarning",
+  // Decipheriv.setAuthTag reports DEP0182 on the next tick.
+  "crypto.cipherNew",
   "process.emitWarningText",
   // The legacy url entries queue DEP0169/DEP0170 on the next tick.
   "url.legacyParse",
@@ -1337,6 +1381,8 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "readable.nextChunkDyn",
   "readable.fromArr",
   "readable.fromDyn",
+  "readable.fromGen",
+  "readable.fromAsyncGen",
   "readable.opMap",
   "readable.opFilter",
   "readable.opFlatMap",
@@ -1375,6 +1421,9 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "stream.compose",
   "sp.finished",
   "sp.pipeline",
+  "sp.pipelineStages",
+  "stream.pipelineStages",
+  "stream.pipelineStagesDyn",
   "sp.pipelineOpts",
   "sp.pipelineOptsSignal",
   "sp.finishedOpts",

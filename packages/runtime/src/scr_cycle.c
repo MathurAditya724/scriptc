@@ -30,6 +30,10 @@
  * traces to reusable worklists. Ordinary RC destruction and cross-generation
  * releases are separate paths. White candidates are recorded during scan
  * and filtered after outside roots settle, avoiding a separate gather walk.
+ * markGray also records the objects it grays and counts those still
+ * externally referenced (rc > 0 after the trial decrements). When none is,
+ * every gray object is garbage, which is what scan would find, so the pass
+ * whitens the recorded set and skips scan.
  *
  * ── generations ──────────────────────────────────────────────────────
  * A pass costs O(objects reachable from its candidates), and a candidate
@@ -180,6 +184,9 @@ typedef struct {
   ScrVec restore_pending;
   ScrVec white;
   ScrVec xgen;
+  ScrVec xgen_edges;
+  void *gray_holder;
+  ScrVec pub_holes[SCR_CYC_NGENS];
   unsigned gen_limit;
   size_t live_after[SCR_CYC_NGENS];
   unsigned char growth_shift[SCR_CYC_NGENS];
@@ -187,6 +194,8 @@ typedef struct {
   unsigned backlog_shift[SCR_CYC_NGENS];
   size_t nbuffered;
   size_t trigger;
+  size_t alloc_trigger;
+  size_t gray_referenced;
   size_t scheduled_mature_age;
   size_t xg_freed;
   size_t mature_dead;
@@ -206,6 +215,9 @@ static _Thread_local ScrCycThread scr_cyc_thread = {.gen_limit = SCR_CYC_OLD};
 #define scr_restore_pending (scr_cyc_thread.restore_pending)
 #define scr_white (scr_cyc_thread.white)
 #define scr_xgen (scr_cyc_thread.xgen)
+#define scr_xgen_edges (scr_cyc_thread.xgen_edges)
+#define scr_gray_holder (scr_cyc_thread.gray_holder)
+#define scr_pub_holes (scr_cyc_thread.pub_holes)
 #define scr_gen_limit (scr_cyc_thread.gen_limit)
 #define scr_cyc_live_after (scr_cyc_thread.live_after)
 #define scr_cyc_growth_shift (scr_cyc_thread.growth_shift)
@@ -213,6 +225,8 @@ static _Thread_local ScrCycThread scr_cyc_thread = {.gen_limit = SCR_CYC_OLD};
 #define scr_cyc_backlog_shift (scr_cyc_thread.backlog_shift)
 #define scr_cyc_nbuffered (scr_cyc_thread.nbuffered)
 #define scr_cyc_trigger (scr_cyc_thread.trigger)
+#define scr_cyc_alloc_trigger (scr_cyc_thread.alloc_trigger)
+#define scr_gray_referenced (scr_cyc_thread.gray_referenced)
 #define scr_cyc_scheduled_mature_age (scr_cyc_thread.scheduled_mature_age)
 #define scr_xg_freed (scr_cyc_thread.xg_freed)
 #define scr_cyc_mature_dead (scr_cyc_thread.mature_dead)
@@ -343,10 +357,19 @@ static SCR_TL ScrVec scr_restore_pending;
 static SCR_TL ScrVec scr_white;
 #endif
 
-/* Cross-generation targets pinned by the white set (see scr_xg_pin_visit),
- * one entry per skipped edge. Drained after the teardowns. */
+/* Cross-generation targets pinned by the white set (see "cross-generation
+ * edges"), one entry per skipped edge. Drained after the teardowns. */
 #ifndef SCR_WORKERS
 static SCR_TL ScrVec scr_xgen;
+#endif
+
+/* Edges from a gray object into a generation the pass does not walk, as
+ * (holder, target) pairs, recorded by markGray (each gray object is traced
+ * there exactly once, so each edge appears once), and the object markGray is
+ * tracing. */
+#ifndef SCR_WORKERS
+static SCR_TL ScrVec scr_xgen_edges;
+static SCR_TL void *scr_gray_holder;
 #endif
 
 /* Objects above this generation are invisible to the pass in flight. */
@@ -359,6 +382,13 @@ static size_t scr_cyc_pass(unsigned gen_limit);
 /* ── when to collect ──────────────────────────────────────────────────── */
 
 #define SCR_CYC_NURSERY_CANDIDATES 256 /* nursery trigger */
+/* A release that buffers a candidate also runs a pass once the live
+ * cycle-headered count has grown by this much since the last one, however
+ * few candidates there are: a dead structure is usually reachable from a
+ * single candidate (its root), so counting candidates alone lets thousands
+ * of dead structures pile up, and the pass then walks them long after they
+ * have left the cache. */
+#define SCR_CYC_NURSERY_ALLOCATIONS 4096
 
 /* Scheduling decisions run once per pass, never per object, so they are
  * kept out of line and built for size: every executable that can release a
@@ -451,7 +481,16 @@ static size_t scr_cyc_nursery_threshold(void) {
 #ifndef SCR_WORKERS
 static SCR_TL size_t scr_cyc_nbuffered = 0;
 static SCR_TL size_t scr_cyc_trigger = 0;
+static SCR_TL size_t scr_cyc_alloc_trigger = 0;
 #endif
+/* Gray objects whose count is above zero after the trial decrements so far
+ * (see scr_mg_visit). markGray records the gray objects in scr_white while
+ * there are fewer than SCR_CYC_GRAY_LIST_MAX; a larger walk runs scan. */
+#ifndef SCR_WORKERS
+static SCR_TL size_t scr_gray_referenced = 0;
+#endif
+#define SCR_CYC_GRAY_LIST_MAX 65536
+
 
 /* Scheduled nursery passes for which at least one mature or old root was
  * waiting. A full pass resets the age; with no such backlog there is nothing
@@ -766,6 +805,60 @@ void scr_cyc_on_dead(void *obj) {
     scr_cyc_scheduled_mature_age = 0;
 }
 
+/* Publication (scr_publish.c) takes buffered objects out of their candidate
+ * buffers while it walks them, when their headers are in cache: the slot is
+ * cleared, the header unbuffered and the slot's index recorded in
+ * scr_pub_holes. Nothing buffers or collects during the walk, so the slots
+ * stay where they are until the publish ends and scr_cyc_pub_fill closes
+ * the ones still empty. A refused publish first puts each object back
+ * (scr_cyc_pub_restore). */
+#ifndef SCR_WORKERS
+static SCR_TL ScrVec scr_pub_holes[SCR_CYC_NGENS];
+#endif
+
+uint32_t scr_cyc_pub_take(void *obj) {
+  ScrCycHdr *h = scr_cyc_hdr(obj);
+  unsigned gen = scr_cyc_gen(h);
+  uint32_t index = scr_cyc_buf_index(h);
+  scr_roots[gen].v[index] = NULL;
+  scr_cyc_clear_buffered(h);
+  scr_cyc_push(&scr_pub_holes[gen], (void *)(uintptr_t)index);
+  return index;
+}
+
+void scr_cyc_pub_restore(void *obj, uint32_t index) {
+  ScrCycHdr *h = scr_cyc_hdr(obj);
+  scr_cyc_set_buffered(h, index);
+  scr_roots[scr_cyc_gen(h)].v[index] = obj;
+}
+
+/* Each empty slot takes the buffer's last entry, after the empty slots at
+ * the end are dropped: one move or drop per slot, with scr_cyc_on_dead's
+ * accounting for each. */
+void scr_cyc_pub_fill(void) {
+  bool older = false;
+  for (unsigned gen = 0; gen < SCR_CYC_NGENS; gen++) {
+    ScrVec *holes = &scr_pub_holes[gen], *b = &scr_roots[gen];
+    size_t before = b->n;
+    for (size_t k = 0; k < holes->n; k++) {
+      size_t i = (uintptr_t)holes->v[k];
+      while (b->n > 0 && b->v[b->n - 1] == NULL) b->n--;
+      if (i < b->n && b->v[i] == NULL) {
+        void *last = b->v[--b->n];
+        b->v[i] = last;
+        scr_cyc_set_buffered(scr_cyc_hdr(last), (uint32_t)i);
+      }
+    }
+    holes->n = 0;
+    size_t closed = before - b->n;
+    scr_cyc_nbuffered -= closed;
+    /* A death must not consume room reserved for a future candidate. */
+    scr_cyc_trigger -= closed;
+    if (closed && gen != SCR_CYC_NURSERY) older = true;
+  }
+  if (older && !scr_cyc_older_backlog()) scr_cyc_scheduled_mature_age = 0;
+}
+
 /* Every release that leaves an unbuffered object alive lands here (the
  * emitted and inline release paths test `buffered` first), so it stays what
  * it has always been: buffer inline, then one compare. */
@@ -782,7 +875,7 @@ void scr_cyc_on_release(void *obj) {
   scr_cyc_nbuffered++;
   /* Never re-entered: a teardown's releases of untraced children can buffer
    * new candidates mid-collection, but they only wait for the next pass. */
-  if (!scr_collecting && scr_cyc_nbuffered >= scr_cyc_trigger)
+  if (!scr_collecting && (scr_cyc_nbuffered >= scr_cyc_trigger || scr_cyc_live >= scr_cyc_alloc_trigger))
     scr_cyc_collect_due();
 }
 
@@ -801,19 +894,33 @@ void scr_cyc_on_release(void *obj) {
  * it is never dereferenced. The ABI already carries it through every edge. */
 static void scr_mark_gray(void *obj, uintptr_t depth);
 static void scr_mg_visit(void *child, void *ctx) {
-  if (SCR_CYC_SKIP(child)) return;
-  SCR_RC(child) -= 1;
+  if (child == NULL || SCR_RC(child) == SIZE_MAX) return;
+  if (scr_cyc_gen(scr_cyc_hdr(child)) > scr_gen_limit) {
+    scr_cyc_push(&scr_xgen_edges, scr_gray_holder);
+    scr_cyc_push(&scr_xgen_edges, child);
+    return;
+  }
+  size_t rc = --SCR_RC(child);
+  if (scr_cyc_color(scr_cyc_hdr(child)) == SCR_CYC_GRAY) {
+    if (rc == 0) scr_gray_referenced--;
+    return;
+  }
   scr_mark_gray(child, (uintptr_t)ctx);
 }
 static void scr_mark_gray(void *obj, uintptr_t depth) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
   if (scr_cyc_color(h) == SCR_CYC_GRAY) return;
   scr_cyc_set_color(h, SCR_CYC_GRAY);
+  if (scr_white.n < SCR_CYC_GRAY_LIST_MAX) scr_cyc_push(&scr_white, obj);
+  if (SCR_RC(obj) > 0) scr_gray_referenced++;
   if (depth == SCR_CYC_WALK_DEPTH) {
     scr_cyc_push(&scr_pending, obj);
     return;
   }
+  void *holder = scr_gray_holder;
+  scr_gray_holder = obj;
   scr_cyc_type(h)->trace(obj, scr_mg_visit, (void *)(depth + 1));
+  scr_gray_holder = holder;
 }
 
 static void scr_scan_black(void *obj, uintptr_t depth);
@@ -885,21 +992,15 @@ static void scr_scan(void *obj, uintptr_t depth) {
  * children can reach a cycle-headered object (that is how they re-buffer
  * survivors), so without it a target could be freed before the drain runs.
  *
- * One entry per skipped edge, so several edges sharing a target settle it
- * once each.
+ * markGray records each such edge as it skips it (scr_xgen_edges), so the
+ * white set needs no second trace to find them: settle pins the targets of
+ * the recorded edges whose holder is about to be freed. One entry per
+ * skipped edge, so several edges sharing a target settle it once each.
  *
  * Nothing pinned here can be in the white set: a skipped older object's
  * edges were never trial-deleted, so anything it references kept that count
  * and was scan-blacked rather than whitened — the same conservatism that
  * makes restricting the walk sound in the first place. */
-static SCR_CYC_COMPACT void scr_xg_pin_visit(void *child, void *ctx) {
-  (void)ctx;
-  if (child == NULL || SCR_RC(child) == SIZE_MAX) return;
-  if (scr_cyc_gen(scr_cyc_hdr(child)) <= scr_gen_limit) return; /* markGray had it */
-  SCR_RC(child) += 1; /* pin across the teardowns */
-  scr_cyc_push(&scr_xgen, child);
-}
-
 /* Freed by the cross-generation drain, for the caller's fixpoint. */
 #ifndef SCR_WORKERS
 static SCR_TL size_t scr_xg_freed = 0;
@@ -956,12 +1057,13 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit) {
    * `gen` still holds the values the walk filtered on (promotion below is
    * what changes them). A full pass skips no edge, so it pins nothing. */
   scr_xgen.n = 0;
-  if (gen_limit < SCR_CYC_OLD) {
-    for (size_t i = 0; i < scr_white.n; i++) {
-      void *obj = scr_white.v[i];
-      scr_cyc_type(scr_cyc_hdr(obj))->trace(obj, scr_xg_pin_visit, NULL);
-    }
+  for (size_t i = 0; i < scr_xgen_edges.n; i += 2) {
+    if (scr_cyc_color(scr_cyc_hdr(scr_xgen_edges.v[i])) != SCR_CYC_DOOMED) continue;
+    void *target = scr_xgen_edges.v[i + 1];
+    SCR_RC(target) += 1; /* pin across the teardowns */
+    scr_cyc_push(&scr_xgen, target);
   }
+  scr_xgen_edges.n = 0;
 
   /* Every phase that consults SCR_CYC_SKIP has run, so the recorded
    * survivors can graduate now, one generation each. They are externally
@@ -1037,6 +1139,7 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit) {
    * resync from the buffers themselves and re-arm. */
   scr_cyc_nbuffered = scr_cyc_buffered();
   scr_cyc_trigger = scr_cyc_nbuffered + scr_cyc_nursery_threshold();
+  scr_cyc_alloc_trigger = scr_cyc_live + SCR_CYC_NURSERY_ALLOCATIONS;
   scr_collecting = false;
   return freed;
 }
@@ -1063,10 +1166,18 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
     }
     scr_roots[g].n = 0;
   }
+  scr_xgen_edges.n = 0;
+  scr_white.n = 0;
+  scr_gray_referenced = 0;
   for (size_t i = 0; i < scr_cands.n; i++) scr_mark_gray(scr_cands.v[i], 0);
   while (scr_pending.n) {
     void *obj = scr_pending.v[--scr_pending.n];
+    scr_gray_holder = obj;
     scr_cyc_type(scr_cyc_hdr(obj))->trace(obj, scr_mg_visit, NULL);
+  }
+  if (scr_gray_referenced == 0 && scr_white.n < SCR_CYC_GRAY_LIST_MAX) {
+    for (size_t i = 0; i < scr_white.n; i++) scr_cyc_set_color(scr_cyc_hdr(scr_white.v[i]), SCR_CYC_WHITE);
+    return scr_cyc_settle(gen_limit);
   }
 
   scr_white.n = 0;
@@ -1105,7 +1216,8 @@ void scr_collect_cycles(void) {
 void scr_cyc_context_cleanup(void) {
   scr_collect_cycles();
   ScrVec *vectors[] = {&scr_roots[SCR_CYC_NURSERY], &scr_roots[SCR_CYC_MATURE],
-    &scr_roots[SCR_CYC_OLD], &scr_cands, &scr_promote, &scr_pending, &scr_restore_pending, &scr_white, &scr_xgen};
+    &scr_roots[SCR_CYC_OLD], &scr_cands, &scr_promote, &scr_pending, &scr_restore_pending, &scr_white, &scr_xgen, &scr_xgen_edges,
+    &scr_pub_holes[SCR_CYC_NURSERY], &scr_pub_holes[SCR_CYC_MATURE], &scr_pub_holes[SCR_CYC_OLD]};
   for (size_t i = 0; i < sizeof vectors / sizeof vectors[0]; i++) {
     free(vectors[i]->v);
     *vectors[i] = (ScrVec){0};

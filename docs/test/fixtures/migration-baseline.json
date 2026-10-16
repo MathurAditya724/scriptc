@@ -280,6 +280,22 @@
       {
         "text": "Cost",
         "id": "cost"
+      },
+      {
+        "text": "InternTable",
+        "id": "interntable"
+      },
+      {
+        "text": "Methods",
+        "id": "methods"
+      },
+      {
+        "text": "Thread behavior",
+        "id": "thread-behavior"
+      },
+      {
+        "text": "Memory",
+        "id": "memory"
       }
     ]
   },

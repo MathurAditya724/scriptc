@@ -26,6 +26,9 @@ export function pairsSnapshotHelper(
     callArgs?: IrExpr[];
     indexValueOk?: (indexValue: IrType) => boolean;
     lookupValue?: "http.reqHeaderValues" | "http.reqTrailerValues";
+    /** A key whose value is the string[] arm, read through `libCall`
+     * (set-cookie in `{ ...req.headers }`), when the slot union has one. */
+    listKey?: { name: string; libCall: IrLibFn };
   },
 ): string | null {
   const shape = lowerer.shapes.get(shapeId);
@@ -39,6 +42,10 @@ export function pairsSnapshotHelper(
     const arrayValue = lowerer.withUndefinedArm(arrayOf(STRING));
     if (arrayValue.kind !== "union" || indexValue.unionId !== arrayValue.unionId) return null;
   } else if (stringTag < 0) return null;
+  const listTag =
+    options.listKey && !options.lookupValue
+      ? lowerer.armTag(indexValue.unionId, arrayOf(STRING))
+      : -1;
   const key = `${options.keyPrefix}.snapshot:${shapeId}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
@@ -129,6 +136,52 @@ export function pairsSnapshotHelper(
           loc,
         },
         body: [
+          ...(listTag >= 0
+            ? [
+                {
+                  kind: "if" as const,
+                  cond: {
+                    kind: "strEq" as const,
+                    negated: false,
+                    left: pairAt(0),
+                    right: {
+                      kind: "strLit" as const,
+                      value: options.listKey!.name,
+                      type: STRING,
+                      loc,
+                    },
+                    type: BOOL,
+                    loc,
+                  },
+                  then: [
+                    {
+                      kind: "recordKeySet" as const,
+                      obj: varRef("out.0", recordType, loc),
+                      shapeId,
+                      key: pairAt(0),
+                      value: {
+                        kind: "unionWrap" as const,
+                        unionId: indexValue.unionId,
+                        tag: listTag,
+                        value: {
+                          kind: "libCall" as const,
+                          fn: options.listKey!.libCall,
+                          args: [...(options.callArgs ?? []), pairAt(0)],
+                          type: arrayOf(STRING),
+                          loc,
+                        },
+                        type: indexValue,
+                        loc,
+                      },
+                      loc,
+                    },
+                    { kind: "continue" as const, loc },
+                  ],
+                  else_: null,
+                  loc,
+                },
+              ]
+            : []),
           {
             kind: "recordKeySet",
             obj: varRef("out.0", recordType, loc),

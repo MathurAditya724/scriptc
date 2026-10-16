@@ -1159,7 +1159,7 @@ static ScrDyn *scr_native_map_pack(void *ptr);
  * the materialized view is released. */
 static ScrDyn *scr_dyn_discriminant(const ScrDyn *d, const ScrStr *key) {
   if (d && d->kind == SCR_DYN_TYPED_REF) {
-    ScrDyn *view = scr_dyn_typed_ref_materialize(d);
+    ScrDyn *view = scr_dyn_visit_view(d);
     ScrDyn *out = scr_dyn_discriminant(view, key);
     scr_dyn_release(view);
     return out;
@@ -2492,6 +2492,12 @@ static bool scr_dyn_name_in_strs(const ScrStr *key, ScrStr *const *names, size_t
   return false;
 }
 
+bool scr_dyn_typed_ref_class_has(const ScrDyn *d, const ScrStr *key) {
+  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return false;
+  const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
+  return ops && scr_dyn_name_in_strs(key, ops->names, ops->count);
+}
+
 static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d) {
   if (!d->v.typed_ref.record || d->v.typed_ref.materialized) return NULL;
   return (const ScrDynTypedRecordOps *)(const void *)d->v.typed_ref.array;
@@ -2499,10 +2505,16 @@ static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d) {
 
 static bool scr_typed_ref_record_field(const ScrDynTypedRecordOps *ops, const ScrStr *key,
                                        size_t *out) {
+  /* Compiled reads pass the interned literal the field names also use. */
+  for (size_t i = 0; i < ops->count; i++) {
+    if (ops->names[i] == key) {
+      *out = i;
+      return true;
+    }
+  }
   for (size_t i = 0; i < ops->count; i++) {
     const ScrStr *name = ops->names[i];
-    if (name == key ||
-        (name->len == key->len && memcmp(name->data, key->data, key->len) == 0)) {
+    if (name->len == key->len && memcmp(name->data, key->data, key->len) == 0) {
       *out = i;
       return true;
     }
@@ -2515,7 +2527,7 @@ static ScrDyn *scr_typed_ref_record_get(const ScrDyn *d, const ScrStr *key) {
   const ScrDynTypedRecordOps *ops = scr_typed_ref_record_ops(d);
   size_t index;
   if (!ops || !scr_typed_ref_record_field(ops, key, &index)) return NULL;
-  if (!ops->has(d->v.typed_ref.ptr, index)) return NULL;
+  if (!ops->fixed && !ops->has(d->v.typed_ref.ptr, index)) return NULL;
   return ops->get(d->v.typed_ref.ptr, index);
 }
 
@@ -2549,6 +2561,19 @@ ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index) {
 }
 
 SCR_TL const ScrEventRefHooks *scr_event_ref_hooks = NULL;
+
+/* d[index] for a numeric index without forming the key string (see the
+ * header): dyn arrays answer in-range elements, and live array capsules
+ * their present and explicitly undefined elements. */
+ScrDyn *scr_dyn_index_get(const ScrDyn *d, double index) {
+  if (!(index >= 0 && index < 4294967295.0)) return NULL;
+  size_t i = (size_t)index;
+  if ((double)i != index) return NULL;
+  if (d->kind == SCR_DYN_ARR) return i < d->v.arr.len ? scr_dyn_retain(d->v.arr.items[i]) : NULL;
+  if (d->kind != SCR_DYN_TYPED_REF || scr_event_ref_hooks || !scr_dyn_typed_ref_array_ops(d))
+    return NULL;
+  return scr_dyn_typed_ref_element(d, i);
+}
 
 ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
   ScrDyn *view = scr_dyn_typed_ref_materialize(d);
@@ -3105,6 +3130,12 @@ const char *scr_dyn_specific_type(const ScrDyn *cb, char *detail, size_t cap) {
   case SCR_DYN_PROMISE: d = "an instance of Promise"; break;
 
   case SCR_DYN_TYPED_REF: {
+    /* A class instance's view has no prototype; Node names its class. */
+    const ScrStr *class_name = scr_dyn_typed_ref_class_name(cb);
+    if (class_name && class_name->len) {
+      snprintf(detail, cap, "an instance of %.*s", (int)class_name->len, class_name->data);
+      break;
+    }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(cb);
     const char *specific = scr_dyn_specific_type(materialized, detail, cap);
     if (specific != detail) snprintf(detail, cap, "%s", specific);
@@ -5140,7 +5171,9 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     d->v.obj.entries[d->v.obj.len - 1].enumerable = e->message_enumerable;
   }
   if (e->stack) scr_dyn_obj_set(d, "stack", 5, scr_dyn_new_str(e->stack));
-  if (e->system_call) scr_dyn_obj_set(d, "errno", 5, scr_dyn_new_num(e->system_errno));
+  /* errno rides fs errors (with syscall) and zlib errors (without). */
+  if (e->system_call || e->system_errno != 0)
+    scr_dyn_obj_set(d, "errno", 5, scr_dyn_new_num(e->system_errno));
   if (e->code) scr_dyn_obj_set(d, "code", 4, scr_dyn_new_str(e->code));
   if (e->system_call) scr_dyn_obj_set(d, "syscall", 7, scr_dyn_new_str(e->system_call));
   if (e->system_path) scr_dyn_obj_set(d, "path", 4, scr_dyn_new_str(e->system_path));
@@ -6498,6 +6531,299 @@ void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *
    * and read the path off e.message; the uncaught line ("Uncaught
    * TypeError: expected ...") is byte-identical to the old string form. */
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+}
+
+/* ── recursive shapes: cycle-aware dynMatch and the dynCheck memo ──────
+ * The tables are open-addressed sets keyed by a dyn value's address and a
+ * generated helper's address. A visit session lasts while any matcher or
+ * builder of a type holding a recursive shape runs; the memo and the
+ * capsule views are dropped when the outermost one returns. */
+typedef struct {
+  ScrDyn *d; /* NULL marks an empty slot */
+  const void *helper;
+  void *value;
+} ScrDynVisit;
+
+typedef struct {
+  ScrDynVisit *slots;
+  size_t cap; /* zero or a power of two */
+  size_t count;
+} ScrDynVisitSet;
+
+/* Entries in the order they were added; each holds a reference to its dyn
+ * value, so the address cannot be reused by another value before the
+ * session ends. */
+typedef struct {
+  ScrDynVisit *items;
+  size_t len;
+  size_t cap;
+} ScrDynVisitLog;
+
+static SCR_TL size_t scr_dyn_visit_depth;
+/* The (value, matcher) pairs being checked further up the stack. */
+static SCR_TL ScrDynVisitSet scr_dyn_matching;
+/* The records and arrays built so far in this session (borrowed: the
+ * conversion's result owns them). */
+static SCR_TL ScrDynVisitSet scr_dyn_built;
+static SCR_TL ScrDynVisitLog scr_dyn_built_log;
+/* Whether the next scr_dyn_build_add records its value (set by enter). */
+static SCR_TL bool scr_dyn_build_track;
+/* The capsules materialized in this session. Their views are not
+ * refreshed again until it ends: a refresh replaces the view's contents,
+ * which an outer visit may still be reading. */
+static SCR_TL ScrDynVisitSet scr_dyn_viewed;
+static SCR_TL ScrDynVisitLog scr_dyn_viewed_log;
+/* The member value a matcher or builder read last and holds one
+ * reference to until it calls scr_dyn_release_held. */
+static SCR_TL const ScrDyn *scr_dyn_visit_held;
+
+/* Tables up to this many slots stay allocated for the next session. */
+#define SCR_DYN_VISIT_KEEP 4096
+
+static size_t scr_dyn_visit_slot(const ScrDynVisitSet *s, const ScrDyn *d, const void *helper) {
+  uint64_t h = (uint64_t)(uintptr_t)d * 0x9E3779B97F4A7C15ull;
+  h ^= (uint64_t)(uintptr_t)helper * 0xC2B2AE3D27D4EB4Full;
+  h ^= h >> 29;
+  return (size_t)h & (s->cap - 1);
+}
+
+static ScrDynVisit *scr_dyn_visit_find(const ScrDynVisitSet *s, const ScrDyn *d,
+                                       const void *helper) {
+  if (s->count == 0) return NULL;
+  for (size_t i = scr_dyn_visit_slot(s, d, helper);; i = (i + 1) & (s->cap - 1)) {
+    ScrDynVisit *e = &s->slots[i];
+    if (!e->d) return NULL;
+    if (e->d == d && e->helper == helper) return e;
+  }
+}
+
+static void scr_dyn_visit_put(ScrDynVisitSet *s, ScrDynVisit v) {
+  if ((s->count + 1) * 2 > s->cap) {
+    size_t cap = s->cap ? s->cap * 2 : 64;
+    ScrDynVisit *slots = calloc(cap, sizeof *slots);
+    if (!slots) scr_json_oom();
+    ScrDynVisitSet grown = {slots, cap, 0};
+    for (size_t i = 0; i < s->cap; i++)
+      if (s->slots[i].d) scr_dyn_visit_put(&grown, s->slots[i]);
+    free(s->slots);
+    *s = grown;
+  }
+  size_t i = scr_dyn_visit_slot(s, v.d, v.helper);
+  while (s->slots[i].d) i = (i + 1) & (s->cap - 1);
+  s->slots[i] = v;
+  s->count++;
+}
+
+/* Removes an entry and shifts the following run back over its slot, so
+ * lookups never need tombstones. */
+static void scr_dyn_visit_remove(ScrDynVisitSet *s, ScrDynVisit *e) {
+  size_t mask = s->cap - 1;
+  size_t i = (size_t)(e - s->slots);
+  for (size_t j = (i + 1) & mask; s->slots[j].d; j = (j + 1) & mask) {
+    size_t home = scr_dyn_visit_slot(s, s->slots[j].d, s->slots[j].helper);
+    bool stays = i <= j ? (i < home && home <= j) : (i < home || home <= j);
+    if (stays) continue;
+    s->slots[i] = s->slots[j];
+    i = j;
+  }
+  s->slots[i].d = NULL;
+  s->count--;
+}
+
+/* Adds a logged entry; the log takes a reference to its dyn value. */
+static void scr_dyn_visit_record(ScrDynVisitSet *s, ScrDynVisitLog *log, const ScrDyn *d,
+                                 const void *helper, void *value) {
+  if (log->len == log->cap) {
+    size_t cap = log->cap ? log->cap * 2 : 32;
+    ScrDynVisit *grown = realloc(log->items, cap * sizeof *grown);
+    if (!grown) scr_json_oom();
+    log->items = grown;
+    log->cap = cap;
+  }
+  ScrDynVisit v = {scr_dyn_retain((ScrDyn *)d), helper, value};
+  log->items[log->len++] = v;
+  scr_dyn_visit_put(s, v);
+}
+
+/* Empties a logged set and releases the log's references. */
+static void scr_dyn_visit_clear(ScrDynVisitSet *s, ScrDynVisitLog *log) {
+  size_t len = log->len;
+  if (len == 0) return;
+  log->len = 0;
+  if (s->cap > SCR_DYN_VISIT_KEEP) {
+    free(s->slots);
+    *s = (ScrDynVisitSet){NULL, 0, 0};
+  } else if (len * 8 < s->cap) {
+    /* Find every slot before clearing any, so each lookup still sees the
+     * probe run it was inserted into. */
+    for (size_t i = 0; i < len; i++)
+      log->items[i].value = scr_dyn_visit_find(s, log->items[i].d, log->items[i].helper);
+    for (size_t i = 0; i < len; i++) ((ScrDynVisit *)log->items[i].value)->d = NULL;
+    s->count = 0;
+  } else {
+    memset(s->slots, 0, s->cap * sizeof *s->slots);
+    s->count = 0;
+  }
+  for (size_t i = 0; i < len; i++) scr_dyn_release(log->items[i].d);
+  if (log->cap > SCR_DYN_VISIT_KEEP) {
+    free(log->items);
+    *log = (ScrDynVisitLog){NULL, 0, 0};
+  }
+}
+
+static void scr_dyn_visit_exit(void) {
+  if (--scr_dyn_visit_depth != 0) return;
+  scr_dyn_visit_clear(&scr_dyn_built, &scr_dyn_built_log);
+  scr_dyn_visit_clear(&scr_dyn_viewed, &scr_dyn_viewed_log);
+}
+
+/* Getters and proxy traps run user code, which may start conversions of
+ * its own and catch their failures. It runs with the session set aside,
+ * so its conversions use their own tables and leave the session's
+ * entries alone. */
+typedef struct {
+  size_t depth;
+  ScrDynVisitSet matching, built, viewed;
+  ScrDynVisitLog built_log, viewed_log;
+  bool track;
+  const ScrDyn *held;
+} ScrDynVisitState;
+
+static void scr_dyn_visit_suspend(ScrDynVisitState *saved) {
+  *saved = (ScrDynVisitState){scr_dyn_visit_depth, scr_dyn_matching, scr_dyn_built,
+                              scr_dyn_viewed, scr_dyn_built_log, scr_dyn_viewed_log,
+                              scr_dyn_build_track, scr_dyn_visit_held};
+  scr_dyn_visit_depth = 0;
+  scr_dyn_matching = scr_dyn_built = scr_dyn_viewed = (ScrDynVisitSet){NULL, 0, 0};
+  scr_dyn_built_log = scr_dyn_viewed_log = (ScrDynVisitLog){NULL, 0, 0};
+  scr_dyn_visit_held = NULL;
+}
+
+static void scr_dyn_visit_resume(const ScrDynVisitState *saved) {
+  free(scr_dyn_matching.slots);
+  free(scr_dyn_built.slots);
+  free(scr_dyn_viewed.slots);
+  free(scr_dyn_built_log.items);
+  free(scr_dyn_viewed_log.items);
+  scr_dyn_visit_depth = saved->depth;
+  scr_dyn_matching = saved->matching;
+  scr_dyn_built = saved->built;
+  scr_dyn_viewed = saved->viewed;
+  scr_dyn_built_log = saved->built_log;
+  scr_dyn_viewed_log = saved->viewed_log;
+  scr_dyn_build_track = saved->track;
+  scr_dyn_visit_held = saved->held;
+}
+
+/* Calls a getter for a member read, outside any visit session. */
+static ScrDyn *scr_dyn_visit_call_getter(ScrDyn *getter) {
+  if (scr_dyn_visit_depth == 0) return scr_dyn_call(getter, NULL, 0, "getter");
+  ScrDynVisitState saved;
+  scr_dyn_visit_suspend(&saved);
+  ScrDyn *result = scr_dyn_call(getter, NULL, 0, "getter");
+  scr_dyn_visit_resume(&saved);
+  return result;
+}
+
+/* A proxy's get trap for a member read, outside any visit session. */
+static ScrDyn *scr_dyn_visit_proxy_get(const ScrDyn *d, ScrStr *name) {
+  if (scr_dyn_visit_depth == 0) return scr_dyn_proxy_get(d, name);
+  ScrDynVisitState saved;
+  scr_dyn_visit_suspend(&saved);
+  ScrDyn *result = scr_dyn_proxy_get(d, name);
+  scr_dyn_visit_resume(&saved);
+  return result;
+}
+
+ScrDyn *scr_dyn_obj_read_held(const ScrDyn *d, const char *key, size_t key_len) {
+  ScrDyn *value = scr_dyn_obj_read(d, key, key_len);
+  scr_dyn_visit_held = value;
+  return value;
+}
+
+void scr_dyn_release_held(ScrDyn *d) {
+  if (scr_dyn_visit_held == d) scr_dyn_visit_held = NULL;
+  scr_dyn_release(d);
+}
+
+/* Whether a visit can reach d again. A dyn value with a single reference,
+ * not counting the one a member read holds, is reached once: that
+ * reference is the edge or holder this visit came through. Reaching a
+ * value twice takes two references. */
+static bool scr_dyn_visit_shared(const ScrDyn *d) {
+  if (!d) return false;
+  if (d->rc == SIZE_MAX) return true;
+  return d->rc - (scr_dyn_visit_held == d ? 1 : 0) >= 2;
+}
+
+bool scr_dyn_match_visit(const ScrDyn *d, const void *matcher, bool (*body)(const ScrDyn *)) {
+  bool shared = matcher && scr_dyn_visit_shared(d);
+  /* Inside an open session, an untracked visit needs no bookkeeping: the
+   * outer visit ends the session. */
+  if (!shared && scr_dyn_visit_depth > 0) return body(d);
+  bool tracked = false;
+  if (shared) {
+    if (scr_dyn_visit_find(&scr_dyn_matching, d, matcher)) return true;
+    scr_dyn_visit_put(&scr_dyn_matching, (ScrDynVisit){(ScrDyn *)d, matcher, NULL});
+    tracked = true;
+  }
+  scr_dyn_visit_depth++;
+  bool ok = body(d);
+  if (tracked)
+    scr_dyn_visit_remove(&scr_dyn_matching, scr_dyn_visit_find(&scr_dyn_matching, d, matcher));
+  scr_dyn_visit_exit();
+  return ok;
+}
+
+void *scr_dyn_build_visit(const ScrDyn *d, const ScrDynPath *path, const void *builder,
+                          void *(*body)(const ScrDyn *, const ScrDynPath *),
+                          void *(*retain)(void *)) {
+  if (builder) {
+    ScrDynVisit *e = scr_dyn_visit_find(&scr_dyn_built, d, builder);
+    if (e) return retain(e->value);
+  }
+  scr_dyn_build_track = builder && scr_dyn_visit_shared(d);
+  /* Inside an open session, an untracked visit needs no bookkeeping: a
+   * failure reaches the outer visit, which drops what was recorded. */
+  if (!scr_dyn_build_track && scr_dyn_visit_depth > 0) return body(d, path);
+  scr_dyn_visit_depth++;
+  size_t mark = scr_dyn_built_log.len;
+  void *built = body(d, path);
+  /* A failed build has released what it built: forget those values. */
+  if (scr_exc_pending()) {
+    while (scr_dyn_built_log.len > mark) {
+      ScrDynVisit v = scr_dyn_built_log.items[--scr_dyn_built_log.len];
+      scr_dyn_visit_remove(&scr_dyn_built, scr_dyn_visit_find(&scr_dyn_built, v.d, v.helper));
+      scr_dyn_release(v.d);
+    }
+  }
+  scr_dyn_visit_exit();
+  return built;
+}
+
+void scr_dyn_build_add(const ScrDyn *d, const void *builder, void *value) {
+  if (!scr_dyn_build_track) return;
+  scr_dyn_build_track = false;
+  scr_dyn_visit_record(&scr_dyn_built, &scr_dyn_built_log, d, builder, value);
+}
+
+void scr_dyn_build_note(const ScrDyn *d, const void *builder, void *value) {
+  if (!value || scr_dyn_visit_find(&scr_dyn_built, d, builder)) return;
+  scr_dyn_visit_record(&scr_dyn_built, &scr_dyn_built_log, d, builder, value);
+}
+
+void scr_dyn_build_rekey(const ScrDyn *d, const void *builder, void *value) {
+  ScrDynVisit *e = scr_dyn_visit_find(&scr_dyn_built, d, builder);
+  if (e) e->value = value;
+}
+
+ScrDyn *scr_dyn_visit_view(const ScrDyn *capsule) {
+  if (capsule->v.typed_ref.materialized && scr_dyn_visit_find(&scr_dyn_viewed, capsule, NULL))
+    return scr_dyn_retain(capsule->v.typed_ref.materialized);
+  ScrDyn *view = scr_dyn_typed_ref_materialize(capsule);
+  if (scr_dyn_visit_depth > 0 && !scr_exc_pending())
+    scr_dyn_visit_record(&scr_dyn_viewed, &scr_dyn_viewed_log, capsule, NULL, NULL);
+  return view;
 }
 
 /* ── parser ────────────────────────────────────────────────────────────── */
@@ -7999,8 +8325,13 @@ void scr_sc_validate_options(const ScrDyn *options) {
   }
   if (tr->v.arr.len > 0) {
     /* Nothing in the static world is transferable — Node's own error for
-     * a non-transferable list member. */
-    scr_throw_domex("DataCloneError", "Found invalid value in transferList.");
+     * a non-transferable list member. A Buffer pool slab's ArrayBuffer is
+     * marked untransferable in Node, which reports it differently. */
+    const ScrDyn *first = tr->v.arr.items[0];
+    if (first && scr_array_buffer_is(first) && ((ScrBytes *)first->v.handle.ptr)->untransferable)
+      scr_throw_domex("DataCloneError", "Cannot transfer object of unsupported type.");
+    else
+      scr_throw_domex("DataCloneError", "Found invalid value in transferList.");
   }
   scr_dyn_release(transferView);
 }
@@ -8042,8 +8373,19 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up) {
     return scr_dyn_new_str(v->v.str);
   case SCR_DYN_BYTES: {
     /* A fresh byte copy; the Buffer flavor drops (Node: structuredClone
-     * of a Buffer answers a plain Uint8Array). */
-    ScrBytes *copy = scr_bytes_copy(v->v.bytes);
+     * of a Buffer answers a plain Uint8Array). A typed array view over a
+     * larger ArrayBuffer, such as a pooled Buffer, clones the whole
+     * ArrayBuffer and keeps its offset and length, as Node does. */
+    ScrBytes *src = v->v.bytes;
+    ScrBytes *copy;
+    if (src->backing && !src->is_data_view && !src->shared) {
+      ScrBytes *storage = scr_bytes_copy(src->backing);
+      copy = scr_bytes_buffer_view(storage, src->elem, scr_bytes_byte_offset(src), true,
+                                   (double)src->len);
+      scr_bytes_release(storage);
+    } else {
+      copy = scr_bytes_copy(src);
+    }
     ScrDyn *result = scr_dyn_new_bytes(copy);
     scr_bytes_release(copy);
     return result;
@@ -8128,6 +8470,16 @@ ScrDyn *scr_structured_clone_transfer_fail(void) {
   return NULL;
 }
 
+/* A literal transfer list whose first member is `first`: a Buffer pool
+ * slab's ArrayBuffer is untransferable in Node. Borrowed. */
+ScrDyn *scr_structured_clone_transfer_fail_with(const ScrDyn *first) {
+  if (scr_array_buffer_is(first) && ((ScrBytes *)first->v.handle.ptr)->untransferable) {
+    scr_throw_domex("DataCloneError", "Cannot transfer object of unsupported type.");
+    return NULL;
+  }
+  return scr_structured_clone_transfer_fail();
+}
+
 ScrDyn *scr_structured_clone_missing(void) {
   /* Node's message, verbatim (its own template double-wraps the text). */
   static const char msg[] =
@@ -8172,7 +8524,7 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
       if (!entry->getter) return scr_dyn_retain(scr_dyn_undefined());
       ScrDyn *getter = scr_dyn_retain(entry->getter);
       scr_dyn_this_push_dyn(receiver);
-      ScrDyn *result = scr_dyn_call(getter, NULL, 0, "getter");
+      ScrDyn *result = scr_dyn_visit_call_getter(getter);
       scr_dyn_this_pop();
       scr_dyn_release(getter);
       return result;
@@ -8268,7 +8620,7 @@ ScrDyn *scr_dyn_function_apply(void) {
 ScrDyn *scr_dyn_obj_read(const ScrDyn *d, const char *key, size_t key_len) {
   if (d->kind == SCR_DYN_PROXY) {
     ScrStr *name = scr_str_new(key, key_len);
-    ScrDyn *value = scr_dyn_proxy_get(d, name);
+    ScrDyn *value = scr_dyn_visit_proxy_get(d, name);
     scr_str_release(name);
     return value;
   }

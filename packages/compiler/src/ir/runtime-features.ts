@@ -39,6 +39,7 @@ export interface RuntimeFeatures {
   http2: boolean;
   tls: boolean;
   tlsCa: boolean;
+  cipher: boolean;
 }
 
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
@@ -165,6 +166,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     http2: false,
     tls: false,
     tlsCa: false,
+    cipher: false,
   };
   const keepGoing = (): boolean => stopAt === undefined || !features[stopAt];
   const expr = (node: IrExpr): boolean => {
@@ -221,18 +223,31 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn === "stream.errored" ||
         fn === "sp.finished" ||
         fn === "sp.pipeline" ||
+        fn === "sp.pipelineStages" ||
+        fn.startsWith("stream.pipelineStages") ||
         fn === "console.bind" ||
         fn === "stream.addAbortSignal" ||
         fn === "stream.addAbortSignalFn" ||
         fn.startsWith("sp.finishedOpts") ||
         fn.startsWith("sp.pipelineOpts") ||
-        fn.startsWith("stream.finishedOpts")
-      )
+        fn.startsWith("stream.finishedOpts") ||
+        fn.startsWith("zlib.stream")
+      ) {
+        // the stream unit emits through the emitter unit, also when the
+        // program constructs no stream (a pipeline of functions)
         features.stream = true;
+        features.emitter = true;
+      }
       if (fn.startsWith("zlib.")) features.zlib = true;
-      // The Readable operators (scr_stream_ops.c) await through the
-      // dyn-async unit.
-      if (fn.startsWith("readable.op")) features.dynAsync = true;
+      // The Readable operators and Readable.from over a compiled generator
+      // (scr_stream_ops.c) await through the dyn-async unit.
+      if (
+        fn.startsWith("readable.op") ||
+        fn.startsWith("readable.fromGen") ||
+        fn === "readable.fromAsyncGen" ||
+        fn === "readable.fromDone"
+      )
+        features.dynAsync = true;
       if (fn.startsWith("dc.")) features.dc = true;
       if (fn.startsWith("assert.")) features.assert = true;
       if (
@@ -304,9 +319,22 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         features.regex = true;
       }
       if (fn.startsWith("fs.watch") || fn.startsWith("watcher.")) features.fsWatch = true;
-      if (fn.startsWith("test.")) features.nodeTest = true;
+      // scr_test.c renders thrown strings in the failing-tests section with
+      // the inspect unit's string formatting.
+      if (fn.startsWith("test.")) {
+        features.nodeTest = true;
+        features.inspect = true;
+      }
       if (fn.startsWith("dgram.") || fn.startsWith("dns.")) features.dgram = true;
       if (fn.startsWith("tlsca.")) features.tlsCa = true;
+      // scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
+      // process-warning unit, and unknown output encodings render through
+      // the inspect unit.
+      if (fn === "crypto.cipherNew") {
+        features.cipher = true;
+        features.dynAsync = true;
+        features.inspect = true;
+      }
     } else {
       switch (node.kind) {
         case "regexLit":

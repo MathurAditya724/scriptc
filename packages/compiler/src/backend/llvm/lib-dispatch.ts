@@ -11,9 +11,10 @@ import { InternalCompilerError } from "../../errors.js";
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
-import { LIB_FN_SYMS, USES_TIMERS_LIB_FNS } from "./lib-shared.js";
+import { ASSERT_VERDICT_LIB_FNS, LIB_FN_SYMS, USES_TIMERS_LIB_FNS } from "./lib-shared.js";
 import { DYN_KIND } from "./dyn.js";
 import { rawBytes } from "./lib-abi.js";
+import { emitInlineAtomicsOp } from "./expr-bytes.js";
 
 export function emitAssertInspectLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -408,6 +409,9 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
           ? emitBorrowedInput(host, a)
           : host.emitExpr(a),
       );
+  // The deep comparisons' number test: computed here, with no runtime call.
+  if (e.fn === "assert.sameValue")
+    return { name: emitSameValueF64(host, args[0]!.name, args[1]!.name), type: e.type };
   const argDecls = args.map((a) => {
     const ty = host.llType(a.type);
     return ty === "i1" ? "i1 zeroext" : ty;
@@ -417,8 +421,34 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   host.declare(`declare ${retDecl} @${sym}(${argDecls.join(", ")})`);
   const argList = args.map((a, index) => `${argDecls[index]} ${a.name}`).join(", ");
   if (retTy === "void") {
+    const failing = emitAssertFailing(host, e.fn, args);
+    let passed: string | null = null;
+    if (failing !== null) {
+      const fail = B.newLabel("assert.fail");
+      passed = B.newLabel("assert.pass");
+      B.condBr(failing, fail, passed);
+      B.startBlock(fail);
+    }
+    // An Assert instance's options apply to this call only: set after the
+    // arguments are evaluated, consumed by a failure, cleared by a pass.
+    const options =
+      e.assertOptions === undefined
+        ? 0
+        : (e.assertOptions.diff === "full" ? 1 : 0) | (e.assertOptions.skipPrototype ? 2 : 0);
+    if (options !== 0) {
+      host.declare("declare void @scr_assert_set_options(i32)");
+      B.line(`call void @scr_assert_set_options(i32 ${options})`);
+    }
     B.line(`call void @${sym}(${argList})`);
+    if (options !== 0 && failing === null) {
+      host.declare("declare void @scr_assert_clear_options()");
+      B.line("call void @scr_assert_clear_options()");
+    }
     if (MAY_THROW_LIB_FNS.has(e.fn)) host.emitPendingCheck();
+    if (passed !== null) {
+      B.br(passed);
+      B.startBlock(passed);
+    }
     return { name: "", type: e.type };
   }
   const t = B.tmp();
@@ -428,6 +458,59 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   const out = host.own({ name: t, type: e.type });
   if (MAY_THROW_LIB_FNS.has(e.fn)) host.emitPendingCheck();
   return out;
+}
+
+/** SameValue over doubles, as scr_assert_same_value_f64 computes it: equal
+ * bits, or both NaN. +0 and -0 differ. */
+function emitSameValueF64(host: LlvmEmitterContext, a: string, b: string): string {
+  const B = host.B;
+  const bitsA = B.tmp();
+  const bitsB = B.tmp();
+  const equalBits = B.tmp();
+  const nanA = B.tmp();
+  const nanB = B.tmp();
+  const bothNan = B.tmp();
+  const same = B.tmp();
+  B.line(`${bitsA} = bitcast double ${a} to i64`);
+  B.line(`${bitsB} = bitcast double ${b} to i64`);
+  B.line(`${equalBits} = icmp eq i64 ${bitsA}, ${bitsB}`);
+  B.line(`${nanA} = fcmp uno double ${a}, ${a}`);
+  B.line(`${nanB} = fcmp uno double ${b}, ${b}`);
+  B.line(`${bothNan} = and i1 ${nanA}, ${nanB}`);
+  B.line(`${same} = or i1 ${equalBits}, ${bothNan}`);
+  return same;
+}
+
+/** The failure test of an assertion call that returns at once when the
+ * assertion passes, or null for other calls. Result calls carry their
+ * verdict; strictEqual over numbers and booleans compares here with the
+ * runtime's test: SameValue (equal bits, or both NaN) and `==`. */
+function emitAssertFailing(
+  host: LlvmEmitterContext,
+  fn: string,
+  args: readonly LlValue[],
+): string | null {
+  const B = host.B;
+  const negatedIndex = ASSERT_VERDICT_LIB_FNS.get(fn);
+  if (negatedIndex !== undefined) {
+    const failing = B.tmp();
+    const verdict = args[0]!.name;
+    if (negatedIndex === null) B.line(`${failing} = xor i1 ${verdict}, true`);
+    else B.line(`${failing} = icmp eq i1 ${verdict}, ${args[negatedIndex]!.name}`);
+    return failing;
+  }
+  if (fn !== "assert.eqF64" && fn !== "assert.eqBool") return null;
+  const [a, b, negated] = [args[0]!.name, args[1]!.name, args[2]!.name];
+  let same: string;
+  if (fn === "assert.eqBool") {
+    same = B.tmp();
+    B.line(`${same} = icmp eq i1 ${a}, ${b}`);
+  } else {
+    same = emitSameValueF64(host, a, b);
+  }
+  const failing = B.tmp();
+  B.line(`${failing} = icmp eq i1 ${same}, ${negated}`);
+  return failing;
 }
 
 /** Runtime string functions that only read their string arguments and keep
@@ -440,6 +523,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (e.fn === "process.nextTick") return host.emitAsyncContextLibCall(e);
   if (
     e.fn === "sp.pipeline" ||
+    e.fn === "sp.pipelineStages" ||
     e.fn.startsWith("sp.pipelineOpts") ||
     e.fn.startsWith("sp.finishedOpts")
   )
@@ -454,6 +538,14 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     // Small-value operator trees run in 64-bit registers (bigint-wrap.ts).
     const fused = emitBigIntWrap(host, e);
     if (fused) return fused;
+  }
+  // timers/promises arms the timer heap or the immediate queue, so the
+  // loop runs even when nothing awaits the promise: a pending ref'd timer
+  // keeps the process alive, as in Node.
+  if (e.fn.startsWith("tp.")) host.usesTimers = true;
+  if (e.fn === "atomics.op") {
+    const inline = emitInlineAtomicsOp(host, e);
+    if (inline) return inline;
   }
   const prefix = e.fn.slice(0, e.fn.indexOf(".")) as LibCallPrefix;
   // events.once builds typed listener adapters beside the emitter calls.

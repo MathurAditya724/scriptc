@@ -26,9 +26,9 @@
       "apiEntries": 29,
       "static": {
         "supported": 0,
-        "partial": 18,
-        "refused": 3,
-        "not-implemented": 8,
+        "partial": 23,
+        "refused": 0,
+        "not-implemented": 6,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -71,9 +71,9 @@
       "apiEntries": 99,
       "static": {
         "supported": 16,
-        "partial": 6,
+        "partial": 7,
         "refused": 0,
-        "not-implemented": 77,
+        "not-implemented": 76,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -191,9 +191,9 @@
       "apiEntries": 152,
       "static": {
         "supported": 5,
-        "partial": 25,
-        "refused": 23,
-        "not-implemented": 99,
+        "partial": 39,
+        "refused": 21,
+        "not-implemented": 87,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -746,9 +746,9 @@
       "apiEntries": 117,
       "static": {
         "supported": 0,
-        "partial": 20,
+        "partial": 42,
         "refused": 0,
-        "not-implemented": 97,
+        "not-implemented": 75,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -956,9 +956,9 @@
       "apiEntries": 94,
       "static": {
         "supported": 0,
-        "partial": 30,
-        "refused": 4,
-        "not-implemented": 60,
+        "partial": 52,
+        "refused": 12,
+        "not-implemented": 30,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -992,9 +992,22 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5510-assert-error-properties.js",
+          "tests/corpus/5511-assert-error-class.ts",
+          "tests/corpus/5512-assert-error-options.js",
+          "tests/corpus/5513-assert-deep-equal-loose.js",
+          "tests/corpus/5514-assert-deep-equal-typed.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/5516-assert-deep-equal-edges.js",
+          "tests/corpus/5517-assert-partial-deep-equal.js",
+          "tests/corpus/5518-assert-partial-deep-typed.ts",
+          "tests/corpus/5519-assert-partial-deep-typed-edges.ts",
+          "tests/corpus/5523-assert-class-options.js",
+          "tests/corpus/5524-assert-class-skip-prototype.ts",
           "tests/corpus/node24-no-error-assertions-coercion.js",
           "tests/corpus/node24-no-error-assertions.cjs",
           "tests/corpus/node24-no-error-assertions.ts",
+          "tests/diagnostics/assert-class-fences.ts",
           "tests/fixtures/node-types/no-error-assertions.ts",
           "tests/harness/project-config.test.ts"
         ]
@@ -1065,8 +1078,13 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.assert.AssertionError"
+        "status": "partial",
+        "evidence": "compiler-dedicated:assert.AssertionError",
+        "tests": [
+          "tests/corpus/5510-assert-error-properties.js",
+          "tests/corpus/5511-assert-error-class.ts",
+          "tests/corpus/5512-assert-error-options.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -1088,8 +1106,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:assert"
+        "status": "partial",
+        "evidence": "compiler-dedicated:assert.Assert",
+        "tests": [
+          "tests/corpus/5523-assert-class-options.js",
+          "tests/corpus/5524-assert-class-skip-prototype.ts",
+          "tests/diagnostics/assert-class-fences.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -1256,7 +1279,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1279,8 +1303,13 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.assert.deepEqual"
+        "status": "partial",
+        "evidence": "compiler-dedicated:assert.deepEqual",
+        "tests": [
+          "tests/corpus/5513-assert-deep-equal-loose.js",
+          "tests/corpus/5514-assert-deep-equal-typed.ts",
+          "tests/corpus/5516-assert-deep-equal-edges.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -1332,7 +1361,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1385,7 +1415,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1475,7 +1506,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1505,7 +1537,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1535,7 +1568,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1565,7 +1599,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1595,7 +1630,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1618,8 +1654,13 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.assert.notDeepEqual"
+        "status": "partial",
+        "evidence": "compiler-dedicated:assert.notDeepEqual",
+        "tests": [
+          "tests/corpus/5513-assert-deep-equal-loose.js",
+          "tests/corpus/5514-assert-deep-equal-typed.ts",
+          "tests/corpus/5516-assert-deep-equal-edges.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -1648,7 +1689,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1678,7 +1720,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1708,7 +1751,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1738,7 +1782,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1768,7 +1813,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1798,7 +1844,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1828,7 +1875,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1851,8 +1899,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:assert"
+        "status": "partial",
+        "evidence": "compiler-dedicated:assert.partialDeepStrictEqual",
+        "tests": [
+          "tests/corpus/5517-assert-partial-deep-equal.js",
+          "tests/corpus/5518-assert-partial-deep-typed.ts",
+          "tests/corpus/5519-assert-partial-deep-typed-edges.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3091,6 +3144,9 @@
           "tests/corpus/5288-blob-validation.js",
           "tests/corpus/5289-blob-read-order.ts",
           "tests/corpus/5290-blob-dynamic.js",
+          "tests/corpus/5530-buffer-pool.ts",
+          "tests/corpus/5531-buffer-pool-first-slab.ts",
+          "tests/corpus/5532-buffer-pool-first-slab-untyped.mjs",
           "tests/corpus/node24-buffer-encoding-errors.ts",
           "tests/corpus/node24-buffer-encoding.ts",
           "tests/fixtures/node-types/blob-file.ts",
@@ -5379,8 +5435,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "partial",
+        "evidence": "compiler-feature:buffer.poolSize",
+        "tests": [
+          "tests/corpus/5530-buffer-pool.ts",
+          "tests/corpus/5531-buffer-pool-first-slab.ts",
+          "tests/corpus/5532-buffer-pool-first-slab-untyped.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -19764,6 +19825,16 @@
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
           "tests/corpus/2890-crypto-static-utility.ts",
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
@@ -19779,6 +19850,7 @@
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-sha2.ts",
+          "tests/fixtures/node-types/cipher.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -20147,8 +20219,21 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.createCipheriv"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.crypto.createCipheriv",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -20170,8 +20255,21 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.createDecipheriv"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.crypto.createDecipheriv",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22117,8 +22215,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:Cipheriv",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22140,8 +22251,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:cipher.final",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22163,8 +22287,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:cipher.getAuthTag",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22186,8 +22323,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:cipher.setAAD",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22209,8 +22359,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:cipher.setAutoPadding",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22232,8 +22395,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:cipher.update",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22255,8 +22431,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:Decipheriv",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22278,8 +22467,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:decipher.final",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22301,8 +22503,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:decipher.setAAD",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22324,8 +22539,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:decipher.setAuthTag",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22347,8 +22575,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:decipher.setAutoPadding",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22370,8 +22611,21 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:decipher.update",
+        "tests": [
+          "tests/corpus/5250-cipher-aes-gcm.ts",
+          "tests/corpus/5251-cipher-aes-cbc.ts",
+          "tests/corpus/5252-cipher-aes-ctr.ts",
+          "tests/corpus/5253-cipher-chacha20-poly1305.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5255-cipher-encodings.cjs",
+          "tests/corpus/5256-cipher-deprecation.cjs",
+          "tests/corpus/5257-cipher-vectors.ts",
+          "tests/corpus/5258-cipher-handles.js",
+          "tests/corpus/5259-cipher-chunked.ts",
+          "tests/fixtures/node-types/cipher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -26244,7 +26498,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -85810,7 +86065,13 @@
           "tests/corpus/5340-readable-from-options.ts",
           "tests/corpus/5341-readable-from-dynamic.cjs",
           "tests/corpus/5342-stream-compose.ts",
-          "tests/corpus/5343-stream-compose-edges.ts"
+          "tests/corpus/5343-stream-compose-edges.ts",
+          "tests/corpus/5420-readable-from-generators.ts",
+          "tests/corpus/5421-readable-from-generators.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -85932,7 +86193,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -85962,7 +86227,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -85992,7 +86261,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -86045,7 +86318,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -86075,7 +86352,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -86105,7 +86386,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -86251,7 +86536,9 @@
         "evidence": "compiler-feature:stream.stream.Readable.from",
         "tests": [
           "tests/corpus/5340-readable-from-options.ts",
-          "tests/corpus/5341-readable-from-dynamic.cjs"
+          "tests/corpus/5341-readable-from-dynamic.cjs",
+          "tests/corpus/5420-readable-from-generators.ts",
+          "tests/corpus/5421-readable-from-generators.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -86492,7 +86779,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -86545,7 +86836,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -86575,7 +86870,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -86628,7 +86927,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -86658,7 +86961,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -86688,7 +86995,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -86834,7 +87145,9 @@
         "evidence": "compiler-feature:stream.stream.Readable.from",
         "tests": [
           "tests/corpus/5340-readable-from-options.ts",
-          "tests/corpus/5341-readable-from-dynamic.cjs"
+          "tests/corpus/5341-readable-from-dynamic.cjs",
+          "tests/corpus/5420-readable-from-generators.ts",
+          "tests/corpus/5421-readable-from-generators.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -87075,7 +87388,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -87174,7 +87491,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -87230,7 +87551,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -87260,7 +87585,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -87290,7 +87619,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -87343,7 +87676,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -87932,7 +88269,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -87962,7 +88303,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -87992,7 +88337,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -88022,7 +88371,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -88052,7 +88405,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -88082,7 +88439,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -88112,7 +88473,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -88142,7 +88507,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -88172,7 +88541,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -89587,7 +89960,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -89847,7 +90224,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -89877,7 +90258,11 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs"
+          "tests/corpus/5303-stream-finished-callback-opts.cjs",
+          "tests/corpus/5425-pipeline-generator-stage.ts",
+          "tests/corpus/5428-pipeline-generator-stages.cjs",
+          "tests/corpus/5617-pipeline-function-ends.ts",
+          "tests/corpus/5619-pipeline-function-ends.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -90154,6 +90539,13 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -90854,7 +91246,8 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91130,8 +91523,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.ctx.callCount",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91153,8 +91550,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.ctx.mockImplementation",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91176,8 +91577,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.ctx.mockImplementationOnce",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91199,8 +91604,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.ctx.resetCalls",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91222,8 +91631,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.ctx.restore",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91245,8 +91658,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.calls",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -91521,8 +91938,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.mock.fn",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92372,8 +92793,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.before",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92395,8 +92821,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.beforeEach",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92418,8 +92849,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.after",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92441,8 +92877,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.afterEach",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92513,8 +92954,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.plan",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92755,8 +93201,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.fullName",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93198,8 +93649,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.suite.skip",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93221,8 +93678,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.suite.todo",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93244,8 +93707,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.suite.only",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93397,8 +93866,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.describe.skip",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93420,8 +93895,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.describe.todo",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93443,8 +93924,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.describe.only",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93492,8 +93979,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.it.skip",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93515,8 +94008,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.it.todo",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93538,8 +94037,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.it.only",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -113631,7 +114136,15 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5376-zlib-constants.cjs",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -114114,8 +114627,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.zlib.BrotliCompress"
       },
       "anchorSource": "exact"
     },
@@ -114137,8 +114650,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.zlib.BrotliDecompress"
       },
       "anchorSource": "exact"
     },
@@ -114160,8 +114673,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.Deflate",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114183,8 +114705,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.DeflateRaw",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114206,8 +114737,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.Gunzip",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114229,8 +114769,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.Gzip",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114252,8 +114801,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.Inflate",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114275,8 +114833,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.InflateRaw",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114298,8 +114865,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.Unzip",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114321,8 +114897,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.ZlibBase",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114344,8 +114929,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.close",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114367,8 +114961,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.flush",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114390,8 +114993,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.params",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114413,8 +115025,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.reset",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114436,8 +115057,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.bytesWritten",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114510,7 +115140,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -114533,8 +115166,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.zlib.createBrotliCompress"
       },
       "anchorSource": "exact"
     },
@@ -114556,8 +115189,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.zlib.createBrotliDecompress"
       },
       "anchorSource": "exact"
     },
@@ -114579,8 +115212,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createDeflate",
+        "tests": [
+          "tests/corpus/1404-zlib-crypto-bytes.ts",
+          "tests/corpus/2921-zlib-callbacks.ts",
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114602,8 +115243,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createDeflateRaw",
+        "tests": [
+          "tests/corpus/1404-zlib-crypto-bytes.ts",
+          "tests/corpus/2921-zlib-callbacks.ts",
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114625,8 +115274,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createGunzip",
+        "tests": [
+          "tests/corpus/1404-zlib-crypto-bytes.ts",
+          "tests/corpus/2921-zlib-callbacks.ts",
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114648,8 +115305,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createGzip",
+        "tests": [
+          "tests/corpus/1404-zlib-crypto-bytes.ts",
+          "tests/corpus/2921-zlib-callbacks.ts",
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114671,8 +115336,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createInflate",
+        "tests": [
+          "tests/corpus/1404-zlib-crypto-bytes.ts",
+          "tests/corpus/2921-zlib-callbacks.ts",
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114694,8 +115367,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createInflateRaw",
+        "tests": [
+          "tests/corpus/1404-zlib-crypto-bytes.ts",
+          "tests/corpus/2921-zlib-callbacks.ts",
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114717,8 +115398,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createUnzip",
+        "tests": [
+          "tests/corpus/1404-zlib-crypto-bytes.ts",
+          "tests/corpus/2921-zlib-callbacks.ts",
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114786,8 +115475,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.zlib.brotliCompress"
       },
       "anchorSource": "exact"
     },
@@ -114832,8 +115521,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.zlib.brotliDecompress"
       },
       "anchorSource": "exact"
     },
@@ -114883,7 +115572,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -114911,7 +115603,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -114939,7 +115634,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -114967,7 +115665,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -114995,7 +115696,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115023,7 +115727,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115051,7 +115758,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115079,7 +115789,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115107,7 +115820,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115135,7 +115851,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115163,7 +115882,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115191,7 +115913,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115219,7 +115944,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115247,7 +115975,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115362,8 +116093,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.constants",
+        "tests": [
+          "tests/corpus/5376-zlib-constants.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115753,8 +116488,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.Options",
+        "tests": [
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs",
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115845,8 +116589,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.zlib.brotliCompress"
       },
       "anchorSource": "ancestor"
     },
@@ -115891,8 +116635,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.zlib.brotliDecompress"
       },
       "anchorSource": "ancestor"
     },
@@ -115942,7 +116686,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -115970,7 +116717,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -115998,7 +116748,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116026,7 +116779,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116054,7 +116810,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116082,7 +116841,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116110,7 +116872,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116138,7 +116903,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116166,7 +116934,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116194,7 +116965,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116222,7 +116996,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116250,7 +117027,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116278,7 +117058,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -116306,7 +117089,10 @@
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts"
+          "tests/corpus/3115-zlib-static-compression-levels.ts",
+          "tests/corpus/5370-zlib-stream-roundtrip.ts",
+          "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5373-zlib-stream-options.cjs"
         ]
       },
       "anchorSource": "ancestor"

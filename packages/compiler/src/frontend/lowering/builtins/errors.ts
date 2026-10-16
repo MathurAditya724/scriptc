@@ -3,6 +3,14 @@ import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { DYN, F64, type IrExpr, STRING } from "../../../ir/ir.js";
 
+const ASSERTION_ERROR_PROPERTIES: ReadonlySet<string> = new Set([
+  "actual",
+  "expected",
+  "operator",
+  "generatedMessage",
+  "diff",
+]);
+
 /** `.code` and `.cause` on an error-hierarchy receiver. The latter reads
  * the hidden dyn slot installed by constructor options. The former is NodeJS.ErrnoException's
  * member (the fallback declares the same shape): the runtime Error's
@@ -72,6 +80,27 @@ export function lowerErrorCodeProperty(
       type: DYN,
       loc: locOf(expr),
     };
+  }
+  // %AssertionError's actual, expected, operator, generatedMessage and
+  // diff are properties of the error's dyn view, read at the declared type.
+  if (
+    recvT.className === "%AssertionError" &&
+    ASSERTION_ERROR_PROPERTIES.has(expr.name.text) &&
+    lowerer.isStdlibMember(expr)
+  ) {
+    const receiver = lowerer.lowerExpr(expr.expression);
+    const loc = locOf(expr);
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? DYN;
+    return lowerer.coerceToExpected(
+      {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(receiver, DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+      declared,
+    );
   }
   const systemField = ["errno", "syscall", "path", "dest"].includes(expr.name.text);
   if (

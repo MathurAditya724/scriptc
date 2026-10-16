@@ -152,6 +152,7 @@ function validFeatures(value: unknown): value is NativeLinkFeatures {
     "nodeTest",
     "tls",
     "tlsCa",
+    "cipher",
   ].every((name) => typeof features[name] === "boolean");
 }
 

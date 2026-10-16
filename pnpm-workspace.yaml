@@ -11,3 +11,5 @@ allowBuilds:
   esbuild: true
 overrides:
   "@napi-rs/wasm-runtime": "1.1.6"
+patchedDependencies:
+  vitest@3.2.7: patches/vitest@3.2.7.patch
