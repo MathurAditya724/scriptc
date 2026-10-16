@@ -9252,6 +9252,68 @@ ScrDyn *scr_dyn_obj_read(const ScrDyn *d, const char *key, size_t key_len) {
   return scr_dyn_obj_read_receiver(d, key, key_len, d);
 }
 
+/* Read-site caches (ScrDynReadIc). A hit is exactly the first step of
+ * scr_dyn_obj_read_receiver: the receiver's own data property. The builtin
+ * Object.prototype answers through its reflection fence instead, so it
+ * never hits. Sites hold key references only on threads that filled them,
+ * and release them with the thread's other runtime state. The audit lane
+ * never fills a site, so its live-key count stays exact. */
+static SCR_TL ScrDynReadIc *scr_dyn_read_ics;
+static SCR_TL bool scr_dyn_read_ics_registered;
+
+static void scr_dyn_read_ics_reset(void) {
+  while (scr_dyn_read_ics) {
+    ScrDynReadIc *ic = scr_dyn_read_ics;
+    scr_dyn_read_ics = ic->next;
+    scr_dyn_key_release(ic->key, ic->key_len);
+    *ic = (ScrDynReadIc){0};
+  }
+  scr_dyn_read_ics_registered = false;
+}
+
+static __attribute__((noinline)) ScrDyn *scr_dyn_obj_read_ic_miss(const ScrDyn *d, const ScrStr *key,
+                                                                  ScrDynReadIc *ic) {
+#ifndef SCR_RC_AUDIT
+  ScrDynEntry *entry = d != scr_builtin_object_prototype ? scr_dyn_find_entry(d, key->data, key->len) : NULL;
+  if (entry && !entry->accessor) {
+    if (ic->key != entry->key) {
+      ((ScrDynKey *)(entry->key - offsetof(ScrDynKey, bytes)))->rc++;
+      if (ic->key) {
+        scr_dyn_key_release(ic->key, ic->key_len);
+      } else {
+        if (!scr_dyn_read_ics_registered) {
+          scr_dyn_read_ics_registered = true;
+          scr_atexit(scr_dyn_read_ics_reset);
+        }
+        ic->next = scr_dyn_read_ics;
+        scr_dyn_read_ics = ic;
+      }
+      ic->key = entry->key;
+      ic->key_len = entry->key_len;
+    }
+    ic->index = (size_t)(entry - d->v.obj.entries);
+    return scr_dyn_retain(entry->value);
+  }
+#else
+  (void)ic;
+#endif
+  return scr_dyn_obj_read_receiver(d, key->data, key->len, d);
+}
+
+/* Equal spellings usually share bytes; long keys and share-table collisions
+ * do not, and compare their bytes at the remembered position instead. */
+ScrDyn *scr_dyn_obj_read_ic(const ScrDyn *d, const ScrStr *key, ScrDynReadIc *ic) {
+  size_t index = ic->index;
+  if (index < d->v.obj.len) {
+    const ScrDynEntry *entry = &d->v.obj.entries[index];
+    if ((entry->key == ic->key ||
+         (entry->key_len == key->len && scr_key_equal(entry->key, key->data, key->len))) &&
+        !entry->accessor && d != scr_builtin_object_prototype)
+      return scr_dyn_retain(entry->value);
+  }
+  return scr_dyn_obj_read_ic_miss(d, key, ic);
+}
+
 /* Compiler-owned class property tables use their native instance as the
  * receiver of inherited accessors, retaining field updates on that instance. */
 ScrDyn *scr_dyn_bag_get(ScrDyn *bag, ScrStr *key, ScrDyn *receiver) {
