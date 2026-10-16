@@ -21,6 +21,7 @@ static void *run(void *ptr) {
   scr_shared_release(task->storage);
   ScrBytes *values = scr_bytes_buffer_view(storage, SCR_BYTES_I32, 4, true, 2);
   ScrBytes *view = scr_dataview_new(storage, 12, true, 4);
+  ScrBytes *counter_view = scr_dataview_new(storage, 4, true, 4);
   atomic_fetch_add_explicit(&ready, 1, memory_order_release);
   if (task->waiting) {
     scr_context_stop_flag(&cancel_wait);
@@ -46,11 +47,20 @@ static void *run(void *ptr) {
         ScrStr *text = scr_bytes_string(storage, 0, storage->len);
         assert(text->len == storage->len);
         scr_str_release(text);
+        /* Bulk reads and writes race with the lock-free Atomics updates of
+         * the counter's bytes; each access is atomic, so none is a data race. */
+        ScrBytes *slice = scr_bytes_slice(storage, 0, (double)storage->len);
+        assert(slice->len == storage->len && !slice->shared);
+        scr_bytes_release(slice);
+        (void)scr_dataview_get(counter_view, 0, SCR_DV_U32, true);
+        scr_bytes_release(scr_bytes_fill_num(storage, task->id, 2, 0, 4));
+        scr_bytes_release(scr_bytes_copy_within(storage, 0, 2, 4));
       }
     }
   }
   scr_bytes_release(values);
   scr_bytes_release(view);
+  scr_bytes_release(counter_view);
   scr_bytes_release(storage);
   scr_context_cleanup();
   return NULL;

@@ -3139,7 +3139,14 @@ bool scr_bytes_sort_numeric(ScrBytes *b, int32_t order) {
   size_t n = b->len;
   if (n < 2) return true;
   if (order < -1 || order > 1) scr_trap("scriptc: invalid typed array sort order\n");
-  SCR_SHARED_GUARD(b, NULL);
+  if (b->shared) {
+    /* Sort a private copy and publish every element. */
+    ScrBytes *copy = scr_bytes_snapshot(b);
+    bool sorted = scr_bytes_sort_numeric(copy, order);
+    if (sorted) scr_shared_store(b->data, copy->data, n * scr_bytes_elem_size(b->elem));
+    scr_bytes_release(copy);
+    return sorted;
+  }
   size_t width = scr_bytes_elem_size(b->elem);
   uint8_t *data = b->data;
   /* Integer elements have no NaN or -0: every order is a value order. */
@@ -3234,18 +3241,23 @@ void scr_bytes_sort_compare(ScrBytes *b, ScrClosure *f, uint32_t arity) {
   if (n < 2) return;
   if (arity > 2) scr_trap("scriptc: invalid typed array comparator\n");
   if (n > SIZE_MAX / 2 / sizeof(uint64_t)) scr_arr_oom();
+  if (b->shared) {
+    /* The comparator runs on a private copy; a completed sort publishes
+     * every element. */
+    ScrBytes *copy = scr_bytes_snapshot(b);
+    scr_bytes_sort_compare(copy, f, arity);
+    if (!scr_exc_pending()) scr_shared_store(b->data, copy->data, n * scr_bytes_elem_size(b->elem));
+    scr_bytes_release(copy);
+    return;
+  }
   uint64_t *work1 = malloc(n * sizeof(*work1)), *work2 = malloc(n * sizeof(*work2));
   if (!work1 || !work2) scr_arr_oom();
-  {
-    SCR_SHARED_GUARD(b, NULL);
-    for (size_t i = 0; i < n; i++) work1[i] = work2[i] = scr_slot_from_f64(scr_bytes_sort_load(b, i));
-  }
+  for (size_t i = 0; i < n; i++) work1[i] = work2[i] = scr_slot_from_f64(scr_bytes_sort_load(b, i));
   ScrSortCompare c = {f, NULL, arity, true, false, 0, NULL};
   scr_dyn_this_push_dyn(NULL);
   bool sorted = scr_bytes_merge_sort(work2, 0, n, work1, &c);
   scr_dyn_this_pop();
   if (sorted) {
-    SCR_SHARED_GUARD(b, NULL);
     for (size_t i = 0; i < n; i++) scr_bytes_sort_store(b, i, scr_slot_to_f64(work1[i]));
   }
   free(work1);
