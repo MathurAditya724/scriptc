@@ -1805,21 +1805,24 @@ export class ClassDynamicDispatch {
                       loc,
                     }
                   : instanceBag;
+              // A read compares the bag with the receiver and then reads it:
+              // evaluate it once, so each read retains the receiver once.
+              const bagRead = varRef("bag.0", DYN, loc);
               const fallback: IrExpr = read
                 ? {
                     kind: "ternary",
                     cond: {
                       kind: "dynScalarEq",
-                      left: bag,
+                      left: bagRead,
                       right: varRef("p.0", DYN, loc),
                       type: BOOL,
                       loc,
                     },
-                    then: { ...read, value: bag },
+                    then: { ...read, value: bagRead },
                     else_: {
                       kind: "libCall",
                       fn: "dyn.bagGet",
-                      args: [bag, read.key, varRef("p.0", DYN, loc)],
+                      args: [bagRead, read.key, varRef("p.0", DYN, loc)],
                       type: DYN,
                       loc,
                     },
@@ -1831,18 +1834,24 @@ export class ClassDynamicDispatch {
                 name: `%dyn.class.property.${this.properties.size}`,
                 params,
                 returnType: write ? VOID : DYN,
-                locals: params.map((p) => ({
-                  id: p.localId,
-                  name: p.name,
-                  type: DYN,
-                  mutable: false,
-                })),
+                locals: [
+                  ...params.map((p) => ({
+                    id: p.localId,
+                    name: p.name,
+                    type: DYN,
+                    mutable: false,
+                  })),
+                  ...(read ? [{ id: "bag.0", name: "bag", type: DYN, mutable: false }] : []),
+                ],
                 body: write
                   ? [
                       { kind: "exprStmt", expr: fallback, loc },
                       { kind: "return", value: null, loc },
                     ]
-                  : [{ kind: "return", value: fallback, loc }],
+                  : [
+                      { kind: "varDecl", localId: "bag.0", init: bag, loc },
+                      { kind: "return", value: fallback, loc },
+                    ],
                 loc,
               };
               if (!write && name === "toString" && lowerer.classes.has("%Error")) {
