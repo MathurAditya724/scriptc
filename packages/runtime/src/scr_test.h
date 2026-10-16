@@ -24,7 +24,8 @@ void scr_testctx_release(ScrTestCtx *t);
 void *scr_testctx_retain_v(void *t);
 void scr_testctx_release_v(void *t);
 void scr_test_register(ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, double flags, ScrStr *at);
-void scr_test_suite(ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, ScrStr *at);
+void scr_test_suite(ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, ScrStr *at,
+                    double flags);
 /* before/after/beforeEach/afterEach on the CURRENT registration parent
  * (`which`: 0 before, 1 after, 2 beforeEach, 3 afterEach). */
 void scr_test_hook(double which, ScrClosure *cb, double flags);
@@ -34,6 +35,10 @@ ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name, double mode, ScrStr *msg, 
 void scr_test_ctx_skip(ScrTestCtx *t, ScrStr *msg);
 void scr_test_ctx_todo(ScrTestCtx *t, ScrStr *msg);
 void scr_test_ctx_diagnostic(ScrTestCtx *t, ScrStr *msg);
+void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb, double flags);
+void scr_test_ctx_plan(ScrTestCtx *t, double count);
+void scr_test_ctx_count(ScrTestCtx *t);
+ScrStr *scr_test_ctx_full_name(ScrTestCtx *t);
 ScrStr *scr_test_ctx_name(ScrTestCtx *t); /* +1 */
 /* Main's epilogue (emitted when moduleUsesNodeTest): 1 when any non-todo
  * test failed, Node's exit contract. */

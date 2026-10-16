@@ -1367,7 +1367,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "test.register": { argTypes: [STRING, F64, STRING, null, F64, STRING], result: VOID },
   "test.registerEmpty": { argTypes: [STRING, F64, STRING, F64, STRING], result: VOID },
   "test.suite": {
-    argTypes: [STRING, F64, STRING, { kind: "func", params: [], ret: VOID }, STRING],
+    argTypes: [STRING, F64, STRING, { kind: "func", params: [], ret: VOID }, STRING, F64],
     result: VOID,
   },
   "test.hook": { argTypes: [F64, null, F64], result: VOID },
@@ -1380,6 +1380,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "test.ctxTodo": { argTypes: [TESTCTX_T, STRING], result: VOID },
   "test.ctxDiagnostic": { argTypes: [TESTCTX_T, STRING], result: VOID },
   "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
+  "test.ctxFullName": { argTypes: [TESTCTX_T], result: STRING },
+  // t.before/t.after/t.beforeEach/t.afterEach (which: 0 before, 1 after,
+  // 2 beforeEach, 3 afterEach); a throwing t.before is captured on the test.
+  "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
+  // t.plan(count), and the count of one t.assert call.
+  "test.ctxPlan": { argTypes: [TESTCTX_T, F64], result: VOID },
+  "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
   // node:http (scr_http.c over scr_net.c). The handler and the data
   // listeners are program-dependent closures (null slots, checked in the
   // libCall case); reqHeader's result is the interned string|undefined

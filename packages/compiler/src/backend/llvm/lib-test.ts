@@ -44,6 +44,15 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
       return finishRuntimeCall(host, e, "scr_test_ctx_diagnostic", a);
     case "test.ctxName":
       return finishRuntimeCall(host, e, "scr_test_ctx_name", a);
+    case "test.ctxFullName":
+      return finishRuntimeCall(host, e, "scr_test_ctx_full_name", a);
+    case "test.ctxHook":
+      host.moveTemp(args[2]!);
+      return finishRuntimeCall(host, e, "scr_test_ctx_hook", a);
+    case "test.ctxPlan":
+      return finishRuntimeCall(host, e, "scr_test_ctx_plan", a);
+    case "test.ctxCount":
+      return finishRuntimeCall(host, e, "scr_test_ctx_count", a);
     default:
       throw new InternalCompilerError(`unhandled test call ${e.fn}`);
   }
