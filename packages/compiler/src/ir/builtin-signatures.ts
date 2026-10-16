@@ -3639,6 +3639,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "insp.seenPush": { argTypes: [null], result: VOID },
   "insp.refWrap": { argTypes: [null, STRING], result: STRING },
   "insp.circular": { argTypes: [F64], result: STRING },
+  /* Whether a closed declared-field record kept the undeclared properties
+   * of its checked source (scr_record_source_note): reflective surfaces
+   * (inspect, Object.keys/values/entries) then answer through its live
+   * checked view. The receiver is any such record type. Never throws. */
+  "record.sourceHas": { argTypes: [null], result: BOOL },
   "insp.key": { argTypes: [STRING], result: STRING },
   "insp.moreItems": { argTypes: [F64], result: STRING },
   "insp.end": { argTypes: [STRING, STRING, STRING, F64, BOOL, BOOL], result: STRING },

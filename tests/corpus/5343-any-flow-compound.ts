@@ -1,6 +1,7 @@
 // `any` values flow through static functions, logical operators keep JS
-// value semantics through the island, compound assignment works, and a
-// churn loop pressures the RC/engine boundary (the SAN lane's real test).
+// value semantics, compound assignment on an `any` local works (formerly a
+// diagnostics fixture from the retired engine), and a churn loop pressures
+// checked-value reference counting (the SAN lane's real test).
 function pipe(v: any): any {
   return v;
 }
