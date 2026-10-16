@@ -6,6 +6,37 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.3.4
+
+### Features
+
+- **`InternTable` in `@scriptc/experimental`** is a shared, append-only table of published values that every thread can read and add to, with string, number and array keys.
+- **`node:zlib` adds the stream classes,** and `node:crypto` supports `createCipheriv` and `createDecipheriv`.
+- **`node:stream` adds the Readable operators, `stream.compose`, `Readable.from` over generators** and the `Readable.from` options, plus async generator stages, source functions, promise destinations and `{ signal }` in `pipeline`.
+- **`node:test` adds `TestContext` hooks, `plan`, `fullName`, Node's `todo` and `only` rules, `mock.fn` and `t.mock.fn`.**
+- **`node:assert` adds `AssertionError`, `deepEqual`, `partialDeepStrictEqual` and the `Assert` class.**
+- **`node:http` matches Node's keep-alive, header and framing behavior,** and `node:net` adds socket address fields, `write` and `end` callbacks and server connection limits.
+- **`dns.lookup` supports Node's forms,** along with `lookupService`, `getServers` and the result order.
+- **`fs.opendirSync`, `fs.promises.opendir` and `fs.Dir`** are supported, and the fs option checks follow Node's.
+- **`util.format` supports `%f`,** and `timers/promises` resolve values and `setInterval` work under `@types/node`.
+
+### Performance
+
+- **`Atomics` run without a lock** on shared storage and compile to inline atomic instructions.
+- **Lifetime regions are cheaper.** Programs that never create a region no longer pay for region counting, a kept region is retried only when its counted references change, and owned objects with a single reference are released without a table entry.
+- **Publishing large object graphs is faster,** and dropped cyclic graphs are collected while they are still in cache.
+- **fs callbacks and worker-pool completions wake the event loop directly** instead of waiting for a timer turn.
+- **Number-keyed `Map` and `Set` operations are faster:** lookups are probed inline, and `set` and `add` after a read store into the entry they found.
+- **Named property reads of unknown values take one receiver retain,** dyn array elements and lengths are read by number, and cyclic dyn values convert to recursive shapes.
+- **Small exact arrays have room for one append.**
+- **Large wasm32 programs are partitioned** like native ones.
+
+### Fixes
+
+- **`process.nextTick` callbacks drain before promise jobs** after every callback, as in Node.
+- **wasm32 array lengths past 2^31** and the exit codes of pending top-level `await` are correct, and typed-array indices stay integral through the shared-buffer check.
+- **The npm case fixtures run natively,** and the issues they found are fixed.
+
 ## 0.3.3
 
 ### Features
