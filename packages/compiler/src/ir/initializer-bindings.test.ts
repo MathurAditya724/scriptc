@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import {
+  conditionalLoopWrites,
   findInitializerBindings,
   initializerLocalCandidates,
   withInitializerBindings,
@@ -149,4 +150,41 @@ test("number bindings without an import-cycle flag may move into a local", () =>
   expect(view.params).toBe(fn.params);
   expect(view.body).toBe(fn.body);
   expect(withInitializerLocals(fn, [])).toBe(fn);
+});
+
+test("conditional loop writes are those an iteration may skip", () => {
+  const t = { kind: "boolLit", value: true, type: BOOL, loc } as const;
+  const inc = (id: string): IrStmt => ({
+    kind: "exprStmt",
+    expr: { kind: "incDec", localId: id, op: "+", prefix: true, type: F64, loc },
+    loc,
+  });
+  const body: IrStmt[] = [
+    // Outside any loop, a conditional write is irrelevant.
+    { kind: "if", cond: t, then: [assign("outside", 1)], else_: null, loc },
+    {
+      kind: "while",
+      cond: t,
+      body: [
+        assign("always", 1),
+        { kind: "if", cond: t, then: [inc("sometimes")], else_: null, loc },
+        // An inner loop's own body writes unconditionally for that loop.
+        { kind: "while", cond: t, body: [assign("inner", 2)], loc },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "logical",
+            op: "&&",
+            left: t,
+            right: { kind: "assignExpr", localId: "shortCircuit", value: t, type: BOOL, loc },
+            type: BOOL,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    },
+  ];
+  expect([...conditionalLoopWrites(body)].sort()).toEqual(["shortCircuit", "sometimes"]);
 });

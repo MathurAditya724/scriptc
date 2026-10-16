@@ -41,6 +41,7 @@ import {
   emitStringMapHas,
 } from "./map-number-lookup.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
+import { emitFusedMapSet, rememberMapEntry } from "./map-entry-fusion.js";
 import { emitStringSliceRead } from "./string-slices.js";
 import {
   STRING_CHAR_CODE_AT_DECL,
@@ -1265,6 +1266,7 @@ export function emitMapLikeIntrinsic(
               ? emitNumberMapGetScalar(host, r.name, numberKey)
               : emitStringMapGetScalar(host, r.name, stringKey!);
           found = scalar.found;
+          if (stringKey !== null) rememberMapEntry(host, e, r.name, stringKey, scalar.entry);
           readHit = () => {
             const hit = B.tmp();
             B.line(
@@ -1335,6 +1337,7 @@ export function emitMapLikeIntrinsic(
       const v = host.emitExpr(e.args[1]!);
       const vAcc = elemAccess(receiverType.value);
       if (vAcc === "ref") host.moveTemp(v);
+      const ordinary = (): void => host.mapSet(r.name, kAcc, vAcc, k.name, v.name);
       if (kAcc === "f64" && vAcc !== "ref" && host.readNumberMapWrites.has(e)) {
         const bits = B.tmp();
         B.line(
@@ -1342,10 +1345,13 @@ export function emitMapLikeIntrinsic(
             ? `${bits} = bitcast double ${v.name} to i64`
             : `${bits} = zext i1 ${v.name} to i64`,
         );
-        emitNumberMapSetScalar(host, r.name, k.name, bits, () =>
-          host.mapSet(r.name, kAcc, vAcc, k.name, v.name),
-        );
-      } else host.mapSet(r.name, kAcc, vAcc, k.name, v.name);
+        emitNumberMapSetScalar(host, r.name, k.name, bits, ordinary);
+      } else if (
+        kAcc !== "str" ||
+        vAcc === "ref" ||
+        !emitFusedMapSet(host, e, r.name, k.name, { name: v.name, access: vAcc }, ordinary)
+      )
+        ordinary();
       return { name: "", type: e.type };
     }
     case "add": {

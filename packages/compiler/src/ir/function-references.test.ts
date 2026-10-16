@@ -72,7 +72,7 @@ const EXPR_FIELDS: Classified<IrExpr> = {
   new: { className: "other" },
   classRef: { className: "other", "captures[]": "other" },
   instanceOf: { className: "other" },
-  virtualCall: { className: "other", method: "method" },
+  virtualCall: { className: "other", method: "method", "targets[]": "other" },
   fieldGet: { className: "other", field: "other" },
   recordLit: { "fields[].name": "other" },
   recordClone: { "overrides[].name": "other" },

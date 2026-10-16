@@ -97,12 +97,15 @@ console.log(a.id(), a.speak(), b.speak());
     // The devirtualized call is a direct sc_f_ call of Animal's id...
     expect(llvm).toMatch(/sc_f__x25_Animal_id\(/);
     // ...and id never becomes a vtable slot, while speak does and the
-    // base-typed call site dispatches through it.
+    // base-typed call site dispatches through it: both classes are
+    // constructed, so the loaded slot selects a direct call of each.
     expect(llvm).toMatch(/%sc_vtt_Animal = type \{ %ScrVt, ptr \}/);
     expect(llvm).toMatch(/@sc_vtable_Dog = [^\n]*ptr @sc_b?f__x25_Dog_speak\b/);
     expect(llvm).toMatch(
-      /getelementptr inbounds %sc_vtt_Animal, ptr %\w+, i64 0, i32 1[\s\S]*call ptr %\w+\(ptr /,
+      /getelementptr inbounds %sc_vtt_Animal, ptr %\w+, i64 0, i32 1[\s\S]*icmp eq ptr %\w+, @sc_b?f__x25_(?:Animal|Dog)_speak\n/,
     );
+    expect(llvm).toMatch(/call ptr @sc_b?f__x25_Dog_speak\(ptr /);
+    expect(llvm).toMatch(/call ptr @sc_b?f__x25_Animal_speak\(ptr /);
   });
 
   test("accessors on standalone classes stay zero-cost direct calls", async () => {
@@ -167,8 +170,9 @@ console.log(c.v, c.label, plain.label);
     expect(llvm).toMatch(/%sc_vtt_Cell = type \{ %ScrVt, ptr \}/);
     expect(llvm).toMatch(/@sc_vtable_UpperCell = [^\n]*ptr @sc_b?f__x25_UpperCell_get_x3a_label\b/);
     expect(llvm).toMatch(
-      /getelementptr inbounds %sc_vtt_Cell, ptr %\w+, i64 0, i32 1[\s\S]*call ptr %\w+\(ptr /,
+      /getelementptr inbounds %sc_vtt_Cell, ptr %\w+, i64 0, i32 1[\s\S]*icmp eq ptr %\w+, @sc_b?f__x25_(?:Cell|UpperCell)_get_x3a_label\n/,
     );
+    expect(llvm).toMatch(/call ptr @sc_b?f__x25_UpperCell_get_x3a_label\(ptr /);
     // ...while the never-overridden pair keeps direct calls and no slots.
     expect(llvm).toMatch(/sc_f__x25_Cell_get_x3a_v\(/);
     expect(llvm).toMatch(/sc_f__x25_Cell_set_x3a_v\(/);
