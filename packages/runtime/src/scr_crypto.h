@@ -53,6 +53,20 @@ bool scr_crypto_random_int_check(double min, double max, bool min_given, double 
 bool scr_crypto_random_int_try(double min, double range, double *out);
 ScrStr *scr_crypto_random_uuid_opts(ScrDyn *options);
 ScrStr *scr_crypto_random_uuid_v7(ScrDyn *options);
+/* Hash and Hmac values as streams: the value's Transform (+1, created on
+ * first use; scr_stream.c) and the steps it runs (scr_lib.c). */
+ScrStream *scr_crypto_hash_stream(ScrCryptoHash *hash);
+void *scr_crypto_hash_stream_get(ScrCryptoHash *hash);
+void scr_crypto_hash_stream_set(ScrCryptoHash *hash, void *stream, void (*release)(void *),
+                                ScrBox *box);
+void scr_crypto_hash_stream_detach(void *hash);
+void scr_crypto_hash_stream_close(ScrCryptoHash *hash);
+bool scr_crypto_hash_stream_usable(const ScrCryptoHash *hash);
+void scr_crypto_hash_stream_hold(ScrCryptoHash *hash);
+void scr_crypto_hash_stream_unhold(ScrCryptoHash *hash);
+ScrStream *scr_crypto_hash_stream_piped(ScrCryptoHash *hash);
+bool scr_crypto_hash_stream_write(ScrCryptoHash *hash, ScrBytes *chunk);
+ScrBytes *scr_crypto_hash_stream_flush(ScrCryptoHash *hash);
 /* Secret KeyObjects (scr_lib.c). */
 ScrDyn *scr_crypto_create_secret_key(ScrDyn *key, ScrDyn *encoding);
 ScrDyn *scr_crypto_generate_key_sync(ScrDyn *type, ScrDyn *options);

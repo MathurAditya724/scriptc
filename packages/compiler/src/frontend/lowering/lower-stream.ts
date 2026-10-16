@@ -1,4 +1,5 @@
 import { nodeThrowExpr, boolLit, numLit, strLit } from "../../ir/build.js";
+import { hashStreamOf, isHashValueType } from "./builtins/hash-stream.js";
 import { InternalCompilerError } from "../../errors.js";
 /* The node:stream lowering (the spoke-module pattern, like
  * lower-event-emitter.ts): construction of the five runtime stream classes
@@ -1708,7 +1709,12 @@ function lowerStreamArg(
   node: ts.Expression,
   what: "finished" | "pipeline" | "addAbortSignal" | "compose",
 ): IrExpr {
-  const v = lowerer.lowerExpr(node);
+  const lowered = lowerer.lowerExpr(node);
+  // A Hash or Hmac stage is its Transform; pipeline and compose stages
+  // keep the value alive until the stream settles.
+  const v = isHashValueType(lowered.type)
+    ? hashStreamOf(lowered, what === "pipeline" || what === "compose")
+    : lowered;
   const info = v.type.kind === "object" ? lowerer.classes.get(v.type.className) : undefined;
   if (!streamSidesOf(lowerer, info)) {
     // A provably-non-stream value in a JS source (the invalid-input
@@ -2941,6 +2947,26 @@ function checkUtf8Encoding(lowerer: Lowerer, member: string, arg: ts.Expression 
 
 /** `recv.<member>(...)` over a stream-rooted receiver. Returns null only
  * for members this spoke does not own. */
+/** pipe()'s `{ end }` option: true when absent. */
+function pipeEndOption(lowerer: Lowerer, options: ts.Expression | undefined, loc: SrcLoc): IrExpr {
+  let end: IrExpr = boolLit(true, loc);
+  if (options === undefined) return end;
+  if (!ts.isObjectLiteralExpression(options)) {
+    lowerer.noLowering(
+      "pipe with a non-literal options argument",
+      options,
+      "{ end: <bool> } inline is the supported form",
+    );
+  }
+  for (const prop of options.properties) {
+    if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name) || prop.name.text !== "end") {
+      lowerer.noLowering("a pipe option other than 'end'", prop);
+    }
+    end = lowerer.lowerExprExpecting(prop.initializer, BOOL);
+  }
+  return end;
+}
+
 export function lowerStreamMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -3156,6 +3182,40 @@ export function lowerStreamMethodCall(
         "the supported forms are (destination) and (destination, { end })",
       );
     }
+    // A Hash or Hmac destination pipes into its Transform, and pipe()
+    // answers the Hash itself (the receiver evaluates first, as in JS).
+    if (isHashValueType(lowerer.mapTypeOf(lowerer.typeOf(args[0]!)))) {
+      const receiverValue = lowerer.lowerExpr(access.expression);
+      const source = lowerer.declareHiddenLocal("%pipeSource", receiverValue.type);
+      const hashValue = lowerer.lowerExpr(args[0]!);
+      const hash = lowerer.declareHiddenLocal("%pipeHash", hashValue.type);
+      const end = pipeEndOption(lowerer, args[1], loc);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: source.id, init: receiverValue, loc },
+          { kind: "varDecl", localId: hash.id, init: hashValue, loc },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "readable.pipe",
+              args: [
+                { kind: "varRef", localId: source.id, type: receiverValue.type, loc },
+                hashStreamOf({ kind: "varRef", localId: hash.id, type: hashValue.type, loc }, true),
+                end,
+              ],
+              type: { kind: "object", className: "%Transform" },
+              loc,
+            },
+            loc,
+          },
+        ],
+        result: { kind: "varRef", localId: hash.id, type: hashValue.type, loc },
+        type: hashValue.type,
+        loc,
+      };
+    }
     const dst = lowerer.lowerExpr(args[0]!);
     const dstInfo =
       dst.type.kind === "object" ? lowerer.classes.get(dst.type.className) : undefined;
@@ -3167,26 +3227,7 @@ export function lowerStreamMethodCall(
         "the destination must be a stream Writable/Duplex (process streams and sockets are not pipe destinations yet)",
       );
     }
-    let end: IrExpr = boolLit(true, loc);
-    if (args[1] !== undefined) {
-      if (!ts.isObjectLiteralExpression(args[1])) {
-        lowerer.noLowering(
-          "pipe with a non-literal options argument",
-          args[1],
-          "{ end: <bool> } inline is the supported form",
-        );
-      }
-      for (const prop of args[1].properties) {
-        if (
-          !ts.isPropertyAssignment(prop) ||
-          !ts.isIdentifier(prop.name) ||
-          prop.name.text !== "end"
-        ) {
-          lowerer.noLowering("a pipe option other than 'end'", prop);
-        }
-        end = lowerer.lowerExprExpecting(prop.initializer, BOOL);
-      }
-    }
+    const end = pipeEndOption(lowerer, args[1], loc);
     const receiver = lowerer.lowerExpr(access.expression);
     return {
       kind: "libCall",

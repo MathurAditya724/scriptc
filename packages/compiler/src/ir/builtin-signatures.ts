@@ -2355,6 +2355,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * finalizes the handle and returns either a Buffer or encoded string. */
   "crypto.native": { argTypes: [], result: DYN },
   "crypto.hashNew": { argTypes: [STRING], result: CRYPTOHASH_T },
+  /** The Transform a Hash or Hmac reads and writes as a stream (+1,
+   * created on first use and owned by the value; scr_stream.c). The Piped
+   * form, for pipe destinations and pipeline stages, also keeps the value
+   * alive until the stream flushes or is destroyed. */
+  "crypto.hashStream": { argTypes: [null], result: { kind: "object", className: "%Transform" } },
+  "crypto.hashStreamPiped": {
+    argTypes: [null],
+    result: { kind: "object", className: "%Transform" },
+  },
   /** createCipheriv (false) / createDecipheriv (true) over checked-dynamic
    * cipher, key, iv and options arguments (scr_cipher.c): a native
    * Cipheriv/Decipheriv handle whose methods dispatch through dynInvoke. */

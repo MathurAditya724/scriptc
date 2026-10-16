@@ -1,4 +1,5 @@
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
+import { lowerHashStreamCall } from "./builtins/hash-stream.js";
 import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
 /** Dispatch source calls, builtin members and receiver-specific operations.
  * Signature collection, argument completion and function bodies have their
@@ -1279,6 +1280,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.lowerUrlMethodCall(expr, expr.expression) ??
       lowerer.lowerSearchParamsMethodCall(expr, expr.expression) ??
       lowerer.lowerStatsMethodCall(expr, expr.expression) ??
+      lowerHashStreamCall(lowerer, expr, expr.expression) ??
       lowerCryptoHashMethodCall(lowerer, expr, expr.expression) ??
       lowerCipherMethodCall(lowerer, expr, expr.expression) ??
       lowerFileHandleMethodCall(lowerer, expr, expr.expression) ??

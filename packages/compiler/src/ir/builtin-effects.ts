@@ -581,6 +581,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.hashDigestStr",
   "crypto.hashDigestBytes",
   "crypto.hashNew",
+  "crypto.hashStream",
+  "crypto.hashStreamPiped",
   "crypto.hmacNewStr",
   "crypto.hmacNewBytes",
   "crypto.hashUpdateStr",

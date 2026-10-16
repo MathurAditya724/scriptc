@@ -20,6 +20,7 @@ import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
 import { lowerKeyObjectCall } from "./builtins/key-object.js";
+import { hashStreamOf } from "./builtins/hash-stream.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { iteratorSlotAdapter } from "./iterator-adapters.js";
 import type { FieldLift } from "./coercions/structural-plans.js";
@@ -2408,6 +2409,10 @@ export class Lowerer {
   /** Inline Promise.then parameters whose contextual type is a builtin
    * module namespace anonymous object. The settled native token is the
    * ABI truth even when the checker type has no stable module symbol. */
+  /** Receivers of a stream call on a Hash or Hmac (lowerHashStreamCall):
+   * for the duration of that call, the receiver lowers to the Transform of
+   * the value held in the named local. */
+  readonly hashStreamReceivers = new Map<ts.Expression, { localId: string; type: IrType }>();
   readonly moduleNsParamOverrides = new Map<
     ts.ParameterDeclaration,
     IrType & { kind: "moduleNs" }
@@ -10372,6 +10377,8 @@ export class Lowerer {
   /* ── expressions ──────────────────────────────────────────────────── */
 
   lowerExpr(expr: ts.Expression): IrExpr {
+    const hash = this.hashStreamReceivers.get(expr);
+    if (hash) return hashStreamOf(varRef(hash.localId, hash.type, locOf(expr)));
     return lowerExpr(this, expr);
   }
 
