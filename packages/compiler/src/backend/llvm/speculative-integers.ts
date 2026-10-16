@@ -106,20 +106,78 @@ const ARITHMETIC_OPS = new Set<string>(["+", "-", "*", "%"]);
  * operators: evaluating it has no effects, so a failed check may restart its
  * statement. Division and exponentiation usually leave the integers and
  * would only bail. */
-export function isSpeculableValue(e: IrExpr): boolean {
+export function isSpeculableValue(e: IrExpr, reads = true): boolean {
   if (e.type.kind !== "f64") return false;
   switch (e.kind) {
     case "numLit":
       return Number.isSafeInteger(e.value) && !Object.is(e.value, -0);
     case "varRef":
       return true;
-    case "bin":
-      return INTEGER_OPS.has(e.op) && isSpeculableValue(e.left) && isSpeculableValue(e.right);
+    case "bin": {
+      if (!INTEGER_OPS.has(e.op)) return false;
+      // Bitwise operators evaluate through the ordinary emitter, which
+      // must not read the heap after a check (see speculativeReads).
+      const inner = reads && ARITHMETIC_OPS.has(e.op);
+      return isSpeculableValue(e.left, inner) && isSpeculableValue(e.right, inner);
+    }
     case "unary":
-      return (e.op === "-" || e.op === "~") && isSpeculableValue(e.operand);
+      return (e.op === "-" || e.op === "~") && isSpeculableValue(e.operand, reads && e.op === "-");
+    default:
+      return reads && isSpeculativeRead(e);
+  }
+}
+
+/** A number read from a string, an array, a record or an object field that
+ * has no effect: it may throw (a missing element), but it changes nothing,
+ * so a failed check may restart its statement. Its value carries no range,
+ * so it is checked like any other unproven integer. */
+export function isSpeculativeRead(e: IrExpr): boolean {
+  if (e.type.kind !== "f64") return false;
+  switch (e.kind) {
+    case "strIntrinsic":
+      return (
+        e.method === "charCodeAt" &&
+        isEffectFree(e.receiver) &&
+        e.args.length === 1 &&
+        isEffectFree(e.args[0]!)
+      );
+    case "arrayGet":
+      return isEffectFree(e.arr) && isEffectFree(e.index);
+    case "recordGet":
+    case "fieldGet":
+      return isEffectFree(e.obj);
     default:
       return false;
   }
+}
+
+/** Receivers and indexes of speculative reads: locals, literals, number
+ * arithmetic and nested reads. */
+function isEffectFree(e: IrExpr): boolean {
+  switch (e.kind) {
+    case "numLit":
+    case "varRef":
+      return true;
+    case "bin":
+      return e.left.type.kind === "f64" && isEffectFree(e.left) && isEffectFree(e.right);
+    case "arrayGet":
+      return isEffectFree(e.arr) && isEffectFree(e.index);
+    case "recordGet":
+    case "fieldGet":
+      return isEffectFree(e.obj);
+    default:
+      return false;
+  }
+}
+
+/** The speculative reads of a speculable value in evaluation order. */
+export function speculativeReads(e: IrExpr, out: IrExpr[] = []): IrExpr[] {
+  if (e.kind === "bin" && ARITHMETIC_OPS.has(e.op)) {
+    speculativeReads(e.left, out);
+    speculativeReads(e.right, out);
+  } else if (e.kind === "unary" && e.op === "-") speculativeReads(e.operand, out);
+  else if (isSpeculativeRead(e)) out.push(e);
+  return out;
 }
 
 function hasArithmetic(e: IrExpr): boolean {
@@ -150,15 +208,22 @@ export function speculativeWriteTarget(
 }
 
 /** `eligible` names the locals a shadow may stand for; `integral` those the
- * emitter already holds as integers (counters, int32 locals). */
+ * emitter already holds as integers (counters, int32 locals); `proven` the
+ * expressions the static range analysis already proves integral. Static
+ * proofs come first: a local whose reads are all proven is never shadowed
+ * or checked, and a loop with nothing unproven is never duplicated. */
 export function planSpeculativeLoop(
   loop: SpeculativeLoop,
   eligible: (localId: string) => boolean,
   integral: (localId: string) => boolean = () => false,
+  proven: (e: IrExpr) => boolean = () => false,
+  invariantEligible: (localId: string) => boolean = eligible,
 ): SpeculativeLoopPlan | null {
   const writes = new Map<string, IrStmt[]>();
   const unspeculable = new Set<string>();
   const reads = new Set<string>();
+  // Locals with at least one read the static analysis does not prove.
+  const unproven = new Set<string>();
   const declared = new Set<string>();
   let nodes = 0;
   let rejected = false;
@@ -178,8 +243,10 @@ export function planSpeculativeLoop(
     nodes++;
     if (!OBSERVER_FREE_EXPRESSIONS.has(e.kind) || (e.kind === "bin" && e.left.type.kind !== "f64"))
       observerFree = false;
-    if (e.kind === "varRef") reads.add(e.localId);
-    else if (e.kind === "assignExpr" || e.kind === "incDec") unspeculable.add(e.localId);
+    if (e.kind === "varRef") {
+      reads.add(e.localId);
+      if (!proven(e)) unproven.add(e.localId);
+    } else if (e.kind === "assignExpr" || e.kind === "incDec") unspeculable.add(e.localId);
     else if (e.kind === "bin" && CONSUMING_OPS.has(e.op)) {
       consume(e.left);
       consume(e.right);
@@ -216,8 +283,10 @@ export function planSpeculativeLoop(
         const list = writes.get(target.localId) ?? [];
         list.push(s);
         writes.set(target.localId, list);
-        if (target.value === null) reads.add(target.localId);
-        else expr(target.value);
+        if (target.value === null) {
+          reads.add(target.localId);
+          if (s.kind !== "exprStmt" || !proven(s.expr)) unproven.add(target.localId);
+        } else expr(target.value);
         return !rejected;
       }
       unspeculable.add(target.localId);
@@ -234,7 +303,7 @@ export function planSpeculativeLoop(
 
   const locals = new Map<string, boolean>();
   for (const id of writes.keys())
-    if (!unspeculable.has(id) && consumed.has(id) && eligible(id))
+    if (!unspeculable.has(id) && consumed.has(id) && unproven.has(id) && eligible(id))
       locals.set(id, !declared.has(id));
   // Every local a speculated write reads must be an integer whenever the
   // write runs: speculated itself, already an integer, or loop-invariant
@@ -244,9 +313,13 @@ export function planSpeculativeLoop(
     if (e.kind === "varRef") {
       const id = e.localId;
       return (
-        locals.has(id) || integral(id) || (!writes.has(id) && !unspeculable.has(id) && eligible(id))
+        proven(e) ||
+        locals.has(id) ||
+        integral(id) ||
+        (!writes.has(id) && !unspeculable.has(id) && invariantEligible(id))
       );
     }
+    if (isSpeculativeRead(e)) return true;
     return everyExprChild(e, grounded, () => false);
   };
   for (let changed = true; changed;) {
@@ -270,7 +343,13 @@ export function planSpeculativeLoop(
   const invariant = (e: IrExpr): boolean => {
     if (e.kind === "varRef") {
       const id = e.localId;
-      if (!locals.has(id) && !writes.has(id) && !unspeculable.has(id) && eligible(id))
+      if (
+        !proven(e) &&
+        !locals.has(id) &&
+        !writes.has(id) &&
+        !unspeculable.has(id) &&
+        invariantEligible(id)
+      )
         locals.set(id, true);
       return true;
     }
@@ -379,12 +458,13 @@ export function emitSpeculativeInteger(
   host: LlvmEmitterContext,
   e: IrExpr,
   bail: (condition: string) => void,
+  reads: ReadonlyMap<IrExpr, LlValue> = new Map(),
 ): string {
   const B = host.B;
   // A value the range analysis already proves takes the ordinary integer
   // emission, which needs no checks.
   const proven = e.kind === "bin" ? host.integerRanges.get(e) : undefined;
-  if (proven && proven.min >= -SAFE && proven.max <= SAFE)
+  if (proven && proven.min >= -SAFE && proven.max <= SAFE && speculativeReads(e).length === 0)
     return speculativeLeaf(host, host.emitExpr(e), e, bail);
   switch (e.kind) {
     case "numLit":
@@ -411,8 +491,8 @@ export function emitSpeculativeInteger(
     }
     case "bin": {
       if (e.op !== "+" && e.op !== "-" && e.op !== "*" && e.op !== "%") break;
-      const a = emitSpeculativeInteger(host, e.left, bail);
-      const b = emitSpeculativeInteger(host, e.right, bail);
+      const a = emitSpeculativeInteger(host, e.left, bail, reads);
+      const b = emitSpeculativeInteger(host, e.right, bail, reads);
       const result = B.tmp();
       if (e.op === "+" || e.op === "-") {
         // With one operand's range known, the other is checked against the
@@ -468,7 +548,7 @@ export function emitSpeculativeInteger(
     }
     case "unary": {
       if (e.op !== "-") break;
-      const a = emitSpeculativeInteger(host, e.operand, bail);
+      const a = emitSpeculativeInteger(host, e.operand, bail, reads);
       const zero = B.tmp(),
         result = B.tmp();
       // -0 is not an integer result.
@@ -480,7 +560,7 @@ export function emitSpeculativeInteger(
     default:
       break;
   }
-  return speculativeLeaf(host, host.emitExpr(e), e, bail);
+  return speculativeLeaf(host, reads.get(e) ?? host.emitExpr(e), e, bail);
 }
 
 /** The safe i64 of an evaluated number: its proven integer, or a checked

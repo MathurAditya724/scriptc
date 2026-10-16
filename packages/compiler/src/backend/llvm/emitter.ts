@@ -60,6 +60,7 @@ import {
   emitSafeIntegerCheck,
   emitSpeculativeInteger,
   planSpeculativeLoop,
+  speculativeReads,
   speculativeWriteTarget,
   SPECULATIVE_RANGE,
 } from "./speculative-integers.js";
@@ -4951,6 +4952,16 @@ export class LlEmitter {
             loop,
             (id) => this.speculativeLocal(id),
             (id) => this.integerLoopBindings.has(id) || this.int32Locals.has(id),
+            (e) => {
+              const range = this.integerRanges.get(e);
+              return (
+                range !== undefined &&
+                range !== null &&
+                range.min >= -Number.MAX_SAFE_INTEGER &&
+                range.max <= Number.MAX_SAFE_INTEGER
+              );
+            },
+            (id) => this.speculativeLocal(id) || this.speculativeInvariantGlobal(id),
           )
         : null;
     if (!plan) {
@@ -5018,7 +5029,10 @@ export class LlEmitter {
     const deferred = new Set<string>();
     // Worker loops also leave through their cancellation poll.
     if (plan.observerFree && !this.mod.workers)
-      for (const id of plan.locals.keys()) if (!this.currentLocals.has(id)) deferred.add(id);
+      for (const s of plan.writes) {
+        const id = speculativeWriteTarget(s)!.localId;
+        if (!this.currentLocals.has(id)) deferred.add(id);
+      }
     this.speculation = {
       writes: plan.writes,
       resume: new Map([...resume].map(([s, r]) => [s, r.label])),
@@ -5074,8 +5088,26 @@ export class LlEmitter {
    * no call from the loop can write the global behind the shadow. */
   private speculativeGlobal(id: string): boolean {
     if (!this.speculativeFunction.startsWith("%init.")) return false;
-    if (this.globalTypes.get(id)?.kind !== "f64") return false;
-    if (this.tdzGlobals.has(id) || this.integerViews.has(id)) return false;
+    const writers = this.numberGlobalWriters(id);
+    return (
+      writers !== null &&
+      (writers.size === 0 || (writers.size === 1 && writers.has(this.speculativeFunction)))
+    );
+  }
+
+  /** A module-level number a loop of any function only reads, written by
+   * nothing but top-level code: an init function never runs during a loop
+   * of another function, so the entry value stays its value. */
+  private speculativeInvariantGlobal(id: string): boolean {
+    const writers = this.numberGlobalWriters(id);
+    return writers !== null && [...writers].every((name) => name.startsWith("%init."));
+  }
+
+  /** The functions writing a number global a shadow may stand for, or null
+   * when the global is not such a number. */
+  private numberGlobalWriters(id: string): ReadonlySet<string> | null {
+    if (this.globalTypes.get(id)?.kind !== "f64") return null;
+    if (this.tdzGlobals.has(id) || this.integerViews.has(id)) return null;
     if (!this.globalWriters) {
       const writers = new Map<string, Set<string>>();
       for (const fn of this.mod.functions) {
@@ -5098,8 +5130,7 @@ export class LlEmitter {
       }
       this.globalWriters = writers;
     }
-    const writers = this.globalWriters.get(id);
-    return writers === undefined || (writers.size === 1 && writers.has(this.speculativeFunction));
+    return this.globalWriters.get(id) ?? new Set<string>();
   }
 
   /** A speculated write in the fast copy: compute the value as a safe
@@ -5121,6 +5152,16 @@ export class LlEmitter {
       B.condBr(expected, failed, next);
       B.startBlock(next);
     };
+    // Heap reads come first, before any check, and release their temporaries
+    // at once: a bailing path then owns nothing, and reads have no effect
+    // whose reordering before the arithmetic could be observed.
+    const reads = new Map<IrExpr, LlValue>();
+    if (target.value !== null) {
+      this.frames.push([]);
+      for (const read of speculativeReads(target.value)) reads.set(read, this.emitExpr(read));
+      this.releaseFrame(this.frames.pop()!);
+    }
+    this.frames.push([]);
     let result: string;
     if (target.value === null) {
       const old = B.tmp();
@@ -5132,7 +5173,10 @@ export class LlEmitter {
       B.line(`${biased} = add i64 ${result}, ${Number.MAX_SAFE_INTEGER}`);
       B.line(`${outside} = icmp ugt i64 ${biased}, ${2 * Number.MAX_SAFE_INTEGER}`);
       bail(outside);
-    } else result = emitSpeculativeInteger(this, target.value, bail);
+    } else result = emitSpeculativeInteger(this, target.value, bail, reads);
+    // Speculable values read only numbers past this point.
+    if (this.frames.pop()!.length > 0)
+      throw new InternalCompilerError("llvm emitter bug: speculative write owns a temporary");
     B.line(`store i64 ${result}, ptr ${binding.slot}`);
     const deferred = this.speculation!.deferred;
     if (!deferred.has(target.localId)) {
@@ -7297,12 +7341,7 @@ export class LlEmitter {
       this.B.startBlock(resume.label);
     }
     if (this.speculation?.writes.has(s)) {
-      // Speculable values read only numbers, so no temporary needs a
-      // release on either the written or the bailing path.
-      this.frames.push([]);
       this.emitSpeculativeWrite(s, this.speculation.resume.get(s)!);
-      if (this.frames.pop()!.length > 0)
-        throw new InternalCompilerError("llvm emitter bug: speculative write owns a temporary");
       return;
     }
     const previous = this.B.debugLocation;
