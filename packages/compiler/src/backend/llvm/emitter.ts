@@ -83,7 +83,7 @@ import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js"
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
 import { analyzeIntegerRanges, INT32_RANGE, type IntegerRanges } from "../../ir/integer-ranges.js";
 import { unshareNodes } from "../../ir/unshare.js";
-import { analyzeInt32Slots, type Int32Slots } from "../../ir/int32-slots.js";
+import { analyzeInt32Slots, dynamicFieldStores, type Int32Slots } from "../../ir/int32-slots.js";
 import { analyzeFinalFields, constructorClass, type FinalFields } from "../../ir/final-fields.js";
 import { foldConstantGlobals } from "../../ir/constant-globals.js";
 import { findIntegerViews } from "./integer-views.js";
@@ -866,6 +866,11 @@ export class LlEmitter {
   private readonly initializerBindings: ReturnType<typeof findInitializerBindings>;
   /** Whole-program int32 storage and parameter/result facts. */
   readonly int32Slots: Int32Slots;
+  /** The program has no runtime store into a checked-dynamic value
+   * (dynamicFieldStores), so live views of classes and records never
+   * commit back into their objects. Library builds keep their commits:
+   * their values cross a native boundary. */
+  readonly liveViewsReadOnly: boolean;
   /** Functions whose direct calls use i32 parameters or results. */
   readonly int32Abis: ReadonlyMap<string, Int32Abi>;
   /** Immutable module constants (contract types) whose graphs become
@@ -976,6 +981,9 @@ export class LlEmitter {
     this.constantNumericTables = findConstantNumericTables(mod);
     this.initializerBindings = findInitializerBindings(mod);
     this.int32Slots = analyzeInt32Slots(mod);
+    const dynamicStores = dynamicFieldStores(mod);
+    this.liveViewsReadOnly =
+      mod.lib === undefined && !dynamicStores.all && dynamicStores.names.size === 0;
     this.int32Abis = this.debug === null ? findInt32Abis(mod, this.int32Slots) : new Map();
     this.immortalGlobals = new Set(mod.contracts?.immortalGlobals ?? []);
     this.programLifetime = new Set(mod.contracts?.programLifetime ?? []);

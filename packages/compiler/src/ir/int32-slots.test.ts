@@ -258,7 +258,8 @@ test("dynamic stores disqualify the field names they can reach", () => {
   const readOnly = analyzeInt32Slots(program(write("dyn.typedRefIs", [view, strLit("object:C")])));
   expect([readOnly.isField("C", "a"), readOnly.isField("C", "b")]).toEqual([true, true]);
   // Reflection that only reads the view (Object.keys/values/entries, for-in,
-  // own-key lists, typeof, toString and inspection) stores nothing.
+  // own-key lists, typeof, toString and inspection) stores nothing, nor does
+  // creating an object from a prototype or reading a prototype.
   for (const reader of [
     "dyn.objKeys",
     "dyn.objKeyStrings",
@@ -276,6 +277,8 @@ test("dynamic stores disqualify the field names they can reach", () => {
     "dyn.typeof",
     "insp.dyn",
     "insp.dynS",
+    "dyn.objCreate",
+    "dyn.getPrototype",
   ]) {
     const reflected = analyzeInt32Slots(program(write(reader, [view])));
     expect([reader, reflected.isField("C", "a"), reflected.isField("C", "b")]).toEqual([
