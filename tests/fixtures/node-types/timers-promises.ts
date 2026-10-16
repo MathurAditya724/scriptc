@@ -11,5 +11,5 @@ for await (const value of setInterval(1, "tick")) {
   console.log(value, ++ticks);
   if (ticks === 3) break;
 }
-void setTimeout(60_000, "never", { ref: false }).then((value) => console.log(value));
+void setTimeout(60_000, "never", { ref: false });
 console.log("done");

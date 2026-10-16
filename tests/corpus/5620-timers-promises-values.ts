@@ -1,14 +1,15 @@
 // timers/promises settles with its resolve value: setTimeout(delay, value)
-// after the delay and setImmediate(value) from the immediate queue, in
-// Node's order. `ref: false` lets the process exit before a pending timer.
+// after the delay, in deadline order, and setImmediate(value) from the
+// immediate queue. `ref: false` lets the process exit before a pending timer.
 import { setImmediate as immediate, setTimeout as sleep } from "node:timers/promises";
 
 const order: string[] = [];
-const late = sleep(5, "five").then((value) => order.push(value));
+const late = sleep(40, "forty").then((value) => order.push(value));
 const early = sleep(1, 1).then((value) => order.push(`one:${value + 1}`));
-const next = immediate({ tag: "immediate" }).then((value) => order.push(value.tag));
-await Promise.all([late, early, next]);
+await Promise.all([late, early]);
 console.log(order.join(","));
+const tagged = await immediate({ tag: "immediate" });
+console.log(tagged.tag);
 await sleep(1, undefined);
 await immediate();
 console.log("void forms");
