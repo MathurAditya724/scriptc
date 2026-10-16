@@ -58,9 +58,12 @@ test("CI partitions both bootstrap lanes without dropping or duplicating phase c
     expect(packageOwners).toBe(sanitize ? 0 : 1);
   }
   expect(workflow.jobs.test.needs).toContain("bootstrap");
+  // The required check holds the bootstrap jobs to their lane (ci-stack-scope.test.ts runs the gate).
   expect(
     workflow.jobs.test.steps.some((step) =>
-      step.run.includes('test "${{ needs.bootstrap.result }}" = success'),
+      step.run?.includes(
+        'lane bootstrap "${{ needs.bootstrap.result }}" "${{ needs.lanes.outputs.bootstrap }}"',
+      ),
     ),
   ).toBe(true);
 });
