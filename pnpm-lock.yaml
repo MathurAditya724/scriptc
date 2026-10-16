@@ -7,6 +7,9 @@ settings:
 overrides:
   '@napi-rs/wasm-runtime': 1.1.6
 
+patchedDependencies:
+  vitest@3.2.7: 03a418fae669c2cd9846dc3c49e6c1b8ee7047bbdcda9d4f5d5ee09eb525a1be
+
 importers:
 
   .:
@@ -52,7 +55,7 @@ importers:
         version: 58.1.0(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(rollup@4.62.2)
       vitest:
         specifier: ^3.0.0
-        version: 3.2.7(@edge-runtime/vm@3.2.0)(@types/node@24.13.3)(tsx@4.23.0)
+        version: 3.2.7(patch_hash=03a418fae669c2cd9846dc3c49e6c1b8ee7047bbdcda9d4f5d5ee09eb525a1be)(@edge-runtime/vm@3.2.0)(@types/node@24.13.3)(tsx@4.23.0)
 
   internal/compatibility: {}
 
@@ -4874,7 +4877,7 @@ snapshots:
       fsevents: 2.3.3
       tsx: 4.23.0
 
-  vitest@3.2.7(@edge-runtime/vm@3.2.0)(@types/node@24.13.3)(tsx@4.23.0):
+  vitest@3.2.7(patch_hash=03a418fae669c2cd9846dc3c49e6c1b8ee7047bbdcda9d4f5d5ee09eb525a1be)(@edge-runtime/vm@3.2.0)(@types/node@24.13.3)(tsx@4.23.0):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.7

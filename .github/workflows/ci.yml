@@ -9,9 +9,11 @@ on:
     - cron: "17 7 * * *"
 
 concurrency:
-  # The nightly sweep neither cancels nor is cancelled by main pushes.
-  group: ci-${{ github.event_name == 'schedule' && 'schedule' || github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # A new push to a pull request cancels its previous run. Every push to main runs to completion in a group of
+  # its own commit, so each merged commit gets a full result (releases require a green run on their commit). The
+  # nightly sweep neither cancels nor is cancelled by main pushes.
+  group: ci-${{ github.event_name == 'schedule' && 'schedule' || github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # GitHub recommends stack.base.ref == base.ref for the lowest unmerged PR:
