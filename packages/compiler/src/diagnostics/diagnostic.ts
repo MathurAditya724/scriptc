@@ -119,20 +119,24 @@ export function widthCopyDivergenceDiag(
   targetType: string,
   use: "write" | "compare",
   useText: string,
-  site: "call" | "declaration",
+  site: "call" | "declaration" | "cast" | "element",
   loc: SrcLoc,
 ): ScrDiagnostic {
   const how =
     site === "call"
       ? `passing a '${sourceType}' where '${targetType}' is expected`
-      : `storing a '${sourceType}' in a '${targetType}' binding`;
+      : site === "cast"
+        ? `asserting a '${sourceType}' as '${targetType}'`
+        : site === "element"
+          ? `storing a '${sourceType}' as an element of '${targetType}[]'`
+          : `storing a '${sourceType}' in a '${targetType}' binding`;
   const effect =
     use === "write"
       ? `the write to '${useText}' updates only the copy, while under Node it updates the original object`
       : `'${useText}' compares the copy, which is never the original object, while under Node it is the same object`;
   return {
     code: "SC6001",
-    message: `${how} copies the object (a narrower record shape compiles as a field copy): ${effect}`,
+    message: `${how} copies the object (converting to a record type with other properties compiles as a field copy): ${effect}`,
     loc,
     hint: `declare the parameter or binding with the value's full type ('${sourceType}'), or make the shape a class — class instances keep their identity when passed as a base class`,
   };
