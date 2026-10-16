@@ -565,6 +565,13 @@ export class LlEmitter {
     return `, !tbaa !${tag}`;
   }
 
+  /** The `!range` attachment of an array length load: a length is at most
+   * 2^32 - 1 (the runtime's SCR_ARR_MAX_LENGTH), so conversions to double
+   * and back fold. 32-bit targets load the full range anyway. */
+  get arrayLengthRange(): string {
+    return this.sizeType === "i64" ? ", !range !{i64 0, i64 4294967296}" : "";
+  }
+
   fieldAliasAttachment(ptr: string): string {
     const tag = this.fieldPointerTags.get(ptr);
     return tag === undefined ? "" : `, !tbaa !${tag}`;
@@ -7145,7 +7152,9 @@ export class LlEmitter {
           done = B.newLabel("arr.len.done");
         B.line(`${lenPtr} = getelementptr inbounds %ScrArr, ptr ${arr.name}, i32 0, i32 1`);
         this.markMemoryPointer(lenPtr, "array:header");
-        B.line(`${len} = load ${this.sizeType}, ptr ${lenPtr}${this.fieldAliasAttachment(lenPtr)}`);
+        B.line(
+          `${len} = load ${this.sizeType}, ptr ${lenPtr}${this.fieldAliasAttachment(lenPtr)}${this.arrayLengthRange}`,
+        );
         B.line(`${lenNumber} = ${sizeToDouble(this.sizeType)} ${this.sizeType} ${len} to double`);
         B.line(`${same} = fcmp oeq double ${length.name}, ${lenNumber}`);
         B.condBr(same, done, resize);
@@ -7819,7 +7828,7 @@ export class LlEmitter {
           B.line(`${lenPtr} = getelementptr inbounds %ScrArr, ptr ${arr!.name}, i32 0, i32 1`);
           this.markMemoryPointer(lenPtr, "array:header");
           B.line(
-            `${rawLen} = load ${this.sizeType}, ptr ${lenPtr}${this.fieldAliasAttachment(lenPtr)}`,
+            `${rawLen} = load ${this.sizeType}, ptr ${lenPtr}${this.fieldAliasAttachment(lenPtr)}${this.arrayLengthRange}`,
           );
           B.line(`${len} = ${sizeToDouble(this.sizeType)} ${this.sizeType} ${rawLen} to double`);
           B.line(`${inBounds} = fcmp olt double ${i}, ${len}`);

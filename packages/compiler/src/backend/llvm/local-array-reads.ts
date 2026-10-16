@@ -523,7 +523,9 @@ function emitDenseReferenceArrayRead(
     belowLen = B.tmp();
   B.line(`${lenPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 1`);
   host.markMemoryPointer(lenPtr, "array:header");
-  B.line(`${len} = load ${host.sizeType}, ptr ${lenPtr}${host.fieldAliasAttachment(lenPtr)}`);
+  B.line(
+    `${len} = load ${host.sizeType}, ptr ${lenPtr}${host.fieldAliasAttachment(lenPtr)}${host.arrayLengthRange}`,
+  );
   B.line(`${belowLen} = icmp ult ${host.sizeType} ${offset}, ${len}`);
   const stateLabel = B.newLabel("local.array.state");
   B.condBr(belowLen, stateLabel, no);

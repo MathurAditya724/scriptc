@@ -557,7 +557,9 @@ export function emitArrIntrinsic(
         t = B.tmp();
       B.line(`${p} = getelementptr inbounds %ScrArr, ptr ${r.name}, i32 0, i32 1`);
       host.markMemoryPointer(p, "array:header");
-      B.line(`${len} = load ${host.sizeType}, ptr ${p}${host.fieldAliasAttachment(p)}`);
+      B.line(
+        `${len} = load ${host.sizeType}, ptr ${p}${host.fieldAliasAttachment(p)}${host.arrayLengthRange}`,
+      );
       B.line(`${t} = ${sizeToDouble(host.sizeType)} ${host.sizeType} ${len} to double`);
       return { name: t, type: e.type };
     }
