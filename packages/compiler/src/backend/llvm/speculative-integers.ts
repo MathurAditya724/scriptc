@@ -259,6 +259,9 @@ export function planSpeculativeLoop(
   // double forms cost the most. A loop whose integers only count and compare
   // gains nothing measurable from a second copy, so it keeps one.
   const multiplied = new Set<string>();
+  // A product in the condition alone (`i < Math.floor(n * scale)`) does not
+  // make the body's work integer.
+  let inCondition = false;
 
   const expr = (e: IrExpr): boolean => {
     if (rejected) return false;
@@ -272,7 +275,7 @@ export function planSpeculativeLoop(
     else if (e.kind === "bin" && CONSUMING_OPS.has(e.op)) {
       consume(e.left);
       consume(e.right);
-      if (e.op === "*" || e.op === "/" || e.op === "%")
+      if (!inCondition && (e.op === "*" || e.op === "/" || e.op === "%"))
         for (const operand of [e.left, e.right])
           if (operand.kind === "varRef") multiplied.add(operand.localId);
     } else if (e.kind === "arrayGet" || e.kind === "arrayHas" || e.kind === "arrayState")
@@ -321,7 +324,11 @@ export function planSpeculativeLoop(
     return everyStmtChild(s, expr, stmt);
   };
 
-  if (loop.cond) expr(loop.cond);
+  if (loop.cond) {
+    inCondition = true;
+    expr(loop.cond);
+    inCondition = false;
+  }
   if (loop.kind === "for" && loop.update) stmt(loop.update);
   for (const s of loop.body) stmt(s);
   if (rejected || nodes > MAX_LOOP_NODES) return null;
