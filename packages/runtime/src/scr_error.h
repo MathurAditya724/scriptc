@@ -117,7 +117,8 @@ enum {
   SCR_ERR_EVAL = 6,
   SCR_ERR_URI = 7,
   SCR_ERR_AGGREGATE = 8, /* AggregateError — ScrAggregateError, the wider layout */
-  SCR_ERR_COUNT = 9,
+  SCR_ERR_ASSERTION = 9, /* node:assert's AssertionError — the Error layout */
+  SCR_ERR_COUNT = 10,
 };
 
 extern SCR_TL ScrVt scr_error_vts[SCR_ERR_COUNT]; /* indexed by SCR_ERR_*; main() stamps pre/post */

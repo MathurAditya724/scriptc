@@ -26,8 +26,8 @@
       "apiEntries": 29,
       "static": {
         "supported": 0,
-        "partial": 18,
-        "refused": 3,
+        "partial": 19,
+        "refused": 2,
         "not-implemented": 8,
         "by-design": 0,
         "unreviewed": 0,
@@ -992,6 +992,9 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/5510-assert-error-properties.js",
+          "tests/corpus/5511-assert-error-class.ts",
+          "tests/corpus/5512-assert-error-options.js",
           "tests/corpus/node24-no-error-assertions-coercion.js",
           "tests/corpus/node24-no-error-assertions.cjs",
           "tests/corpus/node24-no-error-assertions.ts",
@@ -1065,8 +1068,13 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.assert.AssertionError"
+        "status": "partial",
+        "evidence": "compiler-dedicated:assert.AssertionError",
+        "tests": [
+          "tests/corpus/5510-assert-error-properties.js",
+          "tests/corpus/5511-assert-error-class.ts",
+          "tests/corpus/5512-assert-error-options.js"
+        ]
       },
       "anchorSource": "exact"
     },

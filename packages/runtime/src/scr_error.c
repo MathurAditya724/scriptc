@@ -33,7 +33,7 @@ static const char *const scr_error_names[SCR_ERR_COUNT] = {
     /* DOMException's DEFAULT name is "Error" too (WebIDL: the name
      * parameter defaults to "Error"); the class identity lives in the
      * vtable, never the name. */
-    "Error", "ReferenceError", "EvalError", "URIError", "AggregateError"};
+    "Error", "ReferenceError", "EvalError", "URIError", "AggregateError", "AssertionError"};
 
 void scr_error_trace(void *e, ScrTraceVisit visit, void *ctx) {
   /* name/message are strings — never collector-headered; nothing to visit. */
@@ -162,6 +162,7 @@ SCR_TL ScrVt scr_error_vts[SCR_ERR_COUNT] = {
     {6, 6, &scr_error_reld}, /* EvalError */
     {7, 7, &scr_error_reld}, /* URIError */
     {8, 8, &scr_aggregate_reld}, /* AggregateError */
+    {9, 9, &scr_error_reld}, /* AssertionError */
 };
 
 ScrError *scr_error_retain(ScrError *e) {

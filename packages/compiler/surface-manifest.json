@@ -300,14 +300,6 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
-      "id": "node-builtin.assert.AssertionError",
-      "kind": "node-builtin",
-      "name": "assert.AssertionError",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "the class itself has no lowering — catch and test err.name === \"AssertionError\" or err.code === \"ERR_ASSERTION\""
-    },
-    {
       "id": "node-builtin.assert.deepEqual",
       "kind": "node-builtin",
       "name": "assert.deepEqual",
@@ -353,14 +345,6 @@
       "name": "assert/strict",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
-    },
-    {
-      "id": "node-builtin.assert.strict.AssertionError",
-      "kind": "node-builtin",
-      "name": "assert/strict.AssertionError",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "the class itself has no lowering — catch and test err.name === \"AssertionError\" or err.code === \"ERR_ASSERTION\""
     },
     {
       "id": "node-builtin.assert.strict.doesNotReject",

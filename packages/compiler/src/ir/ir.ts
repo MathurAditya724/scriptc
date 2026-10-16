@@ -1384,6 +1384,10 @@ export const RUNTIME_ERROR_CLASSES: ReadonlyMap<
   // (the DOMException arrangement), read through error.aggregateErrors, so
   // user `extends AggregateError` is fenced too.
   ["%AggregateError", { lib: "AggregateError", kind: 8, base: "%Error" }],
+  // node:assert's AssertionError — every assertion failure and its own
+  // constructor. The Error layout; actual, expected, operator,
+  // generatedMessage and diff are properties of the error's dyn view.
+  ["%AssertionError", { lib: "AssertionError", kind: 9, base: "%Error" }],
 ]);
 
 /** The runtime-provided node:events EventEmitter class (ScrEmitter /

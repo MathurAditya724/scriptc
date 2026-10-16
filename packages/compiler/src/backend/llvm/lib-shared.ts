@@ -339,6 +339,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // node:assert (scr_assert.c): all args borrowed; failures throw the
   // catchable AssertionError. The never-throwing members ride along.
   "assert.ok": "scr_assert_ok",
+  "assert.record": "scr_assert_record_dyn",
+  "assert.errorNew": "scr_assert_error_new",
   "assert.eqF64": "scr_assert_eq_f64",
   "assert.eqBigInt": "scr_assert_eq_bigint",
   "assert.eqStr": "scr_assert_eq_str",

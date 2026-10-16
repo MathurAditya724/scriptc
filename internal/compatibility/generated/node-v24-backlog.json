@@ -7,9 +7,9 @@
     "tierItemCount": 3472,
     "tiers": {
       "static": {
-        "replace-refusal": 37,
+        "audit-partial": 972,
         "verify-gap": 2377,
-        "audit-partial": 971,
+        "replace-refusal": 36,
         "classify": 2,
         "implement": 85
       }
@@ -37,12 +37,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.assert.AssertionError",
-          "tests": []
+          "source": "compiler-dedicated:assert.AssertionError",
+          "tests": [
+            "tests/corpus/5510-assert-error-properties.js",
+            "tests/corpus/5511-assert-error-class.ts",
+            "tests/corpus/5512-assert-error-options.js"
+          ]
         }
       }
     },
