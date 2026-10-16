@@ -6,6 +6,36 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.3.5
+
+### Features
+
+- **`node:fs` adds read and write streams,** including `fs.createReadStream` and `fs.createWriteStream`.
+- **`util.promisify` works over `child_process.exec`** and the fs callback functions that have an `fs/promises` counterpart.
+- **`node:net` adds `socket.address()`, `socket.resetAndDestroy()` and `server.dropMaxConnection`,** and `node:dgram` supports the socket options and `disconnect()`.
+- **`node:tls` adds `getProtocol`, `getCipher`, `alpnProtocol`** and `tls.DEFAULT_MIN_VERSION`/`DEFAULT_MAX_VERSION`.
+- **`events.once` works on `EventEmitter` instances.**
+- **Checked JSON records keep keys they do not declare,** and compound assignment with untyped operands compiles.
+
+### Performance
+
+- **`Map` and `Set` headers and small entry arrays are smaller:** an empty map takes 100 bytes instead of 188.
+- **Released lifetime regions are freed without a pass over the whole heap.**
+- **The cycle collector frees its large work vectors after a pass,** and intact parsed JSON documents skip cycle collection.
+- **Classes keep a property bag only when something stores into it,** and class and record views without dynamic stores emit no commit adapters.
+- **Integer arithmetic is proven through calls and module-level code,** pure number recursion runs on integer clones, and array lengths load with the range of a JS array length.
+- **Closed virtual calls are dispatched directly,** read-modify-write operations reuse their `Map` lookup, and never-reassigned bindings are read as values.
+- **Generators, user iterators and awaits cost less per value,** and promises use a smaller block allocated inline.
+- **SHA-1 and SHA-256 use the SHA extensions on x86-64,** about 4 to 5 times faster than before.
+- **Regex exec results, `parseInt` of captures, UTF-8 file reads, string-and-number concatenation and small `Buffer` allocation are cheaper,** and `JSON.parse` storage fits its length.
+- **The main thread leaves its heap to the operating system at exit.**
+
+### Fixes
+
+- **Sockets read ahead without a consumer,** so a peer's close reaches them.
+- **Publication walkers with more than ten pushes keep distinct value names,** and int32 field storage survives reflection reads through `unknown`.
+- **Native program objects use runtime ABI v22.** External object consumers must link the matching v0.3.5 runtime pack; the versioned marker rejects incompatible runtime objects at link time.
+
 ## 0.3.4
 
 ### Features
