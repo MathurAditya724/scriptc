@@ -114,7 +114,9 @@ function check(label, fn) {
   check("start negative", () => fs.createWriteStream(file, { start: -1 }));
   check("path null", () => fs.createWriteStream(null));
   check("fd string", () => fs.createWriteStream(file, { fd: "3" }));
-  check("encoding buffer", () => fs.createWriteStream(file, { encoding: "buffer" }));
+  // Node's constructor throws here after scheduling the open, so the
+  // stream still opens (and truncates) its file later: keep it off `file`.
+  check("encoding buffer", () => fs.createWriteStream(path.join(dir, "unknown-encoding.txt"), { encoding: "buffer" }));
   check("hwm string", () => fs.createWriteStream(file, { highWaterMark: "4" }));
   {
     const log = [];
@@ -134,5 +136,6 @@ function check(label, fn) {
     await new Promise((resolve) => ws.on("close", () => resolve(report("pipe", [], ws.bytesWritten, ws.pending))));
     console.log("piped", fs.statSync(file).size);
   }
+  console.log("unknown-encoding stream opened its file", fs.existsSync(path.join(dir, "unknown-encoding.txt")));
   fs.rmSync(dir, { recursive: true });
 })();

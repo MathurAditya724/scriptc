@@ -557,23 +557,19 @@ static ScrStream *scr_fss_new(const ScrDyn *path, const ScrDyn *opts_in, bool re
     scr_dyn_release(eo);
   }
   if (!s) goto fail;
+  bool unknown_encoding = false;
   if (!readable) {
     /* setDefaultEncoding(options.encoding) after the Writable constructor:
      * 'buffer' is not an encoding there; utf8 is the default */
     ScrDyn *enc = scr_fss_get(o, "encoding");
-    bool buffer = enc && enc->kind == SCR_DYN_STR && enc->v.str->len == 6 &&
+    unknown_encoding = enc && enc->kind == SCR_DYN_STR && enc->v.str->len == 6 &&
         memcmp(enc->v.str->data, "buffer", 6) == 0;
-    bool other = enc && enc->kind == SCR_DYN_STR && enc->v.str->len > 0 && !buffer &&
+    bool other = enc && enc->kind == SCR_DYN_STR && enc->v.str->len > 0 && !unknown_encoding &&
         !(enc->v.str->len == 4 && memcmp(enc->v.str->data, "utf8", 4) == 0) &&
         !(enc->v.str->len == 5 && memcmp(enc->v.str->data, "utf-8", 5) == 0);
     if (enc) scr_dyn_release(enc);
-    if (buffer) {
-      static const char m[] = "Unknown encoding: buffer";
-      scr_throw_error_msg_code(SCR_ERR_TYPE, m, sizeof m - 1, "ERR_UNKNOWN_ENCODING");
-    } else if (other) {
+    if (other) {
       scr_fss_unsupported("the WriteStream option 'encoding' is not supported yet (utf8, the default, is the write-side string encoding)");
-    }
-    if (buffer || other) {
       scr_stream_release(s);
       s = NULL;
       goto fail;
@@ -592,6 +588,15 @@ static ScrStream *scr_fss_new(const ScrDyn *path, const ScrDyn *opts_in, bool re
   }
   scr_stream_set_destroy(s, scr_fss_hook((void *)&scr_fss_destroy), &scr_fss_destroy);
   scr_stream_construct(s, scr_fss_hook((void *)&scr_fss_construct), &scr_fss_construct);
+  if (unknown_encoding) {
+    /* Node's constructor has already scheduled _construct when
+     * setDefaultEncoding throws, so the unreachable stream still opens
+     * (and with the default 'w' flags truncates) its file. */
+    static const char m[] = "Unknown encoding: buffer";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, m, sizeof m - 1, "ERR_UNKNOWN_ENCODING");
+    scr_stream_release(s);
+    s = NULL;
+  }
 fail:
   if (f) scr_fss_free(f);
   if (owner) owner_ops->release(owner);
