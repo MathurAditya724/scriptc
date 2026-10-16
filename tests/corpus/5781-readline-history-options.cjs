@@ -1,7 +1,8 @@
 'use strict';
 // createInterface's history and editing options in JavaScript:
 // shorthand options, the members, the validation errors (completer
-// included), and 'history' listeners that never fire without a terminal.
+// included; Node checks historySize, reported as "size", before
+// completer), and 'history' listeners that never fire without a terminal.
 const readline = require('readline');
 const { PassThrough } = require('stream');
 
@@ -43,6 +44,12 @@ try {
   console.log('completer 5', 'ok');
 } catch (e) {
   console.log('completer 5', e.name, e.code, e.message);
+}
+try {
+  readline.createInterface({ input: new PassThrough(), historySize: -1, completer: 5 }).close();
+  console.log('historySize -1 and completer 5', 'ok');
+} catch (e) {
+  console.log('historySize -1 and completer 5', e.name, e.code, e.message);
 }
 try {
   readline.createInterface({ input: new PassThrough(), tabSize: 2, escapeCodeTimeout: 0, historySize: 0 }).close();
