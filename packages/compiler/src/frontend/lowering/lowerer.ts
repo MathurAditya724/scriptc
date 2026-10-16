@@ -591,6 +591,7 @@ export type StaticCallableProjection =
   | { kind: "declared-function"; signature: FnSig }
   | { kind: "builtin-function"; module: string; member: string }
   | { kind: "promisified-exec-file" }
+  | { kind: "promisified-exec" }
   | { kind: "promisified-builtin"; module: string; member: string };
 
 /** Own-property lookup for the surface tables. They are plain object
@@ -11742,8 +11743,8 @@ export class Lowerer {
     return registerPromisifiedBuiltinDecl(this, nameNode, init);
   }
 
-  lowerExecFileAsyncCall(expr: ts.CallExpression, loc: SrcLoc): IrExpr {
-    return lowerExecFileAsyncCall(this, expr, loc);
+  lowerExecFileAsyncCall(expr: ts.CallExpression, loc: SrcLoc, shell = false): IrExpr {
+    return lowerExecFileAsyncCall(this, expr, loc, shell);
   }
 
   lowerNumberStaticCall(

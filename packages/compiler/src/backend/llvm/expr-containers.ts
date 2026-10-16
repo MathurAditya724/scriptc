@@ -557,7 +557,9 @@ export function emitArrIntrinsic(
         t = B.tmp();
       B.line(`${p} = getelementptr inbounds %ScrArr, ptr ${r.name}, i32 0, i32 1`);
       host.markMemoryPointer(p, "array:header");
-      B.line(`${len} = load ${host.sizeType}, ptr ${p}${host.fieldAliasAttachment(p)}`);
+      B.line(
+        `${len} = load ${host.sizeType}, ptr ${p}${host.fieldAliasAttachment(p)}${host.arrayLengthRange}`,
+      );
       B.line(`${t} = ${sizeToDouble(host.sizeType)} ${host.sizeType} ${len} to double`);
       return { name: t, type: e.type };
     }
@@ -977,35 +979,45 @@ export function wrapNullable(
   return host.own({ name: t, type: resultType });
 }
 
-/** Construct matching key/value storage once for Maps and Sets. Union arm
- * descriptors are immutable module data; all-reference unions keep their
- * existing identity-only representation. */
-function newCollection(host: LlvmEmitterContext, key: IrType, value: IrType): string {
-  const B = host.B;
+/** The ScrMapOps descriptor of a Map or Set with these key and value
+ * types: the reference adapters of each side and, for a union of value
+ * arms, the key kind of every arm (immutable module data); all-reference
+ * unions keep their existing identity-only representation. */
+function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): string {
   const rc = isRefCounted(value)
     ? vAdapters(host.shapeHost, value)
     : { retain: "null", release: "null" };
+  const keyRc =
+    mapKeyAccess(key) === "ref"
+      ? { ...vAdapters(host.shapeHost, key), trace: traceArg(host.shapeHost, key) }
+      : { retain: "null", release: "null", trace: "null" };
+  const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
+  let unionKeys = "null";
+  if (mapKeyKindNum(key, arms) === 7) {
+    if (!arms) throw new InternalCompilerError("llvm emitter bug: collection key union missing");
+    unionKeys = host.cstr(arms.map((arm) => String.fromCharCode(mapKeyKindNum(arm))).join(""));
+  }
+  return host.shapeHost.mapOps([
+    keyRc.retain,
+    keyRc.release,
+    keyRc.trace,
+    rc.retain,
+    rc.release,
+    traceArg(host.shapeHost, value),
+    unionKeys,
+  ]);
+}
+
+/** Construct matching key/value storage once for Maps and Sets. */
+function newCollection(host: LlvmEmitterContext, key: IrType, value: IrType): string {
+  const B = host.B;
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
   const kind = mapKeyKindNum(key, arms);
   const m = B.tmp();
-  if (mapKeyAccess(key) === "ref") {
-    const keyRc = vAdapters(host.shapeHost, key);
-    host.declare(`declare ptr @scr_map_new_typed(i32, i32, ptr, ptr, ptr, ptr, ptr, ptr)`);
-    B.line(
-      `${m} = call ptr @scr_map_new_typed(i32 ${kind}, i32 ${mapValKindNum(value)}, ptr ${keyRc.retain}, ptr ${keyRc.release}, ptr ${traceArg(host.shapeHost, key)}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, value)})`,
-    );
-  } else {
-    host.declare(`declare ptr @scr_map_new(i32, i32, ptr, ptr, ptr)`);
-    B.line(
-      `${m} = call ptr @scr_map_new(i32 ${kind}, i32 ${mapValKindNum(value)}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, value)})`,
-    );
-  }
-  if (kind === 7) {
-    if (!arms) throw new InternalCompilerError("llvm emitter bug: collection key union missing");
-    const kinds = arms.map((arm) => String.fromCharCode(mapKeyKindNum(arm))).join("");
-    host.declare(`declare void @scr_map_union_keys(ptr, ptr)`);
-    B.line(`call void @scr_map_union_keys(ptr ${m}, ptr ${host.cstr(kinds)})`);
-  }
+  host.declare(`declare ptr @scr_map_new(i32, i32, ptr)`);
+  B.line(
+    `${m} = call ptr @scr_map_new(i32 ${kind}, i32 ${mapValKindNum(value)}, ptr ${collectionOps(host, key, value)})`,
+  );
   return m;
 }
 
@@ -1077,10 +1089,17 @@ export function emitMapLikeIntrinsic(
     const checked =
       key.kind === "dyn" &&
       (keysOnly || (receiverType.kind === "map" && receiverType.value.kind === "dyn"));
-    const helper = checked ? "scr_map_clone_dyn" : "scr_map_clone";
-    host.declare(`declare ptr @${helper}(ptr, i1 zeroext)`);
     const result = B.tmp();
-    B.line(`${result} = call ptr @${helper}(ptr ${r.name}, i1 ${keysOnly})`);
+    if (checked) {
+      host.declare(`declare ptr @scr_map_clone_dyn(ptr, i1 zeroext)`);
+      B.line(`${result} = call ptr @scr_map_clone_dyn(ptr ${r.name}, i1 ${keysOnly})`);
+    } else {
+      // A Map's key Set drops the value adapters: it takes the descriptor
+      // of a Set of the Map's keys.
+      const ops = method === "keySet" ? collectionOps(host, key, { kind: "f64" }) : "null";
+      host.declare(`declare ptr @scr_map_clone(ptr, i1 zeroext, ptr)`);
+      B.line(`${result} = call ptr @scr_map_clone(ptr ${r.name}, i1 ${keysOnly}, ptr ${ops})`);
+    }
     return host.own({ name: result, type: e.type });
   }
   if (method === "valueSet") {

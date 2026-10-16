@@ -26,6 +26,7 @@ function declarationHost(
       declarations.push(decl);
     },
     needOom() {},
+    mapOps: (operands) => (operands.every((op) => op === "null") ? "null" : "@sc_map_ops"),
     sizeType: pointerBits === 32 ? "i32" : "i64",
     cycleBufOffset: 4,
     tracedShapes: new Set(),
@@ -186,8 +187,7 @@ describe("LLVM runtime RC symbols", () => {
     expect(fn("sc_rc_retain_arr")).not.toContain("%ScrArr");
     expect(fn("sc_rc_retain_arr")).not.toContain("store i32");
     // Maps: a headered map's release is the runtime's; no inline buffering.
-    expect(fn("sc_rc_release_map")).toContain("%ScrMapRc, ptr %o, i32 0, i32 5");
-    expect(fn("sc_rc_release_map")).toContain("%ScrMapRc, ptr %o, i32 0, i32 8");
+    expect(fn("sc_rc_release_map")).toContain("%ScrMapRc, ptr %o, i32 0, i32 3");
     expect(fn("sc_rc_release_map")).toContain("br i1 %headered, label %slow, label %dec");
     expect(fn("sc_rc_release_map")).not.toContain("store i32 1");
     // Unions: no color store, only the sign of the i32 `buf` at obj-4.

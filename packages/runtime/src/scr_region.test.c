@@ -170,12 +170,15 @@ static bool was_disposed(const void *obj) {
   return false;
 }
 
+static const ScrMapOps node_names_ops = { NULL, NULL, NULL, node_retain, node_release, NULL, NULL };
+static const ScrMapOps node_set_ops = { node_retain, node_release, NULL, NULL, NULL, NULL, NULL };
+
 /* A graph exercising every walked shape, rooted at the returned node. */
 static Node *build_graph(int n) {
   Node *root = node_new(0);
   root->kids = node_array();
-  root->names = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_REF, node_retain, node_release, NULL);
-  ScrMap *set = scr_map_new_typed(SCR_MAP_KEY_REF, SCR_MAP_VAL_F64, node_retain, node_release, NULL, NULL, NULL, NULL);
+  root->names = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_REF, &node_names_ops);
+  ScrMap *set = scr_map_new(SCR_MAP_KEY_REF, SCR_MAP_VAL_F64, &node_set_ops);
   ScrDyn *list = scr_dyn_new_arr();
   for (int i = 0; i < n; i++) {
     Node *child = node_new(i + 1);

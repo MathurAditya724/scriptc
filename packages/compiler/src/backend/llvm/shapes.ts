@@ -49,6 +49,11 @@ export interface ShapeHost {
   classRootOf?(className: string): string | undefined;
   /** Request the shared OOM abort helper (@sc_oom) — emitted once. */
   needOom(): void;
+  /** The immutable ScrMapOps descriptor (scr_map.h) of a Map or Set type:
+   * a module constant holding the LLVM operands { key retain, key release,
+   * key trace, value retain, value release, value trace, union key kinds },
+   * or `null` when every operand is null. */
+  mapOps(operands: readonly string[]): string;
   /** The target C ABI's `size_t` / refcount integer type. */
   readonly sizeType: "i32" | "i64";
   /** Byte offset from an object pointer back to ScrCycHdr.buf. */
@@ -253,8 +258,8 @@ export function releaseSym(host: ShapeHost, t: IrType): string {
 /* ── inline RC fast paths ─────────────────────────────────────────────── */
 
 /** How a runtime family decides whether an object carries a ScrCycHdr:
- * never, always, or per object through the trace slots its C release
- * tests (`a->cyc`, `m->key_trace || m->val_trace`). */
+ * never, always, or per object through the header flag its C release
+ * tests (`a->cyc`, `m->traced`). */
 type RcCycle = "none" | "always" | "arr" | "map";
 
 interface InlineRcFamily {
@@ -467,7 +472,7 @@ export function inlineRcDecls(host: ShapeHost): string[] {
 }
 
 /** Branch to `yes` when a per-object family's object carries a cycle
- * header (its C retain/release trace-slot test), else to `no`. */
+ * header (the C retain/release header test), else to `no`. */
 function rcHeaderTest(cycle: "arr" | "map", yes: string, no: string): string[] {
   if (cycle === "arr") {
     return [
@@ -478,13 +483,9 @@ function rcHeaderTest(cycle: "arr" | "map", yes: string, no: string): string[] {
     ];
   }
   return [
-    `  %vtracep = getelementptr inbounds %ScrMapRc, ptr %o, i32 0, i32 5 ; val_trace`,
-    `  %vtrace = load ptr, ptr %vtracep`,
-    `  %ktracep = getelementptr inbounds %ScrMapRc, ptr %o, i32 0, i32 8 ; key_trace`,
-    `  %ktrace = load ptr, ptr %ktracep`,
-    `  %vheadered = icmp ne ptr %vtrace, null`,
-    `  %kheadered = icmp ne ptr %ktrace, null`,
-    `  %headered = or i1 %vheadered, %kheadered`,
+    `  %tracedp = getelementptr inbounds %ScrMapRc, ptr %o, i32 0, i32 3 ; traced`,
+    `  %traced = load i8, ptr %tracedp`,
+    `  %headered = icmp ne i8 %traced, 0`,
     `  br i1 %headered, label %${yes}, label %${no}`,
   ];
 }
@@ -1427,13 +1428,13 @@ export function emitRecordShapes(
     if (shape.indexValue) {
       // The overflow map (string-keyed): value handling is type-directed
       // exactly like shapes.ts's overflowNewC.
-      host.declare(`declare ptr @scr_map_new(i32, i32, ptr, ptr, ptr)`);
+      host.declare(`declare ptr @scr_map_new(i32, i32, ptr)`);
       const v = shape.indexValue;
       const valKind = v.kind === "f64" ? 0 : v.kind === "bool" ? 1 : 2;
       const rc = valKind === 2 ? vAdapters(host, v) : { retain: "null", release: "null" };
       const trace = valKind === 2 ? traceArg(host, v) : "null";
       nw.push(
-        `  %ovf = call ptr @scr_map_new(i32 1, i32 ${valKind}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${trace})`,
+        `  %ovf = call ptr @scr_map_new(i32 1, i32 ${valKind}, ptr ${host.mapOps(["null", "null", "null", rc.retain, rc.release, trace, "null"])})`,
         `  %ovfp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${shape.fields.length + 1}`,
         `  store ptr %ovf, ptr %ovfp`,
       );

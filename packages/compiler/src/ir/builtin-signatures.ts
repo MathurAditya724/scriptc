@@ -1821,6 +1821,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * the 'session' registration (fires once with the serialized session —
    * a Buffer; the received-ticket event). */
   "tls.sockAuthorized": { argTypes: [NETSOCKET_T], result: BOOL },
+  /** getProtocol() (string | null), getCipher() (CipherNameAndProtocol,
+   * undefined before the handshake, null after close) and alpnProtocol
+   * (string | false | null), as dyn values. */
+  "tls.sockGetProtocol": { argTypes: [NETSOCKET_T], result: DYN },
+  "tls.sockGetCipher": { argTypes: [NETSOCKET_T], result: DYN },
+  "tls.sockAlpnProtocol": { argTypes: [NETSOCKET_T], result: DYN },
   "tls.sockAuthError": { argTypes: [NETSOCKET_T], result: VOID },
   "tls.sockOnSecureConnect": {
     argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
@@ -2126,17 +2132,19 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     ],
     result: STRING,
   },
-  /** The promisified-execFile capture (args: cmd, argv, cwd, hasEnv,
-   * envPairs, timeoutMs): the same exec core in the async shape — both
-   * streams captured, no echo, Node's ASYNC messages on the throw paths
+  /** The promisified-execFile/exec capture (args: cmd, argv, shell, cwd,
+   * hasEnv, envPairs, timeoutMs; shell marks exec's /bin/sh -c argv, as
+   * for execSync, so failures display the command string): the same exec
+   * core in the async shape — both streams captured, no echo, Node's ASYNC messages on the throw paths
    * ("Command failed: <cmd>\n<stderr>" with the unconditional newline,
    * "spawn <file> ENOENT" with .code, timeouts reporting as ordinary
    * SIGTERM command failures — never ETIMEDOUT). Result reuses the
    * ScrSpawnRes container (+1; stdout/stderr strings, status unused).
-   * Called only from the frontend's interned %execFileAsync ASYNC helper,
-   * whose fiber turns the throw into the rejection. */
+   * Called only from the frontend's interned %execFileAsync and
+   * %execAsync ASYNC helpers, whose fiber turns the throw into the
+   * rejection. */
   "cp.execCapture": {
-    argTypes: [STRING, arrayOf(STRING), STRING, BOOL, arrayOf(STRING), F64],
+    argTypes: [STRING, arrayOf(STRING), BOOL, STRING, BOOL, arrayOf(STRING), F64],
     result: SPAWNRES_T,
   },
   /** child_process.spawn (scr_child.c + the scr_async.c loop): posix_spawnp
@@ -3662,6 +3670,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * turns, Node's check phase). Neither throws. */
   "tp.setTimeout": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
   "tp.setImmediate": { argTypes: [], result: { kind: "promise", inner: VOID } },
+  /** events.once (scr_events_emitter.c): [emitter, name, boxer,
+   * errorBoxer, listenForError] → a pending promise of any[]; the boxers
+   * turn the event's and the 'error' tuple into that array. */
+  "events.once": { argTypes: [null, STRING, null, null, BOOL], result: VOID },
   /** The resolve-value forms: [ms?, value, ref] → a pending promise of the
    * value's type that copies the borrowed already-resolved `value` promise
    * when the timer (or immediate) fires; ref false unrefs it. The result

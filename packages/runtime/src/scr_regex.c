@@ -666,6 +666,30 @@ static uint64_t scr_regex_mask_bits(double mask) {
   return mask >= 0 && mask < 18446744073709551616.0 ? (uint64_t)mask : UINT64_MAX;
 }
 
+/* Slot k of an exec result: a nonparticipating or unselected capture is a
+ * present undefined (SCR_RE_NO_SPAN when lazy), a lazy capture of an ASCII
+ * subject is a span word, and every other capture a fresh string. */
+static inline void scr_regex_fill_slot(const ScrRegexInput *input, uint64_t *data,
+                                       uint8_t *present, int k, uint64_t mask, uint64_t lazy,
+                                       bool spans) {
+  const uint8_t *cs = input->capture[2 * k], *ce = input->capture[2 * k + 1];
+  bool deferred = k < 64 && (lazy >> k & 1);
+  uint64_t word = 0;
+  uint8_t state = SCR_ARR_UNDEFINED;
+  if (cs == NULL || ce == NULL || (k < 64 && !(mask >> k & 1))) {
+    if (deferred) word = SCR_RE_NO_SPAN;
+  } else if (deferred && spans) {
+    word = (uint64_t)(cs - input->data) << 32 | (uint64_t)(ce - input->data);
+  } else {
+    ScrStr *text =
+        scr_regex_span(input, scr_capture_index(input, cs), scr_capture_index(input, ce));
+    word = (uint64_t)(uintptr_t)text;
+    state = SCR_ARR_VALUE;
+  }
+  data[k] = word;
+  present[k] = state;
+}
+
 /* re.exec(s): a fresh string[] of [whole match, ...captures], or NULL
  * for no match (the compiler wraps the `string[] | null` union). Global
  * and sticky regexes start at lastIndex, set it to the match end, and
@@ -687,7 +711,7 @@ static ScrArr *scr_regex_exec_core(ScrStr *s, ScrRegex *re, uint64_t mask, bool 
   if (rc == 1) {
     int count = lre_get_capture_count(bc);
     bool spans = lazy != 0 && !input.wide && (count >= 64 || ((mask | lazy) >> count) == 0);
-    out = scr_arr_new(SCR_ELEM_STR, (size_t)count + spans);
+    out = scr_arr_new_inline(SCR_ELEM_STR, (size_t)count + spans);
     if (metadata) {
       ScrDyn *props = scr_dyn_new_obj();
       scr_arr_ext(out)->metadata = props;
@@ -695,34 +719,35 @@ static ScrArr *scr_regex_exec_core(ScrStr *s, ScrRegex *re, uint64_t mask, bool 
       scr_dyn_obj_set(props, "input", 5, scr_dyn_new_str(s));
     }
     /* A fresh dense array: every slot is written directly, then the
-     * hole-free prefix is the run of materialized captures from 0. */
+     * hole-free prefix is the run of materialized captures from 0. Its
+     * storage pointers are fixed (the inline block never moves here), so
+     * they stay in registers across the slot stores. */
     size_t n = (size_t)count + spans;
-    bool prefix = true;
-    for (int k = 0; k < count; k++) {
-      const uint8_t *cs = capture[2 * k], *ce = capture[2 * k + 1];
-      bool deferred = k < 64 && (lazy >> k & 1);
-      uint64_t word = 0;
-      uint8_t state = SCR_ARR_UNDEFINED;
-      if (cs == NULL || ce == NULL || (k < 64 && !(mask >> k & 1))) {
-        if (deferred) word = SCR_RE_NO_SPAN;
-      } else if (deferred && spans) {
-        word = (uint64_t)(cs - input.data) << 32 | (uint64_t)(ce - input.data);
-      } else {
-        ScrStr *text =
-            scr_regex_span(&input, scr_capture_index(&input, cs), scr_capture_index(&input, ce));
-        word = (uint64_t)(uintptr_t)text;
-        state = SCR_ARR_VALUE;
+    uint64_t *data = out->data;
+    uint8_t *present = out->present;
+    if (count <= 64) {
+      /* Captures neither selected nor lazy are present undefined with a
+       * zero payload; only the selected and lazy ones need a decision. */
+      memset(data, 0, (size_t)count * sizeof *data);
+      memset(present, SCR_ARR_UNDEFINED, (size_t)count);
+      uint64_t visit = mask | lazy;
+      if (count < 64) visit &= (UINT64_C(1) << count) - 1;
+      while (visit) {
+        int k = __builtin_ctzll(visit);
+        visit &= visit - 1;
+        scr_regex_fill_slot(&input, data, present, k, mask, lazy, spans);
       }
-      out->data[k] = word;
-      out->present[k] = state;
-      if (state != SCR_ARR_VALUE) prefix = false;
-      if (prefix) out->filled = (uint32_t)k + 1;
+    } else {
+      for (int k = 0; k < count; k++)
+        scr_regex_fill_slot(&input, data, present, k, mask, lazy, spans);
     }
     if (spans) {
-      out->data[count] = (uint64_t)(uintptr_t)scr_str_retain(s);
-      out->present[count] = SCR_ARR_VALUE;
-      if (prefix) out->filled = (uint32_t)n;
+      data[count] = (uint64_t)(uintptr_t)scr_str_retain(s);
+      present[count] = SCR_ARR_VALUE;
     }
+    size_t filled = 0;
+    while (filled < n && present[filled] == SCR_ARR_VALUE) filled++;
+    out->filled = (uint32_t)filled;
     out->len = n;
   }
   scr_regex_input_dispose(&input);
@@ -744,8 +769,9 @@ ScrArr *scr_regex_exec_spans(ScrStr *s, ScrRegex *re, double mask, double lazy) 
 
 /* The bytes of capture k, false when it reads as undefined. */
 static bool scr_regex_group_bytes(const ScrArr *m, double k, const char **p, size_t *n) {
-  if (!(k >= 0 && k < (double)m->len)) return false;
-  size_t i = (size_t)k;
+  /* Array lengths stay below 2^53, so signed conversions are exact. */
+  if (!(k >= 0 && k < (double)(int64_t)m->len)) return false;
+  size_t i = (size_t)(int64_t)k;
   if (m->present[i] == SCR_ARR_VALUE) {
     const ScrStr *str = (const ScrStr *)(uintptr_t)m->data[i];
     *p = str->data;
@@ -777,6 +803,8 @@ double scr_regex_group_parse_int(ScrArr *m, double k, double radix) {
   size_t n;
   /* parseInt(undefined, radix) parses the string "undefined". */
   if (!scr_regex_group_bytes(m, k, &p, &n)) return scr_parse_int_bytes("undefined", 9, radix);
+  double fast;
+  if (radix == 10 && scr_parse_int_short_digits(p, n, &fast)) return fast;
   return scr_parse_int_bytes(p, n, radix);
 }
 

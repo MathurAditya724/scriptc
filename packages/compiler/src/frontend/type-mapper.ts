@@ -861,6 +861,20 @@ export function perfEntryShape(shapes: ShapeRegistry, unions: UnionRegistry): st
   );
 }
 
+/** The `{ stdout, stderr }` record a promisified exec/execFile call
+ * fulfills with (see mapType), in Node's key order. */
+export function execResultShape(shapes: ShapeRegistry): string {
+  return shapes.intern(
+    [
+      { name: "stderr", type: STRING },
+      { name: "stdout", type: STRING },
+    ],
+    false,
+    undefined,
+    ["stdout", "stderr"],
+  );
+}
+
 /** toJSON()'s plain object over an entry: the same fields without the
  * marker. */
 export function perfEntryJsonShape(shapes: ShapeRegistry): string {
@@ -3105,6 +3119,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ),
     };
   }
+  // tlsSocket.getCipher()'s { name, standardName, version }.
+  if (isStdlibInterface("CipherNameAndProtocol")) {
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "name", type: STRING },
+          { name: "standardName", type: STRING },
+          { name: "version", type: STRING },
+        ],
+        false,
+        undefined,
+        ["name", "standardName", "version"],
+      ),
+    };
+  }
   // child_process.ExecFileSyncOptionsWithStringEncoding: the exec-options
   // interface interned explicitly on the AddressInfo pattern, so a TYPED
   // options value (`const commandOptions: ExecFileSyncOptions... = {...}`,
@@ -3408,6 +3438,38 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         ["uid", "gid", "username", "homedir", "shell"],
       ),
     };
+  }
+  // The promisified exec/execFile result `{ stdout: string; stderr: string }`:
+  // an anonymous type literal (@types/node's __promisify__ overloads in
+  // child_process, the shipped fallback's promisify overloads in util),
+  // so it maps by provenance and exact shape, interned as the
+  // %execFileAsync/%execAsync helpers build it. Node builds the object as
+  // { stdout, stderr }. The Buffer-typed literals do not match and stay
+  // unmapped.
+  if (
+    psym &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          ts.isTypeLiteralNode(d) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          (isDeclaredInAmbientModule(d, "child_process") || isDeclaredInAmbientModule(d, "util")),
+      )
+  ) {
+    const props = checker.getPropertiesOfType(widened);
+    if (
+      props.length === 2 &&
+      props.every(
+        (p) =>
+          (p.name === "stdout" || p.name === "stderr") &&
+          (p.flags & ts.SymbolFlags.Optional) === 0 &&
+          (checker.getTypeOfSymbol(p).flags & ts.TypeFlags.String) !== 0,
+      ) &&
+      props[0]!.name !== props[1]!.name
+    ) {
+      return { kind: "record", shapeId: execResultShape(ctx.shapes) };
+    }
   }
   // crypto.X509Certificate — the Dirent-style data record: THREE visible
   // fields (fingerprint and the validFrom/validTo validity window, all

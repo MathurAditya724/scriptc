@@ -783,6 +783,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       if (projection?.kind === "promisified-exec-file") {
         return lowerer.lowerExecFileAsyncCall(expr, loc);
       }
+      if (projection?.kind === "promisified-exec") {
+        return lowerer.lowerExecFileAsyncCall(expr, loc, true);
+      }
       if (projection?.kind === "promisified-builtin") {
         return lowerBuiltinCall(
           lowerer,

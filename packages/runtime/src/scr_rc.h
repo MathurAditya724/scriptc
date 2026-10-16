@@ -428,6 +428,26 @@ void scr_rc_destroy(void *obj, void (*destroy)(void *));
  * that walks it finds it externally referenced. */
 void scr_cyc_on_release(void *obj);
 void scr_cyc_on_dead(void *obj);
+/* A set of object pointers for scr_cyc_collect_set: open addressing over
+ * `mask + 1` slots (a power of two), NULL marking an empty slot. */
+typedef struct {
+  void **slots;
+  size_t mask;
+} ScrCycSet;
+static inline size_t scr_cyc_set_slot(const void *obj, size_t mask) {
+  return (size_t)(((uintptr_t)obj >> 3) * 0x9E3779B97F4A7C15ull >> 20) & mask;
+}
+static inline bool scr_cyc_set_has(const ScrCycSet *set, const void *obj) {
+  for (size_t j = scr_cyc_set_slot(obj, set->mask);; j = (j + 1) & set->mask) {
+    if (set->slots[j] == obj) return true;
+    if (set->slots[j] == NULL) return false;
+  }
+}
+/* One full-depth pass over only the candidates in `set`, taken from the
+ * buffers of generations up to `gen` (the others keep their slots and are
+ * not touched); returns how many objects it freed. It leaves the
+ * schedule's baselines alone. */
+size_t scr_cyc_collect_set(const ScrCycSet *set, unsigned gen);
 /* Publication's buffer hooks (scr_publish.c): take a buffered object out
  * of its buffer (returns its index), put it back at `index`, and close the
  * slots taken since the last fill that are still empty. */

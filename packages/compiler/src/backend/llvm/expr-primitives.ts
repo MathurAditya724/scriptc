@@ -278,14 +278,17 @@ export function emitOperatorExpr(
             return uint32 === undefined ? number : { ...number, uint32 };
           }
           if (e.op === "%" && li.range.min >= 0 && ri.range.min > 0) {
+            const range = { min: 0, max: Math.min(li.range.max, ri.range.max - 1) };
+            if (withinInt32(li.range) && withinInt32(ri.range)) {
+              // LLVM does not narrow the i64 remainder of two extended
+              // int32s; a 32-bit one takes a shorter magic-number sequence.
+              const result = B.tmp();
+              B.line(`${result} = urem i32 ${narrowInteger(host, li)}, ${narrowInteger(host, ri)}`);
+              return int32Number(host, result, range, e.type);
+            }
             const result = B.tmp();
             B.line(`${result} = urem i64 ${left}, ${right}`);
-            return integerNumber(
-              host,
-              result,
-              { min: 0, max: Math.min(li.range.max, ri.range.max - 1) },
-              e.type,
-            );
+            return integerNumber(host, result, range, e.type);
           }
           if (e.op === "%") {
             const integer = emitSignedIntegerRemainder(host, l, li, ri);
