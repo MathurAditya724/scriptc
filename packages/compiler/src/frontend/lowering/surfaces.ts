@@ -287,6 +287,29 @@ export const AGENT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
   "path",
 ]);
 
+/** new https.Agent(options) also takes tls.connect's client-side options,
+ * which Node merges into every request made through the agent. None lower
+ * yet, so each fences by name. */
+export const HTTPS_AGENT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
+  ...AGENT_DOCUMENTED_OPTIONS,
+  "ca",
+  "cert",
+  "ciphers",
+  "crl",
+  "ecdhCurve",
+  "key",
+  "maxCachedSessions",
+  "maxVersion",
+  "minVersion",
+  "passphrase",
+  "pfx",
+  "rejectUnauthorized",
+  "secureOptions",
+  "secureProtocol",
+  "servername",
+  "sessionIdContext",
+]);
+
 /** https.request adds tls.connect's client-side TLS knobs. */
 export const HTTPS_CLIENT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
   ...HTTP_CLIENT_DOCUMENTED_OPTIONS,
