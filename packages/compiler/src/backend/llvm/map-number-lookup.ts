@@ -3,8 +3,10 @@
  * Number-keyed collections whose keys are small non-negative integers keep a
  * direct index in the runtime (scr_map.c). Reads go through the internal
  * sc_map_entry_f64 helper (emitter.ts helperDefs), which LLVM inlines: it
- * resolves directly indexed maps without a call and defers to
- * scr_map_entry_f64 otherwise. The generated code then reads the entry's
+ * resolves directly indexed maps without a call and other maps through
+ * the internal sc_map_entry_f64_hashed probe, which hashes the key as the
+ * runtime does and defers to scr_map_entry_f64 only for wide bucket
+ * tables. Both only read memory. The generated code then reads the entry's
  * value slot itself and retains a reference value with the value type's own
  * retain, which is the adapter the collection was constructed with.
  * String-keyed reads use the same entry contract through the internal
@@ -152,6 +154,37 @@ export function emitNumberMapHas(host: LlvmEmitterContext, map: string, key: str
   const found = host.B.tmp();
   host.B.line(`${found} = icmp ne ptr ${entry}, null`);
   return found;
+}
+
+/** Map.set / Set.add of a scalar value under a number key: a found entry
+ * takes the value in its slot (a Set entry's unit value is already there);
+ * a new key appends through `append`, the runtime set. */
+export function emitNumberMapSetScalar(
+  host: LlvmEmitterContext,
+  map: string,
+  key: string,
+  bits: string | null,
+  append: () => void,
+): void {
+  const B = host.B;
+  const entry = emitNumberMapEntry(host, map, key);
+  const found = B.tmp();
+  B.line(`${found} = icmp ne ptr ${entry}, null`);
+  const hit = B.newLabel("mapn.set.hit"),
+    miss = B.newLabel("mapn.set.miss"),
+    join = B.newLabel("mapn.set.join");
+  B.condBr(found, hit, miss);
+  B.startBlock(hit);
+  if (bits !== null) {
+    const slot = B.tmp();
+    B.line(`${slot} = getelementptr inbounds %ScrMapEntry, ptr ${entry}, i32 0, i32 1`);
+    B.line(`store i64 ${bits}, ptr ${slot}`);
+  }
+  B.br(join);
+  B.startBlock(miss);
+  append();
+  B.br(join);
+  B.startBlock(join);
 }
 
 /** Declared by the inline Map/Set iteration steps; its presence makes the

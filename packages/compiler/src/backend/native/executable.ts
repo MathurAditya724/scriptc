@@ -549,6 +549,7 @@ export async function compileCInternal(
       ? [rt(join(rtDir, "scr_util_callable.c"))]
       : []),
     ...(opts.stream ? [rt(join(rtDir, "scr_stream.c"))] : []),
+    ...(opts.stream && opts.dynAsync ? [rt(join(rtDir, "scr_stream_ops.c"))] : []),
     // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,
     // epoll on Linux, WSAPoll on Windows — each TU is empty off its
     // platform, so all three link whenever a poller-using unit does and

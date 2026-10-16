@@ -60,6 +60,14 @@ void scr_dgram_msg_thunk1(ScrClosure *cb, ScrBytes *msg, ScrStr *addr, ScrStr *f
  * frontend), the callback moves. getaddrinfo runs NOW (blocking —
  * SEMANTICS.md); delivery defers to the next loop turn. */
 void scr_dns_lookup(ScrStr *hostname /*borrowed*/, double family, ScrClosure *cb /*moves*/, ScrDnsLookupFn fn);
+/* Node's dns argument forms, with dyn callbacks (all borrowed). */
+void scr_dns_lookup_dyn(const ScrDyn *hostname, const ScrDyn *options, const ScrDyn *callback,
+                        bool typed);
+void scr_dns_lookup_service(const ScrDyn *address, const ScrDyn *port, const ScrDyn *callback,
+                            bool typed);
+ScrDyn *scr_dns_get_servers(void);                  /* +1 */
+ScrStr *scr_dns_get_default_result_order(void);     /* +1 */
+void scr_dns_set_default_result_order(const ScrDyn *order);
 void scr_dns_thunk0(ScrClosure *cb, ScrStr *errmsg, ScrStr *addr, double family);
 void scr_dgram_install(void);
 #ifdef SCR_RC_AUDIT

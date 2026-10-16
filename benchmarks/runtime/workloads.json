@@ -64,6 +64,13 @@
       ]
     },
     {
+      "name": "cyclic-graphs",
+      "entry": "workloads/cyclic-graphs.ts",
+      "args": [
+        "3"
+      ]
+    },
+    {
       "name": "numeric-kernels",
       "entry": "workloads/numeric-kernels.ts",
       "args": [
@@ -103,6 +110,13 @@
       "entry": "workloads/record-boundaries.ts",
       "args": [
         "8"
+      ]
+    },
+    {
+      "name": "number-maps",
+      "entry": "workloads/number-maps.ts",
+      "args": [
+        "4"
       ]
     },
     {

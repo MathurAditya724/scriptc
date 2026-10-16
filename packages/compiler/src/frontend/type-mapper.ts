@@ -3000,6 +3000,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // PromiseFulfilledResult precedent). RemoteInfo's 'IPv4' | 'IPv6'
   // family widens to string here; the runtime only ever answers "IPv4"
   // (udp4 is the one lowered socket type).
+  // dns.lookup's all: true entries: { address, family }.
+  if (isStdlibInterface("LookupAddress")) {
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "address", type: STRING },
+          { name: "family", type: F64 },
+        ],
+        false,
+        undefined,
+        ["address", "family"],
+      ),
+    };
+  }
   // child_process.ExecFileSyncOptionsWithStringEncoding: the exec-options
   // interface interned explicitly on the AddressInfo pattern, so a TYPED
   // options value (`const commandOptions: ExecFileSyncOptions... = {...}`,
@@ -3054,6 +3069,28 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         ["address", "family", "port"],
       ),
     };
+  }
+  // net's 'drop' payload: the record the runtime's address object checks
+  // into, each optional field with its declared type.
+  if (isStdlibInterface("DropArgument")) {
+    const known = [
+      "localAddress",
+      "localPort",
+      "localFamily",
+      "remoteAddress",
+      "remotePort",
+      "remoteFamily",
+    ];
+    const fields: { name: string; type: IrType }[] = [];
+    for (const property of checker.getPropertiesOfType(widened)) {
+      if (!known.includes(property.name)) return null;
+      const type = mapType(checker.getTypeOfSymbol(property), ctx);
+      if (!type) return null;
+      fields.push({ name: property.name, type });
+    }
+    const order = fields.map((field) => field.name);
+    fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return { kind: "record", shapeId: ctx.shapes.intern(fields, false, undefined, order) };
   }
   // Filesystem options are data records. Keep their declared optional fields
   // instead of allowing arbitrary standard-library interfaces into records.

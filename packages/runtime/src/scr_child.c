@@ -2453,6 +2453,8 @@ static SCR_TL const char *scr_child_err_code = NULL;
  * POSIX arm's parser, shared story (see its comment). */
 static const char *scr_err_msg_code(const ScrStr *msg) {
   static SCR_TL char buf[32];
+  const char *known = scr_error_message_code(msg);
+  if (known != NULL) return known;
   const char *sp = strchr((const char *)msg->data, ' ');
   if (sp == NULL || sp[1] != 'E') return NULL;
   const char *tok = sp + 1;
@@ -5139,10 +5141,13 @@ static SCR_TL const char *scr_child_err_code = NULL;
  * it in this shape — Node builds the same messages FROM the code
  * (errnoException), so parsing it back is exact over the closed message
  * set. Fallback only (an explicit context wins); returns a static buffer
- * valid until the next call, or NULL for code-less messages ("socket
- * hang up" stays undefined — divergence 54's documented bound). */
+ * valid until the next call, or NULL for code-less messages. Messages
+ * whose text carries no errno name take their code from
+ * scr_error_message_code. */
 static const char *scr_err_msg_code(const ScrStr *msg) {
   static SCR_TL char buf[32];
+  const char *known = scr_error_message_code(msg);
+  if (known != NULL) return known;
   const char *sp = strchr((const char *)msg->data, ' ');
   if (sp == NULL || sp[1] != 'E') return NULL;
   const char *tok = sp + 1;

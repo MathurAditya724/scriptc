@@ -1145,8 +1145,21 @@ export function dynFallbackType(lowerer: Lowerer, node: ts.Node, t: ts.Type): Ir
       symbol && lowerer.isStdlibSymbol(symbol)
         ? lowerer.checker.getTypeArguments(t as ts.TypeReference)
         : [];
-    if (symbol?.name === "Promise" && args[0] && args[0].flags & ts.TypeFlags.Any)
-      return jsFallbackPromiseType(lowerer, t);
+    // Promise<any> and Promise<any[]> (an any[] is itself a checked
+    // value below): a promise of a checked value.
+    const anyArray = (x: ts.Type): boolean =>
+      lowerer.checker.isArrayType(x) &&
+      ((lowerer.checker.getTypeArguments(x as ts.TypeReference)[0]?.flags ?? 0) &
+        ts.TypeFlags.Any) !==
+        0;
+    if (
+      symbol?.name === "Promise" &&
+      args[0] &&
+      (args[0].flags & ts.TypeFlags.Any || anyArray(args[0]))
+    )
+      return symbol.name === "Promise" && anyArray(args[0])
+        ? { kind: "promise", inner: DYN }
+        : jsFallbackPromiseType(lowerer, t);
     if (
       symbol &&
       ["Generator", "AsyncGenerator", "IterableIterator"].includes(symbol.name) &&
@@ -1788,6 +1801,11 @@ export class Lowerer {
    * prepass. This includes explicit annotations: unchecked TS annotations do
    * not prove that an array property read produced a value. */
   readonly runtimeOptionalBindingTypes = new Map<ts.Symbol, IrType>();
+  /** A pipeline() function stage's `source` parameter: the IR type of what
+   * the pipeline passes it (the previous stage as an async iterable), set
+   * while the stage lowers. Parameter typing and `for await` heads read
+   * it before the checker's `AsyncIterable<T>`. */
+  readonly stageSourceTypes = new Map<ts.Symbol, IrType>();
   /** Set when a match result lowers to execGroups/matchGroups, the inputs
    * of regex span folding. */
   regexGroupResults = false;
@@ -9014,6 +9032,16 @@ export class Lowerer {
 
   paramShape(param: ts.ParameterDeclaration): ParamShape {
     return paramShape(this, param);
+  }
+
+  /** The pipeline stage source type bound to `node` (a parameter name or
+   * a reference to it), or null. */
+  stageSourceType(node: ts.Node): IrType | null {
+    if (this.stageSourceTypes.size === 0) return null;
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    if (!ts.isIdentifier(node)) return null;
+    const symbol = this.checker.getSymbolAtLocation(node);
+    return (symbol && this.stageSourceTypes.get(symbol)) ?? null;
   }
 
   checkDefaultParamBodyType(param: ts.ParameterDeclaration, bodyType: IrType): void {

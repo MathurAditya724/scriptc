@@ -131,6 +131,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dc.chanBindStore",
   "dc.chanRunStores",
   "http.resWriteHeadDyn",
+  "http.resSetHeaderDyn",
+  "http.resAppendHeader",
   "http.resWriteContinue",
   "http.resWriteProcessing",
   "http.resWriteEarlyHints",
@@ -184,6 +186,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "readable.nextChunkDyn",
   // The checked-dynamic chunk forms throw Node's ERR_INVALID_ARG_TYPE
   // chunk TypeError on a non-string/Buffer dyn kind.
+  // socket.setTimeout's msecs check (ERR_OUT_OF_RANGE).
+  "net.sockSetTimeout",
+  "net.sockSetTimeoutCb",
   "net.sockWriteDyn",
   "net.sockEndDyn",
   "http.resWriteDyn",
@@ -241,8 +246,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.finishedDyn",
   "stream.pipeline",
   "stream.pipelineDyn",
+  "stream.compose",
   "sp.finished",
   "sp.pipeline",
+  "sp.pipelineStages",
+  "stream.pipelineStages",
+  "stream.pipelineStagesDyn",
   "sc.text",
   "sc.json",
   "sc.buffer",
@@ -383,6 +392,15 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "https.requestFn",
   "https.requestFnCb",
   "rl.question",
+  "readable.fromArr",
+  "readable.fromDyn",
+  "readable.fromGen",
+  "readable.fromAsyncGen",
+  "readable.opMap",
+  "readable.opFilter",
+  "readable.opFlatMap",
+  "readable.opDrop",
+  "readable.opTake",
   "rl.createSignal",
   "stream.finishedOpts",
   "stream.finishedOptsSignal",
@@ -657,6 +675,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // dns.lookup and net.connect throw ERR_INVALID_ARG_VALUE for a host with
   // null bytes.
   "dns.lookup",
+  // Node's argument checks (ERR_INVALID_ARG_TYPE/VALUE, ERR_SOCKET_BAD_PORT).
+  "dns.lookupDyn",
+  "dns.lookupService",
+  "dns.setDefaultResultOrder",
   "net.connect",
   "net.connectCb",
   // node:dgram state errors (Node throws synchronously): bind on a bound

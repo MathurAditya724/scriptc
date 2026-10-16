@@ -7,7 +7,6 @@
 import * as http from "node:http";
 import * as tls from "node:tls";
 import * as fs from "node:fs";
-import * as dns from "node:dns";
 import * as readline from "node:readline";
 
 // The Agent lowers to a checked-dynamic handle now — but only from a
@@ -42,9 +41,6 @@ tls.createServer({ cert: "c", key: "k", ticketKeys: new Uint8Array(48) }, () => 
 fs.watch("/tmp", { recursive: true }, () => {});
 fs.watch("/tmp", { persistent: false }, () => {});
 
-// dns.lookup: hints/all are documented knobs with no lowering.
-dns.lookup("localhost", { family: 4, hints: 32 }, () => {});
-dns.lookup("localhost", { family: 4, all: true }, () => {});
 
 // readline: history only exists for terminal interfaces; completer
 // needs an interactive terminal.

@@ -2505,10 +2505,16 @@ static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d) {
 
 static bool scr_typed_ref_record_field(const ScrDynTypedRecordOps *ops, const ScrStr *key,
                                        size_t *out) {
+  /* Compiled reads pass the interned literal the field names also use. */
+  for (size_t i = 0; i < ops->count; i++) {
+    if (ops->names[i] == key) {
+      *out = i;
+      return true;
+    }
+  }
   for (size_t i = 0; i < ops->count; i++) {
     const ScrStr *name = ops->names[i];
-    if (name == key ||
-        (name->len == key->len && memcmp(name->data, key->data, key->len) == 0)) {
+    if (name->len == key->len && memcmp(name->data, key->data, key->len) == 0) {
       *out = i;
       return true;
     }
@@ -2521,7 +2527,7 @@ static ScrDyn *scr_typed_ref_record_get(const ScrDyn *d, const ScrStr *key) {
   const ScrDynTypedRecordOps *ops = scr_typed_ref_record_ops(d);
   size_t index;
   if (!ops || !scr_typed_ref_record_field(ops, key, &index)) return NULL;
-  if (!ops->has(d->v.typed_ref.ptr, index)) return NULL;
+  if (!ops->fixed && !ops->has(d->v.typed_ref.ptr, index)) return NULL;
   return ops->get(d->v.typed_ref.ptr, index);
 }
 
@@ -2555,6 +2561,19 @@ ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index) {
 }
 
 SCR_TL const ScrEventRefHooks *scr_event_ref_hooks = NULL;
+
+/* d[index] for a numeric index without forming the key string (see the
+ * header): dyn arrays answer in-range elements, and live array capsules
+ * their present and explicitly undefined elements. */
+ScrDyn *scr_dyn_index_get(const ScrDyn *d, double index) {
+  if (!(index >= 0 && index < 4294967295.0)) return NULL;
+  size_t i = (size_t)index;
+  if ((double)i != index) return NULL;
+  if (d->kind == SCR_DYN_ARR) return i < d->v.arr.len ? scr_dyn_retain(d->v.arr.items[i]) : NULL;
+  if (d->kind != SCR_DYN_TYPED_REF || scr_event_ref_hooks || !scr_dyn_typed_ref_array_ops(d))
+    return NULL;
+  return scr_dyn_typed_ref_element(d, i);
+}
 
 ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
   ScrDyn *view = scr_dyn_typed_ref_materialize(d);
@@ -4162,6 +4181,23 @@ static ScrDyn *scr_iterator_method(const ScrDyn *source) {
   }
   if (scr_iterator_symbol) return scr_dyn_symbol_key_get(source, scr_iterator_symbol, false);
   return scr_builtin_iterable(source) ? scr_builtin_iterator_method(source) : scr_dyn_retain(scr_dyn_undefined());
+}
+
+int scr_dyn_iterable_kind(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) return 0;
+  if (scr_dyn_generator(value)) return value->v.typed_ref.type_key[0] == 'a' ? 2 : 1;
+  if (scr_async_iterator_symbol) {
+    ScrDyn *method = scr_dyn_symbol_key_get(value, scr_async_iterator_symbol, false);
+    if (!method) return -1;
+    bool set = method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL;
+    scr_dyn_release(method);
+    if (set) return 2;
+  }
+  ScrDyn *method = scr_iterator_method(value);
+  if (!method) return -1;
+  bool set = method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL;
+  scr_dyn_release(method);
+  return set ? 1 : 0;
 }
 
 /* Compiled class methods are dispatched before this checked-object path. */

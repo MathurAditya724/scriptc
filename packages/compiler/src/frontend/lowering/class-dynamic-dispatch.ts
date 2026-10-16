@@ -59,13 +59,14 @@ import {
 import { classStaticData } from "./class-static-data.js";
 import { isJsSourceFile } from "../program.js";
 import * as ts from "../ts7/adapter.js";
-import { SYMBOL_T } from "../../ir/ir.js";
+import { SYMBOL_T, type IrLibFn } from "../../ir/ir.js";
 import { isClassCallback } from "./class-callbacks.js";
 import { CaughtValueDispatch } from "./caught-value-dispatch.js";
 import { refreshDescriptorGuards } from "./class-descriptors.js";
 import { ClassConstructionDispatch } from "./class-construction.js";
 import { emitterRooted } from "./lower-event-emitter.js";
 import { protocolArm, protocolFieldArm } from "./class-protocol-dispatch.js";
+import { STREAM_OPERATORS } from "./lower-stream.js";
 
 const STREAM_METHODS = new Set([
   "on",
@@ -1089,7 +1090,12 @@ export class ClassDynamicDispatch {
       const matching = this.propertyReceivers(lowerer, true).flatMap(({ info }) => {
         if (!info || info.fields.has(method) || info.builtinError) return [];
         if (emitterRooted(lowerer, info) && EMITTER_METHODS.has(method)) return [info];
-        if (info.builtinStream) return STREAM_METHODS.has(method) ? [info] : [];
+        if (info.builtinStream) {
+          return STREAM_METHODS.has(method) ||
+            (STREAM_OPERATORS.has(method) && info.builtinStream !== "w")
+            ? [info]
+            : [];
+        }
         return findMethodOn(lowerer, info, method) || findGenericMethodOn(lowerer, info, method)
           ? [info]
           : [];
@@ -1598,6 +1604,9 @@ export class ClassDynamicDispatch {
                       ]
                     : [{ kind: "return", value: fallback, loc }],
                 loc,
+                ...(numericKey && computedRead && !reflect && !dynamicKey
+                  ? { fastRead: "index" as const }
+                  : {}),
               };
               if (dynamicKey)
                 helper.body.unshift(
@@ -1796,21 +1805,24 @@ export class ClassDynamicDispatch {
                       loc,
                     }
                   : instanceBag;
+              // A read compares the bag with the receiver and then reads it:
+              // evaluate it once, so each read retains the receiver once.
+              const bagRead = varRef("bag.0", DYN, loc);
               const fallback: IrExpr = read
                 ? {
                     kind: "ternary",
                     cond: {
                       kind: "dynScalarEq",
-                      left: bag,
+                      left: bagRead,
                       right: varRef("p.0", DYN, loc),
                       type: BOOL,
                       loc,
                     },
-                    then: { ...read, value: bag },
+                    then: { ...read, value: bagRead },
                     else_: {
                       kind: "libCall",
                       fn: "dyn.bagGet",
-                      args: [bag, read.key, varRef("p.0", DYN, loc)],
+                      args: [bagRead, read.key, varRef("p.0", DYN, loc)],
                       type: DYN,
                       loc,
                     },
@@ -1822,18 +1834,24 @@ export class ClassDynamicDispatch {
                 name: `%dyn.class.property.${this.properties.size}`,
                 params,
                 returnType: write ? VOID : DYN,
-                locals: params.map((p) => ({
-                  id: p.localId,
-                  name: p.name,
-                  type: DYN,
-                  mutable: false,
-                })),
+                locals: [
+                  ...params.map((p) => ({
+                    id: p.localId,
+                    name: p.name,
+                    type: DYN,
+                    mutable: false,
+                  })),
+                  ...(read ? [{ id: "bag.0", name: "bag", type: DYN, mutable: false }] : []),
+                ],
                 body: write
                   ? [
                       { kind: "exprStmt", expr: fallback, loc },
                       { kind: "return", value: null, loc },
                     ]
-                  : [{ kind: "return", value: fallback, loc }],
+                  : [
+                      { kind: "varDecl", localId: "bag.0", init: bag, loc },
+                      { kind: "return", value: fallback, loc },
+                    ],
                 loc,
               };
               if (!write && name === "toString" && lowerer.classes.has("%Error")) {
@@ -3969,6 +3987,48 @@ export class ClassDynamicDispatch {
           type: method === "isPaused" ? BOOL : receiver.type,
           loc,
         });
+      if (STREAM_OPERATORS.has(method) && info.builtinStream && info.builtinStream !== "w") {
+        // The Readable operators over a checked-dynamic receiver: every
+        // argument is already a checked value.
+        const arg = (i: number): IrExpr => incoming[i] ?? dynUndefinedExpr(loc);
+        const readableT: IrType = { kind: "object", className: "%Readable" };
+        const op = (fn: string, args: IrExpr[], type: IrType): IrStmt[] =>
+          ret({ kind: "libCall", fn: fn as IrLibFn, args: [receiver, ...args], type, loc });
+        switch (method) {
+          case "map":
+            return op("readable.opMap", [arg(0), arg(1)], readableT);
+          case "filter":
+            return op("readable.opFilter", [arg(0), arg(1)], readableT);
+          case "flatMap":
+            return op("readable.opFlatMap", [arg(0), arg(1)], readableT);
+          case "drop":
+            return op("readable.opDrop", [arg(0), arg(1)], readableT);
+          case "take":
+            return op("readable.opTake", [arg(0), arg(1)], readableT);
+          case "toArray":
+            return op("readable.opToArray", [arg(0)], { kind: "promise", inner: DYN });
+          case "forEach":
+            return op("readable.opForEach", [arg(0), arg(1)], { kind: "promise", inner: VOID });
+          case "some":
+            return op("readable.opSome", [arg(0), arg(1)], { kind: "promise", inner: BOOL });
+          case "every":
+            return op("readable.opEvery", [arg(0), arg(1)], { kind: "promise", inner: BOOL });
+          case "find":
+            return op("readable.opFind", [arg(0), arg(1)], { kind: "promise", inner: DYN });
+          case "reduce":
+            return op(
+              "readable.opReduce",
+              [
+                arg(0),
+                arg(1),
+                { kind: "boolLit", value: dispatch.source.args.length >= 2, type: BOOL, loc },
+                arg(2),
+                { kind: "numLit", value: 0, type: F64, loc },
+              ],
+              { kind: "promise", inner: DYN },
+            );
+        }
+      }
       if (method === "destroy" && (!incoming.length || incoming[0]?.kind === "unitLit"))
         return ret({
           kind: "libCall",

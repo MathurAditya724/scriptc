@@ -25,7 +25,6 @@ import {
   STRING,
   VOID,
 } from "../../ir/ir.js";
-import { DNS_LOOKUP_DOCUMENTED_OPTIONS, fenceOrDropOptionKey } from "./surfaces.js";
 import { resultIsDiscarded } from "./call-position.js";
 import { lowerCallbackArg as lowerCallbackArgShared } from "./callback-arg.js";
 
@@ -66,17 +65,6 @@ function requireStatementPosition(lowerer: Lowerer, call: ts.CallExpression, wha
  * return, at most `maxParams` parameters, each parameter's IR kind
  * satisfying `paramOk` (indexed). The lower-server helper's shape,
  * re-stated here so the spoke stays self-contained. */
-/** True iff `t` is the `Error | null` union — dns.lookup's first callback
- * parameter (NodeJS.ErrnoException maps to %Error in type-mapper.ts). */
-function isErrorOrNullUnion(lowerer: Lowerer, t: IrType): boolean {
-  if (t.kind !== "union") return false;
-  const def = lowerer.unions.get(t.unionId);
-  if (!def || def.arms.length !== 2) return false;
-  const hasNull = def.arms.some((a) => a.kind === "nullT");
-  const hasError = def.arms.some((a) => a.kind === "object" && a.className === "%Error");
-  return hasNull && hasError;
-}
-
 /** True iff `t` is a record of exactly the given (name-sorted) string/f64
  * fields — the AddressInfo/RemoteInfo shape check. */
 function isRecordOfFields(
@@ -239,97 +227,118 @@ export function lowerDgramDnsModuleCall(
   );
 }
 
-/** dns.lookup(hostname, { family: 4 }, (err, address[, family]) => ...) —
- * the ONE lowered dns member. getaddrinfo runs at call time; the callback
- * defers to the next loop turn (SEMANTICS.md documents the split). */
+/** A dns callback the runtime calls through the checked-dynamic boundary:
+ * a dyn function as is, or a typed function boxed with per-argument
+ * checks. */
+function lowerDnsCallback(lowerer: Lowerer, node: ts.Expression, what: string): IrExpr {
+  const cb = lowerer.lowerExpr(node);
+  if (cb.type.kind === "dyn") return cb;
+  if (
+    cb.type.kind === "func" &&
+    canBoxFuncIntoDyn(
+      cb.type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return { kind: "dynFrom", value: cb, type: DYN, loc: locOf(node) };
+  }
+  lowerer.noLowering(
+    `${what} that cannot cross the checked-dynamic boundary`,
+    node,
+    "the callback's parameters must have checked-dynamic conversions",
+  );
+}
+
+/** dns module calls: lookup(hostname[, options], callback) with Node's
+ * option forms, lookupService(address, port, callback), getServers() and
+ * get/setDefaultResultOrder(). The runtime validates the arguments as
+ * lib/dns.js does; getaddrinfo runs at call time and the callback comes
+ * with the other lookup deliveries (literal addresses on the next tick). */
 function lowerDnsModuleCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   bi: { module: string; member: string },
   loc: SrcLoc,
 ): IrExpr {
-  if (bi.member !== "lookup") {
-    lowerer.noLowering(
-      `dns.${bi.member}`,
-      expr,
-      "lookup is the lowered dns module function",
-      ts.isIdentifier(expr.expression) ? lowerer.resolveValueSymbol(expr.expression) : undefined,
-    );
-  }
-  requireStatementPosition(lowerer, expr, "dns.lookup(...)");
   const args = expr.arguments;
-  if (args.length !== 3) {
-    lowerer.noLowering(
-      `lookup with ${args.length} arguments`,
-      expr,
-      "the supported form is lookup(hostname, { family: 4 }, callback)",
-    );
-  }
-  const hostname = lowerer.lowerExprExpecting(args[0]!, STRING);
-  // The options: an object literal whose one meaningful entry is the
-  // IPv4 pin — `{ family: 4 }`. Node's family-less and family-6 lookups
-  // have no lowering (the runtime resolves over getaddrinfo/AF_INET).
-  const opts = args[1]!;
-  if (!ts.isObjectLiteralExpression(opts)) {
-    lowerer.noLowering(
-      "lookup with a non-literal options argument",
-      opts,
-      "pass the options as an object literal: lookup(hostname, { family: 4 }, cb)",
-    );
-  }
-  let family: IrExpr | null = null;
-  for (const prop of opts.properties) {
-    if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) {
+  const dyn = (node: ts.Expression): IrExpr =>
+    lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
+  // A callback whose second parameter is typed (string, LookupAddress[])
+  // cannot take the undefined Node passes after an error.
+  const typedResult = (node: ts.Expression): IrExpr => {
+    const sig = lowerer.checker.getCallSignatures(lowerer.typeOf(node))[0];
+    const second = sig?.getParameters()[1];
+    const t = second ? lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(second)) : null;
+    return boolLit(t !== null && t.kind !== "dyn", loc);
+  };
+  if (bi.member === "lookup") {
+    requireStatementPosition(lowerer, expr, "dns.lookup(...)");
+    if (args.length !== 2 && args.length !== 3) {
       lowerer.noLowering(
-        "lookup options with computed keys, spreads, or shorthand entries",
-        prop,
-        "each option must be a plain `name: value` entry with a literal key",
+        `lookup with ${args.length} arguments`,
+        expr,
+        "the supported forms are lookup(hostname, callback) and lookup(hostname, options, callback)",
       );
     }
-    if (prop.name.text !== "family") {
-      // The options-record stance: hints/all/order/verbatim are
-      // documented dns.lookup knobs with no lowering — they fence by
-      // name; undocumented keys drop like Node drops them.
-      fenceOrDropOptionKey(
-        lowerer,
-        prop,
-        prop.name.text,
-        "lookup",
-        DNS_LOOKUP_DOCUMENTED_OPTIONS,
-        "family: 4 is the supported option",
-        {
-          all: "the all-addresses callback shape has no lowering — the lowered callback is (err, address, family) over one IPv4 answer",
-        },
-      );
-      continue; // an undocumented key, dropped like Node drops it
-    }
-    const t = lowerer.typeOf(prop.initializer);
-    if (!t.isNumberLiteralType() || t.value !== 4) {
+    const hostname = dyn(args[0]!);
+    const options = args.length === 3 ? dyn(args[1]!) : dynUndefinedExpr(loc);
+    const last = args[args.length - 1]!;
+    const typed = typedResult(last);
+    const cb = lowerDnsCallback(lowerer, last, "lookup callbacks");
+    return {
+      kind: "libCall",
+      fn: "dns.lookupDyn",
+      args: [hostname, options, cb, typed],
+      type: VOID,
+      loc,
+    };
+  }
+  if (bi.member === "lookupService") {
+    requireStatementPosition(lowerer, expr, "dns.lookupService(...)");
+    if (args.length !== 3) {
       lowerer.noLowering(
-        "lookup with a family other than the literal 4",
-        prop.initializer,
-        "IPv4 lookups ({ family: 4 }) are the supported form",
+        `lookupService with ${args.length} arguments`,
+        expr,
+        "the form is lookupService(address, port, callback)",
       );
     }
-    family = lowerer.lowerExprExpecting(prop.initializer, F64);
+    const typed = typedResult(args[2]!);
+    const cb = lowerDnsCallback(lowerer, args[2]!, "lookupService callbacks");
+    return {
+      kind: "libCall",
+      fn: "dns.lookupService",
+      args: [dyn(args[0]!), dyn(args[1]!), cb, typed],
+      type: VOID,
+      loc,
+    };
   }
-  if (!family) {
-    lowerer.noLowering(
-      "lookup options without a family",
-      opts,
-      "the supported form is lookup(hostname, { family: 4 }, cb)",
-    );
+  if (bi.member === "getServers" && args.length === 0) {
+    const value: IrExpr = { kind: "libCall", fn: "dns.getServers", args: [], type: DYN, loc };
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    return declared === null || declared.kind === "dyn"
+      ? value
+      : lowerer.coerceInto(expr, value, declared);
   }
-  const { cb } = lowerCallbackArg(
-    lowerer,
-    args[2]!,
-    "lookup callbacks",
-    3,
-    (p, i) =>
-      i === 0 ? isErrorOrNullUnion(lowerer, p) : i === 1 ? p.kind === "string" : p.kind === "f64",
-    "use (err, address) — err is Error | null, address a string",
+  if (bi.member === "getDefaultResultOrder" && args.length === 0) {
+    return { kind: "libCall", fn: "dns.getDefaultResultOrder", args: [], type: STRING, loc };
+  }
+  if (bi.member === "setDefaultResultOrder" && args.length === 1) {
+    requireStatementPosition(lowerer, expr, "dns.setDefaultResultOrder(...)");
+    return {
+      kind: "libCall",
+      fn: "dns.setDefaultResultOrder",
+      args: [dyn(args[0]!)],
+      type: VOID,
+      loc,
+    };
+  }
+  lowerer.noLowering(
+    `dns.${bi.member}`,
+    expr,
+    "lookup, lookupService, getServers, getDefaultResultOrder, and setDefaultResultOrder are the lowered dns module functions",
+    ts.isIdentifier(expr.expression) ? lowerer.resolveValueSymbol(expr.expression) : undefined,
   );
-  return { kind: "libCall", fn: "dns.lookup", args: [hostname, family, cb], type: VOID, loc };
 }
 
 /** Method calls on dgram.Socket receivers — one entry in lower-calls.ts's

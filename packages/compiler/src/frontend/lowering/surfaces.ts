@@ -287,6 +287,29 @@ export const AGENT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
   "path",
 ]);
 
+/** new https.Agent(options) also takes tls.connect's client-side options,
+ * which Node merges into every request made through the agent. None lower
+ * yet, so each fences by name. */
+export const HTTPS_AGENT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
+  ...AGENT_DOCUMENTED_OPTIONS,
+  "ca",
+  "cert",
+  "ciphers",
+  "crl",
+  "ecdhCurve",
+  "key",
+  "maxCachedSessions",
+  "maxVersion",
+  "minVersion",
+  "passphrase",
+  "pfx",
+  "rejectUnauthorized",
+  "secureOptions",
+  "secureProtocol",
+  "servername",
+  "sessionIdContext",
+]);
+
 /** https.request adds tls.connect's client-side TLS knobs. */
 export const HTTPS_CLIENT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
   ...HTTP_CLIENT_DOCUMENTED_OPTIONS,
@@ -1767,6 +1790,10 @@ export const BUILTIN_MODULE_FNS: Record<
       params: [F64],
       result: VOID,
     },
+    // Node's IPv4Reg / IPv6Reg tests over String(input).
+    isIP: { fn: "net.isIP", params: [DYN], result: F64 },
+    isIPv4: { fn: "net.isIPv4", params: [DYN], result: BOOL },
+    isIPv6: { fn: "net.isIPv6", params: [DYN], result: BOOL },
   },
   http: {},
   // node:tls and node:https ride the same spoke (tls.createServer's

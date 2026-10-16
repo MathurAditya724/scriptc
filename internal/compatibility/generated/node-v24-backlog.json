@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 35,
-        "verify-gap": 2383,
-        "audit-partial": 967,
+        "verify-gap": 2365,
+        "audit-partial": 985,
         "classify": 2,
         "implement": 85
       }
@@ -27621,8 +27621,7 @@
           "confidence": "high",
           "source": "compiler-feature:fs.fs.mkdtemp",
           "tests": [
-            "tests/corpus/5548-fs-callback-arguments.cjs",
-            "tests/corpus/5549-fs-callback-option-checks.cjs"
+            "tests/corpus/5545-fs-options-encoding.cjs"
           ]
         }
       }
@@ -27839,8 +27838,7 @@
           "confidence": "high",
           "source": "compiler-feature:fs.fs.readFile",
           "tests": [
-            "tests/corpus/5548-fs-callback-arguments.cjs",
-            "tests/corpus/5549-fs-callback-option-checks.cjs"
+            "tests/corpus/5545-fs-options-encoding.cjs"
           ]
         }
       }
@@ -29103,12 +29101,9 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:node-builtin.fs.mkdtempSync",
+          "source": "compiler-feature:fs.fs.mkdtempSync",
           "tests": [
-            "tests/corpus/1403-buffer-fs.ts",
-            "tests/corpus/2595-fs-arg-ladders.cjs",
-            "tests/corpus/2919-fs-function-values.ts",
-            "tests/corpus/2920-fs-promises-function-values.ts"
+            "tests/corpus/5545-fs-options-encoding.cjs"
           ]
         }
       }
@@ -29245,13 +29240,9 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:node-builtin.fs.readFileSync",
+          "source": "compiler-feature:fs.fs.readFileSync",
           "tests": [
-            "tests/corpus/1403-buffer-fs.ts",
-            "tests/corpus/2595-fs-arg-ladders.cjs",
-            "tests/corpus/2919-fs-function-values.ts",
-            "tests/corpus/2920-fs-promises-function-values.ts",
-            "tests/corpus/fs-read-encodings.ts"
+            "tests/corpus/5545-fs-options-encoding.cjs"
           ]
         }
       }
@@ -51475,12 +51466,15 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:net",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.net.isIP",
+          "tests": [
+            "tests/corpus/2500-net-autosel-timeout.ts",
+            "tests/corpus/2596-net-arg-ladders.cjs"
+          ]
         }
       }
     },
@@ -51495,12 +51489,15 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:net",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.net.isIPv4",
+          "tests": [
+            "tests/corpus/2500-net-autosel-timeout.ts",
+            "tests/corpus/2596-net-arg-ladders.cjs"
+          ]
         }
       }
     },
@@ -51515,12 +51512,15 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:net",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.net.isIPv6",
+          "tests": [
+            "tests/corpus/2500-net-autosel-timeout.ts",
+            "tests/corpus/2596-net-arg-ladders.cjs"
+          ]
         }
       }
     },
@@ -61812,7 +61812,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -61843,7 +61845,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -61874,7 +61878,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -61905,7 +61911,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -61936,7 +61944,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -61967,7 +61977,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -61988,12 +62000,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.stream.compose",
+          "tests": [
+            "tests/corpus/5342-stream-compose.ts",
+            "tests/corpus/5343-stream-compose-edges.ts"
+          ]
         }
       }
     },
@@ -62113,12 +62128,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.stream.Readable.from",
+          "tests": [
+            "tests/corpus/5340-readable-from-options.ts",
+            "tests/corpus/5341-readable-from-dynamic.cjs",
+            "tests/corpus/5420-readable-from-generators.ts",
+            "tests/corpus/5421-readable-from-generators.cjs"
+          ]
         }
       }
     },
@@ -62376,7 +62396,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -62432,7 +62454,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -62463,7 +62487,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -62494,7 +62520,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -62525,7 +62553,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -62556,7 +62586,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -62577,12 +62609,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.stream.compose",
+          "tests": [
+            "tests/corpus/5342-stream-compose.ts",
+            "tests/corpus/5343-stream-compose-edges.ts"
+          ]
         }
       }
     },
@@ -62702,12 +62737,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.stream.Readable.from",
+          "tests": [
+            "tests/corpus/5340-readable-from-options.ts",
+            "tests/corpus/5341-readable-from-dynamic.cjs",
+            "tests/corpus/5420-readable-from-generators.ts",
+            "tests/corpus/5421-readable-from-generators.cjs"
+          ]
         }
       }
     },
@@ -62965,7 +63005,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -63046,7 +63088,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -63104,7 +63148,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -63135,7 +63181,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -63166,7 +63214,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -63222,7 +63272,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -63758,7 +63810,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -63789,7 +63843,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -63820,7 +63876,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -63851,7 +63909,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -63882,7 +63942,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -63913,7 +63975,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -63944,7 +64008,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -63975,7 +64041,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -64006,7 +64074,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -64158,12 +64228,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.map",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64183,12 +64258,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.filter",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64208,12 +64288,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.forEach",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64233,12 +64318,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.toArray",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64258,12 +64348,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.some",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64283,12 +64378,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.find",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64308,12 +64408,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.every",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64333,12 +64438,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.flatMap",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64358,12 +64468,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.drop",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64383,12 +64498,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.take",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64408,12 +64528,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.reduce",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -65243,7 +65368,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -65399,7 +65526,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }
@@ -65430,7 +65559,9 @@
             "tests/corpus/1688-stream-writable-basics.ts",
             "tests/corpus/1814-stream-pipeline.cjs",
             "tests/corpus/5302-stream-promises-options.ts",
-            "tests/corpus/5303-stream-finished-callback-opts.cjs"
+            "tests/corpus/5303-stream-finished-callback-opts.cjs",
+            "tests/corpus/5425-pipeline-generator-stage.ts",
+            "tests/corpus/5428-pipeline-generator-stages.cjs"
           ]
         }
       }

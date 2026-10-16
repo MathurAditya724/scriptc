@@ -612,6 +612,86 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     host.emitPendingCheck();
     return out;
   }
+  if (e.fn === "stream.compose") {
+    // compose(count, s1..sn): the stream list rides a stack array.
+    const countArg = e.args[0]!;
+    if (countArg.kind !== "numLit")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} count not a literal`);
+    const n = countArg.value;
+    const args = e.args.map((a) => host.emitExpr(a));
+    const arr = B.slot();
+    B.entryAllocas.push(`${arr} = alloca [${n} x ptr]`);
+    for (let i = 0; i < n; i++) {
+      const p = B.tmp();
+      B.line(`${p} = getelementptr inbounds [${n} x ptr], ptr ${arr}, i64 0, i64 ${i}`);
+      B.line(`store ptr ${args[1 + i]!.name}, ptr ${p}`);
+    }
+    const t = B.tmp();
+    host.declare(`declare ptr @scr_stream_compose(double, ptr)`);
+    B.line(`${t} = call ptr @scr_stream_compose(double ${f64Lit(n)}, ptr ${arr})`);
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (
+    e.fn === "sp.pipelineStages" ||
+    e.fn === "stream.pipelineStages" ||
+    e.fn === "stream.pipelineStagesDyn"
+  ) {
+    // (n, at, k, s1..sn, stage1..stagek, next, read, return[, cb]):
+    // the streams and the stage closures ride stack arrays.
+    const [nArg, atArg, kArg] = e.args;
+    if (nArg?.kind !== "numLit" || atArg?.kind !== "numLit" || kArg?.kind !== "numLit")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} counts not literals`);
+    const n = nArg.value;
+    const k = kArg.value;
+    const args = e.args.map((a) => host.emitExpr(a));
+    const packed = (from: number, count: number): string => {
+      const arr = B.slot();
+      B.entryAllocas.push(`${arr} = alloca [${count} x ptr]`);
+      for (let i = 0; i < count; i++) {
+        const p = B.tmp();
+        B.line(`${p} = getelementptr inbounds [${count} x ptr], ptr ${arr}, i64 0, i64 ${i}`);
+        B.line(`store ptr ${args[from + i]!.name}, ptr ${p}`);
+      }
+      return arr;
+    };
+    const streams = packed(3, n);
+    const stages = packed(3 + n, k);
+    const [next, read, ret] = [3 + n + k, 4 + n + k, 5 + n + k].map((i) => args[i]!.name);
+    const head = `double ${f64Lit(n)}, ptr ${streams}, double ${f64Lit(atArg.value)}, double ${f64Lit(k)}, ptr ${stages}, ptr ${next}, ptr ${read}, ptr ${ret}`;
+    const t = B.tmp();
+    if (e.fn === "sp.pipelineStages") {
+      host.declare(
+        `declare ptr @scr_sp_pipeline_stages(double, ptr, double, double, ptr, ptr, ptr, ptr)`,
+      );
+      B.line(`${t} = call ptr @scr_sp_pipeline_stages(${head})`);
+    } else if (e.fn === "stream.pipelineStagesDyn") {
+      host.declare(
+        `declare ptr @scr_stream_pipeline_stages_dyn(double, ptr, double, double, ptr, ptr, ptr, ptr, ptr)`,
+      );
+      B.line(
+        `${t} = call ptr @scr_stream_pipeline_stages_dyn(${head}, ptr ${args[args.length - 1]!.name})`,
+      );
+    } else {
+      const cbT = e.args[e.args.length - 1]!.type;
+      if (cbT.kind !== "func")
+        throw new InternalCompilerError(
+          "llvm emitter bug: stream.pipelineStages callback not a func",
+        );
+      host.moveTemp(args[args.length - 1]!);
+      const thunk = host.streamCbThunkFor("e", cbT);
+      host.declare(
+        `declare ptr @scr_stream_pipeline_stages(double, ptr, double, double, ptr, ptr, ptr, ptr, ptr, ptr)`,
+      );
+      B.line(
+        `${t} = call ptr @scr_stream_pipeline_stages(${head}, ptr ${args[args.length - 1]!.name}, ptr @${thunk})`,
+      );
+    }
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
   if (e.fn === "stream.pipeline" || e.fn === "stream.pipelineDyn") {
     // pipeline(count, s1..sn, cb): the destination answers +1. The
     // stream list rides a stack array (the C compound literal).

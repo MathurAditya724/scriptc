@@ -78,6 +78,8 @@ const OPTIONAL = [
   ["scr_util_style.c", all("parseArgs", "inspect", "dynAsync")],
   ["scr_util_callable.c", all("parseArgs", "inspect", "dynAsync", "dynInvoke", "regex")],
   ["scr_stream.c", "stream"],
+  // The Readable operators await through the dyn-async unit.
+  ["scr_stream_ops.c", all("stream", "dynAsync")],
   ["scr_loop_kqueue.c", any("netEffective", "dgram")],
   ["scr_loop_epoll.c", any("netEffective", "dgram")],
   ["scr_loop_wsapoll.c", any("netEffective", "dgram")],

@@ -126,6 +126,7 @@ import { lowerStreamUnderscoreAssign, streamClassAliasDecl } from "./lower-strea
 import {
   lowerHttpResPropertyAssignment,
   lowerHttpServerTimeoutAssignment,
+  lowerNetServerMaxConnectionsAssignment,
   lowerServerCloseOverrideAssignment,
 } from "./lower-server.js";
 import { lowerUrlAssignment } from "./builtins/url.js";
@@ -6166,6 +6167,16 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
           );
           if (timeoutProp) return timeoutProp;
         }
+        // server.maxConnections — net.Server's connection cap.
+        {
+          const capProp = lowerNetServerMaxConnectionsAssignment(
+            lowerer,
+            expr.left,
+            expr.right,
+            locOf(expr),
+          );
+          if (capProp) return capProp;
+        }
         // `N.x = v` — a namespace-qualified write: exported `let`
         // members are module globals, so the qualified spelling assigns
         // exactly like the bare one inside the namespace body.
@@ -7838,7 +7849,9 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     !!stmt.awaitModifier && lowerer.mapTypeOf(lowerer.typeOf(stmt.expression))?.kind === "array";
   if (stmt.awaitModifier && !awaitArray) {
     {
-      const genT = lowerer.mapTypeOf(lowerer.typeOf(stmt.expression));
+      const genT =
+        lowerer.stageSourceType(stmt.expression) ??
+        lowerer.mapTypeOf(lowerer.typeOf(stmt.expression));
       if (genT?.kind === "generator" && genT.async) {
         const iterable = lowerer.lowerExpr(stmt.expression);
         if (iterable.type.kind === "generator" && iterable.type.async) {

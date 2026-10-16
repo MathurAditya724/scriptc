@@ -223,6 +223,8 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn === "stream.errored" ||
         fn === "sp.finished" ||
         fn === "sp.pipeline" ||
+        fn === "sp.pipelineStages" ||
+        fn.startsWith("stream.pipelineStages") ||
         fn === "console.bind" ||
         fn === "stream.addAbortSignal" ||
         fn === "stream.addAbortSignalFn" ||
@@ -232,6 +234,15 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       )
         features.stream = true;
       if (fn.startsWith("zlib.")) features.zlib = true;
+      // The Readable operators and Readable.from over a compiled generator
+      // (scr_stream_ops.c) await through the dyn-async unit.
+      if (
+        fn.startsWith("readable.op") ||
+        fn.startsWith("readable.fromGen") ||
+        fn === "readable.fromAsyncGen" ||
+        fn === "readable.fromDone"
+      )
+        features.dynAsync = true;
       if (fn.startsWith("dc.")) features.dc = true;
       if (fn.startsWith("assert.")) features.assert = true;
       if (

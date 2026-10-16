@@ -13,11 +13,10 @@ const MAX_PROGRAM_PARTITIONS = 64;
 /** Executable objects this large are divided into partitions that the helper
  * simplifies, optimizes and compiles concurrently, importing small functions
  * across partitions for inlining, and reuses individually across builds. The
- * count is a power of two that depends only on the module, so artifacts never
- * vary with the host and ordinary edits keep every function in its
- * partition. */
-export function nativeProgramPartitions(target: NativeTargetSpec, llvmBytes: number): number {
-  if (target.platform === "wasi") return 1;
+ * count is a power of two that depends only on the module's size, on every
+ * target, so artifacts never vary with the host and ordinary edits keep every
+ * function in its partition. */
+export function nativeProgramPartitions(llvmBytes: number): number {
   const required = Math.ceil(llvmBytes / PROGRAM_PARTITION_BYTES);
   if (required < 2) return 1;
   return Math.min(MAX_PROGRAM_PARTITIONS, 2 ** Math.ceil(Math.log2(required)));

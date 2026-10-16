@@ -65,10 +65,13 @@ ScrStr *scr_fs_read_fd_encoded(double fd, ScrStr *encoding) {
 
 /* ── fs (the Buffer forms of scr_lib.c's utf8 pair) ────────────────────── */
 
+static bool scr_fs_str_is(const ScrStr *s, const char *lit);
+
 /* readFileSync's runtime-encoding form (a JS helper's untyped `enc`
  * parameter — test/common fixtures.js): undefined/null answer a Buffer,
  * a supported encoding answers a string, invalid names throw
- * ERR_INVALID_ARG_VALUE before reading, and an
+ * ERR_INVALID_ARG_VALUE before reading, 'buffer' reads and then throws
+ * ERR_UNKNOWN_ENCODING, and an
  * options object dispatches on its `encoding` member (Node's form). +1
  * dyn value, or NULL with the exception pending. */
 ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *enc) {
@@ -85,7 +88,16 @@ ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *enc) {
     return d;
   }
   if (enc->kind == SCR_DYN_STR) {
-    ScrStr *text = scr_fs_read_file_encoded(path, enc->v.str);
+    ScrStr *text;
+    if (scr_fs_str_is(enc->v.str, "buffer")) {
+      /* getOptions lets 'buffer' through; Node reads the file, then
+       * buffer.toString('buffer') throws ERR_UNKNOWN_ENCODING (an empty
+       * file answers ""). */
+      ScrBytes *b = scr_fs_read_file_bytes(path);
+      if (!b) return NULL;
+      text = scr_bytes_to_str_checked(b, enc->v.str);
+      scr_bytes_release(b);
+    } else text = scr_fs_read_file_encoded(path, enc->v.str);
     if (!text) return NULL;
     ScrDyn *value = scr_dyn_new_str(text);
     scr_str_release(text);
@@ -497,6 +509,31 @@ static ScrDyn *scr_fs_cb_string(ScrStr *text) {
   return value;
 }
 
+/* A path result (mkdtemp) in getOptions' encoding: a string for utf8 and
+ * the default, a Buffer for 'buffer', and the UTF-8 bytes re-encoded
+ * otherwise, as the binding's StringBytes::Encode does. Consumes +1 text. */
+static ScrDyn *scr_fs_cb_encoded_path(ScrStr *text, const ScrDyn *options) {
+  if (!text) return NULL;
+  ScrDyn *encoding = options->kind == SCR_DYN_STR ? scr_dyn_retain((ScrDyn *)options) : scr_fs_cb_option(options, "encoding");
+  ScrDyn *value = NULL;
+  if (encoding && encoding->kind == SCR_DYN_STR && encoding->v.str->len > 0 && !scr_fs_str_is(encoding->v.str, "utf8") &&
+      !scr_fs_str_is(encoding->v.str, "utf-8")) {
+    ScrBytes *bytes = scr_bytes_from_data((const uint8_t *)text->data, text->len);
+    if (scr_fs_str_is(encoding->v.str, "buffer")) value = scr_dyn_new_buffer(bytes);
+    else {
+      ScrStr *encoded = scr_bytes_to_str_checked(bytes, encoding->v.str);
+      if (encoded) {
+        value = scr_dyn_new_str(encoded);
+        scr_str_release(encoded);
+      }
+    }
+    scr_bytes_release(bytes);
+  } else if (encoding) value = scr_dyn_new_str(text);
+  scr_dyn_release(encoding);
+  scr_str_release(text);
+  return value;
+}
+
 static ScrStr *scr_fs_cb_join(const ScrStr *directory, const char *name) {
   ScrStr *suffix = scr_str_new("/", 1);
   ScrStr *base = scr_str_concat((ScrStr *)directory, suffix);
@@ -814,6 +851,7 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
   double mkdir_mode = 0777;
   bool mkdir_recursive = false;
   if (!strcmp(op, "mkdir") && (!scr_fs_cb_mkdir_options(ARG(1), &mkdir_mode, &mkdir_recursive) || !scr_fs_cb_chk(callback, "cb"))) return NULL;
+  if (!strcmp(op, "mkdtemp") && !scr_fs_encoding_chk(ARG(1))) return NULL;
   if (!strcmp(op, "readFile") && (!scr_fs_encoding_chk(ARG(1)) ||
                                   (ARG(1)->kind != SCR_DYN_STR && !scr_fs_cb_read_buffer_option(ARG(1))))) return NULL;
   /* read checks its fd and the buffer of the full form before the
@@ -885,7 +923,15 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
       double opened = scr_fs_cb_open(path, flag, 0666, "r");
       if (opened >= 0 && !scr_exc_pending()) {
         bool text = encoding->kind == SCR_DYN_STR && encoding->v.str->len > 0;
-        if (text) {
+        if (text && scr_fs_str_is(encoding->v.str, "buffer")) {
+          ScrBytes *bytes = scr_fs_read_fd_bytes(opened);
+          ScrStr *content = bytes ? scr_bytes_to_str_checked(bytes, encoding->v.str) : NULL;
+          scr_bytes_release(bytes);
+          if (content) {
+            result = scr_dyn_new_str(content);
+            scr_str_release(content);
+          }
+        } else if (text) {
           ScrStr *content = scr_fs_read_fd_encoded(opened, encoding->v.str);
           if (content) {
             result = scr_dyn_new_str(content);
@@ -940,7 +986,7 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
       if (first && !scr_exc_pending()) result = scr_fs_cb_string(first);
       else if (first) scr_str_release(first);
     } else scr_fs_mkdir_mode(path, mkdir_mode);
-  } else if (!strcmp(op, "mkdtemp")) result = scr_fs_cb_string(scr_fs_mkdtemp_async(path));
+  } else if (!strcmp(op, "mkdtemp")) result = scr_fs_cb_encoded_path(scr_fs_mkdtemp_async(path), ARG(1));
   else if (!strcmp(op, "rm")) scr_fs_rm_opts_retry(path, scr_fs_cb_option_bool(ARG(1), "recursive"), scr_fs_cb_option_bool(ARG(1), "force"), scr_fs_cb_option_number(ARG(1), "maxRetries", 0), scr_fs_cb_option_number(ARG(1), "retryDelay", 100));
   else if (!strcmp(op, "rmdir")) scr_fs_rmdir(path);
   else if (!strcmp(op, "unlink")) scr_fs_unlink(path);
@@ -1384,9 +1430,18 @@ static bool scr_fs_path_chk(const ScrDyn *p, const char *name) {
   return false;
 }
 
-/* assertEncoding over an options slot (a bare encoding string or an
- * options record's `encoding` member): Node throws ERR_INVALID_ARG_VALUE
- * for any truthy value Buffer.isEncoding rejects. */
+/* An encoding that leaves getOptions' utf8 default: absent, falsy, or a
+ * utf8 spelling. */
+static bool scr_fs_utf8_encoding(const ScrDyn *enc) {
+  if (scr_fs_dyn_absent(enc) || !scr_dyn_truthy(enc)) return true;
+  return enc->kind == SCR_DYN_STR && (scr_fs_str_is(enc->v.str, "utf8") || scr_fs_str_is(enc->v.str, "utf-8"));
+}
+
+/* getOptions: null, undefined and functions take the defaults; a string
+ * is the encoding; any other non-object throws ERR_INVALID_ARG_TYPE. The
+ * encoding (the string, or an object's `encoding` member) then goes
+ * through assertEncoding unless it is 'buffer': Node throws
+ * ERR_INVALID_ARG_VALUE for any truthy value Buffer.isEncoding rejects. */
 static bool scr_fs_encoding_chk(const ScrDyn *opts) {
   if (opts->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(opts);
@@ -1394,18 +1449,24 @@ static bool scr_fs_encoding_chk(const ScrDyn *opts) {
     scr_dyn_release(view);
     return valid;
   }
+  if (scr_fs_dyn_absent(opts) || opts->kind == SCR_DYN_FUNC) return true;
+  if (opts->kind == SCR_DYN_NUM || opts->kind == SCR_DYN_BOOL || opts->kind == SCR_DYN_BIGINT ||
+      opts->kind == SCR_DYN_SYMBOL) {
+    scr_dyn_arg_type_fail("options", "one of type string or object", opts);
+    return false;
+  }
   const ScrDyn *enc = opts;
-  if (opts->kind == SCR_DYN_OBJ) {
-    enc = scr_dyn_obj_get(opts, "encoding", 8);
+  if (opts->kind != SCR_DYN_STR) {
+    enc = opts->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(opts, "encoding", 8) : NULL;
     if (enc == NULL) return true;
   }
   if (scr_fs_dyn_absent(enc)) return true;
   if (enc->kind == SCR_DYN_STR) {
     if (enc->v.str->len == 0) return true; /* falsy: assertEncoding's `encoding &&` gate */
-    if (scr_bytes_is_encoding(enc->v.str)) return true;
+    if (scr_bytes_is_encoding(enc->v.str) || scr_fs_str_is(enc->v.str, "buffer")) return true;
   }
   if (enc->kind == SCR_DYN_BOOL && !enc->v.b) return true;
-  if (enc->kind == SCR_DYN_NUM && enc->v.num == 0) return true;
+  if (enc->kind == SCR_DYN_NUM && (enc->v.num == 0 || enc->v.num != enc->v.num)) return true; /* 0, NaN */
   scr_dyn_arg_value_fail("encoding", "is invalid encoding", enc);
   return false;
 }
@@ -1531,19 +1592,13 @@ ScrStr *scr_fs_mkdtemp_sync_chk(const ScrDyn *prefix, const ScrDyn *opts, const 
       const ScrDynEntry *e = &opts->v.obj.entries[i];
       if (scr_fs_dyn_absent(e->value)) continue;
       if (strcmp(e->key, "encoding") == 0) {
-        const ScrDyn *enc = e->value;
-        if (!(enc->kind == SCR_DYN_STR &&
-              (scr_fs_str_is(enc->v.str, "utf8") || scr_fs_str_is(enc->v.str, "utf-8")))) {
-          utf8 = false;
-        }
+        if (!scr_fs_utf8_encoding(e->value)) utf8 = false;
         continue;
       }
       utf8 = false; /* an unmodeled effectful option */
     }
-  } else if (opts->kind == SCR_DYN_STR) {
-    utf8 = scr_fs_str_is(opts->v.str, "utf8") || scr_fs_str_is(opts->v.str, "utf-8");
-  } else if (!scr_fs_dyn_absent(opts)) {
-    utf8 = false;
+  } else if (opts->kind != SCR_DYN_FUNC) {
+    utf8 = scr_fs_utf8_encoding(opts);
   }
   if (!utf8 || prefix->kind != SCR_DYN_STR) {
     scr_throw_lowering_fence(fence);

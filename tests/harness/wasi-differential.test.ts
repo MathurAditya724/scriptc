@@ -9,6 +9,8 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { compile, compileLibrary } from "@scriptc/compiler";
+import { emitNativeArtifact } from "../../packages/compiler/src/backend/native-codegen.js";
+import { WASM32_WASI_TARGET } from "../../packages/compiler/src/backend/targets.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -267,6 +269,8 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5317-map-iterate-while-mutating.ts",
     "5318-set-iterate-after-deletes.ts",
     "5319-map-iteration-values.ts",
+    // Hashed number-key lookups probe ScrMap through size_t-width fields.
+    "5710-map-number-keys-hashed.ts",
     // JSON writers read array slots as pointers.
     "5305-json-stringify-typed-arrays.ts",
     // Comparator sorts move 64-bit slots of 32-bit pointers.
@@ -315,6 +319,91 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
       const wasm = await readFile(outPath);
       expect(wasmCustomSectionNames(wasm).filter((name) => name.startsWith(".debug"))).toEqual([]);
       expect(wasm.byteLength).toBeLessThan(256 * 1024);
+    }
+  });
+
+  test("partitioned wasm32 objects link to the same program as one object", async () => {
+    const dir = await mkdtemp("/tmp/scriptc-wasi-partitions-");
+    // Internal callees, internal state, indirect calls through a table of
+    // internal functions and a thread_local global, reached across partitions.
+    const adds = [0, 1, 2, 3, 4, 5];
+    const llvm = `@total = internal global i32 0
+@zero = internal global i32 0
+@counter = internal thread_local global i32 0
+@handlers = internal constant [3 x ptr] [ptr @add0, ptr @add1, ptr @add2]
+${adds
+  .map(
+    (index) => `define internal void @add${index}(i32 %value) noinline {
+  %old = load i32, ptr @total
+  %scaled = mul i32 %value, ${index + 1}
+  %new = add i32 %old, %scaled
+  store i32 %new, ptr @total
+  ret void
+}`,
+  )
+  .join("\n")}
+define internal i32 @bump() noinline {
+  %old = load i32, ptr @counter
+  %new = add i32 %old, 1
+  store i32 %new, ptr @counter
+  ret i32 %new
+}
+define i32 @__main_argc_argv(i32 %argc, ptr %argv) {
+${adds.map((index) => `  call void @add${index}(i32 ${index + 2})`).join("\n")}
+  %base = load volatile i32, ptr @zero
+${[0, 1, 2]
+  .map(
+    (slot) => `  %i${slot} = add i32 %base, ${slot}
+  %p${slot} = getelementptr [3 x ptr], ptr @handlers, i32 0, i32 %i${slot}
+  %f${slot} = load ptr, ptr %p${slot}
+  call void %f${slot}(i32 3)`,
+  )
+  .join("\n")}
+  %b0 = call i32 @bump()
+  %b1 = call i32 @bump()
+  %sum = load i32, ptr @total
+  %code = add i32 %sum, %b1
+  ret i32 %code
+}
+`;
+    const emit = async (output: string, partitions: number, optimization: "0" | "2") => {
+      const artifact = await emitNativeArtifact({
+        outputPath: output,
+        llvm,
+        outputKind: "obj",
+        sourcePath: "/src/partitions.ts",
+        optimization,
+        target: WASM32_WASI_TARGET,
+        cacheRoot: null,
+        partitions,
+      });
+      return artifact.outputPaths;
+    };
+    const link = async (objects: string[], name: string) => {
+      const output = join(dir, name);
+      await execFileAsync("zig", ["cc", "-target", "wasm32-wasi", ...objects, "-o", output]);
+      return run(process.execPath, [
+        "--no-warnings",
+        "--experimental-wasi-unstable-preview1",
+        "-e",
+        WASI_RUNNER,
+        output,
+      ]);
+    };
+    // Release partitions import small functions from each other; dev
+    // partitions compile independently.
+    for (const optimization of ["2", "0"] as const) {
+      const partitions = await emit(join(dir, `program-${optimization}.o`), 3, optimization);
+      expect(partitions).toHaveLength(3);
+      const again = await emit(join(dir, `again-${optimization}.o`), 3, optimization);
+      expect(await Promise.all(again.map((path) => readFile(path)))).toEqual(
+        await Promise.all(partitions.map((path) => readFile(path))),
+      );
+      const whole = await emit(join(dir, `whole-${optimization}.o`), 1, optimization);
+      const partitioned = await link(partitions, `partitioned-${optimization}.wasm`);
+      expect(partitioned).toEqual(await link(whole, `whole-${optimization}.wasm`));
+      // 112 from the direct calls, 18 through the table, 2 from the counter.
+      expect(partitioned.exitCode).toBe(132);
     }
   });
 
