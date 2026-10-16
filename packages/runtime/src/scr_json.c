@@ -2550,6 +2550,19 @@ ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index) {
 
 SCR_TL const ScrEventRefHooks *scr_event_ref_hooks = NULL;
 
+/* d[index] for a numeric index without forming the key string (see the
+ * header): dyn arrays answer in-range elements, and live array capsules
+ * their present and explicitly undefined elements. */
+ScrDyn *scr_dyn_index_get(const ScrDyn *d, double index) {
+  if (!(index >= 0 && index < 4294967295.0)) return NULL;
+  size_t i = (size_t)index;
+  if ((double)i != index) return NULL;
+  if (d->kind == SCR_DYN_ARR) return i < d->v.arr.len ? scr_dyn_retain(d->v.arr.items[i]) : NULL;
+  if (d->kind != SCR_DYN_TYPED_REF || scr_event_ref_hooks || !scr_dyn_typed_ref_array_ops(d))
+    return NULL;
+  return scr_dyn_typed_ref_element(d, i);
+}
+
 ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
   ScrDyn *view = scr_dyn_typed_ref_materialize(d);
   const char *tag = scr_event_ref_hooks ? scr_event_ref_hooks->string_tag(d) : NULL;
@@ -4150,6 +4163,23 @@ static ScrDyn *scr_iterator_method(const ScrDyn *source) {
   }
   if (scr_iterator_symbol) return scr_dyn_symbol_key_get(source, scr_iterator_symbol, false);
   return scr_builtin_iterable(source) ? scr_builtin_iterator_method(source) : scr_dyn_retain(scr_dyn_undefined());
+}
+
+int scr_dyn_iterable_kind(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) return 0;
+  if (scr_dyn_generator(value)) return value->v.typed_ref.type_key[0] == 'a' ? 2 : 1;
+  if (scr_async_iterator_symbol) {
+    ScrDyn *method = scr_dyn_symbol_key_get(value, scr_async_iterator_symbol, false);
+    if (!method) return -1;
+    bool set = method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL;
+    scr_dyn_release(method);
+    if (set) return 2;
+  }
+  ScrDyn *method = scr_iterator_method(value);
+  if (!method) return -1;
+  bool set = method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL;
+  scr_dyn_release(method);
+  return set ? 1 : 0;
 }
 
 /* Compiled class methods are dispatched before this checked-object path. */

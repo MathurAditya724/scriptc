@@ -3960,6 +3960,7 @@ function validateFunction(
       e.fn === "passthrough.initDyn" ||
       e.fn === "stream.pipeline" ||
       e.fn === "stream.pipelineDyn" ||
+      e.fn === "stream.compose" ||
       e.fn === "sp.pipeline" ||
       e.fn === "sp.pipelineOpts" ||
       e.fn === "sp.pipelineOptsSignal" ||
@@ -5220,6 +5221,7 @@ function validateFunction(
       e.fn === "stream.finishedDyn" ||
       e.fn === "stream.pipeline" ||
       e.fn === "stream.pipelineDyn" ||
+      e.fn === "stream.compose" ||
       e.fn === "stream.addAbortSignal" ||
       e.fn === "stream.addAbortSignalFn" ||
       e.fn === "stream.finishedOpts" ||
@@ -5310,6 +5312,22 @@ function validateFunction(
         }
         return true;
       }
+      if (e.fn === "stream.compose") {
+        // (count, s1..sn) → a Duplex (n >= 2), or the lone stream.
+        const count = e.args[0];
+        const n = count?.kind === "numLit" ? count.value : -1;
+        if (n < 1 || e.args.length !== n + 1) {
+          err(`libCall ${e.fn} count/arity mismatch`, e.loc);
+          return true;
+        }
+        for (let i = 1; i <= n; i++) {
+          if (!isStreamObject(e.args[i]?.type)) {
+            err(`libCall ${e.fn} stage ${i} must be a stream-hierarchy object`, e.loc);
+          }
+        }
+        if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream`, e.loc);
+        return true;
+      }
       if (e.fn === "stream.pipeline" || e.fn === "stream.pipelineDyn") {
         // (count, s1..sn, cb) → the destination's type.
         const count = e.args[0];
@@ -5335,10 +5353,54 @@ function validateFunction(
         }
         return true;
       }
-      if (e.fn === "readable.fromArr") {
-        // No receiver: the seed array leads; the result is the class.
-        if (e.args[0]?.type.kind !== "array" || !isStreamObject(e.type)) {
-          err(`libCall readable.fromArr must take an array and return a stream class`, e.loc);
+      if (
+        e.fn === "readable.opMap" ||
+        e.fn === "readable.opFilter" ||
+        e.fn === "readable.opFlatMap" ||
+        e.fn === "readable.opDrop" ||
+        e.fn === "readable.opTake"
+      ) {
+        if (!isStreamObject(e.args[0]?.type) || !isStreamObject(e.type)) {
+          err(`libCall ${e.fn} must take a stream and return a stream class`, e.loc);
+        }
+        return true;
+      }
+      if (e.fn === "readable.opReduce") {
+        const inner = e.type.kind === "promise" ? e.type.inner : null;
+        const kind = e.args[5]?.kind === "numLit" ? e.args[5].value : -1;
+        const want = [DYN, F64, BOOL, STRING][kind];
+        if (!isStreamObject(e.args[0]?.type) || !inner || !want || !typeEquals(inner, want)) {
+          err(`libCall readable.opReduce must return the promise its kind names`, e.loc);
+        }
+        return true;
+      }
+      if (e.fn === "readable.fromDone") {
+        if (e.args.length !== 0 || e.type.kind !== "dyn")
+          err(`libCall ${e.fn} takes no arguments`, e.loc);
+        return true;
+      }
+      if (e.fn === "readable.fromGen" || e.fn === "readable.fromAsyncGen") {
+        const g = e.args[0]?.type;
+        const helpers = e.fn === "readable.fromGen" ? 3 : 4;
+        if (
+          g?.kind !== "generator" ||
+          (g.async === true) !== (e.fn === "readable.fromAsyncGen") ||
+          !e.args.slice(1, 1 + helpers).every((a) => a.kind === "closure") ||
+          e.args[1 + helpers]?.kind !== "numLit" ||
+          !isStreamObject(e.type)
+        ) {
+          err(`libCall ${e.fn} must take a generator, its helpers and the flags`, e.loc);
+        }
+        return true;
+      }
+      if (e.fn === "readable.fromArr" || e.fn === "readable.fromDyn") {
+        // No receiver: the source leads; the result is the class.
+        const src = e.fn === "readable.fromArr" ? "array" : "dyn";
+        if (e.args[0]?.type.kind !== src || !isStreamObject(e.type)) {
+          err(`libCall ${e.fn} must take a ${src} source and return a stream class`, e.loc);
+        }
+        if (e.fn === "readable.fromArr" && e.args[1]?.kind !== "numLit") {
+          err(`libCall readable.fromArr flags must be a number literal`, e.loc);
         }
         return true;
       }

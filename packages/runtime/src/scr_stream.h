@@ -160,16 +160,22 @@ ScrClosure *scr_stream_finished(ScrStream *s, ScrClosure *cb, ScrStreamErrInv in
  * the slot): success calls with NO arguments, errors box through the
  * boundary encoding. cb's cap boxes the dyn callable. */
 void scr_stream_finished_dyn_inv(ScrClosure *cb, ScrStream *s, ScrError *err);
-/* stream.pipeline(s1..sn, cb) — the callback form over stream arguments:
- * chains pipes (end: true), destroys every other stream with the first
- * error (Node's destroyer, pipeline order), and calls cb once after the
- * LAST 'close' with that error (or NULL). Streams borrowed; cb MOVES;
- * answers the destination +1 (pipeline's return value). */
+/* stream.pipeline(s1..sn, cb) — the callback form over stream arguments
+ * (pipeline.js): pipes each pair, destroys the unfinished streams with
+ * the first error, and calls cb on a nextTick once every stream's eos
+ * watcher finished, with that error (or NULL). Streams borrowed; cb
+ * MOVES; answers the destination +1 (pipeline's return value), or NULL
+ * with ERR_STREAM_UNABLE_TO_PIPE / ERR_INVALID_ARG_TYPE pending. */
 ScrStream *scr_stream_pipeline(double n, ScrStream **streams, ScrClosure *cb, ScrStreamErrInv inv);
 /* The dyn-valued twins (the callback as a checked-dynamic value —
  * mustCall wrappers; borrowed). */
 ScrClosure *scr_stream_finished_dyn(ScrStream *s, struct ScrDyn *cb);
 ScrStream *scr_stream_pipeline_dyn(double n, ScrStream **streams, struct ScrDyn *cb);
+/* stream.compose(s1..sn): a pipeline over the streams and a Duplex that
+ * writes to the first and reads from the last (compose.js). One stream
+ * answers itself (Duplex.from of a duplex). +1, or NULL with
+ * ERR_MISSING_ARGS / ERR_INVALID_ARG_VALUE pending. Streams borrowed. */
+ScrStream *scr_stream_compose(double n, ScrStream **streams);
 
 /* Emitted subclass RC/trace delegates for the state block (NULL-safe —
  * an exception before super(options) leaves st unset). The registry
@@ -247,10 +253,47 @@ ScrPromise *scr_sc_text(ScrStream *s);
 ScrPromise *scr_sc_json(ScrStream *s);
 ScrPromise *scr_sc_buffer(ScrStream *s);
 ScrPromise *scr_sc_array_buffer(ScrStream *s);
-/* Readable.from(array): +1 fully-seeded object-entry stream (one WHOLE
- * chunk per element — strings or Buffers per the flag; hwm 1, already
- * EOF'd). Borrows arr. */
-ScrStream *scr_stream_from_arr(ScrArr *arr, bool strings);
+/* Readable.from over a typed source: arr holds the string or Buffer
+ * elements (one element under SCR_FROM_SINGLE, from.js's string/Buffer
+ * case). Elements push lazily, one _read at a time, as whole entries
+ * unless SCR_FROM_BYTE_MODE ({ objectMode: false }). hwm applies under
+ * SCR_FROM_HAS_HWM. +1, or NULL with ERR_INVALID_ARG_VALUE pending.
+ * Borrows arr. */
+enum {
+  SCR_FROM_STRINGS = 1,
+  SCR_FROM_SINGLE = 2,
+  SCR_FROM_BYTE_MODE = 4,
+  SCR_FROM_HAS_HWM = 8,
+};
+ScrStream *scr_stream_from_arr(ScrArr *arr, double flags, double hwm);
+/* Readable.from(iterable, options) in the JS lane: strings, Buffers and
+ * arrays of them; options objectMode and highWaterMark. +1, or NULL with
+ * the error pending (ERR_INVALID_ARG_TYPE for a non-iterable). Borrows. */
+ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts);
+/* One checked-dynamic value into a Readable.from stream: a whole entry in
+ * object mode, a chunk in byte mode. null, values other than strings and
+ * Buffers in object mode, and byte mode's chunk errors destroy the stream
+ * and answer -1; otherwise push()'s answer. Borrows v. */
+int scr_stream_from_push(ScrStream *s, const ScrDyn *v);
+/* The from.js stream around native read/destroy callbacks (moved), with
+ * SCR_FROM_* option flags: +1, or NULL with ERR_INVALID_ARG_VALUE
+ * pending for a bad highWaterMark. */
+ScrStream *scr_stream_new_from_readable(ScrClosure *read, ScrStreamReadInv read_inv,
+                                        ScrClosure *destroy, ScrStreamErrInv destroy_inv,
+                                        double flags, double hwm);
+struct ScrGen;
+/* Readable.from over a compiled generator (scr_stream_ops.c). The
+ * compiler's helpers (borrowed) take the generator: next/ret answer the
+ * next value or the done marker (scr_stream_from_done) and thr takes the
+ * error as a checked-dynamic value; for an async generator they answer
+ * the resume's promise and `read` turns its IteratorResult into the value
+ * or the marker. g borrowed; +1, or NULL with the error pending. */
+ScrStream *scr_stream_from_gen(struct ScrGen *g, ScrClosure *next, ScrClosure *ret, ScrClosure *thr,
+                               double flags, double hwm);
+ScrStream *scr_stream_from_async_gen(struct ScrGen *g, ScrClosure *next, ScrClosure *read,
+                                     ScrClosure *ret, ScrClosure *thr, double flags,
+                                     double hwm);
+ScrDyn *scr_stream_from_done(void); /* +1 */
 ScrStream *scr_stream_pause(ScrStream *s);            /* recv +1 */
 ScrStream *scr_stream_resume(ScrStream *s);           /* recv +1 */
 bool scr_stream_is_paused(ScrStream *s);
@@ -279,6 +322,34 @@ ScrStream *scr_stream_iterator_close(ScrStream *s);
  * NULL with ERR_INVALID_ARG_TYPE pending. */
 ScrStream *scr_stream_add_abort_signal(ScrStream *s, ScrDyn *signal, bool from_option,
                                        ScrAbortAddFn add);
+/* Object-mode streams for the stream operators: Readable.from's stream
+ * (highWaterMark 1) around native callbacks (+1; callbacks move), and its
+ * push: whole string or Buffer entries, the first push fixing the kind.
+ * Answers push()'s result, -1 for another kind of value, -2 for a kind
+ * that differs from the first push's. */
+ScrStream *scr_stream_new_object_readable(ScrClosure *read, ScrStreamReadInv read_inv,
+                                          ScrClosure *destroy, ScrStreamErrInv destroy_inv);
+int scr_stream_push_object(ScrStream *s, const ScrDyn *v);
+/* The Readable operators (scr_stream_ops.c, the streamOps feature): the
+ * callbacks, counts and options are checked-dynamic values (borrowed).
+ * The stream-returning ones answer the +1 object-mode output stream, or
+ * NULL with Node's validation error pending; the promise-returning ones
+ * answer a +1 promise and reject instead of throwing. toArray settles a
+ * dyn array, find and reduce a dyn value — reduce's `kind` picks the
+ * payload instead: 0 dyn, 1 number, 2 boolean, 3 string — some and every
+ * a boolean, forEach nothing. */
+ScrStream *scr_stream_op_map(ScrStream *s, ScrDyn *fn, ScrDyn *options);
+ScrStream *scr_stream_op_filter(ScrStream *s, ScrDyn *fn, ScrDyn *options);
+ScrStream *scr_stream_op_flat_map(ScrStream *s, ScrDyn *fn, ScrDyn *options);
+ScrStream *scr_stream_op_drop(ScrStream *s, ScrDyn *number, ScrDyn *options);
+ScrStream *scr_stream_op_take(ScrStream *s, ScrDyn *number, ScrDyn *options);
+ScrPromise *scr_stream_op_to_array(ScrStream *s, ScrDyn *options);
+ScrPromise *scr_stream_op_for_each(ScrStream *s, ScrDyn *fn, ScrDyn *options);
+ScrPromise *scr_stream_op_some(ScrStream *s, ScrDyn *fn, ScrDyn *options);
+ScrPromise *scr_stream_op_every(ScrStream *s, ScrDyn *fn, ScrDyn *options);
+ScrPromise *scr_stream_op_find(ScrStream *s, ScrDyn *fn, ScrDyn *options);
+ScrPromise *scr_stream_op_reduce(ScrStream *s, ScrDyn *fn, ScrDyn *init, bool has_init,
+                                 ScrDyn *options, double kind);
 /* finished(s, options[, cb]) — Node's eos with its listeners and state
  * predicates: readable/writable are -1 (the default), 0 or 1; on_error is
  * options.error !== false; signal is NULL or borrowed (ERR_INVALID_ARG_TYPE

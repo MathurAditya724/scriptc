@@ -3,10 +3,11 @@ import {
   typeEquals,
   type IrExpr,
   type IrFunction,
+  type IrStmt,
   type IrType,
   type IrUnionDef,
 } from "../../ir/ir.js";
-import { everyStmtList } from "../../ir/traverse.js";
+import { everyExpr, everyStmt, everyStmtList } from "../../ir/traverse.js";
 import type { CallLifetimes } from "./call-lifetimes.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import {
@@ -145,6 +146,100 @@ export function findMapReadLifetimes(
     },
   });
   return result;
+}
+
+/** The operand's expression tree without source locations: equal strings
+ * name equal expressions. A match only selects the lookup form; both forms
+ * are correct for any operands. */
+function operandKey(expr: IrExpr): string {
+  return JSON.stringify(expr, (name, value: unknown) =>
+    name === "loc" ? undefined : Object.is(value, -0) ? "-0" : value,
+  );
+}
+
+/** The receiver|key pair of a typed number-key collection call. */
+function numberKeyPair(expr: IrExpr): string | null {
+  if (!hasTypedCollectionReceiver(expr) || expr.args.length === 0) return null;
+  const receiver = expr.receiver.type;
+  const key =
+    receiver.kind === "map" ? receiver.key : receiver.kind === "set" ? receiver.elem : null;
+  if (key?.kind !== "f64") return null;
+  return `${operandKey(expr.receiver)}|${operandKey(expr.args[0]!)}`;
+}
+
+/** The receiver|key pairs that get and has read anywhere in `node`. */
+function numberKeyReads(node: IrStmt | IrExpr, isStmt: boolean): Set<string> {
+  const reads = new Set<string>();
+  const visitor = {
+    stmt: () => true,
+    expr: (expr: IrExpr) => {
+      if (
+        (expr.kind === "mapIntrinsic" || expr.kind === "setIntrinsic") &&
+        (expr.method === "get" || expr.method === "has")
+      ) {
+        const pair = numberKeyPair(expr);
+        if (pair !== null) reads.add(pair);
+      }
+      return true;
+    },
+  };
+  if (isStmt) everyStmt(node as IrStmt, visitor);
+  else everyExpr(node as IrExpr, visitor);
+  return reads;
+}
+
+function nestedStmtLists(stmt: IrStmt): IrStmt[][] {
+  switch (stmt.kind) {
+    case "if":
+      return stmt.else_ === null ? [stmt.then] : [stmt.then, stmt.else_];
+    case "while":
+    case "doWhile":
+    case "forOf":
+    case "block":
+      return [stmt.body];
+    case "for":
+      return [stmt.body];
+    case "switch":
+      return stmt.cases.map((c) => c.body);
+    case "tryCatch":
+      return [stmt.tryBody, stmt.catchBody ?? [], stmt.finallyBody ?? []];
+    default:
+      return [];
+  }
+}
+
+/** Number-key Map.set and Set.add statements that follow a get or has of
+ * the same collection and key: inside their own arguments (`m.set(k,
+ * (m.get(k) ?? 0) + 1)`) or in the statement just before them. Such a
+ * write usually finds its key, so it looks the key up inline
+ * (emitNumberMapSetScalar) and stores into the found entry; the lookup is
+ * read-only, so LLVM merges it with the read's when no store intervenes.
+ * Other writes, including those guarded by an absent key, keep the single
+ * runtime call, which finds the insertion bucket in the same probe. */
+export function findReadNumberMapWrites(fn: IrFunction): Set<IrExpr> {
+  const writes = new Set<IrExpr>();
+  const visitList = (list: IrStmt[]): void => {
+    list.forEach((stmt, index) => {
+      for (const nested of nestedStmtLists(stmt)) visitList(nested);
+      if (stmt.kind !== "exprStmt") return;
+      const write = stmt.expr;
+      if (
+        (write.kind !== "mapIntrinsic" || write.method !== "set") &&
+        (write.kind !== "setIntrinsic" || write.method !== "add")
+      )
+        return;
+      const pair = numberKeyPair(write);
+      if (pair === null) return;
+      const before = index > 0 ? list[index - 1]! : null;
+      if (
+        write.args.some((arg) => numberKeyReads(arg, false).has(pair)) ||
+        (before !== null && numberKeyReads(before, true).has(pair))
+      )
+        writes.add(write);
+    });
+  };
+  visitList(fn.body);
+  return writes;
 }
 
 export function emitMapLookupKey(

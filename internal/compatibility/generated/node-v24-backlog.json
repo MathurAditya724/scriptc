@@ -7,8 +7,8 @@
     "tierItemCount": 3472,
     "tiers": {
       "static": {
-        "audit-partial": 957,
-        "verify-gap": 2392,
+        "audit-partial": 972,
+        "verify-gap": 2377,
         "replace-refusal": 36,
         "classify": 2,
         "implement": 85
@@ -61824,12 +61824,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.stream.compose",
+          "tests": [
+            "tests/corpus/5342-stream-compose.ts",
+            "tests/corpus/5343-stream-compose-edges.ts"
+          ]
         }
       }
     },
@@ -61949,12 +61952,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.stream.Readable.from",
+          "tests": [
+            "tests/corpus/5340-readable-from-options.ts",
+            "tests/corpus/5341-readable-from-dynamic.cjs",
+            "tests/corpus/5420-readable-from-generators.ts",
+            "tests/corpus/5421-readable-from-generators.cjs"
+          ]
         }
       }
     },
@@ -62413,12 +62421,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.stream.compose",
+          "tests": [
+            "tests/corpus/5342-stream-compose.ts",
+            "tests/corpus/5343-stream-compose-edges.ts"
+          ]
         }
       }
     },
@@ -62538,12 +62549,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.stream.Readable.from",
+          "tests": [
+            "tests/corpus/5340-readable-from-options.ts",
+            "tests/corpus/5341-readable-from-dynamic.cjs",
+            "tests/corpus/5420-readable-from-generators.ts",
+            "tests/corpus/5421-readable-from-generators.cjs"
+          ]
         }
       }
     },
@@ -63994,12 +64010,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.map",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64019,12 +64040,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.filter",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64044,12 +64070,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.forEach",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64069,12 +64100,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.toArray",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64094,12 +64130,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.some",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64119,12 +64160,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.find",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64144,12 +64190,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.every",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64169,12 +64220,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.flatMap",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64194,12 +64250,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.drop",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64219,12 +64280,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.take",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },
@@ -64244,12 +64310,17 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:stream",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:stream.readable.reduce",
+          "tests": [
+            "tests/corpus/5335-stream-operators-values.ts",
+            "tests/corpus/5336-stream-operators-promise-timing.ts",
+            "tests/corpus/5337-stream-operators-concurrency.ts",
+            "tests/corpus/5338-stream-operators-checks.cjs"
+          ]
         }
       }
     },

@@ -533,6 +533,9 @@ void scr_dyn_arr_push_hole(ScrDyn *arr);
 ScrDyn *scr_dyn_new_obj(void);
 ScrDyn *scr_dyn_iterator(const ScrDyn *value, const ScrStr *spell);
 ScrDyn *scr_dyn_iterator_optional(const ScrDyn *value);
+/* from.js's probe: 2 when value[Symbol.asyncIterator] is set, 1 when
+ * value[Symbol.iterator] is, 0 for neither, -1 with an error pending. */
+int scr_dyn_iterable_kind(const ScrDyn *value);
 void scr_dyn_install_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key);
 ScrDyn *scr_dyn_array_values_function(void);
@@ -641,6 +644,12 @@ ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key);
 /* +1 view of an own element of a bound live array capsule; NULL for a hole
  * or an index at or past its length. */
 ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index);
+/* d[index] for a numeric index (+1) when the receiver answers it without
+ * the property-key string: an in-range element of a dyn array, or a present
+ * or explicitly undefined element of a live array capsule. NULL otherwise
+ * (other receivers, holes, out-of-range and non-index numbers), and the
+ * caller takes the keyed path. Never throws. */
+ScrDyn *scr_dyn_index_get(const ScrDyn *d, double index);
 void *scr_dyn_typed_ref_cached_cast(
     const ScrDyn *d, const char *type_key, size_t type_key_len); /* +1/NULL */
 void scr_dyn_typed_ref_cache_cast(

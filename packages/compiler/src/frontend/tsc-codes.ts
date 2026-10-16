@@ -71,6 +71,7 @@ export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([
   2556,
   2769,
   2740, // 2322's elaborated "missing the following properties" form
+  2559, // a value with no properties in common with an all-optional options type
   2305,
   2551,
   2724,
