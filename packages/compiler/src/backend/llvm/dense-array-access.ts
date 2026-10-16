@@ -97,7 +97,9 @@ function emitDenseGuard(
   const loadChecked = (): void => {
     B.line(`${lenPtr} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 1`);
     host.markMemoryPointer(lenPtr, "array:header");
-    B.line(`${len} = load ${size}, ptr ${lenPtr}${host.fieldAliasAttachment(lenPtr)}`);
+    B.line(
+      `${len} = load ${size}, ptr ${lenPtr}${host.fieldAliasAttachment(lenPtr)}${host.arrayLengthRange}`,
+    );
     B.line(`${capPtr} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 2`);
     host.markMemoryPointer(capPtr, "array:header");
     B.line(`${cap} = load ${size}, ptr ${capPtr}${host.fieldAliasAttachment(capPtr)}`);
