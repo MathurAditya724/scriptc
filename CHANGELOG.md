@@ -36,6 +36,8 @@ All notable changes to scriptc will be documented in this file.
 - **Publication walkers with more than ten pushes keep distinct value names,** and int32 field storage survives reflection reads through `unknown`.
 - **Native program objects use runtime ABI v22.** External object consumers must link the matching v0.3.5 runtime pack; the versioned marker rejects incompatible runtime objects at link time.
 
+<!-- release:end -->
+
 ## 0.3.4
 
 ### Features
@@ -101,8 +103,6 @@ All notable changes to scriptc will be documented in this file.
 - **`parseInt` rounds as Node does on each architecture.**
 - **New runtime globals are defined with initializers,** so library localization hides them.
 - **Native program objects use runtime ABI v21.** Array, record and allocator layouts changed, so external object consumers must link the matching v0.3.3 runtime pack; the versioned marker rejects incompatible runtime objects at link time.
-
-<!-- release:end -->
 
 ## 0.3.2
 
