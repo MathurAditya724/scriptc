@@ -4907,6 +4907,8 @@ export function lowerIntrinsicProperty(
   const numberMember = lowerer.stdlibGlobalMember(expr, "Number");
   if (numberMember === "parseInt" || numberMember === "parseFloat")
     return lowerNumberParserValue(lowerer, numberMember, locOf(expr));
+  if (lowerer.stdlibGlobalMember(expr, "Buffer") === "poolSize")
+    return { kind: "libCall", fn: "buffer.poolSize", args: [], type: F64, loc: locOf(expr) };
   if (lowerer.stdlibGlobalMember(expr, "Buffer") === "isBuffer")
     return lowerCheckedPredicateValue(lowerer, "Buffer.isBuffer", "buffer", locOf(expr));
   if (lowerer.stdlibGlobalMember(expr, "Date") === "now")

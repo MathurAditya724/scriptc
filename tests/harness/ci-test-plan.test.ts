@@ -152,17 +152,28 @@ test.for([1, 2, 3])("the darwin suite retains every darwin file with %i shards",
     const plans = Array.from({ length: count }, (_, index) =>
       ciTestPlan({ shard: `${index + 1}/${count}`, flavor, suite: "darwin" }),
     );
-    for (const plan of plans) {
-      expect(plan.corpus.args).toEqual(["test", ...darwinCorpusFiles]);
-      expect(plan.corpus.env.SCRIPTC_SAN).toBe(flavor === "san" ? "1" : "");
-      expect(plan.side).toHaveLength(1);
+    const caseShards: string[] = [];
+    plans.forEach((plan, index) => {
+      const halves = [plan.corpus, plan.side[1]!];
+      expect(plan.side).toHaveLength(2);
+      for (const half of halves) {
+        expect(half.args).toEqual(["test", ...darwinCorpusFiles]);
+        expect(half.env.SCRIPTC_SAN).toBe(flavor === "san" ? "1" : "");
+        expect(half.env.SCRIPTC_TEST_WORKERS).toBe("1");
+        caseShards.push(half.env.SCRIPTC_TEST_SHARD!);
+      }
       expect(plan.side[0]!.args).toEqual([
         "test",
         "--passWithNoTests",
-        `--shard=${plan.corpus.env.SCRIPTC_TEST_SHARD}`,
+        `--shard=${index + 1}/${count}`,
         ...darwinFiles,
       ]);
-    }
+    });
+    // The halves of all slices are the case shards of twice as many slices,
+    // each run once.
+    expect(caseShards).toEqual(
+      Array.from({ length: 2 * count }, (_, index) => `${index + 1}/${2 * count}`),
+    );
   }
   // The full suite still runs every darwin file through its file shards.
   for (const file of [...darwinCorpusFiles, ...darwinFiles]) {

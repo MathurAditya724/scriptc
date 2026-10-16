@@ -132,6 +132,7 @@ ScrBytes *scr_bytes_take_data(uint8_t *data, size_t len) {
   b->is_buffer = false;
   b->is_data_view = false;
   b->external = false;
+  b->untransferable = false;
   b->shared = NULL;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
@@ -654,6 +655,7 @@ ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
   v->is_buffer = b->is_buffer;
   v->is_data_view = false;
   v->external = false;
+  v->untransferable = false;
   v->shared = owner->shared;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
@@ -890,6 +892,7 @@ ScrBytes *scr_dataview_new(ScrBytes *src, double byte_off, bool has_len, double 
   v->is_buffer = false;
   v->is_data_view = true;
   v->external = false;
+  v->untransferable = false;
   v->shared = owner->shared;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
@@ -2478,14 +2481,30 @@ static const int8_t scr_b64_values[256] = {
 
 /* Conversion destinations are private until their initialized length is set.
  * General typed-array allocation must remain zero-filled. */
-static ScrBytes *scr_bytes_conversion_storage(size_t capacity) {
+/* Where scr_bytes_encode_str writes: room bytes at `at` in the current pool
+ * slab, or (at == NULL, or more than room needed) fresh private storage. */
+typedef struct {
+  uint8_t *at;
+  size_t room;
+  ScrBytes header; /* the temporary view handed to the encoders */
+} ScrBytesSink;
+
+static ScrBytes *scr_bytes_conversion_storage_in(ScrBytesSink *sink, size_t capacity) {
+  if (sink && sink->at && capacity <= sink->room) {
+    sink->header = (ScrBytes){.rc = 1, .len = 0, .elem = SCR_BYTES_U8, .data = sink->at};
+    return &sink->header;
+  }
   uint8_t *data = malloc(capacity ? capacity : 1);
   if (!data) scr_bytes_oom();
   return scr_bytes_take_data(data, 0);
 }
 
-static ScrBytes *scr_bytes_decode_b64(const uint8_t *in, size_t n) {
-  ScrBytes *b = scr_bytes_conversion_storage(n / 4 * 3 + 2);
+static ScrBytes *scr_bytes_conversion_storage(size_t capacity) {
+  return scr_bytes_conversion_storage_in(NULL, capacity);
+}
+
+static ScrBytes *scr_bytes_decode_b64(ScrBytesSink *sink, const uint8_t *in, size_t n) {
+  ScrBytes *b = scr_bytes_conversion_storage_in(sink, n / 4 * 3 + 2);
   size_t i = 0, o = 0;
   unsigned acc = 0, have = 0;
   while (i < n) {
@@ -2524,13 +2543,16 @@ static ScrBytes *scr_bytes_decode_b64(const uint8_t *in, size_t n) {
   return b;
 }
 
-ScrBytes *scr_bytes_from_str(const ScrStr *s, const ScrStr *enc) {
+/* Encodes s into sink's pool room when its upper bound fits there, else into
+ * fresh private storage. The result's len is the bytes written; a pool
+ * result is &sink->header, never released. */
+static ScrBytes *scr_bytes_encode_str(ScrBytesSink *sink, const ScrStr *s, const ScrStr *enc) {
   const uint8_t *in = (const uint8_t *)s->data;
   size_t n = s->len;
   if (scr_enc_is(enc, "latin1") || scr_enc_is(enc, "ascii")) {
     /* Node writes charCodeAt(i) & 0xFF for BOTH spellings — an astral
      * code point contributes its two surrogates' low bytes. */
-    ScrBytes *b = scr_bytes_conversion_storage(n);
+    ScrBytes *b = scr_bytes_conversion_storage_in(sink, n);
     size_t o = 0, i = 0;
     while (i < n) {
       uint32_t cp = scr_bytes_next_cp(in, &i);
@@ -2547,7 +2569,7 @@ ScrBytes *scr_bytes_from_str(const ScrStr *s, const ScrStr *enc) {
   }
   if (scr_enc_is(enc, "utf16le")) {
     if (n > SIZE_MAX / 2) scr_bytes_oom();
-    ScrBytes *b = scr_bytes_conversion_storage(n * 2);
+    ScrBytes *b = scr_bytes_conversion_storage_in(sink, n * 2);
     size_t o = 0, i = 0;
     while (i < n) {
       uint32_t cp = scr_bytes_next_cp(in, &i);
@@ -2573,7 +2595,7 @@ ScrBytes *scr_bytes_from_str(const ScrStr *s, const ScrStr *enc) {
     ScrBytes *narrowed = NULL;
     if (scr_bytes_ascii_prefix(in, n) != n) {
       ScrStr *latin1 = scr_str_new("latin1", 6);
-      narrowed = scr_bytes_from_str(s, latin1);
+      narrowed = scr_bytes_encode_str(NULL, s, latin1);
       scr_str_release(latin1);
       in = narrowed->data;
       n = narrowed->len;
@@ -2581,7 +2603,7 @@ ScrBytes *scr_bytes_from_str(const ScrStr *s, const ScrStr *enc) {
     ScrBytes *b;
     if (hex) {
       /* Stop at the first invalid pair, discarding an odd tail. */
-      b = scr_bytes_conversion_storage(n / 2);
+      b = scr_bytes_conversion_storage_in(sink, n / 2);
       size_t o = 0;
       for (size_t i = 0; i + 1 < n; i += 2) {
         int hi = scr_hex_val(in[i]), lo = scr_hex_val(in[i + 1]);
@@ -2590,18 +2612,350 @@ ScrBytes *scr_bytes_from_str(const ScrStr *s, const ScrStr *enc) {
       }
       b->len = o;
     } else {
-      b = scr_bytes_decode_b64(in, n);
+      b = scr_bytes_decode_b64(sink, in, n);
     }
     scr_bytes_release(narrowed);
     return b;
   }
   /* utf8: ScrStr storage IS the bytes, once lone surrogates become U+FFFD
    * (same length) */
-  ScrBytes *b = scr_bytes_conversion_storage(n);
+  ScrBytes *b = scr_bytes_conversion_storage_in(sink, n);
   memcpy(b->data, in, n);
   if (!s->ascii) scr_wtf8_to_utf8((char *)b->data, n);
   b->len = n;
   return b;
+}
+
+ScrBytes *scr_bytes_from_str(const ScrStr *s, const ScrStr *enc) {
+  return scr_bytes_encode_str(NULL, s, enc);
+}
+
+/* ── the Buffer pool ────────────────────────────────────────────────────
+ * Node's lib/buffer.js: Buffer.poolSize starts at 64 KiB, and the first
+ * slab exists from startup with that size. A pooled request (size <
+ * Buffer.poolSize >>> 1) that does not fit the current slab's remainder
+ * starts a new slab of Buffer.poolSize bytes; a slab created later uses the
+ * value at that time. Views start at 8-byte aligned offsets. The pool holds
+ * one reference to the current slab and each view another, so a slab is
+ * freed once it is replaced and its last view is released (Node keeps a
+ * slab alive the same way). */
+#define SCR_BUFFER_POOL_DEFAULT 65536.0
+size_t scr_num_received(double v, char out[48]);
+static SCR_TL double scr_pool_setting = SCR_BUFFER_POOL_DEFAULT;
+static SCR_TL ScrBytes *scr_pool_slab;
+static SCR_TL size_t scr_pool_offset;
+static SCR_TL bool scr_pool_started;
+static SCR_TL bool scr_pool_registered; /* scr_buffer_pool_reset runs at context exit */
+
+/* Buffer.poolSize >>> 1, kept with the setting. */
+static SCR_TL size_t scr_pool_half = 32768;
+
+double scr_buffer_pool_size(void) { return scr_pool_setting; }
+
+void scr_buffer_set_pool_size(double size) {
+  scr_pool_setting = size;
+  double t = isfinite(size) ? fmod(trunc(size), 4294967296.0) : 0;
+  if (t < 0) t += 4294967296.0;
+  scr_pool_half = (size_t)((uint32_t)t >> 1);
+}
+
+static size_t scr_pool_threshold(void) { return scr_pool_half; }
+
+/* Bytes left in the slab. Aligning can move the offset past the end of a
+ * slab whose size is not a multiple of 8; nothing is left then. */
+static size_t scr_pool_room(void) {
+  if (!scr_pool_slab || scr_pool_offset >= scr_pool_slab->len) return 0;
+  return scr_pool_slab->len - scr_pool_offset;
+}
+
+/* Replaces the slab with one of `size` bytes (Node's createPool). false
+ * with a pending RangeError when size is not a valid typed array length. */
+static bool scr_pool_create(double size) {
+  ScrBytes *slab = scr_bytes_new(SCR_BYTES_U8, size);
+  if (!slab) return false;
+  slab->untransferable = true;
+  if (!scr_pool_registered) {
+    scr_atexit(scr_buffer_pool_reset);
+    scr_pool_registered = true;
+  }
+  scr_bytes_release(scr_pool_slab);
+  scr_pool_slab = slab;
+  scr_pool_offset = 0;
+  scr_pool_started = true;
+  return true;
+}
+
+/* Ensures the current slab holds `reserve` more bytes (Node's `size >
+ * poolSize - poolOffset` test before createPool). Node creates the first
+ * slab at startup with the default size, so a request it holds goes there
+ * even after Buffer.poolSize changed, and one it does not hold replaces it
+ * with a slab of the current Buffer.poolSize. Callers write `reserve`
+ * bytes at the pool offset, so the room is checked again after every new
+ * slab: a pooled request is below Buffer.poolSize >>> 1, which a slab of
+ * Buffer.poolSize bytes always holds, and anything else is an internal
+ * error rather than a write past the slab. */
+static bool scr_pool_reserve(size_t reserve) {
+  if (scr_pool_started && reserve <= scr_pool_room()) return true;
+  bool startup = !scr_pool_started && (double)reserve <= SCR_BUFFER_POOL_DEFAULT;
+  if (!scr_pool_create(startup ? SCR_BUFFER_POOL_DEFAULT : scr_pool_setting)) return false;
+  if (reserve > scr_pool_room()) scr_trap("scriptc: internal error: Buffer pool slab smaller than its reservation\n");
+  return true;
+}
+
+/* A +1 Buffer view of `len` bytes at the pool offset, which then advances
+ * past it to the next 8-byte boundary (Node's alignPool). */
+static ScrBytes *scr_pool_take(size_t len) {
+  ScrBytes *v = malloc(sizeof(ScrBytes));
+  if (!v) scr_bytes_oom();
+  v->rc = 1;
+  v->len = len;
+  v->elem = SCR_BYTES_U8;
+  v->data = scr_pool_slab->data + scr_pool_offset;
+  v->backing = scr_bytes_retain(scr_pool_slab);
+  v->is_buffer = true;
+  v->is_data_view = false;
+  v->external = false;
+  v->untransferable = false;
+  v->shared = NULL;
+#ifdef SCR_RC_AUDIT
+  scr_live_bytes++;
+#endif
+  scr_pool_offset += len;
+  if (scr_pool_offset & 7) scr_pool_offset = (scr_pool_offset | 7) + 1;
+  return v;
+}
+
+/* An empty Buffer (Node's new FastBuffer()): its own zero-length buffer. */
+static ScrBytes *scr_buffer_empty(void) {
+  ScrBytes *b = scr_bytes_alloc(SCR_BYTES_U8, 0);
+  b->is_buffer = true;
+  return b;
+}
+
+/* validateNumber(size, 'size', 0, kMaxLength). */
+static bool scr_buffer_check_size(double size) {
+  if (size >= 0 && size <= 9007199254740991.0) return true;
+  char recv[48], msg[160];
+  scr_num_received(size, recv);
+  int len = snprintf(msg, sizeof msg,
+                     "The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. "
+                     "Received %s",
+                     recv);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+ScrBytes *scr_buffer_alloc(double size) {
+  if (!scr_buffer_check_size(size)) return NULL;
+  /* Sizes past 2^31 keep scr_bytes_new's typed array length rules. */
+  ScrBytes *b = size < 2147483648.0 ? scr_bytes_alloc(SCR_BYTES_U8, (size_t)size)
+                                    : scr_bytes_new(SCR_BYTES_U8, size);
+  if (b) b->is_buffer = true;
+  return b;
+}
+
+ScrBytes *scr_buffer_alloc_unsafe_slow(double size) { return scr_buffer_alloc(size); }
+
+/* Node's allocate(size) for a validated size. */
+static ScrBytes *scr_buffer_allocate(double size) {
+  if (!(size >= 1)) return scr_buffer_empty();
+  if (size < (double)scr_pool_threshold()) {
+    size_t n = (size_t)size;
+    if (!scr_pool_reserve(n)) return NULL;
+    return scr_pool_take(n);
+  }
+  return scr_buffer_alloc(size);
+}
+
+ScrBytes *scr_buffer_alloc_unsafe(double size) {
+  if (!scr_buffer_check_size(size)) return NULL;
+  return scr_buffer_allocate(size);
+}
+
+/* Node's fromArrayLike: the values of a typed array or number[] (ToUint8). */
+ScrBytes *scr_buffer_from_bytes(const ScrBytes *src) {
+  size_t n = src->len;
+  if (n == 0) return scr_buffer_empty();
+  if (n < scr_pool_threshold()) {
+    if (!scr_pool_reserve(n)) return NULL;
+    ScrBytes *v = scr_pool_take(n);
+    if (src->elem == SCR_BYTES_U8 || src->elem == SCR_BYTES_U8C || src->elem == SCR_BYTES_I8) {
+      scr_bytes_raw_in(src, v->data, src->data, n);
+    } else {
+      for (size_t i = 0; i < n; i++) v->data[i] = (uint8_t)scr_to_uint32(scr_bytes_get(src, (double)i));
+    }
+    return v;
+  }
+  ScrBytes *b = scr_bytes_convert(SCR_BYTES_U8, src);
+  b->is_buffer = true;
+  return b;
+}
+
+static void scr_bytes_fill_from_arr(uint8_t *out, ScrBytesElem elem, const ScrArr *arr);
+
+ScrBytes *scr_buffer_from_arr(const ScrArr *arr) {
+  size_t n = arr->len;
+  if (n == 0) return scr_buffer_empty();
+  if (n < scr_pool_threshold()) {
+    /* Converting numbers runs no user code, so the values are written
+     * straight into the slab. */
+    if (!scr_pool_reserve(n)) return NULL;
+    ScrBytes *v = scr_pool_take(n);
+    scr_bytes_fill_from_arr(v->data, SCR_BYTES_U8, arr);
+    return v;
+  }
+  ScrBytes *b = scr_bytes_from_arr(SCR_BYTES_U8, arr);
+  b->is_buffer = true;
+  return b;
+}
+
+double scr_bytes_byte_length_str(ScrStr *s, const ScrStr *enc);
+
+/* Node's createFromString: an unpooled Buffer of the encoding's byte
+ * length; when fewer bytes are written it views the start of that
+ * ArrayBuffer. */
+static ScrBytes *scr_buffer_from_str_unpooled(const ScrStr *s, const ScrStr *enc, size_t length) {
+  ScrBytes *b = scr_bytes_encode_str(NULL, s, enc);
+  b->is_buffer = true;
+  if (b->len >= length) return b;
+  /* The encoders' storage bound covers the byte length. */
+  size_t actual = b->len;
+  memset(b->data + actual, 0, length - actual);
+  b->len = length;
+  ScrBytes *view = scr_bytes_subarray(b, 0, (double)actual);
+  scr_bytes_release(b);
+  return view;
+}
+
+/* Node's fromString/fromStringFast for a normalized encoding name. */
+ScrBytes *scr_buffer_from_str(const ScrStr *s, const ScrStr *enc) {
+  if (s->len == 0) return scr_buffer_empty();
+  size_t max = scr_pool_threshold();
+  /* The UTF-16 length lies between len / 3 and len (each unit is one to
+   * three stored bytes; an astral character's four bytes are two units).
+   * Node's reservation is four bytes per unit; when four bytes per stored
+   * byte already fits the threshold and the slab, the exact length cannot
+   * change the outcome. */
+  size_t units;
+  if (s->ascii) {
+    units = s->len;
+  } else if (s->len < max / 4 && scr_pool_started && s->len * 4 <= scr_pool_room()) {
+    units = s->len; /* an upper bound: reserve() succeeds without a new slab */
+  } else {
+    units = (size_t)scr_str_utf16_len((ScrStr *)s);
+  }
+  if (units >= max)
+    return scr_buffer_from_str_unpooled(s, enc, (size_t)scr_bytes_byte_length_str((ScrStr *)s, enc));
+  size_t length = units * 4;
+  if (length >= max) {
+    length = (size_t)scr_bytes_byte_length_str((ScrStr *)s, enc);
+    if (length >= max) return scr_buffer_from_str_unpooled(s, enc, length);
+  }
+  if (!scr_pool_reserve(length)) return NULL;
+  ScrBytesSink sink = {scr_pool_slab->data + scr_pool_offset, scr_pool_room()};
+  ScrBytes *b = scr_bytes_encode_str(&sink, s, enc);
+  size_t actual = b->len;
+  if (b != &sink.header) {
+    /* The encoder's storage bound exceeded the room; the bytes written
+     * never exceed Node's reservation, which fits. */
+    memcpy(scr_pool_slab->data + scr_pool_offset, b->data, actual);
+    scr_bytes_release(b);
+  }
+  return scr_pool_take(actual);
+}
+
+ScrBytes *scr_buffer_from_str_checked(const ScrStr *s, const ScrStr *enc) {
+  ScrStr *normalized = enc->len ? scr_bytes_normalize_encoding(enc) : scr_str_new("utf8", 4);
+  if (!normalized) return NULL;
+  ScrBytes *out = scr_buffer_from_str(s, normalized);
+  scr_str_release(normalized);
+  return out;
+}
+
+static ScrBytes *scr_bytes_concat_item(const ScrArr *list, size_t i);
+
+/* Buffer.concat(list[, totalLength]) into Node's allocate(totalLength). */
+static ScrBytes *scr_buffer_concat_into(const ScrArr *list, double total) {
+  ScrBytes *out = scr_buffer_allocate(total);
+  if (!out) return NULL;
+  size_t pos = 0;
+  for (size_t i = 0; i < list->len && pos < out->len; i++) {
+    ScrBytes *part = scr_bytes_concat_item(list, i);
+    if (!part) {
+      scr_bytes_release(out);
+      return NULL;
+    }
+    size_t take = part->len < out->len - pos ? part->len : out->len - pos;
+    scr_bytes_read(part, 0, out->data + pos, take);
+    pos += take;
+    scr_bytes_release(part);
+  }
+  if (pos < out->len) memset(out->data + pos, 0, out->len - pos);
+  return out;
+}
+
+ScrBytes *scr_buffer_concat(const ScrArr *list) {
+  if (list->len == 0) return scr_buffer_empty();
+  size_t total = 0;
+  bool borrowed = true;
+  for (size_t i = 0; i < list->len; i++) {
+    /* Present parts are read borrowed; copying runs no script code. */
+    const ScrBytes *part = scr_arr_has(list, (double)i) ? scr_arr_peek_ref(list, (double)i) : NULL;
+    if (!part) {
+      borrowed = false;
+      break;
+    }
+    total += part->len;
+  }
+  if (!borrowed) {
+    total = 0;
+    for (size_t i = 0; i < list->len; i++) {
+      ScrBytes *part = scr_bytes_concat_item(list, i);
+      if (!part) return NULL;
+      total += part->len;
+      scr_bytes_release(part);
+    }
+    return scr_buffer_concat_into(list, (double)total);
+  }
+  ScrBytes *out = scr_buffer_allocate((double)total);
+  if (!out) return NULL;
+  size_t pos = 0;
+  for (size_t i = 0; i < list->len; i++) {
+    const ScrBytes *part = scr_arr_peek_ref(list, (double)i);
+    scr_bytes_read(part, 0, out->data + pos, part->len);
+    pos += part->len;
+  }
+  return out;
+}
+
+ScrBytes *scr_buffer_concat_len(const ScrArr *list, double total) {
+  /* An empty list returns before the total validates, as in Node. */
+  if (list->len == 0) return scr_buffer_empty();
+  if (!scr_bytes_validate_off("length", total, 9007199254740991.0)) return NULL;
+  return scr_buffer_concat_into(list, total);
+}
+
+/* Moves an unpooled array-like copy into the pool when it is small enough
+ * (Node's fromArrayLike). Consumes `b`. */
+ScrBytes *scr_buffer_pool_adopt(ScrBytes *b) {
+  size_t n = b->len;
+  if (b->backing || b->shared || n == 0 || n >= scr_pool_threshold()) return b;
+  if (!scr_pool_reserve(n)) {
+    scr_bytes_release(b);
+    return NULL;
+  }
+  ScrBytes *v = scr_pool_take(n);
+  memcpy(v->data, b->data, n);
+  scr_bytes_release(b);
+  return v;
+}
+
+void scr_buffer_pool_reset(void) {
+  scr_bytes_release(scr_pool_slab);
+  scr_pool_slab = NULL;
+  scr_pool_offset = 0;
+  scr_pool_started = false;
+  scr_buffer_set_pool_size(SCR_BUFFER_POOL_DEFAULT);
 }
 
 /* Runtime encoding variables share the output conversion alias/error table.
@@ -2616,6 +2970,12 @@ ScrBytes *scr_bytes_from_str_checked(const ScrStr *s, const ScrStr *enc) {
 
 ScrBytes *scr_bytes_from_arr(ScrBytesElem elem, const ScrArr *arr) {
   ScrBytes *b = scr_bytes_alloc_private(elem, arr->len);
+  scr_bytes_fill_from_arr(b->data, elem, arr);
+  return b;
+}
+
+/* Writes arr's values, converted to `elem`, at `out` (arr->len elements). */
+static void scr_bytes_fill_from_arr(uint8_t *out, ScrBytesElem elem, const ScrArr *arr) {
   size_t width = scr_bytes_elem_size(elem);
   double values[128];
   for (size_t start = 0; start < arr->len;) {
@@ -2630,10 +2990,9 @@ ScrBytes *scr_bytes_from_arr(ScrBytesElem elem, const ScrArr *arr) {
         else values[i] = NAN;
       } else values[i] = scr_arr_get_number(arr, (double)index);
     }
-    scr_bytes_write_numbers(b->data + start * width, elem, values, count);
+    scr_bytes_write_numbers(out + start * width, elem, values, count);
     start += count;
   }
-  return b;
 }
 
 /* ── equals / compare / indexOf / fill / copy / swap / write (u8; the

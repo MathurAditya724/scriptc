@@ -68,12 +68,13 @@ export function sideOwners(flavor, count) {
   return owners;
 }
 
-// Pull requests run the full suite on Linux. Their macOS lane keeps the
-// darwin clang/libc/kqueue oracles: the Node differential corpus, plus every
-// file whose assertions run only on darwin or take darwin-specific branches
-// (including the Mach-O library localization arm and the arm64 runtime
-// string oracle).
-// Pushes to main and the nightly schedule still run the full suite on macOS.
+// Pull requests and pushes to main run the full suite on Linux. Their macOS
+// lane runs the darwin suite, which keeps the darwin clang/libc/kqueue
+// oracles: the Node differential corpus, plus every file whose assertions run
+// only on darwin or take darwin-specific branches (including the Mach-O
+// library localization arm and the arm64 runtime string oracle).
+// The nightly schedule and manual runs with macos_full run the full suite on
+// macOS.
 export const darwinCorpusFiles = ["tests/harness/differential.test.ts"];
 export const darwinFiles = [
   "packages/cli/test/bootstrap.test.ts",
@@ -112,22 +113,32 @@ export function ciTestPlan({ shard, flavor, workers = 4, suite = "full" }) {
     count = Number(match[2]);
   const sideWorkers = workers === 1 ? 0 : 1;
   const env = { SCRIPTC_TEST_SHARD: shard, SCRIPTC_SAN: flavor === "san" ? "1" : "" };
-  if (suite === "darwin")
+  if (suite === "darwin") {
+    // vitest runs one file's cases in sequence, so the shard's corpus cases
+    // run as two halves in separate processes: case shards 2i-1 and 2i of
+    // 2n. The second half follows the darwin contracts in the side queue.
+    const half = (part) => ({
+      name: `case-sharded differential corpus ${part}/2`,
+      args: ["test", ...darwinCorpusFiles],
+      env: {
+        ...env,
+        SCRIPTC_TEST_SHARD: `${2 * index - 2 + part}/${2 * count}`,
+        SCRIPTC_TEST_WORKERS: "1",
+      },
+    });
     return {
       sideWorkers,
-      corpus: {
-        name: "case-sharded differential corpus",
-        args: ["test", ...darwinCorpusFiles],
-        env: { ...env, SCRIPTC_TEST_WORKERS: String(workers - sideWorkers) },
-      },
+      corpus: half(1),
       side: [
         {
           name: "darwin contracts",
           args: ["test", "--passWithNoTests", "--shard=" + shard, ...darwinFiles],
           env: { ...env, SCRIPTC_TEST_WORKERS: "1" },
         },
+        half(2),
       ],
     };
+  }
   const owners = sideOwners(flavor, count);
   const isolated = new Set(isolatedFiles.map(([, file]) => file));
   const balanced = [...owners]

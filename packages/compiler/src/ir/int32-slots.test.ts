@@ -257,6 +257,33 @@ test("dynamic stores disqualify the field names they can reach", () => {
   expect(computed.isField("Hidden", "c")).toBe(true);
   const readOnly = analyzeInt32Slots(program(write("dyn.typedRefIs", [view, strLit("object:C")])));
   expect([readOnly.isField("C", "a"), readOnly.isField("C", "b")]).toEqual([true, true]);
+  // Reflection that only reads the view (Object.keys/values/entries, for-in,
+  // own-key lists, typeof, toString and inspection) stores nothing.
+  for (const reader of [
+    "dyn.objKeys",
+    "dyn.objKeyStrings",
+    "dyn.objValues",
+    "dyn.objEntries",
+    "dyn.objEntryPairs",
+    "dyn.forInKeys",
+    "dyn.forInKeyStrings",
+    "dyn.forInStable",
+    "dyn.objectTag",
+    "dyn.getOwnPropertyNames",
+    "dyn.ownKeys",
+    "dyn.hasOwn",
+    "dyn.toString",
+    "dyn.typeof",
+    "insp.dyn",
+    "insp.dynS",
+  ]) {
+    const reflected = analyzeInt32Slots(program(write(reader, [view])));
+    expect([reader, reflected.isField("C", "a"), reflected.isField("C", "b")]).toEqual([
+      reader,
+      true,
+      true,
+    ]);
+  }
 });
 
 test("an Error subclass constructor forwarding dynamic arguments stores no class fields", () => {
