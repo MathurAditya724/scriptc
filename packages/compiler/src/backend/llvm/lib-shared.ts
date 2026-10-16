@@ -23,6 +23,18 @@ export function emitAlwaysThrowLibCall(
   return out;
 }
 
+/** Assertion result calls that return at once when the assertion passes
+ * (scr_assert.c). The first argument is the verdict; the value is the index
+ * of the `negated` flag, or null when the call fails exactly when the
+ * verdict is false. A passing assertion branches around the call. */
+export const ASSERT_VERDICT_LIB_FNS: ReadonlyMap<string, number | null> = new Map([
+  ["assert.ok", null],
+  ["assert.looseResult", 1],
+  ["assert.deepResult", 1],
+  ["assert.looseDeepResult", 1],
+  ["assert.partialDeepResult", null],
+]);
+
 export const LIB_FN_SYMS: Record<string, string> = {
   "assert.expectsErrDyn": "scr_assert_expects_err_dyn",
   "insp.jsonDyn": "scr_dyn_format_j",
@@ -349,6 +361,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "assert.eqDyn": "scr_assert_eq_dyn",
   "assert.looseResult": "scr_assert_loose_result",
   "assert.deepResult": "scr_assert_deep_result",
+  "assert.looseDeepResult": "scr_assert_loose_deep_result",
+  "assert.looseDeepDyn": "scr_assert_loose_deep_dyn",
+  "assert.partialDeepDyn": "scr_assert_partial_deep_dyn",
+  "assert.partialDeepResult": "scr_assert_partial_deep_result",
+  "assert.partialEqDyn": "scr_assert_partial_eq_dyn",
+  "assert.looseF64Eq": "scr_assert_loose_f64_eq",
   "assert.sameValue": "scr_assert_same_value_f64",
   "assert.deqEnter": "scr_assert_deq_enter",
   "assert.deqLeave": "scr_assert_deq_leave",
@@ -372,6 +390,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "assert.refEqFn": "scr_assert_ref_eq_fn",
   "assert.refEqBytes": "scr_assert_ref_eq_bytes",
   "assert.bytesDeepEq": "scr_assert_bytes_deep_eq",
+  "assert.looseBytesEq": "scr_assert_loose_bytes_eq",
   // The Buffer statics and bytes-adjacent members (scr_bytes.c /
   // scr_bytes_io.c / scr_zlib.c / scr_crypto): fromStr decodes Node-
   // leniently (never throws), concat copies its borrowed list; the sync

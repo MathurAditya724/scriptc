@@ -1,5 +1,6 @@
 // AssertionError options validation, generatedMessage from the message's
-// truthiness, and the class reached through the default export.
+// truthiness, the class reached through the default export, and the
+// `diff` option's effect on long messages.
 import assert, { AssertionError } from "node:assert";
 
 /** @param {string} label @param {() => unknown} fn */
@@ -44,3 +45,18 @@ show("thrown and matched", () => {
   assert.throws(() => { throw make({ message: "custom" }); }, /custom/);
   return "ok";
 });
+
+const long = Array.from({ length: 60 }, (_, i) => i);
+const longer = Array.from({ length: 200 }, (_, i) => i);
+const wide = "x".repeat(600);
+/** @param {unknown} diff @param {unknown} actual @param {unknown} expected @param {string} operator */
+const text = (diff, actual, expected, operator) =>
+  JSON.stringify(make({ actual, expected, operator, diff }).message);
+for (const diff of [undefined, "simple", "full", "other"]) {
+  show(`diff ${diff} notIdentical`, () => text(diff, long, long.slice(), "deepStrictEqual"));
+  show(`diff ${diff} notDeepStrictEqual`, () => text(diff, long, long.slice(), "notDeepStrictEqual"));
+  show(`diff ${diff} notDeepEqual`, () => text(diff, longer, longer.slice(), "notDeepEqual"));
+  show(`diff ${diff} deepEqual`, () => text(diff, wide, "y", "deepEqual"));
+  show(`diff ${diff} generic`, () => text(diff, "y", wide, "=="));
+  show(`diff ${diff} property`, () => make({ actual: 1, expected: 2, operator: "strictEqual", diff }).diff);
+}

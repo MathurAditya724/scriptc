@@ -300,14 +300,6 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
-      "id": "node-builtin.assert.deepEqual",
-      "kind": "node-builtin",
-      "name": "assert.deepEqual",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "legacy deep equality has no lowering yet — deepStrictEqual and notDeepStrictEqual compare structures with Node's modern semantics"
-    },
-    {
       "id": "node-builtin.assert.doesNotReject",
       "kind": "node-builtin",
       "name": "assert.doesNotReject",
@@ -322,14 +314,6 @@
       "status": "unsupported",
       "code": "SC2020",
       "note": "test explicitly instead: assert.strictEqual(err, null) / assert.strictEqual(err, undefined)"
-    },
-    {
-      "id": "node-builtin.assert.notDeepEqual",
-      "kind": "node-builtin",
-      "name": "assert.notDeepEqual",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "legacy deep equality has no lowering yet — deepStrictEqual and notDeepStrictEqual compare structures with Node's modern semantics"
     },
     {
       "id": "node-builtin.assert.rejects",

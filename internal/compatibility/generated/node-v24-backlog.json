@@ -7,9 +7,9 @@
     "tierItemCount": 3472,
     "tiers": {
       "static": {
-        "audit-partial": 1008,
-        "verify-gap": 2335,
-        "replace-refusal": 42,
+        "audit-partial": 1012,
+        "verify-gap": 2333,
+        "replace-refusal": 40,
         "classify": 2,
         "implement": 85
       }
@@ -66,12 +66,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:assert",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:assert.Assert",
+          "tests": [
+            "tests/corpus/5523-assert-class-options.js",
+            "tests/corpus/5524-assert-class-skip-prototype.ts",
+            "tests/diagnostics/assert-class-fences.ts"
+          ]
         }
       }
     },
@@ -251,7 +255,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -272,12 +277,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.assert.deepEqual",
-          "tests": []
+          "source": "compiler-dedicated:assert.deepEqual",
+          "tests": [
+            "tests/corpus/5513-assert-deep-equal-loose.js",
+            "tests/corpus/5514-assert-deep-equal-typed.ts",
+            "tests/corpus/5516-assert-deep-equal-edges.js"
+          ]
         }
       }
     },
@@ -307,7 +316,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -338,7 +348,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -431,7 +442,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -462,7 +474,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -493,7 +506,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -524,7 +538,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -555,7 +570,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -576,12 +592,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.assert.notDeepEqual",
-          "tests": []
+          "source": "compiler-dedicated:assert.notDeepEqual",
+          "tests": [
+            "tests/corpus/5513-assert-deep-equal-loose.js",
+            "tests/corpus/5514-assert-deep-equal-typed.ts",
+            "tests/corpus/5516-assert-deep-equal-edges.js"
+          ]
         }
       }
     },
@@ -611,7 +631,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -642,7 +663,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -673,7 +695,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -704,7 +727,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -735,7 +759,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -766,7 +791,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -797,7 +823,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }
@@ -818,12 +845,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:assert",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:assert.partialDeepStrictEqual",
+          "tests": [
+            "tests/corpus/5517-assert-partial-deep-equal.js",
+            "tests/corpus/5518-assert-partial-deep-typed.ts",
+            "tests/corpus/5519-assert-partial-deep-typed-edges.ts"
+          ]
         }
       }
     },
@@ -61818,7 +61849,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -61851,7 +61884,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -61884,7 +61919,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -61917,7 +61954,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -61950,7 +61989,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -61983,7 +62024,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62402,7 +62445,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62460,7 +62505,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62493,7 +62540,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62526,7 +62575,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62559,7 +62610,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -62592,7 +62645,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63011,7 +63066,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63094,7 +63151,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63154,7 +63213,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63187,7 +63248,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63220,7 +63283,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63278,7 +63343,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63816,7 +63883,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63849,7 +63918,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63882,7 +63953,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63915,7 +63988,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63948,7 +64023,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -63981,7 +64058,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -64014,7 +64093,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -64047,7 +64128,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -64080,7 +64163,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -65374,7 +65459,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -65532,7 +65619,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -65565,7 +65654,9 @@
             "tests/corpus/5302-stream-promises-options.ts",
             "tests/corpus/5303-stream-finished-callback-opts.cjs",
             "tests/corpus/5425-pipeline-generator-stage.ts",
-            "tests/corpus/5428-pipeline-generator-stages.cjs"
+            "tests/corpus/5428-pipeline-generator-stages.cjs",
+            "tests/corpus/5617-pipeline-function-ends.ts",
+            "tests/corpus/5619-pipeline-function-ends.cjs"
           ]
         }
       }
@@ -65757,7 +65848,8 @@
             "tests/corpus/1604-assert-deep-structures.ts",
             "tests/corpus/1609-assert-async.ts",
             "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/2936-static-loose-equality.ts",
+            "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
           ]
         }
       }

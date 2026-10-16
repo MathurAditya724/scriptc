@@ -3526,6 +3526,12 @@ export type IrExpr =
       type: IrType;
       loc: SrcLoc;
       prototypeIdentityOnly?: true;
+      /** An assertion call made through a node:assert Assert instance: the
+       * instance options the runtime applies to this call. Backends set
+       * them right before the runtime call, after its arguments are
+       * evaluated; the AssertionError constructor consumes them, and a
+       * call that passes clears them. */
+      assertOptions?: { diff?: "full"; skipPrototype?: true };
     }
   /** `JSON.stringify(v)` — type-DIRECTED serialization: `value`'s static IR
    * type must be JSON-safe (f64/string/bool/record/array/union of those,

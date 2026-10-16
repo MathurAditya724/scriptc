@@ -232,8 +232,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn.startsWith("sp.pipelineOpts") ||
         fn.startsWith("stream.finishedOpts") ||
         fn.startsWith("zlib.stream")
-      )
+      ) {
+        // the stream unit emits through the emitter unit, also when the
+        // program constructs no stream (a pipeline of functions)
         features.stream = true;
+        features.emitter = true;
+      }
       if (fn.startsWith("zlib.")) features.zlib = true;
       // The Readable operators and Readable.from over a compiled generator
       // (scr_stream_ops.c) await through the dyn-async unit.

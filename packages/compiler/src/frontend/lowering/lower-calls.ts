@@ -51,6 +51,7 @@ import {
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
+import { lowerAssertInstanceCall } from "./assert-instances.js";
 import { isGenericCallableMemberType, typeKey } from "../type-mapper.js";
 import { dynFallbackType, jsFuncNameOf, newFnCtx, staticImportNamespaceType } from "./lowerer.js";
 import {
@@ -1222,6 +1223,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // as named builtin imports — before anything below tries to lower
       // the namespace object itself as a receiver.
       lowerer.lowerNamespaceBuiltinCall(expr, expr.expression) ??
+      // Method calls on a static node:assert Assert instance.
+      lowerAssertInstanceCall(lowerer, expr, expr.expression, locOf(expr)) ??
       // The node:perf_hooks spoke: performance.now() and its
       // .bind(performance) function value over the runtime's
       // process-start-anchored monotonic clock.

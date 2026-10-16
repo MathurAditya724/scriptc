@@ -78,6 +78,10 @@ test("the side queue balances measured files across the twenty Linux shards", ()
     const shared = shards.filter((shard) => shard.files.length > 1).map((shard) => shard.load);
     expect(shared.length).toBeGreaterThan(10);
     expect(Math.max(...shared)).toBeLessThanOrEqual(Math.min(...shared) * 1.1);
+    // The longest file starts from the last shard, away from the longest
+    // corpus and three.js cases, which balance from the first.
+    const longest = [...owned].sort((a, b) => (costs[b] ?? 0) - (costs[a] ?? 0))[0]!;
+    expect(shards[19]!.files).toContain(longest);
   }
 });
 
@@ -165,6 +169,24 @@ test.for([1, 2, 3])("the darwin suite retains every darwin file with %i shards",
   expect(corpusFiles).toEqual(expect.arrayContaining(darwinCorpusFiles));
 });
 
+/** Expands the ${{ }} expressions of a workflow value for one event: string
+ * literals, ==, !=, !, &&, || and fromJSON, with matrix.shard left as
+ * "{shard}". A value that is a single expression returns its result. */
+function expand(value: string, context: { event: string; macosFull: boolean | null }): unknown {
+  const evaluate = (expression: string): unknown =>
+    new Function(
+      `return (${expression
+        .replaceAll("github.event_name", JSON.stringify(context.event))
+        .replaceAll("inputs.macos_full", JSON.stringify(context.macosFull))
+        .replaceAll("fromJSON", "JSON.parse")});`,
+    )();
+  const single = /^\$\{\{(.*)\}\}$/s.exec(value);
+  if (single && !single[1]!.includes("}}")) return evaluate(single[1]!);
+  return value.replace(/\$\{\{(.*?)\}\}/g, (_match, expression: string) =>
+    expression.trim() === "matrix.shard" ? "{shard}" : String(evaluate(expression)),
+  );
+}
+
 test("pull requests run the full suite on Linux and the darwin suite on macOS", () => {
   type Job = {
     "runs-on": string;
@@ -189,15 +211,26 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   ).toBe("native-linux-x64-gnu");
   expect(macos["runs-on"]).toBe("macos-15");
   expect(macos.needs).toContain("native_macos");
-  expect(macos.strategy.matrix.shard).toBe(
-    "${{ fromJSON(github.event_name == 'pull_request' && '[1, 2, 3]' || '[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]') }}",
-  );
-  expect(macos.env["SCRIPTC_TEST_SHARD"]).toBe(
-    "${{ matrix.shard }}/${{ github.event_name == 'pull_request' && '3' || '10' }}",
-  );
-  expect(macos.env["SCRIPTC_CI_SUITE"]).toBe(
-    "${{ github.event_name == 'pull_request' && 'darwin' || 'full' }}",
-  );
+  // Pull requests, pushes to main and plain manual runs run the darwin suite in
+  // three slices; the nightly sweep and manual runs with macos_full run the
+  // complete suite in ten.
+  for (const [event, macosFull, full] of [
+    ["pull_request", null, false],
+    ["push", null, false],
+    ["workflow_dispatch", false, false],
+    ["workflow_dispatch", true, true],
+    ["schedule", null, true],
+  ] as const) {
+    const context = { event, macosFull };
+    const label = `${event} ${macosFull}`;
+    expect(expand(String(macos.strategy.matrix.shard), context), label).toEqual(
+      full ? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] : [1, 2, 3],
+    );
+    expect(expand(macos.env["SCRIPTC_TEST_SHARD"]!, context), label).toBe(
+      full ? "{shard}/10" : "{shard}/3",
+    );
+    expect(expand(macos.env["SCRIPTC_CI_SUITE"]!, context), label).toBe(full ? "full" : "darwin");
+  }
   // Expected aborts must not stream cores through Ubuntu's piped handler.
   const coreStep = linux.steps.findIndex(
     (step) => step.run === "sudo sysctl -w kernel.core_pattern=core",
