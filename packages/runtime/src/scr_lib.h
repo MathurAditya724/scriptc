@@ -340,6 +340,9 @@ void scr_fs_ftruncate(double fd, double length);
 void scr_fs_utimes(ScrStr *path, double atime, double mtime, bool nofollow);
 void scr_fs_invalid_path(const ScrDyn *value, const ScrStr *path);
 void scr_fs_invalid_named_path(const ScrDyn *value, const ScrStr *path, const char *name);
+/* A string path argument: false after throwing Node's ERR_INVALID_ARG_VALUE
+ * when it holds a null byte (`name` is the argument's name). */
+bool scr_fs_path_ok(const ScrStr *path, const char *name);
 void scr_fs_futimes(double fd, double atime, double mtime);
 void scr_fs_link(ScrStr *source, ScrStr *dest);
 void scr_fs_symlink(ScrStr *target, ScrStr *destination, int kind);

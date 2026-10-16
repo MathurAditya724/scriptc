@@ -3176,6 +3176,12 @@ static bool scr_fs_renames_can_wait(void) { return false; }
 
 void scr_fs_rename_async(ScrStr *oldpath, ScrStr *newpath,
                          ScrClosure *cb, ScrFsRenameFn fn) {
+  /* Node validates both paths before queueing the rename: a null byte
+   * throws here and the callback never runs. */
+  if (!scr_fs_path_ok(oldpath, "oldPath") || !scr_fs_path_ok(newpath, "newPath")) {
+    scr_closure_release(cb);
+    return;
+  }
 #if defined(SCR_LIB)
   (void)oldpath; (void)newpath; (void)fn;
   scr_closure_release(cb);
