@@ -38,7 +38,7 @@ function crossing(): number {
   let s: number = 9007199254740900;
   for (let i: number = 0; i < 200; i++) {
     s += i;
-    if (s === 1) break;
+    if (s % 1000 === -1) break;
   }
   return s;
 }
@@ -234,7 +234,7 @@ function scaled(step: number): number {
   let x: number = 0;
   for (let i: number = 0; i < 10; i++) {
     x = x + step;
-    if (x === -1) break;
+    if (x % 3 === -1) break;
   }
   return x;
 }

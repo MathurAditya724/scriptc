@@ -20,7 +20,7 @@ console.log("total", total, "calls", calls);
 
 for (let i: number = 0; i < 3000; i++) {
   big += i;
-  if (big === 1) break;
+  if (big % 7 === -1) break;
 }
 console.log("big", big, Number.isSafeInteger(big));
 

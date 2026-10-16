@@ -1,6 +1,10 @@
 import { expect, test } from "vitest";
 import { F64, type IrExpr, type IrStmt } from "../../ir/ir.js";
-import { isSpeculableValue, planSpeculativeLoop } from "./speculative-integers.js";
+import {
+  isSpeculableValue,
+  planSpeculativeLoop,
+  speculativeReads,
+} from "./speculative-integers.js";
 
 const loc = { file: "speculative.ts", start: 0, end: 0 };
 const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
@@ -70,7 +74,7 @@ test("non-integer, expression-position and ineligible writes keep the double cop
   expect(isSpeculableValue(bin("|", ref("a"), num(0)))).toBe(true);
   // A fractional write leaves only the counter, which alone is not worth a copy.
   const halves = loop([assign("x", bin("/", ref("x"), num(2))), increment("i")]);
-  expect(planSpeculativeLoop(halves as never, all)?.locals.has("x")).toBe(false);
+  expect(planSpeculativeLoop(halves as never, all)?.locals.has("x")).toBeFalsy();
   // A write inside a sequence expression cannot restart its statement.
   const sequence: IrStmt = {
     kind: "exprStmt",
@@ -87,7 +91,7 @@ test("non-integer, expression-position and ineligible writes keep the double cop
     loop([sequence, assign("v", bin("+", ref("v"), num(2))), increment("i")]) as never,
     all,
   );
-  expect(plan?.locals.has("v")).toBe(false);
+  expect(plan?.locals.has("v")).toBeFalsy();
   expect(
     planSpeculativeLoop(
       loop([assign("v", bin("+", ref("v"), num(2)))]) as never,
@@ -98,10 +102,89 @@ test("non-integer, expression-position and ineligible writes keep the double cop
 
 test("accumulators that are only added to keep their double", () => {
   const sum = loop([assign("s", bin("+", ref("s"), bin("%", ref("i"), num(7)))), increment("i")]);
-  expect(planSpeculativeLoop(sum as never, all)?.locals.has("s")).toBe(false);
+  expect(planSpeculativeLoop(sum as never, all)?.locals.has("s")).toBeFalsy();
 });
 
 test("nested loops are left to the inner loop", () => {
   const inner = loop([assign("v", bin("+", ref("v"), num(1)))]);
   expect(planSpeculativeLoop(loop([inner, increment("i")]) as never, all)).toBeNull();
+});
+
+test("statically proven locals are never shadowed and leave nothing to duplicate", () => {
+  const write = assign(
+    "v",
+    bin("%", bin("+", bin("*", ref("v"), num(31)), ref("k")), num(1000003)),
+  );
+  const body = [write, increment("i")];
+  // Every read proven: no plan at all.
+  expect(
+    planSpeculativeLoop(
+      loop(body) as never,
+      all,
+      () => false,
+      () => true,
+    ),
+  ).toBeNull();
+  // Only `k` proven: `v` and the counter are shadowed, `k` is not checked.
+  const plan = planSpeculativeLoop(
+    loop(body) as never,
+    all,
+    () => false,
+    (e) => e.kind === "varRef" && e.localId === "k",
+  )!;
+  expect(plan.locals.has("v")).toBe(true);
+  expect(plan.locals.has("k")).toBe(false);
+});
+
+test("heap reads are speculative leaves, read before any check", () => {
+  const rows: IrExpr = {
+    kind: "varRef",
+    localId: "rows",
+    type: { kind: "array", elem: F64 },
+    loc,
+  } as never;
+  const element: IrExpr = { kind: "arrayGet", arr: rows, index: ref("i"), type: F64, loc };
+  const text: IrExpr = { kind: "varRef", localId: "s", type: { kind: "string" }, loc } as never;
+  const code: IrExpr = {
+    kind: "strIntrinsic",
+    method: "charCodeAt",
+    receiver: text,
+    args: [ref("i")],
+    type: F64,
+    loc,
+  } as never;
+  const value = bin("%", bin("+", bin("*", ref("h"), num(33)), code), num(2147483647));
+  expect(isSpeculableValue(value)).toBe(true);
+  expect(speculativeReads(bin("+", element, code))).toEqual([element, code]);
+  // The ordinary emitter evaluates bitwise operators; heap reads stay out.
+  expect(isSpeculableValue(bin("|", code, num(0)))).toBe(false);
+  const eligible = (id: string): boolean => id !== "rows" && id !== "s";
+  const plan = planSpeculativeLoop(loop([assign("h", value), increment("i")]) as never, eligible)!;
+  expect(plan.locals.has("h")).toBe(true);
+});
+
+test("invariants may come from bindings no shadow could be written to", () => {
+  const write = assign("h", bin("%", bin("+", bin("*", ref("h"), num(33)), ref("i")), ref("m")));
+  const body = [write, increment("i")];
+  const locals = (id: string): boolean => id !== "m";
+  expect(planSpeculativeLoop(loop(body) as never, locals)?.locals.has("h")).toBeFalsy();
+  const plan = planSpeculativeLoop(
+    loop(body) as never,
+    locals,
+    () => false,
+    () => false,
+    all,
+  )!;
+  expect(plan.locals.get("m")).toBe(true);
+  expect(plan.locals.has("h")).toBe(true);
+});
+
+test("loops that only count and compare keep one copy", () => {
+  const counter = loop([increment("i")]);
+  expect(planSpeculativeLoop(counter as never, all)).toBeNull();
+  const scaled = loop([
+    assign("j", bin("+", ref("j"), bin("*", ref("i"), ref("n")))),
+    increment("i"),
+  ]);
+  expect(planSpeculativeLoop(scaled as never, all)?.locals.has("n")).toBe(true);
 });

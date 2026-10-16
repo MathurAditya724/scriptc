@@ -180,6 +180,13 @@ export function speculativeReads(e: IrExpr, out: IrExpr[] = []): IrExpr[] {
   return out;
 }
 
+function hasProduct(e: IrExpr): boolean {
+  if (e.kind === "bin")
+    return e.op === "*" || e.op === "%" || hasProduct(e.left) || hasProduct(e.right);
+  if (e.kind === "unary") return hasProduct(e.operand);
+  return false;
+}
+
 function hasArithmetic(e: IrExpr): boolean {
   if (e.kind === "bin")
     return ARITHMETIC_OPS.has(e.op) || hasArithmetic(e.left) || hasArithmetic(e.right);
@@ -237,6 +244,10 @@ export function planSpeculativeLoop(
   const consume = (e: IrExpr): void => {
     if (e.kind === "varRef") consumed.add(e.localId);
   };
+  // Operands of multiplication, division and remainder: the operations whose
+  // double forms cost the most. A loop whose integers only count and compare
+  // gains nothing measurable from a second copy, so it keeps one.
+  const multiplied = new Set<string>();
 
   const expr = (e: IrExpr): boolean => {
     if (rejected) return false;
@@ -250,6 +261,9 @@ export function planSpeculativeLoop(
     else if (e.kind === "bin" && CONSUMING_OPS.has(e.op)) {
       consume(e.left);
       consume(e.right);
+      if (e.op === "*" || e.op === "/" || e.op === "%")
+        for (const operand of [e.left, e.right])
+          if (operand.kind === "varRef") multiplied.add(operand.localId);
     } else if (e.kind === "arrayGet" || e.kind === "arrayHas" || e.kind === "arrayState")
       consume(e.index);
     else if (e.kind === "bytesIntrinsic" || e.kind === "strIntrinsic") e.args.forEach(consume);
@@ -365,6 +379,13 @@ export function planSpeculativeLoop(
   }
   if (!arithmetic) return null;
   if (loop.cond) invariant(loop.cond);
+  const heavy =
+    [...locals.keys()].some((id) => multiplied.has(id)) ||
+    [...speculated].some((s) => {
+      const value = speculativeWriteTarget(s)!.value;
+      return value !== null && hasProduct(value);
+    });
+  if (!heavy) return null;
   return { locals, writes: speculated, observerFree };
 }
 
