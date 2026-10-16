@@ -416,19 +416,37 @@ function lowerAssertFail(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc)
     );
   }
   let msg: IrExpr;
+  let generated: IrExpr;
   const msgNode = expr.arguments[0];
-  const generated = !msgNode || (ts.isIdentifier(msgNode) && msgNode.text === "undefined");
-  if (generated) {
+  const stmts: IrStmt[] = [];
+  if (!msgNode || (ts.isIdentifier(msgNode) && msgNode.text === "undefined")) {
     msg = { kind: "strLit", value: "Failed", type: STRING, loc };
+    generated = boolLit(true, loc);
   } else {
-    msg = lowerMessageArg(lowerer, msgNode, loc).msg;
+    // Node's AssertionError sets generatedMessage to !message, so an
+    // empty custom message counts as generated.
+    msg = stableValue(
+      lowerer,
+      stmts,
+      lowerMessageArg(lowerer, msgNode, loc).msg,
+      "%assertFailMessage",
+      loc,
+    );
+    generated = {
+      kind: "strEq",
+      negated: false,
+      left: msg,
+      right: strLit("", loc),
+      type: BOOL,
+      loc,
+    };
   }
   const falseLit: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
-  const stmts: IrStmt[] = [recordOnFailure(lowerer, boolLit(true, loc), null, null, "fail", loc)];
+  stmts.push(recordOnFailure(lowerer, boolLit(true, loc), null, null, "fail", loc));
   const result: IrExpr = {
     kind: "libCall",
     fn: "assert.ok",
-    args: [falseLit, msg, boolLit(generated, loc)],
+    args: [falseLit, msg, generated],
     type: VOID,
     loc,
   };

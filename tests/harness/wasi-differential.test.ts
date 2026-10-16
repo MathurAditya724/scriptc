@@ -174,6 +174,8 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5444-crypto-timing-safe-equal.js",
     "5445-crypto-secret-key-objects.ts",
     "5446-crypto-secret-key-errors.js",
+    // Empty custom messages.
+    "5521-assert-empty-message.js",
     // AssertionError properties, the class, and its options.
     "5510-assert-error-properties.js",
     "5511-assert-error-class.ts",

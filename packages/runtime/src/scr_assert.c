@@ -206,6 +206,13 @@ void scr_assert_fail(ScrStr *message, bool generated) {
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
+/* A custom message that Node passes to the AssertionError constructor
+ * (innerFail): the message is kept as is, and generatedMessage is
+ * `!message`, so the empty string counts as generated. Borrows msg. */
+static void scr_assert_fail_custom(ScrStr *msg) {
+  scr_assert_fail(scr_str_retain(msg), msg->len == 0);
+}
+
 /* A generated message. */
 void scr_assert_fail_msg(ScrStr *message) { scr_assert_fail(message, true); }
 
@@ -277,7 +284,7 @@ static const char *scr_assert_neq_header(bool deep) {
 void scr_assert_neq_fail(const char *insp, size_t ilen, bool deep,
                          ScrStr *msg, bool has_msg) {
   if (has_msg) {
-    scr_assert_fail(scr_str_retain(msg), false);
+    scr_assert_fail_custom(msg);
     return;
   }
   ScrAssertBuf b = {0};
@@ -407,7 +414,7 @@ void scr_assert_loose_result(bool equal, bool negated, ScrStr *actual,
                              ScrStr *expected, ScrStr *msg, bool has_msg) {
   if ((negated && !equal) || (!negated && equal)) return;
   if (has_msg) {
-    scr_assert_fail(scr_str_retain(msg), false);
+    scr_assert_fail_custom(msg);
     return;
   }
   ScrAssertBuf b = {0};
@@ -429,7 +436,7 @@ void scr_assert_deep_result(bool equal, bool negated, ScrStr *msg, bool has_msg)
      * the equal operators use it as the diff HEADER when non-empty —
      * without a rendered diff below it the two collapse to the same
      * shape here. */
-    scr_assert_fail(scr_str_retain(msg), false);
+    scr_assert_fail_custom(msg);
     return;
   }
   const char *base = negated ? scr_assert_neq_header(true) : scr_assert_eq_header(true);
@@ -466,7 +473,7 @@ void scr_assert_ref_eq_bytes(const ScrBytes *a, const ScrBytes *b, bool negated,
     /* The deepResult message stance: not-equal operators use it alone
      * (even empty); the equal operators use a non-empty one as the diff
      * header — headerless diffs collapse both to the message itself. */
-    scr_assert_fail(scr_str_retain(msg), false);
+    scr_assert_fail_custom(msg);
     return;
   }
   const char *h;
@@ -491,7 +498,7 @@ void scr_assert_ref_eq_fn(const ScrClosure *a, const ScrClosure *b, bool negated
    * undefined. */
   scr_assert_record(NULL, NULL, scr_assert_eq_operator(negated, false));
   if (has_msg && (negated || msg->len > 0)) {
-    scr_assert_fail(scr_str_retain(msg), false);
+    scr_assert_fail_custom(msg);
     return;
   }
   const char *h = negated
@@ -1249,7 +1256,7 @@ static ScrStr *scr_assert_dyn_neq_message(ScrDyn *a, bool deep) {
 
 static void scr_assert_dyn_neq_fail(ScrDyn *a, bool deep, ScrStr *msg, bool has_msg) {
   if (has_msg) {
-    scr_assert_fail(scr_str_retain(msg), false);
+    scr_assert_fail_custom(msg);
     return;
   }
   scr_assert_fail(scr_assert_dyn_neq_message(a, deep), true);
@@ -1307,7 +1314,7 @@ void scr_assert_throws_none(bool rejection, ScrStr *ename, bool has_ename,
     ab_str(&b, ename);
     ab_char(&b, ')');
   }
-  if (has_msg) {
+  if (has_msg && msg->len > 0) {
     ab_cstr(&b, ": ");
     ab_str(&b, msg);
   } else {
@@ -1328,7 +1335,7 @@ void scr_assert_throws_mismatch(ScrStr *expected_name, ScrError *err,
                                 ScrStr *msg, bool has_msg) {
   /* The expected class has no runtime box here; expected stays undefined. */
   scr_assert_record(scr_dyn_from_error(err), NULL, "throws");
-  if (has_msg) {
+  if (has_msg && msg->len > 0) {
     /* A custom message stands alone (Node's innerFail with the user's
      * message — the instance-of text is the generated form only). */
     scr_assert_fail(scr_str_retain(msg), false);
@@ -1543,7 +1550,7 @@ void scr_assert_shape_end(ScrStr *msg, bool has_msg) {
     scr_shape_clear();
     return;
   }
-  if (has_msg) {
+  if (has_msg && msg->len > 0) {
     scr_shape_clear();
     scr_assert_fail(scr_str_retain(msg), false);
     return;
@@ -1557,7 +1564,7 @@ void scr_assert_shape_end(ScrStr *msg, bool has_msg) {
 void scr_assert_unwanted_rejection(ScrError *err, ScrStr *msg, bool has_msg) {
   ScrAssertBuf b = {0};
   ab_cstr(&b, "Got unwanted rejection");
-  if (has_msg) {
+  if (has_msg && msg->len > 0) {
     ab_cstr(&b, ": ");
     ab_str(&b, msg);
   } else {
