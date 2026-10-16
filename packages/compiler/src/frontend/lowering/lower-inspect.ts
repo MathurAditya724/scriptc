@@ -27,7 +27,7 @@ import {
   typeKey,
 } from "../../ir/ir.js";
 import type { ClassInfo } from "./lower-classes.js";
-import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
+import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { symbolFieldDisplayName } from "./symbol-fields.js";
 import { eventTargetRootOf } from "./lower-event-target.js";
 import { lowerSystemErrorMap } from "./lower-system-errors.js";
@@ -1916,7 +1916,8 @@ export function lowerFormatCall(
       case 102: {
         // %f — parseFloat(String(arg)) formatted: a number keeps its value
         // except -0, which String() prints as "0"; strings parse with the
-        // global parseFloat; booleans and unit values parse to NaN.
+        // global parseFloat; booleans and unit values (void calls and
+        // null | undefined unions included) parse to NaN.
         const value = lowerer.lowerExpr(node);
         const format = (number: IrExpr): IrExpr => ({
           kind: "libCall",
@@ -1946,11 +1947,21 @@ export function lowerFormatCall(
             loc,
           });
         }
-        if (value.type.kind === "bool" || isUnitType(value.type)) {
-          if (value.kind === "unitLit") return strLit("NaN", loc);
+        const unitArms = (t: IrType): boolean =>
+          t.kind === "union" && (lowerer.unions.get(t.unionId)?.arms.every(isUnitType) ?? false);
+        if (
+          value.type.kind === "bool" ||
+          value.type.kind === "void" ||
+          isUnitType(value.type) ||
+          unitArms(value.type)
+        ) {
+          // The argument still evaluates once, for its effects: the value
+          // already lowered, as a statement (never a second lowering of the
+          // node, whose lifted helpers and closures would be built twice).
+          if (isSafeToDiscard(value)) return strLit("NaN", loc);
           return {
             kind: "seqExpr",
-            stmts: [lowerer.lowerExprStatement(node)],
+            stmts: [{ kind: "exprStmt", expr: value, loc }],
             result: strLit("NaN", loc),
             type: STRING,
             loc,
