@@ -55,23 +55,34 @@ typedef struct {
  * walk within the inline buffers and allocate nothing. */
 #define SCR_PUB_INLINE 32
 
+/* The emitted walkers (llvm/publish.ts) push onto `stack` and log their
+ * marks inline, through the leading word-sized fields: keep their order. */
 struct ScrPub {
   ScrPubItem *stack;
   size_t len, cap;
   ScrPubLog *log;
   size_t logged, log_cap;
+  const char *refusal; /* first refusal message; the walk stops */
+  size_t taken; /* logged candidates taken out of their buffers */
+  size_t dyns; /* logged dyn containers */
   size_t *big; /* counts SCR_PUB_RC_BIG stands for, in log order */
   size_t nbig, big_cap;
 #ifdef SCR_RC_AUDIT
   uint8_t *kinds; /* per logged mark, SCR_PUB_KIND_*: leaves the audit's live count */
   size_t kinds_cap;
 #endif
-  size_t taken; /* logged candidates taken out of their buffers */
-  size_t dyns; /* logged dyn containers */
-  const char *refusal; /* first refusal message; the walk stops */
   ScrPubItem stack_inline[SCR_PUB_INLINE];
   ScrPubLog log_inline[SCR_PUB_INLINE];
 };
+
+_Static_assert(offsetof(ScrPub, stack) == 0 && offsetof(ScrPub, len) == sizeof(void *) &&
+                   offsetof(ScrPub, cap) == 2 * sizeof(void *) && offsetof(ScrPub, log) == 3 * sizeof(void *) &&
+                   offsetof(ScrPub, logged) == 4 * sizeof(void *) &&
+                   offsetof(ScrPub, log_cap) == 5 * sizeof(void *) &&
+                   offsetof(ScrPub, refusal) == 6 * sizeof(void *) &&
+                   offsetof(ScrPub, taken) == 7 * sizeof(void *) && sizeof(ScrPubItem) == 2 * sizeof(void *) &&
+                   offsetof(ScrPubLog, rc) == sizeof(void *) && sizeof(ScrPubLog) == sizeof(void *) + 8,
+               "llvm/publish.ts pushes and logs at these offsets");
 
 /* Doubles a buffer of *cap elements (256 when empty); `inline_buf` is the
  * caller's fixed first buffer, which is copied rather than reallocated. */
