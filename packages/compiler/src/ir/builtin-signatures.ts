@@ -3660,6 +3660,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * turns, Node's check phase). Neither throws. */
   "tp.setTimeout": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
   "tp.setImmediate": { argTypes: [], result: { kind: "promise", inner: VOID } },
+  /** events.once (scr_events_emitter.c): [emitter, name, boxer,
+   * errorBoxer, listenForError] → a pending promise of any[]; the boxers
+   * turn the event's and the 'error' tuple into that array. */
+  "events.once": { argTypes: [null, STRING, null, null, BOOL], result: VOID },
   /** The resolve-value forms: [ms?, value, ref] → a pending promise of the
    * value's type that copies the borrowed already-resolved `value` promise
    * when the timer (or immediate) fires; ref false unrefs it. The result

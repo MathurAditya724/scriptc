@@ -4061,6 +4061,21 @@ function validateFunction(
   }
 
   function checkLibValueCall(e: IrExpr & { kind: "libCall" }): boolean {
+    if (e.fn === "events.once") {
+      const [recv, , boxer, errorBoxer] = e.args;
+      const arrayT = e.type.kind === "promise" ? e.type.inner : null;
+      const boxes = (b: IrExpr | undefined) =>
+        b?.type.kind === "func" && arrayT !== null && typeEquals(b.type.ret, arrayT);
+      if (
+        recv?.type.kind !== "object" ||
+        arrayT?.kind !== "array" ||
+        !boxes(boxer) ||
+        !boxes(errorBoxer)
+      ) {
+        err(`libCall events.once must box its event tuples into the promised array`, e.loc);
+      }
+      return true;
+    }
     if (e.fn === "tp.setTimeoutValue" || e.fn === "tp.setImmediateValue") {
       const value = e.args[e.fn === "tp.setTimeoutValue" ? 1 : 0];
       if (value?.type.kind !== "promise" || !typeEquals(e.type, value.type)) {
