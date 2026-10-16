@@ -3538,6 +3538,27 @@ export class ClassDynamicDispatch {
         { kind: "return", value: null, loc },
       ];
     }
+    // fs.ReadStream / fs.WriteStream's members (undefined on other
+    // streams, as in Node).
+    if (
+      info.builtinStream !== undefined &&
+      !write &&
+      (name === "bytesRead" || name === "bytesWritten" || name === "pending" || name === "path")
+    ) {
+      return [
+        {
+          kind: "return",
+          value: {
+            kind: "libCall",
+            fn: "fs.fsStreamPropDyn",
+            args: [receiver, { kind: "strLit", value: name, type: STRING, loc }],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ];
+    }
     if (info.builtinStream !== undefined && streamProperty(name)) {
       if (write)
         return [

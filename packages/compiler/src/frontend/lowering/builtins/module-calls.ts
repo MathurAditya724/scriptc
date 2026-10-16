@@ -17,6 +17,7 @@ import {
   lowerFsPromisesEncodedRead,
   lowerFsMkdirSyncCall,
   lowerFsOpendirCall,
+  lowerFsStreamCreate,
   lowerFsPromisesMkdirCall,
   lowerFsRemoveCall,
   lowerFsWriteBytesCall,
@@ -246,6 +247,12 @@ export function lowerBuiltinModuleCall(
     (bi.module === "fs/promises" && bi.member === "opendir")
   ) {
     return lowerFsOpendirCall(lowerer, expr, fn, bi.member, loc);
+  }
+  if (
+    bi.module === "fs" &&
+    (bi.member === "createReadStream" || bi.member === "createWriteStream")
+  ) {
+    return lowerFsStreamCreate(lowerer, expr, bi.member, loc);
   }
   if (bi.module === "fs" && bi.member === "mkdirSync" && expr.arguments.length === 2) {
     return lowerFsMkdirSyncCall(lowerer, expr, loc);

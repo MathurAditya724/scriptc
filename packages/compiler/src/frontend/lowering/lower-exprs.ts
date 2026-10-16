@@ -22,6 +22,7 @@ import { literalUnionArm } from "../union-discriminants.js";
  * comparisons, nullish coalescing and optional chains, conditions and
  * ToBoolean/ToString coercion helpers, and field/element reads and writes
  * (FieldTarget). */
+import { isFsStreamMember, lowerFsStreamProperty } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
 import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "./builtins/compression.js";
 import { constituentTypes } from "../ts7/checker.js";
@@ -15176,6 +15177,10 @@ function lowerStreamObjectProperty(
   if (!info || streamSidesOf(lowerer, info) === null) return null;
   if (expr.name.text === "bytesWritten" && isZlibStreamMember(lowerer, expr)) {
     return lowerZlibStreamBytesWritten(lowerer, expr);
+  }
+  if (isFsStreamMember(lowerer, expr)) {
+    const member = lowerFsStreamProperty(lowerer, expr);
+    if (member) return member;
   }
   return lowerStreamProperty(lowerer, expr, info);
 }

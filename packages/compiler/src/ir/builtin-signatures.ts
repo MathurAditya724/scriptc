@@ -35,6 +35,7 @@ import {
   TESTCTX_T,
   URL_T,
   VOID,
+  funcOf,
 } from "./ir.js";
 
 /** Runtime call slots. A null argument accepts a program-dependent type;
@@ -2528,6 +2529,32 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fsp.lchmodChk": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
   "fs.readChk": { argTypes: [DYN, DYN, DYN, DYN, DYN, STRING], result: VOID },
   "fs.streamOptsChk": { argTypes: [DYN, DYN, STRING], result: VOID },
+  /** fs.ReadStream / fs.WriteStream (scr_fs_stream.c): the constructors
+   * take the path and options as dyn values and throw Node's option
+   * errors; the members read bytesRead/bytesWritten, pending and the path
+   * value, and close() / close(cb) (a `() => void` callback). */
+  "fs.createReadStream": {
+    argTypes: [DYN, DYN],
+    result: { kind: "object", className: "%Readable" },
+  },
+  "fs.createWriteStream": {
+    argTypes: [DYN, DYN],
+    result: { kind: "object", className: "%Writable" },
+  },
+  "fs.fsStreamBytes": { argTypes: [null], result: F64 },
+  "fs.fsStreamPending": { argTypes: [null], result: BOOL },
+  "fs.fsStreamPath": { argTypes: [null], result: DYN },
+  "fs.fsStreamPropDyn": { argTypes: [null, STRING], result: DYN },
+  "fileHandle.createReadStream": {
+    argTypes: [FILEHANDLE_T, DYN],
+    result: { kind: "object", className: "%Readable" },
+  },
+  "fileHandle.createWriteStream": {
+    argTypes: [FILEHANDLE_T, DYN],
+    result: { kind: "object", className: "%Writable" },
+  },
+  "fs.fsStreamClose": { argTypes: [null], result: VOID },
+  "fs.fsStreamCloseCb": { argTypes: [null, funcOf([], VOID)], result: VOID },
   /** The compiler-resolved ERR_INVALID_ARG_TYPE throw with a RUNTIME-
    * rendered Received tail: args [argname, "of type ..." clause, the
    * offending dyn value]. ALWAYS THROWS; polymorphic result (the

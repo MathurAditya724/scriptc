@@ -13,6 +13,7 @@ import {
 } from "./lower-timers.js";
 import { objectEnumerationReceiver } from "./object-enumeration-receiver.js";
 import { InternalCompilerError } from "../../errors.js";
+import { isFsStreamMember, lowerFsStreamMethodCall } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
 import { isZlibStreamMember, lowerZlibStreamMethodCall } from "./builtins/compression.js";
 import type { Lowerer } from "./lowerer.js";
@@ -8616,6 +8617,12 @@ export function lowerObjectMethodCall(
     isZlibStreamMember(lowerer, access)
   ) {
     return lowerZlibStreamMethodCall(lowerer, call, access);
+  }
+  // fs.ReadStream / fs.WriteStream's close(cb?): declared on the fs
+  // classes; their receivers are runtime Readable / Writable streams.
+  if (info && !found && isFsStreamMember(lowerer, access)) {
+    const member = lowerFsStreamMethodCall(lowerer, call, access);
+    if (member) return member;
   }
   // The stream surface: API-named calls on stream-rooted receivers
   // lower through the stream spoke (checked before the emitter surface
