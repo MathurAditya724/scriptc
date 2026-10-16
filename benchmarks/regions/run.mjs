@@ -37,6 +37,8 @@ const CONFIGS = [
   // A tokenizer, parser, binder and checker rebuilt in one region per build.
   { name: "compiler-watch", program: "compiler.ts", args: ["200", "60", "10"] },
   { name: "compiler-one-shot", program: "compiler.ts", args: ["400", "60", "1"] },
+  // Per-file emit regions next to a large live heap of ordinary objects.
+  { name: "emit-files", program: "emit.ts", args: ["400000", "200", "2000"] },
 ];
 
 const work = join(tmpdir(), `scriptc-region-bench-${process.pid}`);

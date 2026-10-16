@@ -21,8 +21,9 @@ const OWNED_ATTEMPTS = [
   "6 freed",
   "7 freed",
   "8 kept",
-  "8 freed",
+  // 9 frees on the check before the pass over the heap that 8 needs.
   "9 freed",
+  "8 freed",
   "10 kept",
   "12 freed",
   "11 freed",
@@ -50,13 +51,25 @@ const RETAINED_STDOUT = [
   "a published object pins its region",
 ];
 
-function attempts(stderr: string): { attempts: string[]; summaries: string[]; other: string[] } {
-  const out = { attempts: [] as string[], summaries: [] as string[], other: [] as string[] };
+function attempts(stderr: string): {
+  attempts: string[];
+  summaries: string[];
+  heapPasses: number[];
+  other: string[];
+} {
+  const out = {
+    attempts: [] as string[],
+    summaries: [] as string[],
+    heapPasses: [] as number[],
+    other: [] as string[],
+  };
   for (const line of stderr.split("\n")) {
     if (line === "") continue;
     const m = /^scriptc region (\d+): (freed|kept|pinned)\b/.exec(line);
     if (m) out.attempts.push(`${m[1]} ${m[2]}`);
     else if (line.startsWith("scriptc regions: ")) out.summaries.push(line);
+    else if (line.startsWith("scriptc region heap passes: "))
+      out.heapPasses.push(Number(line.slice("scriptc region heap passes: ".length)));
     else out.other.push(line);
   }
   return out;
@@ -178,6 +191,7 @@ describe.skipIf(process.platform === "win32")("counted lifetime regions", () => 
       expect(stats.summaries).toEqual(
         Array(4).fill("scriptc regions: 20 created, 20 released, 20 freed, 0 pinned, 0 kept"),
       );
+      expect(stats.heapPasses).toEqual([0, 0, 0, 0]);
       expect(stats.other).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });

@@ -112,6 +112,12 @@ typedef struct ScrRegion {
   int64_t kept_counted;
   size_t retry_at;
   unsigned backoff;
+  /* The first check of a retry could not free it (scr_rgn_retry): what that
+   * walk found, for the check after the heap pass. */
+  bool held;
+  int64_t held_counted, held_explained;
+  size_t held_black, held_owned;
+  double held_walk_ms;
 } ScrRegion;
 
 typedef struct {
@@ -176,6 +182,8 @@ struct ScrRgnWalk {
   size_t singles; /* owned objects walked without an entry */
   size_t *hash; /* open addressing: entry index + 1 */
   size_t cap_hash;
+  void **owned; /* the entries' objects, as a set (scr_rgn_owned_set) */
+  size_t cap_owned;
   ScrRgnEdge *edges;
   size_t nedges, cap_edges;
   ScrRgnWork *work;
@@ -206,6 +214,7 @@ typedef struct {
   double cycle_ms; /* the cycle pass before the next attempt (stats) */
   struct {
     size_t created, released, freed, pinned, leaked, attempts;
+    size_t heap_passes; /* full cycle passes run for regions */
   } stats;
 } ScrRgnThread;
 
@@ -515,6 +524,26 @@ static size_t scr_rgn_find(ScrRgnWalk *w, const void *p) {
   size_t j = scr_rgn_hash_of(p, w->cap_hash);
   while (w->hash[j] && w->ents[w->hash[j] - 1].obj != p) j = (j + 1) & (w->cap_hash - 1);
   return j;
+}
+
+/* The objects the walk entered, as a set for scr_cyc_collect_set. */
+static ScrCycSet scr_rgn_owned_set(ScrRgnWalk *w) {
+  size_t cap = 16;
+  while (cap < w->nents * 2) cap <<= 1;
+  if (cap > w->cap_owned) {
+    free(w->owned);
+    w->owned = calloc(cap, sizeof *w->owned);
+    if (!w->owned) scr_trap("scriptc: out of memory\n");
+    w->cap_owned = cap;
+  } else
+    memset(w->owned, 0, cap * sizeof *w->owned);
+  ScrCycSet set = {w->owned, cap - 1};
+  for (size_t i = 0; i < w->nents; i++) {
+    size_t j = scr_cyc_set_slot(w->ents[i].obj, set.mask);
+    while (set.slots[j]) j = (j + 1) & set.mask;
+    set.slots[j] = w->ents[i].obj;
+  }
+  return set;
 }
 
 static void scr_rgn_rehash(ScrRgnWalk *w) {
@@ -938,12 +967,40 @@ static void scr_rgn_report(const ScrRegion *r, const ScrRgnWalk *w, int64_t unex
 #endif
 
 /* One release attempt; true when `r` was freed. */
-static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r) {
+/* `tentative`: an attempt before the retry's cycle pass. A region it cannot
+ * free is left as it was, for the attempt after the pass to judge. */
+/* A region an attempt could not free: when it is attempted again. */
+static void scr_rgn_keep(ScrRgnThread *t, ScrRegion *r, int64_t counted, int64_t explained, size_t black, size_t owned,
+                         double cycles, double walk_ms) {
+  if (r->kept && counted == r->kept_counted) {
+    if (r->backoff < SCR_RGN_MAX_BACKOFF) r->backoff++;
+  } else r->backoff = 0;
+  r->kept = true;
+  r->kept_counted = counted;
+  r->retry_at = t->allocated + ((r->bytes > SCR_RGN_RETRY_BYTES ? r->bytes : SCR_RGN_RETRY_BYTES) << r->backoff);
+  if (scr_rgn_stats())
+    fprintf(stderr,
+            "scriptc region %llu: kept: %lld references counted, %lld explained; %zu of %zu owned objects referenced from outside; cycles %.1f ms, walk %.1f ms\n",
+            (unsigned long long)r->id, (long long)counted, (long long)explained, black, owned, cycles, walk_ms);
+}
+
+static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r, bool tentative) {
   bool stats = scr_rgn_stats();
   uint64_t t0 = stats ? scr_hrtime_ns() : 0;
   double cycles = t->cycle_ms;
   t->cycle_ms = 0;
   t->stats.attempts++;
+  bool held = r->held;
+  r->held = false;
+  /* Kept on the first check, and the heap pass dropped no reference into
+   * it: the walk would find what that check found. A pass that freed a dead
+   * cycle referring only to an owned object leaves the count as it was;
+   * such a region waits for its next attempt. SCRIPTC_REGION_DEBUG walks
+   * again for its report. */
+  if (held && !tentative && scr_rgn_counted(r) == r->held_counted && !scr_rgn_debug()) {
+    scr_rgn_keep(t, r, r->held_counted, r->held_explained, r->held_black, r->held_owned, cycles, r->held_walk_ms);
+    return false;
+  }
   ScrRgnWalk *w = &t->walk;
   w->region = r;
   w->internal = 0;
@@ -983,16 +1040,16 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r) {
   int64_t explained = w->internal + scr_rgn_settle(w, &black);
   uint64_t t1 = stats ? scr_hrtime_ns() : 0;
   if (explained != counted) {
-    if (r->kept && counted == r->kept_counted) {
-      if (r->backoff < SCR_RGN_MAX_BACKOFF) r->backoff++;
-    } else r->backoff = 0;
-    r->kept = true;
-    r->kept_counted = counted;
-    r->retry_at = t->allocated + ((r->bytes > SCR_RGN_RETRY_BYTES ? r->bytes : SCR_RGN_RETRY_BYTES) << r->backoff);
-    if (stats)
-      fprintf(stderr,
-              "scriptc region %llu: kept: %lld references counted, %lld explained; %zu of %zu owned objects referenced from outside; cycles %.1f ms, walk %.1f ms\n",
-              (unsigned long long)r->id, (long long)counted, (long long)explained, black, w->nents + w->singles, cycles, scr_rgn_ms(t0, t1));
+    if (tentative) {
+      r->held = true;
+      r->held_counted = counted;
+      r->held_explained = explained;
+      r->held_black = black;
+      r->held_owned = w->nents + w->singles;
+      r->held_walk_ms = stats ? scr_rgn_ms(t0, t1) : 0;
+      return false;
+    }
+    scr_rgn_keep(t, r, counted, explained, black, w->nents + w->singles, cycles, stats ? scr_rgn_ms(t0, t1) : 0);
 #ifdef SCR_RGN_DEBUG
     if (debug) scr_rgn_report(r, w, counted - explained, debug);
 #else
@@ -1008,7 +1065,26 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r) {
   if (scr_weak_dispose_hook) SCR_RGN_EACH(r, s, o) scr_weak_dispose(o);
   SCR_RGN_EACH(r, s, o) s->cls->release_fields(o);
   int64_t left = scr_rgn_counted(r);
+  /* What can still count references is cycles of the owned objects: each
+   * has a member that lost a reference here, which leaves it buffered as a
+   * candidate (the walk entered every cycle member). Passes over those
+   * candidates come first, from the youngest buffer out (objects made during
+   * the region's runs are usually young, while a large heap keeps most of
+   * its candidates in the older buffers), and the whole heap only if counts
+   * remain. The set may hold the addresses of owned objects already freed;
+   * it is only compared with buffered candidates. */
   if (left != 0) {
+    ScrCycSet owned = scr_rgn_owned_set(w);
+    for (unsigned gen = SCR_CYC_NURSERY; left != 0 && gen <= SCR_CYC_OLD;) {
+      /* A pass that frees nothing at this depth widens to the next
+       * generation's buffer; one that frees something may have left new
+       * candidates through its teardowns, so it goes again. */
+      if (scr_cyc_collect_set(&owned, gen) == 0) gen++;
+      left = scr_rgn_counted(r);
+    }
+  }
+  if (left != 0) {
+    t->stats.heap_passes++;
     scr_collect_cycles();
     left = scr_rgn_counted(r);
   }
@@ -1046,28 +1122,44 @@ static bool scr_rgn_due(const ScrRegion *r, const ScrRgnThread *t) {
   return !r->kept || t->allocated >= r->retry_at || scr_rgn_counted(r) != r->kept_counted;
 }
 
-/* Tries every condemned region that is due. */
+/* Attempts every condemned region that is due; true if one was kept. */
+static bool scr_rgn_try_due(ScrRgnThread *t, bool tentative) {
+  bool kept = false;
+  for (size_t i = 0; i < t->nregions;) {
+    ScrRegion *r = t->regions[i];
+    if (scr_rgn_due(r, t)) {
+      if (scr_rgn_try_free(t, r, tentative)) {
+        /* The table shrank, and the freed region's references may have
+         * kept another one: the regions it held now count fewer
+         * references. */
+        i = 0;
+        kept = false;
+        continue;
+      }
+      kept = true;
+    }
+    i++;
+  }
+  return kept;
+}
+
+/* Tries every condemned region that is due. A region whose references all
+ * come from its own objects and what they own frees without a cycle pass;
+ * one that is kept may be kept by dead cycles of ordinary objects, which
+ * hold counted references into it until the collector frees them, so only
+ * then does the thread's heap get a full pass before the region is judged. */
 static void scr_rgn_retry(ScrRgnThread *t) {
   bool any = false;
   for (size_t i = 0; i < t->nregions && !any; i++) any = scr_rgn_due(t->regions[i], t);
   t->checked = t->allocated;
   if (!any) return;
   if (atomic_load_explicit(&scr_rgn_index_state, memory_order_acquire) != 2) scr_rgn_index_build();
-  /* Dead cycles of ordinary objects can hold counted references into a
-   * condemned region until the collector frees them. */
+  if (!scr_rgn_try_due(t, true)) return;
   uint64_t t0 = scr_rgn_stats() ? scr_hrtime_ns() : 0;
+  t->stats.heap_passes++;
   scr_collect_cycles();
   if (t0) t->cycle_ms = scr_rgn_ms(t0, scr_hrtime_ns());
-  for (size_t i = 0; i < t->nregions;) {
-    ScrRegion *r = t->regions[i];
-    if (scr_rgn_due(r, t) && scr_rgn_try_free(t, r)) {
-      /* The table shrank, and the freed region's references may have kept
-       * another one: the regions it held now count fewer references. */
-      i = 0;
-      continue;
-    }
-    i++;
-  }
+  scr_rgn_try_due(t, false);
 }
 
 /* ── program-facing entry points ─────────────────────────────────────── */
@@ -1124,6 +1216,7 @@ static void scr_rgn_thread_exit(void) {
     for (size_t i = 0; i < t->nregions; i++) condemned += t->regions[i]->state == SCR_RGN_CONDEMNED;
     fprintf(stderr, "scriptc regions: %zu created, %zu released, %zu freed, %zu pinned, %zu kept\n",
             t->stats.created, t->stats.released, t->stats.freed, t->stats.pinned, condemned);
+    fprintf(stderr, "scriptc region heap passes: %zu\n", t->stats.heap_passes);
   }
   ScrRegion *all[1] = {t->dflt};
   for (size_t i = 0; i <= t->nregions; i++) {
@@ -1142,6 +1235,7 @@ static void scr_rgn_thread_exit(void) {
   free(t->stack);
   free(t->walk.ents);
   free(t->walk.hash);
+  free(t->walk.owned);
   free(t->walk.edges);
   free(t->walk.work);
 #ifdef SCR_RGN_DEBUG

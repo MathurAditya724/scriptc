@@ -64,6 +64,7 @@ scriptc region 1: freed 87381 objects, 87381 owned objects, 2 chunks (4.0 MiB); 
 build 3: 87381 nodes
 scriptc region 2: freed 87381 objects, 87381 owned objects, 2 chunks (4.0 MiB); cycles 0.0 ms, walk 8.9 ms, free 2.4 ms
 scriptc regions: 3 created, 2 released, 2 freed, 0 pinned, 0 kept
+scriptc region heap passes: 0
 ```
 
 ### API
@@ -99,9 +100,11 @@ Each thread has its own regions and its own default region. A region belongs to 
 
 ### Cost
 
-Programs that never construct a `LifetimeRegion` compile exactly as they would without the package. In programs that do, every retain and release of a `ProgramLifetime` instance that belongs to a region updates a count of the region chunk that holds it. Instances of the default region are not counted, and until the program creates its first region, a retain or release only tests whether counting has started. Freeing a region visits each of its instances and the ordinary objects they own.
+Programs that never construct a `LifetimeRegion` compile exactly as they would without the package. In programs that do, every retain and release of a `ProgramLifetime` instance that belongs to a region updates a count of the region chunk that holds it. Instances of the default region are not counted, and until the program creates its first region, a retain or release only tests whether counting has started.
 
-`SCRIPTC_REGION_STATS=1` prints one line per release attempt, freed, `kept` (with the number of references the check could not explain) or `pinned` (published), and a summary per thread at exit.
+Freeing a region visits each of its instances and the ordinary objects they own. A region that the check would keep may be kept only by unreachable cycles of ordinary objects that refer into it, so before keeping it scriptc runs the cycle collector over the thread's heap and checks again.
+
+`SCRIPTC_REGION_STATS=1` prints one line per release attempt, freed, `kept` (with the number of references the check could not explain) or `pinned` (published), and at exit a summary per thread and the number of those cycle-collector passes over the thread's heap.
 
 ## InternTable
 
