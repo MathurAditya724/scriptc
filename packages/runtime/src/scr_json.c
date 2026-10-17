@@ -1555,7 +1555,7 @@ static void scr_dyn_obj_put(ScrDyn *obj, const char *key, size_t key_len, ScrDyn
     obj->v.obj.cap = cap;
   }
   ScrDynEntry *e = &obj->v.obj.entries[obj->v.obj.len++];
-  if (!e->key || e->key_len != key_len || memcmp(e->key, key, key_len)) {
+  if (!e->key || e->key_len != key_len || !scr_key_equal(e->key, key, key_len)) {
     char *owned = scr_dyn_key_copy(key, key_len);
     scr_dyn_key_release(e->key, e->key_len);
     e->key = owned;
@@ -7280,6 +7280,8 @@ typedef struct {
   int depth;
   bool quiet; /* schema fast path: report failure without throwing */
   ScrDynRegion *region; /* tags completed containers (ScrDynRegion); may be NULL */
+  struct ScrJsonShape *shapes; /* key-sequence transitions (scr_json_object) */
+  uint32_t nshapes, shape_cap;
 } ScrJsonP;
 
 static void scr_json_throw(const ScrJsonP *p, const char *msg) {
@@ -7553,7 +7555,7 @@ static ScrDyn *scr_json_number(ScrJsonP *p) {
 }
 
 static bool scr_json_lit(ScrJsonP *p, const char *word, size_t n) {
-  if (p->len - p->pos >= n && memcmp(p->s + p->pos, word, n) == 0) {
+  if (p->len - p->pos >= n && scr_key_equal(p->s + p->pos, word, n)) {
     p->pos += n;
     return true;
   }
@@ -7635,6 +7637,107 @@ static ScrDyn *scr_json_array(ScrJsonP *p) {
   }
 }
 
+/* ── key-sequence transitions ──────────────────────────────────────────
+ * Parsed documents repeat object layouts: every record of an array usually
+ * spells the same keys in the same order. Like V8's JSON parser following a
+ * map's expected transition, the parser remembers the key sequences it has
+ * built as a tree whose root is the empty object. A member whose raw text is
+ * exactly `"<expected key>"` then needs no string scan, no duplicate search
+ * and no key copy: the object holds the path's keys and nothing else, every
+ * transition was recorded when a put appended a key that was not yet
+ * present, so the matched key is new too, and the entry shares the tree's
+ * key bytes. Transitions are recorded only for keys that needed no unescaping
+ * (raw text equals the key), so a byte match proves the decoded key. The
+ * tree belongs to one parse and holds one reference to each key. */
+typedef struct ScrJsonShape {
+  char *key;
+  size_t key_len;
+  uint32_t child;   /* first transition; 0 = none (the root is never a child) */
+  uint32_t sibling; /* next transition from the same layout; 0 = none */
+} ScrJsonShape;
+
+#define SCR_JSON_SHAPE_MAX 4096u   /* transitions per parse */
+#define SCR_JSON_SHAPE_PROBES 4    /* transitions tried per member */
+
+static void scr_json_shapes_free(ScrJsonP *p) {
+  for (uint32_t i = 1; i < p->nshapes; i++) scr_dyn_key_release(p->shapes[i].key, p->shapes[i].key_len);
+  free(p->shapes);
+  p->shapes = NULL;
+  p->nshapes = p->shape_cap = 0;
+}
+
+/* The transition from `shape` whose key the input spells next, consuming
+ * its quoted text; 0 when none of the first few transitions matches. */
+static inline uint32_t scr_json_shape_follow(ScrJsonP *p, uint32_t shape) {
+  if (!p->shapes) return 0;
+  uint32_t next = p->shapes[shape].child;
+  const char *text = p->s + p->pos + 1; /* past the opening quote */
+  size_t room = p->len - p->pos - 1;
+  for (int probe = 0; next && probe < SCR_JSON_SHAPE_PROBES; probe++) {
+    const ScrJsonShape *candidate = &p->shapes[next];
+    size_t n = candidate->key_len;
+    if (n < room && text[n] == '"' && scr_key_equal(text, candidate->key, n)) {
+      p->pos += n + 2;
+      return next;
+    }
+    next = candidate->sibling;
+  }
+  return 0;
+}
+
+/* Record `entry`'s key as a transition from `shape`; 0 when the budget is
+ * spent (the object then finishes on the ordinary path). */
+static uint32_t scr_json_shape_add(ScrJsonP *p, uint32_t shape, const ScrDynEntry *entry) {
+  if (!p->shapes) {
+    p->shapes = malloc(16 * sizeof *p->shapes);
+    if (!p->shapes) scr_json_oom();
+    p->shapes[0] = (ScrJsonShape){0};
+    p->nshapes = 1;
+    p->shape_cap = 16;
+  }
+  if (p->nshapes == SCR_JSON_SHAPE_MAX) return 0;
+  if (p->nshapes == p->shape_cap) {
+    ScrJsonShape *grown = realloc(p->shapes, 2 * p->shape_cap * sizeof *grown);
+    if (!grown) scr_json_oom();
+    p->shapes = grown;
+    p->shape_cap *= 2;
+  }
+  uint32_t added = p->nshapes++;
+  ((ScrDynKey *)(entry->key - offsetof(ScrDynKey, bytes)))->rc++;
+  p->shapes[added] = (ScrJsonShape){entry->key, entry->key_len, 0, p->shapes[shape].child};
+  p->shapes[shape].child = added;
+  return added;
+}
+
+/* scr_dyn_obj_put for a fresh parser object and a key it does not hold yet,
+ * sharing the transition's key bytes. */
+static void scr_dyn_obj_append_shared(ScrDyn *obj, char *key, size_t key_len, ScrDyn *value) {
+  scr_dyn_region_store(obj, value);
+  if (obj->v.obj.len == obj->v.obj.cap) {
+    size_t cap = obj->v.obj.cap ? obj->v.obj.cap * 2 : 4;
+    ScrDynEntry *entries = scr_mem_realloc(obj->v.obj.entries, cap * sizeof *entries);
+    if (!entries) scr_json_oom();
+    memset(entries + obj->v.obj.cap, 0, (cap - obj->v.obj.cap) * sizeof *entries);
+    obj->v.obj.entries = entries;
+    obj->v.obj.cap = cap;
+  }
+  ScrDynEntry *e = &obj->v.obj.entries[obj->v.obj.len++];
+  if (e->key != key) {
+    ((ScrDynKey *)(key - offsetof(ScrDynKey, bytes)))->rc++;
+    scr_dyn_key_release(e->key, e->key_len);
+    e->key = key;
+  }
+  e->key_len = key_len;
+  e->value = value;
+  e->getter = NULL;
+  e->setter = NULL;
+  e->accessor = false;
+  e->writable = true;
+  e->enumerable = true;
+  e->configurable = true;
+  if (obj->v.obj.len >= SCR_DYN_OBJECT_INDEX_MIN) scr_dyn_index_append(obj);
+}
+
 static ScrDyn *scr_json_object(ScrJsonP *p) {
   p->pos++; /* '{' */
   ScrDyn *obj = scr_dyn_alloc(SCR_DYN_OBJ);
@@ -7643,6 +7746,8 @@ static ScrDyn *scr_json_object(ScrJsonP *p) {
     p->pos++;
     return obj;
   }
+  uint32_t shape = 0; /* the empty layout */
+  bool shaped = true;  /* obj holds exactly the keys on shape's path */
   for (;;) {
     scr_json_ws(p);
     if (p->pos >= p->len) {
@@ -7661,7 +7766,13 @@ static ScrDyn *scr_json_object(ScrJsonP *p) {
     size_t key_len = 0;
     const char *key;
     ScrStr *decoded_key = NULL;
-    {
+    uint32_t follow = shaped ? scr_json_shape_follow(p, shape) : 0;
+    char *shared_key = NULL;
+    if (follow) {
+      shared_key = p->shapes[follow].key;
+      key = shared_key;
+      key_len = p->shapes[follow].key_len;
+    } else {
       const char *span;
       size_t span_len;
       int r = scr_json_string_span(p, &span, &span_len);
@@ -7697,7 +7808,19 @@ static ScrDyn *scr_json_object(ScrJsonP *p) {
       scr_dyn_release(obj);
       return NULL;
     }
-    scr_dyn_obj_put(obj, key, key_len, value); /* later duplicate keys win */
+    if (shared_key) {
+      scr_dyn_obj_append_shared(obj, shared_key, key_len, value);
+      shape = follow;
+    } else {
+      size_t before = obj->v.obj.len;
+      scr_dyn_obj_put(obj, key, key_len, value); /* later duplicate keys win */
+      if (shaped) {
+        uint32_t added = !decoded_key && obj->v.obj.len == before + 1
+            ? scr_json_shape_add(p, shape, &obj->v.obj.entries[before]) : 0;
+        if (added) shape = added;
+        else shaped = false;
+      }
+    }
     scr_str_release(decoded_key);
     scr_json_ws(p);
     if (p->pos >= p->len) {
@@ -7774,6 +7897,7 @@ ScrDyn *scr_json_parse(ScrStr *text) {
   /* Documents with a container start intact (ScrDynRegion). */
   if (p.s[p.pos] == '{' || p.s[p.pos] == '[') p.region = scr_dyn_region_new();
   ScrDyn *d = scr_json_value(&p);
+  scr_json_shapes_free(&p);
   scr_dyn_region_unref(p.region); /* the parser's own reference */
   if (!d) return NULL;
   scr_json_ws(&p);
@@ -8181,7 +8305,9 @@ static bool scr_jschema_read(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *o
 void *scr_json_parse_schema(const ScrStr *text, const ScrJsonSchema *schema) {
   ScrJsonP p = { text->data, text->len, 0, 0, true };
   ScrJsonSlot v;
-  if (!scr_jschema_read(&p, schema, &v)) return NULL;
+  bool read = scr_jschema_read(&p, schema, &v);
+  scr_json_shapes_free(&p); /* undeclared members parse as checked values */
+  if (!read) return NULL;
   scr_json_ws(&p);
   if (p.pos < p.len) {
     scr_jschema_drop(schema, &v);
@@ -9259,6 +9385,68 @@ ScrDyn *scr_dyn_obj_read(const ScrDyn *d, const char *key, size_t key_len) {
     return value;
   }
   return scr_dyn_obj_read_receiver(d, key, key_len, d);
+}
+
+/* Read-site caches (ScrDynReadIc). A hit is exactly the first step of
+ * scr_dyn_obj_read_receiver: the receiver's own data property. The builtin
+ * Object.prototype answers through its reflection fence instead, so it
+ * never hits. Sites hold key references only on threads that filled them,
+ * and release them with the thread's other runtime state. The audit lane
+ * never fills a site, so its live-key count stays exact. */
+static SCR_TL ScrDynReadIc *scr_dyn_read_ics;
+static SCR_TL bool scr_dyn_read_ics_registered;
+
+static void scr_dyn_read_ics_reset(void) {
+  while (scr_dyn_read_ics) {
+    ScrDynReadIc *ic = scr_dyn_read_ics;
+    scr_dyn_read_ics = ic->next;
+    scr_dyn_key_release(ic->key, ic->key_len);
+    *ic = (ScrDynReadIc){0};
+  }
+  scr_dyn_read_ics_registered = false;
+}
+
+static __attribute__((noinline)) ScrDyn *scr_dyn_obj_read_ic_miss(const ScrDyn *d, const ScrStr *key,
+                                                                  ScrDynReadIc *ic) {
+#ifndef SCR_RC_AUDIT
+  ScrDynEntry *entry = d != scr_builtin_object_prototype ? scr_dyn_find_entry(d, key->data, key->len) : NULL;
+  if (entry && !entry->accessor) {
+    if (ic->key != entry->key) {
+      ((ScrDynKey *)(entry->key - offsetof(ScrDynKey, bytes)))->rc++;
+      if (ic->key) {
+        scr_dyn_key_release(ic->key, ic->key_len);
+      } else {
+        if (!scr_dyn_read_ics_registered) {
+          scr_dyn_read_ics_registered = true;
+          scr_atexit(scr_dyn_read_ics_reset);
+        }
+        ic->next = scr_dyn_read_ics;
+        scr_dyn_read_ics = ic;
+      }
+      ic->key = entry->key;
+      ic->key_len = entry->key_len;
+    }
+    ic->index = (size_t)(entry - d->v.obj.entries);
+    return scr_dyn_retain(entry->value);
+  }
+#else
+  (void)ic;
+#endif
+  return scr_dyn_obj_read_receiver(d, key->data, key->len, d);
+}
+
+/* Equal spellings usually share bytes; long keys and share-table collisions
+ * do not, and compare their bytes at the remembered position instead. */
+ScrDyn *scr_dyn_obj_read_ic(const ScrDyn *d, const ScrStr *key, ScrDynReadIc *ic) {
+  size_t index = ic->index;
+  if (index < d->v.obj.len) {
+    const ScrDynEntry *entry = &d->v.obj.entries[index];
+    if ((entry->key == ic->key ||
+         (entry->key_len == key->len && scr_key_equal(entry->key, key->data, key->len))) &&
+        !entry->accessor && d != scr_builtin_object_prototype)
+      return scr_dyn_retain(entry->value);
+  }
+  return scr_dyn_obj_read_ic_miss(d, key, ic);
 }
 
 /* Compiler-owned class property tables use their native instance as the

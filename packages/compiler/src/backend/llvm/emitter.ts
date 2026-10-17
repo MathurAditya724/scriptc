@@ -795,6 +795,9 @@ export class LlEmitter {
   private stableGlobals: ReadonlySet<string> = new Set();
   private readonly tdzGlobals = new Map<string, string>();
   readonly constantNumericTables: ReadonlyMap<string, ConstantNumericTable>;
+  /** Constant-key reads on checked-dynamic objects, each with its own
+   * zero-initialized ScrDynReadIc (scr_runtime.h). */
+  private dynReadIcSites = 0;
   /** May-throw analysis (computeMayThrow): pending
    * checks are emitted only after calls that can actually raise. */
   readonly mayThrow: Set<string>;
@@ -2275,6 +2278,14 @@ export class LlEmitter {
     for (const d of this.decls) out.push(d);
     out.push(``);
     const flushedDecls = new Set(this.decls);
+    {
+      const tl =
+        this.mod.workers === true || this.mod.lib?.threadInstances === true ? "thread_local " : "";
+      for (let site = 0; site < this.dynReadIcSites; site++)
+        out.push(
+          `@sc_dyn_read_ic_${site} = internal ${tl}global { ptr, ${this.sizeType}, ${this.sizeType}, ptr } zeroinitializer`,
+        );
+    }
     for (const table of this.constantNumericTables.values()) {
       const n = table.values.length;
       let tableTmp = 0;
@@ -9959,6 +9970,11 @@ export class LlEmitter {
 
   emitExpr(e: IrExpr): LlValue {
     return emitExpr(this, e);
+  }
+
+  /** A fresh read-site cache for one constant-key dyn read. */
+  dynReadIcSite(): string {
+    return `@sc_dyn_read_ic_${this.dynReadIcSites++}`;
   }
 
   dynKind(d: string): string {
