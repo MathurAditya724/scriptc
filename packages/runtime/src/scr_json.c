@@ -1781,6 +1781,18 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
 }
 
 ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
+  /* A primitive receiver is returned unchanged when the prototype is null or
+   * any object or function; nothing is mutated, so the prototype's kind is the
+   * only check. */
+  if (object->kind == SCR_DYN_BOOL || object->kind == SCR_DYN_NUM || object->kind == SCR_DYN_STR ||
+      object->kind == SCR_DYN_BIGINT || object->kind == SCR_DYN_SYMBOL) {
+    bool valid = scr_dyn_is_object(prototype) || scr_dyn_is_callable(prototype);
+    if (scr_exc_pending()) return NULL;
+    if (valid) return scr_dyn_retain(object);
+    static const char message[] = "Object prototype may only be an Object or null";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
   if (scr_dyn_class_reflection_fence(object) || scr_dyn_class_reflection_fence(prototype)) return NULL;
   if (object->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
@@ -1811,16 +1823,12 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
   }
   bool typed = scr_dyn_typed_ref_prototype(prototype);
   if (scr_exc_pending()) return NULL;
-  bool primitive = object->kind == SCR_DYN_BOOL || object->kind == SCR_DYN_NUM || object->kind == SCR_DYN_STR ||
-    object->kind == SCR_DYN_BIGINT || object->kind == SCR_DYN_SYMBOL;
-  if ((object->kind != SCR_DYN_OBJ && object->kind != SCR_DYN_ARR && !primitive) ||
+  if ((object->kind != SCR_DYN_OBJ && object->kind != SCR_DYN_ARR) ||
       (prototype->kind != SCR_DYN_OBJ && prototype->kind != SCR_DYN_ARR && prototype->kind != SCR_DYN_FUNC && prototype->kind != SCR_DYN_NULL && !typed)) {
     static const char message[] = "Object prototype may only be an Object or null";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
   }
-  /* A primitive receiver is returned unchanged once the prototype is valid. */
-  if (primitive) return scr_dyn_retain(object);
   for (const ScrDyn *current = scr_dyn_chain_link(prototype); current;) {
     if (current->kind == SCR_DYN_FUNC) {
       ScrDyn *table = scr_dyn_fn_properties(current);
