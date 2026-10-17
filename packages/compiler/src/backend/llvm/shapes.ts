@@ -916,6 +916,12 @@ export function mapKeyParamType(access: MapKeyAccess): string {
   return access === "bool" ? "i1 zeroext" : mapKeyLlType(access);
 }
 
+/** The byte offset of ScrMap.flags (scr_map.h), whose SCR_MAP_NULL_PROTO
+ * bit marks a null-prototype record's overflow map. */
+export function mapFlagsOffset(sizeType: "i32" | "i64"): number {
+  return (sizeType === "i64" ? 8 : 4) + 3;
+}
+
 /** The ScrMapKeyKind / ScrMapValKind constants for scr_map_new. */
 export function mapKeyKindNum(key: IrType, unionArms?: IrType[]): number {
   if (key.kind === "dyn") return 4;

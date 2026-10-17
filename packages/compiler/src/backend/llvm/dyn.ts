@@ -48,6 +48,7 @@ import {
   arrNewCall,
   elemAccess,
   llFieldType,
+  mapFlagsOffset,
   releaseSym,
   traceAdapter,
   traceArg,
@@ -1872,6 +1873,21 @@ export class LlDyn {
             `${ovfp} = getelementptr inbounds %${struct}, ptr %r0, i64 0, i32 ${shape.fields.length + 1}`,
           );
           B.line(`${ovf} = load ptr, ptr ${ovfp} ; overflow map`);
+          if (shape.fields.length === 0) {
+            // Object.create(null)'s dictionary keeps its null prototype:
+            // ScrDyn.null_proto becomes SCR_MAP_NULL_PROTO.
+            const npp = B.tmp();
+            const np = B.tmp();
+            const flagsp = B.tmp();
+            B.line(
+              `${npp} = getelementptr inbounds i8, ptr %d, i64 ${this.abiOffset(13, 9)} ; ->null_proto`,
+            );
+            B.line(`${np} = load i8, ptr ${npp}`);
+            B.line(
+              `${flagsp} = getelementptr inbounds i8, ptr ${ovf}, i64 ${mapFlagsOffset(host.sizeType)}`,
+            );
+            B.line(`store i8 ${np}, ptr ${flagsp}`);
+          }
           const n = this.lenOf(B, "%d");
           const entries = this.itemsOf(B, "%d");
           this.i64Loop(B, "dcv", n, (i, brNext) => {
@@ -2485,6 +2501,28 @@ export class LlDyn {
           B.line(
             `${d} = call ptr @scr_dyn_new_obj_with_identity(ptr %v, ptr ${rc.retain}, ptr @${sourceAccessor.name})`,
           );
+        } else if (shape.indexValue && shape.fields.length === 0) {
+          // A pure index-signature record keeps a null prototype
+          // (SCR_MAP_NULL_PROTO on its overflow map; Object.groupBy).
+          host.declare(`declare ptr @scr_dyn_new_obj()`);
+          host.declare(`declare ptr @scr_dyn_new_obj_null_proto()`);
+          const ovfp = B.tmp();
+          const ovf = B.tmp();
+          const flagsp = B.tmp();
+          const flags = B.tmp();
+          const np = B.tmp();
+          const alloc = B.tmp();
+          B.line(`${ovfp} = getelementptr inbounds %${struct}, ptr %v, i64 0, i32 1`);
+          B.line(`${ovf} = load ptr, ptr ${ovfp} ; overflow map`);
+          B.line(
+            `${flagsp} = getelementptr inbounds i8, ptr ${ovf}, i64 ${mapFlagsOffset(host.sizeType)}`,
+          );
+          B.line(`${flags} = load i8, ptr ${flagsp}`);
+          B.line(`${np} = icmp ne i8 ${flags}, 0`);
+          B.line(
+            `${alloc} = select i1 ${np}, ptr @scr_dyn_new_obj_null_proto, ptr @scr_dyn_new_obj`,
+          );
+          B.line(`${d} = call ptr ${alloc}()`);
         } else {
           host.declare(`declare ptr @scr_dyn_new_obj()`);
           B.line(`${d} = call ptr @scr_dyn_new_obj()`);

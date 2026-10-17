@@ -1,3 +1,4 @@
+import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
 /** Dispatch source calls, builtin members and receiver-specific operations.
@@ -2411,6 +2412,7 @@ function lowerObjectOwnMethodCall(
     call.arguments[0],
     call.arguments.slice(1),
     method,
+    access,
   );
 }
 
@@ -2448,6 +2450,9 @@ function lowerObjectOwnCall(
   keyNode: ts.Expression | undefined,
   extraNodes: readonly ts.Expression[],
   method: string,
+  // The `receiver.method` access of a method call (null for the
+  // Object.prototype.method.call form).
+  methodAccess: ts.PropertyAccessExpression | null = null,
 ): IrExpr {
   const enumerable = method === "propertyIsEnumerable";
   const loc = locOf(call);
@@ -2517,6 +2522,8 @@ function lowerObjectOwnCall(
         receiverNode ?? call,
       );
     }
+    // A null-prototype record (Object.groupBy) has no such method: Node
+    // throws after evaluating the arguments.
     result = {
       kind: "call",
       callee: recordHasOwnHelper(lowerer, type.shapeId, loc),
@@ -2524,6 +2531,15 @@ function lowerObjectOwnCall(
       type: BOOL,
       loc,
     };
+    if (methodAccess && nullProtoRecordShape(lowerer, type)) {
+      result = guardNullProto(
+        receiverRef,
+        type.shapeId,
+        `${methodAccess.getText()} is not a function`,
+        result,
+        loc,
+      );
+    }
   } else if (type.kind === "dyn") {
     result = {
       kind: "libCall",
@@ -4139,19 +4155,33 @@ function lowerDefaultToStringCall(
   // `(<A>{}).toString()` — assertion-wrapped literals and plain reads
   // have nothing to evaluate; pureObjectToStringReceiver widens
   // pureReceiverNode with the empty object literal.
-  if (pureObjectToStringReceiver(access.expression)) return constant;
+  // A null-prototype record (Object.groupBy) has no toString: Node
+  // throws "<callee> is not a function".
+  const nullProtoT = nullProtoRecordShape(lowerer, recvT);
+  const missing = nullProtoT ? `${access.getText()} is not a function` : null;
+  if (!missing && pureObjectToStringReceiver(access.expression)) return constant;
   const recv = lowerer.lowerExpr(access.expression);
-  const key = `objToStr:${typeKey(recv.type)}`;
+  const key = `objToStr:${typeKey(recv.type)}${missing ? `:${missing}` : ""}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
     helper = `%obj.tostr.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, helper);
+    const o = varRef("o.0", recv.type, loc);
     lowerer.liftedFns.push({
       name: helper,
       params: [{ localId: "o.0", name: "o", type: recv.type }],
       returnType: STRING,
       locals: [{ id: "o.0", name: "o", type: recv.type, mutable: false }],
-      body: [{ kind: "return", value: { ...constant }, loc }],
+      body: [
+        {
+          kind: "return",
+          value:
+            nullProtoT && missing
+              ? guardNullProto(o, nullProtoT.shapeId, missing, { ...constant }, loc)
+              : { ...constant },
+          loc,
+        },
+      ],
       loc,
     });
   }

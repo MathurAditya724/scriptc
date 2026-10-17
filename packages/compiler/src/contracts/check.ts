@@ -1023,6 +1023,7 @@ const OBSERVE = new Set<IrExpr["kind"]>([
   "fieldAbsent",
   "recordHas",
   "recordOvfHas",
+  "recordNullProto",
   "arrayHas",
   "arrayState",
   "jsonStringify",

@@ -556,6 +556,7 @@ export class ReferenceWrites {
       case "recordHas":
       case "recordKeyGet":
       case "recordOvfHas":
+      case "recordNullProto":
       case "recordOvfKeys":
       case "fieldAbsent":
       case "unionDisc":

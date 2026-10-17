@@ -374,6 +374,8 @@ struct ScrDyn {
 };
 /* Compiled class dispatch reads a capsule's instance and key in place. */
 _Static_assert(offsetof(ScrDyn, v.typed_ref.ptr) == 16, "typed_ref.ptr offset");
+_Static_assert(offsetof(ScrDyn, null_proto) == sizeof(size_t) + sizeof(ScrDynKind) + 1,
+               "dyn-to-record conversions read null_proto at byte 13 (9 on wasm32)");
 _Static_assert(offsetof(ScrDyn, v.typed_ref.type_key) == 16 + 3 * sizeof(void *),
                "typed_ref.type_key offset");
 /* The region links ride in payload space the capsule variant already
