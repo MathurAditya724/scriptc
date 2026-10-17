@@ -2457,6 +2457,22 @@ static ScrStr *scr_bytes_normalize_encoding(const ScrStr *raw) {
   return NULL;
 }
 
+/* new StringDecoder(encoding) with an encoding known only at run time:
+ * Node's normalizeEncoding. undefined, null and "" are utf8; a Buffer
+ * encoding name in any ASCII case answers its canonical name (+1); any
+ * other string throws ERR_UNKNOWN_ENCODING (NULL). Encodings that are not
+ * strings have no lowering. */
+ScrStr *scr_strdec_encoding(const ScrDyn *enc) {
+  if (enc->kind == SCR_DYN_UNDEF || enc->kind == SCR_DYN_NULL) return scr_str_new("utf8", 4);
+  if (enc->kind != SCR_DYN_STR) {
+    static const char message[] = "new StringDecoder with an encoding that is not a string has no lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  if (enc->v.str->len == 0) return scr_str_new("utf8", 4);
+  return scr_bytes_normalize_encoding(enc->v.str);
+}
+
 ScrStr *scr_bytes_to_str_checked(const ScrBytes *b, const ScrStr *enc) {
   /* Node returns before resolving the encoding when there are no bytes
    * to decode, so even an unknown runtime name answers the empty string. */

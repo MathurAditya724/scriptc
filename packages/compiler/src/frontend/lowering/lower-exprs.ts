@@ -225,7 +225,7 @@ import {
 } from "./lower-builtin-values.js";
 import { lowerArrayFromValue } from "./containers/array-construction.js";
 import { lowerPerfHooksTypeof } from "./builtins/performance.js";
-import { lowerUrlAssignment } from "./builtins/url.js";
+import { isSearchParamsIterable, lowerUrlAssignment } from "./builtins/url.js";
 import { jsBindingHasOpenWrites } from "./lower-stmts.js";
 import { checkedClassInstanceOf } from "./class-construction.js";
 import { lowerModuleNamespaceElement } from "./module-namespace-elements.js";
@@ -5889,6 +5889,11 @@ export function lowerArrayLiteral(
         const drained = generatorDrain(lowerer, src, type.elem, locOf(el));
         if (drained) src = drained;
       }
+      // `[...sp]` and `[...sp.entries()]` over a URLSearchParams: its
+      // checked-dynamic view iterates the live pair list, and the drained
+      // [name, value] pairs convert to the literal's tuple elements.
+      const searchParamsSource = isSearchParamsIterable(lowerer, el.expression);
+      if (src.type.kind === "searchParams") src = lowerer.coerceInto(el.expression, src, DYN);
       // A native checked iterable can supply scalar elements even when
       // the checker inferred a typed array from its producer. Drain once
       // and validate the elements before the ordinary spread copy.
@@ -5897,7 +5902,8 @@ export function lowerArrayLiteral(
         (type.elem.kind === "dyn" ||
           type.elem.kind === "f64" ||
           type.elem.kind === "string" ||
-          type.elem.kind === "bool")
+          type.elem.kind === "bool" ||
+          searchParamsSource)
       ) {
         src = lowerer.coerceInto(el.expression, checkedIteratorPack(lowerer, src, locOf(el)), type);
       }

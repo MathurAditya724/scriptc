@@ -74,7 +74,7 @@ import { isAssertClassNew } from "./assert-instances.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-methods.js";
 import { lowerObjectConstructor } from "./containers/indexed-objects.js";
-import { bufEncoding } from "./containers/bytes.js";
+import { knownBufEncoding } from "./containers/bytes.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { lowerSearchParamsNew } from "./builtins/url.js";
 import { lowerTextCodecNew } from "./builtins/text-codecs.js";
@@ -8905,24 +8905,41 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       );
     }
     // `new StringDecoder(encoding?)` (node:string_decoder): the decoder
-    // is a two-field record — the CANONICAL encoding name (aliases fold
-    // at compile time, exactly what `.encoding` answers in Node) and
-    // the packed-f64 pending state starting at 0 (nothing buffered).
-    // The encoding must be a literal (Node's alias set); omitted means
-    // utf8, Node's default.
+    // is a two-field record — the CANONICAL encoding name (exactly what
+    // `.encoding` answers in Node) and the packed-f64 pending state
+    // starting at 0 (nothing buffered). A literal Buffer encoding folds
+    // its alias at compile time; any other encoding argument is
+    // normalized at run time (Node's normalizeEncoding, which throws
+    // ERR_UNKNOWN_ENCODING for an unknown name). Omitted means utf8,
+    // Node's default.
     if (symbol && symbol.name === "StringDecoder" && lowerer.isStdlibSymbol(symbol)) {
       const args = expr.arguments ?? [];
       if (args.length > 1) {
         lowerer.noLowering("new StringDecoder with 2 arguments", expr, undefined, symbol);
       }
-      const encName =
-        args.length === 1 ? bufEncoding(lowerer, "new StringDecoder", args[0]!) : "utf8";
+      const encNode = args[0];
+      const encT = encNode ? lowerer.typeOf(encNode) : undefined;
+      const encName = !encNode
+        ? "utf8"
+        : encT!.isStringLiteralType()
+          ? knownBufEncoding(encT!.value)
+          : undefined;
+      const encoding: IrExpr =
+        encName !== undefined
+          ? { kind: "strLit", value: encName, type: STRING, loc }
+          : {
+              kind: "libCall",
+              fn: "strdec.encoding",
+              args: [lowerer.lowerExprExpecting(encNode!, DYN)],
+              type: STRING,
+              loc,
+            };
       const decT = lowerer.mapTypeOf(lowerer.typeOf(expr));
       if (decT?.kind !== "record") lowerer.badType(expr, lowerer.typeOf(expr));
       return {
         kind: "recordLit",
         fields: [
-          { name: "%enc", value: { kind: "strLit", value: encName, type: STRING, loc } },
+          { name: "%enc", value: encoding },
           { name: "%pending", value: { kind: "numLit", value: 0, type: F64, loc } },
         ],
         type: decT,
