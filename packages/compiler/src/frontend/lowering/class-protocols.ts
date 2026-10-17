@@ -89,10 +89,11 @@ export class ClassProtocols {
    *
    * A copy differs from the original only when something observes the
    * difference, so a type is marked only when the program can: values of
-   * the type are written through, compared by identity, used as Set/Map
-   * keys or array search needles, given to whole-object observers (console,
-   * JSON, Object, util, structuredClone, spreads, for-in, templates,
-   * `unknown` parameters) or tested with instanceof; or a field the type
+   * the type are written through, compared by identity (`===`, `switch`,
+   * assert), used as Set/Map keys or array search needles, given to
+   * whole-object observers (console, JSON, Object, util, structuredClone,
+   * spreads, for-in, templates, `unknown` parameters) or tested with
+   * instanceof; or a field the type
    * exposes is written on the source class after construction, so a copy
    * could read a stale value. A view of readonly data that nothing
    * observes stays a native record. */
@@ -165,6 +166,13 @@ export class ClassProtocols {
         observed.push(node.expression);
       } else if (ts.isForInStatement(node)) {
         observed.push(node.expression);
+      } else if (ts.isSwitchStatement(node)) {
+        // `switch` matches its cases with ===.
+        const cases = node.caseBlock.clauses
+          .filter(ts.isCaseClause)
+          .map((clause) => clause.expression)
+          .filter((expr) => !isNullishLiteral(expr) && !isPrimitiveLiteral(expr));
+        if (cases.length > 0) observed.push(node.expression, ...cases);
       } else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
         const callee = node.expression;
         const args = node.arguments ?? [];
@@ -175,7 +183,9 @@ export class ClassProtocols {
             : null;
         if (
           (owner !== null && OBSERVER_NAMESPACES.has(owner)) ||
-          (ts.isIdentifier(callee) && OBSERVER_FUNCTIONS.has(callee.text))
+          (ts.isIdentifier(callee) &&
+            (OBSERVER_FUNCTIONS.has(callee.text) ||
+              (ts.isNewExpression(node) && IDENTITY_CONSTRUCTORS.has(callee.text))))
         ) {
           observed.push(...args.filter((arg) => !ts.isSpreadElement(arg)));
           // Object.assign(target, ...) and Object.defineProperty write the target.
@@ -767,7 +777,24 @@ const NO_SYMBOLS: ReadonlySet<ts.Symbol> = new Set();
 
 /** Calls of these namespaces and functions observe whole objects. */
 const OBSERVER_NAMESPACES = new Set(["console", "JSON", "Object", "Reflect", "util", "assert"]);
-const OBSERVER_FUNCTIONS = new Set(["structuredClone", "String", "inspect", "format"]);
+const OBSERVER_FUNCTIONS = new Set([
+  "structuredClone",
+  "String",
+  "inspect",
+  "format",
+  "isDeepStrictEqual",
+  // node:assert's named exports.
+  "strictEqual",
+  "notStrictEqual",
+  "deepStrictEqual",
+  "notDeepStrictEqual",
+  "deepEqual",
+  "notDeepEqual",
+  "equal",
+  "notEqual",
+]);
+/** Constructors that key their arguments' values by identity. */
+const IDENTITY_CONSTRUCTORS = new Set(["Set", "Map", "WeakSet", "WeakMap", "WeakRef"]);
 /** Object statics that write their first argument. */
 const OBJECT_WRITERS = new Set(["assign", "defineProperty", "defineProperties", "setPrototypeOf"]);
 /** Methods that compare their arguments by identity (Set, Map, WeakMap,
