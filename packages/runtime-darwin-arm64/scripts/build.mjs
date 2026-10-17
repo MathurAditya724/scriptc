@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { RUNTIME_PACK_MATRIX } from "../runtime-pack-matrix.mjs";
 import {
+  buildImportBitcode,
   buildRuntimeUnit,
   resolveRuntimeUnitHelper,
 } from "../../runtime-pack-common/scripts/runtime-unit.mjs";
@@ -88,7 +89,8 @@ async function build() {
   ];
 
   // Speed-flavor executable units are emitted through the host LLVM helper
-  // so their object and import bitcode come from one promoted module.
+  // so their object and import bitcode come from one promoted module. The
+  // helper also reduces release units' bitcode to what programs can import.
   const unitHelper = await resolveRuntimeUnitHelper(
     repoRoot,
     RUNTIME_PACK_MATRIX.target.llvm_triple,
@@ -215,6 +217,31 @@ async function build() {
               };
             } else {
               await compile(join(runtimeSrc, unit.source), output, unitFlags);
+              if (
+                flavor === "release" &&
+                unitHelper !== null &&
+                (await buildImportBitcode({
+                  helper: unitHelper,
+                  compileBitcode: (optimized) =>
+                    run(compiler, [
+                      ...sourcePathFlags,
+                      ...unitFlags,
+                      "-emit-llvm",
+                      "-c",
+                      join(runtimeSrc, unit.source),
+                      "-o",
+                      optimized,
+                    ]),
+                  bitcode: bitcodeOutput,
+                  tag: unit.source.replace(/\.c$/, ""),
+                }))
+              ) {
+                bitcode = {
+                  path: artifactPath(bitcodeOutput),
+                  sha256: await sha256(bitcodeOutput),
+                  size: (await stat(bitcodeOutput)).size,
+                };
+              }
             }
             const built = {
               id: variant.id,

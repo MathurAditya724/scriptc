@@ -37,7 +37,7 @@ Repeating `--output` divides the program into that many partitions, which are co
 
 `--cache-dir <dir>` names a private directory the caller owns for one helper build. Simplified partitions are stored under the hash of their exact source and objects under the hash of the exact module after importing, each with a trailing digest and published by rename, so a rebuild recompiles only the partitions an edit can affect.
 
-`--optimization=speed` program builds pass `--import-bitcode <unit.bc>` once per runtime-pack unit the program links. Small runtime functions reachable from the program's runtime calls are imported as `available_externally` so LLVM can inline them; the runtime objects remain the only definitions. The helper never runs a sanitizer pass, so with import it also drops the emitter's inert `sanitize_address` attributes, which would otherwise block that inlining. Without `--import-bitcode` the module is optimized exactly as emitted.
+Unsanitized `speed` program builds, and unsanitized `release` builds of programs small enough for one partition, pass `--import-bitcode <unit.bc>` once per runtime-pack unit the program links that ships bitcode. Small runtime functions reachable from the program's runtime calls are imported as `available_externally` so LLVM can inline them; the runtime objects remain the only definitions. The helper never runs a sanitizer pass, so with import it also drops the emitter's inert `sanitize_address` attributes, which would otherwise block that inlining. Without `--import-bitcode` the module is optimized exactly as emitted.
 
 Runtime-pack builds emit each unit of the executable `speed` flavor through the helper:
 
@@ -48,3 +48,11 @@ scriptc-llvm-codegen runtime-unit --input unit.opt.bc --object unit.o \
 ```
 
 The input is the runtime compiler's optimized bitcode. The command promotes unit-local symbols to hidden `<name>.scrunit.<tag>` globals and writes the object and the import bitcode from that one module, so imported bodies can reference the unit's private state and helpers.
+
+Release units keep the runtime compiler's own objects. Their import bitcode is the same compilation with `-emit-llvm`, reduced by the helper:
+
+```console
+scriptc-llvm-codegen prune-import --input unit.opt.bc --output unit.bc
+```
+
+Both commands keep only what a program build can import: the importable bodies within the size limit at their call distance from any public function, and the constants they copy. Every other definition becomes a declaration, so a program imports exactly what it would from the whole unit while reading a fraction of it. Unpromoted unit-local symbols stay local, so release bitcode offers only bodies that need none of them.

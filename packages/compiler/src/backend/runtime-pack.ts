@@ -262,19 +262,24 @@ export interface RuntimeBitcodeImport {
   dependencies: NativeArtifactDependency[];
 }
 
-/** Verified bitcode for the speed-flavor runtime units a program links, for
- * the helper's available_externally import. Null when the pack ships no
- * bitcode (no speed flavor, or a speed flavor built without the helper). */
+/** Verified bitcode for the runtime units of the given flavor that a program
+ * links, for the helper's available_externally import. Release units carry
+ * their compiled bitcode reduced to the bodies that need no unit-local
+ * state; speed units carry their promoted bitcode. Null when the selected
+ * units ship no bitcode (a pack built without the helper, or no speed
+ * flavor). */
 export async function loadRuntimeBitcode(options: {
   target: NativeTargetSpec;
   features: NativeLinkFeatures;
+  optimization: "release" | "speed";
   env?: NodeJS.ProcessEnv;
   resolver?: (specifier: string) => string;
 }): Promise<RuntimeBitcodeImport | null> {
-  const pack = await loadRuntimePack({ ...options, optimization: "speed" });
-  // Only a real speed flavor's promoted objects match its bitcode.
-  if (pack.manifest.flavors.speed === undefined || pack.selectedRuntimeBitcode.length === 0)
-    return null;
+  const pack = await loadRuntimePack(options);
+  // Without a speed flavor, speed programs link release units; only the
+  // speed flavor's promoted objects match speed bitcode.
+  if (options.optimization === "speed" && pack.manifest.flavors.speed === undefined) return null;
+  if (pack.selectedRuntimeBitcode.length === 0) return null;
   const paths = await Promise.all(
     pack.selectedRuntimeBitcode.map((artifact) => verifyArtifact(pack.root, artifact)),
   );

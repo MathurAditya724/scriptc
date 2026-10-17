@@ -5,16 +5,21 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
-/* Release executable runtime units ship two artifacts produced from one
- * optimized LLVM module: the native object and the bitcode the LLVM helper
- * imports small runtime functions from (available_externally, so program
- * code can inline them while the object stays the only linked definition).
+/* Executable runtime units ship the bitcode the LLVM helper imports small
+ * runtime functions from (available_externally, so program code can inline
+ * them while the unit's object stays the only linked definition).
  *
- * The runtime compiler optimizes the C source to bitcode; the host LLVM
- * helper's `runtime-unit` command then promotes translation-unit-local
- * symbols to hidden unit-qualified globals and emits both artifacts. Every
- * host helper supports every scriptc target, so packs keep building on
- * their usual hosts. Without a runnable host helper (or with
+ * Speed units produce both artifacts from one optimized LLVM module: the
+ * runtime compiler optimizes the C source to bitcode, and the host helper's
+ * `runtime-unit` command promotes translation-unit-local symbols to hidden
+ * unit-qualified globals and emits the object and the bitcode. Release
+ * units keep the runtime compiler's own objects; their bitcode is the same
+ * compilation with -emit-llvm, which the helper's `prune-import` reduces to
+ * the bodies that need none of the unit's local state. Both bitcode forms
+ * keep only what a program build can import.
+ *
+ * Every host helper supports every scriptc target, so packs keep building
+ * on their usual hosts. Without a runnable host helper (or with
  * SCRIPTC_RUNTIME_BITCODE=0) units are compiled to objects directly and
  * ship no bitcode; program builds then simply import nothing. */
 
@@ -93,6 +98,26 @@ export async function buildRuntimeUnit({
     const detail = (error.stderr || error.message || String(error)).trim().split("\n")[0];
     process.stderr.write(`runtime-unit: ${tag}: emitting without import bitcode (${detail})\n`);
     await Promise.all([rm(object, { force: true }), rm(bitcode, { force: true })]);
+    return false;
+  } finally {
+    await rm(optimized, { force: true });
+  }
+}
+
+/** Import bitcode for a unit whose object the runtime compiler emits
+ * itself (the release flavor). `compileBitcode(output)` must run the
+ * runtime compiler with the unit's exact flags plus -emit-llvm. A helper
+ * failure only drops the bitcode; the object is unaffected. */
+export async function buildImportBitcode({ helper, compileBitcode, bitcode, tag }) {
+  const optimized = bitcode.replace(/\.bc$/, ".opt.bc");
+  await compileBitcode(optimized);
+  try {
+    await run(helper.path, ["prune-import", "--input", optimized, "--output", bitcode]);
+    return true;
+  } catch (error) {
+    const detail = (error.stderr || error.message || String(error)).trim().split("\n")[0];
+    process.stderr.write(`prune-import: ${tag}: shipping without import bitcode (${detail})\n`);
+    await rm(bitcode, { force: true });
     return false;
   } finally {
     await rm(optimized, { force: true });
