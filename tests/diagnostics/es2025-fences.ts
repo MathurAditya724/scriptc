@@ -37,7 +37,7 @@ const tried = Promise.try((a: number, b: number) => a + b, 1, 2);
 // Object.groupBy at a literal-union key type (a fixed-field record).
 const grouped = Object.groupBy([1, 2, 3], (n) => (n % 2 === 0 ? "even" : "odd"));
 
-// A set-like argument that isn't a Set.
+// A set-like argument that is neither a Set nor a Map.
 const s = new Set([1, 2]);
-const m = new Map<number, string>([[1, "x"]]);
-const u = s.union(m);
+const like = { size: 1, has: (x: number) => x === 1, keys: () => [1].values() };
+const u = s.union(like);
