@@ -1474,8 +1474,37 @@ declare module "node:fs" {
     readonly ctime: Date;
     readonly birthtime: Date;
   }
-  export function statSync(path: string): Stats;
-  export function lstatSync(path: string): Stats;
+  /* throwIfNoEntry: false answers undefined for a missing entry (ENOENT or
+   * ENOTDIR) instead of throwing. BigIntStats (bigint: true) has no
+   * lowering. */
+  export interface StatSyncOptions {
+    bigint?: boolean;
+    throwIfNoEntry?: boolean;
+  }
+  export function statSync(path: string, options?: undefined): Stats;
+  export function statSync(
+    path: string,
+    options: StatSyncOptions & { bigint?: false; throwIfNoEntry: false },
+  ): Stats | undefined;
+  export function statSync(
+    path: string,
+    options: StatSyncOptions & { bigint?: false; throwIfNoEntry?: true },
+  ): Stats;
+  /* bigint: true type-checks so the lowering can name it as unsupported. */
+  export function statSync(path: string, options: StatSyncOptions & { bigint: true }): Stats;
+  export function statSync(path: string, options: StatSyncOptions): Stats | undefined;
+  export function lstatSync(path: string, options?: undefined): Stats;
+  export function lstatSync(
+    path: string,
+    options: StatSyncOptions & { bigint?: false; throwIfNoEntry: false },
+  ): Stats | undefined;
+  export function lstatSync(
+    path: string,
+    options: StatSyncOptions & { bigint?: false; throwIfNoEntry?: true },
+  ): Stats;
+  /* bigint: true type-checks so the lowering can name it as unsupported. */
+  export function lstatSync(path: string, options: StatSyncOptions & { bigint: true }): Stats;
+  export function lstatSync(path: string, options: StatSyncOptions): Stats | undefined;
   /* The fd pair behind spawn's fd-stdio form: openSync(path, flags) →
    * the raw fd. Numeric flags use an inline OR of the O_* constants. */
   export function openSync(path: string, flags: string): number;

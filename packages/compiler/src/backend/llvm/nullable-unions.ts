@@ -36,13 +36,15 @@ export const NULLABLE_NULL = "@sc_nullable_null";
 export const NULLABLE_ABSENT = "@sc_nullable_absent";
 
 /** The reference arms whose instances are never NULL. Class and record
- * entry points all tolerate NULL; strings, arrays, maps and sets retain
- * through a NULL-skipping wrapper (shapes.ts). Object arms are always truthy and compare by
- * identity; string arms are truthy when non-empty and compare bytes. */
+ * entry points all tolerate NULL; strings, Stats snapshots, arrays, maps and
+ * sets retain through a NULL-skipping wrapper (shapes.ts). Object arms are
+ * always truthy and compare by identity; string arms are truthy when
+ * non-empty and compare bytes. */
 export type NullableRefArm =
   | { kind: "object"; className: string }
   | { kind: "record"; shapeId: string }
   | { kind: "string" }
+  | { kind: "stats" }
   | (IrType & { kind: "array" | "map" | "set" });
 
 /** The arm is a JS object: always truthy, compared by identity. */
@@ -133,6 +135,7 @@ function nullableShape(
   if (arm.kind === "record" && records.has(arm.shapeId))
     return { ...base, arm: { kind: "record", shapeId: arm.shapeId } };
   if (arm.kind === "string") return { ...base, arm: { kind: "string" } };
+  if (arm.kind === "stats") return { ...base, arm: { kind: "stats" } };
   if (arm.kind === "array" || arm.kind === "map" || arm.kind === "set") return { ...base, arm };
   return null;
 }

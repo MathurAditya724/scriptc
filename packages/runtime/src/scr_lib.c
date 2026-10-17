@@ -3017,7 +3017,12 @@ ScrError *scr_fs_error(int e, const char *op, const ScrStr *path) {
   return error;
 }
 
+/* Set while scr_fs_stat_probe runs: a missing entry (ENOENT, ENOTDIR) is
+ * not thrown, so the probe answers undefined without building the error. */
+static SCR_TL bool scr_fs_probing = false;
+
 void scr_fs_throw(int e, const char *op, const ScrStr *path) {
+  if (scr_fs_probing && (e == ENOENT || e == ENOTDIR)) return;
   ScrError *error = scr_fs_error(e, op, path);
   scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
@@ -5011,7 +5016,7 @@ ScrStats *scr_stats_retain(ScrStats *s) {
 
 void scr_stats_release(ScrStats *s) {
   if (!s || s->rc == SIZE_MAX) return;
-  if (--s->rc == 0) free(s);
+  if (--s->rc == 0) scr_mem_free(s);
 }
 
 void *scr_stats_retain_v(void *p) { return scr_stats_retain(p); }
@@ -5075,8 +5080,10 @@ double scr_stats_mtime(ScrStats *s) { return scr_date_new_ms(scr_stats_round(scr
 double scr_stats_ctime(ScrStats *s) { return scr_date_new_ms(scr_stats_round(scr_stats_ms(s, SCR_STATS_CTIME))); }
 double scr_stats_birthtime(ScrStats *s) { return scr_date_new_ms(scr_stats_round(scr_stats_ms(s, SCR_STATS_BIRTHTIME))); }
 
+/* Small-object blocks: a stat-and-test loop recycles one block instead of
+ * calling the system allocator per call. */
 static ScrStats *scr_stats_new(void) {
-  ScrStats *s = calloc(1, sizeof(ScrStats));
+  ScrStats *s = scr_mem_calloc(sizeof(ScrStats));
   if (!s) {
     scr_trap("scriptc: out of memory\n");
   }
@@ -5809,6 +5816,19 @@ ScrStats *scr_fs_lstat(ScrStr *path) {
   if (!s) scr_fs_throw(error, "lstat", path);
   return s;
 #endif
+}
+
+/* statSync / lstatSync(path, { throwIfNoEntry }): with false, NULL (undefined)
+ * when the entry or a parent directory is missing, as Node's binding
+ * answers for ENOENT and ENOTDIR (a dangling link's stat included); other
+ * failures throw as statSync does. */
+ScrStats *scr_fs_stat_probe(ScrStr *path, bool no_follow, bool throw_if_no_entry) {
+  if (throw_if_no_entry) return no_follow ? scr_fs_lstat(path) : scr_fs_stat(path);
+  bool outer = scr_fs_probing;
+  scr_fs_probing = true;
+  ScrStats *s = no_follow ? scr_fs_lstat(path) : scr_fs_stat(path);
+  scr_fs_probing = outer;
+  return s;
 }
 
 ScrStats *scr_stats_of_fd(int fd, int *error) {
