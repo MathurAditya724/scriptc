@@ -628,6 +628,8 @@ const ERROR_KIND_NAMES: readonly string[] = [
   "EvalError",
   "URIError",
   "AggregateError",
+  "AssertionError",
+  "SuppressedError",
 ];
 
 /** A short description of a node that seeds the may-throw fixpoint. */
