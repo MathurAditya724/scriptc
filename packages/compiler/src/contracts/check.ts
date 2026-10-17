@@ -11,6 +11,9 @@
  *   proven by the same integer range analysis the int32 storage uses,
  *   assuming every Int32 slot holds an int32 (sound by induction: every
  *   write is checked under that assumption).
+ * - Int32[]: every element stored into an array that can reach the slot is
+ *   an int32 (contracts/int32-elements.ts), so present element reads
+ *   through slots only such arrays reach are int32s.
  * - Acyclic: the class or object type cannot lie on a reference cycle, by
  *   the cycle analysis that decides tracing (backend/cycle-analysis.ts), or
  *   the diagnostic shows the cycle.
@@ -57,6 +60,7 @@ import {
   type CycleStep,
 } from "../backend/cycle-analysis.js";
 import { SourceLocations } from "../backend/source-locations.js";
+import { Int32ElementContracts } from "./int32-elements.js";
 import {
   contractLocKey,
   type ContractAnnotations,
@@ -251,7 +255,9 @@ class ContractChecker {
     this.checkProgramLifetime();
     this.checkNoThrow();
     this.checkAcyclic();
-    const int32 = new Int32Contracts(this);
+    const elements = new Int32ElementContracts(this);
+    elements.analyze();
+    const int32 = new Int32Contracts(this, elements);
     int32.run();
     const immutable = new ImmutableContracts(this);
     immutable.run();
@@ -604,19 +610,24 @@ class Int32Contracts {
   private readonly returns = new Map<string, ContractNote>(); // fn
   private readonly locals = new Map<string, ContractNote>(); // fn\0localId or \0globalId
 
-  constructor(private readonly c: ContractChecker) {
+  constructor(
+    private readonly c: ContractChecker,
+    private readonly elements: Int32ElementContracts,
+  ) {
     this.slots = new Int32Slots(c.classes);
   }
 
   run(): void {
     if (!this.bind()) return;
-    if (this.fields.size + this.params.size + this.returns.size + this.locals.size === 0) return;
+    const scalars = this.fields.size + this.params.size + this.returns.size + this.locals.size;
+    if (scalars === 0 && !this.elements.active) return;
     this.structural();
     this.writes();
     this.c.record("int32Fields", [...this.fields.keys()]);
     this.c.record("int32Params", [...this.params.keys()]);
     this.c.record("int32Returns", [...this.returns.keys()]);
     this.c.record("int32Locals", [...this.locals.keys()]);
+    this.c.record("int32Elements", [...this.elements.int32Slots]);
   }
 
   private refuse(note: ContractNote, why: string, hint: string): void {
@@ -632,7 +643,7 @@ class Int32Contracts {
     const c = this.c;
     for (const [key, list] of c.notes.functions)
       for (const note of list) {
-        if (note.marker !== "Int32") continue;
+        if (note.marker !== "Int32" || note.elements === true) continue;
         for (const fn of c.functionsAt(key)) {
           if (fn.async === true || fn.generator !== undefined) {
             this.refuse(
@@ -654,7 +665,7 @@ class Int32Contracts {
         }
       }
     for (const [key, note] of c.notes.bindings) {
-      if (note.marker !== "Int32") continue;
+      if (note.marker !== "Int32" || note.elements === true) continue;
       for (const b of c.bindingsOf(key)) {
         const type = b.fn
           ? b.fn.locals.find((l) => l.id === b.id)?.type
@@ -677,7 +688,7 @@ class Int32Contracts {
       }
     }
     for (const [key, note] of c.notes.fields) {
-      if (note.marker !== "Int32") continue;
+      if (note.marker !== "Int32" || note.elements === true) continue;
       const cut = key.lastIndexOf("\0");
       const field = key.slice(cut + 1);
       for (const cls of c.classesAt(key.slice(0, cut))) {
@@ -821,6 +832,7 @@ class Int32Contracts {
         this.locals.has(`${fnName}\0${localId}`) || this.locals.has(`\0${localId}`)
           ? INT32_RANGE
           : null,
+      elements: (arr) => this.elements.readsInt32(fnName, arr),
     };
   }
 
@@ -841,9 +853,14 @@ class Int32Contracts {
           : "make the int32 conversion explicit with '| 0', so Node computes the same value",
       );
     };
+    const elementFunctions = this.elements.functionsWithWrites();
+    const elementRanges = new Map<string, IntegerRanges>();
     for (const fn of c.mod.functions) {
       const numeric = withInitializerBindings(fn, bindings.get(fn.name) ?? []);
       const ranges = analyzeIntegerRanges(numeric, this.int32Facts(fn.name));
+      if (elementFunctions.has(fn.name)) elementRanges.set(fn.name, ranges);
+      // Scalar Int32 slots accept exactly what the backend's int32 storage
+      // proves (int32-slots.ts stores pinned slots from proven writes).
       const int32 = (e: IrExpr): boolean => e.type.kind === "f64" && withinInt32(ranges.get(e));
       const localNote = (id: string): ContractNote | undefined =>
         this.locals.get(`${fn.name}\0${id}`) ?? this.locals.get(`\0${id}`);
@@ -930,6 +947,11 @@ class Int32Contracts {
         },
       });
     }
+    this.elements.checkWrites((fn, value) => {
+      const proven = (e: IrExpr): boolean =>
+        e.type.kind === "f64" && withinInt32(elementRanges.get(fn.name)?.get(e));
+      return proven(value) || this.elements.provenElement(fn, value, proven);
+    });
   }
 }
 

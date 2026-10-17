@@ -988,6 +988,9 @@ export class LlEmitter {
    * not a constructor (where they change), not async or a generator. */
   private finalFieldBorrows = false;
   integerRanges: IntegerRanges = new Map();
+  /** Number arrays of the current function whose every present element is
+   * an int32 (Int32[] contracts), or null when the module has none. */
+  int32Elements: ((arr: IrExpr) => boolean) | null = null;
   /** Sums whose result only feeds 32-bit conversions (wrapping-sums.ts). */
   wrappingSums = new Set<IrExpr>();
   private byteWindowsEnabled = true;
@@ -6388,7 +6391,9 @@ export class LlEmitter {
     this.localUnionStorageProofs = findLocalUnionStorage(fn, this.callLifetimes, this.unionSources);
     this.localUnionStorage = new Map();
     this.walkBorrows = this.walkBorrowsByFunction.get(fn.name) ?? new Set();
-    this.integerRanges = analyzeIntegerRanges(numericFn, this.int32Slots.facts(fn.name));
+    const slotFacts = this.int32Slots.facts(fn.name);
+    this.integerRanges = analyzeIntegerRanges(numericFn, slotFacts);
+    this.int32Elements = slotFacts.elements ?? null;
     this.bytesBounds = findBytesBounds(numericFn, this.integerRanges);
     // Debug builds keep every number local a double for the debugger's
     // variable view. Lazily boxed captured parameters keep their double,

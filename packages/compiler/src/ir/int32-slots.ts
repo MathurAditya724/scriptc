@@ -12,6 +12,41 @@ import { exprFunctionReference, moduleFunctionReferences } from "./function-refe
 import { findInitializerBindings, withInitializerBindings } from "./initializer-bindings.js";
 import { everyExprChild, everyStmtChild, everyStmtList, everyTypeChild } from "./traverse.js";
 
+/** The storage slot an array-valued expression reads, as an
+ * IrContracts.int32Elements key: a local or parameter
+ * (`l:${function}\0${localId}`), a module global (`g:${globalId}`), a class
+ * field family (`f:${family}`), a record field of every record of its shape
+ * (`s:${shapeId}\0${field}`) or a direct call's result (`r:${callee}`),
+ * looking through retypings of the same value. Null for anything else. */
+export function int32ElementSlot(
+  fnName: string,
+  e: IrExpr,
+  family: (className: string, field: string) => string | null,
+): string | null {
+  for (;;) {
+    switch (e.kind) {
+      case "upcast":
+      case "downcast":
+      case "unionNarrow":
+      case "unionRetype":
+        e = e.value;
+        continue;
+      case "varRef":
+        return e.localId.startsWith("%g.") ? `g:${e.localId}` : `l:${fnName}\0${e.localId}`;
+      case "fieldGet": {
+        const key = family(e.className, e.field);
+        return key === null ? null : `f:${key}`;
+      }
+      case "recordGet":
+        return `s:${e.shapeId}\0${e.field}`;
+      case "call":
+        return `r:${e.callee}`;
+      default:
+        return null;
+    }
+  }
+}
+
 /** Whole-program int32 specialization of numeric storage.
  *
  * A class field typed `number` whose every write provably stores an int32
@@ -66,6 +101,9 @@ export class Int32Slots {
   private readonly pinned = new Set<string>();
   /** Int32 contract locals (`function\0localId`) and globals (`\0id`). */
   private readonly int32Locals = new Set<string>();
+  /** Number-array slots whose arrays hold only int32 elements (Int32[]
+   * contracts, IrContracts.int32Elements keys). */
+  private readonly int32Elements = new Set<string>();
   /** Drops the analysis attempted on pinned slots. The contract check and
    * this analysis use the same range proofs, so this stays empty. */
   readonly pinViolations: string[] = [];
@@ -111,7 +149,8 @@ export class Int32Slots {
       this.returns.size === 0 &&
       this.paramFacts.size === 0 &&
       this.boxes.size === 0 &&
-      this.int32Locals.size === 0
+      this.int32Locals.size === 0 &&
+      this.int32Elements.size === 0
     )
       return {};
     const level = (key: string): IntegerRange =>
@@ -130,6 +169,7 @@ export class Int32Slots {
         this.int32Locals.has(`${fnName}\0${localId}`) || this.int32Locals.has(`\0${localId}`)
           ? INT32_RANGE
           : null;
+    if (this.int32Elements.size > 0) result.elements = (arr) => this.hasInt32Elements(fnName, arr);
     const params = this.paramFacts.get(fnName);
     if (params)
       result.params =
@@ -190,6 +230,16 @@ export class Int32Slots {
   }
   addInt32Local(key: string): void {
     this.int32Locals.add(key);
+  }
+  addInt32Elements(key: string): void {
+    this.int32Elements.add(key);
+  }
+  /** Whether every present element of the number array `arr` evaluates to
+   * (read inside `fnName`) is an int32. */
+  hasInt32Elements(fnName: string, arr: IrExpr): boolean {
+    if (this.int32Elements.size === 0) return false;
+    const key = int32ElementSlot(fnName, arr, (cls, field) => this.family(cls, field));
+    return key !== null && this.int32Elements.has(key);
   }
   private refusePinned(key: string): boolean {
     if (!this.pinned.has(key)) return false;
@@ -666,6 +716,7 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
     slots.addReturn(fnName);
   }
   for (const key of contracts?.int32Locals ?? []) slots.addInt32Local(key);
+  for (const key of contracts?.int32Elements ?? []) slots.addInt32Elements(key);
 
   /* ── candidate fields ── */
   const children = new Map<string, string[]>();

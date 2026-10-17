@@ -7,6 +7,7 @@ import { F64_INF, exactIndexLines, f64Lit, sizeToDouble } from "./common.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
 import { byteNumberAccess } from "../../ir/byte-numbers.js";
 import { emitByteNumber } from "./byte-numbers.js";
+import { integerOrNaNRange } from "./wrapping-sums.js";
 
 const BYTES_NUM_KIND: Record<string, { kind: number; le: boolean } | undefined> = {
   u8: { kind: 0, le: false },
@@ -360,6 +361,20 @@ export function emitToUint32(
     const out = B.tmp();
     B.line(`${integer} = fptosi double ${value} to i64`);
     B.line(`${out} = trunc i64 ${integer} to i32`);
+    return out;
+  }
+  if (expr && integerOrNaNRange(host, expr)) {
+    // An exact integer or NaN (an Int32[] or typed-array element read that
+    // may miss, `charCodeAt`): the integer's low 32 bits, or 0 for NaN. The
+    // conversion of NaN is poison, but the select then picks 0.
+    const integer = B.tmp();
+    const low = B.tmp();
+    const ordered = B.tmp();
+    const out = B.tmp();
+    B.line(`${integer} = fptosi double ${value} to i64`);
+    B.line(`${low} = trunc i64 ${integer} to i32`);
+    B.line(`${ordered} = fcmp ord double ${value}, 0.0`);
+    B.line(`${out} = select i1 ${ordered}, i32 ${low}, i32 0`);
     return out;
   }
   const aboveMin = B.tmp();
