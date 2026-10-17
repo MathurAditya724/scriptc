@@ -54,7 +54,8 @@ void scr_child_err_thunk0(ScrClosure *cb, ScrStr *msg) {
 }
 
 void scr_child_err_thunk_error(ScrClosure *cb, ScrStr *msg) {
-  ScrError *error = scr_error_new(0 /* Error */, msg);
+  ScrError *error = scr_event_error_payload != NULL ? scr_error_retain(scr_event_error_payload)
+                                                    : scr_error_new(0 /* Error */, msg);
   ((void (*)(ScrClosure *, ScrError *))cb->fn)(cb, error);
 }
 #endif

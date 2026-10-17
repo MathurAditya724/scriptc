@@ -4313,7 +4313,7 @@ declare module "net" {
     /* http.createServer(handler)'s event twin (a no-parser net server
      * never fires it, like Node). */
     on(
-      event: "request",
+      event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
@@ -4327,7 +4327,7 @@ declare module "net" {
       listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
     ): void;
     addListener(
-      event: "request",
+      event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
     once(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
@@ -4340,7 +4340,7 @@ declare module "net" {
       listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
     ): void;
     once(
-      event: "request",
+      event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
   }
@@ -4461,6 +4461,7 @@ declare module "http" {
     requireHostHeader?: boolean;
     joinDuplicateHeaders?: boolean;
     keepAliveTimeoutBuffer?: number;
+    maxHeaderSize?: number;
     [option: string]: unknown;
   }
   /* The outgoing-header shape, @types/node's matrix: numbers format via
@@ -4580,6 +4581,8 @@ declare module "http" {
      * Agent VALUE threads through (getName-keyed maxSockets accounting
      * over one-dial-per-request connections). */
     agent?: Agent | boolean | null;
+    /* Aborting destroys the request with an AbortError. */
+    signal?: AbortSignal;
     /* The options-record stance: Node ignores an options record's
      * unknown keys, so every key typechecks here — the option WALK in
      * the lowering decides per key (lower, fence by name, or drop
@@ -4661,7 +4664,7 @@ declare module "http" {
     setTimeout(timeout: number, callback?: () => void): this;
     write(data: string | Uint8Array): void;
     end(data?: string | Uint8Array): void;
-    destroy(): void;
+    destroy(error?: Error): void;
     abort(): void;
     on(event: "response", listener: (res: IncomingMessage) => void): void;
     on(event: "socket", listener: (socket: Socket) => void): void;
@@ -4669,7 +4672,7 @@ declare module "http" {
       event: "upgrade",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
     ): void;
-    on(event: "timeout" | "close" | "finish" | "abort", listener: () => void): void;
+    on(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
     addListener(event: "response", listener: (res: IncomingMessage) => void): void;
@@ -4686,7 +4689,7 @@ declare module "http" {
       event: "upgrade",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
     ): void;
-    once(event: "timeout" | "close" | "finish" | "abort", listener: () => void): void;
+    once(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): void;
     once(event: "error", listener: (err: Error) => void): void;
   }
   export function createServer(
@@ -4849,6 +4852,8 @@ declare module "https" {
     rejectUnauthorized?: boolean;
     ca?: string | Uint8Array;
     agent?: Agent | boolean | null;
+    /* Aborting destroys the request with an AbortError. */
+    signal?: AbortSignal;
     /* The options-record stance (see http.RequestOptions). */
     [option: string]: unknown;
   }

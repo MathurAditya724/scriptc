@@ -1794,6 +1794,18 @@ function lowerNetServerMethodCall(
         loc,
       };
     }
+    if (event === "checkContinue" || event === "checkExpectation") {
+      // Expect handling: these listeners take the request instead of
+      // 'request' (checkContinue answers with res.writeContinue()).
+      const cb = lowerRequestHandlerArg(lowerer, args[1]!);
+      return {
+        kind: "libCall",
+        fn: "http.serverOnCheck",
+        args: [receiver, cb, once, boolLit(event === "checkExpectation", loc)],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "request") {
       // The 'request' event — http.createServer(handler)'s event twin, and
       // the way an http2 allowHTTP1 server (created handler-less) gets its
@@ -1981,7 +1993,7 @@ function lowerNetServerMethodCall(
     lowerer.noLowering(
       `server.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
       args[0]!,
-      '"connection", "request", "drop", "stream", "session", "upgrade", "connect", "error", "close", "listening", and "sessionError" are the supported server events (as literals)',
+      '"connection", "request", "checkContinue", "checkExpectation", "drop", "stream", "session", "upgrade", "connect", "error", "close", "listening", and "sessionError" are the supported server events (as literals)',
     );
   }
   if (name === "emit") {
@@ -3944,6 +3956,7 @@ function lowerHttpServerOptions(
   joinDup: boolean;
   allowMissingHost: boolean;
   keepAliveTimeoutBuffer: IrExpr | null;
+  maxHeaderSize: IrExpr | null;
 } {
   if (!ts.isObjectLiteralExpression(node)) {
     lowerer.noLowering(
@@ -3955,6 +3968,7 @@ function lowerHttpServerOptions(
   let joinDup = false;
   let allowMissingHost = false;
   let keepAliveTimeoutBuffer: IrExpr | null = null;
+  let maxHeaderSize: IrExpr | null = null;
   for (const prop of node.properties) {
     let initializer: ts.Expression | null;
     if (
@@ -4005,6 +4019,22 @@ function lowerHttpServerOptions(
         'the lowered forms are the literals joinDuplicateHeaders: true (repeats join ", ") and false (the keep-first default)',
       );
     }
+    if (key === "maxHeaderSize") {
+      // The header size bound (Node's validateInteger runs in the runtime).
+      const raw =
+        initializer !== null
+          ? lowerer.lowerExpr(initializer)
+          : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
+      if (raw.type.kind !== "f64") {
+        lowerer.noLowering(
+          `${what} with a '${lowerer.fmt(raw.type)}' maxHeaderSize option`,
+          prop,
+          "maxHeaderSize is a number",
+        );
+      }
+      maxHeaderSize = raw;
+      continue;
+    }
     if (key === "keepAliveTimeoutBuffer") {
       if (keepAliveTimeoutBuffer !== null) {
         lowerer.noLowering(
@@ -4039,11 +4069,11 @@ function lowerHttpServerOptions(
       key,
       what,
       HTTP_SERVER_DOCUMENTED_OPTIONS,
-      "requireHostHeader, joinDuplicateHeaders, and keepAliveTimeoutBuffer are the supported options",
+      "requireHostHeader, joinDuplicateHeaders, keepAliveTimeoutBuffer, and maxHeaderSize are the supported options",
     );
     // An undocumented key, dropped like Node drops it.
   }
-  return { joinDup, allowMissingHost, keepAliveTimeoutBuffer };
+  return { joinDup, allowMissingHost, keepAliveTimeoutBuffer, maxHeaderSize };
 }
 
 /** The shared createServer([options][, handler]) shapes behind
@@ -4077,7 +4107,12 @@ function lowerHttpCreateServerForms(
   const opts =
     optsNode !== null
       ? lowerHttpServerOptions(lowerer, optsNode, what)
-      : { joinDup: false, allowMissingHost: false, keepAliveTimeoutBuffer: null };
+      : {
+          joinDup: false,
+          allowMissingHost: false,
+          keepAliveTimeoutBuffer: null,
+          maxHeaderSize: null,
+        };
   const server: IrExpr =
     handlerNode !== null
       ? {
@@ -4088,20 +4123,27 @@ function lowerHttpCreateServerForms(
           loc,
         }
       : { kind: "libCall", fn: "http.createServerEmpty", args: [], type: NETSERVER_T, loc };
-  if (!opts.joinDup && !opts.allowMissingHost && opts.keepAliveTimeoutBuffer === null)
+  if (
+    !opts.joinDup &&
+    !opts.allowMissingHost &&
+    opts.keepAliveTimeoutBuffer === null &&
+    opts.maxHeaderSize === null
+  )
     return server;
   // The option-setting composition: an interned helper takes the option
   // values first (preserving Node's options-before-handler evaluation
   // order), then the fresh server, applies the modeled fields, and answers
   // the server as the constructor/factory result.
   const hasBuffer = opts.keepAliveTimeoutBuffer !== null;
-  const key = `server.opts:${opts.joinDup ? 1 : 0}:${opts.allowMissingHost ? 1 : 0}:${hasBuffer ? 1 : 0}`;
+  const hasMax = opts.maxHeaderSize !== null;
+  const key = `server.opts:${opts.joinDup ? 1 : 0}:${opts.allowMissingHost ? 1 : 0}:${hasBuffer ? 1 : 0}:${hasMax ? 1 : 0}`;
   const existing = lowerer.arrHofHelpers.get(key);
   const name = existing ?? `%server.opts.${lowerer.arrHofHelpers.size}`;
   if (!existing) {
     lowerer.arrHofHelpers.set(key, name);
     const params = [
       ...(hasBuffer ? [{ localId: "b.0", name: "buffer", type: DYN }] : []),
+      ...(hasMax ? [{ localId: "m.0", name: "maxHeaderSize", type: F64 }] : []),
       { localId: "s.0", name: "s", type: NETSERVER_T },
     ];
     const ref: IrExpr = { kind: "varRef", localId: "s.0", type: NETSERVER_T, loc };
@@ -4115,6 +4157,19 @@ function lowerHttpCreateServerForms(
           kind: "libCall",
           fn: "http.serverTimeoutOptionSet",
           args: [ref, selector, value],
+          type: VOID,
+          loc,
+        },
+        loc,
+      });
+    }
+    if (hasMax) {
+      body.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "http.serverMaxHeaderSize",
+          args: [ref, { kind: "varRef", localId: "m.0", type: F64, loc }],
           type: VOID,
           loc,
         },
@@ -4154,7 +4209,11 @@ function lowerHttpCreateServerForms(
   return {
     kind: "call",
     callee: name,
-    args: [...(opts.keepAliveTimeoutBuffer !== null ? [opts.keepAliveTimeoutBuffer] : []), server],
+    args: [
+      ...(opts.keepAliveTimeoutBuffer !== null ? [opts.keepAliveTimeoutBuffer] : []),
+      ...(opts.maxHeaderSize !== null ? [opts.maxHeaderSize] : []),
+      server,
+    ],
     type: NETSERVER_T,
     loc,
   };
@@ -5781,6 +5840,12 @@ function lowerHttpClientCall(
   let agentClose: ts.Node | null = null;
   /** agent: <Agent value> — the requestAgent rows thread the handle. */
   let agentVal: IrExpr | null = null;
+  /** signal: an AbortSignal (checked at runtime) that destroys the request. */
+  let signal: IrExpr | null = null;
+  /** servername: the TLS name for SNI and certificate verification. */
+  let servername: IrExpr | null = null;
+  /** maxHeaderSize: the response head's size bound. */
+  let maxHeaderSize: IrExpr | null = null;
   for (const prop of optsNode.properties) {
     // Shorthand entries ({ port } for { port: port }) are the natural
     // spelling at these call sites — the shorthand's VALUE lowering
@@ -5891,6 +5956,27 @@ function lowerHttpClientCall(
       case "timeout":
         timeout = lowerVal("f64");
         break;
+      case "maxHeaderSize":
+        maxHeaderSize = lowerVal("f64");
+        break;
+      case "servername":
+        if (!secureish) {
+          lowerer.noLowering(
+            `${member} option 'servername'`,
+            prop,
+            "servername is an https.request option — the plain http client has no TLS layer",
+          );
+        }
+        servername = lowerVal("string");
+        break;
+      case "signal": {
+        const v =
+          initializer !== null
+            ? lowerer.lowerExpr(initializer)
+            : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
+        signal = lowerer.coerceToExpected(v, DYN);
+        break;
+      }
       case "headers":
         if (initializer === null) {
           lowerer.noLowering(
@@ -6024,8 +6110,8 @@ function lowerHttpClientCall(
           member,
           secureish ? HTTPS_CLIENT_DOCUMENTED_OPTIONS : HTTP_CLIENT_DOCUMENTED_OPTIONS,
           secureish
-            ? "hostname/host, port, path, method, timeout, headers, agent, rejectUnauthorized, and ca are the supported options"
-            : "hostname/host, port, path, method, timeout, headers, and agent are the supported options",
+            ? "hostname/host, port, path, method, timeout, headers, agent, signal, maxHeaderSize, rejectUnauthorized, ca, and servername are the supported options"
+            : "hostname/host, port, path, method, timeout, headers, agent, signal, and maxHeaderSize are the supported options",
         );
     }
   }
@@ -6110,10 +6196,59 @@ function lowerHttpClientCall(
   timeout ??= numLit(0, loc);
   headers ??= { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
   const autoEnd = boolLit(member === "get", loc);
+  // Options applied to the built request: servername before the TLS
+  // handshake starts, then options.signal (an already aborted signal
+  // destroys the request at once, like Node's constructor).
+  const withSignal = (request: IrExpr): IrExpr => {
+    if (signal === null && servername === null && maxHeaderSize === null) return request;
+    const local = lowerer.declareHiddenLocal("%requestOptions", HTTPCLIENTREQ_T);
+    const ref = (): IrExpr => varRef(local.id, HTTPCLIENTREQ_T, loc);
+    const steps: IrStmt[] = [{ kind: "varDecl", localId: local.id, init: request, loc }];
+    if (maxHeaderSize !== null) {
+      steps.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "http.clientMaxHeaderSize",
+          args: [ref(), maxHeaderSize],
+          type: VOID,
+          loc,
+        },
+        loc,
+      });
+    }
+    if (servername !== null) {
+      steps.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "https.clientServername",
+          args: [ref(), servername],
+          type: VOID,
+          loc,
+        },
+        loc,
+      });
+    }
+    if (signal !== null) {
+      steps.push({
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "http.clientSignal", args: [ref(), signal], type: VOID, loc },
+        loc,
+      });
+    }
+    return { kind: "seqExpr", stmts: steps, result: ref(), type: HTTPCLIENTREQ_T, loc };
+  };
   if (connCb !== null) {
     const base = [connCb, path, method, timeout, headers, autoEnd];
     if (args.length === 1) {
-      return { kind: "libCall", fn: "http.requestConn", args: base, type: HTTPCLIENTREQ_T, loc };
+      return withSignal({
+        kind: "libCall",
+        fn: "http.requestConn",
+        args: base,
+        type: HTTPCLIENTREQ_T,
+        loc,
+      });
     }
     const { cb } = lowerCallbackArg(
       lowerer,
@@ -6124,13 +6259,13 @@ function lowerHttpClientCall(
       "use (res) or ()",
       [HTTPREQ_T],
     );
-    return {
+    return withSignal({
       kind: "libCall",
       fn: "http.requestConnCb",
       args: [...base, cb],
       type: HTTPCLIENTREQ_T,
       loc,
-    };
+    });
   }
   const base = [host, port, path, method, timeout, headers, autoEnd];
   if (secureish) {
@@ -6151,7 +6286,7 @@ function lowerHttpClientCall(
           : agentVal !== null
             ? "http.requestAgent"
             : "http.request";
-    return { kind: "libCall", fn, args: base, type: HTTPCLIENTREQ_T, loc };
+    return withSignal({ kind: "libCall", fn, args: base, type: HTTPCLIENTREQ_T, loc });
   }
   const { cb } = lowerCallbackArg(
     lowerer,
@@ -6172,7 +6307,7 @@ function lowerHttpClientCall(
         : agentVal !== null
           ? "http.requestAgentCb"
           : "http.requestCb";
-  return { kind: "libCall", fn, args: [...base, cb], type: HTTPCLIENTREQ_T, loc };
+  return withSignal({ kind: "libCall", fn, args: [...base, cb], type: HTTPCLIENTREQ_T, loc });
 }
 
 /** The headers option of http.request: an object literal with literal
@@ -6449,6 +6584,26 @@ function lowerHttpClientMethodCall(
       NARROW_DATA_HINT,
     );
   }
+  if (name === "destroy" && args.length === 1) {
+    // destroy(err): err is the request's 'error' (an Error value here).
+    requireStatementPosition(lowerer, call, "request.destroy(err)");
+    const receiver = lowerer.lowerExpr(access.expression);
+    const err = lowerer.lowerExpr(args[0]!);
+    if (err.type.kind !== "object") {
+      lowerer.noLowering(
+        `destroy with a '${lowerer.fmt(err.type)}' argument`,
+        args[0]!,
+        "pass an Error value, or call destroy() without one",
+      );
+    }
+    return {
+      kind: "libCall",
+      fn: "http.clientDestroyError",
+      args: [receiver, lowerer.coerceToExpected(err, ERROR_T)],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "destroy" || name === "abort") {
     requireStatementPosition(lowerer, call, `request.${name}()`);
     if (args.length !== 0) {
@@ -6527,7 +6682,13 @@ function lowerHttpClientMethodCall(
         loc,
       };
     }
-    if (event === "timeout" || event === "close" || event === "finish" || event === "abort") {
+    if (
+      event === "timeout" ||
+      event === "close" ||
+      event === "finish" ||
+      event === "abort" ||
+      event === "continue"
+    ) {
       const { cb } = lowerCallbackArg(
         lowerer,
         args[1]!,
@@ -6544,7 +6705,9 @@ function lowerHttpClientMethodCall(
             ? "http.clientOnClose"
             : event === "abort"
               ? "http.clientOnAbort"
-              : "http.clientOnFinish";
+              : event === "continue"
+                ? "http.clientOnContinue"
+                : "http.clientOnFinish";
       return { kind: "libCall", fn, args: [receiver, cb, once], type: VOID, loc };
     }
     if (event === "upgrade") {

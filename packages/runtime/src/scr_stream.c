@@ -4476,17 +4476,8 @@ static bool scr_stream_signal_aborted(ScrDyn *signal) {
 }
 
 static ScrError *scr_stream_abort_error(ScrDyn *signal) {
-  ScrStr *message = scr_str_new("The operation was aborted", 25);
-  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
-  scr_str_release(message);
-  scr_str_release(e->name);
-  e->name = scr_str_new("AbortError", 10);
-  /* AbortError assigns code, then name: own enumerable properties */
-  scr_error_set_code(e, "ABORT_ERR");
-  e->name_present = true;
-  e->name_enumerable = true;
   ScrDyn *reason = scr_stream_signal_prop(signal, "reason");
-  scr_error_define_cause(e, reason ? reason : scr_dyn_undefined());
+  ScrError *e = scr_error_abort(reason);
   if (reason) scr_dyn_release(reason);
   return e;
 }

@@ -244,6 +244,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       if (
         fn === "rl.createSignal" ||
         fn === "rl.questionAsyncSignal" ||
+        fn === "http.clientSignal" ||
         fn === "stream.addAbortSignal" ||
         fn === "stream.addAbortSignalFn" ||
         fn === "sp.finishedOptsSignal" ||

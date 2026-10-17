@@ -241,6 +241,8 @@ void scr_error_install_cause_drop(void (*fn)(void *obj));
 bool scr_error_has_cause(ScrError *e);
 struct ScrDyn *scr_error_cause(ScrError *e); /* +1, undefined when absent */
 void scr_error_define_cause(ScrError *e, struct ScrDyn *value);
+ScrError *scr_error_abort(struct ScrDyn *reason /*borrowed, NULL = undefined*/); /* +1 */
+extern SCR_TL ScrError *scr_event_error_payload;
 void scr_error_set_cause(ScrError *e, struct ScrDyn *value); /* borrowed operands */
 void scr_error_delete_cause(ScrError *e);
 /* ECMA Error.prototype.toString: "", name, message, or "name: message".
