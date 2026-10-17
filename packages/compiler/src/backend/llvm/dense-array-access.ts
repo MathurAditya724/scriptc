@@ -47,7 +47,8 @@ interface DenseGuard {
  * then extends the length over hole states exactly the same way). An index
  * below the hole-free prefix bound branches to `filledLabel` first; both
  * that block and the returned (state-checked) dense block may use the
- * guard's values. */
+ * guard's values. A `proven` index is known to lie below the bound (a dense
+ * array loop's fast copy, dense-array-loops.ts) and always takes it. */
 function emitDenseGuard(
   host: LlvmEmitterContext,
   array: string,
@@ -56,6 +57,7 @@ function emitDenseGuard(
   slow: string,
   requireBelowLen: boolean,
   filledLabel: string,
+  proven = false,
 ): DenseGuard {
   const B = host.B;
   const size = host.sizeType;
@@ -137,8 +139,10 @@ function emitDenseGuard(
     B.line(`${offset} = trunc i64 ${wide} to i32`);
   }
   // The bound never exceeds the length or the dense capacity.
-  let inFilled = B.tmp();
-  B.line(`${inFilled} = icmp ult i64 ${wide}, ${filledWide}`);
+  // The proof covers the counter's integer value only.
+  const below = proven && integral === null;
+  let inFilled = below ? "true" : B.tmp();
+  if (!below) B.line(`${inFilled} = icmp ult i64 ${wide}, ${filledWide}`);
   if (integral) {
     const t = B.tmp();
     B.line(`${t} = and i1 ${integral}, ${inFilled}`);
@@ -272,6 +276,7 @@ export function emitDenseArrayGet(
   element: IrType,
   getter: string,
   retain: boolean,
+  proven = false,
 ): string {
   const B = host.B;
   const ty = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
@@ -285,7 +290,7 @@ export function emitDenseArrayGet(
   const slow = B.newLabel("arr.get.slow"),
     join = B.newLabel("arr.get.join"),
     valueLabel = B.newLabel("arr.get.value");
-  const guard = emitDenseGuard(host, array, index, indexExpr, slow, true, valueLabel);
+  const guard = emitDenseGuard(host, array, index, indexExpr, slow, true, valueLabel, proven);
   const state = loadState(host, guard);
   const present = B.tmp();
   B.line(`${present} = icmp eq i8 ${state}, ${SCR_ARR_VALUE}`);
@@ -331,6 +336,7 @@ export function emitDenseArrayNumber(
   array: string,
   index: LlValue,
   indexExpr: IrExpr | undefined,
+  proven = false,
 ): string {
   return emitDenseArrayGet(
     host,
@@ -341,6 +347,7 @@ export function emitDenseArrayNumber(
     { kind: "f64" },
     "scr_arr_get_number",
     false,
+    proven,
   );
 }
 
@@ -399,6 +406,7 @@ export function emitDenseArraySet(
   acc: ArrayAccess,
   element: IrType,
   value: string,
+  proven = false,
 ): void {
   const B = host.B;
   const ty = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
@@ -413,7 +421,7 @@ export function emitDenseArraySet(
   const slow = B.newLabel("arr.set.slow"),
     join = B.newLabel("arr.set.join"),
     filledLabel = B.newLabel("arr.set.filled");
-  const guard = emitDenseGuard(host, array, index, indexExpr, slow, false, filledLabel);
+  const guard = emitDenseGuard(host, array, index, indexExpr, slow, false, filledLabel, proven);
   const { offset, len } = guard;
   const storeValue = (valuePtr: string): void => {
     if (acc === "f64") {

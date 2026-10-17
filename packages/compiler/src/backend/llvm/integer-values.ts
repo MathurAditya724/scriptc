@@ -93,11 +93,16 @@ export function integerNumber(
   // `x | 0`), while a 64-bit source is not known to convert exactly. So a
   // counter written `i = (i + 1) | 0` stays an integer instead of taking a
   // double round trip on every iteration.
+  // A uint32 (an array index counter) converts from its low half unsigned,
+  // which LLVM likewise folds back through a later `fptosi` to i64.
   const int32 = range.min >= -2147483648 && range.max <= 2147483647;
+  const unsigned = !int32 && range.min >= 0 && range.max <= 4294967295;
   host.B.line(
     int32
       ? `${number} = sitofp i32 ${uint32} to double`
-      : `${number} = sitofp i64 ${name} to double`,
+      : unsigned
+        ? `${number} = uitofp i32 ${uint32} to double`
+        : `${number} = sitofp i64 ${name} to double`,
   );
   return { name: number, type, uint32, integer: { name, type: "i64", signed: true, range } };
 }
