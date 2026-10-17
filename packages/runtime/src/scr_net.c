@@ -2755,6 +2755,1038 @@ ScrNetSocket *scr_net_sock_reset_and_destroy(ScrNetSocket *s) {
   return scr_net_sock_retain(s);
 }
 
+
+/* ── net.SocketAddress and net.BlockList ──────────────────────────────────
+ * Both are native checked-dynamic handles. SocketAddress follows
+ * lib/internal/socketaddress.js (the option checks in Node's order, then
+ * the address parse, which fails as ERR_INVALID_ADDRESS); BlockList
+ * follows lib/internal/blocklist.js over Node's C++ rules: an address
+ * matches an address rule when it compares the same, a range when it lies
+ * between the ends, and a subnet by prefix. Across families an IPv4
+ * address compares as its IPv4-mapped IPv6 form (::ffff:a.b.c.d), as
+ * Node's SocketAddress::compare and is_in_network do. */
+
+typedef struct {
+  int family;           /* 4 or 6 */
+  unsigned char b[16];  /* network order; IPv4 uses the first 4 bytes */
+} ScrNetIp;
+
+typedef struct ScrNetSockAddr {
+  size_t rc;
+  ScrNetIp ip;
+  double port;
+  double flowlabel;
+} ScrNetSockAddr;
+
+static void *scr_net_sockaddr_retain(void *p) {
+  ScrNetSockAddr *a = p;
+  a->rc++;
+  return a;
+}
+
+static void scr_net_sockaddr_release(void *p) {
+  ScrNetSockAddr *a = p;
+  if (a != NULL && --a->rc == 0) free(a);
+}
+
+static void scr_net_addr_install(void);
+
+/* uv_ip4_addr / uv_ip6_addr: the IPv6 form may carry a %scope, which the
+ * address keeps out of its text, as uv_ip6_name prints it. */
+static bool scr_net_ip_parse(const ScrStr *text, int family, ScrNetIp *out) {
+  char buf[INET6_ADDRSTRLEN + 64];
+  if (text->len >= sizeof buf || memchr(text->data, '\0', text->len) != NULL) return false;
+  memcpy(buf, text->data, text->len);
+  buf[text->len] = '\0';
+  memset(out, 0, sizeof *out);
+  out->family = family;
+  if (family == 4) return inet_pton(AF_INET, buf, out->b) == 1;
+  char *pct = strchr(buf, '%');
+  if (pct != NULL) *pct = '\0';
+  return inet_pton(AF_INET6, buf, out->b) == 1;
+}
+
+static ScrStr *scr_net_ip_text(const ScrNetIp *ip) {
+  char buf[INET6_ADDRSTRLEN];
+  if (!inet_ntop(ip->family == 4 ? AF_INET : AF_INET6, ip->b, buf, sizeof buf)) buf[0] = '\0';
+  return scr_str_new(buf, strlen(buf));
+}
+
+static ScrDyn *scr_net_sockaddr_box(const ScrNetIp *ip, double port, double flowlabel) {
+  scr_net_addr_install();
+  ScrNetSockAddr *a = malloc(sizeof *a);
+  if (!a) scr_net_oom();
+  a->rc = 1;
+  a->ip = *ip;
+  a->port = port;
+  a->flowlabel = flowlabel;
+  ScrDyn *box = scr_dyn_new_handle(a, SCR_DYNH_NET_SOCKET_ADDRESS);
+  scr_net_sockaddr_release(a);
+  return box;
+}
+
+static const ScrNetSockAddr *scr_net_sockaddr_of(const ScrDyn *v) {
+  if (v == NULL || v->kind != SCR_DYN_HANDLE || v->v.handle.tag != SCR_DYNH_NET_SOCKET_ADDRESS) return NULL;
+  return (const ScrNetSockAddr *)v->v.handle.ptr;
+}
+
+static ScrDyn *scr_net_dyn_str(const char *s) {
+  ScrStr *str = scr_str_new(s, strlen(s));
+  ScrDyn *d = scr_dyn_new_str(str);
+  scr_str_release(str);
+  return d;
+}
+
+/* { address, port, family, flowlabel }: toJSON() and the inspect view. */
+static ScrDyn *scr_net_sockaddr_detail(const ScrNetSockAddr *a) {
+  ScrDyn *out = scr_dyn_new_obj();
+  ScrStr *text = scr_net_ip_text(&a->ip);
+  scr_dyn_obj_set(out, "address", 7, scr_dyn_new_str(text));
+  scr_str_release(text);
+  scr_dyn_obj_set(out, "port", 4, scr_dyn_new_num(a->port));
+  scr_dyn_obj_set(out, "family", 6, scr_net_dyn_str(a->ip.family == 4 ? "ipv4" : "ipv6"));
+  scr_dyn_obj_set(out, "flowlabel", 9, scr_dyn_new_num(a->flowlabel));
+  return out;
+}
+
+/* The inspect text of a SocketAddress, as ERR_INVALID_ARG_VALUE's
+ * "Received" renders it. */
+static int scr_net_sockaddr_inspect_text(const ScrNetSockAddr *a, char *out, size_t cap) {
+  char ip[INET6_ADDRSTRLEN];
+  if (!inet_ntop(a->ip.family == 4 ? AF_INET : AF_INET6, a->ip.b, ip, sizeof ip)) ip[0] = '\0';
+  char port[48], flow[48];
+  scr_num_received(a->port, port);
+  scr_num_received(a->flowlabel, flow);
+  return snprintf(out, cap, "SocketAddress { address: '%s', port: %s, family: '%s', flowlabel: %s }", ip,
+                  port, a->ip.family == 4 ? "ipv4" : "ipv6", flow);
+}
+
+static bool scr_net_is_plain_object(const ScrDyn *v) {
+  return v->kind == SCR_DYN_OBJ;
+}
+
+/* ERR_OUT_OF_RANGE: The value of "<name>" is out of range. It must be <range>. Received <n> */
+static void scr_net_out_of_range(const char *name, const char *range, double got) {
+  char rec[48], msg[256];
+  scr_num_received(got, rec);
+  int n = snprintf(msg, sizeof msg, "The value of \"%s\" is out of range. It must be %s. Received %s", name,
+                   range, rec);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
+}
+
+static void scr_net_invalid_address(void) {
+  static const char msg[] = "Invalid socket address";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_INVALID_ADDRESS");
+}
+
+/* new SocketAddress(options): validateObject, the destructuring defaults
+ * (the address default reads the family as given), the family switch
+ * after toLowerCase(), validateString(address), validatePort(port) and
+ * validateUint32(flowlabel), then the address parse. NULL with the
+ * exception pending on failure. */
+static ScrDyn *scr_net_sockaddr_from_options(const ScrDyn *options) {
+  if (options == NULL || options->kind == SCR_DYN_UNDEF) options = NULL;
+  else if (!scr_net_is_plain_object(options)) {
+    scr_dyn_arg_type_fail("options", "of type object", options);
+    return NULL;
+  }
+  const ScrDyn *family = options ? scr_dyn_obj_get(options, "family", 6) : NULL;
+  const ScrDyn *address = options ? scr_dyn_obj_get(options, "address", 7) : NULL;
+  const ScrDyn *port = options ? scr_dyn_obj_get(options, "port", 4) : NULL;
+  const ScrDyn *flowlabel = options ? scr_dyn_obj_get(options, "flowlabel", 9) : NULL;
+  if (family != NULL && family->kind == SCR_DYN_UNDEF) family = NULL;
+  if (address != NULL && address->kind == SCR_DYN_UNDEF) address = NULL;
+  if (port != NULL && port->kind == SCR_DYN_UNDEF) port = NULL;
+  if (flowlabel != NULL && flowlabel->kind == SCR_DYN_UNDEF) flowlabel = NULL;
+  bool raw_ipv4 = family == NULL ||
+                  (family->kind == SCR_DYN_STR && family->v.str->len == 4 &&
+                   memcmp(family->v.str->data, "ipv4", 4) == 0);
+  int fam = 0;
+  if (family == NULL) {
+    fam = 4;
+  } else if (family->kind == SCR_DYN_STR && family->v.str->len == 4) {
+    char lower[4];
+    for (size_t i = 0; i < 4; i++) {
+      unsigned char c = (unsigned char)family->v.str->data[i];
+      lower[i] = (char)(c >= 'A' && c <= 'Z' ? c + 32 : c);
+    }
+    if (memcmp(lower, "ipv4", 4) == 0) fam = 4;
+    else if (memcmp(lower, "ipv6", 4) == 0) fam = 6;
+  }
+  if (fam == 0) {
+    scr_dyn_arg_value_fail("options.family", NULL, family);
+    return NULL;
+  }
+  if (address != NULL && address->kind != SCR_DYN_STR) {
+    scr_dyn_prop_type_fail("options.address", "of type string", address);
+    return NULL;
+  }
+  double port_num = 0;
+  if (port != NULL) {
+    bool ok = false;
+    if (port->kind == SCR_DYN_NUM) {
+      port_num = port->v.num;
+      ok = true;
+    } else if (port->kind == SCR_DYN_STR) {
+      ScrStr *ps = scr_str_retain(port->v.str);
+      ScrStr *trimmed = scr_str_trim(ps);
+      ok = trimmed->len > 0;
+      scr_str_release(trimmed);
+      port_num = scr_string_to_number(ps);
+      scr_str_release(ps);
+    }
+    ok = ok && port_num == port_num && port_num >= 0 && port_num <= 4294967295.0 &&
+         trunc(port_num) == port_num && port_num <= 65535;
+    if (!ok) {
+      char detail[64], msg[160];
+      const char *d = scr_dyn_specific_type(port, detail, sizeof detail);
+      int n = snprintf(msg, sizeof msg, "options.port should be >= 0 and < 65536. Received %s.", d);
+      scr_throw_error_msg_code(SCR_ERR_RANGE, msg, n < 0 ? 0 : (size_t)n, "ERR_SOCKET_BAD_PORT");
+      return NULL;
+    }
+  }
+  double flow = 0;
+  if (flowlabel != NULL) {
+    if (flowlabel->kind != SCR_DYN_NUM) {
+      scr_dyn_prop_type_fail("options.flowlabel", "of type number", flowlabel);
+      return NULL;
+    }
+    flow = flowlabel->v.num;
+    if (!(isfinite(flow) && trunc(flow) == flow)) {
+      scr_net_out_of_range("options.flowlabel", "an integer", flow);
+      return NULL;
+    }
+    if (flow < 0 || flow > 4294967295.0) {
+      scr_net_out_of_range("options.flowlabel", ">= 0 && <= 4294967295", flow);
+      return NULL;
+    }
+  }
+  ScrNetIp ip;
+  bool parsed;
+  if (address != NULL) {
+    parsed = scr_net_ip_parse(address->v.str, fam, &ip);
+  } else {
+    ScrStr *def = raw_ipv4 ? scr_str_new("127.0.0.1", 9) : scr_str_new("::", 2);
+    parsed = scr_net_ip_parse(def, fam, &ip);
+    scr_str_release(def);
+  }
+  if (!parsed) {
+    scr_net_invalid_address();
+    return NULL;
+  }
+  /* `port | 0` and `flowlabel | 0` (the binding reads the flow label
+   * back as unsigned) */
+  return scr_net_sockaddr_box(&ip, (double)(int32_t)(uint32_t)port_num, flow);
+}
+
+/* new net.SocketAddress([options]) — args is the argument array. +1. */
+ScrDyn *scr_net_socket_address_new(const ScrDyn *args) {
+  const ScrDyn *options =
+      args->kind == SCR_DYN_ARR && args->v.arr.len > 0 && scr_dyn_arr_has_index(args, 0) ? args->v.arr.items[0] : NULL;
+  ScrDyn *out = scr_net_sockaddr_from_options(options);
+  return out != NULL ? out : scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* SocketAddress.parse(input): URL.parse(`http://${input}`)'s hostname and
+ * port; a bracketed hostname is an IPv6 address. Any failure answers
+ * undefined. +1. */
+ScrDyn *scr_net_socket_address_parse(const ScrDyn *input) {
+  if (input->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("input", "of type string", input);
+    return NULL;
+  }
+  ScrStr *prefix = scr_str_new("http://", 7);
+  ScrStr *url_text = scr_str_concat(prefix, input->v.str);
+  scr_str_release(prefix);
+  ScrDyn *result = NULL;
+  if (scr_url_can_parse(url_text)) {
+    ScrUrl *url = scr_url_new(url_text);
+    ScrStr *host = scr_url_hostname(url);
+    ScrStr *port = scr_url_port(url);
+    double port_num = port->len > 0 ? scr_string_to_number(port) : 0;
+    ScrDyn *options = scr_dyn_new_obj();
+    bool v6 = host->len >= 2 && host->data[0] == '[' && host->data[host->len - 1] == ']';
+    ScrStr *addr = v6 ? scr_str_new(host->data + 1, host->len - 2) : scr_str_retain(host);
+    scr_dyn_obj_set(options, "address", 7, scr_dyn_new_str(addr));
+    scr_str_release(addr);
+    scr_dyn_obj_set(options, "port", 4, scr_dyn_new_num((double)(int32_t)(uint32_t)port_num));
+    if (v6) scr_dyn_obj_set(options, "family", 6, scr_net_dyn_str("ipv6"));
+    result = scr_net_sockaddr_from_options(options);
+    if (result == NULL) scr_exc_clear();
+    scr_dyn_release(options);
+    scr_str_release(port);
+    scr_str_release(host);
+    scr_url_release(url);
+  }
+  scr_str_release(url_text);
+  return result != NULL ? result : scr_dyn_retain(scr_dyn_undefined());
+}
+
+bool scr_net_is_socket_address(const ScrDyn *v) { return scr_net_sockaddr_of(v) != NULL; }
+
+static ScrDyn *scr_net_sockaddr_get(void *h, const char *key, size_t len) {
+  const ScrNetSockAddr *a = h;
+  if (len == 7 && memcmp(key, "address", 7) == 0) {
+    ScrStr *text = scr_net_ip_text(&a->ip);
+    ScrDyn *d = scr_dyn_new_str(text);
+    scr_str_release(text);
+    return d;
+  }
+  if (len == 4 && memcmp(key, "port", 4) == 0) return scr_dyn_new_num(a->port);
+  if (len == 6 && memcmp(key, "family", 6) == 0) return scr_net_dyn_str(a->ip.family == 4 ? "ipv4" : "ipv6");
+  if (len == 9 && memcmp(key, "flowlabel", 9) == 0) return scr_dyn_new_num(a->flowlabel);
+  return NULL;
+}
+
+/* The getters have no setters (strict-mode TypeError). */
+static bool scr_net_getter_only_set(const char *cls, const char *const *names, const char *key, size_t len) {
+  for (size_t i = 0; names[i] != NULL; i++) {
+    if (strlen(names[i]) == len && memcmp(names[i], key, len) == 0) {
+      char msg[160];
+      int n = snprintf(msg, sizeof msg, "Cannot set property %.*s of #<%s> which has only a getter", (int)len,
+                       key, cls);
+      scr_throw_error_msg(SCR_ERR_TYPE, msg, n < 0 ? 0 : (size_t)n);
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool scr_net_sockaddr_set(void *h, const char *key, size_t len, const ScrDyn *value) {
+  (void)h;
+  (void)value;
+  static const char *const names[] = { "address", "port", "family", "flowlabel", NULL };
+  return scr_net_getter_only_set("SocketAddress", names, key, len);
+}
+
+static void scr_net_not_a_function(const char *what) {
+  char msg[160];
+  int n = snprintf(msg, sizeof msg, "%s is not a function", what);
+  scr_throw_error_msg(SCR_ERR_TYPE, msg, n < 0 ? 0 : (size_t)n);
+}
+
+static ScrDyn *scr_net_sockaddr_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args,
+                                       size_t argc, const char *what) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  if (strcmp(method, "toJSON") == 0) return scr_net_sockaddr_detail((const ScrNetSockAddr *)h);
+  scr_net_not_a_function(what);
+  return NULL;
+}
+
+static ScrDyn *scr_net_sockaddr_inspect_view(void *h) {
+  return scr_net_sockaddr_detail((const ScrNetSockAddr *)h);
+}
+
+static const unsigned char scr_net_v4_mapped[12] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff };
+
+/* SocketAddress::compare: -1, 0 or 1, or 2 when the two cannot compare
+ * (an IPv6 address that is not IPv4-mapped against an IPv4 one). */
+static int scr_net_ip_compare(const ScrNetIp *a, const ScrNetIp *b) {
+  if (a->family == b->family) {
+    int c = memcmp(a->b, b->b, a->family == 4 ? 4 : 16);
+    return c < 0 ? -1 : c > 0 ? 1 : 0;
+  }
+  const ScrNetIp *v4 = a->family == 4 ? a : b;
+  const ScrNetIp *v6 = a->family == 4 ? b : a;
+  if (memcmp(v6->b, scr_net_v4_mapped, 12) != 0) return 2;
+  int c = memcmp(v4->b, v6->b + 12, 4);
+  c = c < 0 ? -1 : c > 0 ? 1 : 0;
+  return a->family == 4 ? c : -c;
+}
+
+static bool scr_net_prefix_match(const unsigned char *a, const unsigned char *net, int prefix) {
+  int full = prefix / 8, rest = prefix % 8;
+  if (memcmp(a, net, (size_t)full) != 0) return false;
+  if (rest == 0) return true;
+  unsigned char mask = (unsigned char)(0xff << (8 - rest));
+  return (a[full] & mask) == (net[full] & mask);
+}
+
+/* SocketAddress::is_in_network. */
+static bool scr_net_ip_in_subnet(const ScrNetIp *a, const ScrNetIp *net, int prefix) {
+  if (a->family == net->family) return scr_net_prefix_match(a->b, net->b, prefix);
+  if (prefix == 0) return true;
+  if (a->family == 4) {
+    if (prefix > 128) return false;
+    unsigned char mapped[16];
+    memcpy(mapped, scr_net_v4_mapped, 12);
+    memcpy(mapped + 12, a->b, 4);
+    return scr_net_prefix_match(mapped, net->b, prefix);
+  }
+  if (prefix > 32 || memcmp(a->b, scr_net_v4_mapped, 12) != 0) return false;
+  return scr_net_prefix_match(a->b + 12, net->b, prefix);
+}
+
+enum { SCR_NET_RULE_ADDRESS, SCR_NET_RULE_SUBNET, SCR_NET_RULE_RANGE };
+
+typedef struct {
+  int kind;
+  ScrNetIp a; /* the address, the subnet's network or the range start */
+  ScrNetIp b; /* the range end */
+  int prefix;
+  size_t seq;
+} ScrNetBlockRule;
+
+typedef struct ScrNetBlockList {
+  size_t rc;
+  ScrNetBlockRule *rules;
+  size_t n, cap, seq;
+} ScrNetBlockList;
+
+static void *scr_net_blocklist_retain(void *p) {
+  ScrNetBlockList *l = p;
+  l->rc++;
+  return l;
+}
+
+static void scr_net_blocklist_release(void *p) {
+  ScrNetBlockList *l = p;
+  if (l == NULL || --l->rc != 0) return;
+  free(l->rules);
+  free(l);
+}
+
+ScrDyn *scr_net_block_list_new(const ScrDyn *args) {
+  (void)args;
+  scr_net_addr_install();
+  ScrNetBlockList *l = calloc(1, sizeof *l);
+  if (!l) scr_net_oom();
+  l->rc = 1;
+  ScrDyn *box = scr_dyn_new_handle(l, SCR_DYNH_NET_BLOCK_LIST);
+  scr_net_blocklist_release(l);
+  return box;
+}
+
+bool scr_net_is_block_list(const ScrDyn *v) {
+  return v != NULL && v->kind == SCR_DYN_HANDLE && v->v.handle.tag == SCR_DYNH_NET_BLOCK_LIST;
+}
+
+static void scr_net_blocklist_push(ScrNetBlockList *l, const ScrNetBlockRule *rule) {
+  if (l->n == l->cap) {
+    l->cap = l->cap ? l->cap * 2 : 8;
+    l->rules = realloc(l->rules, l->cap * sizeof *l->rules);
+    if (!l->rules) scr_net_oom();
+  }
+  l->rules[l->n] = *rule;
+  l->rules[l->n].seq = l->seq++;
+  l->n++;
+}
+
+/* Node lists IPv4 address rules, then IPv6 ones, then subnets, then
+ * ranges, each group newest first. */
+static int scr_net_rule_group(const ScrNetBlockRule *r) {
+  if (r->kind == SCR_NET_RULE_ADDRESS) return r->a.family == 4 ? 0 : 1;
+  return r->kind == SCR_NET_RULE_SUBNET ? 2 : 3;
+}
+
+static int scr_net_rule_order(const void *x, const void *y) {
+  const ScrNetBlockRule *a = *(const ScrNetBlockRule *const *)x;
+  const ScrNetBlockRule *b = *(const ScrNetBlockRule *const *)y;
+  int ga = scr_net_rule_group(a), gb = scr_net_rule_group(b);
+  if (ga != gb) return ga < gb ? -1 : 1;
+  return a->seq > b->seq ? -1 : a->seq < b->seq ? 1 : 0;
+}
+
+static ScrStr *scr_net_rule_text(const ScrNetBlockRule *r) {
+  char a[INET6_ADDRSTRLEN], b[INET6_ADDRSTRLEN], out[160];
+  if (!inet_ntop(r->a.family == 4 ? AF_INET : AF_INET6, r->a.b, a, sizeof a)) a[0] = '\0';
+  const char *fam = r->a.family == 4 ? "IPv4" : "IPv6";
+  int n;
+  if (r->kind == SCR_NET_RULE_ADDRESS) {
+    n = snprintf(out, sizeof out, "Address: %s %s", fam, a);
+  } else if (r->kind == SCR_NET_RULE_SUBNET) {
+    n = snprintf(out, sizeof out, "Subnet: %s %s/%d", fam, a, r->prefix);
+  } else {
+    if (!inet_ntop(r->b.family == 4 ? AF_INET : AF_INET6, r->b.b, b, sizeof b)) b[0] = '\0';
+    n = snprintf(out, sizeof out, "Range: %s %s-%s", fam, a, b);
+  }
+  return scr_str_new(out, n < 0 ? 0 : (size_t)n);
+}
+
+static ScrDyn *scr_net_blocklist_rules(const ScrNetBlockList *l) {
+  ScrDyn *out = scr_dyn_new_arr();
+  if (l->n == 0) return out;
+  const ScrNetBlockRule **order = malloc(l->n * sizeof *order);
+  if (!order) scr_net_oom();
+  for (size_t i = 0; i < l->n; i++) order[i] = &l->rules[i];
+  qsort(order, l->n, sizeof *order, scr_net_rule_order);
+  for (size_t i = 0; i < l->n; i++) {
+    ScrStr *text = scr_net_rule_text(order[i]);
+    scr_dyn_arr_push(out, scr_dyn_new_str(text));
+    scr_str_release(text);
+  }
+  free(order);
+  return out;
+}
+
+static bool scr_net_blocklist_check_ip(const ScrNetBlockList *l, const ScrNetIp *ip) {
+  for (size_t i = 0; i < l->n; i++) {
+    const ScrNetBlockRule *r = &l->rules[i];
+    if (r->kind == SCR_NET_RULE_ADDRESS && scr_net_ip_compare(ip, &r->a) == 0) return true;
+    if (r->kind == SCR_NET_RULE_SUBNET && scr_net_ip_in_subnet(ip, &r->a, r->prefix)) return true;
+    if (r->kind == SCR_NET_RULE_RANGE) {
+      int lo = scr_net_ip_compare(ip, &r->a), hi = scr_net_ip_compare(ip, &r->b);
+      if ((lo == 0 || lo == 1) && (hi == 0 || hi == -1)) return true;
+    }
+  }
+  return false;
+}
+
+static void scr_net_blocklist_remove(ScrNetBlockList *l, const ScrNetBlockRule *rule);
+static bool scr_net_blocklist_has_address(const ScrNetBlockList *l, const ScrNetIp *ip);
+static bool scr_net_subnet_prefix(const ScrDyn *prefix, int family, int *out);
+static bool scr_net_parse_cidr(const ScrDyn *cidr, ScrDyn **address, double *prefix, const char **family);
+
+/* The `family` argument: validateString, then the SocketAddress family
+ * switch. */
+static const ScrDyn *scr_net_family_arg(ScrDyn *const *args, size_t argc, size_t i) {
+  if (i < argc && args[i]->kind != SCR_DYN_UNDEF) return args[i];
+  return NULL;
+}
+
+/* A rule's address argument: a SocketAddress as is, or validateString
+ * and `new SocketAddress({ address, family })`. false with the exception
+ * pending. */
+static bool scr_net_rule_address(ScrDyn *const *args, size_t argc, size_t i, const char *name,
+                                 const ScrDyn *family, ScrNetIp *out, const ScrNetSockAddr **sa) {
+  const ScrDyn *v = i < argc ? args[i] : scr_dyn_undefined();
+  const ScrNetSockAddr *given = scr_net_sockaddr_of(v);
+  if (given != NULL) {
+    *out = given->ip;
+    if (sa != NULL) *sa = given;
+    return true;
+  }
+  if (v->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail(name, "of type string", v);
+    return false;
+  }
+  if (family != NULL && family->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("family", "of type string", family);
+    return false;
+  }
+  ScrDyn *options = scr_dyn_new_obj();
+  scr_dyn_obj_set(options, "address", 7, scr_dyn_retain((ScrDyn *)v));
+  if (family != NULL) scr_dyn_obj_set(options, "family", 6, scr_dyn_retain((ScrDyn *)family));
+  ScrDyn *made = scr_net_sockaddr_from_options(options);
+  scr_dyn_release(options);
+  if (made == NULL) return false;
+  *out = scr_net_sockaddr_of(made)->ip;
+  scr_dyn_release(made);
+  if (sa != NULL) *sa = NULL;
+  return true;
+}
+
+static void scr_net_blocklist_add_address(ScrNetBlockList *l, ScrDyn *const *args, size_t argc,
+                                          bool remove) {
+  ScrNetBlockRule rule = { .kind = SCR_NET_RULE_ADDRESS };
+  if (!scr_net_rule_address(args, argc, 0, "address", scr_net_family_arg(args, argc, 1), &rule.a, NULL))
+    return;
+  if (remove) {
+    scr_net_blocklist_remove(l, &rule);
+    return;
+  }
+  if (scr_net_blocklist_has_address(l, &rule.a)) return; /* already listed: the rule keeps its place */
+  scr_net_blocklist_push(l, &rule);
+}
+
+static void scr_net_blocklist_add_range(ScrNetBlockList *l, ScrDyn *const *args, size_t argc,
+                                        bool remove) {
+  ScrNetBlockRule rule = { .kind = SCR_NET_RULE_RANGE };
+  const ScrDyn *family = scr_net_family_arg(args, argc, 2);
+  const ScrNetSockAddr *start_sa = NULL;
+  if (!scr_net_rule_address(args, argc, 0, "start", family, &rule.a, &start_sa)) return;
+  if (!scr_net_rule_address(args, argc, 1, "end", family, &rule.b, NULL)) return;
+  if (remove) {
+    scr_net_blocklist_remove(l, &rule);
+    return;
+  }
+  if (scr_net_ip_compare(&rule.a, &rule.b) == 1) {
+    /* ERR_INVALID_ARG_VALUE('start', start, 'must come before end'),
+     * with `start` the SocketAddress the call built or was given */
+    ScrNetSockAddr shown = { .rc = 1, .ip = rule.a, .port = 0, .flowlabel = 0 };
+    if (start_sa != NULL) shown = *start_sa;
+    char insp[192], msg[320];
+    scr_net_sockaddr_inspect_text(&shown, insp, sizeof insp);
+    int n = snprintf(msg, sizeof msg, "The argument 'start' must come before end. Received %s", insp);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, n < 0 ? 0 : (size_t)n, "ERR_INVALID_ARG_VALUE");
+    return;
+  }
+  scr_net_blocklist_push(l, &rule);
+}
+
+static void scr_net_blocklist_subnet(ScrNetBlockList *l, ScrDyn *const *args, size_t argc, bool remove) {
+  ScrNetBlockRule rule = { .kind = SCR_NET_RULE_SUBNET };
+  if (!scr_net_rule_address(args, argc, 0, "network", scr_net_family_arg(args, argc, 2), &rule.a, NULL))
+    return;
+  if (!scr_net_subnet_prefix(1 < argc ? args[1] : scr_dyn_undefined(), rule.a.family, &rule.prefix)) return;
+  if (remove) scr_net_blocklist_remove(l, &rule);
+  else scr_net_blocklist_push(l, &rule);
+}
+
+/* addCIDR / removeCIDR: parseCIDR, then addSubnet(address, prefix, family). */
+static void scr_net_blocklist_cidr(ScrNetBlockList *l, const ScrDyn *cidr, bool remove) {
+  ScrDyn *address = NULL;
+  double prefix = 0;
+  const char *family = NULL;
+  if (!scr_net_parse_cidr(cidr, &address, &prefix, &family)) return;
+  ScrDyn *sub[3] = { address, scr_dyn_new_num(prefix), scr_net_dyn_str(family) };
+  scr_net_blocklist_subnet(l, sub, 3, remove);
+  for (size_t i = 0; i < 3; i++) scr_dyn_release(sub[i]);
+}
+
+/* addAddresses(addresses[, family]) and addCIDRs(cidrs): every entry is
+ * validated and parsed before any rule is added. */
+static void scr_net_blocklist_add_addresses(ScrNetBlockList *l, ScrDyn *const *args, size_t argc) {
+  const ScrDyn *list = argc > 0 ? args[0] : scr_dyn_undefined();
+  if (list->kind != SCR_DYN_ARR) {
+    scr_dyn_arg_type_fail("addresses", "an instance of Array", list);
+    return;
+  }
+  const ScrDyn *family = scr_net_family_arg(args, argc, 1);
+  if (family != NULL && family->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("family", "of type string", family);
+    return;
+  }
+  size_t n = list->v.arr.len;
+  ScrNetIp *ips = malloc((n ? n : 1) * sizeof *ips);
+  if (!ips) scr_net_oom();
+  for (size_t i = 0; i < n; i++) {
+    ScrDyn *item = scr_dyn_arr_has_index(list, i) ? list->v.arr.items[i] : (ScrDyn *)scr_dyn_undefined();
+    if (scr_net_sockaddr_of(item) == NULL && item->kind != SCR_DYN_STR) {
+      char name[48];
+      snprintf(name, sizeof name, "addresses[%zu]", i);
+      scr_dyn_arg_type_fail(name, "of type string", item);
+      free(ips);
+      return;
+    }
+    ScrDyn *one[2] = { item, (ScrDyn *)(family != NULL ? family : scr_dyn_undefined()) };
+    if (!scr_net_rule_address(one, 2, 0, "address", family, &ips[i], NULL)) {
+      free(ips);
+      return;
+    }
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (scr_net_blocklist_has_address(l, &ips[i])) continue;
+    ScrNetBlockRule rule = { .kind = SCR_NET_RULE_ADDRESS, .a = ips[i] };
+    scr_net_blocklist_push(l, &rule);
+  }
+  free(ips);
+}
+
+static void scr_net_blocklist_add_cidrs(ScrNetBlockList *l, ScrDyn *const *args, size_t argc) {
+  const ScrDyn *list = argc > 0 ? args[0] : scr_dyn_undefined();
+  if (list->kind != SCR_DYN_ARR) {
+    scr_dyn_arg_type_fail("cidrs", "an instance of Array", list);
+    return;
+  }
+  size_t n = list->v.arr.len;
+  for (size_t i = 0; i < n; i++) {
+    const ScrDyn *item = scr_dyn_arr_has_index(list, i) ? list->v.arr.items[i] : scr_dyn_undefined();
+    if (item->kind != SCR_DYN_STR) {
+      char name[48];
+      snprintf(name, sizeof name, "cidrs[%zu]", i);
+      scr_dyn_arg_type_fail(name, "of type string", item);
+      return;
+    }
+    ScrDyn *address = NULL;
+    double prefix = 0;
+    const char *family = NULL;
+    if (!scr_net_parse_cidr(item, &address, &prefix, &family)) return;
+    scr_dyn_release(address);
+  }
+  for (size_t i = 0; i < n && !scr_exc_pending(); i++) scr_net_blocklist_cidr(l, list->v.arr.items[i], false);
+}
+
+/* check(address[, family]): a SocketAddress applies as is; a string is
+ * parsed with inet_pton in the family's form (any family other than
+ * "ipv4", in any case, means IPv6), and one that does not parse answers
+ * false, as Node's checkString does. */
+static ScrDyn *scr_net_blocklist_check(const ScrNetBlockList *l, ScrDyn *const *args, size_t argc) {
+  const ScrDyn *v = argc > 0 ? args[0] : scr_dyn_undefined();
+  const ScrNetSockAddr *given = scr_net_sockaddr_of(v);
+  if (given != NULL) return scr_dyn_new_bool(scr_net_blocklist_check_ip(l, &given->ip));
+  const ScrDyn *family = scr_net_family_arg(args, argc, 1);
+  if (v->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("address", "of type string", v);
+    return NULL;
+  }
+  if (family != NULL && family->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("family", "of type string", family);
+    return NULL;
+  }
+  bool v4 = family == NULL;
+  if (family != NULL && family->v.str->len == 4) {
+    char lower[4];
+    for (size_t i = 0; i < 4; i++) {
+      unsigned char c = (unsigned char)family->v.str->data[i];
+      lower[i] = (char)(c >= 'A' && c <= 'Z' ? c + 32 : c);
+    }
+    v4 = memcmp(lower, "ipv4", 4) == 0;
+  }
+  char buf[INET6_ADDRSTRLEN + 8];
+  const ScrStr *text = v->v.str;
+  if (text->len >= sizeof buf || memchr(text->data, '\0', text->len) != NULL) return scr_dyn_new_bool(false);
+  memcpy(buf, text->data, text->len);
+  buf[text->len] = '\0';
+  ScrNetIp ip;
+  memset(&ip, 0, sizeof ip);
+  ip.family = v4 ? 4 : 6;
+  if (inet_pton(v4 ? AF_INET : AF_INET6, buf, ip.b) != 1) return scr_dyn_new_bool(false);
+  return scr_dyn_new_bool(scr_net_blocklist_check_ip(l, &ip));
+}
+
+/* The remove* calls drop every rule equal to the one given. */
+static void scr_net_blocklist_remove(ScrNetBlockList *l, const ScrNetBlockRule *rule) {
+  size_t w = 0;
+  for (size_t i = 0; i < l->n; i++) {
+    const ScrNetBlockRule *r = &l->rules[i];
+    bool same = r->kind == rule->kind && r->a.family == rule->a.family &&
+                memcmp(r->a.b, rule->a.b, 16) == 0 &&
+                (rule->kind != SCR_NET_RULE_SUBNET || r->prefix == rule->prefix) &&
+                (rule->kind != SCR_NET_RULE_RANGE ||
+                 (r->b.family == rule->b.family && memcmp(r->b.b, rule->b.b, 16) == 0));
+    if (!same) l->rules[w++] = *r;
+  }
+  l->n = w;
+}
+
+static bool scr_net_blocklist_has_address(const ScrNetBlockList *l, const ScrNetIp *ip) {
+  for (size_t i = 0; i < l->n; i++) {
+    const ScrNetBlockRule *r = &l->rules[i];
+    if (r->kind == SCR_NET_RULE_ADDRESS && r->a.family == ip->family && memcmp(r->a.b, ip->b, 16) == 0)
+      return true;
+  }
+  return false;
+}
+
+/* validateInt32(prefix, 'prefix', 0, max) for the network's family. */
+static bool scr_net_subnet_prefix(const ScrDyn *prefix, int family, int *out) {
+  if (prefix->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("prefix", "of type number", prefix);
+    return false;
+  }
+  double p = prefix->v.num;
+  if (!(isfinite(p) && trunc(p) == p)) {
+    scr_net_out_of_range("prefix", "an integer", p);
+    return false;
+  }
+  if (p < 0 || p > (family == 4 ? 32 : 128)) {
+    scr_net_out_of_range("prefix", family == 4 ? ">= 0 && <= 32" : ">= 0 && <= 128", p);
+    return false;
+  }
+  *out = (int)p;
+  return true;
+}
+
+/* parseCIDR(cidr): the text before the last '/', and a prefix that reads
+ * back as the same decimal integer; a ':' makes it IPv6. */
+static bool scr_net_parse_cidr(const ScrDyn *cidr, ScrDyn **address, double *prefix, const char **family) {
+  if (cidr->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("cidr", "of type string", cidr);
+    return false;
+  }
+  const ScrStr *text = cidr->v.str;
+  size_t slash = text->len;
+  for (size_t i = text->len; i > 0; i--) {
+    if (text->data[i - 1] == '/') {
+      slash = i - 1;
+      break;
+    }
+  }
+  if (slash == text->len) {
+    scr_dyn_arg_value_fail("cidr", "must contain a prefix length (e.g. \"10.0.0.0/8\")", cidr);
+    return false;
+  }
+  const char *digits = text->data + slash + 1;
+  size_t ndigits = text->len - slash - 1;
+  /* NumberParseInt(prefixStr, 10) and `${prefix}` === prefixStr: an
+   * optional '-' and decimal digits with no leading zero (except "0") */
+  bool neg = ndigits > 0 && digits[0] == '-';
+  size_t start = neg ? 1 : 0;
+  bool ok = ndigits > start && ndigits - start <= 9;
+  for (size_t i = start; ok && i < ndigits; i++) ok = digits[i] >= '0' && digits[i] <= '9';
+  if (ok && ndigits - start > 1 && digits[start] == '0') ok = false;
+  if (ok && neg && ndigits - start == 1 && digits[start] == '0') ok = false; /* "-0" reads back as "0" */
+  if (!ok) {
+    scr_dyn_arg_value_fail("cidr", "prefix length must be a valid integer", cidr);
+    return false;
+  }
+  double value = 0;
+  for (size_t i = start; i < ndigits; i++) value = value * 10 + (digits[i] - '0');
+  *prefix = neg ? -value : value;
+  ScrStr *addr = scr_str_new(text->data, slash);
+  *family = memchr(addr->data, ':', addr->len) != NULL ? "ipv6" : "ipv4";
+  *address = scr_dyn_new_str(addr);
+  scr_str_release(addr);
+  return true;
+}
+
+/* fromJSON(data): a JSON string or an array of rule strings, each added
+ * with addSubnet, addAddress or addRange; other strings are ignored. */
+static void scr_net_blocklist_from_json(ScrNetBlockList *l, ScrDyn *const *args, size_t argc);
+
+static ScrDyn *scr_net_blocklist_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args,
+                                        size_t argc, const char *what) {
+  (void)self;
+  ScrNetBlockList *l = h;
+  const ScrDyn *first = argc > 0 ? args[0] : scr_dyn_undefined();
+  if (strcmp(method, "addAddress") == 0) scr_net_blocklist_add_address(l, args, argc, false);
+  else if (strcmp(method, "addAddresses") == 0) scr_net_blocklist_add_addresses(l, args, argc);
+  else if (strcmp(method, "addRange") == 0) scr_net_blocklist_add_range(l, args, argc, false);
+  else if (strcmp(method, "addSubnet") == 0) scr_net_blocklist_subnet(l, args, argc, false);
+  else if (strcmp(method, "addCIDR") == 0) scr_net_blocklist_cidr(l, first, false);
+  else if (strcmp(method, "addCIDRs") == 0) scr_net_blocklist_add_cidrs(l, args, argc);
+  else if (strcmp(method, "removeAddress") == 0) scr_net_blocklist_add_address(l, args, argc, true);
+  else if (strcmp(method, "removeRange") == 0) scr_net_blocklist_add_range(l, args, argc, true);
+  else if (strcmp(method, "removeSubnet") == 0) scr_net_blocklist_subnet(l, args, argc, true);
+  else if (strcmp(method, "removeCIDR") == 0) scr_net_blocklist_cidr(l, first, true);
+  else if (strcmp(method, "clear") == 0) l->n = 0;
+  else if (strcmp(method, "check") == 0) return scr_net_blocklist_check(l, args, argc);
+  else if (strcmp(method, "toJSON") == 0) return scr_net_blocklist_rules(l);
+  else if (strcmp(method, "fromJSON") == 0) scr_net_blocklist_from_json(l, args, argc);
+  else {
+    scr_net_not_a_function(what);
+    return NULL;
+  }
+  return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+}
+
+static ScrDyn *scr_net_blocklist_get(void *h, const char *key, size_t len) {
+  if (len == 5 && memcmp(key, "rules", 5) == 0) return scr_net_blocklist_rules((const ScrNetBlockList *)h);
+  if (len == 4 && memcmp(key, "size", 4) == 0) return scr_dyn_new_num((double)((const ScrNetBlockList *)h)->n);
+  return NULL;
+}
+
+static bool scr_net_blocklist_set(void *h, const char *key, size_t len, const ScrDyn *value) {
+  (void)h;
+  (void)value;
+  static const char *const names[] = { "rules", "size", NULL };
+  return scr_net_getter_only_set("BlockList", names, key, len);
+}
+
+static ScrDyn *scr_net_blocklist_inspect_view(void *h) {
+  ScrDyn *out = scr_dyn_new_obj();
+  scr_dyn_obj_set(out, "rules", 5, scr_net_blocklist_rules((const ScrNetBlockList *)h));
+  return out;
+}
+
+static const ScrDynHandleOps scr_net_sockaddr_ops = {
+    .cls = "SocketAddress",
+    .retain = scr_net_sockaddr_retain,
+    .release = scr_net_sockaddr_release,
+    .invoke = scr_net_sockaddr_invoke,
+    .get = scr_net_sockaddr_get,
+    .set = scr_net_sockaddr_set,
+    .inspect_view = scr_net_sockaddr_inspect_view,
+};
+
+static const ScrDynHandleOps scr_net_blocklist_ops = {
+    .cls = "BlockList",
+    .retain = scr_net_blocklist_retain,
+    .release = scr_net_blocklist_release,
+    .invoke = scr_net_blocklist_invoke,
+    .get = scr_net_blocklist_get,
+    .set = scr_net_blocklist_set,
+    .inspect_view = scr_net_blocklist_inspect_view,
+};
+
+static void scr_net_addr_install(void) {
+  static SCR_TL bool installed;
+  if (installed) return;
+  installed = true;
+  scr_dyn_handle_install(SCR_DYNH_NET_SOCKET_ADDRESS, &scr_net_sockaddr_ops);
+  scr_dyn_handle_install(SCR_DYNH_NET_BLOCK_LIST, &scr_net_blocklist_ops);
+}
+
+/* The JSON forms of the handles (scr_json.c calls toJSON through invoke). */
+
+/* fromJSON's patterns (lib/internal/blocklist.js #parseIPInfo), matched
+ * at the leftmost position as the regular expressions are: a dotted quad
+ * of 1-3 digit groups for IPv4, and 1-45 of [0-9a-fA-F:.] for IPv6, whose
+ * patterns also ignore case. */
+static size_t scr_net_match_quad(const char *s, size_t n) {
+  size_t i = 0;
+  for (int part = 0; part < 4; part++) {
+    if (part > 0) {
+      if (i >= n || s[i] != '.') return 0;
+      i++;
+    }
+    size_t d = 0;
+    while (i < n && d < 3 && s[i] >= '0' && s[i] <= '9') i++, d++;
+    if (d == 0) return 0;
+  }
+  return i;
+}
+
+static size_t scr_net_match_v6(const char *s, size_t n) {
+  size_t i = 0;
+  while (i < n && i < 45 &&
+         ((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f') || (s[i] >= 'A' && s[i] <= 'F') ||
+          s[i] == ':' || s[i] == '.'))
+    i++;
+  return i;
+}
+
+static size_t scr_net_match_digits(const char *s, size_t n, size_t max) {
+  size_t i = 0;
+  while (i < n && i < max && s[i] >= '0' && s[i] <= '9') i++;
+  return i;
+}
+
+static bool scr_net_lit_at(const char *s, size_t n, const char *lit, bool fold) {
+  size_t m = strlen(lit);
+  if (m > n) return false;
+  for (size_t i = 0; i < m; i++) {
+    unsigned char a = (unsigned char)s[i], b = (unsigned char)lit[i];
+    if (fold) {
+      if (a >= 'A' && a <= 'Z') a += 32;
+      if (b >= 'A' && b <= 'Z') b += 32;
+    }
+    if (a != b) return false;
+  }
+  return true;
+}
+
+/* One pattern: `<lit><ip>`, `<lit><ip>/<digits>` or `<lit><ip>-<ip>`.
+ * Fills the captured spans; false when no position matches. */
+typedef struct {
+  const char *a;
+  size_t alen;
+  const char *b;
+  size_t blen;
+} ScrNetCapture;
+
+static bool scr_net_match_rule(const ScrStr *item, const char *lit, bool v6, char tail, size_t tail_max,
+                               ScrNetCapture *cap) {
+  const char *s = item->data;
+  size_t n = item->len, m = strlen(lit);
+  for (size_t at = 0; at + m <= n; at++) {
+    if (!scr_net_lit_at(s + at, n - at, lit, v6)) continue;
+    size_t i = at + m;
+    size_t a = v6 ? scr_net_match_v6(s + i, n - i) : scr_net_match_quad(s + i, n - i);
+    if (a == 0) continue;
+    cap->a = s + i;
+    cap->alen = a;
+    if (tail == 0) return true;
+    i += a;
+    if (i >= n || s[i] != tail) continue;
+    i++;
+    size_t b = tail == '/' ? scr_net_match_digits(s + i, n - i, tail_max)
+               : v6        ? scr_net_match_v6(s + i, n - i)
+                           : scr_net_match_quad(s + i, n - i);
+    if (b == 0) continue;
+    cap->b = s + i;
+    cap->blen = b;
+    return true;
+  }
+  return false;
+}
+
+static bool scr_net_str_has(const ScrStr *s, const char *needle) {
+  size_t m = strlen(needle);
+  for (size_t i = 0; i + m <= s->len; i++)
+    if (memcmp(s->data + i, needle, m) == 0) return true;
+  return false;
+}
+
+static ScrDyn *scr_net_span_dyn(const char *p, size_t n) {
+  ScrStr *s = scr_str_new(p, n);
+  ScrDyn *d = scr_dyn_new_str(s);
+  scr_str_release(s);
+  return d;
+}
+
+/* Runs one parsed rule through the add* entry point, as #parseIPInfo
+ * calls this.addSubnet / addAddress / addRange. */
+static void scr_net_from_json_item(ScrNetBlockList *l, const ScrStr *item) {
+  ScrNetCapture c;
+  for (int pass = 0; pass < 2; pass++) {
+    bool v6 = pass == 1;
+    if (!scr_net_str_has(item, v6 ? "IPv6" : "IPv4")) continue;
+    ScrDyn *family = scr_net_dyn_str(v6 ? "ipv6" : "ipv4");
+    ScrDyn *args[3] = { NULL, NULL, family };
+    bool done = true;
+    if (scr_net_match_rule(item, v6 ? "Subnet: IPv6 " : "Subnet: IPv4 ", v6, '/', v6 ? 3 : 2, &c)) {
+      args[0] = scr_net_span_dyn(c.a, c.alen);
+      double prefix = 0;
+      for (size_t i = 0; i < c.blen; i++) prefix = prefix * 10 + (c.b[i] - '0');
+      args[1] = scr_dyn_new_num(prefix);
+      scr_net_blocklist_subnet(l, args, 3, false);
+    } else if (scr_net_match_rule(item, v6 ? "Address: IPv6 " : "Address: IPv4 ", v6, 0, 0, &c)) {
+      args[0] = scr_net_span_dyn(c.a, c.alen);
+      args[1] = family;
+      scr_net_blocklist_add_address(l, args, 2, false);
+      args[1] = NULL;
+    } else if (scr_net_match_rule(item, v6 ? "Range: IPv6 " : "Range: IPv4 ", v6, '-', 0, &c)) {
+      args[0] = scr_net_span_dyn(c.a, c.alen);
+      args[1] = scr_net_span_dyn(c.b, c.blen);
+      scr_net_blocklist_add_range(l, args, 3, false);
+    } else {
+      done = false;
+    }
+    scr_dyn_release(args[0]);
+    scr_dyn_release(args[1]);
+    scr_dyn_release(family);
+    if (done) return;
+  }
+}
+
+static bool scr_net_all_strings(const ScrDyn *v) {
+  for (size_t i = 0; i < v->v.arr.len; i++) {
+    const ScrDyn *item = scr_dyn_arr_has_index(v, i) ? v->v.arr.items[i] : scr_dyn_undefined();
+    if (item->kind != SCR_DYN_STR) return false;
+  }
+  return true;
+}
+
+static void scr_net_blocklist_from_json(ScrNetBlockList *l, ScrDyn *const *args, size_t argc) {
+  const ScrDyn *data = argc > 0 ? args[0] : scr_dyn_undefined();
+  ScrDyn *parsed = NULL;
+  if (data->kind == SCR_DYN_STR) {
+    parsed = scr_json_parse(data->v.str);
+    if (parsed == NULL || scr_exc_pending()) {
+      scr_dyn_release(parsed);
+      return;
+    }
+    data = parsed;
+  }
+  if (data->kind != SCR_DYN_ARR || !scr_net_all_strings(data)) {
+    scr_dyn_arg_type_fail("data", "of type string or string[]", data);
+    scr_dyn_release(parsed);
+    return;
+  }
+  for (size_t i = 0; i < data->v.arr.len && !scr_exc_pending(); i++)
+    scr_net_from_json_item(l, data->v.arr.items[i]->v.str);
+  scr_dyn_release(parsed);
+}
+
+/* BlockList.PRIVATE_RANGES: one frozen array of Node's CIDR strings,
+ * released at exit. +1. */
+static SCR_TL ScrDyn *scr_net_private_ranges;
+
+static void scr_net_private_ranges_cleanup(void) {
+  ScrDyn *ranges = scr_net_private_ranges;
+  scr_net_private_ranges = NULL;
+  scr_dyn_release(ranges);
+}
+
+ScrDyn *scr_net_block_list_private_ranges(void) {
+  ScrDyn *ranges = scr_net_private_ranges;
+  if (ranges == NULL) {
+    static const char *const cidrs[] = { "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8",
+                                         "::1/128", "169.254.0.0/16", "fe80::/10", "fc00::/7" };
+    ScrDyn *arr = scr_dyn_new_arr();
+    for (size_t i = 0; i < sizeof cidrs / sizeof cidrs[0]; i++) scr_dyn_arr_push(arr, scr_net_dyn_str(cidrs[i]));
+    ranges = scr_dyn_freeze(arr); /* +1 on the same array */
+    scr_dyn_release(arr);
+    scr_net_private_ranges = ranges;
+    scr_atexit(scr_net_private_ranges_cleanup);
+  }
+  return scr_dyn_retain(ranges);
+}
+
 /* The address fields as dyn values (+1): remotePort (0), remoteFamily
  * (1), localAddress (2), localPort (3) and localFamily (4), each
  * undefined when unknown. */

@@ -520,10 +520,10 @@
       "entries": 122,
       "apiEntries": 119,
       "static": {
-        "supported": 0,
-        "partial": 37,
+        "supported": 16,
+        "partial": 39,
         "refused": 0,
-        "not-implemented": 82,
+        "not-implemented": 64,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -71655,7 +71655,9 @@
           "tests/corpus/2596-net-arg-ladders.cjs",
           "tests/corpus/2597-dgram-send-ladders.cjs",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -71709,8 +71711,12 @@
       "anchor": "class-netblocklist",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-dedicated:net.BlockList",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -71727,8 +71733,12 @@
       "anchor": "blocklistaddaddressaddress-type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-dedicated:blockList.addAddress",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -71745,8 +71755,12 @@
       "anchor": "blocklistaddaddressesaddresses-type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-dedicated:blockList.addAddresses",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -71763,8 +71777,12 @@
       "anchor": "blocklistaddcidrcidr",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-dedicated:blockList.addCIDR",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -71781,8 +71799,12 @@
       "anchor": "blocklistaddcidrscidrs",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-dedicated:blockList.addCIDRs",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -71799,8 +71821,12 @@
       "anchor": "blocklistaddrangestart-end-type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-dedicated:blockList.addRange",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -71817,8 +71843,12 @@
       "anchor": "blocklistaddsubnetnet-prefix-type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-dedicated:blockList.addSubnet",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -71835,8 +71865,12 @@
       "anchor": "blocklistcheckaddress-type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-dedicated:blockList.check",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -71853,8 +71887,12 @@
       "anchor": "blocklistclear",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-dedicated:blockList.clear",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -71876,8 +71914,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-dedicated:blockList.fromJSON",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -71894,8 +71936,12 @@
       "anchor": "blocklistisblocklistvalue",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-dedicated:BlockList.isBlockList",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -71912,8 +71958,12 @@
       "anchor": "blocklistremoveaddressaddress-type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-dedicated:blockList.removeAddress",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -71930,8 +71980,12 @@
       "anchor": "blocklistremovecidrcidr",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-dedicated:blockList.removeCIDR",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -71948,8 +72002,12 @@
       "anchor": "blocklistremoverangestart-end-type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-dedicated:blockList.removeRange",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -71966,8 +72024,12 @@
       "anchor": "blocklistremovesubnetnet-prefix-type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-dedicated:blockList.removeSubnet",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -71989,8 +72051,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-dedicated:blockList.toJSON",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -72061,8 +72127,12 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-dedicated:net.SocketAddress",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -72079,8 +72149,12 @@
       "anchor": "socketaddressparseinput",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-dedicated:SocketAddress.parse",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/fixtures/node-types/net-blocklist.ts"
+        ]
       },
       "anchorSource": "exact"
     },

@@ -1819,6 +1819,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "net.serverMaxConnectionsSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
   "net.serverDropMaxConnectionGet": { argTypes: [NETSERVER_T], result: DYN },
   "net.serverDropMaxConnectionSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
+  /** net.SocketAddress and net.BlockList (scr_net.c): the constructors
+   * take the argument array; the handles are dyn values. */
+  "net.socketAddressNew": { argTypes: [DYN], result: DYN },
+  "net.socketAddressParse": { argTypes: [DYN], result: DYN },
+  "net.isSocketAddress": { argTypes: [DYN], result: BOOL },
+  "net.blockListNew": { argTypes: [DYN], result: DYN },
+  "net.isBlockList": { argTypes: [DYN], result: BOOL },
+  "net.blockListPrivateRanges": { argTypes: [], result: DYN },
   "net.serverOnDrop": { argTypes: [NETSERVER_T, DYN, BOOL], result: VOID },
   "net.serverGetConnections": { argTypes: [NETSERVER_T, DYN], result: VOID },
   "net.sockReadable": { argTypes: [NETSOCKET_T], result: BOOL },
