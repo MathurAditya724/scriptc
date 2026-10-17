@@ -5,6 +5,7 @@ import {
   boundedIntegerLoopFacts,
   guardedLoopCounterFacts,
   integerPathFallsThrough,
+  STRING_MAX_UNITS,
 } from "./integer-loop-facts.js";
 
 /** Exactly representable integers, excluding negative zero. Facts describe
@@ -20,10 +21,6 @@ const UNSIGNED: IntegerRange = { min: 0, max: 4294967295 };
  * non-negative dividends) can close a loop-carried local. */
 const NON_NEGATIVE: IntegerRange = { min: 0, max: 2147483647 };
 const EXACT_LIMIT = 2 ** 53;
-/** The most UTF-16 code units a runtime string holds: SCR_STR_MAX_CAP
- * (scr_runtime.h) caps a string's UTF-8 bytes, and a UTF-16 length never
- * exceeds the UTF-8 byte length. */
-const STRING_MAX_UNITS = 0x7fffffff;
 type Facts = Map<string, IntegerRange>;
 
 function union(left: IntegerRange, right: IntegerRange): IntegerRange {
