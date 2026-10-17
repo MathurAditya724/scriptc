@@ -910,11 +910,8 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
           scopeid.inline,
         );
       }
-      const rc = vAdapters(host.shapeHost, t);
-      const rowU = B.tmp();
-      B.line(
-        `${rowU} = call ptr @scr_union_new_ref(i32 ${tag}, ptr ${r}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, t)})`,
-      );
+      // The row (+1) moves into its union arm (a shape union is the row).
+      const rowU = host.unionNewOwned(infoT.unionId, tag, { name: r, type: t });
       B.line(`store ptr ${rowU}, ptr ${rowSlot}`);
       B.br(lRow);
     };

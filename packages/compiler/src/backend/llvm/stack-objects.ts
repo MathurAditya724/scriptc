@@ -14,6 +14,7 @@ import type { CallLifetimes } from "./call-lifetimes.js";
 import { emitCallExpr, emitConstruction } from "./expr-calls.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { emitRecordLitFields } from "./expr-primitives.js";
+import { SHAPE_WORD_INDEX } from "./nullable-unions.js";
 
 export type StackObjectSource = IrExpr & { kind: "recordLit" | "new" | "call" };
 
@@ -159,6 +160,17 @@ export function emitStackObject(
     }
   }
   B.line(`store ${host.sizeType} -1, ptr ${slot}`);
+  if (type.kind === "record") {
+    // A tagged shape's word names it to every shape union's tag read.
+    const shapeNumber = host.nullableUnions.shapeNumber(type.shapeId);
+    if (shapeNumber !== 0) {
+      const p = B.tmp();
+      B.line(
+        `${p} = getelementptr inbounds ${struct}, ptr ${slot}, i64 0, i32 ${SHAPE_WORD_INDEX}`,
+      );
+      B.line(`store i32 ${shapeNumber}, ptr ${p}`);
+    }
+  }
   if (e.kind === "call") {
     // The entry writes the result into the slot it receives last.
     emitCallExpr(

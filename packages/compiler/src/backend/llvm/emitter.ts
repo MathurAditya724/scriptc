@@ -373,6 +373,7 @@ import {
   elemAccess,
   emitInlineRcHelpers,
   emitNullableRetainWrappers,
+  emitShapeUnionHelpers,
   FN_ATTRS,
   inlineRcDecls,
   type InlineRcMode,
@@ -1071,7 +1072,7 @@ export class LlEmitter {
           expr: (expr) => !(expr.kind === "libCall" && expr.fn === "error.stack"),
         }),
     );
-    this.nullableUnions = new NullableUnions(mod);
+    this.nullableUnions = new NullableUnions(mod, options.debugSources === undefined);
     this.debug =
       options.debugSources === undefined
         ? null
@@ -1165,8 +1166,10 @@ export class LlEmitter {
     // Optional array reads also cover nullable unions: emitLocalArrayRead
     // then yields the (borrowed or owned) element pointer, not a stack box.
     // Arrays of such a union are read the same way.
-    this.optionalArrayReads = new OptionalArrayReads(this.fnByName, this.unionsById, (id) =>
-      this.nullableUnions.has(id),
+    this.optionalArrayReads = new OptionalArrayReads(
+      this.fnByName,
+      this.unionsById,
+      (id) => this.nullableUnions.single(id) !== null,
     );
     this.unionSources = {
       unions: this.boxedUnionsById,
@@ -1219,7 +1222,8 @@ export class LlEmitter {
           (type) =>
             this.plainReference(type) &&
             type.kind !== "string" &&
-            (type.kind !== "union" || this.nullableUnions.get(type.unionId)?.arm.kind !== "string"),
+            (type.kind !== "union" ||
+              this.nullableUnions.single(type.unionId)?.arm.kind !== "string"),
           this.walkBorrowsByFunction.get(fn.name) ?? new Set(),
         );
         if (rebound.size === 0) continue;
@@ -1270,6 +1274,15 @@ export class LlEmitter {
     const traced = computeTraced(mod);
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
+    // A shape union's value is whichever record it holds, and the collector
+    // visits it as that record: when one arm carries a collector header,
+    // every arm must (nullable-unions.ts).
+    for (const union of this.nullableUnions.allShapeUnions())
+      if (
+        this.tracedUnions.has(union.unionId) ||
+        union.arms.some((arm) => this.tracedShapes.has(`record:${arm.shapeId}`))
+      )
+        for (const arm of union.arms) this.tracedShapes.add(`record:${arm.shapeId}`);
     this.shapeHost = {
       sizeType: this.sizeType,
       cycleBufOffset: this.cycleBufOffset,
@@ -3551,6 +3564,7 @@ export class LlEmitter {
     return [
       ...late,
       ...emitNullableRetainWrappers(this.shapeHost),
+      ...emitShapeUnionHelpers(this.shapeHost),
       ...emitInlineRcHelpers(this.shapeHost),
     ];
   }
@@ -5527,7 +5541,11 @@ export class LlEmitter {
     const nullable = this.nullableUnions.get(unionId);
     if (nullable) {
       // The owned payload IS the nullable union's value.
-      if (tag !== nullable.refTag)
+      if (
+        nullable.repr === "single"
+          ? tag !== nullable.refTag
+          : !nullable.arms.some((arm) => arm.tag === tag)
+      )
         throw new InternalCompilerError(
           `llvm emitter bug: payload wrap into unit arm ${tag} of ${unionId}`,
         );
@@ -5632,7 +5650,7 @@ export class LlEmitter {
         const index = shape.fields.findIndex((entry) => entry.name === field);
         if (index < 0)
           throw new InternalCompilerError(`llvm emitter bug: missing union field ${field}`);
-        layout = "record:";
+        layout = this.nullableUnions.fieldBase(arm.shapeId) === 2 ? "record:tagged;" : "record:";
         for (let i = 0; i <= index; i++) {
           const type = shape.fields[i]!.type;
           layout += `${llFieldType(type, this.inlineUnions.record(type))};`;
@@ -5668,7 +5686,7 @@ export class LlEmitter {
       );
     const p = this.B.tmp();
     this.B.line(
-      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + 1}`,
+      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + this.nullableUnions.fieldBase(shapeId)}`,
     );
     const type = shape.fields[idx]!.type;
     return { ptr: p, type, inline: this.inlineUnions.record(type) };
@@ -5682,7 +5700,7 @@ export class LlEmitter {
     const p = this.B.tmp();
     const v = this.B.tmp();
     this.B.line(
-      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${shape.fields.length + 1}`,
+      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${shape.fields.length + this.nullableUnions.fieldBase(shapeId)}`,
     );
     this.B.line(`${v} = load ptr, ptr ${p}`);
     return v;
@@ -9564,7 +9582,12 @@ export class LlEmitter {
       unionsById: this.unionsById,
       recordsById: this.recordsById,
       inlineUnions: this.inlineUnions,
-      nullableArm: (t) => this.nullableUnions.of(t)?.arm ?? null,
+      nullableArm: (t) => {
+        const nullable = this.nullableUnions.of(t);
+        return nullable?.repr === "single" ? nullable.arm : null;
+      },
+      shapeUnion: (t) => this.nullableUnions.of(t)?.repr === "shapes",
+      fieldBase: (shapeId) => this.nullableUnions.fieldBase(shapeId),
       classInfo: (className) => {
         const meta = this.classMetaOf(className);
         return {
@@ -10280,7 +10303,11 @@ export class LlEmitter {
     const nullable = this.nullableUnions.get(e.unionId);
     if (!nullable) return null;
     if (isUnitType(e.value.type)) return e.value.kind === "unitLit" ? "unit" : null;
-    return e.tag === nullable.refTag && isRefCounted(e.value.type) ? "ref" : null;
+    const refArm =
+      nullable.repr === "single"
+        ? e.tag === nullable.refTag
+        : nullable.arms.some((arm) => arm.tag === e.tag);
+    return refArm && isRefCounted(e.value.type) ? "ref" : null;
   }
 
   materializeSplitLocal(localId: string): void {

@@ -1179,12 +1179,13 @@ export class LlDyn {
             `llvm emitter bug: JSON schema of unknown shape ${t.shapeId}`,
           );
         const struct = mangleRecordStruct(t.shapeId);
-        const index = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+        const base = host.nullableUnions.fieldBase(t.shapeId);
+        const index = new Map(shape.fields.map((f, i) => [f.name, i + base]));
         // The runtime names kept-source keys by this index (record-sources.ts).
         const order = recordSourceFieldOrder(shape);
         const fieldTy = `{ ptr, ${S}, ${S}, ptr }`;
         const entries = order.map((fieldName) => {
-          const field = shape.fields[index.get(fieldName)! - 1]!;
+          const field = shape.fields[index.get(fieldName)! - base]!;
           const sub = this.jsonSchema(field.type);
           const offset = `ptrtoint (ptr getelementptr (%${struct}, ptr null, i64 0, i32 ${index.get(fieldName)}) to ${S})`;
           return `${fieldTy} { ptr ${host.cstr(fieldName)}, ${S} ${Buffer.byteLength(fieldName, "utf8")}, ${S} ${offset}, ptr @${sub} }`;
@@ -1421,18 +1422,19 @@ export class LlDyn {
             B.line(`call void @scr_arr_outline(ptr ${cached})`);
             B.line(`call void @scr_arr_outline(ptr ${checked})`);
           }
+          const base = t.kind === "record" ? host.nullableUnions.fieldBase(t.shapeId) : 1;
           const members =
             t.kind === "record"
               ? [
                   ...shape!.fields.map((field, index) => ({
-                    index: index + 1,
+                    index: index + base,
                     type: llFieldType(field.type, host.inlineUnions.record(field.type)),
                     name: field.name,
                   })),
                   ...(shape!.indexValue
                     ? [
                         {
-                          index: shape!.fields.length + 1,
+                          index: shape!.fields.length + base,
                           type: "ptr" as const,
                           name: "[key: string] overflow",
                         },
@@ -1693,7 +1695,8 @@ export class LlDyn {
             `llvm emitter bug: dynCheck of unknown shape ${t.shapeId}`,
           );
         const struct = mangleRecordStruct(t.shapeId);
-        const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+        const base = host.nullableUnions.fieldBase(t.shapeId);
+        const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + base]));
         const releaseR = (): void => {
           B.line(`call void ${releaseSym(host, t)}(ptr %r0)`);
         };
@@ -1870,7 +1873,7 @@ export class LlDyn {
           const ovfp = B.tmp();
           const ovf = B.tmp();
           B.line(
-            `${ovfp} = getelementptr inbounds %${struct}, ptr %r0, i64 0, i32 ${shape.fields.length + 1}`,
+            `${ovfp} = getelementptr inbounds %${struct}, ptr %r0, i64 0, i32 ${shape.fields.length + base}`,
           );
           B.line(`${ovf} = load ptr, ptr ${ovfp} ; overflow map`);
           if (shape.fields.length === 0) {
@@ -2443,7 +2446,8 @@ export class LlDyn {
         if (!shape)
           throw new InternalCompilerError(`llvm emitter bug: to-dyn of unknown shape ${t.shapeId}`);
         const struct = mangleRecordStruct(t.shapeId);
-        const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+        const base = host.nullableUnions.fieldBase(t.shapeId);
+        const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + base]));
         const loadFieldOf = (fname: string, ft: IrType): string => {
           const p = B.tmp();
           B.line(
@@ -2567,7 +2571,7 @@ export class LlDyn {
           const ovfp = B.tmp();
           const ovf = B.tmp();
           B.line(
-            `${ovfp} = getelementptr inbounds %${struct}, ptr %v, i64 0, i32 ${shape.fields.length + 1}`,
+            `${ovfp} = getelementptr inbounds %${struct}, ptr %v, i64 0, i32 ${shape.fields.length + base}`,
           );
           B.line(`${ovf} = load ptr, ptr ${ovfp} ; overflow map`);
           const ks = B.tmp();
