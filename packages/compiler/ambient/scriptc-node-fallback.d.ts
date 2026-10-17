@@ -3080,6 +3080,12 @@ declare module "util" {
       windowsHide?: boolean;
     },
   ) => Promise<{ stdout: string; stderr: string }>;
+  export function promisify(
+    fn: typeof globalThis.setTimeout,
+  ): typeof import("node:timers/promises").setTimeout;
+  export function promisify(
+    fn: typeof globalThis.setImmediate,
+  ): typeof import("node:timers/promises").setImmediate;
   export function promisify(fn: typeof import("node:child_process").exec): (
     command: string,
     options?: {
