@@ -2774,7 +2774,7 @@ export function builtinModulesArrayLit(loc: { file: string; start: number; end: 
  * no lowering. The default-options one-shot zlib/deflate-raw/gzip codecs
  * lower for strings and Buffers; the remaining surface points at them. */
 const ZLIB_HINT =
-  "the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms, crc32, " +
+  "the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, " +
   "and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface";
 /** Brotli has no codec in the static runtime (zlib is the only vendored
  * compression library). */

@@ -211,6 +211,39 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     );
     return { name: "", type: e.type };
   }
+  if (e.fn === "zlib.syncOpts" || e.fn === "zlib.syncOptsDyn") {
+    // (mode, data, options): data and options borrowed; +1 bytes or NULL
+    // with a pending throw.
+    const args = e.args.map((a) => host.emitExpr(a));
+    const sym = e.fn === "zlib.syncOpts" ? "scr_zlib_sync_opts" : "scr_zlib_sync_opts_dyn";
+    host.declare(`declare ptr @${sym}(double, ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @${sym}(double ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "zlib.cbOpts" || e.fn === "zlib.cbOptsDyn") {
+    // (mode, data, options, callback): the options validate before the
+    // submission (a pending throw); the callback moves into the operation.
+    host.usesTimers = true;
+    const args = e.args.map((a) => host.emitExpr(a));
+    const cbT = e.args[3]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: zlib callback not a func");
+    host.moveTemp(args[3]!);
+    const adapter = host.zlibBytesThunkFor(cbT);
+    const sym =
+      e.fn === "zlib.cbOpts" ? "scr_zlib_codec_async_opts" : "scr_zlib_codec_async_opts_dyn";
+    host.declare(`declare void @${sym}(ptr, double, ptr, ptr, ptr)`);
+    B.line(
+      `call void @${sym}(ptr ${args[1]!.name}, double ${args[0]!.name}, ptr ${args[2]!.name}, ptr ${args[3]!.name}, ptr @${adapter})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (e.fn === "zlib.streamNew") {
     // The stream's engine steps run on the worker pool; the options value
     // is borrowed and the +1 stream may be NULL with a pending throw.

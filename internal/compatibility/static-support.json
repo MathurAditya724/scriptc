@@ -169,7 +169,7 @@
     "node-builtin.util.debug": ["tests/corpus/5192-util-debuglog.cjs", "tests/corpus/5193-util-debuglog.ts"],
     "node-builtin.util": ["tests/corpus/2440-console-inspect-args.ts", "tests/corpus/2912-promisify-fs-readfile.ts"],
     "node-builtin.worker_threads": ["tests/corpus/957-builtins-namespace.ts", "tests/corpus/native-worker-messages.ts", "tests/corpus/native-worker-references.ts"],
-    "node-builtin.zlib": ["tests/corpus/1404-zlib-crypto-bytes.ts", "tests/corpus/2921-zlib-callbacks.ts", "tests/corpus/3115-zlib-static-compression-levels.ts", "tests/corpus/5370-zlib-stream-roundtrip.ts", "tests/corpus/5371-zlib-stream-chunking.cjs", "tests/corpus/5373-zlib-stream-options.cjs"],
+    "node-builtin.zlib": ["tests/corpus/1404-zlib-crypto-bytes.ts", "tests/corpus/2921-zlib-callbacks.ts", "tests/corpus/3115-zlib-static-compression-levels.ts", "tests/corpus/5370-zlib-stream-roundtrip.ts", "tests/corpus/5371-zlib-stream-chunking.cjs", "tests/corpus/5373-zlib-stream-options.cjs", "tests/corpus/5378-zlib-sync-options.cjs", "tests/corpus/5379-zlib-callback-options.ts", "tests/corpus/5415-zlib-dynamic-inputs.cjs"],
     "stdlib.fetch": ["tests/harness/fetch-conformance.test.ts"],
     "stdlib.map": ["tests/corpus/typed-collection-iterators.ts", "tests/corpus/typed-collection-iterator-references.ts", "tests/corpus/537-map-iter-drains.ts"],
     "stdlib.set": ["tests/corpus/typed-collection-iterators.ts", "tests/corpus/typed-collection-iterator-references.ts", "tests/corpus/checked-collection-iterators.ts"],

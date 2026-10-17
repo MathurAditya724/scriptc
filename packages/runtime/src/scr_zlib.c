@@ -32,56 +32,8 @@ ScrBytes *scr_zlib_deflate(const ScrBytes *data) {
   int rc = compress2(buf, &outLen, data->data, srcLen, Z_DEFAULT_COMPRESSION);
   if (rc != Z_OK) scr_zlib_oom(); /* Z_MEM_ERROR is the only reachable code */
   ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)outLen);
+  out->is_buffer = true; /* Node returns a Buffer */
   memcpy(out->data, buf, outLen);
-  free(buf);
-  return out;
-}
-
-ScrBytes *scr_zlib_inflate(const ScrBytes *data) {
-  SCR_BYTES_SNAPSHOT(data);
-  z_stream zs;
-  memset(&zs, 0, sizeof zs);
-  if (inflateInit(&zs) != Z_OK) scr_zlib_oom();
-  size_t cap = data->len > 64 ? data->len * 4 : 256;
-  uint8_t *buf = malloc(cap);
-  if (!buf) scr_zlib_oom();
-  zs.next_in = data->data;
-  zs.avail_in = (uInt)data->len;
-  size_t len = 0;
-  for (;;) {
-    zs.next_out = buf + len;
-    zs.avail_out = (uInt)(cap - len);
-    int rc = inflate(&zs, Z_NO_FLUSH);
-    len = cap - zs.avail_out;
-    if (rc == Z_STREAM_END) break;
-    if (rc == Z_OK || rc == Z_BUF_ERROR) {
-      if (rc == Z_BUF_ERROR && zs.avail_in == 0 && zs.avail_out > 0) {
-        /* Truncated input: Node throws "unexpected end of file". */
-        inflateEnd(&zs);
-        free(buf);
-        static const char msg[] = "unexpected end of file";
-        scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
-        return NULL;
-      }
-      if (cap - len < 64) {
-        cap *= 2;
-        uint8_t *grown = realloc(buf, cap);
-        if (!grown) scr_zlib_oom();
-        buf = grown;
-      }
-      continue;
-    }
-    /* Corrupt data: zlib's msg is exactly Node's error message text. */
-    const char *msg = zs.msg ? zs.msg : "zlib error";
-    size_t mlen = strlen(msg);
-    inflateEnd(&zs);
-    free(buf);
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, mlen);
-    return NULL;
-  }
-  inflateEnd(&zs);
-  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)len);
-  memcpy(out->data, buf, len);
   free(buf);
   return out;
 }
@@ -117,58 +69,7 @@ ScrBytes *scr_zlib_deflate_mode(const ScrBytes *data, double mode, double level)
   size_t len = cap - zs.avail_out;
   deflateEnd(&zs);
   ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)len);
-  memcpy(out->data, buf, len);
-  free(buf);
-  return out;
-}
-
-ScrBytes *scr_zlib_inflate_mode(const ScrBytes *data, double mode) {
-  SCR_BYTES_SNAPSHOT(data);
-  z_stream zs;
-  memset(&zs, 0, sizeof zs);
-  if (inflateInit2(&zs, scr_zlib_window_bits((int)mode, true)) != Z_OK) scr_zlib_oom();
-  size_t cap = data->len > 64 ? data->len * 4 : 256;
-  uint8_t *buf = malloc(cap);
-  if (!buf) scr_zlib_oom();
-  zs.next_in = data->data;
-  zs.avail_in = (uInt)data->len;
-  size_t len = 0;
-  for (;;) {
-    zs.next_out = buf + len;
-    zs.avail_out = (uInt)(cap - len);
-    int rc = inflate(&zs, Z_NO_FLUSH);
-    len = cap - zs.avail_out;
-    if (rc == Z_STREAM_END) break;
-    if (rc == Z_OK || rc == Z_BUF_ERROR) {
-      if (rc == Z_BUF_ERROR && zs.avail_in == 0 && zs.avail_out > 0) {
-        inflateEnd(&zs);
-        free(buf);
-        static const char msg[] = "unexpected end of file";
-        scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "Z_BUF_ERROR");
-        return NULL;
-      }
-      if (cap - len < 64) {
-        cap *= 2;
-        uint8_t *grown = realloc(buf, cap);
-        if (!grown) scr_zlib_oom();
-        buf = grown;
-      }
-      continue;
-    }
-    const char *msg = zs.msg ? zs.msg : "zlib error";
-    size_t mlen = strlen(msg);
-    /* Node stamps the zlib return code's name (err.code) */
-    const char *code = rc == Z_DATA_ERROR ? "Z_DATA_ERROR"
-                       : rc == Z_NEED_DICT ? "Z_NEED_DICT"
-                       : rc == Z_MEM_ERROR ? "Z_MEM_ERROR"
-                                           : "Z_STREAM_ERROR";
-    inflateEnd(&zs);
-    free(buf);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, mlen, code);
-    return NULL;
-  }
-  inflateEnd(&zs);
-  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)len);
+  out->is_buffer = true; /* Node returns a Buffer */
   memcpy(out->data, buf, len);
   free(buf);
   return out;
@@ -196,143 +97,17 @@ double scr_zlib_crc32(const ScrBytes *data, double value) {
 }
 
 /* The callback convenience methods share the executable's four-worker
- * pool with fs.rename. Only copied raw bytes and malloc-owned result state
- * cross threads; runtime RC, exceptions, Buffer/Error construction, and
- * callback execution stay on the main thread. */
+ * pool with fs.rename (scr_zlib_codec_async_opts below). Only copied raw
+ * bytes and malloc-owned result state cross threads; runtime RC,
+ * exceptions, Buffer/Error construction, and callback execution stay on
+ * the main thread. The lowering's mode numbers are 0 zlib, 1 raw, 2 gzip
+ * and (decoding) 3 unzip. */
 #ifndef SCR_LIB
-typedef struct {
-  unsigned char *data;
-  size_t len;
-  int mode;
-  bool compressing;
-  unsigned char *result;
-  size_t result_len;
-  int error;
-  char message[128];
-  ScrClosure *cb;
-  ScrZlibBytesFn fn;
-} ScrZlibAsyncOp;
-
-static const char *scr_zlib_error_code(int error) {
-  switch (error) {
-  case Z_BUF_ERROR: return "Z_BUF_ERROR";
-  case Z_DATA_ERROR: return "Z_DATA_ERROR";
-  case Z_NEED_DICT: return "Z_NEED_DICT";
-  case Z_MEM_ERROR: return "Z_MEM_ERROR";
-  default: return "Z_STREAM_ERROR";
-  }
-}
-
-static void scr_zlib_async_deflate(ScrZlibAsyncOp *op) {
-  z_stream zs;
-  memset(&zs, 0, sizeof zs);
-  if (deflateInit2(&zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
-                   scr_zlib_window_bits(op->mode, false), 8,
-                   Z_DEFAULT_STRATEGY) != Z_OK) {
-    scr_zlib_oom();
-  }
-  uLong cap = deflateBound(&zs, (uLong)op->len);
-  op->result = malloc(cap ? cap : 1);
-  if (!op->result) scr_zlib_oom();
-  zs.next_in = op->data;
-  zs.avail_in = (uInt)op->len;
-  zs.next_out = op->result;
-  zs.avail_out = (uInt)cap;
-  int rc = deflate(&zs, Z_FINISH);
-  if (rc != Z_STREAM_END) scr_zlib_oom();
-  op->result_len = cap - zs.avail_out;
-  deflateEnd(&zs);
-}
-
-static void scr_zlib_async_inflate(ScrZlibAsyncOp *op) {
-  z_stream zs;
-  memset(&zs, 0, sizeof zs);
-  if (inflateInit2(&zs, scr_zlib_window_bits(op->mode, true)) != Z_OK) {
-    scr_zlib_oom();
-  }
-  size_t cap = op->len > 64 ? op->len * 4 : 256;
-  op->result = malloc(cap);
-  if (!op->result) scr_zlib_oom();
-  zs.next_in = op->data;
-  zs.avail_in = (uInt)op->len;
-  size_t len = 0;
-  for (;;) {
-    zs.next_out = op->result + len;
-    zs.avail_out = (uInt)(cap - len);
-    int rc = inflate(&zs, Z_NO_FLUSH);
-    len = cap - zs.avail_out;
-    if (rc == Z_STREAM_END) {
-      op->result_len = len;
-      break;
-    }
-    if (rc == Z_OK || rc == Z_BUF_ERROR) {
-      if (rc == Z_BUF_ERROR && zs.avail_in == 0 && zs.avail_out > 0) {
-        op->error = Z_BUF_ERROR;
-        memcpy(op->message, "unexpected end of file", sizeof "unexpected end of file");
-        break;
-      }
-      if (cap - len < 64) {
-        cap *= 2;
-        unsigned char *grown = realloc(op->result, cap);
-        if (!grown) scr_zlib_oom();
-        op->result = grown;
-      }
-      continue;
-    }
-    op->error = rc;
-    snprintf(op->message, sizeof op->message, "%s", zs.msg ? zs.msg : "zlib error");
-    break;
-  }
-  inflateEnd(&zs);
-}
-
-static void scr_zlib_async_work(void *payload) {
-  ScrZlibAsyncOp *op = payload;
-  if (op->compressing) scr_zlib_async_deflate(op);
-  else scr_zlib_async_inflate(op);
-}
-
-static void scr_zlib_async_after(void *payload) {
-  ScrZlibAsyncOp *op = payload;
-  if (op->error == Z_OK) {
-    ScrBytes *value = scr_bytes_new(SCR_BYTES_U8, (double)op->result_len);
-    memcpy(value->data, op->result, op->result_len);
-    op->fn(op->cb, NULL, value);
-    return;
-  }
-  scr_throw_error_msg_code(SCR_ERR_ERROR, op->message, strlen(op->message),
-                           scr_zlib_error_code(op->error));
-  ScrCaught *caught = scr_exc_take();
-  ScrError *error = caught && caught->kind == SCR_EXC_OBJ && scr_error_is(caught->payload)
-      ? (ScrError *)caught->payload
-      : NULL;
-  op->fn(op->cb, error, NULL);
-  scr_caught_release(caught);
-}
-
-static void scr_zlib_async_destroy(void *payload) {
-  ScrZlibAsyncOp *op = payload;
-  free(op->data);
-  free(op->result);
-  scr_closure_release(op->cb);
-  free(op);
-}
+static int scr_zlib_codec_mode_of(double mode, bool compressing);
 
 void scr_zlib_codec_async(const ScrBytes *data, double mode, bool compressing,
                           ScrClosure *cb, ScrZlibBytesFn fn) {
-  SCR_BYTES_SNAPSHOT(data);
-  ScrZlibAsyncOp *op = calloc(1, sizeof *op);
-  if (!op) scr_zlib_oom();
-  op->data = malloc(data->len ? data->len : 1);
-  if (!op->data) scr_zlib_oom();
-  memcpy(op->data, data->data, data->len);
-  op->len = data->len;
-  op->mode = (int)mode;
-  op->compressing = compressing;
-  op->cb = cb;
-  op->fn = fn;
-  scr_work_submit(op, &scr_zlib_async_work, &scr_zlib_async_after,
-                  &scr_zlib_async_destroy);
+  scr_zlib_codec_async_opts(data, scr_zlib_codec_mode_of(mode, compressing), NULL, cb, fn);
 }
 #endif
 
@@ -581,4 +356,447 @@ void scr_zlib_engine_free(ScrZlibEngine *e) {
   }
   free(e->dict);
   free(e);
+}
+
+/* ── the option ladder (lib/zlib.js Zlib() and ZlibBase()) ───────────────
+ * Shared by the stream classes and the one-shot forms with options: the
+ * Zlib reads (windowBits, level, memLevel, strategy, dictionary), then the
+ * ZlibBase reads (chunkSize, flush, finishFlush, maxOutputLength,
+ * rejectGarbageAfterEnd), with lib/internal/validators.js's messages. */
+static void scr_zlib_range_fail(const char *name, const char *range, double v) {
+  char recv[48], msg[256];
+  scr_num_received(v, recv);
+  int len = snprintf(msg, sizeof msg, "The value of \"%s\" is out of range. It must be %s. Received %s",
+                     name, range, recv);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+}
+
+/* validateFiniteNumber: false for undefined/NaN, true for finite numbers,
+ * throws otherwise. `prop` picks the property/argument message flavor. */
+static bool scr_zlib_finite(const ScrDyn *v, const char *name, bool prop, bool *ok) {
+  *ok = true;
+  if (v == NULL || v->kind == SCR_DYN_UNDEF) return false;
+  if (v->kind == SCR_DYN_NUM) {
+    if (isfinite(v->v.num)) return true;
+    if (isnan(v->v.num)) return false;
+    scr_zlib_range_fail(name, "a finite number", v->v.num);
+    *ok = false;
+    return false;
+  }
+  if (prop) scr_dyn_prop_type_fail(name, "of type number", v);
+  else scr_dyn_arg_type_fail(name, "of type number", v);
+  *ok = false;
+  return false;
+}
+
+bool scr_zlib_check_range(const ScrDyn *v, const char *name, bool prop, double lower, double upper,
+                          double def, double *out) {
+  bool ok;
+  if (!scr_zlib_finite(v, name, prop, &ok)) {
+    *out = def;
+    return ok;
+  }
+  if (v->v.num < lower || v->v.num > upper) {
+    char range[96];
+    snprintf(range, sizeof range, ">= %.17g and <= %.17g", lower, upper);
+    scr_zlib_range_fail(name, range, v->v.num);
+    return false;
+  }
+  *out = v->v.num;
+  return true;
+}
+
+static const ScrDyn *scr_zlib_opt(const ScrDyn *opts, const char *key) {
+  if (opts == NULL || opts->kind != SCR_DYN_OBJ) return NULL;
+  return scr_dyn_obj_get((ScrDyn *)opts, key, strlen(key));
+}
+
+static bool scr_zlib_is_null(const ScrDyn *v) {
+  return v == NULL || v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_NULL;
+}
+
+void scr_zlib_options_drop(ScrZlibOptions *o) {
+  if (o->dict) scr_bytes_release(o->dict);
+  o->dict = NULL;
+}
+
+bool scr_zlib_options_parse(int mode, const ScrDyn *opts, ScrZlibOptions *out) {
+  memset(out, 0, sizeof *out);
+  out->window_bits = 15;
+  out->level = Z_DEFAULT_COMPRESSION;
+  out->mem_level = 8;
+  out->strategy = Z_DEFAULT_STRATEGY;
+  out->chunk_size = 16384;
+  out->flush = Z_NO_FLUSH;
+  out->finish_flush = Z_FINISH;
+  out->max_output = 9007199254740991.0;
+  /* Node's `if (opts)`: a falsy value reads no options. */
+  const ScrDyn *o = opts != NULL && scr_dyn_truthy(opts) ? opts : NULL;
+  if (o == NULL) return true;
+  const ScrDyn *wb = scr_zlib_opt(o, "windowBits");
+  if (mode == SCR_Z_DEFLATERAW && wb != NULL && wb->kind == SCR_DYN_NUM && wb->v.num == 8) {
+    out->window_bits = 9; /* DeflateRaw rewrites windowBits 8 as 9 */
+  } else if ((scr_zlib_is_null(wb) || (wb->kind == SCR_DYN_NUM && wb->v.num == 0)) &&
+             (mode == SCR_Z_INFLATE || mode == SCR_Z_GUNZIP || mode == SCR_Z_UNZIP)) {
+    out->window_bits = 0;
+  } else if (!scr_zlib_check_range(wb, "options.windowBits", true, mode == SCR_Z_GZIP ? 9 : 8, 15,
+                                   15, &out->window_bits)) {
+    return false;
+  }
+  if (!scr_zlib_check_range(scr_zlib_opt(o, "level"), "options.level", true, -1, 9, -1,
+                            &out->level) ||
+      !scr_zlib_check_range(scr_zlib_opt(o, "memLevel"), "options.memLevel", true, 1, 9, 8,
+                            &out->mem_level) ||
+      !scr_zlib_check_range(scr_zlib_opt(o, "strategy"), "options.strategy", true, 0, 4, 0,
+                            &out->strategy)) {
+    return false;
+  }
+  const ScrDyn *d = scr_zlib_opt(o, "dictionary");
+  if (d != NULL && d->kind != SCR_DYN_UNDEF) {
+    if (d->kind != SCR_DYN_BYTES) {
+      scr_dyn_prop_type_fail("options.dictionary",
+                             "an instance of Buffer, TypedArray, DataView, or ArrayBuffer", d);
+      return false;
+    }
+    out->dict = scr_bytes_raw_view(d->v.bytes);
+  }
+  const ScrDyn *rg = scr_zlib_opt(o, "rejectGarbageAfterEnd");
+  out->reject_garbage = rg != NULL && rg->kind == SCR_DYN_BOOL && rg->v.b;
+  const ScrDyn *cs = scr_zlib_opt(o, "chunkSize");
+  bool ok;
+  if (scr_zlib_finite(cs, "options.chunkSize", true, &ok)) {
+    if (cs->v.num < 64) {
+      scr_zlib_range_fail("options.chunkSize", ">= 64", cs->v.num);
+      ok = false;
+    } else {
+      out->chunk_size = floor(cs->v.num);
+    }
+  }
+  if (!ok ||
+      !scr_zlib_check_range(scr_zlib_opt(o, "flush"), "options.flush", true, 0, 5, Z_NO_FLUSH,
+                            &out->flush) ||
+      !scr_zlib_check_range(scr_zlib_opt(o, "finishFlush"), "options.finishFlush", true, 0, 5,
+                            Z_FINISH, &out->finish_flush) ||
+      !scr_zlib_check_range(scr_zlib_opt(o, "maxOutputLength"), "options.maxOutputLength", true, 1,
+                            9007199254740991.0, 9007199254740991.0, &out->max_output)) {
+    scr_zlib_options_drop(out);
+    return false;
+  }
+  if (rg != NULL && rg->kind != SCR_DYN_UNDEF && rg->kind != SCR_DYN_BOOL) {
+    scr_zlib_options_drop(out);
+    scr_dyn_prop_type_fail("options.rejectGarbageAfterEnd", "of type boolean", rg);
+    return false;
+  }
+  if (out->chunk_size > 4294967295.0) {
+    scr_zlib_options_drop(out);
+    static const char msg[] = "a zlib chunkSize above 4294967295 is not supported yet";
+    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    return false;
+  }
+  const ScrDyn *info = scr_zlib_opt(o, "info");
+  out->info = info != NULL && scr_dyn_truthy(info);
+  return true;
+}
+
+ScrZlibEngine *scr_zlib_engine_from_options(int mode, const ScrZlibOptions *o) {
+  return scr_zlib_engine_new(mode, (int)o->level, (int)o->window_bits, (int)o->mem_level,
+                             (int)o->strategy, o->dict ? o->dict->data : NULL,
+                             o->dict ? o->dict->len : 0, o->reject_garbage);
+}
+
+/* Node's error for an engine failure: Error(message) with errno and code. */
+ScrError *scr_zlib_error_new(const ScrZlibError *ze) {
+  ScrStr *message = scr_str_new(ze->message, strlen(ze->message));
+  ScrError *err = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  err->system_errno = ze->err;
+  scr_error_set_code(err, ze->code);
+  return err;
+}
+
+/* ── the one-shot forms with options (processChunkSync / zlibBuffer) ────
+ * One run over the whole input with the finish flush, the output filling
+ * chunkSize steps; worker-safe (no runtime calls). */
+typedef struct {
+  unsigned char *data;
+  size_t len, cap;
+  int status; /* 0 ok, 1 engine error, 2 past maxOutputLength, 3 trailing data */
+  ScrZlibError err;
+} ScrZlibRun;
+
+static void scr_zlib_run(ScrZlibEngine *e, const unsigned char *in, size_t in_len, uint32_t chunk,
+                         int flush, double max_output, bool reject, ScrZlibRun *out) {
+  uint32_t in_off = 0, avail_in_before = (uint32_t)in_len, avail_out_before = chunk;
+  uint32_t offset = 0, avail_in_after = 0, avail_out_after = 0;
+  for (;;) {
+    if (out->len + avail_out_before > out->cap) {
+      size_t cap = out->cap ? out->cap : chunk;
+      while (cap < out->len + avail_out_before) cap *= 2;
+      unsigned char *grown = realloc(out->data, cap);
+      if (!grown) scr_zlib_oom();
+      out->data = grown;
+      out->cap = cap;
+    }
+    scr_zlib_engine_work(e, flush, in + in_off, avail_in_before, out->data + out->len,
+                         avail_out_before);
+    if (scr_zlib_engine_error(e, &out->err)) {
+      out->status = 1;
+      return;
+    }
+    scr_zlib_engine_offsets(e, &avail_in_after, &avail_out_after);
+    uint32_t in_delta = avail_in_before - avail_in_after;
+    uint32_t have = avail_out_before - avail_out_after;
+    out->len += have;
+    offset += have;
+    if ((double)out->len > max_output) {
+      out->status = 2;
+      return;
+    }
+    if (avail_out_after == 0 || offset >= chunk) {
+      avail_out_before = chunk;
+      offset = 0;
+    } else {
+      avail_out_before = chunk - offset;
+    }
+    if (avail_out_after != 0) break;
+    in_off += in_delta;
+    avail_in_before = avail_in_after;
+  }
+  if (avail_in_after > 0 && reject) out->status = 3;
+}
+
+static ScrError *scr_zlib_run_error(const ScrZlibRun *run, double max_output) {
+  if (run->status == 1) return scr_zlib_error_new(&run->err);
+  char msg[96];
+  int type = SCR_ERR_TYPE;
+  const char *code = "ERR_TRAILING_JUNK_AFTER_STREAM_END";
+  if (run->status == 2) {
+    char num[32];
+    scr_f64_to_str(max_output, num);
+    snprintf(msg, sizeof msg, "Cannot create a Buffer larger than %s bytes", num);
+    type = SCR_ERR_RANGE;
+    code = "ERR_BUFFER_TOO_LARGE";
+  } else {
+    snprintf(msg, sizeof msg, "Trailing junk found after the end of the compressed stream");
+  }
+  ScrStr *message = scr_str_new(msg, strlen(msg));
+  ScrError *err = scr_error_new(type, message);
+  scr_str_release(message);
+  scr_error_set_code(err, code);
+  return err;
+}
+
+static bool scr_zlib_refuse_info(const ScrZlibOptions *o) {
+  if (!o->info) return false;
+  static const char msg[] =
+      "the zlib option 'info' is not supported yet (it returns the engine object)";
+  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  return true;
+}
+
+/* A checked-dynamic input (the JS lane): strings encode as UTF-8, any
+ * TypedArray, DataView or ArrayBuffer contributes its bytes, and anything
+ * else throws Node's ERR_INVALID_ARG_TYPE — zlibBufferSync's "buffer"
+ * check, or the stream write's "chunk" check for the callback forms. */
+static ScrBytes *scr_zlib_input_dyn(const ScrDyn *v, bool callback) {
+  if (v->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
+    if (!materialized) return NULL;
+    ScrBytes *out = scr_zlib_input_dyn(materialized, callback);
+    scr_dyn_release(materialized);
+    return out;
+  }
+  if (v->kind == SCR_DYN_STR) {
+    ScrStr *str = v->v.str;
+    ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)str->len);
+    memcpy(b->data, str->data, str->len);
+    if (!str->ascii) scr_wtf8_to_utf8((char *)b->data, str->len);
+    return b;
+  }
+  if (v->kind == SCR_DYN_BYTES) return scr_bytes_raw_view(v->v.bytes);
+  if (scr_buffer_storage_is(v))
+    return scr_array_buffer_view(SCR_BYTES_U8, (ScrDyn *)v, scr_dyn_undefined(), scr_dyn_undefined());
+  if (callback)
+    scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer, TypedArray, or DataView", v);
+  else
+    scr_dyn_arg_type_fail(
+        "buffer", "of type string or an instance of Buffer, TypedArray, DataView, or ArrayBuffer", v);
+  return NULL;
+}
+
+static ScrBytes *scr_zlib_sync_run(int mode, const ScrBytes *data, ScrZlibOptions *o);
+
+ScrBytes *scr_zlib_sync_opts_dyn(double mode_d, ScrDyn *data, ScrDyn *opts) {
+  int mode = (int)mode_d;
+  ScrZlibOptions o;
+  if (!scr_zlib_options_parse(mode, opts, &o)) return NULL;
+  if (scr_zlib_refuse_info(&o)) {
+    scr_zlib_options_drop(&o);
+    return NULL;
+  }
+  ScrBytes *input = scr_zlib_input_dyn(data, false);
+  if (!input) {
+    scr_zlib_options_drop(&o);
+    return NULL;
+  }
+  ScrBytes *out = scr_zlib_sync_run(mode, input, &o);
+  scr_bytes_release(input);
+  return out;
+}
+
+ScrBytes *scr_zlib_sync_opts(double mode_d, const ScrBytes *data, ScrDyn *opts) {
+  int mode = (int)mode_d;
+  ScrZlibOptions o;
+  if (!scr_zlib_options_parse(mode, opts, &o)) return NULL;
+  if (scr_zlib_refuse_info(&o)) {
+    scr_zlib_options_drop(&o);
+    return NULL;
+  }
+  return scr_zlib_sync_run(mode, data, &o);
+}
+
+/* Runs the whole input and drops *o. */
+static ScrBytes *scr_zlib_sync_run(int mode, const ScrBytes *data, ScrZlibOptions *o_) {
+  SCR_BYTES_SNAPSHOT(data);
+  ScrZlibOptions o = *o_;
+  ScrZlibEngine *e = scr_zlib_engine_from_options(mode, &o);
+  ScrZlibRun run = {NULL, 0, 0, 0, {NULL, NULL, 0}};
+  scr_zlib_run(e, data->data, data->len, (uint32_t)o.chunk_size, (int)o.finish_flush, o.max_output,
+               o.reject_garbage, &run);
+  ScrBytes *result = NULL;
+  if (run.status != 0) {
+    ScrError *err = scr_zlib_run_error(&run, o.max_output);
+    scr_throw_obj(err, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+  } else {
+    result = scr_bytes_new(SCR_BYTES_U8, (double)run.len);
+    result->is_buffer = true; /* Node returns a Buffer */
+    if (run.len) memcpy(result->data, run.data, run.len);
+  }
+  free(run.data);
+  scr_zlib_engine_free(e);
+  scr_zlib_options_drop(&o);
+  return result;
+}
+
+#ifndef SCR_LIB
+typedef struct {
+  ScrZlibEngine *eng;
+  unsigned char *data;
+  size_t len;
+  uint32_t chunk;
+  int flush;
+  double max_output;
+  bool reject;
+  ScrZlibRun run;
+  ScrClosure *cb;
+  ScrZlibBytesFn fn;
+} ScrZlibOptsOp;
+
+static void scr_zlib_opts_work(void *payload) {
+  ScrZlibOptsOp *op = payload;
+  scr_zlib_run(op->eng, op->data, op->len, op->chunk, op->flush, op->max_output, op->reject,
+               &op->run);
+}
+
+static void scr_zlib_opts_after(void *payload) {
+  ScrZlibOptsOp *op = payload;
+  if (op->run.status == 0) {
+    ScrBytes *value = scr_bytes_new(SCR_BYTES_U8, (double)op->run.len);
+    value->is_buffer = true; /* Node returns a Buffer */
+    if (op->run.len) memcpy(value->data, op->run.data, op->run.len);
+    op->fn(op->cb, NULL, value);
+    return;
+  }
+  ScrError *err = scr_zlib_run_error(&op->run, op->max_output);
+  op->fn(op->cb, err, NULL);
+  scr_error_release(err);
+}
+
+static void scr_zlib_opts_destroy(void *payload) {
+  ScrZlibOptsOp *op = payload;
+  scr_zlib_engine_free(op->eng);
+  free(op->data);
+  free(op->run.data);
+  scr_closure_release(op->cb);
+  free(op);
+}
+
+static void scr_zlib_async_submit(int mode, const ScrBytes *data, ScrZlibOptions *o_,
+                                  ScrClosure *cb, ScrZlibBytesFn fn);
+
+static bool scr_zlib_async_options(int mode, ScrDyn *opts, ScrZlibOptions *o, ScrClosure *cb) {
+  if (!scr_zlib_options_parse(mode, opts, o)) {
+    scr_closure_release(cb);
+    return false;
+  }
+  if (scr_zlib_refuse_info(o)) {
+    scr_zlib_options_drop(o);
+    scr_closure_release(cb);
+    return false;
+  }
+  return true;
+}
+
+void scr_zlib_codec_async_opts(const ScrBytes *data, double mode_d, ScrDyn *opts, ScrClosure *cb,
+                               ScrZlibBytesFn fn) {
+  int mode = (int)mode_d;
+  ScrZlibOptions o;
+  if (scr_zlib_async_options(mode, opts, &o, cb)) scr_zlib_async_submit(mode, data, &o, cb, fn);
+}
+
+void scr_zlib_codec_async_opts_dyn(ScrDyn *data, double mode_d, ScrDyn *opts, ScrClosure *cb,
+                                   ScrZlibBytesFn fn) {
+  int mode = (int)mode_d;
+  ScrZlibOptions o;
+  if (!scr_zlib_async_options(mode, opts, &o, cb)) return;
+  ScrBytes *input = scr_zlib_input_dyn(data, true);
+  if (!input) {
+    scr_zlib_options_drop(&o);
+    scr_closure_release(cb);
+    return;
+  }
+  scr_zlib_async_submit(mode, input, &o, cb, fn);
+  scr_bytes_release(input);
+}
+
+/* Moves cb and drops *o_. */
+static void scr_zlib_async_submit(int mode, const ScrBytes *data, ScrZlibOptions *o_,
+                                  ScrClosure *cb, ScrZlibBytesFn fn) {
+  SCR_BYTES_SNAPSHOT(data);
+  ScrZlibOptions o = *o_;
+  ScrZlibOptsOp *op = calloc(1, sizeof *op);
+  if (!op) scr_zlib_oom();
+  op->eng = scr_zlib_engine_from_options(mode, &o);
+  op->data = malloc(data->len ? data->len : 1);
+  if (!op->data) scr_zlib_oom();
+  if (data->len) memcpy(op->data, data->data, data->len);
+  op->len = data->len;
+  op->chunk = (uint32_t)o.chunk_size;
+  op->flush = (int)o.finish_flush;
+  op->max_output = o.max_output;
+  op->reject = o.reject_garbage;
+  op->cb = cb;
+  op->fn = fn;
+  scr_zlib_options_drop(&o);
+  scr_work_submit(op, &scr_zlib_opts_work, &scr_zlib_opts_after, &scr_zlib_opts_destroy);
+}
+#endif
+
+/* The default-options forms run Node's engine too: the decoders read
+ * every gzip member and their errors carry errno and code. */
+static int scr_zlib_codec_mode_of(double mode, bool compressing) {
+  switch ((int)mode) {
+  case 1: return compressing ? SCR_Z_DEFLATERAW : SCR_Z_INFLATERAW;
+  case 2: return compressing ? SCR_Z_GZIP : SCR_Z_GUNZIP;
+  case 3: return SCR_Z_UNZIP;
+  default: return compressing ? SCR_Z_DEFLATE : SCR_Z_INFLATE;
+  }
+}
+
+ScrBytes *scr_zlib_inflate(const ScrBytes *data) {
+  return scr_zlib_sync_opts(SCR_Z_INFLATE, data, NULL);
+}
+
+ScrBytes *scr_zlib_inflate_mode(const ScrBytes *data, double mode) {
+  return scr_zlib_sync_opts(scr_zlib_codec_mode_of(mode, false), data, NULL);
 }

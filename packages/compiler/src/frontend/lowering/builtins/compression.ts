@@ -14,6 +14,7 @@ import {
   type IrLibFn,
   type IrType,
   type SrcLoc,
+  STRING,
   VOID,
   ZLIB_STREAM_MODES,
 } from "../../../ir/ir.js";
@@ -40,6 +41,56 @@ const ZLIB_CALLBACK_FNS: Readonly<Record<string, IrLibFn | undefined>> = {
 
 const ZLIB_STREAM_T: IrType = { kind: "object", className: "%Transform" };
 
+/** A zlib data argument, lowered once: Buffer/Uint8Array bytes, a string
+ * (UTF-8 encoded here), or a checked-dynamic value (the JS lane's untyped
+ * data, which the runtime converts after validating the options — Node's
+ * order). Other static types keep the byte-input fence. */
+function zlibInput(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  loc: SrcLoc,
+): { value: IrExpr; dyn: boolean } {
+  const value = lowerer.lowerExpr(node);
+  if (value.type.kind === "dyn") return { value, dyn: true };
+  if (value.type.kind === "bytes" && value.type.elem === "u8") return { value, dyn: false };
+  if (value.type.kind === "string") {
+    return {
+      value: {
+        kind: "libCall",
+        fn: "buffer.fromStr",
+        args: [value, { kind: "strLit", value: "utf8", type: STRING, loc }],
+        type: BYTES_U8,
+        loc,
+      },
+      dyn: false,
+    };
+  }
+  lowerer.noLowering(
+    `zlib byte input of '${lowerer.fmt(value.type)}' values`,
+    node,
+    "string and Buffer/Uint8Array values are supported",
+  );
+}
+
+/** A zlib options argument as the dyn value the runtime ladder reads. */
+function zlibOptionsValue(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  what: string,
+  loc: SrcLoc,
+): IrExpr {
+  const raw = lowerer.lowerExpr(node);
+  if (raw.type.kind === "dyn") return raw;
+  if (raw.kind === "unitLit" || lowerer.dynConvertible(raw.type)) {
+    return { kind: "dynFrom", value: raw, type: DYN, loc };
+  }
+  lowerer.noLowering(
+    `${what} with a '${lowerer.fmt(raw.type)}' options value`,
+    node,
+    "zlib options are a plain object of numbers, booleans and Buffers",
+  );
+}
+
 /** `zlib.createGzip(options?)` and `new zlib.Gzip(options?)`: the runtime
  * Transform stream (scr_zlib_stream.c). The options value crosses as a dyn
  * value and is validated at runtime with Node's ladder, so literal and
@@ -60,20 +111,8 @@ export function lowerZlibStreamNew(
       "the supported form takes one options object",
     );
   }
-  let options: IrExpr = dynUndefinedExpr(loc);
-  if (args[0] !== undefined) {
-    const raw = lowerer.lowerExpr(args[0]);
-    if (raw.type.kind === "dyn") options = raw;
-    else if (raw.kind === "unitLit" || lowerer.dynConvertible(raw.type)) {
-      options = { kind: "dynFrom", value: raw, type: DYN, loc };
-    } else {
-      lowerer.noLowering(
-        `${what} with a '${lowerer.fmt(raw.type)}' options value`,
-        args[0],
-        "zlib stream options are a plain object of numbers, booleans and Buffers",
-      );
-    }
-  }
+  const options =
+    args[0] !== undefined ? zlibOptionsValue(lowerer, args[0], what, loc) : dynUndefinedExpr(loc);
   return {
     kind: "libCall",
     fn: "zlib.streamNew",
@@ -226,6 +265,24 @@ export function lowerZlibStreamMethodCall(
   }
 }
 
+/** node_zlib_mode of each one-shot form (the options-taking runtime entry). */
+const ZLIB_ONE_SHOT_MODES: Readonly<Record<string, number | undefined>> = {
+  deflateSync: 1,
+  inflateSync: 2,
+  gzipSync: 3,
+  gunzipSync: 4,
+  deflateRawSync: 5,
+  inflateRawSync: 6,
+  unzipSync: 7,
+  deflate: 1,
+  inflate: 2,
+  gzip: 3,
+  gunzip: 4,
+  deflateRaw: 5,
+  inflateRaw: 6,
+  unzip: 7,
+};
+
 const ZLIB_STREAM_FACTORIES: Readonly<Record<string, number | undefined>> = {
   createDeflate: 1,
   createInflate: 2,
@@ -251,15 +308,33 @@ export function lowerZlibModuleCall(
   }
   const syncFn = ZLIB_SYNC_FNS[bi.member];
   if (syncFn !== undefined) {
+    if (expr.arguments.length === 0 || expr.arguments.length > 2) {
+      lowerer.noLowering(`${bi.member} with ${expr.arguments.length} arguments`, expr);
+    }
+    const input = zlibInput(lowerer, expr.arguments[0]!, loc);
+    if (input.dyn) {
+      return {
+        kind: "libCall",
+        fn: "zlib.syncOptsDyn",
+        args: [
+          numLit(ZLIB_ONE_SHOT_MODES[bi.member]!, loc),
+          input.value,
+          expr.arguments[1] !== undefined
+            ? zlibOptionsValue(lowerer, expr.arguments[1], `zlib.${bi.member}`, loc)
+            : dynUndefinedExpr(loc),
+        ],
+        type: BYTES_U8,
+        loc,
+      };
+    }
     if (
       expr.arguments.length === 2 &&
       (bi.member === "deflateSync" || bi.member === "deflateRawSync" || bi.member === "gzipSync")
     ) {
       const options = expr.arguments[1]!;
-      // A literal level is enough for build-time compression in the native
-      // emitters. Other options retain the explicit refusal: dropping
-      // strategy/windowBits/dictionaries without a diagnostic changes the
-      // wire bytes.
+      // A lone literal level keeps the direct compression entry (build-time
+      // compression in the native emitters uses it); other options take the
+      // runtime option ladder below.
       if (ts.isObjectLiteralExpression(options) && options.properties.length === 1) {
         const prop = options.properties[0]!;
         if (
@@ -280,7 +355,7 @@ export function lowerZlibModuleCall(
               kind: "libCall",
               fn: "zlib.deflateLevelSync",
               args: [
-                lowerBuiltinByteInput(lowerer, expr.arguments[0]!, loc, "zlib"),
+                input.value,
                 numLit(
                   bi.member === "deflateSync" ? 0 : bi.member === "deflateRawSync" ? 1 : 2,
                   loc,
@@ -293,45 +368,62 @@ export function lowerZlibModuleCall(
           }
         }
       }
-      lowerer.noLowering(
-        `${bi.member} with these options`,
-        options,
-        "the static compression options form is { level: <integer literal from -1 through 9> }",
-      );
     }
-    if (expr.arguments.length !== 1) {
-      const site = expr.arguments[1] ?? expr;
-      lowerer.noLowering(
-        `${bi.member} with explicit options`,
-        site,
-        `${bi.member}(data) with Node's default options is supported`,
-      );
+    if (expr.arguments.length === 2) {
+      return {
+        kind: "libCall",
+        fn: "zlib.syncOpts",
+        args: [
+          numLit(ZLIB_ONE_SHOT_MODES[bi.member]!, loc),
+          input.value,
+          zlibOptionsValue(lowerer, expr.arguments[1]!, `zlib.${bi.member}`, loc),
+        ],
+        type: BYTES_U8,
+        loc,
+      };
     }
     return {
       kind: "libCall",
       fn: syncFn,
-      args: [lowerBuiltinByteInput(lowerer, expr.arguments[0]!, loc, "zlib")],
+      args: [input.value],
       type: BYTES_U8,
       loc,
     };
   }
   const callbackFn = ZLIB_CALLBACK_FNS[bi.member];
   if (callbackFn !== undefined) {
-    if (expr.arguments.length !== 2) {
-      const site = expr.arguments.length >= 3 ? expr.arguments[1]! : expr;
+    if (expr.arguments.length !== 2 && expr.arguments.length !== 3) {
       lowerer.noLowering(
         `${bi.member} with ${expr.arguments.length} arguments`,
-        site,
-        `${bi.member}(data, callback) with Node's default options is supported; explicit options are not yet lowered`,
+        expr,
+        `${bi.member}(data, callback) and ${bi.member}(data, options, callback) are supported`,
       );
+    }
+    const input = zlibInput(lowerer, expr.arguments[0]!, loc);
+    const dynData = input.dyn;
+    if (expr.arguments.length === 3 || dynData) {
+      // (data, options, callback): Node validates the options before the
+      // callback and the input, so the runtime ladder runs first.
+      const withOptions = expr.arguments.length === 3;
+      return {
+        kind: "libCall",
+        fn: dynData ? "zlib.cbOptsDyn" : "zlib.cbOpts",
+        args: [
+          numLit(ZLIB_ONE_SHOT_MODES[bi.member]!, loc),
+          input.value,
+          withOptions
+            ? zlibOptionsValue(lowerer, expr.arguments[1]!, `zlib.${bi.member}`, loc)
+            : dynUndefinedExpr(loc),
+          errorFirstBytesCallback(lowerer, expr.arguments[withOptions ? 2 : 1]!, "zlib"),
+        ],
+        type: VOID,
+        loc,
+      };
     }
     return {
       kind: "libCall",
       fn: callbackFn,
-      args: [
-        lowerBuiltinByteInput(lowerer, expr.arguments[0]!, loc, "zlib"),
-        errorFirstBytesCallback(lowerer, expr.arguments[1]!, "zlib"),
-      ],
+      args: [input.value, errorFirstBytesCallback(lowerer, expr.arguments[1]!, "zlib")],
       type: VOID,
       loc,
     };
