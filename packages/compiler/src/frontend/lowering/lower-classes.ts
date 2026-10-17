@@ -386,6 +386,9 @@ export interface ClassInfo {
   def: IrClassDef;
   expressionInitializationEmitted?: true;
   runtimeStatics?: readonly ts.ClassElement[];
+  /** Direct calls of runtime static methods (directRuntimeStaticCall), by
+   * member name. */
+  runtimeStaticCalls?: Map<string, GenericFnInfo>;
   runtimePrototypeMembers?: readonly ts.ClassElement[];
   localPrototypeData?: true;
   prototypeMethodValues?: Map<string, IrExpr>;
@@ -5642,6 +5645,8 @@ function staticCallOn(
   throughValue: boolean,
 ): IrExpr | null {
   const loc = locOf(call);
+  const runtimeStatic = directRuntimeStaticCall(lowerer, call, access, info, throughValue);
+  if (runtimeStatic) return runtimeStatic;
   if (
     (hasRuntimeStatics(info) && !findStaticOn(lowerer, info, access.name.text)?.field) ||
     (info.callableBase &&
@@ -5778,6 +5783,179 @@ function staticCallOn(
   lowerer.noteEdge(fnName);
   const args = lowerer.completeArgs(call.arguments, found.method.params, loc, call);
   return { kind: "call", callee: fnName, args, type: found.method.ret, loc };
+}
+
+/** `C.m(...)` where `m` is a static method that a function-local
+ * JavaScript class defines at runtime (a factory's `class extends base`),
+ * inherited by `C` through its statically known base chain. When the body
+ * captures nothing from the factory's scope, every evaluation of the class
+ * defines the same method, so the call lowers directly with `this` bound
+ * to `C`, as a free function given `C` would. A receiver-dependent result
+ * (a class built from `this`) then keeps a static base. Null when another
+ * declaration of `m` answers first, the program assigns that member, or
+ * the method form has no direct lowering. */
+function directRuntimeStaticCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  info: ClassInfo,
+  throughValue: boolean,
+): IrExpr | null {
+  const name = access.name.text;
+  if (throughValue || name.startsWith("#")) return null;
+  let declarer: ClassInfo | null = null;
+  let member: ts.MethodDeclaration | null = null;
+  for (let c: ClassInfo | null = info; c; c = c.base) {
+    if (
+      c.staticFields.some((field) => field.name === name) ||
+      c.staticMethods?.has(name) === true ||
+      c.genericStatics?.has(name) === true
+    )
+      return null;
+    const runtime = c.runtimeStatics?.find(
+      (element) =>
+        (element as { name?: ts.PropertyName }).name !== undefined &&
+        ts.isIdentifier((element as { name: ts.PropertyName }).name) &&
+        (element as { name: ts.Identifier }).name.text === name,
+    );
+    if (runtime) {
+      if (!ts.isMethodDeclaration(runtime) || !runtime.body) return null;
+      declarer = c;
+      member = runtime;
+      break;
+    }
+  }
+  if (!declarer || !member || !declarer.decl) return null;
+  if (member.asteriskToken || member.typeParameters) return null;
+  if (member.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword))
+    return null;
+  if (hasLexicalSuper(member) || capturesEnclosingScope(lowerer, member, declarer.decl))
+    return null;
+  if (memberAssigned(lowerer, member, name) || bodyReadsArguments(member)) return null;
+  const implicit =
+    member.parameters.length === 0 ? null : implicitAnyParamSymbolsOf(lowerer, member, true);
+  if (member.parameters.length > 0 && !implicit) return null;
+  let calls = declarer.runtimeStaticCalls;
+  if (!calls) {
+    calls = new Map();
+    declarer.runtimeStaticCalls = calls;
+  }
+  const method: GenericFnInfo = calls.get(name) ?? {
+    decl: member,
+    baseName: name,
+    qualifiedName: `%${declarer.def.name}.runtimeStatic:${name}`,
+    typeParams: [],
+    instances: new Map(),
+    member: { cls: declarer, kind: "static" },
+    ...(implicit ? { implicitParams: implicit } : {}),
+  };
+  calls.set(name, method);
+  // A direct lowering the method form does not support keeps the dynamic
+  // call: its refusal is not this program's error.
+  const sink: ScrDiagnostic[] = [];
+  const previousSink = lowerer.diagSink;
+  lowerer.diagSink = sink;
+  let lowered: IrExpr;
+  try {
+    const receiver = staticMethodForReceiver(lowerer, access, method, info, false);
+    const instance = implicit
+      ? implicitCallInstance(lowerer, call, receiver)
+      : genericCallInstance(lowerer, call, receiver);
+    lowered = {
+      kind: "call",
+      callee: instance.name,
+      args: lowerer.completeArgs(call.arguments, instance.params, locOf(call), call),
+      type: instance.returnType,
+      loc: locOf(call),
+    };
+  } catch (error) {
+    if (error instanceof PoisonError) return null;
+    throw error;
+  } finally {
+    lowerer.diagSink = previousSink;
+  }
+  return sink.length === 0 ? lowered : null;
+}
+
+/** `super` inside the method (arrows included) names the defining
+ * class's base, which a receiver specialization does not track. */
+function hasLexicalSuper(root: ts.Node): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (node.kind === ts.SyntaxKind.SuperKeyword) found = true;
+    if (
+      (ts.isFunctionLike(node) && !ts.isArrowFunction(node)) ||
+      ts.isClassDeclaration(node) ||
+      ts.isClassExpression(node)
+    )
+      return;
+    node.forEachChild(visit);
+  };
+  root.forEachChild(visit);
+  return found;
+}
+
+/** The method reads a binding declared in a function that encloses its
+ * class: each evaluation of the class can see a different value. */
+function capturesEnclosingScope(
+  lowerer: Lowerer,
+  member: ts.MethodDeclaration,
+  classDecl: ts.ClassLikeDeclaration,
+): boolean {
+  let scope: ts.Node | undefined = classDecl.parent;
+  while (scope && !ts.isFunctionLike(scope) && !ts.isSourceFile(scope)) scope = scope.parent;
+  if (!scope || ts.isSourceFile(scope)) return false;
+  const inside = (node: ts.Node, container: ts.Node): boolean => {
+    for (let n: ts.Node | undefined = node; n; n = n.parent) if (n === container) return true;
+    return false;
+  };
+  let captured = false;
+  const visit = (node: ts.Node): void => {
+    if (captured) return;
+    if (ts.isIdentifier(node)) {
+      const symbol = lowerer.checker.getSymbolAtLocation(node);
+      const decl = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+      // The enclosing function's own name is the same binding for every
+      // evaluation.
+      if (decl && decl !== scope && inside(decl, scope) && !inside(decl, member)) captured = true;
+      return;
+    }
+    node.forEachChild(visit);
+  };
+  member.forEachChild(visit);
+  return captured;
+}
+
+/** Some code assigns or deletes a member of this name, or defines it by
+ * reflection: the member a runtime lookup finds can then differ. */
+function memberAssigned(lowerer: Lowerer, member: ts.MethodDeclaration, name: string): boolean {
+  let found = false;
+  for (const sf of lowerer.program.getSourceFiles()) {
+    if (sf.isDeclarationFile || found) continue;
+    if (!sf.text.includes(name)) continue;
+    ts.walkPreorder(sf, (node) => {
+      if (found) return "skip";
+      if (ts.isPropertyAccessExpression(node) && node.name.text === name) {
+        const parent = node.parent;
+        if (
+          parent &&
+          ((ts.isBinaryExpression(parent) &&
+            parent.left === node &&
+            parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+            parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+            ts.isDeleteExpression(parent))
+        )
+          found = true;
+      }
+      if (ts.isStringLiteral(node) && node.text === name && node !== member.name) {
+        const parent = node.parent;
+        if (parent && (ts.isCallExpression(parent) || ts.isElementAccessExpression(parent)))
+          found = true;
+      }
+      return undefined;
+    });
+  }
+  return found;
 }
 
 function staticMethodForReceiver(

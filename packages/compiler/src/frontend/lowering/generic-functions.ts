@@ -1431,6 +1431,17 @@ export function implicitCallInstance(
         shapes.push({ type: bound, mode: "required" });
         return;
       }
+      // `this` in a static method specialized for its receiver class is
+      // that class: bind it as a call naming the class would.
+      if (stored?.kind === "classval" && arg.kind === ts.SyntaxKind.ThisKeyword) {
+        const classDecl = lowerer.classes.get(stored.className)?.decl;
+        const classType = classDecl?.name ? lowerer.typeOf(classDecl.name) : null;
+        if (classType) {
+          argTypes.set(sym, classType);
+          shapes.push({ type: stored, mode: "required" });
+          return;
+        }
+      }
       // A represented native array must keep its storage when a direct
       // inferred helper receives it. Re-boxing a checker-any array would
       // copy it, losing writes (and attempting to read unfilled slots).
