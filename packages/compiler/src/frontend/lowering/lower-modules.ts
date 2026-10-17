@@ -823,6 +823,7 @@ export function moduleArtifacts(
         case "recordKeyGet":
         case "recordOvfKeys":
         case "recordOvfHas":
+        case "recordNullProto":
         case "recordHas":
           visitShape(node.shapeId);
           break;

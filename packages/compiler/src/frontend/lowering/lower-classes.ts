@@ -78,7 +78,7 @@ import { bufEncoding } from "./containers/bytes.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { lowerSearchParamsNew } from "./builtins/url.js";
 import { lowerTextCodecNew } from "./builtins/text-codecs.js";
-import { lowerWorkerNew } from "./builtins/workers.js";
+import { lowerMessageChannelNew, lowerWorkerNew } from "./builtins/workers.js";
 import {
   unsupportedPackageValueDiag,
   unsupportedDiag,
@@ -8153,6 +8153,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   if (worker) return worker;
   const readlineUi = lowerReadlineUiNew(lowerer, expr);
   if (readlineUi) return readlineUi;
+  const channel = lowerMessageChannelNew(lowerer, expr);
+  if (channel) return channel;
   let intlConstructor = expr.expression;
   if (ts.isIdentifier(intlConstructor)) {
     const symbol = lowerer.resolveValueSymbol(intlConstructor);
@@ -8643,6 +8645,21 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       };
       const pattern = strArg(args[0], "pattern");
       const flags = strArg(args[1], "flags argument");
+      // Node accepts the 'd' and 'v' flags the engine does not have; a
+      // literal flags string refuses here like the literal regex form.
+      if (flags.kind === "strLit" && args[1] !== undefined) {
+        for (const f of ["d", "v"]) {
+          if (flags.value.includes(f)) {
+            lowerer.unsupported(
+              "SC1120",
+              args[1],
+              f === "d"
+                ? "the regex 'd' flag (match indices)"
+                : "the regex 'v' flag (unicode sets)",
+            );
+          }
+        }
+      }
       return {
         kind: "libCall",
         fn: "regex.new",

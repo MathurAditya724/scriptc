@@ -55,7 +55,13 @@ static void scr_test_oom(void) {
 /* mode values (the frontend's literals) */
 enum { SCR_TEST_RUN = 0, SCR_TEST_SKIP = 1, SCR_TEST_TODO = 2 };
 /* flags bitmask */
-enum { SCR_TEST_F_ASYNC = 1, SCR_TEST_F_CTX = 2, SCR_TEST_F_ONLY = 4, SCR_TEST_F_TIMEOUT = 8 };
+enum {
+  SCR_TEST_F_ASYNC = 1,
+  SCR_TEST_F_CTX = 2,
+  SCR_TEST_F_ONLY = 4,
+  SCR_TEST_F_TIMEOUT = 8,
+  SCR_TEST_F_CONCURRENCY = 16,
+};
 /* hook kinds */
 enum { SCR_HOOK_BEFORE = 0, SCR_HOOK_AFTER = 1, SCR_HOOK_BEFORE_EACH = 2, SCR_HOOK_AFTER_EACH = 3 };
 /* outcome states */
@@ -105,6 +111,15 @@ struct ScrTestCtx {
   ScrTestHooks mocks;    /* t.mock: the restore closure of each mock, in creation order */
   double timeout;        /* { timeout } in ms, INFINITY without one */
   bool timed_out;        /* the async body was still pending when the timeout elapsed */
+  /* { concurrency }: how many subtests run at once (1 runs them in order),
+   * the parent's value without the option. Above 1, each subtest runs on
+   * its own fiber, started in order as slots free up. */
+  double concurrency;
+  int active;          /* subtests running on their own fibers */
+  bool queued;         /* waiting for a free slot under the parent's concurrency */
+  bool on_fiber;       /* started on its own fiber by a concurrent parent */
+  ScrPromise *done;    /* owned; settles when a concurrent subtest finishes */
+  ScrPromise *slot;    /* owned; the parent waiting for its next subtest to finish */
 };
 
 static SCR_TL ScrTestCtx *scr_test_root = NULL;
@@ -118,6 +133,20 @@ static SCR_TL long scr_test_ct_tests = 0, scr_test_ct_suites = 0, scr_test_ct_pa
             scr_test_ct_todo = 0;
 static SCR_TL double scr_test_t0 = 0;
 static SCR_TL bool scr_test_suite_hook_failed = false;
+/* Above 0 while subtests run concurrently: result lines are held, and the
+ * outermost concurrent parent prints its subtrees in declaration order,
+ * as Node's reporter does, once they all finish. */
+static SCR_TL int scr_test_defer = 0;
+
+/* Where a concurrent subtest's fiber registers: each fiber started by a
+ * concurrent parent has its own registration parent, which its nested
+ * test() calls and hooks attach to. Other code uses scr_test_reg_parent. */
+typedef struct {
+  void *fiber;
+  ScrTestCtx *parent;
+} ScrTestFiberParent;
+static SCR_TL ScrTestFiberParent *scr_test_fibers = NULL;
+static SCR_TL size_t scr_test_nfibers = 0, scr_test_fibers_cap = 0;
 /* The module's `mock` tracker: the restore closure of each mock it made. */
 static SCR_TL ScrTestHooks scr_test_mocks = {0};
 
@@ -146,6 +175,8 @@ void scr_testctx_release(ScrTestCtx *t) {
   scr_closure_release(t->cb);
   scr_caught_release(t->err);
   scr_caught_release(t->before_err);
+  scr_promise_release(t->done);
+  scr_promise_release(t->slot);
   for (size_t i = 0; i < t->ndiags; i++) scr_str_release(t->diags[i]);
   free(t->diags);
   for (size_t i = 0; i < t->nchildren; i++) scr_testctx_release(t->children[i]);
@@ -178,6 +209,7 @@ static ScrTestCtx *scr_test_node_new(ScrStr *name /*borrowed*/, int mode,
   t->is_suite = is_suite;
   t->plan = -1;
   t->timeout = INFINITY;
+  t->concurrency = 1;
 #ifdef SCR_RC_AUDIT
   scr_testctx_live++;
 #endif
@@ -195,7 +227,29 @@ static void scr_test_child_add(ScrTestCtx *parent, ScrTestCtx *child /*moves*/) 
    * are todo themselves, with a bare TODO directive, unless they carry
    * their own skip or todo. */
   if (child->mode == SCR_TEST_RUN && parent->mode == SCR_TEST_TODO) child->mode = SCR_TEST_TODO;
+  /* Subtests inherit the parent's concurrency unless they set their own. */
+  if (!(child->flags & SCR_TEST_F_CONCURRENCY)) child->concurrency = parent->concurrency;
   parent->children[parent->nchildren++] = child;
+}
+
+static ScrTestFiberParent *scr_test_fiber_slot(void) {
+  if (scr_test_nfibers == 0) return NULL;
+  void *self = scr_fiber_self();
+  for (size_t i = 0; i < scr_test_nfibers; i++) {
+    if (scr_test_fibers[i].fiber == self) return &scr_test_fibers[i];
+  }
+  return NULL;
+}
+
+static ScrTestCtx *scr_test_parent_get(void) {
+  ScrTestFiberParent *slot = scr_test_fiber_slot();
+  return slot ? slot->parent : scr_test_reg_parent;
+}
+
+static void scr_test_parent_set(ScrTestCtx *t) {
+  ScrTestFiberParent *slot = scr_test_fiber_slot();
+  if (slot) slot->parent = t;
+  else scr_test_reg_parent = t;
 }
 
 static ScrTestCtx *scr_test_ensure_root(void) {
@@ -258,8 +312,10 @@ static void scr_test_ensure_started(ScrTestCtx *t) {
   fputc('\n', stdout);
 }
 
-/* "<sym> <name> (<dur>ms)[ # directive]" + queued ℹ diagnostics. */
+/* "<sym> <name> (<dur>ms)[ # directive]" + queued ℹ diagnostics. Held
+ * while subtests run concurrently (scr_test_report_tree prints them). */
 static void scr_test_report_result(ScrTestCtx *t) {
+  if (scr_test_defer > 0) return;
   scr_test_ensure_started(t->parent);
   int depth = scr_test_depth(t);
   scr_test_indent(depth);
@@ -353,15 +409,21 @@ static void scr_test_run_hooks_of(ScrTestCtx *owner, int which) {
   }
 }
 
-static void scr_test_run_each_hooks(ScrTestCtx *t, int which, bool outermost_first) {
+/* Returns whether the chain has any `which` hooks. */
+static bool scr_test_run_each_hooks(ScrTestCtx *t, int which, bool outermost_first) {
   ScrTestCtx *chain[64];
   int n = 0;
-  for (ScrTestCtx *p = t->parent; p && n < 64; p = p->parent) chain[n++] = p;
+  bool any = false;
+  for (ScrTestCtx *p = t->parent; p && n < 64; p = p->parent) {
+    chain[n++] = p;
+    if (p->hooks[which].n > 0) any = true;
+  }
   if (outermost_first) {
     for (int i = n - 1; i >= 0; i--) scr_test_run_hooks_of(chain[i], which);
   } else {
     for (int i = 0; i < n; i++) scr_test_run_hooks_of(chain[i], which);
   }
+  return any;
 }
 
 /* A test or suite marked only, or one with a marked descendant. */
@@ -382,6 +444,113 @@ static bool scr_test_any_only(ScrTestCtx *parent) {
 
 static void scr_test_run_node(ScrTestCtx *t);
 
+/* ── concurrency ─────────────────────────────────────────────────────── */
+
+/* Turns a concurrent subtest waits: after its beforeEach hooks, and before
+ * a suite runs its children (Node awaits its suite build first). Node's
+ * awaited hook and suite steps take these many microtask turns, so sibling
+ * bodies interleave as they do there. */
+#define SCR_TEST_HOOK_TURNS 8
+#define SCR_TEST_SUITE_TURNS 2
+
+static void scr_test_spawn(ScrTestCtx *c);
+
+static void scr_test_fiber_enter(ScrTestCtx *parent) {
+  if (scr_test_nfibers == scr_test_fibers_cap) {
+    scr_test_fibers_cap = scr_test_fibers_cap ? scr_test_fibers_cap * 2 : 8;
+    scr_test_fibers = realloc(scr_test_fibers, scr_test_fibers_cap * sizeof *scr_test_fibers);
+    if (!scr_test_fibers) scr_test_oom();
+  }
+  scr_test_fibers[scr_test_nfibers].fiber = scr_fiber_self();
+  scr_test_fibers[scr_test_nfibers].parent = parent;
+  scr_test_nfibers++;
+}
+
+static void scr_test_fiber_leave(void) {
+  void *self = scr_fiber_self();
+  for (size_t i = 0; i < scr_test_nfibers; i++) {
+    if (scr_test_fibers[i].fiber == self) {
+      scr_test_fibers[i] = scr_test_fibers[--scr_test_nfibers];
+      break;
+    }
+  }
+  if (scr_test_nfibers == 0) {
+    free(scr_test_fibers);
+    scr_test_fibers = NULL;
+    scr_test_fibers_cap = 0;
+  }
+}
+
+static void scr_test_child_entry(ScrFiber *self, void *arg) {
+  (void)self;
+  ScrTestCtx *c = arg;
+  ScrTestCtx *parent = c->parent;
+  scr_test_fiber_enter(parent);
+  if (c->is_suite && c->mode != SCR_TEST_SKIP) {
+    for (int i = 0; i < SCR_TEST_SUITE_TURNS; i++) scr_await_hop();
+  }
+  scr_test_run_node(c);
+  scr_test_fiber_leave();
+  parent->active--;
+  /* The next queued sibling takes the freed slot. */
+  for (size_t i = 0; i < parent->nchildren; i++) {
+    if (parent->children[i]->queued) {
+      scr_test_spawn(parent->children[i]);
+      break;
+    }
+  }
+  scr_promise_fulfill_void(c->done);
+  if (parent->slot) scr_promise_fulfill_void(parent->slot);
+  scr_testctx_release(c);
+}
+
+static void scr_test_spawn(ScrTestCtx *c) {
+  c->queued = false;
+  c->on_fiber = true;
+  c->parent->active++;
+  scr_promise_release(scr_async_spawn(scr_test_child_entry, scr_testctx_retain(c)));
+}
+
+/* Starts a subtest of a concurrent parent: now when a slot is free, else
+ * when one frees up. */
+static void scr_test_start(ScrTestCtx *c) {
+  ScrTestCtx *parent = c->parent;
+  c->done = scr_promise_new();
+  if (parent->active >= parent->concurrency) {
+    c->queued = true;
+    return;
+  }
+  scr_test_spawn(c);
+}
+
+/* Waits until every subtest the parent started has finished. */
+static void scr_test_wait_children(ScrTestCtx *t) {
+  for (;;) {
+    bool pending = t->active > 0;
+    for (size_t i = 0; i < t->nchildren && !pending; i++) pending = t->children[i]->queued;
+    if (!pending) return;
+    t->slot = scr_promise_new();
+    scr_await_void(t->slot);
+    scr_promise_release(t->slot);
+    t->slot = NULL;
+  }
+}
+
+/* Prints a finished subtree's result lines, in the order a sequential
+ * run prints them. */
+static void scr_test_report_tree(ScrTestCtx *t) {
+  if (t->state == SCR_TS_PENDING) return;
+  for (size_t i = 0; i < t->nchildren; i++) scr_test_report_tree(t->children[i]);
+  scr_test_report_result(t);
+}
+
+/* A concurrent parent's subtests are done: the outermost one prints them. */
+static void scr_test_finish_concurrent(ScrTestCtx *t) {
+  scr_test_wait_children(t);
+  if (--scr_test_defer > 0) return;
+  for (size_t i = 0; i < t->nchildren; i++) scr_test_report_tree(t->children[i]);
+}
+
 static void scr_test_run_children(ScrTestCtx *t) {
   /* `only` at this level: when a child is marked, or contains a marked
    * test or suite, only those children run. The others are dropped entirely
@@ -392,9 +561,11 @@ static void scr_test_run_children(ScrTestCtx *t) {
     if (only && !scr_test_has_only(c)) {
       continue; /* filtered: never run, never reported, never counted */
     }
-    /* Subtests t.test already ran INLINE at their call site. */
-    if (c->state != SCR_TS_PENDING) continue;
-    scr_test_run_node(c);
+    /* Subtests t.test already ran INLINE at their call site, or started on
+     * their own fiber. */
+    if (c->state != SCR_TS_PENDING || c->done) continue;
+    if (t->concurrency > 1) scr_test_start(c);
+    else scr_test_run_node(c);
   }
 }
 
@@ -422,7 +593,13 @@ static void scr_test_run_node(ScrTestCtx *t) {
     if (scr_exc_pending()) {
       t->err = scr_exc_take();
     } else {
-      scr_test_run_children(t);
+      if (t->concurrency > 1) {
+        scr_test_defer++;
+        scr_test_run_children(t);
+        scr_test_finish_concurrent(t);
+      } else {
+        scr_test_run_children(t);
+      }
       scr_test_run_hooks_of(t, SCR_HOOK_AFTER);
       if (scr_exc_pending()) t->err = scr_exc_take();
     }
@@ -442,9 +619,16 @@ static void scr_test_run_node(ScrTestCtx *t) {
   /* A test: beforeEach chain, the body, subtests it queued (t.test runs
    * them inline; bare nested test() calls queued unrun run now), the
    * afterEach chain. */
-  ScrTestCtx *prev_parent = scr_test_reg_parent;
-  scr_test_reg_parent = t;
-  scr_test_run_each_hooks(t, SCR_HOOK_BEFORE_EACH, true);
+  ScrTestCtx *prev_parent = scr_test_parent_get();
+  scr_test_parent_set(t);
+  if (t->concurrency > 1) scr_test_defer++;
+  bool hooked = scr_test_run_each_hooks(t, SCR_HOOK_BEFORE_EACH, true);
+  /* A concurrent subtest resumes after its beforeEach hooks as many turns
+   * later as Node's awaited hook run takes, so sibling bodies interleave
+   * as they do there. */
+  if (hooked && t->on_fiber && !scr_exc_pending()) {
+    for (int i = 0; i < SCR_TEST_HOOK_TURNS; i++) scr_await_hop();
+  }
   bool failed = false;
   if (scr_exc_pending()) {
     t->err = scr_exc_take();
@@ -460,6 +644,8 @@ static void scr_test_run_node(ScrTestCtx *t) {
    * the body): run them now, before the parent completes — Node holds
    * the parent open for its pending subtests. */
   if (!failed) scr_test_run_children(t);
+  /* Concurrent subtests the body started are awaited either way. */
+  if (t->concurrency > 1) scr_test_finish_concurrent(t);
   if (!failed && t->before_err) {
     t->err = scr_caught_retain(t->before_err);
     failed = true;
@@ -495,7 +681,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
   }
   /* Then t.mock is reset: its mocks are restored. */
   scr_test_mocks_restore(&t->mocks, true);
-  scr_test_reg_parent = prev_parent;
+  scr_test_parent_set(prev_parent);
   t->dur_ms = scr_now_ms() - start;
   if (t->mode == SCR_TEST_SKIP) {
     /* t.skip() marked it mid-body. */
@@ -663,30 +849,53 @@ static void scr_test_ensure_runner(void) {
 
 /* The { plan, timeout } options of a new test. Node checks the timeout's
  * range when the test is created and throws ERR_OUT_OF_RANGE. */
-static bool scr_test_options_ok(double flags, double timeout) {
-  if (!((int)flags & SCR_TEST_F_TIMEOUT) || timeout == INFINITY ||
-      (timeout >= 0 && timeout <= 2147483647))
-    return true;
+static void scr_test_out_of_range(const char *option, const char *range, double value) {
   char recv[48];
-  size_t n = scr_num_received(timeout, recv);
-  char msg[160];
+  size_t n = scr_num_received(value, recv);
+  char msg[192];
   int len = snprintf(msg, sizeof msg,
-                     "The value of \"options.timeout\" is out of range. It must be >= 0 && <= "
-                     "2147483647. Received %.*s",
-                     (int)n, recv);
+                     "The value of \"options.%s\" is out of range. It must be %s. Received %.*s",
+                     option, range, (int)n, recv);
   scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-  return false;
 }
 
-static void scr_test_options_apply(ScrTestCtx *t, double flags, double plan, double timeout) {
+/* Node checks concurrency (a positive uint32; -1 stands for `true`) and
+ * then the timeout's range when the test is created. */
+static bool scr_test_options_ok(double flags, double timeout, double concurrency) {
+  if (((int)flags & SCR_TEST_F_CONCURRENCY) && concurrency != -1) {
+    if (concurrency != floor(concurrency) || isnan(concurrency)) {
+      scr_test_out_of_range("concurrency", "an integer", concurrency);
+      return false;
+    }
+    if (concurrency < 1 || concurrency > 4294967295.0) {
+      scr_test_out_of_range("concurrency", ">= 1 && <= 4294967295", concurrency);
+      return false;
+    }
+  }
+  if (((int)flags & SCR_TEST_F_TIMEOUT) && timeout != INFINITY &&
+      !(timeout >= 0 && timeout <= 2147483647)) {
+    scr_test_out_of_range("timeout", ">= 0 && <= 2147483647", timeout);
+    return false;
+  }
+  return true;
+}
+
+static void scr_test_options_apply(ScrTestCtx *t, double flags, double plan, double timeout,
+                                   double concurrency) {
   if (plan >= 0) t->plan = (int)plan;
   if ((int)flags & SCR_TEST_F_TIMEOUT) t->timeout = timeout;
+  if ((int)flags & SCR_TEST_F_CONCURRENCY) {
+    /* `true` runs every subtest at once: Node uses Infinity for any test
+     * with a parent, and os.availableParallelism() - 1 only for its root. */
+    t->concurrency = concurrency == -1 ? INFINITY : concurrency;
+  }
 }
 
 void scr_test_register(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrowed*/,
                         ScrClosure *cb /*moves, may be NULL*/, double flags,
-                        ScrStr *at /*borrowed*/, double plan, double timeout) {
-  if (!scr_test_options_ok(flags, timeout)) {
+                        ScrStr *at /*borrowed*/, double plan, double timeout,
+                        double concurrency) {
+  if (!scr_test_options_ok(flags, timeout, concurrency)) {
     scr_closure_release(cb);
     return;
   }
@@ -699,13 +908,20 @@ void scr_test_register(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*bor
     return;
   }
   ScrTestCtx *t = scr_test_node_new(name, (int)mode, msg, cb, (int)flags, at, false);
-  scr_test_options_apply(t, flags, plan, timeout);
-  scr_test_child_add(scr_test_reg_parent, t);
+  scr_test_options_apply(t, flags, plan, timeout, concurrency);
+  ScrTestCtx *parent = scr_test_parent_get();
+  scr_test_child_add(parent, t);
+  /* A test() call inside a running concurrent test starts the subtest now. */
+  if (!parent->is_suite && parent->concurrency > 1) scr_test_start(t);
 }
 
 void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrowed*/,
                      ScrClosure *cb /*moves, may be NULL*/, ScrStr *at /*borrowed*/,
-                     double flags) {
+                     double flags, double concurrency) {
+  if (!scr_test_options_ok(flags, 0, concurrency)) {
+    scr_closure_release(cb);
+    return;
+  }
   scr_test_ensure_root();
   scr_test_ensure_runner();
   if (scr_test_run_done) {
@@ -713,21 +929,22 @@ void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrow
     return;
   }
   ScrTestCtx *t = scr_test_node_new(name, (int)mode, msg, NULL, (int)flags, at, true);
-  scr_test_child_add(scr_test_reg_parent, t);
+  scr_test_options_apply(t, flags, -1, 0, concurrency);
+  scr_test_child_add(scr_test_parent_get(), t);
   /* The suite body runs NOW (Node's collection phase) — its test()/it()
    * calls attach here. Skipped suites keep their bodies unrun. */
   if (cb && (int)mode != SCR_TEST_SKIP) {
-    ScrTestCtx *prev = scr_test_reg_parent;
-    scr_test_reg_parent = t;
+    ScrTestCtx *prev = scr_test_parent_get();
+    scr_test_parent_set(t);
     ((void (*)(ScrClosure *))cb->fn)(cb);
-    scr_test_reg_parent = prev;
+    scr_test_parent_set(prev);
   }
   scr_closure_release(cb);
 }
 
 void scr_test_hook(double which, ScrClosure *cb /*moves*/, double flags) {
   scr_test_ensure_root();
-  ScrTestCtx *owner = scr_test_reg_parent;
+  ScrTestCtx *owner = scr_test_parent_get();
   ScrTestHooks *h = &owner->hooks[(int)which];
   if (h->n == h->cap) {
     h->cap = h->cap ? h->cap * 2 : 2;
@@ -745,15 +962,22 @@ void scr_test_hook(double which, ScrClosure *cb /*moves*/, double flags) {
  * consumes. */
 ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name /*borrowed*/, double mode,
                           ScrStr *msg /*borrowed*/, ScrClosure *cb /*moves, may be NULL*/,
-                          double flags, ScrStr *at /*borrowed*/, double plan, double timeout) {
-  if (!scr_test_options_ok(flags, timeout)) {
+                          double flags, ScrStr *at /*borrowed*/, double plan, double timeout,
+                          double concurrency) {
+  if (!scr_test_options_ok(flags, timeout, concurrency)) {
     scr_closure_release(cb);
     return NULL;
   }
   ScrTestCtx *sub = scr_test_node_new(name, (int)mode, msg, cb, (int)flags, at, false);
-  scr_test_options_apply(sub, flags, plan, timeout);
+  scr_test_options_apply(sub, flags, plan, timeout, concurrency);
   scr_test_child_add(t, sub);
   t->plan_count++;
+  if (t->concurrency > 1 && !t->before_err) {
+    /* Under concurrency the subtest starts now, or when a slot frees up,
+     * and the returned promise settles when it finishes. */
+    scr_test_start(sub);
+    return scr_promise_retain(sub->done);
+  }
   if (t->before_err) {
     /* A throwing t.before fails the subtests that follow: their bodies and
      * beforeEach hooks do not run, their afterEach hooks do. */

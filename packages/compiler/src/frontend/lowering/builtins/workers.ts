@@ -98,3 +98,71 @@ export function lowerWorkerNew(lowerer: Lowerer, expression: ts.NewExpression): 
     loc,
   };
 }
+
+/** True when `node`'s type is worker_threads' `name` class (also reached
+ * through its global). */
+function isWorkerThreadsClass(lowerer: Lowerer, node: ts.Expression, name: string): boolean {
+  const t = lowerer.checker.getTypeAtLocation(node);
+  const sym = t.getSymbol();
+  if (sym?.name !== name) return false;
+  return lowerer.checker.declarationsOf(sym).some((d) => {
+    if (!ts.isClassDeclaration(d) && !ts.isInterfaceDeclaration(d)) return false;
+    if (!lowerer.isStdlibFile(d.getSourceFile())) return false;
+    let up: ts.Node | undefined = d.parent;
+    while (up) {
+      if (ts.isModuleDeclaration(up) && ts.isStringLiteral(up.name))
+        return up.name.text === "worker_threads" || up.name.text === "node:worker_threads";
+      up = up.parent;
+    }
+    return false;
+  });
+}
+
+/** new MessageChannel(): { port1, port2 }, two entangled MessagePorts. */
+export function lowerMessageChannelNew(
+  lowerer: Lowerer,
+  expression: ts.NewExpression,
+): IrExpr | null {
+  if (!isWorkerThreadsClass(lowerer, expression, "MessageChannel")) return null;
+  if ((expression.arguments ?? []).length > 0) {
+    lowerer.noLowering(
+      "MessageChannel constructor arguments",
+      expression,
+      "use new MessageChannel()",
+    );
+  }
+  if (lowerer.targetPlatform === "wasi") {
+    lowerer.noLowering(
+      "MessageChannel in this target",
+      expression,
+      "use a native static executable",
+    );
+  }
+  lowerer.usesWorkers = true;
+  return { kind: "libCall", fn: "worker.channel", args: [], type: DYN, loc: locOf(expression) };
+}
+
+/** receiveMessageOnPort(port): { message } or undefined. */
+export function lowerReceiveMessageOnPort(lowerer: Lowerer, call: ts.CallExpression): IrExpr {
+  const args = call.arguments;
+  if (args.length > 1 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`receiveMessageOnPort with ${args.length} arguments`, call);
+  }
+  lowerer.usesWorkers = true;
+  const loc = locOf(call);
+  const port: IrExpr = args[0]
+    ? lowerer.lowerExprExpecting(args[0], DYN)
+    : {
+        kind: "dynFrom",
+        value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        type: DYN,
+        loc,
+      };
+  return {
+    kind: "libCall",
+    fn: "worker.receiveMessageOnPort",
+    args: [port],
+    type: DYN,
+    loc,
+  };
+}

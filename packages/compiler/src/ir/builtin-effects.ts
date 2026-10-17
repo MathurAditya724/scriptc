@@ -10,11 +10,12 @@ import type { IrLibFn } from "./builtin-signatures.js";
 export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Node's argument, cipher-name, IV, tag-length and key-length errors.
   "crypto.cipherNew",
-  // node:test's { timeout } range check.
+  // node:test's { timeout } and { concurrency } range checks.
   "test.register",
   "test.registerEmpty",
   "test.sub",
   "test.subEmpty",
+  "test.suite",
   "console.write",
   "console.label",
   "console.countReset",
@@ -23,6 +24,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "worker.new",
   "worker.data",
   "worker.parentPort",
+  "worker.channel",
+  "worker.receiveMessageOnPort",
   "process.exit",
   "text.encodeInto",
   "buffer.isAscii",
@@ -605,6 +608,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.hashDigestStr",
   "crypto.hashDigestBytes",
   "crypto.hashNew",
+  "crypto.hashStream",
+  "crypto.hashStreamPiped",
   "crypto.hmacNewStr",
   "crypto.hmacNewBytes",
   "crypto.hashUpdateStr",

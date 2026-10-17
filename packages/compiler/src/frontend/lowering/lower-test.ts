@@ -98,6 +98,8 @@ interface TestOptions {
   plan: number;
   /** The { timeout } in ms, null without one. */
   timeout: IrExpr | null;
+  /** The { concurrency } count (-1 for true, 1 for false), null without one. */
+  concurrency: IrExpr | null;
   /** The non-literal option values, evaluated in source order before the
    * registration call reads them. */
   pre: IrStmt[];
@@ -109,8 +111,13 @@ const noOptions = (): TestOptions => ({
   only: false,
   plan: -1,
   timeout: null,
+  concurrency: null,
   pre: [],
 });
+
+/** Flags 8 and 16: a { timeout } and a { concurrency } are given. */
+const optionFlags = (opts: TestOptions): number =>
+  (opts.only ? 4 : 0) | (opts.timeout ? 8 : 0) | (opts.concurrency ? 16 : 0);
 
 /** Evaluates a non-literal option value into a hidden local, so option
  * values run in source order. */
@@ -123,9 +130,9 @@ function optionValue(lowerer: Lowerer, out: TestOptions, value: IrExpr, loc: Src
 
 /** Parses a test/describe options argument — an OBJECT LITERAL whose
  * skip/todo values are boolean literals or string messages and whose
- * only is the boolean literal. Tests also take plan, a non-negative
- * integer literal, and timeout, a number. Everything else fences with the
- * option name (concurrency included — bounded surface, honest fence). */
+ * only is the boolean literal, and concurrency, a boolean literal or a
+ * number. Tests also take plan, a non-negative integer literal, and
+ * timeout, a number. Everything else fences with the option name. */
 function lowerTestOptions(
   lowerer: Lowerer,
   node: ts.Expression,
@@ -137,8 +144,8 @@ function lowerTestOptions(
       `${what} with a non-literal options argument`,
       node,
       suite
-        ? "pass the options as an object literal: { skip?, todo?, only? }"
-        : "pass the options as an object literal: { skip?, todo?, only?, plan?, timeout? }",
+        ? "pass the options as an object literal: { skip?, todo?, only?, concurrency? }"
+        : "pass the options as an object literal: { skip?, todo?, only?, concurrency?, plan?, timeout? }",
     );
   }
   const out = noOptions();
@@ -193,6 +200,19 @@ function lowerTestOptions(
         );
       }
       out.plan = value;
+    } else if (name === "concurrency") {
+      const loc = locOf(init);
+      if (init.kind === ts.SyntaxKind.TrueKeyword) out.concurrency = numLit(-1, loc);
+      else if (init.kind === ts.SyntaxKind.FalseKeyword) out.concurrency = numLit(1, loc);
+      else if (lowerer.mapTypeOf(lowerer.typeOf(init))?.kind === "f64") {
+        out.concurrency = optionValue(lowerer, out, lowerer.lowerExprExpecting(init, F64), loc);
+      } else {
+        lowerer.noLowering(
+          `${what} with a non-literal concurrency value`,
+          init,
+          "concurrency takes the literal true/false or a number here",
+        );
+      }
     } else if (name === "timeout" && !suite) {
       out.timeout = optionValue(lowerer, out, lowerer.lowerExprExpecting(init, F64), locOf(init));
     } else {
@@ -200,8 +220,8 @@ function lowerTestOptions(
         `${what} option '${name}'`,
         prop,
         suite
-          ? "skip, todo, and only are the supported suite options"
-          : "skip, todo, only, plan, and timeout are the supported options",
+          ? "skip, todo, only, and concurrency are the supported suite options"
+          : "skip, todo, only, concurrency, plan, and timeout are the supported options",
       );
     }
   }
@@ -297,11 +317,14 @@ function lowerRegistration(
   const at = strLit(atStringOf(expr), loc);
   const mode = numLit(opts.mode, loc);
   const msg = opts.msg ?? strLit("", loc);
-  // Flag 8: a { timeout } is given.
-  const optionFlags = (opts.only ? 4 : 0) | (opts.timeout ? 8 : 0);
-  const planTimeout = [numLit(opts.plan, loc), opts.timeout ?? numLit(0, loc)];
+  const flagBits = optionFlags(opts);
+  const planTimeout = [
+    numLit(opts.plan, loc),
+    opts.timeout ?? numLit(0, loc),
+    opts.concurrency ?? numLit(0, loc),
+  ];
   if (!fnNode) {
-    const emptyFlags = numLit(optionFlags, loc);
+    const emptyFlags = numLit(flagBits, loc);
     return withOptionValues(
       sub
         ? {
@@ -323,7 +346,7 @@ function lowerRegistration(
     );
   }
   const { cb, flags } = lowerBodyArg(lowerer, fnNode, what, true);
-  const flagsLit = numLit(flags | optionFlags, loc);
+  const flagsLit = numLit(flags | flagBits, loc);
   if (sub) {
     const promiseVoid: IrType = { kind: "promise", inner: VOID };
     return withOptionValues(
@@ -401,12 +424,12 @@ function lowerSuite(
   const mode = numLit(opts.mode, loc);
   const msg = opts.msg ?? strLit("", loc);
   // describe.only and { only: true } mark the suite (flag 4, as for tests).
-  const flags = numLit(methodMode === 3 || opts.only ? 4 : 0, loc);
+  const flags = numLit(optionFlags(opts) | (methodMode === 3 ? 4 : 0), loc);
   return withOptionValues(
     {
       kind: "libCall",
       fn: "test.suite",
-      args: [name, mode, msg, cb, at, flags],
+      args: [name, mode, msg, cb, at, flags, opts.concurrency ?? numLit(0, loc)],
       type: VOID,
       loc,
     },

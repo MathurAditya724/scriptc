@@ -290,6 +290,8 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn === "sp.pipelineStages" ||
         fn.startsWith("stream.pipelineStages") ||
         fn === "console.bind" ||
+        fn === "crypto.hashStream" ||
+        fn === "crypto.hashStreamPiped" ||
         fn === "stream.addAbortSignal" ||
         fn === "stream.addAbortSignalFn" ||
         fn.startsWith("sp.finishedOpts") ||

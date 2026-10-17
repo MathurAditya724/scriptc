@@ -425,6 +425,19 @@ static void tty_set_line(ScrRlTty *t, const uint16_t *p, size_t n) {
   }
 }
 
+/* Keeps the cursor on a character boundary of the line: a cursor between
+ * the two units of a surrogate pair moves to the pair's start (dir < 0)
+ * or its end (dir > 0). Node's own kMultilineMove can stop inside a pair;
+ * the editing code here indexes the line by the cursor and relies on it
+ * staying on a boundary and within the line. */
+static void tty_snap(ScrRlTty *t, int dir) {
+  size_t c = t->cursor > t->line.n ? t->line.n : t->cursor;
+  if (c > 0 && c < t->line.n && t->line.u[c - 1] >= 0xd800 && t->line.u[c - 1] <= 0xdbff &&
+      t->line.u[c] >= 0xdc00 && t->line.u[c] <= 0xdfff)
+    c = dir < 0 ? c - 1 : c + 1;
+  t->cursor = c;
+}
+
 /* kRefreshLine */
 static void tty_refresh(ScrRl *rl) {
   ScrRlTty *t = tty_of(rl);
@@ -478,6 +491,7 @@ static void tty_move(ScrRl *rl, double dx) {
   if (c < 0) c = 0;
   else if (c > (double)t->line.n) c = (double)t->line.n;
   t->cursor = (size_t)c;
+  tty_snap(t, dx < 0 ? -1 : 1);
   RlPos now = tty_cursor_pos(rl);
   if (old.rows == now.rows) tty_move_cursor(rl, now.cols - old.cols, 0);
   else tty_refresh(rl);
@@ -519,6 +533,7 @@ static void tty_undo_redo(ScrRl *rl, RlEdits *from, RlEdits *to) {
   RlEdit e = from->v[--from->n];
   tty_set_line(t, e.text.u, e.text.n);
   t->cursor = e.cursor;
+  tty_snap(t, -1);
   u16_free(&e.text);
   tty_refresh(rl);
 }
@@ -566,6 +581,7 @@ static void tty_delete_left(ScrRl *rl) {
   if (t->cursor > 0 && t->line.n > 0) {
     tty_before_edit(t);
     size_t k = char_length_left(&t->line, t->cursor);
+    if (k > t->cursor) k = t->cursor;
     memmove(t->line.u + t->cursor - k, t->line.u + t->cursor,
             (t->line.n - t->cursor) * sizeof *t->line.u);
     t->line.n -= k;
@@ -635,6 +651,7 @@ static void tty_delete_word_left(ScrRl *rl) {
   if (t->cursor > 0) {
     tty_before_edit(t);
     size_t k = tty_word_left_len(t);
+    if (k > t->cursor) k = t->cursor;
     memmove(t->line.u + t->cursor - k, t->line.u + t->cursor,
             (t->line.n - t->cursor) * sizeof *t->line.u);
     t->line.n -= k;
@@ -648,6 +665,7 @@ static void tty_delete_word_right(ScrRl *rl) {
   if (t->cursor < t->line.n) {
     tty_before_edit(t);
     size_t k = tty_word_right_len(t, true);
+    if (k > t->line.n - t->cursor) k = t->line.n - t->cursor;
     memmove(t->line.u + t->cursor, t->line.u + t->cursor + k,
             (t->line.n - t->cursor - k) * sizeof *t->line.u);
     t->line.n -= k;
@@ -725,6 +743,7 @@ static void tty_yank_pop(ScrRl *rl) {
     tty_set_line(t, line.u, line.n);
     u16_free(&line);
     t->cursor = head_n + cur->n;
+    tty_snap(t, 1);
     tty_refresh(rl);
   }
 }
@@ -1072,6 +1091,7 @@ static void tty_tab_completer(ScrRl *rl, bool last_tab, ScrDyn *value /*borrowed
     u16_free(&line);
     double c = cut + (double)prefix.n;
     t->cursor = c < 0 ? 0 : c > (double)t->line.n ? t->line.n : (size_t)c;
+    tty_snap(t, 1);
     tty_refresh(rl);
   } else if (last_tab) {
     tty_before_edit(t);

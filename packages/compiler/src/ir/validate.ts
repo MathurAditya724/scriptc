@@ -1364,6 +1364,7 @@ function validateFunction(
       case "recordGet":
       case "recordKeyGet":
       case "recordOvfHas":
+      case "recordNullProto":
       case "recordOvfKeys":
       case "recordHas":
       case "fieldAbsent":
@@ -3157,6 +3158,7 @@ function validateFunction(
         | "recordGet"
         | "recordKeyGet"
         | "recordOvfHas"
+        | "recordNullProto"
         | "recordOvfKeys"
         | "recordHas"
         | "fieldAbsent";
@@ -3173,6 +3175,8 @@ function validateFunction(
           err(`recordLit of undeclared shape "${e.type.shapeId}"`, e.loc);
           break;
         }
+        if (e.nullProto && (!shape.indexValue || shape.tuple))
+          err(`recordLit nullProto on ${shape.id}: requires an index-signature record`, e.loc);
         const want = recordValidation.get(shape.id)!.initializationFields;
         const seen = new Set<string>();
         for (const f of e.fields) {
@@ -3328,6 +3332,16 @@ function validateFunction(
         expectType(e.obj, { kind: "record", shapeId: e.shapeId }, "recordOvfHas receiver");
         expectType(e.key, STRING, "recordOvfHas key");
         if (e.type.kind !== "bool") err("recordOvfHas must be bool", e.loc);
+        break;
+      }
+      case "recordNullProto": {
+        checkExpr(e.obj);
+        const shape = records.get(e.shapeId);
+        if (!shape) err(`recordNullProto on undeclared shape "${e.shapeId}"`, e.loc);
+        else if (!shape.indexValue || shape.tuple)
+          err(`recordNullProto on ${e.shapeId}: requires an index-signature record`, e.loc);
+        expectType(e.obj, { kind: "record", shapeId: e.shapeId }, "recordNullProto receiver");
+        if (e.type.kind !== "bool") err("recordNullProto must be bool", e.loc);
         break;
       }
       case "recordOvfKeys": {
@@ -5170,6 +5184,12 @@ function validateFunction(
       if (view?.kind !== "bytes" || !typeEquals(e.type, view)) {
         err(`libCall ${e.fn} must return its view argument's type`, e.loc);
       }
+      return true;
+    }
+    if (e.fn === "crypto.hashStream" || e.fn === "crypto.hashStreamPiped") {
+      const value = e.args[0]?.type.kind;
+      if (value !== "cryptoHash" && value !== "cryptoHmac")
+        err(`libCall ${e.fn} argument must be a Hash or Hmac`, e.loc);
       return true;
     }
     if (e.fn === "crypto.timingSafeEqual") {

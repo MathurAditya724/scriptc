@@ -867,6 +867,67 @@ try {
   });
 });
 
+// After a Hash's stream flushes its digest, Node copies the finished
+// OpenSSL context, whose later updates and digests fail with OpenSSL
+// error-queue codes. That copy throws a coded SC2020 error.
+describe("copy() of a Hash whose stream has flushed", () => {
+  test("throws SC2020", async () => {
+    const r = await compileAndRun(
+      "hash-stream-copy-after-flush",
+      `import { createHash } from "node:crypto";
+const hash = createHash("sha256");
+hash.resume();
+hash.on("finish", () => {
+  try {
+    hash.copy();
+  } catch (error) {
+    const e = error as Error & { code?: string };
+    console.log(e.name, e.code, e.message);
+  }
+});
+hash.end("abc");
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Error SC2020 copy() of a Hash whose stream has flushed its digest has no lowering\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+});
+
+// A Hash or Hmac lets go of its stream once the stream is destroyed, so
+// listeners that capture the value do not keep it alive. Using the value
+// as a stream again throws a coded SC2020 error; Node keeps the destroyed
+// stream.
+describe("stream use of a Hash after its stream closed", () => {
+  test("throws SC2020", async () => {
+    const r = await compileAndRun(
+      "hash-stream-after-close",
+      `import { createHash } from "node:crypto";
+const hash = createHash("sha256");
+hash.resume();
+hash.on("close", () => {
+  try {
+    hash.on("data", () => {});
+  } catch (error) {
+    const e = error as Error & { code?: string };
+    console.log(e.name, e.code, e.message);
+  }
+  console.log("digest", hash.digest("hex").slice(0, 8));
+});
+hash.end("abc");
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Error SC2020 Stream use of a Hash or Hmac after its stream closed has no lowering\n" +
+        "digest ba7816bf\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+});
+
 // Node 24.22 skips the chacha20-poly1305 tag check when neither
 // setAuthTag() nor authTagLength was used, and returns unverified
 // plaintext. scriptc keeps Node 24.15's behavior: final() fails.

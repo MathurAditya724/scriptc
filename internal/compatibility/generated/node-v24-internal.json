@@ -941,9 +941,9 @@
       "apiEntries": 66,
       "static": {
         "supported": 0,
-        "partial": 24,
+        "partial": 26,
         "refused": 0,
-        "not-implemented": 42,
+        "not-implemented": 40,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -19846,6 +19846,9 @@
           "tests/corpus/5444-crypto-timing-safe-equal.js",
           "tests/corpus/5445-crypto-secret-key-objects.ts",
           "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -20386,6 +20389,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:crypto.createHash",
         "tests": [
+          "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
@@ -20420,6 +20426,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:crypto.createHmac",
         "tests": [
+          "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
@@ -21018,6 +21027,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:crypto.hash",
         "tests": [
+          "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
@@ -21133,6 +21145,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:crypto.pbkdf2",
         "tests": [
+          "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
@@ -21167,6 +21182,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:crypto.pbkdf2Sync",
         "tests": [
+          "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
@@ -23064,6 +23082,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:Hash",
         "tests": [
+          "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
@@ -23098,6 +23119,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:hash.copy",
         "tests": [
+          "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
@@ -23132,6 +23156,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:hash.digest",
         "tests": [
+          "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
@@ -23166,6 +23193,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:hash.update",
         "tests": [
+          "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
@@ -23200,6 +23230,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:Hmac",
         "tests": [
+          "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
@@ -23234,6 +23267,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:hmac.digest",
         "tests": [
+          "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
@@ -23268,6 +23304,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:hmac.update",
         "tests": [
+          "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
@@ -24979,6 +25018,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:crypto.pbkdf2",
         "tests": [
+          "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
@@ -28059,6 +28101,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:Hash",
         "tests": [
+          "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
@@ -28106,6 +28151,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:Hmac",
         "tests": [
+          "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
@@ -112689,6 +112737,9 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/5793-worker-message-channel.ts",
+          "tests/corpus/5796-worker-message-channel.cjs",
+          "tests/corpus/5797-worker-message-port-transfer.ts",
           "tests/corpus/native-worker-clone-errors.ts",
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-delayed-messages.ts",
@@ -112957,8 +113008,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.MessageChannel",
+        "tests": [
+          "tests/corpus/5793-worker-message-channel.ts",
+          "tests/corpus/5796-worker-message-channel.cjs",
+          "tests/corpus/5797-worker-message-port-transfer.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114029,8 +114085,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker_threads.receiveMessageOnPort",
+        "tests": [
+          "tests/corpus/5793-worker-message-channel.ts",
+          "tests/corpus/5796-worker-message-channel.cjs",
+          "tests/corpus/5797-worker-message-port-transfer.ts"
+        ]
       },
       "anchorSource": "exact"
     },

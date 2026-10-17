@@ -7844,9 +7844,30 @@ struct ScrCryptoHash {
   size_t rc;
   bool finalized;
   bool hmac;
+  /* The digest was computed, by digest() or by the stream's flush. Node's
+   * native handle keeps it, so a Hash flushed as a stream answers one more
+   * digest() with it, and every later update fails. */
+  bool digested;
   size_t out_len; /* digest bytes; an XOF's options.outputLength */
   ScrDigestCtx inner;
   ScrDigestCtx outer;
+  /* The computed digest (Hash only): inline up to 64 bytes, else heap. */
+  unsigned char cached_inline[64];
+  unsigned char *cached;
+  size_t cached_len;
+  /* The Transform this value reads and writes as a stream (scr_stream.c),
+   * created on first stream use; owned, released through stream_release.
+   * The stream's steps find this value through stream_box, which holds it
+   * without a reference and is cleared when the value is freed. While the
+   * stream is a pipe destination or pipeline stage, held is set and the
+   * value holds one reference to itself, so a pipe keeps it alive until
+   * the stream flushes or is destroyed. */
+  void *stream;
+  void (*stream_release)(void *);
+  ScrBox *stream_box;
+  bool held;
+  /* The stream was destroyed and released: it keeps no listeners alive. */
+  bool stream_closed;
 };
 
 static void scr_crypto_digest_unsupported(void) {
@@ -7907,6 +7928,35 @@ static void scr_crypto_hash_finalized(void) {
                            "ERR_CRYPTO_HASH_FINALIZED");
 }
 
+static void scr_crypto_hash_update_failed(void) {
+  static const char msg[] = "Hash update failed";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1,
+                           "ERR_CRYPTO_HASH_UPDATE_FAILED");
+}
+
+/* update() may run: Node throws ERR_CRYPTO_HASH_FINALIZED after digest(),
+ * and ERR_CRYPTO_HASH_UPDATE_FAILED when only a stream flush computed the
+ * digest. */
+static bool scr_crypto_hash_updatable(const ScrCryptoHash *hash) {
+  if (hash->finalized) {
+    scr_crypto_hash_finalized();
+    return false;
+  }
+  if (hash->digested) {
+    scr_crypto_hash_update_failed();
+    return false;
+  }
+  return true;
+}
+
+static void scr_crypto_hash_cache(ScrCryptoHash *hash, const unsigned char *digest, size_t len) {
+  if (hash->hmac) return;
+  hash->cached = len <= sizeof hash->cached_inline ? hash->cached_inline : malloc(len);
+  if (!hash->cached) scr_trap("scriptc: out of memory\n");
+  memcpy(hash->cached, digest, len);
+  hash->cached_len = len;
+}
+
 static ScrCryptoHash *scr_crypto_hash_alloc(ScrDigestAlg alg, bool hmac,
                                             const unsigned char *key, size_t keylen) {
   ScrCryptoHash *hash = calloc(1, sizeof *hash);
@@ -7962,6 +8012,16 @@ ScrCryptoHash *scr_crypto_hash_retain(ScrCryptoHash *hash) {
 void scr_crypto_hash_release(ScrCryptoHash *hash) {
   if (!hash || hash->rc == SIZE_MAX) return;
   if (--hash->rc == 0) {
+    /* Clearing the box detaches the stream (scr_crypto_hash_stream_detach),
+     * then the value releases its reference to it. */
+    void *stream = hash->stream;
+    void (*stream_release)(void *) = hash->stream_release;
+    if (hash->stream_box) scr_box_set_ref(hash->stream_box, NULL);
+    if (stream) stream_release(stream);
+    if (hash->cached && hash->cached != hash->cached_inline) {
+      scr_crypto_zero(hash->cached, hash->cached_len);
+      free(hash->cached);
+    }
     scr_crypto_zero(hash, sizeof *hash);
     free(hash);
   }
@@ -7972,10 +8032,7 @@ void scr_crypto_hash_release_v(void *p) { scr_crypto_hash_release(p); }
 
 static ScrCryptoHash *scr_crypto_hash_update_raw(ScrCryptoHash *hash,
                                                  const unsigned char *data, size_t len) {
-  if (hash->finalized) {
-    scr_crypto_hash_finalized();
-    return NULL;
-  }
+  if (!scr_crypto_hash_updatable(hash)) return NULL;
   scr_digest_update(&hash->inner, data, len);
   return scr_crypto_hash_retain(hash);
 }
@@ -7994,20 +8051,60 @@ ScrCryptoHash *scr_crypto_hash_update_bytes(ScrCryptoHash *hash, ScrBytes *data)
                                     data->len * scr_bytes_elem_size(data->elem));
 }
 
-ScrCryptoHash *scr_crypto_hash_copy(ScrCryptoHash *hash) {
+/* copy() may run. After a stream flush, Node copies the finished
+ * OpenSSL context, whose later updates and digests fail with OpenSSL
+ * error-queue codes; that copy has no lowering. */
+static bool scr_crypto_hash_copyable(const ScrCryptoHash *hash) {
   if (hash->finalized) {
     scr_crypto_hash_finalized();
-    return NULL;
+    return false;
   }
+  if (hash->digested) {
+    static const char msg[] = "copy() of a Hash whose stream has flushed its digest has no lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    return false;
+  }
+  return true;
+}
+
+static ScrCryptoHash *scr_crypto_hash_clone(const ScrCryptoHash *hash) {
   ScrCryptoHash *copy = malloc(sizeof *copy);
   if (!copy) scr_trap("scriptc: out of memory\n");
   *copy = *hash;
   copy->rc = 1;
+  copy->cached = NULL;
+  copy->cached_len = 0;
+  copy->stream = NULL;
+  copy->stream_release = NULL;
+  copy->stream_box = NULL;
+  copy->held = false;
+  copy->stream_closed = false;
   copy->out_len = scr_digest_info[copy->inner.alg].size;
   return copy;
 }
 
+ScrCryptoHash *scr_crypto_hash_copy(ScrCryptoHash *hash) {
+  if (!scr_crypto_hash_copyable(hash)) return NULL;
+  return scr_crypto_hash_clone(hash);
+}
+
 static bool scr_crypto_integer(double value, const char *name, double max);
+
+/* Computes the digest into `out` (hash->out_len bytes) and marks it
+ * computed. A Hash keeps a copy for a later digest() or flush. */
+static size_t scr_crypto_hash_compute(ScrCryptoHash *hash, unsigned char *out) {
+  hash->digested = true;
+  if (hash->hmac) return scr_hmac_final(&hash->inner, &hash->outer, out);
+  size_t n;
+  if (scr_digest_info[hash->inner.alg].xof) {
+    scr_digest_final_xof(&hash->inner, out, hash->out_len);
+    n = hash->out_len;
+  } else {
+    n = scr_digest_final(&hash->inner, out);
+  }
+  scr_crypto_hash_cache(hash, out, n);
+  return n;
+}
 
 /* The digest into `out`, which holds hash->out_len bytes. Returns the
  * byte count, or 0: with the error pending for a finalized Hash, and
@@ -8019,12 +8116,12 @@ static size_t scr_crypto_hash_finish(ScrCryptoHash *hash, unsigned char *out) {
     return 0;
   }
   hash->finalized = true;
-  if (hash->hmac) return scr_hmac_final(&hash->inner, &hash->outer, out);
-  if (scr_digest_info[hash->inner.alg].xof) {
-    scr_digest_final_xof(&hash->inner, out, hash->out_len);
-    return hash->out_len;
+  if (hash->digested) {
+    /* A stream flush computed it; Node's handle answers it again. */
+    memcpy(out, hash->cached, hash->cached_len);
+    return hash->cached_len;
   }
-  return scr_digest_final(&hash->inner, out);
+  return scr_crypto_hash_compute(hash, out);
 }
 
 /* Digest storage: the stack for the fixed-length digests, the heap for a
@@ -8075,6 +8172,89 @@ ScrBytes *scr_crypto_hash_digest_buffer(ScrCryptoHash *hash) {
     result = scr_bytes_new(SCR_BYTES_U8, (double)n);
     if (n != 0) memcpy(result->data, digest, n);
   }
+  scr_crypto_digest_space_end(digest, hash->out_len, stack);
+  return result;
+}
+
+/* ── Hash and Hmac as streams ─────────────────────────────────────────
+ * The Transform behind a Hash used as a stream (scr_stream.c) writes and
+ * flushes through these. Node's _transform updates the native handle and
+ * reports ERR_CRYPTO_HASH_UPDATE_FAILED once the digest was computed;
+ * Hash's _flush pushes the digest without finalizing the Hash, and
+ * Hmac's finalizes it. */
+void *scr_crypto_hash_stream_get(ScrCryptoHash *hash) { return hash->stream; }
+
+void scr_crypto_hash_stream_set(ScrCryptoHash *hash, void *stream, void (*release)(void *),
+                                ScrBox *box) {
+  hash->stream = stream;
+  hash->stream_release = release;
+  hash->stream_box = box;
+}
+
+/* The box's release: the box lets go of the value, either because the
+ * value is being freed or because the stream was torn down first. */
+void scr_crypto_hash_stream_detach(void *value) {
+  ScrCryptoHash *hash = value;
+  hash->stream = NULL;
+  hash->stream_release = NULL;
+  hash->stream_box = NULL;
+}
+
+/* After the stream is destroyed, the value lets go of it, so listeners
+ * that capture the value do not keep the pair alive. */
+void scr_crypto_hash_stream_close(ScrCryptoHash *hash) {
+  void *stream = hash->stream;
+  void (*stream_release)(void *) = hash->stream_release;
+  if (hash->stream_box) scr_box_set_ref(hash->stream_box, NULL);
+  hash->stream_closed = true;
+  if (stream) stream_release(stream);
+}
+
+bool scr_crypto_hash_stream_usable(const ScrCryptoHash *hash) {
+  if (!hash->stream_closed) return true;
+  static const char msg[] = "Stream use of a Hash or Hmac after its stream closed has no lowering";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+  return false;
+}
+
+void scr_crypto_hash_stream_hold(ScrCryptoHash *hash) {
+  if (hash->held) return;
+  hash->held = true;
+  scr_crypto_hash_retain(hash);
+}
+
+void scr_crypto_hash_stream_unhold(ScrCryptoHash *hash) {
+  if (!hash->held) return;
+  hash->held = false;
+  scr_crypto_hash_release(hash);
+}
+
+bool scr_crypto_hash_stream_write(ScrCryptoHash *hash, ScrBytes *chunk) {
+  if (hash->digested) return false;
+  SCR_BYTES_SNAPSHOT(chunk);
+  scr_digest_update(&hash->inner, chunk->data, chunk->len * scr_bytes_elem_size(chunk->elem));
+  return true;
+}
+
+ScrBytes *scr_crypto_hash_stream_flush(ScrCryptoHash *hash) {
+  unsigned char stack[64];
+  unsigned char *digest = scr_crypto_digest_space(hash->out_len, stack);
+  size_t n = 0;
+  if (hash->hmac) {
+    /* After digest(), Node's Hmac handle answers an empty digest. */
+    if (!hash->finalized) {
+      hash->finalized = true;
+      n = scr_crypto_hash_compute(hash, digest);
+    }
+  } else if (hash->digested) {
+    n = hash->cached_len;
+    memcpy(digest, hash->cached, n);
+  } else {
+    n = scr_crypto_hash_compute(hash, digest);
+  }
+  ScrBytes *result = scr_bytes_new(SCR_BYTES_U8, (double)n);
+  result->is_buffer = true;
+  if (n != 0) memcpy(result->data, digest, n);
   scr_crypto_digest_space_end(digest, hash->out_len, stack);
   return result;
 }
@@ -8131,10 +8311,7 @@ ScrDyn *scr_crypto_hash_digest_dyn(ScrCryptoHash *hash, ScrDyn *enc) {
  * has an even length, then decodes with the encoding, using UTF-8 for a
  * name it does not know. */
 ScrCryptoHash *scr_crypto_hash_update_enc(ScrCryptoHash *hash, ScrStr *data, ScrStr *enc) {
-  if (hash->finalized) {
-    scr_crypto_hash_finalized();
-    return NULL;
-  }
+  if (!scr_crypto_hash_updatable(hash)) return NULL;
   int encoding = scr_crypto_encoding(enc->data, enc->len);
   if (encoding == SCR_CRYPTO_HEX) {
     double units = scr_str_utf16_len(data);
@@ -8164,10 +8341,7 @@ static const char scr_crypto_data_types[] =
 
 /* update(data, inputEncoding) over any values. */
 ScrCryptoHash *scr_crypto_hash_update_dyn(ScrCryptoHash *hash, ScrDyn *data, ScrDyn *enc) {
-  if (hash->finalized) {
-    scr_crypto_hash_finalized();
-    return NULL;
-  }
+  if (!scr_crypto_hash_updatable(hash)) return NULL;
   if (data->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *value = scr_dyn_typed_ref_materialize(data);
     if (!value) return NULL;
@@ -8415,10 +8589,7 @@ ScrCryptoHash *scr_crypto_hash_copy_opts(ScrCryptoHash *hash, ScrDyn *options) {
     scr_dyn_release(value);
     return result;
   }
-  if (hash->finalized) {
-    scr_crypto_hash_finalized();
-    return NULL;
-  }
+  if (!scr_crypto_hash_copyable(hash)) return NULL;
   bool has_length;
   double length;
   if (!scr_crypto_output_length(options, "options.outputLength", &has_length, &length)) return NULL;

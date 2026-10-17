@@ -1234,7 +1234,9 @@ function isWorkerHandleSymbol(
   ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
 ): boolean {
   return (
-    (symbol?.name === "Worker" || symbol?.name === "MessagePort") &&
+    (symbol?.name === "Worker" ||
+      symbol?.name === "MessagePort" ||
+      symbol?.name === "MessageChannel") &&
     ctx.checker
       .declarationsOf(symbol)
       .some(
@@ -1244,6 +1246,37 @@ function isWorkerHandleSymbol(
           isDeclaredInAmbientModule(d, "worker_threads"),
       )
   );
+}
+
+/** The `{ message: any }` object type (or its union with undefined) that
+ * worker_threads declares as receiveMessageOnPort's result. */
+function isReceiveMessageResult(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  const members = type.isUnionType() ? ts.constituentTypes(type) : [type];
+  let found = false;
+  for (const member of members) {
+    if (member.flags & ts.TypeFlags.Undefined) continue;
+    const decl = member.getSymbol()
+      ? ctx.checker.declarationsOf(member.getSymbol()!)[0]
+      : undefined;
+    let fn: ts.Node | undefined = decl?.parent;
+    while (fn && ts.isUnionTypeNode(fn)) fn = fn.parent;
+    if (
+      !decl ||
+      !ts.isTypeLiteralNode(decl) ||
+      !fn ||
+      !ts.isFunctionDeclaration(fn) ||
+      fn.name?.text !== "receiveMessageOnPort" ||
+      !ctx.isStdlibFile(decl.getSourceFile()) ||
+      !isDeclaredInAmbientModule(fn, "worker_threads")
+    ) {
+      return false;
+    }
+    found = true;
+  }
+  return found;
 }
 
 /** True for a type built only from worker handles, null/undefined, and
@@ -1330,6 +1363,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const moduleId = ctx.moduleNamespaceId?.(type) ?? null;
     if (moduleId !== null) return { kind: "moduleNs", moduleId };
   }
+  // worker_threads.receiveMessageOnPort's `{ message: any } | undefined`:
+  // the runtime's { message } object, a checked-dynamic value.
+  if (isReceiveMessageResult(type, ctx)) return DYN;
   // @types/node spells child_process.ExecFileException as an intersection
   // type alias over two Error-derived metadata interfaces. The value is
   // still one ordinary Error; recognize the owned alias before generic

@@ -90,6 +90,10 @@ void scr_bytes_require_unshared(const ScrBytes *);
 ScrDyn *scr_shared_array_buffer_new(ScrDyn *);
 ScrDyn *scr_worker_data(void);
 ScrDyn *scr_worker_parent_port(void);
+/* new MessageChannel() ({ port1, port2 }) and receiveMessageOnPort(port)
+ * (scr_worker_events.c). */
+ScrDyn *scr_worker_message_channel(void);
+ScrDyn *scr_worker_receive_message_on_port(ScrDyn *port);
 ScrDyn *scr_worker_new(double root, ScrStr *filename, ScrDyn *options);
 bool scr_shared_array_buffer_is(const ScrDyn *);
 bool scr_buffer_storage_is(const ScrDyn *);

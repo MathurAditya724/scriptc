@@ -1108,6 +1108,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "worker.root": { argTypes: [], result: F64 },
   "worker.data": { argTypes: [], result: DYN },
   "worker.parentPort": { argTypes: [], result: DYN },
+  /** new MessageChannel() ({ port1, port2 }) and receiveMessageOnPort(port)
+   * (scr_worker_events.c; the latter may throw). */
+  "worker.channel": { argTypes: [], result: DYN },
+  "worker.receiveMessageOnPort": { argTypes: [DYN], result: DYN },
   /** child_process.spawnSync (scr_child.c): posix_spawn + waitpid + piped
    * utf8 capture — cmd borrowed, args one borrowed string[] (the frontend
    * completes an omitted list to an empty literal), result an owned (+1)
@@ -1392,24 +1396,28 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * consumes. ctxSkip/ctxTodo mark the running test; ctxDiagnostic
    * queues an ℹ line; ctxName reads t.name. Every registration keeps
    * the loop-run emitted (usesTimers) so the runner fiber drains. */
-  // The trailing pair is the { plan, timeout } options (plan -1 without
-  // one; timeout read under flag 8). An out-of-range timeout throws.
+  // The trailing three are the { plan, timeout, concurrency } options (plan
+  // -1 without one; timeout read under flag 8; concurrency read under flag
+  // 16, -1 for true). An out-of-range timeout or concurrency throws.
   "test.register": {
-    argTypes: [STRING, F64, STRING, null, F64, STRING, F64, F64],
+    argTypes: [STRING, F64, STRING, null, F64, STRING, F64, F64, F64],
     result: VOID,
   },
-  "test.registerEmpty": { argTypes: [STRING, F64, STRING, F64, STRING, F64, F64], result: VOID },
+  "test.registerEmpty": {
+    argTypes: [STRING, F64, STRING, F64, STRING, F64, F64, F64],
+    result: VOID,
+  },
   "test.suite": {
-    argTypes: [STRING, F64, STRING, { kind: "func", params: [], ret: VOID }, STRING, F64],
+    argTypes: [STRING, F64, STRING, { kind: "func", params: [], ret: VOID }, STRING, F64, F64],
     result: VOID,
   },
   "test.hook": { argTypes: [F64, null, F64], result: VOID },
   "test.sub": {
-    argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64],
+    argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64, F64],
     result: { kind: "promise", inner: VOID },
   },
   "test.subEmpty": {
-    argTypes: [TESTCTX_T, STRING, F64, STRING, F64, STRING, F64, F64],
+    argTypes: [TESTCTX_T, STRING, F64, STRING, F64, STRING, F64, F64, F64],
     result: VOID,
   },
   "test.ctxSkip": { argTypes: [TESTCTX_T, STRING], result: VOID },
@@ -2416,6 +2424,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * finalizes the handle and returns either a Buffer or encoded string. */
   "crypto.native": { argTypes: [], result: DYN },
   "crypto.hashNew": { argTypes: [STRING], result: CRYPTOHASH_T },
+  /** The Transform a Hash or Hmac reads and writes as a stream (+1,
+   * created on first use and owned by the value; scr_stream.c). The Piped
+   * form, for pipe destinations and pipeline stages, also keeps the value
+   * alive until the stream flushes or is destroyed. */
+  "crypto.hashStream": { argTypes: [null], result: { kind: "object", className: "%Transform" } },
+  "crypto.hashStreamPiped": {
+    argTypes: [null],
+    result: { kind: "object", className: "%Transform" },
+  },
   /** createCipheriv (false) / createDecipheriv (true) over checked-dynamic
    * cipher, key, iv and options arguments (scr_cipher.c): a native
    * Cipheriv/Decipheriv handle whose methods dispatch through dynInvoke. */
