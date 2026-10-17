@@ -722,7 +722,7 @@ export function lambdaSignature(
       return { shapes, funcType: funcTypeFromParamShapes(shapes, DYN) };
     }
   }
-  if (node.typeParameters) {
+  if (node.typeParameters && !lowerer.erasingLambdas.has(node)) {
     // Generic function-like forms monomorphize only where a static home
     // exists: top-level generic function declarations, generic methods
     // (class and object-literal), and module-scope never-reassigned

@@ -51,6 +51,3 @@ function throughParam(a: Amb): void {
   console.log(a.m(4));
 }
 throughParam(amb);
-
-// A generic lambda outside any monomorphizable home (an IIFE).
-console.log((<T>(x: T): T => x)(5));
