@@ -5677,6 +5677,16 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
       scr_dyn_obj_set(d, "cause", 5, scr_domex_cause((ScrError *)e));
     }
   }
+  /* A disposal SuppressedError's non-enumerable `error` and `suppressed`
+   * (scr_exc_suppress); a constructed one sets them on its view. */
+  const ScrCaught *suppressed_error = NULL, *suppressed_value = NULL;
+  if (e->vt == &scr_error_vts[SCR_ERR_SUPPRESSED] &&
+      scr_exc_suppressed_values(e, &suppressed_error, &suppressed_value)) {
+    scr_dyn_obj_set(d, "error", 5, scr_caught_to_dyn(suppressed_error));
+    d->v.obj.entries[d->v.obj.len - 1].enumerable = false;
+    scr_dyn_obj_set(d, "suppressed", 10, scr_caught_to_dyn(suppressed_value));
+    d->v.obj.entries[d->v.obj.len - 1].enumerable = false;
+  }
   /* AggregateError's own non-enumerable `errors` list, shared with the
    * typed read so both spellings answer the same array. */
   if (e->vt == &scr_error_vts[SCR_ERR_AGGREGATE]) {
@@ -10897,16 +10907,6 @@ static void scr_suppressed_attach(ScrError *e, ScrDyn *error, ScrDyn *suppressed
   scr_dyn_obj_set(view, "suppressed", 10, suppressed);
   view->v.obj.entries[view->v.obj.len - 1].enumerable = false;
   scr_dyn_release(view);
-}
-
-static void scr_suppressed_hook(void *error_object, const ScrCaught *error, const ScrCaught *suppressed) {
-  scr_suppressed_attach((ScrError *)error_object, scr_caught_to_dyn(error), scr_caught_to_dyn(suppressed));
-}
-
-/* Disposal errors become SuppressedErrors with both values once this unit
- * is linked; reading either property links it. */
-__attribute__((constructor)) static void scr_suppressed_hook_install(void) {
-  scr_exc_install_suppressed_hook(&scr_suppressed_hook);
 }
 
 ScrError *scr_suppressed_new(const ScrDyn *error, const ScrDyn *suppressed, const ScrDyn *message) {

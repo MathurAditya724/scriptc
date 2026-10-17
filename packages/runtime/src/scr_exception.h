@@ -166,12 +166,15 @@ void scr_caught_release(ScrCaught *c); /* NULL-tolerant */
 void scr_caught_trace_v(void *c, ScrTraceVisit visit, void *ctx);
 /* Replace the pending disposal error with a SuppressedError and consume the
  * original body-error snapshot. The current exception cell must be pending.
- * The SuppressedError's `error` is the disposal error and `suppressed` the
- * body error, set by the hook scr_json.c installs when it is linked (every
- * read of either property links it). */
+ * The SuppressedError keeps both snapshots in a side table until its
+ * teardown: scr_exc_suppressed_values answers them (borrowed) for the
+ * error's `error` (the disposal error) and `suppressed` (the body error)
+ * when scr_json.c builds its dyn view, and scr_exc_suppressed_forget
+ * releases them. */
 void scr_exc_suppress(ScrCaught *suppressed);
-void scr_exc_install_suppressed_hook(void (*fn)(void *error_object, const ScrCaught *error,
-                                                const ScrCaught *suppressed));
+bool scr_exc_suppressed_values(const void *error_object, const ScrCaught **error,
+                               const ScrCaught **suppressed);
+void scr_exc_suppressed_forget(const void *error_object);
 /* Borrows the box; re-raises the saved exception exactly (payload RETAINED
  * — the binding stays live until its scope exits). */
 void scr_rethrow(const ScrCaught *c);
