@@ -723,3 +723,40 @@ test("to-dyn of a copied record projects it, while live and identity conversions
   fn.body = [convert(cls), ret(num())];
   expect(analyzeWith(copies).get(fn.name)).toBeUndefined();
 });
+
+test("a parameter stored as its last use takes the owned convention", () => {
+  const cell: IrType = { kind: "object", className: "Cell" };
+  const self: IrType = { kind: "object", className: "Box" };
+  const store = (value: IrExpr): IrStmt => ({
+    kind: "fieldSet",
+    obj: ref("this", self),
+    className: "Box",
+    field: "item",
+    value,
+    loc,
+  });
+  const ctor = (body: IrStmt[]): IrFunction => ({
+    name: "%Box.constructor",
+    loc,
+    returnType: { kind: "void" },
+    params: [
+      { localId: "this", name: "this", type: self },
+      { localId: "item", name: "item", type: cell },
+    ],
+    locals: [local("this", self), local("item", cell)],
+    body,
+  });
+  // `this.item = item` last: callers hand over their reference.
+  expect(analyze(ctor([store(ref("item", cell))])).borrowed.get("%Box.constructor")).toEqual(
+    new Set([0]),
+  );
+  // A later read keeps the borrowed convention (the store retains a copy).
+  const later = ctor([
+    store(ref("item", cell)),
+    { kind: "exprStmt", expr: call("use", [ref("item", cell)]), loc },
+  ]);
+  expect(analyze(later).borrowed.get("%Box.constructor")).toEqual(new Set([0, 1]));
+  // A last use that only passes the parameter on is not a store.
+  const passed = ctor([{ kind: "exprStmt", expr: call("use", [ref("item", cell)]), loc }]);
+  expect(analyze(passed).borrowed.get("%Box.constructor")).toEqual(new Set([0, 1]));
+});

@@ -9,6 +9,7 @@ import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 import { borrowsStringInputs } from "./string-lifetimes.js";
 import { borrowsMapReadInputs } from "./map-read-lifetimes.js";
 import { LazyCaptures } from "./lazy-captures.js";
+import { storedLastUseRead } from "./local-extents.js";
 
 interface ForwardedUse {
   callee: string;
@@ -343,6 +344,7 @@ export function analyzeCallLifetimes(
   const lazyCaptures = new LazyCaptures(functions);
   const nodes = new Map<string, Parameter[]>();
   const unsafe: Parameter[] = [];
+  const consumed: { fn: string; index: number }[] = [];
   const result: CallLifetimes = {
     parameters: new Map(),
     locals: new Map(),
@@ -416,6 +418,7 @@ export function analyzeCallLifetimes(
     // A captured parameter that nothing rebinds keeps its entry value; its
     // environment box takes a reference of its own when it is created.
     const unchangedCaptures = lazyCaptures.parameters(fn);
+    const walks = walkParameters.get(fn.name);
     fn.params.forEach((param, index) => {
       const local = locals.get(param.localId);
       if (
@@ -424,8 +427,16 @@ export function analyzeCallLifetimes(
         isRefCounted(param.type) &&
         (stable(local) || unchangedCaptures.has(local.id)) &&
         !uses.declarations.has(local.id)
-      )
+      ) {
         borrowed.add(index);
+        if (
+          !walks?.has(index) &&
+          !unchangedCaptures.has(local.id) &&
+          param.name !== "this" &&
+          consumedParameter(fn, param.localId)
+        )
+          consumed.push({ fn: fn.name, index });
+      }
     });
     if (borrowed.size > 0) result.borrowed.set(fn.name, borrowed);
     nodes.set(
@@ -499,5 +510,33 @@ export function analyzeCallLifetimes(
     result.locals.set(fn.name, safe);
     result.projectedLocals.set(fn.name, projected);
   }
+  // Consumed parameters take the owned convention, unless only projected.
+  for (const { fn, index } of consumed) {
+    if (result.parameters.get(fn)?.has(index) === true) continue;
+    const borrowed = result.borrowed.get(fn);
+    if (!borrowed) continue;
+    borrowed.delete(index);
+    if (borrowed.size === 0) result.borrowed.delete(fn);
+  }
   return result;
+}
+
+/** A parameter whose last use in the body stores it (a field, record or
+ * element store, a record literal field, a push) and moves its reference
+ * there (lastUseRead). Its owned convention lets a caller hand over a
+ * temporary or its own last use; a borrowed one would retain the stored
+ * copy while the caller releases its temporary right after the call. The
+ * read must be the only node of its kind in the function, like every
+ * moved read. */
+function consumedParameter(fn: IrFunction, localId: string): boolean {
+  const read = storedLastUseRead(fn.body, -1, localId, true);
+  if (read === null) return false;
+  let count = 0;
+  const expr = (e: IrExpr): boolean => {
+    if (e === read) count++;
+    return everyExprChild(e, expr, stmt);
+  };
+  const stmt = (s: IrStmt): boolean => everyStmtChild(s, expr, stmt);
+  fn.body.every(stmt);
+  return count === 1;
 }
