@@ -603,4 +603,3 @@ test(
   },
   sanitize ? 10_800_000 : 5_400_000,
 );
-// CI check: this file is touched so the native bootstrap lane runs.
