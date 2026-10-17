@@ -8,7 +8,6 @@ import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { lowerReadlineProperty } from "./builtins/readline.js";
 import { lowerBlobInstanceof } from "./builtins/blob.js";
 import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
-import { isExecExceptionType, refuseExecExceptionCode } from "./builtins/errors.js";
 import { STATS_TYPE_TESTS } from "./builtins/filesystem.js";
 import { threadsImportOf } from "../threads-import.js";
 import { experimentalImportOf, lifetimeRegionMemberOf } from "../experimental-import.js";
@@ -11119,7 +11118,6 @@ function lowerErrorCodeTypeofTest(
       recv = recv.expression;
     const errT = errorRootedObjectOf(lowerer, lowerer.typeOf(recv));
     if (!errT) continue;
-    if (isExecExceptionType(lowerer, lowerer.typeOf(recv))) refuseExecExceptionCode(lowerer, prop);
     const caught = lowerer.caughtLocalOf(recv);
     let receiver: IrExpr;
     if (caught) {
@@ -12715,9 +12713,6 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
       type: BOOL,
       loc,
     };
-  }
-  if (key === "code" && isExecExceptionType(lowerer, lowerer.typeOf(expr.right))) {
-    refuseExecExceptionCode(lowerer, expr);
   }
   let recv = lowerer.lowerExpr(expr.right);
   const classInfo =
