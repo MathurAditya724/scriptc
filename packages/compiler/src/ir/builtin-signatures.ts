@@ -1393,24 +1393,28 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * consumes. ctxSkip/ctxTodo mark the running test; ctxDiagnostic
    * queues an ℹ line; ctxName reads t.name. Every registration keeps
    * the loop-run emitted (usesTimers) so the runner fiber drains. */
-  // The trailing pair is the { plan, timeout } options (plan -1 without
-  // one; timeout read under flag 8). An out-of-range timeout throws.
+  // The trailing three are the { plan, timeout, concurrency } options (plan
+  // -1 without one; timeout read under flag 8; concurrency read under flag
+  // 16, -1 for true). An out-of-range timeout or concurrency throws.
   "test.register": {
-    argTypes: [STRING, F64, STRING, null, F64, STRING, F64, F64],
+    argTypes: [STRING, F64, STRING, null, F64, STRING, F64, F64, F64],
     result: VOID,
   },
-  "test.registerEmpty": { argTypes: [STRING, F64, STRING, F64, STRING, F64, F64], result: VOID },
+  "test.registerEmpty": {
+    argTypes: [STRING, F64, STRING, F64, STRING, F64, F64, F64],
+    result: VOID,
+  },
   "test.suite": {
-    argTypes: [STRING, F64, STRING, { kind: "func", params: [], ret: VOID }, STRING, F64],
+    argTypes: [STRING, F64, STRING, { kind: "func", params: [], ret: VOID }, STRING, F64, F64],
     result: VOID,
   },
   "test.hook": { argTypes: [F64, null, F64], result: VOID },
   "test.sub": {
-    argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64],
+    argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64, F64],
     result: { kind: "promise", inner: VOID },
   },
   "test.subEmpty": {
-    argTypes: [TESTCTX_T, STRING, F64, STRING, F64, STRING, F64, F64],
+    argTypes: [TESTCTX_T, STRING, F64, STRING, F64, STRING, F64, F64, F64],
     result: VOID,
   },
   "test.ctxSkip": { argTypes: [TESTCTX_T, STRING], result: VOID },
