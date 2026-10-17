@@ -18,13 +18,12 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const argv = host.emitExpr(e.args[1]!);
     const cb = host.emitExpr(callbackArg);
     host.moveTemp(cb);
-    const shell = host.emitExpr(e.args[3]!);
     const adapter = host.execFileThunkFor(cbT);
     host.usesTimers = true;
-    host.declare(`declare ptr @scr_exec_file(ptr, ptr, ptr, ptr, i1)`);
+    host.declare(`declare ptr @scr_exec_file(ptr, ptr, ptr, ptr)`);
     const out = B.tmp();
     B.line(
-      `${out} = call ptr @scr_exec_file(ptr ${cmd.name}, ptr ${argv.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${shell.name})`,
+      `${out} = call ptr @scr_exec_file(ptr ${cmd.name}, ptr ${argv.name}, ptr ${cb.name}, ptr @${adapter})`,
     );
     return host.own({ name: out, type: e.type });
   }

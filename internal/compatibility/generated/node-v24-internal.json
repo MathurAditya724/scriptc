@@ -131,9 +131,9 @@
       "apiEntries": 39,
       "static": {
         "supported": 0,
-        "partial": 18,
+        "partial": 17,
         "refused": 0,
-        "not-implemented": 21,
+        "not-implemented": 22,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -11663,10 +11663,7 @@
           "tests/corpus/3127-spawn-runtime-options.ts",
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
-          "tests/corpus/3132-child-generic-stream-completion.ts",
-          "tests/corpus/5627-exec-callback.ts",
-          "tests/fixtures/node-types/child-exec.ts",
-          "tests/harness/project-config.test.ts"
+          "tests/corpus/3132-child-generic-stream-completion.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -11735,13 +11732,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-feature:child_process.child_process.exec",
-        "tests": [
-          "tests/corpus/5627-exec-callback.ts",
-          "tests/fixtures/node-types/child-exec.ts",
-          "tests/harness/project-config.test.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:child_process"
       },
       "anchorSource": "exact"
     },

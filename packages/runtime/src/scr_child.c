@@ -2265,14 +2265,14 @@ static void scr_exec_file_fire(ScrChild *c) {
 }
 
 ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb,
-                        ScrExecFileFn fn, bool shell) {
+                        ScrExecFileFn fn) {
   ScrStr *empty = scr_str_new("", 0);
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false,
                                NULL, empty);
   scr_str_release(empty);
   c->exec_cb = cb;
   c->exec_fn = fn;
-  char *display = scr_exec_display(cmd, args, shell);
+  char *display = scr_exec_display(cmd, args, false);
   c->exec_display = scr_str_new(display, strlen(display));
   free(display);
   scr_child_stream_capture_begin(c->out_stream);
@@ -4905,14 +4905,14 @@ static void scr_exec_file_fire(ScrChild *c) {
 }
 
 ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb,
-                        ScrExecFileFn fn, bool shell) {
+                        ScrExecFileFn fn) {
   ScrStr *empty = scr_str_new("", 0);
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false,
                                NULL, empty);
   scr_str_release(empty);
   c->exec_cb = cb;
   c->exec_fn = fn;
-  char *display = scr_exec_display(cmd, args, shell);
+  char *display = scr_exec_display(cmd, args, false);
   c->exec_display = scr_str_new(display, strlen(display));
   free(display);
   scr_child_stream_capture_begin(c->out_stream);
