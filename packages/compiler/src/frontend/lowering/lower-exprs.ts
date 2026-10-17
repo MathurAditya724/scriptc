@@ -3128,9 +3128,9 @@ export function lowerTernary(
  * union-typed reference at use sites (`if (r.kind === "ok") { ...r... }`
  * types `r` as the ok-arm inside the branch); the IR value is still the
  * tagged union, so the read is bridged with a `unionNarrow` extracting
- * the arm's payload. The extraction is tag-UNCHECKED at runtime —
- * soundness rests entirely on tsc having proven the tag (the project's
- * trust-the-checker thesis; see docs/ir.md). A checker type that maps to
+ * the arm's payload. The extraction relies on tsc having proven the tag;
+ * backends verify it once and trap on a mismatch, so a wrong proof stops
+ * the program instead of reading another arm. A checker type that maps to
  * the same union (unnarrowed use), to a SUB-union (partial narrowing —
  * unrepresentable without a re-tag), or to nothing (`never` in an
  * exhaustive default) leaves the expression union-typed. */
@@ -3320,8 +3320,8 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
   }
   // instanceof narrowing for classes: tsc types this USE as a subclass of
   // the IR value's class (only a dynamic instanceof test narrows a class
-  // type), so the read bridges with an unchecked static downcast — the
-  // same trust-the-checker contract as the union bridge below.
+  // type), so the read bridges with a static downcast that backends verify
+  // at run time, like the union bridge below.
   if (expr.type.kind === "object") {
     const narrowed = lowerer.mapTypeOf(lowerer.typeOf(node));
     if (narrowed?.kind === "union") {
@@ -3972,7 +3972,7 @@ function runtimeOptionalAssertionErases(
  * (`w = 5; if (w !== null)`), the comparison is statically decided and
  * folds to a bool literal — that drops only a side-effect-free read
  * (flow narrowing applies to references, never to calls), and soundness
- * is the same trust-the-checker bet unionNarrow already makes. Null when
+ * rests on the same narrowing proof unionNarrow relies on. Null when
  * neither side is a unit literal (not a unit comparison). */
 export function lowerUnitComparison(
   lowerer: Lowerer,
@@ -11904,8 +11904,8 @@ function lowerCjsExportTableThisMember(
 /** A read of a catch binding — the caught analog of maybeNarrow. Where
  * tsc's control-flow narrowing has proven a supported test (`instanceof`
  * over a hierarchy class, `typeof` over a primitive), the read bridges
- * with a kind-unchecked `caughtNarrow` extraction (trust-the-checker,
- * exactly like unionNarrow). Every OTHER read is the narrowness fence:
+ * with a `caughtNarrow` extraction whose kind backends verify at run time,
+ * exactly like unionNarrow. Every OTHER read is the narrowness fence:
  * the binding's payload is a typed exception snapshot, not a dyn, so
  * un-narrowed uses have nothing sound to lower to. */
 export function caughtRead(

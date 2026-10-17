@@ -5405,7 +5405,7 @@ function lowerBranchSwitch(
  *   cell, deliberately narrower than dyn: the supported uses are the
  *   narrowing tests (`e instanceof C` over hierarchy classes, `typeof e
  *   === "string"/"number"/"boolean"`), reads under a proven narrow
- *   (caughtRead bridges them with caughtNarrow, trust-the-checker like
+ *   (caughtRead bridges them with caughtNarrow, verified at run time like
  *   unionNarrow), and rethrow (`throw e`). Unsupported raw uses and
  *   assignments are fenced (SC1063 and friends); destructuring patterns
  *   are SC1062. Captures retain the snapshot beyond the catch scope.

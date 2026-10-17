@@ -2907,7 +2907,7 @@ function validateFunction(
       case "downcast": {
         // A pointer reinterpret is sound exactly between hierarchy
         // relatives: upcast widens a STRICT descendant to an ancestor,
-        // downcast (checker-trusted) narrows an ancestor to a STRICT
+        // downcast (verified at run time) narrows an ancestor to a STRICT
         // descendant. Upcast additionally widens CLASS VALUES
         // (classval:D → classval:C): the same pointer, type-only — legal
         // exactly when D strictly descends from C AND the two completed
