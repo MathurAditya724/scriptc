@@ -1728,6 +1728,7 @@ ScrStr *scr_promise_payload_str(ScrPromise *p) {
 static bool scr_await_settled(ScrPromise *p); /* defined with the await family */
 int scr_promise_payload_kind(const ScrPromise *p) { return (int)p->payload_kind; }
 bool scr_promise_is_rejected(const ScrPromise *p) { return p->state == SCR_PROM_REJECTED; }
+bool scr_promise_is_pending(const ScrPromise *p) { return p->state == SCR_PROM_PENDING; }
 bool scr_promise_payload_is_dyn(const ScrPromise *p) { return p->retain_fn == scr_dyn_retain_v; }
 double scr_promise_payload_num(const ScrPromise *p) { return p->f64; }
 bool scr_promise_payload_flag(const ScrPromise *p) { return p->b; }

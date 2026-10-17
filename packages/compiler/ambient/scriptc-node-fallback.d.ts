@@ -3284,8 +3284,9 @@ declare module "node:test" {
   function after(fn: HookFn): void;
   function beforeEach(fn: HookFn): void;
   function afterEach(fn: HookFn): void;
-  /* The mock function surface: mock.fn and t.mock.fn, with the calls log
-   * and the implementation controls on fn.mock. */
+  /* The mock function surface: mock.fn, mock.method and their t.mock
+   * twins, the tracker's restoreAll and reset, and the calls log and the
+   * implementation controls on fn.mock. */
   interface MockFunctionCall<
     F extends Function,
     ReturnType = F extends (...args: any) => infer T ? T : unknown,
@@ -3305,17 +3306,35 @@ declare module "node:test" {
     restore(): void;
   }
   type Mock<F extends Function> = F & { mock: MockFunctionContext<F> };
+  interface MockFunctionOptions {
+    times?: number;
+  }
+  type FunctionPropertyNames<T> = {
+    [K in keyof T]: T[K] extends Function ? K : never;
+  }[keyof T];
   interface MockTracker {
     fn<F extends Function = (...args: any[]) => undefined>(original?: F): Mock<F>;
     fn<F extends Function = (...args: any[]) => undefined, Implementation extends Function = F>(
       original?: F,
       implementation?: Implementation,
     ): Mock<F | Implementation>;
-    method<MockedObject extends object>(
+    method<MockedObject extends object, MethodName extends FunctionPropertyNames<MockedObject>>(
       object: MockedObject,
-      methodName: keyof MockedObject,
-      implementation?: Function,
-    ): Mock<Function>;
+      methodName: MethodName,
+      options?: MockFunctionOptions,
+    ): MockedObject[MethodName] extends Function ? Mock<MockedObject[MethodName]> : never;
+    method<
+      MockedObject extends object,
+      MethodName extends FunctionPropertyNames<MockedObject>,
+      Implementation extends Function,
+    >(
+      object: MockedObject,
+      methodName: MethodName,
+      implementation: Implementation,
+      options?: MockFunctionOptions,
+    ): MockedObject[MethodName] extends Function
+      ? Mock<MockedObject[MethodName] | Implementation>
+      : never;
     reset(): void;
     restoreAll(): void;
   }

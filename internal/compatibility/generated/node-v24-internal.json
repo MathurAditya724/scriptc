@@ -746,9 +746,9 @@
       "apiEntries": 117,
       "static": {
         "supported": 0,
-        "partial": 42,
+        "partial": 45,
         "refused": 0,
-        "not-implemented": 75,
+        "not-implemented": 72,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -90652,9 +90652,12 @@
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
           "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/5810-mock-method-records.ts",
+          "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/fixtures/node-test/cases/only-nested.ts",
           "tests/fixtures/node-test/cases/suite-variants.ts",
           "tests/fixtures/node-test/cases/todo-suites.ts",
@@ -91639,6 +91642,7 @@
         "evidence": "compiler-feature:test.ctx.callCount",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -91666,6 +91670,7 @@
         "evidence": "compiler-feature:test.ctx.mockImplementation",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -91693,6 +91698,7 @@
         "evidence": "compiler-feature:test.ctx.mockImplementationOnce",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -91720,6 +91726,7 @@
         "evidence": "compiler-feature:test.ctx.resetCalls",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -91747,6 +91754,7 @@
         "evidence": "compiler-feature:test.ctx.restore",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -91774,6 +91782,7 @@
         "evidence": "compiler-feature:test.calls",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -92100,8 +92109,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.mock.method",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-method.ts",
+          "tests/corpus/5810-mock-method-records.ts",
+          "tests/corpus/5811-mock-tracker-restore.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92169,8 +92184,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.mock.reset",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-method.ts",
+          "tests/corpus/5810-mock-method-records.ts",
+          "tests/corpus/5811-mock-tracker-restore.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92192,8 +92213,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.mock.restoreAll",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-method.ts",
+          "tests/corpus/5810-mock-method-records.ts",
+          "tests/corpus/5811-mock-tracker-restore.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },

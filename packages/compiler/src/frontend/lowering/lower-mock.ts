@@ -1,5 +1,6 @@
 /* node:test's mock functions (Node 24.22, lib/internal/test_runner/mock):
- * mock.fn and t.mock.fn, and the fn.mock context's calls, callCount,
+ * mock.fn, mock.method and their t.mock twins, the trackers' restoreAll
+ * and reset, and the fn.mock context's calls, callCount,
  * mockImplementation, mockImplementationOnce, resetCalls and restore.
  *
  * mock.fn(original, implementation?) lowers to the hybrid record
@@ -8,7 +9,14 @@
  * one-time implementation registered for this call index, or the current
  * one, calls it, and appends { arguments, error, result, this } to the
  * calls log before returning or rethrowing. The context's mutating
- * methods are lifted helpers of the same type. */
+ * methods are lifted helpers of the same type.
+ *
+ * mock.method(object, name, implementation?) mocks a function-valued field
+ * of a record: the field gets a second wrapper over the same context, one
+ * that records the object as `this`, and the context's %unmock closure
+ * writes the original back on restore(). Each mock registers a closure
+ * that calls its restore() with its tracker (scr_test.c): the module's
+ * `mock`, or the test's t.mock, which is reset when the test ends. */
 import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
@@ -25,7 +33,9 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { countedFor, dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
+import { mockType as mockHybridType } from "../mock-shapes.js";
 import { locOf } from "../program.js";
+import { resultIsDiscarded } from "./call-position.js";
 import type { Lowerer } from "./lowerer.js";
 
 type FuncType = IrType & { kind: "func" };
@@ -36,9 +46,12 @@ interface MockContextFields {
   calls: IrType;
   once: IrType;
   onceEntry: IrType;
+  unmock: IrType;
   result: IrType;
   args: IrType;
 }
+
+const RESTORE_FN: IrType = { kind: "func", params: [], ret: VOID };
 
 /** The context record's parts, or null when `type` is not a mock context
  * (mock-shapes.ts). */
@@ -49,10 +62,12 @@ function mockContextFields(lowerer: Lowerer, type: IrType): MockContextFields | 
   const impl = field("%impl");
   const once = field("%once");
   const calls = field("calls");
+  const unmock = field("%unmock");
   if (
     impl?.kind !== "func" ||
     once?.kind !== "array" ||
     calls?.kind !== "array" ||
+    unmock?.kind !== "array" ||
     field("%original") === undefined
   )
     return null;
@@ -61,7 +76,7 @@ function mockContextFields(lowerer: Lowerer, type: IrType): MockContextFields | 
   const result = callShape?.fields.find((f) => f.name === "result")?.type;
   const args = callShape?.fields.find((f) => f.name === "arguments")?.type;
   if (!result || !args) return null;
-  return { fn: impl, call, calls, once, onceEntry: once.elem, result, args };
+  return { fn: impl, call, calls, once, onceEntry: once.elem, unmock, result, args };
 }
 
 export function isMockContextType(lowerer: Lowerer, type: IrType): boolean {
@@ -102,14 +117,22 @@ const local = (id: string, name: string, type: IrType, mutable = false): IrLocal
   mutable,
 });
 
-/** Lifts one function per (context type, role), cached on the lowerer. */
+/** A captured local of a lifted closure. */
+const boxedLocal = (id: string, name: string, type: IrType): IrLocal => ({
+  ...local(id, name, type),
+  boxed: true,
+});
+
+/** Lifts one function per (context type, role), cached on the lowerer.
+ * `owner` overrides the context type's shape as the cache key. */
 function liftOnce(
   lowerer: Lowerer,
   ctxType: IrType,
   role: string,
   build: (name: string) => void,
+  owner: string = (ctxType as IrType & { kind: "record" }).shapeId,
 ): string {
-  const key = `mock.${role}:${(ctxType as IrType & { kind: "record" }).shapeId}`;
+  const key = `mock.${role}:${owner}`;
   const existing = lowerer.assertHelpers.get(key);
   if (existing) return existing;
   const name = `%mock.${role}.${lowerer.assertHelpers.size}`;
@@ -118,9 +141,15 @@ function liftOnce(
   return name;
 }
 
-/** `%mock.wrap.N(ctx)`: the closure that records each call into ctx. */
-function mockWrapperFactory(lowerer: Lowerer, ctxType: IrType, loc: SrcLoc): string {
-  return liftOnce(lowerer, ctxType, "wrap", (name) => {
+/** `%mock.wrap.N(ctx)`: the closure that records each call into ctx, with
+ * `this` undefined. `%mock.wrapMethod.N(ctx, this)` records `this`. */
+function mockWrapperFactory(
+  lowerer: Lowerer,
+  ctxType: IrType,
+  loc: SrcLoc,
+  withThis = false,
+): string {
+  return liftOnce(lowerer, ctxType, withThis ? "wrapMethod" : "wrap", (name) => {
     const { fn, call, calls, once, onceEntry, result, args } = mockContextFields(lowerer, ctxType)!;
     const impl = `${name}.impl`;
     const ctx = () => varRef("ctx.0", ctxType, loc);
@@ -129,12 +158,14 @@ function mockWrapperFactory(lowerer: Lowerer, ctxType: IrType, loc: SrcLoc): str
     const argumentsValue = (): IrExpr =>
       fn.rest
         ? paramRefs()[0]!
-        : {
-            kind: "recordLit",
-            fields: paramRefs().map((value, i) => ({ name: String(i), value })),
-            type: args,
-            loc,
-          };
+        : args.kind === "array"
+          ? { kind: "arrayLit", elems: [], type: args, loc }
+          : {
+              kind: "recordLit",
+              fields: paramRefs().map((value, i) => ({ name: String(i), value })),
+              type: args,
+              loc,
+            };
     const record = (resultValue: IrExpr, error: IrExpr): IrStmt => ({
       kind: "exprStmt",
       expr: {
@@ -148,7 +179,10 @@ function mockWrapperFactory(lowerer: Lowerer, ctxType: IrType, loc: SrcLoc): str
               { name: "arguments", value: argumentsValue() },
               { name: "error", value: error },
               { name: "result", value: resultValue },
-              { name: "this", value: dynUndefinedExpr(loc) },
+              {
+                name: "this",
+                value: withThis ? varRef("this.0", DYN, loc) : dynUndefinedExpr(loc),
+              },
             ],
             type: call,
             loc,
@@ -254,10 +288,14 @@ function mockWrapperFactory(lowerer: Lowerer, ctxType: IrType, loc: SrcLoc): str
       name: impl,
       params,
       returnType: fn.ret,
-      captures: [{ localId: "ctx.0", name: "ctx", type: ctxType }],
+      captures: [
+        { localId: "ctx.0", name: "ctx", type: ctxType },
+        ...(withThis ? [{ localId: "this.0", name: "this", type: DYN }] : []),
+      ],
       locals: [
         ...params.map((p) => local(p.localId, p.name, p.type)),
-        { ...local("ctx.0", "ctx", ctxType), boxed: true },
+        boxedLocal("ctx.0", "ctx", ctxType),
+        ...(withThis ? [boxedLocal("this.0", "this", DYN)] : []),
         local("n.0", "index", F64),
         local("f.0", "implementation", fn, true),
         local("i.0", "entry", F64, true),
@@ -279,19 +317,185 @@ function mockWrapperFactory(lowerer: Lowerer, ctxType: IrType, loc: SrcLoc): str
     });
     lowerer.liftedFns.push({
       name,
-      params: [{ localId: "ctx.0", name: "ctx", type: ctxType }],
+      params: [
+        { localId: "ctx.0", name: "ctx", type: ctxType },
+        ...(withThis ? [{ localId: "this.0", name: "this", type: DYN }] : []),
+      ],
       returnType: fn,
-      locals: [{ ...local("ctx.0", "ctx", ctxType), boxed: true }],
+      locals: [
+        boxedLocal("ctx.0", "ctx", ctxType),
+        ...(withThis ? [boxedLocal("this.0", "this", DYN)] : []),
+      ],
       body: [
         {
           kind: "return",
-          value: { kind: "closure", fnName: impl, captures: ["ctx.0"], type: fn, loc },
+          value: {
+            kind: "closure",
+            fnName: impl,
+            captures: withThis ? ["ctx.0", "this.0"] : ["ctx.0"],
+            type: fn,
+            loc,
+          },
           loc,
         },
       ],
       loc,
     });
   });
+}
+
+/** `%mock.restore.N(ctx)`: fn.mock.restore(). A method mock writes the
+ * original back to its object and keeps its implementation; a mock.fn mock
+ * goes back to its original implementation. */
+function mockRestoreHelper(lowerer: Lowerer, ctxType: IrType, loc: SrcLoc): string {
+  const { fn, unmock } = mockContextFields(lowerer, ctxType)!;
+  return mockHelper(
+    lowerer,
+    ctxType,
+    "restore",
+    [],
+    (ctx) => {
+      const unmockArray = () => recordGet(ctx(), "%unmock", unmock, loc);
+      return [
+        {
+          kind: "if",
+          cond: {
+            kind: "bin",
+            op: "===",
+            left: length(unmockArray(), loc),
+            right: numLit(0, loc),
+            type: BOOL,
+            loc,
+          },
+          then: [recordSet(ctx(), "%impl", recordGet(ctx(), "%original", fn, loc), loc)],
+          else_: [
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "callValue",
+                callee: {
+                  kind: "arrayGet",
+                  arr: unmockArray(),
+                  index: numLit(0, loc),
+                  type: RESTORE_FN,
+                  loc,
+                },
+                args: [],
+                type: VOID,
+                loc,
+              },
+              loc,
+            },
+          ],
+          loc,
+        },
+      ];
+    },
+    loc,
+  );
+}
+
+/** `%mock.tracked.N(ctx)`: the closure a tracker keeps, which calls the
+ * mock's restore(). */
+function mockTrackedFactory(lowerer: Lowerer, ctxType: IrType, loc: SrcLoc): string {
+  const restore = mockRestoreHelper(lowerer, ctxType, loc);
+  return liftOnce(lowerer, ctxType, "tracked", (name) => {
+    const impl = `${name}.impl`;
+    lowerer.liftedFns.push({
+      name: impl,
+      params: [],
+      returnType: VOID,
+      captures: [{ localId: "ctx.0", name: "ctx", type: ctxType }],
+      locals: [boxedLocal("ctx.0", "ctx", ctxType)],
+      body: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "call",
+            callee: restore,
+            args: [varRef("ctx.0", ctxType, loc)],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+        { kind: "return", value: null, loc },
+      ],
+      loc,
+    });
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "ctx.0", name: "ctx", type: ctxType }],
+      returnType: RESTORE_FN,
+      locals: [boxedLocal("ctx.0", "ctx", ctxType)],
+      body: [
+        {
+          kind: "return",
+          value: { kind: "closure", fnName: impl, captures: ["ctx.0"], type: RESTORE_FN, loc },
+          loc,
+        },
+      ],
+      loc,
+    });
+  });
+}
+
+/** `%mock.unmock.N(object, original)`: the closure that writes `original`
+ * back to the object's field. */
+function mockUnmockFactory(
+  lowerer: Lowerer,
+  ctxType: IrType,
+  objType: IrType & { kind: "record" },
+  field: string,
+  loc: SrcLoc,
+): string {
+  const { fn } = mockContextFields(lowerer, ctxType)!;
+  return liftOnce(
+    lowerer,
+    ctxType,
+    "unmock",
+    (name) => {
+      const impl = `${name}.impl`;
+      const captures = [
+        { localId: "obj.0", name: "object", type: objType as IrType },
+        { localId: "orig.0", name: "original", type: fn as IrType },
+      ];
+      const boxedLocals = captures.map((c) => boxedLocal(c.localId, c.name, c.type));
+      lowerer.liftedFns.push({
+        name: impl,
+        params: [],
+        returnType: VOID,
+        captures,
+        locals: boxedLocals,
+        body: [
+          recordSet(varRef("obj.0", objType, loc), field, varRef("orig.0", fn, loc), loc),
+          { kind: "return", value: null, loc },
+        ],
+        loc,
+      });
+      lowerer.liftedFns.push({
+        name,
+        params: captures,
+        returnType: RESTORE_FN,
+        locals: boxedLocals,
+        body: [
+          {
+            kind: "return",
+            value: {
+              kind: "closure",
+              fnName: impl,
+              captures: ["obj.0", "orig.0"],
+              type: RESTORE_FN,
+              loc,
+            },
+            loc,
+          },
+        ],
+        loc,
+      });
+    },
+    `${objType.shapeId}.${JSON.stringify(field)}`,
+  );
 }
 
 /** A VOID helper over the context: `%mock.<role>.N(ctx, ...extra)`. */
@@ -323,8 +527,114 @@ function mockHelper(
   });
 }
 
+/** The lowered TestContext of a t.mock call, or null for the module's
+ * `mock`. */
+export type MockTracker = IrExpr | null;
+
+/** Registers a mock's restore with its tracker. */
+function trackMock(
+  lowerer: Lowerer,
+  tracker: MockTracker,
+  ctxType: IrType,
+  ctx: IrExpr,
+  loc: SrcLoc,
+): IrStmt {
+  const restore: IrExpr = {
+    kind: "call",
+    callee: mockTrackedFactory(lowerer, ctxType, loc),
+    args: [ctx],
+    type: RESTORE_FN,
+    loc,
+  };
+  return {
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: tracker ? "test.ctxMockTrack" : "test.mockTrack",
+      args: tracker ? [tracker, restore] : [restore],
+      type: VOID,
+      loc,
+    },
+    loc,
+  };
+}
+
+/** The context record literal of a new mock. */
+function mockContextLiteral(
+  ctxType: IrType,
+  fields: MockContextFields,
+  implementation: IrExpr,
+  original: IrExpr,
+  unmock: IrExpr[],
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "recordLit",
+    fields: [
+      { name: "%impl", value: implementation },
+      { name: "%once", value: { kind: "arrayLit", elems: [], type: fields.once, loc } },
+      { name: "%original", value: original },
+      { name: "%unmock", value: { kind: "arrayLit", elems: unmock, type: fields.unmock, loc } },
+      { name: "calls", value: { kind: "arrayLit", elems: [], type: fields.calls, loc } },
+    ],
+    type: ctxType,
+    loc,
+  };
+}
+
+/** The Mock<F> record over a context: { %call: wrapper, mock: context }. */
+function mockRecord(
+  lowerer: Lowerer,
+  mockType: IrType,
+  ctxType: IrType,
+  ctx: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const { fn } = mockContextFields(lowerer, ctxType)!;
+  return {
+    kind: "recordLit",
+    fields: [
+      {
+        name: "%call",
+        value: {
+          kind: "call",
+          callee: mockWrapperFactory(lowerer, ctxType, loc),
+          args: [ctx],
+          type: fn,
+          loc,
+        },
+      },
+      { name: "mock", value: ctx },
+    ],
+    type: mockType,
+    loc,
+  };
+}
+
+/** A union return type needs an undefined arm: the calls log records
+ * undefined for calls that throw. */
+function requireUndefinedResultArm(
+  lowerer: Lowerer,
+  fields: MockContextFields,
+  call: ts.CallExpression,
+  what: string,
+): void {
+  if (fields.fn.ret.kind === "union" && typeKey(fields.result) !== typeKey(fields.fn.ret)) {
+    lowerer.noLowering(
+      `${what} of a function returning '${lowerer.fmt(fields.fn.ret)}'`,
+      call,
+      "a union return type needs an undefined arm here (the calls log records undefined for calls that throw)",
+    );
+  }
+}
+
 /** mock.fn(original, implementation?) and t.mock.fn(...). */
-export function lowerMockFn(lowerer: Lowerer, call: ts.CallExpression, what: string): IrExpr {
+export function lowerMockFn(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  what: string,
+  tracker: MockTracker,
+): IrExpr {
   const loc = locOf(call);
   const mockType = lowerer.mapTypeOf(lowerer.typeOf(call));
   const shape = mockType?.kind === "record" ? lowerer.shapes.get(mockType.shapeId) : undefined;
@@ -340,17 +650,12 @@ export function lowerMockFn(lowerer: Lowerer, call: ts.CallExpression, what: str
     lowerer.noLowering(
       `${what} of this function type`,
       call,
-      "mock functions lower for functions with fixed parameters, or a single rest array parameter",
+      "mock functions lower for functions with fixed parameters, or a single rest array parameter, and an implementation of the same type",
     );
   }
-  const { fn, calls, once, result } = mockContextFields(lowerer, ctxType!)!;
-  if (fn.ret.kind === "union" && typeKey(result) !== typeKey(fn.ret)) {
-    lowerer.noLowering(
-      `${what} of a function returning '${lowerer.fmt(fn.ret)}'`,
-      call,
-      "a union return type needs an undefined arm here (the calls log records undefined for calls that throw)",
-    );
-  }
+  const fields = mockContextFields(lowerer, ctxType!)!;
+  const { fn } = fields;
+  requireUndefinedResultArm(lowerer, fields, call, what);
   const args = call.arguments;
   if (args.length === 0 || args.length > 2 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(
@@ -372,46 +677,188 @@ export function lowerMockFn(lowerer: Lowerer, call: ts.CallExpression, what: str
       ? lowerer.lowerExprExpecting(args[1]!, fn)
       : varRef(originalLocal.id, fn, loc);
   const ctxLocal = lowerer.declareHiddenLocal("%mockContext", ctxType!);
-  stmts.push({
-    kind: "varDecl",
-    localId: ctxLocal.id,
-    init: {
-      kind: "recordLit",
-      fields: [
-        { name: "%impl", value: implementation },
-        { name: "%once", value: { kind: "arrayLit", elems: [], type: once, loc } },
-        { name: "%original", value: varRef(originalLocal.id, fn, loc) },
-        { name: "calls", value: { kind: "arrayLit", elems: [], type: calls, loc } },
-      ],
-      type: ctxType!,
+  const ctx = () => varRef(ctxLocal.id, ctxType!, loc);
+  stmts.push(
+    {
+      kind: "varDecl",
+      localId: ctxLocal.id,
+      init: mockContextLiteral(
+        ctxType!,
+        fields,
+        implementation,
+        varRef(originalLocal.id, fn, loc),
+        [],
+        loc,
+      ),
       loc,
     },
-    loc,
-  });
-  const factory = mockWrapperFactory(lowerer, ctxType!, loc);
+    trackMock(lowerer, tracker, ctxType!, ctx(), loc),
+  );
   return {
     kind: "seqExpr",
     stmts,
-    result: {
-      kind: "recordLit",
-      fields: [
-        {
-          name: "%call",
-          value: {
-            kind: "call",
-            callee: factory,
-            args: [varRef(ctxLocal.id, ctxType!, loc)],
-            type: fn,
-            loc,
-          },
-        },
-        { name: "mock", value: varRef(ctxLocal.id, ctxType!, loc) },
-      ],
-      type: mockType!,
-      loc,
-    },
+    result: mockRecord(lowerer, mockType!, ctxType!, ctx(), loc),
     type: mockType!,
     loc,
+  };
+}
+
+const METHOD_HINT =
+  "mock.method lowers for objects whose type maps to a record (object literals and interface-typed objects) and a function-valued field named by a string literal";
+
+/** mock.method(object, methodName, implementation?) and t.mock.method. The
+ * field's function type F is the mock's type; an implementation must have
+ * the same type, unless the call's result is discarded. */
+export function lowerMockMethod(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  what: string,
+  tracker: MockTracker,
+): IrExpr {
+  const loc = locOf(call);
+  const args = call.arguments;
+  if (args.length < 2 || args.length > 3 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      `${what} with ${args.length} arguments`,
+      call,
+      "the supported forms are mock.method(object, methodName) and mock.method(object, methodName, implementation); mock options have no lowering",
+    );
+  }
+  const nameArg = args[1]!;
+  if (!ts.isStringLiteralLike(nameArg)) {
+    lowerer.noLowering(`${what} with a computed method name`, nameArg, METHOD_HINT);
+  }
+  const field = (nameArg as ts.StringLiteralLike).text;
+  if (
+    args.length === 3 &&
+    lowerer.checker.getCallSignatures(lowerer.typeOf(args[2]!)).length === 0
+  ) {
+    lowerer.noLowering(
+      `${what} with an options object`,
+      args[2]!,
+      "mock options (times, getter and setter) have no lowering",
+    );
+  }
+  const objType = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
+  const objShape = objType?.kind === "record" ? lowerer.shapes.get(objType.shapeId) : undefined;
+  const fn = objShape?.fields.find((f) => f.name === field)?.type;
+  if (!objType || !objShape || fn?.kind !== "func") {
+    const typeName = lowerer.typeOf(args[0]!).getSymbol()?.name;
+    lowerer.noLowering(
+      typeName && !typeName.startsWith("__")
+        ? `${what} on '${typeName}'`
+        : `${what} on this object`,
+      args[0]!,
+      METHOD_HINT,
+    );
+  }
+  const mockType = mockHybridType(fn as FuncType, lowerer.typeCtx);
+  const ctxType =
+    mockType?.kind === "record"
+      ? lowerer.shapes.get(mockType.shapeId)?.fields.find((f) => f.name === "mock")?.type
+      : undefined;
+  if (!mockType || !ctxType || !isMockContextType(lowerer, ctxType)) {
+    lowerer.noLowering(
+      `${what} of a '${lowerer.fmt(fn!)}' method`,
+      call,
+      "mock functions lower for functions with fixed parameters, or a single rest array parameter",
+    );
+  }
+  if (!resultIsDiscarded(call)) {
+    const resultType = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (!resultType || typeKey(resultType) !== typeKey(mockType!)) {
+      lowerer.noLowering(
+        `${what} with an implementation of another type`,
+        args[2] ?? call,
+        "give the implementation the method's parameter and return types, or discard the result",
+      );
+    }
+  }
+  const fields = mockContextFields(lowerer, ctxType!)!;
+  requireUndefinedResultArm(lowerer, fields, call, what);
+  const stmts: IrStmt[] = [];
+  const objLocal = lowerer.declareHiddenLocal("%mockObject", objType!);
+  const obj = () => varRef(objLocal.id, objType!, loc);
+  stmts.push({ kind: "varDecl", localId: objLocal.id, init: lowerer.lowerExpr(args[0]!), loc });
+  const originalLocal = lowerer.declareHiddenLocal("%mockOriginal", fn!);
+  const original = () => varRef(originalLocal.id, fn!, loc);
+  stmts.push({
+    kind: "varDecl",
+    localId: originalLocal.id,
+    init: recordGet(obj(), field, fn!, loc),
+    loc,
+  });
+  const implementation = args.length === 3 ? lowerer.lowerExprExpecting(args[2]!, fn!) : original();
+  const unmock: IrExpr = {
+    kind: "call",
+    callee: mockUnmockFactory(
+      lowerer,
+      ctxType!,
+      objType as IrType & { kind: "record" },
+      field,
+      loc,
+    ),
+    args: [obj(), original()],
+    type: RESTORE_FN,
+    loc,
+  };
+  const ctxLocal = lowerer.declareHiddenLocal("%mockContext", ctxType!);
+  const ctx = () => varRef(ctxLocal.id, ctxType!, loc);
+  stmts.push(
+    {
+      kind: "varDecl",
+      localId: ctxLocal.id,
+      init: mockContextLiteral(ctxType!, fields, implementation, original(), [unmock], loc),
+      loc,
+    },
+    trackMock(lowerer, tracker, ctxType!, ctx(), loc),
+    // The object's field: the wrapper that records the object as `this`.
+    recordSet(
+      obj(),
+      field,
+      {
+        kind: "call",
+        callee: mockWrapperFactory(lowerer, ctxType!, loc, true),
+        args: [ctx(), lowerer.coerceToExpected(obj(), DYN)],
+        type: fn!,
+        loc,
+      },
+      loc,
+    ),
+  );
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: mockRecord(lowerer, mockType!, ctxType!, ctx(), loc),
+    type: mockType!,
+    loc,
+  };
+}
+
+/** The trackers' restoreAll() and reset(): `mock.restoreAll()`,
+ * `t.mock.reset()`. */
+export function lowerMockTrackerCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  member: "restoreAll" | "reset",
+  tracker: MockTracker,
+): IrExpr {
+  if (call.arguments.length > 0) {
+    lowerer.noLowering(`MockTracker.${member} with ${call.arguments.length} arguments`, call);
+  }
+  const fn = tracker
+    ? member === "reset"
+      ? "test.ctxMockReset"
+      : "test.ctxMockRestoreAll"
+    : member === "reset"
+      ? "test.mockReset"
+      : "test.mockRestoreAll";
+  return {
+    kind: "libCall",
+    fn,
+    args: tracker ? [tracker] : [],
+    type: VOID,
+    loc: locOf(call),
   };
 }
 
@@ -585,18 +1032,9 @@ export function lowerMockContextCall(
       );
       return helperCall(helper, []);
     }
-    case "restore": {
+    case "restore":
       arity(0);
-      const helper = mockHelper(
-        lowerer,
-        ctxType,
-        "restore",
-        [],
-        (ctx) => [recordSet(ctx(), "%impl", recordGet(ctx(), "%original", fn, loc), loc)],
-        loc,
-      );
-      return helperCall(helper, []);
-    }
+      return helperCall(mockRestoreHelper(lowerer, ctxType, loc), []);
     default:
       return lowerer.noLowering(
         `MockFunctionContext.${member}`,
