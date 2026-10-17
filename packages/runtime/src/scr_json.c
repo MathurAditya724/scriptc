@@ -8234,6 +8234,31 @@ static inline size_t scr_jschema_key_direct(const ScrJsonP *p, const ScrJsonSche
   return (special & high & bytes) ? 0 : len + 2;
 }
 
+/* An undeclared member of a record with an index signature, after its
+ * key: the value, read as the index value type, joins the overflow map in
+ * source order, as the checked route copies the parsed object's entries.
+ * A repeated key (last value, first position) and `__proto__` decline. */
+static bool scr_jschema_overflow(ScrJsonP *p, const ScrJsonSchema *s, char *rec, const char *key,
+                                 size_t key_len) {
+  scr_json_ws(p);
+  if (p->pos >= p->len || p->s[p->pos] != ':') return false;
+  p->pos++;
+  if (key_len == 9 && memcmp(key, "__proto__", 9) == 0) return false;
+  ScrJsonSlot v;
+  if (!scr_jschema_member(p, s->elem, &v)) return false;
+  ScrMap *map;
+  memcpy(&map, rec + s->ovf_offset, sizeof map);
+  uint32_t before = map->nlive;
+  ScrStr *name = scr_str_new(key, key_len);
+  switch (s->elem->kind) {
+  case SCR_JSCHEMA_F64: scr_map_set_str_f64(map, name, v.f); break;
+  case SCR_JSCHEMA_BOOL: scr_map_set_str_bool(map, name, v.b); break;
+  default: scr_map_set_str_ref(map, name, v.ptr); break; /* moves in */
+  }
+  scr_str_release(name);
+  return map->nlive != before;
+}
+
 /* A record's own-key view, started at the first member that leaves the
  * layout's declaration order: placeholders for the declared members read so
  * far, which arrived in that order. */
@@ -8367,9 +8392,19 @@ static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot 
         }
       }
       /* An undeclared member, or one before the previous match, keeps the
-       * source beside the record: the rest of the object parses there. */
-      if (idx == n || idx + 1 < guess)
+       * source beside the record: the rest of the object parses there.
+       * Records with an index signature keep no source; their undeclared
+       * members join the overflow map. */
+      if (s->elem) {
+        if (idx == n) {
+          bool joined = scr_jschema_overflow(p, s, rec, key, key_len);
+          scr_str_release(decoded);
+          if (!joined) goto fail;
+          goto separator;
+        }
+      } else if (idx == n || idx + 1 < guess) {
         return scr_jschema_record_kept(p, s, out, rec, seen, guess, idx, key, key_len, decoded);
+      }
       scr_str_release(decoded);
     }
     scr_json_ws(p);
@@ -8383,6 +8418,7 @@ static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot 
       guess = idx + 1;
       if (!scr_jschema_field(p, f, rec)) goto fail;
     }
+  separator:
     scr_json_ws(p);
     if (p->pos >= p->len) goto fail;
     if (p->s[p->pos] == ',') {

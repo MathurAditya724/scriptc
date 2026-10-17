@@ -1108,12 +1108,13 @@ export class LlDyn {
   private readonly recordNameTables = new Map<string, { names: string; lens: string }>();
 
   /** Targets the one-pass parser (scr_json_parse_schema) can build
-   * directly: number, boolean and string leaves inside arrays and plain
-   * records (no tuple, index signature, internal '%' slot or `__proto__`
-   * member; 1..64 fields), and record members typed as unions those leaves,
-   * records and arrays, null and undefined (optional and nullable members;
-   * see jsonUnionSupported). Everything else keeps the checked-dynamic
-   * route alone. */
+   * directly: number, boolean and string leaves inside arrays and records
+   * (no tuple, internal '%' slot or `__proto__` member; at most 64 declared
+   * fields, and at least one unless an index signature collects the
+   * members), record members typed as unions of those leaves, records and
+   * arrays, null and undefined (optional and nullable members; see
+   * jsonUnionSupported), and index signatures whose value type is not a
+   * union. Everything else keeps the checked-dynamic route alone. */
   private jsonSchemaSupported(t: IrType, visiting: Set<string>, member = false): boolean {
     switch (t.kind) {
       case "f64":
@@ -1125,14 +1126,18 @@ export class LlDyn {
       case "record": {
         if (visiting.has(t.shapeId)) return true;
         const shape = this.host.recordsById.get(t.shapeId);
-        if (!shape || shape.tuple || shape.indexValue) return false;
-        if (shape.fields.length === 0 || shape.fields.length > 64) return false;
+        if (!shape || shape.tuple) return false;
+        const index = shape.indexValue;
+        if (shape.fields.length > 64 || (shape.fields.length === 0 && !index)) return false;
         visiting.add(t.shapeId);
-        return shape.fields.every(
-          (f) =>
-            !f.name.startsWith("%") &&
-            f.name !== "__proto__" &&
-            this.jsonSchemaSupported(f.type, visiting, true),
+        return (
+          shape.fields.every(
+            (f) =>
+              !f.name.startsWith("%") &&
+              f.name !== "__proto__" &&
+              this.jsonSchemaSupported(f.type, visiting, true),
+          ) &&
+          (!index || this.jsonSchemaSupported(index, visiting))
         );
       }
       case "union":
@@ -1188,7 +1193,7 @@ export class LlDyn {
       case "bool":
       case "string": {
         const kind = t.kind === "f64" ? 0 : t.kind === "bool" ? 1 : 2;
-        body = `${S} ${kind}, ${S} 0, ptr null, ptr null, ptr null, ptr null, ptr null, ptr null`;
+        body = `${S} ${kind}, ${S} 0, ptr null, ptr null, ptr null, ptr null, ptr null, ptr null, ${S} 0`;
         break;
       }
       case "array": {
@@ -1202,7 +1207,7 @@ export class LlDyn {
           `}`,
           ``,
         );
-        body = `${S} 4, ${S} 0, ptr null, ptr @${elem}, ptr null, ptr @${ctor}, ptr ${vAdapters(host, t).release}, ptr null`;
+        body = `${S} 4, ${S} 0, ptr null, ptr @${elem}, ptr null, ptr @${ctor}, ptr ${vAdapters(host, t).release}, ptr null, ${S} 0`;
         break;
       }
       case "record": {
@@ -1222,22 +1227,33 @@ export class LlDyn {
           const offset = `ptrtoint (ptr getelementptr (%${struct}, ptr null, i64 0, i32 ${index.get(fieldName)}) to ${S})`;
           return `${fieldTy} { ptr ${host.cstr(fieldName)}, ${S} ${Buffer.byteLength(fieldName, "utf8")}, ${S} ${offset}, ptr @${sub} }`;
         });
-        const fields = `${name}_fields`;
-        this.defs.push(
-          `@${fields} = internal constant [${entries.length} x ${fieldTy}] [${entries.join(", ")}]`,
-          ``,
-        );
-        body = `${S} 3, ${S} ${entries.length}, ptr @${fields}, ptr null, ptr @${mangleRecordNew(t.shapeId)}, ptr null, ptr ${vAdapters(host, t).release}, ptr null`;
+        let fields = "null";
+        if (entries.length > 0) {
+          fields = `@${name}_fields`;
+          this.defs.push(
+            `${fields} = internal constant [${entries.length} x ${fieldTy}] [${entries.join(", ")}]`,
+            ``,
+          );
+        }
+        // An index signature's undeclared members go to the overflow map
+        // after the declared fields.
+        const overflow = shape.indexValue
+          ? {
+              elem: `@${this.jsonSchema(shape.indexValue)}`,
+              offset: `ptrtoint (ptr getelementptr (%${struct}, ptr null, i64 0, i32 ${shape.fields.length + 1}) to ${S})`,
+            }
+          : { elem: "null", offset: "0" };
+        body = `${S} 3, ${S} ${entries.length}, ptr ${fields}, ptr ${overflow.elem}, ptr @${mangleRecordNew(t.shapeId)}, ptr null, ptr ${vAdapters(host, t).release}, ptr null, ${S} ${overflow.offset}`;
         break;
       }
       case "union":
-        body = `${S} 5, ${S} 0, ptr null, ptr null, ptr null, ptr null, ptr null, ptr @${this.jsonUnionSchema(t, name)}`;
+        body = `${S} 5, ${S} 0, ptr null, ptr null, ptr null, ptr null, ptr null, ptr @${this.jsonUnionSchema(t, name)}, ${S} 0`;
         break;
       default:
         throw new InternalCompilerError(`llvm emitter bug: JSON schema of ${t.kind}`);
     }
     this.defs.push(
-      `@${name} = internal constant { ${S}, ${S}, ptr, ptr, ptr, ptr, ptr, ptr } { ${body} }`,
+      `@${name} = internal constant { ${S}, ${S}, ptr, ptr, ptr, ptr, ptr, ptr, ${S} } { ${body} }`,
       ``,
     );
     return name;

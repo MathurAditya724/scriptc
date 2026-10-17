@@ -21,6 +21,7 @@ interface Mixed { id: number; meta: Meta | null; score: number | null; key: stri
 interface Shape { kind: string; a: number }
 interface Other { kind: string; b: string }
 interface Either { s: Shape | Other }
+interface Pkg { name: string; deps: Record<string, string>; counts: { [k: string]: number } }
 const text = process.argv[2] ?? "[]";
 const orders = JSON.parse(text) as Order[];
 const typed: Item = JSON.parse(text);
@@ -29,7 +30,8 @@ const mixed = JSON.parse(text) as Mixed[];
 const pair = JSON.parse(text) as [string, number];
 const either = JSON.parse(text) as Either;
 const holes = JSON.parse(text) as (string | null)[];
-console.log(orders.length, typed.sku, loose.name, mixed.length, pair[0], either.s.kind, holes.length);
+const pkg = JSON.parse(text) as Pkg;
+console.log(orders.length, typed.sku, loose.name, mixed.length, pair[0], either.s.kind, holes.length, pkg.name);
 `,
     );
     const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
@@ -38,10 +40,11 @@ console.log(orders.length, typed.sku, loose.name, mixed.length, pair[0], either.
     const mod = deserializeModule(await readFile(outPath, "utf8"));
 
     const llvm = emitLlvmModule(mod);
-    // Order[], Item (an annotated binding), and the optional and nullable
-    // members of Loose and Mixed[] take the fused path; the record schema
-    // lists fields in declaration order with struct offsets.
-    expect(llvm.match(/^define internal ptr @sc_jp_\d+(?:\.i32)?\(ptr %text\)/gm)).toHaveLength(4);
+    // Order[], Item (an annotated binding), the optional and nullable
+    // members of Loose and Mixed[], and Pkg's index signatures take the
+    // fused path; the record schema lists fields in declaration order with
+    // struct offsets.
+    expect(llvm.match(/^define internal ptr @sc_jp_\d+(?:\.i32)?\(ptr %text\)/gm)).toHaveLength(5);
     expect(llvm).toContain("call ptr @scr_json_parse_schema(ptr %text, ptr @sc_jsch_");
     expect(llvm).toMatch(
       /@sc_jsch_\d+_fields = internal constant \[3 x \{ ptr, i64, i64, ptr \}\] \[\{ ptr, i64, i64, ptr \} \{ ptr @sc_cs_\d+, i64 3, i64 ptrtoint/,
@@ -64,12 +67,17 @@ console.log(orders.length, typed.sku, loose.name, mixed.length, pair[0], either.
       /@sc_jsch_\d+_union = internal constant \{ i64, \[7 x i64\], \[7 x ptr\], ptr, ptr, ptr \} \{ i64 2, .*ptr @sc_jsch_\d+_box \}/,
     );
     expect(llvm).toMatch(/^define internal ptr @sc_jsch_\d+_box\(i32 %tag, i64 %bits\)/m);
+    // A pure dictionary has no declared fields: its index value schema and
+    // overflow map offset describe every member.
+    expect(llvm).toMatch(
+      /= internal constant \{ i64, i64, ptr, ptr, ptr, ptr, ptr, ptr, i64 \} \{ i64 3, i64 0, ptr null, ptr @sc_jsch_\d+, ptr @\S+, ptr null, ptr @\S+, ptr null, i64 ptrtoint/,
+    );
     // Tuples, two record arms, and unions outside a record member keep the
     // checked-dynamic route alone.
     expect(llvm.match(/call ptr @scr_json_parse\(ptr /g)!.length).toBeGreaterThanOrEqual(7);
 
     const wasm = emitLlvmModule(mod, { pointerBits: 32, wasi: true });
-    expect(wasm).toContain("= internal constant { i32, i32, ptr, ptr, ptr, ptr, ptr, ptr }");
+    expect(wasm).toContain("= internal constant { i32, i32, ptr, ptr, ptr, ptr, ptr, ptr, i32 }");
     expect(wasm).toContain("= internal constant { i32, [7 x i32], [7 x ptr], ptr, ptr, ptr }");
     expect(wasm).toMatch(/\{ ptr, i32, i32, ptr \} \{ ptr @sc_cs_\d+, i32 3, i32 ptrtoint/);
   } finally {

@@ -12,12 +12,14 @@ ScrDyn *scr_json_parse(ScrStr *text);
 
 /* Compiler-emitted description of a statically known JSON.parse target
  * (`JSON.parse(text) as T`). Constant data in the program image; the LLVM
- * backend mirrors this layout ({size, size, ptr, ptr, ptr, ptr, ptr, ptr},
+ * backend mirrors this layout ({size, size, ptr, ptr, ptr, ptr, ptr, ptr, size},
  * {ptr, size, size, ptr} and {size, [7 x size], [7 x ptr], ptr, ptr, ptr}).
  * Records list their declared fields (at most 64), each with its byte
  * offset in the record struct; bool fields are one byte, f64 fields
  * doubles, inline union fields a {uint32 tag, uint64 bits} pair, every
- * other kind a +1 pointer. Unions appear only as record field types. */
+ * other kind a +1 pointer. Unions appear only as record field types. A
+ * record with an index signature names its index value type in `elem` and
+ * its overflow map's offset in `ovf_offset`. */
 enum {
   SCR_JSCHEMA_F64 = 0,
   SCR_JSCHEMA_BOOL = 1,
@@ -69,11 +71,12 @@ struct ScrJsonSchema {
   size_t kind;
   size_t nfields;
   const ScrJsonSchemaField *fields; /* records */
-  const ScrJsonSchema *elem;        /* arrays */
+  const ScrJsonSchema *elem;        /* arrays; records: the index value type */
   void *(*rec_new)(void);           /* records: zeroed instance, rc 1 */
   ScrArr *(*arr_new)(size_t);       /* arrays: empty array of the element kind */
   void (*release)(void *);          /* records and arrays */
   const ScrJsonUnion *uni;          /* unions */
+  size_t ovf_offset;                /* records with an index signature */
 };
 
 /* One-pass parse straight into the native layout. Returns the +1 record
