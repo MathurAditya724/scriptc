@@ -76136,6 +76136,7 @@
             "tests/fixtures/node-types/promisify-fs.ts",
             "tests/corpus/5628-promisify-timers.ts",
             "tests/fixtures/node-types/promisify-timers.ts",
+            "tests/corpus/5629-promisify-stream.ts",
             "tests/harness/project-config.test.ts"
           ]
         }

@@ -147,12 +147,19 @@ export function registerPromisifiedBuiltinDecl(
                 module: "timers/promises",
                 member: target.member,
               }
-            : null;
+            : target?.module === "stream" &&
+                (target.member === "finished" || target.member === "pipeline")
+              ? {
+                  kind: "promisified-builtin" as const,
+                  module: "stream/promises",
+                  member: target.member,
+                }
+              : null;
   if (!projection) {
     lowerer.noLowering(
       "util.promisify of this target",
       argNode ?? e,
-      "child_process.exec, child_process.execFile, setTimeout, setImmediate and the fs callback functions with an fs/promises counterpart are the supported targets",
+      "child_process.exec, child_process.execFile, setTimeout, setImmediate, stream.finished, stream.pipeline and the fs callback functions with an fs/promises counterpart are the supported targets",
     );
   }
   const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
