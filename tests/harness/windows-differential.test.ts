@@ -149,6 +149,8 @@ const WINDOWS_SKIPS: Record<string, string> = {
     "posix-shaped: the uncaught sh ENOENT throw crashes both sides, rendered differently (1645 covers env here)",
   "1464-env-writes.ts":
     'posix-shaped: the observing child is ENOENT on Windows, exposing the documented spawn-failure ""-vs-null stance',
+  "5627-exec-callback.ts":
+    "posix-shaped: exec runs /bin/sh -c (execSync's static shell lowering); Windows Node runs cmd.exe",
   // Two programs the events unit's win32 arm surfaced (they compiled for
   // the first time once the events gate lifted): both drive their signal
   // listeners through a /bin/sh child, ENOENT on Windows Node too.
