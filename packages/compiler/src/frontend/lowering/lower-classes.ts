@@ -1,5 +1,6 @@
 import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
+import { lowerReadlineUiNew } from "./builtins/readline.js";
 import { collectClassMethodMutations } from "./class-method-mutations.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Class lowering: shape collection over the single-inheritance graph
@@ -8146,6 +8147,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
   const worker = lowerWorkerNew(lowerer, expr);
   if (worker) return worker;
+  const readlineUi = lowerReadlineUiNew(lowerer, expr);
+  if (readlineUi) return readlineUi;
   let intlConstructor = expr.expression;
   if (ts.isIdentifier(intlConstructor)) {
     const symbol = lowerer.resolveValueSymbol(intlConstructor);

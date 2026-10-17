@@ -120,6 +120,11 @@ const UTIL_CALLABLE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 
 /** Inspect types and expressions together in one traversal. This is a fresh
  * snapshot: callers may mutate an IR module between compilation passes. */
+/** The checked-dynamic undefined value (dynUndefinedExpr). */
+export function isDynUndefined(e: IrExpr): boolean {
+  return e.kind === "dynFrom" && e.value.kind === "unitLit" && e.value.unit === "undefined";
+}
+
 export function moduleRuntimeFeatures(mod: IrModule): RuntimeFeatures {
   return scanRuntimeFeatures(mod);
 }
@@ -253,6 +258,20 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         features.eventTarget = true;
       }
       if (PROCESS_EVENT_LIB_FNS.has(fn)) features.processEvents = true;
+      // readline's terminal unit (scr_readline_tty.c) measures with the
+      // regex unit's stripVTControlCharacters; with a completer it prints
+      // completion errors through the inspect unit.
+      if (
+        fn === "rl.cursorPos" ||
+        fn === "rl.keypressStdin" ||
+        fn === "rl.keypressStream" ||
+        fn === "stdin.onKeypress"
+      )
+        features.regex = true;
+      if (fn === "rl.terminal") {
+        features.regex = true;
+        if (!isDynUndefined(node.args[3]!)) features.inspect = true;
+      }
       if (fn.startsWith("emitter.")) features.emitter = true;
       if (
         fn.startsWith("readable.") ||
@@ -569,9 +588,11 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "rl.pause",
   "rl.resume",
   "rl.prompt",
+  "rl.promptWith",
   "rl.setPrompt",
   "rl.getPrompt",
   "rl.write",
+  "rl.writeKey",
   "rl.on",
   "rl.iterOpen",
   "rl.iterNext",
@@ -582,6 +603,24 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "rl.setHistory",
   "rl.history",
   "rl.numProp",
+  "rl.terminal",
+  "rl.line",
+  "rl.isTerminal",
+  "rl.cursor",
+  "rl.seq",
+  "rl.moves",
+  "rl.cursorPos",
+  "rl.keypressStdin",
+  "rl.keypressStream",
+  "stdin.onKeypress",
+  "rl.uiOpen",
+  "rl.uiOpenStream",
+  "rl.uiCursorTo",
+  "rl.uiMoveCursor",
+  "rl.uiClearLine",
+  "rl.uiClearScreenDown",
+  "rl.uiRollback",
+  "rl.uiCommit",
 ]);
 
 /** True when the module uses the process-events surface — the link switch

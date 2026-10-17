@@ -641,9 +641,9 @@
       "apiEntries": 43,
       "static": {
         "supported": 0,
-        "partial": 22,
+        "partial": 42,
         "refused": 0,
-        "not-implemented": 21,
+        "not-implemented": 1,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -82163,7 +82163,20 @@
           "tests/corpus/5298-readline-abort.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5780-readline-history-options.ts",
-          "tests/corpus/5781-readline-history-options.cjs"
+          "tests/corpus/5781-readline-history-options.cjs",
+          "tests/corpus/5782-readline-terminal-editing.ts",
+          "tests/corpus/5783-readline-terminal-completion.cjs",
+          "tests/corpus/5784-readline-terminal-promises.ts",
+          "tests/corpus/5785-readline-terminal-keys.ts",
+          "tests/corpus/5786-readline-terminal-history.cjs",
+          "tests/corpus/5787-readline-cursor-helpers.cjs",
+          "tests/corpus/5788-readline-promises-readline.ts",
+          "tests/corpus/5789-readline-cursor-pos.cjs",
+          "tests/corpus/5790-readline-keypress-events.ts",
+          "tests/corpus/5791-readline-keypress-interfaces.cjs",
+          "tests/corpus/5792-readline-keypress-listeners.ts",
+          "tests/corpus/5872-readline-positional-create-interface.mjs",
+          "tests/corpus/5873-readline-promises-namespace.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -82215,7 +82228,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5298-readline-abort.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5872-readline-positional-create-interface.mjs",
+          "tests/corpus/5873-readline-promises-namespace.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -82244,7 +82259,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5298-readline-abort.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5872-readline-positional-create-interface.mjs",
+          "tests/corpus/5873-readline-promises-namespace.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -82267,8 +82284,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.readlinePromises.Readline",
+        "tests": [
+          "tests/corpus/5788-readline-promises-readline.ts",
+          "tests/corpus/5789-readline-cursor-pos.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82290,8 +82311,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.rl.clearLine",
+        "tests": [
+          "tests/corpus/5788-readline-promises-readline.ts",
+          "tests/corpus/5789-readline-cursor-pos.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82313,8 +82338,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.rl.clearScreenDown",
+        "tests": [
+          "tests/corpus/5788-readline-promises-readline.ts",
+          "tests/corpus/5789-readline-cursor-pos.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82336,8 +82365,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.rl.commit",
+        "tests": [
+          "tests/corpus/5788-readline-promises-readline.ts",
+          "tests/corpus/5789-readline-cursor-pos.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82359,8 +82392,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.rl.cursorTo",
+        "tests": [
+          "tests/corpus/5788-readline-promises-readline.ts",
+          "tests/corpus/5789-readline-cursor-pos.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82382,8 +82419,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.rl.moveCursor",
+        "tests": [
+          "tests/corpus/5788-readline-promises-readline.ts",
+          "tests/corpus/5789-readline-cursor-pos.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82405,8 +82446,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.rl.rollback",
+        "tests": [
+          "tests/corpus/5788-readline-promises-readline.ts",
+          "tests/corpus/5789-readline-cursor-pos.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82434,7 +82479,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5298-readline-abort.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5872-readline-positional-create-interface.mjs",
+          "tests/corpus/5873-readline-promises-namespace.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -82457,8 +82504,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.completer",
+        "tests": [
+          "tests/corpus/5782-readline-terminal-editing.ts",
+          "tests/corpus/5783-readline-terminal-completion.cjs",
+          "tests/corpus/5784-readline-terminal-promises.ts",
+          "tests/corpus/5785-readline-terminal-keys.ts",
+          "tests/corpus/5786-readline-terminal-history.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82538,7 +82592,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5298-readline-abort.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5872-readline-positional-create-interface.mjs",
+          "tests/corpus/5873-readline-promises-namespace.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -82561,8 +82617,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.readline.clearLine",
+        "tests": [
+          "tests/corpus/5787-readline-cursor-helpers.cjs",
+          "tests/corpus/5789-readline-cursor-pos.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82584,8 +82644,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.readline.clearScreenDown",
+        "tests": [
+          "tests/corpus/5787-readline-cursor-helpers.cjs",
+          "tests/corpus/5789-readline-cursor-pos.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82633,8 +82697,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.completer",
+        "tests": [
+          "tests/corpus/5782-readline-terminal-editing.ts",
+          "tests/corpus/5783-readline-terminal-completion.cjs",
+          "tests/corpus/5784-readline-terminal-promises.ts",
+          "tests/corpus/5785-readline-terminal-keys.ts",
+          "tests/corpus/5786-readline-terminal-history.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82656,8 +82727,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.readline.cursorTo",
+        "tests": [
+          "tests/corpus/5787-readline-cursor-helpers.cjs",
+          "tests/corpus/5789-readline-cursor-pos.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82679,8 +82754,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.readline.moveCursor",
+        "tests": [
+          "tests/corpus/5787-readline-cursor-helpers.cjs",
+          "tests/corpus/5789-readline-cursor-pos.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83006,8 +83085,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.rl.getCursorPos",
+        "tests": [
+          "tests/corpus/5787-readline-cursor-helpers.cjs",
+          "tests/corpus/5789-readline-cursor-pos.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83029,8 +83112,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.line",
+        "tests": [
+          "tests/corpus/5782-readline-terminal-editing.ts",
+          "tests/corpus/5783-readline-terminal-completion.cjs",
+          "tests/corpus/5784-readline-terminal-promises.ts",
+          "tests/corpus/5785-readline-terminal-keys.ts",
+          "tests/corpus/5786-readline-terminal-history.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83052,8 +83142,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.cursor",
+        "tests": [
+          "tests/corpus/5782-readline-terminal-editing.ts",
+          "tests/corpus/5783-readline-terminal-completion.cjs",
+          "tests/corpus/5784-readline-terminal-promises.ts",
+          "tests/corpus/5785-readline-terminal-keys.ts",
+          "tests/corpus/5786-readline-terminal-history.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83247,8 +83344,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.'SIGCONT'",
+        "tests": [
+          "tests/corpus/5782-readline-terminal-editing.ts",
+          "tests/corpus/5783-readline-terminal-completion.cjs",
+          "tests/corpus/5784-readline-terminal-promises.ts",
+          "tests/corpus/5785-readline-terminal-keys.ts",
+          "tests/corpus/5786-readline-terminal-history.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83270,8 +83374,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.'SIGINT'",
+        "tests": [
+          "tests/corpus/5782-readline-terminal-editing.ts",
+          "tests/corpus/5783-readline-terminal-completion.cjs",
+          "tests/corpus/5784-readline-terminal-promises.ts",
+          "tests/corpus/5785-readline-terminal-keys.ts",
+          "tests/corpus/5786-readline-terminal-history.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83293,8 +83404,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.'SIGTSTP'",
+        "tests": [
+          "tests/corpus/5782-readline-terminal-editing.ts",
+          "tests/corpus/5783-readline-terminal-completion.cjs",
+          "tests/corpus/5784-readline-terminal-promises.ts",
+          "tests/corpus/5785-readline-terminal-keys.ts",
+          "tests/corpus/5786-readline-terminal-history.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83316,8 +83434,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "partial",
+        "evidence": "compiler-feature:readline.readline.emitKeypressEvents",
+        "tests": [
+          "tests/corpus/5790-readline-keypress-events.ts",
+          "tests/corpus/5791-readline-keypress-interfaces.cjs",
+          "tests/corpus/5792-readline-keypress-listeners.ts"
+        ]
       },
       "anchorSource": "exact"
     },

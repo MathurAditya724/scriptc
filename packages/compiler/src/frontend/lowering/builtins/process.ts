@@ -1,3 +1,4 @@
+import { stdinKeypressListener } from "./readline.js";
 import { envSnapshotHelper, lowerProcessLoadEnvFile } from "./environment.js";
 import { dynUndefinedExpr, boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
 import { timerStyleCallback } from "../lower-timers.js";
@@ -608,11 +609,11 @@ export function lowerProcessMethodCall(
     }
     const evT = lowerer.typeOf(call.arguments[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
-    if (event !== "data" && event !== "end" && event !== "error") {
+    if (event !== "data" && event !== "end" && event !== "error" && event !== "keypress") {
       lowerer.noLowering(
         `stdin.${access.name.text}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
         call.arguments[0]!,
-        '"data", "end", and "error" are the supported stdin events (as literals)',
+        '"data", "end", "error", and "keypress" are the supported stdin events (as literals)',
       );
     }
     if (!ts.isExpressionStatement(call.parent)) {
@@ -621,6 +622,12 @@ export function lowerProcessMethodCall(
         call,
         "chaining stdin listener registration (the result is void here — register each listener as its own statement)",
       );
+    }
+    if (event === "keypress") {
+      // readline.emitKeypressEvents' (str, key) events
+      const listener = stdinKeypressListener(lowerer, call.arguments[1]!);
+      const onceKp: IrExpr = { kind: "boolLit", value: once, type: BOOL, loc };
+      return { kind: "libCall", fn: "stdin.onKeypress", args: [listener, onceKp], type: VOID, loc };
     }
     const cb = lowerer.lowerExpr(call.arguments[1]!);
     if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 1) {

@@ -551,6 +551,16 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`call void @${sym}(ptr ${cb.name}, ptr @${adapter}, i1 ${once.name})`);
     return { name: "", type: e.type };
   }
+  if (e.fn === "stdin.onKeypress") {
+    // The listener, a checked-dynamic function, joins process.stdin's
+    // keypress listeners (the runtime retains it).
+    host.usesTimers = true;
+    const cb = host.emitExpr(e.args[0]!);
+    const once = host.emitExpr(e.args[1]!);
+    host.declare(`declare void @scr_rl_stdin_on_keypress(ptr, i1 zeroext)`);
+    B.line(`call void @scr_rl_stdin_on_keypress(ptr ${cb.name}, i1 ${once.name})`);
+    return { name: "", type: e.type };
+  }
   if (e.fn === "process.onSignal") {
     host.usesTimers = true;
     const sig = host.emitExpr(e.args[0]!);

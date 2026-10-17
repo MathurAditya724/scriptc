@@ -7,8 +7,8 @@
     "tierItemCount": 3472,
     "tiers": {
       "static": {
-        "audit-partial": 1058,
-        "verify-gap": 2287,
+        "audit-partial": 1078,
+        "verify-gap": 2267,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -59180,7 +59180,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5298-readline-abort.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5872-readline-positional-create-interface.mjs",
+            "tests/corpus/5873-readline-promises-namespace.cjs"
           ]
         }
       }
@@ -59210,7 +59212,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5298-readline-abort.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5872-readline-positional-create-interface.mjs",
+            "tests/corpus/5873-readline-promises-namespace.cjs"
           ]
         }
       }
@@ -59231,12 +59235,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.readlinePromises.Readline",
+          "tests": [
+            "tests/corpus/5788-readline-promises-readline.ts",
+            "tests/corpus/5789-readline-cursor-pos.cjs"
+          ]
         }
       }
     },
@@ -59256,12 +59263,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.rl.clearLine",
+          "tests": [
+            "tests/corpus/5788-readline-promises-readline.ts",
+            "tests/corpus/5789-readline-cursor-pos.cjs"
+          ]
         }
       }
     },
@@ -59281,12 +59291,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.rl.clearScreenDown",
+          "tests": [
+            "tests/corpus/5788-readline-promises-readline.ts",
+            "tests/corpus/5789-readline-cursor-pos.cjs"
+          ]
         }
       }
     },
@@ -59306,12 +59319,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.rl.commit",
+          "tests": [
+            "tests/corpus/5788-readline-promises-readline.ts",
+            "tests/corpus/5789-readline-cursor-pos.cjs"
+          ]
         }
       }
     },
@@ -59331,12 +59347,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.rl.cursorTo",
+          "tests": [
+            "tests/corpus/5788-readline-promises-readline.ts",
+            "tests/corpus/5789-readline-cursor-pos.cjs"
+          ]
         }
       }
     },
@@ -59356,12 +59375,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.rl.moveCursor",
+          "tests": [
+            "tests/corpus/5788-readline-promises-readline.ts",
+            "tests/corpus/5789-readline-cursor-pos.cjs"
+          ]
         }
       }
     },
@@ -59381,12 +59403,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.rl.rollback",
+          "tests": [
+            "tests/corpus/5788-readline-promises-readline.ts",
+            "tests/corpus/5789-readline-cursor-pos.cjs"
+          ]
         }
       }
     },
@@ -59415,7 +59440,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5298-readline-abort.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5872-readline-positional-create-interface.mjs",
+            "tests/corpus/5873-readline-promises-namespace.cjs"
           ]
         }
       }
@@ -59436,12 +59463,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.completer",
+          "tests": [
+            "tests/corpus/5782-readline-terminal-editing.ts",
+            "tests/corpus/5783-readline-terminal-completion.cjs",
+            "tests/corpus/5784-readline-terminal-promises.ts",
+            "tests/corpus/5785-readline-terminal-keys.ts",
+            "tests/corpus/5786-readline-terminal-history.cjs"
+          ]
         }
       }
     },
@@ -59500,7 +59533,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5298-readline-abort.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5872-readline-positional-create-interface.mjs",
+            "tests/corpus/5873-readline-promises-namespace.cjs"
           ]
         }
       }
@@ -59521,12 +59556,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.readline.clearLine",
+          "tests": [
+            "tests/corpus/5787-readline-cursor-helpers.cjs",
+            "tests/corpus/5789-readline-cursor-pos.cjs"
+          ]
         }
       }
     },
@@ -59546,12 +59584,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.readline.clearScreenDown",
+          "tests": [
+            "tests/corpus/5787-readline-cursor-helpers.cjs",
+            "tests/corpus/5789-readline-cursor-pos.cjs"
+          ]
         }
       }
     },
@@ -59598,12 +59639,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.completer",
+          "tests": [
+            "tests/corpus/5782-readline-terminal-editing.ts",
+            "tests/corpus/5783-readline-terminal-completion.cjs",
+            "tests/corpus/5784-readline-terminal-promises.ts",
+            "tests/corpus/5785-readline-terminal-keys.ts",
+            "tests/corpus/5786-readline-terminal-history.cjs"
+          ]
         }
       }
     },
@@ -59623,12 +59670,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.readline.cursorTo",
+          "tests": [
+            "tests/corpus/5787-readline-cursor-helpers.cjs",
+            "tests/corpus/5789-readline-cursor-pos.cjs"
+          ]
         }
       }
     },
@@ -59648,12 +59698,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.readline.moveCursor",
+          "tests": [
+            "tests/corpus/5787-readline-cursor-helpers.cjs",
+            "tests/corpus/5789-readline-cursor-pos.cjs"
+          ]
         }
       }
     },
@@ -59965,12 +60018,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.rl.getCursorPos",
+          "tests": [
+            "tests/corpus/5787-readline-cursor-helpers.cjs",
+            "tests/corpus/5789-readline-cursor-pos.cjs"
+          ]
         }
       }
     },
@@ -59990,12 +60046,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.line",
+          "tests": [
+            "tests/corpus/5782-readline-terminal-editing.ts",
+            "tests/corpus/5783-readline-terminal-completion.cjs",
+            "tests/corpus/5784-readline-terminal-promises.ts",
+            "tests/corpus/5785-readline-terminal-keys.ts",
+            "tests/corpus/5786-readline-terminal-history.cjs"
+          ]
         }
       }
     },
@@ -60015,12 +60077,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.cursor",
+          "tests": [
+            "tests/corpus/5782-readline-terminal-editing.ts",
+            "tests/corpus/5783-readline-terminal-completion.cjs",
+            "tests/corpus/5784-readline-terminal-promises.ts",
+            "tests/corpus/5785-readline-terminal-keys.ts",
+            "tests/corpus/5786-readline-terminal-history.cjs"
+          ]
         }
       }
     },
@@ -60218,12 +60286,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.'SIGCONT'",
+          "tests": [
+            "tests/corpus/5782-readline-terminal-editing.ts",
+            "tests/corpus/5783-readline-terminal-completion.cjs",
+            "tests/corpus/5784-readline-terminal-promises.ts",
+            "tests/corpus/5785-readline-terminal-keys.ts",
+            "tests/corpus/5786-readline-terminal-history.cjs"
+          ]
         }
       }
     },
@@ -60243,12 +60317,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.'SIGINT'",
+          "tests": [
+            "tests/corpus/5782-readline-terminal-editing.ts",
+            "tests/corpus/5783-readline-terminal-completion.cjs",
+            "tests/corpus/5784-readline-terminal-promises.ts",
+            "tests/corpus/5785-readline-terminal-keys.ts",
+            "tests/corpus/5786-readline-terminal-history.cjs"
+          ]
         }
       }
     },
@@ -60268,12 +60348,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.'SIGTSTP'",
+          "tests": [
+            "tests/corpus/5782-readline-terminal-editing.ts",
+            "tests/corpus/5783-readline-terminal-completion.cjs",
+            "tests/corpus/5784-readline-terminal-promises.ts",
+            "tests/corpus/5785-readline-terminal-keys.ts",
+            "tests/corpus/5786-readline-terminal-history.cjs"
+          ]
         }
       }
     },
@@ -60293,12 +60379,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.readline.emitKeypressEvents",
+          "tests": [
+            "tests/corpus/5790-readline-keypress-events.ts",
+            "tests/corpus/5791-readline-keypress-interfaces.cjs",
+            "tests/corpus/5792-readline-keypress-listeners.ts"
+          ]
         }
       }
     },

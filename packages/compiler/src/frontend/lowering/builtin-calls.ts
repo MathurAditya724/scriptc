@@ -1,3 +1,4 @@
+import { lowerReadlineCursorCall } from "./builtins/readline.js";
 import * as ts from "../ts7/adapter.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { DYN, type IrExpr, type SrcLoc } from "../../ir/ir.js";
@@ -88,6 +89,10 @@ export function lowerBuiltinCall(
   if (timersInterval) return timersInterval;
   const nodeModuleServed = lowerNodeModuleCall(lowerer, expr, bi, loc);
   if (nodeModuleServed) return nodeModuleServed;
+  if (bi.module === "readline") {
+    const cursorServed = lowerReadlineCursorCall(lowerer, expr, bi.member, loc);
+    if (cursorServed) return cursorServed;
+  }
   const builtinFn = builtinModuleFnOf(lowerer, bi.module, bi.member);
   if (!builtinFn) {
     lowerer.noLowering(

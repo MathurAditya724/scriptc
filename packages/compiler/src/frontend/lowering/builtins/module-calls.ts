@@ -204,7 +204,7 @@ export function lowerBuiltinModuleCall(
     (bi.module === "readline" || bi.module === "readline/promises") &&
     bi.member === "createInterface"
   ) {
-    return lowerReadlineCreateCall(lowerer, expr, loc);
+    return lowerReadlineCreateCall(lowerer, expr, loc, bi.module === "readline/promises");
   }
   if (bi.module === "fs" && bi.member === "readFileSync" && expr.arguments.length === 2) {
     const encoded = lowerFsEncodedRead(
