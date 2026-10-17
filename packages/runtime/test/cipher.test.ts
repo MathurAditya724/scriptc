@@ -13,6 +13,7 @@ const runtimeSources = [
   "scr_shared.c",
   "scr_bytes.c",
   "scr_bytes.test.c",
+  "scr_cipher_simd.c",
   "scr_bytes_io.c",
   "scr_fs_cp.c",
   "scr_zlib.c",
@@ -64,10 +65,11 @@ const mbedtlsSources = [
 ];
 
 // Compiled once with ASan + the RC audit. test_cipher.c includes
-// scr_cipher.c, moves contexts next to mbedTLS's GCM message and AAD
-// limits, and checks that a failed update() or setAAD() returns no data
-// and leaves every later call throwing, and that chacha20-poly1305
-// decryption without a tag fails in final().
+// scr_cipher.c, moves contexts next to the GCM message and AAD limits (in
+// the x86-64 kernels or mbedTLS, whichever the CPU selects), and checks
+// that a failed update() or setAAD() returns no data and leaves every
+// later call throwing, and that chacha20-poly1305 decryption without a
+// tag fails in final().
 beforeAll(async () => {
   await mkdir(join(testDir, "build"), { recursive: true });
   await execFileAsync("clang", [

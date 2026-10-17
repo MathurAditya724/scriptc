@@ -123,8 +123,10 @@ static void test_gcm_message_limit(bool decrypt) {
     scr_dyn_release(call(h, "setAuthTag", tag, NULL));
     scr_dyn_release(tag);
   }
-  /* As if GCM_MAX - 32 bytes had been processed. */
+  /* As if GCM_MAX - 32 bytes had been processed, on either backend. */
   ctx(h)->gcm.MBEDTLS_PRIVATE(len) = GCM_MAX - 32;
+  ctx(h)->simd_gcm.text_len = GCM_MAX - 32;
+  ctx(h)->simd_gcm.data = true;
   ctx(h)->data_started = true;
   ScrDyn *block = buffer(16, 9);
   ScrDyn *r = call(h, "update", block, NULL);
@@ -153,6 +155,7 @@ static void test_gcm_aad_limit(void) {
   check(h != NULL, "create aes-128-gcm");
   if (!h) return;
   ctx(h)->gcm.MBEDTLS_PRIVATE(add_len) = (1ull << 61) - 8;
+  ctx(h)->simd_gcm.aad_len = (1ull << 61) - 8;
   ScrDyn *aad = buffer(16, 3);
   ScrDyn *r = call(h, "setAAD", aad, NULL);
   check(!r && take_error("Error: Invalid state for operation setAAD", "ERR_CRYPTO_INVALID_STATE"),

@@ -19821,6 +19821,7 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "packages/runtime/test/cipher.test.ts",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -19835,6 +19836,11 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/5355-cipher-bulk.ts",
+          "tests/corpus/5356-cipher-counters.ts",
+          "tests/corpus/5357-cipher-chacha-bulk.ts",
+          "tests/corpus/5358-cipher-cbc-bulk.ts",
+          "tests/corpus/5359-cipher-tamper.ts",
           "tests/corpus/5435-crypto-hash-algorithms.ts",
           "tests/corpus/5436-crypto-hash-names.js",
           "tests/corpus/5437-crypto-hmac-algorithms.ts",
@@ -20235,6 +20241,12 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/5355-cipher-bulk.ts",
+          "tests/corpus/5356-cipher-counters.ts",
+          "tests/corpus/5357-cipher-chacha-bulk.ts",
+          "tests/corpus/5358-cipher-cbc-bulk.ts",
+          "tests/corpus/5359-cipher-tamper.ts",
+          "packages/runtime/test/cipher.test.ts",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -20271,6 +20283,12 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/5355-cipher-bulk.ts",
+          "tests/corpus/5356-cipher-counters.ts",
+          "tests/corpus/5357-cipher-chacha-bulk.ts",
+          "tests/corpus/5358-cipher-cbc-bulk.ts",
+          "tests/corpus/5359-cipher-tamper.ts",
+          "packages/runtime/test/cipher.test.ts",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -22246,6 +22264,11 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/5355-cipher-bulk.ts",
+          "tests/corpus/5356-cipher-counters.ts",
+          "tests/corpus/5357-cipher-chacha-bulk.ts",
+          "tests/corpus/5358-cipher-cbc-bulk.ts",
+          "tests/corpus/5359-cipher-tamper.ts",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -22282,6 +22305,11 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/5355-cipher-bulk.ts",
+          "tests/corpus/5356-cipher-counters.ts",
+          "tests/corpus/5357-cipher-chacha-bulk.ts",
+          "tests/corpus/5358-cipher-cbc-bulk.ts",
+          "tests/corpus/5359-cipher-tamper.ts",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -22318,6 +22346,11 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/5355-cipher-bulk.ts",
+          "tests/corpus/5356-cipher-counters.ts",
+          "tests/corpus/5357-cipher-chacha-bulk.ts",
+          "tests/corpus/5358-cipher-cbc-bulk.ts",
+          "tests/corpus/5359-cipher-tamper.ts",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -22354,6 +22387,11 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/5355-cipher-bulk.ts",
+          "tests/corpus/5356-cipher-counters.ts",
+          "tests/corpus/5357-cipher-chacha-bulk.ts",
+          "tests/corpus/5358-cipher-cbc-bulk.ts",
+          "tests/corpus/5359-cipher-tamper.ts",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -22390,6 +22428,11 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/5355-cipher-bulk.ts",
+          "tests/corpus/5356-cipher-counters.ts",
+          "tests/corpus/5357-cipher-chacha-bulk.ts",
+          "tests/corpus/5358-cipher-cbc-bulk.ts",
+          "tests/corpus/5359-cipher-tamper.ts",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -22426,6 +22469,11 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/5355-cipher-bulk.ts",
+          "tests/corpus/5356-cipher-counters.ts",
+          "tests/corpus/5357-cipher-chacha-bulk.ts",
+          "tests/corpus/5358-cipher-cbc-bulk.ts",
+          "tests/corpus/5359-cipher-tamper.ts",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -22462,6 +22510,11 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/5355-cipher-bulk.ts",
+          "tests/corpus/5356-cipher-counters.ts",
+          "tests/corpus/5357-cipher-chacha-bulk.ts",
+          "tests/corpus/5358-cipher-cbc-bulk.ts",
+          "tests/corpus/5359-cipher-tamper.ts",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -22498,6 +22551,11 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/5355-cipher-bulk.ts",
+          "tests/corpus/5356-cipher-counters.ts",
+          "tests/corpus/5357-cipher-chacha-bulk.ts",
+          "tests/corpus/5358-cipher-cbc-bulk.ts",
+          "tests/corpus/5359-cipher-tamper.ts",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -22534,6 +22592,11 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/5355-cipher-bulk.ts",
+          "tests/corpus/5356-cipher-counters.ts",
+          "tests/corpus/5357-cipher-chacha-bulk.ts",
+          "tests/corpus/5358-cipher-cbc-bulk.ts",
+          "tests/corpus/5359-cipher-tamper.ts",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -22570,6 +22633,11 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/5355-cipher-bulk.ts",
+          "tests/corpus/5356-cipher-counters.ts",
+          "tests/corpus/5357-cipher-chacha-bulk.ts",
+          "tests/corpus/5358-cipher-cbc-bulk.ts",
+          "tests/corpus/5359-cipher-tamper.ts",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -22606,6 +22674,11 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/5355-cipher-bulk.ts",
+          "tests/corpus/5356-cipher-counters.ts",
+          "tests/corpus/5357-cipher-chacha-bulk.ts",
+          "tests/corpus/5358-cipher-cbc-bulk.ts",
+          "tests/corpus/5359-cipher-tamper.ts",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -22642,6 +22715,11 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/5355-cipher-bulk.ts",
+          "tests/corpus/5356-cipher-counters.ts",
+          "tests/corpus/5357-cipher-chacha-bulk.ts",
+          "tests/corpus/5358-cipher-cbc-bulk.ts",
+          "tests/corpus/5359-cipher-tamper.ts",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },

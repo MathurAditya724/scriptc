@@ -585,7 +585,9 @@ export async function compileCInternal(
           "-I",
           join(vendorTlsDir(), "include"),
           ...(tls ? [rt(join(rtDir, "scr_tls.c"))] : []),
-          ...(cipher ? [rt(join(rtDir, "scr_cipher.c"))] : []),
+          ...(cipher
+            ? [rt(join(rtDir, "scr_cipher.c")), rt(join(rtDir, "scr_cipher_simd.c"))]
+            : []),
           tlsArchive,
           // mbedTLS's win32 entropy poll is BCryptGenRandom (bcrypt.h).
           // The unconditional win32 libs above do not carry it.

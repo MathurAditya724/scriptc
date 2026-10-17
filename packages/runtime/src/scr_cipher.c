@@ -7,8 +7,11 @@
  * padding follow OpenSSL 3's generic block provider, so every update()
  * returns the same number of bytes as Node's. String output goes through
  * the runtime StringDecoder, which carries partial characters and base64
- * groups between calls as Node's does. chacha20-poly1305 follows OpenSSL's
- * construction, which also accepts AAD after data. Authentication tags are
+ * groups between calls as Node's does. On x86-64 CPUs with AES-NI and
+ * PCLMULQDQ (AES) or AVX2 (chacha20-poly1305), the transforms use the
+ * kernels in scr_cipher_simd.c, which produce the same output as mbedTLS.
+ * chacha20-poly1305 follows OpenSSL's construction, which also accepts AAD
+ * after data. Authentication tags are
  * compared in constant time. All arguments are borrowed. */
 #include "scr_runtime.h"
 
@@ -20,6 +23,7 @@
 #include "mbedtls/chacha20.h"
 #include "mbedtls/gcm.h"
 #include "mbedtls/poly1305.h"
+#include "scr_cipher_simd.h"
 #include "mbedtls/platform_util.h"
 
 typedef enum { SC_CBC, SC_CTR, SC_GCM, SC_CHACHA } ScCipherMode;
@@ -98,6 +102,11 @@ typedef struct ScCipher {
   mbedtls_gcm_context gcm;
   mbedtls_chacha20_context chacha;
   mbedtls_poly1305_context poly;
+  bool simd; /* the scr_cipher_simd.c kernels replace mbedTLS */
+  ScCsAesKey simd_key; /* CBC and CTR; the decryption schedule for CBC decryption */
+  ScCsGcm simd_gcm;
+  ScCsChaCha simd_chacha;
+  ScCsPoly1305 simd_poly;
   uint64_t aad_len;  /* chacha20-poly1305 AAD bytes */
   uint64_t text_len; /* chacha20-poly1305 data bytes */
   bool aad_open;     /* AAD was added since the last data or padding */
@@ -548,7 +557,34 @@ static ScrDyn *sc_cipher_new(bool decrypt, ScrDyn *cipher, ScrDyn *key, ScrDyn *
   mbedtls_poly1305_init(&c->poly);
   int rc = 0;
   unsigned bits = spec->key_len * 8;
-  switch (spec->mode) {
+  c->simd = spec->mode == SC_CHACHA ? scr_cs_chacha_available() : scr_cs_aes_available();
+  if (c->simd) {
+    switch (spec->mode) {
+    case SC_CBC: {
+      ScCsAesKey enc;
+      scr_cs_aes_setkey(&enc, decrypt ? &c->simd_key : NULL, key_bytes->data, spec->key_len);
+      if (!decrypt) c->simd_key = enc;
+      mbedtls_platform_zeroize(&enc, sizeof enc);
+      memcpy(c->block, iv_bytes->data, 16);
+      break;
+    }
+    case SC_CTR:
+      scr_cs_aes_setkey(&c->simd_key, NULL, key_bytes->data, spec->key_len);
+      memcpy(c->block, iv_bytes->data, 16);
+      break;
+    case SC_GCM:
+      scr_cs_gcm_start(&c->simd_gcm, key_bytes->data, spec->key_len, iv_bytes->data, iv_len, decrypt);
+      break;
+    case SC_CHACHA: {
+      unsigned char poly_key[64] = {0};
+      scr_cs_chacha_start(&c->simd_chacha, key_bytes->data, iv_bytes->data, 0);
+      scr_cs_chacha_xor(&c->simd_chacha, poly_key, poly_key, sizeof poly_key);
+      scr_cs_poly_start(&c->simd_poly, poly_key);
+      mbedtls_platform_zeroize(poly_key, sizeof poly_key);
+      break;
+    }
+    }
+  } else switch (spec->mode) {
   case SC_CBC:
     rc = decrypt ? mbedtls_aes_setkey_dec(&c->aes, key_bytes->data, bits)
                  : mbedtls_aes_setkey_enc(&c->aes, key_bytes->data, bits);
@@ -608,6 +644,11 @@ done:
 
 /* Raw CBC over whole blocks. */
 static bool sc_cbc_blocks(ScCipher *c, const unsigned char *in, size_t len, unsigned char *out) {
+  if (c->simd) {
+    if (c->decrypt) scr_cs_aes_cbc_decrypt(&c->simd_key, c->block, in, out, len / 16);
+    else scr_cs_aes_cbc_encrypt(&c->simd_key, c->block, in, out, len / 16);
+    return true;
+  }
   return mbedtls_aes_crypt_cbc(&c->aes, c->decrypt ? MBEDTLS_AES_DECRYPT : MBEDTLS_AES_ENCRYPT, len, c->block, in,
                                out) == 0;
 }
@@ -698,11 +739,17 @@ static bool sc_tag_equal(const unsigned char *a, const unsigned char *b, size_t 
   return diff == 0;
 }
 
+static bool sc_poly_update(ScCipher *c, const unsigned char *data, size_t len) {
+  if (!c->simd) return mbedtls_poly1305_update(&c->poly, data, len) == 0;
+  scr_cs_poly_update(&c->simd_poly, data, len);
+  return true;
+}
+
 /* Poly1305 zero padding to the next 16-byte boundary of `length`. */
 static bool sc_poly_pad(ScCipher *c, uint64_t length) {
   static const unsigned char zero[16] = {0};
   size_t rem = (size_t)(length % 16);
-  return rem == 0 || mbedtls_poly1305_update(&c->poly, zero, 16 - rem) == 0;
+  return rem == 0 || sc_poly_update(c, zero, 16 - rem);
 }
 
 /* OpenSSL's chacha20-poly1305 data step: pending AAD is padded first, and
@@ -712,9 +759,10 @@ static bool sc_chacha_update(ScCipher *c, const unsigned char *in, size_t len, u
     if (!sc_poly_pad(c, c->aad_len)) return false;
     c->aad_open = false;
   }
-  if (c->decrypt && mbedtls_poly1305_update(&c->poly, in, len) != 0) return false;
-  if (mbedtls_chacha20_update(&c->chacha, len, in, out) != 0) return false;
-  if (!c->decrypt && mbedtls_poly1305_update(&c->poly, out, len) != 0) return false;
+  if (c->decrypt && !sc_poly_update(c, in, len)) return false;
+  if (c->simd) scr_cs_chacha_xor(&c->simd_chacha, in, out, len);
+  else if (mbedtls_chacha20_update(&c->chacha, len, in, out) != 0) return false;
+  if (!c->decrypt && !sc_poly_update(c, out, len)) return false;
   c->text_len += len;
   return true;
 }
@@ -727,7 +775,12 @@ static bool sc_chacha_finish(ScCipher *c, unsigned char tag[16]) {
     lengths[i] = (unsigned char)(c->aad_len >> (8 * i));
     lengths[8 + i] = (unsigned char)(c->text_len >> (8 * i));
   }
-  return mbedtls_poly1305_update(&c->poly, lengths, sizeof lengths) == 0 && mbedtls_poly1305_finish(&c->poly, tag) == 0;
+  if (!sc_poly_update(c, lengths, sizeof lengths)) return false;
+  if (c->simd) {
+    scr_cs_poly_finish(&c->simd_poly, tag);
+    return true;
+  }
+  return mbedtls_poly1305_finish(&c->poly, tag) == 0;
 }
 
 /* The cipher output of an update over len bytes (+1 Buffer), or NULL
@@ -747,11 +800,17 @@ static ScrBytes *sc_transform(ScCipher *c, const unsigned char *in, size_t len) 
     break;
   }
   case SC_CTR:
-    ok = len == 0 || mbedtls_aes_crypt_ctr(&c->aes, len, &c->bufsz, c->block, c->buf, in, out->data) == 0;
+    if (len && c->simd) scr_cs_aes_ctr(&c->simd_key, c->block, c->buf, &c->bufsz, in, out->data, len);
+    else ok = len == 0 || mbedtls_aes_crypt_ctr(&c->aes, len, &c->bufsz, c->block, c->buf, in, out->data) == 0;
     produced = len;
     break;
   case SC_GCM:
-    ok = len == 0 || mbedtls_gcm_update(&c->gcm, in, len, out->data, room, &produced) == 0;
+    if (len && c->simd) {
+      ok = scr_cs_gcm_update(&c->simd_gcm, in, out->data, len);
+      produced = len;
+    } else {
+      ok = len == 0 || mbedtls_gcm_update(&c->gcm, in, len, out->data, room, &produced) == 0;
+    }
     break;
   case SC_CHACHA:
     ok = len == 0 || sc_chacha_update(c, in, len, out->data);
@@ -911,7 +970,8 @@ static ScrDyn *sc_final(ScCipher *c, ScrDyn *output_encoding) {
   case SC_GCM: {
     unsigned char full[16];
     size_t ignored;
-    backend = mbedtls_gcm_finish(&c->gcm, NULL, 0, &ignored, full, 16) == 0;
+    if (c->simd) scr_cs_gcm_finish(&c->simd_gcm, full);
+    else backend = mbedtls_gcm_finish(&c->gcm, NULL, 0, &ignored, full, 16) == 0;
     if (!backend) {
       /* No tag is computed or compared. */
     } else if (c->decrypt) {
@@ -974,9 +1034,10 @@ static ScrDyn *sc_set_aad(ScCipher *c, ScrDyn *self, ScrDyn *buffer, ScrDyn *opt
    * non-empty AAD. */
   bool ok = c->active && sc_aead(c) && !(c->data_started && (c->mode == SC_GCM || aad->len > 0));
   bool backend = true;
-  if (ok && c->mode == SC_GCM) backend = mbedtls_gcm_update_ad(&c->gcm, aad->data, aad->len) == 0;
+  if (ok && c->mode == SC_GCM && c->simd) backend = scr_cs_gcm_aad(&c->simd_gcm, aad->data, aad->len);
+  else if (ok && c->mode == SC_GCM) backend = mbedtls_gcm_update_ad(&c->gcm, aad->data, aad->len) == 0;
   if (ok && c->mode == SC_CHACHA && aad->len > 0) {
-    backend = mbedtls_poly1305_update(&c->poly, aad->data, aad->len) == 0;
+    backend = sc_poly_update(c, aad->data, aad->len);
     c->aad_len += aad->len;
     c->aad_open = true;
   }
@@ -1134,5 +1195,5 @@ static bool sc_set(void *h, const char *key, size_t key_len, const ScrDyn *value
   return true;
 }
 
-static ScrDynHandleOps sc_ops_cipher = {"Cipheriv", sc_retain, sc_release, sc_invoke, sc_get, sc_set, NULL, NULL, NULL};
-static ScrDynHandleOps sc_ops_decipher = {"Decipheriv", sc_retain, sc_release, sc_invoke, sc_get, sc_set, NULL, NULL, NULL};
+static ScrDynHandleOps sc_ops_cipher = {"Cipheriv", sc_retain, sc_release, sc_invoke, sc_get, sc_set, NULL, NULL, NULL, NULL};
+static ScrDynHandleOps sc_ops_decipher = {"Decipheriv", sc_retain, sc_release, sc_invoke, sc_get, sc_set, NULL, NULL, NULL, NULL};
