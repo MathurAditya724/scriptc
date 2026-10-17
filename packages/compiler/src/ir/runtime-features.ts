@@ -131,14 +131,16 @@ interface TypeTables {
 }
 
 /** Whether boxing a value of type `t` as dyn boxes a promise, which goes
- * through scr_async_dyn.c: a promise, a function returning one, or a
- * record, array, tuple, union, Map or Set that holds either. */
+ * through scr_async_dyn.c: a promise, a function whose result type holds
+ * one, or a record, array, tuple, union, Map or Set that holds either. */
 function boxesPromise(t: IrType, tables: TypeTables, seen: Set<string>): boolean {
   switch (t.kind) {
     case "promise":
       return true;
     case "func":
-      return t.ret.kind === "promise";
+      // A boxed function converts its result to dyn, which boxes any promise
+      // the result type holds.
+      return boxesPromise(t.ret, tables, seen);
     case "array":
     case "set":
       return boxesPromise(t.elem, tables, seen);

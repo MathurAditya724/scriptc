@@ -138,4 +138,29 @@ describe("runtime feature snapshots", () => {
     mod.records[1]!.fields[0]!.type = { kind: "func", params: [], ret: STRING };
     expect(moduleRuntimeFeatures(mod).dynAsync).toBe(false);
   });
+
+  test("detects promise boxing through a function's result type", () => {
+    const mod = module();
+    const promise = { kind: "promise" as const, inner: STRING };
+    mod.unions = [{ id: "u0", arms: [promise, { kind: "undefinedT" }] }];
+    const maybe = {
+      kind: "func" as const,
+      params: [],
+      ret: { kind: "union" as const, unionId: "u0" },
+    };
+    mod.functions[0]!.locals.push({ id: "maybe", name: "maybe", mutable: false, type: maybe });
+    mod.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynFrom",
+        type: DYN,
+        loc,
+        value: { kind: "varRef", localId: "maybe", type: maybe, loc },
+      },
+    });
+    expect(moduleRuntimeFeatures(mod).dynAsync).toBe(true);
+    mod.unions[0]!.arms[0] = STRING;
+    expect(moduleRuntimeFeatures(mod).dynAsync).toBe(false);
+  });
 });
