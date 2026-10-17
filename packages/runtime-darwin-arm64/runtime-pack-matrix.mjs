@@ -76,6 +76,7 @@ const optional = [
   ["scr_zlib.c", "zlib"],
   ["scr_events.c", "events"],
   ["scr_readline.c", "events"],
+  ["scr_readline_tty.c", all("events", "regex")],
   ["scr_events_emitter.c", "emitter"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
   ["scr_symbol.c", "symbol"],

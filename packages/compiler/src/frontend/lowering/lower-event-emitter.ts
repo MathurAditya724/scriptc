@@ -42,6 +42,7 @@
  * emit-overrides block at the bottom of this file (per-event
  * monomorphization of the override body, dispatch on the dynamic class,
  * super.emit as the prototype chain). */
+import { checkKeypressListener } from "./builtins/readline.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { dynFallbackType, newFnCtx } from "./lowerer.js";
@@ -1281,7 +1282,14 @@ export function lowerEmitterMethodCall(
     // (runtime-emitted 'end'/'pipe'/... payloads); the dyn-listener check
     // below then sees the forced tuple exactly like a table one.
     const tuple = streamForcedTuple(lowerer, info, name) ?? tupleOf(lowerer, table, name, call);
-    const dynFlavor = dynListenerFlavor(lowerer, args[1]!);
+    // readline's 'keypress' (str, key) arrives as checked-dynamic values:
+    // a typed listener is called through the dyn machinery too
+    const keypress = name === "keypress" && streamForcedTuple(lowerer, info, name) !== null;
+    if (keypress) {
+      const probe = tryLowerExpression(lowerer, args[1]!);
+      if (probe) checkKeypressListener(lowerer, args[1]!, probe);
+    }
+    const dynFlavor = dynListenerFlavor(lowerer, args[1]!) ?? (keypress ? "func" : null);
     if (dynFlavor !== null) {
       return lowerDynListenerCall(
         lowerer,

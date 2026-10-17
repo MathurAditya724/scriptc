@@ -1,3 +1,4 @@
+import { lowerReadlineCursorCall } from "./builtins/readline.js";
 import { lowerReceiveMessageOnPort } from "./builtins/workers.js";
 import * as ts from "../ts7/adapter.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
@@ -89,6 +90,10 @@ export function lowerBuiltinCall(
   if (timersInterval) return timersInterval;
   const nodeModuleServed = lowerNodeModuleCall(lowerer, expr, bi, loc);
   if (nodeModuleServed) return nodeModuleServed;
+  if (bi.module === "readline") {
+    const cursorServed = lowerReadlineCursorCall(lowerer, expr, bi.member, loc);
+    if (cursorServed) return cursorServed;
+  }
   if (bi.module === "worker_threads" && bi.member === "receiveMessageOnPort") {
     return lowerReceiveMessageOnPort(lowerer, expr);
   }

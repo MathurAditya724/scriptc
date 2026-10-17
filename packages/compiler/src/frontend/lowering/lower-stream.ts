@@ -208,6 +208,7 @@ export const STREAM_FORCED_EVENT_NAMES: ReadonlySet<string> = new Set([
   "unpipe",
   "open",
   "ready",
+  "keypress",
 ]);
 
 /** The per-base FORCED event tuples (runtime-emitted payloads): consulted
@@ -232,6 +233,8 @@ export function streamForcedTuple(
     resume: [],
     open: [F64],
     ready: [],
+    // readline.emitKeypressEvents' (str, key), as checked-dynamic values
+    keypress: [DYN, DYN],
   };
   const writable: Record<string, IrType[]> = {
     open: [F64],

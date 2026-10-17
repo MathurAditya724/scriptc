@@ -410,6 +410,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stdin.onData": { argTypes: [null, BOOL], result: VOID },
   "stdin.onEnd": { argTypes: [{ kind: "func", params: [], ret: VOID }, BOOL], result: VOID },
   "stdin.onError": { argTypes: [null, BOOL], result: VOID },
+  /** process.stdin.on/once('keypress', cb) (scr_readline_tty.c): cb is the
+   * listener as a checked-dynamic function, called with (str, key). */
+  "stdin.onKeypress": { argTypes: [DYN, BOOL], result: VOID },
   /** The for-await chunk source over process.stdin: no args, result
    * Promise<Uint8Array> (+1). Fulfills with the next arrived chunk; the
    * EMPTY bytes value is the done sentinel (POSIX reads never deliver
@@ -3807,9 +3810,17 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "rl.pause": { argTypes: [F64], result: VOID },
   "rl.resume": { argTypes: [F64], result: VOID },
   "rl.prompt": { argTypes: [F64], result: VOID },
+  /** prompt(preserveCursor): [handle, preserveCursor] */
+  "rl.promptWith": { argTypes: [F64, BOOL], result: VOID },
   "rl.setPrompt": { argTypes: [F64, STRING], result: VOID },
   "rl.getPrompt": { argTypes: [F64], result: STRING },
   "rl.write": { argTypes: [F64, STRING], result: VOID },
+  /** write(data, key): [handle, hasData, data, hasKey, hasName, name,
+   * ctrl, meta, shift] */
+  "rl.writeKey": {
+    argTypes: [F64, BOOL, STRING, BOOL, BOOL, STRING, BOOL, BOOL, BOOL],
+    result: VOID,
+  },
   "rl.on": { argTypes: [F64, F64, null, BOOL], result: VOID },
   "rl.iterOpen": { argTypes: [F64], result: VOID },
   "rl.iterNext": { argTypes: [F64], result: { kind: "promise", inner: DYN } },
@@ -3826,6 +3837,42 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "rl.setHistory": { argTypes: [F64, arrayOf(STRING)], result: VOID },
   "rl.history": { argTypes: [F64], result: arrayOf(STRING) },
   "rl.numProp": { argTypes: [F64, F64], result: F64 },
+  /** Terminal mode (scr_readline_tty.c): rl.terminal: [handle, mode (0
+   * the option's value, 2 output.isTTY of process.stdout), terminal,
+   * completer (undefined when absent), readline/promises], emitted with
+   * scr_insp_dyn when there is a completer; the line, terminal and cursor
+   * members. */
+  "rl.terminal": { argTypes: [F64, F64, BOOL, DYN, BOOL], result: VOID },
+  "rl.line": { argTypes: [F64], result: STRING },
+  "rl.isTerminal": { argTypes: [F64], result: BOOL },
+  "rl.cursor": { argTypes: [F64], result: F64 },
+  /** readline.cursorTo / moveCursor / clearLine / clearScreenDown: rl.seq
+   * [kind (0-3), the first and second numbers, whether the second is
+   * given] answers the data to write after the argument checks (may
+   * throw); rl.moves [dx, dy] says whether moveCursor writes. */
+  "rl.seq": { argTypes: [F64, F64, F64, BOOL], result: STRING },
+  "rl.moves": { argTypes: [F64, F64], result: BOOL },
+  /** getCursorPos() (scr_readline_tty.c, linked through the regex unit
+   * like rl.terminal): [handle, 0 rows | 1 cols] */
+  "rl.cursorPos": { argTypes: [F64, F64], result: F64 },
+  /** readline.emitKeypressEvents (scr_readline_tty.c): rl.keypressStdin
+   * [interface (0: none), escapeCodeTimeout (NaN: the interface's or
+   * 500)], rl.keypressStream [stream, interface, timeout]. */
+  "rl.keypressStdin": { argTypes: [F64, F64], result: VOID },
+  "rl.keypressStream": { argTypes: [null, F64, F64], result: VOID },
+  /** readline/promises Readline over an f64 handle: rl.uiOpen [fd (1
+   * stdout, 2 stderr), autoCommit], rl.uiOpenStream [stream, autoCommit]
+   * (isWritable, may throw); the actions take [handle, ...numbers] (the
+   * checks may throw; cursorTo: [handle, x, whether y is given, y]);
+   * rl.uiCommit answers a promise<void>. */
+  "rl.uiOpen": { argTypes: [F64, BOOL], result: F64 },
+  "rl.uiOpenStream": { argTypes: [null, BOOL], result: F64 },
+  "rl.uiCursorTo": { argTypes: [F64, F64, BOOL, F64], result: VOID },
+  "rl.uiMoveCursor": { argTypes: [F64, F64, F64], result: VOID },
+  "rl.uiClearLine": { argTypes: [F64, F64], result: VOID },
+  "rl.uiClearScreenDown": { argTypes: [F64], result: VOID },
+  "rl.uiRollback": { argTypes: [F64], result: VOID },
+  "rl.uiCommit": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
   /** node:timers/promises — the promisified pair (scr_async.c, beside
    * the timer heap they ride): tp.setTimeout: [ms] → a pending void
    * promise a one-shot heap timer fulfills (the loop's timer phase, FIFO

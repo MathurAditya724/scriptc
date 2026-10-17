@@ -4655,14 +4655,41 @@ static void scr_stream_rl_off(ScrStream *s, const char *name, ScrClosure *cb) {
 static void scr_stream_rl_pause(void *s) { scr_stream_release(scr_stream_pause(s)); }
 static void scr_stream_rl_resume(void *s) { scr_stream_release(scr_stream_resume(s)); }
 static void scr_stream_rl_write(void *s, ScrStr *text) { scr_stream_write_str(s, text, NULL); }
+static void scr_stream_rl_write_cb(void *s, ScrStr *text, ScrClosure *cb) {
+  scr_stream_write_str(s, text, cb);
+}
 static void scr_stream_rl_release(void *s) { scr_stream_release(s); }
+
+static void scr_stream_rl_on_event(void *s, const char *name, ScrClosure *cb, int nargs) {
+  ScrEeInvoke inv = nargs == 0 ? scr_ee_inv_fixed0 : nargs == 1 ? scr_ee_inv_fixed1 : scr_ee_inv_fixed2;
+  scr_stream_rl_on(s, name, cb, inv);
+}
+
+static void scr_stream_rl_off_event(void *s, const char *name, ScrClosure *cb) {
+  scr_stream_rl_off(s, name, cb);
+}
+
+static double scr_stream_rl_listener_count(void *s, const char *name) {
+  ScrStr *n = scr_str_new(name, strlen(name));
+  double c = scr_emitter_listener_count((ScrEmitter *)s, n);
+  scr_str_release(n);
+  return c;
+}
+
+static void scr_stream_rl_emit2(void *s, const char *name, void *a, void *b) {
+  ScrStr *n = scr_str_new(name, strlen(name));
+  scr_emitter_emit((ScrEmitter *)s, n, a, b);
+  scr_str_release(n);
+}
+
+static void *scr_stream_rl_retain(void *s) { return scr_stream_retain(s); }
 
 static void scr_stream_rl_detach(void *s, double id) {
   for (ScrRlHook **at = &scr_rl_hooks; *at; at = &(*at)->next) {
     ScrRlHook *h = *at;
     if (h->s != s || h->id != id) continue;
     *at = h->next;
-    scr_stream_rl_off(h->s, "data", h->data);
+    if (h->data) scr_stream_rl_off(h->s, "data", h->data);
     scr_stream_rl_off(h->s, "error", h->error);
     scr_stream_rl_off(h->s, "end", h->end);
     free(h);
@@ -4670,10 +4697,28 @@ static void scr_stream_rl_detach(void *s, double id) {
   }
 }
 
+/* a terminal interface reads keys, not 'data' */
+static void scr_stream_rl_drop_data(void *s, double id) {
+  for (ScrRlHook *h = scr_rl_hooks; h; h = h->next) {
+    if (h->s != s || h->id != id || !h->data) continue;
+    scr_stream_rl_off(h->s, "data", h->data);
+    h->data = NULL;
+    return;
+  }
+}
+
 static const ScrRlIo scr_stream_rl_io = {
-    &scr_stream_rl_pause, &scr_stream_rl_resume, &scr_stream_rl_detach,
-    &scr_stream_rl_write, &scr_stream_rl_release,
+    &scr_stream_rl_pause,          &scr_stream_rl_resume,   &scr_stream_rl_detach,
+    &scr_stream_rl_write,          &scr_stream_rl_write_cb, &scr_stream_rl_on_event,
+    &scr_stream_rl_off_event,      &scr_stream_rl_listener_count,
+    &scr_stream_rl_emit2,          &scr_stream_rl_retain,   &scr_stream_rl_drop_data,
+    &scr_stream_rl_release,
 };
+
+/* readline.emitKeypressEvents(stream, interface) */
+void scr_stream_rl_keypress_events(ScrStream *s, double iface, double timeout) {
+  scr_rl_keypress_events(&scr_stream_rl_io, s, iface, timeout);
+}
 
 static void scr_stream_rl_hooks_free(void) {
   while (scr_rl_hooks) {
@@ -4708,6 +4753,23 @@ double scr_stream_rl_open(ScrStream *in, ScrStream *out, bool out_stdout, double
   scr_stream_rl_on(in, "end", h->end, scr_ee_inv_fixed0);
   scr_stream_rl_resume(in);
   return id;
+}
+
+static int scr_eos_is_writable(const ScrStreamState *st);
+
+/* new Readline(stream, options): isWritable(stream), else
+ * ERR_INVALID_ARG_TYPE('stream', 'Writable', stream) */
+double scr_stream_rl_ui_open(ScrStream *out, bool auto_commit) {
+  if (scr_eos_is_writable(out->st) != 1) {
+    char m[160];
+    int n = snprintf(m, sizeof m,
+                     "The \"stream\" argument must be an instance of Writable. Received an "
+                     "instance of %s",
+                     out->cls ? out->cls : "Stream");
+    scr_throw_error_msg_code(SCR_ERR_TYPE, m, (size_t)n, "ERR_INVALID_ARG_TYPE");
+    return 0;
+  }
+  return scr_rl_ui_open(&scr_stream_rl_io, scr_stream_retain(out), 0, auto_commit);
 }
 
 /* ── finished(stream, options) (lib/internal/streams/end-of-stream.js) ──

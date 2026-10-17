@@ -2038,6 +2038,37 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return F64;
   }
+  // readline.Key: emitKeys' key object stays a checked-dynamic value, so
+  // it keeps Node's own shape (an undefined name, the escape sequences'
+  // code member).
+  if (
+    psym?.name === "Key" &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          ts.isInterfaceDeclaration(d) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          (isDeclaredInAmbientModule(d, "readline") ||
+            isDeclaredInAmbientModule(d, "readline/promises")),
+      )
+  ) {
+    return DYN;
+  }
+  // readline/promises.Readline: an f64 handle the same way.
+  if (
+    psym?.name === "Readline" &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          isDeclaredInAmbientModule(d, "readline/promises"),
+      )
+  ) {
+    return F64;
+  }
   // diagnostics_channel.Channel: the channel value is an f64 handle into
   // the runtime's channel registry (the readline.Interface precedent —
   // Node's channels are process-lived too, its WeakRef machinery aside).
@@ -3542,6 +3573,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       )
   ) {
     return { kind: "record", shapeId: perfEntryShape(ctx.shapes, ctx.unions) };
+  }
+  // readline's getCursorPos() record, in Node's key order ({ cols, rows }).
+  if (isStdlibInterface("CursorPos")) {
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "cols", type: F64 },
+          { name: "rows", type: F64 },
+        ],
+        false,
+        undefined,
+        ["cols", "rows"],
+      ),
+    };
   }
   // process.memoryUsage()'s record, in Node's key order.
   if (isStdlibInterface("MemoryUsage")) {
