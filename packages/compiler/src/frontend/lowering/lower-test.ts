@@ -18,6 +18,7 @@ import type { Lowerer } from "./lowerer.js";
 import { locOf } from "../program.js";
 import {
   type IrExpr,
+  type IrStmt,
   type IrType,
   type SrcLoc,
   F64,
@@ -26,7 +27,39 @@ import {
   isUnitType,
 } from "../../ir/ir.js";
 import { numLit, strLit } from "../../ir/build.js";
-import { lowerMockContextCall, lowerMockContextProperty, lowerMockFn } from "./lower-mock.js";
+import {
+  lowerMockContextCall,
+  lowerMockContextProperty,
+  lowerMockFn,
+  lowerMockMethod,
+  lowerMockTrackerCall,
+  type MockTracker,
+} from "./lower-mock.js";
+
+const MOCK_HINT =
+  "mock.fn, mock.method, mock.restoreAll and mock.reset are the supported mock members";
+
+/** The mock tracker members that lower, for the module's `mock` (tracker
+ * null) and t.mock. Null for other members. */
+function lowerMockTrackerMember(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  member: string,
+  what: string,
+  tracker: () => MockTracker,
+): IrExpr | null {
+  switch (member) {
+    case "fn":
+      return lowerMockFn(lowerer, call, `${what}.fn`, tracker());
+    case "method":
+      return lowerMockMethod(lowerer, call, `${what}.method`, tracker());
+    case "restoreAll":
+    case "reset":
+      return lowerMockTrackerCall(lowerer, call, member, tracker());
+    default:
+      return null;
+  }
+}
 
 const TEST_FN_HINT = "test bodies take () or (t: TestContext) and return void or Promise<void>";
 const TESTCTX_SURFACE_HINT =
@@ -61,66 +94,124 @@ interface TestOptions {
   mode: number;
   msg: IrExpr | null;
   only: boolean;
+  /** The { plan } count, -1 without one. */
+  plan: number;
+  /** The { timeout } in ms, null without one. */
+  timeout: IrExpr | null;
+  /** The non-literal option values, evaluated in source order before the
+   * registration call reads them. */
+  pre: IrStmt[];
+}
+
+const noOptions = (): TestOptions => ({
+  mode: 0,
+  msg: null,
+  only: false,
+  plan: -1,
+  timeout: null,
+  pre: [],
+});
+
+/** Evaluates a non-literal option value into a hidden local, so option
+ * values run in source order. */
+function optionValue(lowerer: Lowerer, out: TestOptions, value: IrExpr, loc: SrcLoc): IrExpr {
+  if (value.kind === "strLit" || value.kind === "numLit") return value;
+  const slot = lowerer.declareHiddenLocal("%testOption", value.type);
+  out.pre.push({ kind: "varDecl", localId: slot.id, init: value, loc });
+  return { kind: "varRef", localId: slot.id, type: value.type, loc };
 }
 
 /** Parses a test/describe options argument — an OBJECT LITERAL whose
  * skip/todo values are boolean literals or string messages and whose
- * only is the boolean literal. Everything else fences with the option
- * name (concurrency/timeout/plan included — bounded surface, honest
- * fence). */
-function lowerTestOptions(lowerer: Lowerer, node: ts.Expression, what: string): TestOptions {
+ * only is the boolean literal. Tests also take plan, a non-negative
+ * integer literal, and timeout, a number. Everything else fences with the
+ * option name (concurrency included — bounded surface, honest fence). */
+function lowerTestOptions(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  what: string,
+  suite: boolean,
+): TestOptions {
   if (!ts.isObjectLiteralExpression(node)) {
     lowerer.noLowering(
       `${what} with a non-literal options argument`,
       node,
-      "pass the options as an object literal: { skip?, todo?, only? }",
+      suite
+        ? "pass the options as an object literal: { skip?, todo?, only? }"
+        : "pass the options as an object literal: { skip?, todo?, only?, plan?, timeout? }",
     );
   }
-  const out: TestOptions = { mode: 0, msg: null, only: false };
+  const out = noOptions();
   for (const prop of node.properties) {
-    if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) {
+    if (
+      !(ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)) &&
+      !ts.isShorthandPropertyAssignment(prop)
+    ) {
       lowerer.noLowering(
-        `${what} options with computed keys, spreads, or shorthand entries`,
+        `${what} options with computed keys or spreads`,
         prop,
-        "each option must be a plain `name: value` entry with a literal key",
+        "each option must be a `name: value` or shorthand entry with a literal key",
       );
     }
-    const name = prop.name.text;
+    const key = prop.name as ts.Identifier;
+    const name = key.text;
+    // A shorthand entry's value is the binding of the same name.
+    const init: ts.Expression = ts.isPropertyAssignment(prop) ? prop.initializer : key;
     if (name === "skip" || name === "todo") {
       const mode = name === "skip" ? 1 : 2;
-      const t = lowerer.typeOf(prop.initializer);
+      const t = lowerer.typeOf(init);
       if (t.isStringLiteralType() || lowerer.mapTypeOf(t)?.kind === "string") {
         out.mode = mode;
-        out.msg = lowerer.lowerExprExpecting(prop.initializer, STRING);
-      } else if (prop.initializer.kind === ts.SyntaxKind.TrueKeyword) {
+        out.msg = optionValue(lowerer, out, lowerer.lowerExprExpecting(init, STRING), locOf(init));
+      } else if (init.kind === ts.SyntaxKind.TrueKeyword) {
         out.mode = mode;
-      } else if (prop.initializer.kind === ts.SyntaxKind.FalseKeyword) {
+      } else if (init.kind === ts.SyntaxKind.FalseKeyword) {
         // explicit false: run normally
       } else {
         lowerer.noLowering(
           `${what} with a non-literal ${name} value`,
-          prop.initializer,
+          init,
           `${name} takes the literal true/false or a string message here`,
         );
       }
     } else if (name === "only") {
-      if (prop.initializer.kind === ts.SyntaxKind.TrueKeyword) out.only = true;
-      else if (prop.initializer.kind !== ts.SyntaxKind.FalseKeyword) {
+      if (init.kind === ts.SyntaxKind.TrueKeyword) out.only = true;
+      else if (init.kind !== ts.SyntaxKind.FalseKeyword) {
         lowerer.noLowering(
           `${what} with a non-literal only value`,
-          prop.initializer,
+          init,
           "only takes the literal true/false here",
         );
       }
+    } else if (name === "plan" && !suite) {
+      const value = ts.isNumericLiteral(init) ? Number(init.text) : NaN;
+      if (!Number.isInteger(value) || value > 2147483647) {
+        lowerer.noLowering(
+          `${what} with a non-literal plan value`,
+          init,
+          "plan takes a non-negative integer literal here",
+        );
+      }
+      out.plan = value;
+    } else if (name === "timeout" && !suite) {
+      out.timeout = optionValue(lowerer, out, lowerer.lowerExprExpecting(init, F64), locOf(init));
     } else {
       lowerer.noLowering(
         `${what} option '${name}'`,
         prop,
-        "skip, todo, and only are the supported options",
+        suite
+          ? "skip, todo, and only are the supported suite options"
+          : "skip, todo, only, plan, and timeout are the supported options",
       );
     }
   }
   return out;
+}
+
+/** The registration call, after the option values it reads. */
+function withOptionValues(call: IrExpr, opts: TestOptions, loc: SrcLoc): IrExpr {
+  if (opts.pre.length === 0) return call;
+  return { kind: "seqExpr", stmts: opts.pre, result: call, type: call.type, loc };
 }
 
 /** Lowers a test/hook body, pinning the shape: 0 params or the one
@@ -187,50 +278,77 @@ function lowerRegistration(
       "the supported forms are (name), (name, fn), and (name, options, fn)",
     );
   }
-  const name = lowerer.lowerExprExpecting(args[0]!, STRING);
-  let opts: TestOptions = { mode: 0, msg: null, only: false };
+  let name = lowerer.lowerExprExpecting(args[0]!, STRING);
+  let opts = noOptions();
   let fnNode: ts.Expression | undefined;
   if (args.length === 2) fnNode = args[1];
   if (args.length === 3) {
-    opts = lowerTestOptions(lowerer, args[1]!, what);
+    opts = lowerTestOptions(lowerer, args[1]!, what, false);
     fnNode = args[2];
+    // The name runs before the option values.
+    if (opts.pre.length > 0 && name.kind !== "strLit") {
+      const slot = lowerer.declareHiddenLocal("%testName", STRING);
+      opts.pre.unshift({ kind: "varDecl", localId: slot.id, init: name, loc });
+      name = { kind: "varRef", localId: slot.id, type: STRING, loc };
+    }
   }
   if (methodMode === 1 || methodMode === 2) opts.mode = methodMode;
   if (methodMode === 3) opts.only = true;
   const at = strLit(atStringOf(expr), loc);
   const mode = numLit(opts.mode, loc);
   const msg = opts.msg ?? strLit("", loc);
+  // Flag 8: a { timeout } is given.
+  const optionFlags = (opts.only ? 4 : 0) | (opts.timeout ? 8 : 0);
+  const planTimeout = [numLit(opts.plan, loc), opts.timeout ?? numLit(0, loc)];
   if (!fnNode) {
-    const emptyFlags = numLit(opts.only ? 4 : 0, loc);
-    return sub
-      ? { kind: "libCall", fn: "test.subEmpty", args: [sub, name, mode, msg, at], type: VOID, loc }
-      : {
-          kind: "libCall",
-          fn: "test.registerEmpty",
-          args: [name, mode, msg, emptyFlags, at],
-          type: VOID,
-          loc,
-        };
+    const emptyFlags = numLit(optionFlags, loc);
+    return withOptionValues(
+      sub
+        ? {
+            kind: "libCall",
+            fn: "test.subEmpty",
+            args: [sub, name, mode, msg, emptyFlags, at, ...planTimeout],
+            type: VOID,
+            loc,
+          }
+        : {
+            kind: "libCall",
+            fn: "test.registerEmpty",
+            args: [name, mode, msg, emptyFlags, at, ...planTimeout],
+            type: VOID,
+            loc,
+          },
+      opts,
+      loc,
+    );
   }
   const { cb, flags } = lowerBodyArg(lowerer, fnNode, what, true);
-  const flagsLit = numLit(flags | (opts.only ? 4 : 0), loc);
+  const flagsLit = numLit(flags | optionFlags, loc);
   if (sub) {
     const promiseVoid: IrType = { kind: "promise", inner: VOID };
-    return {
-      kind: "libCall",
-      fn: "test.sub",
-      args: [sub, name, mode, msg, cb, flagsLit, at],
-      type: promiseVoid,
+    return withOptionValues(
+      {
+        kind: "libCall",
+        fn: "test.sub",
+        args: [sub, name, mode, msg, cb, flagsLit, at, ...planTimeout],
+        type: promiseVoid,
+        loc,
+      },
+      opts,
       loc,
-    };
+    );
   }
-  return {
-    kind: "libCall",
-    fn: "test.register",
-    args: [name, mode, msg, cb, flagsLit, at],
-    type: VOID,
+  return withOptionValues(
+    {
+      kind: "libCall",
+      fn: "test.register",
+      args: [name, mode, msg, cb, flagsLit, at, ...planTimeout],
+      type: VOID,
+      loc,
+    },
+    opts,
     loc,
-  };
+  );
 }
 
 /** describe/suite (and describe.skip/todo/only): the body is a SYNC
@@ -251,12 +369,17 @@ function lowerSuite(
       "the supported forms are (name, fn) and (name, options, fn)",
     );
   }
-  const name = lowerer.lowerExprExpecting(args[0]!, STRING);
-  let opts: TestOptions = { mode: 0, msg: null, only: false };
+  let name = lowerer.lowerExprExpecting(args[0]!, STRING);
+  let opts = noOptions();
   let fnNode = args[1]!;
   if (args.length === 3) {
-    opts = lowerTestOptions(lowerer, args[1]!, what);
+    opts = lowerTestOptions(lowerer, args[1]!, what, true);
     fnNode = args[2]!;
+    if (opts.pre.length > 0 && name.kind !== "strLit") {
+      const slot = lowerer.declareHiddenLocal("%testName", STRING);
+      opts.pre.unshift({ kind: "varDecl", localId: slot.id, init: name, loc });
+      name = { kind: "varRef", localId: slot.id, type: STRING, loc };
+    }
   }
   if (methodMode === 1 || methodMode === 2) opts.mode = methodMode;
   const cb = lowerer.lowerExpr(fnNode);
@@ -279,13 +402,17 @@ function lowerSuite(
   const msg = opts.msg ?? strLit("", loc);
   // describe.only and { only: true } mark the suite (flag 4, as for tests).
   const flags = numLit(methodMode === 3 || opts.only ? 4 : 0, loc);
-  return {
-    kind: "libCall",
-    fn: "test.suite",
-    args: [name, mode, msg, cb, at, flags],
-    type: VOID,
+  return withOptionValues(
+    {
+      kind: "libCall",
+      fn: "test.suite",
+      args: [name, mode, msg, cb, at, flags],
+      type: VOID,
+      loc,
+    },
+    opts,
     loc,
-  };
+  );
 }
 
 /** before/after/beforeEach/afterEach — hooks on the enclosing suite
@@ -452,12 +579,13 @@ export function lowerTestMethodCall(
           member === "skip" ? 1 : member === "todo" ? 2 : 3,
         );
       }
-      if (bi.member === "mock" && member === "fn") return lowerMockFn(lowerer, call, "mock.fn");
       if (bi.member === "mock") {
+        const served = lowerMockTrackerMember(lowerer, call, member, "mock", () => null);
+        if (served) return served;
         lowerer.noLowering(
           `test.mock.${member}`,
           call,
-          "mock.fn and t.mock.fn are the supported mock members",
+          MOCK_HINT,
           lowerer.checker.getSymbolAtLocation(access.name),
         );
       }
@@ -469,16 +597,19 @@ export function lowerTestMethodCall(
       );
     }
   }
-  // t.mock.fn(...): the test's mock tracker.
+  // t.mock.fn(...) and the other tracker members: the test's mock tracker.
   if (
-    member === "fn" &&
     ts.isPropertyAccessExpression(access.expression) &&
     !access.expression.questionDotToken &&
     access.expression.name.text === "mock" &&
     lowerer.mapTypeOf(lowerer.typeOf(access.expression.expression))?.kind === "testCtx" &&
     lowerer.isStdlibMember(access.expression)
   ) {
-    return lowerMockFn(lowerer, call, "t.mock.fn");
+    const testCtx = access.expression.expression;
+    const served = lowerMockTrackerMember(lowerer, call, member, "t.mock", () =>
+      lowerer.lowerExpr(testCtx),
+    );
+    if (served) return served;
   }
   // t.assert.strictEqual(...) — the callee's receiver is `t.assert` on a
   // TestContext: Node's t.assert methods ARE the assert functions (bound

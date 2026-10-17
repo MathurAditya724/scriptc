@@ -314,6 +314,7 @@ void *scr_promise_payload_ref(ScrPromise *p);   /* +1 via the stored retain */
 /* Thin payload views for the gated dyn-async TU (scr_async_dyn.c). */
 int scr_promise_payload_kind(const ScrPromise *p);   /* ScrExcKind */
 bool scr_promise_is_rejected(const ScrPromise *p);
+bool scr_promise_is_pending(const ScrPromise *p);
 bool scr_promise_payload_is_dyn(const ScrPromise *p);
 double scr_promise_payload_num(const ScrPromise *p);
 bool scr_promise_payload_flag(const ScrPromise *p);

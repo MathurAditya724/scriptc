@@ -1389,18 +1389,26 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * consumes. ctxSkip/ctxTodo mark the running test; ctxDiagnostic
    * queues an ℹ line; ctxName reads t.name. Every registration keeps
    * the loop-run emitted (usesTimers) so the runner fiber drains. */
-  "test.register": { argTypes: [STRING, F64, STRING, null, F64, STRING], result: VOID },
-  "test.registerEmpty": { argTypes: [STRING, F64, STRING, F64, STRING], result: VOID },
+  // The trailing pair is the { plan, timeout } options (plan -1 without
+  // one; timeout read under flag 8). An out-of-range timeout throws.
+  "test.register": {
+    argTypes: [STRING, F64, STRING, null, F64, STRING, F64, F64],
+    result: VOID,
+  },
+  "test.registerEmpty": { argTypes: [STRING, F64, STRING, F64, STRING, F64, F64], result: VOID },
   "test.suite": {
     argTypes: [STRING, F64, STRING, { kind: "func", params: [], ret: VOID }, STRING, F64],
     result: VOID,
   },
   "test.hook": { argTypes: [F64, null, F64], result: VOID },
   "test.sub": {
-    argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING],
+    argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64],
     result: { kind: "promise", inner: VOID },
   },
-  "test.subEmpty": { argTypes: [TESTCTX_T, STRING, F64, STRING, STRING], result: VOID },
+  "test.subEmpty": {
+    argTypes: [TESTCTX_T, STRING, F64, STRING, F64, STRING, F64, F64],
+    result: VOID,
+  },
   "test.ctxSkip": { argTypes: [TESTCTX_T, STRING], result: VOID },
   "test.ctxTodo": { argTypes: [TESTCTX_T, STRING], result: VOID },
   "test.ctxDiagnostic": { argTypes: [TESTCTX_T, STRING], result: VOID },
@@ -1412,6 +1420,17 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // t.plan(count), and the count of one t.assert call.
   "test.ctxPlan": { argTypes: [TESTCTX_T, F64], result: VOID },
   "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
+  // The mock trackers: the module's `mock` and t.mock keep each mock's
+  // restore closure (moved) for restoreAll and reset.
+  "test.mockTrack": { argTypes: [{ kind: "func", params: [], ret: VOID }], result: VOID },
+  "test.mockRestoreAll": { argTypes: [], result: VOID },
+  "test.mockReset": { argTypes: [], result: VOID },
+  "test.ctxMockTrack": {
+    argTypes: [TESTCTX_T, { kind: "func", params: [], ret: VOID }],
+    result: VOID,
+  },
+  "test.ctxMockRestoreAll": { argTypes: [TESTCTX_T], result: VOID },
+  "test.ctxMockReset": { argTypes: [TESTCTX_T], result: VOID },
   // node:http (scr_http.c over scr_net.c). The handler and the data
   // listeners are program-dependent closures (null slots, checked in the
   // libCall case); reqHeader's result is the interned string|undefined

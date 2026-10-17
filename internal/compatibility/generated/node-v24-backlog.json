@@ -7,8 +7,8 @@
     "tierItemCount": 3472,
     "tiers": {
       "static": {
-        "audit-partial": 1061,
-        "verify-gap": 2284,
+        "audit-partial": 1064,
+        "verify-gap": 2281,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -66204,6 +66204,7 @@
           "source": "compiler-feature:test.ctx.callCount",
           "tests": [
             "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/fixtures/node-test/cases/mock-method.ts",
             "tests/harness/node-test.test.ts"
           ]
         }
@@ -66232,6 +66233,7 @@
           "source": "compiler-feature:test.ctx.mockImplementation",
           "tests": [
             "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/fixtures/node-test/cases/mock-method.ts",
             "tests/harness/node-test.test.ts"
           ]
         }
@@ -66260,6 +66262,7 @@
           "source": "compiler-feature:test.ctx.mockImplementationOnce",
           "tests": [
             "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/fixtures/node-test/cases/mock-method.ts",
             "tests/harness/node-test.test.ts"
           ]
         }
@@ -66288,6 +66291,7 @@
           "source": "compiler-feature:test.ctx.resetCalls",
           "tests": [
             "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/fixtures/node-test/cases/mock-method.ts",
             "tests/harness/node-test.test.ts"
           ]
         }
@@ -66316,6 +66320,7 @@
           "source": "compiler-feature:test.ctx.restore",
           "tests": [
             "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/fixtures/node-test/cases/mock-method.ts",
             "tests/harness/node-test.test.ts"
           ]
         }
@@ -66344,6 +66349,7 @@
           "source": "compiler-feature:test.calls",
           "tests": [
             "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/fixtures/node-test/cases/mock-method.ts",
             "tests/harness/node-test.test.ts"
           ]
         }
@@ -66668,12 +66674,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.mock.method",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-method.ts",
+            "tests/corpus/5810-mock-method-records.ts",
+            "tests/corpus/5811-mock-tracker-restore.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66743,12 +66754,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.mock.reset",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-method.ts",
+            "tests/corpus/5810-mock-method-records.ts",
+            "tests/corpus/5811-mock-tracker-restore.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66768,12 +66784,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.mock.restoreAll",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-method.ts",
+            "tests/corpus/5810-mock-method-records.ts",
+            "tests/corpus/5811-mock-tracker-restore.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },

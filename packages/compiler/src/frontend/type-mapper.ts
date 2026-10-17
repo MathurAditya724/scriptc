@@ -3695,6 +3695,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
       return DYN;
   }
+  // A union of such hybrids that all map to ONE record is that record:
+  // node:test's Mock<F | Implementation> distributes to (F & { mock }) |
+  // (Implementation & { mock }), and the two function types can map alike.
+  if (widened.isUnionType()) {
+    const hybrid = mapUniformHybridUnion(widened, ctx);
+    if (hybrid) return hybrid;
+  }
   const callSigs = checker.getCallSignatures(widened);
   if (callSigs.length === 1) {
     const sig = callSigs[0]!;
@@ -4827,6 +4834,21 @@ function mapHybridCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): Ir
   if (fields.length === 1) return null; // no properties — it is just F
   fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   return { kind: "record", shapeId: shapes.intern(fields, false, undefined, declaredOrder) };
+}
+
+/** The record every part of a union of function-with-properties
+ * intersections maps to, or null when a part does not map to the same one. */
+function mapUniformHybridUnion(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const parts = ts.constituentTypes(widened);
+  if (!parts.every((p) => p.isIntersectionType())) return null;
+  let first: IrType | null = null;
+  for (const part of parts) {
+    if (ctx.checker.getConstructSignatures(part).length > 0) return null;
+    const mapped = mapHybridCallableIntersection(part, ctx);
+    if (!mapped || (first && typeKey(mapped) !== typeKey(first))) return null;
+    first ??= mapped;
+  }
+  return first;
 }
 
 /** Optional standard error metadata refines an existing Error identity;
