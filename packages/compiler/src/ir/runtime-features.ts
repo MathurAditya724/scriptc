@@ -348,7 +348,13 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         features.tls = true;
       }
       if (fn.startsWith("http2.") && !HTTP2_LEGACY_FNS.has(fn)) features.http2 = true;
-      if (fn.startsWith("sym.") || fn === "util.isDeepStrictEqual") features.symbol = true;
+      if (
+        fn.startsWith("sym.") ||
+        fn === "util.isDeepStrictEqual" ||
+        fn === "dyn.usingMethod" ||
+        fn === "dyn.usingDispose"
+      )
+        features.symbol = true;
       if (fn === "process.hrtimeValue") features.bigint = true;
       if (fn.startsWith("bigint.")) features.bigint = true;
       if (fn.startsWith("sp.") || fn === "url.searchParams") features.searchParams = true;

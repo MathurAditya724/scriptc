@@ -189,7 +189,7 @@ import { fenceNodeModuleMutation } from "./lower-node-module.js";
 import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
 
 interface UsingRegistration {
-  acquire: IrStmt;
+  acquire: IrStmt[];
   cleanup: IrStmt[];
   loc: SrcLoc;
 }
@@ -403,14 +403,51 @@ function cleanupCall(
   return null;
 }
 
+/** The statements that dispose `value` at scope exit. `setup` receives
+ * the statements that run at the declaration, after the value is bound. */
 function cleanupForValue(
   lowerer: Lowerer,
   node: ts.Identifier,
   value: IrExpr,
   awaited: boolean,
+  setup: IrStmt[],
 ): IrStmt[] {
   const loc = locOf(node);
   if (isUnitType(value.type)) return [];
+  if (value.type.kind === "dyn") {
+    // A dyn value (an object literal, a Disposable-typed result): the
+    // declaration reads and checks its dispose method, and scope exit
+    // calls it with the value as `this`.
+    const method = lowerer.declareHiddenLocal("%dispose", DYN);
+    setup.push({
+      kind: "varDecl",
+      localId: method.id,
+      init: {
+        kind: "libCall",
+        fn: "dyn.usingMethod",
+        args: [value, { kind: "boolLit", value: awaited, type: BOOL, loc }],
+        type: DYN,
+        loc,
+      },
+      loc,
+    });
+    const call: IrExpr = {
+      kind: "libCall",
+      fn: "dyn.usingDispose",
+      args: [{ kind: "varRef", localId: method.id, type: DYN, loc }, value],
+      type: DYN,
+      loc,
+    };
+    return [
+      {
+        kind: "exprStmt",
+        expr: awaited
+          ? { kind: "libCall", fn: "async.awaitDyn", args: [call], type: DYN, loc }
+          : call,
+        loc,
+      },
+    ];
+  }
   if (value.type.kind === "union") {
     const def = lowerer.unions.get(value.type.unionId);
     if (!def)
@@ -427,7 +464,9 @@ function cleanupForValue(
         type: arm,
         loc,
       };
-      const body = cleanupForValue(lowerer, node, narrowed, awaited);
+      if (arm.kind === "dyn")
+        lowerer.unsupported("SC1090", node, "disposing a union with an 'unknown' arm");
+      const body = cleanupForValue(lowerer, node, narrowed, awaited, setup);
       out.push({
         kind: "if",
         cond: {
@@ -513,8 +552,9 @@ function lowerUsingStatement(lowerer: Lowerer, stmt: ts.VariableStatement): Usin
     if (!binding)
       throw new InternalCompilerError("lowerer bug: using declaration has no runtime binding");
     const value = varRef(binding.id, binding.type, locOf(decl.name));
-    const cleanup = cleanupForValue(lowerer, decl.name, value, awaited);
-    registrations.push({ acquire, cleanup, loc: locOf(decl) });
+    const setup: IrStmt[] = [];
+    const cleanup = cleanupForValue(lowerer, decl.name, value, awaited, setup);
+    registrations.push({ acquire: [acquire, ...setup], cleanup, loc: locOf(decl) });
   }
   return registrations;
 }
@@ -634,8 +674,8 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
           const registrations = lowerUsingStatement(lowerer, stmt);
           const accounting: IrStmt[] = [];
           for (const registration of registrations) {
-            out.push(registration.acquire);
-            accounting.push(registration.acquire, ...registration.cleanup);
+            out.push(...registration.acquire);
+            accounting.push(...registration.acquire, ...registration.cleanup);
             if (registration.cleanup.length > 0) {
               usingMarkers.push({
                 start: out.length,
@@ -8612,8 +8652,10 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     const body = lowerer.inCtl("loop", () => lowerer.lowerScopedBlock(stmt.statement), labels);
     if (!resourceLoop) return forValues(local.id, body);
     const resource = varRef(local.id, local.type, locOf(decl.name));
-    const cleanup = cleanupForValue(lowerer, decl.name, resource, isAwaitUsing(list));
+    const setup: IrStmt[] = [];
+    const cleanup = cleanupForValue(lowerer, decl.name, resource, isAwaitUsing(list), setup);
     return forValues(local.id, [
+      ...setup,
       {
         kind: "tryCatch",
         tryBody: body,

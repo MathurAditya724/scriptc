@@ -155,11 +155,9 @@ ScrChild *scr_spawn_dynamic(ScrStr *cmd, ScrArr *args, const ScrDyn *options);
 void scr_child_on_spawn(ScrChild *child, ScrClosure *cb); /* moves zero-argument callback */
 /* The callback slice: file + args, default options. The returned child has
  * all three stdio slots piped; stdout/stderr are captured internally and
- * the callback moves into the child registry until settlement. With shell
- * (exec), args is ["-c", command] for /bin/sh and failure messages show
- * the command, as for scr_exec_sync. */
+ * the callback moves into the child registry until settlement. */
 ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
-                        ScrExecFileFn fn, bool shell);
+                        ScrExecFileFn fn);
 ScrChild *scr_child_retain(ScrChild *c);
 void scr_child_release(ScrChild *c);
 void *scr_child_retain_v(void *p);

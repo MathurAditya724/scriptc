@@ -2971,10 +2971,10 @@ declare module "child_process" {
     args?: string[] | null,
     options?: ExecSyncOptions,
   ): unknown;
-  /* The async shell form. The callback forms lower like execFile's, with
-   * the command line run by /bin/sh -c, and util.promisify recognizes it
-   * statically, as it does execFile; reached calls without a callback
-   * fence at their site. */
+  /* The async shell form — declared surface without full lowering (the
+   * type-level tolerance story): harness code on paths tests don't reach
+   * must typecheck; a reached call fences at its site. util.promisify
+   * recognizes it statically, as it does execFile. */
   export function exec(
     command: string,
     options?: ExecSyncOptions | ((error: Error | null, stdout: string, stderr: string) => void),
@@ -3062,6 +3062,12 @@ declare module "util" {
   export type TextDecoder = globalThis.TextDecoder;
   export var TextEncoder: typeof globalThis.TextEncoder;
   export var TextDecoder: typeof globalThis.TextDecoder;
+  /* stream.pipeline's (...streams: unknown[]) => unknown is assignable to
+   * every other target's parameter type, so its overload comes first; no
+   * other target is assignable to it. */
+  export function promisify(
+    fn: typeof import("node:stream").pipeline,
+  ): typeof import("node:stream/promises").pipeline;
   export function promisify(
     fn: typeof import("node:fs").readFile,
   ): (path: string, encoding: "utf8" | "utf-8") => Promise<string>;
@@ -3098,6 +3104,9 @@ declare module "util" {
       windowsHide?: boolean;
     },
   ) => Promise<{ stdout: string; stderr: string }>;
+  export function promisify(
+    fn: typeof import("node:stream").finished,
+  ): typeof import("node:stream/promises").finished;
   /* Declared surface without full lowering (the type-level tolerance
    * story: guarded/diagnostic-path code must TYPECHECK; a reached use
    * without a lowering fences at its site). inspect's options carry the

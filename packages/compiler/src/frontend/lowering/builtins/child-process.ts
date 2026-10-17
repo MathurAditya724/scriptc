@@ -725,57 +725,35 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
 }
 
 /** `execFile(file[, args][, options], callback)` — the asynchronous callback
- * slice. With `shell`, `exec(command[, options], callback)`: the command
- * line runs with /bin/sh -c, as execSync runs it, and failure messages show
- * the command line as Node's do. The child starts immediately with
- * stdin/stdout/stderr piped; the runtime captures both outputs and invokes
- * the error-first callback after settlement. The callback may ignore a suffix of `(error, stdout,
+ * slice. The child starts immediately with stdin/stdout/stderr piped; the
+ * runtime captures both outputs and invokes the error-first callback after
+ * settlement. The callback may ignore a suffix of `(error, stdout,
  * stderr)`, but every declared parameter must have the Node shape. Inline
  * `encoding: "utf8"` and a pure numeric `maxBuffer` are accepted; the latter
  * is not enforced by the growing native capture, as
  * with the synchronous and promisified capture forms. Other options remain
  * fenced until their lifecycle can share this asynchronous core. */
-export function lowerExecFileCall(
-  lowerer: Lowerer,
-  expr: ts.CallExpression,
-  loc: SrcLoc,
-  shell = false,
-): IrExpr {
-  const what = shell ? "exec" : "execFile";
+export function lowerExecFileCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   if (
     expr.arguments.some(ts.isSpreadElement) ||
     expr.arguments.length < 2 ||
-    expr.arguments.length > (shell ? 3 : 4)
+    expr.arguments.length > 4
   ) {
     lowerer.noLowering(
-      `${what} with ${expr.arguments.length} arguments`,
+      `execFile with ${expr.arguments.length} arguments`,
       expr,
-      shell
-        ? "the supported callback forms are exec(command, callback) and exec(command, { encoding: 'utf8', maxBuffer: N }, callback)"
-        : "the supported callback forms are execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback)",
+      "the supported callback forms are execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback)",
     );
   }
-  const first = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+  const cmd = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+  const argsNode = expr.arguments.length >= 3 ? expr.arguments[1] : undefined;
   const callbackNode = expr.arguments[expr.arguments.length - 1]!;
-  // exec: /bin/sh -c <command>, execSync's lowering (the runtime reads the
-  // command line back from argv[1] for failure messages); execFile: the
-  // file and its args list.
-  const cmd: IrExpr = shell ? { kind: "strLit", value: "/bin/sh", type: STRING, loc } : first;
-  const argv: IrExpr = shell
-    ? {
-        kind: "arrayLit",
-        elems: [{ kind: "strLit", value: "-c", type: STRING, loc }, first],
-        type: arrayOf(STRING),
-        loc,
-      }
-    : lowerChildArgsArg(lowerer, expr.arguments.length >= 3 ? expr.arguments[1] : undefined, loc);
-  const optionsNode =
-    expr.arguments.length === (shell ? 3 : 4) ? expr.arguments[shell ? 1 : 2] : undefined;
-  if (optionsNode) {
-    const options = optionsNode;
+  const argv = lowerChildArgsArg(lowerer, argsNode, loc);
+  if (expr.arguments.length === 4) {
+    const options = expr.arguments[2]!;
     if (!ts.isObjectLiteralExpression(options)) {
       lowerer.noLowering(
-        `${what} with a non-literal options argument`,
+        "execFile with a non-literal options argument",
         options,
         "pass encoding and maxBuffer in an inline object literal",
       );
@@ -796,7 +774,7 @@ export function lowerExecFileCall(
       const member = optionMember(property);
       if (!member)
         lowerer.noLowering(
-          `${what} with this options shape`,
+          "execFile with this options shape",
           property,
           "use plain encoding and maxBuffer properties without spreads or computed keys",
         );
@@ -806,7 +784,7 @@ export function lowerExecFileCall(
           (member.value.text !== "utf8" && member.value.text !== "utf-8")
         ) {
           lowerer.noLowering(
-            `${what} with a non-literal utf8 encoding`,
+            "execFile with a non-literal utf8 encoding",
             member.value,
             "pass the literal 'utf8' or 'utf-8' (other expressions might have side effects)",
           );
@@ -814,14 +792,14 @@ export function lowerExecFileCall(
       } else if (member.name === "maxBuffer") {
         if (!pureNumber(member.value)) {
           lowerer.noLowering(
-            `${what} with a non-literal maxBuffer`,
+            "execFile with a non-literal maxBuffer",
             member.value,
             "pass a numeric literal or literal arithmetic (the native capture grows without enforcing this limit)",
           );
         }
       } else {
         lowerer.noLowering(
-          `${what} option '${member.name}'`,
+          `execFile option '${member.name}'`,
           property,
           "only encoding: 'utf8' and a pure numeric maxBuffer are supported in the callback form",
         );
@@ -837,14 +815,14 @@ export function lowerExecFileCall(
     lowerer.unsupported(
       "SC1090",
       callbackNode,
-      `${what} callbacks take (error), (error, stdout), (error, stdout, stderr), or no parameters`,
+      "execFile callbacks take (error), (error, stdout), (error, stdout, stderr), or no parameters",
     );
   }
   if (callback.type.ret.kind !== "void") {
     lowerer.unsupported(
       "SC1090",
       callbackNode,
-      `${what} callbacks returning a value (make the callback body a block, or return nothing)`,
+      "execFile callbacks returning a value (make the callback body a block, or return nothing)",
     );
   }
   const errorParam = callback.type.params[0];
@@ -859,7 +837,7 @@ export function lowerExecFileCall(
       lowerer.unsupported(
         "SC1090",
         callbackNode,
-        `${what} callbacks whose first parameter is not 'Error | null' (got '${lowerer.fmt(errorParam)}')`,
+        `execFile callbacks whose first parameter is not 'Error | null' (got '${lowerer.fmt(errorParam)}')`,
       );
     }
   }
@@ -868,15 +846,9 @@ export function lowerExecFileCall(
       lowerer.unsupported(
         "SC1090",
         callbackNode,
-        `${what} callbacks whose ${i === 1 ? "stdout" : "stderr"} parameter is not 'string'`,
+        `execFile callbacks whose ${i === 1 ? "stdout" : "stderr"} parameter is not 'string'`,
       );
     }
   }
-  return {
-    kind: "libCall",
-    fn: "cp.execFile",
-    args: [cmd, argv, callback, boolLit(shell, loc)],
-    type: CHILD_T,
-    loc,
-  };
+  return { kind: "libCall", fn: "cp.execFile", args: [cmd, argv, callback], type: CHILD_T, loc };
 }

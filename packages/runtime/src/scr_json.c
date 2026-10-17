@@ -5677,6 +5677,16 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
       scr_dyn_obj_set(d, "cause", 5, scr_domex_cause((ScrError *)e));
     }
   }
+  /* A disposal SuppressedError's non-enumerable `error` and `suppressed`
+   * (scr_exc_suppress); a constructed one sets them on its view. */
+  const ScrCaught *suppressed_error = NULL, *suppressed_value = NULL;
+  if (e->vt == &scr_error_vts[SCR_ERR_SUPPRESSED] &&
+      scr_exc_suppressed_values(e, &suppressed_error, &suppressed_value)) {
+    scr_dyn_obj_set(d, "error", 5, scr_caught_to_dyn(suppressed_error));
+    d->v.obj.entries[d->v.obj.len - 1].enumerable = false;
+    scr_dyn_obj_set(d, "suppressed", 10, scr_caught_to_dyn(suppressed_value));
+    d->v.obj.entries[d->v.obj.len - 1].enumerable = false;
+  }
   /* AggregateError's own non-enumerable `errors` list, shared with the
    * typed read so both spellings answer the same array. */
   if (e->vt == &scr_error_vts[SCR_ERR_AGGREGATE]) {
@@ -10885,6 +10895,24 @@ ScrError *scr_error_new_options(int kind, const ScrDyn *message, const ScrDyn *o
     scr_error_release(e);
     return NULL;
   }
+  return e;
+}
+
+/* SuppressedError's `error` and `suppressed`: non-enumerable own
+ * properties of the error's dyn view. Both values move in. */
+static void scr_suppressed_attach(ScrError *e, ScrDyn *error, ScrDyn *suppressed) {
+  ScrDyn *view = scr_dyn_from_error(e);
+  scr_dyn_obj_set(view, "error", 5, error);
+  view->v.obj.entries[view->v.obj.len - 1].enumerable = false;
+  scr_dyn_obj_set(view, "suppressed", 10, suppressed);
+  view->v.obj.entries[view->v.obj.len - 1].enumerable = false;
+  scr_dyn_release(view);
+}
+
+ScrError *scr_suppressed_new(const ScrDyn *error, const ScrDyn *suppressed, const ScrDyn *message) {
+  ScrError *e = scr_error_new_options(SCR_ERR_SUPPRESSED, message, NULL);
+  if (!e) return NULL;
+  scr_suppressed_attach(e, scr_dyn_retain((ScrDyn *)error), scr_dyn_retain((ScrDyn *)suppressed));
   return e;
 }
 

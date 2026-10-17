@@ -1377,23 +1377,6 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "object", className: "%Error" };
   }
-  // child_process.ExecException, exec's callback error, is an interface
-  // extending Error with optional metadata members; the value is one
-  // ordinary Error as well.
-  const execException = type.getSymbol();
-  if (
-    execException?.name === "ExecException" &&
-    checker
-      .declarationsOf(execException)
-      .some(
-        (decl) =>
-          ts.isInterfaceDeclaration(decl) &&
-          ctx.isStdlibFile(decl.getSourceFile()) &&
-          isDeclaredInAmbientModule(decl, "child_process"),
-      )
-  ) {
-    return { kind: "object", className: "%Error" };
-  }
   if (isOsConstantsType(type, ctx) || isLegacyUrlType(type, ctx)) return DYN;
   // Immutable<T> (@scriptc/types) is a deep-readonly view: the value is
   // still the T it maps.
@@ -2325,10 +2308,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // The stdlib Console interface (the global console and node:console
   // Console instances) is a native handle carried by the checked-dynamic
   // representation and consumed by the console method lowerings. The
-  // stdlib Disposable (events.addAbortListener's result) is a checked
-  // object carrying its Symbol.dispose method.
+  // stdlib Disposable (events.addAbortListener's result) and
+  // AsyncDisposable are checked objects carrying their Symbol.dispose or
+  // Symbol.asyncDispose method.
   if (
-    (psym?.name === "Console" || psym?.name === "Disposable") &&
+    (psym?.name === "Console" || psym?.name === "Disposable" || psym?.name === "AsyncDisposable") &&
     checker
       .declarationsOf(psym)
       .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
@@ -4900,6 +4884,7 @@ function mapErrorMetadataIntersection(type: ts.Type, ctx: TypeMapperCtx): IrType
         "TypeError",
         "URIError",
         "AggregateError",
+        "SuppressedError",
       ].includes(symbol.name) &&
       ctx.checker.declarationsOf(symbol).some((decl) => ctx.isStdlibFile(decl.getSourceFile()))
     );

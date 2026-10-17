@@ -11,6 +11,6 @@ console.log(await sleepFromModule(1, true));
 const order: string[] = [];
 await Promise.all([
   sleep(20, "slow").then((v) => order.push(v)),
-  immediate("now").then((v) => order.push(v)),
+  sleep(1, "fast").then((v) => order.push(v)),
 ]);
 console.log(order.join(","));
