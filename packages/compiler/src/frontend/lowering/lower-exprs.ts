@@ -5497,6 +5497,31 @@ export function lowerIntrinsicProperty(
   return null;
 }
 
+/** JavaScript: whether `expr` is or holds an existing checked-dynamic
+ * object — a binding stored as a dyn value whose checker type is an
+ * object, or an array or object literal with such an element. Building
+ * the enclosing literal with a static element type would copy it. */
+export function jsHoldsDynObject(lowerer: Lowerer, expr: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (ts.isIdentifier(expr)) {
+    const stored = lowerer.peekLocal(expr)?.type ?? lowerer.globalOf(expr)?.type;
+    return stored?.kind === "dyn" && (lowerer.typeOf(expr).flags & ts.TypeFlags.Object) !== 0;
+  }
+  if (ts.isArrayLiteralExpression(expr))
+    return expr.elements.some(
+      (element) => !ts.isSpreadElement(element) && jsHoldsDynObject(lowerer, element),
+    );
+  if (ts.isObjectLiteralExpression(expr))
+    return expr.properties.some(
+      (property) =>
+        (ts.isPropertyAssignment(property) && jsHoldsDynObject(lowerer, property.initializer)) ||
+        (ts.isShorthandPropertyAssignment(property) &&
+          ts.isIdentifier(property.name) &&
+          jsHoldsDynObject(lowerer, property.name)),
+    );
+  return false;
+}
+
 /** `[a, b, c]`. The element type comes from the contextual type when tsc
  * has one (`const a: number[] = []`, arguments, nested literals) and from
  * the literal's own inferred type otherwise. A bare `[]` with no context
@@ -5665,6 +5690,18 @@ export function lowerArrayLiteral(
       (element) =>
         ts.isSpreadElement(element) &&
         tryLowerExpression(lowerer, element.expression)?.type.kind === "dyn",
+    )
+  )
+    mapped = DYN;
+  // An element that is an existing checked-dynamic object (a file-scope
+  // object literal binding, or a literal holding one) keeps its identity
+  // only in a checked-dynamic array: a static element type would copy it.
+  if (
+    !expected &&
+    isJsSourceFile(expr.getSourceFile()) &&
+    mapped?.kind !== "dyn" &&
+    expr.elements.some(
+      (element) => !ts.isSpreadElement(element) && jsHoldsDynObject(lowerer, element),
     )
   )
     mapped = DYN;
