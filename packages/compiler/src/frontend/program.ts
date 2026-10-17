@@ -138,11 +138,16 @@ const FORCED_OPTIONS: ts.Ts7CompilerOptions = {
   // classification is intentionally independent below; this option is only
   // the binder's scope decision.
   moduleDetection: ts.ModuleDetectionKind.Force,
-  // Explicit resource management and Array.fromAsync are ESNext library
-  // slices in TS 7 even though Node 24 ships them. Include those focused
-  // libs without widening the rest of the standard-library target past
-  // ES2025.
-  lib: ["lib.es2025.d.ts", "lib.esnext.disposable.d.ts", "lib.esnext.array.d.ts"],
+  // Explicit resource management, Array.fromAsync and Error.isError are
+  // ESNext library slices in TS 7 even though Node 24 ships them. Include
+  // those focused libs without widening the rest of the standard-library
+  // target past ES2025.
+  lib: [
+    "lib.es2025.d.ts",
+    "lib.esnext.disposable.d.ts",
+    "lib.esnext.array.d.ts",
+    "lib.esnext.error.d.ts",
+  ],
   types: [],
   allowImportingTsExtensions: true,
   allowJs: true,

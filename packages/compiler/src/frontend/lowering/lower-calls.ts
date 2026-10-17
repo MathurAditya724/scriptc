@@ -105,6 +105,7 @@ import {
   lowerRequireResolveCall,
 } from "./builtins/module-resolution.js";
 import { lowerCipherMethodCall, lowerCryptoHashMethodCall } from "./builtins/crypto.js";
+import { lowerErrorIsErrorCall } from "./builtins/errors.js";
 import {
   lowerDirentMethodCall,
   lowerFileHandleMethodCall,
@@ -1387,6 +1388,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // by the receiver's own element.
       lowerer.lowerFilterNarrowCall(expr, expr.expression) ??
       lowerArrayIsArrayCall(lowerer, expr, expr.expression) ??
+      lowerErrorIsErrorCall(lowerer, expr, expr.expression) ??
       lowerBigIntMethodCall(lowerer, expr, expr.expression) ??
       lowerSymbolStaticCall(lowerer, expr, expr.expression) ??
       lowerSymbolMethodCall(lowerer, expr, expr.expression) ??
