@@ -322,8 +322,80 @@ static ScrStr *parse_rooted_path(const char *raw, size_t len, bool special) {
   return parse_rooted_path_mode(raw, len, special, false);
 }
 
+/* The WHATWG IPv4 number parser: "0x"/"0X" makes the rest hexadecimal
+ * and a leading "0" octal; an empty rest is 0. Values past 2^32 saturate
+ * there, since every caller rejects them. */
+static bool url_ipv4_number(const char *s, size_t n, uint64_t *out) {
+  if (n == 0) return false;
+  unsigned radix = 10;
+  if (n >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+    radix = 16;
+    s += 2;
+    n -= 2;
+  } else if (n >= 2 && s[0] == '0') {
+    radix = 8;
+    s += 1;
+    n -= 1;
+  }
+  uint64_t v = 0;
+  for (size_t i = 0; i < n; i++) {
+    unsigned char c = (unsigned char)s[i];
+    unsigned d = c >= '0' && c <= '9' ? (unsigned)(c - '0')
+                 : c >= 'a' && c <= 'f' ? (unsigned)(c - 'a' + 10)
+                 : c >= 'A' && c <= 'F' ? (unsigned)(c - 'A' + 10)
+                                        : 16;
+    if (d >= radix) return false;
+    v = v > 0xFFFFFFFFull ? v : v * radix + d;
+  }
+  *out = v;
+  return true;
+}
+
+/* The WHATWG "ends in a number" checker: the last dot-separated label
+ * (one trailing empty label dropped) is all digits or an IPv4 number. */
+static bool url_ends_in_number(const char *s, size_t n) {
+  if (n > 0 && s[n - 1] == '.') n--;
+  size_t start = n;
+  while (start > 0 && s[start - 1] != '.') start--;
+  const char *last = s + start;
+  size_t len = n - start;
+  if (len == 0) return false;
+  bool digits = true;
+  for (size_t i = 0; i < len && digits; i++) digits = last[i] >= '0' && last[i] <= '9';
+  uint64_t ignored;
+  return digits || url_ipv4_number(last, len, &ignored);
+}
+
+/* The WHATWG IPv4 parser: up to four labels (one trailing empty label
+ * dropped); every label but the last at most 255, and the last below
+ * 256^(5 - labels). Writes the dotted-decimal serialization. */
+static bool url_ipv4_parse(const char *s, size_t n, UrlBuf *out) {
+  if (n > 0 && s[n - 1] == '.') n--;
+  uint64_t parts[4];
+  size_t count = 0, start = 0;
+  for (size_t i = 0; i <= n; i++) {
+    if (i < n && s[i] != '.') continue;
+    if (count == 4 || !url_ipv4_number(s + start, i - start, &parts[count])) return false;
+    count++;
+    start = i + 1;
+  }
+  for (size_t i = 0; i + 1 < count; i++)
+    if (parts[i] > 255) return false;
+  uint64_t limit = 1ull << (8 * (5 - count));
+  if (parts[count - 1] >= limit) return false;
+  uint64_t v = parts[count - 1];
+  for (size_t i = 0; i + 1 < count; i++) v += parts[i] << (8 * (3 - i));
+  char text[16];
+  int len = snprintf(text, sizeof text, "%u.%u.%u.%u", (unsigned)(v >> 24) & 255, (unsigned)(v >> 16) & 255,
+                     (unsigned)(v >> 8) & 255, (unsigned)v & 255);
+  ub_append(out, text, (size_t)len);
+  return true;
+}
+
 /* Shared constructor/setter host parsing keeps the existing ASCII-host
- * boundary and canonical IPv6 serialization in both execution tiers. */
+ * boundary and canonical IPv6 serialization in both execution tiers. A
+ * special host that ends in a number is an IPv4 address: it serializes
+ * as dotted decimal, or the URL is invalid. */
 static bool parse_host(const char *hp, size_t host_len, bool special, bool is_file,
                        ScrStr **host) {
   bool ipv6 = host_len > 0 && hp[0] == '[';
@@ -352,6 +424,17 @@ static bool parse_host(const char *hp, size_t host_len, bool special, bool is_fi
       }
       ub_push(&hb, (char)c);
     }
+  }
+  if (!ipv6 && special && url_ends_in_number(hb.data, hb.len)) {
+    UrlBuf ip;
+    ub_init(&ip);
+    bool ok = url_ipv4_parse(hb.data, hb.len, &ip);
+    free(hb.data);
+    if (!ok) {
+      free(ip.data);
+      return false;
+    }
+    hb = ip;
   }
   /* file: "localhost" normalizes to "" at parse time (Node). */
   if (is_file && hb.len == 9 && memcmp(hb.data, "localhost", 9) == 0) hb.len = 0;
