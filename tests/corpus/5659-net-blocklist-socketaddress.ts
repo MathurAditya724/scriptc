@@ -1,9 +1,17 @@
 // net.SocketAddress (options, defaults, parse(), toJSON() and Node's
 // validation errors) and net.BlockList (address, range, subnet and CIDR
 // rules, removal, the rule listing order, check() across IPv4 and IPv6,
-// toJSON()/fromJSON() and PRIVATE_RANGES).
+// toJSON()/fromJSON() and PRIVATE_RANGES). Node lists the address rules
+// first, in the iteration order of a C++ unordered_map (which differs between
+// platforms), then the subnets and the ranges, each newest first; the program
+// sorts the address rules before printing.
 import * as net from "node:net";
 import { inspect } from "node:util";
+
+function ordered(rules: readonly string[]): string[] {
+  const addresses = rules.filter((rule) => rule.startsWith("Address: "));
+  return [...addresses.sort(), ...rules.slice(addresses.length)];
+}
 
 function show(label: string, f: () => unknown): void {
   try {
@@ -43,9 +51,13 @@ list.addRange("10.0.0.1", "10.0.0.5");
 list.addSubnet("192.168.0.0", 16);
 list.addCIDR("fe80::/10");
 list.addAddresses(["7.7.7.7", sa]);
-show("rules", () => list.rules);
+show("rules", () => ordered(list.rules));
 show("size", () => list.size);
-show("inspect", () => list);
+const single = new net.BlockList();
+single.addAddress("3.3.3.3");
+single.addRange("10.0.0.1", "10.0.0.5");
+single.addSubnet("192.168.0.0", 16);
+show("inspect", () => single);
 show("check", () => [
   list.check("1.2.3.4"),
   list.check("10.0.0.3"),
@@ -66,7 +78,7 @@ show("bad cidr", () => list.addCIDR("10.0.0.0"));
 list.removeAddress("2.2.2.2");
 list.removeRange("10.0.0.1", "10.0.0.5");
 list.removeCIDR("fe80::/10");
-show("after removal", () => list.rules);
+show("after removal", () => ordered(list.rules));
 
 const mapped = new net.BlockList();
 mapped.addSubnet("::", 64, "ipv6");
@@ -74,7 +86,7 @@ show("mapped", () => [mapped.check("9.9.9.9"), mapped.check("::1:0:0:0:1", "ipv6
 
 const copy = new net.BlockList();
 copy.fromJSON(list.toJSON());
-show("fromJSON", () => copy.rules);
+show("fromJSON", () => ordered(copy.rules));
 const parsed = new net.BlockList();
 parsed.fromJSON(JSON.stringify(["Subnet: IPv6 ::/64", "x Address: IPv4 9.9.9.9 y", "Range: IPv4 1.1.1.1-1.1.1.2"]));
 show("fromJSON string", () => parsed.rules);
