@@ -18,9 +18,10 @@ export function markWrappingOperands(host: LlvmEmitterContext, ...operands: IrEx
 
 /** The values an f64 expression can have when each one is an exact integer
  * (never -0) or NaN: proven ranges, safe integer literals, NaN-coded reads
- * of integer typed-array elements, `charCodeAt`, and sums and differences of those whose
- * every integer result is still exact in a double. */
-function integerOrNaNRange(host: LlvmEmitterContext, e: IrExpr): IntegerRange | null {
+ * of integer typed-array elements and of Int32[] elements, `charCodeAt`,
+ * and sums and differences of those whose every integer result is still
+ * exact in a double. */
+export function integerOrNaNRange(host: LlvmEmitterContext, e: IrExpr): IntegerRange | null {
   if (e.type.kind !== "f64") return null;
   const range = host.integerRanges.get(e);
   if (range) return range;
@@ -35,6 +36,15 @@ function integerOrNaNRange(host: LlvmEmitterContext, e: IrExpr): IntegerRange | 
     e.receiver.type.kind === "bytes"
   )
     return ELEMENT_RANGES[e.receiver.type.elem] ?? null;
+  // ToNumber of an Int32[] element read: the stored int32, or NaN for a
+  // hole, a present undefined or a missing index.
+  if (
+    e.kind === "arrIntrinsic" &&
+    e.method === "getNumber" &&
+    host.int32Elements !== null &&
+    host.int32Elements(e.receiver)
+  )
+    return ELEMENT_RANGES.i32!;
   // A UTF-16 code unit, or NaN past either end.
   if (e.kind === "strIntrinsic" && e.method === "charCodeAt") return { min: 0, max: 65535 };
   if (e.kind === "bin" && (e.op === "+" || e.op === "-")) {

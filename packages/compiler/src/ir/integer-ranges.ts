@@ -210,6 +210,9 @@ export interface IntegerSlotFacts {
   /** Locals and globals an Int32 contract covers (ir/contract-check.ts):
    * every write anywhere is proven int32, so every read is one. */
   locals?: (localId: string) => IntegerRange | null;
+  /** Number arrays whose every present element is an int32 (Int32[]
+   * contracts): an element read that found a value reads an int32. */
+  elements?: (arr: IrExpr) => boolean;
 }
 
 /** Structured local dataflow. Calls cannot write uncaptured local slots,
@@ -248,7 +251,9 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
         ? (slots.field?.(e.className, e.field) ?? null)
         : e.kind === "call"
           ? (slots.call?.(e.callee) ?? null)
-          : null;
+          : e.kind === "arrayGet" && slots.elements?.(e.arr) === true
+            ? INT32_RANGE
+            : null;
 
   /** Every write of a local in the given nodes: the written value, or null
    * for writes whose value is not an ordinary expression (++/--, for-of
