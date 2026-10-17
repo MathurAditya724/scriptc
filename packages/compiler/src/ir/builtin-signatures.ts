@@ -3899,6 +3899,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * type follows the value promise. */
   "tp.setTimeoutValue": { argTypes: [F64, null, BOOL], result: VOID },
   "tp.setImmediateValue": { argTypes: [null, BOOL], result: VOID },
+  /** The same with options.signal (a checked-dynamic AbortSignal or
+   * undefined) last: an abort clears the timer and rejects with an
+   * AbortError (scr_event_target.c). */
+  "tp.setTimeoutSignal": { argTypes: [F64, null, BOOL, DYN], result: VOID },
+  "tp.setImmediateSignal": { argTypes: [null, BOOL, DYN], result: VOID },
   /** node:diagnostics_channel (scr_dc.c, linked when any dc.* appears —
    * the zlib gating precedent): a process-global name→channel registry;
    * channel values are f64 handles (type-mapper.ts maps Channel to F64, the

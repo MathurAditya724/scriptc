@@ -28,7 +28,7 @@ accessSync("/bin/sh", constants.X_OK);
 const tmp = mkdtempSync("/tmp/scr-");
 const raw = readFileSync("/etc/hosts").toString(tty ? "hex" : "latin1"); // runtime BufferEncoding selection lowers too
 const intervalWithSignal = promiseInterval(1, "tick", {}); // AbortSignal options stay fenced
-const sleepWithSignal = promiseSleep(1, "tick", { signal: AbortSignal.timeout(5) }); // resolve values lower; AbortSignal stays fenced
+const sleepWithSignal = promiseSleep(1, "tick", { signal: AbortSignal.timeout(5) }); // resolve values and AbortSignal options lower
 // The computed encoding is now part of the static Buffer surface. The
 // one-shot zlib/raw/gzip codecs take Node's options, validated at run
 // time; Brotli remains an explicit member fence.
