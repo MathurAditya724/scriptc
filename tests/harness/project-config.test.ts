@@ -404,6 +404,24 @@ test("node-types: promisified setTimeout and setImmediate lower as timers/promis
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: promisified zlib one-shots settle from the worker-pool codec", async () => {
+  const outDir = outDirFor("promisify-zlib");
+  const entry = join(nodeTypesDir, "promisify-zlib.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "promisify-zlib"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: unsupported child stdin forms remain named fences", async () => {
   const dir = outDirFor("node-child-stdin-fences");
   const entry = join(nodeTypesDir, "child-stdin-fences.ts");

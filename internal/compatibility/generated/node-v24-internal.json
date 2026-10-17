@@ -100567,6 +100567,7 @@
           "tests/corpus/5626-promisify-forms.ts",
           "tests/corpus/5628-promisify-timers.ts",
           "tests/corpus/5629-promisify-stream.ts",
+          "tests/corpus/5630-promisify-zlib.ts",
           "tests/corpus/node24-deep-equality-properties.js",
           "tests/corpus/node24-deep-equality.cjs",
           "tests/corpus/node24-deep-equality.ts",
@@ -100595,6 +100596,7 @@
           "tests/fixtures/node-types/env-files.ts",
           "tests/fixtures/node-types/promisify-fs.ts",
           "tests/fixtures/node-types/promisify-timers.ts",
+          "tests/fixtures/node-types/promisify-zlib.ts",
           "tests/fixtures/node-types/style-text.ts",
           "tests/fixtures/node-types/system-errors.ts",
           "tests/fixtures/node-types/text-codecs.mts",
@@ -102225,6 +102227,8 @@
           "tests/corpus/5628-promisify-timers.ts",
           "tests/fixtures/node-types/promisify-timers.ts",
           "tests/corpus/5629-promisify-stream.ts",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/fixtures/node-types/promisify-zlib.ts",
           "tests/harness/project-config.test.ts"
         ]
       },

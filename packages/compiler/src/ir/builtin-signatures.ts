@@ -2626,6 +2626,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** The checked-dynamic input twins (the JS lane's untyped data). */
   "zlib.syncOptsDyn": { argTypes: [F64, DYN, DYN], result: BYTES_U8 },
   "zlib.cbOptsDyn": { argTypes: [F64, DYN, DYN, null], result: VOID },
+  /** util.promisify over the callback one-shots: [mode, data, options]
+   * like zlib.cbOpts → a promise the worker-pool run settles with the
+   * Buffer or the callback form's Error. An options or input error rejects
+   * it; never throws. The Dyn twin takes the JS lane's untyped data. */
+  "zlib.promise": { argTypes: [F64, BYTES_U8, DYN], result: { kind: "promise", inner: BYTES_U8 } },
+  "zlib.promiseDyn": { argTypes: [F64, DYN, DYN], result: { kind: "promise", inner: BYTES_U8 } },
   /** The stream classes (scr_zlib_stream.c, linked with the stream unit):
    * streamNew takes Node's node_zlib_mode number and the options value
    * (undefined when absent), validates it with Node's ladder, and answers
