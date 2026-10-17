@@ -166,6 +166,8 @@ typedef enum {
   SCR_DYNH_DIR,            /* fs.Dir (scr_lib.c) */
   SCR_DYNH_CIPHER,         /* node:crypto Cipheriv (scr_cipher.c) */
   SCR_DYNH_DECIPHER,       /* node:crypto Decipheriv (scr_cipher.c) */
+  SCR_DYNH_NET_SOCKET_ADDRESS, /* net.SocketAddress (scr_net.c) */
+  SCR_DYNH_NET_BLOCK_LIST, /* net.BlockList (scr_net.c) */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 

@@ -9,6 +9,7 @@ import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { lowerReadlineProperty } from "./builtins/readline.js";
 import { lowerBlobInstanceof } from "./builtins/blob.js";
 import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
+import { lowerNetAddressInstanceof, lowerNetAddressStaticRead } from "./builtins/net-address.js";
 import { STATS_TYPE_TESTS } from "./builtins/filesystem.js";
 import { threadsImportOf } from "../threads-import.js";
 import { experimentalImportOf, lifetimeRegionMemberOf } from "../experimental-import.js";
@@ -4927,6 +4928,8 @@ export function lowerIntrinsicProperty(
     return lowerNumberParserValue(lowerer, numberMember, locOf(expr));
   if (lowerer.stdlibGlobalMember(expr, "Buffer") === "poolSize")
     return { kind: "libCall", fn: "buffer.poolSize", args: [], type: F64, loc: locOf(expr) };
+  const netAddressStatic = lowerNetAddressStaticRead(lowerer, expr);
+  if (netAddressStatic) return netAddressStatic;
   if (lowerer.stdlibGlobalMember(expr, "Buffer") === "isBuffer")
     return lowerCheckedPredicateValue(lowerer, "Buffer.isBuffer", "buffer", locOf(expr));
   if (lowerer.stdlibGlobalMember(expr, "Date") === "now")
@@ -11932,6 +11935,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     if (blob) return blob;
     const keyObject = lowerKeyObjectInstanceof(lowerer, expr);
     if (keyObject) return keyObject;
+    const netAddress = lowerNetAddressInstanceof(lowerer, expr);
+    if (netAddress) return netAddress;
   }
   if (lowerer.isStdlibGlobal(expr.right, "SharedArrayBuffer")) {
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);

@@ -2302,6 +2302,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (!elem) return null;
     return genResultRecord(elem, VOID, ctx.shapes, ctx.unions);
   }
+  // node:net's SocketAddress and BlockList: native handles (scr_net.c)
+  // whose getters and methods dispatch through the handle.
+  if (
+    (psym?.name === "SocketAddress" || psym?.name === "BlockList") &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
+          ctx.isStdlibFile(d.getSourceFile()),
+      )
+  ) {
+    return DYN;
+  }
   // node:crypto's KeyObject: secret keys are native handles (scr_lib.c)
   // whose getters and methods dispatch through the handle. The JsonWebKey
   // that export() returns is a plain checked-dynamic object.

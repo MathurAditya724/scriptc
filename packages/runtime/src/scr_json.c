@@ -8795,7 +8795,9 @@ static ScrDyn *scr_json_replace(const ScrDyn *holder, const ScrStr *key, const S
       ? scr_dyn_typed_ref_materialize(value) : NULL;
   const ScrDyn *inspected = view ? view : value;
   if (scr_exc_pending()) { scr_dyn_release(view); scr_dyn_release(value); return NULL; }
-  if (inspected->kind == SCR_DYN_HANDLE && (inspected->v.handle.tag == SCR_DYNH_DATE || inspected->v.handle.tag == SCR_DYNH_URL)) {
+  if (inspected->kind == SCR_DYN_HANDLE && (inspected->v.handle.tag == SCR_DYNH_DATE || inspected->v.handle.tag == SCR_DYNH_URL ||
+                                             inspected->v.handle.tag == SCR_DYNH_NET_SOCKET_ADDRESS ||
+                                             inspected->v.handle.tag == SCR_DYNH_NET_BLOCK_LIST)) {
     const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(inspected);
     ScrDyn *converted = ops->invoke(inspected->v.handle.ptr, value, "toJSON", NULL, 0, "toJSON");
     scr_dyn_release(value);
