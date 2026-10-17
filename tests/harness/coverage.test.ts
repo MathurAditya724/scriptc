@@ -57,6 +57,21 @@ test("divergences report as warnings, never as blockers", async () => {
   );
 });
 
+test("record width copies report at every storing site", async () => {
+  const { coverage } = analyze(fixture("width-copies.ts"));
+  expect(coverage.diagnostics).toEqual([]);
+  expect((coverage.divergences ?? []).map((d) => d.code)).toEqual([
+    "SC6001",
+    "SC6001",
+    "SC6001",
+    "SC6001",
+    "SC6001",
+  ]);
+  await expect(report(fixture("width-copies.ts"))).toMatchFileSnapshot(
+    "__snapshots__/coverage-width-copies.txt",
+  );
+});
+
 test("ordinary code reports no divergence", () => {
   const { coverage } = analyze(fixture("no-divergences.ts"));
   expect(coverage.diagnostics).toEqual([]);

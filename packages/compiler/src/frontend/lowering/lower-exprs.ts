@@ -8598,6 +8598,11 @@ export function lowerAsExpression(
     // object. Box a live reference instead of erasing the assertion and
     // handing native storage to a checked-dynamic property operation.
     if (target?.kind === "dyn" && (targetTs0.flags & ts.TypeFlags.Object) !== 0) {
+      // A class instance asserted to a class-backed protocol view (a type
+      // class instances flow into): the same identity-keeping box an
+      // implicit flow into the view uses.
+      if (inner.type.kind === "object" && lowerer.classImplementedProtocol(targetTs0))
+        return lowerer.coerceInto(expr, inner, DYN);
       const sourceShape =
         inner.type.kind === "record" ? lowerer.shapes.get(inner.type.shapeId) : undefined;
       if (
@@ -8977,7 +8982,14 @@ export function lowerIncDec(
             },
       );
     }
-    if (isJsSourceFile(expr.getSourceFile()) && raw.type.kind === "dyn") {
+    // A TS member statically typed number on a checked-dynamic receiver (a
+    // class-backed protocol view): the expanded form `o.v = o.v + 1`, its
+    // read checked into number like any other read of the member.
+    const checkedNumber =
+      !isJsSourceFile(expr.getSourceFile()) &&
+      raw.type.kind === "dyn" &&
+      lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "f64";
+    if ((isJsSourceFile(expr.getSourceFile()) || checkedNumber) && raw.type.kind === "dyn") {
       const receiver = save(raw, "%incrementReceiver");
       const key = save(
         ts.isElementAccessExpression(access)
@@ -8989,7 +9001,8 @@ export function lowerIncDec(
             ),
         "%incrementKey",
       );
-      return finish({ kind: "dynKeyGet", value: receiver, key, type: DYN, loc }, (value) => ({
+      const read: IrExpr = { kind: "dynKeyGet", value: receiver, key, type: DYN, loc };
+      return finish(checkedNumber ? lowerer.coerceInto(access, read, F64) : read, (value) => ({
         kind: "exprStmt",
         expr: {
           kind: "libCall",
