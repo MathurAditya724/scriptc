@@ -3062,6 +3062,12 @@ declare module "util" {
   export type TextDecoder = globalThis.TextDecoder;
   export var TextEncoder: typeof globalThis.TextEncoder;
   export var TextDecoder: typeof globalThis.TextDecoder;
+  /* stream.pipeline's (...streams: unknown[]) => unknown is assignable to
+   * every other target's parameter type, so its overload comes first; no
+   * other target is assignable to it. */
+  export function promisify(
+    fn: typeof import("node:stream").pipeline,
+  ): typeof import("node:stream/promises").pipeline;
   export function promisify(
     fn: typeof import("node:fs").readFile,
   ): (path: string, encoding: "utf8" | "utf-8") => Promise<string>;
@@ -3098,6 +3104,9 @@ declare module "util" {
       windowsHide?: boolean;
     },
   ) => Promise<{ stdout: string; stderr: string }>;
+  export function promisify(
+    fn: typeof import("node:stream").finished,
+  ): typeof import("node:stream/promises").finished;
   /* Declared surface without full lowering (the type-level tolerance
    * story: guarded/diagnostic-path code must TYPECHECK; a reached use
    * without a lowering fences at its site). inspect's options carry the
