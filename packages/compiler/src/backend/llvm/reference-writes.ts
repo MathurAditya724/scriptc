@@ -191,6 +191,7 @@ export class ReferenceWrites {
   private current: IrFunction | null = null;
   private currentBoxed = new Set<string>();
   private currentLocals = new Set<string>();
+  private currentPrivateArrays: ReadonlySet<string> = new Set();
   private constructors: ReadonlySet<string> = new Set();
   private inConstructor = false;
 
@@ -278,6 +279,7 @@ export class ReferenceWrites {
       }
       const thisId = external && constructors.has(fn.name) ? (fn.params[0]?.localId ?? null) : null;
       const boxed = boxedLocals(fn);
+      const privates = privateArrays(fn, boxed);
       const sink: WriteSink = {
         add: (k) => {
           // Interned for queries; a callee's locals are private to it.
@@ -311,7 +313,7 @@ export class ReferenceWrites {
       const stmt = (s: IrStmt): boolean => {
         if (thisId !== null && s.kind === "fieldSet" && isThisRef(s.obj, thisId)) {
           // A store into the fresh `this`: no outside borrow can reach it.
-        } else this.stmtWrites(s, sink, boxed);
+        } else this.stmtWrites(s, sink, boxed, privates);
         return everyStmtChild(s, expr, stmt);
       };
       fn.body.every(stmt);
@@ -574,7 +576,12 @@ export class ReferenceWrites {
   }
 
   /** Writes of one statement node itself. */
-  private stmtWrites(s: IrStmt, sink: WriteSink, boxed: ReadonlySet<string>): void {
+  private stmtWrites(
+    s: IrStmt,
+    sink: WriteSink,
+    boxed: ReadonlySet<string>,
+    privates: ReadonlySet<string>,
+  ): void {
     switch (s.kind) {
       case "assign":
         if (isRefCounted(s.value.type)) sink.add(this.localKey(s.localId, boxed));
@@ -593,7 +600,7 @@ export class ReferenceWrites {
       case "arraySetUndefined":
       case "arrayDelete":
       case "arraySetLength":
-        sink.add(ARRAY_KEY);
+        if (!privateReceiver(s.arr, privates)) sink.add(ARRAY_KEY);
         return;
       case "varDecl":
       case "exprStmt":
@@ -701,6 +708,7 @@ export class ReferenceWrites {
   enter(fn: IrFunction): void {
     this.current = fn;
     this.currentBoxed = boxedLocals(fn);
+    this.currentPrivateArrays = privateArrays(fn, this.currentBoxed);
     this.currentLocals = new Set(fn.locals.map((local) => local.id));
     this.inConstructor = this.constructors.has(fn.name);
     for (const p of fn.params) this.currentLocals.add(p.localId);
@@ -780,7 +788,7 @@ export class ReferenceWrites {
     const known = this.stmtCache.get(s);
     if (known !== undefined) return known;
     const parts: Writes[] = [];
-    this.stmtWrites(s, this.querySink(parts), this.currentBoxed);
+    this.stmtWrites(s, this.querySink(parts), this.currentBoxed, this.currentPrivateArrays);
     everyStmtChild(
       s,
       (child) => (parts.push(this.expr(child)), true),
@@ -913,6 +921,96 @@ function isThisRef(e: IrExpr, thisId: string): boolean {
   if (e.kind === "varRef") return e.localId === thisId;
   if (e.kind === "upcast") return isThisRef(e.value, thisId);
   return false;
+}
+
+/** A write whose receiver is a private array of the current function. */
+function privateReceiver(arr: IrExpr, privates: ReadonlySet<string>): boolean {
+  return privates.size > 0 && arr.kind === "varRef" && privates.has(arr.localId);
+}
+
+/** Array methods a private array may receive: they neither read an
+ * element out nor let the array escape. */
+const PRIVATE_ARRAY_METHODS = new Set(["length", "push"]);
+
+/** Array locals whose storage the function allocated itself and that
+ * nothing else can reach before the function returns them: declared once
+ * from an array literal or `new Array(n)`, never rebound, unboxed, and
+ * otherwise only the receiver of element stores, length updates, `length`,
+ * `push` and presence tests, or the value of a `return`. No code reads an
+ * element of such an array or reaches its storage through another path, so
+ * its element stores cannot release a value that a borrow depends on:
+ * a borrow's own location stays unwritten, and the array is not one. The
+ * stores are private to the activation, like writes of its locals, and
+ * stay out of the function's summary (a caller's borrows predate the
+ * array). The literal map, filter and fused-pipeline helpers fill their
+ * results this way. */
+function privateArrays(fn: IrFunction, boxed: ReadonlySet<string>): ReadonlySet<string> {
+  if (fn.async || fn.generator) return new Set();
+  const candidates = new Set<string>();
+  for (const local of fn.locals)
+    if (local.type.kind === "array" && !local.boxed && !boxed.has(local.id))
+      candidates.add(local.id);
+  if (candidates.size === 0) return candidates;
+  const declarations = new Map<string, number>();
+  const rejected = new Set<string>();
+  // Permitted positions per varRef node (lowering may share one node
+  // between several positions, so each visit consumes one permission).
+  const permitted = new Map<IrExpr, number>();
+  const permit = (e: IrExpr): void => {
+    if (e.kind === "varRef" && candidates.has(e.localId))
+      permitted.set(e, (permitted.get(e) ?? 0) + 1);
+  };
+  const expr = (e: IrExpr): boolean => {
+    switch (e.kind) {
+      case "varRef": {
+        const left = permitted.get(e) ?? 0;
+        if (left === 0) rejected.add(e.localId);
+        else permitted.set(e, left - 1);
+        break;
+      }
+      case "assignExpr":
+      case "incDec":
+        rejected.add(e.localId);
+        break;
+      case "closure":
+      case "classRef":
+        for (const id of e.captures ?? []) rejected.add(id);
+        break;
+      case "arrIntrinsic":
+        if (PRIVATE_ARRAY_METHODS.has(e.method)) permit(e.receiver);
+        break;
+      case "arrayHas":
+        permit(e.arr);
+        break;
+    }
+    return everyExprChild(e, expr, stmt);
+  };
+  const stmt = (s: IrStmt): boolean => {
+    switch (s.kind) {
+      case "varDecl":
+        declarations.set(s.localId, (declarations.get(s.localId) ?? 0) + 1);
+        if (s.init === null || (s.init.kind !== "arrayLit" && s.init.kind !== "arrayNewLen"))
+          rejected.add(s.localId);
+        break;
+      case "assign":
+        rejected.add(s.localId);
+        break;
+      case "arraySet":
+      case "arraySetUndefined":
+      case "arrayDelete":
+      case "arraySetLength":
+        permit(s.arr);
+        break;
+      case "return":
+        if (s.value !== null) permit(s.value);
+        break;
+    }
+    return everyStmtChild(s, expr, stmt);
+  };
+  fn.body.every(stmt);
+  const out = new Set<string>();
+  for (const id of candidates) if (!rejected.has(id) && declarations.get(id) === 1) out.add(id);
+  return out;
 }
 
 /** Locals living in boxes: declared boxed or captured from an enclosing
