@@ -2964,9 +2964,12 @@ export type IrExpr =
    * shape (their values have the shape's indexValue type — dyn included);
    * they insert into the overflow map in list order, interleaved with the
    * declared writes (one list keeps JS source-order evaluation). */
+  /** `nullProto` (index-signature shapes only) gives the record a null
+   * prototype, as Object.groupBy's result has (recordNullProto reads it). */
   | {
       kind: "recordLit";
       fields: { name: string; value: IrExpr; overflow?: true }[];
+      nullProto?: true;
       type: IrType;
       loc: SrcLoc;
     }
@@ -3268,6 +3271,10 @@ export type IrExpr =
    * value. Declared fields are handled separately by the lowering. Both
    * operands are borrowed, the key is string, the result is bool. */
   | { kind: "recordOvfHas"; obj: IrExpr; shapeId: string; key: IrExpr; type: IrType; loc: SrcLoc }
+  /** Whether an index-signature record has a null prototype: the flag a
+   * `nullProto` recordLit sets on its overflow map. The receiver is
+   * borrowed, the result is bool. Never throws. */
+  | { kind: "recordNullProto"; obj: IrExpr; shapeId: string; type: IrType; loc: SrcLoc }
   /** Own-property presence of a DECLARED record field (`"f" in r`,
    * Object.keys/hasOwn and every other key surface). A field whose type
    * has no undefined arm is always present; an undefined-armed union field

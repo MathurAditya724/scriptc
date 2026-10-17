@@ -378,6 +378,7 @@ import {
   type InlineRcMode,
   limitInlineDynReleases,
   llFieldType,
+  mapFlagsOffset,
   type MapKeyAccess,
   releaseSym,
   retainSym,
@@ -5687,6 +5688,17 @@ export class LlEmitter {
     return v;
   }
 
+  /** The pointer to ScrMap.flags of an index-signature record's overflow
+   * map (byte offset sizeof(size_t) + 3; SCR_MAP_NULL_PROTO is bit 0). */
+  recordMapFlagsPtr(objName: string, shapeId: string): string {
+    const ovf = this.recordOvfPtr(objName, shapeId);
+    const p = this.B.tmp();
+    this.B.line(
+      `${p} = getelementptr inbounds i8, ptr ${ovf}, i64 ${mapFlagsOffset(this.sizeType)}`,
+    );
+    return p;
+  }
+
   /** Loads a record field (i8-stored bools trunc to i1). An inline union
    * field answers a private stack box with the slot's own bits, ABSENT
    * included: it may only be borrowed. */
@@ -9350,6 +9362,7 @@ export class LlEmitter {
       | "recordKeyGet"
       | "recordOvfKeys"
       | "recordOvfHas"
+      | "recordNullProto"
       | "recordHas"
       | "fieldAbsent"
     >,

@@ -86,6 +86,7 @@ const EXPR_FIELDS: Classified<IrExpr> = {
   dynIterN: { notIterableMessage: "other" },
   recordOvfKeys: { shapeId: "other" },
   recordOvfHas: { shapeId: "other" },
+  recordNullProto: { shapeId: "other" },
   recordHas: { shapeId: "other", field: "other" },
   fieldAbsent: { unionId: "other" },
   unionWrap: { unionId: "other" },

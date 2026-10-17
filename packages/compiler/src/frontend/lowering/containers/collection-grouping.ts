@@ -242,9 +242,10 @@ function buildGroupByFn(
     {
       kind: "varDecl",
       localId: "g.0",
+      // Object.groupBy's result object has a null prototype.
       init: isMap
         ? { kind: "mapNew", type: resultT, loc }
-        : { kind: "recordLit", fields: [], type: resultT, loc },
+        : { kind: "recordLit", fields: [], nullProto: true, type: resultT, loc },
       loc,
     },
     {

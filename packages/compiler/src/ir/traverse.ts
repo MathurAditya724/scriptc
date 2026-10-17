@@ -300,6 +300,8 @@ export function everyExprChild(
       return expr(node.obj);
     case "recordOvfHas":
       return expr(node.obj) && expr(node.key);
+    case "recordNullProto":
+      return expr(node.obj);
     case "recordHas":
       return expr(node.obj);
     case "fieldAbsent":
@@ -652,6 +654,8 @@ export function mapExprChildren(
       return { ...node, obj: expr(node.obj) };
     case "recordOvfHas":
       return { ...node, obj: expr(node.obj), key: expr(node.key) };
+    case "recordNullProto":
+      return { ...node, obj: expr(node.obj) };
     case "recordHas":
       return { ...node, obj: expr(node.obj) };
     case "fieldAbsent":

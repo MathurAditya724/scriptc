@@ -33,6 +33,7 @@ import { eventTargetRootOf } from "./lower-event-target.js";
 import { lowerSystemErrorMap } from "./lower-system-errors.js";
 import { isPerfEntryType, perfEntryJson } from "./builtins/performance.js";
 import { recordMayKeepSource, recordSourceTest } from "./record-sources.js";
+import { nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 
 /* ── IR construction shorthand ───────────────────────────────────────── */
 function concatAll(parts: IrExpr[], loc: SrcLoc): IrExpr {
@@ -815,6 +816,20 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
         const n = (): IrExpr => varRef("n.0", F64, loc);
         const i = (): IrExpr => varRef("i.0", F64, loc);
         const k = (): IrExpr => varRef("k.0", STRING, loc);
+        // A null-prototype record (Object.groupBy) prints Node's
+        // "[Object: null prototype]" base.
+        const nullProto = nullProtoRecordShape(lowerer, t) !== null;
+        const byProto = (plain: string, bare: string): IrExpr =>
+          nullProto
+            ? {
+                kind: "ternary",
+                cond: recordNullProtoTest(v(), t.shapeId, loc),
+                then: strLit(bare, loc),
+                else_: strLit(plain, loc),
+                type: STRING,
+                loc,
+              }
+            : strLit(plain, loc);
         const keyedRead = (): IrExpr => ({
           kind: "recordKeyGet",
           obj: v(),
@@ -847,11 +862,17 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
           {
             kind: "if",
             cond: { kind: "bin", op: "===", left: n(), right: numLit(0, loc), type: BOOL, loc },
-            then: [ret(strLit("{}", loc))],
+            then: [ret(byProto("{}", "[Object: null prototype] {}"))],
             else_: null,
             loc,
           },
-          depthGate("[Object]"),
+          {
+            kind: "if",
+            cond: { kind: "bin", op: ">", left: r(), right: d(), type: BOOL, loc },
+            then: [ret(byProto("[Object]", "[Object: null prototype]"))],
+            else_: null,
+            loc,
+          },
           ...begin(),
           {
             kind: "for",
@@ -884,7 +905,15 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
             ],
             loc,
           },
-          ret(end(strLit("", loc), strLit("{", loc), strLit("}", loc), false, boolLit(false, loc))),
+          ret(
+            end(
+              byProto("", "[Object: null prototype]"),
+              strLit("{", loc),
+              strLit("}", loc),
+              false,
+              boolLit(false, loc),
+            ),
+          ),
         ];
         break;
       }

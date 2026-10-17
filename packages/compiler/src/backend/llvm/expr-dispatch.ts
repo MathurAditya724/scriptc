@@ -74,6 +74,7 @@ export function emitExpr(host: LlvmEmitterContext, e: IrExpr): LlValue {
     case "recordKeyGet":
     case "recordOvfKeys":
     case "recordOvfHas":
+    case "recordNullProto":
     case "recordHas":
     case "fieldAbsent":
       return host.emitRecordExpr(e);
