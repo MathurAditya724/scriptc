@@ -14,7 +14,10 @@ import {
   resolveRuntimeUnitHelper,
 } from "../../runtime-pack-common/scripts/runtime-unit.mjs";
 import { createDeterministicArchive } from "./archive.mjs";
-import { runtimeHardeningFlags } from "../../runtime-pack-common/scripts/hardening.mjs";
+import {
+  probeHardeningSupport,
+  runtimeHardeningFlags,
+} from "../../runtime-pack-common/scripts/hardening.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 
 const run = promisify(execFile);
@@ -52,6 +55,11 @@ async function build() {
   const compiler = process.env.CC ?? "clang";
   const archiver = process.env.AR ?? "ar";
   const compilerVersion = (await run(compiler, ["--version"])).stdout.split("\n", 1)[0].trim();
+  // Optional hardening flags follow what this compiler accepts.
+  const hardeningSupport = await probeHardeningSupport({
+    compiler,
+    args: ["-target", RUNTIME_PACK_MATRIX.target.llvm_triple],
+  });
   const commonFlags = [
     "-target",
     RUNTIME_PACK_MATRIX.target.llvm_triple,
@@ -185,7 +193,7 @@ async function build() {
               ...includeFlags,
               ...runtimeHardeningFlags(
                 { platform: "darwin", target: RUNTIME_PACK_MATRIX.target },
-                { optimized: flavorSpec.optimization !== "-O0" },
+                { optimized: flavorSpec.optimization !== "-O0", ...hardeningSupport },
               ),
             ];
             let bitcode;
@@ -272,7 +280,7 @@ async function build() {
     // runtime units; QuickJS and libregexp are not (see hardening.mjs).
     const vendorHardening = runtimeHardeningFlags(
       { platform: "darwin", target: RUNTIME_PACK_MATRIX.target },
-      { optimized: true },
+      { optimized: true, ...hardeningSupport },
     );
     const archives = [
       await archive("quickjs", QJS_SOURCES, quickjs, [
