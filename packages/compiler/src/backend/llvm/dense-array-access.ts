@@ -220,6 +220,44 @@ function loadState(host: LlvmEmitterContext, guard: DenseGuard): string {
 
 export type ArrayAccess = "f64" | "bool" | "ref";
 
+/** Before a self-append (`a[i] = a[i] + suffix`) replaces a reference
+ * element: when `index` lies in the hole-free prefix and the slot still
+ * holds `expected` (the caller's owned snapshot of the old element), the
+ * slot takes `placeholder` (an immortal value of the element type) and the
+ * array's reference is released, so a snapshot nobody else holds becomes
+ * unique and the append can extend it in place. The caller must store into
+ * the same slot before any code can observe the array again. Every other
+ * index leaves the array untouched. */
+export function emitDenseSlotUnlink(
+  host: LlvmEmitterContext,
+  array: string,
+  index: LlValue,
+  indexExpr: IrExpr | undefined,
+  expected: string,
+  placeholder: string,
+  element: IrType,
+): void {
+  const B = host.B;
+  const unlink = B.newLabel("arr.unlink"),
+    swap = B.newLabel("arr.unlink.swap"),
+    done = B.newLabel("arr.unlink.done");
+  const guard = emitDenseGuard(host, array, index, indexExpr, done, true, unlink);
+  // The state-checked dense block: leave holes and the tail to the store.
+  B.br(done);
+  B.startBlock(unlink);
+  const valuePtr = valuePointer(host, guard, "ref");
+  const current = B.tmp(),
+    same = B.tmp();
+  B.line(`${current} = load ptr, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+  B.line(`${same} = icmp eq ptr ${current}, ${expected}`);
+  B.condBr(same, swap, done);
+  B.startBlock(swap);
+  B.line(`store ptr ${placeholder}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+  host.releaseValue(current, element);
+  B.br(done);
+  B.startBlock(done);
+}
+
 /** Strict element read with the runtime getter's result contract: a
  * double, an i1, or a pointer that is +1 (`retain`) or borrowed. The
  * runtime getter keeps the trap for holes, present undefined, and missing

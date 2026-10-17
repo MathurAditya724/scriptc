@@ -122,6 +122,7 @@ ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *enc) {
 }
 
 static void scr_fs_write_bytes_common(ScrStr *path, const ScrBytes *data, const char *mode) {
+  if (!scr_fs_path_ok(path, "path")) return;
   SCR_BYTES_SNAPSHOT(data);
   FILE *f = fopen(path->data, mode);
   if (!f) {

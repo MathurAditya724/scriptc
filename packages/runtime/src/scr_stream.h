@@ -293,12 +293,24 @@ enum {
   SCR_FROM_SINGLE = 2,
   SCR_FROM_BYTE_MODE = 4,
   SCR_FROM_HAS_HWM = 8,
+  SCR_FROM_DEFAULT_HWM = 16, /* a nullish highWaterMark: the mode's default */
 };
 ScrStream *scr_stream_from_arr(ScrArr *arr, double flags, double hwm);
-/* Readable.from(iterable, options) in the JS lane: strings, Buffers and
- * arrays of them; options objectMode and highWaterMark. +1, or NULL with
- * the error pending (ERR_INVALID_ARG_TYPE for a non-iterable). Borrows. */
+/* Readable.from(iterable, options) over a checked-dynamic source: a
+ * string or Buffer, an array (read by index), or any other iterable or
+ * async iterable, whose iterator from.js takes before reading the
+ * options; options objectMode and highWaterMark. +1, or NULL with the
+ * error pending (ERR_INVALID_ARG_TYPE for a non-iterable). Borrows. */
 ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts);
+/* The from.js stream over a checked-dynamic iterator (scr_stream_ops.c),
+ * async_iter when it came from Symbol.asyncIterator. iter moves; +1, or
+ * NULL with ERR_INVALID_ARG_VALUE pending for a bad highWaterMark. */
+ScrStream *scr_stream_from_dyn_iter(ScrDyn *iter, bool async_iter, double flags, double hwm);
+/* Readable.from over a class iterator: the compiler opens it and passes a
+ * checked-dynamic { next } object over it (borrowed), with SCR_FROM_*
+ * flags. +1, or NULL with ERR_INVALID_ARG_VALUE pending. */
+ScrStream *scr_stream_from_iter(ScrDyn *iter, double flags, double hwm);
+ScrStream *scr_stream_from_async_iter(ScrDyn *iter, double flags, double hwm);
 /* One checked-dynamic value into a Readable.from stream: a whole entry in
  * object mode, a chunk in byte mode. null, values other than strings and
  * Buffers in object mode, and byte mode's chunk errors destroy the stream

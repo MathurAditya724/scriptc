@@ -4668,6 +4668,18 @@ function validateFunction(
   }
 
   function checkLibFileCall(e: IrExpr & { kind: "libCall" }): boolean {
+    if (e.fn === "fs.statProbeSync" || e.fn === "fs.lstatProbeSync") {
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "stats") &&
+        def.arms.some((a) => a.kind === "undefinedT");
+      if (!ok) {
+        err(`libCall ${e.fn} must return the 'Stats | undefined' union`, e.loc);
+      }
+      return true;
+    }
     if (
       e.fn === "zlib.deflateCb" ||
       e.fn === "zlib.inflateCb" ||
@@ -4675,9 +4687,11 @@ function validateFunction(
       e.fn === "zlib.inflateRawCb" ||
       e.fn === "zlib.gzipCb" ||
       e.fn === "zlib.gunzipCb" ||
-      e.fn === "zlib.unzipCb"
+      e.fn === "zlib.unzipCb" ||
+      e.fn === "zlib.cbOpts" ||
+      e.fn === "zlib.cbOptsDyn"
     ) {
-      const cbT = e.args[1]?.type;
+      const cbT = e.args[e.fn.startsWith("zlib.cbOpts") ? 3 : 1]?.type;
       let ok = cbT?.kind === "func" && cbT.ret.kind === "void" && cbT.params.length <= 2;
       if (ok && cbT?.kind === "func" && cbT.params.length >= 1) {
         const error = cbT.params[0]!;
@@ -5561,6 +5575,16 @@ function validateFunction(
           !isStreamObject(e.type)
         ) {
           err(`libCall ${e.fn} must take a generator, its helpers and the flags`, e.loc);
+        }
+        return true;
+      }
+      if (e.fn === "readable.fromIter" || e.fn === "readable.fromAsyncIter") {
+        if (
+          e.args[0]?.type.kind !== "dyn" ||
+          e.args[1]?.kind !== "numLit" ||
+          !isStreamObject(e.type)
+        ) {
+          err(`libCall ${e.fn} must take an iterator object and the flags`, e.loc);
         }
         return true;
       }

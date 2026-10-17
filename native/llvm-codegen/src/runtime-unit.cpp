@@ -13,6 +13,7 @@
 #include "runtime-unit.h"
 
 #include "diagnostics.h"
+#include "runtime-import.h"
 #include "target.h"
 
 #include "llvm/ADT/SmallString.h"
@@ -31,6 +32,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 
 #include <memory>
 #include <optional>
@@ -212,9 +214,15 @@ int runtimeUnit(int Argc, char **Argv) {
   if (verifyModule(*M, &VerifyStream))
     return fail("verification_failed", VerifyStream.str());
 
+  // The bitcode exists only to be imported from, so it carries only what
+  // an import can take; program builds then read a fraction of the unit.
+  std::unique_ptr<Module> Import = CloneModule(*M);
+  pruneRuntimeImport(*Import);
+  if (verifyModule(*Import, &VerifyStream))
+    return fail("verification_failed", VerifyStream.str());
   if (std::optional<std::string> Failure = writeFileAtomically(
           Options->Bitcode,
-          [&](raw_fd_ostream &Out) { WriteBitcodeToFile(*M, Out); }))
+          [&](raw_fd_ostream &Out) { WriteBitcodeToFile(*Import, Out); }))
     return fail("output_write_failed", *Failure);
 
   bool Unsupported = false;
@@ -234,6 +242,40 @@ int runtimeUnit(int Argc, char **Argv) {
                 "target does not support object emission");
   }
   if (Failure)
+    return fail("output_write_failed", *Failure);
+  return 0;
+}
+
+int pruneImport(int Argc, char **Argv) {
+  std::string Input, Output;
+  bool Valid = Argc % 2 == 0;
+  for (int I = 2; Valid && I + 1 < Argc; I += 2) {
+    StringRef Arg(Argv[I]);
+    if (Arg == "--input")
+      Input = Argv[I + 1];
+    else if (Arg == "--output")
+      Output = Argv[I + 1];
+    else
+      Valid = false;
+  }
+  if (!Valid || Input.empty() || Output.empty())
+    return fail("usage", "prune-import requires --input <bc> --output <bc>");
+  LLVMContext Context;
+  SMDiagnostic Diagnostic;
+  std::unique_ptr<Module> M = parseIRFile(Input, Diagnostic, Context);
+  if (!M) {
+    std::string Detail;
+    raw_string_ostream Stream(Detail);
+    Diagnostic.print("scriptc-llvm-codegen", Stream);
+    return fail("invalid_ir", Stream.str());
+  }
+  pruneRuntimeImport(*M);
+  std::string VerifyError;
+  raw_string_ostream VerifyStream(VerifyError);
+  if (verifyModule(*M, &VerifyStream))
+    return fail("verification_failed", VerifyStream.str());
+  if (std::optional<std::string> Failure = writeFileAtomically(
+          Output, [&](raw_fd_ostream &Out) { WriteBitcodeToFile(*M, Out); }))
     return fail("output_write_failed", *Failure);
   return 0;
 }

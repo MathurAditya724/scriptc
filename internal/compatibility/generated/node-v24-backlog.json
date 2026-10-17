@@ -62265,7 +62265,10 @@
             "tests/corpus/5340-readable-from-options.ts",
             "tests/corpus/5341-readable-from-dynamic.cjs",
             "tests/corpus/5420-readable-from-generators.ts",
-            "tests/corpus/5421-readable-from-generators.cjs"
+            "tests/corpus/5421-readable-from-generators.cjs",
+            "tests/corpus/5610-readable-from-sets-and-views.ts",
+            "tests/corpus/5611-readable-from-class-iterables.ts",
+            "tests/corpus/5612-readable-from-iterables.cjs"
           ]
         }
       }
@@ -62886,7 +62889,10 @@
             "tests/corpus/5340-readable-from-options.ts",
             "tests/corpus/5341-readable-from-dynamic.cjs",
             "tests/corpus/5420-readable-from-generators.ts",
-            "tests/corpus/5421-readable-from-generators.cjs"
+            "tests/corpus/5421-readable-from-generators.cjs",
+            "tests/corpus/5610-readable-from-sets-and-views.ts",
+            "tests/corpus/5611-readable-from-class-iterables.ts",
+            "tests/corpus/5612-readable-from-iterables.cjs"
           ]
         }
       }
@@ -76126,7 +76132,9 @@
             "tests/corpus/1573-promisify-execfile-env-spread.ts",
             "tests/corpus/2912-promisify-fs-readfile.ts",
             "tests/corpus/5625-promisify-exec.ts",
-            "tests/corpus/5626-promisify-forms.ts"
+            "tests/corpus/5626-promisify-forms.ts",
+            "tests/fixtures/node-types/promisify-fs.ts",
+            "tests/harness/project-config.test.ts"
           ]
         }
       }
@@ -86424,7 +86432,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -86506,7 +86517,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -86538,7 +86552,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -86570,7 +86587,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -86602,7 +86622,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -86634,7 +86657,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -86666,7 +86692,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -86698,7 +86727,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -86880,7 +86912,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -86912,7 +86947,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -86944,7 +86982,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -86976,7 +87017,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87008,7 +87052,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87040,7 +87087,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87072,7 +87122,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87104,7 +87157,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87136,7 +87192,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87168,7 +87227,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87200,7 +87262,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87232,7 +87297,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87264,7 +87332,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87296,7 +87367,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87639,7 +87713,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87671,7 +87748,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87703,7 +87783,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87735,7 +87818,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87767,7 +87853,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87799,7 +87888,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87831,7 +87923,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87863,7 +87958,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87895,7 +87993,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87927,7 +88028,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87959,7 +88063,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -87991,7 +88098,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -88023,7 +88133,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }
@@ -88055,7 +88168,10 @@
             "tests/corpus/3115-zlib-static-compression-levels.ts",
             "tests/corpus/5370-zlib-stream-roundtrip.ts",
             "tests/corpus/5371-zlib-stream-chunking.cjs",
-            "tests/corpus/5373-zlib-stream-options.cjs"
+            "tests/corpus/5373-zlib-stream-options.cjs",
+            "tests/corpus/5378-zlib-sync-options.cjs",
+            "tests/corpus/5379-zlib-callback-options.ts",
+            "tests/corpus/5415-zlib-dynamic-inputs.cjs"
           ]
         }
       }

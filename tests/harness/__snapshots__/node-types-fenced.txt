@@ -79,15 +79,6 @@ fenced.ts:46:13 - error SC2020: 'URL.createObjectURL' is typed by @types/node bu
 
   hint: protocol, origin, username, password, pathname, href, host, hostname, port, search, hash, searchParams, toString(), and toJSON() are the supported URL members
 
-fenced.ts:52:21 - error SC2020: 'deflateSync with these options' is part of the standard library types but has no scriptc lowering yet
-
-  51 | import { brotliCompressSync, deflateSync } from "zlib";
-  52 | deflateSync("data", { level: 9, strategy: 1 });
-     |                     ^~~~~~~~~~~~~~~~~~~~~~~~~
-  53 | brotliCompressSync(Buffer.from("data"));
-
-  hint: the static compression options form is { level: <integer literal from -1 through 9> }
-
 fenced.ts:53:1 - error SC2020: 'zlib.brotliCompressSync' is typed by @types/node but has no scriptc lowering yet
 
   52 | deflateSync("data", { level: 9, strategy: 1 });
@@ -95,7 +86,7 @@ fenced.ts:53:1 - error SC2020: 'zlib.brotliCompressSync' is typed by @types/node
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   54 | /* The http2 compatibility slice's @types/node-world fences (divergence
 
-  hint: Brotli needs a Brotli codec, which the static runtime does not vendor — the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface
+  hint: Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface
 
 fenced.ts:62:71 - error SC2020: 'a createSecureServer SNICallback of 'undefined' values' is part of the standard library types but has no scriptc lowering yet
 

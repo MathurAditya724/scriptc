@@ -245,10 +245,14 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       }
       if (fn.startsWith("zlib.")) features.zlib = true;
       // The Readable operators and Readable.from over a compiled generator
-      // (scr_stream_ops.c) await through the dyn-async unit.
+      // or a checked-dynamic iterator (scr_stream_ops.c) await through the
+      // dyn-async unit.
       if (
         fn.startsWith("readable.op") ||
         fn.startsWith("readable.fromGen") ||
+        fn === "readable.fromDyn" ||
+        fn === "readable.fromIter" ||
+        fn === "readable.fromAsyncIter" ||
         fn === "readable.fromAsyncGen" ||
         fn === "readable.fromDone"
       )

@@ -41,7 +41,15 @@ console.log(sum);
     /^define internal void @sc_f_range(?:\.i32)?\(double [^)]*\) #1 /,
   );
   expect(definition(llvm, "sc_f_range")).toContain("@llvm.coro.suspend(");
-  expect(definition(llvm, "sc_f_range")).toContain("call void @scr_coro_yield_f64(");
+  // Number yields store into the generator's OUT slot inline, and the
+  // for-of drive takes them back out inline.
+  expect(definition(llvm, "sc_f_range")).toContain("getelementptr inbounds %ScrGenHead, ptr");
+  expect(definition(llvm, "sc_f_range")).toMatch(
+    /store i32 1, ptr %t\d+\n.*%ScrGenSlot.*i32 1\n\s*store double/,
+  );
+  expect(definition(llvm, "sc_f_range")).not.toContain("@scr_coro_yield_f64(");
+  expect(llvm).not.toContain("@scr_gen_take_out_f64(");
+  expect(llvm).toContain("%ScrGenHead = type { i64, ptr, ptr, i32, %ScrGenSlot }");
   expect(llvm).toContain("attributes #1 = { sanitize_address presplitcoroutine }");
   expect(definition(llvm, "sc_gs_range")).toContain("call ptr @scr_gen_new_stackless(");
   expect(llvm).not.toContain("@scr_gen_yield_f64(");
@@ -103,7 +111,8 @@ for (const x of nums()) sum += x;
 const r = nums().next();
 console.log(sum, r.value);
 `);
-  expect(definition(llvm, "sc_f_nums")).toContain("call void @scr_coro_yield_f64(");
+  expect(definition(llvm, "sc_f_nums")).toContain("getelementptr inbounds %ScrGenHead, ptr");
+  expect(definition(llvm, "sc_f_nums")).not.toContain("@scr_coro_yield_f64(");
   expect(definition(llvm, "sc_f_nums")).not.toContain("@scr_gen_take_in_");
   expect(llvm).toMatch(/define internal ptr @sc_gres_\d+\(ptr %g\)[^\n]*\(dyn channel\)/);
 });
@@ -135,7 +144,8 @@ for (const x of flat([[1, 2], [3]])) sum += x;
 console.log(sum);
 `);
   const body = definition(llvm, "sc_f_flat");
-  expect(body).toContain("@scr_coro_yield_f64(");
+  expect(body).toContain("getelementptr inbounds %ScrGenSlot, ptr");
+  expect(body).not.toContain("@scr_coro_yield_f64(");
   expect(body).not.toContain("@scr_dyn_iterator");
   expect(body).not.toContain("@scr_dyn_call");
   expect(body).not.toContain("@sc_gres_");

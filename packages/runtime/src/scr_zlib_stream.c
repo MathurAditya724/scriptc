@@ -25,9 +25,6 @@
 enum { SCR_ZF_NO_FLUSH, SCR_ZF_PARTIAL, SCR_ZF_SYNC, SCR_ZF_FULL, SCR_ZF_FINISH, SCR_ZF_BLOCK };
 enum { SCR_ZM_DEFLATE = 1, SCR_ZM_INFLATE, SCR_ZM_GZIP, SCR_ZM_GUNZIP, SCR_ZM_DEFLATERAW,
        SCR_ZM_INFLATERAW, SCR_ZM_UNZIP };
-#define SCR_Z_DEFAULT_CHUNK 16384.0
-#define SCR_Z_MIN_CHUNK 64.0
-#define SCR_K_MAX_LENGTH 9007199254740991.0
 
 typedef struct ScrZlibStream {
   size_t rc;
@@ -351,50 +348,6 @@ static void scr_zs_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
 
 /* ── option validation (lib/internal/validators.js) ───────────────────── */
 
-static void scr_zs_range_fail(const char *name, const char *range, double v) {
-  char recv[48], msg[256];
-  scr_num_received(v, recv);
-  int len = snprintf(msg, sizeof msg, "The value of \"%s\" is out of range. It must be %s. Received %s",
-                     name, range, recv);
-  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-}
-
-/* validateFiniteNumber: false for undefined/NaN, true for finite numbers,
- * throws otherwise. `prop` picks the property/argument message flavor. */
-static bool scr_zs_finite(const ScrDyn *v, const char *name, bool prop, bool *ok) {
-  *ok = true;
-  if (v == NULL || v->kind == SCR_DYN_UNDEF) return false;
-  if (v->kind == SCR_DYN_NUM) {
-    if (isfinite(v->v.num)) return true;
-    if (isnan(v->v.num)) return false;
-    scr_zs_range_fail(name, "a finite number", v->v.num);
-    *ok = false;
-    return false;
-  }
-  if (prop) scr_dyn_prop_type_fail(name, "of type number", v);
-  else scr_dyn_arg_type_fail(name, "of type number", v);
-  *ok = false;
-  return false;
-}
-
-/* checkRangesOrGetDefault */
-static bool scr_zs_ranged(const ScrDyn *v, const char *name, bool prop, double lower, double upper,
-                          double def, double *out) {
-  bool ok;
-  if (!scr_zs_finite(v, name, prop, &ok)) {
-    *out = def;
-    return ok;
-  }
-  if (v->v.num < lower || v->v.num > upper) {
-    char range[96];
-    snprintf(range, sizeof range, ">= %.17g and <= %.17g", lower, upper);
-    scr_zs_range_fail(name, range, v->v.num);
-    return false;
-  }
-  *out = v->v.num;
-  return true;
-}
-
 static const ScrDyn *scr_zs_opt(const ScrDyn *opts, const char *key) {
   if (opts == NULL || opts->kind != SCR_DYN_OBJ) return NULL;
   return scr_dyn_obj_get((ScrDyn *)opts, key, strlen(key));
@@ -479,78 +432,9 @@ static const char *scr_zs_class_name(int mode) {
 
 ScrStream *scr_zlib_stream_new(double mode_d, ScrDyn *opts) {
   int mode = (int)mode_d;
-  bool have_opts = opts != NULL && scr_dyn_truthy(opts);
-  const ScrDyn *o = have_opts ? opts : NULL;
-  /* Zlib(): windowBits, level, memLevel, strategy, dictionary. */
-  double window_bits = 15, level = -1, mem_level = 8, strategy = 0;
-  const unsigned char *dict = NULL;
-  size_t dict_len = 0;
-  ScrBytes *dict_view = NULL;
-  if (have_opts) {
-    const ScrDyn *wb = scr_zs_opt(o, "windowBits");
-    if (mode == SCR_ZM_DEFLATERAW && wb != NULL && wb->kind == SCR_DYN_NUM && wb->v.num == 8) {
-      window_bits = 9; /* DeflateRaw rewrites windowBits 8 as 9 */
-    } else if ((scr_zs_is_null(wb) || (wb->kind == SCR_DYN_NUM && wb->v.num == 0)) &&
-        (mode == SCR_ZM_INFLATE || mode == SCR_ZM_GUNZIP || mode == SCR_ZM_UNZIP)) {
-      window_bits = 0;
-    } else if (!scr_zs_ranged(wb, "options.windowBits", true, mode == SCR_ZM_GZIP ? 9 : 8, 15, 15,
-                              &window_bits)) {
-      return NULL;
-    }
-    if (!scr_zs_ranged(scr_zs_opt(o, "level"), "options.level", true, -1, 9, -1, &level) ||
-        !scr_zs_ranged(scr_zs_opt(o, "memLevel"), "options.memLevel", true, 1, 9, 8, &mem_level) ||
-        !scr_zs_ranged(scr_zs_opt(o, "strategy"), "options.strategy", true, 0, 4, 0, &strategy)) {
-      return NULL;
-    }
-    const ScrDyn *d = scr_zs_opt(o, "dictionary");
-    if (d != NULL && d->kind != SCR_DYN_UNDEF) {
-      if (d->kind != SCR_DYN_BYTES) {
-        scr_dyn_prop_type_fail("options.dictionary",
-                               "an instance of Buffer, TypedArray, DataView, or ArrayBuffer", d);
-        return NULL;
-      }
-      dict_view = scr_bytes_raw_view(d->v.bytes);
-      dict = dict_view->data;
-      dict_len = dict_view->len;
-    }
-  }
-  const ScrDyn *rg = scr_zs_opt(o, "rejectGarbageAfterEnd");
-  bool reject_garbage = rg != NULL && rg->kind == SCR_DYN_BOOL && rg->v.b;
-  /* ZlibBase(): chunkSize, flush, finishFlush, maxOutputLength,
-   * rejectGarbageAfterEnd. */
-  double chunk_size = SCR_Z_DEFAULT_CHUNK, flush = SCR_ZF_NO_FLUSH, finish_flush = SCR_ZF_FINISH;
-  if (have_opts) {
-    const ScrDyn *cs = scr_zs_opt(o, "chunkSize");
-    bool ok;
-    if (scr_zs_finite(cs, "options.chunkSize", true, &ok)) {
-      if (cs->v.num < SCR_Z_MIN_CHUNK) {
-        scr_zs_range_fail("options.chunkSize", ">= 64", cs->v.num);
-        ok = false;
-      } else {
-        chunk_size = floor(cs->v.num);
-      }
-    }
-    double max_output;
-    if (!ok ||
-        !scr_zs_ranged(scr_zs_opt(o, "flush"), "options.flush", true, 0, 5, SCR_ZF_NO_FLUSH, &flush) ||
-        !scr_zs_ranged(scr_zs_opt(o, "finishFlush"), "options.finishFlush", true, 0, 5,
-                       SCR_ZF_FINISH, &finish_flush) ||
-        !scr_zs_ranged(scr_zs_opt(o, "maxOutputLength"), "options.maxOutputLength", true, 1,
-                       SCR_K_MAX_LENGTH, SCR_K_MAX_LENGTH, &max_output)) {
-      if (dict_view) scr_bytes_release(dict_view);
-      return NULL;
-    }
-    if (rg != NULL && rg->kind != SCR_DYN_UNDEF && rg->kind != SCR_DYN_BOOL) {
-      if (dict_view) scr_bytes_release(dict_view);
-      scr_dyn_prop_type_fail("options.rejectGarbageAfterEnd", "of type boolean", rg);
-      return NULL;
-    }
-    if (chunk_size > 4294967295.0) {
-      if (dict_view) scr_bytes_release(dict_view);
-      scr_zs_unsupported("a zlib chunkSize above 4294967295 is not supported yet");
-      return NULL;
-    }
-  }
+  const ScrDyn *o = opts != NULL && scr_dyn_truthy(opts) ? opts : NULL;
+  ScrZlibOptions zo;
+  if (!scr_zlib_options_parse(mode, opts, &zo)) return NULL;
   /* Transform(): the high-water marks, then the unlowered options. */
   double rhwm = -1, whwm = -1;
   bool hwm_ok = scr_zs_hwm(o, "readableHighWaterMark", "options.readableHighWaterMark", &rhwm);
@@ -565,25 +449,24 @@ ScrStream *scr_zlib_stream_new(double mode_d, ScrDyn *opts) {
     hwm_ok = scr_zs_hwm(o, "writableHighWaterMark", "options.writableHighWaterMark", &whwm);
   }
   if (!hwm_ok || !scr_zs_check_unlowered(o)) {
-    if (dict_view) scr_bytes_release(dict_view);
+    scr_zlib_options_drop(&zo);
     return NULL;
   }
   ScrZlibStream *zs = calloc(1, sizeof *zs);
   if (!zs) scr_zlib_stream_oom();
   zs->rc = 1;
   zs->mode = mode;
-  zs->eng = scr_zlib_engine_new(mode, (int)level, (int)window_bits, (int)mem_level, (int)strategy,
-                                dict, dict_len, reject_garbage);
-  if (dict_view) scr_bytes_release(dict_view);
-  zs->chunk_size = (uint32_t)chunk_size;
+  zs->eng = scr_zlib_engine_from_options(mode, &zo);
+  scr_zlib_options_drop(&zo);
+  zs->chunk_size = (uint32_t)zo.chunk_size;
   zs->out_buf = malloc(zs->chunk_size);
   if (!zs->out_buf) scr_zlib_stream_oom();
-  zs->default_flush = (int)flush;
-  zs->finish_flush = (int)finish_flush;
+  zs->default_flush = (int)zo.flush;
+  zs->finish_flush = (int)zo.finish_flush;
   zs->full_flush = SCR_ZF_FULL;
-  zs->level = level;
-  zs->strategy = strategy;
-  zs->reject_garbage = reject_garbage;
+  zs->level = zo.level;
+  zs->strategy = zo.strategy;
+  zs->reject_garbage = zo.reject_garbage;
   bool auto_destroy = !scr_zs_false(scr_zs_opt(o, "autoDestroy"));
   bool emit_close = !scr_zs_false(scr_zs_opt(o, "emitClose"));
   bool allow_half_open = !scr_zs_false(scr_zs_opt(o, "allowHalfOpen"));
@@ -636,7 +519,7 @@ void scr_zlib_stream_flush(ScrStream *s, ScrDyn *kind, ScrClosure *cb) {
     return;
   }
   double k;
-  if (!scr_zs_ranged(kind, "kind", false, 0, 5, zs->full_flush, &k)) {
+  if (!scr_zlib_check_range(kind, "kind", false, 0, 5, zs->full_flush, &k)) {
     if (cb) scr_closure_release(cb);
     return;
   }
@@ -692,8 +575,8 @@ static void scr_zs_params_after(ScrClosure *cb) {
 void scr_zlib_stream_params(ScrStream *s, ScrDyn *level_d, ScrDyn *strategy_d, ScrClosure *cb) {
   ScrZlibStream *zs = scr_zs_from_stream(s);
   double level, strategy;
-  if (!zs || !scr_zs_ranged(level_d, "level", false, -1, 9, NAN, &level) ||
-      !scr_zs_ranged(strategy_d, "strategy", false, 0, 4, NAN, &strategy)) {
+  if (!zs || !scr_zlib_check_range(level_d, "level", false, -1, 9, NAN, &level) ||
+      !scr_zlib_check_range(strategy_d, "strategy", false, 0, 4, NAN, &strategy)) {
     if (cb) scr_closure_release(cb);
     return;
   }

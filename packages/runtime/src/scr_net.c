@@ -448,6 +448,9 @@ struct ScrNetServer {
   bool max_conns_set;
   double max_conns;
   ScrNetLs drop_ls;
+  /* server.dropMaxConnection (NULL = undefined): Node reads it only in
+   * cluster mode, so here it is a stored value */
+  ScrDyn *drop_max_connection;
   /* protocol layer (scr_http.c): a C-level connection consumer + its
    * context, freed with the handle */
   ScrNetNativeConnFn native_conn;
@@ -620,6 +623,7 @@ void scr_net_server_release(ScrNetServer *s) {
     scr_net_ls_drop(&s->drop_ls);
     scr_closure_release(s->close_override);
     for (size_t i = 0; i < 5; i++) scr_dyn_release(s->http_timeout_dyn[i]);
+    scr_dyn_release(s->drop_max_connection);
     scr_str_release(s->bound_host);
     scr_str_release(s->pending_err);
     if (s->fd >= 0) scr_net_close_fd_raw(s->fd);
@@ -1816,6 +1820,17 @@ void scr_net_server_max_connections_set(ScrNetServer *s, const ScrDyn *value /*b
   s->max_conns = n;
 }
 
+/* server.dropMaxConnection: the value as assigned (undefined until set).
+ * +1 for the getter. */
+ScrDyn *scr_net_server_drop_max_connection_get(ScrNetServer *s) {
+  return scr_dyn_retain(s->drop_max_connection != NULL ? s->drop_max_connection : scr_dyn_undefined());
+}
+
+void scr_net_server_drop_max_connection_set(ScrNetServer *s, const ScrDyn *value /*borrowed*/) {
+  scr_dyn_release(s->drop_max_connection);
+  s->drop_max_connection = scr_dyn_retain((ScrDyn *)value);
+}
+
 void scr_net_server_on_drop(ScrNetServer *s, const ScrDyn *listener /*borrowed*/, bool once) {
   if (s->close_emitted) return;
   scr_net_ls_add(&s->drop_ls, scr_dyn_listener_closure_fn(listener, (void *)&scr_net_dyn_fire_arg),
@@ -2678,6 +2693,66 @@ ScrStr *scr_net_sock_local_family(ScrNetSocket *s) {
   bool v6;
   if (!scr_net_sock_local(s, addr, sizeof addr, &port, &v6)) return NULL;
   return v6 ? scr_str_new("IPv6", 4) : scr_str_new("IPv4", 4);
+}
+
+/* socket.address(): { address, family, port } while the socket has a
+ * local address, {} while it connects or once it is destroyed, as Node's
+ * _getsockname answers. +1. */
+ScrDyn *scr_net_sock_address(ScrNetSocket *s) {
+  ScrDyn *out = scr_dyn_new_obj();
+  char addr[INET6_ADDRSTRLEN];
+  int port;
+  bool v6;
+  if (s->connecting || !scr_net_sock_local(s, addr, sizeof addr, &port, &v6)) return out;
+  ScrStr *a = scr_str_new(addr, strlen(addr));
+  scr_dyn_obj_set(out, "address", 7, scr_dyn_new_str(a));
+  scr_str_release(a);
+  ScrStr *f = v6 ? scr_str_new("IPv6", 4) : scr_str_new("IPv4", 4);
+  scr_dyn_obj_set(out, "family", 6, scr_dyn_new_str(f));
+  scr_str_release(f);
+  scr_dyn_obj_set(out, "port", 4, scr_dyn_new_num((double)port));
+  return out;
+}
+
+/* socket.resetAndDestroy(): the connection closes with an RST instead of
+ * a FIN (SO_LINGER with a zero timeout, then close), like Node's TCP
+ * reset; 'close' reports hadError false. A connecting socket resets once
+ * it connects: Node registers the reset as a once('connect') listener,
+ * so it runs at that place among the 'connect' listeners. A destroyed
+ * socket is left as it is, and a TLS socket throws Node's
+ * ERR_INVALID_HANDLE_TYPE. +1: chaining. */
+static void scr_net_sock_reset_now(ScrNetSocket *s) {
+  if (s->fd >= 0) {
+    struct linger l;
+    l.l_onoff = 1;
+    l.l_linger = 0;
+    setsockopt(s->fd, SOL_SOCKET, SO_LINGER, (const void *)&l, sizeof l);
+  }
+  scr_net_sock_destroy(s);
+}
+
+static void scr_net_sock_reset_on_connect(ScrClosure *self) {
+  ScrNetSocket *s = scr_box_get_ref(self->caps[0]);
+  scr_net_sock_reset_now(s);
+  scr_net_sock_release(s);
+}
+
+ScrNetSocket *scr_net_sock_reset_and_destroy(ScrNetSocket *s) {
+  if (scr_net_sock_destroyed(s)) return scr_net_sock_retain(s);
+  if (s->tops != NULL) {
+    static const char msg[] = "This handle type cannot be sent";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_HANDLE_TYPE");
+    return scr_net_sock_retain(s);
+  }
+  if (s->connecting) {
+    ScrClosure *cb = scr_closure_new((void *)&scr_net_sock_reset_on_connect, 1);
+    cb->caps[0] = scr_box_new_obj(&scr_net_sock_retain_v, &scr_net_sock_release_v, NULL);
+    scr_box_set_ref(cb->caps[0], scr_net_sock_retain(s));
+    scr_net_ls_add(&s->conn_ls, cb, NULL, true);
+  } else {
+    scr_net_sock_reset_now(s);
+  }
+  return scr_net_sock_retain(s);
 }
 
 /* The address fields as dyn values (+1): remotePort (0), remoteFamily
@@ -3891,15 +3966,20 @@ static ScrDyn *scr_net_dynh_sock_invoke(void *h, ScrDyn *self, const char *metho
     scr_net_sock_set_ref(s, method[0] == 'r');
     return scr_dyn_retain(self);
   }
+  if (strcmp(method, "address") == 0) return scr_net_sock_address(s);
+  if (strcmp(method, "resetAndDestroy") == 0) {
+    scr_net_sock_release(scr_net_sock_reset_and_destroy(s));
+    return scr_exc_pending() ? NULL : scr_dyn_retain(self);
+  }
   if (scr_net_dynh_tls != NULL) {
     ScrDyn *out = NULL;
     if (scr_net_dynh_tls->invoke(s, method, args, argc, &out)) return out;
   }
   {
     static const char *const known[] = { "connect",
-      "address", "cork", "uncork", "read", "unpipe",
+      "cork", "uncork", "read", "unpipe",
       "off", "removeListener", "removeAllListeners", "emit", "prependListener",
-      "prependOnceListener", "listenerCount", "listeners", "resetAndDestroy", NULL };
+      "prependOnceListener", "listenerCount", "listeners", NULL };
     for (size_t i = 0; known[i]; i++) {
       if (strcmp(method, known[i]) == 0) {
         scr_net_dynh_unsupported(method, NULL);
@@ -4206,6 +4286,8 @@ static ScrDyn *scr_net_dynh_srv_get(void *h, const char *key, size_t key_len) {
   }
   {
     if (strcmp(key, "maxConnections") == 0) return s->max_conns_set ? scr_dyn_new_num(s->max_conns) : NULL;
+    if (strcmp(key, "dropMaxConnection") == 0)
+      return s->drop_max_connection != NULL ? scr_dyn_retain(s->drop_max_connection) : NULL;
     static const char *const known[] = { "connections", "maxHeadersCount", NULL };
     for (size_t i = 0; known[i]; i++) {
       if (strcmp(key, known[i]) == 0) {
@@ -4232,6 +4314,10 @@ static bool scr_net_dynh_srv_set(void *h, const char *key, size_t key_len, const
   }
   if (strcmp(key, "maxConnections") == 0) {
     scr_net_server_max_connections_set(s, value);
+    return true;
+  }
+  if (strcmp(key, "dropMaxConnection") == 0) {
+    scr_net_server_drop_max_connection_set(s, value);
     return true;
   }
   return false;

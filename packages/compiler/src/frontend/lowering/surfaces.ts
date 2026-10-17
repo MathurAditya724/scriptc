@@ -1965,6 +1965,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     rmSync: ["fs.rmOptsSync", "fs.rmRetrySync"],
     // The { withFileTypes: true } Dirent form.
     readdirSync: ["fs.readdirTypesSync"],
+    // The { throwIfNoEntry } probe form.
+    statSync: ["fs.statProbeSync"],
+    lstatSync: ["fs.lstatProbeSync"],
     globSync: ["fs.globTypesSync"],
     // The JS-source validation-ladder variant (lowerFsLadderCall): the
     // real mkdtemp runs when the options leave utf8 semantics.
@@ -2774,7 +2777,7 @@ export function builtinModulesArrayLit(loc: { file: string; start: number; end: 
  * no lowering. The default-options one-shot zlib/deflate-raw/gzip codecs
  * lower for strings and Buffers; the remaining surface points at them. */
 const ZLIB_HINT =
-  "the default-options deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms, crc32, " +
+  "the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, " +
   "and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface";
 /** Brotli has no codec in the static runtime (zlib is the only vendored
  * compression library). */
@@ -2806,7 +2809,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   util: {
     promisify:
-      "the lowered shapes are const bindings over child_process.execFile, child_process.exec and fs.readFile; call the bound function directly",
+      "the lowered shapes are const bindings over child_process.execFile, child_process.exec and the fs callback functions with an fs/promises counterpart; call the bound function directly",
   },
   "stream/consumers": {
     blob:

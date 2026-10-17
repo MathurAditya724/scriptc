@@ -1336,7 +1336,7 @@ static void flat_thr(OpGen *g, ScrCaught *c) {
 /* The operator's output stream: from.js's nextAsync pulls the generator
  * while push() accepts, and _destroy runs close(error) (the generator's
  * throw, then return) before the destroy callback, on a nextTick. */
-enum { FROM_OP, FROM_SYNC, FROM_ASYNC };
+enum { FROM_OP, FROM_SYNC, FROM_ASYNC, FROM_DYN };
 
 typedef struct {
   OpObj base;
@@ -1348,6 +1348,10 @@ typedef struct {
    * `read`). */
   ScrGen *gen;
   ScrClosure *next, *ret, *thr, *read;
+  /* FROM_DYN: the checked-dynamic iterator from.js keeps (+1), and
+   * whether it came from Symbol.asyncIterator */
+  ScrDyn *iter;
+  bool async_iter;
   ScrStream *out;  /* borrowed: the stream owns this object */
   bool reading;
 } OpFrom;
@@ -1360,6 +1364,7 @@ static void op_from_drop(OpObj *o) {
   if (f->ret) scr_closure_release(f->ret);
   if (f->thr) scr_closure_release(f->thr);
   if (f->read) scr_closure_release(f->read);
+  if (f->iter) scr_dyn_release(f->iter);
   free(f);
 }
 
@@ -1504,7 +1509,148 @@ static void op_from_step_k(void *self, ScrDyn *v) {
   f->reading = false;
 }
 
+/* iterator[name](...args): the method is read through the property on
+ * every call. +1, or NULL with the error pending ("<what> is not a
+ * function" for a method that cannot be called). */
+static ScrDyn *from_dyn_call(const ScrDyn *iter, const char *name, ScrDyn *const *args,
+                             size_t argc, const char *what) {
+  ScrDyn *m = scr_dyn_iterator_result_get(iter, name, strlen(name));
+  if (!m) return NULL;
+  scr_dyn_this_push_dyn(iter);
+  ScrDyn *r = scr_dyn_call(m, args, argc, what);
+  scr_dyn_this_pop();
+  scr_dyn_release(m);
+  return r;
+}
+
+/* `const { value, done } = result` over an iterator result: value, then
+ * done, each read once. what spells the result expression in the
+ * TypeError for a nullish result. +1 value with *done set, or NULL with
+ * the error pending. Borrows r. */
+static ScrDyn *from_dyn_result(const ScrDyn *r, const char *what, bool *done) {
+  if (r->kind == SCR_DYN_UNDEF || r->kind == SCR_DYN_NULL) {
+    char msg[160];
+    int n = snprintf(msg, sizeof msg, "Cannot destructure property 'value' of '%s' as it is %s.",
+                     what, r->kind == SCR_DYN_UNDEF ? "undefined" : "null");
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)n);
+    return NULL;
+  }
+  ScrDyn *v = scr_dyn_iterator_result_get(r, "value", 5);
+  if (!v) return NULL;
+  ScrDyn *d = scr_dyn_iterator_result_get(r, "done", 4);
+  if (!d) {
+    scr_dyn_release(v);
+    return NULL;
+  }
+  *done = scr_dyn_truthy(d);
+  scr_dyn_release(d);
+  return v;
+}
+
+/* `value && typeof value.then === 'function'`: 1 for a promise, 0 for
+ * no then method, -1 for another thenable (refused: the await of a
+ * non-promise thenable has no lowering), -2 with the error pending. */
+static int from_dyn_thenable(const ScrDyn *v) {
+  if (v->kind == SCR_DYN_PROMISE) return 1;
+  if (!scr_dyn_truthy(v)) return 0;
+  if (v->kind != SCR_DYN_OBJ && v->kind != SCR_DYN_FUNC && v->kind != SCR_DYN_PROXY &&
+      v->kind != SCR_DYN_TYPED_REF) {
+    return 0;
+  }
+  ScrDyn *then = scr_dyn_iterator_result_get(v, "then", 4);
+  if (!then) return -2;
+  bool callable = scr_dyn_is_callable(then);
+  scr_dyn_release(then);
+  return callable ? -1 : 0;
+}
+
+static OpFromStep *from_step_new(OpFrom *f, ScrStream *out) {
+  OpFromStep *st = op_alloc(sizeof *st);
+  st->base.rc = 1;
+  st->base.drop = &op_from_step_drop;
+  st->from = op_ref(f);
+  st->out = scr_stream_retain(out);
+  return st;
+}
+
+/* nextAsync's `await iterator.next()` result, destructured: the value,
+ * the done marker, or NULL (the await rejected or the result read threw,
+ * pending). Moves r. */
+static ScrDyn *from_dyn_async_result(ScrDyn *r) {
+  if (!r) return NULL;
+  bool done = false;
+  ScrDyn *v = from_dyn_result(r, "(intermediate value)", &done);
+  scr_dyn_release(r);
+  if (v && done) {
+    scr_dyn_release(v);
+    return scr_dyn_retain(op_k_done);
+  }
+  return v;
+}
+
+static void op_from_dyn_async_k(void *self, ScrDyn *r) {
+  OpFromStep *st = self;
+  if (from_take(st->from, st->out, from_dyn_async_result(r))) {
+    from_next(st->from, st->out);
+  }
+}
+
+/* from.js over a checked-dynamic iterator. A sync iterator pushes while
+ * push() accepts and awaits only promise values (nextSyncWithSyncValues,
+ * changeToAsyncValues and nextSyncWithAsyncValues behave the same way);
+ * an async iterator awaits each next() result (nextAsync). Each pull
+ * calls iterator.next() through its property. */
+static void from_dyn_next(OpFrom *f, ScrStream *out) {
+  if (f->async_iter) {
+    ScrDyn *r = from_dyn_call(f->iter, "next", NULL, 0, "iterator.next");
+    if (!r) {
+      from_take(f, out, NULL);
+      return;
+    }
+    OpFromStep *st = from_step_new(f, out);
+    op_await_value(r, &op_from_dyn_async_k, st);
+    scr_dyn_release(r);
+    op_unref(st);
+    return;
+  }
+  for (;;) {
+    ScrDyn *r = from_dyn_call(f->iter, "next", NULL, 0, "iterator.next");
+    bool done = false;
+    ScrDyn *v = NULL;
+    if (r) {
+      v = from_dyn_result(r, "iterator.next(...)", &done);
+      scr_dyn_release(r);
+    }
+    if (v && done) {
+      scr_dyn_release(v);
+      v = scr_dyn_retain(op_k_done);
+    } else if (v) {
+      int thenable = from_dyn_thenable(v);
+      if (thenable == 1) {
+        OpFromStep *st = from_step_new(f, out);
+        op_await_value(v, &op_from_step_k, st);
+        scr_dyn_release(v);
+        op_unref(st);
+        return;
+      }
+      if (thenable < 0) {
+        scr_dyn_release(v);
+        v = NULL;
+        if (thenable == -1) {
+          ScrError *e = op_unsupported("Readable.from over a value with a then method that is not a promise");
+          scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+        }
+      }
+    }
+    if (!from_take(f, out, v)) return;
+  }
+}
+
 static void from_next(OpFrom *f, ScrStream *out) {
+  if (f->kind == FROM_DYN) {
+    from_dyn_next(f, out);
+    return;
+  }
   if (f->kind == FROM_SYNC) {
     /* nextSyncWithSyncValues: no awaits between the pushes */
     while (from_take(f, out, ((FromSyncFn)f->next->fn)(f->next, scr_gen_retain(f->gen)))) {
@@ -1551,6 +1697,7 @@ typedef struct {
   ScrError *error; /* +1, the destroy error, or NULL */
   ScrError *fail;  /* +1, close()'s rejection */
   int stage;
+  bool thr_done;   /* FROM_DYN: the throw() result's done */
 } OpFromClose;
 
 static void op_from_close_drop(OpObj *o) {
@@ -1562,10 +1709,51 @@ static void op_from_close_drop(OpObj *o) {
   free(c);
 }
 
+/* aggregateTwoErrors(inner, outer) from internal/errors.js: two distinct
+ * errors become an AggregateError of [outer, inner] with outer's message
+ * and code, or inner joins outer.errors when that is an array; otherwise
+ * whichever is set. +1, or NULL for neither. */
+static ScrError *op_aggregate_two(ScrError *inner, ScrError *outer) {
+  if (!inner || !outer || inner == outer) {
+    ScrError *e = inner ? inner : outer;
+    return e ? scr_error_retain(e) : NULL;
+  }
+  ScrDyn *od = scr_dyn_from_error(outer);
+  ScrDyn *list = od ? scr_dyn_iterator_result_get(od, "errors", 6) : NULL;
+  if (list && list->kind == SCR_DYN_ARR) {
+    scr_dyn_arr_push(list, scr_dyn_from_error(inner));
+    scr_dyn_release(list);
+    scr_dyn_release(od);
+    return scr_error_retain(outer);
+  }
+  if (list) scr_dyn_release(list);
+  /* err.code = outerError.code: a code assigned in JavaScript is a
+   * property of the error's checked-dynamic view */
+  ScrDyn *code = od ? scr_dyn_iterator_result_get(od, "code", 4) : NULL;
+  if (od) scr_dyn_release(od);
+  if (scr_exc_pending()) scr_exc_clear();
+  ScrDyn *m = scr_dyn_new_str(outer->message);
+  ScrError *e = scr_aggregate_new(m, scr_dyn_undefined());
+  scr_dyn_release(m);
+  if (!e) {
+    scr_exc_clear();
+    if (code) scr_dyn_release(code);
+    return scr_error_retain(outer);
+  }
+  ScrDyn *errors = scr_dyn_new_arr();
+  scr_dyn_arr_push(errors, scr_dyn_from_error(outer));
+  scr_dyn_arr_push(errors, scr_dyn_from_error(inner));
+  scr_aggregate_set_errors(e, errors);
+  scr_dyn_release(errors);
+  if (code && code->kind == SCR_DYN_STR) e->code = scr_str_retain(code->v.str);
+  if (code) scr_dyn_release(code);
+  return e;
+}
+
 static void op_from_cb_tick(ScrClosure *job) {
   OpFromClose *c = scr_box_get_ref(job->caps[0]);
-  ScrError *e = c->fail ? c->fail : c->error;
-  scr_stream_destroy_done(c->out, e ? scr_error_retain(e) : NULL);
+  /* cb(combinedError), or cb(aggregateTwoErrors(combinedError, closeError)) */
+  scr_stream_destroy_done(c->out, op_aggregate_two(c->error, c->fail));
   op_unref(c);
 }
 
@@ -1655,6 +1843,102 @@ static void op_from_close_k(void *self, ScrDyn *v) {
   }
 }
 
+/* close(error) over a checked-dynamic iterator: `typeof iterator.throw`
+ * and `typeof iterator.return` are read when close runs, and each result
+ * is destructured and its value awaited as in from.js. Stages 20/21 await
+ * throw()'s result and value, 22/23 return()'s, and 24 is the job of a
+ * close that awaited nothing. */
+static void op_from_dyn_close_k(void *self, ScrDyn *v);
+
+/* typeof iterator[name] === 'function': 1, 0, or -1 with the error
+ * pending. */
+static int from_dyn_has_method(const ScrDyn *iter, const char *name, size_t len) {
+  ScrDyn *m = scr_dyn_iterator_result_get(iter, name, len);
+  if (!m) return -1;
+  bool callable = scr_dyn_is_callable(m);
+  scr_dyn_release(m);
+  return callable ? 1 : 0;
+}
+
+/* Calls iterator[name](args) and awaits the result at stage. */
+static void from_dyn_close_call(OpFromClose *c, const char *name, ScrDyn *const *args,
+                                size_t argc, int stage) {
+  char what[16];
+  snprintf(what, sizeof what, "iterator.%s", name);
+  ScrDyn *r = from_dyn_call(c->from->iter, name, args, argc, what);
+  if (!r) {
+    op_from_close_k(c, NULL);
+    return;
+  }
+  c->stage = stage;
+  op_await_value(r, &op_from_dyn_close_k, c);
+  scr_dyn_release(r);
+}
+
+static void from_dyn_close_return(OpFromClose *c) {
+  int has = from_dyn_has_method(c->from->iter, "return", 6);
+  if (has < 0) {
+    op_from_close_k(c, NULL);
+    return;
+  }
+  if (has) {
+    from_dyn_close_call(c, "return", NULL, 0, 22);
+    return;
+  }
+  c->stage = 24;
+  op_await_value(scr_dyn_undefined(), &op_from_dyn_close_k, c);
+}
+
+static void from_dyn_close_start(OpFromClose *c) {
+  if (c->error) {
+    int has = from_dyn_has_method(c->from->iter, "throw", 5);
+    if (has < 0) {
+      op_from_close_k(c, NULL);
+      return;
+    }
+    if (has) {
+      ScrDyn *e = scr_dyn_from_error(c->error);
+      from_dyn_close_call(c, "throw", &e, 1, 20);
+      scr_dyn_release(e);
+      return;
+    }
+  }
+  from_dyn_close_return(c);
+}
+
+static void op_from_dyn_close_k(void *self, ScrDyn *v) {
+  OpFromClose *c = self;
+  if (!v) {
+    op_from_close_k(c, NULL);
+    return;
+  }
+  switch (c->stage) {
+  case 20:   /* const { value, done } = await iterator.throw(error) */
+  case 22: { /* const { value } = await iterator.return() */
+    bool done = false;
+    ScrDyn *value = from_dyn_result(v, "(intermediate value)", &done);
+    scr_dyn_release(v);
+    if (!value) {
+      op_from_close_k(c, NULL);
+      return;
+    }
+    c->thr_done = done;
+    c->stage++;
+    op_await_value(value, &op_from_dyn_close_k, c); /* await value */
+    scr_dyn_release(value);
+    return;
+  }
+  case 21: /* if (done) return; */
+    scr_dyn_release(v);
+    if (c->thr_done) op_from_close_settled(c);
+    else from_dyn_close_return(c);
+    return;
+  default: /* 23, 24 */
+    scr_dyn_release(v);
+    op_from_close_settled(c);
+  }
+}
+
 static void op_from_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
   OpFrom *f = op_from_of(cb);
   OpFromClose *c = op_alloc(sizeof *c);
@@ -1663,8 +1947,12 @@ static void op_from_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
   c->from = f; /* the +1 from op_from_of moves here */
   c->out = scr_stream_retain(s);
   c->error = err ? scr_error_retain(err) : NULL;
-  c->stage = err ? 0 : 4;
-  from_close_resume(c, err);
+  if (f->kind == FROM_DYN) {
+    from_dyn_close_start(c);
+  } else {
+    c->stage = err ? 0 : 4;
+    from_close_resume(c, err);
+  }
   op_unref(c);
 }
 
@@ -1726,6 +2014,30 @@ ScrStream *scr_stream_from_async_gen(ScrGen *g, ScrClosure *next, ScrClosure *re
   return op_from_compiled(FROM_ASYNC, g, next, read, ret, thr, flags, hwm);
 }
 
+ScrStream *scr_stream_from_dyn_iter(ScrDyn *iter, bool async_iter, double flags, double hwm) {
+  op_sentinels_init();
+  OpFrom *f = op_alloc(sizeof *f);
+  f->base.rc = 1;
+  f->base.drop = &op_from_drop;
+  f->kind = FROM_DYN;
+  f->iter = iter;
+  f->async_iter = async_iter;
+  ScrStream *out = scr_stream_new_from_readable(op_from_closure((void *)&op_from_read_inv, f),
+                                                &op_from_read_inv,
+                                                op_from_closure((void *)&op_from_destroy_inv, f),
+                                                &op_from_destroy_inv, flags, hwm);
+  f->out = out;
+  op_unref(f);
+  return out;
+}
+
+ScrStream *scr_stream_from_iter(ScrDyn *iter, double flags, double hwm) {
+  return scr_stream_from_dyn_iter(scr_dyn_retain(iter), false, flags, hwm);
+}
+
+ScrStream *scr_stream_from_async_iter(ScrDyn *iter, double flags, double hwm) {
+  return scr_stream_from_dyn_iter(scr_dyn_retain(iter), true, flags, hwm);
+}
 
 /* ── the promise operators ─────────────────────────────────────────── */
 

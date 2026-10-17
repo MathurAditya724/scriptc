@@ -175,87 +175,91 @@ void stripTargetSpecificAttributes(Function &F) {
   F.removeFnAttr(Attribute::StackProtectReq);
 }
 
-// Rewrites a merged runtime module so that linking it with LinkOnlyNeeded
-// imports only safe, available_externally definitions.
-void prepareImport(Module &Runtime, const std::vector<std::string> &Roots) {
-  unsigned Limit = MaxInstructions;
+// The functions that may be imported at all: small candidates whose local
+// references are importable functions or copyable constants, closed under
+// those references. Selection by call-graph distance (prepareImport) only
+// ever narrows this set.
+struct ImportAnalysis {
   std::vector<Function *> Candidates;
   DenseMap<const Function *, References> Refs;
   DenseSet<const Function *> Importable;
   DenseMap<const Function *, std::string> Blockers;
-  for (Function &F : Runtime)
-    if (candidate(F, Limit)) {
-      References R = referencesOf(F);
-      if (R.LocalFunctionAddressTaken) {
-        Blockers[&F] = R.Blocker;
-        continue;
-      }
-      Candidates.push_back(&F);
-      Importable.insert(&F);
-      Refs[&F] = std::move(R);
-    }
-
   DenseMap<const GlobalVariable *, bool> ConstantMemo;
-  auto Restrict = [&]() {
-  bool Changed = true;
-  while (Changed) {
-    Changed = false;
-    for (Function *F : Candidates) {
-      if (!Importable.contains(F))
-        continue;
-      bool Ok = true;
-      for (const GlobalValue *GV : Refs[F].Globals) {
-        if (isa<GlobalAlias>(GV) || isa<GlobalIFunc>(GV)) {
-          Ok = false;
-          break;
-        }
-        if (!GV->hasLocalLinkage())
+
+  explicit ImportAnalysis(Module &Runtime) {
+    for (Function &F : Runtime)
+      if (candidate(F, MaxInstructions)) {
+        References R = referencesOf(F);
+        if (R.LocalFunctionAddressTaken) {
+          Blockers[&F] = R.Blocker;
           continue;
-        if (const auto *Callee = dyn_cast<Function>(GV)) {
-          if (!Importable.contains(Callee)) {
+        }
+        Candidates.push_back(&F);
+        Importable.insert(&F);
+        Refs[&F] = std::move(R);
+      }
+    restrict();
+  }
+
+  void restrict() {
+    bool Changed = true;
+    while (Changed) {
+      Changed = false;
+      for (Function *F : Candidates) {
+        if (!Importable.contains(F))
+          continue;
+        bool Ok = true;
+        for (const GlobalValue *GV : Refs[F].Globals) {
+          if (isa<GlobalAlias>(GV) || isa<GlobalIFunc>(GV)) {
             Ok = false;
             break;
           }
-        } else if (!copyableConstant(*cast<GlobalVariable>(GV), ConstantMemo)) {
-          Ok = false;
-          break;
-        }
-      }
-      if (!Ok) {
-        if (Blockers.find(F) == Blockers.end()) {
-          for (const GlobalValue *GV : Refs[F].Globals)
-            if (GV->hasLocalLinkage() || isa<GlobalAlias>(GV)) {
-              const auto *Callee = dyn_cast<Function>(GV);
-              const auto *Var = dyn_cast<GlobalVariable>(GV);
-              bool Blocks = Callee ? !Importable.contains(Callee)
-                            : Var  ? !copyableConstant(*Var, ConstantMemo)
-                                   : true;
-              if (Blocks) {
-                Blockers[F] = GV->getName().str();
-                break;
-              }
+          if (!GV->hasLocalLinkage())
+            continue;
+          if (const auto *Callee = dyn_cast<Function>(GV)) {
+            if (!Importable.contains(Callee)) {
+              Ok = false;
+              break;
             }
+          } else if (!copyableConstant(*cast<GlobalVariable>(GV), ConstantMemo)) {
+            Ok = false;
+            break;
+          }
         }
-        Importable.erase(F);
-        Changed = true;
+        if (!Ok) {
+          if (Blockers.find(F) == Blockers.end()) {
+            for (const GlobalValue *GV : Refs[F].Globals)
+              if (GV->hasLocalLinkage() || isa<GlobalAlias>(GV)) {
+                const auto *Callee = dyn_cast<Function>(GV);
+                const auto *Var = dyn_cast<GlobalVariable>(GV);
+                bool Blocks = Callee ? !Importable.contains(Callee)
+                              : Var  ? !copyableConstant(*Var, ConstantMemo)
+                                     : true;
+                if (Blocks) {
+                  Blockers[F] = GV->getName().str();
+                  break;
+                }
+              }
+          }
+          Importable.erase(F);
+          Changed = true;
+        }
       }
     }
   }
-  };
-  Restrict();
 
-  // Select by call-graph distance from the program's references.
-  {
+  // Keeps the importable functions within the size limit at their
+  // call-graph distance from Roots; the limit decays with every hop.
+  void select(const std::vector<Function *> &Roots) {
     DenseSet<const Function *> Selected;
     DenseSet<const Function *> Queued;
     std::vector<std::pair<Function *, unsigned>> Queue;
-    for (const std::string &Name : Roots)
-      if (Function *F = Runtime.getFunction(Name))
-        if (Importable.contains(F) && Queued.insert(F).second)
-          Queue.push_back({F, 0});
+    for (Function *F : Roots)
+      if (Importable.contains(F) && Queued.insert(F).second)
+        Queue.push_back({F, 0});
     for (size_t Next = 0; Next < Queue.size(); ++Next) {
       auto [F, Depth] = Queue[Next];
-      double Allowed = Limit;
+      double Allowed = MaxInstructions;
       for (unsigned I = 0; I < Depth; ++I)
         Allowed = Allowed * DecayPercent / 100.0;
       if (F->getInstructionCount() > Allowed)
@@ -269,8 +273,24 @@ void prepareImport(Module &Runtime, const std::vector<std::string> &Roots) {
         }
     }
     Importable = std::move(Selected);
-    Restrict();
+    restrict();
   }
+};
+
+// Rewrites a merged runtime module so that linking it with LinkOnlyNeeded
+// imports only safe, available_externally definitions.
+void prepareImport(Module &Runtime, const std::vector<std::string> &Roots) {
+  ImportAnalysis Analysis(Runtime);
+  auto &Refs = Analysis.Refs;
+  auto &Importable = Analysis.Importable;
+  auto &Blockers = Analysis.Blockers;
+
+  // Select by call-graph distance from the program's references.
+  std::vector<Function *> RootFunctions;
+  for (const std::string &Name : Roots)
+    if (Function *F = Runtime.getFunction(Name))
+      RootFunctions.push_back(F);
+  Analysis.select(RootFunctions);
 
   if (std::getenv("SCRIPTC_RUNTIME_IMPORT_DEBUG") != nullptr) {
     for (Function &F : Runtime) {
@@ -349,6 +369,99 @@ void prepareImport(Module &Runtime, const std::vector<std::string> &Roots) {
 }
 
 } // namespace
+
+void pruneRuntimeImport(Module &Runtime) {
+  ImportAnalysis Analysis(Runtime);
+  // A program names only the unit's public functions, never a local or a
+  // promoted local (`<name>.scrunit.<tag>`). Selecting from all of them at
+  // once keeps every body any program's selection could reach: a function's
+  // distance from a program's roots is never shorter than from the nearest
+  // public one, and the size limits are the same.
+  std::vector<Function *> Public;
+  for (Function &F : Runtime)
+    if (!F.isDeclaration() && !F.hasLocalLinkage() &&
+        !F.getName().contains(".scrunit."))
+      Public.push_back(&F);
+  Analysis.select(Public);
+  const DenseSet<const Function *> &Importable = Analysis.Importable;
+
+  // Locals the kept bodies name: importable local functions and the
+  // constants they copy, with the constants those name in turn.
+  SmallPtrSet<const GlobalValue *, 32> Live;
+  std::vector<const GlobalValue *> Work;
+  for (const Function *F : Importable) {
+    Work.push_back(F);
+    for (const GlobalValue *GV : Analysis.Refs[F].Globals)
+      if (GV->hasLocalLinkage())
+        Work.push_back(GV);
+  }
+  while (!Work.empty()) {
+    const GlobalValue *GV = Work.back();
+    Work.pop_back();
+    if (!Live.insert(GV).second)
+      continue;
+    if (const auto *V = dyn_cast<GlobalVariable>(GV); V && V->hasInitializer()) {
+      SmallPtrSet<const GlobalValue *, 8> Inner;
+      SmallPtrSet<const Constant *, 16> Seen;
+      collectConstant(V->getInitializer(), Inner, Seen);
+      for (const GlobalValue *Named : Inner)
+        if (Named->hasLocalLinkage())
+          Work.push_back(Named);
+    }
+  }
+
+  // Exactly what prepareImport does to the bodies it will never import,
+  // done once here instead of in every program build.
+  std::vector<GlobalValue *> Dead;
+  for (Function &F : Runtime) {
+    if (F.isDeclaration() || Importable.contains(&F))
+      continue;
+    F.deleteBody();
+    F.setComdat(nullptr);
+    if (F.hasLocalLinkage())
+      Dead.push_back(&F);
+  }
+  std::vector<GlobalVariable *> Appending;
+  for (GlobalVariable &GV : Runtime.globals()) {
+    if (GV.hasAppendingLinkage()) {
+      Appending.push_back(&GV);
+    } else if (GV.hasLocalLinkage()) {
+      if (!Live.contains(&GV)) {
+        GV.setInitializer(nullptr);
+        Dead.push_back(&GV);
+      }
+    } else if (!GV.isDeclaration()) {
+      GV.setInitializer(nullptr);
+      GV.setLinkage(GlobalValue::ExternalLinkage);
+      GV.setComdat(nullptr);
+    }
+  }
+  for (GlobalVariable *GV : Appending)
+    GV->eraseFromParent();
+  // No importable body names an alias (see ImportAnalysis::restrict).
+  std::vector<GlobalAlias *> Aliases;
+  for (GlobalAlias &A : Runtime.aliases())
+    Aliases.push_back(&A);
+  for (GlobalAlias *A : Aliases) {
+    A->replaceAllUsesWith(PoisonValue::get(A->getType()));
+    A->eraseFromParent();
+  }
+  // Only other dead bodies and initializers named these.
+  for (GlobalValue *GV : Dead)
+    GV->replaceAllUsesWith(PoisonValue::get(GV->getType()));
+  for (GlobalValue *GV : Dead)
+    GV->eraseFromParent();
+  std::vector<GlobalValue *> Unused;
+  for (Function &F : Runtime)
+    if (F.isDeclaration() && F.use_empty())
+      Unused.push_back(&F);
+  for (GlobalVariable &GV : Runtime.globals())
+    if (GV.isDeclaration() && GV.use_empty())
+      Unused.push_back(&GV);
+  for (GlobalValue *GV : Unused)
+    GV->eraseFromParent();
+  Runtime.setModuleInlineAsm("");
+}
 
 std::optional<std::string>
 importRuntimeBitcode(Module &Program, const std::vector<std::string> &BitcodePaths) {

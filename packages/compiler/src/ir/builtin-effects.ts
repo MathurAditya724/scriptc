@@ -399,6 +399,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "rl.checkCompleter",
   "readable.fromArr",
   "readable.fromDyn",
+  "readable.fromIter",
+  "readable.fromAsyncIter",
   "readable.fromGen",
   "readable.fromAsyncGen",
   "readable.opMap",
@@ -581,6 +583,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "sp.fromPairs",
   "sp.newChecked",
   "fs.statSync",
+  "fs.statProbeSync",
   "crypto.randomBytesToString",
   "crypto.randomBytes",
   "crypto.hashDigestStr",
@@ -678,6 +681,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "zlib.unzipSync",
   "zlib.crc32",
   "zlib.streamNew",
+  "zlib.syncOpts",
+  "zlib.cbOpts",
+  "zlib.syncOptsDyn",
+  "zlib.cbOptsDyn",
   "zlib.streamFlush",
   "zlib.streamFlushCb",
   "zlib.streamParams",
@@ -701,6 +708,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dns.setDefaultResultOrder",
   "net.connect",
   "net.connectCb",
+  // resetAndDestroy on a TLS socket throws ERR_INVALID_HANDLE_TYPE.
+  "net.sockResetAndDestroy",
   // node:dgram state errors (Node throws synchronously): bind on a bound
   // socket, connect on a connected one, send/close/address on a closed or
   // never-bound one.
@@ -786,7 +795,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dir.closeSync",
   "fs.copyFileSync",
   "fs.renameSync",
+  "fs.renameCb",
   "fs.lstatSync",
+  "fs.lstatProbeSync",
   "fs.fstatSync",
   "fs.fchmodSync",
   "fs.fsyncSync",

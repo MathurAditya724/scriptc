@@ -567,21 +567,29 @@ async function emitNativeProgramObject(
   const linkPath = `${privateSiblingPath(artifactPath, "native-program-object")}.o`;
   // The validated program-object artifact is a single object by contract.
   const target = nativeCodegenTarget();
+  const llvmBytes = (typeof llvm === "string" ? [llvm] : llvm).reduce(
+    (bytes, part) => bytes + Buffer.byteLength(part),
+    0,
+  );
   const partitions =
-    opts.nativeProgramObject === true || target === null
-      ? 1
-      : nativeProgramPartitions(
-          (typeof llvm === "string" ? [llvm] : llvm).reduce(
-            (bytes, part) => bytes + Buffer.byteLength(part),
-            0,
-          ),
-        );
-  // Speed programs import small runtime functions from the bitcode of the
-  // exact runtime units they link, so LLVM can inline across the boundary.
-  // Release programs never do: their objects stay independent of it.
+    opts.nativeProgramObject === true || target === null ? 1 : nativeProgramPartitions(llvmBytes);
+  // Optimized programs import small runtime functions from the bitcode of
+  // the exact runtime units they link, so LLVM can inline across the
+  // boundary. Release units ship only the bodies that need none of their
+  // unit-local state, which keeps the import cheap; speed units promote
+  // that state and offer more. Every partition reads the bitcode again, so
+  // release imports only into programs small enough for one partition: in
+  // larger ones the build-time and size cost outgrows the gain.
   const runtimeBitcode =
-    opts.optimization === "speed" && opts.sanitize !== true && target !== null
-      ? await loadRuntimeBitcode({ target, features })
+    opts.sanitize !== true &&
+    target !== null &&
+    (opts.optimization === "speed" ||
+      (opts.optimization !== "dev" && nativeProgramPartitions(llvmBytes) === 1))
+      ? await loadRuntimeBitcode({
+          target,
+          features,
+          optimization: opts.optimization === "speed" ? "speed" : "release",
+        })
       : null;
   try {
     const artifact = await emitNativeArtifact({

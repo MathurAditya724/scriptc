@@ -13,7 +13,7 @@ import {
   runtimeForbiddenStrings,
 } from "./artifact-policy.mjs";
 import { createDeterministicArchive } from "./archive.mjs";
-import { buildRuntimeUnit, resolveRuntimeUnitHelper } from "./runtime-unit.mjs";
+import { buildImportBitcode, buildRuntimeUnit, resolveRuntimeUnitHelper } from "./runtime-unit.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { parallelMap } from "./parallel-map.mjs";
 
@@ -121,7 +121,8 @@ async function build() {
     ]);
   };
   // Speed-flavor executable units are emitted through the host LLVM helper
-  // so their object and import bitcode come from one promoted module.
+  // so their object and import bitcode come from one promoted module. The
+  // helper also reduces release units' bitcode to what programs can import.
   const unitHelper =
     config.bitcode === false
       ? null
@@ -281,6 +282,33 @@ async function build() {
               };
             } else {
               await compile(join(runtimeSrc, unit.source), output, unitFlags);
+              if (
+                flavor === "release" &&
+                unitHelper !== null &&
+                (await buildImportBitcode({
+                  helper: unitHelper,
+                  compileBitcode: (optimized) =>
+                    run(compiler, [
+                      ...compilerArgs,
+                      ...sourcePathFlags,
+                      ...unitFlags,
+                      "-g0",
+                      "-emit-llvm",
+                      "-c",
+                      join(runtimeSrc, unit.source),
+                      "-o",
+                      optimized,
+                    ]),
+                  bitcode: bitcodeOutput,
+                  tag: unit.source.replace(/\.c$/, ""),
+                }))
+              ) {
+                bitcode = {
+                  path: artifactPath(bitcodeOutput),
+                  sha256: await sha256(bitcodeOutput),
+                  size: (await stat(bitcodeOutput)).size,
+                };
+              }
             }
             const built = {
               id: variant.id,
@@ -404,7 +432,7 @@ async function build() {
       package: packageManifest.name,
       version: packageManifest.version,
       target: matrix.target,
-      runtime_abi: { version: 21, marker: "scr_runtime_abi_v21" },
+      runtime_abi: { version: 22, marker: "scr_runtime_abi_v22" },
       compiler: {
         command: compiler,
         identity: compilerVersion,

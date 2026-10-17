@@ -245,6 +245,13 @@ ScrStr *scr_net_sock_remote_family(ScrNetSocket *s); /* +1 or NULL */
 ScrStr *scr_net_sock_local_address(ScrNetSocket *s); /* +1 or NULL */
 double scr_net_sock_local_port(ScrNetSocket *s);     /* NaN = undefined */
 ScrStr *scr_net_sock_local_family(ScrNetSocket *s);  /* +1 or NULL */
+ScrDyn *scr_net_sock_address(ScrNetSocket *s);       /* +1: socket.address() */
+/* socket.resetAndDestroy(): RST close (deferred to 'connect' while
+ * connecting); throws ERR_INVALID_HANDLE_TYPE on TLS. +1: chaining. */
+ScrNetSocket *scr_net_sock_reset_and_destroy(ScrNetSocket *s);
+/* server.dropMaxConnection: a stored value (+1 get, borrowed set). */
+ScrDyn *scr_net_server_drop_max_connection_get(ScrNetServer *s);
+void scr_net_server_drop_max_connection_set(ScrNetServer *s, const ScrDyn *value);
 ScrDyn *scr_net_sock_addr_field(ScrNetSocket *s, double field); /* +1 */
 double scr_net_sock_bytes_read(ScrNetSocket *s);
 bool scr_net_sock_connecting(ScrNetSocket *s);

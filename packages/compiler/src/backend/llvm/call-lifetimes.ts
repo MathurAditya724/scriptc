@@ -45,6 +45,12 @@ export interface CallLifetimes {
   /** Projection-only local uses, allowing statement assignments. Each
    * initializer and assignment still needs a separate storage proof. */
   projectedLocals: Map<string, Set<string>>;
+  /** Generator bodies own their parameters for the whole body, including
+   * every suspension: the frame releases them only on its final exit. A
+   * reference parameter nothing rebinds, declares or captures is therefore
+   * a stable owner that reads may borrow, as a borrowed parameter is in a
+   * synchronous body. These parameters keep their owned convention. */
+  generatorParameters: Map<string, Set<string>>;
 }
 
 function eligible(local: IrLocal): boolean {
@@ -343,8 +349,28 @@ export function analyzeCallLifetimes(
     borrowed: new Map(),
     bindings: new Map(),
     projectedLocals: new Map(),
+    generatorParameters: new Map(),
   };
   for (const fn of functions.values()) {
+    if (fn.generator !== undefined && fn.classCaptures === undefined) {
+      const uses = collectUses(fn, nullableField, false, inlineField, recordDynCopy);
+      const locals = new Map(fn.locals.map((local) => [local.id, local]));
+      const stable = new Set<string>();
+      for (const param of fn.params) {
+        const local = locals.get(param.localId);
+        if (
+          local &&
+          isRefCounted(param.type) &&
+          !local.boxed &&
+          !local.tdz &&
+          !uses.written.has(local.id) &&
+          !uses.declarations.has(local.id)
+        )
+          stable.add(local.id);
+      }
+      if (stable.size > 0) result.generatorParameters.set(fn.name, stable);
+      continue;
+    }
     if (fn.async || fn.generator) continue;
     const uses = collectUses(
       fn,
