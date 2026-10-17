@@ -51,7 +51,9 @@ static void *scr_rl_grow(void *p, size_t *cap, size_t need, size_t elem) {
   return q;
 }
 
-enum { RL_EV_LINE, RL_EV_CLOSE, RL_EV_PAUSE, RL_EV_RESUME, RL_EV_ERROR, RL_EV_COUNT };
+/* 'history' is stored and never fires: only terminal interfaces record
+ * history. */
+enum { RL_EV_LINE, RL_EV_CLOSE, RL_EV_PAUSE, RL_EV_RESUME, RL_EV_ERROR, RL_EV_HISTORY, RL_EV_COUNT };
 
 typedef void (*ScrRlLineFn)(ScrClosure *, ScrStr *); /* owns the +1 line */
 typedef void (*ScrRlErrFn)(ScrClosure *, ScrError *); /* borrows the error */
@@ -104,6 +106,11 @@ typedef struct ScrRl {
   size_t parked_len, parked_cap;
   RlIter *iter;
   ScrDyn *abort_dispose; /* the signal option's listener disposable (+1) */
+  /* The history and editing options. A non-terminal interface keeps
+   * them as given and never records history. */
+  ScrArr *history; /* the history option (+1), or NULL until first read */
+  double history_size, tab_size, escape_timeout;
+  bool remove_dups;
   struct ScrRl *next;
 } ScrRl;
 
@@ -639,6 +646,7 @@ static void scr_rl_cleanup_atexit(void) {
     }
     if (rl->iter) scr_rl_iter_free(rl->iter);
     if (rl->abort_dispose) scr_dyn_release(rl->abort_dispose);
+    if (rl->history) scr_arr_release(rl->history);
     if (rl->in) rl->io->release(rl->in);
     if (rl->out) rl->io->release(rl->out);
     scr_str_release(rl->prompt);
@@ -730,6 +738,9 @@ double scr_rl_open(const ScrRlIo *io, void *in, void *out, bool out_stdout, doub
   rl->prompt = prompt ? scr_str_retain(prompt) : scr_str_new("> ", 2);
   /* this.crlfDelay = crlfDelay ? MathMax(kMincrlfDelay, crlfDelay) : kMincrlfDelay */
   rl->crlf_delay = isnan(crlf_delay) || crlf_delay == 0 ? 100 : fmax(100, crlf_delay);
+  rl->history_size = 30; /* kHistorySize */
+  rl->tab_size = 8;
+  rl->escape_timeout = 500; /* ESCAPE_CODE_TIMEOUT */
   rl->next = scr_rls;
   scr_rls = rl;
   if (in == NULL) {
@@ -995,6 +1006,82 @@ void scr_rl_on(double id, double ev, ScrClosure *cb /*moves*/, void *fn, bool on
     return;
   }
   scr_rl_add(rl, (int)ev, cb, fn, once, false);
+}
+
+/* ── the history and editing options ───────────────────────────────── */
+
+static SCR_COLD void scr_rl_out_of_range(const char *name, const char *range, double v) {
+  char got[48];
+  size_t n = scr_num_received(v, got);
+  char m[200];
+  int len = snprintf(m, sizeof m, "The value of \"%s\" is out of range. It must be %s. Received %.*s",
+                     name, range, (int)n, got);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, m, (size_t)len, "ERR_OUT_OF_RANGE");
+}
+
+void scr_rl_check_options(double flags, double tab_size, double escape_timeout, double size) {
+  int f = (int)flags;
+  if (f & 1) { /* validateUint32(input.tabSize, 'tabSize', true) */
+    if (tab_size != floor(tab_size) || isnan(tab_size)) {
+      scr_rl_out_of_range("tabSize", "an integer", tab_size);
+      return;
+    }
+    if (tab_size < 1 || tab_size > 4294967295.0) {
+      scr_rl_out_of_range("tabSize", ">= 1 && <= 4294967295", tab_size);
+      return;
+    }
+  }
+  if ((f & 2) && !isfinite(escape_timeout)) {
+    /* ERR_INVALID_ARG_VALUE('input.escapeCodeTimeout', this.escapeCodeTimeout) */
+    static const char m[] = "The property 'input.escapeCodeTimeout' is invalid. Received 500";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, m, sizeof m - 1, "ERR_INVALID_ARG_VALUE");
+    return;
+  }
+  if ((f & 4) && (isnan(size) || size < 0)) { /* validateNumber(options.size, 'size', 0) */
+    scr_rl_out_of_range("size", ">= 0", size);
+  }
+}
+
+void scr_rl_check_completer(ScrDyn *completer) {
+  /* completer !== undefined && typeof completer !== 'function' */
+  if (completer->kind == SCR_DYN_UNDEF || scr_dyn_is_callable(completer)) return;
+  scr_dyn_arg_value_fail("completer", NULL, completer);
+}
+
+void scr_rl_set_options(double id, double flags, double size, bool remove_dups, double tab_size,
+                        double escape_timeout) {
+  ScrRl *rl = scr_rl_find(id);
+  if (!rl) return;
+  int f = (int)flags;
+  if (f & 1) rl->tab_size = tab_size;
+  if (f & 2) rl->escape_timeout = escape_timeout;
+  if (f & 4) rl->history_size = size;
+  rl->remove_dups = remove_dups;
+}
+
+void scr_rl_set_history(double id, ScrArr *history) {
+  ScrRl *rl = scr_rl_find(id);
+  if (!rl) return;
+  if (rl->history) scr_arr_release(rl->history);
+  rl->history = scr_arr_retain(history);
+}
+
+ScrArr *scr_rl_history(double id) {
+  ScrRl *rl = scr_rl_find(id);
+  if (!rl) return scr_arr_new(SCR_ELEM_STR, 0);
+  if (!rl->history) rl->history = scr_arr_new(SCR_ELEM_STR, 0);
+  return scr_arr_retain(rl->history);
+}
+
+double scr_rl_num_prop(double id, double which) {
+  ScrRl *rl = scr_rl_find(id);
+  switch ((int)which) {
+  case 0: return rl ? rl->history_size : 30;
+  case 1: return -1; /* historyIndex: nothing recalled */
+  case 2: return rl ? rl->crlf_delay : 100;
+  case 3: return rl ? rl->tab_size : 8;
+  default: return rl ? rl->escape_timeout : 500;
+  }
 }
 
 /* ── the runtime-provided adapters ─────────────────────────────────── */

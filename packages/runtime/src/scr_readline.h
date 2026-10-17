@@ -43,6 +43,24 @@ void scr_rl_set_prompt(double id, ScrStr *prompt);
 ScrStr *scr_rl_get_prompt(double id); /* +1 */
 void scr_rl_write(double id, ScrStr *data); /* may throw ERR_USE_AFTER_CLOSE */
 void scr_rl_on(double id, double ev, ScrClosure *cb /*moves*/, void *fn, bool once);
+/* createInterface's history and editing options, in Node's order: the
+ * flags name the present ones (1 tabSize, 2 escapeCodeTimeout,
+ * 4 historySize), checked before the interface opens (validateUint32,
+ * the finite escapeCodeTimeout, validateNumber(size, 0)); may throw.
+ * set_options and set_history store them on the open interface (history
+ * borrowed: rl.history answers that array). */
+void scr_rl_check_options(double flags, double tab_size, double escape_timeout, double size);
+/* A checked-dynamic completer that is not undefined must be callable
+ * (ERR_INVALID_ARG_VALUE); borrowed; may throw. */
+void scr_rl_check_completer(ScrDyn *completer);
+void scr_rl_set_options(double id, double flags, double size, bool remove_dups, double tab_size,
+                        double escape_timeout);
+void scr_rl_set_history(double id, ScrArr *history);
+/* rl.history: the history option itself, or an empty array the interface
+ * keeps (+1). The numeric members (0 historySize, 1 historyIndex,
+ * 2 crlfDelay, 3 tabSize, 4 escapeCodeTimeout). */
+ScrArr *scr_rl_history(double id);
+double scr_rl_num_prop(double id, double which);
 void scr_rl_iter_open(double id);
 ScrPromise *scr_rl_iter_next(double id); /* +1 promise<dyn>: the line, or undefined */
 void scr_rl_iter_return(double id);

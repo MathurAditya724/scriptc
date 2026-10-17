@@ -3731,6 +3731,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "rl.iterOpen": { argTypes: [F64], result: VOID },
   "rl.iterNext": { argTypes: [F64], result: { kind: "promise", inner: DYN } },
   "rl.iterReturn": { argTypes: [F64], result: VOID },
+  /** createInterface's history and editing options (scr_rl_check_options:
+   * [flags, tabSize, escapeCodeTimeout, historySize], may throw;
+   * rl.setOptions: [handle, flags, historySize, removeHistoryDuplicates,
+   * tabSize, escapeCodeTimeout]; rl.setHistory: [handle, history]) and
+   * the member reads (rl.history answers the array, rl.numProp the
+   * numeric member by number). */
+  "rl.checkOptions": { argTypes: [F64, F64, F64, F64], result: VOID },
+  "rl.checkCompleter": { argTypes: [DYN], result: VOID },
+  "rl.setOptions": { argTypes: [F64, F64, F64, BOOL, F64, F64], result: VOID },
+  "rl.setHistory": { argTypes: [F64, arrayOf(STRING)], result: VOID },
+  "rl.history": { argTypes: [F64], result: arrayOf(STRING) },
+  "rl.numProp": { argTypes: [F64, F64], result: F64 },
   /** node:timers/promises — the promisified pair (scr_async.c, beside
    * the timer heap they ride): tp.setTimeout: [ms] → a pending void
    * promise a one-shot heap timer fulfills (the loop's timer phase, FIFO
