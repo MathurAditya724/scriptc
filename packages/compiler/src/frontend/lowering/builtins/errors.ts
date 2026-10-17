@@ -82,10 +82,12 @@ export function lowerErrorCodeProperty(
     };
   }
   // %AssertionError's actual, expected, operator, generatedMessage and
-  // diff are properties of the error's dyn view, read at the declared type.
+  // diff, and %SuppressedError's error and suppressed, are properties of
+  // the error's dyn view, read at the declared type.
   if (
-    recvT.className === "%AssertionError" &&
-    ASSERTION_ERROR_PROPERTIES.has(expr.name.text) &&
+    ((recvT.className === "%AssertionError" && ASSERTION_ERROR_PROPERTIES.has(expr.name.text)) ||
+      (recvT.className === "%SuppressedError" &&
+        (expr.name.text === "error" || expr.name.text === "suppressed"))) &&
     lowerer.isStdlibMember(expr)
   ) {
     const receiver = lowerer.lowerExpr(expr.expression);

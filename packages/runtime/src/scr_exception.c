@@ -354,10 +354,41 @@ void scr_rethrow(const ScrCaught *c) {
   }
 }
 
-/* Explicit resource management's error merge. The full JavaScript object
- * exposes `.error` and `.suppressed`; the static catch surface currently
- * exposes Error name/message, so retain Node's externally visible identity
- * and ordering while consuming both snapshots exactly once. */
+/* Explicit resource management's error merge: a SuppressedError whose
+ * `error` is the disposal error and whose `suppressed` is the body error.
+ * The snapshots wait in this table for the error's dyn view, so programs
+ * that never read them link no checked-dynamic code. */
+typedef struct ScrSuppressedEntry {
+  const void *error_object;
+  ScrCaught *error;
+  ScrCaught *suppressed;
+} ScrSuppressedEntry;
+static SCR_TL ScrSuppressedEntry *scr_suppressed_entries = NULL;
+static SCR_TL size_t scr_suppressed_len = 0;
+static SCR_TL size_t scr_suppressed_cap = 0;
+
+bool scr_exc_suppressed_values(const void *error_object, const ScrCaught **error,
+                               const ScrCaught **suppressed) {
+  for (size_t i = 0; i < scr_suppressed_len; i++) {
+    if (scr_suppressed_entries[i].error_object != error_object) continue;
+    *error = scr_suppressed_entries[i].error;
+    *suppressed = scr_suppressed_entries[i].suppressed;
+    return true;
+  }
+  return false;
+}
+
+void scr_exc_suppressed_forget(const void *error_object) {
+  for (size_t i = 0; i < scr_suppressed_len; i++) {
+    if (scr_suppressed_entries[i].error_object != error_object) continue;
+    ScrSuppressedEntry entry = scr_suppressed_entries[i];
+    scr_suppressed_entries[i] = scr_suppressed_entries[--scr_suppressed_len];
+    scr_caught_release(entry.error);
+    scr_caught_release(entry.suppressed);
+    return;
+  }
+}
+
 void scr_exc_suppress(ScrCaught *suppressed) {
   if (suppressed->kind == SCR_EXC_GENRET) {
     /* A generator .return() is a return completion, not a thrown error.
@@ -371,11 +402,22 @@ void scr_exc_suppress(ScrCaught *suppressed) {
     scr_caught_release(suppressed);
     return;
   }
-  scr_caught_release(error);
-  scr_caught_release(suppressed);
-  scr_throw_error_named(
-      scr_str_new("SuppressedError", sizeof("SuppressedError") - 1),
-      scr_str_new("An error was suppressed during disposal", sizeof("An error was suppressed during disposal") - 1));
+  static const char text[] = "An error was suppressed during disposal";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrError *e = scr_error_new(SCR_ERR_SUPPRESSED, message);
+  scr_str_release(message);
+  if (scr_suppressed_len == scr_suppressed_cap) {
+    size_t cap = scr_suppressed_cap ? scr_suppressed_cap * 2 : 4;
+    ScrSuppressedEntry *entries = realloc(scr_suppressed_entries, cap * sizeof *entries);
+    if (!entries) {
+      fputs("scriptc: out of memory\n", stderr);
+      abort();
+    }
+    scr_suppressed_entries = entries;
+    scr_suppressed_cap = cap;
+  }
+  scr_suppressed_entries[scr_suppressed_len++] = (ScrSuppressedEntry){e, error, suppressed};
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
 bool scr_caught_instanceof(const ScrCaught *c, size_t pre, size_t post) {
