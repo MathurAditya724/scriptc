@@ -527,6 +527,8 @@ struct ScrNetSocket {
   bool dial_deferred;
   ScrStr **dial_ips;
   size_t dial_n, dial_i;
+  /* a host name the dial resolves first (+1; NULL for IP literals) */
+  ScrStr *dial_host;
   /* the in-flight dial chain's LAST failure — surfaced (moved into
    * pending_err) only when the list exhausts; a later success drops it */
   ScrStr *dial_err;
@@ -662,6 +664,7 @@ void scr_net_sock_release(ScrNetSocket *s) {
     for (size_t i = 0; i < s->dial_n; i++) scr_str_release(s->dial_ips[i]);
     free(s->dial_ips);
     scr_str_release(s->dial_err);
+    scr_str_release(s->dial_host);
     free(s->wbuf);
     free(s->rbuf);
     if (s->pipe_dst) scr_net_sock_release(s->pipe_dst);
@@ -2023,9 +2026,9 @@ static void scr_net_server_accept(ScrNetServer *srv) {
 
 /* ── the client ──────────────────────────────────────────────────────── */
 
-/* connect(port, host): numeric IPv4/IPv6 hosts and "localhost" (pinned to
- * 127.0.0.1 — the documented divergence from Node's family autoselect).
- * The connect callback registers as once('connect'). Never throws: every
+/* connect(port, host): numeric IPv4/IPv6 hosts, "localhost" (pinned to
+ * 127.0.0.1 — the documented divergence from Node's family autoselect),
+ * and host names resolved through getaddrinfo. The connect callback registers as once('connect'). Never throws: every
  * failure is the async 'error' event, like Node. */
 
 ScrStr *scr_net_blocking_lookup(ScrStr *host /*borrowed*/) {
@@ -2056,12 +2059,112 @@ ScrStr *scr_net_blocking_lookup(ScrStr *host /*borrowed*/) {
   return scr_str_new(ip, strlen(ip));
 }
 
+/* Records a host connect target: IP literals dial as given, "localhost"
+ * is pinned to 127.0.0.1 (the documented divergence from Node's family
+ * autoselect), and any other name is resolved when the dial starts. */
+static void scr_net_sock_set_peer(ScrNetSocket *s, ScrStr *host /*borrowed, nullable*/) {
+  const char *h = host && host->len > 0 ? host->data : "localhost";
+  if (strcmp(h, "localhost") == 0) h = "127.0.0.1";
+  snprintf(s->peer_ip, sizeof s->peer_ip, "%s", h);
+  struct in_addr a4;
+  struct in6_addr a6;
+  if (inet_pton(AF_INET, h, &a4) != 1 && inet_pton(AF_INET6, h, &a6) != 1)
+    s->dial_host = scr_str_retain(host);
+}
+
+/* Resolves dial_host the way Node's lookupAndConnect does: getaddrinfo
+ * for stream sockets of any family, with AI_ADDRCONFIG except on
+ * Windows. The answers are deduplicated and ordered like Node's
+ * autoSelectFamily list (families alternate, starting with the first
+ * answer's), then dialed in order through the address chain: a failed
+ * connect tries the next address, and the last failure is the 'error'.
+ * The attempt timer that starts the next address while one is still
+ * pending is not modeled. A failed lookup is Node's deferred
+ * "getaddrinfo <code> <host>" error. */
+static void scr_net_sock_dial_host(ScrNetSocket *s) {
+  ScrStr *host = s->dial_host;
+  s->dial_host = NULL;
+  struct addrinfo hints;
+  memset(&hints, 0, sizeof hints);
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+#ifndef _WIN32
+  hints.ai_flags = AI_ADDRCONFIG;
+#endif
+  struct addrinfo *res = NULL;
+  int rc = getaddrinfo(host->data, NULL, &hints, &res);
+  size_t n = 0;
+  for (struct addrinfo *ai = rc == 0 ? res : NULL; ai != NULL; ai = ai->ai_next) n++;
+  ScrStr **ips = n > 0 ? calloc(n, sizeof *ips) : NULL;
+  if (n > 0 && !ips) scr_net_oom();
+  /* by family: [0] is the first answer's family, [1] the other */
+  size_t count[2] = { 0, 0 };
+  ScrStr **fam[2] = { NULL, NULL };
+  int first = AF_UNSPEC;
+  for (struct addrinfo *ai = rc == 0 ? res : NULL; ai != NULL; ai = ai->ai_next) {
+    char ip[INET6_ADDRSTRLEN];
+    const char *out = NULL;
+    if (ai->ai_family == AF_INET) {
+      out = inet_ntop(AF_INET, &((struct sockaddr_in *)ai->ai_addr)->sin_addr, ip, sizeof ip);
+    } else if (ai->ai_family == AF_INET6) {
+      out = inet_ntop(AF_INET6, &((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr, ip, sizeof ip);
+    }
+    if (out == NULL) continue;
+    if (first == AF_UNSPEC) first = ai->ai_family;
+    size_t f = ai->ai_family == first ? 0 : 1;
+    if (fam[f] == NULL) {
+      fam[f] = calloc(n, sizeof *fam[f]);
+      if (!fam[f]) scr_net_oom();
+    }
+    size_t len = strlen(ip);
+    bool seen = false;
+    for (size_t i = 0; i < count[f] && !seen; i++)
+      seen = fam[f][i]->len == len && memcmp(fam[f][i]->data, ip, len) == 0;
+    if (!seen) fam[f][count[f]++] = scr_str_new(ip, len);
+  }
+  if (res) freeaddrinfo(res);
+  size_t total = 0;
+  for (size_t i = 0; i < count[0] || i < count[1]; i++) {
+    if (i < count[0]) ips[total++] = fam[0][i];
+    if (i < count[1]) ips[total++] = fam[1][i];
+  }
+  free(fam[0]);
+  free(fam[1]);
+  if (total == 0) {
+    bool notfound = rc == 0 || rc == EAI_NONAME
+#ifdef EAI_NODATA
+                    || rc == EAI_NODATA
+#endif
+        ;
+    const char *code = notfound ? "ENOTFOUND" : rc == EAI_AGAIN ? "EAI_AGAIN" : "EAI_FAIL";
+    char msg[320];
+    snprintf(msg, sizeof msg, "getaddrinfo %s %.*s", code,
+             (int)(host->len < 255 ? host->len : 255), host->data);
+    free(ips);
+    scr_str_release(host);
+    s->pending_err = scr_str_new(msg, strlen(msg));
+    s->had_error = true;
+    s->emit_close = true;
+    s->connecting = false;
+    return;
+  }
+  scr_str_release(host);
+  s->dial_ips = ips;
+  s->dial_n = total;
+  s->dial_i = 0;
+  scr_net_sock_dial_next(s);
+}
+
 /* The dial itself (peer_ip/peer_port already set): the sockaddr arms,
  * socket(), and the nonblocking connect(). Shared by the immediate dial
  * (scr_net_connect) and the DEFERRED one (the http agent's maxSockets
  * queue — the socket exists, buffers writes, and dials when a slot
  * frees). */
 static void scr_net_sock_dial_peer(ScrNetSocket *s) {
+  if (s->dial_host != NULL) {
+    scr_net_sock_dial_host(s);
+    return;
+  }
   const char *h = s->peer_ip;
   struct sockaddr_in a4;
   struct sockaddr_in6 a6;
@@ -2081,8 +2184,8 @@ static void scr_net_sock_dial_peer(ScrNetSocket *s) {
     salen = sizeof a6;
   }
   if (!sa) {
-    /* Non-numeric host: no resolver in this slice. Node's shape for a
-     * failed lookup is ENOTFOUND; deliver it deferred. */
+    /* not an IP literal and not resolved: Node's shape for a failed
+     * lookup is ENOTFOUND; deliver it deferred. */
     char msg[160];
     snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", h);
     s->pending_err = scr_str_new(msg, strlen(msg));
@@ -2142,9 +2245,7 @@ ScrNetSocket *scr_net_connect(double port, ScrStr *host /*borrowed, nullable*/,
   ScrNetSocket *s = scr_net_sock_new();
   if (cb) scr_net_ls_add(&s->conn_ls, cb, NULL, true);
   s->peer_port = (int)port;
-  const char *h = host && host->len > 0 ? host->data : "localhost";
-  if (strcmp(h, "localhost") == 0) h = "127.0.0.1";
-  snprintf(s->peer_ip, sizeof s->peer_ip, "%s", h);
+  scr_net_sock_set_peer(s, host);
   if (!scr_net_poller_init()) {
     fputs("scriptc: event poller init failed\n", stderr);
     abort();
@@ -2283,9 +2384,7 @@ void scr_net_connect_opts_chk(const ScrDyn *opts, const ScrStr *fence) {
 ScrNetSocket *scr_net_connect_deferred(double port, ScrStr *host /*borrowed, nullable*/) {
   ScrNetSocket *s = scr_net_sock_new();
   s->peer_port = (int)port;
-  const char *h = host && host->len > 0 ? host->data : "localhost";
-  if (strcmp(h, "localhost") == 0) h = "127.0.0.1";
-  snprintf(s->peer_ip, sizeof s->peer_ip, "%s", h);
+  scr_net_sock_set_peer(s, host);
   if (!scr_net_poller_init()) {
     fputs("scriptc: event poller init failed\n", stderr);
     abort();
