@@ -45,9 +45,9 @@ console.log(win32.sep);
 const u = new URL("https://example.com/x?a=1");
 console.log(URL.createObjectURL(new Blob(["data"])));
 u.searchParams.get("a");
-/* The one-shot zlib/raw/gzip codecs also accept literal compression levels;
- * other options remain fenced, while Brotli remains a member-qualified
- * fence with the lowered family named. */
+/* The one-shot zlib/raw/gzip codecs take Node's options (the deflateSync
+ * call lowers), while Brotli remains a member-qualified fence with the
+ * lowered family named. */
 import { brotliCompressSync, deflateSync } from "zlib";
 deflateSync("data", { level: 9, strategy: 1 });
 brotliCompressSync(Buffer.from("data"));

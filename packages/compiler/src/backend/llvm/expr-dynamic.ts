@@ -528,9 +528,32 @@ export function emitDynamicExpr(
       const helper =
         e.key.type.kind === "dyn" ? host.dyn.dynComputedKeyGetHelper() : host.dyn.dynKeyGetHelper();
       const t = B.tmp();
-      B.line(
-        `${t} = call ptr @${helper}(ptr ${d.name}, ptr ${k.name}, i1 ${e.optional ? "true" : "false"})`,
-      );
+      const generic = `call ptr @${helper}(ptr ${d.name}, ptr ${k.name}, i1 ${e.optional ? "true" : "false"})`;
+      if (e.key.kind === "strLit") {
+        // A constant key on an ordinary object reads through the site's
+        // cache; every other receiver keeps the shared helper.
+        host.declare(`declare ptr @scr_dyn_obj_read_ic(ptr, ptr, ptr)`);
+        const isObject = B.tmp();
+        B.line(`${isObject} = icmp eq i32 ${host.dynKind(d.name)}, ${DYN_KIND.OBJ}`);
+        const cached = B.newLabel("dkg.ic");
+        const shared = B.newLabel("dkg.any");
+        const join = B.newLabel("dkg.j");
+        B.condBr(isObject, cached, shared);
+        B.startBlock(cached);
+        const fast = B.tmp();
+        B.line(
+          `${fast} = call ptr @scr_dyn_obj_read_ic(ptr ${d.name}, ptr ${k.name}, ptr ${host.dynReadIcSite()})`,
+        );
+        B.br(join);
+        B.startBlock(shared);
+        const slow = B.tmp();
+        B.line(`${slow} = ${generic}`);
+        B.br(join);
+        B.startBlock(join);
+        B.line(`${t} = phi ptr [ ${fast}, %${cached} ], [ ${slow}, %${shared} ]`);
+      } else {
+        B.line(`${t} = ${generic}`);
+      }
       const out = host.own({ name: t, type: e.type });
       host.emitPendingCheck();
       return out;

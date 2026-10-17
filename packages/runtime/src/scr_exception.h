@@ -105,6 +105,16 @@ bool scr_exc_pending(void);
  * for those lanes and for emitted code's slow paths. */
 static inline bool scr_exc_pending_inline(void) { return scr_exc_active->kind != SCR_EXC_NONE; }
 #define scr_exc_pending() scr_exc_pending_inline()
+/* These lanes keep no alert or flag state beside the active cell
+ * (scr_exc_cell_changed is empty), so a fiber switch's cell swap is two
+ * plain pointer moves that runtime units can inline into each hop. */
+extern ScrExcCell *const scr_exc_main_cell;
+static inline ScrExcCell *scr_exc_swap_cell_inline(ScrExcCell *cell) {
+  ScrExcCell *prev = scr_exc_active;
+  scr_exc_active = cell ? cell : scr_exc_main_cell;
+  return prev;
+}
+#define scr_exc_swap_cell(cell) scr_exc_swap_cell_inline(cell)
 #endif
 _Static_assert(offsetof(ScrExcCell, kind) == 0 && sizeof(ScrExcKind) == 4 && SCR_EXC_NONE == 0,
                "the LLVM emitter's inline pending check loads an i32 kind at offset 0");

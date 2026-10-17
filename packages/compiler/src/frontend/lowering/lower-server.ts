@@ -1309,7 +1309,8 @@ export function lowerHttpServerTimeoutAssignment(
 }
 
 /** `server.maxConnections = n`: the value crosses as a dyn (undefined
- * and null unset the cap). */
+ * and null unset the cap). `server.dropMaxConnection = v` stores the
+ * value as is (Node reads it only in cluster mode). */
 export function lowerNetServerMaxConnectionsAssignment(
   lowerer: Lowerer,
   left: ts.Expression,
@@ -1317,7 +1318,8 @@ export function lowerNetServerMaxConnectionsAssignment(
   loc: SrcLoc,
 ): IrStmt | null {
   if (!ts.isPropertyAccessExpression(left) || left.questionDotToken) return null;
-  if (left.name.text !== "maxConnections") return null;
+  const name = left.name.text;
+  if (name !== "maxConnections" && name !== "dropMaxConnection") return null;
   if (lowerer.mapTypeOf(lowerer.typeOf(left.expression))?.kind !== "netServer") return null;
   if (!lowerer.isStdlibMember(left)) return null;
   const receiver = coerceToHandle(lowerer, left.expression, NETSERVER_T);
@@ -1326,7 +1328,10 @@ export function lowerNetServerMaxConnectionsAssignment(
     kind: "exprStmt",
     expr: {
       kind: "libCall",
-      fn: "net.serverMaxConnectionsSet",
+      fn:
+        name === "maxConnections"
+          ? "net.serverMaxConnectionsSet"
+          : "net.serverDropMaxConnectionSet",
       args: [receiver, value],
       type: VOID,
       loc,
@@ -2398,6 +2403,46 @@ function lowerNetSocketMethodCall(
       ? value
       : lowerer.coerceInto(call, value, declared);
   }
+  if (name === "resetAndDestroy") {
+    // An RST close; a connecting socket resets once it connects. Answers
+    // the socket, Node's chaining.
+    if (args.length !== 0) {
+      lowerer.noLowering(
+        `resetAndDestroy with ${args.length} arguments`,
+        call,
+        "the form is resetAndDestroy()",
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    return {
+      kind: "libCall",
+      fn: "net.sockResetAndDestroy",
+      args: [receiver],
+      type: NETSOCKET_T,
+      loc,
+    };
+  }
+  if (name === "address") {
+    // { address, family, port } or {} (connecting or destroyed): the
+    // declared AddressInfo | {} maps to a dyn value.
+    if (args.length !== 0) {
+      lowerer.noLowering(
+        `address with ${args.length} arguments`,
+        call,
+        "address() takes no arguments",
+      );
+    }
+    const result = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (result?.kind !== "dyn") {
+      lowerer.noLowering(
+        "socket.address() where the result is not AddressInfo | {}",
+        call,
+        "use the declared AddressInfo | {} result, and narrow it with a type assertion",
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    return { kind: "libCall", fn: "net.sockAddress", args: [receiver], type: DYN, loc };
+  }
   if (name === "destroySoon") {
     // end() now, destroy once the FIN actually flushed — Node's
     // 'finish'-then-destroy.
@@ -3293,11 +3338,14 @@ export function lowerServerProperty(
       const receiver = coerceToHandle(lowerer, expr.expression, NETSERVER_T);
       return { kind: "libCall", fn: "net.serverListening", args: [receiver], type: BOOL, loc };
     }
-    if (expr.name.text === "maxConnections") {
+    if (expr.name.text === "maxConnections" || expr.name.text === "dropMaxConnection") {
       const receiver = coerceToHandle(lowerer, expr.expression, NETSERVER_T);
       const value: IrExpr = {
         kind: "libCall",
-        fn: "net.serverMaxConnectionsGet",
+        fn:
+          expr.name.text === "maxConnections"
+            ? "net.serverMaxConnectionsGet"
+            : "net.serverDropMaxConnectionGet",
         args: [receiver],
         type: DYN,
         loc,

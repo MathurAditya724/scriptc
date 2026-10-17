@@ -117,7 +117,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 21, marker: "scr_runtime_abi_v21" },
+    runtime_abi: { version: 22, marker: "scr_runtime_abi_v22" },
     compiler: {
       command: "clang",
       identity: "fixture clang",
@@ -254,7 +254,7 @@ describe("runtime pack manifests", () => {
     expect(fileHandle.archives.map((path) => path.split("/").at(-1))).toEqual(["zlib.a"]);
   });
 
-  test("runtime bitcode follows the selected speed variant and is verified", async () => {
+  test("runtime bitcode follows the selected flavor variant and is verified", async () => {
     const { root, packagePath, manifest } = await fixture();
     const bitcode = async (path: string, bytes: string) => {
       await writeFile(join(root, path), bytes);
@@ -288,7 +288,9 @@ describe("runtime pack manifests", () => {
       },
     };
     const resolver = () => packagePath;
-    // Release-flavor bitcode is never imported; only the speed flavor's is.
+    const speed = { target: MACOS_ARM64_TARGET, optimization: "speed" } as const;
+    // Release programs import their own units' bitcode. Speed programs
+    // never import release bitcode: without a speed flavor they import none.
     await writeFile(
       join(root, "runtime-pack.json"),
       JSON.stringify({
@@ -296,12 +298,17 @@ describe("runtime pack manifests", () => {
         flavors: { ...withBitcode.flavors, release: withBitcode.flavors.speed, speed: undefined },
       }),
     );
-    expect(
-      await loadRuntimeBitcode({ target: MACOS_ARM64_TARGET, features: BASE, resolver }),
-    ).toBeNull();
+    expect(await loadRuntimeBitcode({ ...speed, features: BASE, resolver })).toBeNull();
+    const release = await loadRuntimeBitcode({
+      target: MACOS_ARM64_TARGET,
+      optimization: "release",
+      features: BASE,
+      resolver,
+    });
+    expect(release?.paths.map((path) => basename(path))).toEqual(["base.bc"]);
     await writeFile(join(root, "runtime-pack.json"), JSON.stringify(withBitcode));
     const legacy = await loadRuntimeBitcode({
-      target: MACOS_ARM64_TARGET,
+      ...speed,
       features: { ...BASE, textDecoderLegacy: true },
       resolver,
     });
@@ -310,15 +317,15 @@ describe("runtime pack manifests", () => {
     // A variant without bitcode imports nothing.
     expect(
       await loadRuntimeBitcode({
-        target: MACOS_ARM64_TARGET,
+        ...speed,
         features: { ...BASE, fileHandle: true },
         resolver,
       }),
     ).toBeNull();
     await writeFile(join(root, "artifacts/base.bc"), "damaged");
-    await expect(
-      loadRuntimeBitcode({ target: MACOS_ARM64_TARGET, features: BASE, resolver }),
-    ).rejects.toThrow("hash mismatch");
+    await expect(loadRuntimeBitcode({ ...speed, features: BASE, resolver })).rejects.toThrow(
+      "hash mismatch",
+    );
     const malformed = structuredClone(withBitcode);
     malformed.flavors.speed!.runtime_units[0]!.variants[0]!.bitcode = {
       path: "../escape.bc",

@@ -5,6 +5,7 @@ import { lowerEventStaticProperty } from "./builtins/numbers.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
+import { lowerReadlineProperty } from "./builtins/readline.js";
 import { lowerBlobInstanceof } from "./builtins/blob.js";
 import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
 import { STATS_TYPE_TESTS } from "./builtins/filesystem.js";
@@ -1863,6 +1864,20 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         });
       return { kind: "closure", fnName: name, captures: [], type: funcOf([DYN], DYN), loc };
     }
+    // An Hmac has no copy() (Hash does): Node answers undefined, which
+    // `typeof mac.copy` feature checks read. TypeScript rejects the read.
+    if (
+      expr.name.text === "copy" &&
+      lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind === "cryptoHmac"
+    ) {
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: lowerer.lowerExpr(expr.expression), loc }],
+        result: dynUndefinedExpr(loc),
+        type: DYN,
+        loc,
+      };
+    }
     if (lowerer.stdlibGlobalMember(expr, "globalThis") === "console") {
       return { kind: "libCall", fn: "console.native", args: [], type: DYN, loc };
     }
@@ -2158,6 +2173,9 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       // diagnostics_channel Channel receivers — name/hasSubscribers
       // over the f64 channel handle.
       lowerer.lowerDiagnosticsChannelProperty(expr) ??
+      // readline Interface receivers — the history and option members
+      // over the f64 interface handle.
+      lowerReadlineProperty(lowerer, expr) ??
       // TracingChannel receivers — the five event channels and
       // hasSubscribers over the f64 tracing handle.
       lowerer.lowerTracingChannelProperty(expr) ??
@@ -7368,6 +7386,31 @@ export function lowerElementCompound(
   expr: ts.BinaryExpression,
   op: CompoundOp,
 ): IrExpr {
+  const lowered = lowerElementCompoundParts(lowerer, expr, op, false);
+  if (!lowered.expr)
+    throw new InternalCompilerError("a compound element value lowered to statements");
+  return lowered.expr;
+}
+
+/** `a[i] op= rhs` in statement position: a string array append becomes the
+ * canonical `a[i] = a[i] + rhs` store (receiver and index saved first),
+ * which the backend appends in place; other forms keep the value path. */
+export function lowerElementCompoundStatement(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  op: CompoundOp,
+): IrStmt {
+  const lowered = lowerElementCompoundParts(lowerer, expr, op, true);
+  if (lowered.stmts) return { kind: "block", body: lowered.stmts, loc: locOf(expr) };
+  return { kind: "exprStmt", expr: lowered.expr!, loc: locOf(expr) };
+}
+
+function lowerElementCompoundParts(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  op: CompoundOp,
+  statement: boolean,
+): { expr: IrExpr | null; stmts: IrStmt[] | null } {
   const target = expr.left as ts.ElementAccessExpression;
   fenceNodeModuleMutation(lowerer, target, "assignment");
   const loc = locOf(expr);
@@ -7405,7 +7448,7 @@ export function lowerElementCompound(
       },
       loc,
     });
-    return { kind: "seqExpr", stmts, result: value, type: DYN, loc };
+    return { expr: { kind: "seqExpr", stmts, result: value, type: DYN, loc }, stmts: null };
   }
   const receiverType =
     checked.type.kind === "array" || checked.type.kind === "bytes"
@@ -7472,6 +7515,29 @@ export function lowerElementCompound(
     elementType.kind === "union" && lowerer.armTag(elementType.unionId, UNDEFINED_T) >= 0
       ? lowerer.stripUndefinedArm(elementType)
       : elementType;
+  if (
+    statement &&
+    op === "+" &&
+    receiver.type.kind === "array" &&
+    receiver.type.elem.kind === "string"
+  ) {
+    // Receiver, index, old element (read inside the concat), rhs, write.
+    const appended: IrExpr = {
+      kind: "strConcat",
+      left: oldValue,
+      right: lowerer.ensureString(rhs, expr.right),
+      type: STRING,
+      loc,
+    };
+    return {
+      expr: null,
+      stmts: [
+        { kind: "varDecl", localId: receiverLocal.id, init: receiver, loc },
+        { kind: "varDecl", localId: indexLocal.id, init: index, loc },
+        { kind: "arraySet", arr: receiverRef(), index: indexRef(), value: appended, loc },
+      ],
+    };
+  }
   let computed: IrExpr;
   if (op === "+" && valueType.kind === "string") {
     computed = {
@@ -7522,17 +7588,20 @@ export function lowerElementCompound(
       ? arrayValueStore(lowerer, receiverRef(), indexRef(), resultRef(), receiver.type.elem, loc)
       : { kind: "bytesSet", arr: receiverRef(), index: indexRef(), value: resultRef(), loc };
   return {
-    kind: "seqExpr",
-    stmts: [
-      { kind: "varDecl", localId: receiverLocal.id, init: receiver, loc },
-      { kind: "varDecl", localId: indexLocal.id, init: index, loc },
-      { kind: "varDecl", localId: oldLocal.id, init: oldValue, loc },
-      { kind: "varDecl", localId: resultLocal.id, init: computed, loc },
-      write,
-    ],
-    result: resultRef(),
-    type: computed.type,
-    loc,
+    expr: {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: receiverLocal.id, init: receiver, loc },
+        { kind: "varDecl", localId: indexLocal.id, init: index, loc },
+        { kind: "varDecl", localId: oldLocal.id, init: oldValue, loc },
+        { kind: "varDecl", localId: resultLocal.id, init: computed, loc },
+        write,
+      ],
+      result: resultRef(),
+      type: computed.type,
+      loc,
+    },
+    stmts: null,
   };
 }
 
@@ -8547,6 +8616,11 @@ export function lowerAsExpression(
     // object. Box a live reference instead of erasing the assertion and
     // handing native storage to a checked-dynamic property operation.
     if (target?.kind === "dyn" && (targetTs0.flags & ts.TypeFlags.Object) !== 0) {
+      // A class instance asserted to a class-backed protocol view (a type
+      // class instances flow into): the same identity-keeping box an
+      // implicit flow into the view uses.
+      if (inner.type.kind === "object" && lowerer.classImplementedProtocol(targetTs0))
+        return lowerer.coerceInto(expr, inner, DYN);
       const sourceShape =
         inner.type.kind === "record" ? lowerer.shapes.get(inner.type.shapeId) : undefined;
       if (
@@ -8926,7 +9000,14 @@ export function lowerIncDec(
             },
       );
     }
-    if (isJsSourceFile(expr.getSourceFile()) && raw.type.kind === "dyn") {
+    // A TS member statically typed number on a checked-dynamic receiver (a
+    // class-backed protocol view): the expanded form `o.v = o.v + 1`, its
+    // read checked into number like any other read of the member.
+    const checkedNumber =
+      !isJsSourceFile(expr.getSourceFile()) &&
+      raw.type.kind === "dyn" &&
+      lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "f64";
+    if ((isJsSourceFile(expr.getSourceFile()) || checkedNumber) && raw.type.kind === "dyn") {
       const receiver = save(raw, "%incrementReceiver");
       const key = save(
         ts.isElementAccessExpression(access)
@@ -8938,7 +9019,8 @@ export function lowerIncDec(
             ),
         "%incrementKey",
       );
-      return finish({ kind: "dynKeyGet", value: receiver, key, type: DYN, loc }, (value) => ({
+      const read: IrExpr = { kind: "dynKeyGet", value: receiver, key, type: DYN, loc };
+      return finish(checkedNumber ? lowerer.coerceInto(access, read, F64) : read, (value) => ({
         kind: "exprStmt",
         expr: {
           kind: "libCall",

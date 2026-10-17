@@ -115,6 +115,30 @@ test.each(["multiple", "escape", "write", "metadata", "suspend", "synthetic"])(
     expect(facts(mod).get("consume")?.has("test")).not.toBe(true);
   },
 );
+test.each(["sync", "async"])(
+  "a %s generator's unchanged callback parameter specializes through its spawn calls",
+  (kind) => {
+    const mod = fixture();
+    const consumer = mod.functions[1]!;
+    delete consumer.ownsPrototype;
+    consumer.generator = {
+      yieldT: BOOL,
+      nextT: VOID,
+      resultType: { kind: "record", shapeId: "r0" },
+    };
+    if (kind === "async") consumer.async = true;
+    expect(analyzeCallLifetimes(new Map(mod.functions.map((fn) => [fn.name, fn])))).toMatchObject({
+      generatorParameters: new Map([["consume", new Set(["test"])]]),
+    });
+    expect(facts(mod).get("consume")?.get("test")).toBe("predicate");
+    // A rebound or captured parameter is no stable owner.
+    consumer.body.unshift({ kind: "assign", localId: "test", value: closure("predicate"), loc });
+    expect(facts(mod).get("consume")?.has("test")).not.toBe(true);
+    consumer.body.shift();
+    consumer.locals[0]!.boxed = true;
+    expect(facts(mod).get("consume")?.has("test")).not.toBe(true);
+  },
+);
 test("global closure aliases resolve without borrowing the caller's local namespace", () => {
   const mod = fixture();
   const entry = mod.functions[2]!;

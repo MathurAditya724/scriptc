@@ -962,6 +962,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * calls); the stats.* getters are pure reads on it. */
   "fs.statSync": { argTypes: [STRING], result: STATS_T },
   "fs.lstatSync": { argTypes: [STRING], result: STATS_T },
+  // statSync / lstatSync(path, { throwIfNoEntry }): arg 1 is the flag.
+  // Result is the interned `Stats | undefined` union (the runtime answers
+  // +1-or-NULL; the backend builds the arms).
+  "fs.statProbeSync": { argTypes: [STRING, BOOL], result: VOID },
+  "fs.lstatProbeSync": { argTypes: [STRING, BOOL], result: VOID },
   "fs.fstatSync": { argTypes: [F64], result: STATS_T },
   "fs.fchmodSync": { argTypes: [F64, F64], result: VOID },
   "fs.fsyncSync": { argTypes: [F64], result: VOID },
@@ -1730,6 +1735,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "net.sockResume": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
   "net.sockSetNoDelay": { argTypes: [NETSOCKET_T, BOOL], result: NETSOCKET_T },
   "net.sockDestroySoon": { argTypes: [NETSOCKET_T], result: VOID },
+  /** RST close, answers the socket; throws ERR_INVALID_HANDLE_TYPE on TLS. */
+  "net.sockResetAndDestroy": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
+  /** socket.address(): { address, family, port } or {} as a dyn. */
+  "net.sockAddress": { argTypes: [NETSOCKET_T], result: DYN },
   "net.sockBytesWritten": { argTypes: [NETSOCKET_T], result: F64 },
   /** remotePort (0), remoteFamily (1), localAddress (2), localPort (3),
    * localFamily (4): dyn values, undefined when unknown. */
@@ -1761,6 +1770,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "net.isIPv6": { argTypes: [DYN], result: BOOL },
   "net.serverMaxConnectionsGet": { argTypes: [NETSERVER_T], result: DYN },
   "net.serverMaxConnectionsSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
+  "net.serverDropMaxConnectionGet": { argTypes: [NETSERVER_T], result: DYN },
+  "net.serverDropMaxConnectionSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
   "net.serverOnDrop": { argTypes: [NETSERVER_T, DYN, BOOL], result: VOID },
   "net.serverGetConnections": { argTypes: [NETSERVER_T, DYN], result: VOID },
   "net.sockReadable": { argTypes: [NETSOCKET_T], result: BOOL },
@@ -2611,6 +2622,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "zlib.gunzipCb": { argTypes: [BYTES_U8, null], result: VOID },
   "zlib.unzipCb": { argTypes: [BYTES_U8, null], result: VOID },
   "zlib.crc32": { argTypes: [BYTES_U8, F64], result: F64 },
+  /** The one-shot forms with an options value: node_zlib_mode, the input,
+   * the options (validated at runtime with Node's ladder). The Cb form
+   * takes the program-shaped (Error | null, Buffer) callback, which moves. */
+  "zlib.syncOpts": { argTypes: [F64, BYTES_U8, DYN], result: BYTES_U8 },
+  "zlib.cbOpts": { argTypes: [F64, BYTES_U8, DYN, null], result: VOID },
+  /** The checked-dynamic input twins (the JS lane's untyped data). */
+  "zlib.syncOptsDyn": { argTypes: [F64, DYN, DYN], result: BYTES_U8 },
+  "zlib.cbOptsDyn": { argTypes: [F64, DYN, DYN, null], result: VOID },
   /** The stream classes (scr_zlib_stream.c, linked with the stream unit):
    * streamNew takes Node's node_zlib_mode number and the options value
    * (undefined when absent), validates it with Node's ladder, and answers
@@ -3419,11 +3438,16 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * error. The Dyn twin boxes chunks by runtime tag (the JS lane).
    * readable.fromArr is Readable.from over a typed array, string or
    * Buffer: [array, SCR_FROM_* flags, highWaterMark]. readable.fromDyn is
-   * the JS lane's [source, options]. */
+   * Readable.from over a checked-dynamic source: [source, options].
+   * readable.fromIter is Readable.from over a class iterator, already
+   * opened: [checked-dynamic { next } object, flags, highWaterMark];
+   * readable.fromAsyncIter is the async class iterator's twin. */
   "readable.nextChunk": { argTypes: [null], result: VOID },
   "readable.nextChunkDyn": { argTypes: [null], result: VOID },
   "readable.fromArr": { argTypes: [null, F64, F64], result: VOID },
   "readable.fromDyn": { argTypes: [DYN, DYN], result: VOID },
+  "readable.fromIter": { argTypes: [DYN, F64, F64], result: VOID },
+  "readable.fromAsyncIter": { argTypes: [DYN, F64, F64], result: VOID },
   /** Readable.from over a compiled generator: [generator, next, return,
    * throw, flags, highWaterMark] (sync) or [generator, next, read,
    * return, throw, flags, highWaterMark] (async), the helpers being the
@@ -3710,6 +3734,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "rl.iterOpen": { argTypes: [F64], result: VOID },
   "rl.iterNext": { argTypes: [F64], result: { kind: "promise", inner: DYN } },
   "rl.iterReturn": { argTypes: [F64], result: VOID },
+  /** createInterface's history and editing options (scr_rl_check_options:
+   * [flags, tabSize, escapeCodeTimeout, historySize], may throw;
+   * rl.setOptions: [handle, flags, historySize, removeHistoryDuplicates,
+   * tabSize, escapeCodeTimeout]; rl.setHistory: [handle, history]) and
+   * the member reads (rl.history answers the array, rl.numProp the
+   * numeric member by number). */
+  "rl.checkOptions": { argTypes: [F64, F64, F64, F64], result: VOID },
+  "rl.checkCompleter": { argTypes: [DYN], result: VOID },
+  "rl.setOptions": { argTypes: [F64, F64, F64, BOOL, F64, F64], result: VOID },
+  "rl.setHistory": { argTypes: [F64, arrayOf(STRING)], result: VOID },
+  "rl.history": { argTypes: [F64], result: arrayOf(STRING) },
+  "rl.numProp": { argTypes: [F64, F64], result: F64 },
   /** node:timers/promises — the promisified pair (scr_async.c, beside
    * the timer heap they ride): tp.setTimeout: [ms] → a pending void
    * promise a one-shot heap timer fulfills (the loop's timer phase, FIFO

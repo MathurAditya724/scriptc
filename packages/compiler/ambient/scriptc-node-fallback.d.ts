@@ -1474,8 +1474,37 @@ declare module "node:fs" {
     readonly ctime: Date;
     readonly birthtime: Date;
   }
-  export function statSync(path: string): Stats;
-  export function lstatSync(path: string): Stats;
+  /* throwIfNoEntry: false answers undefined for a missing entry (ENOENT or
+   * ENOTDIR) instead of throwing. BigIntStats (bigint: true) has no
+   * lowering. */
+  export interface StatSyncOptions {
+    bigint?: boolean;
+    throwIfNoEntry?: boolean;
+  }
+  export function statSync(path: string, options?: undefined): Stats;
+  export function statSync(
+    path: string,
+    options: StatSyncOptions & { bigint?: false; throwIfNoEntry: false },
+  ): Stats | undefined;
+  export function statSync(
+    path: string,
+    options: StatSyncOptions & { bigint?: false; throwIfNoEntry?: true },
+  ): Stats;
+  /* bigint: true type-checks so the lowering can name it as unsupported. */
+  export function statSync(path: string, options: StatSyncOptions & { bigint: true }): Stats;
+  export function statSync(path: string, options: StatSyncOptions): Stats | undefined;
+  export function lstatSync(path: string, options?: undefined): Stats;
+  export function lstatSync(
+    path: string,
+    options: StatSyncOptions & { bigint?: false; throwIfNoEntry: false },
+  ): Stats | undefined;
+  export function lstatSync(
+    path: string,
+    options: StatSyncOptions & { bigint?: false; throwIfNoEntry?: true },
+  ): Stats;
+  /* bigint: true type-checks so the lowering can name it as unsupported. */
+  export function lstatSync(path: string, options: StatSyncOptions & { bigint: true }): Stats;
+  export function lstatSync(path: string, options: StatSyncOptions): Stats | undefined;
   /* The fd pair behind spawn's fd-stdio form: openSync(path, flags) →
    * the raw fd. Numeric flags use an inline OR of the O_* constants. */
   export function openSync(path: string, flags: string): number;
@@ -3527,6 +3556,17 @@ declare module "readline" {
    * (scr_readline.c). Listener registrations are statements: chaining
    * on()/once() results has no lowering. */
   export interface Interface extends Disposable {
+    /* The non-terminal members: terminal is false and line ''; history
+     * is the history option itself (or the interface's own empty array),
+     * never recorded without a terminal. */
+    readonly terminal: boolean;
+    readonly line: string;
+    history: string[];
+    readonly historySize: number;
+    readonly historyIndex: number;
+    readonly crlfDelay: number;
+    readonly tabSize: number;
+    readonly escapeCodeTimeout: number;
     question(query: string, callback: (answer: string) => void): void;
     close(): void;
     pause(): this;
@@ -3538,12 +3578,15 @@ declare module "readline" {
     on(event: "line", listener: (input: string) => void): this;
     on(event: "close" | "pause" | "resume", listener: () => void): this;
     on(event: "error", listener: (err: Error) => void): this;
+    on(event: "history", listener: (history: string[]) => void): this;
     once(event: "line", listener: (input: string) => void): this;
     once(event: "close" | "pause" | "resume", listener: () => void): this;
     once(event: "error", listener: (err: Error) => void): this;
+    once(event: "history", listener: (history: string[]) => void): this;
     addListener(event: "line", listener: (input: string) => void): this;
     addListener(event: "close" | "pause" | "resume", listener: () => void): this;
     addListener(event: "error", listener: (err: Error) => void): this;
+    addListener(event: "history", listener: (history: string[]) => void): this;
     [Symbol.asyncIterator](): AsyncIterableIterator<string>;
     [Symbol.dispose](): void;
   }
@@ -3553,12 +3596,18 @@ declare module "readline" {
     terminal?: boolean;
     /* Node's crlfDelay: a \n arriving within this many ms (at least 100)
      * after a line ended by \r is dropped. completer and the history
-     * knobs fence by name (no interactive terminal). The options-record
+     * options are validated and kept; without a terminal neither is used.
+     * The options-record
      * stance (see http.RequestOptions) admits every key; the walk
      * decides. */
     crlfDelay?: number;
     completer?: unknown;
     signal?: AbortSignal;
+    history?: string[];
+    historySize?: number;
+    removeHistoryDuplicates?: boolean;
+    tabSize?: number;
+    escapeCodeTimeout?: number;
     [option: string]: unknown;
   }
   export function createInterface(options: ReadLineOptions): Interface;
@@ -3573,6 +3622,17 @@ declare module "readline/promises" {
    * the next line, rejects with an AbortError when options.signal aborts,
    * and with ERR_USE_AFTER_CLOSE after close(). */
   export interface Interface extends Disposable {
+    /* The non-terminal members: terminal is false and line ''; history
+     * is the history option itself (or the interface's own empty array),
+     * never recorded without a terminal. */
+    readonly terminal: boolean;
+    readonly line: string;
+    history: string[];
+    readonly historySize: number;
+    readonly historyIndex: number;
+    readonly crlfDelay: number;
+    readonly tabSize: number;
+    readonly escapeCodeTimeout: number;
     question(query: string, options?: { signal?: AbortSignal }): Promise<string>;
     close(): void;
     pause(): this;
@@ -3584,12 +3644,15 @@ declare module "readline/promises" {
     on(event: "line", listener: (input: string) => void): this;
     on(event: "close" | "pause" | "resume", listener: () => void): this;
     on(event: "error", listener: (err: Error) => void): this;
+    on(event: "history", listener: (history: string[]) => void): this;
     once(event: "line", listener: (input: string) => void): this;
     once(event: "close" | "pause" | "resume", listener: () => void): this;
     once(event: "error", listener: (err: Error) => void): this;
+    once(event: "history", listener: (history: string[]) => void): this;
     addListener(event: "line", listener: (input: string) => void): this;
     addListener(event: "close" | "pause" | "resume", listener: () => void): this;
     addListener(event: "error", listener: (err: Error) => void): this;
+    addListener(event: "history", listener: (history: string[]) => void): this;
     [Symbol.asyncIterator](): AsyncIterableIterator<string>;
     [Symbol.dispose](): void;
   }
@@ -4060,6 +4123,11 @@ declare module "net" {
     setKeepAlive(enable?: boolean, initialDelay?: number): Socket;
     /* end() now, destroy once the FIN actually flushed. */
     destroySoon(): void;
+    /* An RST instead of a FIN; a connecting socket resets once it
+     * connects. Throws ERR_INVALID_HANDLE_TYPE on a TLS socket. */
+    resetAndDestroy(): Socket;
+    /* The local address, or {} while connecting and once destroyed. */
+    address(): AddressInfo | {};
     /* setEncoding('utf8'): 'data' delivers strings — the IncomingMessage
      * twin's contract. */
     setEncoding(encoding: string): void;
@@ -4119,6 +4187,8 @@ declare module "net" {
     /* Connections past this many are closed with a 'drop' event;
      * undefined (the default) or null lifts the cap. */
     maxConnections: number | undefined;
+    /* Node reads it only in cluster mode: a stored value here. */
+    dropMaxConnection: boolean | undefined;
     /* cb(null, count) on the next tick. */
     getConnections(callback: (error: Error | null, count: number) => void): Server;
     /* Node answers the server itself (`return this` chaining). */

@@ -64,6 +64,39 @@ export function registerBuiltinCallableAlias(
   return true;
 }
 
+/** The fs callback functions whose promisified form is the fs/promises
+ * member of the same name: the callback's single result is the promise's
+ * value and the errors are the same. fs.open (an fd number, where
+ * fs/promises.open gives a FileHandle), fs.exists (a custom promisify),
+ * and fs.read/fs.write (multi-value callbacks) are not in the set. */
+const PROMISIFIED_FS_MEMBERS: ReadonlySet<string> = new Set([
+  "access",
+  "appendFile",
+  "chmod",
+  "chown",
+  "copyFile",
+  "lchown",
+  "link",
+  "lstat",
+  "lutimes",
+  "mkdir",
+  "mkdtemp",
+  "readFile",
+  "readdir",
+  "readlink",
+  "realpath",
+  "rename",
+  "rm",
+  "rmdir",
+  "stat",
+  "statfs",
+  "symlink",
+  "truncate",
+  "unlink",
+  "utimes",
+  "writeFile",
+]);
+
 export function registerPromisifiedBuiltinDecl(
   lowerer: Lowerer,
   nameNode: ts.Node,
@@ -92,14 +125,14 @@ export function registerPromisifiedBuiltinDecl(
       ? { kind: "promisified-exec-file" as const }
       : target?.module === "child_process" && target.member === "exec"
         ? { kind: "promisified-exec" as const }
-        : target?.module === "fs" && target.member === "readFile"
-          ? { kind: "promisified-builtin" as const, module: "fs/promises", member: "readFile" }
+        : target?.module === "fs" && PROMISIFIED_FS_MEMBERS.has(target.member)
+          ? { kind: "promisified-builtin" as const, module: "fs/promises", member: target.member }
           : null;
   if (!projection) {
     lowerer.noLowering(
       "util.promisify of this target",
       argNode ?? e,
-      "child_process.exec, child_process.execFile and fs.readFile are the supported targets",
+      "child_process.exec, child_process.execFile and the fs callback functions with an fs/promises counterpart are the supported targets",
     );
   }
   const symbol = lowerer.checker.getSymbolAtLocation(nameNode);

@@ -49,12 +49,6 @@ test.each([
     "only a setter",
   ],
   [
-    "opaque class view cannot discard prototype accessors",
-    `class Row { get value(): number { return 1; } }
-    const opaque = new Row() as { value: unknown }; console.log(opaque.value);`,
-    "opaque structural views",
-  ],
-  [
     "opaque optional class view cannot discard prototype accessors",
     nominal +
       `
@@ -96,3 +90,24 @@ test.each([
     }
   },
 );
+
+test("opaque class view keeps prototype accessors through the instance itself", () => {
+  const dir = mkdtempSync(
+    join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-structural-view-"),
+  );
+  try {
+    const entry = join(dir, "main.ts");
+    writeFileSync(
+      entry,
+      `class Row { get value(): number { return 1; } }
+      const opaque = new Row() as { value: unknown }; console.log(opaque.value);`,
+    );
+    const { coverage } = analyze(entry, {});
+    expect(coverage.preflightFailed, JSON.stringify(coverage.diagnostics)).toBe(false);
+    // The view is the instance itself, so the build has no blocker; the
+    // differential corpus (5767) pins the behavior against Node.
+    expect(coverage.diagnostics).toEqual([]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

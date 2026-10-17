@@ -1409,7 +1409,8 @@ ScrStream *scr_stream_new_from_readable(ScrClosure *read, ScrStreamReadInv read_
     return NULL;
   }
   bool object_mode = (bits & SCR_FROM_BYTE_MODE) == 0;
-  if (!(bits & SCR_FROM_HAS_HWM)) hwm = 1;
+  if (bits & SCR_FROM_DEFAULT_HWM) hwm = object_mode ? 16 : -1;
+  else if (!(bits & SCR_FROM_HAS_HWM)) hwm = 1;
   ScrStream *s = scr_stream_new_readable(hwm, true, true, read, read_inv, destroy, destroy_inv);
   if (object_mode) s->st->r.object_entries = true;
   return s;
@@ -1498,19 +1499,18 @@ static void scr_from_read_dyn_inv(ScrClosure *cb, ScrStream *s, double size) {
 
 ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts) {
   bool single = src->kind == SCR_DYN_STR || src->kind == SCR_DYN_BYTES;
-  if (!single) {
-    int kind = scr_dyn_iterable_kind(src);
+  ScrDyn *iter = NULL; /* from.js's iterator, for sources other than arrays */
+  int kind = 0;
+  if (!single && src->kind == SCR_DYN_ARR) {
+    kind = scr_dyn_iterable_kind(src);
     if (kind < 0) return NULL;
-    if (kind == 0) {
-      scr_dyn_arg_type_fail("iterable", "an instance of Iterable", src);
-      return NULL;
-    }
-    if (src->kind != SCR_DYN_ARR) {
-      static const char msg[] =
-          "Readable.from over an iterable other than an array, string, or Buffer is not supported yet";
-      scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
-      return NULL;
-    }
+  } else if (!single) {
+    iter = scr_dyn_from_iterator(src, &kind);
+    if (kind < 0) return NULL;
+  }
+  if (!single && kind == 0) {
+    scr_dyn_arg_type_fail("iterable", "an instance of Iterable", src);
+    return NULL;
   }
   bool object_mode = true;
   int hwm_kind = SCR_FROM_HWM_FROM;
@@ -1518,7 +1518,10 @@ ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts) {
   if (opts && opts->kind == SCR_DYN_OBJ) {
     /* new Readable({ objectMode: true, highWaterMark: 1, ...opts }) */
     ScrDyn *keys = scr_dyn_own_keys(opts);
-    if (!keys) return NULL;
+    if (!keys) {
+      if (iter) scr_dyn_release(iter);
+      return NULL;
+    }
     for (size_t i = 0; i < keys->v.arr.len; i++) {
       ScrDyn *k = keys->v.arr.items[i];
       if (k->kind != SCR_DYN_STR) continue;
@@ -1531,6 +1534,7 @@ ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts) {
       int n = snprintf(m, sizeof m, "the Readable.from option '%.*s' is not supported yet",
                        (int)(name->len > 64 ? 64 : name->len), name->data);
       scr_dyn_release(keys);
+      if (iter) scr_dyn_release(iter);
       scr_throw_error_msg(SCR_ERR_ERROR, m, (size_t)n);
       return NULL;
     }
@@ -1543,12 +1547,20 @@ ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts) {
     } else if (h) {
       double v = h->kind == SCR_DYN_NUM ? h->v.num : -1;
       if (!(v >= 0 && v <= 9007199254740991.0 && v == (double)(int64_t)v)) {
+        if (iter) scr_dyn_release(iter);
         scr_dyn_arg_value_fail("options.highWaterMark", NULL, h);
         return NULL;
       }
       hwm_kind = SCR_FROM_HWM_SET;
       hwm = v;
     }
+  }
+  if (iter) {
+    double flags = (object_mode ? 0 : SCR_FROM_BYTE_MODE) |
+                   (hwm_kind == SCR_FROM_HWM_SET       ? SCR_FROM_HAS_HWM
+                    : hwm_kind == SCR_FROM_HWM_DEFAULT ? SCR_FROM_DEFAULT_HWM
+                                                       : 0);
+    return scr_stream_from_dyn_iter(iter, kind == 2, flags, hwm);
   }
   ScrFromSrc *f = calloc(1, sizeof *f);
   if (!f) scr_stream_oom();

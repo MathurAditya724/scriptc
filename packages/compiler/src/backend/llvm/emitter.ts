@@ -8,7 +8,9 @@ import { InternalCompilerError } from "../../errors.js";
 import { createHash } from "node:crypto";
 import {
   endsWithJump,
+  matchFieldSelfConcat,
   matchStringSelfConcat,
+  readsArraySlot,
   streamTypedRefEligible,
   undefinedArmTag,
 } from "../../ir/analysis.js";
@@ -54,6 +56,14 @@ import {
   matchIntegerCountedForLoop,
 } from "../../ir/integer-loops.js";
 import { emitCountedLoopLimit } from "./counted-loops.js";
+import {
+  emitSafeIntegerCheck,
+  emitSpeculativeInteger,
+  planSpeculativeLoop,
+  speculativeReads,
+  speculativeWriteTarget,
+  SPECULATIVE_RANGE,
+} from "./speculative-integers.js";
 import { emitLiteralSwitch } from "./switch-dispatch.js";
 import { findBytesBounds } from "./bytes-bounds.js";
 import {
@@ -88,10 +98,13 @@ import {
   type IntegerRanges,
 } from "../../ir/integer-ranges.js";
 import { unshareNodes } from "../../ir/unshare.js";
+import { copyStableCaptures } from "../../ir/capture-values.js";
 import { analyzeInt32Slots, dynamicFieldStores, type Int32Slots } from "../../ir/int32-slots.js";
 import { analyzeFinalFields, constructorClass, type FinalFields } from "../../ir/final-fields.js";
 import { foldConstantGlobals } from "../../ir/constant-globals.js";
 import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
+import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
+import { hoistFinalFieldReads } from "../../ir/field-values.js";
 import { findIntegerViews } from "./integer-views.js";
 import {
   findInt32Abis,
@@ -184,7 +197,7 @@ import {
   type LocalArrayRead,
 } from "./local-array-reads.js";
 import { CheckedNarrows, emitCheckedNarrowReceiver } from "./checked-narrows.js";
-import { emitDenseArrayGet, emitDenseArraySet } from "./dense-array-access.js";
+import { emitDenseArrayGet, emitDenseArraySet, emitDenseSlotUnlink } from "./dense-array-access.js";
 import {
   emitStackMapRead,
   findMapReadLifetimes,
@@ -466,7 +479,11 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
       ? addRecordResultEntries(
           scalarizeNumericRecords(
             specializeNumericCalls(
-              foldConstantGlobals(dropUnwrittenPropertyBags(mod)),
+              foldConstantGlobals(
+                copyStableCaptures(
+                  hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                ),
+              ),
               mangleFunction,
             ),
           ),
@@ -487,7 +504,11 @@ export function emitLlvmModuleSource(
       ? addRecordResultEntries(
           scalarizeNumericRecords(
             specializeNumericCalls(
-              foldConstantGlobals(dropUnwrittenPropertyBags(mod)),
+              foldConstantGlobals(
+                copyStableCaptures(
+                  hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                ),
+              ),
               mangleFunction,
             ),
           ),
@@ -505,6 +526,9 @@ function llStrBytes(text: string): string {
 }
 
 const NO_BORROWED: ReadonlySet<number> = new Set();
+/** ScrExcKind tags of a generator slot holding a number or a boolean. */
+const SCR_EXC_F64 = 1;
+const SCR_EXC_BOOL = 2;
 
 /** Whether any node of `e` names the local (reads, writes, declarations,
  * captures). */
@@ -779,6 +803,9 @@ export class LlEmitter {
   private stableGlobals: ReadonlySet<string> = new Set();
   private readonly tdzGlobals = new Map<string, string>();
   readonly constantNumericTables: ReadonlyMap<string, ConstantNumericTable>;
+  /** Constant-key reads on checked-dynamic objects, each with its own
+   * zero-initialized ScrDynReadIc (scr_runtime.h). */
+  private dynReadIcSites = 0;
   /** May-throw analysis (computeMayThrow): pending
    * checks are emitted only after calls that can actually raise. */
   readonly mayThrow: Set<string>;
@@ -937,6 +964,22 @@ export class LlEmitter {
     { slot: string; type: "i32" | "i64"; signed?: boolean; range?: { min: number; max: number } }
   >();
   private countedLoopsEnabled = false;
+  /** Speculative integer loops (speculative-integers.ts) run in this function. */
+  private speculativeLoopsEnabled = false;
+  /** The fast copy of a speculative integer loop being emitted: its
+   * integer-computed writes and where each resumes in the ordinary copy. */
+  private speculation: {
+    writes: Set<IrStmt>;
+    resume: Map<IrStmt, string>;
+    /** Globals whose double is written back only when the copy is left. */
+    deferred: Set<string>;
+  } | null = null;
+  /** The ordinary copy being emitted: resume labels still to place. */
+  private speculationResume: Map<IrStmt, { label: string; placed: boolean }> | null = null;
+  /** The function being emitted, for speculative globals. */
+  private speculativeFunction = "";
+  /** Every function that writes each number global (computed on demand). */
+  private globalWriters: Map<string, Set<string>> | null = null;
   /** Whole-program final reference fields (ir/final-fields.ts). */
   private finalFields!: FinalFields;
   /** The current function may borrow final fields of borrowable objects:
@@ -997,7 +1040,14 @@ export class LlEmitter {
     finalLabel: string;
     cleanupLabel: string;
     suspendLabel: string;
+    /** The generator's OUT slot (%ScrGenSlot) for a native body whose
+     * yield channel is a number or boolean, which its yields store into
+     * inline (see emitGenSlotStore); null otherwise. */
+    out: string | null;
   } | null = null;
+  /** Inline generator slot accesses need the %ScrGenHead/%ScrGenSlot
+   * mirrors in the module header. */
+  usesGenSlots = false;
   /** The generator channels of the function being emitted (null outside
    * generator bodies): yieldExpr emission reads them, and emitTryCatch's
    * catch prologue emits the GENRET sentinel re-unwind exactly here. */
@@ -2213,6 +2263,15 @@ export class LlEmitter {
       `%ScrDynPath = type { ptr, ptr, ${this.sizeType} }`,
       `%ScrIslandModule = type { ptr, ptr, ${this.sizeType}, ${this.sizeType}, i32, ptr, ${this.sizeType}, ${this.sizeType} }`,
       `%ScrIslandEdge = type { ptr, ptr, ptr, i32 }`,
+      // A generator's prefix { rc, receiver, fiber, state, out } and its
+      // value slot { kind, f64, b, payload, release_fn } (scr_async.c pins
+      // both): number and boolean yields and drives address OUT directly.
+      ...(this.usesGenSlots
+        ? [
+            `%ScrGenSlot = type { i32, double, i8, ptr, ptr }`,
+            `%ScrGenHead = type { ${this.sizeType}, ptr, ptr, i32, %ScrGenSlot }`,
+          ]
+        : []),
     ];
     for (const line of shapes.typeDefs) out.push(line);
     for (const line of classShapes.typeDefs) out.push(line);
@@ -2243,6 +2302,14 @@ export class LlEmitter {
     for (const d of this.decls) out.push(d);
     out.push(``);
     const flushedDecls = new Set(this.decls);
+    {
+      const tl =
+        this.mod.workers === true || this.mod.lib?.threadInstances === true ? "thread_local " : "";
+      for (let site = 0; site < this.dynReadIcSites; site++)
+        out.push(
+          `@sc_dyn_read_ic_${site} = internal ${tl}global { ptr, ${this.sizeType}, ${this.sizeType}, ptr } zeroinitializer`,
+        );
+    }
     for (const table of this.constantNumericTables.values()) {
       const n = table.values.length;
       let tableTmp = 0;
@@ -4877,6 +4944,266 @@ export class LlEmitter {
     return slot;
   }
 
+  /** Emit a loop's condition, body and update through `emitCopy`, twice
+   * when speculative-integers.ts plans a fast integer copy. Both copies
+   * share the loop's setup and exit; the ordinary copy comes first so the
+   * fast copy is only emitted when every resume point exists. */
+  private emitLoopCopies(
+    loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" }>,
+    allowed: boolean,
+    exit: string,
+    emitCopy: (exit: string) => void,
+  ): void {
+    const plan =
+      allowed &&
+      this.speculativeLoopsEnabled &&
+      this.speculation === null &&
+      this.speculationResume === null
+        ? planSpeculativeLoop(
+            loop,
+            (id) => this.speculativeLocal(id),
+            (id) => this.integerLoopBindings.has(id) || this.int32Locals.has(id),
+            (e) => {
+              const range = this.integerRanges.get(e);
+              return (
+                range !== undefined &&
+                range !== null &&
+                range.min >= -Number.MAX_SAFE_INTEGER &&
+                range.max <= Number.MAX_SAFE_INTEGER
+              );
+            },
+            (id) => this.speculativeLocal(id) || this.speculativeInvariantGlobal(id),
+          )
+        : null;
+    if (!plan) {
+      emitCopy(exit);
+      return;
+    }
+    const B = this.B;
+    const entries = new Map<string, string>();
+    let ok = "true";
+    for (const [id, live] of plan.locals) {
+      if (!live) continue;
+      const value = B.tmp();
+      B.line(`${value} = load double, ptr ${this.binding(id).slot}`);
+      const [integer, exact] = emitSafeIntegerCheck(this, value);
+      entries.set(id, integer);
+      if (ok === "true") ok = exact;
+      else {
+        const both = B.tmp();
+        B.line(`${both} = and i1 ${ok}, ${exact}`);
+        ok = both;
+      }
+    }
+    const fast = B.newLabel("spec.fast"),
+      slow = B.newLabel("spec.slow");
+    B.condBr(ok, fast, slow);
+    const resume = new Map<IrStmt, { label: string; placed: boolean }>();
+    for (const s of plan.writes) resume.set(s, { label: B.newLabel("spec.resume"), placed: false });
+    B.startBlock(slow);
+    this.speculationResume = resume;
+    try {
+      emitCopy(exit);
+    } finally {
+      this.speculationResume = null;
+    }
+    B.startBlock(fast);
+    if (![...resume.values()].every((r) => r.placed)) {
+      B.br(slow);
+      return;
+    }
+    for (const id of plan.locals.keys()) {
+      const shadow = B.slot();
+      B.entryAllocas.push(
+        `${shadow} = alloca i64 ; speculative integer ${this.currentLocals.get(id)?.name ?? id}`,
+      );
+      const entry = entries.get(id);
+      if (entry !== undefined) {
+        // The same double, now visibly an integer conversion: the double
+        // phis of the fast copy fold into integer phis.
+        const exact = B.tmp();
+        B.line(`store i64 ${entry}, ptr ${shadow}`);
+        B.line(`${exact} = sitofp i64 ${entry} to double`);
+        B.line(`store double ${exact}, ptr ${this.binding(id).slot}`);
+      } else B.line(`store i64 0, ptr ${shadow}`);
+      this.integerLoopBindings.set(id, {
+        slot: shadow,
+        type: "i64",
+        signed: true,
+        range: SPECULATIVE_RANGE,
+      });
+    }
+    // A global's store stays in the loop (calls may read it). When nothing
+    // in the loop can observe it, its double is written once on leaving the
+    // copy instead, so the loop keeps it in a register as the double copy
+    // would.
+    const deferred = new Set<string>();
+    // Worker loops also leave through their cancellation poll.
+    if (plan.observerFree && !this.mod.workers)
+      for (const s of plan.writes) {
+        const id = speculativeWriteTarget(s)!.localId;
+        if (!this.currentLocals.has(id)) deferred.add(id);
+      }
+    this.speculation = {
+      writes: plan.writes,
+      resume: new Map([...resume].map(([s, r]) => [s, r.label])),
+      deferred,
+    };
+    try {
+      if (deferred.size === 0) emitCopy(exit);
+      else {
+        const leave = B.newLabel("spec.leave");
+        emitCopy(leave);
+        B.startBlock(leave);
+        this.writeBackSpeculativeGlobals(deferred);
+        B.br(exit);
+      }
+    } finally {
+      this.speculation = null;
+      for (const id of plan.locals.keys()) this.integerLoopBindings.delete(id);
+    }
+  }
+
+  private writeBackSpeculativeGlobals(deferred: Set<string>): void {
+    const B = this.B;
+    for (const id of deferred) {
+      const integer = B.tmp(),
+        number = B.tmp();
+      B.line(`${integer} = load i64, ptr ${this.integerLoopBindings.get(id)!.slot}`);
+      B.line(`${number} = sitofp i64 ${integer} to double`);
+      B.line(`store double ${number}, ptr ${this.binding(id).slot}`);
+    }
+  }
+
+  /** A number local whose only storage is its own double slot, so an i64
+   * shadow beside it can stand for it within one loop. */
+  private speculativeLocal(id: string): boolean {
+    const local = this.currentLocals.get(id);
+    if (!local) return this.speculativeGlobal(id);
+    if (local.type.kind !== "f64" || local.boxed || local.tdz) return false;
+    return !(
+      this.captureIds.has(id) ||
+      this.int32Locals.has(id) ||
+      this.integerLoopBindings.has(id) ||
+      this.integerViews.has(id) ||
+      this.localUnionStorage.has(id) ||
+      this.reboundOwnerSlots.has(id) ||
+      this.lazyCaptureBoxes.has(id) ||
+      this.privateSplitLocals.has(id)
+    );
+  }
+
+  /** A module-level number written only by the file's top-level code that
+   * is emitting this loop. Calls may still read it: the fast copy keeps its
+   * double current. An init function runs once and is never re-entered, so
+   * no call from the loop can write the global behind the shadow. */
+  private speculativeGlobal(id: string): boolean {
+    if (!this.speculativeFunction.startsWith("%init.")) return false;
+    const writers = this.numberGlobalWriters(id);
+    return (
+      writers !== null &&
+      (writers.size === 0 || (writers.size === 1 && writers.has(this.speculativeFunction)))
+    );
+  }
+
+  /** A module-level number a loop of any function only reads, written by
+   * nothing but top-level code: an init function never runs during a loop
+   * of another function, so the entry value stays its value. */
+  private speculativeInvariantGlobal(id: string): boolean {
+    const writers = this.numberGlobalWriters(id);
+    return writers !== null && [...writers].every((name) => name.startsWith("%init."));
+  }
+
+  /** The functions writing a number global a shadow may stand for, or null
+   * when the global is not such a number. */
+  private numberGlobalWriters(id: string): ReadonlySet<string> | null {
+    if (this.globalTypes.get(id)?.kind !== "f64") return null;
+    if (this.tdzGlobals.has(id) || this.integerViews.has(id)) return null;
+    if (!this.globalWriters) {
+      const writers = new Map<string, Set<string>>();
+      for (const fn of this.mod.functions) {
+        const note = (localId: string): void => {
+          if (!localId.startsWith("%g.")) return;
+          const set = writers.get(localId) ?? new Set<string>();
+          set.add(fn.name);
+          writers.set(localId, set);
+        };
+        everyStmtList(fn.body, {
+          stmt: (s) => {
+            if (s.kind === "assign" || s.kind === "varDecl") note(s.localId);
+            return true;
+          },
+          expr: (e) => {
+            if (e.kind === "assignExpr" || e.kind === "incDec") note(e.localId);
+            return true;
+          },
+        });
+      }
+      this.globalWriters = writers;
+    }
+    return this.globalWriters.get(id) ?? new Set<string>();
+  }
+
+  /** A speculated write in the fast copy: compute the value as a safe
+   * integer, store it to the shadow and its exact double to the local.
+   * Any failed check re-executes the statement in the ordinary copy. */
+  private emitSpeculativeWrite(s: IrStmt, resume: string): void {
+    const B = this.B;
+    const target = speculativeWriteTarget(s)!;
+    const binding = this.integerLoopBindings.get(target.localId)!;
+    const failed = B.newLabel("spec.bail");
+    let bails = false;
+    this.declare("declare i1 @llvm.expect.i1(i1, i1)");
+    const bail = (condition: string): void => {
+      if (condition === "false") return;
+      bails = true;
+      const expected = B.tmp();
+      B.line(`${expected} = call i1 @llvm.expect.i1(i1 ${condition}, i1 false)`);
+      const next = B.newLabel("spec.ok");
+      B.condBr(expected, failed, next);
+      B.startBlock(next);
+    };
+    // Heap reads come first, before any check, and release their temporaries
+    // at once: a bailing path then owns nothing, and reads have no effect
+    // whose reordering before the arithmetic could be observed.
+    const reads = new Map<IrExpr, LlValue>();
+    if (target.value !== null) {
+      this.frames.push([]);
+      for (const read of speculativeReads(target.value)) reads.set(read, this.emitExpr(read));
+      this.releaseFrame(this.frames.pop()!);
+    }
+    this.frames.push([]);
+    let result: string;
+    if (target.value === null) {
+      const old = B.tmp();
+      result = B.tmp();
+      B.line(`${old} = load i64, ptr ${binding.slot}`);
+      B.line(`${result} = ${target.op === "+" ? "add" : "sub"} nsw i64 ${old}, 1`);
+      const biased = B.tmp(),
+        outside = B.tmp();
+      B.line(`${biased} = add i64 ${result}, ${Number.MAX_SAFE_INTEGER}`);
+      B.line(`${outside} = icmp ugt i64 ${biased}, ${2 * Number.MAX_SAFE_INTEGER}`);
+      bail(outside);
+    } else result = emitSpeculativeInteger(this, target.value, bail, reads);
+    // Speculable values read only numbers past this point.
+    if (this.frames.pop()!.length > 0)
+      throw new InternalCompilerError("llvm emitter bug: speculative write owns a temporary");
+    B.line(`store i64 ${result}, ptr ${binding.slot}`);
+    const deferred = this.speculation!.deferred;
+    if (!deferred.has(target.localId)) {
+      const number = B.tmp();
+      B.line(`${number} = sitofp i64 ${result} to double`);
+      B.line(`store double ${number}, ptr ${this.binding(target.localId).slot}`);
+    }
+    if (!bails) return;
+    const done = B.newLabel("spec.done");
+    B.br(done);
+    B.startBlock(failed);
+    this.writeBackSpeculativeGlobals(deferred);
+    B.br(resume);
+    B.startBlock(done);
+  }
+
   /** The amortized cancellation poll, emitted on the loop's back edge (the
    * continue target), after the body. A poll in the header would be a loop
    * exit ahead of the body; LLVM then cannot rotate the loop, so loads that
@@ -5772,6 +6099,60 @@ export class LlEmitter {
     this.emitCoroSuspendPrepared();
   }
 
+  /** A native generator's OUT slot (scr_async.c's ScrGen.out, mirrored by
+   * %ScrGenHead and %ScrGenSlot { kind, f64, b, payload, release_fn }). */
+  genOutSlot(gen: string): string {
+    this.usesGenSlots = true;
+    const slot = this.B.tmp();
+    this.B.line(`${slot} = getelementptr inbounds %ScrGenHead, ptr ${gen}, i32 0, i32 4`);
+    return slot;
+  }
+
+  /** A yield on a number or boolean channel: scr_gen_slot_f64/bool inline.
+   * Such a body's OUT never holds a reference at a yield (only its final
+   * completion can park one), so the slot needs no release first. */
+  emitGenSlotStore(slot: string, kind: "f64" | "bool", value: string): void {
+    const B = this.B;
+    const field = B.tmp();
+    if (kind === "f64") {
+      B.line(`store i32 ${SCR_EXC_F64}, ptr ${slot}`);
+      B.line(`${field} = getelementptr inbounds %ScrGenSlot, ptr ${slot}, i32 0, i32 1`);
+      B.line(`store double ${value}, ptr ${field}`);
+    } else {
+      const byte = B.tmp();
+      B.line(`store i32 ${SCR_EXC_BOOL}, ptr ${slot}`);
+      B.line(`${field} = getelementptr inbounds %ScrGenSlot, ptr ${slot}, i32 0, i32 2`);
+      B.line(`${byte} = zext i1 ${value} to i8`);
+      B.line(`store i8 ${byte}, ptr ${field}`);
+    }
+  }
+
+  /** scr_gen_take_out_f64/bool inline: the slot's value when it holds that
+   * kind (otherwise 0 or false), leaving the slot empty. */
+  emitGenSlotTake(slot: string, kind: "f64" | "bool"): string {
+    const B = this.B;
+    const tag = B.tmp(),
+      matches = B.tmp(),
+      field = B.tmp(),
+      raw = B.tmp(),
+      out = B.tmp();
+    B.line(`${tag} = load i32, ptr ${slot}`);
+    B.line(`${matches} = icmp eq i32 ${tag}, ${kind === "f64" ? SCR_EXC_F64 : SCR_EXC_BOOL}`);
+    if (kind === "f64") {
+      B.line(`${field} = getelementptr inbounds %ScrGenSlot, ptr ${slot}, i32 0, i32 1`);
+      B.line(`${raw} = load double, ptr ${field}`);
+      B.line(`${out} = select i1 ${matches}, double ${raw}, double 0.0`);
+    } else {
+      const bit = B.tmp();
+      B.line(`${field} = getelementptr inbounds %ScrGenSlot, ptr ${slot}, i32 0, i32 2`);
+      B.line(`${raw} = load i8, ptr ${field}`);
+      B.line(`${bit} = trunc i8 ${raw} to i1`);
+      B.line(`${out} = select i1 ${matches}, i1 ${bit}, i1 false`);
+    }
+    B.line(`store i32 0, ptr ${slot}`);
+    return out;
+  }
+
   /** Suspend after a target-specific runtime helper already queued the
    * continuation (used by module awaits, which skip the hop when settled). */
   emitCoroSuspendPrepared(): void {
@@ -5854,6 +6235,19 @@ export class LlEmitter {
     }
   }
 
+  /** Number locals declared as a copy of a capture or of a lazily boxed
+   * parameter, at the top of the body. */
+  private doubleCopies(fn: IrFunction): string[] {
+    const copies: string[] = [];
+    for (const s of fn.body) {
+      if (s.kind !== "varDecl") break;
+      if (s.init?.kind !== "varRef" || s.init.type.kind !== "f64") continue;
+      const source = s.init.localId;
+      if (this.captureIds.has(source) || this.lazyCaptureBoxes.has(source)) copies.push(s.localId);
+    }
+    return copies;
+  }
+
   private emitFunction(fn: IrFunction): string {
     const B = new BlockBuilder();
     this.B = B;
@@ -5912,6 +6306,10 @@ export class LlEmitter {
         )
           this.borrowedParameters.add(fn.params[index]!.localId);
     }
+    // A generator frame owns its unchanged parameters across suspensions.
+    const generatorParameters = this.callLifetimes.generatorParameters.get(fn.name);
+    if (generatorParameters !== undefined)
+      for (const id of generatorParameters) this.borrowedParameters.add(id);
     this.captureIds = new Set(
       [...(fn.captures ?? []), ...(fn.classCaptures ?? [])].map((c) => c.localId),
     );
@@ -5919,6 +6317,10 @@ export class LlEmitter {
       fn.captures !== undefined ? this.lazyCaptures.stableCaptures(fn.name) : new Set();
     this.integerLoopBindings.clear();
     this.countedLoopsEnabled = this.debug === null && !fn.async && !fn.generator;
+    this.speculativeLoopsEnabled = this.countedLoopsEnabled;
+    this.speculativeFunction = fn.name;
+    this.speculation = null;
+    this.speculationResume = null;
     this.finalFieldBorrows =
       !fn.async && !fn.generator && constructorClass(fn.name) === null && this.finalFields.size > 0;
     this.byteWindowsEnabled = this.countedLoopsEnabled;
@@ -5977,7 +6379,9 @@ export class LlEmitter {
     this.bytesBounds = findBytesBounds(numericFn, this.integerRanges);
     // Debug builds keep every number local a double for the debugger's
     // variable view. Lazily boxed captured parameters keep their double,
-    // which the box is created from.
+    // which the box is created from, and so do plain copies of a capture or
+    // such a parameter (copyStableCaptures): the source already holds the
+    // double, which an i32 copy would convert and widen again on every call.
     // Initializer bindings proven int32 move into an i32 local of their
     // initializer: no other code observes the global, so the loop-carried
     // value never round-trips through the double slot.
@@ -5988,7 +6392,7 @@ export class LlEmitter {
             withInitializerLocals(fn, initializerLocals),
             this.integerRanges,
             this.int32Slots.facts(fn.name),
-            new Set(this.lazyCaptureBoxes.keys()),
+            new Set([...this.lazyCaptureBoxes.keys(), ...this.doubleCopies(fn)]),
           )
         : null;
     this.int32Locals = int32Locals?.locals ?? new Map();
@@ -6046,6 +6450,20 @@ export class LlEmitter {
       B.line(`${handle} = call ptr @llvm.coro.begin(token ${id}, ptr ${mem})`);
       B.line(`call void @${started}(ptr ${handle})`);
       B.line(`${self} = call ptr @scr_fiber_self()`);
+      // A native synchronous body owns its generator for the whole run (the
+      // ScrGen owns the frame), so its OUT slot address is fixed.
+      let out: string | null = null;
+      const yieldKind = fn.generator?.yieldT.kind;
+      if (
+        !this.wasi &&
+        fn.async !== true &&
+        (yieldKind === "f64" || yieldKind === "date" || yieldKind === "bool")
+      ) {
+        this.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
+        const gen = B.tmp();
+        B.line(`${gen} = call ptr @scr_gen_of_fiber(ptr ${self})`);
+        out = this.genOutSlot(gen);
+      }
       this.currentCoro = {
         kind: fn.generator !== undefined ? "generator" : "async",
         id,
@@ -6054,6 +6472,7 @@ export class LlEmitter {
         finalLabel: B.newLabel("coro.final"),
         cleanupLabel: B.newLabel("coro.cleanup"),
         suspendLabel: B.newLabel("coro.suspend"),
+        out,
       };
     }
 
@@ -6925,6 +7344,17 @@ export class LlEmitter {
   }
 
   emitStmt(s: IrStmt): void {
+    const resume = this.speculationResume?.get(s);
+    if (resume && !resume.placed && !this.B.isTerminated()) {
+      // The fast copy's failed checks re-execute this statement here.
+      resume.placed = true;
+      this.B.br(resume.label);
+      this.B.startBlock(resume.label);
+    }
+    if (this.speculation?.writes.has(s)) {
+      this.emitSpeculativeWrite(s, this.speculation.resume.get(s)!);
+      return;
+    }
     const previous = this.B.debugLocation;
     this.B.debugLocation = this.debug?.location(s.loc, this.debugScope) ?? null;
     const loop =
@@ -7229,6 +7659,7 @@ export class LlEmitter {
         // the replaced element itself). A local receiver that the index and
         // value cannot rebind is read in place, as for field stores; the
         // released element cannot reach that binding.
+        if (this.emitArraySelfConcat(s)) break;
         const arr = this.emitStableReceiver(s.arr, [s.index, s.value]);
         const idx = this.emitExpr(s.index);
         const v = this.emitExpr(s.value);
@@ -7349,6 +7780,7 @@ export class LlEmitter {
           this.storeInt32Field(ptr, v, s.value);
           break;
         }
+        if (this.emitFieldSelfConcat(s)) break;
         const obj = this.emitStableReceiver(s.obj, [s.value]);
         const v = this.emitFieldValue(
           s.value,
@@ -7583,57 +8015,61 @@ export class LlEmitter {
       }
       case "while": {
         const workerBudget = this.workerLoopBudget(s);
-        const lc = B.newLabel("loop.c");
-        const lb = B.newLabel("loop.b");
         const le = B.newLabel("loop.e");
-        const lp = workerBudget !== null ? B.newLabel("loop.p") : lc;
-        B.br(lc);
-        B.startBlock(lc);
-        B.condBr(this.emitCondition(s.cond), lb, le);
-        B.startBlock(lb);
-        this.jumpTargets.push({
-          kind: "loop",
-          brkLabel: le,
-          contLabel: lp,
-          labels: s.labels,
-          frameDepth: this.frames.length,
-          scopeDepth: this.scopes.length,
-          finallyDepth: this.finallyStack.length,
-        });
-        this.emitBlock(s.body);
-        this.jumpTargets.pop();
-        B.br(lp);
-        if (lp !== lc) {
-          B.startBlock(lp);
-          this.emitWorkerLoopCheck(workerBudget);
+        this.emitLoopCopies(s, true, le, (exit) => {
+          const lc = B.newLabel("loop.c");
+          const lb = B.newLabel("loop.b");
+          const lp = workerBudget !== null ? B.newLabel("loop.p") : lc;
           B.br(lc);
-        }
+          B.startBlock(lc);
+          B.condBr(this.emitCondition(s.cond), lb, exit);
+          B.startBlock(lb);
+          this.jumpTargets.push({
+            kind: "loop",
+            brkLabel: exit,
+            contLabel: lp,
+            labels: s.labels,
+            frameDepth: this.frames.length,
+            scopeDepth: this.scopes.length,
+            finallyDepth: this.finallyStack.length,
+          });
+          this.emitBlock(s.body);
+          this.jumpTargets.pop();
+          B.br(lp);
+          if (lp !== lc) {
+            B.startBlock(lp);
+            this.emitWorkerLoopCheck(workerBudget);
+            B.br(lc);
+          }
+        });
         B.startBlock(le);
         break;
       }
       case "doWhile": {
         const workerBudget = this.workerLoopBudget(s);
         // Body first (runs at least once); continue jumps to the CONDITION.
-        const lb = B.newLabel("loop.b");
-        const lc = B.newLabel("loop.c");
         const le = B.newLabel("loop.e");
-        B.br(lb);
-        B.startBlock(lb);
-        this.jumpTargets.push({
-          kind: "loop",
-          brkLabel: le,
-          contLabel: lc,
-          labels: s.labels,
-          frameDepth: this.frames.length,
-          scopeDepth: this.scopes.length,
-          finallyDepth: this.finallyStack.length,
+        this.emitLoopCopies(s, true, le, (exit) => {
+          const lb = B.newLabel("loop.b");
+          const lc = B.newLabel("loop.c");
+          B.br(lb);
+          B.startBlock(lb);
+          this.jumpTargets.push({
+            kind: "loop",
+            brkLabel: exit,
+            contLabel: lc,
+            labels: s.labels,
+            frameDepth: this.frames.length,
+            scopeDepth: this.scopes.length,
+            finallyDepth: this.finallyStack.length,
+          });
+          this.emitBlock(s.body);
+          this.jumpTargets.pop();
+          B.br(lc);
+          B.startBlock(lc);
+          this.emitWorkerLoopCheck(workerBudget);
+          B.condBr(this.emitCondition(s.cond), lb, exit);
         });
-        this.emitBlock(s.body);
-        this.jumpTargets.pop();
-        B.br(lc);
-        B.startBlock(lc);
-        this.emitWorkerLoopCheck(workerBudget);
-        B.condBr(this.emitCondition(s.cond), lb, le);
         B.startBlock(le);
         break;
       }
@@ -7789,8 +8225,6 @@ export class LlEmitter {
           const initializers = s.init.kind === "block" ? s.init.body : [s.init];
           for (const initializer of initializers) this.emitStmt(initializer);
         }
-        const lc = B.newLabel("loop.c");
-        const lb = B.newLabel("loop.b");
         const le = B.newLabel("loop.e");
         // JS `for (let i ...)`: each iteration gets a FRESH binding holding
         // a copy of the previous one (closures made in iteration k keep
@@ -7819,69 +8253,75 @@ export class LlEmitter {
           }
         };
         const workerBudget = this.workerLoopBudget(s);
-        const lu =
-          s.update || capturedLets.length > 0 || workerBudget !== null ? B.newLabel("loop.u") : lc;
         freshenBindings();
-        B.br(lc);
-        B.startBlock(lc);
-        if (integerLoop && integerSlot) {
-          const receiver = this.emitStableReceiver(integerLoop.limitReceiver, []);
-          const lenPtr = B.tmp();
-          const len = B.tmp();
-          const index = B.tmp();
-          const inBounds = B.tmp();
-          B.line(
-            `${lenPtr} = getelementptr inbounds %${integerArrayLoop ? "ScrArr" : "ScrBytes"}, ptr ${receiver.name}, i64 0, i32 1`,
-          );
-          if (integerArrayLoop) this.markMemoryPointer(lenPtr, "array:header");
-          B.line(
-            `${len} = load ${this.sizeType}, ptr ${lenPtr}${this.fieldAliasAttachment(lenPtr)}`,
-          );
-          B.line(`${index} = load ${this.sizeType}, ptr ${integerSlot}`);
-          B.line(`${inBounds} = icmp ult ${this.sizeType} ${index}, ${len}`);
-          B.condBr(inBounds, lb, le);
-        } else if (countedLoop && integerSlot && countedLimit) {
-          const index = B.tmp();
-          const inBounds = B.tmp();
-          B.line(`${index} = load i64, ptr ${integerSlot}`);
-          B.line(
-            `${inBounds} = icmp ${countedLoop.step > 0 ? "slt" : "sgt"} i64 ${index}, ${countedLimit}`,
-          );
-          B.condBr(inBounds, lb, le);
-        } else if (s.cond) B.condBr(this.emitCondition(s.cond), lb, le);
-        else B.br(lb);
-        B.startBlock(lb);
-        this.jumpTargets.push({
-          kind: "loop",
-          brkLabel: le,
-          contLabel: lu,
-          labels: s.labels,
-          frameDepth: this.frames.length,
-          scopeDepth: this.scopes.length,
-          finallyDepth: this.finallyStack.length,
-        });
-        this.emitBlock(s.body);
-        this.jumpTargets.pop();
-        B.br(lu);
-        if (lu !== lc) {
-          B.startBlock(lu);
-          this.emitWorkerLoopCheck(workerBudget);
-          freshenBindings();
-          if (integerLoop && integerSlot) {
-            const old = B.tmp();
-            const next = B.tmp();
-            B.line(`${old} = load ${this.sizeType}, ptr ${integerSlot}`);
-            B.line(`${next} = add nuw ${this.sizeType} ${old}, 1`);
-            B.line(`store ${this.sizeType} ${next}, ptr ${integerSlot}`);
-          } else if (countedLoop && integerSlot) {
-            const old = B.tmp();
-            const next = B.tmp();
-            B.line(`${old} = load i64, ptr ${integerSlot}`);
-            B.line(`${next} = add nsw i64 ${old}, ${countedLoop.step}`);
-            B.line(`store i64 ${next}, ptr ${integerSlot}`);
-          } else if (s.update) this.emitStmt(s.update);
+        this.emitLoopCopies(s, capturedLets.length === 0, le, (exit) => {
+          const lc = B.newLabel("loop.c");
+          const lb = B.newLabel("loop.b");
+          const lu =
+            s.update || capturedLets.length > 0 || workerBudget !== null
+              ? B.newLabel("loop.u")
+              : lc;
           B.br(lc);
-        }
+          B.startBlock(lc);
+          if (integerLoop && integerSlot) {
+            const receiver = this.emitStableReceiver(integerLoop.limitReceiver, []);
+            const lenPtr = B.tmp();
+            const len = B.tmp();
+            const index = B.tmp();
+            const inBounds = B.tmp();
+            B.line(
+              `${lenPtr} = getelementptr inbounds %${integerArrayLoop ? "ScrArr" : "ScrBytes"}, ptr ${receiver.name}, i64 0, i32 1`,
+            );
+            if (integerArrayLoop) this.markMemoryPointer(lenPtr, "array:header");
+            B.line(
+              `${len} = load ${this.sizeType}, ptr ${lenPtr}${this.fieldAliasAttachment(lenPtr)}`,
+            );
+            B.line(`${index} = load ${this.sizeType}, ptr ${integerSlot}`);
+            B.line(`${inBounds} = icmp ult ${this.sizeType} ${index}, ${len}`);
+            B.condBr(inBounds, lb, exit);
+          } else if (countedLoop && integerSlot && countedLimit) {
+            const index = B.tmp();
+            const inBounds = B.tmp();
+            B.line(`${index} = load i64, ptr ${integerSlot}`);
+            B.line(
+              `${inBounds} = icmp ${countedLoop.step > 0 ? "slt" : "sgt"} i64 ${index}, ${countedLimit}`,
+            );
+            B.condBr(inBounds, lb, exit);
+          } else if (s.cond) B.condBr(this.emitCondition(s.cond), lb, exit);
+          else B.br(lb);
+          B.startBlock(lb);
+          this.jumpTargets.push({
+            kind: "loop",
+            brkLabel: exit,
+            contLabel: lu,
+            labels: s.labels,
+            frameDepth: this.frames.length,
+            scopeDepth: this.scopes.length,
+            finallyDepth: this.finallyStack.length,
+          });
+          this.emitBlock(s.body);
+          this.jumpTargets.pop();
+          B.br(lu);
+          if (lu !== lc) {
+            B.startBlock(lu);
+            this.emitWorkerLoopCheck(workerBudget);
+            freshenBindings();
+            if (integerLoop && integerSlot) {
+              const old = B.tmp();
+              const next = B.tmp();
+              B.line(`${old} = load ${this.sizeType}, ptr ${integerSlot}`);
+              B.line(`${next} = add nuw ${this.sizeType} ${old}, 1`);
+              B.line(`store ${this.sizeType} ${next}, ptr ${integerSlot}`);
+            } else if (countedLoop && integerSlot) {
+              const old = B.tmp();
+              const next = B.tmp();
+              B.line(`${old} = load i64, ptr ${integerSlot}`);
+              B.line(`${next} = add nsw i64 ${old}, ${countedLoop.step}`);
+              B.line(`store i64 ${next}, ptr ${integerSlot}`);
+            } else if (s.update) this.emitStmt(s.update);
+            B.br(lc);
+          }
+        });
         B.startBlock(le);
         this.releaseScope(this.scopes.pop()!);
         if (integerLoop) this.integerLoopBindings.delete(integerLoop.localId);
@@ -8679,6 +9119,128 @@ export class LlEmitter {
     if (packed?.kind !== "arrayLit" || packed.elems.length !== 1 || packed.spreads?.length)
       return null;
     return this.emitExpr(packed.elems[0]!);
+  }
+
+  /**
+   * Lower `recv.f = recv.f + suffix` on a plain string field like
+   * emitStringSelfConcatAssign does for locals. The field's old value is
+   * snapshotted (+1) and the suffix evaluated in JavaScript order; then the
+   * field unlinks and releases its CURRENT value, so the snapshot is unique
+   * unless a real alias exists and the concat appends in place instead of
+   * copying the whole string on every append. Returns false (emitting
+   * nothing) for every other store.
+   */
+  private emitFieldSelfConcat(s: Extract<IrStmt, { kind: "fieldSet" | "recordSet" }>): boolean {
+    const suffix = matchFieldSelfConcat(s);
+    if (!suffix || s.value.kind !== "strConcat") return false;
+    let fieldType: IrType | undefined;
+    if (s.kind === "fieldSet") {
+      if (
+        this.inlineUnions.classField(s.className, s.field) ||
+        this.classMeta.get(s.className)?.root.def.name === "%Error"
+      )
+        return false;
+      fieldType = classFieldIndex(this.classMetaOf(s.className), s.field).type;
+    } else {
+      fieldType = this.recordShape(s.shapeId).fields.find((f) => f.name === s.field)?.type;
+    }
+    if (fieldType?.kind !== "string") return false;
+    const B = this.B;
+    const obj = this.emitStableReceiver(s.obj, [s.value]);
+    const snapshot = this.emitExpr(s.value.left);
+    const parts = stringParts(suffix);
+    const mixed = parts.length > 1 || numberPart(parts[0]!) !== null;
+    const inputs = mixed ? emitConcatInputs(this, parts) : [];
+    const right = mixed ? null : this.emitExpr(suffix);
+    if (s.kind === "fieldSet") this.emitStoreGuard(obj.name, s);
+    else if (this.publishedTypes?.recordGuarded(s.shapeId) === true)
+      this.emitPublishedFieldGuard(obj.name, null, s.field);
+    const { ptr } =
+      s.kind === "fieldSet"
+        ? this.classFieldPtr(obj.name, s.className, s.field)
+        : this.recordFieldPtr(obj.name, s.shapeId, s.field);
+    // Unlink, then release: nothing between here and the store below can
+    // run user code or observe the field (the concat only traps on OOM).
+    // Only an owned snapshot may survive the field's release.
+    const owned = this.ownsSnapshot(snapshot.name);
+    if (owned) {
+      const old = this.loadField(ptr, fieldType, false);
+      this.storeField(ptr, fieldType, "null", false);
+      this.releaseValue(old, fieldType);
+    }
+    let raw: string;
+    if (right === null) {
+      raw = emitMixedConcat(this, snapshot.name, inputs);
+    } else {
+      this.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
+      raw = B.tmp();
+      B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right.name})`);
+    }
+    // The +1 result moves straight into the (now empty) field.
+    if (owned) this.storeField(ptr, fieldType, raw, false);
+    else this.replaceField(ptr, fieldType, false, this.own({ name: raw, type: fieldType }));
+    return true;
+  }
+
+  /** A snapshot the current statement frames own (+1), or an immortal
+   * value: it stays valid after its container releases the same string. */
+  private ownsSnapshot(name: string): boolean {
+    return (
+      this.isImmortal(name) || this.frames.some((f) => f.some((v) => v.name === name && !v.slot))
+    );
+  }
+
+  /**
+   * `a[i] = a[i] + suffix` on a string array (the canonical statement form
+   * of `a[i] += suffix`): the old element is snapshotted (+1) and the
+   * suffix evaluated in JavaScript order; then, when the slot still holds
+   * the snapshot, the array lets go of it (emitDenseSlotUnlink) so the
+   * concat can append in place, and the result is stored as usual.
+   */
+  private emitArraySelfConcat(s: Extract<IrStmt, { kind: "arraySet" }>): boolean {
+    const value = s.value;
+    if (
+      value.kind !== "strConcat" ||
+      value.type.kind !== "string" ||
+      value.left.type.kind !== "string" ||
+      value.right.type.kind !== "string" ||
+      s.arr.type.kind !== "array" ||
+      s.arr.type.elem.kind !== "string" ||
+      s.arr.kind !== "varRef" ||
+      s.index.kind !== "varRef" ||
+      !readsArraySlot(value.left, s.arr.localId, s.index.localId)
+    )
+      return false;
+    const elem = s.arr.type.elem;
+    const B = this.B;
+    const arr = this.emitStableReceiver(s.arr, [s.index, s.value]);
+    const idx = this.emitExpr(s.index);
+    const snapshot = this.emitExpr(value.left);
+    const parts = stringParts(value.right);
+    const mixed = parts.length > 1 || numberPart(parts[0]!) !== null;
+    const inputs = mixed ? emitConcatInputs(this, parts) : [];
+    const right = mixed ? null : this.emitExpr(value.right);
+    this.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
+    if (this.ownsSnapshot(snapshot.name))
+      emitDenseSlotUnlink(
+        this,
+        arr.name,
+        idx,
+        s.index,
+        snapshot.name,
+        this.internLiteral(""),
+        elem,
+      );
+    let raw: string;
+    if (right === null) {
+      raw = emitMixedConcat(this, snapshot.name, inputs);
+    } else {
+      this.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
+      raw = B.tmp();
+      B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right.name})`);
+    }
+    emitDenseArraySet(this, arr.name, idx, s.index, "ref", elem, raw);
+    return true;
   }
 
   /** `local = local + suffix` when the suffix cannot read or write the
@@ -9715,6 +10277,11 @@ export class LlEmitter {
 
   emitExpr(e: IrExpr): LlValue {
     return emitExpr(this, e);
+  }
+
+  /** A fresh read-site cache for one constant-key dyn read. */
+  dynReadIcSite(): string {
+    return `@sc_dyn_read_ic_${this.dynReadIcSites++}`;
   }
 
   dynKind(d: string): string {

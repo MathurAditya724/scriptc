@@ -1,7 +1,17 @@
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
-import { DYN, F64, type IrExpr, type SrcLoc, STRING, VOID } from "../../../ir/ir.js";
+import {
+  BOOL,
+  DYN,
+  F64,
+  type IrExpr,
+  type IrStmt,
+  type SrcLoc,
+  STRING,
+  VOID,
+  arrayOf,
+} from "../../../ir/ir.js";
 import { boolLit, numLit } from "../../../ir/build.js";
 import { READLINE_DOCUMENTED_OPTIONS, fenceOrDropOptionKey } from "../surfaces.js";
 import { streamSidesOf } from "../lower-stream.js";
@@ -41,7 +51,14 @@ export function isReadlineTyped(lowerer: Lowerer, node: ts.Expression): boolean 
 }
 
 /** The runtime's listener event numbers (scr_readline.c). */
-const RL_EVENTS: Record<string, number> = { line: 0, close: 1, pause: 2, resume: 3, error: 4 };
+const RL_EVENTS: Record<string, number> = {
+  line: 0,
+  close: 1,
+  pause: 2,
+  resume: 3,
+  error: 4,
+  history: 5,
+};
 
 /** True when the call's resolved signature answers a Promise — the
  * readline/promises question. */
@@ -187,7 +204,7 @@ export function lowerReadlineMethodCall(
       lowerer.noLowering(
         `readline.Interface.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
         args[0]!,
-        '"line", "close", "pause", "resume" and "error" are the supported readline events',
+        '"line", "close", "pause", "resume", "error" and "history" are the supported readline events',
       );
     }
     if (!ts.isExpressionStatement(call.parent)) {
@@ -199,13 +216,21 @@ export function lowerReadlineMethodCall(
     }
     const recv = receiver();
     const cb = lowerer.lowerExpr(args[1]!);
-    const want = event === "line" ? "string" : event === "error" ? "error" : null;
+    const want =
+      event === "line"
+        ? "string"
+        : event === "error"
+          ? "error"
+          : event === "history"
+            ? "history"
+            : null;
     const param = cb.type.kind === "func" ? cb.type.params[0] : undefined;
     const paramOk =
       param === undefined ||
       (want !== null && param.kind === "dyn") ||
       (want === "string" && param.kind === "string") ||
-      (want === "error" && param.kind === "object" && param.className === "Error");
+      (want === "error" && param.kind === "object" && param.className === "Error") ||
+      (want === "history" && param.kind === "array" && param.elem.kind === "string");
     if (
       cb.type.kind !== "func" ||
       cb.type.ret.kind !== "void" ||
@@ -219,7 +244,9 @@ export function lowerReadlineMethodCall(
           ? "'line' listeners other than (input: string) => void"
           : want === "error"
             ? "'error' listeners other than (err: Error) => void"
-            : `'${event}' listeners with parameters or a return value (use ())`,
+            : want === "history"
+              ? "'history' listeners other than (history: string[]) => void"
+              : `'${event}' listeners with parameters or a return value (use ())`,
       );
     }
     return {
@@ -233,7 +260,7 @@ export function lowerReadlineMethodCall(
   lowerer.noLowering(
     `readline.Interface.${name}`,
     call,
-    "question, close, pause, resume, prompt, setPrompt, getPrompt, write, for await, and on/once for 'line', 'close', 'pause', 'resume' and 'error' are the supported Interface members",
+    "question, close, pause, resume, prompt, setPrompt, getPrompt, write, for await, and on/once for 'line', 'close', 'pause', 'resume', 'error' and 'history' are the supported Interface members",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }
@@ -302,6 +329,14 @@ export function lowerReadlineCreateCall(
   let crlf: IrExpr = numLit(0, loc);
   let prompt: IrExpr | null = null;
   let signal: IrExpr | null = null;
+  // the history and editing options (scr_rl_check_options' flags)
+  let tabSize: IrExpr | null = null;
+  let escapeTimeout: IrExpr | null = null;
+  let historySize: IrExpr | null = null;
+  let history: IrExpr | null = null;
+  let removeDups: IrExpr | null = null;
+  let completer: IrExpr | null = null;
+  const pre: IrStmt[] = [];
   const optsNode = expr.arguments[0];
   if (optsNode === undefined) {
     lowerer.noLowering(
@@ -330,43 +365,87 @@ export function lowerReadlineCreateCall(
     }
     let sawInput = false;
     for (const p of optsNode.properties) {
-      if (!ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name)) {
+      const shorthand = ts.isShorthandPropertyAssignment(p);
+      if (!(shorthand || (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name)))) {
         lowerer.noLowering(
           "createInterface with this options shape",
           p,
-          "spreads, computed keys, and shorthand options have no lowering — write each member inline",
+          "spreads and computed keys have no lowering — write each member inline",
         );
       }
-      const member = p.name.text;
+      const member = (p.name as ts.Identifier).text;
+      // `{ input }` reads the binding of the same name
+      const value: ts.Expression = shorthand
+        ? (p.name as ts.Identifier)
+        : (p as ts.PropertyAssignment).initializer;
+      const numeric = (): IrExpr => {
+        if (!(lowerer.typeOf(value).flags & ts.TypeFlags.NumberLike)) {
+          lowerer.noLowering(
+            `the createInterface option '${member}' with a value that is not a number`,
+            value,
+          );
+        }
+        return lowerer.lowerExprExpecting(value, F64);
+      };
       if (member === "input") {
-        input = lowerInput(lowerer, p.initializer);
+        input = lowerInput(lowerer, value);
         sawInput = true;
       } else if (member === "output") {
-        output = lowerOutput(lowerer, p.initializer);
+        output = lowerOutput(lowerer, value);
+      } else if (member === "tabSize") {
+        tabSize = numeric();
+      } else if (member === "escapeCodeTimeout") {
+        escapeTimeout = numeric();
+      } else if (member === "historySize") {
+        historySize = numeric();
+      } else if (member === "history") {
+        const h = lowerer.lowerExpr(value);
+        if (h.type.kind !== "array" || h.type.elem.kind !== "string") {
+          lowerer.noLowering(
+            "createInterface with a history that is not a string array",
+            value,
+            "pass the history as a string[]",
+          );
+        }
+        history = h;
+      } else if (member === "removeHistoryDuplicates") {
+        if (!(lowerer.typeOf(value).flags & ts.TypeFlags.BooleanLike)) {
+          lowerer.noLowering(
+            "the createInterface option 'removeHistoryDuplicates' with a value that is not a boolean",
+            value,
+          );
+        }
+        removeDups = lowerer.lowerExprExpecting(value, BOOL);
+      } else if (member === "completer") {
+        // Only terminal interfaces call the completer; a function is
+        // evaluated and kept by nothing else, and a checked-dynamic value
+        // must be callable (Node's ERR_INVALID_ARG_VALUE, after the
+        // history checks).
+        const c = lowerer.lowerExpr(value);
+        if (c.type.kind === "func") {
+          pre.push({ kind: "exprStmt", expr: c, loc: c.loc });
+        } else {
+          completer = lowerer.coerceToExpected(c, DYN);
+        }
       } else if (member === "terminal") {
-        const t = lowerer.typeOf(p.initializer);
+        const p2 = p as ts.PropertyAssignment;
+        const t = lowerer.typeOf(p2.initializer);
         if (
           !(t.flags & ts.TypeFlags.BooleanLiteral) ||
           lowerer.checker.typeToString(t) !== "false"
         ) {
           lowerer.noLowering(
             "createInterface with terminal enabled",
-            p.initializer,
+            p2.initializer,
             "terminal line editing has no lowering — the pipe behavior is what compiles",
           );
         }
       } else if (member === "crlfDelay") {
-        crlf = lowerer.lowerExprExpecting(p.initializer, F64);
+        crlf = lowerer.lowerExprExpecting(value, F64);
       } else if (member === "prompt") {
-        prompt = lowerer.lowerExprExpecting(p.initializer, STRING);
+        prompt = lowerer.lowerExprExpecting(value, STRING);
       } else if (member === "signal") {
-        signal = lowerer.lowerExprExpecting(p.initializer, DYN);
-      } else if (member === "completer") {
-        lowerer.noLowering(
-          "createInterface with a completer",
-          p,
-          "tab completion needs an interactive terminal — the lowered interface reads piped lines (terminal: false)",
-        );
+        signal = lowerer.lowerExprExpecting(value, DYN);
       } else {
         fenceOrDropOptionKey(
           lowerer,
@@ -374,7 +453,7 @@ export function lowerReadlineCreateCall(
           member,
           "createInterface",
           READLINE_DOCUMENTED_OPTIONS,
-          "input, output, terminal: false, crlfDelay, prompt and signal are the supported options",
+          "input, output, terminal: false, crlfDelay, prompt, signal, history, historySize, removeHistoryDuplicates, completer, tabSize and escapeCodeTimeout are the supported options",
         );
         // An undocumented key, dropped like Node drops it.
       }
@@ -399,11 +478,127 @@ export function lowerReadlineCreateCall(
   args.push(crlf);
   if (prompt !== null) args.push(prompt);
   if (signal !== null) args.push(signal);
-  return {
+  const create: IrExpr = {
     kind: "libCall",
     fn: signal !== null ? "rl.createSignal" : "rl.create",
     args,
     type: F64,
     loc,
   };
+  if (
+    pre.length === 0 &&
+    !tabSize &&
+    !escapeTimeout &&
+    !historySize &&
+    !history &&
+    !removeDups &&
+    !completer
+  ) {
+    return create;
+  }
+  // The numeric options are evaluated once, checked in Node's order
+  // before the interface opens, then stored on it with the history.
+  const stmts: IrStmt[] = [...pre];
+  const temp = (name: string, v: IrExpr | null): IrExpr => {
+    if (v === null) return numLit(0, loc);
+    const l = lowerer.declareHiddenLocal(name, F64);
+    stmts.push({ kind: "varDecl", localId: l.id, init: v, loc });
+    return { kind: "varRef", localId: l.id, type: F64, loc };
+  };
+  const flags = (tabSize ? 1 : 0) | (escapeTimeout ? 2 : 0) | (historySize ? 4 : 0);
+  const tab = temp("%rlTabSize", tabSize);
+  const esc = temp("%rlEscapeCodeTimeout", escapeTimeout);
+  const size = temp("%rlHistorySize", historySize);
+  if (flags !== 0) {
+    stmts.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "rl.checkOptions",
+        args: [numLit(flags, loc), tab, esc, size],
+        type: VOID,
+        loc,
+      },
+      loc,
+    });
+  }
+  if (completer) {
+    stmts.push({
+      kind: "exprStmt",
+      expr: { kind: "libCall", fn: "rl.checkCompleter", args: [completer], type: VOID, loc },
+      loc,
+    });
+  }
+  const id = lowerer.declareHiddenLocal("%rl", F64);
+  const idRef: IrExpr = { kind: "varRef", localId: id.id, type: F64, loc };
+  stmts.push({ kind: "varDecl", localId: id.id, init: create, loc });
+  stmts.push({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "rl.setOptions",
+      args: [idRef, numLit(flags, loc), size, removeDups ?? boolLit(false, loc), tab, esc],
+      type: VOID,
+      loc,
+    },
+    loc,
+  });
+  if (history) {
+    stmts.push({
+      kind: "exprStmt",
+      expr: { kind: "libCall", fn: "rl.setHistory", args: [idRef, history], type: VOID, loc },
+      loc,
+    });
+  }
+  return { kind: "seqExpr", stmts, result: idRef, type: F64, loc };
+}
+
+/** Property reads on an Interface: `history` (the history option itself,
+ * or the interface's own empty array), `historySize`, `historyIndex`,
+ * `crlfDelay`, `tabSize`, `escapeCodeTimeout`, and, as on a non-terminal
+ * interface, `line` ('') and `terminal` (false). Null for other
+ * receivers. */
+export function lowerReadlineProperty(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (access.questionDotToken) return null;
+  if (!isReadlineTyped(lowerer, access.expression)) return null;
+  if (!lowerer.isStdlibMember(access)) return null;
+  const name = access.name.text;
+  const loc = locOf(access);
+  const numeric: Record<string, number> = {
+    historySize: 0,
+    historyIndex: 1,
+    crlfDelay: 2,
+    tabSize: 3,
+    escapeCodeTimeout: 4,
+  };
+  if (name === "history") {
+    const recv = lowerer.lowerExprExpecting(access.expression, F64);
+    return { kind: "libCall", fn: "rl.history", args: [recv], type: arrayOf(STRING), loc };
+  }
+  if (numeric[name] !== undefined) {
+    const recv = lowerer.lowerExprExpecting(access.expression, F64);
+    return {
+      kind: "libCall",
+      fn: "rl.numProp",
+      args: [recv, numLit(numeric[name]!, loc)],
+      type: F64,
+      loc,
+    };
+  }
+  if (name === "line" || name === "terminal") {
+    const recv = lowerer.lowerExprExpecting(access.expression, F64);
+    const value: IrExpr =
+      name === "line" ? { kind: "strLit", value: "", type: STRING, loc } : boolLit(false, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: recv, loc }],
+      result: value,
+      type: value.type,
+      loc,
+    };
+  }
+  return null;
 }

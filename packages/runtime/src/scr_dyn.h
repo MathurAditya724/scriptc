@@ -626,6 +626,15 @@ ScrDyn *scr_dyn_iterator_optional(const ScrDyn *value);
 /* from.js's probe: 2 when value[Symbol.asyncIterator] is set, 1 when
  * value[Symbol.iterator] is, 0 for neither, -1 with an error pending. */
 int scr_dyn_iterable_kind(const ScrDyn *value);
+/* from.js's iterator: value[Symbol.asyncIterator]() when that method is
+ * set (*kind 2), else value[Symbol.iterator]() (*kind 1), reading each
+ * method once. +1 iterator; NULL with *kind 0 when neither is set, or
+ * with *kind -1 and the error pending (also for a compiled generator,
+ * which only typed code can step). */
+ScrDyn *scr_dyn_from_iterator(const ScrDyn *value, int *kind);
+/* One field of an iterator result object (value, done), read the way the
+ * for-of protocol reads it. +1, or NULL with the error pending. */
+ScrDyn *scr_dyn_iterator_result_get(const ScrDyn *result, const char *key, size_t len);
 void scr_dyn_install_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key);
 ScrDyn *scr_dyn_array_values_function(void);
@@ -878,6 +887,22 @@ bool scr_dyn_err_instanceof(const ScrDyn *d, double kind);
  * runtime Error instances inherit their exact builtin constructor token.
  * The result is owned. */
 ScrDyn *scr_dyn_obj_read(const ScrDyn *d, const char *key, size_t key_len);
+/* A compiler-emitted read site with a constant key keeps one of these in
+ * zero-initialized thread-local storage: the entry position where the key
+ * was last found as an own data property and a reference to the interned
+ * key bytes stored there. Objects that share a key spelling share its bytes
+ * (scr_dyn_key_copy), so one pointer compare at the remembered position
+ * proves the property without hashing or comparing bytes. The held
+ * reference keeps the bytes, and therefore the pointer's meaning, alive. */
+typedef struct ScrDynReadIc {
+  char *key;
+  size_t key_len;
+  size_t index;
+  struct ScrDynReadIc *next; /* this thread's filled sites, for cleanup */
+} ScrDynReadIc;
+/* scr_dyn_obj_read for a SCR_DYN_OBJ receiver `d` (callers check the kind)
+ * and the site's constant key; same result and ownership. */
+ScrDyn *scr_dyn_obj_read_ic(const ScrDyn *d, const ScrStr *key, ScrDynReadIc *ic);
 /* JS typeof comparison, including null's "object" result. */
 bool scr_dyn_is_object(const ScrDyn *d);
 void scr_dyn_throw(ScrDyn *d); /* moves; preserves boxed native Error classification */

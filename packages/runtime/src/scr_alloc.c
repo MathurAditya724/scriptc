@@ -146,8 +146,23 @@ static void scr_sa_dumpable(char *start, char *end, char *lim, char *next) {
  * second half of the current one, so a slice keeps at most about one step
  * of untouched committed memory. Nothing is faulted ahead before a slice
  * reaches SCR_SA_PF_START: a lightly used class commits nothing extra.
- * SCR_SA_PREFAULT=0 turns it off. Library archives run on embedder threads
- * and keep the plain policy. */
+ *
+ * Worker threads fault ahead only once they have shown sustained
+ * allocation, and within one budget that all workers share. A worker's
+ * limits must have advanced SCR_SA_PF_WORKER_MIN bytes, and the ranges
+ * faulted ahead of all workers together stay within SCR_SA_PF_WORKERS_MAX.
+ * A range counts against the budget until its class's limit reaches it or
+ * its thread parks its arena, and a class has one range in flight at a
+ * time. A step outside the budget is not faulted ahead: the owner faults
+ * those pages itself. Many worker threads (parse and check pools) would
+ * otherwise each hold faulted-in ranges, up to a huge page per hot class,
+ * that they never carve, and all of them would queue on the one helper,
+ * whose populates also hold the address-space lock their own mmap and brk
+ * calls need. A program whose allocation runs on one or two workers keeps
+ * most of the pre-faulting. The main thread keeps the policy above, and
+ * executables without worker threads compile only that policy.
+ * SCR_SA_PREFAULT=0 turns pre-faulting off. Library archives run on
+ * embedder threads and keep the plain policy. */
 #if defined(SCR_SA_THP) && !defined(SCR_LIB)
 #ifndef MADV_POPULATE_WRITE
 #define MADV_POPULATE_WRITE 23 /* Linux 5.14 */
@@ -156,8 +171,14 @@ static void scr_sa_dumpable(char *start, char *end, char *lim, char *next) {
 #define SCR_SA_PF_STEP ((size_t)256 << 10)
 #define SCR_SA_PF_START ((size_t)1 << 20)
 #define SCR_SA_PF_HUGE_STEP (SCR_SA_HUGE_PAGE / 2)
+#define SCR_SA_PF_WORKER_MIN ((size_t)4 << 20)
+#define SCR_SA_PF_WORKERS_MAX ((size_t)8 << 20)
 #include <errno.h>
 #include <pthread.h>
+#ifdef SCR_WORKERS
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 #include <signal.h>
 #include <stdatomic.h>
 
@@ -337,13 +358,73 @@ static void scr_sa_prefault(char *lo, char *hi) {
   }
   pthread_mutex_unlock(&scr_sa_pf_lock);
 }
+
+#ifdef SCR_WORKERS
+/* The workers' budget (see above): bytes faulted ahead of all workers
+ * that their limits have not reached. Per thread: whether it is the main
+ * thread (0 not known yet, 1 main, 2 worker), bytes its slice limits have
+ * advanced, its share of the budget, and each class's range in flight. */
+static _Atomic(size_t) scr_sa_pf_workers_ahead;
+static _Thread_local int scr_sa_pf_role;
+static _Thread_local size_t scr_sa_pf_advanced, scr_sa_pf_ahead;
+static _Thread_local char *scr_sa_pf_lo[SCR_SA_NCLASS];
+static _Thread_local size_t scr_sa_pf_len[SCR_SA_NCLASS];
+
+/* Records class c's limit moving from lim to next: the advance counts
+ * toward SCR_SA_PF_WORKER_MIN, and a range in flight that the limit has
+ * reached goes back to the workers' budget. */
+static void scr_sa_pf_advance(unsigned c, char *lim, char *next) {
+  scr_sa_pf_advanced += (size_t)(next - lim);
+  if (scr_sa_pf_len[c] && next > scr_sa_pf_lo[c]) {
+    scr_sa_pf_ahead -= scr_sa_pf_len[c];
+    atomic_fetch_sub_explicit(&scr_sa_pf_workers_ahead, scr_sa_pf_len[c], memory_order_relaxed);
+    scr_sa_pf_len[c] = 0;
+  }
+}
+
+/* Returns the calling thread's ranges in flight to the workers' budget
+ * when it parks its arena. */
+static void scr_sa_pf_park(void) {
+  if (scr_sa_pf_ahead)
+    atomic_fetch_sub_explicit(&scr_sa_pf_workers_ahead, scr_sa_pf_ahead, memory_order_relaxed);
+  scr_sa_pf_ahead = 0;
+  scr_sa_pf_advanced = 0;
+  memset(scr_sa_pf_len, 0, sizeof scr_sa_pf_len);
+}
+
+/* scr_sa_prefault for class c: unconditionally on the main thread, within
+ * the budget on a worker. */
+static void scr_sa_prefault_ahead(unsigned c, char *lo, char *hi) {
+  if (!scr_sa_pf_role) scr_sa_pf_role = (pid_t)syscall(SYS_gettid) == getpid() ? 1 : 2;
+  if (scr_sa_pf_role == 1) {
+    scr_sa_prefault(lo, hi);
+    return;
+  }
+  if (hi <= lo || scr_sa_pf_len[c] || scr_sa_pf_advanced < SCR_SA_PF_WORKER_MIN) return;
+  size_t n = (size_t)(hi - lo);
+  size_t ahead = atomic_load_explicit(&scr_sa_pf_workers_ahead, memory_order_relaxed);
+  do {
+    if (ahead + n > SCR_SA_PF_WORKERS_MAX) return;
+  } while (!atomic_compare_exchange_weak_explicit(&scr_sa_pf_workers_ahead, &ahead, ahead + n,
+                                                  memory_order_relaxed, memory_order_relaxed));
+  scr_sa_pf_ahead += n;
+  scr_sa_pf_lo[c] = lo;
+  scr_sa_pf_len[c] = n;
+  scr_sa_prefault(lo, hi);
+}
+#else
+/* Without worker threads every allocating thread is the main thread. */
+#define scr_sa_pf_advance(c, lim, next) ((void)0)
+#define scr_sa_prefault_ahead(c, lo, hi) scr_sa_prefault(lo, hi)
+#endif
 #endif
 
-/* The next bump limit of a class slice [start, end) whose limit is lim
+/* The next bump limit of class c's slice [start, end) whose limit is lim
  * (< end): its small-page prefix ends at SCR_SA_HUGE_AFTER, where the rest
  * of the slice switches to huge pages. Limits advance in steps: the
  * pre-fault steps (see above), or else the core-dump steps (SCR_SA_DUMP). */
-static char *scr_sa_extend(char *start, char *lim, char *end) {
+static char *scr_sa_extend(unsigned c, char *start, char *lim, char *end) {
+  (void)c;
 #ifdef SCR_SA_THP
   char *sw = start + SCR_SA_HUGE_AFTER;
   bool tiered = (size_t)(end - start) > SCR_SA_HUGE_AFTER;
@@ -352,20 +433,22 @@ static char *scr_sa_extend(char *start, char *lim, char *end) {
     if (!tiered) return end;
     if (lim < sw) {
       char *next = lim + SCR_SA_PF_STEP < sw ? lim + SCR_SA_PF_STEP : sw;
+      scr_sa_pf_advance(c, lim, next);
       if (next == sw) {
         /* The last small-page chunk: switch the rest now, so the first huge
          * page can be faulted ahead like every later one. */
         (void)madvise(sw, (size_t)(end - sw), MADV_HUGEPAGE);
-        scr_sa_prefault(sw, sw + SCR_SA_HUGE_PAGE < end ? sw + SCR_SA_HUGE_PAGE : end);
+        scr_sa_prefault_ahead(c, sw, sw + SCR_SA_HUGE_PAGE < end ? sw + SCR_SA_HUGE_PAGE : end);
       } else if ((size_t)(next - start) >= SCR_SA_PF_START) {
-        scr_sa_prefault(next, next + SCR_SA_PF_STEP < sw ? next + SCR_SA_PF_STEP : sw);
+        scr_sa_prefault_ahead(c, next, next + SCR_SA_PF_STEP < sw ? next + SCR_SA_PF_STEP : sw);
       }
       return next;
     }
     char *next = lim + SCR_SA_PF_HUGE_STEP < end ? lim + SCR_SA_PF_HUGE_STEP : end;
+    scr_sa_pf_advance(c, lim, next);
     /* Entering the second half of a huge page: fault the next one. */
     if (((uintptr_t)next & (SCR_SA_HUGE_PAGE - 1)) == 0 && next < end)
-      scr_sa_prefault(next, next + SCR_SA_HUGE_PAGE < end ? next + SCR_SA_HUGE_PAGE : end);
+      scr_sa_prefault_ahead(c, next, next + SCR_SA_HUGE_PAGE < end ? next + SCR_SA_HUGE_PAGE : end);
     return next;
   }
 #endif
@@ -834,6 +917,9 @@ void scr_sa_wait_trims(void) {}
 void scr_sa_thread_park(void) {
   if (scr_sa_arena < 0) return;
   unsigned i = (unsigned)scr_sa_arena;
+#if defined(SCR_SA_PREFAULT) && defined(SCR_WORKERS)
+  scr_sa_pf_park();
+#endif
 #ifdef SCR_SA_TRIM
   if (scr_sa_trim_worth()) {
     scr_sa_parked[i] = scr_sa;
@@ -940,7 +1026,7 @@ __attribute__((cold, noinline)) void *scr_sa_slow(size_t n, bool zero) {
 #ifdef SCR_SA_DUMP
     char *from = lim;
 #endif
-    while ((size_t)(lim - p) < sz && lim < end) lim = scr_sa_extend(start, lim, end);
+    while ((size_t)(lim - p) < sz && lim < end) lim = scr_sa_extend(c, start, lim, end);
 #ifdef SCR_SA_DUMP
     if (lim > from) scr_sa_dumpable(start, end, from, lim);
 #endif

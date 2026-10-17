@@ -179,6 +179,27 @@ test("node-types: events.once over typed EventEmitter listeners under @types/nod
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: socket.address and resetAndDestroy under @types/node", async () => {
+  const outDir = outDirFor("net-reset-address");
+  const entry = join(nodeTypesDir, "net-reset-address.ts");
+  const result = await compile(entry, {
+    outPath: join(
+      outDir,
+      process.platform === "win32" ? "net-reset-address.exe" : "net-reset-address",
+    ),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: timers/promises resolve values and setInterval iteration under @types/node", async () => {
   const outDir = outDirFor("timers-promises");
   const entry = join(nodeTypesDir, "timers-promises.ts");
@@ -349,6 +370,20 @@ test("node-types: promisified exec and execFile results under PromiseWithChild",
   const { stdout, stderr } = await execFileAsync(result.binaryPath);
   expect(stdout).toBe('typed-exec err typed-execfile true\n"Command failed: exit 2\\n"\n');
   expect(stderr).toBe("");
+});
+
+test("node-types: promisified fs callback functions lower as their fs/promises calls", async () => {
+  const outDir = outDirFor("promisify-fs");
+  const entry = join(nodeTypesDir, "promisify-fs.ts");
+  const result = await compile(entry, { outPath: join(outDir, "promisify-fs"), outDir, sanitize });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
 test("node-types: unsupported child stdin forms remain named fences", async () => {

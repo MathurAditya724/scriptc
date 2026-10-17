@@ -99,4 +99,68 @@ describe("runtime feature snapshots", () => {
     });
     expect(moduleRuntimeFeatures(mod).dynAsync).toBe(true);
   });
+
+  test("detects promise boxing through record fields and array elements", () => {
+    const mod = module();
+    const load = {
+      kind: "func" as const,
+      params: [],
+      ret: { kind: "promise" as const, inner: STRING },
+    };
+    mod.records = [
+      { id: "r0", fields: [{ name: "inner", type: { kind: "record", shapeId: "r1" } }] },
+      {
+        id: "r1",
+        fields: [
+          { name: "load", type: load },
+          { name: "name", type: STRING },
+        ],
+      },
+    ];
+    const services = arrayOf({ kind: "record", shapeId: "r0" });
+    mod.functions[0]!.locals.push({
+      id: "services",
+      name: "services",
+      mutable: false,
+      type: services,
+    });
+    mod.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynFrom",
+        type: DYN,
+        loc,
+        value: { kind: "varRef", localId: "services", type: services, loc },
+      },
+    });
+    expect(moduleRuntimeFeatures(mod).dynAsync).toBe(true);
+    mod.records[1]!.fields[0]!.type = { kind: "func", params: [], ret: STRING };
+    expect(moduleRuntimeFeatures(mod).dynAsync).toBe(false);
+  });
+
+  test("detects promise boxing through a function's result type", () => {
+    const mod = module();
+    const promise = { kind: "promise" as const, inner: STRING };
+    mod.unions = [{ id: "u0", arms: [promise, { kind: "undefinedT" }] }];
+    const maybe = {
+      kind: "func" as const,
+      params: [],
+      ret: { kind: "union" as const, unionId: "u0" },
+    };
+    mod.functions[0]!.locals.push({ id: "maybe", name: "maybe", mutable: false, type: maybe });
+    mod.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynFrom",
+        type: DYN,
+        loc,
+        value: { kind: "varRef", localId: "maybe", type: maybe, loc },
+      },
+    });
+    expect(moduleRuntimeFeatures(mod).dynAsync).toBe(true);
+    mod.unions[0]!.arms[0] = STRING;
+    expect(moduleRuntimeFeatures(mod).dynAsync).toBe(false);
+  });
 });

@@ -46,6 +46,13 @@ export function scanDivergences(
   const fnsByName = new Map<string, ts.FunctionLikeDeclaration[]>();
   const calls: ts.CallExpression[] = [];
   const typedDecls: ts.VariableDeclaration[] = [];
+  /** `const v = r as T` (also through `unknown`): the binding views `r`. */
+  const castDecls: { decl: ts.VariableDeclaration; source: ts.Expression; type: ts.TypeNode }[] =
+    [];
+  /** `v = r` into a binding declared elsewhere with a type. */
+  const assignments: ts.BinaryExpression[] = [];
+  /** `const list: T[] = [r, ...]`: each existing element is stored as T. */
+  const arrayDecls: { decl: ts.VariableDeclaration; element: ts.TypeNode }[] = [];
   const literals: ts.ObjectLiteralExpression[] = [];
   const observers: ts.Expression[] = [];
   const casts: (ts.AsExpression | ts.TypeAssertion)[] = [];
@@ -113,11 +120,29 @@ export function scanDivergences(
         ts.isIdentifier(node.name)
       )
         typedDecls.push(node);
+      else if (node.initializer !== undefined && ts.isIdentifier(node.name)) {
+        const cast = castView(node.initializer);
+        if (cast !== null && node.type === undefined) castDecls.push({ decl: node, ...cast });
+        const element = node.type === undefined ? undefined : arrayElementTypeNode(node.type);
+        if (
+          element !== undefined &&
+          ts.isArrayLiteralExpression(node.initializer) &&
+          node.initializer.elements.some(isExistingObjectExpression)
+        )
+          arrayDecls.push({ decl: node, element });
+      }
     } else if (ts.isObjectLiteralExpression(node)) {
       if (node.properties.length >= 1 && node.properties.every(isPlainProperty))
         literals.push(node);
     } else if (ts.isAsExpression(node) || ts.isTypeAssertion(node)) {
       casts.push(node);
+    } else if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isIdentifier(node.left) &&
+      isExistingObjectExpression(node.right)
+    ) {
+      assignments.push(node);
     } else if (
       ts.isBinaryExpression(node) &&
       node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
@@ -187,6 +212,62 @@ export function scanDivergences(
         locOf(decl.initializer!),
       ),
     );
+  }
+
+  for (const { decl, source, type } of castDecls) {
+    const name = (decl.name as ts.Identifier).text;
+    const scope = enclosingScope(decl);
+    if (scope === undefined) continue;
+    const use = identityUse(scope, name, decl.end);
+    if (use === null) continue;
+    const copy = safely(() => widthCopyBetween(lowerer, source, type));
+    if (copy === undefined || copy === null) continue;
+    out.push(
+      widthCopyDivergenceDiag(copy.source, copy.target, use.kind, use.text, "cast", locOf(source)),
+    );
+  }
+  for (const assignment of assignments) {
+    const left = assignment.left as ts.Identifier;
+    const symbol = safely(() => checker.getSymbolAtLocation(left));
+    if (symbol === undefined) continue;
+    const decl = checker
+      .declarationsOf(symbol)
+      .find(
+        (d): d is ts.VariableDeclaration => ts.isVariableDeclaration(d) && d.type !== undefined,
+      );
+    if (decl === undefined) continue;
+    const scope = enclosingScope(decl);
+    if (scope === undefined) continue;
+    const use = identityUse(scope, left.text, assignment.end);
+    if (use === null) continue;
+    const copy = safely(() => widthCopyBetween(lowerer, assignment.right, decl.type!));
+    if (copy === undefined || copy === null) continue;
+    out.push(
+      widthCopyDivergenceDiag(
+        copy.source,
+        copy.target,
+        use.kind,
+        use.text,
+        "declaration",
+        locOf(assignment.right),
+      ),
+    );
+  }
+  for (const { decl, element } of arrayDecls) {
+    const name = (decl.name as ts.Identifier).text;
+    const scope = enclosingScope(decl);
+    if (scope === undefined) continue;
+    const use = elementWrite(scope, name, decl.end);
+    if (use === null) continue;
+    for (const item of (decl.initializer as ts.ArrayLiteralExpression).elements) {
+      if (!isExistingObjectExpression(item)) continue;
+      const copy = safely(() => widthCopyBetween(lowerer, item, element));
+      if (copy === undefined || copy === null) continue;
+      out.push(
+        widthCopyDivergenceDiag(copy.source, copy.target, "write", use, "element", locOf(item)),
+      );
+      break;
+    }
   }
 
   // ── key order: a reordered literal that reaches an order observer ───
@@ -500,6 +581,96 @@ function identityUse(root: ts.Node, name: string, from = -1): IdentityUse | null
   return found;
 }
 
+/** `expr as T`, possibly through `as unknown`: the viewed value and `T`. */
+function castView(expr: ts.Expression): { source: ts.Expression; type: ts.TypeNode } | null {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (!ts.isAsExpression(expr) && !ts.isTypeAssertion(expr)) return null;
+  const type = expr.type;
+  let inner = expr.expression;
+  for (;;) {
+    while (ts.isParenthesizedExpression(inner) || ts.isNonNullExpression(inner))
+      inner = inner.expression;
+    if (
+      (ts.isAsExpression(inner) || ts.isTypeAssertion(inner)) &&
+      (inner.type.kind === ts.SyntaxKind.UnknownKeyword ||
+        inner.type.kind === ts.SyntaxKind.AnyKeyword)
+    ) {
+      inner = inner.expression;
+      continue;
+    }
+    break;
+  }
+  return isExistingObjectExpression(inner) ? { source: inner, type } : null;
+}
+
+/** The element type node of `T[]`, `readonly T[]` or `Array<T>`. */
+function arrayElementTypeNode(node: ts.TypeNode): ts.TypeNode | undefined {
+  if (ts.isTypeOperatorNode(node)) node = node.type;
+  if (ts.isArrayTypeNode(node)) return node.elementType;
+  if (
+    ts.isTypeReferenceNode(node) &&
+    ts.isIdentifier(node.typeName) &&
+    (node.typeName.text === "Array" || node.typeName.text === "ReadonlyArray") &&
+    node.typeArguments?.length === 1
+  )
+    return node.typeArguments[0];
+  return undefined;
+}
+
+/** The first write through an element of the array binding `name`
+ * (`list[i].p = v`, or through a for-of variable over it) after `from`. */
+function elementWrite(root: ts.Node, name: string, from: number): string | null {
+  const throughElement = (node: ts.Expression): boolean => {
+    let cur = node;
+    while (ts.isPropertyAccessExpression(cur) || ts.isElementAccessExpression(cur)) {
+      const inner = cur.expression;
+      if (ts.isElementAccessExpression(inner) && ts.isIdentifier(inner.expression))
+        return inner.expression.text === name;
+      cur = inner;
+    }
+    return false;
+  };
+  let found: string | null = null;
+  ts.walkPreorder(root, (node) => {
+    if (found !== null) return "stop";
+    if (node.end <= from) return "skip";
+    let target: ts.Expression | undefined;
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    )
+      target = node.left;
+    else if (
+      (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+      (node.operator === ts.SyntaxKind.PlusPlusToken ||
+        node.operator === ts.SyntaxKind.MinusMinusToken)
+    )
+      target = node.operand;
+    if (target !== undefined && throughElement(target)) {
+      found = target.getText();
+      return "stop";
+    }
+    if (
+      ts.isForOfStatement(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === name &&
+      ts.isVariableDeclarationList(node.initializer)
+    ) {
+      const binding = node.initializer.declarations[0]?.name;
+      if (binding !== undefined && ts.isIdentifier(binding)) {
+        const use = identityUse(node.statement, binding.text);
+        if (use?.kind === "write") {
+          found = use.text;
+          return "stop";
+        }
+      }
+    }
+    return undefined;
+  });
+  return found;
+}
+
 function testsInstanceof(root: ts.Node, name: string): boolean {
   let found = false;
   ts.walkPreorder(root, (node) => {
@@ -531,11 +702,12 @@ function enclosingScope(node: ts.Node): ts.Node | undefined {
   return cur;
 }
 
-/** A plain-record width copy between the value at `source` and the
- * declared `targetNode` type: both are object types that are not class
- * instances, arrays, functions or built-in containers, and the target's
- * properties are a strict subset of the source's — the shape scriptc
- * compiles as a field copy. */
+/** A width copy between the value at `source` and the declared `targetNode`
+ * type: a plain record whose property set differs from the target's (the
+ * target may drop properties or add optional ones), or a program class
+ * instance flowing into a plain record type that does not keep class
+ * identity (ClassProtocols marks the targets a class instance visibly
+ * flows into; a value reaching another record type is a field copy). */
 function widthCopyBetween(
   lowerer: Lowerer,
   source: ts.Expression,
@@ -544,16 +716,33 @@ function widthCopyBetween(
   const checker = lowerer.checker;
   const s = checker.getTypeAtLocation(source);
   const t = checker.getTypeFromTypeNode(targetNode);
-  if (!isPlainRecordType(checker, s) || !isPlainRecordType(checker, t)) return null;
-  // Accessor members write through to captured state, so a copy of them
-  // still observes the same writes: no divergence to report.
-  const accessor = ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor;
-  if (checker.getPropertiesOfType(s).some((p) => (p.flags & accessor) !== 0)) return null;
-  const sourceProps = new Set(checker.getPropertiesOfType(s).map((p) => p.name));
-  const targetProps = checker.getPropertiesOfType(t).map((p) => p.name);
-  if (targetProps.length === 0 || targetProps.length >= sourceProps.size) return null;
-  if (!targetProps.every((p) => sourceProps.has(p))) return null;
+  if (!isPlainRecordType(checker, t)) return null;
+  const classSource = isProgramClassType(checker, s);
+  if (!classSource && !isPlainRecordType(checker, s)) return null;
+  // A class-backed protocol view keeps the original value.
+  if (lowerer.classImplementedProtocol(t)) return null;
+  const sourceProps = checker.getPropertiesOfType(s);
+  if (!classSource) {
+    // Accessor members write through to captured state, so a copy of them
+    // still observes the same writes: no divergence to report.
+    const accessor = ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor;
+    if (sourceProps.some((p) => (p.flags & accessor) !== 0)) return null;
+    const sourceNames = new Set(sourceProps.map((p) => p.name));
+    const targetNames = checker.getPropertiesOfType(t).map((p) => p.name);
+    if (targetNames.length === sourceNames.size && targetNames.every((n) => sourceNames.has(n)))
+      return null;
+  }
   return { source: checker.typeToString(s), target: checker.typeToString(t) };
+}
+
+function isProgramClassType(checker: ts.TypeChecker, type: ts.Type): boolean {
+  if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+  const symbol = type.getSymbol();
+  return (
+    symbol !== undefined &&
+    (symbol.flags & ts.SymbolFlags.Class) !== 0 &&
+    checker.declarationsOf(symbol).some((d) => !d.getSourceFile().isDeclarationFile)
+  );
 }
 
 function isPlainRecordType(checker: ts.TypeChecker, type: ts.Type): boolean {
