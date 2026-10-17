@@ -2,13 +2,17 @@ import { Worker, isMainThread, parentPort, receiveMessageOnPort, workerData } fr
 
 // receiveMessageOnPort(parentPort) in a worker takes the parent's messages
 // one at a time, before and between 'message' listener deliveries, and
-// answers undefined once the queue is empty.
+// answers undefined once the queue is empty. The worker starts reading
+// once the parent has posted its first three messages (flag[1]), so the
+// second read does not depend on thread timing.
 if (isMainThread) {
-  const flag = new Int32Array(new SharedArrayBuffer(4));
+  const flag = new Int32Array(new SharedArrayBuffer(8));
   const worker = new Worker(new URL(import.meta.url), { workerData: flag });
   worker.postMessage("a");
   worker.postMessage({ b: 2 });
   worker.postMessage("c");
+  Atomics.store(flag, 1, 1);
+  Atomics.notify(flag, 1);
   worker.on("message", (m: unknown) => {
     console.log("main got", JSON.stringify(m));
     if (m === "ready") {
@@ -22,6 +26,7 @@ if (isMainThread) {
 } else {
   const flag = workerData as Int32Array;
   const port = parentPort!;
+  Atomics.wait(flag, 1, 0);
   let first = receiveMessageOnPort(port);
   while (first === undefined) first = receiveMessageOnPort(port);
   port.postMessage(["first", first]);
