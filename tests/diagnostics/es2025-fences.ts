@@ -2,8 +2,8 @@
 // ArrayBuffers and transfer, SharedArrayBuffer.grow, Atomics.waitAsync,
 // Float16Array and its Math/DataView companions, first-class iterator
 // objects, and the unlowered forms of the implemented statics
-// (Promise.try's ...args, groupBy's literal-union keys, a set-like
-// non-Set argument).
+// (Promise.try with fewer arguments than parameters, groupBy's
+// literal-union keys, a set-like non-Set argument).
 
 // Resizable ArrayBuffer + transfer (ES2024).
 const ab = new ArrayBuffer(8, { maxByteLength: 16 });
@@ -31,8 +31,8 @@ dv.setFloat16(0, 1.5);
 // First-class iterator objects.
 const it = Iterator.from([1, 2, 3].values());
 
-// Promise.try's ...args form (close over the values instead).
-const tried = Promise.try((a: number, b: number) => a + b, 1, 2);
+// Promise.try with fewer arguments than the callback's parameters.
+const tried = Promise.try((a: number, b?: number) => a + (b ?? 0), 1);
 
 // Object.groupBy at a literal-union key type (a fixed-field record).
 const grouped = Object.groupBy([1, 2, 3], (n) => (n % 2 === 0 ? "even" : "odd"));
