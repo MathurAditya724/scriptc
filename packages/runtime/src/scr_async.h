@@ -216,6 +216,10 @@ void scr_emit_warning(const char *name, const char *code, ScrStr *message);
  * listener registration): units that cannot link the dyn-async unit route
  * their warnings through it, and print the default report otherwise. */
 extern SCR_TL void (*scr_warning_emit_hook)(const char *name, const char *code, ScrStr *message);
+/* Node's traceWarningHelperShown: the "(Use `node --trace-warnings ...`"
+ * hint follows only the first warning report of the process, whichever
+ * unit prints it (scr_lib.c). */
+extern SCR_TL bool scr_warning_trace_hint_shown;
 /* process.noDeprecation (which 0) and process.throwDeprecation (which 1):
  * the stored value (+1; undefined until assigned), the assignment
  * (borrowed), and the truthiness the warning paths test. */

@@ -7,8 +7,8 @@
     "tierItemCount": 3456,
     "tiers": {
       "static": {
-        "audit-partial": 1088,
-        "verify-gap": 2241,
+        "audit-partial": 1091,
+        "verify-gap": 2238,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -25006,8 +25006,7 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.getEventListeners",
           "tests": [
-            "tests/corpus/1677-emitter-listeners.ts",
-            "tests/corpus/2620-ee-override-once-order.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts"
           ]
         }
       }
@@ -25028,12 +25027,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:events.getMaxListeners",
+          "tests": [
+            "tests/corpus/5885-events-max-listener-helpers.ts"
+          ]
         }
       }
     },
@@ -25087,8 +25088,7 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.listenerCount",
           "tests": [
-            "tests/corpus/1677-emitter-listeners.ts",
-            "tests/corpus/2620-ee-override-once-order.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts"
           ]
         }
       }
@@ -25109,15 +25109,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "compiler-dedicated:events.on",
-          "tests": [
-            "tests/corpus/1677-emitter-listeners.ts",
-            "tests/corpus/2620-ee-override-once-order.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:events",
+          "tests": []
         }
       }
     },
@@ -25143,8 +25140,7 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.setMaxListeners",
           "tests": [
-            "tests/corpus/1677-emitter-listeners.ts",
-            "tests/corpus/2620-ee-override-once-order.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts"
           ]
         }
       }
@@ -25192,12 +25188,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:events",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:events.defaultMaxListeners",
+          "tests": [
+            "tests/corpus/5885-events-max-listener-helpers.ts"
+          ]
         }
       }
     },
@@ -34347,7 +34345,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -34377,7 +34376,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -34407,7 +34407,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -34487,7 +34488,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -34517,7 +34519,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -34547,7 +34550,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -68753,7 +68757,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -68783,7 +68788,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -68813,7 +68819,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -68843,7 +68850,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -68873,7 +68881,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -68903,7 +68912,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -68933,7 +68943,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -68963,7 +68974,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -68993,7 +69005,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -69014,12 +69027,15 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:timers",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:timersPromises.scheduler.wait",
+          "tests": [
+            "tests/corpus/5839-timers-promises-scheduler.ts",
+            "tests/corpus/5889-timers-scheduler-signal.ts"
+          ]
         }
       }
     },
@@ -69039,12 +69055,15 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:timers",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:timersPromises.scheduler.yield",
+          "tests": [
+            "tests/corpus/5839-timers-promises-scheduler.ts",
+            "tests/corpus/5889-timers-scheduler-signal.ts"
+          ]
         }
       }
     },
@@ -69098,7 +69117,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -69128,7 +69148,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -69158,7 +69179,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -69265,7 +69287,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -69295,7 +69318,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -69325,7 +69349,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }
@@ -69355,7 +69380,8 @@
             "tests/corpus/1804-timers-module.ts",
             "tests/corpus/1805-timer-callback-args.ts",
             "tests/corpus/2093-timers-promises.ts",
-            "tests/corpus/2852-timers-promises-interval.ts"
+            "tests/corpus/2852-timers-promises-interval.ts",
+            "tests/corpus/5830-timers-promises-signal.ts"
           ]
         }
       }

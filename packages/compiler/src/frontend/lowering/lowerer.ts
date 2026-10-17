@@ -11234,8 +11234,29 @@ export class Lowerer {
         return { module: "fs", member: "realpathSync.native" };
       }
     }
+    // timers/promises scheduler.wait / scheduler.yield: methods of the
+    // module's scheduler object, dispatched as module members.
+    if (access.name.text === "wait" || access.name.text === "yield") {
+      const owner = access.expression;
+      const imported = ts.isIdentifier(owner)
+        ? this.builtinImportOf(owner)
+        : ts.isPropertyAccessExpression(owner)
+          ? this.builtinMemberOf(owner)
+          : null;
+      if (imported?.module === "timers/promises" && imported.member === "scheduler") {
+        return { module: "timers/promises", member: `scheduler.${access.name.text}` };
+      }
+    }
     const module = this.builtinNamespaceModuleOf(access.expression);
     if (module !== null) return { module, member: access.name.text };
+    // The events module object IS the EventEmitter class, so the class's
+    // defaultMaxListeners is the module property.
+    if (access.name.text === "defaultMaxListeners" && ts.isIdentifier(access.expression)) {
+      const imported = this.builtinImportOf(access.expression);
+      if (imported?.module === "events" && imported.member === "EventEmitter") {
+        return { module: "events", member: "defaultMaxListeners" };
+      }
+    }
     // The RE-EXPORT FACADE's namespace spelling: `import * as assert from
     // "./facade.js"` over `export { ok } from "node:assert"` (the formatter idiom's
     // universal/assert). The member's symbol is the facade's

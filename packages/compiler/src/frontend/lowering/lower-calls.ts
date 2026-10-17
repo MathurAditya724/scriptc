@@ -8735,7 +8735,15 @@ export function lowerObjectMethodCall(
   // The EventEmitter surface: API-named calls on emitter-rooted
   // receivers lower through the emitter spoke (subclass members with
   // these names are fenced at collection, so `found` never shadows).
-  if (info && !found && EMITTER_API_MEMBERS.has(access.name.text) && emitterRooted(lowerer, info)) {
+  if (
+    info &&
+    !found &&
+    (EMITTER_API_MEMBERS.has(access.name.text) ||
+      // A static with no instance twin (events.getEventListeners).
+      (access.name.text === "getEventListeners" &&
+        lowerer.checker.getConstructSignatures(lowerer.typeOf(access.expression)).length > 0)) &&
+    emitterRooted(lowerer, info)
+  ) {
     return lowerEmitterMethodCall(lowerer, call, access, info);
   }
   // The inherited EventTarget/Event methods of a class rooted at those

@@ -1225,6 +1225,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "tp.setImmediate": "scr_tp_set_immediate",
   "tp.setTimeoutValue": "scr_tp_set_timeout_value",
   "tp.setImmediateValue": "scr_tp_set_immediate_value",
+  "tp.setTimeoutSignal": "scr_tp_set_timeout_signal",
+  "tp.setImmediateSignal": "scr_tp_set_immediate_signal",
   // stream/promises' finished form (+1 promise; may-throw pending check;
   // the pipeline form needs the stream-array compound and emits below).
   "sp.finished": "scr_sp_finished",

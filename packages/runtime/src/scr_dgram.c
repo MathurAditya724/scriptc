@@ -1335,7 +1335,10 @@ static void scr_dns_warn_tick(ScrClosure *self) {
 #endif
     fprintf(stderr, "(node:%ld) [DEP0118] DeprecationWarning: %.*s\n", pid, (int)message->len,
             message->data);
-    fputs("(Use `node --trace-deprecation ...` to show where the warning was created)\n", stderr);
+    if (!scr_warning_trace_hint_shown) {
+      scr_warning_trace_hint_shown = true;
+      fputs("(Use `node --trace-deprecation ...` to show where the warning was created)\n", stderr);
+    }
   }
   scr_str_release(message);
 }

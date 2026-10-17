@@ -34,11 +34,11 @@
  * 'error' listener the Error payload THROWS through the exception cell
  * (catchable; uncaught exits 1), Node's unhandled-'error' contract.
  *
- * The maxListeners leak warning prints Node's message shape on stderr,
- * once per (emitter, event name), plus the once-per-process
- * --trace-warnings hint line. Documented divergences: the pid in
- * "(node:pid)" is this process's (it can never equal the oracle's), and
- * the warning prints synchronously at the add (Node defers it a tick). */
+ * The maxListeners leak warning is emitted once per (emitter, event name)
+ * on the next tick, as process.emitWarning delivers it: to the process
+ * 'warning' listeners and Node's stderr report, with the once-per-process
+ * --trace-warnings hint line. The pid in "(node:pid)" is this process's
+ * (it can never equal the oracle's). */
 #include "scr_runtime.h"
 
 #include <stdarg.h>
@@ -111,8 +111,6 @@ static void scr_emitter_release_direct(void *obj);
 SCR_TL ScrVt scr_emitter_vt = {0, 0, &scr_emitter_release_direct};
 
 SCR_TL double scr_emitter_default_max = 10; /* EventEmitter.defaultMaxListeners */
-
-static SCR_TL bool scr_ee_trace_hint_shown = false;
 
 /* Post-registration hook (scr_runtime.h): the stream unit's flow kick.
  * NULL in stream-free builds — behavior byte-identical. */
@@ -375,24 +373,52 @@ static void scr_ee_emit_meta(ScrEmitter *em, const char *meta, ScrStr *name) {
 
 /* ── add / remove ─────────────────────────────────────────────────────── */
 
+/* process.emitWarning's next-tick delivery of the leak warning: to the
+ * 'warning' listeners and the default report when the process-warning
+ * unit is linked, otherwise the default report alone. */
+static void scr_ee_warn_tick(ScrClosure *self) {
+  ScrStr *message = (ScrStr *)scr_box_get_ref(self->caps[0]);
+  if (scr_warning_emit_hook) {
+    scr_warning_emit_hook("MaxListenersExceededWarning", NULL, message);
+  } else {
+    fflush(stdout);
+    fprintf(stderr, "(node:%ld) MaxListenersExceededWarning: %.*s\n", SCR_EE_PID(),
+            (int)message->len, message->data);
+    if (!scr_warning_trace_hint_shown) {
+      scr_warning_trace_hint_shown = true;
+      fputs("(Use `node --trace-warnings ...` to show where the warning was created)\n", stderr);
+    }
+  }
+  scr_str_release(message);
+}
+
 static void scr_ee_warn_maybe(ScrEmitter *em, ScrEeBucket *b) {
   ScrEeReg *reg = em->reg;
   double max = reg->max >= 0 ? reg->max : scr_emitter_default_max;
   if (b->warned || max <= 0 || (double)b->n <= max) return;
   b->warned = true;
-  /* Node's exact message, except the pid, which is OURS (it can
-   * never match another process's), and the synchronous timing (Node
-   * defers the print by a tick). SEMANTICS.md documents both. */
-  fprintf(stderr,
-          "(node:%ld) MaxListenersExceededWarning: Possible EventEmitter memory leak "
-          "detected. %zu %s listeners added to [%s]. MaxListeners is %g. Use "
-          "emitter.setMaxListeners() to increase limit\n",
-          SCR_EE_PID(), b->n, b->name->data, em->cls, max);
-  if (!scr_ee_trace_hint_shown) {
-    scr_ee_trace_hint_shown = true;
-    fputs("(Use `node --trace-warnings ...` to show where the warning was created)\n",
-          stderr);
-  }
+  /* Node's message, except the pid, which is this process's. Node emits
+   * the warning through process.emitWarning, which delivers it on the next
+   * tick. */
+  char count[32], limit[32];
+  snprintf(count, sizeof count, "%zu", b->n);
+  snprintf(limit, sizeof limit, "%g", max);
+  ScrJsonBuf text;
+  scr_jb_init(&text);
+  scr_jb_puts(&text, "Possible EventEmitter memory leak detected. ");
+  scr_jb_puts(&text, count);
+  scr_jb_putc(&text, ' ');
+  scr_jb_write(&text, b->name->data, b->name->len);
+  scr_jb_puts(&text, " listeners added to [");
+  scr_jb_puts(&text, em->cls);
+  scr_jb_puts(&text, "]. MaxListeners is ");
+  scr_jb_puts(&text, limit);
+  scr_jb_puts(&text, ". Use emitter.setMaxListeners() to increase limit");
+  ScrClosure *tick = scr_closure_new((void *)&scr_ee_warn_tick, 1);
+  ScrBox *box = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(box, scr_jb_finish(&text));
+  tick->caps[0] = box;
+  scr_next_tick(tick);
 }
 
 /* Registers a listener. cb and orig MOVE in; name is borrowed. Returns em
