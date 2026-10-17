@@ -1288,8 +1288,6 @@ static const ScrRgnFiberHooks scr_rgn_fiber_hooks = {
     scr_rgn_fiber_suspend,
 };
 
-_Atomic(const ScrRgnFiberHooks *) scr_region_fiber_hooks = NULL;
-
 /* ── program-facing entry points ─────────────────────────────────────── */
 
 double scr_region_create(const ScrRgnType *types) {
