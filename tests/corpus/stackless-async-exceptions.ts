@@ -80,6 +80,22 @@ async function throwsString(): Promise<void> {
   throw "plain string";
 }
 
+async function syncFail(n: number): Promise<number> {
+  if (n > 0) throw new AppError("sync fail " + n, 4);
+  return -n;
+}
+
+async function inlineAwaits(label: string): Promise<string> {
+  const ok = await syncFail(-3);
+  say(label + " ok " + ok);
+  try {
+    await syncFail(5);
+    return "unreachable";
+  } catch (e) {
+    return label + " " + ok + " " + (e as AppError).code + " " + (e as Error).message;
+  }
+}
+
 async function main(): Promise<void> {
   const p = early(-1);
   say("early returned a promise");
@@ -116,6 +132,10 @@ async function main(): Promise<void> {
   const anyOf: Promise<number>[] = [late(7), late(1)];
   const any = await Promise.any(anyOf);
   say("any " + any);
+  const inlined: Promise<string>[] = [inlineAwaits("i1"), inlineAwaits("i2")];
+  queueMicrotask(() => say("inline microtask"));
+  const results = await Promise.all(inlined);
+  say("inline " + results.join(" | "));
 }
 
 main().then(

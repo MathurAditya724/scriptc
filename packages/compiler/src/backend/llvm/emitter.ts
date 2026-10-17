@@ -142,6 +142,7 @@ import {
   mangleArgPack,
   mangleAsyncAdoptCall,
   mangleAsyncAwaitCall,
+  mangleAsyncInlineAwaitCall,
   mangleAsyncSpawn,
   mangleBorrowedFunction,
   mangleClassObj,
@@ -854,6 +855,12 @@ export class LlEmitter {
   /** Async functions returned directly at some `return f(...)` site of an
    * async function; each gets an adopting entry (emitAsyncAwaitCall). */
   readonly adoptCallees = new Set<string>();
+  /** Fiberless async functions a stackless coroutine body awaits directly;
+   * each gets an inline await entry (emitCoroInlineAwait). */
+  readonly inlineAwaitCallees = new Set<string>();
+  /** The async functions whose bodies never suspend and that a direct
+   * await may enter in place (selectStacklessAsync). */
+  private inlineAwaitable = new Set<string>();
   /** The promise a `return` emitted past its finally regions already
    * produced for its adopting await (borrowed from the return's parked
    * slot); that await takes it instead of evaluating its operand. */
@@ -3729,9 +3736,17 @@ export class LlEmitter {
    * cannot reorder execution undetected: the runtime traps when a context parks while a
    * fiberless body is on its stack. */
   private fiberlessAsyncFunctions(): Set<string> {
-    const eligible = new Set<string>();
     const parks = this.parkingFunctions();
-    if (parks === null) return eligible;
+    const eligible = parks === null ? new Set<string>() : this.neverParkingAsync(parks);
+    for (const name of this.inlineAwaitCallees)
+      if (!eligible.has(name))
+        throw new InternalCompilerError(`llvm emitter bug: inline await of suspending ${name}`);
+    return eligible;
+  }
+
+  /** The async functions `parks` leaves fiberless (fiberlessAsyncFunctions). */
+  private neverParkingAsync(parks: ReadonlySet<string>): Set<string> {
+    const eligible = new Set<string>();
     for (const fn of this.mod.functions) {
       if (fn.async !== true || fn.generator !== undefined) continue;
       if (fn.asyncCacheGlobal !== undefined || fn.asyncCycleCacheGlobal !== undefined) continue;
@@ -3815,6 +3830,9 @@ export class LlEmitter {
     if (!this.stacklessAsyncAllowed) return;
     const parks = this.parkingFunctions();
     if (parks === null) return;
+    // Coroutine bodies emitted below are the only inline-await callers, and
+    // replacing their text changes no other function's parking.
+    this.inlineAwaitable = this.neverParkingAsync(parks);
     const qualifies = (fn: IrFunction, text: string, suspends: RegExp): boolean => {
       if (suspends.test(text)) return false;
       for (const callee of this.mentionedFunctions(text))
@@ -3891,6 +3909,76 @@ export class LlEmitter {
     if (fn === undefined || fn.async !== true || fn.generator !== undefined) return false;
     if (fn.captures !== undefined || fn.returnType.kind === "dyn") return false;
     return fn.asyncCacheGlobal === undefined && fn.asyncCycleCacheGlobal === undefined;
+  }
+
+  /** Whether a stackless coroutine body's `await f(...)` may run f's body in
+   * place (emitCoroInlineAwait): f never suspends, and its direct call is
+   * one an await-call entry could take. */
+  inlineAwaitEligible(fnName: string): boolean {
+    if (this.wasi || this.currentCoro?.kind !== "async") return false;
+    const fn = this.fnByName.get(fnName);
+    if (fn === undefined || !this.inlineAwaitable.has(fnName)) return false;
+    return fn.captures === undefined;
+  }
+
+  /** The inline await entry of a fiberless async function (`sc_ai_*`): its
+   * body on the caller's stack between scr_async_inline_enter/exit, as in
+   * its spawn wrapper, returning the result and leaving a throw pending for
+   * the awaiting coroutine (emitCoroInlineAwait). */
+  private emitAsyncInlineAwaitCall(fn: IrFunction): string[] {
+    const retTy = this.llType(fn.returnType);
+    const params = fn.params.map((p, i) => `${this.llType(p.type)} %a${i}`);
+    const args = params.join(", ");
+    this.declare(`declare void @scr_async_inline_enter(ptr)`);
+    this.declare(`declare void @scr_async_inline_exit(ptr)`);
+    const bodyCall = `call ${retTy} @${mangleFunction(fn.name)}(${args})`;
+    return [
+      `define internal ${retTy} @${mangleAsyncInlineAwaitCall(fn.name)}(${args}) ${FN_ATTRS} { ; inline await ${fn.name}`,
+      `entry:`,
+      `  %frame = alloca { ptr, ptr }`,
+      `  call void @scr_async_inline_enter(ptr %frame)`,
+      retTy === "void" ? `  ${bodyCall}` : `  %r = ${bodyCall}`,
+      `  call void @scr_async_inline_exit(ptr %frame)`,
+      retTy === "void" ? `  ret void` : `  ret ${retTy} %r`,
+      `}`,
+      ``,
+    ];
+  }
+
+  /** A stackless coroutine body's `await f(...)` of a fiberless f, the
+   * await-call entry's turns without its promise: the body runs in place,
+   * then a clean result takes the await's turn, and a throw becomes the
+   * rejected promise the await takes its turn on and re-throws, exactly as
+   * the spawn wrapper's promise would. An adopting await (`return f(...)`)
+   * first takes the adoption's then-job turn either way. */
+  emitCoroInlineAwait(call: ExprOf<"call">, adopt: boolean): LlValue {
+    const B = this.B;
+    const value = emitCallExpr(this, call, "inline");
+    const thrown = B.tmp();
+    for (const line of this.pendingTestLines(thrown)) B.line(line.trim());
+    if (adopt) this.emitCoroAwait(null);
+    const clean = B.newLabel("ai.clean");
+    const rejected = B.newLabel("ai.rejected");
+    const join = B.newLabel("ai.join");
+    B.condBr(thrown, rejected, clean);
+    B.startBlock(clean);
+    this.emitCoroAwait(null);
+    B.br(join);
+    B.startBlock(rejected);
+    this.declare(`declare ptr @scr_promise_new()`);
+    this.declare(`declare void @scr_promise_reject_pending(ptr)`);
+    this.declare(`declare void @scr_coro_await_void(ptr)`);
+    this.declare(`declare void @scr_promise_release(ptr)`);
+    const promise = B.tmp();
+    B.line(`${promise} = call ptr @scr_promise_new()`);
+    B.line(`call void @scr_promise_reject_pending(ptr ${promise})`);
+    this.emitCoroAwait(promise);
+    B.line(`call void @scr_coro_await_void(ptr ${promise})`);
+    B.line(`call void @scr_promise_release(ptr ${promise})`);
+    B.br(join);
+    B.startBlock(join);
+    this.emitPendingCheck();
+    return value;
   }
 
   /** The await-call entry of an async function (`sc_aw_*`): one direct
@@ -4071,6 +4159,9 @@ export class LlEmitter {
       }
       if (fiberless.has(fn.name) && this.adoptCallees.has(fn.name)) {
         for (const line of this.emitAsyncAwaitCall(fn, null, true)) out.push(line);
+      }
+      if (this.inlineAwaitCallees.has(fn.name)) {
+        for (const line of this.emitAsyncInlineAwaitCall(fn)) out.push(line);
       }
       if (fiberless.has(fn.name)) {
         const fieldTys = [

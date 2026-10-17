@@ -185,7 +185,14 @@ test("bodies that suspend only at their own awaits compile to stackless coroutin
   expect(middle).toContain("call zeroext i1 @scr_coro_await_prepare(ptr");
   expect(middle).toContain("call double @scr_coro_await_f64(ptr");
   expect(middle).toContain("call ptr @sc_as_slow(double");
-  expect(middle).toContain("call ptr @sc_as_leaf(double");
+  // A callee that never suspends runs in place; the coroutine takes the
+  // await's turn itself and awaits a rejected promise only on a throw.
+  expect(middle).toContain("call double @sc_ai_leaf(double");
+  const inline = definition(llvm, "sc_ai_leaf");
+  expect(inline).toContain("call double @sc_f_leaf(double %a0)");
+  expect(inline).toContain("call void @scr_async_inline_exit(ptr %frame)");
+  expect(middle).toContain("call zeroext i1 @scr_coro_hop_prepare(ptr");
+  expect(middle).toContain("call void @scr_promise_reject_pending(ptr");
   expect(middle).toContain("call void @scr_coro_async_finish(ptr");
   expect(middle).not.toContain("@sc_aw_");
   expect(middle).not.toContain("@scr_await_f64(");

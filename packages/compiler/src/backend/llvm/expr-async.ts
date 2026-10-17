@@ -892,6 +892,17 @@ export function emitAsyncExpr(
       // the callee's adopting entry. Past finally regions, the return has
       // already produced the promise (adoptedOperand).
       const adopted = e.adopt === true ? host.takeAdoptedOperand() : null;
+      // A stackless coroutine body runs a never-suspending callee in place
+      // and takes the await's turn itself.
+      if (adopted === null && e.value.kind === "call" && host.inlineAwaitEligible(e.value.callee)) {
+        const callee = host.fnByName.get(e.value.callee)!;
+        if (
+          typeEquals(callee.returnType, e.type) &&
+          !host.callLifetimes.borrowed.has(e.value.callee)
+        ) {
+          return host.emitCoroInlineAwait(e.value, e.adopt === true);
+        }
+      }
       if (adopted === null && e.value.kind === "call" && host.awaitCallEligible(e.value.callee)) {
         const callee = host.fnByName.get(e.value.callee)!;
         if (

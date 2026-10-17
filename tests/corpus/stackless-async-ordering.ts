@@ -101,6 +101,30 @@ async function consume(limit: number): Promise<number> {
   return sum;
 }
 
+async function syncLeaf(n: number): Promise<number> {
+  say("leaf " + n);
+  return n + 1;
+}
+
+async function syncThrow(n: number): Promise<number> {
+  say("sync throw " + n);
+  throw new Error("sync " + n);
+}
+
+async function relayLeaf(n: number): Promise<number> {
+  return syncLeaf(n);
+}
+
+async function interleave(label: string): Promise<void> {
+  say(label + " a " + (await syncLeaf(1)));
+  try {
+    await syncThrow(2);
+  } catch (e) {
+    say(label + " caught " + (e as Error).message);
+  }
+  say(label + " relay " + (await relayLeaf(3)));
+}
+
 async function main(): Promise<void> {
   say("main start");
   const a = plain("a");
@@ -142,6 +166,11 @@ async function main(): Promise<void> {
   const bumps: Promise<void>[] = [bump(1), bump(10), bump(100)];
   await Promise.all(bumps);
   say("closures " + captured.join(" ") + " shared " + shared);
+  const inline: Promise<void>[] = [interleave("x"), interleave("y")];
+  queueMicrotask(() => say("inline microtask"));
+  Promise.resolve().then(() => say("inline then"));
+  await Promise.all(inline);
+  say("inline done");
 }
 
 main().then(() => {
