@@ -32,7 +32,7 @@ import { isSafeToRepeat } from "./evaluation-safety.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceSymbolFieldCopy } from "../symbol-fields.js";
 import { planUnionRetag } from "../union-retag.js";
-import { runtimeOptionalStorageOperand } from "../lower-exprs.js";
+import { jsHoldsDynObject, runtimeOptionalStorageOperand } from "../lower-exprs.js";
 
 /** `{ a: 1, b: "x" }` → recordLit. The record type comes from the
  * contextual type when tsc has one (annotated declarations, arguments,
@@ -732,6 +732,10 @@ export function lowerObjectLiteral(
           ? prop.name
           : null;
       while (value && ts.isParenthesizedExpression(value)) value = value.expression;
+      // A nested literal holding such a binding: building it as a static
+      // record would copy the binding's object.
+      if (value && (ts.isArrayLiteralExpression(value) || ts.isObjectLiteralExpression(value)))
+        return jsHoldsDynObject(lowerer, value);
       if (!value || !ts.isIdentifier(value)) return false;
       const stored = lowerer.peekLocal(value)?.type ?? lowerer.globalOf(value)?.type;
       const inferred = lowerer.mapTypeOf(lowerer.typeOf(value));

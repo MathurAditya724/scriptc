@@ -299,7 +299,7 @@ declare var process: {
   stdout: import("tty").WriteStream;
   stderr: import("tty").WriteStream;
   /* The stdin stream, the piped-input slice: the TTY probe, the
-   * data/end/error events (on and once — a 'data' listener keeps the
+   * data/end/error events and readline's 'keypress' (on and once — a 'data' listener keeps the
    * event loop alive until EOF, like Node's flowing stdin), destroy()
    * (full teardown: nothing fires after, the loop stops waiting), and
    * async iteration (`for await (const chunk of process.stdin)` — chunks
@@ -310,9 +310,18 @@ declare var process: {
     on(event: "data", listener: (chunk: Uint8Array) => void): void;
     on(event: "end", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
+    /* readline.emitKeypressEvents(process.stdin)'s keys */
+    on(
+      event: "keypress",
+      listener: (str: string | undefined, key: import("readline").Key) => void,
+    ): void;
     once(event: "data", listener: (chunk: Uint8Array) => void): void;
     once(event: "end", listener: () => void): void;
     once(event: "error", listener: (err: Error) => void): void;
+    once(
+      event: "keypress",
+      listener: (str: string | undefined, key: import("readline").Key) => void,
+    ): void;
     destroy(): void;
     setEncoding(encoding: "utf8"): void;
     /* Termios raw mode on a TTY stdin (libuv's UV_TTY_MODE_RAW, the mode
@@ -3642,15 +3651,25 @@ declare module "node:querystring" {
  * on("close", cb). An open interface keeps the process alive until
  * close()/EOF, Node's semantics; lines split on \n and \r\n. */
 declare module "readline" {
-  /* The non-terminal Interface over process.stdin or a stream input
-   * (scr_readline.c). Listener registrations are statements: chaining
-   * on()/once() results has no lowering. */
+  /* The Interface over process.stdin or a stream input (scr_readline.c;
+   * terminal mode in scr_readline_tty.c). Listener registrations are
+   * statements: chaining on()/once() results has no lowering. */
+  export interface Key {
+    sequence?: string;
+    name?: string;
+    ctrl?: boolean;
+    meta?: boolean;
+    shift?: boolean;
+  }
   export interface Interface extends Disposable {
-    /* The non-terminal members: terminal is false and line ''; history
-     * is the history option itself (or the interface's own empty array),
-     * never recorded without a terminal. */
+    /* terminal says whether the interface edits lines as a terminal;
+     * line and cursor are the terminal's (line is '' otherwise). history
+     * is the history option itself (or the interface's own empty array);
+     * a terminal records the lines it reads. */
     readonly terminal: boolean;
     readonly line: string;
+    readonly cursor: number;
+    getCursorPos(): CursorPos;
     history: string[];
     readonly historySize: number;
     readonly historyIndex: number;
@@ -3664,17 +3683,26 @@ declare module "readline" {
     prompt(preserveCursor?: boolean): void;
     setPrompt(prompt: string): void;
     getPrompt(): string;
-    write(data: string): void;
+    write(data: string | null | undefined, key?: Key): void;
     on(event: "line", listener: (input: string) => void): this;
-    on(event: "close" | "pause" | "resume", listener: () => void): this;
+    on(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
     on(event: "error", listener: (err: Error) => void): this;
     on(event: "history", listener: (history: string[]) => void): this;
     once(event: "line", listener: (input: string) => void): this;
-    once(event: "close" | "pause" | "resume", listener: () => void): this;
+    once(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
     once(event: "error", listener: (err: Error) => void): this;
     once(event: "history", listener: (history: string[]) => void): this;
     addListener(event: "line", listener: (input: string) => void): this;
-    addListener(event: "close" | "pause" | "resume", listener: () => void): this;
+    addListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
     addListener(event: "error", listener: (err: Error) => void): this;
     addListener(event: "history", listener: (history: string[]) => void): this;
     [Symbol.asyncIterator](): AsyncIterableIterator<string>;
@@ -3686,7 +3714,7 @@ declare module "readline" {
     terminal?: boolean;
     /* Node's crlfDelay: a \n arriving within this many ms (at least 100)
      * after a line ended by \r is dropped. completer and the history
-     * options are validated and kept; without a terminal neither is used.
+     * options are validated and kept; a terminal interface uses them.
      * The options-record
      * stance (see http.RequestOptions) admits every key; the walk
      * decides. */
@@ -3701,22 +3729,62 @@ declare module "readline" {
     [option: string]: unknown;
   }
   export function createInterface(options: ReadLineOptions): Interface;
-  export function createInterface(input: unknown, output?: unknown): Interface;
+  export function createInterface(
+    input: unknown,
+    output?: unknown,
+    completer?: unknown,
+    terminal?: boolean,
+  ): Interface;
+  export interface CursorPos {
+    rows: number;
+    cols: number;
+  }
+  /* The escape-sequence helpers over process.stdout, process.stderr, a
+   * writable stream, or null/undefined (nothing is written). */
+  export function cursorTo(stream: unknown, x: number, y?: number, callback?: () => void): boolean;
+  export function cursorTo(stream: unknown, x: number, callback: () => void): boolean;
+  export function moveCursor(
+    stream: unknown,
+    dx: number,
+    dy: number,
+    callback?: () => void,
+  ): boolean;
+  export function clearLine(stream: unknown, dir: -1 | 0 | 1, callback?: () => void): boolean;
+  export function clearScreenDown(stream: unknown, callback?: () => void): boolean;
+  /* 'keypress' events (str, key) on process.stdin or a readable stream */
+  export function emitKeypressEvents(stream: unknown, readlineInterface?: unknown): void;
+  /* the same object as node:readline/promises */
+  export const promises: typeof import("node:readline/promises");
 }
 declare module "node:readline" {
   export * from "readline";
 }
 declare module "readline/promises" {
-  import { ReadLineOptions } from "readline";
+  import { CursorPos, Key, ReadLineOptions } from "readline";
+  /* The escape-sequence builder over process.stdout, process.stderr or a
+   * writable stream: actions queue until commit(), or are written on the
+   * next tick with autoCommit. */
+  export class Readline {
+    constructor(stream: unknown, options?: { autoCommit?: boolean });
+    clearLine(dir: -1 | 0 | 1): this;
+    clearScreenDown(): this;
+    commit(): Promise<void>;
+    cursorTo(x: number, y?: number): this;
+    moveCursor(dx: number, dy: number): this;
+    rollback(): this;
+  }
   /* The readline Interface with the promise question: it resolves with
    * the next line, rejects with an AbortError when options.signal aborts,
    * and with ERR_USE_AFTER_CLOSE after close(). */
   export interface Interface extends Disposable {
-    /* The non-terminal members: terminal is false and line ''; history
-     * is the history option itself (or the interface's own empty array),
-     * never recorded without a terminal. */
+    /* terminal says whether the interface edits lines as a terminal;
+     * line and cursor are the terminal's (line is '' otherwise). history
+     * is the history option itself (or the interface's own empty array);
+     * a terminal records the lines it reads. */
     readonly terminal: boolean;
     readonly line: string;
+    readonly cursor: number;
+    getCursorPos(): CursorPos;
     history: string[];
     readonly historySize: number;
     readonly historyIndex: number;
@@ -3730,24 +3798,38 @@ declare module "readline/promises" {
     prompt(preserveCursor?: boolean): void;
     setPrompt(prompt: string): void;
     getPrompt(): string;
-    write(data: string): void;
+    write(data: string | null | undefined, key?: Key): void;
     on(event: "line", listener: (input: string) => void): this;
-    on(event: "close" | "pause" | "resume", listener: () => void): this;
+    on(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
     on(event: "error", listener: (err: Error) => void): this;
     on(event: "history", listener: (history: string[]) => void): this;
     once(event: "line", listener: (input: string) => void): this;
-    once(event: "close" | "pause" | "resume", listener: () => void): this;
+    once(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
     once(event: "error", listener: (err: Error) => void): this;
     once(event: "history", listener: (history: string[]) => void): this;
     addListener(event: "line", listener: (input: string) => void): this;
-    addListener(event: "close" | "pause" | "resume", listener: () => void): this;
+    addListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
     addListener(event: "error", listener: (err: Error) => void): this;
     addListener(event: "history", listener: (history: string[]) => void): this;
     [Symbol.asyncIterator](): AsyncIterableIterator<string>;
     [Symbol.dispose](): void;
   }
   export function createInterface(options: ReadLineOptions): Interface;
-  export function createInterface(input: unknown, output?: unknown): Interface;
+  export function createInterface(
+    input: unknown,
+    output?: unknown,
+    completer?: unknown,
+    terminal?: boolean,
+  ): Interface;
 }
 declare module "node:readline/promises" {
   export * from "readline/promises";
@@ -4314,7 +4396,7 @@ declare module "net" {
     /* http.createServer(handler)'s event twin (a no-parser net server
      * never fires it, like Node). */
     on(
-      event: "request",
+      event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
@@ -4328,7 +4410,7 @@ declare module "net" {
       listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
     ): void;
     addListener(
-      event: "request",
+      event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
     once(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
@@ -4341,7 +4423,7 @@ declare module "net" {
       listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
     ): void;
     once(
-      event: "request",
+      event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
   }
@@ -4355,6 +4437,48 @@ declare module "net" {
     remoteFamily?: string;
   }
   export type AddressInfo = import("node:dgram").AddressInfo;
+  export type IPVersion = "ipv4" | "ipv6";
+  export interface SocketAddressInitOptions {
+    address?: string;
+    family?: IPVersion;
+    flowlabel?: number;
+    port?: number;
+  }
+  /* A native handle (scr_net.c); the getters read its parsed address. */
+  export class SocketAddress {
+    constructor(options?: SocketAddressInitOptions);
+    readonly address: string;
+    readonly family: IPVersion;
+    readonly port: number;
+    readonly flowlabel: number;
+    toJSON(): { address: string; port: number; family: IPVersion; flowlabel: number };
+    /* undefined when the input is not "<ip>[:<port>]" */
+    static parse(input: string): SocketAddress | undefined;
+    static isSocketAddress(value: unknown): value is SocketAddress;
+  }
+  /* Address, range and subnet rules; check() matches IPv4 addresses
+   * against IPv6 rules through their IPv4-mapped form, as Node does. */
+  export class BlockList {
+    constructor();
+    readonly rules: readonly string[];
+    readonly size: number;
+    addAddress(address: string | SocketAddress, type?: IPVersion): void;
+    addAddresses(addresses: readonly (string | SocketAddress)[], type?: IPVersion): void;
+    addRange(start: string | SocketAddress, end: string | SocketAddress, type?: IPVersion): void;
+    addSubnet(net: string | SocketAddress, prefix: number, type?: IPVersion): void;
+    addCIDR(cidr: string): void;
+    addCIDRs(cidrs: readonly string[]): void;
+    removeAddress(address: string | SocketAddress, type?: IPVersion): void;
+    removeRange(start: string | SocketAddress, end: string | SocketAddress, type?: IPVersion): void;
+    removeSubnet(net: string | SocketAddress, prefix: number, type?: IPVersion): void;
+    removeCIDR(cidr: string): void;
+    clear(): void;
+    check(address: string | SocketAddress, type?: IPVersion): boolean;
+    toJSON(): string[];
+    fromJSON(data: string | readonly string[]): void;
+    static isBlockList(value: unknown): value is BlockList;
+    static readonly PRIVATE_RANGES: readonly string[];
+  }
   /* Node's IPv4Reg and IPv6Reg tests: 4, 6, or 0 for isIP. */
   export function isIP(input: string): number;
   export function isIPv4(input: string): boolean;
@@ -4462,6 +4586,7 @@ declare module "http" {
     requireHostHeader?: boolean;
     joinDuplicateHeaders?: boolean;
     keepAliveTimeoutBuffer?: number;
+    maxHeaderSize?: number;
     [option: string]: unknown;
   }
   /* The outgoing-header shape, @types/node's matrix: numbers format via
@@ -4581,6 +4706,8 @@ declare module "http" {
      * Agent VALUE threads through (getName-keyed maxSockets accounting
      * over one-dial-per-request connections). */
     agent?: Agent | boolean | null;
+    /* Aborting destroys the request with an AbortError. */
+    signal?: AbortSignal;
     /* The options-record stance: Node ignores an options record's
      * unknown keys, so every key typechecks here — the option WALK in
      * the lowering decides per key (lower, fence by name, or drop
@@ -4662,7 +4789,7 @@ declare module "http" {
     setTimeout(timeout: number, callback?: () => void): this;
     write(data: string | Uint8Array): void;
     end(data?: string | Uint8Array): void;
-    destroy(): void;
+    destroy(error?: Error): void;
     abort(): void;
     on(event: "response", listener: (res: IncomingMessage) => void): void;
     on(event: "socket", listener: (socket: Socket) => void): void;
@@ -4670,7 +4797,7 @@ declare module "http" {
       event: "upgrade",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
     ): void;
-    on(event: "timeout" | "close" | "finish" | "abort", listener: () => void): void;
+    on(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
     addListener(event: "response", listener: (res: IncomingMessage) => void): void;
@@ -4687,7 +4814,7 @@ declare module "http" {
       event: "upgrade",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
     ): void;
-    once(event: "timeout" | "close" | "finish" | "abort", listener: () => void): void;
+    once(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): void;
     once(event: "error", listener: (err: Error) => void): void;
   }
   export function createServer(
@@ -4850,6 +4977,8 @@ declare module "https" {
     rejectUnauthorized?: boolean;
     ca?: string | Uint8Array;
     agent?: Agent | boolean | null;
+    /* Aborting destroys the request with an AbortError. */
+    signal?: AbortSignal;
     /* The options-record stance (see http.RequestOptions). */
     [option: string]: unknown;
   }

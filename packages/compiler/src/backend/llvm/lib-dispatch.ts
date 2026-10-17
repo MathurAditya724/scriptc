@@ -12,6 +12,7 @@ import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
 import { ASSERT_VERDICT_LIB_FNS, LIB_FN_SYMS, USES_TIMERS_LIB_FNS } from "./lib-shared.js";
+import { isDynUndefined } from "../../ir/runtime-features.js";
 import { DYN_KIND } from "./dyn.js";
 import { rawBytes } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
@@ -118,10 +119,35 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
     );
     return host.own({ name: t, type: e.type });
   }
+  if (e.fn === "rl.keypressStdin") {
+    // emitKeypressEvents(process.stdin): no stream side
+    host.usesTimers = true;
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.declare(`declare void @scr_rl_keypress_events(ptr, ptr, double, double)`);
+    B.line(
+      `call void @scr_rl_keypress_events(ptr null, ptr null, double ${args[0]!.name}, double ${args[1]!.name})`,
+    );
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "rl.terminal") {
+    // A completer's errors print through the inspect unit, which links
+    // only when there is a completer: its inspect function rides along.
+    const args = e.args.map((a) => host.emitExpr(a));
+    let inspect = "null";
+    if (!isDynUndefined(e.args[3]!)) {
+      host.declare(`declare ptr @scr_insp_dyn(ptr, double, double)`);
+      inspect = "@scr_insp_dyn";
+    }
+    host.declare(`declare void @scr_rl_terminal(double, double, i1 zeroext, ptr, i1 zeroext, ptr)`);
+    B.line(
+      `call void @scr_rl_terminal(double ${args[0]!.name}, double ${args[1]!.name}, i1 zeroext ${args[2]!.name}, ptr ${args[3]!.name}, i1 zeroext ${args[4]!.name}, ptr ${inspect})`,
+    );
+    return { name: "", type: e.type };
+  }
   if (e.fn === "rl.on") {
     // The listener MOVES into the interface's registry; the adapter is
     // picked by event and parameter count ('line': the text, 'error': the
-    // error, the rest none).
+    // error, 'history': the history array, the rest none).
     host.usesTimers = true;
     const cbT = e.args[2]!.type;
     const evArg = e.args[1]!;
@@ -141,6 +167,11 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
       const name = evArg.value === 0 ? `scr_rl_answer_thunk${kind}` : `scr_rl_error_thunk${kind}`;
       host.declare(`declare void @${name}(ptr, ptr)`);
       adapter = `@${name}`;
+    } else if (evArg.value === 5 && cbT.params.length === 1) {
+      const name =
+        cbT.params[0]!.kind === "dyn" ? "scr_rl_history_thunk_dyn" : "scr_rl_history_thunk_arr";
+      host.declare(`declare void @${name}(ptr, ptr)`);
+      adapter = `@${name}`;
     }
     host.declare(`declare void @scr_rl_on(double, double, ptr, ptr, i1)`);
     B.line(
@@ -153,8 +184,8 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
 
 export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
-  if (host.wasi && e.fn === "async.hop") {
-    host.emitWasiSuspend(null);
+  if (host.coroAwait && e.fn === "async.hop") {
+    host.emitCoroAwait(null);
     return { name: "", type: e.type };
   }
   if (host.wasi && e.fn === "async.awaitDyn") {

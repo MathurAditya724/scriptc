@@ -1115,8 +1115,82 @@ ScrDyn *scr_promise_reason_dyn(const ScrPromise *p) {
 
 SCR_TL extern bool (*scr_dyn_promise_identity_fn)(ScrPromise *, ScrPromise *);
 
+/* Promise.prototype.then, catch and finally as function values: one FUNC
+ * box per method and thread. A call reads its receiver from the ambient
+ * binding (`p.then.call(p, f)`, or the method read off the promise and
+ * called on it); a receiver that is not a promise throws Node's
+ * incompatible-receiver TypeError. */
+static const char *const scr_dyn_promise_method_names[3] = {"then", "catch", "finally"};
+static SCR_TL ScrDyn *scr_dyn_promise_methods[3];
+
+static void scr_dyn_promise_methods_cleanup(void) {
+  for (size_t i = 0; i < 3; i++) {
+    if (scr_dyn_promise_methods[i]) scr_dyn_release(scr_dyn_promise_methods[i]);
+    scr_dyn_promise_methods[i] = NULL;
+  }
+}
+
+static void scr_dyn_throw_incompatible_receiver(const char *method, const ScrDyn *self) {
+  char shown[64];
+  const char *text = "#<Object>";
+  if (scr_dyn_is_nullish(self)) {
+    text = self->kind == SCR_DYN_NULL ? "null" : "undefined";
+  } else if (self->kind == SCR_DYN_BOOL) {
+    text = self->v.b ? "true" : "false";
+  } else if (self->kind == SCR_DYN_STR) {
+    snprintf(shown, sizeof shown, "%.*s", (int)(self->v.str->len < 48 ? self->v.str->len : 48), self->v.str->data);
+    text = shown;
+  } else if (self->kind == SCR_DYN_NUM) {
+    ScrStr *s = scr_f64_to_scrstr(self->v.num);
+    snprintf(shown, sizeof shown, "%.*s", (int)s->len, s->data);
+    scr_str_release(s);
+    text = shown;
+  }
+  char message[160];
+  int len = snprintf(message, sizeof message,
+                     "Method Promise.prototype.%s called on incompatible receiver %s", method, text);
+  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)len);
+}
+
+static ScrDyn *scr_dyn_promise_method_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  size_t which = (size_t)scr_box_get_f64(closure->caps[0]);
+  ScrDyn *self = scr_dyn_this_get();
+  ScrPromise *promise = scr_dyn_promise_of(self);
+  if (!promise) {
+    scr_dyn_throw_incompatible_receiver(scr_dyn_promise_method_names[which], self);
+    scr_dyn_release(self);
+    return NULL;
+  }
+  ScrDyn *first = argc >= 1 ? args[0] : NULL;
+  ScrDyn *result = which == 0   ? scr_dyn_promise_then(promise, first, argc >= 2 ? args[1] : NULL, NULL)
+                   : which == 1 ? scr_dyn_promise_then(promise, NULL, first, NULL)
+                                : scr_dyn_promise_then(promise, NULL, NULL, first);
+  scr_dyn_release(self);
+  return result;
+}
+
+static ScrDyn *scr_dyn_promise_member(const char *key, size_t len) {
+  for (size_t i = 0; i < 3; i++) {
+    const char *name = scr_dyn_promise_method_names[i];
+    if (strlen(name) != len || memcmp(name, key, len) != 0) continue;
+    if (!scr_dyn_promise_methods[i]) {
+      if (!scr_dyn_promise_methods[0] && !scr_dyn_promise_methods[1] &&
+          !scr_dyn_promise_methods[2])
+        scr_atexit(scr_dyn_promise_methods_cleanup);
+      ScrClosure *closure = scr_closure_new(NULL, 1);
+      closure->caps[0] = scr_box_new(SCR_BOX_F64);
+      scr_box_set_f64(closure->caps[0], (double)i);
+      scr_dyn_promise_methods[i] =
+          scr_dyn_new_func(closure, scr_dyn_promise_method_call, i == 0 ? 2 : 1, "", name);
+    }
+    return scr_dyn_retain(scr_dyn_promise_methods[i]);
+  }
+  return NULL;
+}
+
 ScrDyn *scr_dyn_new_promise(ScrPromise *p) {
   scr_dyn_promise_identity_fn = scr_promise_identity_equal;
+  scr_dyn_promise_member_fn = scr_dyn_promise_member;
   ScrDyn *d = scr_dyn_alloc_promise(scr_promise_release);
   d->v.promise = scr_promise_retain(p);
   return d;
@@ -1133,6 +1207,7 @@ ScrDyn *scr_dyn_new_promise_adapting(ScrPromise *src,
   ScrPromise *dst = scr_promise_new();
   scr_promise_share_identity(dst, src);
   scr_dyn_promise_identity_fn = scr_promise_identity_equal;
+  scr_dyn_promise_member_fn = scr_dyn_promise_member;
   scr_promise_race_add(dst, src, adapt);
   ScrDyn *d = scr_dyn_alloc_promise(scr_promise_release);
   d->v.promise = dst; /* the constructor's +1 moves in */

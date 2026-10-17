@@ -410,6 +410,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stdin.onData": { argTypes: [null, BOOL], result: VOID },
   "stdin.onEnd": { argTypes: [{ kind: "func", params: [], ret: VOID }, BOOL], result: VOID },
   "stdin.onError": { argTypes: [null, BOOL], result: VOID },
+  /** process.stdin.on/once('keypress', cb) (scr_readline_tty.c): cb is the
+   * listener as a checked-dynamic function, called with (str, key). */
+  "stdin.onKeypress": { argTypes: [DYN, BOOL], result: VOID },
   /** The for-await chunk source over process.stdin: no args, result
    * Promise<Uint8Array> (+1). Fulfills with the next arrived chunk; the
    * EMPTY bytes value is the done sentinel (POSIX reads never deliver
@@ -1738,6 +1741,24 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * accounting is real: over-limit requests defer their dial and queue.
    * MAY THROW. */
   "http.agentNew": { argTypes: [BOOL, BOOL, F64, F64, F64, F64, F64], result: DYN },
+  /** http.request's `signal` option over the fresh request: an aborted
+   * signal destroys it with Node's AbortError now, a later abort event
+   * does the same. A falsy value is ignored; a non-signal throws
+   * ERR_INVALID_ARG_TYPE. */
+  "http.clientSignal": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
+  /** https.request's servername option: the TLS name sent and verified.
+   * The "https." prefix keeps the TLS unit linked. */
+  "https.clientServername": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
+  /** The maxHeaderSize option of createServer / http.request: Node's
+   * validateInteger (ERR_OUT_OF_RANGE) then the header size bound.
+   * MAY THROW. */
+  "http.serverMaxHeaderSize": { argTypes: [NETSERVER_T, F64], result: VOID },
+  "http.clientMaxHeaderSize": { argTypes: [HTTPCLIENTREQ_T, F64], result: VOID },
+  /** req.destroy(err): err becomes the request's 'error'. */
+  "http.clientDestroyError": {
+    argTypes: [HTTPCLIENTREQ_T, { kind: "object", className: "%Error" }],
+    result: VOID,
+  },
   /** The agent-threaded request rows: the http.request/https.request
    * shape with a trailing `agent` dyn argument (an Agent handle, false —
    * the one-shot Connection: close dial — or null/undefined for the
@@ -1819,6 +1840,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "net.serverMaxConnectionsSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
   "net.serverDropMaxConnectionGet": { argTypes: [NETSERVER_T], result: DYN },
   "net.serverDropMaxConnectionSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
+  /** net.SocketAddress and net.BlockList (scr_net.c): the constructors
+   * take the argument array; the handles are dyn values. */
+  "net.socketAddressNew": { argTypes: [DYN], result: DYN },
+  "net.socketAddressParse": { argTypes: [DYN], result: DYN },
+  "net.isSocketAddress": { argTypes: [DYN], result: BOOL },
+  "net.blockListNew": { argTypes: [DYN], result: DYN },
+  "net.isBlockList": { argTypes: [DYN], result: BOOL },
+  "net.blockListPrivateRanges": { argTypes: [], result: DYN },
   "net.serverOnDrop": { argTypes: [NETSERVER_T, DYN, BOOL], result: VOID },
   "net.serverGetConnections": { argTypes: [NETSERVER_T, DYN], result: VOID },
   "net.sockReadable": { argTypes: [NETSOCKET_T], result: BOOL },
@@ -1972,6 +2001,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * h2-only split). args are (cert, key) — PEM strings or Buffers. */
   "http2.createSecureServerH2": { argTypes: [null, null, BOOL], result: NETSERVER_T },
   "http.serverOnRequest": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
+  /** server.on('checkContinue' | 'checkExpectation', (req, res)): the
+   * 'request' listener shape; the last argument picks checkExpectation. */
+  "http.serverOnCheck": { argTypes: [NETSERVER_T, null, BOOL, BOOL], result: VOID },
   "http2.serverOnSessionError": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
   /** The guarded absent-session compatibility call remains a no-op. */
   "http2.streamNoop": { argTypes: [], result: VOID },
@@ -2182,6 +2214,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     result: VOID,
   },
   "http.clientOnAbort": {
+    argTypes: [HTTPCLIENTREQ_T, { kind: "func", params: [], ret: VOID }, BOOL],
+    result: VOID,
+  },
+  "http.clientOnContinue": {
     argTypes: [HTTPCLIENTREQ_T, { kind: "func", params: [], ret: VOID }, BOOL],
     result: VOID,
   },
@@ -3803,9 +3839,17 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "rl.pause": { argTypes: [F64], result: VOID },
   "rl.resume": { argTypes: [F64], result: VOID },
   "rl.prompt": { argTypes: [F64], result: VOID },
+  /** prompt(preserveCursor): [handle, preserveCursor] */
+  "rl.promptWith": { argTypes: [F64, BOOL], result: VOID },
   "rl.setPrompt": { argTypes: [F64, STRING], result: VOID },
   "rl.getPrompt": { argTypes: [F64], result: STRING },
   "rl.write": { argTypes: [F64, STRING], result: VOID },
+  /** write(data, key): [handle, hasData, data, hasKey, hasName, name,
+   * ctrl, meta, shift] */
+  "rl.writeKey": {
+    argTypes: [F64, BOOL, STRING, BOOL, BOOL, STRING, BOOL, BOOL, BOOL],
+    result: VOID,
+  },
   "rl.on": { argTypes: [F64, F64, null, BOOL], result: VOID },
   "rl.iterOpen": { argTypes: [F64], result: VOID },
   "rl.iterNext": { argTypes: [F64], result: { kind: "promise", inner: DYN } },
@@ -3822,6 +3866,42 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "rl.setHistory": { argTypes: [F64, arrayOf(STRING)], result: VOID },
   "rl.history": { argTypes: [F64], result: arrayOf(STRING) },
   "rl.numProp": { argTypes: [F64, F64], result: F64 },
+  /** Terminal mode (scr_readline_tty.c): rl.terminal: [handle, mode (0
+   * the option's value, 2 output.isTTY of process.stdout), terminal,
+   * completer (undefined when absent), readline/promises], emitted with
+   * scr_insp_dyn when there is a completer; the line, terminal and cursor
+   * members. */
+  "rl.terminal": { argTypes: [F64, F64, BOOL, DYN, BOOL], result: VOID },
+  "rl.line": { argTypes: [F64], result: STRING },
+  "rl.isTerminal": { argTypes: [F64], result: BOOL },
+  "rl.cursor": { argTypes: [F64], result: F64 },
+  /** readline.cursorTo / moveCursor / clearLine / clearScreenDown: rl.seq
+   * [kind (0-3), the first and second numbers, whether the second is
+   * given] answers the data to write after the argument checks (may
+   * throw); rl.moves [dx, dy] says whether moveCursor writes. */
+  "rl.seq": { argTypes: [F64, F64, F64, BOOL], result: STRING },
+  "rl.moves": { argTypes: [F64, F64], result: BOOL },
+  /** getCursorPos() (scr_readline_tty.c, linked through the regex unit
+   * like rl.terminal): [handle, 0 rows | 1 cols] */
+  "rl.cursorPos": { argTypes: [F64, F64], result: F64 },
+  /** readline.emitKeypressEvents (scr_readline_tty.c): rl.keypressStdin
+   * [interface (0: none), escapeCodeTimeout (NaN: the interface's or
+   * 500)], rl.keypressStream [stream, interface, timeout]. */
+  "rl.keypressStdin": { argTypes: [F64, F64], result: VOID },
+  "rl.keypressStream": { argTypes: [null, F64, F64], result: VOID },
+  /** readline/promises Readline over an f64 handle: rl.uiOpen [fd (1
+   * stdout, 2 stderr), autoCommit], rl.uiOpenStream [stream, autoCommit]
+   * (isWritable, may throw); the actions take [handle, ...numbers] (the
+   * checks may throw; cursorTo: [handle, x, whether y is given, y]);
+   * rl.uiCommit answers a promise<void>. */
+  "rl.uiOpen": { argTypes: [F64, BOOL], result: F64 },
+  "rl.uiOpenStream": { argTypes: [null, BOOL], result: F64 },
+  "rl.uiCursorTo": { argTypes: [F64, F64, BOOL, F64], result: VOID },
+  "rl.uiMoveCursor": { argTypes: [F64, F64, F64], result: VOID },
+  "rl.uiClearLine": { argTypes: [F64, F64], result: VOID },
+  "rl.uiClearScreenDown": { argTypes: [F64], result: VOID },
+  "rl.uiRollback": { argTypes: [F64], result: VOID },
+  "rl.uiCommit": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
   /** node:timers/promises — the promisified pair (scr_async.c, beside
    * the timer heap they ride): tp.setTimeout: [ms] → a pending void
    * promise a one-shot heap timer fulfills (the loop's timer phase, FIFO

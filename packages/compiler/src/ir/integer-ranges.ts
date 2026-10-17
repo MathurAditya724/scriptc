@@ -5,6 +5,7 @@ import {
   boundedIntegerLoopFacts,
   guardedLoopCounterFacts,
   integerPathFallsThrough,
+  STRING_MAX_UNITS,
 } from "./integer-loop-facts.js";
 
 /** Exactly representable integers, excluding negative zero. Facts describe
@@ -20,10 +21,6 @@ const UNSIGNED: IntegerRange = { min: 0, max: 4294967295 };
  * non-negative dividends) can close a loop-carried local. */
 const NON_NEGATIVE: IntegerRange = { min: 0, max: 2147483647 };
 const EXACT_LIMIT = 2 ** 53;
-/** The most UTF-16 code units a runtime string holds: SCR_STR_MAX_CAP
- * (scr_runtime.h) caps a string's UTF-8 bytes, and a UTF-16 length never
- * exceeds the UTF-8 byte length. */
-const STRING_MAX_UNITS = 0x7fffffff;
 type Facts = Map<string, IntegerRange>;
 
 function union(left: IntegerRange, right: IntegerRange): IntegerRange {
@@ -213,6 +210,9 @@ export interface IntegerSlotFacts {
   /** Locals and globals an Int32 contract covers (ir/contract-check.ts):
    * every write anywhere is proven int32, so every read is one. */
   locals?: (localId: string) => IntegerRange | null;
+  /** Number arrays whose every present element is an int32 (Int32[]
+   * contracts): an element read that found a value reads an int32. */
+  elements?: (arr: IrExpr) => boolean;
 }
 
 /** Structured local dataflow. Calls cannot write uncaptured local slots,
@@ -251,7 +251,9 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
         ? (slots.field?.(e.className, e.field) ?? null)
         : e.kind === "call"
           ? (slots.call?.(e.callee) ?? null)
-          : null;
+          : e.kind === "arrayGet" && slots.elements?.(e.arr) === true
+            ? INT32_RANGE
+            : null;
 
   /** Every write of a local in the given nodes: the written value, or null
    * for writes whose value is not an ordinary expression (++/--, for-of

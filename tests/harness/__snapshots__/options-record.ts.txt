@@ -32,7 +32,7 @@ options-record.ts:23:22 - error SC2020: 'get option 'socketPath'' is part of the
      |                      ^~~~~~~~~~~~~~~~~~~~~~~~~
   24 | http.get({ port: 80, localAddress: "127.0.0.1" }, () => {});
 
-  hint: hostname/host, port, path, method, timeout, headers, and agent are the supported options
+  hint: hostname/host, port, path, method, timeout, headers, agent, signal, and maxHeaderSize are the supported options
 
 options-record.ts:24:22 - error SC2020: 'get option 'localAddress'' is part of the standard library types but has no scriptc lowering yet
 
@@ -41,7 +41,7 @@ options-record.ts:24:22 - error SC2020: 'get option 'localAddress'' is part of t
      |                      ^~~~~~~~~~~~~~~~~~~~~~~~~
   25 | 
 
-  hint: hostname/host, port, path, method, timeout, headers, and agent are the supported options
+  hint: hostname/host, port, path, method, timeout, headers, agent, signal, and maxHeaderSize are the supported options
 
 options-record.ts:32:22 - error SC2020: 'the undocumented get option 'zorp' with an effectful value' is part of the standard library types but has no scriptc lowering yet
 

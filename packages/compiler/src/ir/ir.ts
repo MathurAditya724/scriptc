@@ -977,6 +977,14 @@ export interface IrContracts {
   /** Int32 locals (`${function}\0${localId}`, including every capture of a
    * captured binding) and module globals (`\0${globalId}`). */
   int32Locals?: string[];
+  /** Number-array slots whose arrays hold only int32 elements (Int32[]):
+   * every element store into any array that can reach them was proven an
+   * int32, so a present element read through them is an int32 (holes and
+   * missing indices still read as undefined). Keys: `l:${function}\0${localId}`
+   * (locals and parameters), `g:${globalId}`, `f:${field family}`,
+   * `s:${shapeId}\0${field}` (record fields) and `r:${function}` (results);
+   * see int32-slots.ts int32ElementSlot. */
+  int32Elements?: string[];
   /** Functions that cannot throw (NoThrow). */
   noThrow?: string[];
   /** Acyclic classes and object types, as cycle-analysis units

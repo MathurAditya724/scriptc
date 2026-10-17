@@ -166,6 +166,9 @@ long scr_http2_live_count(void);
 ScrNetServer *scr_https_create_server(const char *cert, size_t cert_len, const char *key, size_t key_len, ScrClosure *handler /*moves*/, ScrHttpReqFn fn); /* +1 */
 /* The runtime-options-record twin (the tls block's divergence-66 walk). */
 ScrNetServer *scr_https_create_server_dyn(const struct ScrDyn *opts /*borrowed*/, ScrClosure *handler /*moves, nullable*/, ScrHttpReqFn fn); /* +1 or NULL+pending */
+/* https.request's servername option (borrowed), applied before the
+ * handshake starts. */
+void scr_https_client_servername(ScrHttpClientReq *c, ScrStr *name);
 ScrHttpClientReq *scr_https_request(ScrStr *host /*borrowed*/, double port,
                                      ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                      double timeout_ms, ScrArr *header_pairs /*borrowed*/,

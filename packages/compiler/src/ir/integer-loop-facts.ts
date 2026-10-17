@@ -154,15 +154,24 @@ export function boundedIntegerLoopFacts(
   return result;
 }
 
+/** The most UTF-16 code units a runtime string holds: SCR_STR_MAX_CAP
+ * (scr_runtime.h) caps a string's UTF-8 bytes, and a UTF-16 length never
+ * exceeds the UTF-8 byte length. */
+export const STRING_MAX_UNITS = 0x7fffffff;
+
 /** Bound counters of a while loop by its condition. A counter qualifies when
  * the loop (condition and body) changes it only by increments of positive
  * integer literals outside nested loops, switch and exception regions, and a
- * conjunct of the condition compares it below a literal or a binding the loop
- * never writes (`while (x * x + y * y <= 4 && it < MAX) it++`). The body runs
- * only after that conjunct held, and the condition never writes the counter,
- * so every pass starts at most at the conjunct's bound and climbs by at most
- * the sum of the body's increments. The counter starts at its entry fact and
- * only grows, so the range holds at every read inside and after the loop. */
+ * conjunct of the condition compares it below a literal, a binding the loop
+ * never writes, or the length of a string binding the loop never writes
+ * (`while (x * x + y * y <= 4 && it < MAX) it++`, `while (pos < text.length)`).
+ * The body runs only after that conjunct held, and the condition never
+ * writes the counter, so every pass starts at most at the conjunct's bound.
+ * The pass then climbs by the increments on its path; an increment inside an
+ * `if` whose condition compares the counter below such a bound starts from
+ * at most that bound (`if (pos < text.length && ...) pos++`). The counter
+ * starts at its entry fact and only grows, so the range holds at every read
+ * inside and after the loop. */
 export function guardedLoopCounterFacts(
   loop: IrStmt & { kind: "while" },
   locals: ReadonlyMap<string, IrLocal>,
@@ -220,44 +229,122 @@ export function guardedLoopCounterFacts(
     if (e.kind === "numLit" && Number.isSafeInteger(e.value) && !Object.is(e.value, -0))
       return { min: e.value, max: e.value };
     if (e.kind === "varRef" && stable(e.localId)) return initial.get(e.localId) ?? null;
+    // Strings are immutable: the length of a binding the loop never writes
+    // is the same on every pass.
+    if (
+      e.kind === "strIntrinsic" &&
+      e.method === "length" &&
+      e.args.length === 0 &&
+      e.type.kind === "f64" &&
+      e.receiver.kind === "varRef" &&
+      e.receiver.type.kind === "string" &&
+      stable(e.receiver.localId)
+    )
+      return { min: 0, max: STRING_MAX_UNITS };
     return null;
   };
-  // Conjuncts that hold whenever the body runs.
-  const conjuncts: IrExpr[] = [];
-  const collect = (e: IrExpr): void => {
-    if (e.kind === "toBool") collect(e.operand);
-    else if (e.kind === "logical" && e.op === "&&") {
-      collect(e.left);
-      collect(e.right);
-    } else conjuncts.push(e);
+  // The bounds a condition's conjuncts put on counters while it holds.
+  const ceilings = (cond: IrExpr): Map<string, number> => {
+    const conjuncts: IrExpr[] = [];
+    const collect = (e: IrExpr): void => {
+      if (e.kind === "toBool") collect(e.operand);
+      else if (e.kind === "logical" && e.op === "&&") {
+        collect(e.left);
+        collect(e.right);
+      } else conjuncts.push(e);
+    };
+    collect(cond);
+    const ceiling = new Map<string, number>();
+    for (const c of conjuncts) {
+      if (c.kind !== "bin") continue;
+      // `counter < bound` or `bound > counter` (and the inclusive forms).
+      const below = c.op === "<" || c.op === "<=",
+        above = c.op === ">" || c.op === ">=";
+      const counter = below ? c.left : above ? c.right : null,
+        other = below ? c.right : c.left;
+      if (counter?.kind !== "varRef") continue;
+      const bound = limit(other);
+      if (!bound) continue;
+      const hi = c.op === "<" || c.op === ">" ? bound.max - 1 : bound.max;
+      const previous = ceiling.get(counter.localId);
+      ceiling.set(counter.localId, previous === undefined ? hi : Math.min(previous, hi));
+    }
+    return ceiling;
   };
-  collect(loop.cond);
-  const ceiling = new Map<string, number>();
-  for (const c of conjuncts) {
-    if (c.kind !== "bin") continue;
-    // `counter < bound` or `bound > counter` (and the inclusive forms).
-    const below = c.op === "<" || c.op === "<=",
-      above = c.op === ">" || c.op === ">=";
-    const counter = below ? c.left : above ? c.right : null,
-      other = below ? c.right : c.left;
-    if (counter?.kind !== "varRef") continue;
-    const bound = limit(other);
-    if (!bound) continue;
-    const hi = c.op === "<" || c.op === ">" ? bound.max - 1 : bound.max;
-    const previous = ceiling.get(counter.localId);
-    ceiling.set(counter.localId, previous === undefined ? hi : Math.min(previous, hi));
-  }
-  for (const [id, step] of budget) {
+  const ceiling = ceilings(loop.cond);
+  for (const id of budget.keys()) {
     const local = locals.get(id),
       start = initial.get(id),
       hi = ceiling.get(id);
     if (refused.has(id) || !local || local.boxed || local.tdz || !start || hi === undefined)
       continue;
-    const max = Math.max(start.max, hi + step);
+    const max = Math.max(start.max, highestCount(loop.body, id, hi, ceilings));
     if (Number.isSafeInteger(start.min) && Number.isSafeInteger(max))
       result.set(id, { min: start.min, max });
   }
   return result;
+}
+
+/** The largest value counter `id` takes in one pass of `body`, which starts
+ * at most at `entry`. The caller has checked that the body changes the
+ * counter only by positive literal increments outside nested loops, switch,
+ * exception and labeled regions, so those regions leave it unchanged, and
+ * every exit from a straight-line path leaves the body. An `if` whose
+ * condition does not write the counter caps it in the then branch by the
+ * condition's bounds; any other statement adds the increments it holds. */
+function highestCount(
+  body: readonly IrStmt[],
+  id: string,
+  entry: number,
+  ceilings: (cond: IrExpr) => ReadonlyMap<string, number>,
+): number {
+  let highest = entry;
+  const increments = (e: IrExpr | IrStmt, expression: boolean): number => {
+    let total = 0;
+    const expr = (x: IrExpr): boolean => {
+      if (x.kind === "assignExpr" && x.localId === id) total += increment(id, x.value) ?? 0;
+      if (x.kind === "incDec" && x.localId === id) total += 1;
+      return everyExprChild(x, expr, stmt);
+    };
+    const stmt = (x: IrStmt): boolean => {
+      if (x.kind === "assign" && x.localId === id) total += increment(id, x.value) ?? 0;
+      return everyStmtChild(x, expr, stmt);
+    };
+    if (expression) expr(e as IrExpr);
+    else stmt(e as IrStmt);
+    return total;
+  };
+  const walk = (stmts: readonly IrStmt[], start: number): number => {
+    let count = start;
+    for (const s of stmts) {
+      if (count === -Infinity) return count;
+      if (s.kind === "if") {
+        const added = increments(s.cond, true);
+        count += added;
+        highest = Math.max(highest, count);
+        const cap = added === 0 ? ceilings(s.cond).get(id) : undefined;
+        const then = walk(s.then, cap === undefined ? count : Math.min(count, cap));
+        const else_ = s.else_ ? walk(s.else_, count) : count;
+        count = Math.max(then, else_);
+      } else if (s.kind === "block" && !s.labels?.length) {
+        count = walk(s.body, count);
+      } else {
+        count += increments(s, false);
+        highest = Math.max(highest, count);
+        if (
+          s.kind === "return" ||
+          s.kind === "throw" ||
+          s.kind === "rethrow" ||
+          s.kind === "break" ||
+          s.kind === "continue"
+        )
+          count = -Infinity;
+      }
+    }
+    return count;
+  };
+  walk(body, entry);
+  return highest;
 }
 
 /** Recognize only exits whose target cannot be inside this statement list.

@@ -212,7 +212,7 @@ export function collectClassMethodMutations(
     receiver: ts.Expression,
     site: ts.Node,
   ): boolean => {
-    if (!ts.isDeleteExpression(site) || !ts.isIdentifier(key)) return false;
+    if (!ts.isDeleteExpression(site) || !ts.isIdentifier(unwrap(key))) return false;
     const statement = site.parent;
     if (!ts.isExpressionStatement(statement)) return false;
     const loop = statement.parent;
@@ -230,9 +230,11 @@ export function collectClassMethodMutations(
     );
   };
   const markKey = (key: ts.Expression, site: ts.Node, receiver?: ts.Expression): void => {
-    key = unwrap(key);
-    if (ts.isStringLiteralLike(key)) markName(key.text, site);
-    else if (ts.isNumericLiteral(key)) markName(String(Number(key.text)), site);
+    const value = unwrap(key);
+    if (ts.isStringLiteralLike(value)) markName(value.text, site);
+    else if (ts.isNumericLiteral(value)) markName(String(Number(value.text)), site);
+    // The key keeps its assertions: `slots[at as number]` and `slots[at!]`
+    // write a number key whatever the type of `at`.
     else computedWrites.push({ key, receiver, site });
   };
   const markFields = (value: ts.Expression, site: ts.Node, receiver?: ts.Expression): void => {
@@ -547,7 +549,7 @@ export function collectClassMethodMutations(
   }
   for (const { key, receiver, site } of computedWrites) {
     const type = key ? lowerer.typeOf(key) : undefined;
-    const names = type && (literalValues(type) ?? (key ? literalLoopKeys(key) : null));
+    const names = type && (literalValues(type) ?? (key ? literalLoopKeys(unwrap(key)) : null));
     if (names) {
       for (const name of names) markName(String(name), site);
       continue;

@@ -249,6 +249,15 @@ ScrDyn *scr_net_sock_address(ScrNetSocket *s);       /* +1: socket.address() */
 /* socket.resetAndDestroy(): RST close (deferred to 'connect' while
  * connecting); throws ERR_INVALID_HANDLE_TYPE on TLS. +1: chaining. */
 ScrNetSocket *scr_net_sock_reset_and_destroy(ScrNetSocket *s);
+/* net.SocketAddress and net.BlockList: native handles. The constructors
+ * take the argument array; parse answers undefined when the input is not
+ * a socket address. All +1, borrowed arguments; may throw. */
+ScrDyn *scr_net_socket_address_new(const ScrDyn *args);
+ScrDyn *scr_net_socket_address_parse(const ScrDyn *input);
+bool scr_net_is_socket_address(const ScrDyn *value);
+ScrDyn *scr_net_block_list_new(const ScrDyn *args);
+bool scr_net_is_block_list(const ScrDyn *value);
+ScrDyn *scr_net_block_list_private_ranges(void);
 /* server.dropMaxConnection: a stored value (+1 get, borrowed set). */
 ScrDyn *scr_net_server_drop_max_connection_get(ScrNetServer *s);
 void scr_net_server_drop_max_connection_set(ScrNetServer *s, const ScrDyn *value);

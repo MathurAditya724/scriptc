@@ -52,6 +52,28 @@ test("tracks exact additions and bitwise conversions through assignments", () =>
   expect(ranges.get(unsigned)).toEqual({ min: 0, max: 4294967295 });
 });
 
+test("element reads of Int32[] arrays that found a value are int32s", () => {
+  const arrType = { kind: "array", elem: F64 } as const;
+  const read = (localId: string): IrExpr => ({
+    loc,
+    kind: "arrayGet",
+    arr: { loc, kind: "varRef", localId, type: arrType },
+    index: num(0),
+    type: F64,
+  });
+  const checked = read("ints");
+  const other = read("floats");
+  const ranges = analyzeIntegerRanges(
+    fn([
+      { loc, kind: "exprStmt", expr: checked },
+      { loc, kind: "exprStmt", expr: other },
+    ]),
+    { elements: (arr) => arr.kind === "varRef" && arr.localId === "ints" },
+  );
+  expect(ranges.get(checked)).toEqual({ min: -2147483648, max: 2147483647 });
+  expect(ranges.get(other) ?? null).toBeNull();
+});
+
 test("rejects negative zero, fractions, nonfinite values and imprecise sums", () => {
   for (const value of [-0, 0.5, NaN, Infinity, -Infinity, 9007199254740992]) {
     const sum = bin("+", num(value), num(0));
@@ -704,6 +726,73 @@ test("a while condition bounds a counter the loop only increments", () => {
     ["unknown start", { start: ref("unknown") }],
   ];
   for (const [label, options] of open) expect(run(options).after, label).toBeNull();
+});
+
+test("a while condition on a string's length bounds a counter, and guarded increments stay below it", () => {
+  // while (pos < text.length) { observe(pos); pos++; if (pos < text.length && unknown === 13) pos++; }
+  const text: IrExpr = { loc, kind: "varRef", localId: "text", type: STRING };
+  const length: IrExpr = {
+    loc,
+    kind: "strIntrinsic",
+    method: "length",
+    receiver: text,
+    args: [],
+    type: F64,
+  };
+  const set = (localId: string, value: IrExpr): IrStmt => ({ loc, kind: "assign", localId, value });
+  const bump: IrStmt = {
+    loc,
+    kind: "exprStmt",
+    expr: { loc, kind: "incDec", op: "+", prefix: false, localId: "pos", type: F64 },
+  };
+  const and = (left: IrExpr, right: IrExpr): IrExpr => ({
+    loc,
+    kind: "logical",
+    op: "&&",
+    left,
+    right,
+    type: BOOL,
+  });
+  const run = (body: (inside: IrExpr) => IrStmt[]) => {
+    const inside = ref("pos"),
+      after = ref("pos");
+    const f = fn([
+      set("pos", num(0)),
+      { loc, kind: "while", cond: condition("<", ref("pos"), length), body: body(inside) },
+      observe(after),
+    ]);
+    f.locals.push(
+      { id: "pos", name: "pos", type: F64, mutable: true },
+      { id: "text", name: "text", type: STRING, mutable: true },
+    );
+    const ranges = analyzeIntegerRanges(f);
+    return { inside: ranges.get(inside), after: ranges.get(after) };
+  };
+  const guarded = (cond: IrExpr): IrStmt => ({ loc, kind: "if", cond, then: [bump], else_: null });
+  const crlf = guarded(
+    and(condition("<", ref("pos"), length), condition("===", ref("unknown"), num(13))),
+  );
+  expect(run((inside) => [observe(inside), bump, crlf])).toEqual({
+    inside: { min: 0, max: 2147483646 },
+    after: { min: 0, max: 2147483647 },
+  });
+  // An exit before the second increment, and an else branch, keep the bound.
+  const exit: IrStmt = {
+    loc,
+    kind: "if",
+    cond: condition("===", ref("unknown"), num(0)),
+    then: [{ loc, kind: "continue" }],
+    else_: [crlf],
+  };
+  expect(run((inside) => [observe(inside), bump, exit]).after).toEqual({ min: 0, max: 2147483647 });
+  // Without the guard both increments count; a string the loop rebinds bounds nothing.
+  const unguarded = guarded(condition("===", ref("unknown"), num(13)));
+  expect(run((inside) => [observe(inside), bump, unguarded]).after).toEqual({
+    min: 0,
+    max: 2147483648,
+  });
+  const rebound = set("text", { loc, kind: "strLit", value: "abc", type: STRING });
+  expect(run((inside) => [observe(inside), bump, rebound]).after).toBeNull();
 });
 
 test("whole-program slot facts seed parameters, field reads and call results", () => {

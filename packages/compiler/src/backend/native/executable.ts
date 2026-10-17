@@ -528,6 +528,9 @@ export async function compileCInternal(
     // through the native installation hooks — the emitted main calls its
     // installer exactly then.
     ...(opts.events ? [rt(join(rtDir, "scr_events.c")), rt(join(rtDir, "scr_readline.c"))] : []),
+    // readline's terminal mode: rl.terminal sets the regex unit it
+    // measures with.
+    ...(opts.events && regex ? [rt(join(rtDir, "scr_readline_tty.c"))] : []),
     ...(opts.emitter || opts.workers ? [rt(join(rtDir, "scr_events_emitter.c"))] : []),
     // The checked-dynamic HANDLE support unit (listener gate + runtime
     // adapter closures): every referencing unit is one of the emitter or

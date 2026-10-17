@@ -105,10 +105,6 @@ const KNOWN: Record<string, Known> = {
   "promise-bridge": { build: "SC1090" },
   "self-name": { build: "SC2013" },
   "stream-shims": { build: "SC1090" },
-  "typed-callbacks": {
-    divergence:
-      "crashes converting a cyclic object into a recursive record type; a follow-up fix is in progress",
-  },
   "util-shims": { run: "SC2020" },
   "web-streams": { build: "SC2013" },
   "workspace-copied": { build: "SC2013" },
