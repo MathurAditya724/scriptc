@@ -2395,6 +2395,14 @@ ScrNetSocket *scr_net_connect_deferred(double port, ScrStr *host /*borrowed, nul
   return s;
 }
 
+/* Moves a deferred socket's buffered (never sent) bytes onto `to`, which
+ * sends them in order after its own: an http agent request that waited
+ * for a slot takes a pooled socket instead of dialing. */
+void scr_net_sock_move_writes(ScrNetSocket *from, ScrNetSocket *to) {
+  if (from->wlen > from->whead) scr_net_sock_write_native(to, from->wbuf + from->whead, from->wlen - from->whead);
+  from->whead = from->wlen = 0;
+}
+
 void scr_net_sock_dial_start(ScrNetSocket *s) {
   if (!s->dial_deferred || s->close_emitted || s->emit_close || s->fd >= 0) return;
   s->dial_deferred = false;

@@ -4716,17 +4716,16 @@ declare module "http" {
   /* The Agent lowers to a checked-dynamic HANDLE: option parsing at the
    * literal construction site, getName, destroy, the sockets/requests/
    * freeSockets snapshots, and REAL maxSockets accounting (over-limit
-   * requests defer their dial and queue). keepAlive: true throws the
-   * named pooling fence — this client dials one connection per request
-   * and closes it with the response, so freeSockets is always
-   * empty. */
+   * requests defer their dial and queue). keepAlive: true keeps finished
+   * connections in freeSockets for the next request to the same name,
+   * taken in `scheduling` order. */
   export interface AgentOptions {
     keepAlive?: boolean;
     keepAliveMsecs?: number;
     maxSockets?: number;
     maxFreeSockets?: number;
     maxTotalSockets?: number;
-    scheduling?: string;
+    scheduling?: "fifo" | "lifo";
     timeout?: number;
     port?: number;
     [option: string]: unknown;
@@ -4756,6 +4755,7 @@ declare module "http" {
     readonly freeSockets: { [key: string]: unknown[] };
     readonly requests: { [key: string]: unknown[] };
   }
+  /* Node's keepAlive global agent for requests without an agent option. */
   export const globalAgent: Agent;
   export interface ClientRequest {
     readonly destroyed: boolean;
@@ -4959,6 +4959,8 @@ declare module "https" {
   import { Server } from "http";
   import { Agent, ClientRequest, IncomingMessage, ServerResponse } from "http";
   export { Agent, Server };
+  /* Node's keepAlive global agent for requests without an agent option. */
+  export const globalAgent: Agent;
   export interface ServerOptions {
     cert: string | Uint8Array;
     key: string | Uint8Array;

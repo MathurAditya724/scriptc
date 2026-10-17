@@ -4228,12 +4228,12 @@ function lowerHttpCreateServerForms(
  * getName/destroy and the sockets/requests/freeSockets counters dispatch
  * through the dyn handle ops, and the request path threads it (the
  * requestAgent rows). Options parse at the LITERAL construction site:
- * keepAlive (a boolean value — TRUE throws the runtime's named pooling
- * fence: this client dials one connection per request), keepAliveMsecs /
- * maxSockets / maxFreeSockets / timeout / port as numbers, scheduling
- * DROPS (no free pool exists, so selection order cannot observe), other
- * documented keys fence by name, and undocumented keys drop like Node
- * drops them. Null when the callee isn't the http/https Agent. */
+ * keepAlive (a boolean value: finished connections return to the free
+ * list), keepAliveMsecs / maxSockets / maxFreeSockets / timeout / port as
+ * numbers, scheduling as a value the runtime validates ('fifo' or
+ * 'lifo'), other documented keys fence by name, and undocumented keys
+ * drop like Node drops them. Null when the callee isn't the http/https
+ * Agent. */
 export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
   const callee = expr.expression;
   const bi =
@@ -4252,6 +4252,7 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
   let maxFree: IrExpr = numLit(-1, loc);
   let timeout: IrExpr = numLit(-1, loc);
   let port: IrExpr = numLit(-1, loc);
+  let scheduling: IrExpr = lowerer.coerceToExpected(strLit("lifo", loc), DYN);
   const args = expr.arguments ?? [];
   if (args.length > 1) {
     lowerer.noLowering(
@@ -4334,11 +4335,15 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
           // the settable defaultPort carries this one.
           port = lowerVal("f64");
           break;
-        case "scheduling":
-          // Free-socket selection order: no free pool exists here (no
-          // keep-alive reuse), so the choice cannot observe — dropped.
-          if (initializer !== null) lowerer.lowerExpr(initializer); // evaluate, like Node
+        case "scheduling": {
+          // 'fifo' | 'lifo' (falsy = 'lifo'), validated by the runtime
+          const v =
+            initializer !== null
+              ? lowerer.lowerExpr(initializer)
+              : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
+          scheduling = lowerer.coerceToExpected(v, DYN);
           break;
+        }
         default:
           fenceOrDropOptionKey(
             lowerer,
@@ -4364,6 +4369,7 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
       maxFree,
       timeout,
       port,
+      scheduling,
     ],
     type: DYN,
     loc,
@@ -5960,6 +5966,13 @@ function lowerHttpClientCall(
         maxHeaderSize = lowerVal("f64");
         break;
       case "servername":
+        if (binding !== null) {
+          lowerer.noLowering(
+            `${member} option 'servername' through a module-function binding`,
+            prop,
+            "call https.request directly when passing servername",
+          );
+        }
         if (!secureish) {
           lowerer.noLowering(
             `${member} option 'servername'`,
@@ -6196,14 +6209,48 @@ function lowerHttpClientCall(
   timeout ??= numLit(0, loc);
   headers ??= { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
   const autoEnd = boolLit(member === "get", loc);
-  // Options applied to the built request: servername before the TLS
-  // handshake starts, then options.signal (an already aborted signal
-  // destroys the request at once, like Node's constructor).
+  // options.signal is checked first: Node's constructor rejects a value
+  // that is not an AbortSignal before it dials. servername is stored just
+  // before construction (it selects the TLS name and which pooled sockets
+  // the request may reuse); maxHeaderSize and the signal then apply to the
+  // built request (an already aborted signal destroys it at once, like
+  // Node's constructor).
   const withSignal = (request: IrExpr): IrExpr => {
     if (signal === null && servername === null && maxHeaderSize === null) return request;
     const local = lowerer.declareHiddenLocal("%requestOptions", HTTPCLIENTREQ_T);
     const ref = (): IrExpr => varRef(local.id, HTTPCLIENTREQ_T, loc);
-    const steps: IrStmt[] = [{ kind: "varDecl", localId: local.id, init: request, loc }];
+    const steps: IrStmt[] = [];
+    let signalRef: (() => IrExpr) | null = null;
+    if (signal !== null) {
+      const signalLocal = lowerer.declareHiddenLocal("%requestSignal", DYN);
+      signalRef = () => varRef(signalLocal.id, DYN, loc);
+      steps.push({ kind: "varDecl", localId: signalLocal.id, init: signal, loc });
+      steps.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "http.clientSignalCheck",
+          args: [signalRef()],
+          type: VOID,
+          loc,
+        },
+        loc,
+      });
+    }
+    if (servername !== null) {
+      steps.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "https.nextServername",
+          args: [servername],
+          type: VOID,
+          loc,
+        },
+        loc,
+      });
+    }
+    steps.push({ kind: "varDecl", localId: local.id, init: request, loc });
     if (maxHeaderSize !== null) {
       steps.push({
         kind: "exprStmt",
@@ -6217,23 +6264,16 @@ function lowerHttpClientCall(
         loc,
       });
     }
-    if (servername !== null) {
+    if (signalRef !== null) {
       steps.push({
         kind: "exprStmt",
         expr: {
           kind: "libCall",
-          fn: "https.clientServername",
-          args: [ref(), servername],
+          fn: "http.clientSignal",
+          args: [ref(), signalRef()],
           type: VOID,
           loc,
         },
-        loc,
-      });
-    }
-    if (signal !== null) {
-      steps.push({
-        kind: "exprStmt",
-        expr: { kind: "libCall", fn: "http.clientSignal", args: [ref(), signal], type: VOID, loc },
         loc,
       });
     }
