@@ -1,4 +1,4 @@
-import { dynUndefinedExpr, varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, helperLoc, nodeThrowExpr, varRef } from "../../ir/build.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
   BOOL,
@@ -155,6 +155,83 @@ interface Dispatch {
   fn: IrFunction;
   callback: IrFunction;
   classes: Set<string>;
+}
+
+type ToPrimitiveHint = "number" | "string";
+type Hoisted = { stmts: IrStmt[]; value: IrExpr };
+const TO_PRIMITIVE_PREFIX = "%dyn.class.toPrimitive.";
+
+/** Operations that convert their dynamic operands with ToPrimitive: the
+ * arithmetic, bitwise, relational and numeric conversions take the number
+ * hint (`+` and `==` take the default hint, which is the number hint for
+ * class instances), and the string conversions take the string hint. */
+const NUMBER_HINT_CALLS = new Set<string>([
+  "dyn.abstractEq",
+  "dyn.add",
+  "dyn.arithmetic",
+  "dyn.bigintConstructor",
+  "dyn.bitwise",
+  "dyn.compare",
+  "dyn.numberConstructor",
+  "dyn.toNumberCoerce",
+  "dyn.toNumeric",
+]);
+const STRING_HINT_CALLS = new Set<string>(["dyn.stringConstructor", "dyn.toStringCoerce"]);
+/** Operations whose second operand is a property key, converted with the
+ * string hint when the receiver admits a key: `in` needs an object,
+ * propertyIsEnumerable converts before checking its receiver, and the
+ * others need a receiver other than null and undefined. */
+const KEY_CALLS = new Map<string, "object" | "any" | "value">([
+  ["dyn.hasKeyComputed", "object"],
+  ["dyn.propertyIsEnumerableComputed", "any"],
+  ["dyn.hasOwnComputed", "value"],
+  ["dyn.keyDeleteComputed", "value"],
+  ["dyn.keySetComputed", "value"],
+]);
+
+function toPrimitiveHint(expr: IrExpr): ToPrimitiveHint | null {
+  if (expr.kind === "toString") return expr.operand.type.kind === "dyn" ? "string" : null;
+  if (expr.kind === "dynKeyGet") return expr.key.type.kind === "dyn" ? "string" : null;
+  if (expr.kind !== "libCall") return null;
+  if (NUMBER_HINT_CALLS.has(expr.fn)) return "number";
+  if (STRING_HINT_CALLS.has(expr.fn) || KEY_CALLS.has(expr.fn)) return "string";
+  return null;
+}
+
+/** An operand that needs no conversion: already passed through a
+ * conversion helper (loose equality converts conditionally), or boxed from
+ * a statically primitive value. */
+function isConversion(expr: IrExpr): boolean {
+  if (expr.kind === "ternary") return isConversion(expr.then);
+  if (expr.kind === "dynFrom") return PRIMITIVE_KINDS.has(expr.value.type.kind);
+  return expr.kind === "call" && expr.callee.startsWith(TO_PRIMITIVE_PREFIX);
+}
+
+const PRIMITIVE_KINDS = new Set<string>([
+  "f64",
+  "string",
+  "bool",
+  "bigint",
+  "symbol",
+  "undefinedT",
+  "nullT",
+]);
+
+/** A declared `valueOf` or `toString` method, own or inherited. */
+function conversionMethod(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  method: "valueOf" | "toString",
+): boolean {
+  if (info.fields.has(method)) return false;
+  const found = findMethodOn(lowerer, info, method);
+  return !!found && !found.declarer.builtinError;
+}
+
+function isPrimitive(value: IrExpr, loc: SrcLoc): IrExpr {
+  return (["number", "string", "boolean", "undefined", "null", "bigint", "symbol"] as const)
+    .map((test): IrExpr => ({ kind: "dynTest", test, value, type: BOOL, loc }))
+    .reduce((a, b) => ({ kind: "logical", op: "||", left: a, right: b, type: BOOL, loc }));
 }
 
 interface PropertyReceiver {
@@ -641,6 +718,13 @@ export class ClassDynamicDispatch {
   /** The for-in key helpers, by libCall (dyn and native string[] keys). */
   private readonly enumerations = new Map<"dyn.forInKeys" | "dyn.forInKeyStrings", IrFunction>();
   private readonly enumerationClasses = new Set<string>();
+  /** OrdinaryToPrimitive over boxed class instances, by hint, and the
+   * per-class method calls its arms make. */
+  private readonly toPrimitives = new Map<
+    ToPrimitiveHint,
+    { fn: IrFunction; classes: Set<string> }
+  >();
+  private readonly toPrimitiveCalls = new Map<string, IrFunction>();
 
   process(lowerer: Lowerer, functions: readonly IrFunction[]): boolean {
     // Dispatch tables grow between worklist waves. Keep their normalization
@@ -662,6 +746,7 @@ export class ClassDynamicDispatch {
     changed = this.constructionDispatch.process(lowerer, functions) || changed;
     const seenTypes = new Set<string>();
     const rewrite = new Set<IrFunction>();
+    const toPrimitiveSites = new Set<IrFunction>();
     const discover = (type: IrType): void => {
       const key = typeKey(type);
       if (seenTypes.has(key)) return;
@@ -699,6 +784,7 @@ export class ClassDynamicDispatch {
           ) {
             this.serializesClasses = true;
           }
+          if (toPrimitiveHint(expr) !== null) toPrimitiveSites.add(fn);
           switch (expr.kind) {
             case "dynFrom":
               discover(expr.value.type);
@@ -752,6 +838,8 @@ export class ClassDynamicDispatch {
         },
       });
     if (this.boxed.size === 0 && rewrite.size === 0) return changed;
+    const converting = this.convertingHints(lowerer);
+    if (converting.size) for (const fn of toPrimitiveSites) rewrite.add(fn);
     for (const fn of functions) {
       if (
         !fn.name.startsWith("%dyn.class.instanceof:") &&
@@ -1189,6 +1277,16 @@ export class ClassDynamicDispatch {
       fn.body = transformStmtList(fn.body, {
         stmt: (stmt) => stmt,
         expr: (expr) => {
+          const converted = converting.size
+            ? this.convertOperands(lowerer, fn, expr, converting)
+            : null;
+          if (converted) {
+            changed = true;
+            // A hoisting sequence revisits the operation as its child; a
+            // wrapped operation continues through the rewrites below.
+            if (converted.kind === "seqExpr") return converted;
+            expr = converted;
+          }
           if (expr.kind === "dynCheck" && isDynTypedRefType(expr.type)) {
             const type = expr.type;
             let cast = this.checkedCasts.get(type.className);
@@ -2390,6 +2488,16 @@ export class ClassDynamicDispatch {
         changed = true;
       }
     }
+    for (const [hint, conversion] of this.toPrimitives) {
+      for (const plan of this.propertyReceivers(lowerer)) {
+        if (conversion.classes.has(plan.key)) continue;
+        conversion.classes.add(plan.key);
+        const arm = this.toPrimitiveArm(lowerer, plan, hint, conversion.fn);
+        if (!arm) continue;
+        conversion.fn.body.unshift(arm);
+        changed = true;
+      }
+    }
     for (const dispatch of lowerer.protocolDispatches.values()) {
       if (!this.generated.has(dispatch.fn)) {
         this.generated.add(dispatch.fn);
@@ -3103,6 +3211,356 @@ export class ClassDynamicDispatch {
     }
     this.generated.add(helper);
     return { kind: "call", callee: name, args: [bag, key], type: BOOL, loc };
+  }
+
+  /** The hints for which some boxed class declares a conversion method. A
+   * string conversion calls toString first, so without a declared toString
+   * it answers Object.prototype.toString's "[object Object]" as before. */
+  private convertingHints(lowerer: Lowerer): Set<ToPrimitiveHint> {
+    const hints = new Set<ToPrimitiveHint>();
+    for (const { info } of this.propertyReceivers(lowerer)) {
+      if (conversionMethod(lowerer, info, "toString")) {
+        hints.add("string");
+        hints.add("number");
+      } else if (conversionMethod(lowerer, info, "valueOf")) hints.add("number");
+    }
+    return hints;
+  }
+
+  /** An operation that converts dynamic operands to primitives, with each
+   * operand passed through the hint's conversion helper first. Operations
+   * with two dynamic operands evaluate both before converting the left one,
+   * as JavaScript does. Returns null when `expr` needs no conversion. */
+  private convertOperands(
+    lowerer: Lowerer,
+    fn: IrFunction,
+    expr: IrExpr,
+    converting: Set<ToPrimitiveHint>,
+  ): IrExpr | null {
+    const hint = toPrimitiveHint(expr);
+    if (hint === null || !converting.has(hint)) return null;
+    const loc = expr.loc;
+    const convert = (value: IrExpr): IrExpr => ({
+      kind: "call",
+      callee: this.toPrimitiveHelper(lowerer, hint, loc),
+      args: [value],
+      type: DYN,
+      loc,
+    });
+    if (expr.kind === "toString") {
+      if (isConversion(expr.operand)) return null;
+      return { ...expr, operand: convert(expr.operand) };
+    }
+    if (expr.kind === "dynKeyGet") {
+      // A computed read converts its key after evaluating the receiver,
+      // unless the receiver is null or undefined.
+      if (expr.key.type.kind !== "dyn" || isConversion(expr.key)) return null;
+      const [receiver, key] = this.hoistOperands(fn, [expr.value, expr.key], loc) as [
+        Hoisted,
+        Hoisted,
+      ];
+      return {
+        kind: "seqExpr",
+        stmts: receiver.stmts.concat(key.stmts),
+        result: {
+          ...expr,
+          value: receiver.value,
+          key: {
+            kind: "ternary",
+            cond: {
+              kind: "dynTest",
+              test: "nullish",
+              negated: true,
+              value: receiver.value,
+              type: BOOL,
+              loc,
+            },
+            then: convert(key.value),
+            else_: key.value,
+            type: DYN,
+            loc,
+          },
+        },
+        type: expr.type,
+        loc,
+      };
+    }
+    if (expr.kind !== "libCall") return null;
+    const receiverNeeds = KEY_CALLS.get(expr.fn);
+    if (receiverNeeds) {
+      if (expr.args[1]?.type.kind !== "dyn" || isConversion(expr.args[1])) return null;
+      // Every operand is evaluated before the key converts, as in
+      // `obj[key] = value`, where the value is evaluated first.
+      const hoisted = this.hoistOperands(fn, expr.args, loc);
+      const args = hoisted.map((operand) => operand.value);
+      const receiver = args[0]!;
+      const admits: IrExpr | null =
+        receiverNeeds === "any"
+          ? null
+          : receiverNeeds === "object"
+            ? { kind: "unary", op: "!", operand: isPrimitive(receiver, loc), type: BOOL, loc }
+            : { kind: "dynTest", test: "nullish", negated: true, value: receiver, type: BOOL, loc };
+      args[1] = admits
+        ? {
+            kind: "ternary",
+            cond: admits,
+            then: convert(args[1]!),
+            else_: args[1]!,
+            type: DYN,
+            loc,
+          }
+        : convert(args[1]!);
+      return {
+        kind: "seqExpr",
+        stmts: hoisted.flatMap((operand) => operand.stmts),
+        result: { ...expr, args },
+        type: expr.type,
+        loc,
+      };
+    }
+    const dynamic = expr.args.flatMap((arg, i) => (arg.type.kind === "dyn" ? [i] : []));
+    if (dynamic.some((i) => isConversion(expr.args[i]!) && expr.args[i]!.kind !== "dynFrom"))
+      return null;
+    const operands = dynamic.filter((i) => !isConversion(expr.args[i]!));
+    if (operands.length === 0) return null;
+    if (expr.args.length === 1) return { ...expr, args: [convert(expr.args[0]!)] };
+    // Every operand is evaluated before the first conversion.
+    const hoisted = expr.args.map((arg): Hoisted =>
+      arg.kind === "strLit" || arg.kind === "numLit" || arg.kind === "boolLit"
+        ? { stmts: [], value: arg }
+        : this.hoistOperands(fn, [arg], loc)[0]!,
+    );
+    const args = hoisted.map((operand) => operand.value);
+    if (expr.fn === "dyn.abstractEq") {
+      // Loose equality converts an object only when the other operand is a
+      // primitive other than null and undefined.
+      if (dynamic.length !== 2) return null;
+      const primitive = (value: IrExpr): IrExpr =>
+        (["number", "string", "boolean", "bigint", "symbol"] as const)
+          .map((test): IrExpr => ({ kind: "dynTest", test, value, type: BOOL, loc }))
+          .reduce((a, b) => ({ kind: "logical", op: "||", left: a, right: b, type: BOOL, loc }));
+      const [left, right] = [args[0]!, args[1]!];
+      for (const i of operands)
+        args[i] = {
+          kind: "ternary",
+          cond: primitive(i === 0 ? right : left),
+          then: convert(args[i]!),
+          else_: args[i]!,
+          type: DYN,
+          loc,
+        };
+    } else for (const i of operands) args[i] = convert(args[i]!);
+    return {
+      kind: "seqExpr",
+      stmts: hoisted.flatMap((operand) => operand.stmts),
+      result: { ...expr, args },
+      type: expr.type,
+      loc,
+    };
+  }
+
+  /** Evaluates each operand into a fresh local, in order. */
+  private hoistOperands(fn: IrFunction, operands: readonly IrExpr[], loc: SrcLoc): Hoisted[] {
+    return operands.map((operand) => {
+      const id = `%toPrimitive.operand.${fn.locals.length}`;
+      fn.locals.push({ id, name: "operand", type: operand.type, mutable: false });
+      const stmts: IrStmt[] = [{ kind: "varDecl", localId: id, init: operand, loc }];
+      return { stmts, value: varRef(id, operand.type, loc) };
+    });
+  }
+
+  /** The conversion helper for `hint`: a boxed class instance answers its
+   * OrdinaryToPrimitive result, any other value is returned unchanged for
+   * the runtime operation to convert. Arms are added per boxed class. */
+  private toPrimitiveHelper(lowerer: Lowerer, hint: ToPrimitiveHint, loc: SrcLoc): string {
+    let conversion = this.toPrimitives.get(hint);
+    if (!conversion) {
+      const at = helperLoc(loc);
+      const fn: IrFunction = {
+        name: `${TO_PRIMITIVE_PREFIX}${hint}`,
+        params: [{ localId: "p.0", name: "value", type: DYN }],
+        locals: [{ id: "p.0", name: "value", type: DYN, mutable: false }],
+        returnType: DYN,
+        body: [{ kind: "return", value: varRef("p.0", DYN, at), loc: at }],
+        loc: at,
+      };
+      conversion = { fn, classes: new Set() };
+      this.toPrimitives.set(hint, conversion);
+      this.generated.add(fn);
+      lowerer.liftedFns.push(fn);
+    }
+    return conversion.fn.name;
+  }
+
+  /** OrdinaryToPrimitive for one boxed class: the declared conversion
+   * methods in hint order, each result returned when it is a primitive.
+   * Object.prototype.valueOf answers the object itself and its toString
+   * answers "[object Object]". */
+  private toPrimitiveArm(
+    lowerer: Lowerer,
+    plan: PropertyReceiver,
+    hint: ToPrimitiveHint,
+    helper: IrFunction,
+  ): IrStmt | null {
+    const { info } = plan;
+    const loc = helper.loc;
+    const order: ("valueOf" | "toString")[] =
+      hint === "string" ? ["toString", "valueOf"] : ["valueOf", "toString"];
+    if (!order.some((method) => conversionMethod(lowerer, info, method))) return null;
+    if (hint === "string" && !conversionMethod(lowerer, info, "toString")) return null;
+    const { condition } = this.propertyReceiver(plan, loc);
+    const body: IrStmt[] = [];
+    let settled = false;
+    for (const method of order) {
+      if (!conversionMethod(lowerer, info, method)) {
+        if (method === "toString") {
+          body.push({
+            kind: "return",
+            value: {
+              kind: "dynFrom",
+              value: { kind: "strLit", value: "[object Object]", type: STRING, loc },
+              type: DYN,
+              loc,
+            },
+            loc,
+          });
+          settled = true;
+          break;
+        }
+        continue;
+      }
+      const result = `%toPrimitive.${method}.${helper.locals.length}`;
+      helper.locals.push({ id: result, name: method, type: DYN, mutable: false });
+      body.push(
+        {
+          kind: "varDecl",
+          localId: result,
+          init: {
+            kind: "call",
+            callee: this.toPrimitiveCall(lowerer, plan, method, loc),
+            args: [varRef("p.0", DYN, loc)],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "if",
+          cond: isPrimitive(varRef(result, DYN, loc), loc),
+          then: [{ kind: "return", value: varRef(result, DYN, loc), loc }],
+          else_: null,
+          loc,
+        },
+      );
+    }
+    if (!settled)
+      body.push({
+        kind: "return",
+        value: nodeThrowExpr(1, "", "Cannot convert object to primitive value", DYN, loc),
+        loc,
+      });
+    return { kind: "if", cond: condition, then: body, else_: null, loc };
+  }
+
+  /** A function calling `method` on a boxed instance of `plan`'s class, as a
+   * dynamic method call would: an own replacement on the instance answers
+   * first for methods the program can replace. */
+  private toPrimitiveCall(
+    lowerer: Lowerer,
+    plan: PropertyReceiver,
+    method: "valueOf" | "toString",
+    loc: SrcLoc,
+  ): string {
+    const key = JSON.stringify([plan.key, method]);
+    const existing = this.toPrimitiveCalls.get(key);
+    if (existing) return existing.name;
+    const { info } = plan;
+    const { receiver } = this.propertyReceiver(plan, loc);
+    const source: Invoke = {
+      kind: "dynInvoke",
+      recv: varRef("p.0", DYN, loc),
+      method,
+      calleeName: `value.${method}`,
+      args: [],
+      type: DYN,
+      loc,
+    };
+    const value = varRef("p.0", DYN, loc);
+    let callback: IrExpr = dynUndefinedExpr(loc);
+    if (isClassCallback(lowerer, info, method)) {
+      const prototypeMethod = lowerer.prototypeMethodAccesses.has(method);
+      if (prototypeMethod) classPrototypeData(lowerer, info, loc);
+      const bag = this.readPropertyBagOrEmpty(lowerer, value, loc);
+      callback = {
+        kind: "ternary",
+        cond: prototypeMethod
+          ? { kind: "boolLit", value: true, type: BOOL, loc }
+          : {
+              kind: "libCall",
+              fn: "dyn.hasKey",
+              args: [bag, { kind: "strLit", value: method, type: STRING, loc }],
+              type: BOOL,
+              loc,
+            },
+        then: {
+          kind: "dynObjLit",
+          fields: [
+            {
+              key: { kind: "strLit", value: "value", type: STRING, loc },
+              value: {
+                kind: "dynKeyGet",
+                value: bag,
+                key: { kind: "strLit", value: method, type: STRING, loc },
+                type: DYN,
+                loc,
+              },
+            },
+          ],
+          type: DYN,
+          loc,
+        },
+        else_: dynUndefinedExpr(loc),
+        type: DYN,
+        loc,
+      };
+    }
+    const fn: IrFunction = {
+      name: `${TO_PRIMITIVE_PREFIX}call.${this.toPrimitiveCalls.size}`,
+      params: [{ localId: "p.0", name: "value", type: DYN }],
+      locals: [
+        { id: "p.0", name: "value", type: DYN, mutable: false },
+        { id: "p.callback", name: "callback", type: DYN, mutable: false },
+        { id: "p.calleeName", name: "calleeName", type: STRING, mutable: false },
+      ],
+      returnType: DYN,
+      body: [],
+      loc,
+    };
+    const dispatch: Dispatch = { source, fn, callback: fn, classes: new Set() };
+    const before = lowerer.diags.length;
+    let body: IrStmt[];
+    try {
+      body = this.methodBody(lowerer, dispatch, info, receiver);
+    } catch (error) {
+      if (!(error instanceof PoisonError) || !info.decl) throw error;
+      const fence = lowerer.deferToRuntimeFence(before, info.decl, { kind: "statement" });
+      if (!fence) throw error;
+      body = [fence];
+    }
+    fn.body = [
+      { kind: "varDecl", localId: "p.callback", init: callback, loc },
+      {
+        kind: "varDecl",
+        localId: "p.calleeName",
+        init: { kind: "strLit", value: source.calleeName, type: STRING, loc },
+        loc,
+      },
+      ...body,
+    ];
+    this.toPrimitiveCalls.set(key, fn);
+    this.generated.add(fn);
+    lowerer.liftedFns.push(fn);
+    return fn.name;
   }
 
   private readPropertyBagOrEmpty(lowerer: Lowerer, receiver: IrExpr, loc: SrcLoc): IrExpr {
