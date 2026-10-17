@@ -20,11 +20,15 @@ async function main(): Promise<void> {
   console.log("module timeout:", await sleepFromModule(1, 42));
   console.log("module immediate:", await immediateFromModule(true));
 
+  // Timers armed together settle in deadline order however late the loop
+  // reaches its timers phase. (An immediate against a short timer is not
+  // ordered: the timer fires first once its delay has passed when the loop
+  // reaches the timers phase, in Node too.)
   const order: string[] = [];
   const slow = sleep(30, "slow").then((v) => order.push(v));
   const fast = sleep(1, "fast").then((v) => order.push(v));
-  const now = immediate("now").then((v) => order.push(v));
-  await Promise.all([slow, fast, now]);
+  const middle = sleep(10, "middle").then((v) => order.push(v));
+  await Promise.all([slow, fast, middle]);
   console.log("order:", order.join(","));
 
   const started = Date.now();
