@@ -106,6 +106,26 @@ export function lowerFsLinkOrStatfsCall(
   return { kind: "libCall", fn: fn.fn, args, type: fn.result, loc };
 }
 
+/** fs.cpSync / fs/promises cp: src, dest and the optional options cross
+ * as dyn values (an omitted argument is undefined); scr_fs_cp_begin
+ * validates them in Node's order. */
+export function lowerFsCpCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  fn: BuiltinModuleFn,
+  loc: SrcLoc,
+  name: string,
+): IrExpr {
+  if (expr.arguments.length > 3 || expr.arguments.some(ts.isSpreadElement))
+    lowerer.noLowering(`${name} with this argument shape`, expr);
+  const args = [0, 1, 2].map((index) =>
+    expr.arguments[index]
+      ? lowerer.lowerExprExpecting(expr.arguments[index]!, DYN)
+      : dynUndefinedExpr(loc),
+  );
+  return { kind: "libCall", fn: fn.fn, args, type: fn.result, loc };
+}
+
 export function lowerFsTimestampCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,

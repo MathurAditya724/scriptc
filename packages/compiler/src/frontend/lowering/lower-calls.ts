@@ -15,7 +15,11 @@ import { objectEnumerationReceiver } from "./object-enumeration-receiver.js";
 import { InternalCompilerError } from "../../errors.js";
 import { isFsStreamMember, lowerFsStreamMethodCall } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
-import { isZlibStreamMember, lowerZlibStreamMethodCall } from "./builtins/compression.js";
+import {
+  isZlibStreamMember,
+  lowerPromisifiedZlibCall,
+  lowerZlibStreamMethodCall,
+} from "./builtins/compression.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerGenMethodCall } from "./lower-generators.js";
 import { lowerClassSymbolMethodCall } from "./symbol-methods.js";
@@ -68,6 +72,7 @@ import {
   lowerArrayFromCall,
   lowerArrayOfCall,
 } from "./containers/array-construction.js";
+import { lowerArrayFromAsyncCall } from "./containers/array-from-async.js";
 import { lowerDynArrayFilterCall, lowerDynArrayFlatMapCall } from "./containers/array-callbacks.js";
 import { lowerGroupByStaticCall } from "./containers/collection-grouping.js";
 import { lowerIteratorHelperCall } from "./containers/iterator-helpers.js";
@@ -788,6 +793,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       if (projection?.kind === "promisified-exec") {
         return lowerer.lowerExecFileAsyncCall(expr, loc, true);
       }
+      if (projection?.kind === "promisified-zlib") {
+        return lowerPromisifiedZlibCall(lowerer, expr, projection.member, loc);
+      }
       if (projection?.kind === "promisified-builtin") {
         return lowerBuiltinCall(
           lowerer,
@@ -1392,6 +1400,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerObjectStaticCall(lowerer, expr, expr.expression) ??
       lowerObjectFromEntriesCall(lowerer, expr, expr.expression) ??
       lowerArrayFromCall(lowerer, expr, expr.expression) ??
+      lowerArrayFromAsyncCall(lowerer, expr, expr.expression) ??
       lowerArrayOfCall(lowerer, expr, expr.expression) ??
       lowerer.lowerArrayMethodCall(expr, expr.expression) ??
       // Tuple reads preserve the receiver through argument evaluation;

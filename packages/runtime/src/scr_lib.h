@@ -288,6 +288,20 @@ bool scr_fs_access_mode_valid(double mode);
 bool scr_fs_truncate_len_valid(double length);
 void scr_fs_truncate(ScrStr *path, double length);
 void scr_fs_copyfile(ScrStr *src, ScrStr *dest);
+/* The two-path form of scr_fs_throw: "ENOENT: no such file or directory,
+ * copyfile 'src' -> 'dest'", with path and dest own properties. */
+void scr_fs_throw2(int e, const char *op, const ScrStr *src, const ScrStr *dest);
+/* The error shapes Node's native fs bindings throw besides the libuv one
+ * (scr_fs_throw): a THROW_ERR_* coded Error ("Error: message", own `code`,
+ * no "[code]" in its name); an ErrnoException from a std::error_code
+ * ("EEXIST, File exists 'path'", positive errno, keys errno, code, path,
+ * syscall); and internal/errors.js's SystemError ("<prefix>: <syscall>
+ * returned <errno name> (<message>) <path>", named SystemError, keys code,
+ * info, errno, syscall, path). */
+void scr_fs_throw_native_coded(const char *code, const char *message, size_t length);
+void scr_fs_throw_errno_exception(int e, const char *syscall, const ScrStr *path);
+void scr_fs_throw_system_error(const char *code, const char *prefix, int e, const char *syscall,
+                               const ScrStr *message, const ScrStr *path);
 void scr_fs_rename(ScrStr *oldpath, ScrStr *newpath);
 /* The callback rename worker uses the non-throwing syscall seam off the
  * runtime thread, then materializes any Node-shaped Error back on the main

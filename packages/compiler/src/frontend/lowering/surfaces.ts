@@ -1222,6 +1222,16 @@ export const BUILTIN_MODULE_FNS: Record<
       result: VOID,
       valueParams: exactValueParams(DYN, DYN),
     },
+    // Options and paths are checked by the runtime (scr_fs_cp_begin).
+    cpSync: {
+      fn: "fs.cpSync",
+      params: [DYN, DYN, DYN],
+      result: VOID,
+      valueParams: [
+        ...exactValueParams(DYN, DYN),
+        { mode: "optional", type: DYN, defaultValue: undefined },
+      ],
+    },
     symlinkSync: {
       fn: "fs.symlinkSync",
       params: [DYN, DYN, DYN],
@@ -1361,6 +1371,15 @@ export const BUILTIN_MODULE_FNS: Record<
       params: [DYN, DYN],
       result: { kind: "promise", inner: VOID },
       valueParams: exactValueParams(DYN, DYN),
+    },
+    cp: {
+      fn: "fsp.cp",
+      params: [DYN, DYN, DYN],
+      result: { kind: "promise", inner: VOID },
+      valueParams: [
+        ...exactValueParams(DYN, DYN),
+        { mode: "optional", type: DYN, defaultValue: undefined },
+      ],
     },
     symlink: {
       fn: "fsp.symlink",
@@ -2809,7 +2828,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   util: {
     promisify:
-      "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate and the fs callback functions with an fs/promises counterpart; call the bound function directly",
+      "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots and the fs callback functions with an fs/promises counterpart; call the bound function directly",
   },
   "stream/consumers": {
     blob:

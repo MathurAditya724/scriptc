@@ -55,7 +55,7 @@ static void scr_test_oom(void) {
 /* mode values (the frontend's literals) */
 enum { SCR_TEST_RUN = 0, SCR_TEST_SKIP = 1, SCR_TEST_TODO = 2 };
 /* flags bitmask */
-enum { SCR_TEST_F_ASYNC = 1, SCR_TEST_F_CTX = 2, SCR_TEST_F_ONLY = 4 };
+enum { SCR_TEST_F_ASYNC = 1, SCR_TEST_F_CTX = 2, SCR_TEST_F_ONLY = 4, SCR_TEST_F_TIMEOUT = 8 };
 /* hook kinds */
 enum { SCR_HOOK_BEFORE = 0, SCR_HOOK_AFTER = 1, SCR_HOOK_BEFORE_EACH = 2, SCR_HOOK_AFTER_EACH = 3 };
 /* outcome states */
@@ -67,6 +67,7 @@ enum {
   SCR_TS_SKIPPED,
   SCR_TS_TODO_PASS,
   SCR_TS_TODO_FAIL,
+  SCR_TS_CANCELLED, /* { timeout } elapsed before the body settled */
 };
 
 typedef struct {
@@ -101,6 +102,9 @@ struct ScrTestCtx {
   ScrCaught *before_err; /* owned; a throwing t.before, which fails the test and later subtests */
   int plan;              /* t.plan count, -1 without a plan */
   int plan_count;        /* t.assert calls and subtests counted against the plan */
+  ScrTestHooks mocks;    /* t.mock: the restore closure of each mock, in creation order */
+  double timeout;        /* { timeout } in ms, INFINITY without one */
+  bool timed_out;        /* the async body was still pending when the timeout elapsed */
 };
 
 static SCR_TL ScrTestCtx *scr_test_root = NULL;
@@ -110,9 +114,12 @@ static SCR_TL ScrTestCtx *scr_test_reg_parent = NULL;
 static SCR_TL bool scr_test_runner_spawned = false;
 static SCR_TL bool scr_test_run_done = false;
 static SCR_TL long scr_test_ct_tests = 0, scr_test_ct_suites = 0, scr_test_ct_pass = 0,
-            scr_test_ct_fail = 0, scr_test_ct_skipped = 0, scr_test_ct_todo = 0;
+            scr_test_ct_fail = 0, scr_test_ct_cancelled = 0, scr_test_ct_skipped = 0,
+            scr_test_ct_todo = 0;
 static SCR_TL double scr_test_t0 = 0;
 static SCR_TL bool scr_test_suite_hook_failed = false;
+/* The module's `mock` tracker: the restore closure of each mock it made. */
+static SCR_TL ScrTestHooks scr_test_mocks = {0};
 
 #ifdef SCR_RC_AUDIT
 static SCR_TL long scr_testctx_live = 0;
@@ -144,6 +151,7 @@ void scr_testctx_release(ScrTestCtx *t) {
   for (size_t i = 0; i < t->nchildren; i++) scr_testctx_release(t->children[i]);
   free(t->children);
   for (int k = 0; k < 4; k++) scr_test_hooks_free(&t->hooks[k]);
+  scr_test_hooks_free(&t->mocks);
 #ifdef SCR_RC_AUDIT
   scr_testctx_live--;
 #endif
@@ -169,6 +177,7 @@ static ScrTestCtx *scr_test_node_new(ScrStr *name /*borrowed*/, int mode,
   t->flags = flags;
   t->is_suite = is_suite;
   t->plan = -1;
+  t->timeout = INFINITY;
 #ifdef SCR_RC_AUDIT
   scr_testctx_live++;
 #endif
@@ -224,7 +233,8 @@ static const char *scr_test_symbol(int state) {
   case SCR_TS_PASS:
   case SCR_TS_TODO_PASS: return "\xE2\x9C\x94";      /* ✔ */
   case SCR_TS_FAIL:
-  case SCR_TS_CHILDFAIL: return "\xE2\x9C\x96";      /* ✖ */
+  case SCR_TS_CHILDFAIL:
+  case SCR_TS_CANCELLED: return "\xE2\x9C\x96";      /* ✖ */
   case SCR_TS_SKIPPED: return "\xEF\xB9\xA3";         /* ﹣ */
   case SCR_TS_TODO_FAIL: return "\xE2\x9A\xA0";       /* ⚠ */
   default: return "?";
@@ -277,18 +287,45 @@ static void scr_test_report_result(ScrTestCtx *t) {
 
 /* ── running ─────────────────────────────────────────────────────────── */
 
+/* An async test body with { timeout }: awaits the body's promise or a
+ * timer, whichever settles first. When the timer wins, the test fails with
+ * Node's "test timed out after <timeout>ms" string and is cancelled; the
+ * body keeps running unobserved. */
+static void scr_test_await_timeout(ScrPromise *p, ScrTestCtx *t) {
+  ScrPromise *timer = scr_promise_new();
+  double handle = scr_set_timeout_handle(scr_make_resolve(timer, 3 /* void */), t->timeout);
+  ScrPromise *race = scr_promise_new();
+  scr_promise_race_join(race, p, scr_promise_adapt_copy);
+  scr_promise_race_join(race, timer, scr_promise_adapt_copy);
+  scr_await_void(race);
+  scr_clear_interval(handle);
+  scr_promise_release(race);
+  scr_promise_release(timer);
+  if (!scr_exc_pending() && scr_promise_is_pending(p)) {
+    char num[32];
+    size_t n = scr_f64_to_str(t->timeout, num);
+    char buf[80];
+    int len = snprintf(buf, sizeof buf, "test timed out after %.*sms", (int)n, num);
+    t->timed_out = true;
+    scr_throw_str(scr_str_new(buf, (size_t)len));
+  }
+}
+
 /* Call one stored closure by its lowering-pinned shape; async shapes are
  * awaited (the runner is a fiber). `ctx` is passed +1 when the body takes
  * the TestContext. Returns with the fiber's exception cell holding any
- * failure. */
-static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx) {
+ * failure. `timed` is the test whose { timeout } bounds an async body. */
+static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx, ScrTestCtx *timed) {
   bool takes_ctx = (flags & SCR_TEST_F_CTX) != 0;
   if (flags & SCR_TEST_F_ASYNC) {
     ScrPromise *p =
         takes_ctx
             ? ((ScrPromise * (*)(ScrClosure *, ScrTestCtx *)) cb->fn)(cb, scr_testctx_retain(ctx))
             : ((ScrPromise * (*)(ScrClosure *)) cb->fn)(cb);
-    if (!scr_exc_pending() && p) scr_await_void(p);
+    if (!scr_exc_pending() && p) {
+      if (timed && isfinite(timed->timeout)) scr_test_await_timeout(p, timed);
+      else scr_await_void(p);
+    }
     scr_promise_release(p);
   } else if (takes_ctx) {
     ((void (*)(ScrClosure *, ScrTestCtx *))cb->fn)(cb, scr_testctx_retain(ctx));
@@ -297,12 +334,22 @@ static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx) {
   }
 }
 
+/* A mock tracker's restoreAll: each mock's restore, in creation order.
+ * reset also forgets the mocks, so later restoreAll calls skip them. */
+static void scr_test_mocks_restore(ScrTestHooks *mocks, bool forget) {
+  for (size_t i = 0; i < mocks->n; i++) {
+    ScrClosure *cb = mocks->v[i].cb;
+    ((void (*)(ScrClosure *))cb->fn)(cb);
+  }
+  if (forget) scr_test_hooks_free(mocks);
+}
+
 /* Run `which` hooks up (beforeEach: outermost suite first) or down
  * (afterEach: innermost first) the ancestor chain. A hook throw fails the
  * test with the hook's error (Node cancels harder — SEMANTICS.md). */
 static void scr_test_run_hooks_of(ScrTestCtx *owner, int which) {
   for (size_t i = 0; i < owner->hooks[which].n && !scr_exc_pending(); i++) {
-    scr_test_call(owner->hooks[which].v[i].cb, owner->hooks[which].v[i].flags, NULL);
+    scr_test_call(owner->hooks[which].v[i].cb, owner->hooks[which].v[i].flags, NULL, NULL);
   }
 }
 
@@ -354,7 +401,7 @@ static void scr_test_run_children(ScrTestCtx *t) {
 static bool scr_test_subtree_failed(const ScrTestCtx *t) {
   for (size_t i = 0; i < t->nchildren; i++) {
     int s = t->children[i]->state;
-    if (s == SCR_TS_FAIL || s == SCR_TS_CHILDFAIL) return true;
+    if (s == SCR_TS_FAIL || s == SCR_TS_CHILDFAIL || s == SCR_TS_CANCELLED) return true;
   }
   return false;
 }
@@ -403,7 +450,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
     t->err = scr_exc_take();
     failed = true;
   } else if (t->cb) {
-    scr_test_call(t->cb, t->flags, t);
+    scr_test_call(t->cb, t->flags, t, t);
     if (scr_exc_pending()) {
       t->err = scr_exc_take();
       failed = true;
@@ -446,6 +493,8 @@ static void scr_test_run_node(ScrTestCtx *t) {
       scr_exc_clear();
     }
   }
+  /* Then t.mock is reset: its mocks are restored. */
+  scr_test_mocks_restore(&t->mocks, true);
   scr_test_reg_parent = prev_parent;
   t->dur_ms = scr_now_ms() - start;
   if (t->mode == SCR_TEST_SKIP) {
@@ -454,7 +503,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
   } else if (t->mode == SCR_TEST_TODO) {
     t->state = failed ? SCR_TS_TODO_FAIL : SCR_TS_TODO_PASS;
   } else if (failed) {
-    t->state = SCR_TS_FAIL;
+    t->state = t->timed_out ? SCR_TS_CANCELLED : SCR_TS_FAIL;
   } else {
     t->state = scr_test_subtree_failed(t) ? SCR_TS_CHILDFAIL : SCR_TS_PASS;
   }
@@ -475,6 +524,7 @@ static void scr_test_count(const ScrTestCtx *t) {
       case SCR_TS_PASS: scr_test_ct_pass++; break;
       case SCR_TS_FAIL:
       case SCR_TS_CHILDFAIL: scr_test_ct_fail++; break;
+      case SCR_TS_CANCELLED: scr_test_ct_cancelled++; break;
       case SCR_TS_SKIPPED: scr_test_ct_skipped++; break;
       case SCR_TS_TODO_PASS:
       case SCR_TS_TODO_FAIL: scr_test_ct_todo++; break;
@@ -559,7 +609,10 @@ static void scr_test_print_failures(ScrTestCtx *t, bool *any) {
   for (size_t i = 0; i < t->nchildren; i++) {
     ScrTestCtx *c = t->children[i];
     scr_test_print_failures(c, any);
-    if (!c->is_suite && (c->state == SCR_TS_FAIL || c->state == SCR_TS_TODO_FAIL) && c->err) {
+    if (!c->is_suite &&
+        (c->state == SCR_TS_FAIL || c->state == SCR_TS_TODO_FAIL ||
+         c->state == SCR_TS_CANCELLED) &&
+        c->err) {
       if (!*any) {
         *any = true;
         fputs("\n\xE2\x9C\x96 failing tests:\n", stdout);
@@ -585,7 +638,7 @@ static void scr_test_runner_entry(ScrFiber *self, void *argpack) {
   scr_test_info_line("suites", (double)scr_test_ct_suites);
   scr_test_info_line("pass", (double)scr_test_ct_pass);
   scr_test_info_line("fail", (double)scr_test_ct_fail);
-  scr_test_info_line("cancelled", 0);
+  scr_test_info_line("cancelled", (double)scr_test_ct_cancelled);
   scr_test_info_line("skipped", (double)scr_test_ct_skipped);
   scr_test_info_line("todo", (double)scr_test_ct_todo);
   scr_test_info_line("duration_ms", round((scr_now_ms() - scr_test_t0) * 1e6) / 1e6);
@@ -608,9 +661,35 @@ static void scr_test_ensure_runner(void) {
 
 /* ── the registration surface (libCall targets) ──────────────────────── */
 
+/* The { plan, timeout } options of a new test. Node checks the timeout's
+ * range when the test is created and throws ERR_OUT_OF_RANGE. */
+static bool scr_test_options_ok(double flags, double timeout) {
+  if (!((int)flags & SCR_TEST_F_TIMEOUT) || timeout == INFINITY ||
+      (timeout >= 0 && timeout <= 2147483647))
+    return true;
+  char recv[48];
+  size_t n = scr_num_received(timeout, recv);
+  char msg[160];
+  int len = snprintf(msg, sizeof msg,
+                     "The value of \"options.timeout\" is out of range. It must be >= 0 && <= "
+                     "2147483647. Received %.*s",
+                     (int)n, recv);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+static void scr_test_options_apply(ScrTestCtx *t, double flags, double plan, double timeout) {
+  if (plan >= 0) t->plan = (int)plan;
+  if ((int)flags & SCR_TEST_F_TIMEOUT) t->timeout = timeout;
+}
+
 void scr_test_register(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrowed*/,
                         ScrClosure *cb /*moves, may be NULL*/, double flags,
-                        ScrStr *at /*borrowed*/) {
+                        ScrStr *at /*borrowed*/, double plan, double timeout) {
+  if (!scr_test_options_ok(flags, timeout)) {
+    scr_closure_release(cb);
+    return;
+  }
   scr_test_ensure_root();
   scr_test_ensure_runner();
   if (scr_test_run_done) {
@@ -620,6 +699,7 @@ void scr_test_register(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*bor
     return;
   }
   ScrTestCtx *t = scr_test_node_new(name, (int)mode, msg, cb, (int)flags, at, false);
+  scr_test_options_apply(t, flags, plan, timeout);
   scr_test_child_add(scr_test_reg_parent, t);
 }
 
@@ -665,8 +745,13 @@ void scr_test_hook(double which, ScrClosure *cb /*moves*/, double flags) {
  * consumes. */
 ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name /*borrowed*/, double mode,
                           ScrStr *msg /*borrowed*/, ScrClosure *cb /*moves, may be NULL*/,
-                          double flags, ScrStr *at /*borrowed*/) {
+                          double flags, ScrStr *at /*borrowed*/, double plan, double timeout) {
+  if (!scr_test_options_ok(flags, timeout)) {
+    scr_closure_release(cb);
+    return NULL;
+  }
   ScrTestCtx *sub = scr_test_node_new(name, (int)mode, msg, cb, (int)flags, at, false);
+  scr_test_options_apply(sub, flags, plan, timeout);
   scr_test_child_add(t, sub);
   t->plan_count++;
   if (t->before_err) {
@@ -705,7 +790,7 @@ void scr_test_ctx_todo(ScrTestCtx *t, ScrStr *msg /*borrowed*/) {
  * each descendant subtest, and after runs once the test finishes. */
 void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb /*moves*/, double flags) {
   if ((int)which == SCR_HOOK_BEFORE) {
-    scr_test_call(cb, (int)flags, NULL);
+    scr_test_call(cb, (int)flags, NULL, NULL);
     scr_closure_release(cb);
     if (scr_exc_pending() && !t->before_err) t->before_err = scr_exc_take();
     else if (scr_exc_pending()) scr_exc_clear();
@@ -721,6 +806,28 @@ void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb /*moves*/, do
   h->v[h->n].flags = (int)flags;
   h->n++;
 }
+
+static void scr_test_mocks_add(ScrTestHooks *h, ScrClosure *restore /*moves*/) {
+  if (h->n == h->cap) {
+    h->cap = h->cap ? h->cap * 2 : 2;
+    h->v = realloc(h->v, h->cap * sizeof *h->v);
+    if (!h->v) scr_test_oom();
+  }
+  h->v[h->n].cb = restore;
+  h->v[h->n].flags = 0;
+  h->n++;
+}
+
+void scr_test_mock_track(ScrClosure *restore /*moves*/) {
+  scr_test_mocks_add(&scr_test_mocks, restore);
+}
+void scr_test_mock_restore_all(void) { scr_test_mocks_restore(&scr_test_mocks, false); }
+void scr_test_mock_reset(void) { scr_test_mocks_restore(&scr_test_mocks, true); }
+void scr_test_ctx_mock_track(ScrTestCtx *t, ScrClosure *restore /*moves*/) {
+  scr_test_mocks_add(&t->mocks, restore);
+}
+void scr_test_ctx_mock_restore_all(ScrTestCtx *t) { scr_test_mocks_restore(&t->mocks, false); }
+void scr_test_ctx_mock_reset(ScrTestCtx *t) { scr_test_mocks_restore(&t->mocks, true); }
 
 void scr_test_ctx_plan(ScrTestCtx *t, double count) { t->plan = (int)count; }
 
@@ -766,6 +873,8 @@ ScrStr *scr_test_ctx_full_name(ScrTestCtx *t) {
 }
 
 int scr_test_exit_code(void) {
+  /* The program is done: the module tracker's restore closures go. */
+  if (scr_exit_frees()) scr_test_hooks_free(&scr_test_mocks);
   /* The runner never finished: a test awaited a promise nobody settles
    * and the loop exhausted (Node cancels the test and exits 1 — the
    * summary it prints there is not reproduced; SEMANTICS.md). The run
@@ -775,5 +884,6 @@ int scr_test_exit_code(void) {
     fputs("scriptc: node:test runner never finished (a test awaited a promise nobody settles)\n", stderr);
     return 1;
   }
-  return (scr_test_ct_fail > 0 || scr_test_suite_hook_failed) ? 1 : 0;
+  return (scr_test_ct_fail > 0 || scr_test_ct_cancelled > 0 || scr_test_suite_hook_failed) ? 1
+                                                                                         : 0;
 }

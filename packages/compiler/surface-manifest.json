@@ -868,6 +868,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.cpSync",
+      "kind": "node-builtin",
+      "name": "fs.cpSync",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.createReadStream",
       "kind": "node-builtin",
       "name": "fs.createReadStream",
@@ -1016,6 +1022,12 @@
       "id": "node-builtin.fs.promises.copyFile",
       "kind": "node-builtin",
       "name": "fs/promises.copyFile",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.promises.cp",
+      "kind": "node-builtin",
+      "name": "fs/promises.cp",
       "status": "static"
     },
     {
@@ -2426,7 +2438,7 @@
       "name": "util.promisify",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate and the fs callback functions with an fs/promises counterpart; call the bound function directly"
+      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots and the fs callback functions with an fs/promises counterpart; call the bound function directly"
     },
     {
       "id": "node-builtin.util.stripVTControlCharacters",

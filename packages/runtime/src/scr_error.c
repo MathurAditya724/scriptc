@@ -53,6 +53,8 @@ static void scr_error_gcfree(void *obj) {
   scr_str_release(e->system_call);
   scr_str_release(e->system_path);
   scr_str_release(e->system_dest);
+  scr_str_release(e->system_message);
+  scr_str_release(e->system_code);
   if (e->error_cause && scr_error_cause_drop) scr_error_cause_drop(obj);
   scr_obj_free_note();
   scr_cyc_free(e);
@@ -102,6 +104,8 @@ static void scr_error_destroy(void *obj) {
   scr_str_release(e->system_call);
   scr_str_release(e->system_path);
   scr_str_release(e->system_dest);
+  scr_str_release(e->system_message);
+  scr_str_release(e->system_code);
   if (e->error_cause && scr_error_cause_drop) scr_error_cause_drop(obj);
   scr_obj_free_note();
   if (scr_error_traced) scr_cyc_free(e);
@@ -284,7 +288,7 @@ static ScrStr *scr_error_format(ScrError *e, ScrStr *name, ScrStr *message) {
    * the code-prefix test is exact for runtime-thrown errors; a user
    * assigning an ERR_* code onto a plain Error would bracket here where
    * Node would not (documented — user code owns that spelling). */
-  bool assertion = name && e->code && e->code->len >= 4 &&
+  bool assertion = !e->native_plain && name && e->code && e->code->len >= 4 &&
                    memcmp(e->code->data, "ERR_", 4) == 0;
   if (!name || name->len == 0) {
     return message ? scr_str_retain(message) : scr_str_new("", 0);
