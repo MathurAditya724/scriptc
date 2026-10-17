@@ -885,9 +885,9 @@ static void scr_test_options_apply(ScrTestCtx *t, double flags, double plan, dou
   if (plan >= 0) t->plan = (int)plan;
   if ((int)flags & SCR_TEST_F_TIMEOUT) t->timeout = timeout;
   if ((int)flags & SCR_TEST_F_CONCURRENCY) {
-    /* `true` is os.availableParallelism() - 1, at least 1, as in Node. */
-    double cores = scr_os_available_parallelism() - 1;
-    t->concurrency = concurrency == -1 ? (cores < 1 ? 1 : cores) : concurrency;
+    /* `true` runs every subtest at once: Node uses Infinity for any test
+     * with a parent, and os.availableParallelism() - 1 only for its root. */
+    t->concurrency = concurrency == -1 ? INFINITY : concurrency;
   }
 }
 

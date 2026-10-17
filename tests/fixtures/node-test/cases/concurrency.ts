@@ -95,6 +95,24 @@ describe("turns", { concurrency: true }, () => {
   });
 });
 
+// `true` runs every subtest at once, whatever the CPU count.
+let running = 0;
+let most = 0;
+describe("all at once", { concurrency: true }, () => {
+  for (let i = 0; i < 64; i++) {
+    it(`n${i}`, async () => {
+      running++;
+      most = Math.max(most, running);
+      await delay(5);
+      running--;
+    });
+  }
+  after(() => {
+    log.push(`most ${most}`);
+    expected.push("most 64");
+  });
+});
+
 test("subtests", { concurrency: 2 }, async (t) => {
   void t.test("u1", async () => {
     log.push("u1 start");
