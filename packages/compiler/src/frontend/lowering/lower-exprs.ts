@@ -13395,6 +13395,9 @@ function lowerMatchGroupsRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressio
   const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (!recvT || !isMatchSliceType(lowerer, recvT) || !lowerer.isStdlibMember(expr)) return null;
   const groups = matchResultNamedGroupsOf(lowerer, expr.expression);
+  // An untraced regex: TypeScript reaches the member fence; JavaScript
+  // would otherwise read the slice's absent expando as undefined.
+  if (groups === null && isJsSourceFile(expr.getSourceFile())) lowerer.stdlibMemberFence(expr);
   if (groups === null) return null;
   if (groups.length === 0) {
     // Node: a match result of a group-less regex answers undefined —

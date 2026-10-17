@@ -3032,6 +3032,23 @@ function lowerOptionalStringNumber(
   return { kind: "call", callee: helper, args: [arg], type: F64, loc };
 }
 
+/** Iterator types whose helper calls have no lowering on any path (the
+ * array iterator's chains lower in lowerIteratorHelperCall). */
+const UNLOWERED_ITERATOR_TYPES = new Set(["MapIterator", "SetIterator", "StringIterator"]);
+const ITERATOR_HELPER_METHODS = new Set([
+  "map",
+  "filter",
+  "take",
+  "drop",
+  "flatMap",
+  "toArray",
+  "forEach",
+  "reduce",
+  "some",
+  "every",
+  "find",
+]);
+
 /** METHOD calls on dyn receivers (`pkg.name.replace(...)`, `rawName.split`,
  * `ws.packages.filter(...)` — JSON.parse-derived values): validate the
  * receiver's dyn kind, extract, and ride the STATIC method machinery — the
@@ -3077,27 +3094,23 @@ function lowerDynReceiverMethodCall(
   const recvSymbol = recvTs.getSymbol();
   if (
     recvSymbol &&
-    ["MapIterator", "SetIterator"].includes(recvSymbol.name) &&
+    UNLOWERED_ITERATOR_TYPES.has(recvSymbol.name) &&
     lowerer.isStdlibSymbol(recvSymbol) &&
-    [
-      "map",
-      "filter",
-      "take",
-      "drop",
-      "flatMap",
-      "toArray",
-      "forEach",
-      "reduce",
-      "some",
-      "every",
-      "find",
-    ].includes(access.name.text) &&
+    ITERATOR_HELPER_METHODS.has(access.name.text) &&
     lowerer.isStdlibMember(access)
   ) {
+    if (recvSymbol.name === "MapIterator" || recvSymbol.name === "SetIterator") {
+      lowerer.noLowering(
+        `collection iterator .${access.name.text}()`,
+        call,
+        "stored Map/Set iterators support .next() and iteration; iterator helper methods have no lowering",
+      );
+    }
+    // The checked runtime's string iterator has no helper methods.
     lowerer.noLowering(
-      `collection iterator .${access.name.text}()`,
+      `${recvSymbol.name}.${access.name.text}`,
       call,
-      "stored Map/Set iterators support .next() and iteration; iterator helper methods have no lowering",
+      "iterator helpers lower on chains from arr.values() or arr.entries() that end in a terminal (toArray, forEach, reduce, some, every, find) — spread the string first: [...s].values()",
     );
   }
   const arrayReceiver = lowerer.checker.isArrayType(recvTs);
@@ -8108,11 +8121,26 @@ export function lowerRecordFieldCall(
     return init ? { kind: "seqExpr", stmts: [init], result, type: result.type, loc } : result;
   }
   if (callee.type.kind !== "func") lowerer.badType(access, lowerer.typeOf(access));
+  // JavaScript passes the record as `this`. A record with no dynamic form
+  // cannot be that receiver; the library's own function fields (the
+  // resolve/reject of Promise.withResolvers) never read it.
+  let receiver: IrExpr | undefined;
+  if (target && receiverLocal) {
+    if (lowerer.dynConvertible(target.obj.type)) {
+      receiver = lowerer.coerceToExpected(target.obj, DYN);
+    } else if (!lowerer.isStdlibMember(access)) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        `calling a function field of a '${lowerer.fmt(target.obj.type)}' record (the record has no dynamic form to pass as 'this')`,
+      );
+    }
+  }
   const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
   const result: IrExpr = {
     kind: "callValue",
     callee,
-    ...(target && receiverLocal ? { receiver: lowerer.coerceToExpected(target.obj, DYN) } : {}),
+    ...(receiver ? { receiver } : {}),
     args,
     type: callee.type.ret,
     loc,
