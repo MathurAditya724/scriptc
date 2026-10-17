@@ -66,10 +66,16 @@
  *
  * Bounds (SEMANTICS.md divergence 55): no session resumption or
  * tickets, no renegotiation/post-handshake auth, no client
- * certificates, hostname verification is skipped for IP-literal peers
- * (mbedTLS has no IP-SAN matching in 3.6), and non-verify client
- * handshake failures carry a generic message where Node prints an
- * OpenSSL one. */
+ * certificates, and non-verify client handshake failures carry a generic
+ * message where Node prints an OpenSSL one.
+ *
+ * Certificate names: a client always checks the leaf against one name,
+ * the servername when it is non-empty and the host otherwise. SNI carries
+ * the same name, except that an IP literal or servername: "" sends none
+ * (Node's tls.connect). When no SNI goes out, mbedTLS is told to skip its
+ * own name check and the verify callback runs it: an IP literal must be
+ * one of the certificate's IP SANs (Node's checkServerIdentity), any other
+ * name follows mbedTLS's DNS SAN / CN rules. */
 #include "scr_runtime.h"
 
 #include <errno.h>
@@ -329,7 +335,8 @@ static void scr_tls_srv_release_v(void *p) { scr_tls_srv_release((ScrTlsSrv *)p)
 typedef struct ScrTlsCli {
   mbedtls_ssl_config conf;
   mbedtls_x509_crt ca;
-  char *hostname; /* NULL for IP-literal peers (no SNI, no name check) */
+  char *hostname;    /* the SNI name; NULL sends none (an IP literal, servername: "") */
+  char *verify_name; /* the name the leaf is checked against; NULL fails the check */
   /* true when the handshake RECORDS verification (VERIFY_OPTIONAL /
    * VERIFY_REQUIRED) — socket.authorized answers from the result; a
    * VERIFY_NONE socket (the https client's rejectUnauthorized:false)
@@ -414,6 +421,12 @@ static mbedtls_x509_crt *scr_tls_system_ca(void) {
  * RUNS and records (socket.authorized / authorizationError answer
  * Node's split); the https client's historical false keeps VERIFY_NONE
  * (verify_optional false there — nothing recorded, nothing read). */
+static bool scr_tls_is_ip(const char *h) {
+  struct in_addr a4;
+  struct in6_addr a6;
+  return inet_pton(AF_INET, h, &a4) == 1 || inet_pton(AF_INET6, h, &a6) == 1;
+}
+
 static ScrTlsCli *scr_tls_cli_new2(ScrStr *host, bool reject_unauthorized, const char *ca,
                                     size_t ca_len, bool verify_optional) {
   scr_tls_rng_init();
@@ -439,16 +452,35 @@ static ScrTlsCli *scr_tls_cli_new2(ScrStr *host, bool reject_unauthorized, const
                                                             : MBEDTLS_SSL_VERIFY_OPTIONAL);
     mbedtls_ssl_conf_ca_chain(&c->conf, ca_len > 0 ? &c->ca : scr_tls_system_ca(), NULL);
   }
-  /* SNI + name verification want the DNS name; an IP literal gets
-   * neither (mbedTLS 3.6 has no IP-SAN matching — SEMANTICS.md). */
-  struct in_addr a4;
-  struct in6_addr a6;
+  /* The host is the verified name; it is also the SNI name unless it is
+   * an IP literal. */
   const char *h = host->len > 0 ? host->data : "localhost";
-  if (inet_pton(AF_INET, h, &a4) != 1 && inet_pton(AF_INET6, h, &a6) != 1) {
+  c->verify_name = strdup(h);
+  if (!c->verify_name) scr_tls_oom();
+  if (!scr_tls_is_ip(h)) {
     c->hostname = strdup(h);
     if (!c->hostname) scr_tls_oom();
   }
   return c;
+}
+
+/* The servername option: a non-empty name is both the SNI name and the
+ * verified name; "" sends no SNI and keeps the host as the verified name,
+ * as in Node. */
+static void scr_tls_cli_set_servername(ScrTlsCli *c, const ScrStr *servername) {
+  free(c->hostname);
+  c->hostname = NULL;
+  if (servername->len == 0) return;
+  char *z = malloc(servername->len + 1);
+  if (!z) scr_tls_oom();
+  memcpy(z, servername->data, servername->len);
+  z[servername->len] = '\0';
+  free(c->verify_name);
+  c->verify_name = z;
+  if (!scr_tls_is_ip(z)) {
+    c->hostname = strdup(z);
+    if (!c->hostname) scr_tls_oom();
+  }
 }
 
 static ScrTlsCli *scr_tls_cli_new(ScrStr *host, bool reject_unauthorized, const char *ca,
@@ -460,6 +492,7 @@ static void scr_tls_cli_free(ScrTlsCli *c) {
   mbedtls_ssl_config_free(&c->conf);
   mbedtls_x509_crt_free(&c->ca);
   free(c->hostname);
+  free(c->verify_name);
   free(c);
 }
 
@@ -488,9 +521,6 @@ typedef struct ScrTlsSock {
   bool vrfy_chain_self;
   bool vrfy_expired;
   bool vrfy_cn_mismatch;
-  /* servername: "" on a client: no SNI goes out, so mbedTLS has no name
-   * to check, and the verify callback checks cli->hostname itself */
-  bool vrfy_host_without_sni;
   /* SNI pre-parse state (server side with an SNI callback only) */
   int sni_state;
   bool in_handshake;   /* a synchronous cb answer must not re-pump */
@@ -499,21 +529,49 @@ typedef struct ScrTlsSock {
   ScrSecureCtx *sni_ctx; /* owned; the answer (NULL = default cert) */
 } ScrTlsSock;
 
+/* checkServerIdentity for an IP literal: the address must be one of the
+ * certificate's IP SANs (no DNS SAN or CN applies). */
+static bool scr_tls_leaf_has_ip(const mbedtls_x509_crt *crt, const char *ip) {
+  unsigned char addr[16];
+  size_t len = 0;
+  if (inet_pton(AF_INET, ip, addr) == 1) len = 4;
+  else if (inet_pton(AF_INET6, ip, addr) == 1) len = 16;
+  else return false;
+  /* without the extension the sequence is empty (no buffer) */
+  for (const mbedtls_x509_sequence *cur = &crt->subject_alt_names; cur != NULL; cur = cur->next) {
+    if (cur->buf.p == NULL) continue;
+    unsigned char tag = (unsigned char)cur->buf.tag & MBEDTLS_ASN1_TAG_VALUE_MASK;
+    if (tag == MBEDTLS_X509_SAN_IP_ADDRESS && cur->buf.len == len &&
+        memcmp(cur->buf.p, addr, len) == 0)
+      return true;
+  }
+  return false;
+}
+
 /* The client verify callback: records WHERE verification failed and how
  * the presented chain is shaped, per certificate (depth 0 = leaf), so
  * the failure message can be Node's exact split. The verdict stays
- * mbedTLS's, except that a client sending no SNI adds the host name
- * check mbedTLS skipped: mbedtls_x509_crt_verify runs the same name rules
- * on the leaf alone, and only its CN_MISMATCH bit is kept. */
+ * mbedTLS's, except that a client sending no SNI (mbedTLS was told to
+ * skip its name check) checks the leaf against cli->verify_name here: an
+ * IP literal against the IP SANs, another name with mbedtls_x509_crt_verify
+ * on the leaf alone, keeping only its CN_MISMATCH bit. No name to check is
+ * a mismatch. */
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
-  if (depth == 0 && t->vrfy_host_without_sni && t->cli != NULL && t->cli->hostname != NULL) {
-    mbedtls_x509_crt *chain = crt->next;
-    uint32_t name_flags = 0;
-    crt->next = NULL; /* the name check needs the leaf only */
-    (void)mbedtls_x509_crt_verify(crt, NULL, NULL, t->cli->hostname, &name_flags, NULL, NULL);
-    crt->next = chain;
-    *flags |= name_flags & MBEDTLS_X509_BADCERT_CN_MISMATCH;
+  if (depth == 0 && t->cli != NULL && t->cli->hostname == NULL) {
+    const char *name = t->cli->verify_name;
+    if (name == NULL || name[0] == '\0') {
+      *flags |= MBEDTLS_X509_BADCERT_CN_MISMATCH;
+    } else if (scr_tls_is_ip(name)) {
+      if (!scr_tls_leaf_has_ip(crt, name)) *flags |= MBEDTLS_X509_BADCERT_CN_MISMATCH;
+    } else {
+      mbedtls_x509_crt *chain = crt->next;
+      uint32_t name_flags = 0;
+      crt->next = NULL; /* the name check needs the leaf only */
+      (void)mbedtls_x509_crt_verify(crt, NULL, NULL, name, &name_flags, NULL, NULL);
+      crt->next = chain;
+      *flags |= name_flags & MBEDTLS_X509_BADCERT_CN_MISMATCH;
+    }
   }
   bool self = crt->issuer_raw.len == crt->subject_raw.len &&
               memcmp(crt->issuer_raw.p, crt->subject_raw.p, crt->subject_raw.len) == 0;
@@ -1009,7 +1067,9 @@ static void scr_tls_cli_wrap(ScrNetSocket *sock, void *ctx) {
   if (!t) scr_tls_oom();
   mbedtls_ssl_init(&t->ssl);
   if (mbedtls_ssl_setup(&t->ssl, &cli->conf) != 0) scr_tls_oom();
-  if (cli->hostname != NULL) (void)mbedtls_ssl_set_hostname(&t->ssl, cli->hostname);
+  /* NULL sends no SNI and skips mbedTLS's name check; the verify callback
+   * checks cli->verify_name instead */
+  (void)mbedtls_ssl_set_hostname(&t->ssl, cli->hostname);
   mbedtls_ssl_set_verify(&t->ssl, &scr_tls_vrfy_cb, t);
   t->sock = sock;
   t->cli = cli; /* the tctx owns the per-request config now */
@@ -1589,9 +1649,9 @@ ScrNetSocket *scr_tls_connect_dyn(double port, ScrStr *host /*borrowed, nullable
     scr_closure_release(cb);
     return NULL;
   }
-  /* SNI + verification see the servername when given, the host name
-   * otherwise (Node's servername default). */
-  ScrStr *verify_host = (ScrStr *)(servername != NULL ? servername : dial_host);
+  /* SNI + verification see a non-empty servername when given, the host
+   * name otherwise (Node's servername default); "" sends no SNI. */
+  ScrStr *verify_host = dial_host;
   ScrStr *localhost_fallback = NULL;
   if (verify_host == NULL) {
     localhost_fallback = scr_str_new("localhost", 9);
@@ -1606,6 +1666,7 @@ ScrNetSocket *scr_tls_connect_dyn(double port, ScrStr *host /*borrowed, nullable
   ScrTlsCli *cli = scr_tls_cli_new2(verify_host, reject,
                                      ca != NULL ? (const char *)ca->data : NULL,
                                      ca != NULL ? ca->len : 0, !reject);
+  if (servername != NULL) scr_tls_cli_set_servername(cli, servername);
   scr_tls_cli_wrap(s, cli);
   scr_str_release(localhost_fallback);
   scr_bytes_release(ca);
@@ -1683,14 +1744,9 @@ void scr_https_client_servername(ScrHttpClientReq *c, ScrStr *name /*borrowed*/)
   ScrNetSocket *sock = scr_http_client_socket(c);
   if (sock == NULL) return;
   ScrTlsSock *t = scr_tls_sock_of(sock);
-  if (t != NULL) {
-    char *z = malloc(name->len + 1);
-    if (!z) scr_tls_oom();
-    memcpy(z, name->data, name->len);
-    z[name->len] = '\0';
-    (void)mbedtls_ssl_set_hostname(&t->ssl, name->len > 0 ? z : NULL);
-    free(z);
-    t->vrfy_host_without_sni = name->len == 0;
+  if (t != NULL && t->cli != NULL) {
+    scr_tls_cli_set_servername(t->cli, name);
+    (void)mbedtls_ssl_set_hostname(&t->ssl, t->cli->hostname);
   }
   scr_net_sock_release(sock);
 }
