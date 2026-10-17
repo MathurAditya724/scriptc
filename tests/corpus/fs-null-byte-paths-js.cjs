@@ -13,58 +13,46 @@ const bad = path.join(dir, "na\0me");
 function show(label, error) {
   console.log(label, error.name, error.code, error.message.replace(dir, "<dir>"));
 }
+function attempt(label, run) {
+  try {
+    run();
+    console.log(label, "no throw");
+  } catch (error) {
+    show(label, error);
+  }
+}
 function never() {
   console.log("callback ran");
 }
 
-const sync = [
-  ["readFileSync", () => { fs.readFileSync(bad, "utf8"); }],
-  ["writeFileSync", () => { fs.writeFileSync(bad, "x"); }],
-  ["statSync", () => { fs.statSync(bad); }],
-  ["lstatSync", () => { fs.lstatSync(bad); }],
-  ["mkdirSync", () => { fs.mkdirSync(bad); }],
-  ["readdirSync", () => { fs.readdirSync(bad); }],
-  ["renameSync", () => { fs.renameSync(file, bad); }],
-  ["copyFileSync", () => { fs.copyFileSync(file, bad); }],
-  ["realpathSync", () => { fs.realpathSync(bad); }],
-  ["unlinkSync", () => { fs.unlinkSync(bad); }],
-  ["openSync", () => { fs.openSync(bad, "r"); }],
-  ["createReadStream", () => { fs.createReadStream(bad); }],
-  ["createWriteStream", () => { fs.createWriteStream(bad); }],
-];
-for (const [label, run] of sync) {
-  try {
-    run();
-    console.log(label, "no throw");
-  } catch (error) {
-    show(label, error);
-  }
-}
+attempt("readFileSync", () => { fs.readFileSync(bad, "utf8"); });
+attempt("writeFileSync", () => { fs.writeFileSync(bad, "x"); });
+attempt("statSync", () => { fs.statSync(bad); });
+attempt("lstatSync", () => { fs.lstatSync(bad); });
+attempt("mkdirSync", () => { fs.mkdirSync(bad); });
+attempt("readdirSync", () => { fs.readdirSync(bad); });
+attempt("renameSync", () => { fs.renameSync(file, bad); });
+attempt("copyFileSync", () => { fs.copyFileSync(file, bad); });
+attempt("realpathSync", () => { fs.realpathSync(bad); });
+attempt("unlinkSync", () => { fs.unlinkSync(bad); });
+attempt("openSync", () => { fs.openSync(bad, "r"); });
+attempt("createReadStream", () => { fs.createReadStream(bad); });
+attempt("createWriteStream", () => { fs.createWriteStream(bad); });
 console.log("existsSync", fs.existsSync(bad), fs.existsSync(file + "\0x"), fs.existsSync(file));
 
-const callbacks = [
-  ["readFile", () => { fs.readFile(bad, "utf8", never); }],
-  ["writeFile", () => { fs.writeFile(bad, "x", never); }],
-  ["stat", () => { fs.stat(bad, never); }],
-  ["lstat", () => { fs.lstat(bad, never); }],
-  ["mkdir", () => { fs.mkdir(bad, never); }],
-  ["readdir", () => { fs.readdir(bad, never); }],
-  ["unlink", () => { fs.unlink(bad, never); }],
-  ["rename", () => { fs.rename(file, bad, never); }],
-  ["copyFile", () => { fs.copyFile(bad, file, never); }],
-  ["access", () => { fs.access(bad, never); }],
-  ["open", () => { fs.open(bad, "r", never); }],
-  ["realpath", () => { fs.realpath(bad, never); }],
-  ["mkdtemp", () => { fs.mkdtemp(bad, never); }],
-];
-for (const [label, run] of callbacks) {
-  try {
-    run();
-    console.log(label, "no throw");
-  } catch (error) {
-    show(label, error);
-  }
-}
+attempt("readFile", () => { fs.readFile(bad, "utf8", never); });
+attempt("writeFile", () => { fs.writeFile(bad, "x", never); });
+attempt("stat", () => { fs.stat(bad, never); });
+attempt("lstat", () => { fs.lstat(bad, never); });
+attempt("mkdir", () => { fs.mkdir(bad, never); });
+attempt("readdir", () => { fs.readdir(bad, never); });
+attempt("unlink", () => { fs.unlink(bad, never); });
+attempt("rename", () => { fs.rename(file, bad, never); });
+attempt("copyFile", () => { fs.copyFile(bad, file, never); });
+attempt("access", () => { fs.access(bad, never); });
+attempt("open", () => { fs.open(bad, "r", never); });
+attempt("realpath", () => { fs.realpath(bad, never); });
+attempt("mkdtemp", () => { fs.mkdtemp(bad, never); });
 
 async function promises() {
   try {
