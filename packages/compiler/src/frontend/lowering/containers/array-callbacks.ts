@@ -709,6 +709,30 @@ function arrayUnionHofHelper(
   return name;
 }
 
+/** A kept filter element as the result's element type: the value itself,
+ * or its narrowed arm or class view when the predicate narrowed it. */
+function filterRetainedValue(
+  lowerer: Lowerer,
+  v: IrExpr,
+  elem: IrType,
+  outElem: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  if (typeEquals(outElem, elem)) return v;
+  const classView =
+    outElem.kind === "object" ? checkedClassAssertion(lowerer, v, outElem, loc) : null;
+  if (classView !== null) return classView;
+  if (v.type.kind !== "union") return v;
+  return {
+    kind: "unionNarrow",
+    unionId: v.type.unionId,
+    tag: lowerer.armTag(v.type.unionId, outElem),
+    value: v,
+    type: outElem,
+    loc,
+  };
+}
+
 /** The loop body of one synthetic array HOF, from existing IR nodes:
  *
  *   map:     out = []; n = a.length; for (i = 0; i < n; i++) out.push(f(a[i])); return out;
@@ -914,24 +938,7 @@ function buildArrayHofFn(
       { id: "v.0", name: "v", type: valueT, mutable: false },
     );
     returnType = outT;
-    const classView =
-      !typeEquals(outElem, elem) && outElem.kind === "object"
-        ? checkedClassAssertion(lowerer, varRef("v.0", valueT, loc), outElem, loc)
-        : null;
-    const retained = typeEquals(outElem, elem)
-      ? varRef("v.0", valueT, loc)
-      : classView !== null
-        ? classView
-        : valueT.kind === "union"
-          ? {
-              kind: "unionNarrow" as const,
-              unionId: valueT.unionId,
-              tag: lowerer.armTag(valueT.unionId, outElem),
-              value: varRef("v.0", valueT, loc),
-              type: outElem,
-              loc,
-            }
-          : varRef("v.0", valueT, loc);
+    const retained = filterRetainedValue(lowerer, varRef("v.0", valueT, loc), elem, outElem, loc);
     body = [
       {
         kind: "varDecl",
@@ -1039,16 +1046,7 @@ export function lowerArrayFindLikeCall(
   // `packages.some((p) => p.scripts[name])` idiom, whose callback
   // returns the index read's `string | undefined`).
   const fnRet = fnArg.type.ret;
-  const truthyRet =
-    fnRet.kind === "bool" ||
-    fnRet.kind === "f64" ||
-    fnRet.kind === "string" ||
-    fnRet.kind === "dyn" ||
-    (fnRet.kind === "union" &&
-      (lowerer.unions.get(fnRet.unionId)?.arms ?? []).every(
-        (a) => a.kind !== "dyn" && a.kind !== "caught",
-      ));
-  if (!truthyRet) lowerer.badType(argNode, lowerer.typeOf(argNode));
+  if (!findPredicateOk(lowerer, fnRet)) lowerer.badType(argNode, lowerer.typeOf(argNode));
   const last = method === "findLast" || method === "findLastIndex";
   if (
     method === "some" ||
@@ -1116,42 +1114,7 @@ export function lowerArrayFindLikeCall(
   if (resultT.kind !== "union") lowerer.badType(call, lowerer.typeOf(call)); // defensive: T | undefined always maps to a union
   const undefTag = lowerer.armTag(resultT.unionId, UNDEFINED_T);
   if (undefTag < 0) lowerer.badType(call, lowerer.typeOf(call));
-  let retag: string | null = null;
-  if (!lowerer.coercibleValue(valueT, resultT)) {
-    const inline = ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode);
-    if (!unchangedElement && (!inline || argNode.type !== undefined)) {
-      lowerer.unsupported(
-        "SC1090",
-        argNode,
-        `narrowing '.${method}' requires an inline callback with an inferred predicate (annotate the return ': boolean' to keep the receiver's element type)`,
-      );
-    }
-    const signature = inline ? lowerer.checker.getSignatureFromDeclaration(argNode) : undefined;
-    const predicate = signature
-      ? lowerer.checker.getTypePredicateOfSignature(signature)
-      : undefined;
-    if (
-      (!unchangedElement && (!predicate || predicate.parameterIndex !== 0)) ||
-      valueT.kind !== "union"
-    ) {
-      lowerer.unsupported(
-        "SC1090",
-        call,
-        `'.${method}' result narrowing without a predicate over its element`,
-      );
-    }
-    retag = lowerer.narrowedRetagHelper(call, valueT.unionId, resultT.unionId, loc);
-    const present = lowerer.stripUndefinedArm(resultT);
-    if (
-      retag === null &&
-      !(present.kind === "object" && canAssertClassValue(lowerer, valueT, present))
-    )
-      lowerer.unsupported(
-        "SC1090",
-        call,
-        `'.${method}' narrowing to an incompatible result layout`,
-      );
-  }
+  const retag = findResultRetag(lowerer, call, argNode, method, valueT, resultT, unchangedElement);
   const helper = findHelper(
     lowerer,
     elem,
@@ -1166,6 +1129,67 @@ export function lowerArrayFindLikeCall(
     present,
   );
   return { kind: "call", callee: helper, args: [receiver, fnArg], type: resultT, loc };
+}
+
+/** The retag helper that converts a found element into find's result union,
+ * or null when the element converts directly. Only an inline callback with
+ * an inferred predicate over its element can narrow the result; a written
+ * predicate is an unchecked assertion and keeps the refusal. */
+function findResultRetag(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  argNode: ts.Expression,
+  method: string,
+  valueT: IrType,
+  resultT: IrType & { kind: "union" },
+  unchangedElement: boolean,
+): string | null {
+  if (lowerer.coercibleValue(valueT, resultT)) return null;
+  const loc = locOf(call);
+  const inline = ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode);
+  if (!unchangedElement && (!inline || argNode.type !== undefined)) {
+    lowerer.unsupported(
+      "SC1090",
+      argNode,
+      `narrowing '.${method}' requires an inline callback with an inferred predicate (annotate the return ': boolean' to keep the receiver's element type)`,
+    );
+  }
+  const signature = inline ? lowerer.checker.getSignatureFromDeclaration(argNode) : undefined;
+  const predicate = signature ? lowerer.checker.getTypePredicateOfSignature(signature) : undefined;
+  if (
+    (!unchangedElement && (!predicate || predicate.parameterIndex !== 0)) ||
+    valueT.kind !== "union"
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      `'.${method}' result narrowing without a predicate over its element`,
+    );
+  }
+  const retag = lowerer.narrowedRetagHelper(call, valueT.unionId, resultT.unionId, loc);
+  const present = lowerer.stripUndefinedArm(resultT);
+  if (
+    retag === null &&
+    !(present.kind === "object" && canAssertClassValue(lowerer, valueT, present))
+  )
+    lowerer.unsupported("SC1090", call, `'.${method}' narrowing to an incompatible result layout`);
+  return retag;
+}
+
+/** The find-like predicate results whose ToBoolean has a static answer:
+ * bool passes through; f64/string by value; checked values and
+ * truthy-answerable unions by their runtime kind or arm. */
+function findPredicateOk(lowerer: Lowerer, fnRet: IrType): boolean {
+  return (
+    fnRet.kind === "bool" ||
+    fnRet.kind === "f64" ||
+    fnRet.kind === "string" ||
+    fnRet.kind === "dyn" ||
+    (fnRet.kind === "union" &&
+      (lowerer.unions.get(fnRet.unionId)?.arms ?? []).every(
+        (a) => a.kind !== "dyn" && a.kind !== "caught",
+      ))
+  );
 }
 
 /** ToBoolean of a predicate result inside a synthesized HOF helper — the
@@ -1208,17 +1232,7 @@ function findHelper(
   const fnT = funcOf([valueT, F64, arrT].slice(0, arity), fnRet);
 
   const v = varRef("v.0", valueT, loc);
-  const presentArm = lowerer.stripUndefinedArm(resultT);
-  // A successful inferred class predicate may select a descendant of a
-  // stored base arm. Keep the value read before the callback mutated the array.
-  const classView =
-    retag === null && !lowerer.coercibleValue(valueT, resultT) && presentArm.kind === "object"
-      ? checkedClassAssertion(lowerer, v, presentArm, loc)
-      : null;
-  const found: IrExpr =
-    retag === null
-      ? lowerer.coerceToExpected(classView ?? v, resultT)
-      : { kind: "call", callee: retag, args: [v], type: resultT, loc };
+  const found = findFoundValue(lowerer, v, resultT, retag, loc);
   const miss: IrExpr = {
     kind: "unionWrap",
     unionId: resultT.unionId,
@@ -1270,6 +1284,25 @@ function findHelper(
     loc,
   });
   return name;
+}
+
+/** A found element as find's result union. A successful inferred class
+ * predicate may select a descendant of a stored base arm. The value is the
+ * one read before the callback ran, even if the callback mutated its slot. */
+function findFoundValue(
+  lowerer: Lowerer,
+  v: IrExpr,
+  resultT: IrType & { kind: "union" },
+  retag: string | null,
+  loc: SrcLoc,
+): IrExpr {
+  if (retag !== null) return { kind: "call", callee: retag, args: [v], type: resultT, loc };
+  const presentArm = lowerer.stripUndefinedArm(resultT);
+  const classView =
+    !lowerer.coercibleValue(v.type, resultT) && presentArm.kind === "object"
+      ? checkedClassAssertion(lowerer, v, presentArm, loc)
+      : null;
+  return lowerer.coerceToExpected(classView ?? v, resultT);
 }
 
 /** The findIndex/findLastIndex loop — find's index-returning sibling, no
@@ -2579,4 +2612,201 @@ function buildDynFilterFn(name: string, elemT: IrType, arity: number, loc: SrcLo
     body,
     loc,
   };
+}
+
+/** Tuple `filter` / `find` / `findIndex` / `some` / `every`. `reads` holds
+ * one element read per position, in index order, each over the helper's
+ * `a.0` receiver parameter. The helper visits positions in order and reads
+ * each one only when it is visited, so a callback's write to a later
+ * position is visible; filter and find keep the value read before the
+ * callback ran. find, findIndex, some and every return at the first
+ * deciding position. Predicate results and narrowing follow the array
+ * methods' rules. */
+export function lowerTuplePredicateCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  method: "filter" | "find" | "findIndex" | "some" | "every",
+  receiver: IrExpr,
+  elem: IrType,
+  reads: IrExpr[],
+): IrExpr {
+  const loc = locOf(call);
+  const argNode = call.arguments[0]!;
+  const booleanFilter =
+    method === "filter" &&
+    ts.isIdentifier(argNode) &&
+    argNode.text === "Boolean" &&
+    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(argNode) ?? undefined);
+  if (booleanFilter) {
+    if (elem.kind === "union") lowerer.requireTruthyUnion(elem.unionId, argNode);
+    if (elem.kind === "dyn" || elem.kind === "void" || isUnitType(elem)) {
+      lowerer.badType(argNode, lowerer.typeOf(argNode));
+    }
+  }
+  const { fnArg, arity } = booleanFilter
+    ? { fnArg: truthyFilterCallback(lowerer, elem, loc), arity: 1 }
+    : lowerArrayCallback(lowerer, argNode, [elem], receiver.type);
+  const fnRet = fnArg.type.ret;
+  if (method === "filter" ? !filterPredicateOk(lowerer, fnRet) : !findPredicateOk(lowerer, fnRet)) {
+    if (fnRet.kind === "void") {
+      lowerer.unsupported(
+        "SC1090",
+        argNode,
+        `'.${method}()' with a void-returning predicate (the callback return value is erased before its truthiness can be tested)`,
+      );
+    }
+    lowerer.badType(argNode, lowerer.typeOf(argNode));
+  }
+  let resultT: IrType;
+  let outElem: IrType = elem;
+  // A narrowing find retags from the element union widened with undefined,
+  // the value type an array find narrows from.
+  let foundT: IrType = elem;
+  let retag: string | null = null;
+  if (method === "filter") {
+    // The element union is built in position order, so the checker's
+    // result element can list the same arms in another order.
+    const checkerResult = lowerer.mapTypeOf(lowerer.typeOf(call));
+    const arms = (type: IrType): IrType[] =>
+      type.kind === "union" ? lowerer.unions.get(type.unionId)!.arms : [type];
+    const unchanged =
+      checkerResult?.kind === "array" &&
+      arms(checkerResult.elem).length === arms(elem).length &&
+      arms(checkerResult.elem).every((arm) => arms(elem).some((other) => typeEquals(arm, other)));
+    outElem = unchanged
+      ? elem
+      : filterResultElem(lowerer, call, argNode, elem, elem, booleanFilter);
+    resultT = arrayOf(outElem);
+  } else if (method === "find") {
+    resultT = lowerer.irTypeOf(call);
+    if (resultT.kind !== "union" || lowerer.armTag(resultT.unionId, UNDEFINED_T) < 0) {
+      lowerer.badType(call, lowerer.typeOf(call));
+    }
+    if (!lowerer.coercibleValue(elem, resultT)) foundT = arrayValueType(lowerer, elem);
+    retag = findResultRetag(lowerer, call, argNode, method, foundT, resultT, false);
+  } else {
+    resultT = method === "findIndex" ? F64 : BOOL;
+  }
+  const key = `tuple.${method}:${typeKey(receiver.type)}:${typeKey(fnArg.type)}:${typeKey(resultT)}:${arity}${callbackSite(fnArg)}`;
+  let helper = lowerer.arrHofHelpers.get(key);
+  if (!helper) {
+    helper = `%tuple.${method}.${lowerer.arrHofHelpers.size}`;
+    lowerer.arrHofHelpers.set(key, helper);
+    const v = varRef("v.0", elem, loc);
+    const out = varRef("out.0", resultT, loc);
+    const test = (index: number): IrExpr => {
+      const invocation: IrExpr = {
+        kind: "callValue",
+        callee: varRef("f.0", fnArg.type, loc),
+        args: [v, numLit(index, loc)].slice(0, arity),
+        type: fnRet,
+        loc,
+      };
+      return method === "filter"
+        ? filterCond(invocation, fnRet, loc)
+        : predicateToBoolean(invocation);
+    };
+    const decided = (index: number): IrStmt => {
+      switch (method) {
+        case "filter":
+          return arrayValueStore(
+            lowerer,
+            out,
+            { kind: "arrIntrinsic", method: "length", receiver: out, args: [], type: F64, loc },
+            filterRetainedValue(lowerer, v, elem, outElem, loc),
+            outElem,
+            loc,
+          );
+        case "find":
+          return {
+            kind: "return",
+            value: findFoundValue(
+              lowerer,
+              lowerer.coerceToExpected(v, foundT),
+              resultT as IrType & { kind: "union" },
+              retag,
+              loc,
+            ),
+            loc,
+          };
+        case "findIndex":
+          return { kind: "return", value: numLit(index, loc), loc };
+        case "some":
+          return { kind: "return", value: boolLit(true, loc), loc };
+        case "every":
+          return { kind: "return", value: boolLit(false, loc), loc };
+      }
+    };
+    const body: IrStmt[] =
+      method === "filter"
+        ? [
+            {
+              kind: "varDecl",
+              localId: "out.0",
+              init: { kind: "arrayLit", elems: [], type: resultT, loc },
+              loc,
+            },
+          ]
+        : [];
+    reads.forEach((read, index) => {
+      body.push(
+        index === 0
+          ? { kind: "varDecl", localId: "v.0", init: read, loc }
+          : { kind: "assign", localId: "v.0", value: read, loc },
+        {
+          kind: "if",
+          cond:
+            method === "every"
+              ? { kind: "unary", op: "!", operand: test(index), type: BOOL, loc }
+              : test(index),
+          then: [decided(index)],
+          else_: null,
+          loc,
+        },
+      );
+    });
+    let done: IrExpr;
+    switch (method) {
+      case "filter":
+        done = out;
+        break;
+      case "find": {
+        const unionId = (resultT as IrType & { kind: "union" }).unionId;
+        done = {
+          kind: "unionWrap",
+          unionId,
+          tag: lowerer.armTag(unionId, UNDEFINED_T),
+          value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+          type: resultT,
+          loc,
+        };
+        break;
+      }
+      case "findIndex":
+        done = numLit(-1, loc);
+        break;
+      default:
+        done = boolLit(method === "every", loc);
+    }
+    body.push({ kind: "return", value: done, loc });
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [
+        { localId: "a.0", name: "a", type: receiver.type },
+        { localId: "f.0", name: "f", type: fnArg.type },
+      ],
+      returnType: resultT,
+      locals: [
+        { id: "a.0", name: "a", type: receiver.type, mutable: false },
+        { id: "f.0", name: "f", type: fnArg.type, mutable: false },
+        ...(reads.length > 0 ? [{ id: "v.0", name: "v", type: elem, mutable: true }] : []),
+        ...(method === "filter"
+          ? [{ id: "out.0", name: "out", type: resultT, mutable: false }]
+          : []),
+      ],
+      body,
+      loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [receiver, fnArg], type: resultT, loc };
 }
