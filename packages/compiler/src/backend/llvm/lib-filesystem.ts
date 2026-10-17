@@ -349,6 +349,8 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.line(
       `call void @scr_fs_rename_async(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, ptr @${adapter})`,
     );
+    // A path with a null byte throws before the rename is queued.
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (

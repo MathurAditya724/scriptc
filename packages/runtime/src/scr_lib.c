@@ -981,7 +981,7 @@ void scr_fs_invalid_named_path(const ScrDyn *value, const ScrStr *path, const ch
   scr_jb_puts(&b, "The argument '");
   scr_jb_puts(&b, name);
   scr_jb_puts(&b, "' must be a string, Uint8Array, or URL without null bytes. Received ");
-  if (value->kind == SCR_DYN_BYTES) {
+  if (value && value->kind == SCR_DYN_BYTES) {
     const ScrBytes *bytes = value->v.bytes;
     SCR_BYTES_SNAPSHOT(bytes);
     if (value->buffer) {
@@ -1004,21 +1004,9 @@ void scr_fs_invalid_named_path(const ScrDyn *value, const ScrStr *path, const ch
       scr_jb_puts(&b, " ]");
     }
   } else {
-    char quote = memchr(path->data, '\'', path->len) ? '"' : '\'';
-    scr_jb_putc(&b, quote);
-    for (size_t i = 0; i < path->len; i++) {
-      unsigned char c = (unsigned char)path->data[i];
-      if (c == (unsigned char)quote || c == '\\') { scr_jb_putc(&b, '\\'); scr_jb_putc(&b, (char)c); }
-      else if (c == '\n') scr_jb_puts(&b, "\\n");
-      else if (c == '\r') scr_jb_puts(&b, "\\r");
-      else if (c == '\t') scr_jb_puts(&b, "\\t");
-      else if (c < 0x20 || c == 0x7f) {
-        char escape[5];
-        snprintf(escape, sizeof escape, "\\x%02X", c);
-        scr_jb_puts(&b, escape);
-      } else scr_jb_putc(&b, (char)c);
-    }
-    scr_jb_putc(&b, quote);
+    ScrStr *shown = scr_str_inspect_quoted(path, true);
+    scr_jb_put_str(&b, shown);
+    scr_str_release(shown);
   }
   ScrStr *message = scr_jb_finish(&b);
   scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "ERR_INVALID_ARG_VALUE");
@@ -1027,6 +1015,12 @@ void scr_fs_invalid_named_path(const ScrDyn *value, const ScrStr *path, const ch
 
 void scr_fs_invalid_path(const ScrDyn *value, const ScrStr *path) {
   scr_fs_invalid_named_path(value, path, "path");
+}
+
+bool scr_fs_path_ok(const ScrStr *path, const char *name) {
+  if (!memchr(path->data, 0, path->len)) return true;
+  scr_fs_invalid_named_path(NULL, path, name);
+  return false;
 }
 
 void scr_process_load_env_file(const ScrDyn *value) {
@@ -3190,6 +3184,7 @@ static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file, size_t *ascii)
 }
 
 ScrBytes *scr_fs_read_file_bytes(ScrStr *path) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
   FILE *f = scr_fs_fopen(path, "rb");
   if (!f) { scr_fs_throw(errno, "open", path); return NULL; }
   ScrFileRead out;
@@ -3203,12 +3198,14 @@ ScrBytes *scr_fs_read_file_bytes(ScrStr *path) {
  * file is read straight into string storage and decoded in place (Node's
  * Buffer utf8 decode: U+FFFD per malformed subpart, a BOM is kept). */
 ScrStr *scr_fs_read_file(ScrStr *path) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
   size_t ascii = 0;
   ScrStr *raw = scr_fs_read_file_core(path, false, &ascii);
   return raw ? scr_str_adopt_utf8_lossy(raw, ascii) : NULL;
 }
 
 static ScrStr *scr_fs_realpath_common(ScrStr *path, const char *op) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
 #ifdef _WIN32
   WCHAR *wide = scr_fs_win_wide(path);
   if (!wide) {
@@ -3292,6 +3289,7 @@ ScrStr *scr_fs_realpath_promise(ScrStr *path) {
 }
 
 static void scr_fs_write_common(ScrStr *path, ScrStr *data, const char *mode) {
+  if (!scr_fs_path_ok(path, "path")) return;
   FILE *f = scr_fs_fopen(path, mode);
   if (!f) {
     scr_fs_throw(errno, "open", path);
@@ -3319,6 +3317,7 @@ void scr_fs_write_file(ScrStr *path, ScrStr *data) {
  * existing file keeps its permissions, exactly Node (which never chmods
  * here). Same error shapes as the plain form. */
 void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode) {
+  if (!scr_fs_path_ok(path, "path")) return;
   char recv[48], msg[176];
   scr_num_received(mode, recv);
   if (!(isfinite(mode) && trunc(mode) == mode)) {
@@ -3366,12 +3365,14 @@ void scr_fs_append_file(ScrStr *path, ScrStr *data) {
 }
 
 bool scr_fs_exists(ScrStr *path) {
-  /* Like Node's existsSync: any failure (missing, EACCES on a parent, ...)
-   * is simply false — never a throw. */
+  /* Like Node's existsSync: any failure (missing, EACCES on a parent, a
+   * path with a null byte, ...) is simply false — never a throw. */
+  if (memchr(path->data, 0, path->len)) return false;
   return access(path->data, F_OK) == 0;
 }
 
 void scr_fs_mkdir(ScrStr *path) {
+  if (!scr_fs_path_ok(path, "path")) return;
   if (scr_sys_mkdir(path->data, 0777) != 0) scr_fs_throw(errno, "mkdir", path);
 }
 
@@ -3379,6 +3380,7 @@ void scr_fs_mkdir(ScrStr *path) {
  * (umask applies, exactly as in Node — mode is the syscall argument;
  * Windows has no directory modes and drops it, like Node there). */
 void scr_fs_mkdir_mode(ScrStr *path, double mode) {
+  if (!scr_fs_path_ok(path, "path")) return;
   if (scr_sys_mkdir(path->data, (mode_t)mode) != 0) scr_fs_throw(errno, "mkdir", path);
 }
 
@@ -3417,6 +3419,7 @@ static int scr_fs_win_remove_link(const char *path, size_t len) {
 #endif
 
 void scr_fs_unlink(ScrStr *path) {
+  if (!scr_fs_path_ok(path, "path")) return;
 #ifdef _WIN32
   int link = scr_fs_win_remove_link(path->data, path->len);
   if (link != 0) { if (link < 0) scr_fs_throw(errno, "unlink", path); return; }
@@ -3425,6 +3428,7 @@ void scr_fs_unlink(ScrStr *path) {
 }
 
 void scr_fs_chmod(ScrStr *path, double mode) {
+  if (!scr_fs_path_ok(path, "path")) return;
   if (chmod(path->data, (mode_t)mode) != 0) scr_fs_throw(errno, "chmod", path);
 }
 
@@ -3477,6 +3481,7 @@ void scr_fs_fchown(double fd, double uid, double gid) { scr_fs_chown_op(NULL, fd
  * usual Node-shaped fs error. Mode is Node's 0666 default (the numeric
  * third argument is a compile fence). */
 double scr_fs_open(ScrStr *path, ScrStr *flags) {
+  if (!scr_fs_path_ok(path, "path")) return 0;
   const char *f = flags->data;
   int of;
   if (strcmp(f, "r") == 0) of = O_RDONLY;
@@ -3511,6 +3516,7 @@ double scr_fs_open(ScrStr *path, ScrStr *flags) {
  * platform-independent mask for inline flag expressions; native flags are
  * chosen here so cross-compiled programs retain the target's values. */
 double scr_fs_open_numeric(ScrStr *path, double flags, double mode) {
+  if (!scr_fs_path_ok(path, "path")) return 0;
   int bits = (int)flags;
   int access = bits & 3;
   if (access == 3 || !(isfinite(mode) && trunc(mode) == mode && mode >= 0 && mode <= 4294967295.0)) {
@@ -3545,6 +3551,7 @@ static void scr_fs_throw_nopath(int e, const char *op);
 static bool scr_fs_write_fd_valid(double fd);
 
 double scr_fs_open_native(ScrStr *path, double flags, double mode) {
+  if (!scr_fs_path_ok(path, "path")) return 0;
 #ifdef _WIN32
   WCHAR *wide = scr_fs_win_wide(path);
   if (!wide) { scr_fs_throw(scr_fs_win_errno(GetLastError()), "open", path); return 0; }
@@ -3619,6 +3626,7 @@ void scr_fs_ftruncate(double fd, double length) {
  * check and clamp, then close. Node's order, so an open failure wins over
  * an invalid len. */
 void scr_fs_truncate(ScrStr *path, double length) {
+  if (!scr_fs_path_ok(path, "path")) return;
   ScrStr *flags = scr_str_new("r+", 2);
   double fd = scr_fs_open(path, flags);
   scr_str_release(flags);
@@ -3672,6 +3680,7 @@ static bool scr_fs_timespec(double time, struct timespec *out) {
 #endif
 
 void scr_fs_utimes(ScrStr *path, double atime, double mtime, bool nofollow) {
+  if (!scr_fs_path_ok(path, "path")) return;
   const char *op = nofollow ? "lutime" : "utime";
 #ifdef _WIN32
   WCHAR *wide = scr_fs_win_wide(path);
@@ -4240,6 +4249,8 @@ static void scr_fs_throw2(int e, const char *op, const ScrStr *src, const ScrStr
 }
 
 void scr_fs_link(ScrStr *source, ScrStr *dest) {
+  if (!scr_fs_path_ok(source, "existingPath")) return;
+  if (!scr_fs_path_ok(dest, "newPath")) return;
 #ifdef _WIN32
   WCHAR *from = scr_fs_win_wide(source);
   WCHAR *to = scr_fs_win_wide(dest);
@@ -4264,6 +4275,8 @@ void scr_fs_link(ScrStr *source, ScrStr *dest) {
  * creation, like any open(2)). Every failure throws catchably with the
  * two-path message and the syscall name Node reports ("copyfile"). */
 void scr_fs_copyfile(ScrStr *src, ScrStr *dest) {
+  if (!scr_fs_path_ok(src, "src")) return;
+  if (!scr_fs_path_ok(dest, "dest")) return;
   int in = open(src->data, O_RDONLY | O_BINARY);
   if (in < 0) {
     scr_fs_throw2(errno, "copyfile", src, dest);
@@ -4416,6 +4429,8 @@ void scr_fs_rename_error(int error, const ScrStr *oldpath, const ScrStr *newpath
 }
 
 void scr_fs_rename(ScrStr *oldpath, ScrStr *newpath) {
+  if (!scr_fs_path_ok(oldpath, "oldPath")) return;
+  if (!scr_fs_path_ok(newpath, "newPath")) return;
   int error = scr_fs_rename_raw(oldpath, newpath);
   if (error != 0) scr_fs_rename_error(error, oldpath, newpath);
 }
@@ -4423,6 +4438,7 @@ void scr_fs_rename(ScrStr *oldpath, ScrStr *newpath) {
 static int scr_rm_unlink(const char *path, size_t len);
 
 void scr_fs_rm(ScrStr *path) {
+  if (!scr_fs_path_ok(path, "path")) return;
 #ifdef _WIN32
   int link = scr_fs_win_remove_link(path->data, path->len);
   if (link != 0) { if (link < 0) scr_fs_throw(errno, "unlink", path); return; }
@@ -4444,6 +4460,7 @@ void scr_fs_rm(ScrStr *path) {
 }
 
 void scr_fs_rmdir(ScrStr *path) {
+  if (!scr_fs_path_ok(path, "path")) return;
   if (rmdir(path->data) != 0) scr_fs_throw(errno, "rmdir", path);
 }
 
@@ -4511,6 +4528,7 @@ static void scr_mkdir_rec(char *path, size_t len, mode_t mode) {
 }
 
 void scr_fs_mkdir_recursive(ScrStr *path) {
+  if (!scr_fs_path_ok(path, "path")) return;
   char *buf = malloc(path->len + 1);
   if (!buf) {
     scr_trap("scriptc: out of memory\n");
@@ -4523,6 +4541,7 @@ void scr_fs_mkdir_recursive(ScrStr *path) {
 /* mkdirSync(p, { recursive: true, mode }): Node passes the mode to every
  * directory the walk creates (existing ones keep theirs). */
 void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode) {
+  if (!scr_fs_path_ok(path, "path")) return;
   char *buf = malloc(path->len + 1);
   if (!buf) {
     scr_trap("scriptc: out of memory\n");
@@ -4550,6 +4569,7 @@ static bool scr_fs_mkdirp_exists(char *buf, size_t len) {
 }
 
 ScrStr *scr_fs_mkdir_recursive_first(ScrStr *path, double mode) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
   char *buf = malloc(path->len + 1);
   if (!buf) {
     scr_trap("scriptc: out of memory\n");
@@ -4694,6 +4714,7 @@ static void scr_fs_rm_attempt(ScrStr *path, bool recursive, bool force, ScrRmFai
 }
 
 void scr_fs_rm_opts(ScrStr *path, bool recursive, bool force) {
+  if (!scr_fs_path_ok(path, "path")) return;
   ScrRmFail f = {0, NULL, NULL};
   scr_fs_rm_attempt(path, recursive, force, &f);
   if (f.err != 0) {
@@ -4708,6 +4729,7 @@ void scr_fs_rm_opts(ScrStr *path, bool recursive, bool force) {
  * fs.rmSync documented semantics). Everything else throws immediately
  * with the failing path, exactly like the plain options form. */
 void scr_fs_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_retries, double retry_delay) {
+  if (!scr_fs_path_ok(path, "path")) return;
   long tries = max_retries > 0 ? (long)max_retries : 0;
   double delay_ms = retry_delay > 0 ? retry_delay : 0;
   ScrRmFail f = {0, NULL, NULL};
@@ -4759,6 +4781,7 @@ static char *scr_portable_mkdtemp(char *tmpl) {
  * path, which is the template as mkdtemp(3) left it (glibc leaves the last
  * name it tried; musl restores the X's). */
 static ScrStr *scr_fs_mkdtemp_op(ScrStr *prefix, bool sync) {
+  if (!scr_fs_path_ok(prefix, "prefix")) return NULL;
   char *tmpl = malloc(prefix->len + 7);
   if (!tmpl) {
     scr_trap("scriptc: out of memory\n");
@@ -4798,6 +4821,7 @@ bool scr_fs_access_mode_valid(double mode) {
 }
 
 void scr_fs_access(ScrStr *path, double mode) {
+  if (!scr_fs_path_ok(path, "path")) return;
   if (!scr_fs_access_mode_valid(mode)) return;
   int m = (int32_t)scr_to_uint32(mode);
 #ifdef _WIN32
@@ -5584,6 +5608,8 @@ int scr_fs_symlink_infer(ScrStr *absolute) {
 }
 
 void scr_fs_symlink(ScrStr *target, ScrStr *destination, int kind) {
+  if (!scr_fs_path_ok(target, "target")) return;
+  if (!scr_fs_path_ok(destination, "path")) return;
 #ifdef _WIN32
   static const ScrArrOps str_ops = { scr_str_retain_v, scr_str_release_v, NULL };
   ScrArr *parts = scr_arr_new_ops(&str_ops, 3);
@@ -5630,6 +5656,7 @@ void scr_fs_symlink(ScrStr *target, ScrStr *destination, int kind) {
 /* Keep the unsigned libuv statfs representation before selecting Number or
  * BigInt. Free-space counts are live snapshots, not cached volume metadata. */
 ScrDyn *scr_fs_statfs(ScrStr *path, bool bigint) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
   uint64_t fields[8];
 #if defined(_WIN32)
   ScrStr *syscall_path = scr_path_win32_to_namespaced_path(path);
@@ -5722,6 +5749,7 @@ ScrDyn *scr_fs_statfs(ScrStr *path, bool bigint) {
 }
 
 ScrBytes *scr_fs_readlink_bytes(ScrStr *path) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
 #ifdef _WIN32
   WCHAR *wide = scr_fs_win_wide(path);
   if (!wide) { scr_fs_throw(scr_fs_win_errno(GetLastError()), "readlink", path); return NULL; }
@@ -5760,6 +5788,7 @@ ScrBytes *scr_fs_readlink_bytes(ScrStr *path) {
 }
 
 ScrStats *scr_fs_stat(ScrStr *path) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
 #ifdef _WIN32
   return scr_stats_of_path(path, "stat", false);
 #else
@@ -5771,6 +5800,7 @@ ScrStats *scr_fs_stat(ScrStr *path) {
 }
 
 ScrStats *scr_fs_lstat(ScrStr *path) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
 #ifdef _WIN32
   return scr_stats_of_path(path, "lstat", true);
 #else
@@ -6103,6 +6133,7 @@ ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint) {
 /* The names of one scandir listing: byte order on POSIX (libuv sorts),
  * the directory's own order on Windows (libuv does not). */
 ScrArr *scr_fs_readdir(ScrStr *path) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
   ScrScandir *scan = scr_fs_scandir(path);
   if (!scan) return NULL;
   ScrArr *arr = scr_arr_new(SCR_ELEM_STR, scr_fs_scandir_count(scan));
@@ -6230,6 +6261,7 @@ static ScrScandir *scr_fs_scandir_windows(ScrStr *path) {
 #endif
 
 ScrScandir *scr_fs_scandir(ScrStr *path) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
 #ifdef _WIN32
   return scr_fs_scandir_windows(path);
 #else
@@ -6432,6 +6464,7 @@ static void scr_dir_dyn_install(void) {
 }
 
 ScrDir *scr_fs_opendir(ScrStr *path, double buffer_size) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
   scr_dir_dyn_install();
   ScrDir *d = calloc(1, sizeof *d);
   if (!d) scr_trap("scriptc: out of memory\n");
