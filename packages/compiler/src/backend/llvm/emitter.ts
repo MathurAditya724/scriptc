@@ -209,6 +209,7 @@ import { findMapEntryFusions, type MapEntryFusion } from "./map-entry-fusion.js"
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
 import { borrowableInputs, emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { analyzeWalks, findWalkBorrows, type WalkBorrowHost } from "./walk-borrows.js";
+import { lastUseRead } from "./local-extents.js";
 import { findReboundParameters } from "./rebound-parameters.js";
 import { ReferenceEffects } from "./reference-effects.js";
 import { ReferenceWrites, type Writes } from "./reference-writes.js";
@@ -6431,6 +6432,9 @@ export class LlEmitter {
     this.currentGenerator = fn.generator ?? null;
     this.currentAsyncGenerator = fn.async === true && fn.generator !== undefined;
     this.currentBorrowedReturn = this.borrowedReturns.has(fn.name);
+    this.lastUseMoves.clear();
+    this.varRefCounts = null;
+    this.currentFunctionBody = fn.body;
     this.inConstructor = this.constructorFunctions.has(fn.name);
     this.currentCoro = null;
     this.logArgSlots = 0;
@@ -6630,7 +6634,10 @@ export class LlEmitter {
       if (this.storeInt32Local(p.localId, incoming)) continue;
       B.line(`store ${this.llType(p.type)} %p_${mangleLocal(p.localId)}, ptr ${slot}`);
       this.storeIntegerView(p.localId, incoming);
-      if (isRefCounted(p.type) && !borrowed?.has(index)) fnScope.push({ slot, type: p.type });
+      if (isRefCounted(p.type) && !borrowed?.has(index)) {
+        fnScope.push({ slot, type: p.type });
+        this.noteParameterMove(fn, p.localId, slot);
+      }
       if (this.reboundByFunction.get(fn.name)?.has(p.localId) && borrowed?.has(index)) {
         // The caller's borrow stays in the parameter slot; values the body
         // assigns are owned here until rebinding or exit releases them.
@@ -7198,6 +7205,91 @@ export class LlEmitter {
     this.B.line(`call void @scr_async_gen_hop_done()`);
   }
 
+  /** Owned-binding reads that take over the binding's reference, by read
+   * node (the binding's slot). */
+  private readonly lastUseMoves = new Map<IrExpr, string>();
+  /** How often each varRef node object occurs in the current function:
+   * lowering may share one node between several reads, and a move keyed by
+   * node identity must fire for exactly one of them. */
+  private varRefCounts: Map<IrExpr, number> | null = null;
+  private currentFunctionBody: IrStmt[] = [];
+
+  private varRefCount(e: IrExpr): number {
+    if (this.varRefCounts === null) {
+      const counts = new Map<IrExpr, number>();
+      everyStmtList(this.currentFunctionBody, {
+        stmt: () => true,
+        expr: (node) => {
+          if (node.kind === "varRef") counts.set(node, (counts.get(node) ?? 0) + 1);
+          return true;
+        },
+      });
+      this.varRefCounts = counts;
+    }
+    return this.varRefCounts.get(e) ?? 0;
+  }
+
+  /** Moves need plain slots that nothing else reads behind the binding's
+   * back: no debugger view, no coroutine frame, no borrowed (+0) return. */
+  private lastUseMovesAllowed(): boolean {
+    return (
+      this.debug === null &&
+      !this.currentBorrowedReturn &&
+      this.currentCoro === null &&
+      this.currentGenerator === null
+    );
+  }
+
+  /** An owned local declared at the statement cursor whose last statement
+   * reads it once (lastUseRead): that read moves the reference. */
+  private noteLastUseMove(
+    s: IrStmt & { kind: "varDecl" },
+    b: ReturnType<LlEmitter["binding"]>,
+  ): void {
+    const cursor = this.stmtCursor;
+    if (
+      !this.lastUseMovesAllowed() ||
+      cursor === null ||
+      cursor.stmts[cursor.index] !== s ||
+      b.kind !== "local" ||
+      b.local === undefined ||
+      b.local.boxed ||
+      b.local.tdz ||
+      this.integerViews.has(s.localId)
+    )
+      return;
+    const read = lastUseRead(cursor.stmts, cursor.index, s.localId);
+    if (read !== null && this.varRefCount(read) === 1) this.lastUseMoves.set(read, b.slot);
+  }
+
+  /** An owned parameter whose last statement in the body reads it once:
+   * that read moves the reference. Walk locals may borrow from an owned
+   * parameter's slot (they need it until the function returns), so bodies
+   * with walks keep their parameters, and locals rebound from the
+   * parameter count as derived from it. */
+  private noteParameterMove(fn: IrFunction, localId: string, slot: string): void {
+    if (
+      !this.lastUseMovesAllowed() ||
+      fn.async ||
+      fn.generator !== undefined ||
+      (this.walkBorrowsByFunction.get(fn.name)?.size ?? 0) > 0 ||
+      this.reboundByFunction.get(fn.name)?.has(localId) === true ||
+      this.integerViews.has(localId)
+    )
+      return;
+    const read = lastUseRead(fn.body, -1, localId, true);
+    if (read !== null && this.varRefCount(read) === 1) this.lastUseMoves.set(read, slot);
+  }
+
+  /** Emits the move of a noted last read: the slot is cleared, so scope
+   * exits release nothing and the read's owned temp carries the reference. */
+  takeLastUseMove(e: IrExpr, slot: string, type: IrType): boolean {
+    if (this.lastUseMoves.get(e) !== slot || !typeEquals(type, e.type)) return false;
+    this.lastUseMoves.delete(e);
+    this.B.line(`store ptr null, ptr ${slot}`);
+    return true;
+  }
+
   /** `return x` of a local whose slot is an owned scope entry of the same
    * type: the return can take over the local's reference. */
   private movableReturn(
@@ -7566,6 +7658,7 @@ export class LlEmitter {
         this.storeIntegerView(s.localId, v, s.init);
         if (isRefCounted(b.type)) {
           this.scopes[this.scopes.length - 1]!.push({ slot: b.slot, type: b.type });
+          this.noteLastUseMove(s, b);
         }
         break;
       }

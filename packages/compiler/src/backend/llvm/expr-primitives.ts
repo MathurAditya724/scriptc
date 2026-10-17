@@ -120,6 +120,8 @@ export function emitLiteralExpr(
         // An immortal Immutable constant: nothing to count.
         if (b.kind === "global" && host.immortalGlobals.has(e.localId))
           return host.markImmortal({ name: t, type: e.type });
+        // The binding's last read takes over its reference (lastUseRead).
+        if (host.takeLastUseMove(e, b.slot, b.type)) return host.own({ name: t, type: e.type });
         return host.own({ name: host.retainValue(t, e.type), type: e.type });
       }
       return { name: t, type: e.type };
