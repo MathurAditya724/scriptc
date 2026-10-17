@@ -7780,6 +7780,7 @@ static ScrCryptoHash *scr_crypto_hash_clone(const ScrCryptoHash *hash) {
   copy->stream_release = NULL;
   copy->stream_box = NULL;
   copy->held = false;
+  copy->stream_closed = false;
   copy->out_len = scr_digest_info[copy->inner.alg].size;
   return copy;
 }

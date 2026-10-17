@@ -4,7 +4,8 @@
 // called", and update() throws ERR_CRYPTO_HASH_UPDATE_FAILED; an Hmac
 // answers digest() with an empty string and update() with "Digest already
 // called". A stream write after digest() fails with an 'error' event, and
-// a flush after digest() pushes the same digest again.
+// a flush after digest() pushes the same digest again. A copy of a Hash
+// whose stream was destroyed gets a stream of its own.
 import { createHash, createHmac } from "node:crypto";
 
 function code(run: () => unknown): string {
@@ -52,3 +53,13 @@ empty.on("data", (digest: Buffer) => console.log("empty", digest.toString("hex")
 empty.on("end", () => console.log("empty end"));
 empty.on("close", () => console.log("empty close"));
 empty.end();
+
+const closed = createHash("sha256");
+closed.update("a");
+closed.on("close", () => {
+  const copy = closed.copy();
+  copy.setEncoding("hex");
+  copy.on("data", (digest: string) => console.log("copy of a closed stream", digest.slice(0, 16)));
+  copy.end("b");
+});
+closed.destroy();
