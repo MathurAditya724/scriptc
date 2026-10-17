@@ -24,6 +24,14 @@ _Thread_local ScrThreadHot scr_thread_hot = {{0}};
 ScrSaState scr_sa = {0};
 #endif
 
+/* Counts a worker's large blocks (scr_sa_thread_large_note, below). */
+#if defined(SCR_WORKERS) && defined(__GLIBC__) && !defined(SCR_LIB)
+static void scr_sa_thread_large_note(void);
+#define SCR_SA_THREAD_LARGE_NOTE() scr_sa_thread_large_note()
+#else
+#define SCR_SA_THREAD_LARGE_NOTE() ((void)0)
+#endif
+
 #if SCR_SMALL_ALLOC
 #include <sys/mman.h>
 
@@ -1039,7 +1047,10 @@ __attribute__((cold, noinline)) void *scr_sa_slow(size_t n, bool zero) {
   }
   /* Large or zero-sized, an exhausted slice, or no reservation. */
   void *q = zero ? calloc(1, n) : malloc(n);
-  if (n > SCR_SA_MAX) SCR_SA_LARGE_NOTE(q, n);
+  if (n > SCR_SA_MAX) {
+    SCR_SA_LARGE_NOTE(q, n);
+    SCR_SA_THREAD_LARGE_NOTE();
+  }
   return q;
 }
 
@@ -1072,6 +1083,60 @@ void *scr_mem_realloc(void *p, size_t n) { return realloc(p, n); }
 void scr_sa_thread_park(void) {}
 void scr_sa_wait_trims(void) {}
 void scr_sa_free_foreign(void *p) { free(p); }
+#endif
+#endif
+
+#ifdef SCR_WORKERS
+/* Blocks above SCR_SA_MAX come from glibc, which gives each thread that
+ * allocates its own arena: a heap reserved up front and made usable with
+ * mprotect as it grows. Each extension takes the process's mmap lock for
+ * writing, which stalls every other thread's page faults and mapping calls
+ * until it is done, and a heap grows in steps barely larger than the
+ * request: worker threads that parse or build large data extend their
+ * heaps around a hundred times each, while the other threads fault pages.
+ * A heap keeps that range accessible, though: trimming returns the pages
+ * of its free top but leaves them mapped read-write (unless the system
+ * forbids overcommit), and growing into them later needs no mprotect. So a
+ * worker that allocates many large blocks (SCR_SA_THREAD_RESERVE_AFTER)
+ * raises its heap's high-water mark once, by allocating
+ * SCR_SA_THREAD_HEAP_RESERVE in blocks below glibc's smallest mmap
+ * threshold and freeing them. The heap top stays as small as glibc leaves
+ * it, so large blocks are still mapped on their own, and only the blocks'
+ * headers are written. A worker with few large blocks never pays for the
+ * extensions. The reservation stays small because glibc's calloc clears
+ * all of a block that lies below the high-water mark, so a larger one
+ * makes zeroed blocks touch pages they would otherwise leave untouched.
+ * Library archives run on their embedder's threads and leave its heaps
+ * alone. */
+#if defined(__GLIBC__) && !defined(SCR_LIB)
+#define SCR_SA_THREAD_HEAP_RESERVE ((size_t)4 << 20)
+#define SCR_SA_THREAD_HEAP_STEP ((size_t)120 << 10) /* below 128 KiB, glibc's lowest threshold */
+#define SCR_SA_THREAD_RESERVE_AFTER 256u
+/* Large blocks this worker allocated before its reservation; 0 on threads
+ * that are not workers (they never reserve). */
+static _Thread_local unsigned scr_sa_thread_large;
+
+void scr_sa_thread_starting(void) { scr_sa_thread_large = 1; }
+
+static void scr_sa_thread_reserve(void) {
+  void *blocks[SCR_SA_THREAD_HEAP_RESERVE / SCR_SA_THREAD_HEAP_STEP + 1];
+  size_t n = 0;
+  for (size_t total = 0; total < SCR_SA_THREAD_HEAP_RESERVE; total += SCR_SA_THREAD_HEAP_STEP) {
+    void *p = malloc(SCR_SA_THREAD_HEAP_STEP);
+    if (!p) break;
+    blocks[n++] = p;
+  }
+  while (n) free(blocks[--n]);
+}
+
+static void scr_sa_thread_large_note(void) {
+  unsigned count = scr_sa_thread_large;
+  if (count == 0 || count > SCR_SA_THREAD_RESERVE_AFTER) return;
+  scr_sa_thread_large = count + 1;
+  if (count == SCR_SA_THREAD_RESERVE_AFTER) scr_sa_thread_reserve();
+}
+#else
+void scr_sa_thread_starting(void) {}
 #endif
 #endif
 

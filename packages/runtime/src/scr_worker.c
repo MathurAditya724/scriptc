@@ -262,11 +262,13 @@ static void scr_worker_thread_run(ScrWorkerThread *worker) {
 
 #ifdef _WIN32
 static unsigned __stdcall scr_worker_thread_main(void *data) {
+  scr_sa_thread_starting();
   scr_worker_thread_run(data);
   return 0;
 }
 #else
 static void *scr_worker_thread_main(void *data) {
+  scr_sa_thread_starting();
   scr_worker_thread_run(data);
   return NULL;
 }

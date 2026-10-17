@@ -335,6 +335,9 @@ void scr_sa_free_foreign(void *p);
 void scr_sa_thread_park(void);
 /* Waits until the arenas of exited threads are trimmed (tests). */
 void scr_sa_wait_trims(void);
+/* Called first on a new worker thread: prepares the thread's system-
+ * allocator heap (scr_alloc.c). */
+void scr_sa_thread_starting(void);
 #define SCR_SA_FREE_FOREIGN(p) scr_sa_free_foreign(p)
 #else
 #define SCR_SA_FREE_FOREIGN(p) free(p)
