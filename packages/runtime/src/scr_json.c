@@ -8141,7 +8141,8 @@ static void scr_jschema_inline_store(char *slot, size_t tag, uint64_t bits) {
  * selects at most one arm (the compiler admits no two arms one kind could
  * both match), so the checked route's first full match is that arm, and
  * any other value declines. */
-static bool scr_jschema_union(ScrJsonP *p, const ScrJsonUnion *u, char *slot) {
+static __attribute__((noinline)) bool scr_jschema_union(ScrJsonP *p, const ScrJsonUnion *u,
+                                                         char *slot) {
   scr_json_ws(p);
   if (p->pos >= p->len) return false;
   char c = p->s[p->pos];
@@ -8183,21 +8184,29 @@ static inline __attribute__((always_inline)) bool scr_jschema_field(ScrJsonP *p,
                                                                     const ScrJsonSchemaField *f,
                                                                     char *rec) {
   char *slot = rec + f->offset;
-  if (f->type->kind == SCR_JSCHEMA_UNION) return scr_jschema_union(p, f->type->uni, slot);
+  const size_t kind = f->type->kind;
   ScrJsonSlot v;
-  if (!scr_jschema_member(p, f->type, &v)) return false;
-  switch (f->type->kind) {
-  case SCR_JSCHEMA_F64: memcpy(slot, &v.f, sizeof v.f); break;
-  case SCR_JSCHEMA_BOOL: *(uint8_t *)slot = v.b ? 1 : 0; break;
-  default: memcpy(slot, &v.ptr, sizeof v.ptr); break; /* zeroed slot; moves in */
+  if (scr_jschema_is_scalar(kind)) {
+    scr_json_ws(p);
+    if (p->pos >= p->len || !scr_jschema_scalar(p, kind, &v)) return false;
+    switch (kind) {
+    case SCR_JSCHEMA_F64: memcpy(slot, &v.f, sizeof v.f); break;
+    case SCR_JSCHEMA_BOOL: *(uint8_t *)slot = v.b ? 1 : 0; break;
+    default: memcpy(slot, &v.ptr, sizeof v.ptr); break; /* zeroed slot; moves in */
+    }
+    return true;
   }
+  if (kind == SCR_JSCHEMA_UNION) return scr_jschema_union(p, f->type->uni, slot);
+  if (!scr_jschema_read(p, f->type, &v)) return false;
+  memcpy(slot, &v.ptr, sizeof v.ptr); /* zeroed slot; moves in */
   return true;
 }
 
 /* The declared members a record's text omitted (`missing`, by field
  * index): each undefined-armed union member takes its ABSENT state, as the
  * checked route's missing key does. Any other omitted member declines. */
-static bool scr_jschema_absent(const ScrJsonSchema *s, char *rec, uint64_t missing) {
+static __attribute__((noinline)) bool scr_jschema_absent(const ScrJsonSchema *s, char *rec,
+                                                          uint64_t missing) {
   while (missing) {
     const ScrJsonSchemaField *f = &s->fields[__builtin_ctzll(missing)];
     missing &= missing - 1;
@@ -8238,8 +8247,9 @@ static inline size_t scr_jschema_key_direct(const ScrJsonP *p, const ScrJsonSche
  * key: the value, read as the index value type, joins the overflow map in
  * source order, as the checked route copies the parsed object's entries.
  * A repeated key (last value, first position) and `__proto__` decline. */
-static bool scr_jschema_overflow(ScrJsonP *p, const ScrJsonSchema *s, char *rec, const char *key,
-                                 size_t key_len) {
+static __attribute__((noinline)) bool scr_jschema_overflow(ScrJsonP *p, const ScrJsonSchema *s,
+                                                            char *rec, const char *key,
+                                                            size_t key_len) {
   scr_json_ws(p);
   if (p->pos >= p->len || p->s[p->pos] != ':') return false;
   p->pos++;
