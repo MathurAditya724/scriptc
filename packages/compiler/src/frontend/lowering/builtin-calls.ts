@@ -55,8 +55,8 @@ export function lowerBuiltinCall(
   loc: SrcLoc,
   namespaceMember?: ts.MemberName,
 ): IrExpr {
-  if (bi.module === "child_process" && bi.member === "execFile") {
-    return lowerer.lowerExecFileCall(expr, loc);
+  if (bi.module === "child_process" && (bi.member === "execFile" || bi.member === "exec")) {
+    return lowerer.lowerExecFileCall(expr, loc, bi.member === "exec");
   }
   if (bi.module === "events" && bi.member === "addAbortListener") {
     return lowerAddAbortListener(lowerer, expr, loc);

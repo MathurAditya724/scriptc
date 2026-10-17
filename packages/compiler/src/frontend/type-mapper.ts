@@ -1341,6 +1341,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "object", className: "%Error" };
   }
+  // child_process.ExecException, exec's callback error, is an interface
+  // extending Error with optional metadata members; the value is one
+  // ordinary Error as well.
+  const execException = type.getSymbol();
+  if (
+    execException?.name === "ExecException" &&
+    checker
+      .declarationsOf(execException)
+      .some(
+        (decl) =>
+          ts.isInterfaceDeclaration(decl) &&
+          ctx.isStdlibFile(decl.getSourceFile()) &&
+          isDeclaredInAmbientModule(decl, "child_process"),
+      )
+  ) {
+    return { kind: "object", className: "%Error" };
+  }
   if (isOsConstantsType(type, ctx) || isLegacyUrlType(type, ctx)) return DYN;
   // Immutable<T> (@scriptc/types) is a deep-readonly view: the value is
   // still the T it maps.
