@@ -231,3 +231,192 @@ int scr_mailbox_pollfd(const ScrMailbox *mailbox) {
   return mailbox->read_fd;
 #endif
 }
+
+/* ── MessageChannel ──────────────────────────────────────────────────── */
+
+typedef struct {
+  ScrMailEvent *head; /* incoming events for this end, in order */
+  ScrMailEvent **tail;
+  size_t count;
+  ScrMailbox *owner; /* the owning thread's inbox (+1), or NULL in transit */
+  bool closed;       /* this end called close() */
+  bool peer_closed;  /* the other end's close reached this end */
+  uint64_t peer_closed_seq; /* when: notices are delivered in this order */
+} ScrChannelEnd;
+
+static atomic_uint_fast64_t scr_channel_notice_seq;
+
+struct ScrChannel {
+  atomic_size_t references;
+  ScrChannelEnd end[2];
+#ifdef _WIN32
+  SRWLOCK lock;
+#else
+  pthread_mutex_t lock;
+#endif
+};
+
+static void scr_channel_lock(ScrChannel *channel) {
+#ifdef _WIN32
+  AcquireSRWLockExclusive(&channel->lock);
+#else
+  (void)pthread_mutex_lock(&channel->lock);
+#endif
+}
+
+static void scr_channel_unlock(ScrChannel *channel) {
+#ifdef _WIN32
+  ReleaseSRWLockExclusive(&channel->lock);
+#else
+  (void)pthread_mutex_unlock(&channel->lock);
+#endif
+}
+
+ScrChannel *scr_channel_new(void) {
+  ScrChannel *channel = calloc(1, sizeof(*channel));
+  if (!channel) scr_trap("scriptc: out of memory\n");
+  atomic_init(&channel->references, 1);
+  for (int side = 0; side < 2; side++) channel->end[side].tail = &channel->end[side].head;
+#ifdef _WIN32
+  InitializeSRWLock(&channel->lock);
+#else
+  if (pthread_mutex_init(&channel->lock, NULL) != 0) scr_trap("scriptc: out of memory\n");
+#endif
+  return channel;
+}
+
+ScrChannel *scr_channel_retain(ScrChannel *channel) {
+  atomic_fetch_add_explicit(&channel->references, 1, memory_order_relaxed);
+  return channel;
+}
+
+void scr_channel_release(ScrChannel *channel) {
+  if (!channel || atomic_fetch_sub_explicit(&channel->references, 1, memory_order_acq_rel) != 1)
+    return;
+  for (int side = 0; side < 2; side++) {
+    ScrChannelEnd *end = &channel->end[side];
+    while (end->head) {
+      ScrMailEvent *event = end->head;
+      end->head = event->next;
+      scr_mail_event_free(event);
+    }
+    scr_mailbox_release(end->owner);
+  }
+#ifndef _WIN32
+  pthread_mutex_destroy(&channel->lock);
+#endif
+  free(channel);
+}
+
+/* Wakes the owner's loop with a wake_kind event. */
+static void scr_channel_wake(ScrMailbox *owner, unsigned wake_kind) {
+  if (!owner) return;
+  ScrMailEvent *wake = calloc(1, sizeof(*wake));
+  if (!wake) scr_trap("scriptc: out of memory\n");
+  wake->kind = wake_kind;
+  scr_mailbox_post(owner, wake);
+  scr_mailbox_release(owner);
+}
+
+void scr_channel_set_owner(ScrChannel *channel, int side, ScrMailbox *owner, unsigned wake_kind) {
+  scr_channel_lock(channel);
+  ScrChannelEnd *end = &channel->end[side];
+  ScrMailbox *old = end->owner;
+  end->owner = owner ? scr_mailbox_retain(owner) : NULL;
+  ScrMailbox *wake = end->owner && (end->head || end->peer_closed) ? scr_mailbox_retain(end->owner) : NULL;
+  scr_channel_unlock(channel);
+  scr_mailbox_release(old);
+  scr_channel_wake(wake, wake_kind);
+}
+
+/* postMessage from `side`: the message (consumed) queues on the other end
+ * unless either end has closed. */
+bool scr_channel_post(ScrChannel *channel, int side, ScrMessage *message, unsigned message_kind,
+                      unsigned wake_kind) {
+  ScrMailEvent *event = calloc(1, sizeof(*event));
+  if (!event) scr_trap("scriptc: out of memory\n");
+  event->kind = message_kind;
+  event->message = message;
+  scr_channel_lock(channel);
+  ScrChannelEnd *peer = &channel->end[1 - side];
+  if (channel->end[side].closed || peer->closed) {
+    scr_channel_unlock(channel);
+    scr_mail_event_free(event);
+    return false;
+  }
+  *peer->tail = event;
+  peer->tail = &event->next;
+  peer->count++;
+  ScrMailbox *wake = peer->owner ? scr_mailbox_retain(peer->owner) : NULL;
+  scr_channel_unlock(channel);
+  scr_channel_wake(wake, wake_kind);
+  return true;
+}
+
+/* close() on `side`: nothing more is posted in either direction. */
+void scr_channel_close(ScrChannel *channel, int side) {
+  scr_channel_lock(channel);
+  channel->end[side].closed = true;
+  scr_channel_unlock(channel);
+}
+
+/* The closed port's 'close' ran: the other end learns it, after its queued
+ * messages. */
+void scr_channel_notify_close(ScrChannel *channel, int side, unsigned wake_kind) {
+  scr_channel_lock(channel);
+  ScrChannelEnd *peer = &channel->end[1 - side];
+  ScrMailbox *wake = NULL;
+  if (!peer->peer_closed && !peer->closed) {
+    peer->peer_closed = true;
+    peer->peer_closed_seq = atomic_fetch_add(&scr_channel_notice_seq, 1) + 1;
+    wake = peer->owner ? scr_mailbox_retain(peer->owner) : NULL;
+  }
+  scr_channel_unlock(channel);
+  scr_channel_wake(wake, wake_kind);
+}
+
+/* The next queued message for `side`, or NULL. */
+ScrMailEvent *scr_channel_take(ScrChannel *channel, int side) {
+  scr_channel_lock(channel);
+  ScrChannelEnd *end = &channel->end[side];
+  ScrMailEvent *event = end->head;
+  if (event) {
+    end->head = event->next;
+    if (!end->head) end->tail = &end->head;
+    end->count--;
+    event->next = NULL;
+  }
+  scr_channel_unlock(channel);
+  return event;
+}
+
+size_t scr_channel_count(ScrChannel *channel, int side) {
+  scr_channel_lock(channel);
+  size_t count = channel->end[side].count;
+  scr_channel_unlock(channel);
+  return count;
+}
+
+/* The other end's close notice order (0: none). */
+uint64_t scr_channel_peer_closed(ScrChannel *channel, int side) {
+  scr_channel_lock(channel);
+  uint64_t seq = channel->end[side].peer_closed ? channel->end[side].peer_closed_seq : 0;
+  scr_channel_unlock(channel);
+  return seq;
+}
+
+/* Drops the queued messages for `side` (its port closed). */
+void scr_channel_drop(ScrChannel *channel, int side) {
+  scr_channel_lock(channel);
+  ScrChannelEnd *end = &channel->end[side];
+  ScrMailEvent *head = end->head;
+  end->head = NULL;
+  end->tail = &end->head;
+  end->count = 0;
+  scr_channel_unlock(channel);
+  while (head) {
+    ScrMailEvent *event = head;
+    head = event->next;
+    scr_mail_event_free(event);
+  }
+}

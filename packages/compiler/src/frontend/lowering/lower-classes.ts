@@ -77,7 +77,7 @@ import { bufEncoding } from "./containers/bytes.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { lowerSearchParamsNew } from "./builtins/url.js";
 import { lowerTextCodecNew } from "./builtins/text-codecs.js";
-import { lowerWorkerNew } from "./builtins/workers.js";
+import { lowerMessageChannelNew, lowerWorkerNew } from "./builtins/workers.js";
 import {
   unsupportedPackageValueDiag,
   unsupportedDiag,
@@ -8150,6 +8150,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
   const worker = lowerWorkerNew(lowerer, expr);
   if (worker) return worker;
+  const channel = lowerMessageChannelNew(lowerer, expr);
+  if (channel) return channel;
   let intlConstructor = expr.expression;
   if (ts.isIdentifier(intlConstructor)) {
     const symbol = lowerer.resolveValueSymbol(intlConstructor);

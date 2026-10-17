@@ -38,5 +38,8 @@ void scr_worker_port_close(void);
 ScrMailbox *scr_worker_inbox(void);
 void scr_loop_set_workers(bool (*pending)(void), bool (*ready)(void), void (*dispatch)(void),
                           int (*pollfd)(void), void (*wait)(double));
+/* After a dispatch: true keeps the loop pass delivering (a MessagePort poll
+ * phase in progress), with microtasks drained between events. */
+void scr_loop_set_workers_more(bool (*more)(void));
 
 #endif

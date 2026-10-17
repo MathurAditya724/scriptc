@@ -1105,6 +1105,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "worker.root": { argTypes: [], result: F64 },
   "worker.data": { argTypes: [], result: DYN },
   "worker.parentPort": { argTypes: [], result: DYN },
+  /** new MessageChannel() ({ port1, port2 }) and receiveMessageOnPort(port)
+   * (scr_worker_events.c; the latter may throw). */
+  "worker.channel": { argTypes: [], result: DYN },
+  "worker.receiveMessageOnPort": { argTypes: [DYN], result: DYN },
   /** child_process.spawnSync (scr_child.c): posix_spawn + waitpid + piped
    * utf8 capture — cmd borrowed, args one borrowed string[] (the frontend
    * completes an omitted list to an empty literal), result an owned (+1)

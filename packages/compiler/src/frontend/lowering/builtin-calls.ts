@@ -1,3 +1,4 @@
+import { lowerReceiveMessageOnPort } from "./builtins/workers.js";
 import * as ts from "../ts7/adapter.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { DYN, type IrExpr, type SrcLoc } from "../../ir/ir.js";
@@ -88,6 +89,9 @@ export function lowerBuiltinCall(
   if (timersInterval) return timersInterval;
   const nodeModuleServed = lowerNodeModuleCall(lowerer, expr, bi, loc);
   if (nodeModuleServed) return nodeModuleServed;
+  if (bi.module === "worker_threads" && bi.member === "receiveMessageOnPort") {
+    return lowerReceiveMessageOnPort(lowerer, expr);
+  }
   const builtinFn = builtinModuleFnOf(lowerer, bi.module, bi.member);
   if (!builtinFn) {
     lowerer.noLowering(
