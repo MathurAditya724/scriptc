@@ -7998,7 +7998,10 @@ ScrDyn *scr_json_parse(ScrStr *text) {
  * layout the compiler describes in a ScrJsonSchema. It accepts only input
  * for which the checked-dynamic route (scr_json_parse + the generated
  * dynCheck builder) would succeed with the same value: every declared key
- * present exactly once with a value of its declared kind; undeclared keys,
+ * present exactly once with a value of its declared kind, except that a
+ * missing undefined-armed union member takes its ABSENT state (the checked
+ * route's missing key reads undefined: parsed objects have no prototype
+ * chain to inherit from); undeclared keys,
  * or declared keys out of declaration order, are kept beside the record in
  * source order (scr_record_source_note's contract). Anything else — a
  * syntax error, a kind mismatch, a missing or repeated key, excessive
@@ -8123,6 +8126,92 @@ static inline __attribute__((always_inline)) bool scr_jschema_member(ScrJsonP *p
   return scr_jschema_scalar(p, type->kind, out);
 }
 
+/* An inline union field slot (INLINE_UNION_FIELD in the backend). */
+typedef struct {
+  uint32_t tag;
+  uint64_t bits;
+} ScrJsonInlineUnion;
+
+static void scr_jschema_inline_store(char *slot, size_t tag, uint64_t bits) {
+  ScrJsonInlineUnion pair = { (uint32_t)tag, bits };
+  memcpy(slot, &pair, sizeof pair);
+}
+
+/* A union member value written into its field slot. Each JSON value kind
+ * selects at most one arm (the compiler admits no two arms one kind could
+ * both match), so the checked route's first full match is that arm, and
+ * any other value declines. */
+static bool scr_jschema_union(ScrJsonP *p, const ScrJsonUnion *u, char *slot) {
+  scr_json_ws(p);
+  if (p->pos >= p->len) return false;
+  char c = p->s[p->pos];
+  size_t arm;
+  if (c == 'n') arm = SCR_JARM_NULL;
+  else if (c == '"') arm = SCR_JARM_STR;
+  else if (c == '{') arm = SCR_JARM_OBJ;
+  else if (c == '[') arm = SCR_JARM_ARR;
+  else if (c == 't' || c == 'f') arm = SCR_JARM_BOOL;
+  else if (c == '-' || (c >= '0' && c <= '9')) arm = SCR_JARM_NUM;
+  else return false;
+  size_t tag = u->tags[arm];
+  if (tag == SCR_JSCHEMA_NO_ARM) return false;
+  if (arm == SCR_JARM_NULL) {
+    if (!scr_json_lit(p, "null", 4)) return false;
+    if (u->repr == SCR_JUNION_INLINE) scr_jschema_inline_store(slot, tag, 0);
+    else memcpy(slot, &u->null_value, sizeof u->null_value); /* immortal */
+    return true;
+  }
+  ScrJsonSlot v;
+  if (!scr_jschema_read(p, u->arms[arm], &v)) return false;
+  uint64_t bits = 0;
+  if (arm == SCR_JARM_NUM) memcpy(&bits, &v.f, sizeof bits);
+  else if (arm == SCR_JARM_BOOL) bits = v.b ? 1 : 0;
+  else bits = (uint64_t)(uintptr_t)v.ptr;
+  switch (u->repr) {
+  case SCR_JUNION_NULLABLE: memcpy(slot, &v.ptr, sizeof v.ptr); break; /* moves in */
+  case SCR_JUNION_INLINE: scr_jschema_inline_store(slot, tag, bits); break;
+  default: {
+    void *box = u->box((uint32_t)tag, bits); /* the payload moves in */
+    memcpy(slot, &box, sizeof box);
+  }
+  }
+  return true;
+}
+
+/* A declared member value written into its (zeroed) slot of `rec`. */
+static inline __attribute__((always_inline)) bool scr_jschema_field(ScrJsonP *p,
+                                                                    const ScrJsonSchemaField *f,
+                                                                    char *rec) {
+  char *slot = rec + f->offset;
+  if (f->type->kind == SCR_JSCHEMA_UNION) return scr_jschema_union(p, f->type->uni, slot);
+  ScrJsonSlot v;
+  if (!scr_jschema_member(p, f->type, &v)) return false;
+  switch (f->type->kind) {
+  case SCR_JSCHEMA_F64: memcpy(slot, &v.f, sizeof v.f); break;
+  case SCR_JSCHEMA_BOOL: *(uint8_t *)slot = v.b ? 1 : 0; break;
+  default: memcpy(slot, &v.ptr, sizeof v.ptr); break; /* zeroed slot; moves in */
+  }
+  return true;
+}
+
+/* The declared members a record's text omitted (`missing`, by field
+ * index): each undefined-armed union member takes its ABSENT state, as the
+ * checked route's missing key does. Any other omitted member declines. */
+static bool scr_jschema_absent(const ScrJsonSchema *s, char *rec, uint64_t missing) {
+  while (missing) {
+    const ScrJsonSchemaField *f = &s->fields[__builtin_ctzll(missing)];
+    missing &= missing - 1;
+    if (f->type->kind != SCR_JSCHEMA_UNION) return false;
+    const ScrJsonUnion *u = f->type->uni;
+    size_t tag = u->tags[SCR_JARM_ABSENT];
+    if (tag == SCR_JSCHEMA_NO_ARM) return false;
+    char *slot = rec + f->offset;
+    if (u->repr == SCR_JUNION_INLINE) scr_jschema_inline_store(slot, tag, 1); /* ABSENT_FIELD_PAYLOAD */
+    else memcpy(slot, &u->absent_value, sizeof u->absent_value); /* immortal */
+  }
+  return true;
+}
+
 /* The quoted key at p->pos when it is exactly `f`'s name, written without
  * escapes: the bytes consumed (name length + 2), else 0. Names of more
  * than eight bytes, and names holding a byte JSON text would escape,
@@ -8179,14 +8268,7 @@ static __attribute__((noinline, cold)) bool scr_jschema_record_kept(
       if (seen & bit) goto fail; /* duplicate: last-wins stays on the checked route */
       seen |= bit;
       guess = idx + 1;
-      ScrJsonSlot v;
-      if (!scr_jschema_member(p, f->type, &v)) goto fail;
-      char *slot = rec + f->offset;
-      switch (f->type->kind) {
-      case SCR_JSCHEMA_F64: memcpy(slot, &v.f, sizeof v.f); break;
-      case SCR_JSCHEMA_BOOL: *(uint8_t *)slot = v.b ? 1 : 0; break;
-      default: memcpy(slot, &v.ptr, sizeof v.ptr); break; /* zeroed slot; moves in */
-      }
+      if (!scr_jschema_field(p, f, rec)) goto fail;
       scr_dyn_obj_set(view, key, key_len, scr_dyn_retain(scr_dyn_undefined()));
     } else {
       /* A repeated undeclared key stays on the checked route too. */
@@ -8230,7 +8312,7 @@ static __attribute__((noinline, cold)) bool scr_jschema_record_kept(
       }
     }
   }
-  if (seen != all) goto fail;
+  if (seen != all && !scr_jschema_absent(s, rec, all & ~seen)) goto fail;
   ScrRecordSource entry = { rec, view, (const char *)&s->fields[0].name,
                             (const char *)&s->fields[0].name_len, sizeof *s->fields,
                             sizeof *s->fields, n };
@@ -8299,14 +8381,7 @@ static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot 
       if (seen & bit) goto fail; /* duplicate: last-wins stays on the checked route */
       seen |= bit;
       guess = idx + 1;
-      ScrJsonSlot v;
-      if (!scr_jschema_member(p, f->type, &v)) goto fail;
-      char *slot = rec + f->offset;
-      switch (f->type->kind) {
-      case SCR_JSCHEMA_F64: memcpy(slot, &v.f, sizeof v.f); break;
-      case SCR_JSCHEMA_BOOL: *(uint8_t *)slot = v.b ? 1 : 0; break;
-      default: memcpy(slot, &v.ptr, sizeof v.ptr); break; /* zeroed slot; moves in */
-      }
+      if (!scr_jschema_field(p, f, rec)) goto fail;
     }
     scr_json_ws(p);
     if (p->pos >= p->len) goto fail;
@@ -8319,7 +8394,7 @@ static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot 
     break;
   }
 close:
-  if (seen != all) goto fail;
+  if (seen != all && !scr_jschema_absent(s, rec, all & ~seen)) goto fail;
   out->ptr = rec;
   return true;
 fail:

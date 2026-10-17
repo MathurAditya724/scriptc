@@ -1110,9 +1110,11 @@ export class LlDyn {
   /** Targets the one-pass parser (scr_json_parse_schema) can build
    * directly: number, boolean and string leaves inside arrays and plain
    * records (no tuple, index signature, internal '%' slot or `__proto__`
-   * member; 1..64 fields). Everything else keeps the checked-dynamic
+   * member; 1..64 fields), and record members typed as unions those leaves,
+   * records and arrays, null and undefined (optional and nullable members;
+   * see jsonUnionSupported). Everything else keeps the checked-dynamic
    * route alone. */
-  private jsonSchemaSupported(t: IrType, visiting: Set<string>): boolean {
+  private jsonSchemaSupported(t: IrType, visiting: Set<string>, member = false): boolean {
     switch (t.kind) {
       case "f64":
       case "bool":
@@ -1130,12 +1132,43 @@ export class LlDyn {
           (f) =>
             !f.name.startsWith("%") &&
             f.name !== "__proto__" &&
-            this.jsonSchemaSupported(f.type, visiting),
+            this.jsonSchemaSupported(f.type, visiting, true),
         );
       }
+      case "union":
+        return member && this.jsonUnionSupported(t, visiting);
       default:
         return false;
     }
+  }
+
+  /** A union record member the one-pass parser writes directly: every arm
+   * a number, boolean, string, null, undefined, or a supported record or
+   * array, with at most one record and one array arm and no discriminant.
+   * Each JSON value kind then selects at most one arm, so the checked
+   * route's first full match is that arm, and a value that arm rejects
+   * fails every arm. */
+  private jsonUnionSupported(t: IrType & { kind: "union" }, visiting: Set<string>): boolean {
+    const def = this.host.unionsById.get(t.unionId);
+    if (!def || def.discriminant) return false;
+    let records = 0,
+      arrays = 0;
+    return def.arms.every((arm) => {
+      switch (arm.kind) {
+        case "f64":
+        case "bool":
+        case "string":
+        case "nullT":
+        case "undefinedT":
+          return true;
+        case "record":
+          return ++records === 1 && this.jsonSchemaSupported(arm, visiting);
+        case "array":
+          return ++arrays === 1 && this.jsonSchemaSupported(arm, visiting);
+        default:
+          return false;
+      }
+    });
   }
 
   /** The ScrJsonSchema constant for t (scr_runtime.h layout). Records list
@@ -1155,7 +1188,7 @@ export class LlDyn {
       case "bool":
       case "string": {
         const kind = t.kind === "f64" ? 0 : t.kind === "bool" ? 1 : 2;
-        body = `${S} ${kind}, ${S} 0, ptr null, ptr null, ptr null, ptr null, ptr null`;
+        body = `${S} ${kind}, ${S} 0, ptr null, ptr null, ptr null, ptr null, ptr null, ptr null`;
         break;
       }
       case "array": {
@@ -1169,7 +1202,7 @@ export class LlDyn {
           `}`,
           ``,
         );
-        body = `${S} 4, ${S} 0, ptr null, ptr @${elem}, ptr null, ptr @${ctor}, ptr ${vAdapters(host, t).release}`;
+        body = `${S} 4, ${S} 0, ptr null, ptr @${elem}, ptr null, ptr @${ctor}, ptr ${vAdapters(host, t).release}, ptr null`;
         break;
       }
       case "record": {
@@ -1194,17 +1227,94 @@ export class LlDyn {
           `@${fields} = internal constant [${entries.length} x ${fieldTy}] [${entries.join(", ")}]`,
           ``,
         );
-        body = `${S} 3, ${S} ${entries.length}, ptr @${fields}, ptr null, ptr @${mangleRecordNew(t.shapeId)}, ptr null, ptr ${vAdapters(host, t).release}`;
+        body = `${S} 3, ${S} ${entries.length}, ptr @${fields}, ptr null, ptr @${mangleRecordNew(t.shapeId)}, ptr null, ptr ${vAdapters(host, t).release}, ptr null`;
         break;
       }
+      case "union":
+        body = `${S} 5, ${S} 0, ptr null, ptr null, ptr null, ptr null, ptr null, ptr @${this.jsonUnionSchema(t, name)}`;
+        break;
       default:
         throw new InternalCompilerError(`llvm emitter bug: JSON schema of ${t.kind}`);
     }
     this.defs.push(
-      `@${name} = internal constant { ${S}, ${S}, ptr, ptr, ptr, ptr, ptr } { ${body} }`,
+      `@${name} = internal constant { ${S}, ${S}, ptr, ptr, ptr, ptr, ptr, ptr } { ${body} }`,
       ``,
     );
     return name;
+  }
+
+  /** The ScrJsonUnion descriptor of a union member (scr_json.h layout):
+   * its slot representation, the arm each JSON value kind selects, and the
+   * values the runtime stores for null and for a missing member. Boxed
+   * unions build their boxes through `<name>_box`. */
+  private jsonUnionSchema(t: IrType & { kind: "union" }, name: string): string {
+    const host = this.host;
+    const S = host.sizeType;
+    const def = host.unionsById.get(t.unionId);
+    if (!def) throw new InternalCompilerError(`llvm emitter bug: JSON schema of ${t.unionId}`);
+    const nullable = host.nullableUnions.has(t.unionId);
+    const inline = host.inlineUnions.record(t);
+    const repr = nullable ? 0 : inline ? 1 : 2;
+    // Indexed by SCR_JARM_*: null, number, boolean, string, object, array, absent.
+    const armKinds = ["nullT", "f64", "bool", "string", "record", "array", "undefinedT"];
+    const tags = armKinds.map((kind) => def.arms.findIndex((arm) => arm.kind === kind));
+    const arms = armKinds.map((_, i) =>
+      i >= 1 && i <= 5 && tags[i]! >= 0
+        ? `ptr @${this.jsonSchema(def.arms[tags[i]!]!)}`
+        : "ptr null",
+    );
+    const nullTag = tags[0]!;
+    const absentTag = tags[6]!;
+    const nullValue = !inline && nullTag >= 0 ? host.unitInstanceRef(t.unionId, nullTag) : "null";
+    const absentValue = !inline && absentTag >= 0 ? host.absentInstanceRef(t.unionId) : "null";
+    let box = "null";
+    if (repr === 2) {
+      box = `@${name}_box`;
+      const lines = [`define internal ptr ${box}(i32 %tag, i64 %bits) ${FN_ATTRS} {`, `entry:`];
+      const cases: string[] = [];
+      const blocks: string[] = [];
+      def.arms.forEach((arm, tag) => {
+        if (arm.kind === "nullT" || arm.kind === "undefinedT") return;
+        cases.push(`i32 ${tag}, label %arm${tag}`);
+        blocks.push(`arm${tag}:`);
+        if (arm.kind === "f64") {
+          host.declare(`declare ptr @scr_union_new_f64(i32, double)`);
+          blocks.push(
+            `  %f${tag} = bitcast i64 %bits to double`,
+            `  %u${tag} = call ptr @scr_union_new_f64(i32 ${tag}, double %f${tag})`,
+          );
+        } else if (arm.kind === "bool") {
+          host.declare(`declare ptr @scr_union_new_bool(i32, i1 zeroext)`);
+          blocks.push(
+            `  %b${tag} = trunc i64 %bits to i1`,
+            `  %u${tag} = call ptr @scr_union_new_bool(i32 ${tag}, i1 zeroext %b${tag})`,
+          );
+        } else {
+          const rc = vAdapters(host, arm);
+          host.declare(`declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)`);
+          blocks.push(
+            `  %p${tag} = inttoptr i64 %bits to ptr`,
+            `  %u${tag} = call ptr @scr_union_new_ref(i32 ${tag}, ptr %p${tag}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host, arm)})`,
+          );
+        }
+        blocks.push(`  ret ptr %u${tag}`);
+      });
+      this.defs.push(
+        ...lines,
+        `  switch i32 %tag, label %none [ ${cases.join(" ")} ]`,
+        `none:`,
+        `  unreachable`,
+        ...blocks,
+        `}`,
+        ``,
+      );
+    }
+    const descriptor = `${name}_union`;
+    this.defs.push(
+      `@${descriptor} = internal constant { ${S}, [7 x ${S}], [7 x ptr], ptr, ptr, ptr } { ${S} ${repr}, [7 x ${S}] [${tags.map((tag) => `${S} ${tag}`).join(", ")}], [7 x ptr] [${arms.join(", ")}], ptr ${nullValue}, ptr ${absentValue}, ptr ${box} }`,
+      ``,
+    );
+    return descriptor;
   }
 
   /** The declared-name tables scr_record_source_note scans: parallel
