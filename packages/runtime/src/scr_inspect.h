@@ -105,6 +105,12 @@ ScrDyn *scr_fs_callback_call(ScrStr *member, const ScrDyn *args);
  * becomes [err], otherwise [null, result(, buffer)]; the callback runs on
  * a later loop turn. result moves in. */
 void scr_fs_cb_schedule(const ScrDyn *callback, ScrDyn *result, const ScrDyn *buffer);
+/* getValidatedPath(value, name): a string, Buffer or file: URL path
+ * without NUL bytes (+1), or NULL with Node's TypeError pending. */
+ScrStr *scr_fs_validated_path(const ScrDyn *value, const char *name);
+/* options[name] for an options object (+1; undefined when options is
+ * nullish), or NULL with an exception pending. */
+ScrDyn *scr_fs_option_get(const ScrDyn *options, const char *name);
 ScrBytes *scr_fs_read_fd_bytes(double fd);      /* +1; the fd form (scr_lib.c) */
 void scr_fs_write_file_bytes(ScrStr *path, const ScrBytes *data);
 void scr_fs_append_file_bytes(ScrStr *path, const ScrBytes *data);

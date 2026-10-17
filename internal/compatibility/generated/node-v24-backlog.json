@@ -7,8 +7,8 @@
     "tierItemCount": 3472,
     "tiers": {
       "static": {
-        "audit-partial": 1059,
-        "verify-gap": 2286,
+        "audit-partial": 1062,
+        "verify-gap": 2283,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -26218,12 +26218,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fsPromises.cp",
+          "tests": [
+            "tests/corpus/5567-fs-cpsync.ts",
+            "tests/corpus/5568-fs-cp-errors.js",
+            "tests/corpus/5569-fs-cp-symlinks.ts",
+            "tests/corpus/5570-fs-cp-async.ts"
+          ]
         }
       }
     },
@@ -27172,12 +27177,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.cp",
+          "tests": [
+            "tests/corpus/5567-fs-cpsync.ts",
+            "tests/corpus/5568-fs-cp-errors.js",
+            "tests/corpus/5569-fs-cp-symlinks.ts",
+            "tests/corpus/5570-fs-cp-async.ts"
+          ]
         }
       }
     },
@@ -28704,12 +28714,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:fs.fs.cpSync",
+          "tests": [
+            "tests/corpus/5567-fs-cpsync.ts",
+            "tests/corpus/5568-fs-cp-errors.js",
+            "tests/corpus/5569-fs-cp-symlinks.ts",
+            "tests/corpus/5570-fs-cp-async.ts"
+          ]
         }
       }
     },

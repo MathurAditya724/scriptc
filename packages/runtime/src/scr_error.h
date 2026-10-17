@@ -106,6 +106,12 @@ typedef struct ScrError {
   ScrStr *system_call;
   ScrStr *system_path;
   ScrStr *system_dest;
+  /* Node's SystemError (internal/errors.js): the context message and errno
+   * name behind `info`; NULL for every other error. */
+  ScrStr *system_message;
+  ScrStr *system_code;
+  bool native_plain; /* a native binding's coded Error: "Name: message", no "[code]" */
+  bool errno_order;  /* ErrnoException key order: errno, code, path, syscall */
 } ScrError;
 
 enum {
@@ -149,6 +155,10 @@ typedef struct ScrDomException {
   ScrStr *system_call;
   ScrStr *system_path;
   ScrStr *system_dest;
+  ScrStr *system_message;
+  ScrStr *system_code;
+  bool native_plain;
+  bool errno_order;
   double dom_code; /* the WebIDL legacy code (0 when the name is off-table) */
   bool has_cause;  /* the options form carried a `cause` member */
   struct ScrDyn *cause; /* owned; NULL when has_cause is false */

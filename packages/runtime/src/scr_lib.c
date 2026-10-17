@@ -3027,6 +3027,69 @@ void scr_fs_throw(int e, const char *op, const ScrStr *path) {
   scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
+/* A native binding's coded Error (Node's THROW_ERR_* macros): "Error:
+ * message" with an own `code`, and no "[code]" in its name. */
+void scr_fs_throw_native_coded(const char *code, const char *message, size_t length) {
+  ScrStr *text = scr_str_new(message, length);
+  ScrError *error = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_code(error, code);
+  error->native_plain = true;
+  scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* Node's ErrnoException (env->ThrowErrnoException, used for std::error_code
+ * failures): "EEXIST, File exists 'path'" with errno (the positive errno),
+ * code, path and syscall. */
+void scr_fs_throw_errno_exception(int e, const char *syscall, const ScrStr *path) {
+  char namebuf[16];
+  const char *name = scr_errno_name(e, namebuf, sizeof namebuf);
+  const char *text = strerror(e);
+  size_t cap = strlen(name) + strlen(text) + (path ? path->len : 0) + 8;
+  char *msg = malloc(cap);
+  if (!msg) scr_trap("scriptc: out of memory\n");
+  int len = path ? snprintf(msg, cap, "%s, %s '%s'", name, text, path->data) : snprintf(msg, cap, "%s, %s", name, text);
+  ScrStr *message = scr_str_new(msg, (size_t)len);
+  free(msg);
+  ScrError *error = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_error_set_code(error, name);
+  error->system_errno = e;
+  error->system_call = scr_str_new(syscall, strlen(syscall));
+  error->system_path = path ? scr_str_retain((ScrStr *)path) : NULL;
+  error->errno_order = true;
+  scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* Node's SystemError (internal/errors.js) with a { message, path, syscall,
+ * errno, code } context: "<prefix>: <syscall> returned <errno name>
+ * (<message>) <path>", named SystemError, with code, info, errno, syscall
+ * and path own properties. */
+void scr_fs_throw_system_error(const char *code, const char *prefix, int e, const char *syscall,
+                               const ScrStr *message, const ScrStr *path) {
+  char namebuf[16];
+  const char *name = scr_errno_name(e, namebuf, sizeof namebuf);
+  size_t cap = strlen(prefix) + strlen(syscall) + strlen(name) + message->len + (path ? path->len : 0) + 32;
+  char *msg = malloc(cap);
+  if (!msg) scr_trap("scriptc: out of memory\n");
+  int len = snprintf(msg, cap, "%s: %s returned %s (%s)", prefix, syscall, name, message->data);
+  if (path) len += snprintf(msg + len, cap - (size_t)len, " %s", path->data);
+  ScrStr *text = scr_str_new(msg, (size_t)len);
+  free(msg);
+  ScrError *error = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_str_release(error->name);
+  error->name = scr_str_new("SystemError", 11);
+  error->name_present = true;
+  scr_error_set_code(error, code);
+  error->system_errno = e;
+  error->system_call = scr_str_new(syscall, strlen(syscall));
+  error->system_path = path ? scr_str_retain((ScrStr *)path) : NULL;
+  error->system_message = scr_str_retain((ScrStr *)message);
+  error->system_code = scr_str_new(name, strlen(name));
+  scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
 /* ── fs operations ───────────────────────────────────────────────────── */
 
 static FILE *scr_fs_fopen(const ScrStr *path, const char *mode) {
@@ -4236,7 +4299,7 @@ int scr_fs_raw_close(int fd) {
 
 /* The two-path fs error shape — Node's copyfile errors quote both ends:
  * "ENOENT: no such file or directory, copyfile 'src' -> 'dest'". */
-static void scr_fs_throw2(int e, const char *op, const ScrStr *src, const ScrStr *dest) {
+void scr_fs_throw2(int e, const char *op, const ScrStr *src, const ScrStr *dest) {
   char namebuf[16];
   const char *name = scr_errno_name(e, namebuf, sizeof namebuf);
   const char *text = scr_errno_text(e);
