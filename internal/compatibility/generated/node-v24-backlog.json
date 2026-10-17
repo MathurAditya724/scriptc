@@ -7,8 +7,8 @@
     "tierItemCount": 3472,
     "tiers": {
       "static": {
-        "audit-partial": 1062,
-        "verify-gap": 2283,
+        "audit-partial": 1061,
+        "verify-gap": 2284,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -3941,16 +3941,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "compiler-feature:child_process.child_process.exec",
-          "tests": [
-            "tests/corpus/5627-exec-callback.ts",
-            "tests/fixtures/node-types/child-exec.ts",
-            "tests/harness/project-config.test.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:child_process",
+          "tests": []
         }
       }
     },
@@ -76155,6 +76151,7 @@
             "tests/fixtures/node-types/promisify-fs.ts",
             "tests/corpus/5628-promisify-timers.ts",
             "tests/fixtures/node-types/promisify-timers.ts",
+            "tests/corpus/5629-promisify-stream.ts",
             "tests/harness/project-config.test.ts"
           ]
         }

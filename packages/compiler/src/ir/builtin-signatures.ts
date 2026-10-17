@@ -2225,9 +2225,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** child_process.execFile's callback slice: starts an all-piped child,
    * captures stdout/stderr, and moves the error-first callback into the
    * child registry. The callback shape is program-dependent and checked
-   * by the validator/backends. The last argument is exec's shell flag:
-   * the argv is ["-c", command] and failure messages show the command. */
-  "cp.execFile": { argTypes: [STRING, arrayOf(STRING), null, BOOL], result: CHILD_T },
+   * by the validator/backends. */
+  "cp.execFile": { argTypes: [STRING, arrayOf(STRING), null], result: CHILD_T },
   // spawn's options form: per-slot stdio modes (0 ignore / 1 inherit /
   // 2 fd) with the out/err fds for mode 2, detached, env replacement
   // pairs, cwd ("" = inherit).
@@ -3030,6 +3029,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   },
   "error.aggregateSetErrors": { argTypes: [null, DYN], result: VOID },
   "error.aggregateErrors": { argTypes: [null], result: DYN },
+  /** `new SuppressedError(error, suppressed, message?)` (scr_json.c): all
+   * three dyn and borrowed; the message conversion can throw. Returns an
+   * owned %SuppressedError. */
+  "error.newSuppressed": {
+    argTypes: [DYN, DYN, DYN],
+    result: { kind: "object", className: "%SuppressedError" },
+  },
   /** `d instanceof TypeError` (and the other BUILTIN error classes) on a
    * checked-dynamic value (scr_json.c): the from_error cache holds the
    * dyn↔error identity edge, so the test resolves the runtime error and
@@ -3119,6 +3125,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.packPushSpreadIter": { argTypes: [DYN, DYN], result: VOID },
   "dyn.reflectApply": { argTypes: [DYN, DYN, DYN], result: DYN },
   "dyn.reflectGet": { argTypes: [DYN, DYN, DYN], result: DYN },
+  /** `using` / `await using` with a dyn value (scr_json.c): usingMethod
+   * runs the declaration's checks and answers what usingDispose calls at
+   * scope exit (undefined for a null or undefined value). The bool selects
+   * `await using`. Both throw Node's TypeErrors or the method's error. */
+  "dyn.usingMethod": { argTypes: [DYN, BOOL], result: DYN },
+  "dyn.usingDispose": { argTypes: [DYN, DYN], result: DYN },
   "dyn.reflectSet": { argTypes: [DYN, DYN, DYN, DYN], result: BOOL },
   "dyn.reflectDefine": { argTypes: [DYN, DYN, DYN], result: BOOL },
   "dyn.abstractEq": { argTypes: [DYN, DYN], result: BOOL },

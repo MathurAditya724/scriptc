@@ -2031,6 +2031,13 @@ export function collectClassShapeInner(
           "extending AssertionError (its constructor takes an options object the subclass constructor would have to forward — extend Error, or construct AssertionError directly)",
         );
       }
+      if (lowerer.builtinErrorInfoOf(symbol)?.def.name === "%SuppressedError") {
+        lowerer.unsupported(
+          "SC1090",
+          t,
+          "extending SuppressedError (extend Error and keep error and suppressed in fields)",
+        );
+      }
       const named =
         (symbol && lowerer.classBySymbol.get(symbol)) ??
         lowerer.builtinErrorInfoOf(symbol) ??
@@ -8498,6 +8505,21 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         fn: "assert.errorNew",
         args: [args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynUndefinedExpr(loc)],
         type: { kind: "object", className: "%AssertionError" },
+        loc,
+      };
+    }
+    if (errInfo && errInfo.def.name === "%SuppressedError") {
+      const args = expr.arguments ?? [];
+      if (args.length > 3 || args.some(ts.isSpreadElement)) {
+        lowerer.noLowering(`new SuppressedError with this argument list`, expr);
+      }
+      return {
+        kind: "libCall",
+        fn: "error.newSuppressed",
+        args: [0, 1, 2].map((index) =>
+          args[index] ? lowerer.lowerExprExpecting(args[index], DYN) : dynUndefinedExpr(loc),
+        ),
+        type: { kind: "object", className: "%SuppressedError" },
         loc,
       };
     }

@@ -2438,7 +2438,7 @@
       "name": "util.promisify",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate and the fs callback functions with an fs/promises counterpart; call the bound function directly"
+      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline and the fs callback functions with an fs/promises counterpart; call the bound function directly"
     },
     {
       "id": "node-builtin.util.stripVTControlCharacters",
@@ -5458,7 +5458,7 @@
       "kind": "syntax",
       "name": "block- and function-scoped await using declarations",
       "status": "static",
-      "note": "LIFO asynchronous disposal through [Symbol.asyncDispose], with synchronous fallback"
+      "note": "LIFO asynchronous disposal through [Symbol.asyncDispose], with synchronous fallback, of class instances, object literals and AsyncDisposable-typed values"
     },
     {
       "id": "syntax.bigint-literals",
@@ -5633,7 +5633,7 @@
       "kind": "syntax",
       "name": "block- and function-scoped using declarations",
       "status": "static",
-      "note": "LIFO disposal on normal and abrupt scope exit through [Symbol.dispose]"
+      "note": "LIFO disposal on normal and abrupt scope exit through [Symbol.dispose], of class instances, object literals and Disposable-typed values; a failing disposal raises a SuppressedError with error and suppressed"
     },
     {
       "id": "syntax.with-statements",

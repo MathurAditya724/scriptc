@@ -33,7 +33,8 @@ static const char *const scr_error_names[SCR_ERR_COUNT] = {
     /* DOMException's DEFAULT name is "Error" too (WebIDL: the name
      * parameter defaults to "Error"); the class identity lives in the
      * vtable, never the name. */
-    "Error", "ReferenceError", "EvalError", "URIError", "AggregateError", "AssertionError"};
+    "Error", "ReferenceError", "EvalError", "URIError", "AggregateError", "AssertionError",
+    "SuppressedError"};
 
 void scr_error_trace(void *e, ScrTraceVisit visit, void *ctx) {
   /* name/message are strings — never collector-headered; nothing to visit. */
@@ -144,6 +145,28 @@ static void scr_aggregate_destroy(void *obj) {
   scr_error_destroy(obj);
 }
 
+/* SuppressedError teardown: the ScrError fields plus the disposal
+ * snapshots scr_exc_suppress recorded for its `error` and `suppressed`. */
+static void scr_suppressed_gcfree(void *obj) {
+  scr_exc_suppressed_forget(obj);
+  scr_error_gcfree(obj);
+}
+
+static void scr_suppressed_destroy(void *obj) {
+  scr_exc_suppressed_forget(obj);
+  scr_error_destroy(obj);
+}
+
+static void scr_suppressed_reld(void *obj) {
+  ScrError *e = (ScrError *)obj;
+  if (--e->rc == 0) {
+    if (scr_error_traced) scr_cyc_dead(e);
+    scr_rc_destroy(obj, scr_suppressed_destroy);
+  } else if (scr_error_traced) {
+    scr_cyc_released(e);
+  }
+}
+
 static void scr_aggregate_reld(void *obj) {
   ScrAggregateError *a = (ScrAggregateError *)obj;
   if (--a->base.rc == 0) {
@@ -167,6 +190,7 @@ SCR_TL ScrVt scr_error_vts[SCR_ERR_COUNT] = {
     {7, 7, &scr_error_reld}, /* URIError */
     {8, 8, &scr_aggregate_reld}, /* AggregateError */
     {9, 9, &scr_error_reld}, /* AssertionError */
+    {10, 10, &scr_suppressed_reld}, /* SuppressedError */
 };
 
 ScrError *scr_error_retain(ScrError *e) {
@@ -212,11 +236,13 @@ static ScrError *scr_error_alloc(int kind) {
   static ScrCycType error_type = { &scr_error_trace, &scr_error_gcfree, SCR_CYC_KIND_ERROR };
   static ScrCycType domex_type = { &scr_error_trace, &scr_domex_gcfree, SCR_CYC_KIND_DOMEXCEPTION };
   static ScrCycType aggregate_type = { &scr_error_trace, &scr_aggregate_gcfree, SCR_CYC_KIND_ERROR };
+  static ScrCycType suppressed_type = { &scr_error_trace, &scr_suppressed_gcfree, SCR_CYC_KIND_ERROR };
   ScrError *e;
   if (scr_error_traced) {
     e = scr_cyc_alloc(size, kind == SCR_ERR_DOMEX       ? &domex_type
-                            : kind == SCR_ERR_AGGREGATE ? &aggregate_type
-                                                        : &error_type);
+                            : kind == SCR_ERR_AGGREGATE  ? &aggregate_type
+                            : kind == SCR_ERR_SUPPRESSED ? &suppressed_type
+                                                         : &error_type);
   } else {
     e = calloc(1, size);
     if (!e) scr_error_oom();

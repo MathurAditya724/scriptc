@@ -205,12 +205,12 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
     [
       "using-declarations",
       "block- and function-scoped using declarations",
-      "LIFO disposal on normal and abrupt scope exit through [Symbol.dispose]",
+      "LIFO disposal on normal and abrupt scope exit through [Symbol.dispose], of class instances, object literals and Disposable-typed values; a failing disposal raises a SuppressedError with error and suppressed",
     ],
     [
       "await-using-declarations",
       "block- and function-scoped await using declarations",
-      "LIFO asynchronous disposal through [Symbol.asyncDispose], with synchronous fallback",
+      "LIFO asynchronous disposal through [Symbol.asyncDispose], with synchronous fallback, of class instances, object literals and AsyncDisposable-typed values",
     ],
     [
       "for-using-of",
