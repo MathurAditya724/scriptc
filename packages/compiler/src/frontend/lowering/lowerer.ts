@@ -58,6 +58,7 @@ import {
 import {
   unionRetagMappable,
   narrowedRetagHelper,
+  uninhabitedArmRetagHelper,
   strandedUnitTrap,
   strandedCoercionTrap,
   recordUnionWrapHelper,
@@ -8467,7 +8468,9 @@ export class Lowerer {
     // node's CHECKER type proves those arms away, they trap instead — the
     // sub-union narrowing bridge (narrowedRetagHelper).
     if (e.type.kind === "union" && expected.kind === "union" && !typeEquals(e.type, expected)) {
-      const helper = this.narrowedRetagHelper(node, e.type.unionId, expected.unionId, e.loc);
+      const helper =
+        this.narrowedRetagHelper(node, e.type.unionId, expected.unionId, e.loc) ??
+        uninhabitedArmRetagHelper(this, node, e.type.unionId, expected.unionId, e.loc);
       if (helper) {
         e = { kind: "call", callee: helper, args: [e], type: expected, loc: e.loc };
       }
