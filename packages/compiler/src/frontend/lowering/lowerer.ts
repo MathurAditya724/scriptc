@@ -2821,10 +2821,33 @@ export class Lowerer {
   }
 
   /** Declared class fields may store a DYN value only when its static type
-   * names checked protocol identity or an owned runtime handle (a Worker
-   * or MessagePort); `unknown` and `any` fields stay refused. */
+   * is `unknown` or `object` (also with `null` or `undefined`, or an array
+   * of those), names checked protocol identity, or is an owned runtime
+   * handle (a Worker or MessagePort); `any` fields stay refused. */
   classFieldStoresDyn(type: ts.Type): boolean {
-    return this.classImplementedProtocol(type) || isWorkerHandleType(type, this.typeCtx);
+    return (
+      this.opaqueValueType(type) ||
+      this.classImplementedProtocol(type) ||
+      isWorkerHandleType(type, this.typeCtx)
+    );
+  }
+
+  /** `unknown`, `object`, an array of those, or a union of those with
+   * `null` and `undefined`: types whose values use checked-dynamic storage
+   * as they do in JavaScript class fields. */
+  private opaqueValueType(type: ts.Type): boolean {
+    const opaque = (part: ts.Type): boolean =>
+      (part.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.NonPrimitive)) !== 0 ||
+      (this.checker.isArrayType(part) &&
+        this.checker.getTypeArguments(part as ts.TypeReference).every(opaque));
+    if (!type.isUnionType()) return opaque(type);
+    const parts = ts.constituentTypes(type);
+    return (
+      parts.some(opaque) &&
+      parts.every(
+        (part) => (part.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0 || opaque(part),
+      )
+    );
   }
 
   /** The nominal identity of a checker module-namespace type. Program
