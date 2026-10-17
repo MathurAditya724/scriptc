@@ -309,7 +309,11 @@ export function emitOperatorExpr(
         }
         if (e.op === "%") {
           const constant = constantDivisor(e.right, ri);
-          const power = constant === null ? null : emitPowerOfTwoRemainder(host, l, constant);
+          // Sums, differences and products are usually integers.
+          const computed =
+            e.left.kind === "bin" && (e.left.op === "+" || e.left.op === "-" || e.left.op === "*");
+          const power =
+            constant === null ? null : emitPowerOfTwoRemainder(host, l, constant, li, computed);
           if (power) return power;
           // A fractional constant divisor never passes the integer check.
           const checked =
