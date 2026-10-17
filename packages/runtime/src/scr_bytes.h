@@ -94,6 +94,9 @@ ScrDyn *scr_worker_parent_port(void);
  * (scr_worker_events.c). */
 ScrDyn *scr_worker_message_channel(void);
 ScrDyn *scr_worker_receive_message_on_port(ScrDyn *port);
+/* new BroadcastChannel(...args) (scr_worker_events.c): args is the argument
+ * vector as one array (borrowed); may throw. */
+ScrDyn *scr_worker_broadcast_channel(ScrDyn *args);
 /* setEnvironmentData(key, value) and getEnvironmentData(key) (+1); both
  * borrow their arguments. */
 void scr_worker_set_environment_data(ScrDyn *key, ScrDyn *value);
