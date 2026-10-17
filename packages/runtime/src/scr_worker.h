@@ -38,7 +38,8 @@ void scr_worker_thread_release(ScrWorkerThread *worker);
 void scr_worker_thread_join(ScrWorkerThread *worker);
 void scr_worker_thread_terminate(ScrWorkerThread *worker);
 uint64_t scr_worker_thread_id(const ScrWorkerThread *worker);
-/* The Worker's threadName (immortal, owned by the thread record). */
+/* The Worker's threadName, owned by the thread record and freed with it:
+ * callers copy it into the strings they return. */
 const ScrStr *scr_worker_thread_name(const ScrWorkerThread *worker);
 /* Posting consumes the message even after the destination has closed. */
 bool scr_worker_thread_post(ScrWorkerThread *worker, ScrMessage *message);

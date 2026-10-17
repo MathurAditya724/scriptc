@@ -477,8 +477,16 @@ static ScrDyn *scr_worker_view_get(void *ptr, const char *key, size_t length) {
     if (!view->stdio_box[i]) view->stdio_box[i] = scr_worker_stdio_box(view->stdio[i]);
     return scr_dyn_retain(view->stdio_box[i]);
   }
-  if (!view->port && length == 10 && !memcmp(key, "threadName", 10))
-    return view->closed ? scr_dyn_new_null() : scr_dyn_new_str((ScrStr *)scr_worker_thread_name(view->thread));
+  if (!view->port && length == 10 && !memcmp(key, "threadName", 10)) {
+    if (view->closed) return scr_dyn_new_null();
+    /* a copy: the thread record's name is freed with the record, which
+     * a string value can outlive */
+    const ScrStr *name = scr_worker_thread_name(view->thread);
+    ScrStr *copy = scr_str_new(name->data, name->len);
+    ScrDyn *value = scr_dyn_new_str(copy);
+    scr_str_release(copy);
+    return value;
+  }
   if (!view->port && length == 14 && !memcmp(key, "resourceLimits", 14))
     return view->closed ? scr_dyn_new_obj() : scr_worker_refusal("worker.resourceLimits is not supported yet");
   for (size_t i = 0; i < sizeof scr_worker_methods / sizeof scr_worker_methods[0]; i++) {

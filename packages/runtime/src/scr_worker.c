@@ -191,7 +191,11 @@ ScrDyn *scr_worker_thread_name_current(void) {
     scr_str_release(empty);
     return name;
   }
-  return scr_dyn_new_str(scr_worker_current->name);
+  /* a copy: the thread record's name is freed with the record */
+  ScrStr *copy = scr_str_new(scr_worker_current->name->data, scr_worker_current->name->len);
+  ScrDyn *name = scr_dyn_new_str(copy);
+  scr_str_release(copy);
+  return name;
 }
 
 void scr_worker_thread_terminate(ScrWorkerThread *worker) {
