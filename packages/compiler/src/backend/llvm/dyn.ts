@@ -3715,6 +3715,21 @@ export class LlDyn {
       B.terminate(`ret ptr ${r}`);
       B.startBlock(lNext);
     }
+    // PROMISE: Promise.prototype.then/catch/finally as function values;
+    // every other key is undefined (promises have no own properties).
+    {
+      const isP = B.tmp();
+      B.line(`${isP} = icmp eq i32 ${kd}, ${DYN_KIND.PROMISE}`);
+      const lP = B.newLabel("kg.p");
+      const lNext = B.newLabel("kg.n");
+      B.condBr(isP, lP, lNext);
+      B.startBlock(lP);
+      host.declare(`declare ptr @scr_dyn_promise_key_get(ptr, ptr)`);
+      const r = B.tmp();
+      B.line(`${r} = call ptr @scr_dyn_promise_key_get(ptr %d, ptr %k)`);
+      B.terminate(`ret ptr ${r}`);
+      B.startBlock(lNext);
+    }
     // The canonical-index parse, shared by BYTES/ARR/STR: digits only,
     // no leading zero. Leaves (digits, idx).
     const parseIndex = (): { digits: string; idx: string } => {

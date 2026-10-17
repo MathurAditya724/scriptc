@@ -3939,6 +3939,14 @@ void *scr_dyn_handle_unbox(const ScrDyn *d, ScrDynHandleTag tag, const ScrDynPat
   return scr_dyn_handle_ops(tag)->retain(d->v.handle.ptr);
 }
 
+SCR_TL ScrDyn *(*scr_dyn_promise_member_fn)(const char *key, size_t len) = NULL;
+
+ScrDyn *scr_dyn_promise_key_get(const ScrDyn *d, const ScrStr *k) {
+  (void)d;
+  ScrDyn *method = scr_dyn_promise_member_fn ? scr_dyn_promise_member_fn(k->data, k->len) : NULL;
+  return method ? method : scr_dyn_retain(scr_dyn_undefined());
+}
+
 ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
   const ScrDynHandleOps *ops = scr_dyn_handle_ops(d->v.handle.tag);
   ScrDyn *r = ops->get(d->v.handle.ptr, k->data, k->len);
@@ -6675,6 +6683,13 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
   if (v->kind == SCR_DYN_ARR) {
     if (v->prototype) return scr_dyn_in(v->prototype, key);
     return !v->null_proto && (scr_dyn_array_proto_name(key) || scr_dyn_object_proto_name(key));
+  }
+  if (v->kind == SCR_DYN_PROMISE) {
+    /* Promise.prototype's methods, then Object.prototype's names. */
+    static const char *const names[] = {"then", "catch", "finally"};
+    for (size_t i = 0; i < 3; i++)
+      if (strlen(names[i]) == key->len && memcmp(names[i], key->data, key->len) == 0) return true;
+    return scr_dyn_object_proto_name(key);
   }
   return false;
 }
