@@ -2312,6 +2312,25 @@ static bool scr_await_settled(ScrPromise *p) {
   return true;
 }
 
+bool scr_promise_settled_now(ScrPromise *p) {
+  if (p->state == SCR_PROM_PENDING) return false;
+  scr_prom_observe(p);
+  if (p->state == SCR_PROM_REJECTED) scr_promise_rethrow(p);
+  return true;
+}
+
+bool scr_promise_payload_truthy(const ScrPromise *p) {
+  switch (p->payload_kind) {
+    case SCR_EXC_NONE: return false;
+    case SCR_EXC_F64: return p->f64 != 0 && p->f64 == p->f64;
+    case SCR_EXC_BOOL: return p->b;
+    case SCR_EXC_STR: return p->payload && ((const ScrStr *)p->payload)->len > 0;
+    default:
+      if (p->retain_fn == scr_dyn_retain_v) return p->payload && scr_dyn_truthy(p->payload);
+      return p->payload != NULL;
+  }
+}
+
 double scr_await_f64(ScrPromise *p) {
   return scr_await_settled(p) ? p->f64 : 0;
 }

@@ -326,9 +326,9 @@
       "apiEntries": 280,
       "static": {
         "supported": 7,
-        "partial": 195,
+        "partial": 198,
         "refused": 0,
-        "not-implemented": 78,
+        "not-implemented": 75,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -44021,6 +44021,10 @@
           "tests/corpus/5548-fs-callback-arguments.cjs",
           "tests/corpus/5549-fs-callback-option-checks.cjs",
           "tests/corpus/5554-fs-streams-typed.ts",
+          "tests/corpus/5567-fs-cpsync.ts",
+          "tests/corpus/5568-fs-cp-errors.js",
+          "tests/corpus/5569-fs-cp-symlinks.ts",
+          "tests/corpus/5570-fs-cp-async.ts",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
@@ -45067,8 +45071,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fsPromises.cp",
+        "tests": [
+          "tests/corpus/5567-fs-cpsync.ts",
+          "tests/corpus/5568-fs-cp-errors.js",
+          "tests/corpus/5569-fs-cp-symlinks.ts",
+          "tests/corpus/5570-fs-cp-async.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -46027,8 +46037,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.cp",
+        "tests": [
+          "tests/corpus/5567-fs-cpsync.ts",
+          "tests/corpus/5568-fs-cp-errors.js",
+          "tests/corpus/5569-fs-cp-symlinks.ts",
+          "tests/corpus/5570-fs-cp-async.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -47655,8 +47671,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.cpSync",
+        "tests": [
+          "tests/corpus/5567-fs-cpsync.ts",
+          "tests/corpus/5568-fs-cp-errors.js",
+          "tests/corpus/5569-fs-cp-symlinks.ts",
+          "tests/corpus/5570-fs-cp-async.ts"
+        ]
       },
       "anchorSource": "exact"
     },

@@ -868,6 +868,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.cpSync",
+      "kind": "node-builtin",
+      "name": "fs.cpSync",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.createReadStream",
       "kind": "node-builtin",
       "name": "fs.createReadStream",
@@ -1016,6 +1022,12 @@
       "id": "node-builtin.fs.promises.copyFile",
       "kind": "node-builtin",
       "name": "fs/promises.copyFile",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.promises.cp",
+      "kind": "node-builtin",
+      "name": "fs/promises.cp",
       "status": "static"
     },
     {

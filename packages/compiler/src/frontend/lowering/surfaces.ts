@@ -1222,6 +1222,16 @@ export const BUILTIN_MODULE_FNS: Record<
       result: VOID,
       valueParams: exactValueParams(DYN, DYN),
     },
+    // Options and paths are checked by the runtime (scr_fs_cp_begin).
+    cpSync: {
+      fn: "fs.cpSync",
+      params: [DYN, DYN, DYN],
+      result: VOID,
+      valueParams: [
+        ...exactValueParams(DYN, DYN),
+        { mode: "optional", type: DYN, defaultValue: undefined },
+      ],
+    },
     symlinkSync: {
       fn: "fs.symlinkSync",
       params: [DYN, DYN, DYN],
@@ -1361,6 +1371,15 @@ export const BUILTIN_MODULE_FNS: Record<
       params: [DYN, DYN],
       result: { kind: "promise", inner: VOID },
       valueParams: exactValueParams(DYN, DYN),
+    },
+    cp: {
+      fn: "fsp.cp",
+      params: [DYN, DYN, DYN],
+      result: { kind: "promise", inner: VOID },
+      valueParams: [
+        ...exactValueParams(DYN, DYN),
+        { mode: "optional", type: DYN, defaultValue: undefined },
+      ],
     },
     symlink: {
       fn: "fsp.symlink",
