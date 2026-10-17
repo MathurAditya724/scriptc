@@ -2,6 +2,7 @@ node_modules/
 .pnpm-store/
 # test-fixture packages are TEST DATA, committed on purpose
 !tests/diagnostics/npm-imports/node_modules/
+!tests/diagnostics/npm-program-type-error/node_modules/
 !tests/diagnostics/retired-engine-import-refusal/node_modules/
 !tests/fixtures/commander-calc/node_modules/
 !tests/fixtures/npm/node_modules/
