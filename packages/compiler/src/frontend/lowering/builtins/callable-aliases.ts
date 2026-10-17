@@ -97,6 +97,19 @@ const PROMISIFIED_FS_MEMBERS: ReadonlySet<string> = new Set([
   "writeFile",
 ]);
 
+/** The global setTimeout/setImmediate as a promisify target, keyed like
+ * the node:timers exports they are. Node's util.promisify returns their
+ * custom promisified form, which is timers/promises' function of the same
+ * name. */
+function globalTimerOf(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+): { module: string; member: string } | null {
+  if (ident.text !== "setTimeout" && ident.text !== "setImmediate") return null;
+  if (!lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(ident) ?? undefined)) return null;
+  return { module: "timers", member: ident.text };
+}
+
 export function registerPromisifiedBuiltinDecl(
   lowerer: Lowerer,
   nameNode: ts.Node,
@@ -116,7 +129,7 @@ export function registerPromisifiedBuiltinDecl(
   const target = !argNode
     ? null
     : ts.isIdentifier(argNode)
-      ? lowerer.builtinImportOf(argNode)
+      ? (lowerer.builtinImportOf(argNode) ?? globalTimerOf(lowerer, argNode))
       : ts.isPropertyAccessExpression(argNode)
         ? lowerer.builtinMemberOf(argNode)
         : null;
@@ -127,12 +140,19 @@ export function registerPromisifiedBuiltinDecl(
         ? { kind: "promisified-exec" as const }
         : target?.module === "fs" && PROMISIFIED_FS_MEMBERS.has(target.member)
           ? { kind: "promisified-builtin" as const, module: "fs/promises", member: target.member }
-          : null;
+          : target?.module === "timers" &&
+              (target.member === "setTimeout" || target.member === "setImmediate")
+            ? {
+                kind: "promisified-builtin" as const,
+                module: "timers/promises",
+                member: target.member,
+              }
+            : null;
   if (!projection) {
     lowerer.noLowering(
       "util.promisify of this target",
       argNode ?? e,
-      "child_process.exec, child_process.execFile and the fs callback functions with an fs/promises counterpart are the supported targets",
+      "child_process.exec, child_process.execFile, setTimeout, setImmediate and the fs callback functions with an fs/promises counterpart are the supported targets",
     );
   }
   const symbol = lowerer.checker.getSymbolAtLocation(nameNode);

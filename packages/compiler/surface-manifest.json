@@ -2426,7 +2426,7 @@
       "name": "util.promisify",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec and the fs callback functions with an fs/promises counterpart; call the bound function directly"
+      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate and the fs callback functions with an fs/promises counterpart; call the bound function directly"
     },
     {
       "id": "node-builtin.util.stripVTControlCharacters",
