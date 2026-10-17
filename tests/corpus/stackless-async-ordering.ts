@@ -133,8 +133,6 @@ async function main(): Promise<void> {
   Promise.resolve().then(() => say("then 1"));
   queueMicrotask(() => say("microtask 1"));
   process.nextTick(() => say("tick 1"));
-  setTimeout(() => say("timeout 0"), 0);
-  setImmediate(() => say("immediate"));
   const w1 = waiter(1);
   const w2 = waiter(2);
   const r1 = returnsPromise(1);
@@ -171,6 +169,20 @@ async function main(): Promise<void> {
   Promise.resolve().then(() => say("inline then"));
   await Promise.all(inline);
   say("inline done");
+  // Macrotasks, each scheduled from the one before so their order is fixed:
+  // the timer's microtask runs before the immediate it schedules.
+  await new Promise<void>((resolve) => {
+    setTimeout(() => {
+      say("timeout");
+      setImmediate(() => {
+        say("immediate");
+        resolve();
+      });
+      Promise.resolve().then(() => say("timeout microtask"));
+      process.nextTick(() => say("timeout tick"));
+    }, 0);
+  });
+  say("after macrotasks " + (await plain("m")));
 }
 
 main().then(() => {

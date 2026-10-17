@@ -3,7 +3,9 @@
 // the caller's run() window closed, nested runs inside the body shadow and
 // restore around awaits, enterWith inside a body stays inside that body,
 // and concurrent bodies keep their own contexts while their continuations
-// interleave on the microtask queue and across timers.
+// interleave on the microtask queue and across timers. The concurrent
+// bodies wake from gates that chained timer callbacks open one per turn in
+// a fixed order, so their interleaving never depends on timer deadlines.
 import { AsyncLocalStorage } from "node:async_hooks";
 
 const store = new AsyncLocalStorage<string>();
@@ -19,12 +21,30 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-async function worker(id: number, ms: number): Promise<string> {
+const opens: (() => void)[] = [];
+function gate(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    opens.push(resolve);
+  });
+}
+
+// Opens the gates in `order`, each from its own timer callback scheduled by
+// the previous one, so each woken body runs before the next gate opens.
+function openInOrder(order: number[], at: number): void {
+  if (at === order.length) return;
+  setTimeout(() => {
+    say("open gate " + order[at]!);
+    opens[order[at]!]!();
+    openInOrder(order, at + 1);
+  }, 1);
+}
+
+async function worker(id: number, ready: Promise<void>): Promise<string> {
   say("worker " + id + " start " + current());
   await null;
   say("worker " + id + " after hop " + current());
-  await sleep(ms);
-  say("worker " + id + " after sleep " + current());
+  await ready;
+  say("worker " + id + " after timer " + current());
   const inner = await store.run("inner" + id, async () => {
     await null;
     return current();
@@ -42,18 +62,19 @@ async function entering(): Promise<string> {
 }
 
 async function main(): Promise<void> {
-  const a = store.run("a", () => worker(1, 2));
-  const b = store.run("b", () => worker(2, 1));
-  const c = worker(3, 0);
+  const a = store.run("a", () => worker(1, gate()));
+  const b = store.run("b", () => worker(2, gate()));
+  const c = worker(3, gate());
   say("main after spawns " + current());
+  openInOrder([1, 2, 0], 0);
   const all: Promise<string>[] = [a, b, c];
   const results = await Promise.all(all);
   say("results " + results.join(" "));
   const e = await store.run("outer", () => entering());
   say("entering returned " + e + " main sees " + current());
   await store.run("chain", async () => {
-    const first = await worker(4, 0);
-    const second = await worker(5, 1);
+    const first = await worker(4, sleep(1));
+    const second = await worker(5, sleep(2));
     say("chain " + first + " " + second);
   });
   say("main end " + current());
