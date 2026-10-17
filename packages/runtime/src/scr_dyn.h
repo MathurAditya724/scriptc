@@ -294,7 +294,7 @@ struct ScrDyn {
     ScrBigInt *bigint; /* owned (SCR_DYN_BIGINT) */
     /* Callbacks keep the optional symbol unit out of symbol-free binaries. */
     struct { ScrSym *value; void (*release)(ScrSym *); ScrStr *(*render)(ScrSym *); ScrStr *(*description)(ScrSym *); } symbol;
-    struct { size_t len; size_t cap; ScrDyn **items; struct ScrDyn *properties; bool sealed; bool frozen; unsigned char *presence; } arr; /* owned; NULL presence means dense */
+    struct { size_t len; size_t cap; ScrDyn **items; struct ScrDyn *properties; bool sealed; bool frozen; unsigned char *presence; struct ScrDynRegion *region; } arr; /* owned; NULL presence means dense; region: see ScrDynRegion */
     struct {
       size_t len;
       size_t cap;
@@ -313,6 +313,7 @@ struct ScrDyn {
        * prototypes that live until their thread exits set it, and they
        * clear it before release, so freelist reuse never sees it. */
       const char *class_name;
+      struct ScrDynRegion *region; /* see ScrDynRegion */
     } obj; /* owned */
     /* SCR_DYN_FUNC: the boxed closure (owned) + its call descriptor. `sig`
      * and `name` are static compiler-emitted literals (never freed); name
@@ -375,6 +376,93 @@ struct ScrDyn {
 _Static_assert(offsetof(ScrDyn, v.typed_ref.ptr) == 16, "typed_ref.ptr offset");
 _Static_assert(offsetof(ScrDyn, v.typed_ref.type_key) == 16 + 3 * sizeof(void *),
                "typed_ref.type_key offset");
+/* The region links ride in payload space the capsule variant already
+ * reserves, so dyn nodes keep their size (and allocation size class). */
+_Static_assert(sizeof(((ScrDyn *)0)->v.arr) <= sizeof(((ScrDyn *)0)->v.typed_ref) &&
+               sizeof(((ScrDyn *)0)->v.obj) <= sizeof(((ScrDyn *)0)->v.typed_ref),
+               "dyn region links must not grow the node");
+
+/* ── intact parse regions ─────────────────────────────────────────────
+ * Every heap dyn node carries a cycle header, so an ordinary release that
+ * leaves an array or object alive buffers it as a possible cycle root, and
+ * reading a member of a parsed document (`parsed[i]`, JSON.stringify's
+ * walk) turns every container it touches into a candidate the collector
+ * must later trace. A JSON.parse result cannot lie on a cycle until the
+ * program stores a reference into it, so the parser tags the containers it
+ * builds with one shared region, and the region stays INTACT until the
+ * first store into any of its containers that could close a cycle.
+ * structuredClone and message decoding tag the documents they build the
+ * same way; "the parser" below means whichever producer built the region.
+ *
+ * Invariant: while a region is intact, every outgoing edge of each of its
+ * containers is an edge the parser created or a store of a primitive, and
+ * each parser edge leads to a node the parser created later in the same
+ * region (a container of the region, or a primitive). Containers have no
+ * prototype, accessors, symbol or named-array tables, and every property
+ * is enumerable. Following edges therefore strictly increases
+ * creation order, so no node of an intact region lies on a cycle — whatever
+ * points INTO the region from outside, including containers of other
+ * regions. Releases of intact containers skip candidate buffering.
+ *
+ * Why the flag is per region and not per container: a cycle can run
+ * through a container that was never written. After `child.parent = root`
+ * the last outside reference to the cycle may be dropped from `root`, which
+ * still has only parser edges; root's release must buffer it. Invalidating
+ * the whole region on the first write makes it do so.
+ *
+ * Soundness of skipping: any cycle consists of non-intact nodes only, and a
+ * garbage cycle becomes garbage when its last outside reference is dropped
+ * — a release of one of its own (non-intact) members, which buffers as
+ * before. Nodes released while their region was intact cannot have been on
+ * a cycle then, and nothing intact can reach a cycle (intact containers
+ * reach only their own region). A missed barrier would leak a cycle (the
+ * RC audit lanes report it); it cannot free live data, because the walk and
+ * teardown of every node are unchanged.
+ *
+ * Writers call scr_dyn_region_store(container, value) where they store a
+ * reference into an existing array or object (items, entries, accessors,
+ * prototype, named array properties, symbol tables). Removals, permutations
+ * of a container's own items, and stores of JSON primitives or undefined
+ * keep the region intact; accessor and property definitions never do.
+ * Published graphs are immortal and frozen, so their releases never get
+ * here and they are never written. Regions are per thread like the nodes
+ * that point at them. */
+typedef struct ScrDynRegion {
+  size_t refs; /* containers tagged with it, plus the parser while it runs */
+  bool intact;
+} ScrDynRegion;
+
+static inline ScrDynRegion *scr_dyn_region_of(const ScrDyn *d) {
+  return d->kind == SCR_DYN_ARR ? d->v.arr.region : d->kind == SCR_DYN_OBJ ? d->v.obj.region : NULL;
+}
+
+/* A value that can be stored without closing a cycle or changing what the
+ * region holds: the JSON primitive kinds and undefined. Everything an
+ * intact container reaches is therefore a container of its region or one
+ * of these, which JSON.stringify relies on (scr_json_plain_container).
+ * Immortal containers (published graphs) are not inert: they may hold
+ * functions, accessors or prototypes. */
+static inline bool scr_dyn_region_inert(const ScrDyn *value) {
+  return value && (value->kind <= SCR_DYN_STR || value->kind == SCR_DYN_UNDEF);
+}
+
+/* Write barrier: `value` (NULL when unknown) is about to be stored into
+ * `container`. Immortal (published) containers are shared across threads
+ * and never released, so their region is left alone. */
+static inline void scr_dyn_region_store(const ScrDyn *container, const ScrDyn *value) {
+  ScrDynRegion *region = scr_dyn_region_of(container);
+  if (region && region->intact && container->rc != SIZE_MAX && !scr_dyn_region_inert(value))
+    region->intact = false;
+}
+
+/* Other whole-document producers (structuredClone, message decoding) open
+ * a region, tag each container once its members are stored, and close
+ * their own reference. They must hold the same invariant as the parser:
+ * fresh containers only, edges to containers created later, inert leaves
+ * only (else they clear `intact`). Tagging a non-container is a no-op. */
+ScrDynRegion *scr_dyn_region_open(void);
+void scr_dyn_region_tag(ScrDyn *d, ScrDynRegion *region);
+void scr_dyn_region_close(ScrDynRegion *region);
 
 static inline ScrDyn *scr_dyn_retain(ScrDyn *d) {
   if (d->rc != SIZE_MAX) {
@@ -632,6 +720,17 @@ void scr_dyn_typed_ref_bind_array(ScrDyn *d, const ScrDynTypedArrayOps *ops);
  * for-in, Object.keys/values/entries, typeof and Array.isArray answer from
  * the native record, creating only the field values they return. */
 void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
+/* Undeclared properties of checked records (scr_json.c). The checked
+ * record builder notes its source object; a record whose source had own
+ * properties the shape does not declare keeps them, in own-key order, in a
+ * retained view released with the record. Its capsules adopt that view, and
+ * the typed serializers consult `has` to serialize through the capsule.
+ * `apply` consumes a fresh copying snapshot and returns it merged (+1). */
+void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *names,
+                            const size_t *lens, size_t count);
+bool scr_record_source_has(const void *rec);
+ScrDyn *scr_record_source_view(const void *rec);
+ScrDyn *scr_record_source_apply(ScrDyn *snapshot, const void *rec);
 /* Attach the prototype member names of a class instance capsule
  * (idempotent), so `in` sees its methods and accessors. */
 void scr_dyn_typed_ref_bind_class(ScrDyn *d, const ScrDynTypedClassOps *ops);

@@ -8,7 +8,9 @@ import { InternalCompilerError } from "../../errors.js";
 import { createHash } from "node:crypto";
 import {
   endsWithJump,
+  matchFieldSelfConcat,
   matchStringSelfConcat,
+  readsArraySlot,
   streamTypedRefEligible,
   undefinedArmTag,
 } from "../../ir/analysis.js";
@@ -88,10 +90,13 @@ import {
   type IntegerRanges,
 } from "../../ir/integer-ranges.js";
 import { unshareNodes } from "../../ir/unshare.js";
+import { copyStableCaptures } from "../../ir/capture-values.js";
 import { analyzeInt32Slots, dynamicFieldStores, type Int32Slots } from "../../ir/int32-slots.js";
 import { analyzeFinalFields, constructorClass, type FinalFields } from "../../ir/final-fields.js";
 import { foldConstantGlobals } from "../../ir/constant-globals.js";
 import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
+import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
+import { hoistFinalFieldReads } from "../../ir/field-values.js";
 import { findIntegerViews } from "./integer-views.js";
 import {
   findInt32Abis,
@@ -110,6 +115,7 @@ import {
 } from "./integer-clones.js";
 import { exactInteger, narrowInteger } from "./integer-values.js";
 import {
+  conditionalLoopWrites,
   findInitializerBindings,
   initializerLocalCandidates,
   withInitializerBindings,
@@ -183,7 +189,7 @@ import {
   type LocalArrayRead,
 } from "./local-array-reads.js";
 import { CheckedNarrows, emitCheckedNarrowReceiver } from "./checked-narrows.js";
-import { emitDenseArrayGet, emitDenseArraySet } from "./dense-array-access.js";
+import { emitDenseArrayGet, emitDenseArraySet, emitDenseSlotUnlink } from "./dense-array-access.js";
 import {
   emitStackMapRead,
   findMapReadLifetimes,
@@ -191,6 +197,7 @@ import {
   matchMapRead,
   type MapReadLifetimes,
 } from "./map-read-lifetimes.js";
+import { findMapEntryFusions, type MapEntryFusion } from "./map-entry-fusion.js";
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
 import { borrowableInputs, emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { analyzeWalks, findWalkBorrows, type WalkBorrowHost } from "./walk-borrows.js";
@@ -464,7 +471,11 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
       ? addRecordResultEntries(
           scalarizeNumericRecords(
             specializeNumericCalls(
-              foldConstantGlobals(dropUnwrittenPropertyBags(mod)),
+              foldConstantGlobals(
+                copyStableCaptures(
+                  hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                ),
+              ),
               mangleFunction,
             ),
           ),
@@ -485,7 +496,11 @@ export function emitLlvmModuleSource(
       ? addRecordResultEntries(
           scalarizeNumericRecords(
             specializeNumericCalls(
-              foldConstantGlobals(dropUnwrittenPropertyBags(mod)),
+              foldConstantGlobals(
+                copyStableCaptures(
+                  hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                ),
+              ),
               mangleFunction,
             ),
           ),
@@ -503,6 +518,9 @@ function llStrBytes(text: string): string {
 }
 
 const NO_BORROWED: ReadonlySet<number> = new Set();
+/** ScrExcKind tags of a generator slot holding a number or a boolean. */
+const SCR_EXC_F64 = 1;
+const SCR_EXC_BOOL = 2;
 
 /** Whether any node of `e` names the local (reads, writes, declarations,
  * captures). */
@@ -728,6 +746,8 @@ export class LlEmitter {
   callArrayReads = new Map<IrExpr, LocalArrayRead>();
   mapReadLifetimes: MapReadLifetimes = { locals: new Map(), arguments: new Map() };
   readNumberMapWrites: ReadonlySet<IrExpr> = new Set();
+  /** The current function's fused string-key Map get-then-set pairs (map-entry-fusion.ts). */
+  mapEntryFusion: MapEntryFusion | null = null;
   readonly callLifetimes: CallLifetimes;
   readonly constantCallbacks: Map<string, Map<string, string>>;
   currentConstantCallbacks: ReadonlyMap<string, string> = new Map();
@@ -945,6 +965,9 @@ export class LlEmitter {
   private byteWindowEntries: ReturnType<typeof findInitializedByteLoopBindings> = new Map();
   bytesBounds: ReadonlySet<IrExpr | IrStmt> = new Set();
   integerViews = new Map<string, string>();
+  /** Module globals the current function owns outright (initializer
+   * bindings): their function-local slot, which stands in for the global. */
+  private privateGlobalSlots = new Map<string, string>();
   /** Number locals of the current function stored only as an i32
    * (int32-locals.ts); their slots are `alloca i32`. */
   int32Locals = new Map<string, Int32Local>();
@@ -990,7 +1013,14 @@ export class LlEmitter {
     finalLabel: string;
     cleanupLabel: string;
     suspendLabel: string;
+    /** The generator's OUT slot (%ScrGenSlot) for a native body whose
+     * yield channel is a number or boolean, which its yields store into
+     * inline (see emitGenSlotStore); null otherwise. */
+    out: string | null;
   } | null = null;
+  /** Inline generator slot accesses need the %ScrGenHead/%ScrGenSlot
+   * mirrors in the module header. */
+  usesGenSlots = false;
   /** The generator channels of the function being emitted (null outside
    * generator bodies): yieldExpr emission reads them, and emitTryCatch's
    * catch prologue emits the GENRET sentinel re-unwind exactly here. */
@@ -1352,6 +1382,11 @@ export class LlEmitter {
   /** The borrowed parameters of a hierarchy's vtable slot (empty: owned). */
   virtualSlotBorrowed(rootName: string, slotIndex: number): ReadonlySet<number> {
     return this.virtualBorrows.slot(rootName, slotIndex);
+  }
+
+  /** Optimized emission: no debug-info (dev) posture. */
+  get optimizing(): boolean {
+    return this.debug === null;
   }
 
   /** The vtable entry for one implementation (VirtualBorrows.entry). */
@@ -2201,6 +2236,15 @@ export class LlEmitter {
       `%ScrDynPath = type { ptr, ptr, ${this.sizeType} }`,
       `%ScrIslandModule = type { ptr, ptr, ${this.sizeType}, ${this.sizeType}, i32, ptr, ${this.sizeType}, ${this.sizeType} }`,
       `%ScrIslandEdge = type { ptr, ptr, ptr, i32 }`,
+      // A generator's prefix { rc, receiver, fiber, state, out } and its
+      // value slot { kind, f64, b, payload, release_fn } (scr_async.c pins
+      // both): number and boolean yields and drives address OUT directly.
+      ...(this.usesGenSlots
+        ? [
+            `%ScrGenSlot = type { i32, double, i8, ptr, ptr }`,
+            `%ScrGenHead = type { ${this.sizeType}, ptr, ptr, i32, %ScrGenSlot }`,
+          ]
+        : []),
     ];
     for (const line of shapes.typeDefs) out.push(line);
     for (const line of classShapes.typeDefs) out.push(line);
@@ -5474,7 +5518,11 @@ export class LlEmitter {
     }
     const g = this.globalTypes.get(id);
     if (!g) throw new InternalCompilerError(`llvm emitter bug: unknown binding ${id}`);
-    return { kind: "global", slot: `@${mangleGlobal(id)}`, type: g };
+    return {
+      kind: "global",
+      slot: this.privateGlobalSlots.get(id) ?? `@${mangleGlobal(id)}`,
+      type: g,
+    };
   }
 
   private emitDebugLocal(local: IrLocal, slot: string, arg = 0, captured = false): void {
@@ -5756,6 +5804,60 @@ export class LlEmitter {
     this.emitCoroSuspendPrepared();
   }
 
+  /** A native generator's OUT slot (scr_async.c's ScrGen.out, mirrored by
+   * %ScrGenHead and %ScrGenSlot { kind, f64, b, payload, release_fn }). */
+  genOutSlot(gen: string): string {
+    this.usesGenSlots = true;
+    const slot = this.B.tmp();
+    this.B.line(`${slot} = getelementptr inbounds %ScrGenHead, ptr ${gen}, i32 0, i32 4`);
+    return slot;
+  }
+
+  /** A yield on a number or boolean channel: scr_gen_slot_f64/bool inline.
+   * Such a body's OUT never holds a reference at a yield (only its final
+   * completion can park one), so the slot needs no release first. */
+  emitGenSlotStore(slot: string, kind: "f64" | "bool", value: string): void {
+    const B = this.B;
+    const field = B.tmp();
+    if (kind === "f64") {
+      B.line(`store i32 ${SCR_EXC_F64}, ptr ${slot}`);
+      B.line(`${field} = getelementptr inbounds %ScrGenSlot, ptr ${slot}, i32 0, i32 1`);
+      B.line(`store double ${value}, ptr ${field}`);
+    } else {
+      const byte = B.tmp();
+      B.line(`store i32 ${SCR_EXC_BOOL}, ptr ${slot}`);
+      B.line(`${field} = getelementptr inbounds %ScrGenSlot, ptr ${slot}, i32 0, i32 2`);
+      B.line(`${byte} = zext i1 ${value} to i8`);
+      B.line(`store i8 ${byte}, ptr ${field}`);
+    }
+  }
+
+  /** scr_gen_take_out_f64/bool inline: the slot's value when it holds that
+   * kind (otherwise 0 or false), leaving the slot empty. */
+  emitGenSlotTake(slot: string, kind: "f64" | "bool"): string {
+    const B = this.B;
+    const tag = B.tmp(),
+      matches = B.tmp(),
+      field = B.tmp(),
+      raw = B.tmp(),
+      out = B.tmp();
+    B.line(`${tag} = load i32, ptr ${slot}`);
+    B.line(`${matches} = icmp eq i32 ${tag}, ${kind === "f64" ? SCR_EXC_F64 : SCR_EXC_BOOL}`);
+    if (kind === "f64") {
+      B.line(`${field} = getelementptr inbounds %ScrGenSlot, ptr ${slot}, i32 0, i32 1`);
+      B.line(`${raw} = load double, ptr ${field}`);
+      B.line(`${out} = select i1 ${matches}, double ${raw}, double 0.0`);
+    } else {
+      const bit = B.tmp();
+      B.line(`${field} = getelementptr inbounds %ScrGenSlot, ptr ${slot}, i32 0, i32 2`);
+      B.line(`${raw} = load i8, ptr ${field}`);
+      B.line(`${bit} = trunc i8 ${raw} to i1`);
+      B.line(`${out} = select i1 ${matches}, i1 ${bit}, i1 false`);
+    }
+    B.line(`store i32 0, ptr ${slot}`);
+    return out;
+  }
+
   /** Suspend after a target-specific runtime helper already queued the
    * continuation (used by module awaits, which skip the hop when settled). */
   emitCoroSuspendPrepared(): void {
@@ -5838,6 +5940,19 @@ export class LlEmitter {
     }
   }
 
+  /** Number locals declared as a copy of a capture or of a lazily boxed
+   * parameter, at the top of the body. */
+  private doubleCopies(fn: IrFunction): string[] {
+    const copies: string[] = [];
+    for (const s of fn.body) {
+      if (s.kind !== "varDecl") break;
+      if (s.init?.kind !== "varRef" || s.init.type.kind !== "f64") continue;
+      const source = s.init.localId;
+      if (this.captureIds.has(source) || this.lazyCaptureBoxes.has(source)) copies.push(s.localId);
+    }
+    return copies;
+  }
+
   private emitFunction(fn: IrFunction): string {
     const B = new BlockBuilder();
     this.B = B;
@@ -5896,6 +6011,10 @@ export class LlEmitter {
         )
           this.borrowedParameters.add(fn.params[index]!.localId);
     }
+    // A generator frame owns its unchanged parameters across suspensions.
+    const generatorParameters = this.callLifetimes.generatorParameters.get(fn.name);
+    if (generatorParameters !== undefined)
+      for (const id of generatorParameters) this.borrowedParameters.add(id);
     this.captureIds = new Set(
       [...(fn.captures ?? []), ...(fn.classCaptures ?? [])].map((c) => c.localId),
     );
@@ -5945,6 +6064,7 @@ export class LlEmitter {
       this.debug === null ? findScalarStringSlices(fn, this.callLifetimes) : new Map();
     this.mapReadLifetimes = findMapReadLifetimes(fn, this.boxedUnionsById, this.callLifetimes);
     this.readNumberMapWrites = findReadNumberMapWrites(fn);
+    this.mapEntryFusion = this.debug === null ? findMapEntryFusions(fn) : null;
     this.localStackUnions = findLocalStackUnions(fn, this.callLifetimes, this.boxedUnionsById);
     this.localStackObjects = this.stackObjects
       ? findLocalStackObjects(this, fn, this.callLifetimes)
@@ -5960,7 +6080,9 @@ export class LlEmitter {
     this.bytesBounds = findBytesBounds(numericFn, this.integerRanges);
     // Debug builds keep every number local a double for the debugger's
     // variable view. Lazily boxed captured parameters keep their double,
-    // which the box is created from.
+    // which the box is created from, and so do plain copies of a capture or
+    // such a parameter (copyStableCaptures): the source already holds the
+    // double, which an i32 copy would convert and widen again on every call.
     // Initializer bindings proven int32 move into an i32 local of their
     // initializer: no other code observes the global, so the loop-carried
     // value never round-trips through the double slot.
@@ -5971,7 +6093,7 @@ export class LlEmitter {
             withInitializerLocals(fn, initializerLocals),
             this.integerRanges,
             this.int32Slots.facts(fn.name),
-            new Set(this.lazyCaptureBoxes.keys()),
+            new Set([...this.lazyCaptureBoxes.keys(), ...this.doubleCopies(fn)]),
           )
         : null;
     this.int32Locals = int32Locals?.locals ?? new Map();
@@ -6029,6 +6151,20 @@ export class LlEmitter {
       B.line(`${handle} = call ptr @llvm.coro.begin(token ${id}, ptr ${mem})`);
       B.line(`call void @${started}(ptr ${handle})`);
       B.line(`${self} = call ptr @scr_fiber_self()`);
+      // A native synchronous body owns its generator for the whole run (the
+      // ScrGen owns the frame), so its OUT slot address is fixed.
+      let out: string | null = null;
+      const yieldKind = fn.generator?.yieldT.kind;
+      if (
+        !this.wasi &&
+        fn.async !== true &&
+        (yieldKind === "f64" || yieldKind === "date" || yieldKind === "bool")
+      ) {
+        this.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
+        const gen = B.tmp();
+        B.line(`${gen} = call ptr @scr_gen_of_fiber(ptr ${self})`);
+        out = this.genOutSlot(gen);
+      }
       this.currentCoro = {
         kind: fn.generator !== undefined ? "generator" : "async",
         id,
@@ -6037,6 +6173,7 @@ export class LlEmitter {
         finalLabel: B.newLabel("coro.final"),
         cleanupLabel: B.newLabel("coro.cleanup"),
         suspendLabel: B.newLabel("coro.suspend"),
+        out,
       };
     }
 
@@ -6057,6 +6194,30 @@ export class LlEmitter {
       const value = B.tmp();
       B.line(`${value} = load double, ptr @${mangleGlobal(global.id)}`);
       this.storeIntegerView(global.id, { name: value, type: global.type });
+    }
+    // A number global only its guarded, synchronous initializer reads or
+    // writes (findInitializerBindings) is invisible to every other function,
+    // and reentry returns before reaching it, so a local slot can stand in
+    // for it: LLVM keeps it in a register across calls and loops that would
+    // otherwise force a store and reload per iteration. The global's
+    // storage is never read again, so nothing writes the slot back. Bindings
+    // proven int32 already live in an i32 local (localizedGlobals above);
+    // this covers the remaining doubles.
+    this.privateGlobalSlots.clear();
+    if (this.debug === null && this.currentCoro === null && !fn.async && !fn.generator) {
+      const conditional = initializerLocals.length ? conditionalLoopWrites(fn.body) : null;
+      for (const global of initializerLocals) {
+        if (localizedGlobals.has(global.id)) continue;
+        // A conditional update in a loop stays a memory update (see
+        // conditionalLoopWrites).
+        if (conditional?.has(global.id)) continue;
+        const slot = B.slot();
+        const value = B.tmp();
+        B.entryAllocas.push(`${slot} = alloca double ; module binding ${global.name}`);
+        B.line(`${value} = load double, ptr @${mangleGlobal(global.id)}`);
+        B.line(`store double ${value}, ptr ${slot}`);
+        this.privateGlobalSlots.set(global.id, slot);
+      }
     }
     for (const local of this.currentLocals.values()) {
       // Boxed locals' slots hold their capture BOX (a ptr); captured
@@ -6286,6 +6447,7 @@ export class LlEmitter {
     if (fn.name.startsWith(RESULT_ENTRY_PREFIX)) attrs = `inlinehint ${attrs}`;
     const debug = this.debugScope === null ? "" : ` !dbg ${this.debugScope}`;
     const symbol = borrowed ? mangleBorrowedFunction(fn.name) : mangleFunction(fn.name);
+    this.privateGlobalSlots.clear();
     let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${debug} { ; ${fn.name}\n${B.render()}\n}`;
     if (int32Abi) body += "\n" + this.emitInt32AbiWrapper(fn, symbol, int32Abi);
     if (this.integerClones.members.has(fn.name)) {
@@ -7187,6 +7349,7 @@ export class LlEmitter {
         // the replaced element itself). A local receiver that the index and
         // value cannot rebind is read in place, as for field stores; the
         // released element cannot reach that binding.
+        if (this.emitArraySelfConcat(s)) break;
         const arr = this.emitStableReceiver(s.arr, [s.index, s.value]);
         const idx = this.emitExpr(s.index);
         const v = this.emitExpr(s.value);
@@ -7307,6 +7470,7 @@ export class LlEmitter {
           this.storeInt32Field(ptr, v, s.value);
           break;
         }
+        if (this.emitFieldSelfConcat(s)) break;
         const obj = this.emitStableReceiver(s.obj, [s.value]);
         const v = this.emitFieldValue(
           s.value,
@@ -8637,6 +8801,128 @@ export class LlEmitter {
     if (packed?.kind !== "arrayLit" || packed.elems.length !== 1 || packed.spreads?.length)
       return null;
     return this.emitExpr(packed.elems[0]!);
+  }
+
+  /**
+   * Lower `recv.f = recv.f + suffix` on a plain string field like
+   * emitStringSelfConcatAssign does for locals. The field's old value is
+   * snapshotted (+1) and the suffix evaluated in JavaScript order; then the
+   * field unlinks and releases its CURRENT value, so the snapshot is unique
+   * unless a real alias exists and the concat appends in place instead of
+   * copying the whole string on every append. Returns false (emitting
+   * nothing) for every other store.
+   */
+  private emitFieldSelfConcat(s: Extract<IrStmt, { kind: "fieldSet" | "recordSet" }>): boolean {
+    const suffix = matchFieldSelfConcat(s);
+    if (!suffix || s.value.kind !== "strConcat") return false;
+    let fieldType: IrType | undefined;
+    if (s.kind === "fieldSet") {
+      if (
+        this.inlineUnions.classField(s.className, s.field) ||
+        this.classMeta.get(s.className)?.root.def.name === "%Error"
+      )
+        return false;
+      fieldType = classFieldIndex(this.classMetaOf(s.className), s.field).type;
+    } else {
+      fieldType = this.recordShape(s.shapeId).fields.find((f) => f.name === s.field)?.type;
+    }
+    if (fieldType?.kind !== "string") return false;
+    const B = this.B;
+    const obj = this.emitStableReceiver(s.obj, [s.value]);
+    const snapshot = this.emitExpr(s.value.left);
+    const parts = stringParts(suffix);
+    const mixed = parts.length > 1 || numberPart(parts[0]!) !== null;
+    const inputs = mixed ? emitConcatInputs(this, parts) : [];
+    const right = mixed ? null : this.emitExpr(suffix);
+    if (s.kind === "fieldSet") this.emitStoreGuard(obj.name, s);
+    else if (this.publishedTypes?.recordGuarded(s.shapeId) === true)
+      this.emitPublishedFieldGuard(obj.name, null, s.field);
+    const { ptr } =
+      s.kind === "fieldSet"
+        ? this.classFieldPtr(obj.name, s.className, s.field)
+        : this.recordFieldPtr(obj.name, s.shapeId, s.field);
+    // Unlink, then release: nothing between here and the store below can
+    // run user code or observe the field (the concat only traps on OOM).
+    // Only an owned snapshot may survive the field's release.
+    const owned = this.ownsSnapshot(snapshot.name);
+    if (owned) {
+      const old = this.loadField(ptr, fieldType, false);
+      this.storeField(ptr, fieldType, "null", false);
+      this.releaseValue(old, fieldType);
+    }
+    let raw: string;
+    if (right === null) {
+      raw = emitMixedConcat(this, snapshot.name, inputs);
+    } else {
+      this.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
+      raw = B.tmp();
+      B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right.name})`);
+    }
+    // The +1 result moves straight into the (now empty) field.
+    if (owned) this.storeField(ptr, fieldType, raw, false);
+    else this.replaceField(ptr, fieldType, false, this.own({ name: raw, type: fieldType }));
+    return true;
+  }
+
+  /** A snapshot the current statement frames own (+1), or an immortal
+   * value: it stays valid after its container releases the same string. */
+  private ownsSnapshot(name: string): boolean {
+    return (
+      this.isImmortal(name) || this.frames.some((f) => f.some((v) => v.name === name && !v.slot))
+    );
+  }
+
+  /**
+   * `a[i] = a[i] + suffix` on a string array (the canonical statement form
+   * of `a[i] += suffix`): the old element is snapshotted (+1) and the
+   * suffix evaluated in JavaScript order; then, when the slot still holds
+   * the snapshot, the array lets go of it (emitDenseSlotUnlink) so the
+   * concat can append in place, and the result is stored as usual.
+   */
+  private emitArraySelfConcat(s: Extract<IrStmt, { kind: "arraySet" }>): boolean {
+    const value = s.value;
+    if (
+      value.kind !== "strConcat" ||
+      value.type.kind !== "string" ||
+      value.left.type.kind !== "string" ||
+      value.right.type.kind !== "string" ||
+      s.arr.type.kind !== "array" ||
+      s.arr.type.elem.kind !== "string" ||
+      s.arr.kind !== "varRef" ||
+      s.index.kind !== "varRef" ||
+      !readsArraySlot(value.left, s.arr.localId, s.index.localId)
+    )
+      return false;
+    const elem = s.arr.type.elem;
+    const B = this.B;
+    const arr = this.emitStableReceiver(s.arr, [s.index, s.value]);
+    const idx = this.emitExpr(s.index);
+    const snapshot = this.emitExpr(value.left);
+    const parts = stringParts(value.right);
+    const mixed = parts.length > 1 || numberPart(parts[0]!) !== null;
+    const inputs = mixed ? emitConcatInputs(this, parts) : [];
+    const right = mixed ? null : this.emitExpr(value.right);
+    this.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
+    if (this.ownsSnapshot(snapshot.name))
+      emitDenseSlotUnlink(
+        this,
+        arr.name,
+        idx,
+        s.index,
+        snapshot.name,
+        this.internLiteral(""),
+        elem,
+      );
+    let raw: string;
+    if (right === null) {
+      raw = emitMixedConcat(this, snapshot.name, inputs);
+    } else {
+      this.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
+      raw = B.tmp();
+      B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right.name})`);
+    }
+    emitDenseArraySet(this, arr.name, idx, s.index, "ref", elem, raw);
+    return true;
   }
 
   /** `local = local + suffix` when the suffix cannot read or write the

@@ -22,6 +22,7 @@ import { literalUnionArm } from "../union-discriminants.js";
  * comparisons, nullish coalescing and optional chains, conditions and
  * ToBoolean/ToString coercion helpers, and field/element reads and writes
  * (FieldTarget). */
+import { isFsStreamMember, lowerFsStreamProperty } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
 import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "./builtins/compression.js";
 import { constituentTypes } from "../ts7/checker.js";
@@ -7367,6 +7368,31 @@ export function lowerElementCompound(
   expr: ts.BinaryExpression,
   op: CompoundOp,
 ): IrExpr {
+  const lowered = lowerElementCompoundParts(lowerer, expr, op, false);
+  if (!lowered.expr)
+    throw new InternalCompilerError("a compound element value lowered to statements");
+  return lowered.expr;
+}
+
+/** `a[i] op= rhs` in statement position: a string array append becomes the
+ * canonical `a[i] = a[i] + rhs` store (receiver and index saved first),
+ * which the backend appends in place; other forms keep the value path. */
+export function lowerElementCompoundStatement(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  op: CompoundOp,
+): IrStmt {
+  const lowered = lowerElementCompoundParts(lowerer, expr, op, true);
+  if (lowered.stmts) return { kind: "block", body: lowered.stmts, loc: locOf(expr) };
+  return { kind: "exprStmt", expr: lowered.expr!, loc: locOf(expr) };
+}
+
+function lowerElementCompoundParts(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  op: CompoundOp,
+  statement: boolean,
+): { expr: IrExpr | null; stmts: IrStmt[] | null } {
   const target = expr.left as ts.ElementAccessExpression;
   fenceNodeModuleMutation(lowerer, target, "assignment");
   const loc = locOf(expr);
@@ -7404,7 +7430,7 @@ export function lowerElementCompound(
       },
       loc,
     });
-    return { kind: "seqExpr", stmts, result: value, type: DYN, loc };
+    return { expr: { kind: "seqExpr", stmts, result: value, type: DYN, loc }, stmts: null };
   }
   const receiverType =
     checked.type.kind === "array" || checked.type.kind === "bytes"
@@ -7471,6 +7497,29 @@ export function lowerElementCompound(
     elementType.kind === "union" && lowerer.armTag(elementType.unionId, UNDEFINED_T) >= 0
       ? lowerer.stripUndefinedArm(elementType)
       : elementType;
+  if (
+    statement &&
+    op === "+" &&
+    receiver.type.kind === "array" &&
+    receiver.type.elem.kind === "string"
+  ) {
+    // Receiver, index, old element (read inside the concat), rhs, write.
+    const appended: IrExpr = {
+      kind: "strConcat",
+      left: oldValue,
+      right: lowerer.ensureString(rhs, expr.right),
+      type: STRING,
+      loc,
+    };
+    return {
+      expr: null,
+      stmts: [
+        { kind: "varDecl", localId: receiverLocal.id, init: receiver, loc },
+        { kind: "varDecl", localId: indexLocal.id, init: index, loc },
+        { kind: "arraySet", arr: receiverRef(), index: indexRef(), value: appended, loc },
+      ],
+    };
+  }
   let computed: IrExpr;
   if (op === "+" && valueType.kind === "string") {
     computed = {
@@ -7492,16 +7541,27 @@ export function lowerElementCompound(
   } else if (valueType.kind === "dyn" && isJsSourceFile(expr.getSourceFile())) {
     const left = lowerer.coerceToExpected(oldRef(), DYN),
       right = lowerer.coerceToExpected(rhs, DYN);
-    const numeric = ["-", "*", "/", "%", "**"].includes(op);
-    computed = {
-      kind: "libCall",
-      fn: op === "+" ? "dyn.add" : numeric ? "dyn.arithmetic" : "dyn.bitwise",
-      args: op === "+" ? [left, right] : [left, right, strLit(op, loc)],
-      type: DYN,
-      loc,
-    };
+    computed = dynCompoundValue(op, left, right, loc);
+  } else if (
+    rhs.type.kind === "dyn" &&
+    receiver.type.kind === "array" &&
+    lowerer.dynConvertible(oldValue.type) &&
+    lowerer.dynConvertible(valueType)
+  ) {
+    // An untyped right operand: the expanded `a[i] = a[i] op rhs`, checked
+    // back into the element type.
+    computed = lowerer.coerceInto(
+      expr,
+      dynCompoundValue(
+        op,
+        lowerer.coerceToExpected(oldRef(), DYN),
+        lowerer.coerceToExpected(rhs, DYN),
+        loc,
+      ),
+      valueType,
+    );
   } else {
-    lowerer.unsupported("SC1043", expr);
+    compoundUnsupported(lowerer, expr, op, oldValue.type, rhs.type);
   }
   const resultLocal = lowerer.declareHiddenLocal("%compoundResult", computed.type);
   const resultRef = (): IrExpr => varRef(resultLocal.id, computed.type, loc);
@@ -7510,17 +7570,20 @@ export function lowerElementCompound(
       ? arrayValueStore(lowerer, receiverRef(), indexRef(), resultRef(), receiver.type.elem, loc)
       : { kind: "bytesSet", arr: receiverRef(), index: indexRef(), value: resultRef(), loc };
   return {
-    kind: "seqExpr",
-    stmts: [
-      { kind: "varDecl", localId: receiverLocal.id, init: receiver, loc },
-      { kind: "varDecl", localId: indexLocal.id, init: index, loc },
-      { kind: "varDecl", localId: oldLocal.id, init: oldValue, loc },
-      { kind: "varDecl", localId: resultLocal.id, init: computed, loc },
-      write,
-    ],
-    result: resultRef(),
-    type: computed.type,
-    loc,
+    expr: {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: receiverLocal.id, init: receiver, loc },
+        { kind: "varDecl", localId: indexLocal.id, init: index, loc },
+        { kind: "varDecl", localId: oldLocal.id, init: oldValue, loc },
+        { kind: "varDecl", localId: resultLocal.id, init: computed, loc },
+        write,
+      ],
+      result: resultRef(),
+      type: computed.type,
+      loc,
+    },
+    stmts: null,
   };
 }
 
@@ -8725,7 +8788,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
         raw.type.kind === "dyn" && isJsSourceFile(expr.getSourceFile())
           ? { kind: "dynCheck" as const, value: raw, type: F64, loc }
           : lowerOptionalNumber(lowerer, raw, loc, expr.operand);
-      if (operand.type.kind !== "f64") lowerer.unsupported("SC1043", expr);
+      if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "-", [raw.type]);
       if (operand.kind === "numLit") return { ...operand, value: -operand.value, loc };
       return { kind: "unary", op: "-", operand, type: F64, loc };
     }
@@ -8742,7 +8805,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
         return { kind: "libCall", fn: "num.fromString", args: [raw], type: F64, loc };
       }
       const operand = lowerOptionalNumber(lowerer, raw, loc, expr.operand);
-      if (operand.type.kind !== "f64") lowerer.unsupported("SC1043", expr);
+      if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "+", [raw.type]);
       return operand;
     }
     case ts.SyntaxKind.ExclamationToken: {
@@ -8776,7 +8839,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       // such as `while (~index)`, where inference may have widened an
       // otherwise numeric slot to the checked-dynamic tree.
       const operand = lowerOptionalNumber(lowerer, raw, loc, expr.operand);
-      if (operand.type.kind !== "f64") lowerer.unsupported("SC1043", expr);
+      if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "~", [raw.type]);
       return { kind: "unary", op: "~", operand, type: F64, loc };
     }
     case ts.SyntaxKind.PlusPlusToken:
@@ -9096,7 +9159,8 @@ export function lowerIncDecTarget(
       loc,
     };
   }
-  if (target.type.kind !== "f64") lowerer.unsupported("SC1043", expr);
+  if (target.type.kind !== "f64")
+    operatorUnsupported(lowerer, expr, op === "+" ? "++" : "--", [target.type]);
   return { kind: "incDec", op, prefix, localId: target.id, type: F64, loc };
 }
 
@@ -9214,28 +9278,75 @@ export function lowerCompoundValueToTarget(
       target.type,
     );
   }
+  // An untyped operand: exactly the expanded `x = x op rhs` — the runtime
+  // operator on both values, then the checked conversion into the
+  // target's declared type (a string result for a number target throws the
+  // catchable TypeError, as the expanded assignment does).
   if (
     (target.type.kind === "dyn" || rhs.type.kind === "dyn") &&
-    isJsSourceFile(expr.getSourceFile())
+    (isJsSourceFile(expr.getSourceFile()) ||
+      (lowerer.dynConvertible(read.type) && lowerer.dynConvertible(rhs.type)))
   ) {
     const left = lowerer.coerceInto(expr.left, read, DYN);
     const right = lowerer.coerceInto(expr.right, rhs, DYN);
-    const numeric = ["-", "*", "/", "%", "**"].includes(compound);
-    const computed: IrExpr = {
-      kind: "libCall",
-      fn: compound === "+" ? "dyn.add" : numeric ? "dyn.arithmetic" : "dyn.bitwise",
-      args:
-        compound === "+"
-          ? [left, right]
-          : [left, right, { kind: "strLit", value: compound, type: STRING, loc }],
-      type: DYN,
-      loc,
-    };
-    return lowerer.coerceInto(expr, computed, target.type);
+    return lowerer.coerceInto(expr, dynCompoundValue(compound, left, right, loc), target.type);
   }
   const bigint = bigintCompoundValue(compound, read, rhs, loc);
   if (bigint) return bigint;
-  lowerer.unsupported("SC1043", expr);
+  compoundUnsupported(lowerer, expr, compound, read.type, rhs.type);
+}
+
+/** The runtime operator of a compound assignment over two checked-dynamic
+ * operands (Node's ToPrimitive/ToNumeric order lives in the runtime). */
+function dynCompoundValue(op: CompoundOp, left: IrExpr, right: IrExpr, loc: SrcLoc): IrExpr {
+  const numeric = ["-", "*", "/", "%", "**"].includes(op);
+  return {
+    kind: "libCall",
+    fn: op === "+" ? "dyn.add" : numeric ? "dyn.arithmetic" : "dyn.bitwise",
+    args: op === "+" ? [left, right] : [left, right, strLit(op, loc)],
+    type: DYN,
+    loc,
+  };
+}
+
+/** An operand type in an SC1043 message: checked-dynamic values (`any`,
+ * `unknown`) are "untyped", everything else its quoted type. */
+function operandText(lowerer: Lowerer, t: IrType): string {
+  return t.kind === "dyn" ? "untyped" : `'${lowerer.fmt(t)}'`;
+}
+
+/** SC1043 for a compound assignment whose operand types have no lowering,
+ * naming the operator and both types rather than the comparison wording. */
+function compoundUnsupported(
+  lowerer: Lowerer,
+  node: ts.Node,
+  op: CompoundOp,
+  target: IrType,
+  value: IrType,
+): never {
+  lowerer.unsupported(
+    "SC1043",
+    node,
+    `compound '${op}=' assignments of ${operandText(lowerer, value)} values to ${operandText(lowerer, target)} targets`,
+  );
+}
+
+/** SC1043 for an arithmetic, unary or update operator whose operand types
+ * have no lowering (comparisons keep the registry wording). */
+function operatorUnsupported(
+  lowerer: Lowerer,
+  node: ts.Node,
+  op: string,
+  operands: readonly IrType[],
+): never {
+  const [first, second] = operands;
+  lowerer.unsupported(
+    "SC1043",
+    node,
+    second === undefined
+      ? `'${op}' operations on ${operandText(lowerer, first!)} values`
+      : `'${op}' operations on ${operandText(lowerer, first!)} and ${operandText(lowerer, second)} values`,
+  );
 }
 
 /** Equality of two NaN-coded values (nan-coded-reads.ts), each of which may
@@ -10204,14 +10315,15 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           };
         }
       }
-      lowerer.unsupported("SC1043", expr);
+      operatorUnsupported(lowerer, expr, "+", [left.type, right.type]);
       break;
     case ts.SyntaxKind.MinusToken:
     case ts.SyntaxKind.AsteriskToken:
     case ts.SyntaxKind.SlashToken:
     case ts.SyntaxKind.PercentToken:
     case ts.SyntaxKind.AsteriskAsteriskToken: {
-      if (!bothNum) lowerer.unsupported("SC1043", expr);
+      if (!bothNum)
+        operatorUnsupported(lowerer, expr, ts.tokenToString(op) ?? "?", [left.type, right.type]);
       const binOp =
         op === ts.SyntaxKind.MinusToken
           ? "-"
@@ -10241,7 +10353,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     case ts.SyntaxKind.LessThanLessThanToken:
     case ts.SyntaxKind.GreaterThanGreaterThanToken:
     case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken: {
-      if (!bothNum) lowerer.unsupported("SC1043", expr);
+      if (!bothNum)
+        operatorUnsupported(lowerer, expr, ts.tokenToString(op) ?? "?", [left.type, right.type]);
       const bitOp =
         op === ts.SyntaxKind.AmpersandToken
           ? "&"
@@ -15041,7 +15154,8 @@ function lowerFieldCompoundValue(
         rhs.type.kind === "dyn"
           ? { kind: "dynCheck", value: rhs, type: F64, loc: rhs.loc }
           : lowerOptionalNumber(lowerer, rhs, loc);
-      if (numericRhs.type.kind !== "f64") lowerer.unsupported("SC1043", access);
+      if (numericRhs.type.kind !== "f64")
+        compoundUnsupported(lowerer, access, op, F64, numericRhs.type);
       const value = save(
         { kind: "bin", op, left: cur, right: numericRhs, type: F64, loc },
         "%compoundResult",
@@ -15114,22 +15228,22 @@ function lowerFieldCompoundValue(
     value = { kind: "bin", op, left: numericRead, right: numericRhs, type: F64, loc };
   } else if (bigintValue) {
     value = bigintValue;
-  } else if (target.fieldType.kind === "dyn" && isJsSourceFile(access.getSourceFile())) {
-    const numeric = ["-", "*", "/", "%", "**"].includes(op);
-    const left = lowerer.coerceToExpected(read, DYN);
-    const right = lowerer.coerceToExpected(rhs, DYN);
-    value = {
-      kind: "libCall",
-      fn: op === "+" ? "dyn.add" : numeric ? "dyn.arithmetic" : "dyn.bitwise",
-      args:
-        op === "+"
-          ? [left, right]
-          : [left, right, { kind: "strLit", value: op, type: STRING, loc }],
-      type: DYN,
+  } else if (
+    (target.fieldType.kind === "dyn" && isJsSourceFile(access.getSourceFile())) ||
+    // An untyped right operand: the expanded `o.f = o.f op rhs`; the field
+    // write below checks the result into the declared field type.
+    (rhs.type.kind === "dyn" &&
+      lowerer.dynConvertible(read.type) &&
+      lowerer.dynConvertible(target.fieldType))
+  ) {
+    value = dynCompoundValue(
+      op,
+      lowerer.coerceToExpected(read, DYN),
+      lowerer.coerceToExpected(rhs, DYN),
       loc,
-    };
+    );
   } else {
-    lowerer.unsupported("SC1043", access);
+    compoundUnsupported(lowerer, access, op, read.type, rhs.type);
   }
   if (storedString && rhs.type.kind === "string" && read.kind === "varRef" && appended !== null) {
     // The field gives up its value before the concat (no code runs in
@@ -15176,6 +15290,10 @@ function lowerStreamObjectProperty(
   if (!info || streamSidesOf(lowerer, info) === null) return null;
   if (expr.name.text === "bytesWritten" && isZlibStreamMember(lowerer, expr)) {
     return lowerZlibStreamBytesWritten(lowerer, expr);
+  }
+  if (isFsStreamMember(lowerer, expr)) {
+    const member = lowerFsStreamProperty(lowerer, expr);
+    if (member) return member;
   }
   return lowerStreamProperty(lowerer, expr, info);
 }

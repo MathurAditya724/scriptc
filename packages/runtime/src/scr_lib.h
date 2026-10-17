@@ -448,6 +448,15 @@ ScrPromise *scr_file_handle_write_file_promise(ScrFileHandle *h, ScrStr *data, S
 ScrPromise *scr_file_handle_write_file_bytes_promise(ScrFileHandle *h, ScrBytes *data, ScrStr *encoding);
 ScrPromise *scr_file_handle_stat_promise(ScrFileHandle *h);
 
+/* Raw fd operations for worker-pool steps (scr_lib.c): no runtime state
+ * and no exceptions; each answers its result or -errno. A negative
+ * position uses the current file offset. flags are native open(2) bits. */
+int scr_fs_raw_open(const char *path, int flags, int mode);
+int64_t scr_fs_raw_read(int fd, void *data, size_t length, double position);
+int64_t scr_fs_raw_write(int fd, const void *data, size_t length, double position);
+int scr_fs_raw_fsync(int fd);
+int scr_fs_raw_close(int fd);
+
 /* Shared executable worker pool. `work` runs on one of four native worker
  * threads and must not touch runtime RC/exception state; `after` and
  * `destroy` run on the main runtime thread. WASI runs `work` on a later

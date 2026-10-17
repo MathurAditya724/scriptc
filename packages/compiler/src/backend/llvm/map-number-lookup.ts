@@ -68,7 +68,7 @@ export function emitStringMapGetScalar(
   host: LlvmEmitterContext,
   map: string,
   key: string,
-): { found: string; bits: string } {
+): { found: string; bits: string; entry: string } {
   return emitMapEntryGetScalar(host, emitStringMapEntry(host, map, key));
 }
 
@@ -121,7 +121,7 @@ export function emitNumberMapGetScalar(
   host: LlvmEmitterContext,
   map: string,
   key: string,
-): { found: string; bits: string } {
+): { found: string; bits: string; entry: string } {
   return emitMapEntryGetScalar(host, emitNumberMapEntry(host, map, key));
 }
 
@@ -129,7 +129,7 @@ export function emitNumberMapGetScalar(
 function emitMapEntryGetScalar(
   host: LlvmEmitterContext,
   entry: string,
-): { found: string; bits: string } {
+): { found: string; bits: string; entry: string } {
   const B = host.B;
   const found = B.tmp();
   B.line(`${found} = icmp ne ptr ${entry}, null`);
@@ -145,7 +145,7 @@ function emitMapEntryGetScalar(
   B.startBlock(join);
   const bits = B.tmp();
   B.line(`${bits} = phi i64 [ ${loaded}, %${hit} ], [ 0, %${miss} ]`);
-  return { found, bits };
+  return { found, bits, entry };
 }
 
 /** Map.has / Set.has. */

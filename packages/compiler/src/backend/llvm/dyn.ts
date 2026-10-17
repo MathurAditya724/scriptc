@@ -54,6 +54,7 @@ import {
   vAdapters,
 } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
+import { recordMayKeepSource, recordSourceFieldOrder } from "./record-sources.js";
 import type { WalkerHost } from "./walkers.js";
 import type { LlStreamTypedRefAdapter } from "./expr-context.js";
 
@@ -1103,6 +1104,7 @@ export class LlDyn {
 
   private readonly jsonSchemas = new Map<string, string>();
   private readonly jsonParsers = new Map<string, string>();
+  private readonly recordNameTables = new Map<string, { names: string; lens: string }>();
 
   /** Targets the one-pass parser (scr_json_parse_schema) can build
    * directly: number, boolean and string leaves inside arrays and plain
@@ -1177,8 +1179,8 @@ export class LlDyn {
           );
         const struct = mangleRecordStruct(t.shapeId);
         const index = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
-        const order = [...(shape.declaredOrder ?? []).filter((n) => index.has(n))];
-        for (const f of shape.fields) if (!order.includes(f.name)) order.push(f.name);
+        // The runtime names kept-source keys by this index (record-sources.ts).
+        const order = recordSourceFieldOrder(shape);
         const fieldTy = `{ ptr, ${S}, ${S}, ptr }`;
         const entries = order.map((fieldName) => {
           const field = shape.fields[index.get(fieldName)! - 1]!;
@@ -1202,6 +1204,28 @@ export class LlDyn {
       ``,
     );
     return name;
+  }
+
+  /** The declared-name tables scr_record_source_note scans: parallel
+   * constant arrays of field-name bytes and byte lengths in declaration
+   * order (the order the record serializes), interned per shape. Internal
+   * '%'-fields follow, so they never count as undeclared source keys. */
+  private recordNameTable(shapeId: string, shape: IrRecordShape): { names: string; lens: string } {
+    const existing = this.recordNameTables.get(shapeId);
+    if (existing) return existing;
+    const host = this.host;
+    const S = host.sizeType;
+    const base = `sc_rnames_${this.recordNameTables.size}`;
+    const table = { names: `@${base}`, lens: `@${base}_lens` };
+    this.recordNameTables.set(shapeId, table);
+    const n = shape.fields.length;
+    const names = recordSourceFieldOrder(shape);
+    this.defs.push(
+      `@${base} = internal constant [${n} x ptr] [${names.map((name) => `ptr ${host.cstr(name)}`).join(", ")}]`,
+      `@${base}_lens = internal constant [${n} x ${S}] [${names.map((name) => `${S} ${Buffer.byteLength(name, "utf8")}`).join(", ")}]`,
+      ``,
+    );
+    return table;
   }
 
   /** `sc_jp_<n>(ptr text) -> T` for `JSON.parse(text) as T`, or null when T
@@ -1822,6 +1846,18 @@ export class LlDyn {
             if (stored !== value) storeInto(f.name, f.type, stored);
           }
           releaseInline(f.type, value);
+        }
+        // A closed layout cannot store undeclared keys: a source object
+        // that has them stays beside the record so its reflective
+        // surfaces still observe them (scr_record_source_note).
+        if (recordMayKeepSource(shape)) {
+          const names = this.recordNameTable(t.shapeId, shape);
+          host.declare(
+            `declare void @scr_record_source_note(ptr, ptr, ptr, ptr, ${host.sizeType})`,
+          );
+          B.line(
+            `call void @scr_record_source_note(ptr %r0, ptr %d, ptr ${names.names}, ptr ${names.lens}, ${host.sizeType} ${shape.fields.length})`,
+          );
         }
         // Index-signature shapes CAPTURE undeclared keys into the
         // overflow map.
@@ -2558,9 +2594,17 @@ export class LlDyn {
           B.line(`call void @scr_arr_release(ptr ${ks})`);
         }
         if (cyclicRec) B.line(`call void @scr_dyn_from_leave()`);
+        let snapshot = d;
+        if (!shape.indexValue && !recordDynKeepsIdentity(shape)) {
+          // Undeclared properties the record kept from its checked source
+          // rejoin the copy in their own-key positions.
+          host.declare(`declare ptr @scr_record_source_apply(ptr, ptr)`);
+          snapshot = B.tmp();
+          B.line(`${snapshot} = call ptr @scr_record_source_apply(ptr ${d}, ptr %v)`);
+        }
         host.declare(`declare ptr @scr_dyn_mark_snapshot(ptr)`);
-        B.line(`call ptr @scr_dyn_mark_snapshot(ptr ${d})`);
-        B.terminate(`ret ptr ${d}`);
+        B.line(`call ptr @scr_dyn_mark_snapshot(ptr ${snapshot})`);
+        B.terminate(`ret ptr ${snapshot}`);
         break;
       }
       case "array": {

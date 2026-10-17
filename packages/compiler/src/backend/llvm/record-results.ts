@@ -252,6 +252,76 @@ export function addRecordResultEntries(mod: IrModule): IrModule {
         throw new Error("unreachable");
     }
   };
+  // fill() turns a returned literal into one store statement per field. A
+  // seqExpr's hidden locals live through their enclosing expression only,
+  // so a field may lift statements (`this.i++` saves its receiver and old
+  // value) as long as no other field names a local declared inside it.
+  const declaredIn = (value: IrExpr): Set<string> => {
+    const ids = new Set<string>();
+    everyExpr(value, {
+      expr: () => true,
+      stmt: (s) => {
+        if (s.kind === "varDecl") ids.add(s.localId);
+        return true;
+      },
+    });
+    return ids;
+  };
+  const mentions = (value: IrExpr, ids: ReadonlySet<string>): boolean =>
+    !everyExpr(value, {
+      expr: (e) => {
+        switch (e.kind) {
+          case "varRef":
+          case "assignExpr":
+          case "incDec":
+            return !ids.has(e.localId);
+          case "closure":
+            return !e.captures.some((id) => ids.has(id));
+          default:
+            return true;
+        }
+      },
+      stmt: (s) => {
+        switch (s.kind) {
+          case "varDecl":
+          case "assign":
+            return !ids.has(s.localId);
+          default:
+            return true;
+        }
+      },
+    });
+  const lifted = (value: IrExpr): boolean =>
+    !everyExpr(value, { expr: (e) => e.kind !== "seqExpr", stmt: () => true });
+  // Whether a return value splits safely; records in `out` the seqExprs the
+  // split may contain.
+  const splitSeqs = (value: IrExpr, out: Set<IrExpr>): boolean => {
+    switch (value.kind) {
+      case "recordLit": {
+        const fields = value.fields.map((field) => field.value);
+        for (let i = 0; i < fields.length; i++) {
+          if (!lifted(fields[i]!)) continue;
+          const ids = declaredIn(fields[i]!);
+          for (let j = 0; j < fields.length; j++)
+            if (j !== i && mentions(fields[j]!, ids)) return false;
+          everyExpr(fields[i]!, {
+            expr: (e) => {
+              if (e.kind === "seqExpr") out.add(e);
+              return true;
+            },
+            stmt: () => true,
+          });
+        }
+        return true;
+      }
+      case "ternary":
+        return !lifted(value.cond) && splitSeqs(value.then, out) && splitSeqs(value.else_, out);
+      default:
+        // Calls, constructions and copies keep their operands in one
+        // expression; nothing is split.
+        return !lifted(value);
+    }
+  };
   const candidates = mod.functions.filter((fn) => {
     if (fn.async || fn.generator || fn.captures !== undefined || fn.classCaptures !== undefined)
       return false;
@@ -266,12 +336,14 @@ export function addRecordResultEntries(mod: IrModule): IrModule {
   const eligible = (fn: IrFunction): boolean => {
     const params = new Set(fn.params.map((param) => param.localId));
     let returns = 0;
+    const splittable = new Set<IrExpr>();
     const ok = everyStmtList(fn.body, {
-      expr: (e) => e.kind !== "seqExpr",
+      expr: (e) => e.kind !== "seqExpr" || splittable.has(e),
       stmt: (s) => {
         if (s.kind !== "return") return s.kind !== "tryCatch";
         returns++;
-        return s.value !== null && fillable(s.value, params);
+        // Visited before its value's expressions.
+        return s.value !== null && fillable(s.value, params) && splitSeqs(s.value, splittable);
       },
     });
     return ok && returns > 0;

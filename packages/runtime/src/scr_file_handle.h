@@ -23,6 +23,21 @@ void *scr_file_handle_retain_v(void *p);
 void scr_file_handle_release_v(void *p);
 double scr_file_handle_fd(ScrFileHandle *h);
 void scr_file_handle_close(ScrFileHandle *h);
+/* The streams over a handle (scr_fs_stream_fh.c): Node's kRef, the
+ * stream close's kUnref + close() (answers the descriptor to close, or -1
+ * while other references remain; a waiting close() resolves), and the
+ * 'close' listeners close() runs. */
+typedef struct ScrFileHandleHook ScrFileHandleHook;
+void scr_file_handle_ref(ScrFileHandle *h);
+int scr_file_handle_stream_unref(ScrFileHandle *h);
+ScrFileHandleHook *scr_file_handle_on_close(ScrFileHandle *h, void (*fn)(void *ctx), void *ctx);
+void scr_file_handle_off_close(ScrFileHandle *h, ScrFileHandleHook *hook);
+/* FileHandle.createReadStream / createWriteStream(options): +1 runtime
+ * streams over the handle (scr_fs_stream_fh.c, linked with the stream
+ * surface); NULL with the exception pending. Borrows both. */
+typedef struct ScrStream ScrStream;
+ScrStream *scr_file_handle_read_stream(ScrFileHandle *h, ScrDyn *options);
+ScrStream *scr_file_handle_write_stream(ScrFileHandle *h, ScrDyn *options);
 ScrPromise *scr_file_handle_sync_promise(ScrFileHandle *h);
 ScrPromise *scr_file_handle_datasync_promise(ScrFileHandle *h);
 ScrPromise *scr_file_handle_truncate_promise(ScrFileHandle *h, double length);

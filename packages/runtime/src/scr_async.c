@@ -599,6 +599,9 @@ struct ScrFiber {
    * above): no stack or saved context; resumes call into the frame on the
    * resumer's stack. */
   bool stackless;
+  /* The fiber a stackless hop resumed this body from (scr_gen_coro_hop),
+   * parked here so the hop keeps fewer values live across the body. */
+  struct ScrFiber *resumer;
   /* Fiberless async bodies (scr_async_inline_enter) currently running on
    * this fiber's stack. Such a body was proven never to park, so a park
    * or hop while this is nonzero is a compiler bug — trap instead of
@@ -4650,6 +4653,26 @@ struct ScrGen {
 #endif
 };
 
+/* The LLVM emitter stores number and boolean yields into OUT and takes
+ * them back out inline, through %ScrGenHead { rc, receiver, fiber, state,
+ * out } and %ScrGenSlot { kind, f64, b, payload, release_fn }. */
+struct ScrGenHeadMirror {
+  size_t rc;
+  ScrDyn *receiver;
+  ScrFiber *fiber;
+  int state;
+  ScrGenSlot out;
+};
+_Static_assert(offsetof(ScrGen, fiber) == offsetof(struct ScrGenHeadMirror, fiber) &&
+                   offsetof(ScrGen, state) == offsetof(struct ScrGenHeadMirror, state) &&
+                   offsetof(ScrGen, out) == offsetof(struct ScrGenHeadMirror, out),
+               "the LLVM emitter's %ScrGenHead");
+_Static_assert(offsetof(ScrGenSlot, kind) == 0 && sizeof(ScrExcKind) == 4 &&
+                   offsetof(ScrGenSlot, f64) == 8 && offsetof(ScrGenSlot, b) == 16 &&
+                   sizeof(bool) == 1 && SCR_EXC_NONE == 0 && SCR_EXC_F64 == 1 &&
+                   SCR_EXC_BOOL == 2,
+               "the LLVM emitter's %ScrGenSlot and its number/boolean tags");
+
 static ScrGen *scr_gen_new_common(void (*entry)(ScrFiber *, void *), void *argpack,
                                   void (*drop_args)(void *),
                                   void (*settle_async)(ScrGen *, ScrPromise *),
@@ -5049,13 +5072,15 @@ void scr_gen_ret_to_out(ScrGen *g) {
 
 /* Back from the body (a yield, a finish, or an async generator's await):
  * settle the generator's state, moving a finished body's exception to the
- * resumer and tearing the finished fiber down. */
-__attribute__((always_inline)) static inline void scr_gen_switched_back(ScrGen *g,
-                                                                  ScrFiber *f) {
-  if (f->done) {
+ * resumer and tearing the finished fiber down. `release` drops the hop's
+ * own reference (see scr_gen_switch_in); `sync` marks a body known to be a
+ * synchronous generator (every stackless one is). */
+__attribute__((always_inline)) static inline void scr_gen_switched_back(ScrGen *g, ScrFiber *f,
+                                                                  bool release, bool sync) {
+  if (__builtin_expect(f->done, 0)) {
     g->state = SCR_GEN_DONE;
     if (f->exc.kind != SCR_EXC_NONE) {
-      if (g->is_async) {
+      if (!sync && g->is_async) {
         /* Async-generator failures reject the active request; they never
          * throw synchronously from next/return/throw. */
         scr_gen_exc_move(&g->async_error, &f->exc);
@@ -5071,31 +5096,39 @@ __attribute__((always_inline)) static inline void scr_gen_switched_back(ScrGen *
   } else {
     /* An async generator can return to its resumer because it yielded OR
      * because await parked it. OUT distinguishes the two. */
-    g->state = g->is_async && !scr_gen_out_has(g)
+    g->state = !sync && g->is_async && !scr_gen_out_has(g)
         ? SCR_GEN_AWAITING
         : SCR_GEN_SUSPENDED;
   }
-  scr_gen_release(g);
+  if (release) scr_gen_release(g);
 }
 
 #ifndef __wasi__
 /* The stackless form of the hop: the coroutine frame runs on this stack
- * until its next yield or its final suspension returns here. */
-static void scr_gen_coro_in(ScrGen *g) {
+ * until its next yield or its final suspension returns here. `retain`
+ * holds the generator across the hop; a resumer whose own reference
+ * provably outlives the hop passes false. */
+__attribute__((always_inline)) static inline void scr_gen_coro_hop(ScrGen *g, bool retain) {
   ScrFiber *f = g->fiber;
-  scr_gen_retain(g);
+  if (retain) scr_gen_retain(g);
   g->state = SCR_GEN_RUNNING;
-  ScrFiber *me = scr_current;
+  f->resumer = scr_current;
   scr_current = f;
   scr_exc_swap_cell(&f->exc);
   scr_als_active = &f->als;
   if (f->coro == NULL) f->entry(f, f->argpack);
   else scr_coro_resume(f->coro);
+  /* A running generator cannot be resumed again, so neither its fiber nor
+   * the parked resumer changed while the body ran. */
+  f = g->fiber;
+  ScrFiber *me = f->resumer;
   scr_current = me;
   scr_exc_swap_cell(me != NULL ? &me->exc : NULL);
   scr_als_active = me != NULL ? &me->als : &scr_als_main_slot;
-  scr_gen_switched_back(g, f);
+  scr_gen_switched_back(g, f, retain, true);
 }
+
+static void scr_gen_coro_in(ScrGen *g) { scr_gen_coro_hop(g, true); }
 #endif
 
 /* The consumer→fiber hop shared by every resume mode: switches in, and on
@@ -5138,7 +5171,7 @@ static void scr_gen_switch_in(ScrGen *g) {
   scr_current = me;
   scr_exc_swap_cell(me != NULL ? &me->exc : NULL);
 #endif
-  scr_gen_switched_back(g, f);
+  scr_gen_switched_back(g, f, true, false);
 }
 
 void scr_gen_resume(ScrGen *g) {
@@ -5163,8 +5196,18 @@ void scr_gen_close(ScrGen *g) {
   scr_gen_slot_reset(&g->out);
 }
 
+/* The compiler's own drives (for-of, spread, destructuring, valueless
+ * yield* steps). Every emitted caller passes a generator it owns or lends
+ * from a binding nothing can rebind during the step, so the body cannot
+ * drop the last reference and a stackless hop needs no retain of its own. */
 bool scr_gen_step(ScrGen *g) {
-  scr_gen_slot_reset(&g->in);
+  if (g->in.kind != SCR_EXC_NONE) scr_gen_slot_reset(&g->in);
+#ifndef __wasi__
+  if ((g->state == SCR_GEN_SUSPENDED || g->state == SCR_GEN_UNSTARTED) && g->fiber->stackless) {
+    scr_gen_coro_hop(g, false);
+    return g->state == SCR_GEN_DONE;
+  }
+#endif
   scr_gen_resume(g);
   return g->state == SCR_GEN_DONE;
 }

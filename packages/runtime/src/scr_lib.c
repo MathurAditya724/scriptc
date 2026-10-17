@@ -2973,8 +2973,8 @@ static const char *scr_fs_err_path(const ScrStr *path, char buf[PATH_MAX]) {
 /* Exported (scr_runtime.h): scr_bytes.c's fs Buffer forms share it. */
 /* Keep metadata on the error itself until it crosses a checked-value
  * boundary. Failed operations do not populate the process identity cache. */
-static void scr_fs_throw_details(int e, const char *name, const char *message, size_t length,
-                                 const char *op, const ScrStr *path, const ScrStr *dest) {
+static ScrError *scr_fs_error_details(int e, const char *name, const char *message, size_t length,
+                                      const char *op, const ScrStr *path, const ScrStr *dest) {
   double number = e > 0 ? -e : e;
 #define SCR_FS_ERRNO_VALUE(code, text) if (strcmp(name, #code) == 0) number = SCR_NODE_UV__##code;
   SCR_NODE_UV_ERRNO_MAP(SCR_FS_ERRNO_VALUE)
@@ -2987,15 +2987,16 @@ static void scr_fs_throw_details(int e, const char *name, const char *message, s
   error->system_call = scr_str_new(op, strlen(op));
   error->system_path = path ? scr_str_retain((ScrStr *)path) : NULL;
   error->system_dest = dest ? scr_str_retain((ScrStr *)dest) : NULL;
+  return error;
+}
+
+static void scr_fs_throw_details(int e, const char *name, const char *message, size_t length,
+                                 const char *op, const ScrStr *path, const ScrStr *dest) {
+  ScrError *error = scr_fs_error_details(e, name, message, length, op, path, dest);
   scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
-/* Set while scr_fs_stat_probe runs: a missing entry (ENOENT, ENOTDIR) is
- * not thrown, so the probe answers undefined without building the error. */
-static SCR_TL bool scr_fs_probing = false;
-
-void scr_fs_throw(int e, const char *op, const ScrStr *path) {
-  if (scr_fs_probing && (e == ENOENT || e == ENOTDIR)) return;
+ScrError *scr_fs_error(int e, const char *op, const ScrStr *path) {
 #ifdef _WIN32
   /* The CRT lands ERROR_ACCESS_DENIED in errno as EACCES; libuv's
    * uv_translate_sys_error maps the same Win32 error to EPERM, so that
@@ -3017,8 +3018,19 @@ void scr_fs_throw(int e, const char *op, const ScrStr *path) {
   int len = path
     ? snprintf(msg, cap, "%s: %s, %s '%s'", name, text, op, shown)
     : snprintf(msg, cap, "%s: %s, %s", name, text, op);
-  scr_fs_throw_details(e, name, msg, (size_t)len, op, path, NULL);
+  ScrError *error = scr_fs_error_details(e, name, msg, (size_t)len, op, path, NULL);
   free(msg);
+  return error;
+}
+
+/* Set while scr_fs_stat_probe runs: a missing entry (ENOENT, ENOTDIR) is
+ * not thrown, so the probe answers undefined without building the error. */
+static SCR_TL bool scr_fs_probing = false;
+
+void scr_fs_throw(int e, const char *op, const ScrStr *path) {
+  if (scr_fs_probing && (e == ENOENT || e == ENOTDIR)) return;
+  ScrError *error = scr_fs_error(e, op, path);
+  scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
 /* ── fs operations ───────────────────────────────────────────────────── */
@@ -4182,6 +4194,36 @@ void scr_fs_close(double fd) {
     int len = snprintf(msg, sizeof msg, "%s: %s, close", name, text);
     scr_fs_throw_details(e, name, msg, (size_t)len, "close", NULL, NULL);
   }
+}
+
+/* Raw fd operations for the fs streams' worker-pool steps: no runtime
+ * state, no exceptions. Each answers its result, or -errno. A negative
+ * position reads or writes at the current file offset. */
+int scr_fs_raw_open(const char *path, int flags, int mode) {
+  int fd = open(path, flags | O_BINARY, (mode_t)mode);
+  return fd < 0 ? -errno : fd;
+}
+
+int64_t scr_fs_raw_read(int fd, void *data, size_t length, double position) {
+  ssize_t n = position >= 0 ? scr_fs_pread(fd, data, length, position) : read(fd, data, length);
+  return n < 0 ? -errno : n;
+}
+
+int64_t scr_fs_raw_write(int fd, const void *data, size_t length, double position) {
+  ssize_t n = scr_fs_write_once(fd, data, length, position >= 0, position);
+  return n < 0 ? -errno : n;
+}
+
+int scr_fs_raw_fsync(int fd) {
+#ifdef _WIN32
+  return _commit(fd) != 0 ? -errno : 0;
+#else
+  return fsync(fd) != 0 ? -errno : 0;
+#endif
+}
+
+int scr_fs_raw_close(int fd) {
+  return close(fd) != 0 ? -errno : 0;
 }
 
 /* The two-path fs error shape — Node's copyfile errors quote both ends:
@@ -6713,6 +6755,133 @@ SCR_DIGEST_ALIGNED static void scr_sha256_block(uint32_t h[8], const unsigned ch
   h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
 }
 
+static void scr_sha1_block(uint32_t h[5], const unsigned char *p);
+
+/* ── SHA-NI kernels (x86-64) ──────────────────────────────────────────
+ * On CPUs with the SHA extensions, SHA-256 and SHA-1 process their
+ * blocks with SHA256RNDS2/SHA1RNDS4 and the message-schedule
+ * instructions; other CPUs and targets use the portable blocks above.
+ * The CPU check runs once and is cached. */
+#if defined(__x86_64__) && (defined(__clang__) || defined(__GNUC__))
+#include <cpuid.h>
+#include <immintrin.h>
+#define SCR_SHA_NI 1
+
+static int scr_sha_ni_state; /* 0 unknown, 1 available, 2 absent */
+
+static bool scr_sha_ni(void) {
+  if (scr_sha_ni_state == 0) {
+    unsigned a, b, c, d;
+    bool ok = __get_cpuid(1, &a, &b, &c, &d) && (c & bit_SSSE3) && (c & bit_SSE4_1) &&
+              __get_cpuid_count(7, 0, &a, &b, &c, &d) && (b & bit_SHA);
+    scr_sha_ni_state = ok ? 1 : 2;
+  }
+  return scr_sha_ni_state == 1;
+}
+
+__attribute__((target("sha,ssse3,sse4.1")))
+static void scr_sha256_blocks_ni(uint32_t h[8], const unsigned char *p, size_t blocks) {
+  const __m128i mask = _mm_set_epi64x(0x0c0d0e0f08090a0bULL, 0x0405060700010203ULL);
+  __m128i tmp = _mm_shuffle_epi32(_mm_loadu_si128((const __m128i *)&h[0]), 0xB1); /* CDAB */
+  __m128i state1 = _mm_shuffle_epi32(_mm_loadu_si128((const __m128i *)&h[4]), 0x1B); /* EFGH */
+  __m128i state0 = _mm_alignr_epi8(tmp, state1, 8);    /* ABEF */
+  state1 = _mm_blend_epi16(state1, tmp, 0xF0);         /* CDGH */
+  for (; blocks != 0; blocks--, p += 64) {
+    __m128i abef = state0, cdgh = state1;
+    /* m[i & 3] holds W for the four rounds of group i; a slot gets
+     * SHA256MSG1 once its neighbor is loaded, and SHA256MSG2 forms the
+     * next words from it. */
+    __m128i m[4];
+#pragma GCC unroll 16
+    for (int i = 0; i < 16; i++) {
+      __m128i w;
+      if (i < 4) {
+        w = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + 16 * i)), mask);
+      } else {
+        w = _mm_add_epi32(m[i & 3], _mm_alignr_epi8(m[(i - 1) & 3], m[(i - 2) & 3], 4));
+        w = _mm_sha256msg2_epu32(w, m[(i - 1) & 3]);
+      }
+      __m128i wk = _mm_add_epi32(w, _mm_loadu_si128((const __m128i *)&scr_sha256_k[4 * i]));
+      state1 = _mm_sha256rnds2_epu32(state1, state0, wk);
+      state0 = _mm_sha256rnds2_epu32(state0, state1, _mm_shuffle_epi32(wk, 0x0E));
+      if (i >= 2 && i <= 13) m[(i - 2) & 3] = _mm_sha256msg1_epu32(m[(i - 2) & 3], m[(i - 1) & 3]);
+      m[i & 3] = w;
+    }
+    state0 = _mm_add_epi32(state0, abef);
+    state1 = _mm_add_epi32(state1, cdgh);
+  }
+  tmp = _mm_shuffle_epi32(state0, 0x1B);            /* FEBA */
+  state1 = _mm_shuffle_epi32(state1, 0xB1);         /* DCHG */
+  state0 = _mm_blend_epi16(tmp, state1, 0xF0);      /* DCBA */
+  state1 = _mm_alignr_epi8(state1, tmp, 8);         /* ABEF */
+  _mm_storeu_si128((__m128i *)&h[0], state0);
+  _mm_storeu_si128((__m128i *)&h[4], state1);
+}
+
+__attribute__((target("sha,ssse3,sse4.1")))
+static inline __m128i scr_sha1_rounds(__m128i abcd, __m128i e, int f) {
+  switch (f) {
+  case 0: return _mm_sha1rnds4_epu32(abcd, e, 0);
+  case 1: return _mm_sha1rnds4_epu32(abcd, e, 1);
+  case 2: return _mm_sha1rnds4_epu32(abcd, e, 2);
+  default: return _mm_sha1rnds4_epu32(abcd, e, 3);
+  }
+}
+
+__attribute__((target("sha,ssse3,sse4.1")))
+static void scr_sha1_blocks_ni(uint32_t h[5], const unsigned char *p, size_t blocks) {
+  const __m128i mask = _mm_set_epi64x(0x0001020304050607ULL, 0x08090a0b0c0d0e0fULL);
+  __m128i abcd = _mm_shuffle_epi32(_mm_loadu_si128((const __m128i *)h), 0x1B);
+  __m128i e0 = _mm_set_epi32((int)h[4], 0, 0, 0);
+  for (; blocks != 0; blocks--, p += 64) {
+    __m128i abcd_save = abcd, e_save = e0;
+    __m128i m[4], e[2];
+#pragma GCC unroll 4
+    for (int i = 0; i < 4; i++) m[i] = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + 16 * i)), mask);
+    e[0] = _mm_add_epi32(e0, m[0]);
+    e[1] = abcd;
+    abcd = scr_sha1_rounds(abcd, e[0], 0);
+    /* Group g: E from the previous group's ABCD plus W[g], twenty rounds
+     * per function. m[g & 3] holds W[g]; SHA1MSG1, XOR and SHA1MSG2 build
+     * the words three, two and one groups ahead. */
+#pragma GCC unroll 20
+    for (int g = 1; g < 20; g++) {
+      __m128i *cur = &e[g & 1];
+      *cur = _mm_sha1nexte_epu32(*cur, m[g & 3]);
+      e[(g + 1) & 1] = abcd;
+      if (g >= 3 && g <= 18) m[(g + 1) & 3] = _mm_sha1msg2_epu32(m[(g + 1) & 3], m[g & 3]);
+      abcd = scr_sha1_rounds(abcd, *cur, g / 5);
+      if (g >= 1 && g <= 16) m[(g - 1) & 3] = _mm_sha1msg1_epu32(m[(g - 1) & 3], m[g & 3]);
+      if (g >= 2 && g <= 17) m[(g - 2) & 3] = _mm_xor_si128(m[(g - 2) & 3], m[g & 3]);
+    }
+    e0 = _mm_sha1nexte_epu32(e[0], e_save);
+    abcd = _mm_add_epi32(abcd, abcd_save);
+  }
+  _mm_storeu_si128((__m128i *)h, _mm_shuffle_epi32(abcd, 0x1B));
+  h[4] = (uint32_t)_mm_extract_epi32(e0, 3);
+}
+#endif
+
+static void scr_sha256_blocks(uint32_t h[8], const unsigned char *p, size_t blocks) {
+#ifdef SCR_SHA_NI
+  if (scr_sha_ni()) {
+    scr_sha256_blocks_ni(h, p, blocks);
+    return;
+  }
+#endif
+  for (; blocks != 0; blocks--, p += 64) scr_sha256_block(h, p);
+}
+
+static void scr_sha1_blocks(uint32_t h[5], const unsigned char *p, size_t blocks) {
+#ifdef SCR_SHA_NI
+  if (scr_sha_ni()) {
+    scr_sha1_blocks_ni(h, p, blocks);
+    return;
+  }
+#endif
+  for (; blocks != 0; blocks--, p += 64) scr_sha1_block(h, p);
+}
+
 typedef struct ScrSha256Ctx {
   uint32_t h[8];
   uint64_t bytes;
@@ -6739,14 +6908,15 @@ static void scr_sha256_update(ScrSha256Ctx *ctx, const unsigned char *data, size
     data += take;
     len -= take;
     if (ctx->tail_len == 64) {
-      scr_sha256_block(ctx->h, ctx->tail);
+      scr_sha256_blocks(ctx->h, ctx->tail, 1);
       ctx->tail_len = 0;
     }
   }
-  while (len >= 64) {
-    scr_sha256_block(ctx->h, data);
-    data += 64;
-    len -= 64;
+  if (len >= 64) {
+    size_t blocks = len / 64;
+    scr_sha256_blocks(ctx->h, data, blocks);
+    data += blocks * 64;
+    len -= blocks * 64;
   }
   if (len != 0) {
     memcpy(ctx->tail, data, len);
@@ -6767,8 +6937,7 @@ static size_t scr_sha256_final(const ScrSha256Ctx *source, unsigned char out[32]
   memset(tail + rem + 1, 0, pad - rem - 1 - 8);
   uint64_t bits = ctx.bytes * 8;
   for (int b = 0; b < 8; b++) tail[pad - 1 - b] = (unsigned char)(bits >> (8 * b));
-  scr_sha256_block(ctx.h, tail);
-  if (pad == 128) scr_sha256_block(ctx.h, tail + 64);
+  scr_sha256_blocks(ctx.h, tail, pad / 64);
   for (int j = 0; j < 8; j++) {
     for (int b = 0; b < 4; b++) out[j * 4 + b] = (unsigned char)(ctx.h[j] >> (24 - 8 * b));
   }
@@ -6825,14 +6994,15 @@ static void scr_sha1_update(ScrSha1Ctx *ctx, const unsigned char *data, size_t l
     data += take;
     len -= take;
     if (ctx->tail_len == 64) {
-      scr_sha1_block(ctx->h, ctx->tail);
+      scr_sha1_blocks(ctx->h, ctx->tail, 1);
       ctx->tail_len = 0;
     }
   }
-  while (len >= 64) {
-    scr_sha1_block(ctx->h, data);
-    data += 64;
-    len -= 64;
+  if (len >= 64) {
+    size_t blocks = len / 64;
+    scr_sha1_blocks(ctx->h, data, blocks);
+    data += blocks * 64;
+    len -= blocks * 64;
   }
   if (len != 0) {
     memcpy(ctx->tail, data, len);
@@ -6850,8 +7020,7 @@ static size_t scr_sha1_final(const ScrSha1Ctx *source, unsigned char out[32]) {
   memset(tail + rem + 1, 0, pad - rem - 1 - 8);
   uint64_t bits = ctx.bytes * 8;
   for (int b = 0; b < 8; b++) tail[pad - 1 - b] = (unsigned char)(bits >> (8 * b));
-  scr_sha1_block(ctx.h, tail);
-  if (pad == 128) scr_sha1_block(ctx.h, tail + 64);
+  scr_sha1_blocks(ctx.h, tail, pad / 64);
   for (int j = 0; j < 5; j++) {
     for (int b = 0; b < 4; b++) out[j * 4 + b] = (unsigned char)(ctx.h[j] >> (24 - 8 * b));
   }

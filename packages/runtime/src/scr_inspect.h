@@ -128,5 +128,7 @@ bool scr_process_stderr_write_bytes(const ScrBytes *b, const ScrStr *encoding);
  * file or directory, open 'x'" and throws it catchably. Shared with
  * scr_bytes.c's fs forms. */
 void scr_fs_throw(int e, const char *op, const ScrStr *path);
+/* The same error, returned +1 instead of thrown (async completions). */
+ScrError *scr_fs_error(int e, const char *op, const ScrStr *path);
 
 #endif /* SCR_INSPECT_H */

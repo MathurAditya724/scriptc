@@ -32,6 +32,7 @@ import { symbolFieldDisplayName } from "./symbol-fields.js";
 import { eventTargetRootOf } from "./lower-event-target.js";
 import { lowerSystemErrorMap } from "./lower-system-errors.js";
 import { isPerfEntryType, perfEntryJson } from "./builtins/performance.js";
+import { recordMayKeepSource, recordSourceTest } from "./record-sources.js";
 
 /* ── IR construction shorthand ───────────────────────────────────────── */
 function concatAll(parts: IrExpr[], loc: SrcLoc): IrExpr {
@@ -1191,6 +1192,31 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       throw new InternalCompilerError(`inspect helper over unexpected type ${typeKey(t)}`);
   }
 
+  // A closed record that kept the undeclared properties of its checked
+  // source renders through its live checked view, which holds them in the
+  // source's own-key order beside the current field values.
+  let prependSourceGate: (() => void) | null = null;
+  if (t.kind === "record" && recordMayKeepSource(lowerer, t)) {
+    prependSourceGate = (): void => {
+      body.unshift({
+        kind: "if",
+        cond: recordSourceTest(v(), loc),
+        then: [
+          ret({
+            kind: "libCall",
+            fn: "insp.dyn",
+            args: [{ kind: "dynFrom", value: v(), liveRef: true, type: DYN, loc }, r(), d()],
+            type: STRING,
+            loc,
+          }),
+        ],
+        else_: null,
+        loc,
+      });
+    };
+    prependSourceGate();
+  }
+
   let prependCycleGuard: (() => void) | null = null;
   if (onCycle) {
     // The circular check, FIRST (before the empty-literal and depth
@@ -1234,6 +1260,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
   if (rebuildShapeOrderBody !== null) {
     lowerer.shapeOrderHelperFinalizers.push(() => {
       rebuildShapeOrderBody!();
+      prependSourceGate?.();
       prependCycleGuard?.();
       fn.body = body;
     });

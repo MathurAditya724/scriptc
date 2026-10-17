@@ -3118,6 +3118,28 @@ function validateFunction(
         ) {
           err(`virtualCall ${e.className}.${e.method} result type mismatch`, e.loc);
         }
+        // Closed target sets name distinct implementations at or below the
+        // static class's chain, each an existing method function.
+        if (e.targets !== undefined) {
+          if (e.targets.length < 2 || new Set(e.targets).size !== e.targets.length)
+            err(
+              `virtualCall ${e.className}.${e.method}: targets must be distinct, at least two`,
+              e.loc,
+            );
+          for (const target of e.targets) {
+            if (!functions.has(`%${target}.${e.method}`))
+              err(
+                `virtualCall ${e.className}.${e.method}: target ${target} has no implementation`,
+                e.loc,
+              );
+            else if (
+              target !== e.className &&
+              !isStrictSubclass(target, e.className) &&
+              !isStrictSubclass(e.className, target)
+            )
+              err(`virtualCall ${e.className}.${e.method}: target ${target} is unrelated`, e.loc);
+          }
+        }
         break;
       }
       default: {

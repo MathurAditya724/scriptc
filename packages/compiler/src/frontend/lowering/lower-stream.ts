@@ -198,6 +198,8 @@ export const STREAM_FORCED_EVENT_NAMES: ReadonlySet<string> = new Set([
   "finish",
   "pipe",
   "unpipe",
+  "open",
+  "ready",
 ]);
 
 /** The per-base FORCED event tuples (runtime-emitted payloads): consulted
@@ -211,6 +213,8 @@ export function streamForcedTuple(
 ): IrType[] | null {
   const sides = streamSidesOf(lowerer, info);
   if (!sides) return null;
+  // 'open' (the fd) and 'ready' are fs.ReadStream / fs.WriteStream's
+  // (scr_fs_stream.c).
   const readable: Record<string, IrType[]> = {
     data: [BYTES],
     end: [],
@@ -218,8 +222,12 @@ export function streamForcedTuple(
     readable: [],
     pause: [],
     resume: [],
+    open: [F64],
+    ready: [],
   };
   const writable: Record<string, IrType[]> = {
+    open: [F64],
+    ready: [],
     drain: [],
     prefinish: [],
     finish: [],

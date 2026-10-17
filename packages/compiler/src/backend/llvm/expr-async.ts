@@ -14,7 +14,7 @@ import { DYN_KIND } from "./dyn.js";
 import { stringParts } from "./string-construction.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { mangleRecordNew } from "../mangle.js";
-import { arrNewCall, traceAdapter, traceArg, vAdapters } from "./shapes.js";
+import { arrNewCall, traceArg, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { settledStoreFor } from "./expr-callbacks.js";
@@ -334,10 +334,12 @@ export function emitSerializationExpr(
         B.line(`${t} = call ptr @scr_jb_finish(ptr ${buf})`);
         compact = host.own({ name: t, type: e.type });
         // A cycle-capable root can throw the circular-structure
-        // TypeError mid-walk: finish still runs (frees the buffer, the
-        // partial string joins the frame and releases on unwind), then
-        // the pending check unwinds — the runtime ABI’s contract exactly.
-        if (traceAdapter(host.shapeHost, e.value.type) !== null) host.emitPendingCheck();
+        // TypeError mid-walk, and a record serialized through its kept
+        // checked source can throw from the dyn walker: finish still runs
+        // (frees the buffer, the partial string joins the frame and
+        // releases on unwind), then the pending check unwinds — the
+        // runtime ABI’s contract exactly.
+        if (host.walkers.jsonWriteMayThrow(e.value.type)) host.emitPendingCheck();
       }
       // A pretty-print form (`stringify(v, null, 2)`): the frontend
       // resolved the space to a compile-time indent string (Node's
@@ -492,7 +494,8 @@ export function emitAsyncExpr(
       if (yt.kind === "f64" || yt.kind === "date") {
         if (host.currentCoro !== null) {
           const coro = host.currentCoro;
-          if (host.wasi) {
+          if (coro.out !== null) host.emitGenSlotStore(coro.out, "f64", v.name);
+          else if (host.wasi) {
             host.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
             host.declare(`declare void @scr_gen_out_f64(ptr, double)`);
             const g = B.tmp();
@@ -509,7 +512,8 @@ export function emitAsyncExpr(
       } else if (yt.kind === "bool") {
         if (host.currentCoro !== null) {
           const coro = host.currentCoro;
-          if (host.wasi) {
+          if (coro.out !== null) host.emitGenSlotStore(coro.out, "bool", v.name);
+          else if (host.wasi) {
             host.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
             host.declare(`declare void @scr_gen_out_bool(ptr, i1 zeroext)`);
             const g = B.tmp();
@@ -697,6 +701,10 @@ export function emitAsyncExpr(
           throw new InternalCompilerError(`llvm emitter bug: genResume ${e.mode} on async`);
         const gb = emitBorrowedInput(host, e.gen);
         if (e.mode === "value") {
+          if (!host.wasi && (e.type.kind === "f64" || e.type.kind === "date"))
+            return { name: host.emitGenSlotTake(host.genOutSlot(gb.name), "f64"), type: e.type };
+          if (!host.wasi && e.type.kind === "bool")
+            return { name: host.emitGenSlotTake(host.genOutSlot(gb.name), "bool"), type: e.type };
           const t = B.tmp();
           if (e.type.kind === "f64" || e.type.kind === "date") {
             host.declare(`declare double @scr_gen_take_out_f64(ptr)`);

@@ -700,6 +700,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dns.setDefaultResultOrder",
   "net.connect",
   "net.connectCb",
+  // resetAndDestroy on a TLS socket throws ERR_INVALID_HANDLE_TYPE.
+  "net.sockResetAndDestroy",
   // node:dgram state errors (Node throws synchronously): bind on a bound
   // socket, connect on a connected one, send/close/address on a closed or
   // never-bound one.
@@ -775,6 +777,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.fchownSync",
   "fs.truncateSync",
   "fs.opendirSync",
+  "fs.createReadStream",
+  "fs.createWriteStream",
+  "fileHandle.createReadStream",
+  "fileHandle.createWriteStream",
+  "fs.fsStreamClose",
+  "fs.fsStreamCloseCb",
   "dir.readSync",
   "dir.closeSync",
   "fs.copyFileSync",

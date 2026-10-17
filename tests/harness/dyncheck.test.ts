@@ -418,16 +418,20 @@ console.log(load('{"port":8080}'), load('{"port":"x"}'), load('{"port":1}'));
     expect(r.stderr).toBe("");
   });
 
-  test("width tolerance really is check-and-extract: extras dropped, no throw", async () => {
+  test("width tolerance checks declared fields and keeps the extras, no throw", async () => {
+    // Extras are not validated against anything, and the record keeps them
+    // beside its declared fields for serialization (Node's output).
     const r = await compileAndRun(
       "width-tolerant",
       `type Slim = { a: number };
-const s = JSON.parse('{"a":1,"b":{"huge":[1,2,3]},"c":"ignored"}') as Slim;
+const s = JSON.parse('{"a":1,"b":{"huge":[1,2,3]},"c":"kept"}') as Slim;
 console.log(s.a, JSON.stringify(s));
 `,
+      "ts",
+      true,
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe('1 {"a":1}\n');
+    expect(r.stdout).toBe('1 {"a":1,"b":{"huge":[1,2,3]},"c":"kept"}\n');
   });
 
   test("tuple targets validate arity exactly", async () => {
@@ -1129,6 +1133,54 @@ console.log(has(eng));
     );
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("true\n");
+  });
+
+  test("compound assignment of an untyped string into a number throws like the expanded form", async () => {
+    // Node turns `n += "x"` into the string "1x"; a `number` local cannot
+    // hold it, so the compound form takes the same checked conversion as
+    // `n = n + value` and leaves the local unchanged.
+    const r = await compileAndRun(
+      "compound-any-string",
+      `const d: any = JSON.parse('{"s":"x"}');
+let expanded: number = 1;
+try { expanded = expanded + d.s; } catch (e) { console.log("expanded", (e as Error).message, expanded); }
+let compound: number = 1;
+try { compound += d.s; } catch (e) { console.log("compound", (e as Error).message, compound); }
+const field = { n: 1 };
+try { field.n += d.s; } catch (e) { console.log("field", (e as Error).message, field.n); }
+const items: number[] = [1];
+try { items[0] += d.s; } catch (e) { console.log("element", (e as Error).message, items[0]); }
+let uncaught: number = 1;
+uncaught += d.s;
+console.log("unreachable", uncaught);
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe(
+      [
+        "expanded expected number at $, got string 1",
+        "compound expected number at $, got string 1",
+        "field expected number at $, got string 1",
+        "element expected number at $, got string 1",
+        "",
+      ].join("\n"),
+    );
+    expect(r.stderr).toContain("Uncaught TypeError: expected number at $, got string");
+  });
+
+  test("Object.values over undeclared source keys checks them into the static result", async () => {
+    // The record keeps the parsed object's undeclared keys, so Object.values
+    // answers all four values in source order; the static `number[]` result
+    // cannot hold the string, so the conversion throws instead of dropping it.
+    const r = await compileAndRun(
+      "record-source-values",
+      `const rows: { score: number }[] = JSON.parse('[{"id":1,"score":2},{"id":0,"name":"n","score":3}]');
+console.log(Object.values(rows[0]!).join(","), Object.entries(rows[0]!).length);
+try { console.log(Object.values(rows[1]!)); } catch (e) { console.log((e as Error).message); }
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("1,2 2\nexpected number at $[1], got string\n");
   });
 
   test("a checked value RC-balances through catch-and-continue", async () => {

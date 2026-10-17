@@ -786,6 +786,28 @@ test("virtual-call validation preserves each call site's diagnostic and excludes
   ]);
 });
 
+test("closed virtual-call target sets name distinct related implementations", () => {
+  const mod = virtualCallModule();
+  const sites = mod.functions
+    .filter((fn) => fn.name.startsWith("caller"))
+    .map((fn) => {
+      const statement = fn.body[0]!;
+      if (statement.kind !== "exprStmt" || statement.expr.kind !== "virtualCall")
+        throw new Error("fixture");
+      return statement.expr;
+    });
+  sites[0]!.targets = ["First", "Second"];
+  sites[1]!.targets = ["Second", "First"];
+  expect(validateModule(deserializeModule(serializeModule(mod)))).toEqual([]);
+  sites[0]!.targets = ["First"];
+  sites[1]!.targets = ["First", "Unrelated", "Missing"];
+  expect(validateModule(mod).map((error) => error.message)).toEqual([
+    "in caller0: virtualCall Base.run: targets must be distinct, at least two",
+    "in caller1: virtualCall Base.run: target Unrelated is unrelated",
+    "in caller1: virtualCall Base.run: target Missing has no implementation",
+  ]);
+});
+
 test("virtual-call validation resolves an abstract slot in class-table order and rechecks each ABI", () => {
   const mod = virtualCallModule();
   const second = mod.functions.find((fn) => fn.name === "%Second.run")!;

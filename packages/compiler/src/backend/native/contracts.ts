@@ -144,7 +144,8 @@ export interface CcOptions {
    * utility units also require their symbol, inspection, and warning features. */
   parseArgs?: boolean;
   /** The program uses the node:stream class surface (moduleUsesStream on
-   * the IR): compiles scr_stream.c into the binary — always alongside
+   * the IR): compiles scr_stream.c and scr_fs_stream.c (fs.ReadStream /
+   * fs.WriteStream) into the binary — always alongside
    * scr_events_emitter.c, which moduleUsesEmitter answers true for
    * whenever this does (the stream classes root at the emitter). Pure
    * data structure plus the loop's deferred-tick hook — no poller, so it
