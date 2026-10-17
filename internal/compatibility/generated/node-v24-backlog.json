@@ -7,8 +7,8 @@
     "tierItemCount": 3472,
     "tiers": {
       "static": {
-        "audit-partial": 1057,
-        "verify-gap": 2288,
+        "audit-partial": 1058,
+        "verify-gap": 2287,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -60130,12 +60130,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:readline",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:readline.'history'",
+          "tests": [
+            "tests/corpus/5780-readline-history-options.ts",
+            "tests/corpus/5781-readline-history-options.cjs"
+          ]
         }
       }
     },
