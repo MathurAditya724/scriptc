@@ -10888,6 +10888,34 @@ ScrError *scr_error_new_options(int kind, const ScrDyn *message, const ScrDyn *o
   return e;
 }
 
+/* SuppressedError's `error` and `suppressed`: non-enumerable own
+ * properties of the error's dyn view. Both values move in. */
+static void scr_suppressed_attach(ScrError *e, ScrDyn *error, ScrDyn *suppressed) {
+  ScrDyn *view = scr_dyn_from_error(e);
+  scr_dyn_obj_set(view, "error", 5, error);
+  view->v.obj.entries[view->v.obj.len - 1].enumerable = false;
+  scr_dyn_obj_set(view, "suppressed", 10, suppressed);
+  view->v.obj.entries[view->v.obj.len - 1].enumerable = false;
+  scr_dyn_release(view);
+}
+
+static void scr_suppressed_hook(void *error_object, const ScrCaught *error, const ScrCaught *suppressed) {
+  scr_suppressed_attach((ScrError *)error_object, scr_caught_to_dyn(error), scr_caught_to_dyn(suppressed));
+}
+
+/* Disposal errors become SuppressedErrors with both values once this unit
+ * is linked; reading either property links it. */
+__attribute__((constructor)) static void scr_suppressed_hook_install(void) {
+  scr_exc_install_suppressed_hook(&scr_suppressed_hook);
+}
+
+ScrError *scr_suppressed_new(const ScrDyn *error, const ScrDyn *suppressed, const ScrDyn *message) {
+  ScrError *e = scr_error_new_options(SCR_ERR_SUPPRESSED, message, NULL);
+  if (!e) return NULL;
+  scr_suppressed_attach(e, scr_dyn_retain((ScrDyn *)error), scr_dyn_retain((ScrDyn *)suppressed));
+  return e;
+}
+
 ScrDyn *scr_error_cause(ScrError *e) {
   size_t hit = scr_errdyn_find(e, true);
   if (hit != SIZE_MAX) {

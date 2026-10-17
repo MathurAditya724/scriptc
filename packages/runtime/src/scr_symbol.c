@@ -356,3 +356,104 @@ void scr_dyn_dirent_finish(ScrDyn *obj) {
     break;
   }
 }
+
+/* The well-known symbol `Symbol.<name>` as a dyn key (+1). */
+static ScrDyn *scr_using_key(const char *name, size_t len) {
+  ScrStr *text = scr_str_new(name, len);
+  ScrSym *symbol = scr_sym_well_known(text);
+  scr_str_release(text);
+  ScrDyn *key = scr_dyn_new_symbol(symbol);
+  scr_sym_release(symbol);
+  return key;
+}
+
+static bool scr_using_typeof_is(const ScrDyn *value, const char *name, size_t len) {
+  ScrStr *type = scr_dyn_typeof(value);
+  bool match = type->len == len && !memcmp(type->data, name, len);
+  scr_str_release(type);
+  return match;
+}
+
+/* The [Symbol.<name>] method of a `using` value: NULL for an absent member
+ * (undefined or null), the callable member (+1), or NULL with a pending
+ * TypeError when the member is not callable. */
+static ScrDyn *scr_using_get_method(const ScrDyn *value, const char *name, size_t len, bool *absent) {
+  ScrDyn *key = scr_using_key(name, len);
+  ScrDyn *method = scr_dyn_symbol_key_get(value, key, false);
+  scr_dyn_release(key);
+  *absent = false;
+  if (!method) return NULL;
+  if (method->kind == SCR_DYN_UNDEF || method->kind == SCR_DYN_NULL) {
+    scr_dyn_release(method);
+    *absent = true;
+    return NULL;
+  }
+  if (!scr_using_typeof_is(method, "function", 8)) {
+    scr_dyn_release(method);
+    ScrJsonBuf message;
+    scr_jb_init(&message);
+    scr_jb_puts(&message, "Symbol(Symbol.");
+    scr_jb_write(&message, name, len);
+    scr_jb_puts(&message, ") is not a function");
+    scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+    return NULL;
+  }
+  return method;
+}
+
+ScrDyn *scr_dyn_using_method(const ScrDyn *value, bool async) {
+  if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) return scr_dyn_retain(scr_dyn_undefined());
+  if (!scr_using_typeof_is(value, "object", 6) && !scr_using_typeof_is(value, "function", 8)) {
+    static const char message[] = "An object is expected with `using` declarations";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  bool absent = false;
+  if (async) {
+    ScrDyn *method = scr_using_get_method(value, "asyncDispose", 12, &absent);
+    if (!method && !absent) return NULL;
+    if (method) {
+      ScrDyn *record = scr_dyn_new_arr();
+      scr_dyn_arr_push(record, method);
+      scr_dyn_arr_push(record, scr_dyn_new_bool(false));
+      return record;
+    }
+  }
+  ScrDyn *method = scr_using_get_method(value, "dispose", 7, &absent);
+  if (!method) {
+    if (absent && value->kind == SCR_DYN_TYPED_REF && value->v.typed_ref.type_key_len > 7 &&
+        !memcmp(value->v.typed_ref.type_key, "object:", 7)) {
+      /* A class instance seen through an `unknown` or Disposable-typed
+       * value: its dyn view carries no methods. */
+      static const char message[] =
+          "disposing a class instance through a Disposable- or unknown-typed value has no lowering "
+          "yet (declare the variable with the class type)";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    } else if (absent) {
+      static const char message[] = "Symbol(Symbol.dispose) is not a function";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    }
+    return NULL;
+  }
+  if (!async) return method;
+  ScrDyn *record = scr_dyn_new_arr();
+  scr_dyn_arr_push(record, method);
+  scr_dyn_arr_push(record, scr_dyn_new_bool(true));
+  return record;
+}
+
+ScrDyn *scr_dyn_using_dispose(const ScrDyn *method, const ScrDyn *value) {
+  if (method->kind == SCR_DYN_UNDEF) return scr_dyn_retain(scr_dyn_undefined());
+  bool sync_fallback = false;
+  const ScrDyn *callee = method;
+  if (method->kind == SCR_DYN_ARR) {
+    callee = method->v.arr.items[0];
+    sync_fallback = method->v.arr.items[1]->v.b;
+  }
+  scr_dyn_this_push_dyn(value);
+  ScrDyn *result = scr_dyn_call(callee, NULL, 0, "[Symbol.dispose]");
+  scr_dyn_this_pop();
+  if (!result || !sync_fallback) return result;
+  scr_dyn_release(result);
+  return scr_dyn_retain(scr_dyn_undefined());
+}

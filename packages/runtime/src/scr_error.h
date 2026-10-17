@@ -119,7 +119,8 @@ enum {
   SCR_ERR_URI = 7,
   SCR_ERR_AGGREGATE = 8, /* AggregateError — ScrAggregateError, the wider layout */
   SCR_ERR_ASSERTION = 9, /* node:assert's AssertionError — the Error layout */
-  SCR_ERR_COUNT = 10,
+  SCR_ERR_SUPPRESSED = 10, /* SuppressedError — the Error layout; error and suppressed are view properties */
+  SCR_ERR_COUNT = 11,
 };
 
 extern SCR_TL ScrVt scr_error_vts[SCR_ERR_COUNT]; /* indexed by SCR_ERR_*; main() stamps pre/post */
@@ -200,6 +201,14 @@ void scr_aggregate_install_errors_drop(void (*fn)(void *obj));
 ScrError *scr_aggregate_new(const struct ScrDyn *message, const struct ScrDyn *options);
 void scr_aggregate_set_errors(ScrError *e, struct ScrDyn *errors); /* both borrowed */
 struct ScrDyn *scr_aggregate_errors(ScrError *e); /* +1 */
+
+/* new SuppressedError(error, suppressed, message) (scr_json.c): the message
+ * as in scr_error_new_options, then `error` and `suppressed` as
+ * non-enumerable properties of the error's dyn view. All arguments are
+ * borrowed (dyn undefined when absent). Returns +1, or NULL with an
+ * exception pending when the message conversion throws. */
+ScrError *scr_suppressed_new(const struct ScrDyn *error, const struct ScrDyn *suppressed,
+                             const struct ScrDyn *message);
 
 /* Switch runtime-side error allocation to collector-headered (called from
  * main() when the compiler's cycle fixpoint marks the hierarchy). */

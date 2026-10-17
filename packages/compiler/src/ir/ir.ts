@@ -1388,6 +1388,10 @@ export const RUNTIME_ERROR_CLASSES: ReadonlyMap<
   // constructor. The Error layout; actual, expected, operator,
   // generatedMessage and diff are properties of the error's dyn view.
   ["%AssertionError", { lib: "AssertionError", kind: 9, base: "%Error" }],
+  // SuppressedError — the error a `using` disposal raises over a pending
+  // error, and its own constructor. The Error layout; error and suppressed
+  // are non-enumerable properties of the error's dyn view.
+  ["%SuppressedError", { lib: "SuppressedError", kind: 10, base: "%Error" }],
 ]);
 
 /** The runtime-provided node:events EventEmitter class (ScrEmitter /

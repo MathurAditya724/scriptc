@@ -354,10 +354,17 @@ void scr_rethrow(const ScrCaught *c) {
   }
 }
 
-/* Explicit resource management's error merge. The full JavaScript object
- * exposes `.error` and `.suppressed`; the static catch surface currently
- * exposes Error name/message, so retain Node's externally visible identity
- * and ordering while consuming both snapshots exactly once. */
+/* Explicit resource management's error merge: a SuppressedError whose
+ * `error` is the disposal error and whose `suppressed` is the body error.
+ * The hook is process-wide: every thread links the same scr_json.c. */
+static void (*scr_exc_suppressed_hook)(void *error_object, const ScrCaught *error,
+                                       const ScrCaught *suppressed) = NULL;
+
+void scr_exc_install_suppressed_hook(void (*fn)(void *error_object, const ScrCaught *error,
+                                                const ScrCaught *suppressed)) {
+  scr_exc_suppressed_hook = fn;
+}
+
 void scr_exc_suppress(ScrCaught *suppressed) {
   if (suppressed->kind == SCR_EXC_GENRET) {
     /* A generator .return() is a return completion, not a thrown error.
@@ -371,11 +378,14 @@ void scr_exc_suppress(ScrCaught *suppressed) {
     scr_caught_release(suppressed);
     return;
   }
+  static const char text[] = "An error was suppressed during disposal";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrError *e = scr_error_new(SCR_ERR_SUPPRESSED, message);
+  scr_str_release(message);
+  if (scr_exc_suppressed_hook) scr_exc_suppressed_hook(e, error, suppressed);
   scr_caught_release(error);
   scr_caught_release(suppressed);
-  scr_throw_error_named(
-      scr_str_new("SuppressedError", sizeof("SuppressedError") - 1),
-      scr_str_new("An error was suppressed during disposal", sizeof("An error was suppressed during disposal") - 1));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
 bool scr_caught_instanceof(const ScrCaught *c, size_t pre, size_t post) {
