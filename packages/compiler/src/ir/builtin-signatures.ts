@@ -3429,11 +3429,16 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * error. The Dyn twin boxes chunks by runtime tag (the JS lane).
    * readable.fromArr is Readable.from over a typed array, string or
    * Buffer: [array, SCR_FROM_* flags, highWaterMark]. readable.fromDyn is
-   * the JS lane's [source, options]. */
+   * Readable.from over a checked-dynamic source: [source, options].
+   * readable.fromIter is Readable.from over a class iterator, already
+   * opened: [checked-dynamic { next } object, flags, highWaterMark];
+   * readable.fromAsyncIter is the async class iterator's twin. */
   "readable.nextChunk": { argTypes: [null], result: VOID },
   "readable.nextChunkDyn": { argTypes: [null], result: VOID },
   "readable.fromArr": { argTypes: [null, F64, F64], result: VOID },
   "readable.fromDyn": { argTypes: [DYN, DYN], result: VOID },
+  "readable.fromIter": { argTypes: [DYN, F64, F64], result: VOID },
+  "readable.fromAsyncIter": { argTypes: [DYN, F64, F64], result: VOID },
   /** Readable.from over a compiled generator: [generator, next, return,
    * throw, flags, highWaterMark] (sync) or [generator, next, read,
    * return, throw, flags, highWaterMark] (async), the helpers being the

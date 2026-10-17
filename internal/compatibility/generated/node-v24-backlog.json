@@ -62262,7 +62262,10 @@
             "tests/corpus/5340-readable-from-options.ts",
             "tests/corpus/5341-readable-from-dynamic.cjs",
             "tests/corpus/5420-readable-from-generators.ts",
-            "tests/corpus/5421-readable-from-generators.cjs"
+            "tests/corpus/5421-readable-from-generators.cjs",
+            "tests/corpus/5610-readable-from-sets-and-views.ts",
+            "tests/corpus/5611-readable-from-class-iterables.ts",
+            "tests/corpus/5612-readable-from-iterables.cjs"
           ]
         }
       }
@@ -62883,7 +62886,10 @@
             "tests/corpus/5340-readable-from-options.ts",
             "tests/corpus/5341-readable-from-dynamic.cjs",
             "tests/corpus/5420-readable-from-generators.ts",
-            "tests/corpus/5421-readable-from-generators.cjs"
+            "tests/corpus/5421-readable-from-generators.cjs",
+            "tests/corpus/5610-readable-from-sets-and-views.ts",
+            "tests/corpus/5611-readable-from-class-iterables.ts",
+            "tests/corpus/5612-readable-from-iterables.cjs"
           ]
         }
       }

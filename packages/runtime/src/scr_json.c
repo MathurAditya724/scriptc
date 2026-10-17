@@ -4636,6 +4636,54 @@ int scr_dyn_iterable_kind(const ScrDyn *value) {
   return set ? 1 : 0;
 }
 
+ScrDyn *scr_dyn_from_iterator(const ScrDyn *value, int *kind) {
+  *kind = 0;
+  if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) return NULL;
+  ScrDyn *method = NULL;
+  if (scr_async_iterator_symbol) {
+    method = scr_dyn_symbol_key_get(value, scr_async_iterator_symbol, false);
+    if (!method) {
+      *kind = -1;
+      return NULL;
+    }
+    if (method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL) {
+      *kind = 2;
+    } else {
+      scr_dyn_release(method);
+      method = NULL;
+    }
+  }
+  if (!method) {
+    method = scr_iterator_method(value);
+    if (!method) {
+      *kind = -1;
+      return NULL;
+    }
+    if (method->kind == SCR_DYN_UNDEF || method->kind == SCR_DYN_NULL) {
+      scr_dyn_release(method);
+      return NULL;
+    }
+    *kind = 1;
+  }
+  ScrDyn *iterator = scr_iterator_call(
+      method, value, *kind == 2 ? "iterable[SymbolAsyncIterator]" : "iterable[SymbolIterator]");
+  scr_dyn_release(method);
+  if (iterator && scr_dyn_generator(iterator)) {
+    /* a compiled generator is stepped through typed helpers only */
+    scr_dyn_release(iterator);
+    iterator = NULL;
+    static const char msg[] =
+        "Readable.from over an object whose iterator method is a generator method is not supported yet";
+    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  }
+  if (!iterator) *kind = -1;
+  return iterator;
+}
+
+ScrDyn *scr_dyn_iterator_result_get(const ScrDyn *result, const char *key, size_t len) {
+  return scr_iterator_read(result, key, len);
+}
+
 /* Compiled class methods are dispatched before this checked-object path. */
 ScrDyn *scr_dyn_iterator_optional(const ScrDyn *source) {
   ScrDyn *method = scr_iterator_method(source);
