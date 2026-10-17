@@ -979,6 +979,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fs.writevSync": { argTypes: [F64, arrayOf(BYTES_U8), F64], result: F64 },
   "fs.linkSync": { argTypes: [DYN, DYN], result: VOID },
   "fs.symlinkSync": { argTypes: [DYN, DYN, DYN], result: VOID },
+  /** fs.cpSync / fs/promises cp (scr_fs_cp.c): src, dest and options are
+   * dyn values the runtime validates in Node's order. */
+  "fs.cpSync": { argTypes: [DYN, DYN, DYN], result: VOID },
   "fs.readlinkSync": { argTypes: [DYN, DYN], result: DYN },
   "fs.statfsSync": { argTypes: [DYN, DYN], result: DYN },
   "fs.readlinkSyncStr": { argTypes: [DYN, DYN], result: STRING },
@@ -2682,6 +2685,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fsp.rmdir": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
   "fsp.link": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
   "fsp.symlink": { argTypes: [DYN, DYN, DYN], result: { kind: "promise", inner: VOID } },
+  "fsp.cp": { argTypes: [DYN, DYN, DYN], result: { kind: "promise", inner: VOID } },
   "fsp.readlink": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "fsp.statfs": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "fsp.readlinkStr": { argTypes: [DYN, DYN], result: { kind: "promise", inner: STRING } },

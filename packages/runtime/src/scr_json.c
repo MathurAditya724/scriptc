@@ -5658,12 +5658,35 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     d->v.obj.entries[d->v.obj.len - 1].enumerable = e->message_enumerable;
   }
   if (e->stack) scr_dyn_obj_set(d, "stack", 5, scr_dyn_new_str(e->stack));
-  /* errno rides fs errors (with syscall) and zlib errors (without). */
-  if (e->system_call || e->system_errno != 0)
+  if (e->system_message) {
+    /* SystemError: code, the read-only `info` context ({ message, path,
+     * syscall, errno, code }), then errno, syscall, path and dest. */
+    if (e->code) scr_dyn_obj_set(d, "code", 4, scr_dyn_new_str(e->code));
+    ScrDyn *info = scr_dyn_new_obj();
+    scr_dyn_obj_set(info, "message", 7, scr_dyn_new_str(e->system_message));
+    if (e->system_path) scr_dyn_obj_set(info, "path", 4, scr_dyn_new_str(e->system_path));
+    if (e->system_dest) scr_dyn_obj_set(info, "dest", 4, scr_dyn_new_str(e->system_dest));
+    if (e->system_call) scr_dyn_obj_set(info, "syscall", 7, scr_dyn_new_str(e->system_call));
+    scr_dyn_obj_set(info, "errno", 5, scr_dyn_new_num(e->system_errno));
+    if (e->system_code) scr_dyn_obj_set(info, "code", 4, scr_dyn_new_str(e->system_code));
+    scr_dyn_obj_set(d, "info", 4, info);
+    d->v.obj.entries[d->v.obj.len - 1].writable = false;
     scr_dyn_obj_set(d, "errno", 5, scr_dyn_new_num(e->system_errno));
-  if (e->code) scr_dyn_obj_set(d, "code", 4, scr_dyn_new_str(e->code));
-  if (e->system_call) scr_dyn_obj_set(d, "syscall", 7, scr_dyn_new_str(e->system_call));
-  if (e->system_path) scr_dyn_obj_set(d, "path", 4, scr_dyn_new_str(e->system_path));
+    if (e->system_call) scr_dyn_obj_set(d, "syscall", 7, scr_dyn_new_str(e->system_call));
+  } else if (e->errno_order) {
+    /* ErrnoException: errno, code, path, syscall. */
+    if (e->system_call) scr_dyn_obj_set(d, "errno", 5, scr_dyn_new_num(e->system_errno));
+    if (e->code) scr_dyn_obj_set(d, "code", 4, scr_dyn_new_str(e->code));
+    if (e->system_path) scr_dyn_obj_set(d, "path", 4, scr_dyn_new_str(e->system_path));
+    if (e->system_call) scr_dyn_obj_set(d, "syscall", 7, scr_dyn_new_str(e->system_call));
+  } else {
+    /* errno rides fs errors (with syscall) and zlib errors (without). */
+    if (e->system_call || e->system_errno != 0)
+      scr_dyn_obj_set(d, "errno", 5, scr_dyn_new_num(e->system_errno));
+    if (e->code) scr_dyn_obj_set(d, "code", 4, scr_dyn_new_str(e->code));
+    if (e->system_call) scr_dyn_obj_set(d, "syscall", 7, scr_dyn_new_str(e->system_call));
+  }
+  if (!e->errno_order && e->system_path) scr_dyn_obj_set(d, "path", 4, scr_dyn_new_str(e->system_path));
   if (e->system_dest) scr_dyn_obj_set(d, "dest", 4, scr_dyn_new_str(e->system_dest));
   if (e->error_cause) {
     scr_dyn_obj_set(d, "cause", 5, scr_dyn_retain(e->error_cause));

@@ -813,6 +813,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.writevSync",
   "fs.linkSync",
   "fs.symlinkSync",
+  "fs.cpSync",
   "fs.readlinkSync",
   "fs.statfsSync",
   "fs.readlinkSyncStr",
