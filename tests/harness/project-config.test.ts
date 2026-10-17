@@ -386,6 +386,24 @@ test("node-types: promisified fs callback functions lower as their fs/promises c
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: promisified setTimeout and setImmediate lower as timers/promises", async () => {
+  const outDir = outDirFor("promisify-timers");
+  const entry = join(nodeTypesDir, "promisify-timers.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "promisify-timers"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: unsupported child stdin forms remain named fences", async () => {
   const dir = outDirFor("node-child-stdin-fences");
   const entry = join(nodeTypesDir, "child-stdin-fences.ts");
@@ -406,6 +424,40 @@ test("node-types: unsupported child stdin forms remain named fences", async () =
     expect.stringContaining("Writable.end"),
     expect.stringContaining("Writable.destroy"),
   ]);
+});
+
+test("node-types: callback exec uses the typed ExecException overloads", async () => {
+  const dir = outDirFor("node-child-exec");
+  const entry = join(nodeTypesDir, "child-exec.ts");
+  const result = await compile(entry, {
+    outPath: join(dir, "child-exec"),
+    outDir: dir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const { stdout } = await execFileAsync(result.binaryPath);
+  expect(stdout).toBe('typed-exec err\n"Command failed: exit 2\\n"\n');
+});
+
+test("node-types: exec's numeric ExecException.code remains a named fence", async () => {
+  const dir = outDirFor("node-child-exec-code-fences");
+  const entry = join(nodeTypesDir, "child-exec-code-fences.ts");
+  const result = await compile(entry, {
+    outPath: join(dir, "child-exec-code-fences"),
+    outDir: dir,
+    sanitize,
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+    "SC2020",
+    "SC2020",
+    "SC2020",
+  ]);
+  for (const diagnostic of result.diagnostics) {
+    expect(diagnostic.message).toContain("ExecException.code");
+  }
 });
 
 test("node-types: path and os lower statically under @types/node's shapes", async () => {

@@ -2971,10 +2971,10 @@ declare module "child_process" {
     args?: string[] | null,
     options?: ExecSyncOptions,
   ): unknown;
-  /* The async shell form — declared surface without full lowering (the
-   * type-level tolerance story): harness code on paths tests don't reach
-   * must typecheck; a reached call fences at its site. util.promisify
-   * recognizes it statically, as it does execFile. */
+  /* The async shell form. The callback forms lower like execFile's, with
+   * the command line run by /bin/sh -c, and util.promisify recognizes it
+   * statically, as it does execFile; reached calls without a callback
+   * fence at their site. */
   export function exec(
     command: string,
     options?: ExecSyncOptions | ((error: Error | null, stdout: string, stderr: string) => void),
@@ -3080,6 +3080,12 @@ declare module "util" {
       windowsHide?: boolean;
     },
   ) => Promise<{ stdout: string; stderr: string }>;
+  export function promisify(
+    fn: typeof globalThis.setTimeout,
+  ): typeof import("node:timers/promises").setTimeout;
+  export function promisify(
+    fn: typeof globalThis.setImmediate,
+  ): typeof import("node:timers/promises").setImmediate;
   export function promisify(fn: typeof import("node:child_process").exec): (
     command: string,
     options?: {

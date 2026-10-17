@@ -115,11 +115,11 @@ es2025-fences.ts:38:17 - error SC2020: 'Object.groupBy at this result type' is p
 
   hint: a string-keyed result (Partial<Record<string, T[]>>) is the supported form — a literal-union key type makes a fixed-field record: widen the callback's key type to string (numbers stringify like JS property keys)
 
-es2025-fences.ts:43:19 - error SC2020: 'Set.prototype.union over a set-like argument of type 'Map<number, string>'' is part of the standard library types but has no scriptc lowering yet
+es2025-fences.ts:43:19 - error SC2020: 'Set.prototype.union over a set-like argument of type '{ size: number; has: (x: number) => x is 1; keys: () => ArrayIterator<number>; }'' is part of the standard library types but has no scriptc lowering yet
 
-  42 | const m = new Map<number, string>([[1, "x"]]);
-  43 | const u = s.union(m);
-     |                   ^
+  42 | const like = { size: 1, has: (x: number) => x === 1, keys: () => [1].values() };
+  43 | const u = s.union(like);
+     |                   ^~~~
   44 | 
 
-  hint: only a real Set lowers (the argument's has/size must be the builtins) — build one first: new Set(...)
+  hint: only a real Set or Map lowers (the argument's has/size/keys must be the builtins) — build one first: new Set(...)

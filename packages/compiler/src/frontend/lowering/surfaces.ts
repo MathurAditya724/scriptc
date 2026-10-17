@@ -538,9 +538,9 @@ export const SET_METHODS = new Set([
 /** The ES2025 Set composition surface (union/intersection/…): desugared
  * to interned helper loops over the set iteration primitives — no user
  * code runs mid-loop, so the walks need no enter/exit bracketing. The
- * lib accepts any ReadonlySetLike argument; only a real Set lowers (the
- * argument's has/size must be the builtins for the desugar to BE the
- * spec's algorithm). */
+ * lib accepts any ReadonlySetLike argument; only a real Set or Map lowers
+ * (the argument's has/size/keys must be the builtins for the desugar to BE
+ * the spec's algorithm). */
 export const SET_COMBINE_METHODS = new Set([
   "union",
   "intersection",
@@ -2809,7 +2809,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   util: {
     promisify:
-      "the lowered shapes are const bindings over child_process.execFile, child_process.exec and the fs callback functions with an fs/promises counterpart; call the bound function directly",
+      "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate and the fs callback functions with an fs/promises counterpart; call the bound function directly",
   },
   "stream/consumers": {
     blob:

@@ -299,7 +299,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
       kind: "stdlib",
       name: `Set.prototype.${name}`,
       status: "static",
-      note: "compiles over Set receivers with Set arguments (the general ReadonlySetLike argument forms are refused per site)",
+      note: "compiles over Set receivers with Set arguments and Map arguments keyed by the element type (other ReadonlySetLike argument forms are refused per site)",
     });
   }
 

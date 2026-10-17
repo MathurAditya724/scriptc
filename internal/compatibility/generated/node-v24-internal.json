@@ -131,9 +131,9 @@
       "apiEntries": 39,
       "static": {
         "supported": 0,
-        "partial": 17,
+        "partial": 18,
         "refused": 0,
-        "not-implemented": 22,
+        "not-implemented": 21,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -11663,7 +11663,10 @@
           "tests/corpus/3127-spawn-runtime-options.ts",
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
-          "tests/corpus/3132-child-generic-stream-completion.ts"
+          "tests/corpus/3132-child-generic-stream-completion.ts",
+          "tests/corpus/5627-exec-callback.ts",
+          "tests/fixtures/node-types/child-exec.ts",
+          "tests/harness/project-config.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -11732,8 +11735,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "partial",
+        "evidence": "compiler-feature:child_process.child_process.exec",
+        "tests": [
+          "tests/corpus/5627-exec-callback.ts",
+          "tests/fixtures/node-types/child-exec.ts",
+          "tests/harness/project-config.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100565,6 +100573,7 @@
           "tests/corpus/5474-strip-vt-surrogates.ts",
           "tests/corpus/5625-promisify-exec.ts",
           "tests/corpus/5626-promisify-forms.ts",
+          "tests/corpus/5628-promisify-timers.ts",
           "tests/corpus/node24-deep-equality-properties.js",
           "tests/corpus/node24-deep-equality.cjs",
           "tests/corpus/node24-deep-equality.ts",
@@ -100592,6 +100601,7 @@
           "tests/fixtures/node-types/deep-equality.ts",
           "tests/fixtures/node-types/env-files.ts",
           "tests/fixtures/node-types/promisify-fs.ts",
+          "tests/fixtures/node-types/promisify-timers.ts",
           "tests/fixtures/node-types/style-text.ts",
           "tests/fixtures/node-types/system-errors.ts",
           "tests/fixtures/node-types/text-codecs.mts",
@@ -102219,6 +102229,8 @@
           "tests/corpus/5625-promisify-exec.ts",
           "tests/corpus/5626-promisify-forms.ts",
           "tests/fixtures/node-types/promisify-fs.ts",
+          "tests/corpus/5628-promisify-timers.ts",
+          "tests/fixtures/node-types/promisify-timers.ts",
           "tests/harness/project-config.test.ts"
         ]
       },
