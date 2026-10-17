@@ -806,12 +806,17 @@ static void sync_copy_file(const ScrFsCp *job, const struct stat *sst, const Scr
 
 static bool sync_copy_dir_contents(const ScrFsCp *job, const ScrStr *src, const ScrStr *dest);
 
-/* libstdc++'s std::filesystem::copy_file(from, to, options, ec): the
- * source's contents and mode into `to`; an existing `to` is skipped,
- * overwritten or refused (file_exists) per `existing`, and a non-regular
- * one is invalid_argument. The binding reports file_exists as
- * ERR_FS_CP_EEXIST and any other error as an ErrnoException naming
- * error_path. */
+/* std::filesystem::copy_file(from, to, options, ec): the source's contents
+ * and mode into `to`; an existing `to` is skipped, overwritten or refused
+ * (file_exists) per `existing`. A non-regular `to` is invalid_argument in
+ * libstdc++ and not_supported in libc++, which Node's macOS builds use.
+ * The binding reports file_exists as ERR_FS_CP_EEXIST and any other error
+ * as an ErrnoException naming error_path. */
+#if defined(__APPLE__)
+#define FS_COPY_NOT_REGULAR ENOTSUP
+#else
+#define FS_COPY_NOT_REGULAR EINVAL
+#endif
 static bool fs_copy_file(const ScrStr *from, const ScrStr *to, int existing, const ScrStr *error_path) {
   struct stat tst, fst;
   bool exists = stat(to->data, &tst) == 0;
@@ -821,7 +826,7 @@ static bool fs_copy_file(const ScrStr *from, const ScrStr *to, int existing, con
   }
   if (exists) {
     if (!S_ISREG(tst.st_mode)) {
-      scr_fs_throw_errno_exception(EINVAL, "cp", error_path);
+      scr_fs_throw_errno_exception(FS_COPY_NOT_REGULAR, "cp", error_path);
       return false;
     }
     bool same = tst.st_dev == fst.st_dev && tst.st_ino == fst.st_ino;

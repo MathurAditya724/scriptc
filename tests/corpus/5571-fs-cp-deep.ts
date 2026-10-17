@@ -1,5 +1,6 @@
-// fs.cpSync and fs/promises cp over a directory chain 1500 levels deep,
-// from a module with top-level await (its code runs on a fiber stack).
+// fs.cpSync and fs/promises cp over a directory chain 400 levels deep (its
+// deepest path stays under macOS's 1024-byte PATH_MAX), from a module with
+// top-level await (its code runs on a fiber stack).
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 
@@ -14,7 +15,7 @@ fs.mkdirSync(root);
 const home = process.cwd();
 process.chdir(root);
 
-const depth = 1500;
+const depth = 400;
 let path = "src";
 for (let i = 0; i < depth; i++) path += "/d";
 fs.mkdirSync(path, { recursive: true });

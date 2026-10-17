@@ -2914,6 +2914,7 @@ static const char *scr_errno_name(int e, char *fallback, size_t cap) {
   case ESPIPE: return "ESPIPE";
   case ELOOP: return "ELOOP";
   case ENOSYS: return "ENOSYS";
+  case ENOTSUP: return "ENOTSUP";
   default:
     snprintf(fallback, cap, "E%d", e);
     return fallback;
