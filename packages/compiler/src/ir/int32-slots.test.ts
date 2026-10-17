@@ -282,6 +282,17 @@ test("dynamic stores disqualify the field names they can reach", () => {
     "insp.dynS",
     "dyn.objCreate",
     "dyn.getPrototype",
+    // Registering or removing a process event listener stores nothing either.
+    "process.onSignal",
+    "process.offSignal",
+    "process.onUncaughtException",
+    "process.offUncaughtException",
+    "process.onUnhandledRejection",
+    "process.offUnhandledRejection",
+    "process.onRejectionHandled",
+    "process.offRejectionHandled",
+    "process.onWarning",
+    "process.offWarning",
   ]) {
     const reflected = analyzeInt32Slots(program(write(reader, [view])));
     expect([reader, reflected.isField("C", "a"), reflected.isField("C", "b")]).toEqual([
