@@ -73,5 +73,6 @@
 #include "scr_test.h"
 #include "scr_assert.h"
 #include "scr_console.h"
+#include "scr_fs_cp.h"
 
 #endif /* SCR_RUNTIME_H */

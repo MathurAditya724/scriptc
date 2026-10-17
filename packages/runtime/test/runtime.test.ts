@@ -16,6 +16,7 @@ const RUNTIME_SOURCES = [
   "scr_bytes.c",
   "scr_shared.c",
   "scr_bytes_io.c",
+  "scr_fs_cp.c",
   "scr_map.c",
   "scr_closure.c",
   "scr_ffi.c",

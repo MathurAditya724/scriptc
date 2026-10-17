@@ -4,6 +4,7 @@ import { lowerDiagnosticsChannelCall } from "./async-context.js";
 import { lowerTimersPromisesCall } from "./timers.js";
 import {
   lowerFsCallbackCall,
+  lowerFsCpCall,
   lowerFsLinkOrStatfsCall,
   lowerFsTimestampCall,
   lowerFsVectorOrTruncateCall,
@@ -72,6 +73,11 @@ export function lowerBuiltinModuleCall(
   if (fn.fn === "fs.callbackCall" && bi.member !== "rename") {
     return lowerFsCallbackCall(lowerer, expr, bi, loc);
   }
+  if (
+    (bi.module === "fs" && bi.member === "cpSync") ||
+    (bi.module === "fs/promises" && bi.member === "cp")
+  )
+    return lowerFsCpCall(lowerer, expr, fn, loc, name);
   if (
     (bi.module === "fs" &&
       ["linkSync", "symlinkSync", "readlinkSync", "statfsSync"].includes(bi.member)) ||

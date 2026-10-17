@@ -1,7 +1,6 @@
 import { InternalCompilerError } from "../../errors.js";
 import type { LibCallExpr, LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { abiValue, callRuntime, finishRuntimeCall, ptr } from "./lib-abi.js";
-import { f64Lit } from "./common.js";
 
 export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const args = e.args.map((arg) => host.emitExpr(arg)),
@@ -30,9 +29,9 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
       const promise = callRuntime(host, "scr_test_sub", "ptr", [
         ...a.slice(0, 4),
         ptr(),
-        { type: "double", name: f64Lit(0) },
-        a[4]!,
+        ...a.slice(4),
       ]);
+      host.emitPendingCheck();
       callRuntime(host, "scr_promise_release", "void", [ptr(promise)]);
       return { name: "", type: e.type };
     }
@@ -53,6 +52,20 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
       return finishRuntimeCall(host, e, "scr_test_ctx_plan", a);
     case "test.ctxCount":
       return finishRuntimeCall(host, e, "scr_test_ctx_count", a);
+    case "test.mockTrack":
+      host.moveTemp(args[0]!);
+      return finishRuntimeCall(host, e, "scr_test_mock_track", a);
+    case "test.mockRestoreAll":
+      return finishRuntimeCall(host, e, "scr_test_mock_restore_all", a);
+    case "test.mockReset":
+      return finishRuntimeCall(host, e, "scr_test_mock_reset", a);
+    case "test.ctxMockTrack":
+      host.moveTemp(args[1]!);
+      return finishRuntimeCall(host, e, "scr_test_ctx_mock_track", a);
+    case "test.ctxMockRestoreAll":
+      return finishRuntimeCall(host, e, "scr_test_ctx_mock_restore_all", a);
+    case "test.ctxMockReset":
+      return finishRuntimeCall(host, e, "scr_test_ctx_mock_reset", a);
     default:
       throw new InternalCompilerError(`unhandled test call ${e.fn}`);
   }

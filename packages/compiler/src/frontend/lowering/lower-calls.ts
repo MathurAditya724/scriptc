@@ -15,7 +15,11 @@ import { objectEnumerationReceiver } from "./object-enumeration-receiver.js";
 import { InternalCompilerError } from "../../errors.js";
 import { isFsStreamMember, lowerFsStreamMethodCall } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
-import { isZlibStreamMember, lowerZlibStreamMethodCall } from "./builtins/compression.js";
+import {
+  isZlibStreamMember,
+  lowerPromisifiedZlibCall,
+  lowerZlibStreamMethodCall,
+} from "./builtins/compression.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerGenMethodCall } from "./lower-generators.js";
 import { lowerClassSymbolMethodCall } from "./symbol-methods.js";
@@ -788,6 +792,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       }
       if (projection?.kind === "promisified-exec") {
         return lowerer.lowerExecFileAsyncCall(expr, loc, true);
+      }
+      if (projection?.kind === "promisified-zlib") {
+        return lowerPromisifiedZlibCall(lowerer, expr, projection.member, loc);
       }
       if (projection?.kind === "promisified-builtin") {
         return lowerBuiltinCall(

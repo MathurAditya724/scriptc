@@ -3,6 +3,7 @@ import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile } from "../../program.js";
 import { builtinModuleFnOf } from "../surfaces.js";
 import { registerHttpClientFnBinding } from "../lower-server.js";
+import { isPromisifiedZlibMember } from "./compression.js";
 
 /** Compile-time util.promisify projections. The immutable result binding
  * owns no runtime slot: calls rewrite to the target's promise lowering,
@@ -154,12 +155,14 @@ export function registerPromisifiedBuiltinDecl(
                   module: "stream/promises",
                   member: target.member,
                 }
-              : null;
+              : target?.module === "zlib" && isPromisifiedZlibMember(target.member)
+                ? { kind: "promisified-zlib" as const, member: target.member }
+                : null;
   if (!projection) {
     lowerer.noLowering(
       "util.promisify of this target",
       argNode ?? e,
-      "child_process.exec, child_process.execFile, setTimeout, setImmediate, stream.finished, stream.pipeline and the fs callback functions with an fs/promises counterpart are the supported targets",
+      "child_process.exec, child_process.execFile, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots and the fs callback functions with an fs/promises counterpart are the supported targets",
     );
   }
   const symbol = lowerer.checker.getSymbolAtLocation(nameNode);

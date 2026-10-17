@@ -314,10 +314,17 @@ void *scr_promise_payload_ref(ScrPromise *p);   /* +1 via the stored retain */
 /* Thin payload views for the gated dyn-async TU (scr_async_dyn.c). */
 int scr_promise_payload_kind(const ScrPromise *p);   /* ScrExcKind */
 bool scr_promise_is_rejected(const ScrPromise *p);
+bool scr_promise_is_pending(const ScrPromise *p);
 bool scr_promise_payload_is_dyn(const ScrPromise *p);
 double scr_promise_payload_num(const ScrPromise *p);
 bool scr_promise_payload_flag(const ScrPromise *p);
 bool scr_promise_await_settled(ScrPromise *p); /* park/hop; false = rethrown */
+/* An already-settled promise's outcome without awaiting (no job hop, no
+ * parking): false while p is pending; otherwise true, with the rejection
+ * rethrown when p rejected. payload_truthy is the fulfillment value's
+ * JavaScript truthiness. */
+bool scr_promise_settled_now(ScrPromise *p);
+bool scr_promise_payload_truthy(const ScrPromise *p);
 void scr_promise_payload_release(const ScrPromise *p, void *v);
 
 void scr_set_timeout(ScrClosure *cb, double ms); /* cb ownership moves in */

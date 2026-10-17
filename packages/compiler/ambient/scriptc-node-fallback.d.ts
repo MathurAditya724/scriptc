@@ -1251,6 +1251,45 @@ declare module "node:fs" {
     path: string | Uint8Array | URL,
     type?: string | null,
   ): void;
+  /* fs.cpSync / fs.cp: copies a file, symlink or (with recursive) a
+   * directory tree. filter decides per path; the callback and promise
+   * forms complete the copy before reporting. */
+  export interface CopySyncOptions {
+    dereference?: boolean;
+    errorOnExist?: boolean;
+    filter?: (source: string, destination: string) => boolean;
+    force?: boolean;
+    mode?: number;
+    preserveTimestamps?: boolean;
+    recursive?: boolean;
+    verbatimSymlinks?: boolean;
+  }
+  export interface CopyOptions {
+    dereference?: boolean;
+    errorOnExist?: boolean;
+    filter?: (source: string, destination: string) => boolean | Promise<boolean>;
+    force?: boolean;
+    mode?: number;
+    preserveTimestamps?: boolean;
+    recursive?: boolean;
+    verbatimSymlinks?: boolean;
+  }
+  export function cpSync(
+    source: string | URL,
+    destination: string | URL,
+    options?: CopySyncOptions,
+  ): void;
+  export function cp(
+    source: string | URL,
+    destination: string | URL,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function cp(
+    source: string | URL,
+    destination: string | URL,
+    options: CopyOptions,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
   export function symlink(
     target: string | Uint8Array | URL,
     path: string | Uint8Array | URL,
@@ -1441,6 +1480,9 @@ declare module "node:fs" {
     readonly O_NONBLOCK: number;
     readonly O_TRUNC: number;
     readonly O_APPEND: number;
+    readonly COPYFILE_EXCL: number;
+    readonly COPYFILE_FICLONE: number;
+    readonly COPYFILE_FICLONE_FORCE: number;
   };
   /* A stat(2) snapshot (statSync follows symlinks, lstatSync does not —
    * Node's split) — immutable; the supported surface is exactly these
@@ -1788,6 +1830,11 @@ declare module "fs/promises" {
     target: string | Uint8Array | URL,
     path: string | Uint8Array | URL,
     type?: string | null,
+  ): Promise<void>;
+  export function cp(
+    source: string | URL,
+    destination: string | URL,
+    options?: import("node:fs").CopyOptions,
   ): Promise<void>;
   export function readlink(
     path: string | Uint8Array | URL,
@@ -3104,6 +3151,11 @@ declare module "util" {
       windowsHide?: boolean;
     },
   ) => Promise<{ stdout: string; stderr: string }>;
+  /* The zlib callback one-shots (deflate, inflate, deflateRaw, inflateRaw,
+   * gzip, gunzip, unzip) share one type. */
+  export function promisify(
+    fn: typeof import("node:zlib").gzip,
+  ): (data: string | Uint8Array, options?: import("node:zlib").ZlibOptions) => Promise<Buffer>;
   export function promisify(
     fn: typeof import("node:stream").finished,
   ): typeof import("node:stream/promises").finished;
@@ -3293,8 +3345,9 @@ declare module "node:test" {
   function after(fn: HookFn): void;
   function beforeEach(fn: HookFn): void;
   function afterEach(fn: HookFn): void;
-  /* The mock function surface: mock.fn and t.mock.fn, with the calls log
-   * and the implementation controls on fn.mock. */
+  /* The mock function surface: mock.fn, mock.method and their t.mock
+   * twins, the tracker's restoreAll and reset, and the calls log and the
+   * implementation controls on fn.mock. */
   interface MockFunctionCall<
     F extends Function,
     ReturnType = F extends (...args: any) => infer T ? T : unknown,
@@ -3314,17 +3367,35 @@ declare module "node:test" {
     restore(): void;
   }
   type Mock<F extends Function> = F & { mock: MockFunctionContext<F> };
+  interface MockFunctionOptions {
+    times?: number;
+  }
+  type FunctionPropertyNames<T> = {
+    [K in keyof T]: T[K] extends Function ? K : never;
+  }[keyof T];
   interface MockTracker {
     fn<F extends Function = (...args: any[]) => undefined>(original?: F): Mock<F>;
     fn<F extends Function = (...args: any[]) => undefined, Implementation extends Function = F>(
       original?: F,
       implementation?: Implementation,
     ): Mock<F | Implementation>;
-    method<MockedObject extends object>(
+    method<MockedObject extends object, MethodName extends FunctionPropertyNames<MockedObject>>(
       object: MockedObject,
-      methodName: keyof MockedObject,
-      implementation?: Function,
-    ): Mock<Function>;
+      methodName: MethodName,
+      options?: MockFunctionOptions,
+    ): MockedObject[MethodName] extends Function ? Mock<MockedObject[MethodName]> : never;
+    method<
+      MockedObject extends object,
+      MethodName extends FunctionPropertyNames<MockedObject>,
+      Implementation extends Function,
+    >(
+      object: MockedObject,
+      methodName: MethodName,
+      implementation: Implementation,
+      options?: MockFunctionOptions,
+    ): MockedObject[MethodName] extends Function
+      ? Mock<MockedObject[MethodName] | Implementation>
+      : never;
     reset(): void;
     restoreAll(): void;
   }

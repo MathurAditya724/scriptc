@@ -74,6 +74,15 @@ void scr_zlib_codec_async_opts(const ScrBytes *data, double mode, ScrDyn *opts,
 ScrBytes *scr_zlib_sync_opts_dyn(double mode, ScrDyn *data, ScrDyn *opts);
 void scr_zlib_codec_async_opts_dyn(ScrDyn *data, double mode, ScrDyn *opts,
                                    ScrClosure *cb /* moves */, ScrZlibBytesFn fn);
+/* util.promisify over the callback one-shots: the callback forms' work,
+ * answering a +1 promise instead of calling back. An options or input
+ * error rejects the promise (the throw Node's promisify turns into a
+ * rejection); otherwise the worker-pool run fulfills it with the Buffer or
+ * rejects it with the callback form's Error, where that callback would
+ * run. Never throws. */
+typedef struct ScrPromise ScrPromise;
+ScrPromise *scr_zlib_codec_promise(const ScrBytes *data, double mode, ScrDyn *opts);
+ScrPromise *scr_zlib_codec_promise_dyn(ScrDyn *data, double mode, ScrDyn *opts);
 /* zlib.Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw and Unzip
  * (scr_zlib_stream.c — linked when the program uses both zlib and the
  * stream surface): Transform streams over the engine. mode is Node's

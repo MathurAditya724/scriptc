@@ -979,6 +979,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fs.writevSync": { argTypes: [F64, arrayOf(BYTES_U8), F64], result: F64 },
   "fs.linkSync": { argTypes: [DYN, DYN], result: VOID },
   "fs.symlinkSync": { argTypes: [DYN, DYN, DYN], result: VOID },
+  /** fs.cpSync / fs/promises cp (scr_fs_cp.c): src, dest and options are
+   * dyn values the runtime validates in Node's order. */
+  "fs.cpSync": { argTypes: [DYN, DYN, DYN], result: VOID },
   "fs.readlinkSync": { argTypes: [DYN, DYN], result: DYN },
   "fs.statfsSync": { argTypes: [DYN, DYN], result: DYN },
   "fs.readlinkSyncStr": { argTypes: [DYN, DYN], result: STRING },
@@ -1390,18 +1393,26 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * consumes. ctxSkip/ctxTodo mark the running test; ctxDiagnostic
    * queues an ℹ line; ctxName reads t.name. Every registration keeps
    * the loop-run emitted (usesTimers) so the runner fiber drains. */
-  "test.register": { argTypes: [STRING, F64, STRING, null, F64, STRING], result: VOID },
-  "test.registerEmpty": { argTypes: [STRING, F64, STRING, F64, STRING], result: VOID },
+  // The trailing pair is the { plan, timeout } options (plan -1 without
+  // one; timeout read under flag 8). An out-of-range timeout throws.
+  "test.register": {
+    argTypes: [STRING, F64, STRING, null, F64, STRING, F64, F64],
+    result: VOID,
+  },
+  "test.registerEmpty": { argTypes: [STRING, F64, STRING, F64, STRING, F64, F64], result: VOID },
   "test.suite": {
     argTypes: [STRING, F64, STRING, { kind: "func", params: [], ret: VOID }, STRING, F64],
     result: VOID,
   },
   "test.hook": { argTypes: [F64, null, F64], result: VOID },
   "test.sub": {
-    argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING],
+    argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64],
     result: { kind: "promise", inner: VOID },
   },
-  "test.subEmpty": { argTypes: [TESTCTX_T, STRING, F64, STRING, STRING], result: VOID },
+  "test.subEmpty": {
+    argTypes: [TESTCTX_T, STRING, F64, STRING, F64, STRING, F64, F64],
+    result: VOID,
+  },
   "test.ctxSkip": { argTypes: [TESTCTX_T, STRING], result: VOID },
   "test.ctxTodo": { argTypes: [TESTCTX_T, STRING], result: VOID },
   "test.ctxDiagnostic": { argTypes: [TESTCTX_T, STRING], result: VOID },
@@ -1413,6 +1424,17 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // t.plan(count), and the count of one t.assert call.
   "test.ctxPlan": { argTypes: [TESTCTX_T, F64], result: VOID },
   "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
+  // The mock trackers: the module's `mock` and t.mock keep each mock's
+  // restore closure (moved) for restoreAll and reset.
+  "test.mockTrack": { argTypes: [{ kind: "func", params: [], ret: VOID }], result: VOID },
+  "test.mockRestoreAll": { argTypes: [], result: VOID },
+  "test.mockReset": { argTypes: [], result: VOID },
+  "test.ctxMockTrack": {
+    argTypes: [TESTCTX_T, { kind: "func", params: [], ret: VOID }],
+    result: VOID,
+  },
+  "test.ctxMockRestoreAll": { argTypes: [TESTCTX_T], result: VOID },
+  "test.ctxMockReset": { argTypes: [TESTCTX_T], result: VOID },
   // node:http (scr_http.c over scr_net.c). The handler and the data
   // listeners are program-dependent closures (null slots, checked in the
   // libCall case); reqHeader's result is the interned string|undefined
@@ -2630,6 +2652,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** The checked-dynamic input twins (the JS lane's untyped data). */
   "zlib.syncOptsDyn": { argTypes: [F64, DYN, DYN], result: BYTES_U8 },
   "zlib.cbOptsDyn": { argTypes: [F64, DYN, DYN, null], result: VOID },
+  /** util.promisify over the callback one-shots: [mode, data, options]
+   * like zlib.cbOpts → a promise the worker-pool run settles with the
+   * Buffer or the callback form's Error. An options or input error rejects
+   * it; never throws. The Dyn twin takes the JS lane's untyped data. */
+  "zlib.promise": { argTypes: [F64, BYTES_U8, DYN], result: { kind: "promise", inner: BYTES_U8 } },
+  "zlib.promiseDyn": { argTypes: [F64, DYN, DYN], result: { kind: "promise", inner: BYTES_U8 } },
   /** The stream classes (scr_zlib_stream.c, linked with the stream unit):
    * streamNew takes Node's node_zlib_mode number and the options value
    * (undefined when absent), validates it with Node's ladder, and answers
@@ -2686,6 +2714,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fsp.rmdir": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
   "fsp.link": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
   "fsp.symlink": { argTypes: [DYN, DYN, DYN], result: { kind: "promise", inner: VOID } },
+  "fsp.cp": { argTypes: [DYN, DYN, DYN], result: { kind: "promise", inner: VOID } },
   "fsp.readlink": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "fsp.statfs": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "fsp.readlinkStr": { argTypes: [DYN, DYN], result: { kind: "promise", inner: STRING } },

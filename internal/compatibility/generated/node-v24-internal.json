@@ -326,9 +326,9 @@
       "apiEntries": 280,
       "static": {
         "supported": 7,
-        "partial": 195,
+        "partial": 198,
         "refused": 0,
-        "not-implemented": 78,
+        "not-implemented": 75,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -746,9 +746,9 @@
       "apiEntries": 117,
       "static": {
         "supported": 0,
-        "partial": 42,
+        "partial": 45,
         "refused": 0,
-        "not-implemented": 75,
+        "not-implemented": 72,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -44021,6 +44021,10 @@
           "tests/corpus/5548-fs-callback-arguments.cjs",
           "tests/corpus/5549-fs-callback-option-checks.cjs",
           "tests/corpus/5554-fs-streams-typed.ts",
+          "tests/corpus/5567-fs-cpsync.ts",
+          "tests/corpus/5568-fs-cp-errors.js",
+          "tests/corpus/5569-fs-cp-symlinks.ts",
+          "tests/corpus/5570-fs-cp-async.ts",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
@@ -45067,8 +45071,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fsPromises.cp",
+        "tests": [
+          "tests/corpus/5567-fs-cpsync.ts",
+          "tests/corpus/5568-fs-cp-errors.js",
+          "tests/corpus/5569-fs-cp-symlinks.ts",
+          "tests/corpus/5570-fs-cp-async.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -46027,8 +46037,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.cp",
+        "tests": [
+          "tests/corpus/5567-fs-cpsync.ts",
+          "tests/corpus/5568-fs-cp-errors.js",
+          "tests/corpus/5569-fs-cp-symlinks.ts",
+          "tests/corpus/5570-fs-cp-async.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -47655,8 +47671,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.cpSync",
+        "tests": [
+          "tests/corpus/5567-fs-cpsync.ts",
+          "tests/corpus/5568-fs-cp-errors.js",
+          "tests/corpus/5569-fs-cp-symlinks.ts",
+          "tests/corpus/5570-fs-cp-async.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -90652,9 +90674,12 @@
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
           "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/5810-mock-method-records.ts",
+          "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/fixtures/node-test/cases/only-nested.ts",
           "tests/fixtures/node-test/cases/suite-variants.ts",
           "tests/fixtures/node-test/cases/todo-suites.ts",
@@ -91639,6 +91664,7 @@
         "evidence": "compiler-feature:test.ctx.callCount",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -91666,6 +91692,7 @@
         "evidence": "compiler-feature:test.ctx.mockImplementation",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -91693,6 +91720,7 @@
         "evidence": "compiler-feature:test.ctx.mockImplementationOnce",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -91720,6 +91748,7 @@
         "evidence": "compiler-feature:test.ctx.resetCalls",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -91747,6 +91776,7 @@
         "evidence": "compiler-feature:test.ctx.restore",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -91774,6 +91804,7 @@
         "evidence": "compiler-feature:test.calls",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -92100,8 +92131,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.mock.method",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-method.ts",
+          "tests/corpus/5810-mock-method-records.ts",
+          "tests/corpus/5811-mock-tracker-restore.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92169,8 +92206,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.mock.reset",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-method.ts",
+          "tests/corpus/5810-mock-method-records.ts",
+          "tests/corpus/5811-mock-tracker-restore.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92192,8 +92235,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.mock.restoreAll",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-method.ts",
+          "tests/corpus/5810-mock-method-records.ts",
+          "tests/corpus/5811-mock-tracker-restore.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100567,6 +100616,7 @@
           "tests/corpus/5626-promisify-forms.ts",
           "tests/corpus/5628-promisify-timers.ts",
           "tests/corpus/5629-promisify-stream.ts",
+          "tests/corpus/5630-promisify-zlib.ts",
           "tests/corpus/node24-deep-equality-properties.js",
           "tests/corpus/node24-deep-equality.cjs",
           "tests/corpus/node24-deep-equality.ts",
@@ -100595,6 +100645,7 @@
           "tests/fixtures/node-types/env-files.ts",
           "tests/fixtures/node-types/promisify-fs.ts",
           "tests/fixtures/node-types/promisify-timers.ts",
+          "tests/fixtures/node-types/promisify-zlib.ts",
           "tests/fixtures/node-types/style-text.ts",
           "tests/fixtures/node-types/system-errors.ts",
           "tests/fixtures/node-types/text-codecs.mts",
@@ -102225,6 +102276,8 @@
           "tests/corpus/5628-promisify-timers.ts",
           "tests/fixtures/node-types/promisify-timers.ts",
           "tests/corpus/5629-promisify-stream.ts",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/fixtures/node-types/promisify-zlib.ts",
           "tests/harness/project-config.test.ts"
         ]
       },
