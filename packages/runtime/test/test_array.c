@@ -1884,6 +1884,136 @@ static void test_dense_slots(void) {
   scr_arr_release(nums);
 }
 
+/* shift and splice(0, n) advance dense storage into head room instead of
+ * moving the tail; unshift reuses that room, growth gives it back, and a
+ * drained array starts over at the front of its allocation. */
+static void test_head_room(void) {
+#ifdef SCR_RC_AUDIT
+  long strings0 = scr_str_live_count();
+  long arrays0 = scr_arr_live_count();
+#endif
+  ScrArr *q = scr_arr_new(SCR_ELEM_F64, 0);
+  for (int i = 0; i < 64; i++) scr_arr_push_f64(q, i);
+  uint64_t *block = q->data;
+  size_t cap = q->cap;
+  check_f64(scr_arr_shift_f64(q), 0, "shift answers the first element");
+  check(q->data == block + 1 && q->cap == cap - 1 && q->len == 63,
+        "shift advances the storage instead of moving the tail");
+  check(q->present == (uint8_t *)(block + cap) + 1, "states keep following the whole value area");
+  check(q->filled == 63, "shift keeps the hole-free prefix");
+  for (int i = 1; i < 40; i++) scr_arr_shift_f64(q);
+  check(q->data == block + 40 && q->len == 24 && scr_arr_get_f64(q, 0) == 40 &&
+            scr_arr_get_f64(q, 23) == 63,
+        "repeated shifts index from the new front");
+  check_f64(scr_arr_unshift_f64(q, -1), 25, "unshift into head room");
+  check(q->data == block + 39 && scr_arr_get_f64(q, 0) == -1 && scr_arr_get_f64(q, 1) == 40,
+        "unshift reuses the room shift left");
+  /* Appends past the window move the elements back to the front of the
+   * same allocation when the reclaimed room is large. */
+  while (q->len < q->cap) scr_arr_push_f64(q, 100);
+  scr_arr_push_f64(q, 101);
+  check(q->data == block && q->cap == cap && q->len == 26,
+        "growth reuses head room in place");
+  check(scr_arr_get_f64(q, 0) == -1 && scr_arr_get_f64(q, 1) == 40 &&
+            scr_arr_get_f64(q, q->len - 1) == 101 && !scr_arr_has(q, (double)q->len),
+        "elements keep their order across the move");
+  /* A drained array starts over at the front of its allocation. */
+  while (q->len > 0) scr_arr_shift_f64(q);
+  check(q->data == block && q->cap == cap && q->filled == 0, "draining resets the head room");
+  scr_arr_push_f64(q, 5);
+  check(q->data == block && scr_arr_get_f64(q, 0) == 5, "a drained array refills from the front");
+  scr_arr_release(q);
+
+  /* Small head room relative to the elements grows the allocation. */
+  ScrArr *full = scr_arr_new(SCR_ELEM_F64, 0);
+  for (int i = 0; i < 64; i++) scr_arr_push_f64(full, i);
+  while (full->len < full->cap) scr_arr_push_f64(full, 0);
+  size_t full_cap = full->cap;
+  scr_arr_shift_f64(full);
+  scr_arr_push_f64(full, 1);
+  scr_arr_push_f64(full, 2);
+  check(full->cap > full_cap && scr_arr_get_f64(full, 0) == 1 &&
+            scr_arr_get_f64(full, full->len - 1) == 2,
+        "growth past a small head room is geometric");
+  scr_arr_release(full);
+
+  /* splice(0, n) as a value and as a statement. */
+  ScrArr *s = scr_arr_new(SCR_ELEM_F64, 0);
+  for (int i = 0; i < 20; i++) scr_arr_push_f64(s, i);
+  uint64_t *sblock = s->data;
+  ScrArr *removed = scr_arr_splice(s, 0, 3);
+  check(removed->len == 3 && scr_arr_get_f64(removed, 2) == 2 && s->data == sblock + 3 &&
+            scr_arr_get_f64(s, 0) == 3,
+        "splice(0, n) leaves head room");
+  scr_arr_release(removed);
+  scr_arr_splice_drop(s, 0, 2, 0, NULL);
+  check(s->data == sblock + 5 && s->len == 15 && scr_arr_get_f64(s, 0) == 5,
+        "statement splice(0, n) leaves head room");
+  /* Sparse writes far past the end, then growth absorbs them. */
+  scr_arr_set_f64(s, 2000000, 7);
+  check(arr_sparse_len(s) == 1 && scr_arr_get_f64(s, 2000000) == 7, "sparse write after head room");
+  check_f64(scr_arr_shift_f64(s), 5, "shift of a sparse array");
+  check(scr_arr_get_f64(s, 1999999) == 7 && !scr_arr_has(s, 2000000), "shift renumbers sparse entries");
+  scr_arr_release(s);
+
+  /* Strings: shifted references move out; the rest are released once. */
+  ScrArr *names = scr_arr_new(SCR_ELEM_STR, 0);
+  for (int i = 0; i < 30; i++) scr_arr_push_ref(names, scr_str_new("name", 4));
+  for (int i = 0; i < 10; i++) scr_str_release((ScrStr *)scr_arr_shift_ref(names));
+  scr_arr_release(scr_arr_splice(names, 0, 5));
+  scr_arr_splice_drop(names, 0, 5, 0, NULL);
+  scr_arr_unshift_ref(names, scr_str_new("front", 5));
+  ScrStr *front = (ScrStr *)scr_arr_get_ref(names, 0);
+  check(strcmp(front->data, "front") == 0 && names->len == 11, "string queue keeps its order");
+  scr_str_release(front);
+  scr_arr_release(names);
+
+  /* A run of unshifts opens head room once it has moved the elements. */
+  ScrArr *rev = scr_arr_new(SCR_ELEM_F64, 0);
+  for (int i = 0; i < 1000; i++) scr_arr_unshift_f64(rev, i);
+  bool ordered = rev->len == 1000;
+  for (int i = 0; i < 1000 && ordered; i++) ordered = scr_arr_get_f64(rev, i) == 999 - i;
+  check(ordered, "unshift run keeps reverse order");
+  size_t room = (size_t)(rev->present - (uint8_t *)(rev->data + rev->cap));
+  check(room >= 4 && rev->cap >= rev->len, "an unshift run reserves head room");
+  uint64_t *rblock = rev->data;
+  scr_arr_unshift_f64(rev, -1);
+  check(rev->data == rblock - 1, "unshift into reserved head room needs no move");
+  uint64_t slots[3] = {0};
+  double v = 7;
+  for (int i = 0; i < 3; i++) memcpy(&slots[i], &v, sizeof v);
+  check_f64(scr_arr_unshift_many(rev, 3, slots), 1004, "unshift many into head room");
+  check(rev->data == rblock - 4 && scr_arr_get_f64(rev, 3) == -1, "unshift many order");
+  /* Storage swaps (typed views) first drop the head room. */
+  scr_arr_outline(rev);
+  check(rev->present == (uint8_t *)(rev->data + rev->cap) && scr_arr_get_f64(rev, 0) == 7 &&
+            scr_arr_get_f64(rev, 1003) == 0,
+        "outline moves the elements to the front of their allocation");
+  scr_arr_release(rev);
+
+  /* A one-off unshift and small arrays keep moving their elements. */
+  ScrArr *once = scr_arr_new(SCR_ELEM_F64, 0);
+  for (int i = 0; i < 40; i++) scr_arr_push_f64(once, i);
+  size_t once_cap = once->cap;
+  scr_arr_unshift_f64(once, -1);
+  check(once->cap == once_cap && once->present == (uint8_t *)(once->data + once->cap),
+        "a one-off unshift keeps the allocation");
+  scr_arr_release(once);
+
+  /* Booleans move their elements (one-byte slots have no head room). */
+  ScrArr *flags = scr_arr_new(SCR_ELEM_BOOL, 0);
+  for (int i = 0; i < 10; i++) scr_arr_push_bool(flags, i % 3 == 0);
+  uint64_t *fblock = flags->data;
+  check(scr_arr_shift_bool(flags) && !scr_arr_shift_bool(flags) && flags->data == fblock &&
+            flags->len == 8 && !scr_arr_get_bool(flags, 0) && scr_arr_get_bool(flags, 1),
+        "boolean shift moves the tail");
+  scr_arr_release(flags);
+#ifdef SCR_RC_AUDIT
+  check(scr_str_live_count() == strings0, "head room: no strings leaked");
+  check(scr_arr_live_count() == arrays0, "head room: no arrays leaked");
+#endif
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) {
     ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
@@ -1934,6 +2064,7 @@ int main(int argc, char **argv) {
   test_filled_prefix();
   test_bool_bytes();
   test_inline_slots();
+  test_head_room();
 
   fprintf(stderr, "%ld/%ld cases passed\n", total - failed, total);
   return failed == 0 ? 0 : 1;
