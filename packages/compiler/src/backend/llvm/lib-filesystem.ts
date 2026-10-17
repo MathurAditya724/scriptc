@@ -225,6 +225,19 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     host.emitPendingCheck();
     return out;
   }
+  if (e.fn === "zlib.promise" || e.fn === "zlib.promiseDyn") {
+    // (mode, data, options): data and options borrowed; the +1 promise
+    // settles from the worker pool, or is already rejected.
+    host.usesTimers = true;
+    const args = e.args.map((a) => host.emitExpr(a));
+    const sym = e.fn === "zlib.promise" ? "scr_zlib_codec_promise" : "scr_zlib_codec_promise_dyn";
+    host.declare(`declare ptr @${sym}(ptr, double, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @${sym}(ptr ${args[1]!.name}, double ${args[0]!.name}, ptr ${args[2]!.name})`,
+    );
+    return host.own({ name: t, type: e.type });
+  }
   if (e.fn === "zlib.cbOpts" || e.fn === "zlib.cbOptsDyn") {
     // (mode, data, options, callback): the options validate before the
     // submission (a pending throw); the callback moves into the operation.

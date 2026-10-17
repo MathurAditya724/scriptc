@@ -283,6 +283,49 @@ const ZLIB_ONE_SHOT_MODES: Readonly<Record<string, number | undefined>> = {
   unzip: 7,
 };
 
+/** True for a zlib callback one-shot util.promisify converts (deflate,
+ * inflate, deflateRaw, inflateRaw, gzip, gunzip and unzip). */
+export function isPromisifiedZlibMember(member: string): boolean {
+  return ZLIB_CALLBACK_FNS[member] !== undefined;
+}
+
+/** A call through `promisify(zlib.gzip)` and the other callback one-shots:
+ * `gzipAsync(data, options?)` runs the callback form's work and returns a
+ * promise that settles where the callback would run, with the Buffer or the
+ * callback form's Error. An options or input error rejects the promise, as
+ * the throw inside Node's promisify wrapper does. */
+export function lowerPromisifiedZlibCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: string,
+  loc: SrcLoc,
+): IrExpr {
+  if (expr.arguments.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`the promisified zlib.${member} with spread arguments`, expr);
+  }
+  if (expr.arguments.length !== 1 && expr.arguments.length !== 2) {
+    lowerer.noLowering(
+      `the promisified zlib.${member} with ${expr.arguments.length} arguments`,
+      expr,
+      `the supported forms are ${member}Async(data) and ${member}Async(data, options)`,
+    );
+  }
+  const input = zlibInput(lowerer, expr.arguments[0]!, loc);
+  return {
+    kind: "libCall",
+    fn: input.dyn ? "zlib.promiseDyn" : "zlib.promise",
+    args: [
+      numLit(ZLIB_ONE_SHOT_MODES[member]!, loc),
+      input.value,
+      expr.arguments[1] !== undefined
+        ? zlibOptionsValue(lowerer, expr.arguments[1], `zlib.${member}`, loc)
+        : dynUndefinedExpr(loc),
+    ],
+    type: { kind: "promise", inner: BYTES_U8 },
+    loc,
+  };
+}
+
 const ZLIB_STREAM_FACTORIES: Readonly<Record<string, number | undefined>> = {
   createDeflate: 1,
   createInflate: 2,

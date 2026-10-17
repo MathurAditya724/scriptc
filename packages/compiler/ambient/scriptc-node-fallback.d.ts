@@ -3151,6 +3151,11 @@ declare module "util" {
       windowsHide?: boolean;
     },
   ) => Promise<{ stdout: string; stderr: string }>;
+  /* The zlib callback one-shots (deflate, inflate, deflateRaw, inflateRaw,
+   * gzip, gunzip, unzip) share one type. */
+  export function promisify(
+    fn: typeof import("node:zlib").gzip,
+  ): (data: string | Uint8Array, options?: import("node:zlib").ZlibOptions) => Promise<Buffer>;
   export function promisify(
     fn: typeof import("node:stream").finished,
   ): typeof import("node:stream/promises").finished;

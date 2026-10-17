@@ -690,6 +690,7 @@ typedef struct {
   ScrZlibRun run;
   ScrClosure *cb;
   ScrZlibBytesFn fn;
+  ScrPromise *promise; /* the promise form settles this instead of calling cb */
 } ScrZlibOptsOp;
 
 static void scr_zlib_opts_work(void *payload) {
@@ -704,10 +705,20 @@ static void scr_zlib_opts_after(void *payload) {
     ScrBytes *value = scr_bytes_new(SCR_BYTES_U8, (double)op->run.len);
     value->is_buffer = true; /* Node returns a Buffer */
     if (op->run.len) memcpy(value->data, op->run.data, op->run.len);
+    if (op->promise) {
+      /* moves value */
+      scr_promise_fulfill_ref(op->promise, value, &scr_bytes_retain_v, &scr_bytes_release_v, NULL);
+      return;
+    }
     op->fn(op->cb, NULL, value);
     return;
   }
   ScrError *err = scr_zlib_run_error(&op->run, op->max_output);
+  if (op->promise) {
+    scr_throw_obj(err, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+    scr_promise_reject_pending(op->promise);
+    return;
+  }
   op->fn(op->cb, err, NULL);
   scr_error_release(err);
 }
@@ -717,12 +728,13 @@ static void scr_zlib_opts_destroy(void *payload) {
   scr_zlib_engine_free(op->eng);
   free(op->data);
   free(op->run.data);
-  scr_closure_release(op->cb);
+  if (op->cb) scr_closure_release(op->cb);
+  if (op->promise) scr_promise_release(op->promise);
   free(op);
 }
 
 static void scr_zlib_async_submit(int mode, const ScrBytes *data, ScrZlibOptions *o_,
-                                  ScrClosure *cb, ScrZlibBytesFn fn);
+                                  ScrClosure *cb, ScrZlibBytesFn fn, ScrPromise *promise);
 
 static bool scr_zlib_async_options(int mode, ScrDyn *opts, ScrZlibOptions *o, ScrClosure *cb) {
   if (!scr_zlib_options_parse(mode, opts, o)) {
@@ -741,7 +753,7 @@ void scr_zlib_codec_async_opts(const ScrBytes *data, double mode_d, ScrDyn *opts
                                ScrZlibBytesFn fn) {
   int mode = (int)mode_d;
   ScrZlibOptions o;
-  if (scr_zlib_async_options(mode, opts, &o, cb)) scr_zlib_async_submit(mode, data, &o, cb, fn);
+  if (scr_zlib_async_options(mode, opts, &o, cb)) scr_zlib_async_submit(mode, data, &o, cb, fn, NULL);
 }
 
 void scr_zlib_codec_async_opts_dyn(ScrDyn *data, double mode_d, ScrDyn *opts, ScrClosure *cb,
@@ -755,13 +767,45 @@ void scr_zlib_codec_async_opts_dyn(ScrDyn *data, double mode_d, ScrDyn *opts, Sc
     scr_closure_release(cb);
     return;
   }
-  scr_zlib_async_submit(mode, input, &o, cb, fn);
+  scr_zlib_async_submit(mode, input, &o, cb, fn, NULL);
   scr_bytes_release(input);
 }
 
-/* Moves cb and drops *o_. */
+/* The promise forms: a refused option or input rejects the promise. */
+ScrPromise *scr_zlib_codec_promise(const ScrBytes *data, double mode_d, ScrDyn *opts) {
+  int mode = (int)mode_d;
+  ScrPromise *promise = scr_promise_new();
+  ScrZlibOptions o;
+  if (!scr_zlib_async_options(mode, opts, &o, NULL)) {
+    scr_promise_reject_pending(promise);
+    return promise;
+  }
+  scr_zlib_async_submit(mode, data, &o, NULL, NULL, scr_promise_retain(promise));
+  return promise;
+}
+
+ScrPromise *scr_zlib_codec_promise_dyn(ScrDyn *data, double mode_d, ScrDyn *opts) {
+  int mode = (int)mode_d;
+  ScrPromise *promise = scr_promise_new();
+  ScrZlibOptions o;
+  if (!scr_zlib_async_options(mode, opts, &o, NULL)) {
+    scr_promise_reject_pending(promise);
+    return promise;
+  }
+  ScrBytes *input = scr_zlib_input_dyn(data, true);
+  if (!input) {
+    scr_zlib_options_drop(&o);
+    scr_promise_reject_pending(promise);
+    return promise;
+  }
+  scr_zlib_async_submit(mode, input, &o, NULL, NULL, scr_promise_retain(promise));
+  scr_bytes_release(input);
+  return promise;
+}
+
+/* Moves cb (or the +1 promise) and drops *o_. */
 static void scr_zlib_async_submit(int mode, const ScrBytes *data, ScrZlibOptions *o_,
-                                  ScrClosure *cb, ScrZlibBytesFn fn) {
+                                  ScrClosure *cb, ScrZlibBytesFn fn, ScrPromise *promise) {
   SCR_BYTES_SNAPSHOT(data);
   ScrZlibOptions o = *o_;
   ScrZlibOptsOp *op = calloc(1, sizeof *op);
@@ -777,6 +821,7 @@ static void scr_zlib_async_submit(int mode, const ScrBytes *data, ScrZlibOptions
   op->reject = o.reject_garbage;
   op->cb = cb;
   op->fn = fn;
+  op->promise = promise; /* +1, moves */
   scr_zlib_options_drop(&o);
   scr_work_submit(op, &scr_zlib_opts_work, &scr_zlib_opts_after, &scr_zlib_opts_destroy);
 }
