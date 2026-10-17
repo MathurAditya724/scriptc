@@ -9,6 +9,7 @@ import {
   type IrExpr,
   type IrFunction,
   type IrLocal,
+  type IrMapIntrinsicMethod,
   type IrSetIntrinsicMethod,
   type IrStmt,
   type IrType,
@@ -628,11 +629,12 @@ export function lowerSetForEachCall(
 
 /** The ES2025 Set composition methods (union/intersection/difference/
  * symmetricDifference/isSubsetOf/isSupersetOf/isDisjointFrom): one
- * set-like argument, desugared to an interned two-set helper loop. Only
- * a REAL Set argument of the receiver's element type lowers — the
- * desugar substitutes the builtin has/size for the spec's observable
- * calls, which is exact for Sets and wrong for anything else (a Map or
- * a custom { has, size, keys } object fences). */
+ * set-like argument, desugared to an interned two-collection helper loop.
+ * A real Set of the receiver's element type, or a real Map whose key type
+ * is that element type, lowers: the desugar substitutes the builtin
+ * has/size/keys for the spec's observable calls, which is exact for both
+ * (a Map's set record reads its keys). A custom { has, size, keys } object
+ * fences. */
 function lowerSetCombineCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -650,14 +652,15 @@ function lowerSetCombineCall(
     );
   }
   const other = lowerer.lowerExpr(argNode);
-  if (other.type.kind !== "set") {
+  if (other.type.kind !== "set" && other.type.kind !== "map") {
     lowerer.noLowering(
       `Set.prototype.${name} over a set-like argument of type '${lowerer.checker.typeToString(lowerer.typeOf(argNode))}'`,
       argNode,
-      "only a real Set lowers (the argument's has/size must be the builtins) — build one first: new Set(...)",
+      "only a real Set or Map lowers (the argument's has/size/keys must be the builtins) — build one first: new Set(...)",
     );
   }
-  if (!typeEquals(other.type.elem, setT.elem)) {
+  const otherT = other.type;
+  if (!typeEquals(otherT.kind === "set" ? otherT.elem : otherT.key, setT.elem)) {
     lowerer.noLowering(
       `Set.prototype.${name} across element types`,
       call,
@@ -666,18 +669,18 @@ function lowerSetCombineCall(
   }
   const predicate = name === "isSubsetOf" || name === "isSupersetOf" || name === "isDisjointFrom";
   const resultT: IrType = predicate ? BOOL : setT;
-  const key = `${name}:${typeKey(setT.elem)}`;
+  const key = `${name}:${typeKey(setT.elem)}:${typeKey(otherT)}`;
   let helper = lowerer.setHofHelpers.get(key);
   if (!helper) {
     helper = `%set.${name}.${lowerer.setHofHelpers.size}`;
     lowerer.setHofHelpers.set(key, helper);
-    lowerer.liftedFns.push(buildSetCombineFn(helper, name, setT, loc));
+    lowerer.liftedFns.push(buildSetCombineFn(helper, name, setT, otherT, loc));
   }
   return { kind: "call", callee: helper, args: [receiver, other], type: resultT, loc };
 }
 
-/** The two-set helper bodies. No user code runs mid-walk (has/add are
- * the builtins), so the loops skip the live-iteration enter/exit
+/** The two-collection helper bodies (`b` is a Set, or a Map walked and
+ * tested by key). No user code runs mid-walk (has/add are the builtins), so the loops skip the live-iteration enter/exit
  * bracketing — nothing can compact the entries underneath them. The
  * spec's iteration orders are kept where observable: union appends the
  * receiver's elements then the argument's; intersection walks the
@@ -698,23 +701,32 @@ function buildSetCombineFn(
   name: string,
   method: string,
   setT: IrType & { kind: "set" },
+  otherT: IrType & { kind: "set" | "map" },
   loc: SrcLoc,
 ): IrFunction {
   const elem = setT.elem;
   const predicate =
     method === "isSubsetOf" || method === "isSupersetOf" || method === "isDisjointFrom";
 
-  const setOp = (recv: string, m: IrSetIntrinsicMethod, args: IrExpr[], type: IrType): IrExpr => ({
-    kind: "setIntrinsic",
-    method: m,
-    receiver: varRef(recv, setT, loc),
-    args,
-    type,
-    loc,
-  });
+  const setOp = (
+    recv: string,
+    m: IrSetIntrinsicMethod & IrMapIntrinsicMethod,
+    args: IrExpr[],
+    type: IrType,
+  ): IrExpr =>
+    recv === "b.0" && otherT.kind === "map"
+      ? { kind: "mapIntrinsic", method: m, receiver: varRef(recv, otherT, loc), args, type, loc }
+      : {
+          kind: "setIntrinsic",
+          method: m,
+          receiver: varRef(recv, recv === "b.0" ? otherT : setT, loc),
+          args,
+          type,
+          loc,
+        };
   const locals: IrLocal[] = [
     { id: "a.0", name: "a", type: setT, mutable: true },
-    { id: "b.0", name: "b", type: setT, mutable: true },
+    { id: "b.0", name: "b", type: otherT, mutable: true },
   ];
   let nextLocal = 0;
   /* for (i = 0; i < src.iterCount; i++) if (src.iterLive(i)) { v = src.iterKey(i); <visit(v)> } */
@@ -849,7 +861,7 @@ function buildSetCombineFn(
     name,
     params: [
       { localId: "a.0", name: "a", type: setT },
-      { localId: "b.0", name: "b", type: setT },
+      { localId: "b.0", name: "b", type: otherT },
     ],
     returnType: predicate ? BOOL : setT,
     locals,

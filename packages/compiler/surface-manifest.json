@@ -5168,7 +5168,7 @@
       "kind": "stdlib",
       "name": "Set.prototype.difference",
       "status": "static",
-      "note": "compiles over Set receivers with Set arguments (the general ReadonlySetLike argument forms are refused per site)"
+      "note": "compiles over Set receivers with Set arguments and Map arguments keyed by the element type (other ReadonlySetLike argument forms are refused per site)"
     },
     {
       "id": "stdlib.set.entries",
@@ -5194,28 +5194,28 @@
       "kind": "stdlib",
       "name": "Set.prototype.intersection",
       "status": "static",
-      "note": "compiles over Set receivers with Set arguments (the general ReadonlySetLike argument forms are refused per site)"
+      "note": "compiles over Set receivers with Set arguments and Map arguments keyed by the element type (other ReadonlySetLike argument forms are refused per site)"
     },
     {
       "id": "stdlib.set.isDisjointFrom",
       "kind": "stdlib",
       "name": "Set.prototype.isDisjointFrom",
       "status": "static",
-      "note": "compiles over Set receivers with Set arguments (the general ReadonlySetLike argument forms are refused per site)"
+      "note": "compiles over Set receivers with Set arguments and Map arguments keyed by the element type (other ReadonlySetLike argument forms are refused per site)"
     },
     {
       "id": "stdlib.set.isSubsetOf",
       "kind": "stdlib",
       "name": "Set.prototype.isSubsetOf",
       "status": "static",
-      "note": "compiles over Set receivers with Set arguments (the general ReadonlySetLike argument forms are refused per site)"
+      "note": "compiles over Set receivers with Set arguments and Map arguments keyed by the element type (other ReadonlySetLike argument forms are refused per site)"
     },
     {
       "id": "stdlib.set.isSupersetOf",
       "kind": "stdlib",
       "name": "Set.prototype.isSupersetOf",
       "status": "static",
-      "note": "compiles over Set receivers with Set arguments (the general ReadonlySetLike argument forms are refused per site)"
+      "note": "compiles over Set receivers with Set arguments and Map arguments keyed by the element type (other ReadonlySetLike argument forms are refused per site)"
     },
     {
       "id": "stdlib.set.keys",
@@ -5229,14 +5229,14 @@
       "kind": "stdlib",
       "name": "Set.prototype.symmetricDifference",
       "status": "static",
-      "note": "compiles over Set receivers with Set arguments (the general ReadonlySetLike argument forms are refused per site)"
+      "note": "compiles over Set receivers with Set arguments and Map arguments keyed by the element type (other ReadonlySetLike argument forms are refused per site)"
     },
     {
       "id": "stdlib.set.union",
       "kind": "stdlib",
       "name": "Set.prototype.union",
       "status": "static",
-      "note": "compiles over Set receivers with Set arguments (the general ReadonlySetLike argument forms are refused per site)"
+      "note": "compiles over Set receivers with Set arguments and Map arguments keyed by the element type (other ReadonlySetLike argument forms are refused per site)"
     },
     {
       "id": "stdlib.set.values",
