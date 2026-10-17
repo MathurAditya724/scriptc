@@ -296,9 +296,15 @@ const DYN_READ_ONLY = new Set<string>([
   "arrayBuffer.viewU8",
   "arrayBuffer.viewU8C",
   "date.nativeNew",
+  // The dynamic operators run the ToPrimitive and coercion helpers of
+  // dyn.compare, dyn.numberConstructor and dyn.toStringCoerce, then build a
+  // fresh number, string or bigint. dyn.increment steps dyn.toNumeric's result.
+  "dyn.add",
+  "dyn.arithmetic",
   "dyn.arrAt",
   "dyn.arrLen",
   "dyn.bagGet",
+  "dyn.bitwise",
   "dyn.compare",
   "dyn.forInKeyStrings",
   "dyn.forInKeys",
@@ -308,6 +314,7 @@ const DYN_READ_ONLY = new Set<string>([
   "dyn.hasKey",
   "dyn.hasOwn",
   "dyn.in",
+  "dyn.increment",
   "dyn.iterator",
   "dyn.iteratorCanStep",
   "dyn.iteratorResult",
@@ -328,6 +335,8 @@ const DYN_READ_ONLY = new Set<string>([
   "dyn.packPushSpread",
   "dyn.stringConstructor",
   "dyn.this",
+  "dyn.toNumberCoerce",
+  "dyn.toNumeric",
   "dyn.toString",
   "dyn.toStringCoerce",
   "dyn.typedRefIs",

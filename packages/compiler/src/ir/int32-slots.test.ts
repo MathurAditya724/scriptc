@@ -301,6 +301,23 @@ test("dynamic stores disqualify the field names they can reach", () => {
       true,
     ]);
   }
+  // The dynamic operators convert their operands to primitives and build a
+  // new value; they store nothing into the view.
+  for (const [operator, args] of [
+    ["dyn.add", [view, strLit("|")]],
+    ["dyn.arithmetic", [view, num(2), strLit("*")]],
+    ["dyn.bitwise", [view, num(1), strLit("|")]],
+    ["dyn.toNumeric", [view]],
+    ["dyn.toNumberCoerce", [view]],
+    ["dyn.increment", [view, { loc, kind: "boolLit", value: true, type: BOOL }]],
+  ] as const) {
+    const converted = analyzeInt32Slots(program(write(operator, [...args])));
+    expect([operator, converted.isField("C", "a"), converted.isField("C", "b")]).toEqual([
+      operator,
+      true,
+      true,
+    ]);
+  }
 });
 
 test("an Error subclass constructor forwarding dynamic arguments stores no class fields", () => {
