@@ -592,6 +592,32 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     },
   );
 
+  test.each(["release", "dev"] as const)(
+    "static methods a factory class defines build subclasses of their receiver (%s)",
+    async (optimization) => {
+      const entry = join(pilotRoot, "class-factory-cli.ts");
+      const outDir = join(cacheDir, `class-factory-${optimization}-${sanitize ? "san" : "plain"}`);
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic: ["class-factory"],
+        sanitize,
+        optimization,
+        outDir,
+        outPath: join(outDir, "program"),
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(reference.exitCode).toBe(0);
+      expect(native.stdout).toEqual(reference.stdout);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.exitCode).toBe(reference.exitCode);
+    },
+  );
+
   test.for([
     ["escape-string-regexp", "escape-cli.ts"],
     ["slash", "slash-cli.ts"],
