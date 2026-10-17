@@ -1,6 +1,7 @@
 // Readable.from error paths over iterators: next() that is not a function
 // or answers a nullish result, rejected next() promises and values, a
-// [Symbol.iterator] that is not a function, the iterator taken before the
+// [Symbol.iterator] that is not a function, Symbol.iterator and
+// Symbol.asyncIterator getters that throw, the iterator taken before the
 // options are validated, Symbol.asyncIterator preferred, and the
 // AggregateError when close() fails with a second error.
 'use strict';
@@ -24,6 +25,17 @@ async function main() {
     Readable.from({ [Symbol.iterator]: 5 });
   } catch (e) {
     console.log('iterator not callable', e.name, e.message);
+  }
+  for (const [label, iterable] of [
+    ['iterator getter throws', { get [Symbol.iterator]() { throw new RangeError('iterator getter'); } }],
+    ['async iterator getter throws', { get [Symbol.asyncIterator]() { throw new TypeError('async iterator getter'); } }],
+  ]) {
+    try {
+      Readable.from(iterable);
+      console.log(label, 'ok');
+    } catch (e) {
+      console.log(label, e.name, e.message, e.code);
+    }
   }
   const order = [];
   try {

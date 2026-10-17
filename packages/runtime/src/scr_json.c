@@ -4206,7 +4206,10 @@ ScrDyn *scr_dyn_from_iterator(const ScrDyn *value, int *kind) {
   ScrDyn *method = NULL;
   if (scr_async_iterator_symbol) {
     method = scr_dyn_symbol_key_get(value, scr_async_iterator_symbol, false);
-    if (!method) return NULL;
+    if (!method) {
+      *kind = -1;
+      return NULL;
+    }
     if (method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL) {
       *kind = 2;
     } else {
@@ -4216,7 +4219,10 @@ ScrDyn *scr_dyn_from_iterator(const ScrDyn *value, int *kind) {
   }
   if (!method) {
     method = scr_iterator_method(value);
-    if (!method) return NULL;
+    if (!method) {
+      *kind = -1;
+      return NULL;
+    }
     if (method->kind == SCR_DYN_UNDEF || method->kind == SCR_DYN_NULL) {
       scr_dyn_release(method);
       return NULL;
