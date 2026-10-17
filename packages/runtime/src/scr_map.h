@@ -91,12 +91,17 @@ typedef struct ScrMapOps {
 #define SCR_MAP_TRACED_KEY 1u
 #define SCR_MAP_TRACED_VAL 2u
 
+/* ScrMap.flags: SCR_MAP_NULL_PROTO marks the overflow map of a record
+ * whose object has a null prototype (Object.groupBy results). Compiled
+ * code sets and tests the byte; the runtime never copies it. */
+#define SCR_MAP_NULL_PROTO 1u
+
 typedef struct ScrMap {
   size_t rc; /* SIZE_MAX = immortal (unused for maps; kept per convention) */
   uint8_t key_kind; /* ScrMapKeyKind */
   uint8_t val_kind; /* ScrMapValKind */
   uint8_t traced;   /* SCR_MAP_TRACED_KEY | SCR_MAP_TRACED_VAL, from ops */
-  uint8_t reserved;
+  uint8_t flags;    /* SCR_MAP_NULL_PROTO */
   uint32_t iter_depth; /* > 0: an iteration is active — no compaction */
   const ScrMapOps *ops; /* never NULL */
   const ScrMapDynOps *dyn_ops;
@@ -138,6 +143,8 @@ typedef struct ScrMap {
  * entry's hash, the third field. */
 _Static_assert(offsetof(ScrMap, traced) == sizeof(size_t) + 2,
                "inline RC fast paths read ScrMap.traced as %ScrMapRc field 3");
+_Static_assert(offsetof(ScrMap, flags) == sizeof(size_t) + 3,
+               "compiled records read ScrMap.flags at byte offset sizeof(size_t) + 3");
 _Static_assert(offsetof(ScrMap, iter_depth) == sizeof(size_t) + 4 &&
                    offsetof(ScrMap, ops) == sizeof(size_t) + 8 &&
                    offsetof(ScrMap, dyn_ops) == offsetof(ScrMap, ops) + sizeof(void *),

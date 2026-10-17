@@ -939,6 +939,7 @@ export function emitRecordExpr(
     | "recordKeyGet"
     | "recordOvfKeys"
     | "recordOvfHas"
+    | "recordNullProto"
     | "recordHas"
     | "fieldAbsent"
   >,
@@ -982,6 +983,8 @@ export function emitRecordExpr(
       const rec = B.tmp();
       B.line(`${rec} = call ptr @${mangleRecordNew(shapeId)}()`);
       const out = host.own({ name: rec, type: e.type });
+      // A null-prototype record: SCR_MAP_NULL_PROTO on the fresh map.
+      if (e.nullProto) B.line(`store i8 1, ptr ${host.recordMapFlagsPtr(rec, shapeId)}`);
       emitRecordLitFields(host, e, rec);
       return out;
     }
@@ -1024,6 +1027,14 @@ export function emitRecordExpr(
       host.declare(`declare zeroext i1 @scr_map_has_str(ptr, ptr)`);
       const t = B.tmp();
       B.line(`${t} = call zeroext i1 @scr_map_has_str(ptr ${ovf}, ptr ${key.name})`);
+      return { name: t, type: e.type };
+    }
+    case "recordNullProto": {
+      const obj = host.emitExpr(e.obj);
+      const flags = B.tmp();
+      const t = B.tmp();
+      B.line(`${flags} = load i8, ptr ${host.recordMapFlagsPtr(obj.name, e.shapeId)}`);
+      B.line(`${t} = icmp ne i8 ${flags}, 0`);
       return { name: t, type: e.type };
     }
     case "recordOvfKeys": {

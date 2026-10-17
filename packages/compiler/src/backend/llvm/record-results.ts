@@ -39,12 +39,12 @@ export function scalarRecordShape(
 }
 
 /** A literal that stores every field of its shape, none of them through
- * the overflow map. */
+ * the overflow map, and that sets no overflow-map flag. */
 export function completeRecordLiteral(
   e: IrExpr & { kind: "recordLit" },
   shape: IrRecordShape | undefined,
 ): boolean {
-  if (!shape || e.fields.some((field) => field.overflow)) return false;
+  if (!shape || e.nullProto || e.fields.some((field) => field.overflow)) return false;
   const names = new Set(e.fields.map((field) => field.name));
   return shape.fields.every((field) => names.has(field.name));
 }

@@ -951,6 +951,7 @@ test("library callbacks retain child, specialized, and generic result diagnostic
       { kind: "strLit", value: "tool", type: STRING, loc },
       { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
       { kind: "boolLit", value: true, type: F64, loc },
+      { kind: "boolLit", value: false, type: BOOL, loc },
     ],
   };
   expect(validateModule(expressionModule(expr, [])).map((error) => error.message)).toEqual([
@@ -1466,6 +1467,46 @@ test.each(["receiver", "key", "result"] as const)(
     expect(validateModule(mod).some((error) => error.message.includes(message))).toBe(true);
   },
 );
+
+function nullPrototypeModule(): IrModule {
+  const record: IrType = { kind: "record", shapeId: "dictionary" };
+  const check: IrExpr = {
+    kind: "recordNullProto",
+    shapeId: "dictionary",
+    obj: { kind: "recordLit", fields: [], nullProto: true, type: record, loc },
+    type: BOOL,
+    loc,
+  };
+  const mod = expressionModule(check, []);
+  mod.records = [{ id: "dictionary", fields: [], indexValue: F64 }];
+  return mod;
+}
+
+test("null-prototype records validate and serialize", () => {
+  const mod = nullPrototypeModule();
+  expect(validateModule(mod)).toEqual([]);
+  expect(deserializeModule(serializeModule(mod))).toEqual(mod);
+});
+
+test("null-prototype records require a map-bearing shape", () => {
+  const mod = nullPrototypeModule();
+  delete mod.records![0]!.indexValue;
+  const messages = validateModule(mod).map((error) => error.message);
+  expect(messages.some((m) => m.includes("recordNullProto on dictionary"))).toBe(true);
+  expect(messages.some((m) => m.includes("recordLit nullProto on dictionary"))).toBe(true);
+});
+
+test.each(["receiver", "result"] as const)("null-prototype tests check their %s type", (slot) => {
+  const mod = nullPrototypeModule();
+  const statement = mod.functions[0]!.body[0]!;
+  if (statement.kind !== "exprStmt" || statement.expr.kind !== "recordNullProto")
+    throw new Error("fixture");
+  const check = statement.expr;
+  if (slot === "receiver") check.obj = { kind: "numLit", value: 1, type: F64, loc };
+  else check.type = F64;
+  const message = slot === "result" ? "recordNullProto must be bool" : "recordNullProto receiver";
+  expect(validateModule(mod).some((error) => error.message.includes(message))).toBe(true);
+});
 
 function fieldPresenceModule(absentInLiteral: boolean): IrModule {
   const optional: IrType = { kind: "union", unionId: "maybeCount" };

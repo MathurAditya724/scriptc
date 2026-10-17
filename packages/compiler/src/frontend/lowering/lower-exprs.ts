@@ -1,3 +1,4 @@
+import { guardNullProto, nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 import { lowerProtocolPropertyRead } from "./class-protocol-dispatch.js";
 import { generatorDrain } from "./iterator-adapters.js";
 import { lowerEventObjectProperty, lowerEventObjectPropertyWrite } from "./lower-event-target.js";
@@ -8,6 +9,7 @@ import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { lowerReadlineProperty } from "./builtins/readline.js";
 import { lowerBlobInstanceof } from "./builtins/blob.js";
 import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
+import { isExecExceptionType, refuseExecExceptionCode } from "./builtins/errors.js";
 import { STATS_TYPE_TESTS } from "./builtins/filesystem.js";
 import { threadsImportOf } from "../threads-import.js";
 import { experimentalImportOf, lifetimeRegionMemberOf } from "../experimental-import.js";
@@ -8470,11 +8472,50 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
     const shape = lowerer.shapes.get(e.type.shapeId);
     if (isPerfEntryType(lowerer, e.type)) return perfEntryTag(lowerer, e, e.type, e.loc);
     if (shape && !shape.tuple && !shape.fields.some((f) => f.name === "toString")) {
+      // A null-prototype record (Object.groupBy) has no toString or
+      // valueOf: ToPrimitive throws Node's TypeError.
+      const nullProtoT = nullProtoRecordShape(lowerer, e.type);
+      if (nullProtoT) return nullProtoToString(lowerer, e, nullProtoT);
       return { kind: "toString", operand: e, type: STRING, loc: e.loc };
     }
   }
   if (e.type.kind !== "f64" && e.type.kind !== "bool") lowerer.badType(node, lowerer.typeOf(node));
   return { kind: "toString", operand: e, type: STRING, loc: e.loc };
+}
+
+/** String(r) over a record that may have a null prototype: an interned
+ * helper that throws Node's TypeError for a null-prototype record and
+ * answers "[object Object]" otherwise. */
+function nullProtoToString(lowerer: Lowerer, e: IrExpr, t: IrType & { kind: "record" }): IrExpr {
+  const loc = e.loc;
+  const key = `nullProtoToString:${t.shapeId}`;
+  let helper = lowerer.valueHelpers.get(key);
+  if (!helper) {
+    helper = `%rec.tostr.${lowerer.valueHelpers.size}`;
+    lowerer.valueHelpers.set(key, helper);
+    const r = varRef("r.0", t, loc);
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "r.0", name: "r", type: t }],
+      returnType: STRING,
+      locals: [{ id: "r.0", name: "r", type: t, mutable: false }],
+      body: [
+        {
+          kind: "return",
+          value: guardNullProto(
+            r,
+            t.shapeId,
+            "Cannot convert object to primitive value",
+            { kind: "toString", operand: r, type: STRING, loc },
+            loc,
+          ),
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [e], type: STRING, loc };
 }
 
 /** `new String(x)` (stdlib provenance, ≤1 argument) in a ToString
@@ -11119,6 +11160,7 @@ function lowerErrorCodeTypeofTest(
       recv = recv.expression;
     const errT = errorRootedObjectOf(lowerer, lowerer.typeOf(recv));
     if (!errT) continue;
+    if (isExecExceptionType(lowerer, lowerer.typeOf(recv))) refuseExecExceptionCode(lowerer, prop);
     const caught = lowerer.caughtLocalOf(recv);
     let receiver: IrExpr;
     if (caught) {
@@ -12715,6 +12757,9 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
       loc,
     };
   }
+  if (key === "code" && isExecExceptionType(lowerer, lowerer.typeOf(expr.right))) {
+    refuseExecExceptionCode(lowerer, expr);
+  }
   let recv = lowerer.lowerExpr(expr.right);
   const classInfo =
     recv.type.kind === "classval" ? lowerer.classes.get(recv.type.className) : undefined;
@@ -12975,6 +13020,17 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
     recv.kind === "fieldGet" ||
     pureRecvNode
   ) {
+    // A null-prototype record (Object.groupBy) has no inherited names.
+    const nullProtoT = inherited ? nullProtoRecordShape(lowerer, recv.type) : null;
+    if (nullProtoT) {
+      return {
+        kind: "unary",
+        op: "!",
+        operand: recordNullProtoTest(recv, nullProtoT.shapeId, loc),
+        type: BOOL,
+        loc,
+      };
+    }
     return { kind: "boolLit", value: inherited, type: BOOL, loc };
   }
   lowerer.unsupported(
@@ -13042,19 +13098,33 @@ function lowerRuntimeKeyIn(
       type: BOOL,
       loc,
     };
-    // A miss in the record's own keys still finds Object.prototype's.
-    let inherited: IrExpr = ovfHas;
+    // A miss in the record's own keys still finds Object.prototype's,
+    // unless the record has a null prototype (Object.groupBy).
+    let protoName: IrExpr | null = null;
     for (const name of OBJECT_PROTOTYPE_KEYS) {
       if (shape.fields.some((f) => f.name === name)) continue;
-      inherited = {
+      const eq: IrExpr = {
+        kind: "strEq",
+        negated: false,
+        left: k,
+        right: { kind: "strLit", value: name, type: STRING, loc },
+        type: BOOL,
+        loc,
+      };
+      protoName =
+        protoName === null
+          ? eq
+          : { kind: "logical", op: "||", left: protoName, right: eq, type: BOOL, loc };
+    }
+    if (protoName !== null && nullProtoRecordShape(lowerer, recT)) {
+      protoName = {
         kind: "logical",
-        op: "||",
-        left: inherited,
+        op: "&&",
+        left: protoName,
         right: {
-          kind: "strEq",
-          negated: false,
-          left: k,
-          right: { kind: "strLit", value: name, type: STRING, loc },
+          kind: "unary",
+          op: "!",
+          operand: recordNullProtoTest(r, recvT.shapeId, loc),
           type: BOOL,
           loc,
         },
@@ -13062,7 +13132,13 @@ function lowerRuntimeKeyIn(
         loc,
       };
     }
-    body.push(ret(inherited));
+    body.push(
+      ret(
+        protoName === null
+          ? ovfHas
+          : { kind: "logical", op: "||", left: ovfHas, right: protoName, type: BOOL, loc },
+      ),
+    );
     lowerer.liftedFns.push({
       name: helper,
       params: [
@@ -13395,6 +13471,9 @@ function lowerMatchGroupsRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressio
   const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (!recvT || !isMatchSliceType(lowerer, recvT) || !lowerer.isStdlibMember(expr)) return null;
   const groups = matchResultNamedGroupsOf(lowerer, expr.expression);
+  // An untraced regex: TypeScript reaches the member fence; JavaScript
+  // would otherwise read the slice's absent expando as undefined.
+  if (groups === null && isJsSourceFile(expr.getSourceFile())) lowerer.stdlibMemberFence(expr);
   if (groups === null) return null;
   if (groups.length === 0) {
     // Node: a match result of a group-less regex answers undefined —

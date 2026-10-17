@@ -2019,6 +2019,8 @@ ScrRegex *scr_regex_new(ScrStr *pattern, ScrStr *flags) {
     case 's': flag = 1u << 3; break;
     case 'u': flag = 1u << 4; break;
     case 'y': flag = 1u << 5; break;
+    case 'd': flag = 1u << 6; break;
+    case 'v': flag = 1u << 7; break;
     default: break;
     }
     if (!flag || (seen_flags & flag)) {
@@ -2030,6 +2032,22 @@ ScrRegex *scr_regex_new(ScrStr *pattern, ScrStr *flags) {
       return NULL;
     }
     seen_flags |= flag;
+  }
+  if ((seen_flags & (1u << 4)) && (seen_flags & (1u << 7))) {
+    char msg[80];
+    int n = snprintf(msg, sizeof msg, "Invalid flags supplied to RegExp constructor '%.20s'",
+                     flags->data);
+    scr_throw_error_msg(SCR_ERR_SYNTAX, msg, (size_t)n);
+    return NULL;
+  }
+  /* Valid in Node, absent from the engine: name the gap rather than
+   * report a flag Node accepts as invalid. */
+  if (seen_flags & ((1u << 6) | (1u << 7))) {
+    static const char d_msg[] = "the regex 'd' flag (match indices) is not supported yet [SC1120]";
+    static const char v_msg[] = "the regex 'v' flag (unicode sets) is not supported yet [SC1120]";
+    if (seen_flags & (1u << 6)) scr_throw_error_msg(SCR_ERR_ERROR, d_msg, sizeof d_msg - 1);
+    else scr_throw_error_msg(SCR_ERR_ERROR, v_msg, sizeof v_msg - 1);
+    return NULL;
   }
   ScrRegex *re = calloc(1, sizeof *re);
   if (!re) {
