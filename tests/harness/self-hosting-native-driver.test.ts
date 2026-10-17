@@ -1,3 +1,4 @@
+// CI-only: run the native bootstrap lane for this check.
 import { verifyBootstrapSeed } from "../../scripts/bootstrap-seed.mjs";
 import { execFile, spawnSync } from "node:child_process";
 import {
