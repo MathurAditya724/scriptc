@@ -7,8 +7,8 @@
     "tierItemCount": 3456,
     "tiers": {
       "static": {
-        "audit-partial": 1088,
-        "verify-gap": 2241,
+        "audit-partial": 1107,
+        "verify-gap": 2222,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -5885,7 +5885,8 @@
           "source": "compiler-dedicated:console.assert",
           "tests": [
             "tests/corpus/5096-console-assert-dir.ts",
-            "tests/corpus/5099-console-methods-dynamic.cjs"
+            "tests/corpus/5099-console-methods-dynamic.cjs",
+            "tests/corpus/5884-inspect-layout-options.ts"
           ]
         }
       }
@@ -6029,7 +6030,8 @@
           "source": "compiler-dedicated:console.dir",
           "tests": [
             "tests/corpus/5096-console-assert-dir.ts",
-            "tests/corpus/5099-console-methods-dynamic.cjs"
+            "tests/corpus/5099-console-methods-dynamic.cjs",
+            "tests/corpus/5884-inspect-layout-options.ts"
           ]
         }
       }
@@ -6057,7 +6059,8 @@
           "source": "compiler-dedicated:console.dirxml",
           "tests": [
             "tests/corpus/5096-console-assert-dir.ts",
-            "tests/corpus/5099-console-methods-dynamic.cjs"
+            "tests/corpus/5099-console-methods-dynamic.cjs",
+            "tests/corpus/5884-inspect-layout-options.ts"
           ]
         }
       }
@@ -75473,12 +75476,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.format",
+          "tests": [
+            "tests/corpus/1636-util-format.ts",
+            "tests/corpus/2440-console-inspect-args.ts",
+            "tests/corpus/5835-util-format-integer-specifiers.ts"
+          ]
         }
       }
     },
@@ -75498,12 +75505,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.formatWithOptions",
+          "tests": [
+            "tests/corpus/1636-util-format.ts",
+            "tests/corpus/2440-console-inspect-args.ts",
+            "tests/corpus/5835-util-format-integer-specifiers.ts"
+          ]
         }
       }
     },
@@ -75692,12 +75703,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.inspect",
+          "tests": [
+            "tests/corpus/1630-inspect-scalars.ts",
+            "tests/corpus/1632-inspect-records.ts",
+            "tests/corpus/1637-inspect-dyn.ts",
+            "tests/corpus/2485-inspect-circular-refs.ts",
+            "tests/corpus/5884-inspect-layout-options.ts"
+          ]
         }
       }
     },
@@ -76237,6 +76254,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isAnyArrayBuffer",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -76267,6 +76286,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isArrayBufferView",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -76322,6 +76343,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isArrayBuffer",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -76352,6 +76375,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isAsyncFunction",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -76376,12 +76401,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isBigInt64Array",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76401,12 +76433,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isBigIntObject",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76426,12 +76465,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isBigUint64Array",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76451,12 +76497,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isBooleanObject",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76476,12 +76529,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isBoxedPrimitive",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76501,12 +76561,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isCryptoKey",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76532,6 +76599,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isDataView",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -76556,12 +76625,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isDate",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76581,12 +76657,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isExternal",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76606,12 +76689,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isFloat16Array",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76637,6 +76727,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isFloat32Array",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -76667,6 +76759,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isFloat64Array",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -76697,6 +76791,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isGeneratorFunction",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -76727,6 +76823,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isGeneratorObject",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -76757,6 +76855,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isInt8Array",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -76787,6 +76887,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isInt16Array",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -76817,6 +76919,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isInt32Array",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -76841,12 +76945,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isKeyObject",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76872,6 +76983,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isMap",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -76896,12 +77009,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isMapIterator",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76952,6 +77072,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isNativeError",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -76976,12 +77098,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isNumberObject",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -77007,6 +77136,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isPromise",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -77037,6 +77168,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isProxy",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -77067,6 +77200,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isRegExp",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -77097,6 +77232,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isSet",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -77121,12 +77258,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isSetIterator",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -77146,12 +77290,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isSharedArrayBuffer",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -77171,12 +77322,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isStringObject",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -77196,12 +77354,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isSymbolObject",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -77227,6 +77392,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isTypedArray",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -77257,6 +77424,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isUint8Array",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -77287,6 +77456,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isUint8ClampedArray",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -77317,6 +77488,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isUint16Array",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -77347,6 +77520,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isUint32Array",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -77377,6 +77552,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isWeakMap",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",
@@ -77407,6 +77584,8 @@
           "confidence": "high",
           "source": "compiler-feature:util.util.types.isWeakSet",
           "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
             "tests/corpus/node24-util-types.ts",
             "tests/corpus/node24-util-types.js",
             "tests/corpus/node24-util-types.cjs",

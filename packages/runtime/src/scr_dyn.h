@@ -1217,11 +1217,18 @@ ScrDyn *scr_gen_receiver(void);
 void scr_dyn_chunk_enc(bool utf8);
 ScrDyn *scr_dyn_new_chunk(const ScrBytes *b);
 
-/* util.format's %j over a dyn value: the JSON.stringify text (+1),
+/* The JSON text of a dyn value: the JSON.stringify text (+1),
  * "undefined" when the root drops (undefined/function), or NULL with a
  * pending exception (a runtime handle inside the tree throws the "not
  * supported yet" Error). */
 ScrStr *scr_dyn_format_j(const ScrDyn *d);
+/* util.format's %j (Node's tryStringify), +1: over a dyn value, the
+ * JSON.stringify(d) text, or "undefined" when it returns undefined; over
+ * the text of a typed serializer that may have thrown, the text itself.
+ * A circular-structure TypeError becomes "[Circular]"; any other
+ * exception stays pending and the result is NULL. */
+ScrStr *scr_util_format_j(const ScrDyn *d);
+ScrStr *scr_util_format_j_text(ScrStr *text); /* borrows text */
 /* Node's ERR_INVALID_ARG_TYPE listener gate over a dyn value — shared by
  * the emitter unit's checked-dynamic registrations and the handle
  * dispatchers' .on(...) paths (both render errors.js's

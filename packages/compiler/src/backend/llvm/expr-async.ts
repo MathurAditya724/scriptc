@@ -338,8 +338,17 @@ export function emitSerializationExpr(
         // checked source can throw from the dyn walker: finish still runs
         // (frees the buffer, the partial string joins the frame and
         // releases on unwind), then the pending check unwinds — the
-        // runtime ABI’s contract exactly.
-        if (host.walkers.jsonWriteMayThrow(e.value.type)) host.emitPendingCheck();
+        // runtime ABI’s contract exactly. Under %j the runtime first turns
+        // a circular-structure TypeError into the text "[Circular]".
+        if (host.walkers.jsonWriteMayThrow(e.value.type)) {
+          if (e.circular) {
+            host.declare(`declare ptr @scr_util_format_j_text(ptr)`);
+            const shown = B.tmp();
+            B.line(`${shown} = call ptr @scr_util_format_j_text(ptr ${t})`);
+            compact = host.own({ name: shown, type: e.type });
+          }
+          host.emitPendingCheck();
+        }
       }
       // A pretty-print form (`stringify(v, null, 2)`): the frontend
       // resolved the space to a compile-time indent string (Node's

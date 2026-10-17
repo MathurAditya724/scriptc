@@ -3264,6 +3264,22 @@ declare module "util/types" {
   export function isGeneratorFunction(value: unknown): boolean;
   export function isGeneratorObject(value: unknown): boolean;
   export function isModuleNamespaceObject(value: unknown): boolean;
+  export function isDate(value: unknown): value is Date;
+  export function isSharedArrayBuffer(value: unknown): value is SharedArrayBuffer;
+  export function isMapIterator(value: unknown): boolean;
+  export function isSetIterator(value: unknown): boolean;
+  export function isKeyObject(value: unknown): boolean;
+  export function isNumberObject(value: unknown): boolean;
+  export function isStringObject(value: unknown): boolean;
+  export function isBooleanObject(value: unknown): boolean;
+  export function isBigIntObject(value: unknown): boolean;
+  export function isSymbolObject(value: unknown): boolean;
+  export function isBoxedPrimitive(value: unknown): boolean;
+  export function isBigInt64Array(value: unknown): value is BigInt64Array;
+  export function isBigUint64Array(value: unknown): value is BigUint64Array;
+  export function isFloat16Array(value: unknown): boolean;
+  export function isCryptoKey(value: unknown): boolean;
+  export function isExternal(value: unknown): boolean;
 }
 declare module "node:util/types" {
   export * from "util/types";
