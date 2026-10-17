@@ -4147,11 +4147,35 @@ export class Lowerer {
     // Such a binding reads `T | undefined`, so a typed parameter, local or
     // field it flows into widens like any other missing element read.
     const holeyIterationSymbols = new Set<ts.Symbol>();
+    // `xs[i] as number` and `stack.pop() as number`: an assertion to a type
+    // without undefined checks the value (lowerAsExpression narrows to the
+    // asserted type and throws a TypeError for undefined), so its result is
+    // never undefined.
+    const assertsDefined = (node: ts.Expression): boolean => {
+      let e = node;
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+      if (!ts.isAsExpression(e) && !ts.isTypeAssertion(e)) return false;
+      const asserted = typeOrNull(e);
+      const admits = (type: ts.Type): boolean =>
+        (type.flags &
+          (ts.TypeFlags.Any |
+            ts.TypeFlags.Unknown |
+            ts.TypeFlags.Undefined |
+            ts.TypeFlags.Void |
+            ts.TypeFlags.TypeParameter)) !==
+        0;
+      return (
+        asserted !== null &&
+        !admits(asserted) &&
+        !(asserted.isUnionType() && ts.constituentTypes(asserted).some(admits))
+      );
+    };
     const mayBeOptional = (node: ts.Expression): boolean => {
       // `xs[i]!` is the explicit proven-present form. Its array read keeps
       // the established dense bounds trap and must not promote the enclosing
       // function/global ABI to `T | undefined`.
       if (explicitlyNonNull(node)) return false;
+      if (assertsDefined(node)) return false;
       const e = peel(node);
       if (isIndexedRead(e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOptionalProcessStreamProperty(this, e)) return true;
