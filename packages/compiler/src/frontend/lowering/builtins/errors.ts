@@ -21,6 +21,28 @@ const ASSERTION_ERROR_PROPERTIES: ReadonlySet<string> = new Set([
  * declaration is not stdlib). Reads only: writes keep their fence (no
  * compiled program constructs an errno error). Null for non-error
  * receivers and non-stdlib members, so the chain keeps trying. */
+/** True for child_process.ExecException, exec's callback error. Its
+ * `code` is the child's numeric exit status (null after a signal), which
+ * the runtime error's string code slot does not hold, so reads, `in` tests
+ * and typeof tests of `code` refuse instead of answering from the slot. */
+export function isExecExceptionType(lowerer: Lowerer, t: ts.Type): boolean {
+  const sym = t.getSymbol();
+  return (
+    sym?.name === "ExecException" &&
+    lowerer.checker
+      .declarationsOf(sym)
+      .some((d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()))
+  );
+}
+
+export function refuseExecExceptionCode(lowerer: Lowerer, node: ts.Node): never {
+  return lowerer.noLowering(
+    "ExecException.code",
+    node,
+    "spawn reports the exit status through its 'close' event",
+  );
+}
+
 export function lowerErrorCodeProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -120,6 +142,9 @@ export function lowerErrorCodeProperty(
     !(recvT.className === "%Error" && lowerer.typeOf(expr.expression).isIntersectionType())
   )
     return null;
+  if (expr.name.text === "code" && isExecExceptionType(lowerer, lowerer.typeOf(expr.expression))) {
+    refuseExecExceptionCode(lowerer, expr);
+  }
   const rawReceiver = lowerer.lowerExpr(expr.expression);
   const receiver =
     rawReceiver.type.kind === "dyn"
