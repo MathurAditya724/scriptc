@@ -1863,6 +1863,20 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         });
       return { kind: "closure", fnName: name, captures: [], type: funcOf([DYN], DYN), loc };
     }
+    // An Hmac has no copy() (Hash does): Node answers undefined, which
+    // `typeof mac.copy` feature checks read. TypeScript rejects the read.
+    if (
+      expr.name.text === "copy" &&
+      lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind === "cryptoHmac"
+    ) {
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: lowerer.lowerExpr(expr.expression), loc }],
+        result: dynUndefinedExpr(loc),
+        type: DYN,
+        loc,
+      };
+    }
     if (lowerer.stdlibGlobalMember(expr, "globalThis") === "console") {
       return { kind: "libCall", fn: "console.native", args: [], type: DYN, loc };
     }
