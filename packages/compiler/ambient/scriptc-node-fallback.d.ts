@@ -2452,6 +2452,7 @@ declare module "node:url" {
 
 /* node:crypto: the static hashing/MAC/random/key-derivation utility slice. */
 declare module "crypto" {
+  import { Transform } from "stream";
   export type KeyObjectType = "secret" | "public" | "private";
   export interface JsonWebKey {
     kty?: string;
@@ -2494,14 +2495,16 @@ declare module "crypto" {
   export interface HashOptions {
     outputLength?: number | undefined;
   }
-  export interface Hash {
+  /* Hash and Hmac are Transforms: written chunks update the digest, which
+   * the readable side delivers once the writable side ends. */
+  export interface Hash extends Transform {
     copy(options?: HashOptions): Hash;
     update(data: string | ArrayBufferView): Hash;
     update(data: string, inputEncoding: Encoding): Hash;
     digest(): Buffer;
     digest(encoding: BinaryToTextEncoding): string;
   }
-  export interface Hmac {
+  export interface Hmac extends Transform {
     update(data: string | ArrayBufferView): Hmac;
     update(data: string, inputEncoding: Encoding): Hmac;
     digest(): Buffer;

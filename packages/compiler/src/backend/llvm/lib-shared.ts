@@ -530,6 +530,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.hashDigestBytes": "scr_crypto_hash_digest_bytes",
   "crypto.native": "scr_crypto_native",
   "crypto.hashNew": "scr_crypto_hash_new",
+  "crypto.hashStream": "scr_crypto_hash_stream",
+  "crypto.hashStreamPiped": "scr_crypto_hash_stream_piped",
   "crypto.cipherNew": "scr_crypto_cipher_new",
   "crypto.hmacNewStr": "scr_crypto_hmac_new_str",
   "crypto.hmacNewBytes": "scr_crypto_hmac_new_bytes",

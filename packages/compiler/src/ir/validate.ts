@@ -5186,6 +5186,12 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "crypto.hashStream" || e.fn === "crypto.hashStreamPiped") {
+      const value = e.args[0]?.type.kind;
+      if (value !== "cryptoHash" && value !== "cryptoHmac")
+        err(`libCall ${e.fn} argument must be a Hash or Hmac`, e.loc);
+      return true;
+    }
     if (e.fn === "crypto.timingSafeEqual") {
       if (e.args[0]?.type.kind !== "bytes" || e.args[1]?.type.kind !== "bytes")
         err(`libCall ${e.fn} arguments must be views`, e.loc);

@@ -971,9 +971,10 @@ ScrDyn *scr_stream_done_dyn_l(ScrClosure *clo, ScrDyn *const *args, size_t argc)
 
 /* Checked-dynamic chunks (the JS lane's push/write of any-typed values):
  * dispatch by dyn tag — bytes copy out, strings convert utf8, null takes
- * the null path (EOF for push; ERR_STREAM_NULL_VALUES for write), and
- * anything else throws the write TypeError (Node would throw
- * ERR_INVALID_ARG_TYPE — approximated by the same shape). Borrow d. */
+ * the null path (EOF for push; ERR_STREAM_NULL_VALUES for write). Any
+ * other write throws Node's ERR_INVALID_ARG_TYPE; any other push throws
+ * the null-values TypeError (Node reports ERR_INVALID_ARG_TYPE through
+ * 'error'). Borrow d. */
 bool scr_stream_push_dyn(ScrStream *s, const ScrDyn *d) {
   switch (d->kind) {
   case SCR_DYN_BYTES: {
@@ -1004,9 +1005,14 @@ bool scr_stream_write_dyn(ScrStream *s, const ScrDyn *d, ScrClosure *cb) {
   }
   case SCR_DYN_STR:
     return scr_stream_write_str(s, d->v.str, cb);
-  default:
+  case SCR_DYN_NULL:
     if (cb) scr_closure_release(cb);
     return scr_stream_write_null(s);
+  default:
+    /* Writable.write: only null is the null-values error. */
+    if (cb) scr_closure_release(cb);
+    scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer, TypedArray, or DataView", d);
+    return false;
   }
 }
 
@@ -6446,4 +6452,78 @@ ScrDyn *scr_stream_dyn_view(ScrStream *stream) {
   scr_dyn_release(attached);
   scr_dyn_release(prototype);
   return view;
+}
+
+/* ── node:crypto Hash and Hmac values as streams ─────────────────────
+ * Node's Hash and Hmac are Transforms. A value used as a stream gets one
+ * native Transform, created on first use and owned by the value. The
+ * steps share a box that holds the value without a reference; releasing
+ * the box's payload detaches the value from the stream, whichever of the
+ * two goes first. A pipe destination or pipeline stage holds the
+ * value until the stream flushes or is destroyed, so a stream that only a
+ * pipe still references keeps its value. */
+static void *scr_hash_stream_box_retain(void *p) { return p; }
+
+/* The value, borrowed: the box's retain is a no-op. */
+static ScrCryptoHash *scr_hash_stream_value(ScrClosure *cb) {
+  return scr_box_get_ref(cb->caps[0]);
+}
+
+static void scr_hash_stream_transform(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
+  ScrCryptoHash *hash = scr_hash_stream_value(cb);
+  bool ok = hash && scr_crypto_hash_stream_write(hash, chunk);
+  scr_stream_transform_done(s, ok ? NULL : scr_stream_mkerr("ERR_CRYPTO_HASH_UPDATE_FAILED", "Hash update failed"),
+                            NULL, NULL);
+}
+
+static void scr_hash_stream_flush(ScrClosure *cb, ScrStream *s) {
+  ScrCryptoHash *hash = scr_hash_stream_value(cb);
+  ScrBytes *digest = hash ? scr_crypto_hash_stream_flush(hash) : NULL;
+  /* Releasing the hold may free the value, which releases this stream. */
+  scr_stream_retain(s);
+  if (hash) scr_crypto_hash_stream_unhold(hash);
+  scr_stream_flush_done(s, NULL, digest, NULL);
+  scr_stream_release(s);
+}
+
+static void scr_hash_stream_destroy(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  ScrCryptoHash *hash = scr_hash_stream_value(cb);
+  scr_stream_retain(s);
+  scr_stream_destroy_done(s, err ? scr_error_retain(err) : NULL);
+  if (hash) {
+    /* The scheduled 'close' keeps the stream until it fires. */
+    scr_crypto_hash_retain(hash);
+    scr_crypto_hash_stream_close(hash);
+    scr_crypto_hash_stream_unhold(hash);
+    scr_crypto_hash_release(hash);
+  }
+  scr_stream_release(s);
+}
+
+static ScrClosure *scr_hash_stream_step(ScrBox *box) {
+  ScrClosure *step = scr_closure_new(NULL, 1);
+  step->caps[0] = scr_box_retain(box);
+  return step;
+}
+
+ScrStream *scr_crypto_hash_stream(ScrCryptoHash *hash) {
+  ScrStream *s = scr_crypto_hash_stream_get(hash);
+  if (s) return scr_stream_retain(s);
+  if (!scr_crypto_hash_stream_usable(hash)) return NULL;
+  ScrBox *box = scr_box_new_obj(scr_hash_stream_box_retain, scr_crypto_hash_stream_detach, NULL);
+  scr_box_set_ref(box, hash);
+  s = scr_stream_new_transform(-1, -1, true, true, true, true, true,
+                               scr_hash_stream_step(box), scr_hash_stream_transform,
+                               scr_hash_stream_step(box), scr_hash_stream_flush,
+                               scr_hash_stream_step(box), scr_hash_stream_destroy);
+  /* The steps keep the box alive as long as the stream. */
+  scr_crypto_hash_stream_set(hash, scr_stream_retain(s), scr_stream_release_v, box);
+  scr_box_release(box);
+  return s;
+}
+
+ScrStream *scr_crypto_hash_stream_piped(ScrCryptoHash *hash) {
+  ScrStream *s = scr_crypto_hash_stream(hash);
+  if (s) scr_crypto_hash_stream_hold(hash);
+  return s;
 }
