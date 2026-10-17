@@ -93,6 +93,7 @@ export class RuntimePackError extends Error {
   constructor(
     message: string,
     readonly code: "missing" | "invalid" | "unsupported",
+    readonly hint?: string,
   ) {
     super(message);
     this.name = "RuntimePackError";
