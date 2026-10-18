@@ -11,6 +11,7 @@ import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { esmImportBindingKind } from "./builtins/module-bindings.js";
 import { lowerReadlineProperty } from "./builtins/readline.js";
 import { lowerBlobInstanceof } from "./builtins/blob.js";
+import { lowerWebAssemblyTypeof, refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
 import { lowerNetAddressInstanceof, lowerNetAddressStaticRead } from "./builtins/net-address.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "./builtins/errors.js";
@@ -458,6 +459,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (externalTypeSpecifier !== null) {
     lowerer.externalHostFence(externalTypeSpecifier, expr);
   }
+  // Every reached use of the WebAssembly API fences at its expression.
+  refuseWebAssemblyUse(lowerer, expr);
 
   if (ts.isNumericLiteral(expr)) {
     const value = Number(expr.text.replace(/_/g, ""));
@@ -623,6 +626,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     );
   }
   if (ts.isTypeOfExpression(expr)) {
+    const webAssembly = lowerWebAssemblyTypeof(lowerer, expr.expression);
+    if (webAssembly) return webAssembly;
     if (lowerer.isStdlibGlobal(expr.expression, "process"))
       return { kind: "strLit", value: "object", type: STRING, loc };
     if (lowerer.isStdlibGlobal(expr.expression, "fetch"))
@@ -10340,6 +10345,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     op === ts.SyntaxKind.ExclamationEqualsEqualsToken
   ) {
     const test =
+      lowerWebAssemblyTypeofTest(lowerer, expr, loc) ??
       lowerErrorCodeTypeofTest(lowerer, expr, loc) ??
       lowerer.lowerCaughtTypeofTest(expr, loc) ??
       lowerDynTypeofTest(lowerer, expr, loc) ??
@@ -11732,6 +11738,24 @@ function errorRootedObjectOf(lowerer: Lowerer, t: ts.Type): IrType | null {
   return null;
 }
 
+/** `typeof WebAssembly === "object"` and `typeof WebAssembly.<member> ===
+ * "function"`: the operand needs no value, so the test folds as bare typeof
+ * does (builtins/webassembly.ts) before any dyn-typed operand lowers. */
+function lowerWebAssemblyTypeofTest(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const negated = expr.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+  for (const [a, b] of operandPairs(expr)) {
+    if (!ts.isTypeOfExpression(a) || !ts.isStringLiteral(b)) continue;
+    const folded = lowerWebAssemblyTypeof(lowerer, a.expression);
+    if (folded?.kind !== "strLit") continue;
+    return { kind: "boolLit", value: (folded.value === b.text) !== negated, type: BOOL, loc };
+  }
+  return null;
+}
+
 /** `typeof e.code === "string"` / `"undefined"` (and the `!==` forms)
  * where e — through parens and as-casts — is a catch binding or a value
  * of %Error-rooted type: the runtime error's code slot is a string
@@ -12429,6 +12453,7 @@ export function caughtLocalOf(lowerer: Lowerer, node: ts.Expression): IrLocal | 
  * Folding is limited to side-effect-free operands — dropping a computed
  * operand would skip its effects, so those are rejected instead. */
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
+  refuseWebAssemblyUse(lowerer, expr.right);
   // `x instanceof net.Socket` over a union with a netSocket arm — the
   // h2 compat 'connect' narrowing (lower-server.ts): a union tag test.
   const sockTest = lowerSocketInstanceOf(lowerer, expr, loc);
