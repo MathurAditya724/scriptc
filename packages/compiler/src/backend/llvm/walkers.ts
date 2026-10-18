@@ -28,6 +28,7 @@ import {
   traceAdapter,
   type ShapeHost,
 } from "./shapes.js";
+import { disposeHookLoadLines, RECORD_SOURCES_GATE } from "./alloc.js";
 import { recordMayKeepSource, recordSourceFieldOrder } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
@@ -397,6 +398,24 @@ export class LlWalkers {
     const writer = this.recordFieldWriter(shapeId);
     const lSource = B.newLabel("jw.source");
     const lNative = B.newLabel("jw.native");
+    // Only a program that can keep record sources looks one up (the gate
+    // folds to a constant), and only once one was kept: keeping a source
+    // installs the dispose hook, so a NULL hook means the table is empty.
+    const lHooked = B.newLabel("jw.hooked");
+    const kept = B.tmp();
+    B.line(`${kept} = load i1, ptr ${RECORD_SOURCES_GATE}`);
+    B.condBr(kept, lHooked, lNative);
+    B.startBlock(lHooked);
+    const hook = B.tmp();
+    const hookLines = disposeHookLoadLines(host, hook);
+    if (hookLines !== null) {
+      const lProbe = B.newLabel("jw.probe");
+      for (const line of hookLines) B.line(line.trimStart());
+      const installed = B.tmp();
+      B.line(`${installed} = icmp ne ptr ${hook}, null`);
+      B.condBr(installed, lProbe, lNative);
+      B.startBlock(lProbe);
+    }
     if (traceAdapter(host, { kind: "record", shapeId }) === null) {
       // One lookup: the runtime writes the record when it kept a source.
       host.declare(`declare zeroext i1 @scr_jb_try_record_source(ptr, ptr, ptr)`);

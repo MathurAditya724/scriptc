@@ -4170,10 +4170,32 @@ function lowerNumberToStringCall(
   }
   if (call.arguments.length === 1) {
     if (operand.type.kind !== "f64") return null;
+    const arg = call.arguments[0]!;
+    // A number radix needs no box: ToIntegerOrInfinity of a number is a
+    // truncation, which the typed entry point applies itself.
+    if (!ts.isSpreadElement(arg) && lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind === "f64") {
+      const radix = lowerer.lowerExpr(arg);
+      if (radix.type.kind === "f64") {
+        return {
+          kind: "libCall",
+          fn: "num.toStringRadixF64",
+          args: [operand, radix],
+          type: STRING,
+          loc: locOf(call),
+        };
+      }
+      return {
+        kind: "libCall",
+        fn: "num.toStringRadix",
+        args: [operand, lowerer.coerceToExpected(radix, DYN)],
+        type: STRING,
+        loc: locOf(call),
+      };
+    }
     return {
       kind: "libCall",
       fn: "num.toStringRadix",
-      args: [operand, lowerer.lowerExprExpecting(call.arguments[0]!, DYN)],
+      args: [operand, lowerer.lowerExprExpecting(arg, DYN)],
       type: STRING,
       loc: locOf(call),
     };
