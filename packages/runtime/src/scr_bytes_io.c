@@ -1249,10 +1249,10 @@ static ScrBytes *scr_buffer_from_array_like(const ScrDyn *value, double length) 
   return out;
 }
 
-/* Buffer.concat over an untyped list: Node's checks (an Array whose every
- * element is a Uint8Array, ERR_INVALID_ARG_TYPE otherwise), then the typed
- * concat over the elements. total < 0 selects the one-argument form. NULL
- * with the exception pending. */
+/* Buffer.concat over an untyped list: Node's checks in Node's order (an
+ * Array, then the total of the two-argument form unless the list is empty,
+ * then every element a Uint8Array, ERR_INVALID_ARG_TYPE otherwise), then the
+ * typed concat over the elements. NULL with the exception pending. */
 static ScrBytes *scr_buffer_concat_dyn_impl(const ScrDyn *list, double total, bool has_total) {
   ScrDyn *materialized = NULL;
   if (list->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(list) != NULL) {
@@ -1265,6 +1265,10 @@ static ScrBytes *scr_buffer_concat_dyn_impl(const ScrDyn *list, double total, bo
     return NULL;
   }
   size_t n = list->v.arr.len;
+  if (has_total && n > 0 && !scr_bytes_validate_off("length", total, 9007199254740991.0)) {
+    scr_dyn_release(materialized);
+    return NULL;
+  }
   ScrArr *parts = scr_arr_new(SCR_ELEM_BYTES, (double)n);
   for (size_t i = 0; i < n; i++) {
     ScrDyn *item = scr_dyn_index_get(list, (double)i);
