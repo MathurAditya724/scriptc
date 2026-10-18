@@ -320,6 +320,35 @@ function usesDecorators(srcDir: string, files: string[]): boolean {
   return false;
 }
 
+/** The overlay's package.json `type`. TypeScript authored with ES module
+ * syntax is an ES module whatever format tsc emitted it to (`module:
+ * commonjs` packages have no `type`, which would make scriptc, like Node,
+ * classify the .ts files as CommonJS and reject their import/export syntax).
+ * Sources that use CommonJS-only TypeScript forms (`export =`,
+ * `import x = require()`) keep the source package's type. The published
+ * format stays available to the compiler as `publishedFormat`. */
+function overlayModuleType(srcDir: string, files: string[], sourceType: unknown): string {
+  for (const rel of files) {
+    const tokens = tokenize(readText(join(srcDir, rel)) ?? "");
+    for (let i = 0; i + 1 < tokens.length; i += 1) {
+      const t = tokens[i];
+      const next = tokens[i + 1];
+      if (t?.kind !== "id" || tokens[i - 1]?.value === ".") continue;
+      if (t.value === "export" && next?.value === "=")
+        return typeof sourceType === "string" ? sourceType : "commonjs";
+      if (
+        t.value === "import" &&
+        next?.kind === "id" &&
+        tokens[i + 2]?.value === "=" &&
+        tokens[i + 3]?.value === "require"
+      ) {
+        return typeof sourceType === "string" ? sourceType : "commonjs";
+      }
+    }
+  }
+  return "module";
+}
+
 function accepted(level: ContentLevel, identity: Identity, policy: ContentPolicy): boolean {
   if (level === "mismatch") return false;
   if (identity === "override") return true;
@@ -368,10 +397,11 @@ async function verifyAndMaterialize(
     return fallback(instance, `content-mismatch: ${content.detail} [${content.checks.join(", ")}]`);
   }
   if (!accepted(level, loc.identity, ctx.options.config.content)) {
-    const why = content.detail !== "" ? `: ${content.detail}` : "";
+    const why = content.detail !== "" ? ` (${content.detail})` : "";
+    const policy = ctx.options.config.content;
     return fallback(
       instance,
-      `content-${level}${why} [${content.checks.join(", ")}] below policy ${ctx.options.config.content}`,
+      `content-${level}: below policy ${policy} [${content.checks.join(", ")}]${why}`,
     );
   }
   const mapped = buildExportMap(pub, content.pubToSrc, loc.srcDir);
@@ -401,7 +431,11 @@ async function verifyAndMaterialize(
     loc.onlyFiles ?? walkFiles(loc.srcDir, OVERLAY_SKIP).filter((f) => !f.endsWith(".map"));
   const srcPkg = readText(join(loc.srcDir, "package.json"));
   const srcPkgJson = srcPkg === null ? {} : (JSON.parse(srcPkg) as Record<string, unknown>);
-  const typeField = srcPkgJson["type"] ?? pub.pkg["type"];
+  const typeField = overlayModuleType(
+    loc.srcDir,
+    sourceFiles,
+    srcPkgJson["type"] ?? pub.pkg["type"],
+  );
   const sourceTreeHash = materializeOverlay({
     overlayDir: overlayDir,
     srcDir: loc.srcDir,
