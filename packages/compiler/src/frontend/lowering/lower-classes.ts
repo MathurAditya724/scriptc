@@ -2344,7 +2344,11 @@ export function collectClassShapeInner(
             (member.type !== undefined ||
               (lowerer.typeOf(member.name).flags & ts.TypeFlags.Any) === 0)
           ) {
-            lowerer.unsupported("SC1090", member.name, "'unknown'-typed static fields");
+            lowerer.unsupported(
+              "SC1090",
+              member.name,
+              `${dynFieldTypeSpelling(lowerer, member.name)}-typed static fields`,
+            );
           }
           staticFields.push({
             name: member.name.text,
@@ -2805,7 +2809,11 @@ export function collectClassShapeInner(
           !isJsSourceFile(member.getSourceFile()) &&
           !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name))
         ) {
-          lowerer.unsupported("SC1090", member.name, "'unknown'-typed class fields");
+          lowerer.unsupported(
+            "SC1090",
+            member.name,
+            `${dynFieldTypeSpelling(lowerer, member.name)}-typed class fields`,
+          );
         }
         const undefinedInitializer =
           type.kind === "dyn" && !member.initializer ? locOf(member) : undefined;
@@ -2939,7 +2947,11 @@ export function collectClassShapeInner(
           if (type.kind === "void") lowerer.badType(p.name, lowerer.typeOf(p.name));
           // The class-field dyn rule verbatim (KEEP NARROW).
           if (type.kind === "dyn" && !lowerer.classFieldStoresDyn(lowerer.typeOf(p))) {
-            lowerer.unsupported("SC1090", p.name, "'unknown'-typed class fields");
+            lowerer.unsupported(
+              "SC1090",
+              p.name,
+              `${dynFieldTypeSpelling(lowerer, p)}-typed class fields`,
+            );
           }
           // `override x` (and any same-named inherited member) would
           // redeclare a base slot — the declared-field rule verbatim.
@@ -7542,6 +7554,14 @@ export function throwingSetterFn(lowerer: Lowerer, info: ClassInfo, prop: string
     ],
     loc,
   };
+}
+
+/** The declared type a refused checked-dynamic class field names in its
+ * diagnostic (`'any'`, `'WeakMap<object, string>'`): `unknown` and
+ * `object` fields store checked-dynamic values, so the refusal is about
+ * whatever else the declaration spells. */
+function dynFieldTypeSpelling(lowerer: Lowerer, node: ts.Node): string {
+  return `'${lowerer.checker.typeToString(lowerer.typeOf(node))}'`;
 }
 
 /** The base a constructor chain actually CALLS into: generic FAMILIES are
