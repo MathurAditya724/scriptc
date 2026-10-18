@@ -235,6 +235,11 @@ void scr_rt_free(void *p);
  * of [lo, hi), aligned to 256 KiB, in ahead of use; builds without the
  * helper ignore it. */
 void scr_mem_prefault(void *lo, void *hi);
+/* Reorders ptrs, distinct pointers `offset` bytes into blocks that are
+ * about to be freed in array order, so that the free lists hand the blocks
+ * back in ascending address order (scr_alloc.c). Builds without the
+ * small-object allocator leave the array as it is. */
+void scr_mem_order_for_free(void **ptrs, size_t n, size_t offset);
 
 /* Size classes: requests up to 128 bytes take a class per 8-byte step
  * (small objects often sit just under a 16-byte boundary), larger ones a

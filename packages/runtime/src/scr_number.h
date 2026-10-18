@@ -91,6 +91,10 @@ ScrStr *scr_intl_num_format_en_us(double x);
  * mutation are frontend-fenced; construction, storage, getters, and ISO
  * formatting are exact over this representation. */
 double scr_date_now(void); /* integer ms since epoch, like Node */
+/* The clock of the MockTimers that mocks Date (scr_test.c), NULL while
+ * Date is not mocked. Dynamic `new Date()` reads it; the runtime's own
+ * time stamps keep scr_date_now, as Node's internals keep the real Date. */
+extern SCR_TL const double *scr_date_mock_now;
 double scr_date_new_ms(double ms); /* TimeClip (NaN when invalid) */
 double scr_date_get_time(double ms);
 /* Node's exact ISO 8601 UTC format (expanded ±YYYYYY years outside

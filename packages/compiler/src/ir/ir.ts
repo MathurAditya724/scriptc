@@ -2564,7 +2564,7 @@ export type IrExpr =
     }
   /** A regex literal `/ab+c/gi`. `pattern` is the text between the slashes
    * exactly as written (escapes UNprocessed — the regex engine parses them),
-   * `flags` the trailing flags in source order (alphabet fenced to gimsuy by
+   * `flags` the trailing flags in getter order (alphabet fenced to gimsuvy by
    * the frontend). Backends intern ONE immortal static per (pattern, flags)
    * pair — like string literals, so repeated evaluation is free and
    * `re === re` would hold — and compile the pattern lazily at first use
@@ -3587,6 +3587,11 @@ export type IrExpr =
       type: IrType;
       loc: SrcLoc;
       prototypeIdentityOnly?: true;
+      /** A timer call through an ESM named or namespace import of
+       * node:timers. Node's mock.timers replaces the globals and the
+       * module object's properties, which these bindings do not follow,
+       * so the call keeps the loop's timer. */
+      realTimer?: true;
       /** An assertion call made through a node:assert Assert instance: the
        * instance options the runtime applies to this call. Backends set
        * them right before the runtime call, after its arguments are

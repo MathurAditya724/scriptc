@@ -411,7 +411,7 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   SC1120: {
     feature: "this regex feature",
     milestone: "later",
-    hint: "supported: literal regexes with the g/i/m/s/u/y flags — .test(), .exec()/.match()/.matchAll(), named capture groups (.groups, $<name> templates, \\k<name>), .source/.flags, and string replace/replaceAll/split with string replacement templates",
+    hint: "supported: literal regexes with the g/i/m/s/u/v/y flags — .test(), .exec()/.match()/.matchAll(), named capture groups (.groups, $<name> templates, \\k<name>), .source/.flags, and string replace/replaceAll/split with string replacement templates",
   },
   // SC1121 (stateful g/y regex tests) shipped — code retired, do not reuse.
 };

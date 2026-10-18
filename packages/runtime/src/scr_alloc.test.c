@@ -119,6 +119,62 @@ static void check_churn(void) {
   }
 }
 
+/* scr_mem_order_for_free keeps every pointer, puts system blocks first and
+ * each class's blocks in descending address order, and freeing in that
+ * order hands each class's blocks back in ascending address order. Builds
+ * without the size-class allocator leave the array as it is. */
+static int compare_pointers(const void *a, const void *b) {
+  uintptr_t x = (uintptr_t)*(void *const *)a, y = (uintptr_t)*(void *const *)b;
+  return x < y ? -1 : x > y;
+}
+
+static void check_free_order(void) {
+  enum { BLOCKS = 12000, SYSTEM = 64, N = BLOCKS + SYSTEM };
+  static void *ptrs[N], *before[N], *a[N], *b[N];
+  const size_t sizes[2] = {32, 96};
+  for (size_t i = 0; i < BLOCKS; i++) ptrs[i] = scr_mem_alloc(sizes[i % 2]);
+  for (size_t i = BLOCKS; i < N; i++) ptrs[i] = malloc(1024);
+  uint32_t x = 0x2545f491u;
+  for (size_t i = N - 1; i > 0; i--) {
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    size_t j = x % (i + 1);
+    void *t = ptrs[i];
+    ptrs[i] = ptrs[j];
+    ptrs[j] = t;
+  }
+  memcpy(before, ptrs, sizeof ptrs);
+  scr_mem_order_for_free(ptrs, N, 0);
+  memcpy(a, ptrs, sizeof ptrs);
+  memcpy(b, before, sizeof before);
+  qsort(a, N, sizeof *a, compare_pointers);
+  qsort(b, N, sizeof *b, compare_pointers);
+  assert(memcmp(a, b, sizeof a) == 0);
+#if SCR_SMALL_ALLOC
+  size_t i = 0;
+  uintptr_t last[SCR_SA_NCLASS] = {0};
+  for (; i < SYSTEM; i++) assert(!owned(ptrs[i]));
+  for (; i < N; i++) {
+    assert(owned(ptrs[i]));
+    unsigned c = (unsigned)(((uintptr_t)ptrs[i] - scr_sa.base) >> scr_sa.shift);
+    assert(!last[c] || (uintptr_t)ptrs[i] < last[c]);
+    last[c] = (uintptr_t)ptrs[i];
+  }
+  for (i = 0; i < N; i++) scr_mem_free(ptrs[i]);
+  for (size_t c = 0; c < 2; c++) {
+    for (size_t k = 0; k < BLOCKS / 2; k++) {
+      a[k] = scr_mem_alloc(sizes[c]);
+      if (k) assert(a[k] > a[k - 1]);
+    }
+    for (size_t k = 0; k < BLOCKS / 2; k++) scr_mem_free(a[k]);
+  }
+#else
+  assert(memcmp(ptrs, before, sizeof ptrs) == 0);
+  for (size_t i = 0; i < N; i++) scr_mem_free(ptrs[i]);
+#endif
+}
+
 #if SCR_SMALL_ALLOC
 #include <string.h>
 #ifdef __linux__
@@ -393,6 +449,8 @@ static unsigned char **discard_blocks;
 static unsigned char *discard_large[DISCARD_LARGE];
 static uintptr_t discard_base, discard_lo, discard_hi;
 static size_t block_size = DISCARD_SIZE; /* of the workers' and reusing threads' blocks */
+/* Whether discard workers claim the arena of discard_old_owner (no other worker holds it). */
+static bool discard_in_old_arena = true;
 /* The end of the highest block of class DISCARD_SIZE so far, and how many blocks of a run lay past the mark
  * at its start: those the slice grew for. */
 static uintptr_t class_hi;
@@ -451,9 +509,10 @@ static void *discard_worker(void *arg) {
   (void)arg;
   scr_sa_thread_starting();
   allocate_discardable();
-  assert(scr_sa.base == discard_base);
   /* None of the arena's older blocks or free blocks is reused. */
-  for (unsigned i = 0; i < DISCARD_OLD; i++) assert(discard_lo > (uintptr_t)old_blocks[i]);
+  if (scr_sa.base == discard_base)
+    for (unsigned i = 0; i < DISCARD_OLD; i++) assert(discard_lo > (uintptr_t)old_blocks[i]);
+  else assert(!discard_in_old_arena);
   if (discard_shares) scr_sa_thread_shares();
   scr_sa_thread_park();
   return NULL;
@@ -541,6 +600,60 @@ static bool readable(uintptr_t a) {
   fclose(maps);
   assert(found);
   return result;
+}
+
+/* A worker that runs until discard_step reaches 3. */
+static void *holding_worker(void *arg) {
+  (void)arg;
+  scr_sa_thread_starting();
+  void *p = scr_mem_alloc(DISCARD_SIZE);
+  assert(p && owned(p));
+  atomic_store(&discard_step, 1);
+  wait_step(3);
+  scr_sa_thread_park();
+  return NULL;
+}
+
+/* A worker that allocates one block of a class the other checks leave
+ * alone and parks without sharing. */
+static void *small_worker(void *arg) {
+  (void)arg;
+  scr_sa_thread_starting();
+  void *p = scr_mem_alloc(200);
+  assert(p && owned(p));
+  scr_sa_thread_park();
+  return NULL;
+}
+
+/* Discards wait while another worker runs, and the last worker to park
+ * starts them. When every arena is held by a discard that waits, a worker
+ * that needs one runs them itself. */
+static void check_deferred_discard(void) {
+  size_t page = (size_t)sysconf(_SC_PAGESIZE);
+  atomic_store(&discard_step, 0);
+  pthread_t holder;
+  assert(pthread_create(&holder, NULL, holding_worker, NULL) == 0);
+  wait_step(1);
+  discard_shares = false;
+  discard_in_old_arena = false;
+  pthread_t t;
+  assert(pthread_create(&t, NULL, discard_worker, NULL) == 0);
+  assert(pthread_join(t, NULL) == 0);
+  uintptr_t first = (discard_lo + page - 1) & ~(uintptr_t)(page - 1);
+  size_t total = (discard_hi - first) / page;
+  /* Still resident (the arena is not reused meanwhile, so the blocks are intact). */
+  assert(resident_pages(first, discard_hi) > total / 2);
+  for (size_t i = 0; i < DISCARD_BLOCKS; i += 4099) verify(discard_blocks[i], block_size, (unsigned char)i);
+  /* More arenas held by waiting discards than there are free ones. */
+  for (unsigned n = 0; n < 40; n++) {
+    assert(pthread_create(&t, NULL, small_worker, NULL) == 0);
+    assert(pthread_join(t, NULL) == 0);
+  }
+  atomic_store(&discard_step, 3);
+  assert(pthread_join(holder, NULL) == 0);
+  scr_sa_wait_trims();
+  assert(resident_pages(first, discard_hi) < total / 2);
+  discard_in_old_arena = true;
 }
 
 static void check_discard(void) {
@@ -635,6 +748,8 @@ static void check_discard(void) {
   assert(trim_outside < 4 * TRIM_BLOCKS / TRIM_KEEP + 256);
   for (size_t k = 0; k < TRIM_BLOCKS / TRIM_KEEP; k++) scr_mem_free(trim_kept[k]);
   free(trim_blocks);
+
+  check_deferred_discard();
   for (unsigned i = 0; i < DISCARD_OLD; i++) scr_mem_free(old_blocks[i]);
   free(discard_blocks);
 }
@@ -649,6 +764,7 @@ int main(void) {
   check_realloc();
   check_system_pointers();
   check_churn();
+  check_free_order();
 #if SCR_SMALL_ALLOC && defined(__linux__) && defined(__GLIBC__)
   check_heap_huge_pages();
 #endif

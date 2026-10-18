@@ -11,7 +11,12 @@ import { InternalCompilerError } from "../../errors.js";
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
-import { ASSERT_VERDICT_LIB_FNS, LIB_FN_SYMS, USES_TIMERS_LIB_FNS } from "./lib-shared.js";
+import {
+  ASSERT_VERDICT_LIB_FNS,
+  LIB_FN_SYMS,
+  mockTimerSym,
+  USES_TIMERS_LIB_FNS,
+} from "./lib-shared.js";
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import { DYN_KIND } from "./dyn.js";
 import { rawBytes } from "./lib-abi.js";
@@ -431,7 +436,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   if (MAY_THROW_LIB_FNS.has(e.fn) && LIB_FN_SYMS[e.fn] === undefined) {
     throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   }
-  const sym = LIB_FN_SYMS[e.fn];
+  const sym = mockTimerSym(host, e) ?? LIB_FN_SYMS[e.fn];
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   const args = READ_ONLY_STRING_LIB_FNS.has(e.fn)
     ? emitBorrowedInputs(host, e.args)

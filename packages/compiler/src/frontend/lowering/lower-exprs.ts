@@ -1,3 +1,4 @@
+import { dateJsonType, isDateJsonSource } from "./builtins/dates.js";
 import { guardNullProto, nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 import { lowerProtocolPropertyRead } from "./class-protocol-dispatch.js";
 import { generatorDrain } from "./iterator-adapters.js";
@@ -3328,10 +3329,23 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       !(declared.kind === "union" && lowerer.armTag(declared.unionId, UNDEFINED_T) >= 0)
     )
       return expr;
+    // The same for a field holding a Date's toJSON() result, whose null
+    // the declared string does not represent.
+    if (
+      expr.kind === "recordGet" &&
+      lowerer.isRuntimeOptionalField(expr.shapeId, expr.field) &&
+      lowerer.armTag(expr.type.unionId, NULL_T) >= 0 &&
+      declared &&
+      !(declared.kind === "union" && lowerer.armTag(declared.unionId, NULL_T) >= 0)
+    )
+      return expr;
   }
   if (ts.isIdentifier(node)) {
     const symbol = lowerer.resolveValueSymbol(node);
     if (symbol && lowerer.unstableSwitchBindings.has(symbol)) return expr;
+    // A binding initialized by a Date's toJSON() can hold null where the
+    // checker says string; consumers check it.
+    if (symbol && lowerer.dateJsonBindings.has(symbol)) return expr;
   }
   if (
     ts.isPropertyAccessExpression(node) &&
@@ -5318,6 +5332,27 @@ export function lowerIntrinsicProperty(
         loc: locOf(expr),
       };
     }
+    // The flag getters answer whether `flags` holds the flag's letter.
+    const flag = REGEX_FLAG_GETTERS.get(name);
+    if (flag !== undefined) {
+      const loc = locOf(expr);
+      const flags: IrExpr = {
+        kind: "regexIntrinsic",
+        method: "flags",
+        receiver: strictReceiver({ kind: "regex" }),
+        args: [],
+        type: STRING,
+        loc,
+      };
+      return {
+        kind: "strIntrinsic",
+        method: "includes",
+        receiver: flags,
+        args: [{ kind: "strLit", value: flag, type: STRING, loc }],
+        type: BOOL,
+        loc,
+      };
+    }
     if (name === "test") {
       lowerer.unsupported("SC1090", expr, "regex methods as values (call 'test' directly)");
     }
@@ -5654,6 +5689,15 @@ export function lowerArrayLiteral(
       }
     }
   }
+  // A Date's toJSON() element keeps its null in a literal with no declared
+  // destination: the lib types say string.
+  if (
+    !expected &&
+    mapped?.kind === "array" &&
+    mapped.elem.kind === "string" &&
+    expr.elements.some((element) => isDateJsonSource(lowerer, element))
+  )
+    mapped = { kind: "array", elem: dateJsonType(lowerer) };
   // An array literal inside an npm-static implicit-any instance can
   // inherit the checker's poisoned any[] context even after the
   // active binding gives every element one concrete lowering. Recover a
@@ -13228,10 +13272,22 @@ function lowerRuntimeKeyIn(
   return { kind: "call", callee: helper, args: [keyIr, recv], type: BOOL, loc };
 }
 
+/** RegExp.prototype's flag getters and the flag each one reads. */
+const REGEX_FLAG_GETTERS: ReadonlyMap<string, string> = new Map([
+  ["hasIndices", "d"],
+  ["global", "g"],
+  ["ignoreCase", "i"],
+  ["multiline", "m"],
+  ["dotAll", "s"],
+  ["unicode", "u"],
+  ["unicodeSets", "v"],
+  ["sticky", "y"],
+]);
+
 /** A regex literal `/ab+c/gi` → regexLit (fresh state per evaluation,
  * shared bytecode per (pattern, flags) pair). The TS parser has already syntax-checked the literal;
- * what remains here is the flag-alphabet fence (d and v are
- * declared-valid TS flags outside this slice). Named capture groups
+ * what remains here is the flag-alphabet fence (d is a
+ * declared-valid TS flag outside this slice). Named capture groups
  * `(?<name>...)` and `\k<name>` backreferences compile — libregexp
  * executes them natively, replace templates resolve `$<name>` at
  * runtime, and `.groups` reads desugar at their access sites
@@ -13242,20 +13298,19 @@ export function lowerRegexLiteral(lowerer: Lowerer, expr: ts.RegularExpressionLi
   const text = expr.text;
   const lastSlash = text.lastIndexOf("/");
   const pattern = text.slice(1, lastSlash);
-  const flags = text.slice(lastSlash + 1);
-  for (const f of flags) {
-    if (!"gimsuy".includes(f)) {
+  const written = text.slice(lastSlash + 1);
+  for (const f of written) {
+    if (!"gimsuvy".includes(f)) {
       lowerer.unsupported(
         "SC1120",
         expr,
-        f === "d"
-          ? "the regex 'd' flag (match indices)"
-          : f === "v"
-            ? "the regex 'v' flag (unicode sets)"
-            : `the regex '${f}' flag`,
+        f === "d" ? "the regex 'd' flag (match indices)" : `the regex '${f}' flag`,
       );
     }
   }
+  // `flags`, `toString()` and inspection list the flags in getter order,
+  // whatever order the literal spells them in.
+  const flags = [..."gimsuvy"].filter((f) => written.includes(f)).join("");
   return { kind: "regexLit", pattern, flags, type: REGEX, loc: locOf(expr) };
 }
 

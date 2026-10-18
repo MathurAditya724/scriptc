@@ -130,6 +130,7 @@ export const FETCH_AMBIENT_TYPES = [
   "RequestInit",
   "Event",
   "CustomEvent",
+  "MessageEvent",
   "EventTarget",
   "AddEventListenerOptions",
   "EventListenerOptions",
@@ -1243,7 +1244,8 @@ function isWorkerHandleSymbol(
   return (
     (symbol?.name === "Worker" ||
       symbol?.name === "MessagePort" ||
-      symbol?.name === "MessageChannel") &&
+      symbol?.name === "MessageChannel" ||
+      symbol?.name === "BroadcastChannel") &&
     ctx.checker
       .declarationsOf(symbol)
       .some(

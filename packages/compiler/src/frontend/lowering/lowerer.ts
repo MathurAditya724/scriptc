@@ -434,7 +434,7 @@ import {
 } from "./builtins/console.js";
 import { lowerConsoleNew } from "./lower-console.js";
 import { lowerNumberStaticCall, lowerNumberStaticProperty } from "./builtins/numbers.js";
-import { lowerDateCall } from "./builtins/dates.js";
+import { dateJsonType, isDateJsonSource, lowerDateCall } from "./builtins/dates.js";
 import {
   lowerFsConstantsProperty,
   lowerBuiltinConstantsProperty,
@@ -1879,6 +1879,8 @@ export class Lowerer {
   /** Record fields promoted to an undefined-armed union by an indexed-read
    * value. The key is the concrete emitted shape and field name. */
   readonly runtimeOptionalFields = new Set<string>();
+  /** Bindings initialized by a Date's `toJSON()` (analyzeDateJsonResults). */
+  readonly dateJsonBindings = new Set<ts.Symbol>();
   /** Record bindings whose flow class reaches storage outside the class:
    * they keep the declared layout, so an initializer from unchecked reads
    * converts once instead of the binding adopting the widened variant. */
@@ -3850,6 +3852,62 @@ export class Lowerer {
    * TypeScript's default indexed-access type is a useful source annotation,
    * but it is not a runtime proof; promoting only the affected slots keeps
    * the rest of the dense ABI unchanged. */
+  /** A Date's `toJSON()` answers null for an invalid date while the lib
+   * types say `string`: unannotated bindings initialized by such a call,
+   * and object-literal fields holding one, keep `string | null`. */
+  analyzeDateJsonResults(parts: FileParts[]): void {
+    const nullable = dateJsonType(this);
+    for (const { sf } of parts) {
+      if (!sf.text.includes("toJSON")) continue;
+      ts.walkPreorder(sf, (node) => {
+        // `x = d.toJSON()`: the checker narrows x to string after the
+        // assignment, so its reads must stay checked.
+        if (
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isIdentifier(node.left) &&
+          isDateJsonSource(this, node.right)
+        ) {
+          const symbol = this.checker.getSymbolAtLocation(node.left);
+          if (symbol) this.dateJsonBindings.add(symbol);
+          return undefined;
+        }
+        if (!ts.isVariableDeclaration(node) || !node.initializer) return undefined;
+        if (!ts.isIdentifier(node.name)) return undefined;
+        const symbol = this.checker.getSymbolAtLocation(node.name);
+        if (!symbol) return undefined;
+        let init: ts.Expression = node.initializer;
+        while (ts.isParenthesizedExpression(init)) init = init.expression;
+        if (isDateJsonSource(this, init)) {
+          this.dateJsonBindings.add(symbol);
+          // An annotation keeps its declared storage.
+          if (!node.type) this.runtimeOptionalBindingTypes.set(symbol, nullable);
+          return undefined;
+        }
+        if (node.type) return undefined;
+        if (!ts.isObjectLiteralExpression(init)) return undefined;
+        const declared = this.mapTypeOf(this.typeOf(node.name));
+        if (declared?.kind !== "record") return undefined;
+        let widened: IrType = declared;
+        for (const property of init.properties) {
+          const value = ts.isPropertyAssignment(property)
+            ? property.initializer
+            : ts.isShorthandPropertyAssignment(property)
+              ? property.name
+              : null;
+          const name =
+            property.name && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name))
+              ? property.name.text
+              : null;
+          if (value && name !== null && isDateJsonSource(this, value))
+            widened = this.runtimeOptionalRecordField(widened, name, nullable);
+        }
+        if (widened !== declared) this.runtimeOptionalBindingTypes.set(symbol, widened);
+        return undefined;
+      });
+    }
+  }
+
   analyzeRuntimeOptionalArrayReads(parts: FileParts[]): void {
     const provenance = RuntimeOptionalProvenance.fromEnvironment();
     // The site whose value the current promotion follows (debug only).
@@ -5999,6 +6057,7 @@ export class Lowerer {
     }
     this.collectProgram(parts);
     this.analyzeRuntimeOptionalArrayReads(parts);
+    this.analyzeDateJsonResults(parts);
     // Decorated classes analyze AFTER the whole collection pass: a
     // decorator's return type may name a subclass declared below the
     // class, and reference lowering needs each class's rebindability
@@ -6383,6 +6442,7 @@ export class Lowerer {
     };
     this.collectProgram(parts);
     this.analyzeRuntimeOptionalArrayReads(parts);
+    this.analyzeDateJsonResults(parts);
     // Decorated classes analyze post-collection here too: the %init seeds
     // lower the decoration calls, whose edges (decorator bodies, construct
     // thunks) reachable emit must see.

@@ -637,6 +637,7 @@ static _Thread_local bool scr_sa_worker;    /* set by scr_sa_thread_starting */
 static _Thread_local ScrSaKeep *scr_sa_keep; /* while the worker's memory is kept apart */
 static void scr_sa_keep_begin(unsigned i);
 static void scr_sa_keep_drained(ScrSaKeep *k, ScrSaBlock *b, unsigned c);
+static bool scr_sa_drain(void);
 #endif
 
 /* Moves every block other threads freed into this arena's free lists. */
@@ -669,6 +670,15 @@ static bool scr_sa_reserve(void) {
   uint32_t claimed = atomic_load_explicit(&scr_sa_claimed, memory_order_relaxed);
   for (;;) {
     if (claimed == UINT32_MAX) {
+#ifdef SCR_SA_TRIM
+      /* Arenas held by discards that wait (see scr_sa_thread_park): this
+       * thread discards them and claims one. */
+      if (scr_sa_drain()) {
+        scr_sa_refused = false;
+        claimed = atomic_load_explicit(&scr_sa_claimed, memory_order_relaxed);
+        continue;
+      }
+#endif
       scr_sa_refused = true;
       return false;
     }
@@ -919,7 +929,12 @@ static void scr_sa_trim(void) {
  *   recorded until it frees them;
  * - a remote free into its blocks means another thread held one: the same
  *   as sharing;
- * - when it parks without having shared, the trim helper returns the pages
+ * - when it parks without having shared, its arena stays claimed until no
+ *   other worker thread is running (scr_sa_thread_park): returning pages
+ *   interrupts every running thread of the process to flush its TLB, and
+ *   glibc's trim locks the arenas other threads allocate from, so discards
+ *   wait for the last worker of a group, which hands them to one helper;
+ * - the helper then returns the pages
  *   it carved (MADV_DONTNEED; the start of the first page, which it may
  *   share with older blocks, is cleared), frees the recorded system blocks,
  *   and parks the arena as the worker found it, with the blocks it took
@@ -956,7 +971,7 @@ struct ScrSaKeep {
 };
 
 static _Thread_local bool scr_sa_discarded; /* this thread's memory went back */
-static ScrSaKeep *scr_sa_parked_keep[SCR_SA_ARENAS]; /* handed to the helper */
+static ScrSaKeep *scr_sa_parked_keep[SCR_SA_ARENAS]; /* of discards that wait */
 
 /* SCR_SA_DISCARD: 0 off, 1 on (the default), 2 poison. */
 static int scr_sa_discard_mode(void) {
@@ -1189,10 +1204,14 @@ void scr_sa_thread_shares(void) {
   if (scr_sa_keep) scr_sa_keep->shared = true;
 }
 
+/* Worker threads that started and have not parked. */
+static _Atomic(unsigned) scr_sa_workers_live;
+
 /* Library archives run on their embedder's threads and keep their memory. */
 static void scr_sa_worker_starting(void) {
 #ifndef SCR_LIB
   scr_sa_worker = true;
+  atomic_fetch_add_explicit(&scr_sa_workers_live, 1, memory_order_relaxed);
 #endif
 }
 #define SCR_SA_WORKER_STARTING() scr_sa_worker_starting()
@@ -1218,20 +1237,16 @@ static void *scr_sa_trim_main(void *arg) {
   unsigned i = (unsigned)(uintptr_t)arg;
   scr_sa_arena = (int)i;
   scr_sa = scr_sa_parked[i];
-  ScrSaKeep *k = scr_sa_parked_keep[i];
-  scr_sa_parked_keep[i] = NULL;
-  if (k) scr_sa_discard(k);
-  else scr_sa_trim();
+  scr_sa_trim();
   scr_sa_release(i);
   atomic_fetch_sub_explicit(&scr_sa_trimming, 1, memory_order_release);
   return NULL;
 }
 
-/* Hands the calling thread's arena to a trim helper (with `k`, to discard
- * the worker's memory); false if no helper could start. */
-static bool scr_sa_start_helper(unsigned i, ScrSaKeep *k) {
+/* Hands the calling thread's arena to a trim helper; false if no helper
+ * could start. */
+static bool scr_sa_start_helper(unsigned i) {
   scr_sa_parked[i] = scr_sa;
-  scr_sa_parked_keep[i] = k;
   atomic_fetch_add_explicit(&scr_sa_trimming, 1, memory_order_relaxed);
   pthread_attr_t attr;
   pthread_t helper;
@@ -1241,11 +1256,70 @@ static bool scr_sa_start_helper(unsigned i, ScrSaKeep *k) {
               pthread_create(&helper, &attr, scr_sa_trim_main, (void *)(uintptr_t)i) == 0;
     pthread_attr_destroy(&attr);
   }
-  if (!started) {
-    scr_sa_parked_keep[i] = NULL;
-    atomic_fetch_sub_explicit(&scr_sa_trimming, 1, memory_order_relaxed);
-  }
+  if (!started) atomic_fetch_sub_explicit(&scr_sa_trimming, 1, memory_order_relaxed);
   return started;
+}
+
+/* Discards that wait for the last running worker: one bit per arena, whose
+ * state and ScrSaKeep are in scr_sa_parked and scr_sa_parked_keep. */
+static pthread_mutex_t scr_sa_pending_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t scr_sa_pending;
+
+/* Queues the discard of the calling worker's arena i; the arena stays
+ * claimed until it is done. */
+static void scr_sa_defer_discard(unsigned i, ScrSaKeep *k) {
+  atomic_fetch_add_explicit(&scr_sa_trimming, 1, memory_order_relaxed);
+  pthread_mutex_lock(&scr_sa_pending_lock);
+  scr_sa_parked[i] = scr_sa;
+  scr_sa_parked_keep[i] = k;
+  scr_sa_pending |= 1u << i;
+  pthread_mutex_unlock(&scr_sa_pending_lock);
+}
+
+/* Runs the waiting discards on the calling thread, which ends with no arena;
+ * returns whether there were any. */
+static bool scr_sa_drain(void) {
+  bool any = false;
+  for (;;) {
+    pthread_mutex_lock(&scr_sa_pending_lock);
+    uint32_t pending = scr_sa_pending;
+    unsigned i = pending ? (unsigned)__builtin_ctz(pending) : 0;
+    scr_sa_pending &= ~(1u << i);
+    pthread_mutex_unlock(&scr_sa_pending_lock);
+    if (!pending) return any;
+    any = true;
+    scr_sa_arena = (int)i;
+    scr_sa = scr_sa_parked[i];
+    ScrSaKeep *k = scr_sa_parked_keep[i];
+    scr_sa_parked_keep[i] = NULL;
+    scr_sa_discard(k);
+    scr_sa_release(i);
+    atomic_fetch_sub_explicit(&scr_sa_trimming, 1, memory_order_release);
+  }
+}
+
+static void *scr_sa_drain_main(void *arg) {
+  (void)arg;
+  scr_sa_drain();
+  return NULL;
+}
+
+/* A worker parked: the last one running starts the waiting discards. */
+static void scr_sa_worker_parked(void) {
+  if (atomic_fetch_sub_explicit(&scr_sa_workers_live, 1, memory_order_acq_rel) != 1) return;
+  pthread_mutex_lock(&scr_sa_pending_lock);
+  bool pending = scr_sa_pending != 0;
+  pthread_mutex_unlock(&scr_sa_pending_lock);
+  if (!pending) return;
+  pthread_attr_t attr;
+  pthread_t helper;
+  bool started = pthread_attr_init(&attr) == 0;
+  if (started) {
+    started = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED) == 0 &&
+              pthread_create(&helper, &attr, scr_sa_drain_main, NULL) == 0;
+    pthread_attr_destroy(&attr);
+  }
+  if (!started) scr_sa_drain();
 }
 
 void scr_sa_wait_trims(void) {
@@ -1259,7 +1333,20 @@ void scr_sa_wait_trims(void) {}
 void scr_sa_thread_shares(void) {}
 #endif
 
+static void scr_sa_park_arena(void);
+
 void scr_sa_thread_park(void) {
+#ifdef SCR_SA_TRIM
+  bool worker = scr_sa_worker;
+  scr_sa_worker = false;
+  scr_sa_park_arena();
+  if (worker) scr_sa_worker_parked();
+#else
+  scr_sa_park_arena();
+#endif
+}
+
+static void scr_sa_park_arena(void) {
   if (scr_sa_arena < 0) return;
   unsigned i = (unsigned)scr_sa_arena;
 #if defined(SCR_SA_PREFAULT) && defined(SCR_WORKERS)
@@ -1270,13 +1357,10 @@ void scr_sa_thread_park(void) {
   scr_sa_keep = NULL;
   if (k && !k->shared) {
     /* Nothing this thread allocated is reachable from another one: its
-     * memory goes back, and later frees on this thread are dropped. */
+     * memory goes back once no other worker runs (scr_sa_worker_parked),
+     * and later frees on this thread are dropped. */
     scr_sa_discarded = true;
-    if (!scr_sa_start_helper(i, k)) {
-      scr_sa_discard(k);
-      scr_sa_release(i);
-      return;
-    }
+    scr_sa_defer_discard(i, k);
     memset(&scr_sa, 0, sizeof scr_sa);
     scr_sa_arena = -1;
     scr_sa_refused = true;
@@ -1284,7 +1368,7 @@ void scr_sa_thread_park(void) {
   }
   if (k) scr_sa_keep_merge(k);
   if (scr_sa_trim_worth()) {
-    if (scr_sa_start_helper(i, NULL)) {
+    if (scr_sa_start_helper(i)) {
       /* Later frees on this thread take the foreign path into the arena's
        * remote list; the helper releases the claim. */
       memset(&scr_sa, 0, sizeof scr_sa);
@@ -1524,6 +1608,92 @@ void scr_mem_prefault(void *lo, void *hi) {
 #else
   (void)lo;
   (void)hi;
+#endif
+}
+
+/* Free order. Free lists are LIFO, so blocks freed in descending address
+ * order come back in ascending order, the order the bump pointers carve
+ * fresh memory in, and the order the program then touches them in. The
+ * order within a page matters as much as across pages: blocks of a page
+ * handed out in no particular order defeat the hardware prefetcher.
+ *
+ * The pointers are marked in a bitmap of block indices per class, over the
+ * range of blocks they span, and read back from the highest block down.
+ * That takes one bit per block in that range, at most one per block in
+ * use, and reading the bitmaps back costs a step per word; a set spread so
+ * thinly that they would take more than SCR_SA_ORDER_SPARSE words per
+ * pointer is left as it is. Pointers outside the reservation, not at
+ * `offset` in a block, or repeated, come first, in the order they had. */
+#define SCR_SA_ORDER_SPARSE 8
+
+#if SCR_SMALL_ALLOC
+/* The class and block index of a pointer `off` bytes past the reservation
+ * base plus the block offset, if it is at that offset in a block. Slices
+ * span at most 1 << 30 bytes, so an offset within one fits in 32 bits. */
+static inline bool scr_sa_order_block(uintptr_t off, uintptr_t span, unsigned shift,
+                                      const uint32_t *size, unsigned *c, uint32_t *idx) {
+  if (off >= span) return false;
+  *c = (unsigned)(off >> shift);
+  uint32_t in = (uint32_t)(off & (((uintptr_t)1 << shift) - 1));
+  *idx = in / size[*c];
+  return in == *idx * size[*c];
+}
+#endif
+
+void scr_mem_order_for_free(void **ptrs, size_t n, size_t offset) {
+#if SCR_SMALL_ALLOC
+  if (n < 2 || !scr_sa.span) return;
+  uintptr_t base = scr_sa.base + offset, span = scr_sa.span;
+  unsigned shift = scr_sa.shift, c;
+  uint32_t idx;
+  uint32_t size[SCR_SA_NCLASS], lo[SCR_SA_NCLASS], hi[SCR_SA_NCLASS];
+  size_t at[SCR_SA_NCLASS], words = 0;
+  for (c = 0; c < SCR_SA_NCLASS; c++) {
+    size[c] = (uint32_t)scr_sa_class_size(c);
+    lo[c] = UINT32_MAX;
+    hi[c] = 0;
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (!scr_sa_order_block((uintptr_t)ptrs[i] - base, span, shift, size, &c, &idx)) continue;
+    if (idx < lo[c]) lo[c] = idx;
+    if (idx > hi[c]) hi[c] = idx;
+  }
+  for (c = 0; c < SCR_SA_NCLASS; c++) {
+    at[c] = words;
+    if (lo[c] <= hi[c]) words += hi[c] / 64 - lo[c] / 64 + 1;
+  }
+  if (words == 0 || words / SCR_SA_ORDER_SPARSE > n) return;
+  uint64_t *bits = calloc(words, sizeof *bits);
+  if (!bits) return; /* the order only affects performance */
+  size_t k = 0;
+  for (size_t i = 0; i < n; i++) {
+    void *p = ptrs[i];
+    if (scr_sa_order_block((uintptr_t)p - base, span, shift, size, &c, &idx)) {
+      uint64_t *word = &bits[at[c] + idx / 64 - lo[c] / 64], bit = (uint64_t)1 << (idx % 64);
+      if (!(*word & bit)) {
+        *word |= bit;
+        continue;
+      }
+    }
+    ptrs[k++] = p;
+  }
+  for (c = 0; c < SCR_SA_NCLASS; c++) {
+    if (lo[c] > hi[c]) continue;
+    char *first = (char *)base + ((uintptr_t)c << shift) + (size_t)(lo[c] / 64) * 64 * size[c];
+    for (size_t w = hi[c] / 64 - lo[c] / 64 + 1; w-- > 0;) {
+      uint64_t word = bits[at[c] + w];
+      while (word) {
+        unsigned b = 63 - (unsigned)__builtin_clzll(word);
+        word &= ~((uint64_t)1 << b);
+        ptrs[k++] = first + (w * 64 + b) * size[c];
+      }
+    }
+  }
+  free(bits);
+#else
+  (void)ptrs;
+  (void)n;
+  (void)offset;
 #endif
 }
 

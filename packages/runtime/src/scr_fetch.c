@@ -496,6 +496,15 @@ static void sf_signal_timer_fire(ScrClosure *cb) {
   sf_signal_release(s);
 }
 
+/* The mocked AbortSignal.timeout's timer: Node's mock calls abort() on
+ * the signal's controller, so the reason is the AbortError. */
+static void sf_signal_mock_timer_fire(ScrClosure *cb) {
+  SfSignal *s = (SfSignal *)scr_box_get_ref(cb->caps[0]);
+  if (!s) return;
+  if (!s->aborted) sf_signal_abort_default(s, false);
+  sf_signal_release(s);
+}
+
 ScrDyn *scr_fetch_abort_timeout(ScrDyn *delay) {
   if (!delay || delay->kind != SCR_DYN_NUM) {
     if (delay) {
@@ -527,13 +536,19 @@ ScrDyn *scr_fetch_abort_timeout(ScrDyn *delay) {
     return NULL;
   }
   SfSignal *s = sf_signal_new();
-  ScrClosure *cb = scr_closure_new((void *)&sf_signal_timer_fire, 1);
+  bool mocked = scr_mt_abort_timeout_arm != NULL;
+  ScrClosure *cb = scr_closure_new(
+      mocked ? (void *)&sf_signal_mock_timer_fire : (void *)&sf_signal_timer_fire, 1);
   ScrBox *box =
       scr_box_new_obj(&sf_signal_retain_v, &sf_signal_release_v, NULL);
   scr_box_set_ref(box, sf_signal_retain(s));
   cb->caps[0] = box;
-  s->timer_id = scr_set_timeout_handle(cb, ms);
-  scr_timer_unref(s->timer_id);
+  if (mocked) {
+    scr_mt_abort_timeout_arm(cb, ms);
+  } else {
+    s->timer_id = scr_set_timeout_handle(cb, ms);
+    scr_timer_unref(s->timer_id);
+  }
   ScrDyn *out = scr_dyn_new_handle(s, SCR_DYNH_ABORT_SIGNAL);
   sf_signal_release(s);
   return out;
