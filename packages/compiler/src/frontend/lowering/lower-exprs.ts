@@ -16404,3 +16404,38 @@ function isCalleeOf(expr: ts.PropertyAccessExpression): boolean {
     parent.expression === node
   );
 }
+
+/** The constructor a primitive dynamic value answers for `.constructor`:
+ * the same interned closure the `Number`/`String`/`Boolean`/`BigInt`
+ * identifiers read (dequal's `(ctor = foo.constructor) === bar.constructor`
+ * over numbers), or `otherwise` for non-primitives. `value` must be safe to
+ * read repeatedly. */
+export function primitiveConstructorOr(
+  lowerer: Lowerer,
+  value: IrExpr,
+  otherwise: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  let result = otherwise;
+  for (const [test, name] of [
+    ["bigint", "BigInt"],
+    ["boolean", "Boolean"],
+    ["string", "String"],
+    ["number", "Number"],
+  ] as const) {
+    result = {
+      kind: "ternary",
+      cond: { kind: "dynTest", test, value, type: BOOL, loc },
+      then: {
+        kind: "dynFrom",
+        value: primitiveCtorClosure(lowerer, name, loc, true),
+        type: DYN,
+        loc,
+      },
+      else_: result,
+      type: DYN,
+      loc,
+    };
+  }
+  return result;
+}

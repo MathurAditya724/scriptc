@@ -1,3 +1,4 @@
+import { primitiveConstructorOr } from "./lower-exprs.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, varRef } from "../../ir/build.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
@@ -2141,7 +2142,20 @@ export class ClassDynamicDispatch {
                     ]
                   : [
                       { kind: "varDecl", localId: "bag.0", init: bag, loc },
-                      { kind: "return", value: fallback, loc },
+                      {
+                        kind: "return",
+                        // Primitives answer their wrapper constructors.
+                        value:
+                          name === "constructor"
+                            ? primitiveConstructorOr(
+                                lowerer,
+                                varRef("p.0", DYN, loc),
+                                fallback,
+                                loc,
+                              )
+                            : fallback,
+                        loc,
+                      },
                     ],
                 loc,
               };

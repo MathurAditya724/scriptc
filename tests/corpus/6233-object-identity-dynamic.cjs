@@ -78,16 +78,28 @@ function isPlainObj(value) {
   const prototype = Object.getPrototypeOf(value);
   return (prototype === null || prototype === Object.prototype || Object.getPrototypeOf(prototype) === null) && !(Symbol.toStringTag in value) && !(Symbol.iterator in value);
 }
-function isPlainLodash(value) {
+function isPlainTagged(value) {
   if (value == null || Object.prototype.toString.call(value) != "[object Object]") return false;
   const proto = Object.getPrototypeOf(value);
-  if (proto === null) return true;
-  const Ctor = Object.prototype.hasOwnProperty.call(proto, "constructor") && proto.constructor;
-  return typeof Ctor == "function" && Ctor instanceof Ctor && Ctor === Object;
+  return proto === null || proto.constructor === Object;
 }
 function isPlainCtor(value) {
   return !!value && typeof value === "object" && (value.constructor === Object || value.constructor === undefined);
 }
 for (const name of ["plain", "parsed", "array", "nullProto", "created", "instance"]) {
-  console.log(name, isPlainObj(values[name]), isPlainLodash(values[name]), isPlainCtor(values[name]));
+  console.log(name, isPlainObj(values[name]), isPlainTagged(values[name]), isPlainCtor(values[name]));
 }
+// Primitives answer their wrapper constructors (dequal compares
+// `(ctor = a.constructor) === b.constructor` before anything else).
+function ctorOf(v) {
+  return v.constructor;
+}
+for (const v of [1, "s", true, 10n]) {
+  const c = ctorOf(v);
+  console.log(typeof v, c === Number, c === String, c === Boolean, c === BigInt, c === Object, typeof c);
+}
+function sameCtor(a, b) {
+  let c;
+  return !!(a && b && (c = a.constructor) === b.constructor) && (c === Number || c === String);
+}
+console.log(sameCtor(1, 2), sameCtor(1, "1"), sameCtor("a", "b"), sameCtor({}, {}));
