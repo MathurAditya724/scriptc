@@ -33,8 +33,10 @@ void scr_test_register(ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, d
 void scr_test_suite(ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, ScrStr *at,
                     double flags, double concurrency);
 /* before/after/beforeEach/afterEach on the CURRENT registration parent
- * (`which`: 0 before, 1 after, 2 beforeEach, 3 afterEach). */
-void scr_test_hook(double which, ScrClosure *cb, double flags);
+ * (`which`: 0 before, 1 after, 2 beforeEach, 3 afterEach); `at` is the
+ * hook call's "file:line:col". The root's before and after hooks run
+ * around the top-level tests. */
+void scr_test_hook(double which, ScrClosure *cb, double flags, ScrStr *at);
 /* t.test(...): registers under `t`, runs the subtest INLINE on the
  * runner fiber, and returns the settled promise the `await` consumes (+1). */
 ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, double flags, ScrStr *at,

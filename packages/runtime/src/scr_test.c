@@ -80,6 +80,7 @@ enum {
 typedef struct {
   ScrClosure *cb;
   int flags;
+  ScrStr *at; /* "file:line:col" of the hook call, owned; NULL for t.* hooks */
 } ScrTestHook;
 
 typedef struct {
@@ -123,6 +124,7 @@ struct ScrTestCtx {
   ScrPromise *slot;    /* owned; the parent waiting for its next subtest to finish */
   struct ScrMockTimers *mock_timers; /* t.mock.timers, made on first use; freed at exit */
   bool passed; /* t.passed: set when the body passes, as Node's pass() does */
+  bool listed; /* a suite listed in the failing section (a failing root before) */
 };
 
 static SCR_TL ScrTestCtx *scr_test_root = NULL;
@@ -136,6 +138,18 @@ static SCR_TL long scr_test_ct_tests = 0, scr_test_ct_suites = 0, scr_test_ct_pa
             scr_test_ct_todo = 0;
 static SCR_TL double scr_test_t0 = 0;
 static SCR_TL bool scr_test_suite_hook_failed = false;
+/* The promises of async module-level before hooks, which the runner waits
+ * for before the first top-level test. */
+static SCR_TL ScrPromise **scr_test_root_pending = NULL;
+static SCR_TL size_t scr_test_root_npending = 0, scr_test_root_pending_cap = 0;
+
+/* A module-level before hook threw or rejected: the first failure is kept
+ * for the top-level tests and suites, later ones are dropped. */
+static void scr_test_root_before_failed(ScrTestCtx *root) {
+  if (!scr_exc_pending()) return;
+  if (!root->before_err) root->before_err = scr_exc_take();
+  else scr_exc_clear();
+}
 /* Above 0 while subtests run concurrently: result lines are held, and the
  * outermost concurrent parent prints its subtrees in declaration order,
  * as Node's reporter does, once they all finish. */
@@ -164,7 +178,10 @@ ScrTestCtx *scr_testctx_retain(ScrTestCtx *t) {
 }
 
 static void scr_test_hooks_free(ScrTestHooks *h) {
-  for (size_t i = 0; i < h->n; i++) scr_closure_release(h->v[i].cb);
+  for (size_t i = 0; i < h->n; i++) {
+    scr_closure_release(h->v[i].cb);
+    scr_str_release(h->v[i].at);
+  }
   free(h->v);
   h->v = NULL;
   h->n = h->cap = 0;
@@ -277,7 +294,9 @@ static void scr_test_indent(int depth) {
 
 /* "(1.234567ms)" — durations print microsecond-rounded (Node's hrtime
  * granularity), not with double noise. */
+/* NaN prints nothing: a test cancelled before it started has no duration. */
 static void scr_test_print_dur(double ms) {
+  if (isnan(ms)) return;
   char num[32];
   fputs(" (", stdout);
   size_t n = scr_f64_to_str(round(ms * 1e6) / 1e6, num);
@@ -406,10 +425,17 @@ static void scr_test_mocks_restore(ScrTestHooks *mocks, bool forget) {
 /* Run `which` hooks up (beforeEach: outermost suite first) or down
  * (afterEach: innermost first) the ancestor chain. A hook throw fails the
  * test with the hook's error (Node cancels harder — SEMANTICS.md). */
-static void scr_test_run_hooks_of(ScrTestCtx *owner, int which) {
-  for (size_t i = 0; i < owner->hooks[which].n && !scr_exc_pending(); i++) {
-    scr_test_call(owner->hooks[which].v[i].cb, owner->hooks[which].v[i].flags, NULL, NULL);
+/* `ctx` is the context a hook that takes one receives: the suite or test
+ * for its own before/after hooks, the test for the beforeEach/afterEach
+ * chain. */
+static ScrTestHook *scr_test_run_hooks_of(ScrTestCtx *owner, int which, ScrTestCtx *ctx) {
+  if (scr_exc_pending()) return NULL; /* an earlier hook in the chain threw */
+  for (size_t i = 0; i < owner->hooks[which].n; i++) {
+    ScrTestHook *h = &owner->hooks[which].v[i];
+    scr_test_call(h->cb, h->flags, ctx, NULL);
+    if (scr_exc_pending()) return h; /* the hook that threw */
   }
+  return NULL;
 }
 
 /* Returns whether the chain has any `which` hooks. */
@@ -422,9 +448,9 @@ static bool scr_test_run_each_hooks(ScrTestCtx *t, int which, bool outermost_fir
     if (p->hooks[which].n > 0) any = true;
   }
   if (outermost_first) {
-    for (int i = n - 1; i >= 0; i--) scr_test_run_hooks_of(chain[i], which);
+    for (int i = n - 1; i >= 0; i--) scr_test_run_hooks_of(chain[i], which, t);
   } else {
-    for (int i = 0; i < n; i++) scr_test_run_hooks_of(chain[i], which);
+    for (int i = 0; i < n; i++) scr_test_run_hooks_of(chain[i], which, t);
   }
   return any;
 }
@@ -556,6 +582,36 @@ static void scr_test_finish_concurrent(ScrTestCtx *t) {
   for (size_t i = 0; i < t->nchildren; i++) scr_test_report_tree(t->children[i]);
 }
 
+/* A failing root before hook (Node): each top-level test fails with its
+ * error without running its body or beforeEach hooks, though its
+ * afterEach hooks run; a top-level suite fails with it, and the tests and
+ * suites in it are cancelled before they start. */
+static void scr_test_cancel_unrun(ScrTestCtx *c) {
+  for (size_t i = 0; i < c->nchildren; i++) scr_test_cancel_unrun(c->children[i]);
+  static const char msg[] = "test did not finish before its parent and was cancelled";
+  scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+  c->err = scr_exc_take();
+  c->listed = true;
+  c->dur_ms = NAN;
+  c->state = SCR_TS_CANCELLED;
+  scr_test_report_result(c);
+}
+
+static void scr_test_fail_unrun(ScrTestCtx *c, ScrCaught *err) {
+  double start = scr_now_ms();
+  c->err = scr_caught_retain(err);
+  c->listed = true;
+  if (c->is_suite) {
+    for (size_t i = 0; i < c->nchildren; i++) scr_test_cancel_unrun(c->children[i]);
+  } else {
+    scr_test_run_each_hooks(c, SCR_HOOK_AFTER_EACH, false);
+    if (scr_exc_pending()) scr_exc_clear();
+  }
+  c->dur_ms = scr_now_ms() - start;
+  c->state = SCR_TS_FAIL;
+  scr_test_report_result(c);
+}
+
 static void scr_test_run_children(ScrTestCtx *t) {
   /* `only` at this level: when a child is marked, or contains a marked
    * test or suite, only those children run. The others are dropped entirely
@@ -569,6 +625,10 @@ static void scr_test_run_children(ScrTestCtx *t) {
     /* Subtests t.test already ran INLINE at their call site, or started on
      * their own fiber. */
     if (c->state != SCR_TS_PENDING || c->done) continue;
+    if (t == scr_test_root && t->before_err) {
+      scr_test_fail_unrun(c, t->before_err);
+      continue;
+    }
     if (t->concurrency > 1) scr_test_start(c);
     else scr_test_run_node(c);
   }
@@ -595,7 +655,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
     /* The body already ran at registration (children collected). A hook
      * throw fails the SUITE with that error — before-failures skip the
      * children (Node cancels them; SEMANTICS.md numbers the difference). */
-    scr_test_run_hooks_of(t, SCR_HOOK_BEFORE);
+    scr_test_run_hooks_of(t, SCR_HOOK_BEFORE, t);
     if (scr_exc_pending()) {
       t->err = scr_exc_take();
     } else {
@@ -606,7 +666,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
       } else {
         scr_test_run_children(t);
       }
-      scr_test_run_hooks_of(t, SCR_HOOK_AFTER);
+      scr_test_run_hooks_of(t, SCR_HOOK_AFTER, t);
       if (scr_exc_pending()) t->err = scr_exc_take();
     }
     t->dur_ms = scr_now_ms() - start;
@@ -619,6 +679,8 @@ static void scr_test_run_node(ScrTestCtx *t) {
                  : scr_test_subtree_failed(t) ? SCR_TS_CHILDFAIL
                                               : SCR_TS_PASS;
     }
+    /* Node's suite pass() comes after its after hooks. */
+    t->passed = t->state == SCR_TS_PASS || t->state == SCR_TS_TODO_PASS;
     scr_test_report_result(t);
     return;
   }
@@ -678,7 +740,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
     }
   }
   /* t.after hooks run once the test and its afterEach chain finish. */
-  scr_test_run_hooks_of(t, SCR_HOOK_AFTER);
+  scr_test_run_hooks_of(t, SCR_HOOK_AFTER, t);
   if (scr_exc_pending()) {
     if (!failed && !t->err) {
       t->err = scr_exc_take();
@@ -808,7 +870,7 @@ static void scr_test_print_failures(ScrTestCtx *t, bool *any) {
   for (size_t i = 0; i < t->nchildren; i++) {
     ScrTestCtx *c = t->children[i];
     scr_test_print_failures(c, any);
-    if (!c->is_suite &&
+    if ((!c->is_suite || c->listed) &&
         (c->state == SCR_TS_FAIL || c->state == SCR_TS_TODO_FAIL ||
          c->state == SCR_TS_CANCELLED) &&
         c->err) {
@@ -1399,7 +1461,41 @@ static void scr_test_runner_entry(ScrFiber *self, void *argpack) {
    * the first test only after the file's synchronous body completes. */
   scr_await_hop();
   ScrTestCtx *root = scr_test_root;
+  /* The root's before hooks ran at their before() calls; the first test
+   * waits for the async ones. */
+  for (size_t i = 0; i < scr_test_root_npending; i++) {
+    scr_await_void(scr_test_root_pending[i]);
+    scr_test_root_before_failed(root);
+    scr_promise_release(scr_test_root_pending[i]);
+  }
+  free(scr_test_root_pending);
+  scr_test_root_pending = NULL;
+  scr_test_root_npending = scr_test_root_pending_cap = 0;
   scr_test_run_children(root);
+  /* Its after hooks: a throw reports the root as "✖ <file>" with the hook's
+   * location, after the top-level results, without counting it or changing
+   * the exit code, as Node does. */
+  double after_start = scr_now_ms();
+  ScrTestHook *after_failed = scr_test_run_hooks_of(root, SCR_HOOK_AFTER, root);
+  if (scr_exc_pending()) {
+    root->err = scr_exc_take();
+    root->dur_ms = scr_now_ms() - after_start;
+    root->state = SCR_TS_FAIL;
+    if (after_failed && after_failed->at) {
+      root->at = scr_str_retain(after_failed->at);
+      /* The name is the file: the location without its ":line:col". */
+      size_t end = root->at->len;
+      for (int colons = 0; end > 0 && colons < 2; end--) {
+        if (root->at->data[end - 1] == ':') colons++;
+      }
+      scr_str_release(root->name);
+      root->name = scr_str_new(root->at->data, end);
+    }
+    fputs("\xE2\x9C\x96 ", stdout);
+    scr_test_print_str(root->name);
+    scr_test_print_dur(root->dur_ms);
+    fputc('\n', stdout);
+  }
   scr_test_run_done = true;
   scr_snap_write_all();
   scr_test_count(root);
@@ -1413,6 +1509,10 @@ static void scr_test_runner_entry(ScrFiber *self, void *argpack) {
   scr_test_info_line("duration_ms", round((scr_now_ms() - scr_test_t0) * 1e6) / 1e6);
   bool any = false;
   scr_test_print_failures(root, &any);
+  if (root->err) {
+    if (!any) fputs("\n\xE2\x9C\x96 failing tests:\n", stdout);
+    scr_test_print_failure(root);
+  }
   /* The tree is done reporting: release it (test bodies may still hold
    * their TestContext refs — the boxes stay alive through those). */
   scr_test_reg_parent = NULL;
@@ -1519,13 +1619,51 @@ void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrow
   if (cb && (int)mode != SCR_TEST_SKIP) {
     ScrTestCtx *prev = scr_test_parent_get();
     scr_test_parent_set(t);
-    ((void (*)(ScrClosure *))cb->fn)(cb);
+    /* flag 2: the body takes its SuiteContext (+1, as test bodies do). */
+    if ((int)flags & SCR_TEST_F_CTX)
+      ((void (*)(ScrClosure *, ScrTestCtx *))cb->fn)(cb, scr_testctx_retain(t));
+    else
+      ((void (*)(ScrClosure *))cb->fn)(cb);
     scr_test_parent_set(prev);
   }
   scr_closure_release(cb);
 }
 
-void scr_test_hook(double which, ScrClosure *cb /*moves*/, double flags) {
+/* A module-level before hook runs at its before() call, as Node runs the
+ * hooks of its already-started root at once: the synchronous part runs
+ * now, on the caller's stack, and the runner waits for an async hook's
+ * promise before the first top-level test. The first failure fails the
+ * top-level tests and suites (scr_test_fail_unrun). */
+static void scr_test_root_before_now(ScrTestCtx *root, ScrClosure *cb, int flags) {
+  bool takes_ctx = (flags & SCR_TEST_F_CTX) != 0;
+  if (flags & SCR_TEST_F_ASYNC) {
+    ScrPromise *p =
+        takes_ctx
+            ? ((ScrPromise * (*)(ScrClosure *, ScrTestCtx *)) cb->fn)(cb, scr_testctx_retain(root))
+            : ((ScrPromise * (*)(ScrClosure *)) cb->fn)(cb);
+    if (p && !scr_exc_pending()) {
+      if (scr_test_root_npending == scr_test_root_pending_cap) {
+        scr_test_root_pending_cap = scr_test_root_pending_cap ? scr_test_root_pending_cap * 2 : 2;
+        scr_test_root_pending = realloc(scr_test_root_pending,
+                                        scr_test_root_pending_cap * sizeof *scr_test_root_pending);
+        if (!scr_test_root_pending) scr_test_oom();
+      }
+      /* The runner observes it: a rejection is the hook's failure, not an
+       * unhandled rejection. */
+      scr_promise_mark_handled(p);
+      scr_test_root_pending[scr_test_root_npending++] = p;
+      return;
+    }
+    scr_promise_release(p);
+  } else if (takes_ctx) {
+    ((void (*)(ScrClosure *, ScrTestCtx *))cb->fn)(cb, scr_testctx_retain(root));
+  } else {
+    ((void (*)(ScrClosure *))cb->fn)(cb);
+  }
+  scr_test_root_before_failed(root);
+}
+
+void scr_test_hook(double which, ScrClosure *cb /*moves*/, double flags, ScrStr *at) {
   scr_test_ensure_root();
   ScrTestCtx *owner = scr_test_parent_get();
   ScrTestHooks *h = &owner->hooks[(int)which];
@@ -1536,7 +1674,10 @@ void scr_test_hook(double which, ScrClosure *cb /*moves*/, double flags) {
   }
   h->v[h->n].cb = cb;
   h->v[h->n].flags = (int)flags;
+  h->v[h->n].at = at && at->len > 0 ? scr_str_retain(at) : NULL;
   h->n++;
+  if ((int)which == SCR_HOOK_BEFORE && owner == scr_test_root)
+    scr_test_root_before_now(owner, cb, (int)flags);
 }
 
 /* t.test(...): registers under `t` and — because subtests run inline on
@@ -1597,7 +1738,7 @@ void scr_test_ctx_todo(ScrTestCtx *t, ScrStr *msg /*borrowed*/) {
  * each descendant subtest, and after runs once the test finishes. */
 void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb /*moves*/, double flags) {
   if ((int)which == SCR_HOOK_BEFORE) {
-    scr_test_call(cb, (int)flags, NULL, NULL);
+    scr_test_call(cb, (int)flags, t, NULL);
     scr_closure_release(cb);
     if (scr_exc_pending() && !t->before_err) t->before_err = scr_exc_take();
     else if (scr_exc_pending()) scr_exc_clear();
@@ -1611,6 +1752,7 @@ void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb /*moves*/, do
   }
   h->v[h->n].cb = cb;
   h->v[h->n].flags = (int)flags;
+  h->v[h->n].at = NULL;
   h->n++;
 }
 
@@ -1622,6 +1764,7 @@ static void scr_test_mocks_add(ScrTestHooks *h, ScrClosure *restore /*moves*/) {
   }
   h->v[h->n].cb = restore;
   h->v[h->n].flags = 0;
+  h->v[h->n].at = NULL;
   h->n++;
 }
 
@@ -2163,6 +2306,7 @@ void scr_test_ctx_diagnostic(ScrTestCtx *t, ScrStr *msg /*borrowed*/) {
 }
 
 ScrStr *scr_test_ctx_name(ScrTestCtx *t) {
+  if (!t->name && !t->parent) return scr_str_new("<root>", 6); /* Node's root test */
   return t->name ? scr_str_retain(t->name) : scr_str_new("", 0);
 }
 

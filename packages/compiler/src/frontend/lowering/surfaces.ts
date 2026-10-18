@@ -3046,8 +3046,8 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
     hint =
       "'.groups' lowers when the match's regex is STATICALLY known — a regex literal, or a " +
       "const initialized with one (the group-name table is built at compile time) — and the " +
-      "read is not an optional-chain step: narrow the match instead (if (m) { m.groups } or " +
-      "m!.groups)";
+      "match comes from exec, match, a for-of over matchAll, or the element parameter of an " +
+      "array-method callback over matchAll rows";
   } else if (recvIr?.kind === "array" && member === "flat") {
     hint =
       "flat has no lowering (flatMap does) — flatten into an accumulator instead: " +

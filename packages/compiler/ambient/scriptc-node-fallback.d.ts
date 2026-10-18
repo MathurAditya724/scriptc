@@ -3375,8 +3375,18 @@ declare module "node:util/types" {
  * suites typecheck but fence at their use sites (no lowering). */
 declare module "node:test" {
   type TestFn = (t: TestContext) => void | Promise<void>;
-  type SuiteFn = () => void;
-  type HookFn = () => void | Promise<void>;
+  type SuiteFn = (s: SuiteContext) => void;
+  type HookFn = (c: TestContext | SuiteContext) => void | Promise<void>;
+  /* The describe/suite callback's context, and the before/after hook
+   * context of a suite. */
+  interface SuiteContext {
+    readonly name: string;
+    readonly fullName: string;
+    readonly filePath: string | undefined;
+    readonly attempt: number;
+    readonly passed: boolean;
+    diagnostic(message: string): void;
+  }
   interface TestOptions {
     skip?: boolean | string;
     todo?: boolean | string;
@@ -3537,6 +3547,7 @@ declare module "node:test" {
     run,
     snapshot,
     TestContext,
+    SuiteContext,
     TestOptions,
     Mock,
     MockFunctionContext,

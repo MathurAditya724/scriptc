@@ -3035,26 +3035,30 @@ export type IrExpr =
    * Declared fields are tried FIRST (an emitted string-switch — field
    * access exactness is preserved: a declared name always answers from the
    * struct slot), then the overflow map on index-signature shapes. `type`
-   * is the CHECKER's type for the access: the index signature's value type
-   * (dyn for `unknown`; with noUncheckedIndexedAccess, its
-   * `V | undefined` union). A MISSING key produces: the undefined dyn
-   * singleton when `type` is dyn; the undefined arm when `type` is an
-   * undefined-armed union; otherwise a TRAP — the checker claimed V and no
-   * undefined is representable (the array OOB policy; on declared-only
-   * shapes tsc's keyof check makes the trap unreachable without an `as`
-   * smuggle). Declared-field values surface as `type`: V-typed fields read
-   * directly, dyn results build a dyn COPY of the field value (the dynFrom
-   * conversion — deep for composites, documented), union results wrap.
+   * is the index signature's value type armed with undefined (dyn for
+   * `unknown`), so a missing key reads undefined as in JavaScript, or the
+   * declared fields' common type on signature-free shapes. A MISSING key
+   * produces: the undefined dyn singleton when `type` is dyn; the undefined
+   * arm when `type` is an undefined-armed union; NaN with `missNaN`;
+   * otherwise a TRAP (declared-only shapes, where tsc's keyof check makes
+   * the trap unreachable without an `as` smuggle). Declared-field values
+   * surface as `type`: V-typed fields read directly, dyn results build a
+   * dyn COPY of the field value (the dynFrom conversion — deep for
+   * composites, documented), union results wrap.
    * The key and object are borrowed; refcounted results are owned (+1).
    * `overflowOnly` (set when the key is a LITERAL that names no declared
    * field): the read touches only the overflow map — declared fields need
-   * not surface as `type`, and the emitted helper skips the string-switch. */
+   * not surface as `type`, and the emitted helper skips the string-switch.
+   * `missNaN` (with an f64 `type`): a missing key produces NaN instead of
+   * trapping, for reads whose every consumer treats undefined like NaN
+   * (nan-coded-reads.ts). */
   | {
       kind: "recordKeyGet";
       obj: IrExpr;
       shapeId: string;
       key: IrExpr;
       overflowOnly?: true;
+      missNaN?: true;
       type: IrType;
       loc: SrcLoc;
     }
