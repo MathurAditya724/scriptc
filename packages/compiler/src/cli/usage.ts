@@ -57,7 +57,8 @@ Options:
                      compile the named npm packages' shipped JS statically as
                      program modules (repeatable; "auto" opts in every eligible
                      direct import: own .d.ts, unminified JS, no build-transform
-                     markers). Packages that fail preflight are refused with a
+                     markers; "pkg..." also names every package pkg depends
+                     on). Packages that fail preflight are refused with a
                      diagnostic. Eligible dependencies compile automatically.
       --provenance-sources
                      EXPERIMENTAL: compile npm dependencies from their

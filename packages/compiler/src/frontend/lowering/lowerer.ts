@@ -142,6 +142,7 @@ import { resolve } from "node:path";
 import { bindingSource } from "../binding-source.js";
 import { tsgoPath } from "../dts-paths.js";
 import * as ts from "../ts7/adapter.js";
+import { erasedTypeOnlyImport } from "../type-only-imports.js";
 import { literalValues } from "../literal-values.js";
 import { discriminantOwners, literalUnionArm, type UnionLiteral } from "../union-discriminants.js";
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
@@ -3901,6 +3902,65 @@ export class Lowerer {
     for (const fp of parts) if (!indexOf.has(fp.sf)) visit(fp.sf);
   }
 
+  /** node:punycode's load at a require() call: the module body reports
+   * DEP0040 when it first runs, unless isInsideNodeModules() finds the
+   * requiring frame in a dependency, and process.emitWarning delivers the
+   * report on the next tick. Later loads are cache hits either way. */
+  punycodeRequireWarning(node: ts.Node): IrStmt {
+    const loc = locOf(node);
+    const fromDependency = /[\\/]node_modules[\\/]/.test(node.getSourceFile().fileName);
+    return {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "punycode.warn",
+        args: [
+          { kind: "boolLit", value: false, type: BOOL, loc },
+          { kind: "boolLit", value: !fromDependency, type: BOOL, loc },
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    };
+  }
+
+  /** node:punycode's DEP0040 for a static ES import anywhere in the module
+   * graph: Node links builtins before any module evaluates, so the report
+   * comes first, before the program can register a 'warning' listener —
+   * whichever file imports it (a dependency's ES import has no requiring
+   * frame either). Prepended to the entry's %init. */
+  punycodeLinkWarning(): IrStmt[] {
+    const imports = this.moduleOrder.some((sf) =>
+      sf.statements.some(
+        (stmt) =>
+          ((ts.isImportDeclaration(stmt) && !erasedTypeOnlyImport(stmt)) ||
+            (ts.isExportDeclaration(stmt) && !stmt.isTypeOnly)) &&
+          stmt.moduleSpecifier !== undefined &&
+          ts.isStringLiteral(stmt.moduleSpecifier) &&
+          canonicalBuiltinModule(stmt.moduleSpecifier.text) === "punycode",
+      ),
+    );
+    if (!imports) return [];
+    const loc: SrcLoc = { file: this.entry.fileName, start: 0, end: 0 };
+    return [
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "punycode.warn",
+          args: [
+            { kind: "boolLit", value: true, type: BOOL, loc },
+            { kind: "boolLit", value: true, type: BOOL, loc },
+          ],
+          type: VOID,
+          loc,
+        },
+        loc,
+      },
+    ];
+  }
+
   /** The lowering of a CommonJS `require("./local")` occurrence: a call of
    * the required module's run-once %init at exactly this statement's
    * position — Node's inline evaluation, with the guard supplying the
@@ -3910,6 +3970,7 @@ export class Lowerer {
    * their external dependencies by name). Null for everything else
    * (builtins load nothing; the rest kept its preflight fence). */
   requireInitStmt(spec: string, node: ts.Node): IrStmt | null {
+    if (canonicalBuiltinModule(spec) === "punycode") return this.punycodeRequireWarning(node);
     // Project requires resolve within the program; another bare require can
     // be a program-module edge when it names an opted-in --npm-static package
     // (one package requiring another — the resolution answered its shipped
@@ -11731,7 +11792,23 @@ export class Lowerer {
         return { module: "timers/promises", member: `scheduler.${access.name.text}` };
       }
     }
+    // punycode.ucs2.decode / encode: methods of the module's ucs2 object,
+    // dispatched as module members.
+    if (access.name.text === "decode" || access.name.text === "encode") {
+      const owner = access.expression;
+      const imported = ts.isIdentifier(owner)
+        ? this.builtinImportOf(owner)
+        : ts.isPropertyAccessExpression(owner)
+          ? this.builtinMemberOf(owner)
+          : null;
+      if (imported?.module === "punycode" && imported.member === "ucs2") {
+        return { module: "punycode", member: `ucs2.${access.name.text}` };
+      }
+    }
     const module = this.builtinNamespaceModuleOf(access.expression);
+    // node:constants is one checked-dynamic object: its members read
+    // through the object itself (builtinConstantsObject), not the tables.
+    if (module === "constants") return null;
     if (module !== null) return { module, member: access.name.text };
     // The events module object IS the EventEmitter class, so the class's
     // defaultMaxListeners is the module property.

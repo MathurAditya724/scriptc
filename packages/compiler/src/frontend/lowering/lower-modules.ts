@@ -2664,6 +2664,7 @@ export function lowerFileInit(
         loc: loc0,
       });
     }
+    if (sf === lowerer.entry) header.push(...lowerer.punycodeLinkWarning());
     // Top-level `this` of a CommonJS module: its object exists before the
     // module's first statement (lowerCjsTopLevelThis).
     const exportsThis = lowerer.cjsExportsThis.get(sf);
