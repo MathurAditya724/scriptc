@@ -444,6 +444,8 @@ import { lowerConsoleNew } from "./lower-console.js";
 import { lowerNumberStaticCall, lowerNumberStaticProperty } from "./builtins/numbers.js";
 import { dateJsonType, isDateJsonSource, lowerDateCall } from "./builtins/dates.js";
 import {
+  fsConstantMemberRead,
+  fsConstantsObject,
   lowerFsConstantsProperty,
   lowerBuiltinConstantsProperty,
   builtinConstantBindingOf,
@@ -11685,13 +11687,7 @@ export class Lowerer {
           COPYFILE_FICLONE_FORCE: 4,
         };
         const value = own(MODES, expr.name.text);
-        if (value === undefined) {
-          this.noLowering(
-            `fs.constants.${expr.name.text}`,
-            expr,
-            "F_OK, R_OK, W_OK, X_OK, and COPYFILE_* are the lowered constants",
-          );
-        }
+        if (value === undefined) return fsConstantMemberRead(expr);
         return { kind: "numLit", value, type: F64, loc };
       }
     }
@@ -11751,14 +11747,8 @@ export class Lowerer {
       const callable = this.lowerBuiltinCallableValue(bi, loc);
       if (callable) return callable;
     }
-    if (bi.member === "constants" && bi.module === "fs") {
-      // A bare `fs.constants` read (not one of the baked bits above).
-      this.noLowering(
-        `fs.constants`,
-        expr,
-        "F_OK, R_OK, W_OK, X_OK, and COPYFILE_* are the lowered constants",
-      );
-    }
+    // A bare `fs.constants` read (not one of the baked bits above).
+    if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
     if (builtinModuleFnOf(this, bi.module, bi.member)) {
       this.unsupported(
         "SC1090",

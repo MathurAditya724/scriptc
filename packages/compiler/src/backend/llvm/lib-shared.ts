@@ -198,6 +198,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "os.cpusModel": "scr_os_cpus_model",
   "os.cpusField": "scr_os_cpus_field",
   "os.constants": "scr_os_constants",
+  "fs.constants": "scr_fs_constants",
   "os.release": "scr_os_release",
   "os.userName": "scr_os_user_name",
   "os.userShell": "scr_os_user_shell",

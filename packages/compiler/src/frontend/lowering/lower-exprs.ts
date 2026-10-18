@@ -1253,6 +1253,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         if (bi.module === "os" && bi.member === "constants") {
           return { kind: "libCall", fn: "os.constants", args: [], type: DYN, loc };
         }
+        if (bi.module === "fs" && bi.member === "constants")
+          return { kind: "libCall", fn: "fs.constants", args: [], type: DYN, loc };
         // tls.rootCertificates: a runtime-valued module constant (the
         // cached bundled-CA array) — the one member read that lowers
         // to a libCall instead of a baked literal.

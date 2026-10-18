@@ -2622,6 +2622,15 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     fns: ["os.constants"],
     note: "the platform's dlopen, errno, signals and priority groups; members a platform lacks read as undefined",
   },
+  // fs.constants as a value, and its members beyond the baked access-mode
+  // bits: the target libc's null-prototype constants object.
+  {
+    id: "node-builtin.fs.constants",
+    kind: "node-builtin",
+    name: "fs.constants",
+    fns: ["fs.constants"],
+    note: "node_constants.cc's fs group under the target libc's macros; members a platform lacks read as undefined",
+  },
 ];
 
 /** The win32-target overrides of the bare modules' constants: path's

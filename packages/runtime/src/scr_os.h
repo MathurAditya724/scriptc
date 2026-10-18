@@ -38,6 +38,8 @@ ScrStr *scr_os_cpus_model(double i);
 double scr_os_cpus_field(double i, double field);
 /* os.constants: the per-thread null-prototype constants object (+1). */
 ScrDyn *scr_os_constants(void);
+/* fs.constants: the target's null-prototype constants object (cached, +1). */
+ScrDyn *scr_fs_constants(void);
 double scr_os_available_parallelism(void); /* uv_available_parallelism: CPUs this process may use, >= 1 */
 /* os.userInfo()'s field trio (pw_name / pw_shell / pw_dir — the passwd
  * home, not the $HOME cascade). +1 fresh; abort on lookup failure. */

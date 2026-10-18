@@ -1,11 +1,11 @@
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
-import { canonicalBuiltinModule, locOf, requireSpecOf } from "../../program.js";
+import { canonicalBuiltinModule, isJsSourceFile, locOf, requireSpecOf } from "../../program.js";
 import { builtinConstLit } from "../surfaces.js";
 import { HTTP2_CONSTANTS } from "../http2-constants.js";
 import { CRYPTO_CONSTANTS } from "../crypto-tables.js";
 import { ZLIB_CONSTANTS } from "../zlib-constants.js";
-import { F64, type IrExpr } from "../../../ir/ir.js";
+import { DYN, F64, type IrExpr, STRING, type SrcLoc } from "../../../ir/ir.js";
 import { builtinImportOf } from "./module-bindings.js";
 
 /** The builtin modules whose `constants` object bakes as literals at
@@ -147,12 +147,30 @@ export function lowerFsConstantsProperty(
     COPYFILE_FICLONE_FORCE: 4,
   };
   const value = own(MODES, expr.name.text);
-  if (value === undefined) {
-    lowerer.noLowering(
-      `fs.constants.${expr.name.text}`,
-      expr,
-      "F_OK, R_OK, W_OK, X_OK, and COPYFILE_* are the lowered constants",
-    );
-  }
+  if (value === undefined) return fsConstantMemberRead(expr);
   return { kind: "numLit", value, type: F64, loc: locOf(expr) };
+}
+
+/** fs.constants as a value: the target's null-prototype constants object,
+ * built by the runtime from its own libc's macros. */
+export function fsConstantsObject(loc: SrcLoc): IrExpr {
+  return { kind: "libCall", fn: "fs.constants", args: [], type: DYN, loc };
+}
+
+/** `fs.constants.O_RDONLY` (any member the access-mode literals do not
+ * cover): a read of the runtime object, so a constant the target lacks
+ * reads as undefined in JavaScript and fails the number check in
+ * TypeScript, whose declarations promise every name. */
+export function fsConstantMemberRead(expr: ts.PropertyAccessExpression): IrExpr {
+  const loc = locOf(expr);
+  const read: IrExpr = {
+    kind: "dynKeyGet",
+    value: fsConstantsObject(loc),
+    key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+    type: DYN,
+    loc,
+  };
+  return isJsSourceFile(expr.getSourceFile())
+    ? read
+    : { kind: "dynCheck", value: read, type: F64, loc };
 }
