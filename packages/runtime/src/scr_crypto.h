@@ -46,6 +46,10 @@ ScrBytes *scr_crypto_random_fill_rest(ScrBytes *bytes, double offset);
 double scr_crypto_random_int(double min, double max);
 double scr_crypto_random_int_max(double max);
 ScrDyn *scr_crypto_random_fill_sync_dyn(ScrDyn *buf, ScrDyn *offset, ScrDyn *size);
+/* crypto.getRandomValues over a view (returned +1) or any value (the
+ * value itself, +1); NULL with Node's DOMException pending. */
+ScrBytes *scr_crypto_get_random_values(ScrBytes *view);
+ScrDyn *scr_crypto_get_random_values_dyn(ScrDyn *value);
 double scr_crypto_random_fill_args(ScrBytes *view, bool typed_array, double offset, double size,
                                    int form);
 void scr_crypto_random_int_refill(void);

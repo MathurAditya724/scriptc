@@ -570,6 +570,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.randomIntMax": "scr_crypto_random_int_max",
   "crypto.randomFillView": "scr_crypto_random_fill",
   "crypto.randomFillViewRest": "scr_crypto_random_fill_rest",
+  "crypto.getRandomValues": "scr_crypto_get_random_values",
+  "crypto.getRandomValuesDyn": "scr_crypto_get_random_values_dyn",
   "crypto.randomFillSyncDyn": "scr_crypto_random_fill_sync_dyn",
   "crypto.randomUUIDOpts": "scr_crypto_random_uuid_opts",
   "crypto.createSecretKey": "scr_crypto_create_secret_key",

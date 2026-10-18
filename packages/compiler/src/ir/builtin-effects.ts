@@ -670,6 +670,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.randomIntMax",
   "crypto.randomFillView",
   "crypto.randomFillViewRest",
+  "crypto.getRandomValues",
+  "crypto.getRandomValuesDyn",
   "crypto.randomFillSyncDyn",
   "crypto.randomFillCb",
   "crypto.randomFillCbDyn",

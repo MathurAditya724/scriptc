@@ -2579,6 +2579,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * whether min was given. */
   "crypto.randomFillView": { argTypes: [null, F64, F64], result: BYTES_U8 },
   "crypto.randomFillViewRest": { argTypes: [null, F64], result: BYTES_U8 },
+  /** crypto.getRandomValues: a view returns itself at its own type (the
+   * float/size DOMExceptions are thrown at run time); any other value
+   * takes the checked form. */
+  "crypto.getRandomValues": { argTypes: [null], result: BYTES_U8 },
+  "crypto.getRandomValuesDyn": { argTypes: [DYN], result: DYN },
   "crypto.randomFillSyncDyn": { argTypes: [DYN, DYN, DYN], result: DYN },
   "crypto.randomFillCb": { argTypes: [null, F64, F64, F64, null], result: VOID },
   "crypto.randomFillCbDyn": { argTypes: [DYN, DYN, DYN, F64, null], result: VOID },

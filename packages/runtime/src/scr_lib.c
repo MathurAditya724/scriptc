@@ -11176,3 +11176,52 @@ ScrDyn *scr_dyn_native_date_from_ms(double ms) {
   scr_native_date_release(date);
   return result;
 }
+
+/* crypto.getRandomValues(typedArray) (WebCrypto, also node:crypto's
+ * export): integer typed arrays only (Node's TypeMismatchError DOMException
+ * for float arrays, DataViews and every other value), at most 65536 bytes
+ * (QuotaExceededError), filled in place and returned. Nothing on an
+ * existing path calls these. They stay at the end of the unit: clang emits
+ * a static helper (scr_random_write) where its first emitted caller
+ * appears, and an earlier caller would move it in every binary that links
+ * the random fills. */
+ScrBytes *scr_crypto_get_random_values(ScrBytes *view) {
+  static const char mismatch[] = "TypeMismatchError";
+  static const char mismatch_msg[] = "The data argument must be an integer-type TypedArray";
+  static const char quota[] = "QuotaExceededError";
+  static const char quota_msg[] = "The requested length exceeds 65,536 bytes";
+  if (view->is_data_view || view->elem == SCR_BYTES_F32 || view->elem == SCR_BYTES_F64 ||
+      view->elem == SCR_BYTES_F16) {
+    scr_throw_domex(mismatch, mismatch_msg);
+    return NULL;
+  }
+  /* Integer arithmetic: a new floating-point literal would land in the
+   * merged constant pool every binary links. */
+  size_t length = view->len * (size_t)scr_bytes_elem_size(view->elem);
+  if (length > 65536u) {
+    scr_throw_domex(quota, quota_msg);
+    return NULL;
+  }
+  scr_random_write(view, 0, length);
+  return scr_bytes_retain(view);
+}
+
+ScrDyn *scr_crypto_get_random_values_dyn(ScrDyn *value) {
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *materialized = scr_dyn_typed_ref_materialize(value);
+    if (!materialized) return NULL;
+    ScrDyn *result = scr_crypto_get_random_values_dyn(materialized);
+    scr_dyn_release(materialized);
+    return result ? scr_dyn_retain(value) : NULL;
+  }
+  if (value->kind != SCR_DYN_BYTES) {
+    static const char mismatch[] = "TypeMismatchError";
+    static const char mismatch_msg[] = "The data argument must be an integer-type TypedArray";
+    scr_throw_domex(mismatch, mismatch_msg);
+    return NULL;
+  }
+  ScrBytes *filled = scr_crypto_get_random_values(value->v.bytes);
+  if (!filled) return NULL;
+  scr_bytes_release(filled);
+  return scr_dyn_retain(value);
+}

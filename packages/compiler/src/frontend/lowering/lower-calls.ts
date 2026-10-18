@@ -110,7 +110,9 @@ import {
   lowerRequireResolveCall,
 } from "./builtins/module-resolution.js";
 import {
+  isWebCryptoReceiver,
   lowerCipherMethodCall,
+  lowerCryptoGetRandomValues,
   lowerCryptoHashMethodCall,
   lowerPromisifiedCryptoCall,
 } from "./builtins/crypto.js";
@@ -1403,6 +1405,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.fenceStaticReadableStreamMember(expr.expression, "call") ??
       lowerDisposableStackUseCall(lowerer, expr, expr.expression) ??
       lowerer.lowerStdlibMethodCall(expr, expr.expression) ??
+      // crypto.getRandomValues on the WebCrypto global (untyped in
+      // fallback builds, so before the dyn receiver path) or webcrypto.
+      lowerWebCryptoGetRandomValues(lowerer, expr, expr.expression) ??
       // Dyn receivers (JSON.parse-derived `unknown`/`any` values) —
 
       lowerDynReceiverMethodCall(lowerer, expr, expr.expression) ??
@@ -9727,4 +9732,20 @@ export function lowerStaticNumberGlobal(
     }
   }
   return null;
+}
+
+/** `crypto.getRandomValues(view)` on the WebCrypto global or webcrypto. */
+function lowerWebCryptoGetRandomValues(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (
+    access.name.text !== "getRandomValues" ||
+    call.questionDotToken ||
+    access.questionDotToken ||
+    !isWebCryptoReceiver(lowerer, access.expression)
+  )
+    return null;
+  return lowerCryptoGetRandomValues(lowerer, call);
 }

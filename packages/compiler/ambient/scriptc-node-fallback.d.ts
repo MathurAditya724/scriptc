@@ -2557,6 +2557,23 @@ declare module "crypto" {
     a: ArrayBufferView | ArrayBufferLike,
     b: ArrayBufferView | ArrayBufferLike,
   ): boolean;
+  /* WebCrypto's getRandomValues (also the webcrypto object's): integer
+   * typed arrays, filled in place and returned. The crypto GLOBAL stays
+   * unknown in fallback builds. */
+  type RandomValuesArray =
+    | Int8Array
+    | Uint8Array
+    | Uint8ClampedArray
+    | Int16Array
+    | Uint16Array
+    | Int32Array
+    | Uint32Array
+    | BigInt64Array
+    | BigUint64Array;
+  export function getRandomValues<T extends RandomValuesArray>(typedArray: T): T;
+  export const webcrypto: {
+    getRandomValues<T extends RandomValuesArray>(typedArray: T): T;
+  };
   export function randomFillSync<T extends ArrayBufferView | ArrayBufferLike>(
     buffer: T,
     offset?: number,
