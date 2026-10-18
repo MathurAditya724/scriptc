@@ -330,7 +330,7 @@ export function emitControlExpr(
         );
         B.line(`store ${ty} ${t}, ptr ${slot}`);
         if (host.mayThrow.has(e.retag)) host.emitPendingCheck();
-      } else if (host.nullableUnions.has(e.left.type.unionId)) {
+      } else if (host.nullableUnions.single(e.left.type.unionId)) {
         // The owned nullable pointer IS the owned arm value.
         B.line(`store ${ty} ${l.name}, ptr ${slot}`);
       } else {
@@ -440,7 +440,7 @@ export function emitControlExpr(
       host.emitBranchInto(slot, e.right);
       B.br(lj);
       B.startBlock(lv);
-      if (typeEquals(e.type, e.left.type) || host.nullableUnions.has(def.id)) {
+      if (typeEquals(e.type, e.left.type) || host.nullableUnions.single(def.id)) {
         // Pass-through, or a nullable pointer that IS its owned arm value.
         B.line(`store ${ty} ${l.name}, ptr ${slot}`);
       } else {

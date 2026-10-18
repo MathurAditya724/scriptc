@@ -35,6 +35,8 @@ import {
   withClassInitFlag,
   withCycleInitFlags,
 } from "./cycle-initialization.js";
+import { markRequireEarlyBindings } from "./require-initialization.js";
+import { collectJsonRequires, isJsonRequireDecl } from "./json-require.js";
 import {
   invalidJsonModuleDiag,
   unsupportedPackageImportDiag,
@@ -78,6 +80,7 @@ import {
   createRequireProgramModuleDecl,
 } from "./builtins/module-bindings.js";
 import { isPromisifyCall, registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
+import { registerZlibClassAlias } from "./builtins/compression.js";
 import { stripTypeCasts } from "./builtins/arguments.js";
 import {
   bindingContextualGenericFnNodeOf,
@@ -409,6 +412,7 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
       for (const fp of parts) lowerer.collectGlobals(fp.sf, fp.topStmts);
       lowerer.collectNpmImports(parts);
       lowerer.collectJsonImports(parts);
+      collectJsonRequires(lowerer, parts);
     } finally {
       lowerer.diagSink = null;
     }
@@ -416,6 +420,7 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
     for (const fp of parts) lowerer.collectGlobals(fp.sf, fp.topStmts);
     lowerer.collectNpmImports(parts);
     lowerer.collectJsonImports(parts);
+    collectJsonRequires(lowerer, parts);
   }
   for (const decl of computed) {
     const symbol = declSymbolOf(lowerer, decl);
@@ -493,6 +498,7 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
     lowerer.collecting = wasCollecting;
   }
   markCycleEarlyBindings(lowerer);
+  markRequireEarlyBindings(lowerer);
 }
 
 export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
@@ -1532,8 +1538,9 @@ export function collectGlobals(
       isRequireStatement(stmt) &&
       !(
         ts.isVariableStatement(stmt) &&
-        stmt.declarationList.declarations.some((decl) =>
-          isNativeFfiRequire(lowerer, decl.initializer),
+        stmt.declarationList.declarations.some(
+          (decl) =>
+            isNativeFfiRequire(lowerer, decl.initializer) || isJsonRequireDecl(lowerer, decl),
         )
       )
     ) {
@@ -1694,6 +1701,7 @@ export function collectGlobals(
       // resolution and value reads reuse the source's interned closure.
       if (isConst && registerOverloadedCallableAlias(lowerer, decl)) continue;
       if (isConst && registerBuiltinCallableAlias(lowerer, decl.name, decl.initializer)) continue;
+      if (registerZlibClassAlias(lowerer, decl.name, decl.initializer)) continue;
       // `const f = (x) => ...` at file scope of an npm-static JS file
       // whose params are implicit-any: the implicit-monomorphization
       // twin of the generic binding above — no global exists; calls and
@@ -2653,6 +2661,17 @@ export function lowerFileInit(
         kind: "assign",
         localId: guardId,
         value: { kind: "boolLit", value: true, type: BOOL, loc: loc0 },
+        loc: loc0,
+      });
+    }
+    // Top-level `this` of a CommonJS module: its object exists before the
+    // module's first statement (lowerCjsTopLevelThis).
+    const exportsThis = lowerer.cjsExportsThis.get(sf);
+    if (exportsThis) {
+      header.push({
+        kind: "assign",
+        localId: exportsThis.id,
+        value: { kind: "dynObjLit", fields: [], type: DYN, loc: loc0 },
         loc: loc0,
       });
     }

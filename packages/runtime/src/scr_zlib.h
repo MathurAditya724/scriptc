@@ -90,6 +90,9 @@ ScrPromise *scr_zlib_codec_promise_dyn(ScrDyn *data, double mode, ScrDyn *opts);
  * with Node's ladder. The callbacks MOVE in and may be NULL. */
 ScrStream *scr_zlib_stream_new(double mode, ScrDyn *opts);
 double scr_zlib_stream_bytes_written(ScrStream *s);
+/* `s instanceof zlib.Gzip` (and the other classes): true when s is a zlib
+ * stream built with that mode. s is borrowed. */
+bool scr_zlib_stream_is(ScrStream *s, double mode);
 void scr_zlib_stream_flush(ScrStream *s, ScrDyn *kind, ScrClosure *cb);
 void scr_zlib_stream_params(ScrStream *s, ScrDyn *level, ScrDyn *strategy, ScrClosure *cb);
 void scr_zlib_stream_close(ScrStream *s, ScrClosure *cb);

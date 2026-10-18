@@ -610,7 +610,7 @@ static ScrStr *uc_format(ScrDyn *const *args, size_t argc, bool colors) {
         ScrStr *piece = NULL;
         switch (next) {
         case 's': piece = uc_format_s(args[++a]); break;
-        case 'j': piece = scr_dyn_format_j(args[++a]); break;
+        case 'j': piece = scr_util_format_j(args[++a]); break;
         case 'd':
         case 'i':
         case 'f': piece = uc_format_number(args[++a], next); break;

@@ -33,19 +33,3 @@ utility-types.ts:19:14 - error SC2004: uses of 'dateBag' inherit the blocker on 
   20 | console.log(boot);
 
   hint: the declaration of 'dateBag' did not compile — fix the diagnostic reported there and these sites clear with it
-
-utility-types.ts:20:13 - error SC1090: console.log of 'Date' values ('Date' values have no inspect lowering) are not supported yet
-
-  19 | const boot = dateBag["boot"];
-  20 | console.log(boot);
-     |             ^~~~
-  21 | 
-
-utility-types.ts:22:33 - error SC1101: converting typed values to 'unknown' is not supported yet
-
-  21 | 
-  22 | const stamped: Readonly<Date> = new Date(0);
-     |                                 ^~~~~~~~~~~
-  23 | console.log(stamped.getTime());
-
-  hint: numbers, strings, booleans, JSON-safe records/arrays/unions (a deep copy), functions, program class instances, and supported native handles convert into 'unknown' slots; functions, exact-class round trips, and handles preserve identity, while this value's type has no dynamic representation yet

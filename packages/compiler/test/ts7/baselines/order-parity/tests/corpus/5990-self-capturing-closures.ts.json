@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/5990-self-capturing-closures.ts"
- ],
- "diags": []
-}

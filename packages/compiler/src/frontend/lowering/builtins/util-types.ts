@@ -12,6 +12,22 @@ export function lowerUtilTypeCall(
 ): IrExpr {
   if (expr.arguments.some(ts.isSpreadElement))
     lowerer.noLowering(`${name} with spread arguments`, expr);
+  const first = expr.arguments[0];
+  if (first !== undefined && lowerer.mapTypeOf(lowerer.typeOf(first))?.kind === "date") {
+    // A Date value has no checked-dynamic form; its static type decides
+    // every brand. The arguments still evaluate in order.
+    return {
+      kind: "seqExpr",
+      stmts: expr.arguments.map((arg): IrStmt => ({
+        kind: "exprStmt",
+        expr: lowerer.lowerExpr(arg),
+        loc,
+      })),
+      result: { kind: "boolLit", value: bi.member === "isDate", type: BOOL, loc },
+      type: BOOL,
+      loc,
+    };
+  }
   const input = expr.arguments[0]
     ? lowerer.lowerExprExpecting(expr.arguments[0], DYN)
     : dynUndefinedExpr(loc);

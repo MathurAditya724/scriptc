@@ -49,12 +49,19 @@ import {
   STRING,
   VOID,
 } from "../../ir/ir.js";
-import { moduleRuntimeFeatures } from "../../ir/runtime-features.js";
+import { moduleRuntimeFeatures, moduleUsesMockTimers } from "../../ir/runtime-features.js";
 import {
   matchIntegerArrayForLoop,
   matchIntegerBytesForLoop,
   matchIntegerCountedForLoop,
 } from "../../ir/integer-loops.js";
+import { findUnaliasedLocalArrays } from "../../ir/array-length-stability.js";
+import {
+  countedDenseShape,
+  emitDenseLoopGuard,
+  matchDenseArrayLoop,
+  type DenseArrayLoop,
+} from "./dense-array-loops.js";
 import { emitCountedLoopLimit } from "./counted-loops.js";
 import {
   emitSafeIntegerCheck,
@@ -88,7 +95,7 @@ import {
   type StringSplit,
 } from "./split-loops.js";
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
-import { RESULT_ENTRY_PREFIX, addRecordResultEntries } from "./record-results.js";
+import { RESULT_DST_ID, RESULT_ENTRY_PREFIX, addRecordResultEntries } from "./record-results.js";
 import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
@@ -167,7 +174,9 @@ import {
   emitStackObject,
   findLocalStackObjects,
   findReassignedStackObjects,
+  stackObjectFields,
   stackObjectStruct,
+  type StackObjectField,
   type StackObjectSource,
 } from "./stack-objects.js";
 import {
@@ -200,7 +209,12 @@ import {
   type LocalArrayRead,
 } from "./local-array-reads.js";
 import { CheckedNarrows, emitCheckedNarrowReceiver } from "./checked-narrows.js";
-import { emitDenseArrayGet, emitDenseArraySet, emitDenseSlotUnlink } from "./dense-array-access.js";
+import {
+  emitDenseArrayGet,
+  emitDenseArrayPop,
+  emitDenseArraySet,
+  emitDenseSlotUnlink,
+} from "./dense-array-access.js";
 import {
   emitStackMapRead,
   findMapReadLifetimes,
@@ -223,7 +237,10 @@ import { findAppendedArrayLiterals } from "./appended-array-literals.js";
 import { AmbientReceiverReaders, findConstantCallbacks } from "./constant-callbacks.js";
 import {
   findScalarStringSlices,
+  findScratchStringSlices,
+  findLentStringParameters,
   emitStringSliceSnapshot,
+  type LentStringParameters,
   type StringSliceSnapshot,
 } from "./string-slices.js";
 import { LazyCaptures } from "./lazy-captures.js";
@@ -377,6 +394,7 @@ import {
   elemAccess,
   emitInlineRcHelpers,
   emitNullableRetainWrappers,
+  emitShapeUnionHelpers,
   FN_ATTRS,
   inlineRcDecls,
   type InlineRcMode,
@@ -392,6 +410,7 @@ import {
 } from "./shapes.js";
 import type { ExprOf, LibCallExpr, LlStreamTypedRefAdapter, LlValue } from "./expr-context.js";
 import { INLINE_LITERAL_BYTES, literalEqualityDefinition } from "./string-literal-equality.js";
+import { emitDowncastGuard, emitUnionNarrowGuard } from "./narrow-guards.js";
 
 export { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -553,9 +572,34 @@ const AWAIT_SUSPENSIONS = /@(?:scr_await_(?:void|f64|bool|str|ref|hop)\b|sc_a[wd
  * own fiber and promise. */
 const COROUTINE_SUSPENDS =
   /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_(?!self\b|promise\b))|sc_a[wd]_)/;
+/** Captured bindings (boxes a body declares or receives) from which a
+ * function compiles without LLVM optimization (see boxSlotCount). */
+const UNOPTIMIZED_BOX_SLOTS = 512;
 /** ScrExcKind tags of a generator slot holding a number or a boolean. */
 const SCR_EXC_F64 = 1;
 const SCR_EXC_BOOL = 2;
+
+/** The capture boxes `fn` holds: its boxed bindings and the bindings its
+ * environment brings in. Each box pointer is a value from its binding (or
+ * function entry) to its last use, and every one of them crosses the calls
+ * in between. With thousands of them in one body, as in a factory whose
+ * returned methods share a large environment, LLVM's inliner, instruction
+ * selection and register allocation grow quadratically and take minutes.
+ * Past UNOPTIMIZED_BOX_SLOTS, which ordinary functions stay far below, the
+ * body is compiled `optnone` (nothing inlines into it and code generation
+ * takes its fast paths) and its box slots are accessed volatile, so no
+ * pass promotes them to values even where a pipeline runs IR passes over
+ * optnone bodies, as the native helper's does. Each use reloads its box
+ * pointer and code generation stays linear. Semantics, boxes and
+ * environments are unchanged; only that body's machine code is slower. */
+function boxSlotCount(fn: IrFunction): number {
+  const captured = new Set<string>();
+  for (const capture of fn.captures ?? []) captured.add(capture.localId);
+  for (const capture of fn.classCaptures ?? []) captured.add(capture.localId);
+  let count = 0;
+  for (const local of fn.locals) if (local.boxed === true || captured.has(local.id)) count++;
+  return count;
+}
 
 /** Whether any node of `e` names the local (reads, writes, declarations,
  * captures). */
@@ -595,11 +639,18 @@ export class LlEmitter {
   private loopArrayBorrows: ReadonlySet<IrStmt> = new Set();
   private scalarStringSlices = new Map<string, IrExpr & { kind: "strIntrinsic" }>();
   readonly stringSlices = new Map<string, StringSliceSnapshot>();
+  /** Slices written into stack buffers (findScratchStringSlices). */
+  scratchStringSlices: ReadonlySet<IrExpr> = new Set();
+  /** String parameters a caller may lend scratch slices to. */
+  private lentStringParameters: LentStringParameters = new Map();
   private localStackUnions = new Map<string, IrExpr & { kind: "unionWrap" }>();
   private localStackObjects = new Map<string, StackObjectSource>();
   private reassignedStackObjects = new Set<string>();
   /** The binding slot of each reassigned stack-object local. */
   private stackObjectSlots = new Map<string, string>();
+  /** Entry-block pointers to the reference fields of each frame object
+   * slot (stack-objects.ts stackObjectFields). */
+  stackObjectFieldPtrs = new Map<string, readonly StackObjectField[]>();
   private localUnionStorageProofs = new Map<string, LocalUnionStorageProof>();
   private localUnionStorage = new Map<string, LocalUnionStorage>();
   integerArrayBindings = new Set<string>();
@@ -641,6 +692,21 @@ export class LlEmitter {
    * and back fold. 32-bit targets load the full range anyway. */
   get arrayLengthRange(): string {
     return this.sizeType === "i64" ? ", !range !{i64 0, i64 4294967296}" : "";
+  }
+
+  /** Whether an element access at `index` of `arr` lies in the hole-free
+   * prefix: the counter of a dense array loop's fast copy indexing one of
+   * the arrays its entry test covered. */
+  provenDenseIndex(arr: IrExpr, index: IrExpr): boolean {
+    const loop = this.denseLoop;
+    return (
+      loop !== null &&
+      arr.kind === "varRef" &&
+      loop.arrays.has(arr.localId) &&
+      index.kind === "varRef" &&
+      index.localId === loop.counter &&
+      this.integerLoopBindings.has(loop.counter)
+    );
   }
 
   fieldAliasAttachment(ptr: string): string {
@@ -887,6 +953,9 @@ export class LlEmitter {
   /** setTimeout and friends appeared somewhere: main must run the event
    * loop even in programs with no async functions. */
   usesTimers = false;
+  /** The program calls mock.timers members (moduleUsesMockTimers): timer
+   * calls emit scr_test.c's mock-aware entry points. */
+  readonly mockTimers: boolean;
   /** Emitted ref-kind resolve thunks for new Promise, interned per inner
    * typeKey → thunk symbol. */
   readonly resolveThunks = new Map<string, string>();
@@ -996,6 +1065,14 @@ export class LlEmitter {
    * immortal from construction (classes.ts programLifetimeClass). */
   readonly programLifetime: ReadonlySet<string>;
   private numericLocals = new Map<string, IrLocal>();
+  /** Local arrays of the current function that no other binding can hold
+   * (ir/array-length-stability.ts). */
+  private unaliasedArrays: ReadonlySet<string> = new Set();
+  /** Dense array loops (dense-array-loops.ts) run in this function. */
+  private denseLoopsEnabled = false;
+  private denseLoopEntries: ReturnType<typeof findInitializedByteLoopBindings> = new Map();
+  /** The fast copy of a dense array loop being emitted. */
+  private denseLoop: DenseArrayLoop | null = null;
   private captureIds = new Set<string>();
   /** Active induction bindings retain their width independently of size_t. */
   integerLoopBindings = new Map<
@@ -1112,7 +1189,8 @@ export class LlEmitter {
           expr: (expr) => !(expr.kind === "libCall" && expr.fn === "error.stack"),
         }),
     );
-    this.nullableUnions = new NullableUnions(mod);
+    this.nullableUnions = new NullableUnions(mod, options.debugSources === undefined);
+    this.mockTimers = moduleUsesMockTimers(mod);
     this.debug =
       options.debugSources === undefined
         ? null
@@ -1210,8 +1288,10 @@ export class LlEmitter {
     // Optional array reads also cover nullable unions: emitLocalArrayRead
     // then yields the (borrowed or owned) element pointer, not a stack box.
     // Arrays of such a union are read the same way.
-    this.optionalArrayReads = new OptionalArrayReads(this.fnByName, this.unionsById, (id) =>
-      this.nullableUnions.has(id),
+    this.optionalArrayReads = new OptionalArrayReads(
+      this.fnByName,
+      this.unionsById,
+      (id) => this.nullableUnions.single(id) !== null,
     );
     this.unionSources = {
       unions: this.boxedUnionsById,
@@ -1264,7 +1344,8 @@ export class LlEmitter {
           (type) =>
             this.plainReference(type) &&
             type.kind !== "string" &&
-            (type.kind !== "union" || this.nullableUnions.get(type.unionId)?.arm.kind !== "string"),
+            (type.kind !== "union" ||
+              this.nullableUnions.single(type.unionId)?.arm.kind !== "string"),
           this.walkBorrowsByFunction.get(fn.name) ?? new Set(),
         );
         if (rebound.size === 0) continue;
@@ -1290,6 +1371,8 @@ export class LlEmitter {
         return shape !== undefined && !recordDynKeepsIdentity(shape);
       },
     );
+    this.lentStringParameters =
+      this.debug === null ? findLentStringParameters(this.fnByName, this.callLifetimes) : new Map();
     this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes);
     // Integer clones signal a stack overflow through their result, which
     // needs the single-threaded guard; worker programs also poll for
@@ -1315,6 +1398,27 @@ export class LlEmitter {
     const traced = computeTraced(mod);
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
+    // A shape union's value is whichever record it holds, and the collector
+    // visits it as that record: when one arm carries a collector header,
+    // every arm must (nullable-unions.ts). Unions that share an arm pass a
+    // header on to each other's arms, so repeat until no union adds one.
+    const shapeUnions = this.nullableUnions.allShapeUnions();
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const union of shapeUnions) {
+        if (
+          !this.tracedUnions.has(union.unionId) &&
+          !union.arms.some((arm) => this.tracedShapes.has(`record:${arm.shapeId}`))
+        )
+          continue;
+        for (const arm of union.arms) {
+          const key = `record:${arm.shapeId}`;
+          if (this.tracedShapes.has(key)) continue;
+          this.tracedShapes.add(key);
+          changed = true;
+        }
+      }
+    }
     this.shapeHost = {
       sizeType: this.sizeType,
       cycleBufOffset: this.cycleBufOffset,
@@ -2033,12 +2137,28 @@ export class LlEmitter {
             this.dyn.toDynHelper({ kind: "object", className: "%Writable" }),
           ]
         : null;
-    if (childStreamBoxes) {
+    // worker.stdout and worker.stderr box the stream unit's Readable the
+    // same way, and worker.stdin its Writable when the program has one
+    // (scr_worker_stdio_install, scr_worker_events.c).
+    const workerStdioBox =
+      this.mod.workers === true && usesStream && this.classMeta.has("%Readable")
+        ? (childStreamBoxes?.[0] ??
+          this.dyn.toDynHelper({ kind: "object", className: "%Readable" }))
+        : null;
+    const workerStdinBox =
+      this.mod.workers === true && usesStream && this.classMeta.has("%Writable")
+        ? (childStreamBoxes?.[1] ??
+          this.dyn.toDynHelper({ kind: "object", className: "%Writable" }))
+        : null;
+    if (childStreamBoxes || workerStdioBox || workerStdinBox) {
       this.declare(
         `@scr_stream_child_ops = external constant { ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr }`,
       );
-      this.declare(`declare void @scr_child_dyn_streams_install(ptr, ptr, ptr)`);
     }
+    if (childStreamBoxes)
+      this.declare(`declare void @scr_child_dyn_streams_install(ptr, ptr, ptr)`);
+    if (workerStdioBox || workerStdinBox)
+      this.declare(`declare void @scr_worker_stdio_install(ptr, ptr, ptr)`);
     if (usesFsWatch) this.declare(`declare void @scr_watch_install()`);
     if (this.ffiHasForeignCallback) this.declare(`declare void @scr_ffi_install()`);
     if (usesStream) this.declare(`declare void @scr_stream_install()`);
@@ -2051,7 +2171,10 @@ export class LlEmitter {
     if (usesHttp) this.declare(`declare void @scr_http_dyn_install()`);
     if (usesFetch) this.declare(`declare void @scr_fetch_install()`);
 
-    if (usesNodeTest) this.declare(`declare i32 @scr_test_exit_code()`);
+    if (usesNodeTest) {
+      this.declare(`declare i32 @scr_test_exit_code()`);
+      this.declare(`declare void @scr_test_init()`);
+    }
     if (snapshotsTlsCa) {
       this.declare(`declare void @scr_tls_ca_install()`);
     }
@@ -2194,6 +2317,12 @@ export class LlEmitter {
       }
       if (this.mod.lib.exports.some((e) => e.returns === "bytes")) {
         this.declare(`declare void @scr_library_bytes_out(ptr, ptr, ptr)`);
+      }
+      if (this.mod.lib.exports.some((e) => e.params.includes("cstring"))) {
+        this.declare(`declare ptr @scr_library_cstr_in(ptr, ptr)`);
+      }
+      if (this.mod.lib.exports.some((e) => e.returns === "cstring")) {
+        this.declare(`declare ptr @scr_library_cstr_out(ptr)`);
       }
     }
     // Helpers assemble BEFORE the declaration table flushes (they add
@@ -2628,6 +2757,11 @@ export class LlEmitter {
             `  call void @scr_child_dyn_streams_install(ptr @scr_stream_child_ops, ptr @${childStreamBoxes[0]}, ptr @${childStreamBoxes[1]})`,
           ]
         : []),
+      ...(workerStdioBox || workerStdinBox
+        ? [
+            `  call void @scr_worker_stdio_install(ptr @scr_stream_child_ops, ptr ${workerStdioBox ? `@${workerStdioBox}` : "null"}, ptr ${workerStdinBox ? `@${workerStdinBox}` : "null"})`,
+          ]
+        : []),
       // fs.watch programs fill the loop's watch hooks the same way —
       // scr_watch.c links only when this line is emitted.
       ...(usesFsWatch ? [`  call void @scr_watch_install()`] : []),
@@ -2640,6 +2774,8 @@ export class LlEmitter {
       ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),
       ...(usesStream ? [`  call void @scr_stream_install()`] : []),
       `  call void @scr_lib_init(i32 %argc, ptr %argv)`,
+      // node:test takes Node's --test-update-snapshots out of argv first.
+      ...(usesNodeTest ? [`  call void @scr_test_init()`] : []),
       ...(asyncEntry
         ? [`  %top = call ptr @${mangleAsyncSpawn(this.mod.entry)}()`]
         : [`  call void @${mangleFunction(this.mod.entry)}()`]),
@@ -2971,6 +3107,15 @@ export class LlEmitter {
           ``,
         );
       }
+      if (e.inboundCstringTrap !== undefined) {
+        // The cstring-in helper's host-contract trap message (a NULL
+        // `const char *`): same assembled structured form and SC4012 code.
+        const trapBytes = Buffer.byteLength(e.inboundCstringTrap, "utf8");
+        out.push(
+          `@sc_lib_cstr_trap_${e.symbol} = internal constant [${trapBytes + 1} x i8] c"${llStrBytes(e.inboundCstringTrap)}"`,
+          ``,
+        );
+      }
       e.params.forEach((cls, i) => {
         switch (cls) {
           case "f64":
@@ -3025,6 +3170,13 @@ export class LlEmitter {
             params.push(`ptr %a${i}_ptr`, `${this.sizeType} %a${i}_len`);
             body.push(
               `  %c${i} = call ptr @scr_library_bytes_in(ptr %a${i}_ptr, ${this.sizeType} %a${i}_len, ptr @sc_lib_bytes_trap_${e.symbol})`,
+            );
+            args.push(`ptr %c${i}`);
+            break;
+          case "cstring":
+            params.push(`ptr %a${i}`);
+            body.push(
+              `  %c${i} = call ptr @scr_library_cstr_in(ptr %a${i}, ptr @sc_lib_cstr_trap_${e.symbol})`,
             );
             args.push(`ptr %c${i}`);
             break;
@@ -3090,6 +3242,16 @@ export class LlEmitter {
             `  call void @scr_library_check_exc()`,
             `  call void @scr_library_bytes_out(ptr %r, ptr %out, ptr %out_len)`,
             `  ret void`,
+          );
+          break;
+        case "cstring":
+          // The result's arena copy, returned as `const char *`.
+          retType = "ptr";
+          body.push(
+            `  %r = call ptr ${target}(${callArgs})`,
+            `  call void @scr_library_check_exc()`,
+            `  %z = call ptr @scr_library_cstr_out(ptr %r)`,
+            `  ret ptr %z`,
           );
           break;
       }
@@ -3597,6 +3759,7 @@ export class LlEmitter {
     return [
       ...late,
       ...emitNullableRetainWrappers(this.shapeHost),
+      ...emitShapeUnionHelpers(this.shapeHost),
       ...emitInlineRcHelpers(this.shapeHost),
     ];
   }
@@ -4704,6 +4867,30 @@ export class LlEmitter {
     if (isRefCounted(type)) this.currentFrame().push({ name: slot, type, slot: true });
   }
 
+  /** The innermost lexical scope releases a frame object's reference
+   * fields when it exits, as it releases its bindings. */
+  ownScopeFields(fields: readonly StackObjectField[]): void {
+    const scope = this.scopes[this.scopes.length - 1]!;
+    for (const field of fields) scope.push({ slot: field.ptr, type: field.type });
+  }
+
+  /** Strike frame-owned slots (ownSlot) from their statement frames: their
+   * contents are moving to another owner. */
+  disownSlots(slots: readonly { ptr: string }[]): void {
+    for (const { ptr } of slots) {
+      let found = false;
+      for (let i = this.frames.length - 1; i >= 0 && !found; i--) {
+        const idx = this.frames[i]!.findIndex((e) => e.slot === true && e.name === ptr);
+        if (idx >= 0) {
+          this.frames[i]!.splice(idx, 1);
+          found = true;
+        }
+      }
+      if (!found)
+        throw new InternalCompilerError(`llvm emitter bug: disowned slot ${ptr} not in a frame`);
+    }
+  }
+
   /** Strike a refcounted temp from its frame: ownership is being moved. */
   moveTemp(v: LlValue): void {
     if (!isRefCounted(v.type) || this.isImmortal(v.name)) return;
@@ -5740,7 +5927,11 @@ export class LlEmitter {
     const nullable = this.nullableUnions.get(unionId);
     if (nullable) {
       // The owned payload IS the nullable union's value.
-      if (tag !== nullable.refTag)
+      if (
+        nullable.repr === "single"
+          ? tag !== nullable.refTag
+          : !nullable.arms.some((arm) => arm.tag === tag)
+      )
         throw new InternalCompilerError(
           `llvm emitter bug: payload wrap into unit arm ${tag} of ${unionId}`,
         );
@@ -5845,7 +6036,7 @@ export class LlEmitter {
         const index = shape.fields.findIndex((entry) => entry.name === field);
         if (index < 0)
           throw new InternalCompilerError(`llvm emitter bug: missing union field ${field}`);
-        layout = "record:";
+        layout = this.nullableUnions.fieldBase(arm.shapeId) === 2 ? "record:tagged;" : "record:";
         for (let i = 0; i <= index; i++) {
           const type = shape.fields[i]!.type;
           layout += `${llFieldType(type, this.inlineUnions.record(type))};`;
@@ -5881,7 +6072,7 @@ export class LlEmitter {
       );
     const p = this.B.tmp();
     this.B.line(
-      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + 1}`,
+      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + this.nullableUnions.fieldBase(shapeId)}`,
     );
     const type = shape.fields[idx]!.type;
     return { ptr: p, type, inline: this.inlineUnions.record(type) };
@@ -5895,7 +6086,7 @@ export class LlEmitter {
     const p = this.B.tmp();
     const v = this.B.tmp();
     this.B.line(
-      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${shape.fields.length + 1}`,
+      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${shape.fields.length + this.nullableUnions.fieldBase(shapeId)}`,
     );
     this.B.line(`${v} = load ptr, ptr ${p}`);
     return v;
@@ -6558,6 +6749,7 @@ export class LlEmitter {
     const initializerBindings = this.initializerBindings.get(fn.name) ?? [];
     const numericFn = withInitializerBindings(fn, initializerBindings);
     this.numericLocals = new Map(numericFn.locals.map((l) => [l.id, l]));
+    this.unaliasedArrays = findUnaliasedLocalArrays(fn);
     this.borrowedParameters.clear();
     this.referenceWrites?.enter(fn);
     this.reboundOwnerSlots.clear();
@@ -6596,6 +6788,12 @@ export class LlEmitter {
     this.finalFieldBorrows =
       !fn.async && !fn.generator && constructorClass(fn.name) === null && this.finalFields.size > 0;
     this.byteWindowsEnabled = this.countedLoopsEnabled;
+    this.denseLoopsEnabled = this.countedLoopsEnabled;
+    this.denseLoop = null;
+    this.denseLoopEntries =
+      this.denseLoopsEnabled && numericFn.locals.some((l) => l.type.kind === "array")
+        ? findInitializedByteLoopBindings(fn)
+        : new Map();
     this.byteWindowEntries =
       this.byteWindowsEnabled && numericFn.locals.some((l) => l.type.kind === "bytes")
         ? findInitializedByteLoopBindings(fn)
@@ -6633,6 +6831,15 @@ export class LlEmitter {
     );
     this.scalarStringSlices =
       this.debug === null ? findScalarStringSlices(fn, this.callLifetimes) : new Map();
+    this.scratchStringSlices =
+      this.debug === null
+        ? findScratchStringSlices(
+            fn,
+            this.callLifetimes,
+            this.scalarStringSlices,
+            this.lentStringParameters,
+          )
+        : new Set();
     this.mapReadLifetimes = findMapReadLifetimes(fn, this.boxedUnionsById, this.callLifetimes);
     this.readNumberMapWrites = findReadNumberMapWrites(fn);
     this.mapEntryFusion = this.debug === null ? findMapEntryFusions(fn) : null;
@@ -6644,6 +6851,7 @@ export class LlEmitter {
       ? findReassignedStackObjects(this, fn, this.callLifetimes)
       : new Set();
     this.stackObjectSlots = new Map();
+    this.stackObjectFieldPtrs = new Map();
     this.localUnionStorageProofs = findLocalUnionStorage(fn, this.callLifetimes, this.unionSources);
     this.localUnionStorage = new Map();
     this.walkBorrows = this.walkBorrowsByFunction.get(fn.name) ?? new Set();
@@ -6821,6 +7029,15 @@ export class LlEmitter {
       if (local.boxed || isRefCounted(local.type)) {
         B.line(`store ptr null, ptr %${mangleLocal(local.id)}`);
       }
+    }
+    // A body holding thousands of capture boxes compiles unoptimized, its
+    // box pointers kept in their slots (see boxSlotCount).
+    const unoptimized = this.currentCoro === null && boxSlotCount(fn) >= UNOPTIMIZED_BOX_SLOTS;
+    if (unoptimized) {
+      const slots = new Set<string>();
+      for (const local of this.currentLocals.values())
+        if (local.boxed || this.captureIds.has(local.id)) slots.add(`%${mangleLocal(local.id)}`);
+      B.volatileSlots = slots;
     }
     // Captured bindings come in through the environment — borrowed for the
     // whole call (the closure owns them): bound here, never released here.
@@ -7025,6 +7242,7 @@ export class LlEmitter {
     if (fn.name.startsWith("%dyn.class.protocol.fallback.")) attrs = `noinline ${attrs}`;
     else if (fn.name.startsWith("%dyn.class.protocol.")) attrs = `inlinehint ${attrs}`;
     if (fn.name.startsWith(RESULT_ENTRY_PREFIX)) attrs = `inlinehint ${attrs}`;
+    if (unoptimized && attrs === FN_ATTRS) attrs = `noinline optnone ${attrs}`;
     const debug = this.debugScope === null ? "" : ` !dbg ${this.debugScope}`;
     const symbol = borrowed ? mangleBorrowedFunction(fn.name) : mangleFunction(fn.name);
     this.privateGlobalSlots.clear();
@@ -7769,12 +7987,18 @@ export class LlEmitter {
         }
         const stackObject = this.localStackObjects.get(s.localId);
         if (stackObject) {
-          B.line(`store ptr ${emitStackObject(this, stackObject).name}, ptr ${b.slot}`);
+          const value = emitStackObject(this, stackObject, (fields) => this.ownScopeFields(fields));
+          B.line(`store ptr ${value.name}, ptr ${b.slot}`);
           break;
         }
         if (s.init && this.reassignedStackObjects.has(s.localId)) {
           const slot = this.stackObjectSlot(s.localId, s.init.type);
-          emitStackObject(this, s.init as StackObjectSource, slot);
+          emitStackObject(
+            this,
+            s.init as StackObjectSource,
+            (fields) => this.ownScopeFields(fields),
+            slot,
+          );
           B.line(`store ptr ${slot}, ptr ${b.slot}`);
           break;
         }
@@ -7947,12 +8171,28 @@ export class LlEmitter {
           break;
         }
         if (this.reassignedStackObjects.has(s.localId)) {
-          // The new value may read the old one: build it apart, then copy.
+          // The new value may read the old one: build it apart (its
+          // reference fields owned by this statement until it completes),
+          // then copy it over the binding's slot. The binding takes over the
+          // new fields; the old ones are released after the slot no longer
+          // holds them.
           const struct = stackObjectStruct(s.value.type);
-          const value = emitStackObject(this, s.value as StackObjectSource);
+          let owned: readonly StackObjectField[] = [];
+          const value = emitStackObject(this, s.value as StackObjectSource, (fields) => {
+            owned = fields;
+            for (const field of fields) this.ownSlot(field.ptr, field.type);
+          });
+          const target = this.stackObjectSlot(s.localId, s.value.type);
+          const old = stackObjectFields(this, s.value.type, target).map((field) => {
+            const t = B.tmp();
+            B.line(`${t} = load ptr, ptr ${field.ptr}`);
+            return { name: t, type: field.type };
+          });
           const bits = B.tmp();
           B.line(`${bits} = load ${struct}, ptr ${value.name}`);
-          B.line(`store ${struct} ${bits}, ptr ${this.stackObjectSlot(s.localId, s.value.type)}`);
+          B.line(`store ${struct} ${bits}, ptr ${target}`);
+          this.disownSlots(owned);
+          for (const field of old) this.releaseValue(field.name, field.type);
           break;
         }
         const localStorage = this.localUnionStorage.get(s.localId);
@@ -8035,7 +8275,16 @@ export class LlEmitter {
         const acc = elemAccess(s.arr.type.elem);
         this.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
         if (acc === "ref") this.moveTemp(v);
-        emitDenseArraySet(this, arr.name, idx, s.index, acc, s.arr.type.elem, v.name);
+        emitDenseArraySet(
+          this,
+          arr.name,
+          idx,
+          s.index,
+          acc,
+          s.arr.type.elem,
+          v.name,
+          this.provenDenseIndex(s.arr, s.index),
+        );
         break;
       }
       case "arraySetLength": {
@@ -8073,6 +8322,28 @@ export class LlEmitter {
         B.line(`${same} = fcmp oeq double ${length.name}, ${lenNumber}`);
         B.condBr(same, done, resize);
         B.startBlock(resize);
+        if (s.pop === true) {
+          // A discarded pop's `length - 1` on a packed array removes the
+          // last element inline, then releases it.
+          const call = B.newLabel("arr.len.call"),
+            pop = B.newLabel("arr.len.pop");
+          const lastNumber = B.tmp(),
+            dropsLast = B.tmp();
+          B.line(`${lastNumber} = fsub double ${lenNumber}, 1.0`);
+          B.line(`${dropsLast} = fcmp oeq double ${length.name}, ${lastNumber}`);
+          B.condBr(dropsLast, pop, call);
+          B.startBlock(pop);
+          const elem = s.arr.type.elem;
+          const acc = elemAccess(elem);
+          const raw = emitDenseArrayPop(this, arr.name, acc, call, call);
+          if (acc === "ref" && isRefCounted(elem)) {
+            const old = B.tmp();
+            B.line(`${old} = inttoptr i64 ${raw} to ptr`);
+            this.releaseValue(old, elem);
+          }
+          B.br(done);
+          B.startBlock(call);
+        }
         B.line(`call void @scr_arr_set_len(ptr ${arr.name}, double ${length.name})`);
         this.emitPendingCheck();
         B.br(done);
@@ -8162,7 +8433,15 @@ export class LlEmitter {
           s.kind === "fieldSet"
             ? this.classFieldPtr(obj.name, s.className, s.field)
             : this.recordFieldPtr(obj.name, s.shapeId, s.field);
-        this.replaceField(ptr, type, inline, v);
+        // A result-slot entry fills zeroed caller storage, each field once.
+        if (
+          s.kind === "recordSet" &&
+          s.obj.kind === "varRef" &&
+          s.obj.localId === RESULT_DST_ID &&
+          this.currentFunctionName.startsWith(RESULT_ENTRY_PREFIX)
+        )
+          this.initField(ptr, type, inline, v);
+        else this.replaceField(ptr, type, inline, v);
         if (
           s.kind === "fieldSet" &&
           s.field === "name" &&
@@ -8452,7 +8731,12 @@ export class LlEmitter {
           (this.debug === null ? matchIntegerBytesForLoop(s, this.numericLocals) : null);
         const countedLoop =
           !integerLoop && this.countedLoopsEnabled
-            ? matchIntegerCountedForLoop(s, this.numericLocals, this.integerRanges)
+            ? matchIntegerCountedForLoop(
+                s,
+                this.numericLocals,
+                this.integerRanges,
+                this.unaliasedArrays,
+              )
             : null;
         const window =
           countedLoop && this.byteWindowsEnabled
@@ -8465,6 +8749,49 @@ export class LlEmitter {
                 this.byteWindowEntries.get(s) ?? new Set(),
               )
             : null;
+        const denseShape = !this.denseLoopsEnabled
+          ? null
+          : integerArrayLoop
+            ? {
+                counter: integerArrayLoop.localId,
+                length: integerArrayLoop.limitReceiver as IrExpr & { kind: "varRef" },
+                range: { min: 0, max: 4294967294 },
+              }
+            : countedLoop && !countedLoop.guarded
+              ? countedDenseShape(s, countedLoop)
+              : null;
+        const dense =
+          denseShape && !window
+            ? matchDenseArrayLoop(
+                s,
+                denseShape,
+                this.numericLocals,
+                this.unaliasedArrays,
+                this.denseLoopEntries.get(s) ?? new Set(),
+              )
+            : null;
+        if (dense) {
+          const valid = emitDenseLoopGuard(this, dense);
+          const fast = B.newLabel("dense.loop.fast"),
+            slow = B.newLabel("dense.loop.slow"),
+            done = B.newLabel("dense.loop.done");
+          B.condBr(valid, fast, slow);
+          this.denseLoopsEnabled = false;
+          try {
+            B.startBlock(slow);
+            this.emitStmt(s);
+            B.br(done);
+            B.startBlock(fast);
+            this.denseLoop = dense;
+            this.emitStmt(s);
+            B.br(done);
+          } finally {
+            this.denseLoop = null;
+            this.denseLoopsEnabled = true;
+          }
+          B.startBlock(done);
+          break;
+        }
         if (window) {
           const valid = emitByteWindowGuard(this, window);
           const fast = B.newLabel("bytes.window.fast"),
@@ -8567,7 +8894,10 @@ export class LlEmitter {
           this.integerLoopBindings.set(integerLoop.localId, {
             slot: integerSlot,
             type: this.sizeType,
-            range: { min: 0, max: integerArrayLoop ? 4294967294 : Number.MAX_SAFE_INTEGER - 1 },
+            range:
+              this.denseLoop?.counter === integerLoop.localId
+                ? this.denseLoop.range
+                : { min: 0, max: integerArrayLoop ? 4294967294 : Number.MAX_SAFE_INTEGER - 1 },
           });
         } else if (countedLoop) {
           integerSlot = B.slot();
@@ -8582,7 +8912,10 @@ export class LlEmitter {
             slot: integerSlot,
             type: "i64",
             signed: true,
-            range: countedLoop.range,
+            range:
+              this.denseLoop?.counter === countedLoop.localId
+                ? this.denseLoop.range
+                : countedLoop.range,
           });
           countedLimit = emitCountedLoopLimit(this, countedLoop);
         } else if (s.init) {
@@ -8924,6 +9257,12 @@ export class LlEmitter {
         // own turn is the await (nothing runs in between).
         const genSettles =
           this.currentAsyncGenerator && (s.awaited === true || this.finallyStack.length > 0);
+        // A completion turn that awaits x replaces a return() request's
+        // already-taken await.
+        if (this.currentAsyncGenerator && !genSettles) {
+          this.declare(`declare void @scr_async_gen_return_awaits()`);
+          B.line(`call void @scr_async_gen_return_awaits()`);
+        }
         if (this.currentAsyncGenerator && s.awaited !== true && this.finallyStack.length > 0) {
           if (this.wasi) this.emitWasiSuspend(null);
           else {
@@ -9919,7 +10258,12 @@ export class LlEmitter {
       unionsById: this.unionsById,
       recordsById: this.recordsById,
       inlineUnions: this.inlineUnions,
-      nullableArm: (t) => this.nullableUnions.of(t)?.arm ?? null,
+      nullableArm: (t) => {
+        const nullable = this.nullableUnions.of(t);
+        return nullable?.repr === "single" ? nullable.arm : null;
+      },
+      shapeUnion: (t) => this.nullableUnions.of(t)?.repr === "shapes",
+      fieldBase: (shapeId) => this.nullableUnions.fieldBase(shapeId),
       classInfo: (className) => {
         const meta = this.classMetaOf(className);
         return {
@@ -10171,11 +10515,16 @@ export class LlEmitter {
     if (canStackUnion(e, this.boxedUnionsById)) return emitStackUnion(this, e).value;
     if (e.kind === "unionNarrow") {
       const union = this.emitUnionProjection(e.value);
+      emitUnionNarrowGuard(this, union.name, e.unionId, e.tag);
       return { name: this.unionPeek(union.name, e.unionId), type: e.type };
     }
     if ((e.kind === "downcast" || e.kind === "upcast") && e.value.type.kind === "object") {
-      // Prefix layouts: a class cast reads the operand's own pointer.
-      return { name: this.emitReadReceiver(e.value).name, type: e.type };
+      // Prefix layouts: a class cast reads the operand's own pointer; a
+      // downcast verifies its target class (narrow-guards.ts).
+      const receiver = this.emitReadReceiver(e.value);
+      if (e.kind === "downcast" && e.type.kind === "object")
+        emitDowncastGuard(this, receiver.name, e.value.type.className, e.type.className);
+      return { name: receiver.name, type: e.type };
     }
     // A nullable-pointer field has no box to borrow. Projections use
     // emitUnionProjection; other borrowers get an owned heap box.
@@ -10635,7 +10984,11 @@ export class LlEmitter {
     const nullable = this.nullableUnions.get(e.unionId);
     if (!nullable) return null;
     if (isUnitType(e.value.type)) return e.value.kind === "unitLit" ? "unit" : null;
-    return e.tag === nullable.refTag && isRefCounted(e.value.type) ? "ref" : null;
+    const refArm =
+      nullable.repr === "single"
+        ? e.tag === nullable.refTag
+        : nullable.arms.some((arm) => arm.tag === e.tag);
+    return refArm && isRefCounted(e.value.type) ? "ref" : null;
   }
 
   materializeSplitLocal(localId: string): void {
@@ -10920,6 +11273,7 @@ export class LlEmitter {
     resultType: IrType,
     overflowOnly: boolean,
     loc?: SrcLoc,
+    missNaN = false,
   ): void {
     return keyedRecordReadInto(
       this,
@@ -10931,6 +11285,7 @@ export class LlEmitter {
       resultType,
       overflowOnly,
       loc,
+      missNaN,
     );
   }
 

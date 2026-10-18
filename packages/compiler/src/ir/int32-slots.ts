@@ -336,6 +336,7 @@ const BOUNDARY_KINDS = new Set<IrExpr["kind"]>([
  * property, except literal-keyed `dyn.keySet`/`dyn.keyDelete`. */
 const DYN_READ_ONLY = new Set<string>([
   "arrayBuffer.new",
+  "arrayBuffer.viewF16",
   "arrayBuffer.viewF32",
   "arrayBuffer.viewF64",
   "arrayBuffer.viewI16",
@@ -889,27 +890,44 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
     else groups.set(root, [key]);
   }
   const boxOrigin = new Map<string, string>();
+  // Per function, computed on first use: its capture ids and the locals an
+  // initialized declaration binds (one body walk each, not one per box).
+  const captureIds = new Map<string, Set<string>>();
+  const capturedIn = (fnName: string, localId: string): boolean => {
+    let ids = captureIds.get(fnName);
+    if (ids === undefined) {
+      ids = new Set((functions.get(fnName)?.captures ?? []).map((c) => c.localId));
+      captureIds.set(fnName, ids);
+    }
+    return ids.has(localId);
+  };
+  const initializedDeclarations = new Map<string, Set<string>>();
+  const initializedIn = (fn: IrFunction, localId: string): boolean => {
+    let ids = initializedDeclarations.get(fn.name);
+    if (ids === undefined) {
+      const found = new Set<string>();
+      walkFunction(fn, {
+        stmt: (s) => {
+          if (s.kind === "varDecl" && s.init) found.add(s.localId);
+        },
+      });
+      initializedDeclarations.set(fn.name, (ids = found));
+    }
+    return ids.has(localId);
+  };
   for (const [group, members] of groups) {
     if (members.some((key) => unstableBoxes.has(key))) continue;
     // The origin is the one member that is not a capture of its function.
     const origins = members.filter((key) => {
       const [fnName, localId] = key.split("\0") as [string, string];
-      return !functions.get(fnName)?.captures?.some((c) => c.localId === localId);
+      return !capturedIn(fnName, localId);
     });
     if (origins.length !== 1) continue;
     const [fnName, localId] = origins[0]!.split("\0") as [string, string];
     const origin = functions.get(fnName)!;
     if (origin.params.some((p) => p.localId === localId)) {
       if (!slots.hasParam(fnName, localId)) continue;
-    } else {
-      let initialized = false;
-      walkFunction(origin, {
-        stmt: (s) => {
-          if (s.kind === "varDecl" && s.localId === localId && s.init) initialized = true;
-        },
-      });
-      if (!initialized) continue;
-    }
+    } else if (!initializedIn(origin, localId)) continue;
     boxOrigin.set(`param:${fnName}\0${localId}`, group);
     slots.addBox(group, members);
     // A box starts from its origin parameter's value: it can only be

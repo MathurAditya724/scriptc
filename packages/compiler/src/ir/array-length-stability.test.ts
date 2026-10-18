@@ -1,0 +1,141 @@
+import { expect, test } from "vitest";
+import { findUnaliasedLocalArrays, preservesArrayLength } from "./array-length-stability.js";
+import {
+  BOOL,
+  F64,
+  arrayOf,
+  type IrExpr,
+  type IrFunction,
+  type IrLocal,
+  type IrStmt,
+} from "./ir.js";
+
+const loc = { file: "array-length-stability.ts", start: 0, end: 0 };
+const ARR = arrayOf(F64);
+const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+const ref = (localId: string): IrExpr => ({ kind: "varRef", localId, type: F64, loc });
+const arr = (localId: string): IrExpr => ({ kind: "varRef", localId, type: ARR, loc });
+const method = (
+  receiver: string,
+  name: Extract<IrExpr, { kind: "arrIntrinsic" }>["method"],
+  args: IrExpr[] = [],
+): IrExpr => ({
+  kind: "arrIntrinsic",
+  method: name,
+  receiver: arr(receiver),
+  args,
+  type: F64,
+  loc,
+});
+const length = (receiver: string): IrExpr => method(receiver, "length");
+const read = (receiver: string, index: IrExpr): IrExpr => method(receiver, "getNumber", [index]);
+const plus = (left: IrExpr, right: IrExpr): IrExpr => ({
+  kind: "bin",
+  op: "+",
+  left,
+  right,
+  type: F64,
+  loc,
+});
+const stmt = (expr: IrExpr): IrStmt => ({ kind: "exprStmt", expr, loc });
+const set = (receiver: string, index: IrExpr, value: IrExpr): IrStmt => ({
+  kind: "arraySet",
+  arr: arr(receiver),
+  index,
+  value,
+  loc,
+});
+const cond: IrExpr = { kind: "bin", op: "<", left: ref("i"), right: length("a"), type: BOOL, loc };
+const sum: IrStmt = {
+  kind: "assign",
+  localId: "s",
+  value: plus(ref("s"), read("a", ref("i"))),
+  loc,
+};
+const locals = new Map<string, IrLocal>([
+  ["i", { id: "i", name: "i", type: F64, mutable: true }],
+  ["s", { id: "s", name: "s", type: F64, mutable: true }],
+  ["a", { id: "a", name: "a", type: ARR, mutable: false }],
+  ["b", { id: "b", name: "b", type: ARR, mutable: false }],
+  ["out", { id: "out", name: "out", type: ARR, mutable: false }],
+]);
+const preserves = (
+  body: IrStmt[],
+  inRange: string | null = "i",
+  unaliased: ReadonlySet<string> = new Set(),
+  scope = locals,
+): boolean => preservesArrayLength([cond, ...body], { receiver: "a", inRange }, scope, unaliased);
+
+test("reads, local arithmetic and element writes at the in-range counter keep the length", () => {
+  expect(preserves([sum])).toBe(true);
+  expect(preserves([set("a", ref("i"), num(1)), set("b", ref("i"), read("a", ref("i")))])).toBe(
+    true,
+  );
+  expect(preserves([stmt(method("a", "indexOf", [num(3)]))])).toBe(true);
+});
+
+test("writes past the counter, without an in-range counter, or to the counter can grow it", () => {
+  expect(preserves([set("a", plus(ref("i"), num(1)), num(1))])).toBe(false);
+  expect(preserves([set("b", ref("s"), num(1))])).toBe(false);
+  expect(preserves([set("a", ref("i"), num(1))], null)).toBe(false);
+  expect(preserves([{ kind: "assign", localId: "i", value: num(0), loc }, sum])).toBe(false);
+});
+
+test("resizing methods, length stores, calls and escapes refuse the proof", () => {
+  for (const name of ["push", "pop", "shift", "unshift", "splice", "fill"] as const)
+    expect(preserves([stmt(method("a", name, [num(1)]))])).toBe(false);
+  // An unrelated array may alias the receiver.
+  expect(preserves([stmt(method("b", "push", [num(1)]))])).toBe(false);
+  expect(preserves([{ kind: "arraySetLength", arr: arr("a"), length: num(0), loc }])).toBe(false);
+  expect(preserves([{ kind: "arrayDelete", arr: arr("a"), index: ref("i"), loc }])).toBe(false);
+  expect(preserves([stmt({ kind: "call", callee: "f", args: [], type: F64, loc })])).toBe(false);
+  expect(preserves([stmt({ kind: "call", callee: "f", args: [arr("a")], type: F64, loc })])).toBe(
+    false,
+  );
+  expect(preserves([{ kind: "varDecl", localId: "b", init: arr("a"), loc }])).toBe(false);
+  expect(preserves([{ kind: "assign", localId: "a", value: arr("b"), loc }])).toBe(false);
+});
+
+test("an unaliased local array other than the receiver may grow", () => {
+  const push = stmt(method("out", "push", [read("a", ref("i"))]));
+  expect(preserves([push], "i", new Set(["out"]))).toBe(true);
+  expect(preserves([set("out", ref("s"), num(1))], "i", new Set(["out"]))).toBe(true);
+  expect(preserves([push])).toBe(false);
+  // The receiver itself is never resized, even when no alias exists.
+  expect(preserves([stmt(method("a", "push", [num(1)]))], "i", new Set(["a"]))).toBe(false);
+});
+
+test("captured receivers have no local proof", () => {
+  const boxed = new Map(locals);
+  boxed.set("a", { ...locals.get("a")!, boxed: true });
+  expect(preserves([sum], "i", new Set(), boxed)).toBe(false);
+});
+
+function fn(body: IrStmt[], params: string[] = []): IrFunction {
+  return {
+    loc,
+    name: "f",
+    params: params.map((localId) => ({ localId, type: ARR })),
+    returnType: ARR,
+    locals: [...locals.values()],
+    body,
+  } as IrFunction;
+}
+const fresh: IrExpr = { kind: "arrayLit", elems: [], type: ARR, loc };
+
+test("fresh local arrays read only as receivers have no alias", () => {
+  const body: IrStmt[] = [
+    { kind: "varDecl", localId: "out", init: fresh, loc },
+    stmt(method("out", "push", [num(1)])),
+    { kind: "return", value: arr("out"), loc },
+  ];
+  expect([...findUnaliasedLocalArrays(fn(body))]).toEqual(["out"]);
+  // Parameters, copies into another binding, and arguments escape.
+  expect(findUnaliasedLocalArrays(fn(body, ["out"])).size).toBe(0);
+  const copied = [...body, { kind: "varDecl", localId: "b", init: arr("out"), loc } as IrStmt];
+  expect(findUnaliasedLocalArrays(fn(copied)).has("out")).toBe(false);
+  const passed = [...body, stmt({ kind: "call", callee: "g", args: [arr("out")], type: F64, loc })];
+  expect(findUnaliasedLocalArrays(fn(passed)).has("out")).toBe(false);
+  const rebound = [...body, { kind: "assign", localId: "out", value: arr("a"), loc } as IrStmt];
+  expect(findUnaliasedLocalArrays(fn(rebound)).has("out")).toBe(false);
+});

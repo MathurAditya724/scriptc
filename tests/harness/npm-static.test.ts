@@ -618,6 +618,40 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     },
   );
 
+  test.each(["release", "dev"] as const)(
+    "a factory that destructures its base class from an options object builds static subclasses (%s)",
+    async (optimization) => {
+      const entry = join(pilotRoot, "class-options-cli.ts");
+      const outDir = join(cacheDir, `class-options-${optimization}-${sanitize ? "san" : "plain"}`);
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic: ["class-options"],
+        sanitize,
+        optimization,
+        outDir,
+        outPath: join(outDir, "program"),
+        emitIr: true,
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(reference.exitCode).toBe(0);
+      expect(native.stdout).toEqual(reference.stdout);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.exitCode).toBe(reference.exitCode);
+      // One makeClass instance per distinct base (Root, Animal, Dog) plus
+      // the generic one a class's own `extend` passing itself back reuses.
+      const ir = JSON.parse(readFileSync(result.irPath!, "utf8")) as {
+        functions: { name: string }[];
+      };
+      const instances = ir.functions.filter((fn) => /^%[\w.]*makeClass%\d+$/.test(fn.name));
+      expect(instances.length).toBeLessThanOrEqual(4);
+    },
+  );
+
   test.for([
     ["escape-string-regexp", "escape-cli.ts"],
     ["slash", "slash-cli.ts"],
@@ -877,6 +911,24 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
+
+  // Real CommonJS packages whose require() placement (a binding required
+  // below code that only reaches it after the require ran) or JSON
+  // require preflight refused before.
+  test("export-first CommonJS packages and JSON requires compile statically", () => {
+    const { coverage } = analyze(join(pilotRoot, "cjs-interop-cli.ts"), {
+      npmStatic: ["fs.realpath", "on-finished", "ee-first", "statuses"],
+    });
+    expect(coverage.preflightFailed).toBe(false);
+    expect(
+      [...(coverage.npmStatic ?? [])].sort((a, b) => a.package.localeCompare(b.package)),
+    ).toEqual([
+      { package: "ee-first", status: "static" },
+      { package: "fs.realpath", status: "static" },
+      { package: "on-finished", status: "static" },
+      { package: "statuses", status: "static" },
+    ]);
+  }, 120_000);
 
   // A package preflight failure stays visible as a package-specific refusal.
   test("a preflight-refused package reports its native refusal", () => {

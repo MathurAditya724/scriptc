@@ -47,7 +47,8 @@ interface DenseGuard {
  * then extends the length over hole states exactly the same way). An index
  * below the hole-free prefix bound branches to `filledLabel` first; both
  * that block and the returned (state-checked) dense block may use the
- * guard's values. */
+ * guard's values. A `proven` index is known to lie below the bound (a dense
+ * array loop's fast copy, dense-array-loops.ts) and always takes it. */
 function emitDenseGuard(
   host: LlvmEmitterContext,
   array: string,
@@ -56,6 +57,7 @@ function emitDenseGuard(
   slow: string,
   requireBelowLen: boolean,
   filledLabel: string,
+  proven = false,
 ): DenseGuard {
   const B = host.B;
   const size = host.sizeType;
@@ -137,8 +139,10 @@ function emitDenseGuard(
     B.line(`${offset} = trunc i64 ${wide} to i32`);
   }
   // The bound never exceeds the length or the dense capacity.
-  let inFilled = B.tmp();
-  B.line(`${inFilled} = icmp ult i64 ${wide}, ${filledWide}`);
+  // The proof covers the counter's integer value only.
+  const below = proven && integral === null;
+  let inFilled = below ? "true" : B.tmp();
+  if (!below) B.line(`${inFilled} = icmp ult i64 ${wide}, ${filledWide}`);
   if (integral) {
     const t = B.tmp();
     B.line(`${t} = and i1 ${integral}, ${inFilled}`);
@@ -272,6 +276,7 @@ export function emitDenseArrayGet(
   element: IrType,
   getter: string,
   retain: boolean,
+  proven = false,
 ): string {
   const B = host.B;
   const ty = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
@@ -285,7 +290,7 @@ export function emitDenseArrayGet(
   const slow = B.newLabel("arr.get.slow"),
     join = B.newLabel("arr.get.join"),
     valueLabel = B.newLabel("arr.get.value");
-  const guard = emitDenseGuard(host, array, index, indexExpr, slow, true, valueLabel);
+  const guard = emitDenseGuard(host, array, index, indexExpr, slow, true, valueLabel, proven);
   const state = loadState(host, guard);
   const present = B.tmp();
   B.line(`${present} = icmp eq i8 ${state}, ${SCR_ARR_VALUE}`);
@@ -331,6 +336,7 @@ export function emitDenseArrayNumber(
   array: string,
   index: LlValue,
   indexExpr: IrExpr | undefined,
+  proven = false,
 ): string {
   return emitDenseArrayGet(
     host,
@@ -341,6 +347,7 @@ export function emitDenseArrayNumber(
     { kind: "f64" },
     "scr_arr_get_number",
     false,
+    proven,
   );
 }
 
@@ -399,6 +406,7 @@ export function emitDenseArraySet(
   acc: ArrayAccess,
   element: IrType,
   value: string,
+  proven = false,
 ): void {
   const B = host.B;
   const ty = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
@@ -413,7 +421,7 @@ export function emitDenseArraySet(
   const slow = B.newLabel("arr.set.slow"),
     join = B.newLabel("arr.set.join"),
     filledLabel = B.newLabel("arr.set.filled");
-  const guard = emitDenseGuard(host, array, index, indexExpr, slow, false, filledLabel);
+  const guard = emitDenseGuard(host, array, index, indexExpr, slow, false, filledLabel, proven);
   const { offset, len } = guard;
   const storeValue = (valuePtr: string): void => {
     if (acc === "f64") {
@@ -506,6 +514,75 @@ export function emitDenseArraySet(
   call(" cold");
   B.br(join);
   B.startBlock(join);
+}
+
+/** The dense half of `pop`. An empty array branches to `empty` (the
+ * runtime's pop returns a hole state there and changes nothing). When the
+ * hole-free prefix bound equals the length, the last element is a present
+ * value in dense storage, and the runtime's pop is exactly: clear its slot
+ * and state, lower the bound and the length to its index, and move the
+ * slot out. That block is left open and its slot bits are returned as an
+ * i64 (a boolean's 0 or 1, zero-extended); every other array branches to
+ * `slow`, which keeps the runtime call. */
+export function emitDenseArrayPop(
+  host: LlvmEmitterContext,
+  array: string,
+  acc: ArrayAccess,
+  empty: string,
+  slow: string,
+): string {
+  const B = host.B;
+  const size = host.sizeType;
+  const header = (field: number): string => {
+    const ptr = B.tmp();
+    B.line(`${ptr} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 ${field}`);
+    host.markMemoryPointer(ptr, "array:header");
+    return ptr;
+  };
+  const lenPtr = header(SCR_ARR_FIELD.len),
+    len = B.tmp(),
+    none = B.tmp();
+  B.line(`${len} = load ${size}, ptr ${lenPtr}${host.fieldAliasAttachment(lenPtr)}`);
+  B.line(`${none} = icmp eq ${size} ${len}, 0`);
+  const check = B.newLabel("arr.pop.check"),
+    dense = B.newLabel("arr.pop.dense");
+  B.condBr(none, empty, check);
+  B.startBlock(check);
+  const filledPtr = header(SCR_ARR_FIELD.filled),
+    filled = B.tmp(),
+    packed = B.tmp();
+  B.line(`${filled} = load i32, ptr ${filledPtr}${host.fieldAliasAttachment(filledPtr)}`);
+  B.line(`${packed} = icmp eq ${size} ${sizedFilled(host, filled)}, ${len}`);
+  B.condBr(packed, dense, slow);
+  B.startBlock(dense);
+  const last = B.tmp();
+  B.line(`${last} = sub nuw ${size} ${len}, 1`);
+  const dataPtr = header(SCR_ARR_FIELD.data),
+    data = B.tmp(),
+    statesPtr = header(SCR_ARR_FIELD.present),
+    states = B.tmp();
+  B.line(`${data} = load ptr, ptr ${dataPtr}${host.fieldAliasAttachment(dataPtr)}`);
+  B.line(`${states} = load ptr, ptr ${statesPtr}${host.fieldAliasAttachment(statesPtr)}`);
+  const valuePtr = valuePointer(host, { offset: last, data }, acc);
+  const statePtr = statePointer(host, { offset: last, states });
+  const slotTy = slotType(acc);
+  let raw = B.tmp();
+  B.line(`${raw} = load ${slotTy}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+  if (slotTy === "i8") {
+    const wide = B.tmp();
+    B.line(`${wide} = zext i8 ${raw} to i64`);
+    raw = wide;
+  }
+  B.line(`store ${slotTy} 0, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+  B.line(`store i8 0, ptr ${statePtr}${host.fieldAliasAttachment(statePtr)}`);
+  let last32 = last;
+  if (size === "i64") {
+    last32 = B.tmp();
+    B.line(`${last32} = trunc i64 ${last} to i32`);
+  }
+  B.line(`store i32 ${last32}, ptr ${filledPtr}${host.fieldAliasAttachment(filledPtr)}`);
+  B.line(`store ${size} ${last}, ptr ${lenPtr}${host.fieldAliasAttachment(lenPtr)}`);
+  return raw;
 }
 
 /** `scr_arr_push_*` (the array takes the value's reference) returning the

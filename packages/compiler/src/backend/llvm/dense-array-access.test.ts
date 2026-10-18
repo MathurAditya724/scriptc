@@ -3,6 +3,7 @@ import {
   BOOL,
   F64,
   STRING,
+  UNDEFINED_T,
   VOID,
   arrayOf,
   type IrExpr,
@@ -23,11 +24,17 @@ const ref = (localId: string, type: IrExpr["type"]): IrExpr => ({
 });
 const index = ref("i", F64);
 
-function module(name: string, returnType: IrExpr["type"], body: IrStmt[]): IrModule {
+function module(
+  name: string,
+  returnType: IrExpr["type"],
+  body: IrStmt[],
+  unions: IrModule["unions"] = [],
+): IrModule {
   return {
     irVersion: 16,
     sourceFile: loc.file,
     entry: "__main",
+    unions,
     functions: [
       { name: "__main", params: [], returnType: VOID, locals: [], body: [], loc },
       {
@@ -173,6 +180,76 @@ test.each([32, 64] as const)(
     }
   },
 );
+
+test.each([32, 64] as const)(
+  "pop removes the last element of a packed array inline and keeps a cold runtime pop (%i-bit)",
+  (bits) => {
+    const maybe = { kind: "union", unionId: "maybe" } as const;
+    const pop: IrExpr = {
+      kind: "arrIntrinsic",
+      method: "pop",
+      receiver: ref("a", nums),
+      args: [],
+      type: maybe,
+      loc,
+    };
+    const llvm = emitLlvmModule(
+      module(
+        "take",
+        maybe,
+        [{ kind: "return", value: pop, loc }],
+        [{ id: "maybe", arms: [F64, UNDEFINED_T] }],
+      ),
+      { pointerBits: bits },
+    );
+    const fn = body(llvm, "take");
+    const size = bits === 32 ? "i32" : "i64";
+    // An empty array answers undefined without a call.
+    expect(fn).toMatch(new RegExp(`icmp eq ${size} %t\\d+, 0\\n  br i1 %t\\d+, label %remove\\.a`));
+    expect(fn).toMatch(new RegExp(`sub nuw ${size} %t\\d+, 1`));
+    expect(fn).toMatch(/store i64 0, ptr /);
+    expect(fn).toMatch(/store i8 0, ptr /);
+    expect(fn).toMatch(/phi i64 /);
+    expect(fn).toMatch(/call zeroext i8 @scr_arr_pop_state\(.*\) cold$/m);
+  },
+);
+
+test("a discarded pop releases the removed element inline", () => {
+  const words = ref("s", arrayOf(STRING));
+  const length: IrExpr = {
+    kind: "arrIntrinsic",
+    method: "length",
+    receiver: words,
+    args: [],
+    type: F64,
+    loc,
+  };
+  const llvm = emitLlvmModule(
+    module("drop", VOID, [
+      {
+        kind: "arraySetLength",
+        arr: words,
+        length: {
+          kind: "bin",
+          op: "-",
+          left: length,
+          right: { kind: "numLit", value: 1, type: F64, loc },
+          type: F64,
+          loc,
+        },
+        loc,
+        pop: true,
+      },
+    ]),
+  );
+  const fn = body(llvm, "drop");
+  expect(fn).toMatch(/fsub double %t\d+, 1\.0/);
+  expect(fn).toMatch(/load i64, ptr .*\n(?:.*\n)*?  store i64 0, ptr /);
+  expect(fn).toMatch(/inttoptr i64 %t\d+ to ptr/);
+  expect(fn).toContain("call void @scr_str_release(");
+  // Holes, sparse storage, and every other length keep the runtime call.
+  expect(fn).toContain("call void @scr_arr_set_len(");
+});
 
 test.each([32, 64] as const)(
   "indices below the hole-free prefix bound skip the state bytes (%i-bit)",
