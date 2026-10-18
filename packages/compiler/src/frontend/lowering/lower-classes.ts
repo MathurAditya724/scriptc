@@ -12,6 +12,11 @@ import { InternalCompilerError } from "../../errors.js";
 import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
+import {
+  type BuiltinClassRef,
+  builtinClassAliasOf,
+  builtinClassRefOf,
+} from "./builtins/class-values.js";
 import type { FnCtx, Lowerer } from "./lowerer.js";
 import {
   BOOL,
@@ -924,12 +929,15 @@ export function registerBuiltinStreamClasses(lowerer: Lowerer): void {
  * "stream" ambient module, EXCLUDING @types/node's (whose stream.Readable
  * also types child stdio — under @types/node the childStream mapping
  * keeps priority and the static stream classes stand down; the shipped
- * fallback declarations are the supported surface). */
+ * fallback declarations are the supported surface). A const binding of
+ * one (`const R = Readable`) names the same class (builtinClassAliasOf). */
 export function builtinStreamInfoOf(
   lowerer: Lowerer,
   symbol: ts.Symbol | null | undefined,
 ): ClassInfo | null {
   if (!symbol) return null;
+  const alias = builtinClassAliasOf(lowerer, symbol);
+  if (alias !== null) return alias.kind === "stream" ? alias.info : null;
   if (!lowerer.isStdlibSymbol(symbol)) {
     // A const ALIAS of a namespace member (`const Writable =
     // stream.Writable` — the two-step spelling; the one-step
@@ -1284,12 +1292,16 @@ function undefArmedFieldType(lowerer: Lowerer, p: ts.Symbol): IrType | null {
  * `extends EventEmitter`, `x instanceof EventEmitter`) — any import
  * spelling (named/default/namespace member, CJS require) resolves to
  * the ambient class. Provenance-checked like the error classes: only a
- * stdlib-file declaration inside the "events" ambient module counts. */
+ * stdlib-file declaration inside the "events" ambient module counts. A
+ * const binding of it (`const E = EventEmitter`) names the same class
+ * (builtinClassAliasOf). */
 export function builtinEmitterInfoOf(
   lowerer: Lowerer,
   symbol: ts.Symbol | null | undefined,
 ): ClassInfo | null {
   if (!symbol) return null;
+  const alias = builtinClassAliasOf(lowerer, symbol);
+  if (alias !== null) return alias.kind === "emitter" ? alias.info : null;
   if (!lowerer.isStdlibSymbol(symbol)) {
     // A const ALIAS of the emitter class member (`const EventEmitter =
     // require('node:events').EventEmitter` — commander's spelling; the
@@ -1330,12 +1342,17 @@ export function builtinEmitterInfoOf(
 /** The builtin error ClassInfo a VALUE symbol refers to (`new Error`,
  * `extends TypeError`, `x instanceof RangeError`), or null. Provenance-
  * checked: only the standard library's declarations count — a user's own
- * `class Error` resolves through classBySymbol instead. */
+ * `class Error` resolves through classBySymbol instead. A const binding
+ * of one (`const E = TypeError`) names the same class
+ * (builtinClassAliasOf). */
 export function builtinErrorInfoOf(
   lowerer: Lowerer,
   symbol: ts.Symbol | null | undefined,
 ): ClassInfo | null {
-  if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
+  if (!symbol) return null;
+  const alias = builtinClassAliasOf(lowerer, symbol);
+  if (alias !== null) return alias.kind === "error" ? alias.info : null;
+  if (!lowerer.isStdlibSymbol(symbol)) return null;
   for (const [irName, rec] of RUNTIME_ERROR_CLASSES) {
     if (rec.lib === symbol.name) return lowerer.classes.get(irName) ?? null;
   }
@@ -4359,6 +4376,7 @@ export function lowerStaticFieldInits(lowerer: Lowerer, info: ClassInfo): IrStmt
   // instantiation's bindings/context (a no-op for everything else —
   // generic FAMILIES own their statics and carry no genericInstance).
   const diagsBefore = lowerer.diags.length;
+  const sinkMark = lowerer.diagSinkMark();
   try {
     return withInstanceBindings(lowerer, info, () => lowerStaticFieldInitsInner(lowerer, info));
   } catch (error) {
@@ -4366,8 +4384,11 @@ export function lowerStaticFieldInits(lowerer: Lowerer, info: ClassInfo): IrStmt
     // Keep their refusal attached to the class declaration instead of
     // letting a poisoned initializer escape the module lowering pass.
     if (!(error instanceof PoisonError)) throw error;
-    if (info.decl && isJsSourceFile(info.decl.getSourceFile()) && lowerer.diagSink === null) {
-      const fence = lowerer.deferToRuntimeFence(diagsBefore, info.decl, { kind: "statement" });
+    if (info.decl && isJsSourceFile(info.decl.getSourceFile())) {
+      const fence =
+        lowerer.diagSink === null
+          ? lowerer.deferToRuntimeFence(diagsBefore, info.decl, { kind: "statement" })
+          : lowerer.capturedRuntimeFence(sinkMark, info.decl);
       if (fence) return [fence];
     }
     return [];
@@ -4504,6 +4525,7 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
     lowerer.stats.statementsTotal++;
     lowerer.bumpFileStat(locOf(f.initializer).file, "total");
     const diagsBefore = lowerer.diags.length;
+    const sinkMark = lowerer.diagSinkMark();
     try {
       const previousThis = lowerer.ctx.thisLocal;
       const receiver =
@@ -4539,10 +4561,11 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
       if (!(e instanceof PoisonError)) throw e;
       lowerer.stats.statementsFailed++;
       lowerer.bumpFileStat(locOf(f.initializer).file, "failed");
-      if (isJsSourceFile(f.initializer.getSourceFile()) && lowerer.diagSink === null) {
-        const fence = lowerer.deferToRuntimeFence(diagsBefore, f.initializer, {
-          kind: "statement",
-        });
+      if (isJsSourceFile(f.initializer.getSourceFile())) {
+        const fence =
+          lowerer.diagSink === null
+            ? lowerer.deferToRuntimeFence(diagsBefore, f.initializer, { kind: "statement" })
+            : lowerer.capturedRuntimeFence(sinkMark, f.initializer);
         if (fence) out.push(fence);
       }
     }
@@ -6415,7 +6438,7 @@ export function collectInheritedJsFieldWrites(
  * hierarchy identifies the original declarations through aliases as well. */
 export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.SourceFile[]): void {
   const families: [ts.MethodDeclaration, ts.MethodDeclaration][] = [];
-  collectClassMethodMutations(lowerer, files);
+  lowerer.speculativeTypeQueries(() => collectClassMethodMutations(lowerer, files));
   const visit = (node: ts.Node): void => {
     if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
       const accessors = node.members.filter(
@@ -7616,6 +7639,7 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
     lowerer.stats.statementsTotal++;
     lowerer.bumpFileStat(locOf(f.initializer).file, "total");
     const diagsBefore = lowerer.diags.length;
+    const sinkMark = lowerer.diagSinkMark();
     try {
       const value = lowerer.lowerExprExpecting(f.initializer, f.type);
       out.push({
@@ -7630,10 +7654,11 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
       if (!(e instanceof PoisonError)) throw e;
       lowerer.stats.statementsFailed++;
       lowerer.bumpFileStat(locOf(f.initializer).file, "failed");
-      if (isJsSourceFile(f.initializer.getSourceFile()) && lowerer.diagSink === null) {
-        const fence = lowerer.deferToRuntimeFence(diagsBefore, f.initializer, {
-          kind: "statement",
-        });
+      if (isJsSourceFile(f.initializer.getSourceFile())) {
+        const fence =
+          lowerer.diagSink === null
+            ? lowerer.deferToRuntimeFence(diagsBefore, f.initializer, { kind: "statement" })
+            : lowerer.capturedRuntimeFence(sinkMark, f.initializer);
         if (fence) out.push(fence);
       }
     }
@@ -8435,6 +8460,12 @@ function assignedThisFieldType(lowerer: Lowerer, expr: ts.NewExpression): IrType
   return lowerer.currentClass?.fields.get(parent.left.name.text) ?? null;
 }
 
+/** Map, Set and the error classes construct in lowerNew's identifier
+ * branch, which a module member alias of one (`new mod.M()`) also takes. */
+function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
+  return ref?.kind === "collection" || ref?.kind === "error";
+}
+
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
   const worker = lowerWorkerNew(lowerer, expr);
@@ -8729,7 +8760,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     ts.isIdentifier(expr.expression) ||
     (ts.isPropertyAccessExpression(expr.expression) &&
       ts.isIdentifier(expr.expression.name) &&
-      lowerer.isStdlibGlobal(expr.expression.expression, "globalThis"))
+      (lowerer.isStdlibGlobal(expr.expression.expression, "globalThis") ||
+        // `new mod.M()` over an exported `const M = Map` or `const E =
+        // TypeError`
+        isCollectionOrErrorClass(builtinClassRefOf(lowerer, expr.expression))))
   ) {
     // `import C = N.C; new C()` — the alias's own source-order guards
     // (a no-op for every non-import= binding).
@@ -9094,7 +9128,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     if (symbol?.name === "Array" && lowerer.isStdlibSymbol(symbol)) {
       return lowerArrayConstructor(lowerer, expr, expr.arguments ?? []);
     }
-    if (symbol?.name === "Map" && lowerer.isStdlibSymbol(symbol)) {
+    // A const alias (`const M = Map`) constructs the same Map.
+    if (ts.isIdentifier(identifier) && lowerer.isStdlibGlobal(identifier, "Map")) {
       const seedArg = (expr.arguments?.length ?? 0) === 1 ? expr.arguments![0]! : null;
       const isPairLit = (el: ts.Expression): el is ts.ArrayLiteralExpression =>
         ts.isArrayLiteralExpression(el) &&
@@ -9226,7 +9261,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     }
     // `new Set<T>()`: construct + bulk add from supported values,
     // including live collection cursors. Duplicates collapse in insertion order.
-    if (symbol?.name === "Set" && lowerer.isStdlibSymbol(symbol)) {
+    if (ts.isIdentifier(identifier) && lowerer.isStdlibGlobal(identifier, "Set")) {
       const tsType = lowerer.typeOf(expr);
       let mapped = lowerer.mapTypeOf(tsType);
       const fieldType = assignedThisFieldType(lowerer, expr);

@@ -489,6 +489,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "str.encodeUri",
   "qs.escape",
   "qs.stringify",
+  // node:punycode's RangeErrors (encode/toASCII only past 32-bit deltas)
+  // and String.fromCodePoint's for ucs2.encode.
+  "punycode.decode",
+  "punycode.encode",
+  "punycode.toASCII",
+  "punycode.toUnicode",
+  "punycode.ucs2Encode",
   // The base64 globals: atob/btoa throw the catchable DOMException
   // InvalidCharacterError on malformed input; the zero-argument form
   // always throws Node's TypeError [ERR_MISSING_ARGS].

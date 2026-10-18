@@ -1159,7 +1159,9 @@ export class ClassDynamicDispatch {
         // Runtime-owned roots keep their dedicated property contracts. A
         // family whose fields all exist from construction and are never
         // deleted keeps a fixed layout, as TypeScript classes do.
-        this.deletedNames ??= deletedPropertyNames(lowerer.moduleOrder);
+        // null is a result too; undefined means not computed yet.
+        if (this.deletedNames === undefined)
+          this.deletedNames = deletedPropertyNames(lowerer.moduleOrder);
         if (!root.base?.def.runtime && !fixedFieldFamily(root, this.deletedNames)) track(root);
       }
       const loc = this.propertyBag.loc;
