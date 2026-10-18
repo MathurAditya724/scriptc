@@ -258,3 +258,21 @@ test("Float16Array accesses version in elements and share the element tag", () =
   // The checked copy keeps its per-element tests.
   expect(body.slice(0, body.indexOf(fast))).toContain("bytes.index.invalid");
 });
+
+test("bodies compiled without optimization keep one checked loop", () => {
+  const loop = counted([set(ref("out", f64s), ref("i"), get(ref("src", f64s), ref("i")))]);
+  const boxes = Array.from({ length: 512 }, (_, k) => local(`box${k}`, F64, true, { boxed: true }));
+  const mod: IrModule = {
+    irVersion: 16,
+    sourceFile: loc.file,
+    entry: "__main",
+    functions: [
+      { name: "__main", params: [], returnType: VOID, locals: [], body: [], loc },
+      fn([loop], boxes),
+    ],
+  };
+  const body = /^define internal [^\n]*@sc_bf_kernel[^]*?^}/m.exec(emitLlvmModule(mod))![0];
+  expect(body.split("\n", 1)[0]).toContain("optnone");
+  expect(body).not.toContain("bytes.version");
+  expect(body).toContain("bytes.index.invalid");
+});
