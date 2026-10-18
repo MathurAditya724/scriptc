@@ -14,6 +14,7 @@ import { isJsSourceFile, locOf } from "../program.js";
 import {
   BOOL,
   canBoxFuncIntoDyn,
+  canDynCheckTo,
   DGRAMSOCK_T,
   DYN,
   F64,
@@ -654,4 +655,99 @@ export function lowerDgramMethodCall(
     DGRAM_SURFACE_HINT,
     lowerer.checker.getSymbolAtLocation(access.name),
   );
+}
+
+/** True for a dns callback function util.promisify converts. */
+export function isPromisifiedDnsMember(member: string): boolean {
+  return member === "lookup" || member === "lookupService";
+}
+
+/** A call through `promisify(dns.lookup)` or `promisify(dns.lookupService)`:
+ * the callback form runs with a callback that settles a promise of the
+ * checked-dynamic `{ address, family }` (the address array with
+ * options.all) or `{ hostname, service }`, which Node's custom promisified
+ * forms produce. An argument error rejects the promise instead of
+ * throwing. A declared result type other than `unknown` is reached through
+ * an async helper that awaits that promise and checks the value. */
+export function lowerPromisifiedDnsCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: string,
+  loc: SrcLoc,
+): IrExpr {
+  const args = expr.arguments;
+  if (args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`the promisified dns.${member} with spread arguments`, expr);
+  }
+  const service = member === "lookupService";
+  if (service ? args.length !== 2 : args.length < 1 || args.length > 2) {
+    lowerer.noLowering(
+      `the promisified dns.${member} with ${args.length} arguments`,
+      expr,
+      service
+        ? "the form is lookupService(address, port)"
+        : "the supported forms are lookup(hostname) and lookup(hostname, options)",
+    );
+  }
+  const dyn = (node: ts.Expression | undefined): IrExpr =>
+    node ? lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN) : dynUndefinedExpr(loc);
+  const promiseDyn: IrType = { kind: "promise", inner: DYN };
+  const call: IrExpr = {
+    kind: "libCall",
+    fn: service ? "dns.lookupServicePromise" : "dns.lookupPromise",
+    args: [dyn(args[0]), dyn(args[1])],
+    type: promiseDyn,
+    loc,
+  };
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (declared?.kind !== "promise") {
+    lowerer.noLowering(`the promisified dns.${member} with this result type`, expr);
+  }
+  const value = declared.inner;
+  if (value.kind === "dyn") return call;
+  if (
+    !canDynCheckTo(
+      value,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    lowerer.noLowering(
+      `the promisified dns.${member} with a '${lowerer.fmt(declared)}' result`,
+      expr,
+      "the result type must have a checked conversion from the lookup's value",
+    );
+  }
+  const key = `dnsPromise:${JSON.stringify(value)}`;
+  let name = lowerer.valueHelpers.get(key);
+  if (!name) {
+    name = `%dnsPromise.${lowerer.valueHelpers.size}`;
+    lowerer.valueHelpers.set(key, name);
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "p.0", name: "p", type: promiseDyn }],
+      returnType: value,
+      async: true,
+      locals: [{ id: "p.0", name: "p", type: promiseDyn, mutable: false }],
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "dynCheck",
+            value: {
+              kind: "awaitExpr",
+              value: { kind: "varRef", localId: "p.0", type: promiseDyn, loc },
+              type: DYN,
+              loc,
+            },
+            type: value,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: [call], type: declared, loc };
 }
