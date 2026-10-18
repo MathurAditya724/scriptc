@@ -270,6 +270,8 @@ export function lowerLambda(
     : lowerer.bodyReturnType(isAsync, funcType.ret);
 
   const fnCtx = newFnCtx(true, selfSymbol, funcType, bodyReturn);
+  if (lowerer.methodLambdasInProgress.has(node))
+    lowerer.methodLambdasInProgress.set(node, { fnName, type: funcType, selfReads: 0 });
   const inferredSignature =
     isJsSourceFile(node.getSourceFile()) && !node.type
       ? lowerer.checker.getSignatureFromDeclaration(node)

@@ -2332,6 +2332,15 @@ export class Lowerer {
   /** Method adapter names are owned by class-method-values. Looking them
    * up must not scan and retain every unrelated lifted function. */
   readonly classMethodValueHelpers = new Set<string>();
+  /** Reflected class methods whose lambda is lowering right now (null
+   * until lowerLambda named it), with the closure it will produce: a
+   * method that reads itself as a value inside its own body
+   * (`o.create = K.create`) takes this closure instead of lowering the
+   * method again. */
+  readonly methodLambdasInProgress = new Map<
+    ts.Node,
+    { fnName: string; type: IrType; selfReads: number } | null
+  >();
   readonly classMethodValueSelections = new Map<
     string,
     import("./class-method-values.js").ClassMethodValueSelection
