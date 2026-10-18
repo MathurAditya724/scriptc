@@ -59,6 +59,7 @@ export function prepareExecutableModule(
             entry.package,
             entry.detail ?? "its static compilation was refused",
             fe.npmImportSites.get(entry.package) ?? { file: entryPath, start: 0, end: 0 },
+            entry.hint,
           ),
         ),
       );
@@ -69,6 +70,7 @@ export function prepareExecutableModule(
       lowered = fe.lower({
         targetPlatform: buildPlatform,
         ...(ffi !== null ? { ffiImports: ffi.functions } : {}),
+        ...(opts.tier !== undefined ? { tierMode: opts.tier } : {}),
       });
       timing("lower");
     } catch (e) {

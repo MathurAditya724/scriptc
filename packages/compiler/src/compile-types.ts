@@ -3,6 +3,7 @@ import type { NativeLinkInfo } from "./backend/native-link-info.js";
 import type { NativeOptimization } from "./backend/optimization.js";
 import type { ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import type { CoverageInput } from "./coverage/report.js";
+import type { TierMode } from "./frontend/tier-analysis.js";
 
 export type CompileOutputKind = "ir" | "llvm" | "asm" | "obj" | "exe";
 
@@ -45,6 +46,10 @@ export interface CompileBaseOptions {
   /** Attach the machine-readable external link recipe to an object result.
    * Valid only with outputKind "obj"; it never invokes a linker. */
   nativeLinkInfo?: boolean;
+  /** `--tier` (frontend/tier-analysis.ts). "static-only" keeps every demotion
+   * request a refusal (design invariant I2). Until demotion lands both modes
+   * compile exactly as before. */
+  tier?: TierMode;
 }
 
 /** Executable compile options. This remains the compatibility type for the
@@ -161,6 +166,11 @@ export interface AnalyzeOptions {
    * to analyze project code, but imported runtime values remain explicit
    * SC1010 blockers rather than being counted as executable. */
   externalTypes?: Readonly<Record<string, string>>;
+  /** `--tier` (see CompileBaseOptions.tier). */
+  tier?: TierMode;
+  /** `--explain-dynamic`: attach the tier-assignment report
+   * (CoverageInput.tiers). Such analyses bypass the verdict cache. */
+  explainDynamic?: boolean;
 }
 
 export interface AnalyzeResult {
