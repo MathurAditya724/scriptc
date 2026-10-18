@@ -1,3 +1,4 @@
+import { dateJsonType, isDateJsonSource } from "./builtins/dates.js";
 import { guardNullProto, nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 import { lowerProtocolPropertyRead } from "./class-protocol-dispatch.js";
 import { generatorDrain } from "./iterator-adapters.js";
@@ -3312,7 +3313,11 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     (expr.kind === "recordGet" || expr.kind === "recordKeyGet") &&
     (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node))
   ) {
-    const receiver = lowerer.mapTypeOf(lowerer.typeOf(node.expression));
+    // The read itself rules out a null or undefined receiver, which a
+    // JavaScript receiver such as `m.groups` still declares.
+    const receiver = lowerer.mapTypeOf(
+      lowerer.checker.getNonNullableType(lowerer.typeOf(node.expression)),
+    );
     const shape = receiver?.kind === "record" ? lowerer.shapes.get(receiver.shapeId) : undefined;
     const declared =
       expr.kind === "recordGet"
@@ -3324,10 +3329,23 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       !(declared.kind === "union" && lowerer.armTag(declared.unionId, UNDEFINED_T) >= 0)
     )
       return expr;
+    // The same for a field holding a Date's toJSON() result, whose null
+    // the declared string does not represent.
+    if (
+      expr.kind === "recordGet" &&
+      lowerer.isRuntimeOptionalField(expr.shapeId, expr.field) &&
+      lowerer.armTag(expr.type.unionId, NULL_T) >= 0 &&
+      declared &&
+      !(declared.kind === "union" && lowerer.armTag(declared.unionId, NULL_T) >= 0)
+    )
+      return expr;
   }
   if (ts.isIdentifier(node)) {
     const symbol = lowerer.resolveValueSymbol(node);
     if (symbol && lowerer.unstableSwitchBindings.has(symbol)) return expr;
+    // A binding initialized by a Date's toJSON() can hold null where the
+    // checker says string; consumers check it.
+    if (symbol && lowerer.dateJsonBindings.has(symbol)) return expr;
   }
   if (
     ts.isPropertyAccessExpression(node) &&
@@ -5650,6 +5668,15 @@ export function lowerArrayLiteral(
       }
     }
   }
+  // A Date's toJSON() element keeps its null in a literal with no declared
+  // destination: the lib types say string.
+  if (
+    !expected &&
+    mapped?.kind === "array" &&
+    mapped.elem.kind === "string" &&
+    expr.elements.some((element) => isDateJsonSource(lowerer, element))
+  )
+    mapped = { kind: "array", elem: dateJsonType(lowerer) };
   // An array literal inside an npm-static implicit-any instance can
   // inherit the checker's poisoned any[] context even after the
   // active binding gives every element one concrete lowering. Recover a
@@ -13458,6 +13485,15 @@ function matchProducerRegexOf(lowerer: Lowerer, e: ts.Expression): ts.Expression
   if (ts.isElementAccessExpression(expr)) {
     return matchAllRegexOf(lowerer, expr.expression);
   }
+  // A row picked by `rows.find(cb)`, `rows.findLast(cb)` or `rows.at(i)`.
+  if (
+    ts.isCallExpression(expr) &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    MATCH_ROW_PICK_METHODS.has(expr.expression.name.text) &&
+    lowerer.isStdlibMember(expr.expression)
+  ) {
+    return matchAllRegexOf(lowerer, expr.expression.expression);
+  }
   if (ts.isIdentifier(expr)) {
     // The for-of binding over a matchAll drain: `for (const m of
     // s.matchAll(re))` (or over a stored const rows).
@@ -13482,6 +13518,12 @@ function matchProducerRegexOf(lowerer: Lowerer, e: ts.Expression): ts.Expression
   return null;
 }
 
+/** Array methods that return one row of the receiver. */
+const MATCH_ROW_PICK_METHODS = new Set(["find", "findLast", "at"]);
+
+/** Array methods whose result holds rows of the receiver. */
+const MATCH_ROW_SUBSET_METHODS = new Set(["filter", "slice", "toReversed", "toSorted"]);
+
 const MATCH_ROW_CALLBACK_METHODS = new Set([
   "map",
   "forEach",
@@ -13502,6 +13544,11 @@ function matchAllCallbackRegexOf(
   const fn = param.parent;
   if (!(ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) || fn.parameters[0] !== param)
     return null;
+  // A reassigned parameter can hold a row of another regex.
+  if (ts.isIdentifier(param.name)) {
+    const sym = lowerer.checker.getSymbolAtLocation(param.name);
+    if (sym === undefined || !bindingNeverReassigned(lowerer, sym, param)) return null;
+  }
   let site: ts.Node = fn;
   while (ts.isParenthesizedExpression(site.parent)) site = site.parent;
   const call = site.parent;
@@ -13521,6 +13568,17 @@ function matchAllCallbackRegexOf(
   )
     return matchAllRegexOf(lowerer, call.arguments[0]);
   return null;
+}
+
+/** The named groups of the rows `param` receives when it is the first
+ * parameter of an inline matchAll callback (matchAllCallbackRegexOf). */
+export function matchCallbackParamGroupsOf(
+  lowerer: Lowerer,
+  param: ts.ParameterDeclaration,
+): { name: string; index: number }[] | null {
+  const reExpr = matchAllCallbackRegexOf(lowerer, param);
+  const pattern = reExpr === null ? null : staticRegexPatternOf(lowerer, reExpr);
+  return pattern === null ? null : namedCaptureGroupsOfPattern(pattern);
 }
 
 /** The regex argument of a (possibly const-stored) `s.matchAll(re)`. */
@@ -13548,6 +13606,14 @@ function matchAllRegexOf(lowerer: Lowerer, e: ts.Expression): ts.Expression | nu
     const only = expr.elements[0]!;
     if (ts.isSpreadElement(only)) return matchAllRegexOf(lowerer, only.expression);
   }
+  if (
+    ts.isCallExpression(expr) &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    MATCH_ROW_SUBSET_METHODS.has(expr.expression.name.text) &&
+    lowerer.isStdlibMember(expr.expression)
+  ) {
+    return matchAllRegexOf(lowerer, expr.expression.expression);
+  }
   if (ts.isIdentifier(expr)) {
     const init = constInitializerOf(lowerer, expr);
     if (init !== null) return matchAllRegexOf(lowerer, init);
@@ -13571,11 +13637,11 @@ function matchAllRegexOf(lowerer: Lowerer, e: ts.Expression): ts.Expression | nu
  *   - ES2025 duplicate names (distinct alternatives) project the first
  *     participating occurrence, including a participating empty string;
  *   - key order is group declaration order (declaredOrder), Node's own.
- * The record has no prototype — Node's groups object is null-prototype,
- * observable only through util.inspect's "[Object: null prototype]"
- * prefix (the Object.groupBy stance, ledgered). Null when the receiver
- * isn't a match slice or the regex isn't traceable — the caller's
- * member fence (with the groups hint) names the gap. */
+ * The record has a null prototype, like Node's groups object. A
+ * JavaScript callback parameter holds the row as a dynamic array; the
+ * projection reads its elements through dynamic reads. Null when the
+ * receiver isn't a match slice or the regex isn't traceable — the
+ * caller's member fence (with the groups hint) names the gap. */
 function lowerMatchGroupsRead(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
   if (expr.name.text !== "groups" || expr.questionDotToken !== undefined) return null;
   const loc = locOf(expr);
@@ -13601,11 +13667,9 @@ function lowerMatchGroupsRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressio
     return null;
   }
   const recv = lowerer.lowerExpr(expr.expression);
-  // A JavaScript callback parameter holds the row as a checked-dynamic
-  // value without its groups: refuse rather than read undefined.
-  if (recv.type.kind === "dyn" && isJsSourceFile(expr.getSourceFile()))
-    lowerer.stdlibMemberFence(expr);
-  if (!isMatchSliceType(lowerer, recv.type)) return null;
+  // A JavaScript callback parameter holds the row as a dynamic array.
+  const dynRow = recv.type.kind === "dyn" && isJsSourceFile(expr.getSourceFile());
+  if (!dynRow && !isMatchSliceType(lowerer, recv.type)) return null;
   return lowerGroupsProjection(lowerer, recv, groups, loc);
 }
 
@@ -13651,6 +13715,21 @@ function matchSliceUnionArms(
   return { arrTag, units };
 }
 
+/** Node's TypeError for `.groups` read off null or undefined. */
+function groupsReadTypeError(unit: "null" | "undefined", loc: SrcLoc): IrStmt {
+  return {
+    kind: "throw",
+    value: {
+      kind: "libCall",
+      fn: "error.new",
+      args: [strLit(`Cannot read properties of ${unit} (reading 'groups')`, loc)],
+      type: { kind: "object", className: "%TypeError" },
+      loc,
+    },
+    loc,
+  };
+}
+
 /** The groups-record projection holds string | undefined values, including
  * an own overflow entry for every nonparticipating capture. One lifted helper per
  * (index list, receiver representation) builds it; see
@@ -13677,7 +13756,8 @@ export function lowerGroupsProjection(
   const valueType = arrayValueType(lowerer, STRING);
   const shapeId = lowerer.shapes.intern([], false, valueType);
   const recordT: IrType = { kind: "record", shapeId };
-  const recvKey = recv.type.kind === "union" ? recv.type.unionId : "arr";
+  const recvKey =
+    recv.type.kind === "union" ? recv.type.unionId : recv.type.kind === "dyn" ? "dyn" : "arr";
   const key = `regexgroups:${shapeId}:${groups.map((g) => `${g.name}=${g.index}`).join(",")}:${recvKey}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
@@ -13701,26 +13781,7 @@ export function lowerGroupsProjection(
             type: BOOL,
             loc,
           },
-          then: [
-            {
-              kind: "throw",
-              value: {
-                kind: "libCall",
-                fn: "error.new",
-                args: [
-                  {
-                    kind: "strLit",
-                    value: `Cannot read properties of ${u.unit} (reading 'groups')`,
-                    type: STRING,
-                    loc,
-                  },
-                ],
-                type: { kind: "object", className: "%TypeError" },
-                loc,
-              },
-              loc,
-            },
-          ],
+          then: [groupsReadTypeError(u.unit, loc)],
           else_: null,
           loc,
         });
@@ -13736,10 +13797,33 @@ export function lowerGroupsProjection(
       locals.push({ id: "arr.0", name: "arr", type: arrayOf(STRING), mutable: false });
       body.push({ kind: "varDecl", localId: "arr.0", init: narrowed, loc });
       mRef = { kind: "varRef", localId: "arr.0", type: arrayOf(STRING), loc };
+    } else if (recv.type.kind === "dyn") {
+      // A JavaScript callback parameter holds the row as a dynamic array:
+      // Node's TypeError for null and undefined, then dynamic element reads.
+      for (const unit of ["null", "undefined"] as const) {
+        body.push({
+          kind: "if",
+          cond: { kind: "dynTest", test: unit, value: mRef, type: BOOL, loc },
+          then: [groupsReadTypeError(unit, loc)],
+          else_: null,
+          loc,
+        });
+      }
     }
 
     const elem = (index: number): IrExpr =>
-      arrayValueRead(lowerer, mRef, numLit(index, loc), STRING, loc);
+      mRef.type.kind === "dyn"
+        ? lowerer.coerceToExpected(
+            {
+              kind: "dynKeyGet",
+              value: mRef,
+              key: strLit(String(index), loc),
+              type: DYN,
+              loc,
+            },
+            valueType,
+          )
+        : arrayValueRead(lowerer, mRef, numLit(index, loc), STRING, loc);
     const values = new Map<string, IrExpr>();
     order.forEach((name, i) => {
       const idxs = indicesByName.get(name)!;
@@ -13777,6 +13861,7 @@ export function lowerGroupsProjection(
       value: {
         kind: "recordLit",
         fields: order.map((name) => ({ name, value: values.get(name)!, overflow: true as const })),
+        nullProto: true,
         type: recordT,
         loc,
       },

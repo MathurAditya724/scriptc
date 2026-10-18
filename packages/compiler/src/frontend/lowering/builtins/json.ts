@@ -1,3 +1,4 @@
+import { isDateJsonSource } from "./dates.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -82,7 +83,12 @@ export function lowerJsonMethodCall(
     // conversion so a stale capture cannot read an impossible payload.
     // Optional strings have a serializer that preserves a missing root;
     // an unchecked array read can still be absent despite its checker type.
-    if (value.type.kind === "union" && optionalStringTags(lowerer, value.type) === null) {
+    // A Date's toJSON() result keeps its null: the lib types say string.
+    if (
+      value.type.kind === "union" &&
+      optionalStringTags(lowerer, value.type) === null &&
+      !isDateJsonSource(lowerer, argNode)
+    ) {
       const narrowed = lowerer.mapTypeOf(lowerer.typeOf(argNode));
       if (narrowed && !isUnitType(narrowed) && narrowed.kind !== "void") {
         const helper =

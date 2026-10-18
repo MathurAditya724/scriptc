@@ -20,7 +20,8 @@
  * Elements are scalars only and the backing edge is acyclic by
  * construction (owners point at nothing): never part of a cycle, no
  * trace. Element reads widen to double; writes coerce JS-exactly (ToUint8
- * / ToUint32 modular truncation, double→float rounding for f32).
+ * / ToUint32 modular truncation, double→float rounding for f32, one
+ * double→binary16 rounding for f16).
  * Out-of-bounds typed ELEMENT reads trap like arrays; invalid writes are
  * ignored as in JavaScript. The Node-shaped operations
  * (construction lengths, set(), the read/write numeric families, the
@@ -37,7 +38,16 @@ typedef enum ScrBytesElem {
   SCR_BYTES_U16, /* Uint16Array */
   SCR_BYTES_I16, /* Int16Array */
   SCR_BYTES_U8C, /* Uint8ClampedArray */
+  SCR_BYTES_F16, /* Float16Array (IEEE 754 binary16 storage) */
 } ScrBytesElem;
+#define SCR_BYTES_ELEM_COUNT 10
+
+/* Float16Array's element conversions: one round-to-nearest-even step from
+ * the double (Float16Array stores, Math.f16round and DataView.setFloat16
+ * all round this way), and the exact widening back. NaN keeps its sign and
+ * top payload bits with the quiet bit set. */
+uint16_t scr_f16_from_f64(double value);
+double scr_f16_to_f64(uint16_t bits);
 
 typedef struct ScrSharedBytes ScrSharedBytes;
 
@@ -94,6 +104,26 @@ ScrDyn *scr_worker_parent_port(void);
  * (scr_worker_events.c). */
 ScrDyn *scr_worker_message_channel(void);
 ScrDyn *scr_worker_receive_message_on_port(ScrDyn *port);
+/* new BroadcastChannel(...args) (scr_worker_events.c): args is the argument
+ * vector as one array (borrowed); may throw. */
+ScrDyn *scr_worker_broadcast_channel(ScrDyn *args);
+/* setEnvironmentData(key, value) and getEnvironmentData(key) (+1); both
+ * borrow their arguments. */
+void scr_worker_set_environment_data(ScrDyn *key, ScrDyn *value);
+ScrDyn *scr_worker_get_environment_data(ScrDyn *key);
+ScrDyn *scr_worker_resource_limits(void);
+ScrDyn *scr_worker_thread_name_current(void);
+/* markAsUntransferable(value) and isMarkedAsUntransferable(value)
+ * (scr_worker_events.c); both borrow the value. */
+void scr_worker_mark_untransferable(ScrDyn *value);
+bool scr_worker_is_marked_untransferable(ScrDyn *value);
+/* worker.stdout, worker.stderr and worker.stdin streams: main installs the
+ * stream unit's operations and the Readable and Writable boxes (the
+ * Writable one may be NULL) when the program reads them. */
+struct ScrChildStreamOps;
+void scr_worker_stdio_install(const struct ScrChildStreamOps *ops, ScrDyn *(*readable_box)(void *),
+                              ScrDyn *(*writable_box)(void *));
+void scr_worker_stdio_default(const struct ScrChildStreamOps *ops, ScrDyn *(*view)(void *));
 ScrDyn *scr_worker_new(double root, ScrStr *filename, ScrDyn *options);
 bool scr_shared_array_buffer_is(const ScrDyn *);
 bool scr_buffer_storage_is(const ScrDyn *);
@@ -149,6 +179,7 @@ ScrBytes *scr_array_buffer_view_i16(ScrDyn *, ScrDyn *, ScrDyn *);
 ScrBytes *scr_array_buffer_view_u8(ScrDyn *, ScrDyn *, ScrDyn *);
 ScrBytes *scr_array_buffer_view_u32(ScrDyn *, ScrDyn *, ScrDyn *);
 ScrBytes *scr_array_buffer_view_i32(ScrDyn *, ScrDyn *, ScrDyn *);
+ScrBytes *scr_array_buffer_view_f16(ScrDyn *, ScrDyn *, ScrDyn *);
 ScrBytes *scr_array_buffer_view_f32(ScrDyn *, ScrDyn *, ScrDyn *);
 ScrBytes *scr_array_buffer_view_f64(ScrDyn *, ScrDyn *, ScrDyn *);
 ScrBytes *scr_array_buffer_view_dv(ScrDyn *, ScrDyn *, ScrDyn *);
@@ -206,7 +237,7 @@ ScrBytes *scr_dataview_new(ScrBytes *src, double byte_off, bool has_len, double 
  * with the exception pending). */
 typedef enum ScrDataViewGet {
   SCR_DV_U8, SCR_DV_I8, SCR_DV_U16, SCR_DV_I16, SCR_DV_U32, SCR_DV_I32,
-  SCR_DV_F32, SCR_DV_F64, SCR_DV_BIGU64, SCR_DV_BIGI64,
+  SCR_DV_F32, SCR_DV_F64, SCR_DV_BIGU64, SCR_DV_BIGI64, SCR_DV_F16,
 } ScrDataViewGet;
 double scr_dataview_get(const ScrBytes *b, double byte_off, ScrDataViewGet kind, bool le);
 

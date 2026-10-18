@@ -169,6 +169,8 @@ typedef enum {
   SCR_DYNH_NET_SOCKET_ADDRESS, /* net.SocketAddress (scr_net.c) */
   SCR_DYNH_NET_BLOCK_LIST, /* net.BlockList (scr_net.c) */
   SCR_DYNH_DISPOSABLE_STACK, /* DisposableStack (scr_symbol.c) */
+  SCR_DYNH_MESSAGE_EVENT,  /* ScrEvent with data — BroadcastChannel's 'message' */
+  SCR_DYNH_BROADCAST_CHANNEL, /* worker_threads BroadcastChannel (scr_worker_events.c) */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 

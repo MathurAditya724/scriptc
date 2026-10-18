@@ -926,6 +926,9 @@ static void scr_mark_gray(void *obj, uintptr_t depth) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
   if (scr_cyc_color(h) == SCR_CYC_GRAY) return;
   scr_cyc_set_color(h, SCR_CYC_GRAY);
+  /* A full pass takes every buffer, so each buffered object it reaches
+   * leaves its buffer here, in the header write the walk makes anyway. */
+  if (scr_gen_limit == SCR_CYC_OLD && !scr_cyc_take) scr_cyc_clear_buffered(h);
   if (scr_white.n < SCR_CYC_GRAY_LIST_MAX) scr_cyc_push_work(&scr_white, obj);
   if (SCR_RC(obj) > 0) scr_gray_referenced++;
   if (depth == SCR_CYC_WALK_DEPTH) {
@@ -1047,6 +1050,10 @@ static SCR_CYC_COMPACT void scr_xg_release(void *obj) {
   scr_rc_destroy(obj, scr_xg_destroy);
 }
 
+/* Dead sets at least this large are torn down in address order. Smaller
+ * ones mostly stay in cache, where ordering them costs more than it saves. */
+#define SCR_CYC_ORDER_MIN 16384
+
 /* One pass over every candidate at or below `gen_limit`; returns how many
  * objects it freed. */
 /* The second half of a pass: settle the white set, promote, re-buffer,
@@ -1125,8 +1132,18 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit) {
 
   /* Teardowns run after the full walk. They may release untraced children
    * (plain RC) — which can re-buffer survivors for the NEXT pass — but
-   * never touch traced (white, already-accounted) edges. */
+   * never touch traced (white, already-accounted) edges.
+   *
+   * A large dead set is torn down in address order, highest address first
+   * (scr_mem_order_for_free). The walk leaves it in graph order, in which
+   * the free lists would hand its blocks to the next allocations scattered
+   * over every page the dead structure used, and the structures built from
+   * them, and every later walk over those, would miss the cache on most
+   * objects. In address order the blocks come back in the order the bump
+   * pointers hand out fresh memory. Teardown order is not observable. */
   size_t freed = scr_white.n;
+  if (scr_white.n >= SCR_CYC_ORDER_MIN)
+    scr_mem_order_for_free(scr_white.v, scr_white.n, sizeof(ScrCycHdr));
   for (size_t i = 0; i < scr_white.n; i++) {
     void *obj = scr_white.v[i];
     scr_cyc_type(scr_cyc_hdr(obj))->free_fn(obj);
@@ -1242,18 +1259,23 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
     scr_cands = scr_roots[largest];
     scr_roots[largest] = previous;
     scr_roots[largest].n = 0;
-    for (size_t i = 0; i < scr_cands.n; i++) {
-      ScrCycHdr *h = scr_cyc_hdr(scr_cands.v[i]);
-      scr_cyc_clear_buffered(h);
-      if (gen_limit < SCR_CYC_OLD) scr_cyc_walked(scr_cyc_type(h), gen_limit);
-    }
+    /* A full pass clears the buffered marks as markGray reaches the
+     * candidates, so only a limited level's candidates are touched here. */
+    if (gen_limit < SCR_CYC_OLD)
+      for (size_t i = 0; i < scr_cands.n; i++) {
+        ScrCycHdr *h = scr_cyc_hdr(scr_cands.v[i]);
+        scr_cyc_clear_buffered(h);
+        scr_cyc_walked(scr_cyc_type(h), gen_limit);
+      }
   }
   for (unsigned g = 0; g <= gen_limit && !scr_cyc_take; g++) {
     for (size_t i = 0; i < scr_roots[g].n; i++) {
       void *obj = scr_roots[g].v[i];
-      ScrCycHdr *h = scr_cyc_hdr(obj);
-      scr_cyc_clear_buffered(h);
-      if (gen_limit < SCR_CYC_OLD) scr_cyc_walked(scr_cyc_type(h), gen_limit);
+      if (gen_limit < SCR_CYC_OLD) {
+        ScrCycHdr *h = scr_cyc_hdr(obj);
+        scr_cyc_clear_buffered(h);
+        scr_cyc_walked(scr_cyc_type(h), gen_limit);
+      }
       scr_cyc_push(&scr_cands, obj);
     }
     scr_roots[g].n = 0;

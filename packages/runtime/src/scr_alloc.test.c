@@ -119,6 +119,62 @@ static void check_churn(void) {
   }
 }
 
+/* scr_mem_order_for_free keeps every pointer, puts system blocks first and
+ * each class's blocks in descending address order, and freeing in that
+ * order hands each class's blocks back in ascending address order. Builds
+ * without the size-class allocator leave the array as it is. */
+static int compare_pointers(const void *a, const void *b) {
+  uintptr_t x = (uintptr_t)*(void *const *)a, y = (uintptr_t)*(void *const *)b;
+  return x < y ? -1 : x > y;
+}
+
+static void check_free_order(void) {
+  enum { BLOCKS = 12000, SYSTEM = 64, N = BLOCKS + SYSTEM };
+  static void *ptrs[N], *before[N], *a[N], *b[N];
+  const size_t sizes[2] = {32, 96};
+  for (size_t i = 0; i < BLOCKS; i++) ptrs[i] = scr_mem_alloc(sizes[i % 2]);
+  for (size_t i = BLOCKS; i < N; i++) ptrs[i] = malloc(1024);
+  uint32_t x = 0x2545f491u;
+  for (size_t i = N - 1; i > 0; i--) {
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    size_t j = x % (i + 1);
+    void *t = ptrs[i];
+    ptrs[i] = ptrs[j];
+    ptrs[j] = t;
+  }
+  memcpy(before, ptrs, sizeof ptrs);
+  scr_mem_order_for_free(ptrs, N, 0);
+  memcpy(a, ptrs, sizeof ptrs);
+  memcpy(b, before, sizeof before);
+  qsort(a, N, sizeof *a, compare_pointers);
+  qsort(b, N, sizeof *b, compare_pointers);
+  assert(memcmp(a, b, sizeof a) == 0);
+#if SCR_SMALL_ALLOC
+  size_t i = 0;
+  uintptr_t last[SCR_SA_NCLASS] = {0};
+  for (; i < SYSTEM; i++) assert(!owned(ptrs[i]));
+  for (; i < N; i++) {
+    assert(owned(ptrs[i]));
+    unsigned c = (unsigned)(((uintptr_t)ptrs[i] - scr_sa.base) >> scr_sa.shift);
+    assert(!last[c] || (uintptr_t)ptrs[i] < last[c]);
+    last[c] = (uintptr_t)ptrs[i];
+  }
+  for (i = 0; i < N; i++) scr_mem_free(ptrs[i]);
+  for (size_t c = 0; c < 2; c++) {
+    for (size_t k = 0; k < BLOCKS / 2; k++) {
+      a[k] = scr_mem_alloc(sizes[c]);
+      if (k) assert(a[k] > a[k - 1]);
+    }
+    for (size_t k = 0; k < BLOCKS / 2; k++) scr_mem_free(a[k]);
+  }
+#else
+  assert(memcmp(ptrs, before, sizeof ptrs) == 0);
+  for (size_t i = 0; i < N; i++) scr_mem_free(ptrs[i]);
+#endif
+}
+
 #if SCR_SMALL_ALLOC
 #include <string.h>
 #ifdef __linux__
@@ -373,6 +429,273 @@ static void check_trim(void) {
 }
 #endif
 
+#if defined(SCR_WORKERS) && SCR_SMALL_ALLOC && defined(__linux__)
+#include <malloc.h>
+#include <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+/* A worker thread (scr_sa_thread_starting) that exits without sharing
+ * gives its memory back: the pages it carved, and the system blocks it
+ * still holds. Older blocks of the arena, and the memory of a worker that
+ * shared (or got a remote free of its own blocks), stay. */
+/* DISCARD_SIZE and POISON_SIZE are classes the earlier checks leave unused
+ * in the workers' arena, so their state there is known. */
+enum { DISCARD_BLOCKS = 1 << 20, DISCARD_SIZE = 40, POISON_SIZE = 56, DISCARD_OLD = 64, DISCARD_LARGE = 64 };
+enum { DISCARD_LARGE_SIZE = 64 << 10 };
+static unsigned char *old_blocks[DISCARD_OLD];
+static unsigned char **discard_blocks;
+static unsigned char *discard_large[DISCARD_LARGE];
+static uintptr_t discard_base, discard_lo, discard_hi;
+static size_t block_size = DISCARD_SIZE; /* of the workers' and reusing threads' blocks */
+/* The end of the highest block of class DISCARD_SIZE so far, and how many blocks of a run lay past the mark
+ * at its start: those the slice grew for. */
+static uintptr_t class_hi;
+static size_t discard_beyond, reuse_beyond;
+static bool discard_shares;
+static atomic_int discard_step;
+
+static void wait_step(int step) {
+  while (atomic_load(&discard_step) < step) {
+    struct timespec pause = {0, 100000};
+    nanosleep(&pause, NULL);
+  }
+}
+
+/* A plain script thread whose blocks stay live in its parked arena. */
+static void *discard_old_owner(void *arg) {
+  (void)arg;
+  for (unsigned i = 0; i < DISCARD_OLD; i++) {
+    old_blocks[i] = scr_mem_alloc(DISCARD_SIZE);
+    assert(owned(old_blocks[i]));
+    fill(old_blocks[i], DISCARD_SIZE, (unsigned char)i);
+  }
+  discard_base = scr_sa.base;
+  scr_sa_thread_park();
+  return NULL;
+}
+
+static void allocate_discardable(void) {
+  discard_lo = UINTPTR_MAX;
+  discard_hi = 0;
+  discard_beyond = 0;
+  for (size_t i = 0; i < DISCARD_BLOCKS; i++) {
+    unsigned char *p = scr_mem_alloc(block_size);
+    assert(p && owned(p));
+    fill(p, block_size, (unsigned char)i);
+    discard_blocks[i] = p;
+    if ((uintptr_t)p >= class_hi) discard_beyond++;
+    if ((uintptr_t)p < discard_lo) discard_lo = (uintptr_t)p;
+    if ((uintptr_t)p + block_size > discard_hi) discard_hi = (uintptr_t)p + block_size;
+  }
+  if (block_size == DISCARD_SIZE && discard_hi > class_hi) class_hi = discard_hi;
+  /* System blocks: some freed, some moved by realloc, the rest kept. */
+  for (unsigned i = 0; i < DISCARD_LARGE; i++) {
+    discard_large[i] = scr_mem_alloc(DISCARD_LARGE_SIZE);
+    assert(discard_large[i] && !owned(discard_large[i]));
+    fill(discard_large[i], 64, (unsigned char)i);
+  }
+  for (unsigned i = 0; i < DISCARD_LARGE; i += 4) {
+    scr_mem_free(discard_large[i]);
+    discard_large[i] = NULL;
+  }
+  for (unsigned i = 1; i < DISCARD_LARGE; i += 4) discard_large[i] = scr_mem_realloc(discard_large[i], 2 * DISCARD_LARGE_SIZE);
+}
+
+static void *discard_worker(void *arg) {
+  (void)arg;
+  scr_sa_thread_starting();
+  allocate_discardable();
+  assert(scr_sa.base == discard_base);
+  /* None of the arena's older blocks or free blocks is reused. */
+  for (unsigned i = 0; i < DISCARD_OLD; i++) assert(discard_lo > (uintptr_t)old_blocks[i]);
+  if (discard_shares) scr_sa_thread_shares();
+  scr_sa_thread_park();
+  return NULL;
+}
+
+/* A worker one of whose blocks the main thread frees while it runs. */
+static void *remote_freed_worker(void *arg) {
+  (void)arg;
+  scr_sa_thread_starting();
+  allocate_discardable();
+  atomic_store(&discard_step, 1);
+  wait_step(2);
+  /* A class this thread has not used: its first block takes the slow path,
+   * which drains the remote free. */
+  void *p = scr_mem_alloc(200);
+  assert(p);
+  scr_sa_thread_park();
+  return NULL;
+}
+
+/* A plain thread that takes as many blocks again from the arena: carved
+ * ones must be zero (the fast path does not clear them). */
+static size_t reuse_outside;
+static uintptr_t reuse_hi;
+static void *discard_reuse(void *arg) {
+  (void)arg;
+  reuse_outside = 0;
+  reuse_hi = 0;
+  reuse_beyond = 0;
+  for (size_t i = 0; i < DISCARD_BLOCKS; i++) {
+    unsigned char *p = scr_mem_calloc(block_size);
+    assert(p && owned(p));
+    assert(scr_sa.base == discard_base);
+    for (size_t k = 0; k < block_size; k++) assert(p[k] == 0);
+    for (unsigned j = 0; j < DISCARD_OLD; j++) assert(p != old_blocks[j]);
+    if ((uintptr_t)p < discard_lo || (uintptr_t)p >= discard_hi) reuse_outside++;
+    if ((uintptr_t)p + block_size > reuse_hi) reuse_hi = (uintptr_t)p + block_size;
+    if ((uintptr_t)p >= class_hi) reuse_beyond++;
+    discard_blocks[i] = p;
+  }
+  if (block_size == DISCARD_SIZE && reuse_hi > class_hi) class_hi = reuse_hi;
+  for (size_t i = 0; i < DISCARD_BLOCKS; i++) scr_mem_free(discard_blocks[i]);
+  scr_sa_thread_park();
+  return NULL;
+}
+
+static void run(void *(*fn)(void *)) {
+  pthread_t t;
+  assert(pthread_create(&t, NULL, fn, NULL) == 0);
+  assert(pthread_join(t, NULL) == 0);
+  scr_sa_wait_trims();
+}
+
+static void verify_old_blocks(void) {
+  for (unsigned i = 0; i < DISCARD_OLD; i++) verify(old_blocks[i], DISCARD_SIZE, (unsigned char)i);
+}
+
+/* The worker's blocks stayed as it left them, and the next thread to claim
+ * the arena carves past them; then they are freed (remote frees). */
+static void verify_kept(void) {
+  for (size_t i = 0; i < DISCARD_BLOCKS; i++) verify(discard_blocks[i], block_size, (unsigned char)i);
+  for (unsigned i = 0; i < DISCARD_LARGE; i++) {
+    if (!discard_large[i]) continue;
+    verify(discard_large[i], 64, (unsigned char)i);
+    free(discard_large[i]);
+  }
+  for (size_t i = 0; i < DISCARD_BLOCKS; i++) scr_mem_free(discard_blocks[i]);
+}
+
+/* The protection of the mapping that holds address a, from /proc/self/maps. */
+static bool readable(uintptr_t a) {
+  FILE *maps = fopen("/proc/self/maps", "r");
+  assert(maps);
+  char line[512];
+  bool found = false, result = false;
+  while (!found && fgets(line, sizeof line, maps)) {
+    unsigned long lo, hi;
+    char perms[8];
+    if (sscanf(line, "%lx-%lx %7s", &lo, &hi, perms) != 3) continue;
+    if (a >= lo && a < hi) {
+      found = true;
+      result = perms[0] == 'r';
+    }
+  }
+  fclose(maps);
+  assert(found);
+  return result;
+}
+
+static void check_discard(void) {
+  discard_blocks = malloc(DISCARD_BLOCKS * sizeof *discard_blocks);
+  assert(discard_blocks);
+  run(discard_old_owner);
+  size_t page = (size_t)sysconf(_SC_PAGESIZE);
+
+  /* Discarded: its pages are returned, and carved again (zeroed) by the next
+   * thread, which does not grow the slice. The arena's older blocks stay. */
+  discard_shares = false;
+  run(discard_worker);
+  verify_old_blocks();
+  uintptr_t first = (discard_lo + page - 1) & ~(uintptr_t)(page - 1);
+  /* Pre-fault requests still in flight may fault in a few megabytes again. */
+  size_t total = (discard_hi - first) / page;
+  assert(resident_pages(first, discard_hi) < total / 2);
+  run(discard_reuse);
+  assert(reuse_outside < 256);
+  verify_old_blocks();
+
+  /* SCR_SA_DISCARD=poison makes the pages inaccessible; the next thread
+   * carves past them. */
+  block_size = POISON_SIZE;
+  setenv("SCR_SA_DISCARD", "poison", 1);
+  run(discard_worker);
+  unsetenv("SCR_SA_DISCARD");
+  verify_old_blocks();
+  first = (discard_lo + page - 1) & ~(uintptr_t)(page - 1);
+  assert(!readable(first));
+  assert(!readable((discard_hi - 1) & ~(uintptr_t)(page - 1)));
+  run(discard_reuse);
+  assert(reuse_outside == DISCARD_BLOCKS);
+  verify_old_blocks();
+  block_size = DISCARD_SIZE;
+
+  /* A worker that shared keeps its memory. */
+  discard_shares = true;
+  run(discard_worker);
+  verify_old_blocks();
+  verify_kept();
+
+  /* So does one that got a remote free of one of its blocks. */
+  atomic_store(&discard_step, 0);
+  pthread_t t;
+  assert(pthread_create(&t, NULL, remote_freed_worker, NULL) == 0);
+  wait_step(1);
+  scr_mem_free(discard_blocks[0]);
+  discard_blocks[0] = scr_mem_alloc(DISCARD_SIZE); /* main's own block, for verify_kept */
+  fill(discard_blocks[0], DISCARD_SIZE, 0);
+  atomic_store(&discard_step, 2);
+  assert(pthread_join(t, NULL) == 0);
+  scr_sa_wait_trims();
+  verify_old_blocks();
+  verify_kept();
+
+  /* SCR_SA_DISCARD=0 keeps every worker's memory. */
+  discard_shares = false;
+  setenv("SCR_SA_DISCARD", "0", 1);
+  run(discard_worker);
+  unsetenv("SCR_SA_DISCARD");
+  verify_old_blocks();
+  verify_kept();
+
+  /* The kept workers' blocks are free now (remote frees): a worker takes
+   * them once its slice has no bump room left, and they are free again
+   * after its memory goes back, so the next thread does not grow the slice
+   * either. Past the highest block so far, each carves at most the bump room
+   * the slice had left (a few megabytes). */
+  size_t room = ((size_t)4 << 20) / DISCARD_SIZE;
+  run(discard_worker);
+  verify_old_blocks();
+  assert(discard_beyond < room);
+  run(discard_reuse);
+  assert(reuse_beyond < room);
+  verify_old_blocks();
+
+  /* Returned regions (holes) of an earlier trim are kept apart while a
+   * worker runs, and carved again afterwards. */
+  trim_blocks = malloc(TRIM_BLOCKS * sizeof *trim_blocks); /* check_trim freed its own */
+  assert(trim_blocks);
+  run(trim_allocate);
+  uintptr_t hole_lo = trim_lo, hole_hi = trim_hi;
+  discard_shares = false;
+  run(discard_worker);
+  verify_old_blocks();
+  for (size_t k = 0; k < TRIM_BLOCKS / TRIM_KEEP; k++)
+    verify(trim_kept[k], TRIM_SIZE, (unsigned char)(k * TRIM_KEEP));
+  trim_lo = hole_lo;
+  trim_hi = hole_hi;
+  run(trim_reuse);
+  assert(trim_outside < 4 * TRIM_BLOCKS / TRIM_KEEP + 256);
+  for (size_t k = 0; k < TRIM_BLOCKS / TRIM_KEEP; k++) scr_mem_free(trim_kept[k]);
+  free(trim_blocks);
+  for (unsigned i = 0; i < DISCARD_OLD; i++) scr_mem_free(old_blocks[i]);
+  free(discard_blocks);
+}
+#endif
+
 int main(void) {
 #if SCR_SMALL_ALLOC
   check_slice_growth(); /* first: its class must be untouched */
@@ -382,6 +705,7 @@ int main(void) {
   check_realloc();
   check_system_pointers();
   check_churn();
+  check_free_order();
 #if SCR_SMALL_ALLOC && defined(__linux__) && defined(__GLIBC__)
   check_heap_huge_pages();
 #endif
@@ -389,6 +713,7 @@ int main(void) {
   check_threads();
 #ifdef __linux__
   check_trim();
+  check_discard();
 #endif
   printf("allocator checks passed: size-class workers\n");
 #else
