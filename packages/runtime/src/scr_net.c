@@ -1173,6 +1173,7 @@ static bool scr_net_sock_deliver(ScrNetSocket *s, const char *buf, size_t n) {
   if (s->pipe_dst) scr_net_sock_write_raw(s->pipe_dst, buf, n);
   if (s->data_ls.n > 0) {
     ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
+    chunk->is_buffer = true; /* Node delivers a Buffer */
     memcpy(chunk->data, buf, n);
     ScrNetL *snap;
     size_t nl = scr_net_ls_snapshot(&s->data_ls, &snap);
@@ -4114,6 +4115,7 @@ ScrBytes *scr_net_sock_read_bytes(ScrNetSocket *s, double n) {
   size_t want = n > 0 ? (size_t)n : avail;
   if (avail == 0 || want == 0 || want > avail) return NULL;
   ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)want);
+  out->is_buffer = true; /* socket.read() answers a Buffer */
   size_t took = scr_net_sock_take_buffered(s, (char *)out->data, want);
   (void)took;
   return out;

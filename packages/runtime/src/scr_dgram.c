@@ -1122,6 +1122,7 @@ static void scr_dgram_read(ScrDgramSocket *s) {
       rport = ntohs(((struct sockaddr_in *)&from)->sin_port);
     }
     ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
+    chunk->is_buffer = true; /* the message is a Buffer */
     memcpy(chunk->data, buf, (size_t)n);
     ScrStr *addr = scr_str_new(ip, strlen(ip));
     ScrStr *family = scr_str_new("IPv4", 4);
