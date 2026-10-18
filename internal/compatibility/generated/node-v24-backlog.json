@@ -7,8 +7,8 @@
     "tierItemCount": 3456,
     "tiers": {
       "static": {
-        "audit-partial": 1142,
-        "verify-gap": 2187,
+        "audit-partial": 1143,
+        "verify-gap": 2186,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -57507,12 +57507,15 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.process.execArgv",
+          "tests": [
+            "tests/corpus/990-process-basics.ts",
+            "tests/corpus/2314-process-introspection.ts"
+          ]
         }
       }
     },
