@@ -513,6 +513,19 @@ test("a subclass constructor runs after its base constructor's escape", () => {
   checkExact(mod, ["object:Base", "object:Sub"], ["link"]);
 });
 
+test("a base without a constructor function lets nothing escape", () => {
+  // Instantiations of a generic class name the generic class as their base,
+  // which has no constructor function of its own.
+  const mod = module();
+  mod.classes = [
+    { name: "Chain", fields: [{ name: "next", type: link }], loc },
+    { name: "Chain%0", base: "Chain", fields: [{ name: "next", type: link }], loc },
+  ];
+  mod.unions = [{ id: "link", arms: [obj("Chain%0"), { kind: "nullT" }] }];
+  mod.functions.push(ctor("Chain%0", [setThis("Chain%0", "next", link)]));
+  checkExact(mod, []);
+});
+
 test("field reads of this inside the constructor do not escape", () => {
   const read: IrStmt = {
     kind: "fieldSet",
