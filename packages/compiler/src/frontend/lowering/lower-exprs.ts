@@ -1,3 +1,4 @@
+import { dateJsonType, isDateJsonSource } from "./builtins/dates.js";
 import { guardNullProto, nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 import { lowerProtocolPropertyRead } from "./class-protocol-dispatch.js";
 import { generatorDrain } from "./iterator-adapters.js";
@@ -3328,10 +3329,23 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       !(declared.kind === "union" && lowerer.armTag(declared.unionId, UNDEFINED_T) >= 0)
     )
       return expr;
+    // The same for a field holding a Date's toJSON() result, whose null
+    // the declared string does not represent.
+    if (
+      expr.kind === "recordGet" &&
+      lowerer.isRuntimeOptionalField(expr.shapeId, expr.field) &&
+      lowerer.armTag(expr.type.unionId, NULL_T) >= 0 &&
+      declared &&
+      !(declared.kind === "union" && lowerer.armTag(declared.unionId, NULL_T) >= 0)
+    )
+      return expr;
   }
   if (ts.isIdentifier(node)) {
     const symbol = lowerer.resolveValueSymbol(node);
     if (symbol && lowerer.unstableSwitchBindings.has(symbol)) return expr;
+    // A binding initialized by a Date's toJSON() can hold null where the
+    // checker says string; consumers check it.
+    if (symbol && lowerer.dateJsonBindings.has(symbol)) return expr;
   }
   if (
     ts.isPropertyAccessExpression(node) &&
@@ -5654,6 +5668,15 @@ export function lowerArrayLiteral(
       }
     }
   }
+  // A Date's toJSON() element keeps its null in a literal with no declared
+  // destination: the lib types say string.
+  if (
+    !expected &&
+    mapped?.kind === "array" &&
+    mapped.elem.kind === "string" &&
+    expr.elements.some((element) => isDateJsonSource(lowerer, element))
+  )
+    mapped = { kind: "array", elem: dateJsonType(lowerer) };
   // An array literal inside an npm-static implicit-any instance can
   // inherit the checker's poisoned any[] context even after the
   // active binding gives every element one concrete lowering. Recover a
