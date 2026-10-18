@@ -524,6 +524,7 @@ import {
   lowerExprStatement,
   lowerForOf,
   lowerForStatement,
+  matchGroupsPatternSource,
 } from "./lower-stmts.js";
 import {
   type FieldTarget,
@@ -558,6 +559,7 @@ import {
   fieldSetStmt,
   lowerFieldCompound,
   uniqueSymbolKeyOf,
+  matchCallbackParamGroupsOf,
 } from "./lower-exprs.js";
 import {
   finishOptionalChain,
@@ -9984,6 +9986,22 @@ export class Lowerer {
           const pickedT = shape.bodyType;
           srcType = pickedT;
           srcRef = () => ({ kind: "varRef", localId: src.id, type: pickedT, loc });
+        } else {
+          // `({ groups }) => ...` over matchAll rows.
+          const groupsSource = matchGroupsPatternSource(
+            this,
+            decl.name,
+            srcRef(),
+            () => matchCallbackParamGroupsOf(this, decl),
+            loc,
+          );
+          if (groupsSource !== null) {
+            const src = this.declareHiddenLocal("%psrc", groupsSource.type);
+            prologue.push({ kind: "varDecl", localId: src.id, init: groupsSource, loc });
+            const groupsT = groupsSource.type;
+            srcType = groupsT;
+            srcRef = () => ({ kind: "varRef", localId: src.id, type: groupsT, loc });
+          }
         }
         this.lowerBindingPattern(decl.name, srcRef, srcType, true, prologue);
         return;

@@ -182,7 +182,11 @@ export function emitByteNumber(
   const integerType = bits <= 32 ? "i32" : "i64";
   if (spec.write) {
     let raw: string;
-    if (spec.floating) {
+    if (spec.floating && bits === 16) {
+      host.declare(`declare zeroext i16 @scr_f16_from_f64(double)`);
+      raw = B.tmp();
+      B.line(`${raw} = call zeroext i16 @scr_f16_from_f64(double ${value!.name})`);
+    } else if (spec.floating) {
       let stored = value!.name;
       if (bits === 32) {
         stored = B.tmp();
@@ -228,7 +232,10 @@ export function emitByteNumber(
     const raw = endianBits(host, loaded, spec.width, little);
     fastResult = B.tmp();
     if (spec.floating) {
-      if (bits === 32) {
+      if (bits === 16) {
+        host.declare(`declare double @scr_f16_to_f64(i16 zeroext)`);
+        B.line(`${fastResult} = call double @scr_f16_to_f64(i16 zeroext ${raw})`);
+      } else if (bits === 32) {
         const float = B.tmp();
         B.line(`${float} = bitcast i32 ${raw} to float`);
         B.line(`${fastResult} = fpext float ${float} to double`);

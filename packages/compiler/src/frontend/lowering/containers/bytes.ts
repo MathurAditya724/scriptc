@@ -151,7 +151,7 @@ function lowerBytesSortCall(
 /* ── typed arrays / Buffer ─────────────────────────────────────────────── */
 
 /** The typed-array constructors with a runtime representation, by lib
- * interface name. Other flavors (Float16Array, BigInt64Array, ...) fall through
+ * interface name. Other flavors (BigInt64Array, BigUint64Array) fall through
  * to the generic stdlib-constructor fence. DataView is handled separately. */
 const BYTES_CTORS: Record<string, IrBytesElem | undefined> = {
   Uint8Array: "u8",
@@ -161,6 +161,7 @@ const BYTES_CTORS: Record<string, IrBytesElem | undefined> = {
   Int16Array: "i16",
   Uint32Array: "u32",
   Int32Array: "i32",
+  Float16Array: "f16",
   Float32Array: "f32",
   Float64Array: "f64",
 };
@@ -397,6 +398,7 @@ function lowerArrayBufferView(
     u8: "arrayBuffer.viewU8",
     u32: "arrayBuffer.viewU32",
     i32: "arrayBuffer.viewI32",
+    f16: "arrayBuffer.viewF16",
     f32: "arrayBuffer.viewF32",
     f64: "arrayBuffer.viewF64",
     dv: "arrayBuffer.viewDV",
@@ -1220,6 +1222,7 @@ const DV_GETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
   getInt16: { method: "dvGetInt16", le: true },
   getUint32: { method: "dvGetUint32", le: true },
   getInt32: { method: "dvGetInt32", le: true },
+  getFloat16: { method: "dvGetFloat16", le: true },
   getFloat32: { method: "dvGetFloat32", le: true },
   getFloat64: { method: "dvGetFloat64", le: true },
 };
@@ -1231,6 +1234,7 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
   setInt16: { method: "dvSetInt16", le: true },
   setUint32: { method: "dvSetUint32", le: true },
   setInt32: { method: "dvSetInt32", le: true },
+  setFloat16: { method: "dvSetFloat16", le: true },
   setFloat32: { method: "dvSetFloat32", le: true },
   setFloat64: { method: "dvSetFloat64", le: true },
 };
