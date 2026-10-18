@@ -90,7 +90,7 @@ export interface IrValidationError {
  * calls and closures over it see Promise<T>; a generator body's is the
  * TReturn channel, so call sites see the generator type. The one place
  * the body/call-site split is spelled out in the validator. */
-function callSiteReturnType(fn: IrFunction): IrType {
+export function callSiteReturnType(fn: IrFunction): IrType {
   if (fn.async && fn.generator !== undefined) {
     return {
       kind: "generator",
