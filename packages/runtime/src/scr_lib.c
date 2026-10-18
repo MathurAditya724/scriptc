@@ -166,6 +166,13 @@ static SCR_TL char **scr_lib_argv_owned = NULL;
 static SCR_TL char *scr_lib_argv_utf8 = NULL;
 #endif
 static SCR_TL bool scr_lib_has_fork = false;
+/* A leading Node runtime flag taken out of process.argv (scr_lib_take_flag),
+ * which process.execArgv reports; NULL without one. */
+static SCR_TL const char *scr_lib_exec_flag = NULL;
+#if defined(_WIN32) && !defined(SCR_LIB)
+/* The flag's index in the original Windows command line, -1 without one. */
+static SCR_TL int scr_lib_exec_flag_index = -1;
+#endif
 #if !defined(_WIN32) && !defined(__wasi__) && !defined(SCR_LIB)
 static void scr_title_init(int argc, char **argv);
 #endif
@@ -321,6 +328,7 @@ static void scr_lib_prepare_utf8_argv(void) {
     // scr_lib_init already consumed this private ASCII fork marker. Do not
     // reintroduce it when replacing the narrow argument storage.
     if (i == 1 && scr_lib_has_fork) continue;
+    if (i == scr_lib_exec_flag_index) continue;
     int size = WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, NULL, 0, NULL, NULL);
     if (size == 0 || WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, next, size, NULL, NULL) != size) {
       free(text); free(args); LocalFree(wide);
@@ -565,6 +573,31 @@ const char *scr_lib_arg(int i) {
   return scr_lib_argv[i];
 }
 
+bool scr_lib_take_flag(const char *flag) {
+  if (scr_lib_argc < 2 || strcmp(scr_lib_argv[1], flag) != 0) return false;
+  char **args = malloc((size_t)scr_lib_argc * sizeof(char *));
+  if (!args) scr_trap("out of memory");
+  args[0] = scr_lib_argv[0];
+  for (int i = 2; i < scr_lib_argc; i++) args[i - 1] = scr_lib_argv[i];
+  args[scr_lib_argc - 1] = NULL;
+  free(scr_lib_argv_owned);
+  scr_lib_argv_owned = args;
+  scr_lib_argv = args;
+  scr_lib_argc--;
+#if defined(_WIN32) && !defined(SCR_LIB)
+  scr_lib_exec_flag_index = scr_lib_has_fork ? 2 : 1;
+#endif
+  scr_lib_exec_flag = flag;
+  return true;
+}
+
+ScrArr *scr_process_exec_argv(void) {
+  ScrArr *arr = scr_arr_new(SCR_ELEM_STR, 1);
+  if (scr_lib_exec_flag)
+    scr_arr_push_ref(arr, scr_str_new(scr_lib_exec_flag, strlen(scr_lib_exec_flag)));
+  return arr;
+}
+
 bool scr_lib_fork_info(double *target, uintptr_t *read_handle,
                        uintptr_t *write_handle) {
   if (!scr_lib_has_fork) return false;
@@ -791,6 +824,26 @@ static void scr_node_debug_capture(const ScrStr *name) {
   if (name->len == 10 && memcmp(name->data, "NODE_DEBUG", 10) == 0) (void)scr_node_debug_initial();
 }
 
+/* Counts writes and deletes of process.env.TZ. The local-time getters keep
+ * their last conversion for the generation it was made in. */
+#ifdef SCR_WORKERS
+static atomic_uint scr_date_tz_generation;
+#else
+static unsigned scr_date_tz_generation;
+#endif
+
+/* After a write or delete of the process's TZ, local time follows the new
+ * value, as in Node: tzset(3) rereads it for later localtime calls. */
+static void scr_env_tz_changed(const ScrStr *name) {
+  /* Compared by character: a string literal would join the merged
+   * read-only strings of every program that links this file. */
+  if (name->len != 2 || name->data[0] != 'T' || name->data[1] != 'Z') return;
+#if !defined(_WIN32) && !defined(__wasi__)
+  tzset();
+#endif
+  scr_date_tz_generation++;
+}
+
 /* process.env.NAME = v — setenv(3): later scr_env_get reads and spawned
  * children (posix_spawn inherits environ) observe the write, like Node.
  * Both args borrowed (NUL-terminated ScrStr data); setenv copies. */
@@ -809,6 +862,7 @@ void scr_env_set(const ScrStr *name, const ScrStr *value) {
 #else
   setenv(k, v, 1);
 #endif
+  scr_env_tz_changed(name);
 #ifdef SCR_WORKERS
 done:
 #endif
@@ -828,6 +882,7 @@ void scr_env_unset(const ScrStr *name) {
 #else
   unsetenv(name->data);
 #endif
+  scr_env_tz_changed(name);
 }
 
 static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file, size_t *ascii);
@@ -1945,14 +2000,17 @@ SCR_TL void (*scr_warning_emit_hook)(const char *name, const char *code, ScrStr 
 SCR_TL bool scr_warning_trace_hint_shown = false;
 SCR_TL void (*scr_stdin_destroy_hook)(void) = NULL;
 
-void scr_process_set_exit_code(double code) {
+/* process.exitCode's validation: a safe integer, or a RangeError
+ * (ERR_OUT_OF_RANGE). Node converts valid codes to signed int32 for
+ * exitCode and exit listeners; the OS observes the low eight bits. */
+static bool scr_process_exit_code_of(double code, int *out) {
   if (!isfinite(code) || trunc(code) != code) {
     char recv[48], msg[160];
     scr_num_received(code, recv);
     int len = snprintf(msg, sizeof msg,
                        "The value of \"code\" is out of range. It must be an integer. Received %s", recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-    return;
+    return false;
   }
   if (fabs(code) > 9007199254740991.0) {
     char recv[48], msg[192];
@@ -1960,15 +2018,19 @@ void scr_process_set_exit_code(double code) {
     int len = snprintf(msg, sizeof msg,
                        "The value of \"code\" is out of range. It must be >= -9007199254740991 && <= 9007199254740991. Received %s", recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-    return;
+    return false;
   }
-  /* Node converts valid safe integers to signed int32 for exitCode and
-   * exit listeners. The OS subsequently observes the low eight bits. */
   double low = fmod(code, 4294967296.0);
   if (low < 0) low += 4294967296.0;
   int64_t signed_code = (int64_t)low;
   if (signed_code > INT_MAX) signed_code -= 4294967296LL;
-  scr_exit_code_note((int)signed_code);
+  *out = (int)signed_code;
+  return true;
+}
+
+void scr_process_set_exit_code(double code) {
+  int converted;
+  if (scr_process_exit_code_of(code, &converted)) scr_exit_code_note(converted);
 }
 
 double scr_process_exit_code_or_zero(void) {
@@ -2026,6 +2088,11 @@ static void scr_detach_teardown(void) {
 #endif
 
 void scr_process_exit(double code) {
+  /* process.exit(code) assigns process.exitCode first, so a code that is
+   * not a safe integer throws its RangeError and the program continues. */
+  int converted;
+  if (!scr_process_exit_code_of(code, &converted)) return;
+  code = converted;
   /* Node runs 'exit' listeners on explicit process.exit() too — they run
    * HERE, synchronously, before the teardown-free exit below. The hook is
    * non-NULL only when the events unit is linked (scr_events.c). */
@@ -10171,6 +10238,8 @@ ScrStr *scr_str_from_code_point_bytes(ScrBytes *codes) {
  * frontend-fenced; construction, storage, getters, and ISO formatting
  * observe exactly this payload. */
 
+SCR_TL const double *scr_date_mock_now = NULL;
+
 double scr_date_now(void) {
   struct timespec ts;
   clock_gettime(CLOCK_REALTIME, &ts);
@@ -10428,9 +10497,14 @@ typedef struct ScrDateParts {
  * endpoint. The checked wrapper is the public UTC-getter gate; the inner
  * walk accepts those bounded local-time values too. */
 static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
-  double dayd = floor(t / 86400000.0);
-  long long msday = (long long)(t - dayd * 86400000.0);
-  long long z = (long long)dayd + 719468;
+  /* t is an integral number of milliseconds within about 2^53. */
+  long long tms = (long long)t;
+  long long day = tms / 86400000, msday = tms % 86400000;
+  if (msday < 0) {
+    msday += 86400000;
+    day--;
+  }
+  long long z = day + 719468;
   long long era = (z >= 0 ? z : z - 146096) / 146097;
   unsigned long long doe = (unsigned long long)(z - era * 146097);
   unsigned long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
@@ -10440,7 +10514,7 @@ static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
   unsigned long long d = doy - (153 * mp + 2) / 5 + 1;
   unsigned long long m = mp < 10 ? mp + 3 : mp - 9;
   if (m <= 2) y++;
-  long long wday = ((long long)dayd + 4) % 7;
+  long long wday = (day + 4) % 7;
   if (wday < 0) wday += 7;
   out->year = y;
   out->month = (int)m - 1;
@@ -10469,10 +10543,39 @@ static bool scr_date_localtime(double secd, struct tm *out) {
 #endif
 }
 
+/* The thread's last local conversion: reading several local fields of one
+ * Date (getFullYear, getMonth, getDate, getHours, ...) converts it once.
+ * A change of process.env.TZ starts a new generation. */
+typedef struct {
+  bool valid;
+  unsigned generation;
+  double ms;
+  ScrDateParts parts;
+} ScrDateLocalCache;
+static SCR_TL ScrDateLocalCache scr_date_local_cache;
+
+static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out);
+
 static bool scr_date_local_parts(double ms, ScrDateParts *out) {
   if (!isfinite(ms) || fabs(ms) > 8640000000000000.0) return false;
   double clipped = trunc(ms);
-  double secd = floor(clipped / 1000.0);
+  ScrDateLocalCache *c = &scr_date_local_cache;
+  unsigned generation = scr_date_tz_generation;
+  if (c->valid && c->ms == clipped && c->generation == generation) {
+    *out = c->parts;
+    return true;
+  }
+  if (!scr_date_local_parts_uncached(clipped, out)) return false;
+  c->valid = true;
+  c->generation = generation;
+  c->ms = clipped;
+  c->parts = *out;
+  return true;
+}
+
+static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out) {
+  long long cms = (long long)clipped;
+  double secd = (double)(cms / 1000 - (cms % 1000 < 0));
   struct tm tmv;
   double basis_secd = secd;
   if (!scr_date_localtime(basis_secd, &tmv)) {
@@ -10861,7 +10964,7 @@ static ScrDyn *scr_native_date_invoke(void *ptr, ScrDyn *self, const char *metho
 
 ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments) {
   double ms;
-  if (arguments->v.arr.len == 0) ms = scr_date_now();
+  if (arguments->v.arr.len == 0) ms = scr_date_mock_now ? *scr_date_mock_now : scr_date_now();
   else {
     ScrDyn *value = arguments->v.arr.items[0];
     if (scr_dyn_native_date_is(value)) ms = scr_dyn_native_date_value(value);
@@ -10869,9 +10972,69 @@ ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments) {
     else if (!scr_dyn_number_coerce_js(value, &ms)) return NULL;
     ms = scr_date_new_ms(ms);
   }
+  return scr_dyn_native_date_from_ms(ms);
+}
+
+/* The Date.prototype methods scr_native_date_invoke answers. */
+static const char *const scr_native_date_methods[] = {
+  "getTime", "valueOf", "toISOString", "toJSON", "getFullYear", "getUTCFullYear", "getMonth",
+  "getUTCMonth", "getDate", "getUTCDate", "getDay", "getUTCDay", "getHours", "getUTCHours",
+  "getMinutes", "getUTCMinutes", "getSeconds", "getUTCSeconds", "getMilliseconds",
+  "getUTCMilliseconds", "getTimezoneOffset",
+};
+#define SCR_NATIVE_DATE_METHODS (sizeof scr_native_date_methods / sizeof scr_native_date_methods[0])
+static SCR_TL ScrDyn *scr_native_date_method_values[SCR_NATIVE_DATE_METHODS];
+static SCR_TL bool scr_native_date_methods_registered;
+
+static void scr_native_date_methods_cleanup(void) {
+  for (size_t i = 0; i < SCR_NATIVE_DATE_METHODS; i++) {
+    ScrDyn *function = scr_native_date_method_values[i];
+    scr_native_date_method_values[i] = NULL;
+    scr_dyn_release(function);
+  }
+}
+
+/* A Date method read as a value and called later: the closure's function
+ * slot holds the method's name, and the receiver must be a Date. */
+static ScrDyn *scr_native_date_method_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  const char *method = closure->fn;
+  ScrDyn *self = scr_dyn_this_get();
+  ScrDyn *result = NULL;
+  if (scr_dyn_native_date_is(self)) {
+    result = scr_native_date_invoke(self->v.handle.ptr, self, method, args, argc, method);
+  } else {
+    static const char message[] = "this is not a Date object.";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  }
+  scr_dyn_release(self);
+  return result;
+}
+
+/* Property reads of a Date: its methods as function values, one per name
+ * and thread, and NULL (undefined) for other names. */
+static ScrDyn *scr_native_date_get(void *ptr, const char *key, size_t key_len) {
+  (void)ptr;
+  for (size_t i = 0; i < SCR_NATIVE_DATE_METHODS; i++) {
+    const char *name = scr_native_date_methods[i];
+    if (strlen(name) != key_len || memcmp(name, key, key_len) != 0) continue;
+    if (!scr_native_date_methods_registered) {
+      scr_native_date_methods_registered = true;
+      scr_atexit(scr_native_date_methods_cleanup);
+    }
+    if (!scr_native_date_method_values[i]) {
+      scr_native_date_method_values[i] = scr_dyn_new_func(
+          scr_closure_new((void *)name, 0), scr_native_date_method_call, 0, "native:Date", name);
+    }
+    return scr_dyn_retain(scr_native_date_method_values[i]);
+  }
+  return NULL;
+}
+
+/* A Date handle holding the time value `ms` (already TimeClip'd). */
+ScrDyn *scr_dyn_native_date_from_ms(double ms) {
   static const ScrDynHandleOps ops = {
     "Date", &scr_native_date_retain, &scr_native_date_release, &scr_native_date_invoke,
-    NULL, NULL, NULL, NULL,
+    &scr_native_date_get, NULL, NULL, NULL,
   };
   scr_dyn_handle_install(SCR_DYNH_DATE, &ops);
   ScrNativeDate *date = malloc(sizeof *date);

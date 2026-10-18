@@ -334,7 +334,8 @@ test("filtered strided loops retain decoded values and bound secondary cursors",
   const ranges = analyzeIntegerRanges(f);
   expect(ranges.get(cursor)).toEqual({ min: 0, max: 80 });
   expect(ranges.get(decoded)).toEqual({ min: 0, max: 4294967295 });
-  expect(ranges.get(conditionRead)).toEqual({ min: 0, max: 124 });
+  // The last pass enters at most at 99, so the failing test reads at most 123.
+  expect(ranges.get(conditionRead)).toEqual({ min: 0, max: 123 });
   for (const mutation of ["fraction", "repeat", "overflow", "counter"] as const) {
     const changed = structuredClone(f);
     const body = (changed.body[1] as IrStmt & { kind: "for" }).body;
@@ -793,6 +794,77 @@ test("a while condition on a string's length bounds a counter, and guarded incre
   });
   const rebound = set("text", { loc, kind: "strLit", value: "abc", type: STRING });
   expect(run((inside) => [observe(inside), bump, rebound]).after).toBeNull();
+});
+
+test("an array length bounds while and for counters even when the body resizes the array", () => {
+  // let i = 0; while (i < items.length) { observe(i); items.push(i); i++; } observe(i);
+  const ARR = { kind: "array", elem: F64 } as const;
+  const items: IrExpr = { loc, kind: "varRef", localId: "items", type: ARR };
+  const length: IrExpr = {
+    loc,
+    kind: "arrIntrinsic",
+    method: "length",
+    receiver: items,
+    args: [],
+    type: F64,
+  };
+  const push: IrStmt = {
+    loc,
+    kind: "exprStmt",
+    expr: {
+      loc,
+      kind: "arrIntrinsic",
+      method: "push",
+      receiver: items,
+      args: [ref("i")],
+      type: F64,
+    },
+  };
+  const bump: IrStmt = {
+    loc,
+    kind: "exprStmt",
+    expr: { loc, kind: "incDec", op: "+", prefix: false, localId: "i", type: F64 },
+  };
+  const inside = ref("i"),
+    after = ref("i");
+  const f = fn([
+    { loc, kind: "assign", localId: "i", value: num(0) },
+    {
+      loc,
+      kind: "while",
+      cond: condition("<", ref("i"), length),
+      body: [observe(inside), push, bump],
+    },
+    observe(after),
+  ]);
+  f.locals.push(
+    { id: "i", name: "i", type: F64, mutable: true },
+    { id: "items", name: "items", type: ARR, mutable: false },
+  );
+  const ranges = analyzeIntegerRanges(f);
+  expect(ranges.get(inside)).toEqual({ min: 0, max: 4294967294 });
+  expect(ranges.get(after)).toEqual({ min: 0, max: 4294967295 });
+  // A secondary cursor of `for (let j = 0; j < items.length; j++) k++` stays a uint32.
+  const cursor = ref("k");
+  const loop: IrStmt = {
+    loc,
+    kind: "for",
+    init: { loc, kind: "varDecl", localId: "j", init: num(0) },
+    cond: condition("<", ref("j"), length),
+    update: { loc, kind: "assign", localId: "j", value: bin("+", ref("j"), num(1)) },
+    body: [
+      push,
+      observe(cursor),
+      { loc, kind: "assign", localId: "k", value: bin("+", ref("k"), num(1)) },
+    ],
+  };
+  const g = fn([{ loc, kind: "assign", localId: "k", value: num(0) }, loop]);
+  g.locals.push(
+    { id: "j", name: "j", type: F64, mutable: true },
+    { id: "k", name: "k", type: F64, mutable: true },
+    { id: "items", name: "items", type: ARR, mutable: false },
+  );
+  expect(analyzeIntegerRanges(g).get(cursor)).toEqual({ min: 0, max: 4294967295 });
 });
 
 test("whole-program slot facts seed parameters, field reads and call results", () => {

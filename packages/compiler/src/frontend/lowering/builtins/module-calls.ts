@@ -40,6 +40,7 @@ import { lowerForkCall } from "./child-process.js";
 import {
   lowerOsCpusCall,
   lowerOsGetPriorityCall,
+  lowerOsSetPriorityCall,
   lowerOsNetworkInterfacesCall,
   lowerOsUserInfoCall,
   lowerPathFormatCall,
@@ -162,6 +163,9 @@ export function lowerBuiltinModuleCall(
   }
   if (bi.module === "os" && bi.member === "cpus") {
     return lowerOsCpusCall(lowerer, expr, loc);
+  }
+  if (bi.module === "os" && bi.member === "setPriority") {
+    return lowerOsSetPriorityCall(lowerer, expr, loc);
   }
   if (bi.module === "os" && bi.member === "getPriority") {
     return lowerOsGetPriorityCall(lowerer, expr, loc);

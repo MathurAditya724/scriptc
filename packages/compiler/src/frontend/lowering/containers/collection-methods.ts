@@ -41,6 +41,7 @@ import {
 } from "../collection-ingestion.js";
 import { strCharsCall } from "./array-construction.js";
 import { arrayElementRead } from "./array-iteration.js";
+import { isSearchParamsIterable } from "../builtins/url.js";
 
 /** Ambient Map method calls. `get`/`set`/`has`/`delete`/`clear` lower to
  * mapIntrinsic; `forEach` desugars to a direct call of a synthetic loop
@@ -1172,6 +1173,11 @@ export function lowerMapSeedNew(
       lowerer.lowerArrayLiteral(argNode, { kind: "array", elem: tuple }),
       mapT,
     );
+  }
+  // new Map(sp) / new Map(sp.entries()): the checked-dynamic view's live
+  // pairs seed the map in order.
+  if (isSearchParamsIterable(lowerer, argNode)) {
+    return mapFromSeedValue(lowerer, lowerer.lowerExprExpecting(argNode, DYN), mapT);
   }
   const input = collectionInput(lowerer, argNode);
   if (input) {

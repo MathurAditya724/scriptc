@@ -59,6 +59,11 @@ export function appendImplicitUndefinedReturn(
 ): void {
   if (bodyReturn.kind === "void") return;
   if (!bodyMayFallThrough(body)) return;
+  // An async generator that falls off its end completes without awaiting
+  // anything: its request settles as the body returns, where `return x`
+  // takes a turn to await x.
+  let settled = false;
+  if (lowerer.ctx.isAsync === true && lowerer.ctx.generator) settled = true;
   // A DYN body that can complete without returning (a JS function whose
   // guarded return may not run — mustSucceed's `if (typeof fn ===
   // 'function') return fn.apply(...)`): JS completes with undefined —
@@ -67,6 +72,7 @@ export function appendImplicitUndefinedReturn(
     body.push({
       kind: "return",
       value: dynUndefinedExpr(loc),
+      ...(settled ? { awaited: true as const } : {}),
       loc,
     });
     return;
@@ -74,7 +80,7 @@ export function appendImplicitUndefinedReturn(
   if (bodyReturn.kind === "union") {
     const value = lowerer.wrappedUndefined(bodyReturn, loc);
     if (value) {
-      body.push({ kind: "return", value, loc });
+      body.push({ kind: "return", value, ...(settled ? { awaited: true as const } : {}), loc });
       return;
     }
     // no undefined arm: the trap below stands in, exactly like non-unions
@@ -423,11 +429,14 @@ export function resolveInferredReturn(
       if (ice.length > 0) lowerer.diags.push(...ice);
       lowerer.runtimeFences.push(...captured.filter((d) => d.code !== "SC9001"));
       const first = captured.find((d) => d.code !== "SC9001");
+      // Property writes, not literal element writes: the class method
+      // census reads `x["kind"] = …` as a possible write to every method
+      // named `kind`, which would make those methods dynamic in native builds.
       const mutable = e.stmt as unknown as Record<string, unknown>;
-      delete mutable["value"];
-      mutable["kind"] = "runtimeFence";
-      mutable["code"] = first?.code ?? "SC1090";
-      mutable["message"] = first
+      delete mutable.value;
+      mutable.kind = "runtimeFence";
+      mutable.code = first?.code ?? "SC1090";
+      mutable.message = first
         ? `${first.message} [${first.code}]`
         : "this return value has no lowering onto the instance's settled return type [SC1090]";
     }

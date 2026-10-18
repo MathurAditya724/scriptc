@@ -1217,12 +1217,13 @@ export class LlDyn {
             `llvm emitter bug: JSON schema of unknown shape ${t.shapeId}`,
           );
         const struct = mangleRecordStruct(t.shapeId);
-        const index = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+        const base = host.nullableUnions.fieldBase(t.shapeId);
+        const index = new Map(shape.fields.map((f, i) => [f.name, i + base]));
         // The runtime names kept-source keys by this index (record-sources.ts).
         const order = recordSourceFieldOrder(shape);
         const fieldTy = `{ ptr, ${S}, ${S}, ptr }`;
         const entries = order.map((fieldName) => {
-          const field = shape.fields[index.get(fieldName)! - 1]!;
+          const field = shape.fields[index.get(fieldName)! - base]!;
           const sub = this.jsonSchema(field.type);
           const offset = `ptrtoint (ptr getelementptr (%${struct}, ptr null, i64 0, i32 ${index.get(fieldName)}) to ${S})`;
           return `${fieldTy} { ptr ${host.cstr(fieldName)}, ${S} ${Buffer.byteLength(fieldName, "utf8")}, ${S} ${offset}, ptr @${sub} }`;
@@ -1240,7 +1241,7 @@ export class LlDyn {
         const overflow = shape.indexValue
           ? {
               elem: `@${this.jsonSchema(shape.indexValue)}`,
-              offset: `ptrtoint (ptr getelementptr (%${struct}, ptr null, i64 0, i32 ${shape.fields.length + 1}) to ${S})`,
+              offset: `ptrtoint (ptr getelementptr (%${struct}, ptr null, i64 0, i32 ${shape.fields.length + base}) to ${S})`,
             }
           : { elem: "null", offset: "0" };
         body = `${S} 3, ${S} ${entries.length}, ptr ${fields}, ptr ${overflow.elem}, ptr @${mangleRecordNew(t.shapeId)}, ptr null, ptr ${vAdapters(host, t).release}, ptr null, ${S} ${overflow.offset}`;
@@ -1547,18 +1548,19 @@ export class LlDyn {
             B.line(`call void @scr_arr_outline(ptr ${cached})`);
             B.line(`call void @scr_arr_outline(ptr ${checked})`);
           }
+          const base = t.kind === "record" ? host.nullableUnions.fieldBase(t.shapeId) : 1;
           const members =
             t.kind === "record"
               ? [
                   ...shape!.fields.map((field, index) => ({
-                    index: index + 1,
+                    index: index + base,
                     type: llFieldType(field.type, host.inlineUnions.record(field.type)),
                     name: field.name,
                   })),
                   ...(shape!.indexValue
                     ? [
                         {
-                          index: shape!.fields.length + 1,
+                          index: shape!.fields.length + base,
                           type: "ptr" as const,
                           name: "[key: string] overflow",
                         },
@@ -1819,7 +1821,8 @@ export class LlDyn {
             `llvm emitter bug: dynCheck of unknown shape ${t.shapeId}`,
           );
         const struct = mangleRecordStruct(t.shapeId);
-        const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+        const base = host.nullableUnions.fieldBase(t.shapeId);
+        const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + base]));
         const releaseR = (): void => {
           B.line(`call void ${releaseSym(host, t)}(ptr %r0)`);
         };
@@ -1996,7 +1999,7 @@ export class LlDyn {
           const ovfp = B.tmp();
           const ovf = B.tmp();
           B.line(
-            `${ovfp} = getelementptr inbounds %${struct}, ptr %r0, i64 0, i32 ${shape.fields.length + 1}`,
+            `${ovfp} = getelementptr inbounds %${struct}, ptr %r0, i64 0, i32 ${shape.fields.length + base}`,
           );
           B.line(`${ovf} = load ptr, ptr ${ovfp} ; overflow map`);
           if (shape.fields.length === 0) {
@@ -2418,6 +2421,15 @@ export class LlDyn {
     const B = new BlockBuilder();
     let sourceAccessor: { name: string; release: string } | null = null;
     switch (t.kind) {
+      case "date": {
+        // A Date handle holding the same time value; native Dates are
+        // immutable values, and so is the handle.
+        host.declare(`declare ptr @scr_dyn_native_date_from_ms(double)`);
+        const r = B.tmp();
+        B.line(`${r} = call ptr @scr_dyn_native_date_from_ms(double %v)`);
+        B.terminate(`ret ptr ${r}`);
+        break;
+      }
       case "url":
       case "searchParams": {
         const native = t.kind === "url" ? "url" : "search_params";
@@ -2569,7 +2581,8 @@ export class LlDyn {
         if (!shape)
           throw new InternalCompilerError(`llvm emitter bug: to-dyn of unknown shape ${t.shapeId}`);
         const struct = mangleRecordStruct(t.shapeId);
-        const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+        const base = host.nullableUnions.fieldBase(t.shapeId);
+        const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + base]));
         const loadFieldOf = (fname: string, ft: IrType): string => {
           const p = B.tmp();
           B.line(
@@ -2693,7 +2706,7 @@ export class LlDyn {
           const ovfp = B.tmp();
           const ovf = B.tmp();
           B.line(
-            `${ovfp} = getelementptr inbounds %${struct}, ptr %v, i64 0, i32 ${shape.fields.length + 1}`,
+            `${ovfp} = getelementptr inbounds %${struct}, ptr %v, i64 0, i32 ${shape.fields.length + base}`,
           );
           B.line(`${ovf} = load ptr, ptr ${ovfp} ; overflow map`);
           const ks = B.tmp();
@@ -3209,82 +3222,19 @@ export class LlDyn {
         this.puts(B, "%b", "[object Object]");
         B.br(done);
         B.startBlock(lErr);
-        const en = this.objGetLit(B, "%d", "name");
-        const em = this.objGetLit(B, "%d", "message");
-        // ens/ems: the member's ScrStr when it is a string, else null.
-        const strOf = (m: string, hint: string): string => {
-          const slot = B.slot();
-          B.entryAllocas.push(`${slot} = alloca ptr`);
-          B.line(`store ptr null, ptr ${slot}`);
-          const nn = B.tmp();
-          B.line(`${nn} = icmp ne ptr ${m}, null`);
-          const lt = B.newLabel(`${hint}.t`);
-          const lj = B.newLabel(`${hint}.j`);
-          B.condBr(nn, lt, lj);
-          B.startBlock(lt);
-          const k = this.kindOf(B, m);
-          const isStr = B.tmp();
-          B.line(`${isStr} = icmp eq i32 ${k}, ${DYN_KIND.STR}`);
-          const ls = B.newLabel(`${hint}.s`);
-          B.condBr(isStr, ls, lj);
-          B.startBlock(ls);
-          const sv = this.payloadOf(B, m, "ptr");
-          B.line(`store ptr ${sv}, ptr ${slot}`);
-          B.br(lj);
-          B.startBlock(lj);
-          const out = B.tmp();
-          B.line(`${out} = load ptr, ptr ${slot}`);
-          return out;
-        };
-        const ens = strOf(en, "ds.en");
-        const ems = strOf(em, "ds.em");
-        const putIf = (s: string, hint: string): void => {
-          const nn = B.tmp();
-          B.line(`${nn} = icmp ne ptr ${s}, null`);
-          const lt = B.newLabel(`${hint}.t`);
-          const lj = B.newLabel(`${hint}.j`);
-          B.condBr(nn, lt, lj);
-          B.startBlock(lt);
-          this.putScrStr(B, "%b", s);
-          B.br(lj);
-          B.startBlock(lj);
-        };
-        putIf(ens, "ds.pn");
-        {
-          // if (ens && ens->len && ems && ems->len) ": "
-          const lenNz = (s: string, hint: string): string => {
-            const slot = B.slot();
-            B.entryAllocas.push(`${slot} = alloca i1`);
-            B.line(`store i1 false, ptr ${slot}`);
-            const nn = B.tmp();
-            B.line(`${nn} = icmp ne ptr ${s}, null`);
-            const lt = B.newLabel(`${hint}.t`);
-            const lj = B.newLabel(`${hint}.j`);
-            B.condBr(nn, lt, lj);
-            B.startBlock(lt);
-            const { len } = this.strParts(B, s);
-            const nz = B.tmp();
-            B.line(`${nz} = icmp ne ${this.S} ${len}, 0`);
-            B.line(`store i1 ${nz}, ptr ${slot}`);
-            B.br(lj);
-            B.startBlock(lj);
-            const out = B.tmp();
-            B.line(`${out} = load i1, ptr ${slot}`);
-            return out;
-          };
-          const a = lenNz(ens, "ds.ln");
-          const b2 = lenNz(ems, "ds.lm");
-          const both = B.tmp();
-          B.line(`${both} = and i1 ${a}, ${b2}`);
-          const lt = B.newLabel("ds.cl");
-          const lj = B.newLabel("ds.cj");
-          B.condBr(both, lt, lj);
-          B.startBlock(lt);
-          this.puts(B, "%b", ": ");
-          B.br(lj);
-          B.startBlock(lj);
-        }
-        putIf(ems, "ds.pm");
+        // Error.prototype.toString, reading name and message through the
+        // prototype. Null leaves the exception its conversion threw pending.
+        host.declare(`declare ptr @scr_dyn_error_string(ptr)`);
+        host.declare(`declare void @scr_str_release(ptr)`);
+        const text = B.tmp();
+        B.line(`${text} = call ptr @scr_dyn_error_string(ptr %d)`);
+        const written = B.tmp();
+        B.line(`${written} = icmp ne ptr ${text}, null`);
+        const lPut = B.newLabel("ds.ep");
+        B.condBr(written, lPut, done);
+        B.startBlock(lPut);
+        this.putScrStr(B, "%b", text);
+        B.line(`call void @scr_str_release(ptr ${text})`);
         B.br(done);
       }
       B.startBlock(labels.get(DYN_KIND.BYTES)!);

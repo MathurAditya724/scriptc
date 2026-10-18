@@ -59,7 +59,20 @@ import {
 import { DYN_CLASS_PROPERTIES } from "./ir.js";
 import { unionWideningTags } from "./analysis.js";
 import { alwaysReturns } from "./control-flow.js";
+import { dynamicOperationOf, functionTier } from "./tiers.js";
 import { LIB_FN_SIGS } from "./builtin-signatures.js";
+
+/** The promisified crypto calls' value kinds besides checked-dynamic. */
+const CRYPTO_PROMISE_VALUES: Readonly<Record<string, "buffer" | "view" | "number" | "dyn">> = {
+  "crypto.randomBytesPromise": "buffer",
+  "crypto.pbkdf2Promise": "buffer",
+  "crypto.scryptPromise": "buffer",
+  "crypto.hkdfPromise": "dyn",
+  "crypto.randomFillPromise": "view",
+  "crypto.randomFillPromiseDyn": "dyn",
+  "crypto.randomIntPromise": "number",
+  "crypto.generateKeyPromise": "dyn",
+};
 import { REGEX_INTRINSIC_SIGS, STR_INTRINSIC_SIGS } from "./intrinsic-signatures.js";
 
 /** True for an object type naming a runtime-provided error class. */
@@ -357,7 +370,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       const fits = (cls: string, t: IrType): boolean =>
         cls === "bool"
           ? t.kind === "bool"
-          : cls === "string"
+          : cls === "string" || cls === "cstring"
             ? t.kind === "string"
             : cls === "bytes"
               ? t.kind === "bytes" && t.elem === "u8"
@@ -1007,6 +1020,14 @@ function validateFunction(
   const locals = new Map(fn.locals.map((l) => [l.id, l]));
   const err = (message: string, loc: SrcLoc) =>
     errors.push({ message: `in ${fn.name}: ${message}`, loc });
+  // Invariant I1 (ir/tiers.ts): a static function reaches dynamic values
+  // only through boundary operations and moves.
+  const staticTier = functionTier(fn) === "static";
+  const checkTier = (e: IrExpr): void => {
+    const operation = dynamicOperationOf(e);
+    if (operation !== null)
+      err(`static-tier function performs the dynamic operation ${operation}`, e.loc);
+  };
 
   const asyncCaches = [
     ["asyncCacheGlobal", fn.asyncCacheGlobal],
@@ -1251,6 +1272,8 @@ function validateFunction(
         continue;
       }
       if (e.kind === "logical") {
+        // checkExpr already checked the root's tier.
+        if (staticTier && e !== root) checkTier(e);
         if (
           e.type.kind !== "f64" &&
           e.type.kind !== "string" &&
@@ -1294,6 +1317,7 @@ function validateFunction(
   }
 
   function checkExpr(e: IrExpr): void {
+    if (staticTier) checkTier(e);
     switch (e.kind) {
       case "numLit":
       case "strLit":
@@ -1932,8 +1956,8 @@ function validateFunction(
       }
       case "regexLit": {
         if (e.type.kind !== "regex") err("regexLit must be regex-typed", e.loc);
-        if (!/^[gimsuy]*$/.test(e.flags)) {
-          err(`regexLit flags "${e.flags}" outside the supported alphabet (gimsuy)`, e.loc);
+        if (!/^[gimsuvy]*$/.test(e.flags)) {
+          err(`regexLit flags "${e.flags}" outside the supported alphabet (gimsuvy)`, e.loc);
         }
         if (new Set(e.flags).size !== e.flags.length) {
           err(`regexLit flags "${e.flags}" contain a duplicate`, e.loc);
@@ -2907,7 +2931,7 @@ function validateFunction(
       case "downcast": {
         // A pointer reinterpret is sound exactly between hierarchy
         // relatives: upcast widens a STRICT descendant to an ancestor,
-        // downcast (checker-trusted) narrows an ancestor to a STRICT
+        // downcast (verified at run time) narrows an ancestor to a STRICT
         // descendant. Upcast additionally widens CLASS VALUES
         // (classval:D → classval:C): the same pointer, type-only — legal
         // exactly when D strictly descends from C AND the two completed
@@ -4097,6 +4121,19 @@ function validateFunction(
   }
 
   function checkLibValueCall(e: IrExpr & { kind: "libCall" }): boolean {
+    const cryptoPromise = CRYPTO_PROMISE_VALUES[e.fn];
+    if (cryptoPromise) {
+      const inner = e.type.kind === "promise" ? e.type.inner : undefined;
+      const view = e.fn === "crypto.randomFillPromise" ? e.args[0]?.type : undefined;
+      const ok =
+        inner !== undefined &&
+        (inner.kind === "dyn" ||
+          (cryptoPromise === "buffer" && inner.kind === "bytes" && inner.elem === "u8") ||
+          (cryptoPromise === "view" && view !== undefined && typeEquals(inner, view)) ||
+          (cryptoPromise === "number" && inner.kind === "f64"));
+      if (!ok) err(`libCall ${e.fn} must be a promise of its ${cryptoPromise} value`, e.loc);
+      return true;
+    }
     if (e.fn === "events.once") {
       const [recv, , boxer, errorBoxer] = e.args;
       const arrayT = e.type.kind === "promise" ? e.type.inner : null;
@@ -4116,9 +4153,12 @@ function validateFunction(
       e.fn === "tp.setTimeoutValue" ||
       e.fn === "tp.setImmediateValue" ||
       e.fn === "tp.setTimeoutSignal" ||
-      e.fn === "tp.setImmediateSignal"
+      e.fn === "tp.setImmediateSignal" ||
+      e.fn === "tp.schedulerWaitValue" ||
+      e.fn === "tp.schedulerWaitSignal"
     ) {
-      const value = e.args[e.fn === "tp.setTimeoutValue" || e.fn === "tp.setTimeoutSignal" ? 1 : 0];
+      const value =
+        e.args[e.fn === "tp.setImmediateValue" || e.fn === "tp.setImmediateSignal" ? 0 : 1];
       if (value?.type.kind !== "promise" || !typeEquals(e.type, value.type)) {
         err(`libCall ${e.fn} must be the value's promise type`, e.loc);
       }
@@ -5692,6 +5732,8 @@ function validateFunction(
       e.fn !== "emitter.setDefaultMax" &&
       e.fn !== "emitter.setDefaultMaxChk" &&
       e.fn !== "emitter.getDefaultMax" &&
+      e.fn !== "emitter.esmDefaultMax" &&
+      e.fn !== "emitter.esmSync" &&
       e.fn !== "emitter.errorMonitor" &&
       e.fn !== "emitter.checkListener"
     ) {

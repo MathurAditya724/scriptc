@@ -44,6 +44,7 @@ const DV_GET_KIND: Record<string, number> = {
   dvGetFloat64: 7,
   dvGetBigUint64Number: 8,
   dvGetBigInt64Number: 9,
+  dvGetFloat16: 10,
 };
 
 const DV_SET_KIND: Record<string, number> = {
@@ -55,6 +56,7 @@ const DV_SET_KIND: Record<string, number> = {
   dvSetInt32: 5,
   dvSetFloat32: 6,
   dvSetFloat64: 7,
+  dvSetFloat16: 10,
 };
 
 export function emitIntegerLoopIndex(host: LlvmEmitterContext, expr: IrExpr): string | null {
@@ -273,7 +275,7 @@ function emitSharedOrLocalLoad(
   idx: string,
 ): LlValue {
   const B = host.B;
-  const floating = elem === "f32" || elem === "f64";
+  const floating = elem === "f16" || elem === "f32" || elem === "f64";
   const fn = floating ? "scr_bytes_shared_get_f64" : "scr_bytes_shared_get_int";
   const ret = floating ? "double" : "i32";
   host.declare(`declare ${ret} @${fn}(ptr, ${host.sizeType})`);
@@ -314,6 +316,16 @@ function emitBytesLoadAt(
   const B = host.B;
   const data = host.emitBytesData(receiver);
   const p = B.tmp();
+  if (elem === "f16") {
+    // Half-precision bits widen exactly; the runtime converts them.
+    host.declare(`declare double @scr_f16_to_f64(i16 zeroext)`);
+    const raw = B.tmp();
+    const out = B.tmp();
+    B.line(`${p} = getelementptr inbounds i16, ptr ${data}, ${host.sizeType} ${idx}`);
+    B.line(`${raw} = load i16, ptr ${p}, align 1`);
+    B.line(`${out} = call double @scr_f16_to_f64(i16 zeroext ${raw})`);
+    return { name: out, type: F64 };
+  }
   if (BYTES_ELEMENT_SIZE[elem] < 4) {
     const bits = BYTES_ELEMENT_SIZE[elem] * 8;
     const signed = elem === "i8" || elem === "i16";
@@ -472,10 +484,19 @@ export function emitBytesSet(
     B.line(`${stored} = fptoui double ${clamped} to i32`);
   } else
     stored =
-      elem === "f32" || elem === "f64" ? null : host.emitToUint32(value.name, expr, value.uint32);
+      elem === "f16" || elem === "f32" || elem === "f64"
+        ? null
+        : host.emitToUint32(value.name, expr, value.uint32);
   const data = host.emitBytesData(receiver);
   const p = B.tmp();
-  if (BYTES_ELEMENT_SIZE[elem] < 4) {
+  if (elem === "f16") {
+    // One round-to-nearest-even step from the double, in the runtime.
+    host.declare(`declare zeroext i16 @scr_f16_from_f64(double)`);
+    const narrowed = B.tmp();
+    B.line(`${narrowed} = call zeroext i16 @scr_f16_from_f64(double ${value.name})`);
+    B.line(`${p} = getelementptr inbounds i16, ptr ${data}, ${host.sizeType} ${idx}`);
+    B.line(`store i16 ${narrowed}, ptr ${p}, align 1`);
+  } else if (BYTES_ELEMENT_SIZE[elem] < 4) {
     const bits = BYTES_ELEMENT_SIZE[elem] * 8;
     const byte = B.tmp();
     B.line(`${byte} = trunc i32 ${stored!} to i${bits}`);
@@ -882,6 +903,7 @@ export function emitBytesIntrinsic(
     case "dvGetInt16":
     case "dvGetUint32":
     case "dvGetInt32":
+    case "dvGetFloat16":
     case "dvGetFloat32":
     case "dvGetFloat64":
     case "dvGetBigUint64Number":
@@ -912,6 +934,7 @@ export function emitBytesIntrinsic(
     case "dvSetInt16":
     case "dvSetUint32":
     case "dvSetInt32":
+    case "dvSetFloat16":
     case "dvSetFloat32":
     case "dvSetFloat64": {
       // DataView setters: [offset, value, littleEndian?] — void; throw

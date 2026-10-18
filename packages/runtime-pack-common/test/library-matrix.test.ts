@@ -73,7 +73,10 @@ test("the young-in nursery collector is an executable-only variant of scr_cycle.
   const young = matrix.runtime_units
     .find((unit) => unit.source === "scr_cycle.c")
     .variants.find((variant) => variant.id === "young-nursery");
-  expect(young).toMatchObject({ when: { youngNursery: true, workers: false }, defines: ["SCR_YIN"] });
+  expect(young).toMatchObject({
+    when: { youngNursery: true, workers: false },
+    defines: ["SCR_YIN"],
+  });
   for (const mode of ["library-release", "library-thread-release"])
     expect(ids(matrix.flavors[mode].runtime_units)).toEqual(["default"]);
 });

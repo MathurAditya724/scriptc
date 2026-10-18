@@ -40,6 +40,7 @@ import {
 import {
   classPrototypeData,
   hasClassPrototypeData,
+  observedPrototypeMethod,
   reflectClassPrototype,
 } from "./class-prototypes.js";
 import {
@@ -697,6 +698,8 @@ export class ClassDynamicDispatch {
   private readonly bagClasses = new Set<string>();
   private readonly bagInitializers = new Map<string, Extract<IrStmt, { kind: "fieldSet" }>[]>();
   private readonly typedPropertyBags = new Map<string, IrFunction>();
+  /** Per-class prototype selection for new property bags (bagPrototypeHelper). */
+  private readonly bagPrototypeHelpers = new Map<string, IrFunction>();
   private readonly readPropertyBags: {
     helper: IrFunction;
     initialize: Extract<IrStmt, { kind: "fieldSet" }>;
@@ -755,6 +758,7 @@ export class ClassDynamicDispatch {
     const seenTypes = new Set<string>();
     const rewrite = new Set<IrFunction>();
     const toPrimitiveSites = new Set<IrFunction>();
+    const hasKeySites = new Set<IrFunction>();
     const discover = (type: IrType): void => {
       const key = typeKey(type);
       if (seenTypes.has(key)) return;
@@ -817,6 +821,9 @@ export class ClassDynamicDispatch {
               )
                 rewrite.add(fn);
               break;
+            case "dynHasKey":
+              hasKeySites.add(fn);
+              break;
             case "dynKeyGet":
             case "dynInvoke":
               rewrite.add(fn);
@@ -853,6 +860,8 @@ export class ClassDynamicDispatch {
     const converting = this.convertingHints(lowerer);
     const calling = this.calledConversions(lowerer);
     if (converting.size || calling.size) for (const fn of toPrimitiveSites) rewrite.add(fn);
+    const prototypeMembers = this.prototypeMemberNames(lowerer);
+    if (prototypeMembers.size) for (const fn of hasKeySites) rewrite.add(fn);
     for (const fn of functions) {
       if (
         !fn.name.startsWith("%dyn.class.instanceof:") &&
@@ -1120,38 +1129,8 @@ export class ClassDynamicDispatch {
         current.subclasses.some(
           (child) => lowerer.classCanBeConstructed(child) && needsPrototype(child),
         );
-      const prototypeFor = (current: ClassInfo, receiver: IrExpr, loc: SrcLoc): IrExpr | null => {
-        const currentReceiver: IrExpr =
-          receiver.type.kind === "object" && receiver.type.className !== current.def.name
-            ? {
-                kind: "downcast",
-                value: receiver,
-                type: { kind: "object", className: current.def.name },
-                loc,
-              }
-            : receiver;
-        let result = classPrototypeData(lowerer, current, loc, currentReceiver);
-        for (const child of current.subclasses) {
-          if (!lowerer.classCanBeConstructed(child)) continue;
-          const selected = prototypeFor(child, receiver, loc);
-          if (selected && result)
-            result = {
-              kind: "ternary",
-              cond: {
-                kind: "instanceOf",
-                value: receiver,
-                className: child.def.name,
-                type: BOOL,
-                loc,
-              },
-              then: selected,
-              else_: result,
-              type: DYN,
-              loc,
-            };
-        }
-        return result;
-      };
+      const prototypeFor = (current: ClassInfo, receiver: IrExpr, loc: SrcLoc): IrExpr | null =>
+        this.bagPrototype(lowerer, current, receiver, loc);
       for (const existingInit of this.bagInitializers.get(className) ?? []) {
         if (existingInit.value.kind === "dynObjLit" && needsPrototype(info)) {
           const prototype = prototypeFor(info, existingInit.obj, existingInit.loc);
@@ -1180,7 +1159,9 @@ export class ClassDynamicDispatch {
         // Runtime-owned roots keep their dedicated property contracts. A
         // family whose fields all exist from construction and are never
         // deleted keeps a fixed layout, as TypeScript classes do.
-        this.deletedNames ??= deletedPropertyNames(lowerer.moduleOrder);
+        // null is a result too; undefined means not computed yet.
+        if (this.deletedNames === undefined)
+          this.deletedNames = deletedPropertyNames(lowerer.moduleOrder);
         if (!root.base?.def.runtime && !fixedFieldFamily(root, this.deletedNames)) track(root);
       }
       const loc = this.propertyBag.loc;
@@ -1293,6 +1274,38 @@ export class ClassDynamicDispatch {
       fn.body = transformStmtList(fn.body, {
         stmt: (stmt) => stmt,
         expr: (expr) => {
+          if (expr.kind === "dynHasKey" && prototypeMembers.has(expr.key)) {
+            // A class instance's snapshot can carry its class's prototype
+            // data, which holds only the methods the program reads through
+            // the prototype. The computed-key form answers methods and
+            // accessors from the class itself.
+            const loc = expr.loc;
+            const test: IrExpr = {
+              kind: "libCall",
+              fn: "dyn.hasKeyComputed",
+              args: [
+                expr.value,
+                {
+                  kind: "dynFrom",
+                  value: { kind: "strLit", value: expr.key, type: STRING, loc },
+                  type: DYN,
+                  loc,
+                },
+              ],
+              type: BOOL,
+              loc,
+            };
+            changed = true;
+            return {
+              kind: "seqExpr",
+              stmts: [],
+              result: expr.negated
+                ? { kind: "unary", op: "!", operand: test, type: BOOL, loc }
+                : test,
+              type: BOOL,
+              loc,
+            };
+          }
           const called = calling.size ? this.convertMethodCall(lowerer, fn, expr, calling) : null;
           if (called) {
             changed = true;
@@ -2438,8 +2451,13 @@ export class ClassDynamicDispatch {
         const value = varRef("p.0", DYN, loc);
         const { receiver, condition } = this.propertyReceiver(plan, loc);
         if (isClassCallback(lowerer, info, dispatch.source.method)) {
-          const prototypeMethod = lowerer.prototypeMethodAccesses.has(dispatch.source.method);
-          if (prototypeMethod) classPrototypeData(lowerer, info, loc);
+          const prototypeMethod = observedPrototypeMethod(
+            lowerer,
+            info,
+            dispatch.source.method,
+            loc,
+            receiver,
+          );
           const bag = this.readPropertyBagOrEmpty(lowerer, value, loc);
           dispatch.callback.body.unshift({
             kind: "if",
@@ -2786,7 +2804,8 @@ export class ClassDynamicDispatch {
             return dispatch.reflect
               ? this.reflectPropertyBody(lowerer, { ...dispatch, name }, info, receiver)
               : this.propertyBody(lowerer, { ...dispatch, name }, info, receiver);
-          const prototypeMethod = lowerer.prototypeMethodAccesses.has(name);
+          const prototypeMethod =
+            !info.fields.has(name) && observedPrototypeMethod(lowerer, info, name, loc, receiver);
           if (info.fields.has(name) || (dispatch.probe === "in" && !prototypeMethod)) {
             if (info.fields.has(name) && info.def.tracksOwnFields) {
               const bag = this.readPropertyBagOrEmpty(
@@ -2819,7 +2838,6 @@ export class ClassDynamicDispatch {
               { kind: "return", value: { kind: "boolLit", value: true, type: BOOL, loc }, loc },
             ];
           }
-          if (prototypeMethod) classPrototypeData(lowerer, info, loc, receiver);
           const bag = this.readPropertyBagOrEmpty(
             lowerer,
             lowerer.coerceToExpected(receiver, DYN),
@@ -3429,6 +3447,19 @@ export class ClassDynamicDispatch {
     };
   }
 
+  /** The method and accessor names of boxed classes whose instances can
+   * carry their class's prototype data. */
+  private prototypeMemberNames(lowerer: Lowerer): Set<string> {
+    const names = new Set<string>();
+    for (const { info } of this.propertyReceivers(lowerer)) {
+      if (!hasClassPrototypeData(info)) continue;
+      for (let c: ClassInfo | null = info; c; c = c.base)
+        for (const name of c.methods.keys())
+          names.add(name.startsWith("get:") || name.startsWith("set:") ? name.slice(4) : name);
+    }
+    return names;
+  }
+
   /** The methods some boxed class declares among valueOf and toString. */
   private calledConversions(lowerer: Lowerer): Set<"valueOf" | "toString"> {
     const methods = new Set<"valueOf" | "toString">();
@@ -3865,10 +3896,20 @@ export class ClassDynamicDispatch {
       obj: receiver,
       value: transformExpr(initializers[0]!.value, {
         stmt: (stmt) => stmt,
-        expr: (expr) =>
-          expr.kind === "dynCheck" && expr.value.kind === "varRef" && expr.value.localId === "p.0"
-            ? receiver
-            : expr,
+        expr: (expr) => {
+          const checked = (e: IrExpr): boolean =>
+            e.kind === "dynCheck" && e.value.kind === "varRef" && e.value.localId === "p.0";
+          // The checked receiver, possibly cast to this class (the prototype
+          // helper's argument), is the typed parameter itself.
+          if (
+            expr.kind === "downcast" &&
+            checked(expr.value) &&
+            expr.type.kind === "object" &&
+            expr.type.className === type.className
+          )
+            return receiver;
+          return checked(expr) ? receiver : expr;
+        },
       }),
       loc,
     };
@@ -3894,6 +3935,79 @@ export class ClassDynamicDispatch {
     if (readOnly) this.readPropertyBags.push({ helper, initialize });
     this.generated.add(helper);
     lowerer.liftedFns.push(helper);
+    return helper;
+  }
+
+  /** The prototype a new property bag of `current` (or of the subclass the
+   * receiver is) starts from, or null when `current` has no prototype data.
+   * A class with constructible subclasses that have prototype data selects
+   * it through its `%class.bagPrototype` helper; any other class reads its
+   * own prototype data. */
+  private bagPrototype(
+    lowerer: Lowerer,
+    current: ClassInfo,
+    receiver: IrExpr,
+    loc: SrcLoc,
+  ): IrExpr | null {
+    const arg: IrExpr =
+      receiver.type.kind === "object" && receiver.type.className !== current.def.name
+        ? {
+            kind: "downcast",
+            value: receiver,
+            type: { kind: "object", className: current.def.name },
+            loc,
+          }
+        : receiver;
+    const helper = this.bagPrototypeHelper(lowerer, current, loc);
+    return helper
+      ? { kind: "call", callee: helper.name, args: [arg], type: DYN, loc }
+      : classPrototypeData(lowerer, current, loc, arg);
+  }
+
+  /** `%class.bagPrototype:<class>(this)`: the prototype data of the most
+   * derived constructible class `this` is an instance of, tested from the
+   * last subclass to the first and then the class itself. One helper per
+   * class, calling its subclasses' helpers, keeps every property-bag branch
+   * a single call: a whole hierarchy inlined into each branch grows with the
+   * square of its depth. Null when the class has no prototype data, in which
+   * case its subclasses are not tested either, or while no constructible
+   * subclass has any. The body is rebuilt on each use, as classes become
+   * constructible. */
+  private bagPrototypeHelper(lowerer: Lowerer, current: ClassInfo, loc: SrcLoc): IrFunction | null {
+    const type: IrType = { kind: "object", className: current.def.name };
+    const self = varRef("this", type, loc);
+    const own = classPrototypeData(lowerer, current, loc, self);
+    if (!own) return null;
+    const body: IrStmt[] = [];
+    const children = current.subclasses.filter((child) => lowerer.classCanBeConstructed(child));
+    for (const child of children.reverse()) {
+      const selected = this.bagPrototype(lowerer, child, self, loc);
+      if (!selected) continue;
+      body.push({
+        kind: "if",
+        cond: { kind: "instanceOf", value: self, className: child.def.name, type: BOOL, loc },
+        then: [{ kind: "return", value: selected, loc }],
+        else_: null,
+        loc,
+      });
+    }
+    let helper = this.bagPrototypeHelpers.get(current.def.name);
+    if (!helper && body.length === 0) return null;
+    body.push({ kind: "return", value: own, loc });
+    if (!helper) {
+      helper = {
+        name: `%class.bagPrototype:${current.def.name}`,
+        params: [{ localId: "this", name: "this", type }],
+        returnType: DYN,
+        locals: [{ id: "this", name: "this", type, mutable: false }],
+        body,
+        loc,
+      };
+      this.bagPrototypeHelpers.set(current.def.name, helper);
+      this.generated.add(helper);
+      lowerer.liftedFns.push(helper);
+    }
+    helper.body = body;
     return helper;
   }
 
@@ -4496,8 +4610,7 @@ export class ClassDynamicDispatch {
           const body: IrStmt[] = [];
           const symbol = symbolMemberKey(lowerer, info, name, loc);
           if (symbol || (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:"))) {
-            const prototypeMethod = lowerer.prototypeMethodAccesses.has(name);
-            if (prototypeMethod) classPrototypeData(lowerer, info, loc, receiver);
+            const prototypeMethod = observedPrototypeMethod(lowerer, info, name, loc, receiver);
             // Selecting the method must not give the object own storage.
             const bag = this.readPropertyBag(lowerer, receiver, loc);
             const key: IrExpr = symbol ?? { kind: "strLit", value: name, type: STRING, loc };

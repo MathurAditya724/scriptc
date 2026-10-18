@@ -1,7 +1,17 @@
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { locOf } from "../../program.js";
-import { F64, type IrExpr, type IrLibFn, STRING } from "../../../ir/ir.js";
+import {
+  BOOL,
+  F64,
+  type IrExpr,
+  type IrLibFn,
+  type IrStmt,
+  type IrType,
+  NULL_T,
+  STRING,
+  typeKey,
+} from "../../../ir/ir.js";
 
 const DATE_GETTER_FNS: Readonly<Record<string, IrLibFn>> = {
   getFullYear: "date.getFullYear",
@@ -24,7 +34,7 @@ const DATE_GETTER_FNS: Readonly<Record<string, IrLibFn>> = {
 };
 
 const DATE_METHOD_HINT =
-  "getTime(), valueOf(), toISOString(), the local/UTC calendar getters, and getTimezoneOffset() are supported; Date setters and locale/string formatters have no lowering";
+  "getTime(), valueOf(), toISOString(), toJSON(), the local/UTC calendar getters, and getTimezoneOffset() are supported; Date setters and locale/string formatters have no lowering";
 
 /** The Date slice: statics plus read-only Date values backed by one
  * TimeClip'd millisecond scalar. Construction lives in lowerNew;
@@ -80,6 +90,7 @@ export function lowerDateCall(
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "date") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
+  if (name === "toJSON") return lowerDateToJson(lowerer, call, access);
   if (call.arguments.length !== 0) {
     lowerer.noLowering(`Date.prototype.${name} with arguments`, call, DATE_METHOD_HINT);
   }
@@ -111,5 +122,79 @@ export function lowerDateCall(
     call,
     DATE_METHOD_HINT,
     lowerer.checker.getSymbolAtLocation(access.name),
+  );
+}
+
+/** `d.toJSON(key?)`: Node answers null for an invalid date and the
+ * `toISOString()` string otherwise, as `string | null` (the lib types say
+ * `string`). The argument is evaluated and ignored, as the built-in does. */
+function lowerDateToJson(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr {
+  const loc = locOf(call);
+  if (call.arguments.length > 1 || call.arguments.some((a) => ts.isSpreadElement(a)))
+    lowerer.noLowering(`Date.prototype.toJSON with ${call.arguments.length} arguments`, call);
+  const raw = lowerer.lowerExpr(access.expression);
+  const receiver: IrExpr =
+    raw.type.kind === "dyn"
+      ? { kind: "libCall", fn: "date.checkedValue", args: [raw], type: { kind: "date" }, loc }
+      : raw;
+  if (receiver.type.kind !== "date")
+    lowerer.badType(access.expression, lowerer.typeOf(access.expression));
+  const date = lowerer.declareHiddenLocal("%date", receiver.type);
+  const stmts: IrStmt[] = [{ kind: "varDecl", localId: date.id, init: receiver, loc }];
+  const key = call.arguments[0];
+  if (key) stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(key), loc });
+  const value: IrExpr = { kind: "varRef", localId: date.id, type: receiver.type, loc };
+  const time: IrExpr = { kind: "libCall", fn: "date.getTime", args: [value], type: F64, loc };
+  const type = dateJsonType(lowerer);
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: {
+      kind: "ternary",
+      // An invalid date's time value is NaN, the one value unequal to itself.
+      cond: { kind: "bin", op: "!==", left: time, right: time, type: BOOL, loc },
+      then: lowerer.coerceToExpected({ kind: "unitLit", unit: "null", type: NULL_T, loc }, type),
+      else_: lowerer.coerceToExpected(
+        { kind: "libCall", fn: "date.toISOStringValue", args: [value], type: STRING, loc },
+        type,
+      ),
+      type,
+      loc,
+    },
+    type,
+    loc,
+  };
+}
+
+/** `string | null`, the type of a Date's `toJSON()` result. */
+export function dateJsonType(lowerer: Lowerer): IrType {
+  const arms = [STRING, NULL_T].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  return { kind: "union", unionId: lowerer.unions.intern(arms) };
+}
+
+/** A Date `toJSON()` call, or a binding initialized by one
+ * (Lowerer.dateJsonBindings): its value can be null where the lib types
+ * say string. */
+export function isDateJsonSource(lowerer: Lowerer, node: ts.Node): boolean {
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (ts.isIdentifier(node)) {
+    const symbol =
+      node.parent && ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node
+        ? lowerer.checker.getShorthandAssignmentValueSymbol(node.parent)
+        : lowerer.checker.getSymbolAtLocation(node);
+    return symbol !== undefined && lowerer.dateJsonBindings.has(symbol);
+  }
+  if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return false;
+  const access = node.expression;
+  return (
+    access.name.text === "toJSON" &&
+    !node.questionDotToken &&
+    !access.questionDotToken &&
+    lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind === "date" &&
+    lowerer.isStdlibMember(access)
   );
 }

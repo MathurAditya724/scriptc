@@ -23,6 +23,8 @@
 ScrStr *scr_insp_f64(double x);   /* JS ToString, except -0 → "-0" */
 ScrStr *scr_insp_str(ScrStr *s);  /* the quoting ladder + line splitting */
 ScrStr *scr_insp_regex(ScrRegex *re);  /* /source/flags */
+/* A Date (its time value): toISOString(), or "Invalid Date" for NaN (+1). */
+ScrStr *scr_insp_date(double ms);
 ScrStr *scr_insp_buffer(ScrBytes *b);  /* <Buffer aa bb ...>, 50-byte cap */
 /* The stackless error form: [Name: message] / [Name], plus the stamped
  * code slot as its one extra property ({ code: 'X' }); [Name] beyond
@@ -32,9 +34,16 @@ ScrStr *scr_insp_error(ScrError *e, double recurse, double depth);
  * traversal is here. dyn-boxed bytes render in the checked-dynamic tree's documented
  * Uint8Array identity. */
 ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth);
+/* A numeric typed array that is not a Buffer: `Uint8Array(n) [ ... ]`,
+ * `[Uint8Array]` past the depth limit. Borrows b; +1. */
+ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth);
 /* format's %s / rest-args twin: dyn strings pass verbatim. */
 ScrStr *scr_insp_dyn_s(ScrDyn *d, double depth);
 void scr_insp_begin(double recurse);
+/* util.inspect's breakLength, compact (0 for false) and sorted for the
+ * renders that follow; the call site restores the defaults (80, 3, false)
+ * afterwards. */
+void scr_insp_layout(double break_length, double compact, bool sorted);
 void scr_insp_entry(ScrStr *s, bool is_num);
 /* Circular references, Node-exact (<ref *N> / [Circular *N]): the
  * compiler-emitted helpers over CYCLE-CAPABLE composites call circ_check
