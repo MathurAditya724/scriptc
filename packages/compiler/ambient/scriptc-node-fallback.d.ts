@@ -3325,6 +3325,11 @@ declare module "node:test" {
   interface TestContext {
     readonly name: string;
     readonly fullName: string;
+    readonly filePath: string | undefined;
+    readonly attempt: number;
+    readonly passed: boolean;
+    readonly workerId: number | undefined;
+    readonly tags: readonly string[];
     readonly assert: TestContextAssert;
     readonly mock: MockTracker;
     test(name: string, fn?: TestFn): Promise<void>;

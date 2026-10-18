@@ -122,6 +122,7 @@ struct ScrTestCtx {
   ScrPromise *done;    /* owned; settles when a concurrent subtest finishes */
   ScrPromise *slot;    /* owned; the parent waiting for its next subtest to finish */
   struct ScrMockTimers *mock_timers; /* t.mock.timers, made on first use; freed at exit */
+  bool passed; /* t.passed: set when the body passes, as Node's pass() does */
 };
 
 static SCR_TL ScrTestCtx *scr_test_root = NULL;
@@ -586,6 +587,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
   if (t->mode == SCR_TEST_SKIP) {
     t->dur_ms = scr_now_ms() - start;
     t->state = SCR_TS_SKIPPED;
+    t->passed = true;
     scr_test_report_result(t);
     return;
   }
@@ -664,6 +666,8 @@ static void scr_test_run_node(ScrTestCtx *t) {
     t->err = scr_exc_take();
     failed = true;
   }
+  /* Node's pass()/fail(): afterEach hooks already see the outcome. */
+  t->passed = !failed;
   scr_test_run_each_hooks(t, SCR_HOOK_AFTER_EACH, false);
   if (scr_exc_pending()) {
     if (!failed && !t->err) {
@@ -686,6 +690,10 @@ static void scr_test_run_node(ScrTestCtx *t) {
   /* Then t.mock is reset: its mocks are restored and its timers reset. */
   scr_test_mocks_restore(&t->mocks, true);
   scr_mt_reset(t->mock_timers);
+  /* Its t.before/t.after/t.beforeEach/t.afterEach hooks have all run, and
+   * nothing runs them again: dropping them releases closures that capture
+   * the context, which would otherwise keep it alive in a cycle. */
+  for (int k = 0; k < 4; k++) scr_test_hooks_free(&t->hooks[k]);
   scr_test_parent_set(prev_parent);
   t->dur_ms = scr_now_ms() - start;
   if (t->mode == SCR_TEST_SKIP) {
@@ -2160,6 +2168,19 @@ ScrStr *scr_test_ctx_name(ScrTestCtx *t) {
 
 /* t.fullName: the names from the outermost suite or test down to this one,
  * joined with " > ". */
+bool scr_test_ctx_passed(ScrTestCtx *t) { return t->passed; }
+
+/* t.workerId: Number(process.env.NODE_TEST_WORKER_ID) || undefined, with 0
+ * standing for undefined. */
+double scr_test_worker_id(void) {
+  const char *env = getenv("NODE_TEST_WORKER_ID");
+  if (!env) return 0;
+  ScrStr *s = scr_str_new(env, strlen(env));
+  double n = scr_string_to_number(s);
+  scr_str_release(s);
+  return isnan(n) ? 0 : n;
+}
+
 ScrStr *scr_test_ctx_full_name(ScrTestCtx *t) {
   const ScrTestCtx *chain[64];
   int n = 0;

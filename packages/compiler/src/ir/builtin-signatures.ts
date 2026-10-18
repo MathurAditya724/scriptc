@@ -1454,6 +1454,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "test.ctxDiagnostic": { argTypes: [TESTCTX_T, STRING], result: VOID },
   "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
   "test.ctxFullName": { argTypes: [TESTCTX_T], result: STRING },
+  // t.passed, and t.workerId's Number(NODE_TEST_WORKER_ID) with 0 for
+  // undefined.
+  "test.ctxPassed": { argTypes: [TESTCTX_T], result: BOOL },
+  "test.workerId": { argTypes: [], result: F64 },
   // t.before/t.after/t.beforeEach/t.afterEach (which: 0 before, 1 after,
   // 2 beforeEach, 3 afterEach); a throwing t.before is captured on the test.
   "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
