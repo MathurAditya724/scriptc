@@ -3207,7 +3207,9 @@ export function isStdlibSymbol(lowerer: Lowerer, symbol: ts.Symbol | undefined):
  *     `global.process`) — `declare var` globals ARE properties of
  *     `typeof globalThis`, same symbol either way;
  *   - a local alias binding (`const process = globalThis.process`, the
- *     tamper-guard prologue) registered in stdlibGlobalAliases. */
+ *     tamper-guard prologue) registered in stdlibGlobalAliases;
+ *   - a const binding of the Map or Set constructor (`const M = Map`,
+ *     builtinClassAliasOf). */
 export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): string | null {
   if (ts.isParenthesizedExpression(expr)) return stdlibGlobalNameOf(lowerer, expr.expression);
   if (ts.isIdentifier(expr)) {
@@ -3225,6 +3227,8 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     if (!symbol) return null;
     const alias = lowerer.stdlibGlobalAliases.get(symbol);
     if (alias !== undefined) return alias;
+    const classAlias = lowerer.builtinClassAliasOf(symbol);
+    if (classAlias?.kind === "collection") return classAlias.which;
     const decl = lowerer.checker.declarationsOf(symbol)[0];
     if (decl !== undefined && ts.isImportClause(decl) && decl.name !== undefined) {
       const importDecl = decl.parent;
