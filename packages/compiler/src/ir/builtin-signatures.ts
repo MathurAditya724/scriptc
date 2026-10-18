@@ -4187,13 +4187,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "date.getUTCMilliseconds": { argTypes: [DATE_T], result: F64 },
   "date.getTimezoneOffset": { argTypes: [DATE_T], result: F64 },
   /** The composed `new Date(dateString).getTime()` read: one borrowed
-   * string, f64 milliseconds since epoch. The parsed grammar is BOUNDED
-   * (documented divergence — V8's parser accepts far more): the ASN.1
-   * validity shape X509Certificate.validFrom/validTo answer ("Jul  1
-   * 00:00:00 2026 GMT" — the portless cert-expiry read), and ECMA's own
-   * date-time string format (YYYY-MM-DD[THH:mm[:ss[.sss]]][Z|±HH:MM] —
-   * date-only forms are UTC, exactly the spec). Anything else is NaN,
-   * Node's invalid-date getTime. Never throws. */
+   * string, f64 milliseconds since epoch, with V8's date-string grammar
+   * (the ES5 format, then the legacy forms: RFC 1123/2822, Date#toString,
+   * "Jan 2, 2024", ...). Zone-less dates are local time; anything V8
+   * rejects is NaN, Node's invalid-date getTime. Never throws. */
   "date.parseGetTime": { argTypes: [STRING], result: F64 },
   /** `Date.UTC(...)` — seven f64 arguments (the frontend completes the
    * spec's defaults for omitted trailing parts: month 0, date 1, time

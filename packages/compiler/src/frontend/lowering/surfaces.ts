@@ -2170,7 +2170,7 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     kind: "stdlib",
     name: "Date.parse",
     fns: ["date.parse"],
-    note: "one date string, using the bounded parser shared with new Date(dateString).getTime()",
+    note: "one date string, using V8's date parser shared with new Date(dateString)",
   },
   {
     id: "stdlib.date.constructor",

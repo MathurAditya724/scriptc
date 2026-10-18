@@ -101,8 +101,9 @@ double scr_date_get_time(double ms);
  * 0–9999). THROWS Node's "Invalid time value" RangeError on NaN or
  * |ms| > 8.64e15 and returns NULL; +1 otherwise. */
 ScrStr *scr_date_to_iso(double ms);
-/* new Date(dateString).getTime(): the BOUNDED parse (the X509 validity
- * shape + ECMA's format with an explicit offset); NaN elsewhere. */
+/* new Date(dateString).getTime() and Date.parse: V8's date parser (the
+ * ES5 format, then its legacy grammar: RFC 1123/2822, Date#toString,
+ * "Jan 2, 2024", ...). Zone-less dates are local time. Never throws. */
 double scr_date_parse_get_time(ScrStr *s);
 /* Date.UTC over already-number arguments (frontend completes the spec's
  * defaults): MakeDay/MakeTime/TimeClip exactly — 0–99 maps to 1900+year,

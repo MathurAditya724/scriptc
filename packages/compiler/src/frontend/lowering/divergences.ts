@@ -14,7 +14,6 @@ import * as ts from "../ts7/adapter.js";
 import { locOf } from "../program.js";
 import { isNodeModulesPath } from "../resolve.js";
 import {
-  dateLiteralDivergenceDiag,
   keyOrderDivergenceDiag,
   localeCompareDivergenceDiag,
   unrelatedClassCastDivergenceDiag,
@@ -56,7 +55,6 @@ export function scanDivergences(
   const literals: ts.ObjectLiteralExpression[] = [];
   const observers: ts.Expression[] = [];
   const casts: (ts.AsExpression | ts.TypeAssertion)[] = [];
-  const dates: { call: ts.CallExpression | ts.NewExpression; arg: ts.Expression }[] = [];
   const localeCompares: ts.CallExpression[] = [];
   /** binding name → member names assigned through it (`q.a = 2`). */
   const assignedMembers = new Map<string, Set<string>>();
@@ -97,18 +95,8 @@ export function scanDivergences(
               member === "dir")
           ) {
             for (const a of node.arguments) if (!isLiteralLike(a)) observers.push(a);
-          } else if (recv.text === "Date" && member === "parse") {
-            if (node.arguments[0] !== undefined) dates.push({ call: node, arg: node.arguments[0] });
           }
         }
-      }
-    } else if (ts.isNewExpression(node)) {
-      if (
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === "Date" &&
-        node.arguments?.length === 1
-      ) {
-        dates.push({ call: node, arg: node.arguments[0]! });
       }
     } else if (ts.isForInStatement(node)) {
       observers.push(node.expression);
@@ -397,53 +385,7 @@ export function scanDivergences(
     }
   }
 
-  // ── Date strings the native parser does not accept ────────────────
-  for (const { call, arg } of dates) {
-    const callee = ts.isNewExpression(call)
-      ? call.expression
-      : ts.isPropertyAccessExpression(call.expression)
-        ? call.expression.expression
-        : undefined;
-    if (callee === undefined || !lowerer.isStdlibGlobal(callee, "Date")) continue;
-    for (const literal of dateStringLiterals(checker, arg)) {
-      const text = stringLiteralText(literal)!;
-      if (nativeDateParses(text) || !/\d/.test(text)) continue;
-      out.push(dateLiteralDivergenceDiag(text, locOf(literal)));
-    }
-  }
-
   return out;
-}
-
-/** The string literals a Date argument can be: the literal itself, or
- * each element of a const array of literals a for-of binding iterates. */
-function dateStringLiterals(checker: ts.TypeChecker, arg: ts.Expression): ts.Expression[] {
-  if (stringLiteralText(arg) !== null) return [arg];
-  if (!ts.isIdentifier(arg)) return [];
-  const symbol = safely(() => checker.getSymbolAtLocation(arg));
-  const decl = symbol === undefined ? undefined : checker.valueDeclarationOf(symbol);
-  const list = decl?.parent;
-  const loop = list?.parent;
-  if (
-    decl === undefined ||
-    !ts.isVariableDeclaration(decl) ||
-    list === undefined ||
-    loop === undefined ||
-    !ts.isForOfStatement(loop) ||
-    loop.initializer !== list
-  )
-    return [];
-  let iterated: ts.Expression = loop.expression;
-  if (ts.isIdentifier(iterated)) {
-    const source = safely(() => checker.getSymbolAtLocation(iterated));
-    const init = source === undefined ? undefined : checker.valueDeclarationOf(source);
-    if (init === undefined || !ts.isVariableDeclaration(init) || init.initializer === undefined)
-      return [];
-    if (init.parent === undefined || (init.parent.flags & ts.NodeFlags.Const) === 0) return [];
-    iterated = init.initializer;
-  }
-  if (!ts.isArrayLiteralExpression(iterated)) return [];
-  return iterated.elements.filter((e) => stringLiteralText(e) !== null);
 }
 
 /** A checker query that fails here only loses a warning. */
@@ -856,21 +798,4 @@ function classExtends(
 
 function className(decl: ts.ClassLikeDeclaration): string {
   return decl.name?.text ?? "(anonymous class)";
-}
-
-const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-
-/** The date-string grammar the native runtime accepts (scr_lib.c
- * scr_date_parse_get_time): ECMAScript's date-time format with an explicit
- * offset (date-only forms are UTC) and the certificate-time shape
- * "Mon DD HH:MM:SS YYYY GMT". Everything else parses to NaN natively. */
-export function nativeDateParses(text: string): boolean {
-  const iso =
-    /^(?:[+-]\d{6}|\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/.test(text) ||
-    /^(?:[+-]\d{6}|\d{4})-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{3})?)?(?:Z|[+-]\d{2}:\d{2})$/.test(
-      text,
-    );
-  if (iso) return true;
-  const cert = /^([A-Za-z]{3}) {1,2}\d{1,2} \d{2}:\d{2}:\d{2} \d{4} GMT$/.exec(text);
-  return cert !== null && MONTHS.includes(cert[1]!.toLowerCase());
 }

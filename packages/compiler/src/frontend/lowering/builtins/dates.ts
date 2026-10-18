@@ -52,9 +52,8 @@ export function lowerDateCall(
     }
     return { kind: "libCall", fn: "date.now", args: [], type: F64, loc };
   }
-  // Date.parse uses the same bounded date-string parser as
-  // new Date(dateString).getTime(); keep their NaN and TimeClip behavior
-  // identical for the ISO timestamps used by CLI applications.
+  // Date.parse uses the same date-string parser as new Date(dateString)
+  // (V8's grammar in the runtime), so their NaN and TimeClip behavior agree.
   if (lowerer.stdlibGlobalMember(access, "Date") === "parse") {
     if (call.arguments.length !== 1 || ts.isSpreadElement(call.arguments[0]!)) {
       lowerer.noLowering(`Date.parse with ${call.arguments.length} arguments`, call);
