@@ -7194,23 +7194,8 @@ export class Lowerer {
     }
     this.runtimeFences.push(...captured);
 
-    const first = captured[0];
+    const fence = this.runtimeFenceStmt(captured[0], node, target.fallback, target.bareMessage);
     const loc = locOf(node);
-    const code = first?.code ?? target.fallback!.code;
-    const baseMessage = first?.message ?? target.fallback!.message;
-    const messageLoc = first?.loc ?? loc;
-    const source = first
-      ? (this.program.getSourceFile(messageLoc.file) ?? node.getSourceFile())
-      : node.getSourceFile();
-    const pos = ts.getLineAndCharacterOfPosition(source, messageLoc.start);
-    const fence: IrStmt = {
-      kind: "runtimeFence",
-      code,
-      message: target.bareMessage
-        ? baseMessage
-        : `${baseMessage} [${code} at ${messageLoc.file}:${pos.line + 1}]`,
-      loc,
-    };
     if (target.kind === "statement") return fence;
 
     const params = target.params ?? [];
@@ -7236,6 +7221,54 @@ export class Lowerer {
     fn.captures = [];
     this.liftedFns.push(fn);
     return { kind: "closure", fnName: fn.name, captures: [], type: target.type, loc };
+  }
+
+  /** The runtimeFence statement that throws `first`'s message (or the
+   * fallback's) at `node`. */
+  private runtimeFenceStmt(
+    first: ScrDiagnostic | undefined,
+    node: ts.Node,
+    fallback: { code: string; message: string } | undefined,
+    bareMessage = false,
+  ): IrStmt & { kind: "runtimeFence" } {
+    const loc = locOf(node);
+    const code = first?.code ?? fallback?.code ?? "SC1090";
+    const baseMessage =
+      first?.message ??
+      fallback?.message ??
+      "this statement uses a construct with no static lowering";
+    const messageLoc = first?.loc ?? loc;
+    const source = first
+      ? (this.program.getSourceFile(messageLoc.file) ?? node.getSourceFile())
+      : node.getSourceFile();
+    const pos = ts.getLineAndCharacterOfPosition(source, messageLoc.start);
+    return {
+      kind: "runtimeFence",
+      code,
+      message: bareMessage
+        ? baseMessage
+        : `${baseMessage} [${code} at ${messageLoc.file}:${pos.line + 1}]`,
+      loc,
+    };
+  }
+
+  /** The current length of the capture buffer (diagSink), or 0 without one:
+   * the mark capturedRuntimeFence reads the refusal from. */
+  diagSinkMark(): number {
+    return this.diagSink?.length ?? 0;
+  }
+
+  /** The runtimeFence for a JavaScript statement refused while a capture
+   * buffer (diagSink) is active. The buffer's owner decides whether its
+   * diagnostics report, and some owners keep the lowered result (a
+   * successful tryLowerExpression candidate, a computed class base whose
+   * diagnostics defer to the class). Without a fence the refused statement
+   * would vanish from that result; with one it throws the refusal when it
+   * runs, exactly like the fence lowerStmts emits outside a buffer. The
+   * diagnostics stay in the buffer for its owner. Null without a buffer. */
+  capturedRuntimeFence(sinkMark: number, node: ts.Node): IrStmt | null {
+    if (this.diagSink === null) return null;
+    return this.runtimeFenceStmt(this.diagSink[sinkMark], node, undefined);
   }
 
   /** All diagnostics land here; while a generic instance body is lowering,
