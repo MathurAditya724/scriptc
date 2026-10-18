@@ -221,6 +221,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * first seven values pass through ToNumber in order (later ones are
    * evaluated, never converted), then the local-time field constructor. */
   "date.nativeNewFields": { argTypes: [DYN], result: DYN },
+  /** `new Date(value)` in JavaScript: a string argument parses with V8's
+   * full date parser; every other value constructs as date.nativeNew. */
+  "date.nativeNewValue": { argTypes: [DYN], result: DYN },
   "date.checkedValue": { argTypes: [DYN], result: DATE_T },
   "dyn.nativeRegexIs": { argTypes: [DYN], result: BOOL },
   /** toString() on a checked-dynamic receiver: runtime kind dispatch

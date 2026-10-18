@@ -9011,7 +9011,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       if (isJsSourceFile(expr.getSourceFile())) {
         return {
           kind: "libCall",
-          fn: "date.nativeNew",
+          // One argument: a string parses with the full date parser.
+          fn: args.length === 1 ? "date.nativeNewValue" : "date.nativeNew",
           args: [
             {
               kind: "dynArrLit",

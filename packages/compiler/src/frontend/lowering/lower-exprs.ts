@@ -5060,6 +5060,13 @@ export function lowerIntrinsicProperty(
     return { kind: "dynFrom", value, fnName: "ownKeys", type: DYN, loc: locOf(expr) };
   }
   if (lowerer.chainBlocked(expr)) return null;
+  // Object.prototype.constructor: the Object constructor value.
+  if (
+    expr.name.text === "constructor" &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    lowerer.stdlibGlobalMember(expr.expression, "Object") === "prototype"
+  )
+    return builtinGlobalValue("Object", locOf(expr));
   const builtinPrototype = builtinPrototypeMethod(lowerer, expr);
   if (builtinPrototype)
     return {

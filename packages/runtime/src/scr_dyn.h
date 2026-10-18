@@ -601,6 +601,8 @@ bool scr_dyn_native_search_params_is(const ScrDyn *value);
 bool scr_dyn_native_date_is(const ScrDyn *value);
 ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments);
 ScrDyn *scr_dyn_native_date_new_fields(const ScrDyn *arguments);
+ScrDyn *scr_dyn_native_date_new_value(const ScrDyn *arguments);
+ScrStr *scr_dyn_object_tag_of(const ScrDyn *d);
 ScrDyn *scr_dyn_native_date_from_ms(double ms);
 double scr_dyn_native_date_value(const ScrDyn *value);
 ScrDyn *scr_dyn_native_regex(ScrRegex *value);
@@ -658,9 +660,13 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
 /* A builtin global function (setTimeout, setImmediate, process.nextTick, ...)
  * as an interned dynamic function value: +1. */
 ScrDyn *scr_dyn_builtin_function(const ScrStr *name);
-/* Object.prototype's valueOf/toString/hasOwnProperty/propertyIsEnumerable as
- * interned function values (+1), or NULL for other names. */
-ScrDyn *scr_dyn_object_proto_method(const char *name);
+/* A constant-key read of an Object.prototype member name: takes the
+ * ordinary read's +1 result and answers the inherited member in place of
+ * an undefined one (scr_dyn_invoke.c). */
+ScrDyn *scr_dyn_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read);
+/* The member `key` read on Object.prototype itself, or NULL for any other
+ * receiver (scr_dyn_invoke.c). */
+ScrDyn *scr_dyn_object_prototype_member(const ScrDyn *d, const ScrStr *key);
 bool scr_dyn_arr_has_index(const ScrDyn *arr, size_t index);
 void scr_dyn_arr_push_hole(ScrDyn *arr);
 ScrDyn *scr_dyn_new_obj(void);

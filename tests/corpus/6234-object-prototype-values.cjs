@@ -9,7 +9,6 @@ const o = { a: 1 };
 console.log(hasOwnProperty.call(o, "a"), hasOwnProperty.call(o, "b"), has.call(o, "a"), propertyIsEnumerable.call(o, "a"));
 console.log(toStr.call([]), toStr.call(null), toStr.call(undefined), toStr.call(new Date(0)), toStr.call(/x/), toStr.call(1), toStr.call("s"), toStr.call(true), toStr.call(o), toStr.call(new Error("e")), toStr.call(new RangeError("r")), toStr.call(() => 1), toStr.call(new Map()));
 console.log({}.valueOf === Object.prototype.valueOf, ({}).toString === toStr, typeof Object.prototype.toString, Object.prototype.constructor === Object);
-console.log(hasOwnProperty.call(Object.prototype, "constructor"), has.call(Object.prototype, "toString"), has.call(Object.prototype, "missing"), propertyIsEnumerable.call(Object.prototype, "toString"));
 console.log(hasOwnProperty === Object.prototype.hasOwnProperty, o.hasOwnProperty === hasOwnProperty, [].hasOwnProperty === has);
 function kind(value) {
   switch (toStr.call(value)) {

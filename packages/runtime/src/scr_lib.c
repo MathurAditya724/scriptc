@@ -10299,8 +10299,9 @@ ScrStr *scr_date_to_iso(double ms) {
 /* ── new Date(dateString).getTime() ──────────────────────────────────────
  *
  * The BOUNDED date-string parse, the fast path: two grammars answer a time
- * value directly; a string they reject falls back to V8's full parser
- * (scr_date_parse_v8 below), which also answers everything they accept.
+ * value directly; scr_date_parse falls back to V8's full parser
+ * (scr_date_parse_v8 below), which also answers everything they accept,
+ * for the strings they reject.
  *
  *   1. The ASN1_TIME_print shape X509Certificate.validFrom/validTo answer
  *      ("Jul  1 00:00:00 2026 GMT", "Jul 17 17:52:11 2026 GMT") — the
@@ -10351,9 +10352,7 @@ static bool scr_date_digits(const char **p, const char *end, int n, int *out) {
   return true;
 }
 
-static double scr_date_parse_v8(ScrStr *s);
-
-static double scr_date_parse_bounded(ScrStr *s) {
+double scr_date_parse_get_time(ScrStr *s) {
   const char *p = s->data;
   const char *end = s->data + s->len;
   static const char *mon[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -10446,10 +10445,13 @@ static double scr_date_parse_bounded(ScrStr *s) {
   }
 }
 
-/* The bounded grammars answer first; only a string they reject reaches
- * V8's full parser, so the timestamps they accept cost nothing more. */
-double scr_date_parse_get_time(ScrStr *s) {
-  double t = scr_date_parse_bounded(s);
+static double scr_date_parse_v8(ScrStr *s);
+
+/* Date.parse and new Date(string): the bounded grammars answer first; only
+ * a string they reject reaches V8's full parser, so the timestamps they
+ * accept cost nothing more. */
+double scr_date_parse(ScrStr *s) {
+  double t = scr_date_parse_get_time(s);
   return isnan(t) ? scr_date_parse_v8(s) : t;
 }
 
@@ -10690,10 +10692,11 @@ static bool scr_date_offset_at(double ms, double *out) {
   return true;
 }
 
+static volatile const double scr_date_day_ms = 86400000.0;
+
 static double scr_date_local_to_utc(double t) {
-  double before, after, at_first, at_second;
-  if (!scr_date_offset_at(t - 86400000.0, &before) ||
-      !scr_date_offset_at(t + 86400000.0, &after)) {
+  double before, after, at_first, at_second, day = scr_date_day_ms;
+  if (!scr_date_offset_at(t - day, &before) || !scr_date_offset_at(t + day, &after)) {
     return NAN;
   }
   double first = t - before;
@@ -10716,10 +10719,7 @@ static double scr_date_local_to_utc(double t) {
 /* V8's MakeDay (date.cc): bounds the UNtruncated year and month, then
  * truncates (FastD2I) and normalizes the month into the year. */
 static double scr_date_v8_make_day(double year, double month, double date) {
-  if (!(year >= -1000000.0 && year <= 1000000.0 && month >= -10000000.0 &&
-        month <= 10000000.0 && isfinite(date))) {
-    return NAN;
-  }
+  if (!(fabs(year) <= 1000000.0 && fabs(month) <= 10000000.0 && isfinite(date))) return NAN;
   int y = (int)year, m = (int)month;
   y += m / 12;
   m %= 12;
@@ -10744,12 +10744,18 @@ static double scr_date_v8_make_time(double h, double m, double s, double ms) {
   return trunc(h) * 3600000.0 + trunc(m) * 60000.0 + trunc(s) * 1000.0 + trunc(ms);
 }
 
+/* V8's bound on a local time value before UTC(t): TimeClip's range plus
+ * ten days. Read from memory so the value stays in its own section instead
+ * of this unit's shared constant pool, which every program linking the
+ * unit carries. */
+static volatile const double scr_date_local_limit = 8640000864000000.0;
+
 /* MakeDate over local fields, then UTC(t) and TimeClip. V8 refuses a local
  * time value more than ten days past TimeClip's range before converting. */
 static double scr_date_from_local(double day, double time) {
   if (!isfinite(day) || !isfinite(time)) return NAN;
   double t = time + day * 86400000.0;
-  if (!(t >= -8640000864000000.0 && t <= 8640000864000000.0)) return NAN;
+  if (!(fabs(t) <= scr_date_local_limit)) return NAN;
   return scr_date_new_ms(scr_date_local_to_utc(trunc(t)));
 }
 
@@ -10768,7 +10774,7 @@ double scr_date_new_local(double y, double mo, double d,
 }
 
 /* ── V8's date-string parser, the fallback ─────────────────────────────
- * scr_date_parse_get_time answers its bounded grammars directly and asks
+ * scr_date_parse answers the bounded grammars directly and asks
  * this parser only when they produce NaN. It follows V8's DateParser
  * (dateparser.cc, dateparser-inl.h) step for step: the ES5 date-time
  * format first, then the Safari-compatible legacy grammar for whatever
@@ -10862,7 +10868,10 @@ static const struct {
 };
 
 static ScrDateTok scr_date_scan_token(ScrDateScan *in) {
-  ScrDateTok t = {SCR_DT_UNKNOWN, 1, -1};
+  ScrDateTok t;
+  t.tag = SCR_DT_UNKNOWN;
+  t.length = 1;
+  t.value = -1;
   uint32_t c = in->ch;
   if (c == 0) {
     t.tag = SCR_DT_END;
@@ -10894,7 +10903,8 @@ static ScrDateTok scr_date_scan_token(ScrDateScan *in) {
     return t;
   }
   if (c >= 'A' && !scr_date_is_space(c)) {
-    uint32_t prefix[3] = {0, 0, 0};
+    uint32_t prefix[3];
+    prefix[0] = prefix[1] = prefix[2] = 0;
     int length = 0;
     while (in->ch >= 'A' && !scr_date_is_space(in->ch)) {
       if (length < 3) prefix[length] = in->ch | 0x20;
@@ -11017,13 +11027,9 @@ static int scr_date_millis(ScrDateTok t) {
   if (length == 1) number *= 100;
   else if (length == 2) number *= 10;
   else if (length > 3) {
+    static const int factors[] = {10, 100, 1000, 10000, 100000, 1000000};
     if (length > 9) length = 9;
-    int factor = 1;
-    do {
-      factor *= 10;
-      length--;
-    } while (length > 3);
-    number /= factor;
+    number /= factors[length - 4];
   }
   return number;
 }
@@ -11033,7 +11039,10 @@ static int scr_date_millis(ScrDateTok t) {
  * INVALID for a malformed ES5 time part. */
 static ScrDateTok scr_date_parse_es5(ScrDateScan *in, ScrDateDay *day, ScrDateTime *time,
                                      ScrDateZone *tz) {
-  ScrDateTok invalid = {SCR_DT_INVALID, 0, -1};
+  ScrDateTok invalid;
+  invalid.tag = SCR_DT_INVALID;
+  invalid.length = 0;
+  invalid.value = -1;
   if (scr_date_tok_sign(in->next)) {
     ScrDateTok sign = scr_date_next(in);
     if (!scr_date_tok_fixed(in->next, 6)) return sign;
@@ -11110,7 +11119,10 @@ static ScrDateTok scr_date_parse_es5(ScrDateScan *in, ScrDateDay *day, ScrDateTi
   /* Date-only forms without a zone are UTC; date-times are local. */
   if (tz->hour == SCR_DT_NONE && time->index == 0) scr_date_zone_set(tz, 0);
   day->iso = true;
-  ScrDateTok end = {SCR_DT_END, 0, -1};
+  ScrDateTok end;
+  end.tag = SCR_DT_END;
+  end.length = 0;
+  end.value = -1;
   return end;
 }
 
@@ -11170,26 +11182,41 @@ static bool scr_date_time_write(ScrDateTime *t, double out[4]) {
   return true;
 }
 
-static bool scr_date_zone_write(ScrDateZone *z, double *offset_seconds) {
+static bool scr_date_zone_write(ScrDateZone *z, double *offset_ms) {
   if (z->sign == SCR_DT_NONE) {
-    *offset_seconds = NAN;
+    *offset_ms = NAN;
     return true;
   }
   if (z->hour == SCR_DT_NONE) z->hour = 0;
   if (z->minute == SCR_DT_NONE) z->minute = 0;
   unsigned total = (unsigned)z->hour * 3600u + (unsigned)z->minute * 60u;
   if (total > (unsigned)INT_MAX) return false;
-  *offset_seconds = z->sign < 0 ? -(double)total : (double)total;
+  long long ms = (long long)total * 1000;
+  *offset_ms = (double)(z->sign < 0 ? -ms : ms);
   return true;
 }
 
 static double scr_date_parse_v8(ScrStr *s) {
-  ScrDateScan in = {(const unsigned char *)s->data, (const unsigned char *)s->data + s->len, 0, 0, {0, 0, 0}};
+  /* Field-by-field initialization keeps vector constants out of the
+   * unit's shared constant pool (see scr_date_local_limit). */
+  ScrDateScan in;
+  in.p = (const unsigned char *)s->data;
+  in.end = in.p + s->len;
+  in.ch = 0;
+  in.low = 0;
   scr_date_scan_advance(&in);
   in.next = scr_date_scan_token(&in);
-  ScrDateDay day = {{0, 0, 0}, 0, SCR_DT_NONE, false};
-  ScrDateTime time = {{0, 0, 0, 0}, 0, SCR_DT_NONE};
-  ScrDateZone tz = {SCR_DT_NONE, SCR_DT_NONE, SCR_DT_NONE};
+  ScrDateDay day;
+  day.index = 0;
+  day.named_month = SCR_DT_NONE;
+  day.iso = false;
+  ScrDateTime time;
+  time.index = 0;
+  time.hour_offset = SCR_DT_NONE;
+  ScrDateZone tz;
+  tz.sign = SCR_DT_NONE;
+  tz.hour = SCR_DT_NONE;
+  tz.minute = SCR_DT_NONE;
   ScrDateTok token = scr_date_parse_es5(&in, &day, &time, &tz);
   if (token.tag == SCR_DT_INVALID) return NAN;
   bool has_read_number = day.index != 0;
@@ -11277,8 +11304,8 @@ static double scr_date_parse_v8(ScrStr *s) {
   double timev = scr_date_v8_make_time(hms[0], hms[1], hms[2], hms[3]);
   if (isnan(offset)) return scr_date_from_local(dayv, timev);
   if (!isfinite(dayv) || !isfinite(timev)) return NAN;
-  double t = timev + dayv * 86400000.0 - offset * 1000.0;
-  if (!(t >= -8640000000000000.0 && t <= 8640000000000000.0)) return NAN;
+  double t = timev + dayv * 86400000.0 - offset;
+  if (!(fabs(t) <= 8640000000000000.0)) return NAN;
   return scr_date_new_ms(t);
 }
 
@@ -11610,11 +11637,21 @@ ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments) {
   return scr_dyn_native_date_from_ms(ms);
 }
 
+/* new Date(value) in JavaScript: a string parses with the full parser;
+ * every other value takes scr_dyn_native_date_new. */
+ScrDyn *scr_dyn_native_date_new_value(const ScrDyn *arguments) {
+  if (arguments->v.arr.len == 1 && arguments->v.arr.items[0]->kind == SCR_DYN_STR)
+    return scr_dyn_native_date_from_ms(scr_date_new_ms(scr_date_parse(arguments->v.arr.items[0]->v.str)));
+  return scr_dyn_native_date_new(arguments);
+}
+
 /* new Date(year, monthIndex, ...) in JavaScript: ToNumber over the first
  * seven arguments in order (a throwing conversion stops there), the
  * spec's defaults for the rest, then the local-time field constructor. */
 ScrDyn *scr_dyn_native_date_new_fields(const ScrDyn *arguments) {
-  double fields[7] = {0, 0, 1, 0, 0, 0, 0};
+  double fields[7];
+  fields[0] = fields[1] = fields[3] = fields[4] = fields[5] = fields[6] = 0;
+  fields[2] = 1;
   size_t n = arguments->v.arr.len < 7 ? arguments->v.arr.len : 7;
   for (size_t i = 0; i < n; i++) {
     if (!scr_dyn_number_coerce_js(arguments->v.arr.items[i], &fields[i])) return NULL;

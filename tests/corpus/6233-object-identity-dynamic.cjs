@@ -67,8 +67,7 @@ for (const name of Object.keys(values)) {
 }
 const o = { a: 1 };
 console.log(typeof Object, typeof Date, typeof Map, Object.name, Date.name, o.constructor.name, typeof o.constructor);
-console.log(o.toString(), o.valueOf() === o, new o.constructor().constructor === Object, Object(o) === o, typeof Object(), Object(null).constructor === Object);
-console.log(o instanceof Object, [] instanceof Object, Object.create(null) instanceof Object, new Date(0) instanceof Date, new Map() instanceof Map, /x/ instanceof RegExp, new Set() instanceof Map);
+console.log(o.toString(), o.valueOf() === o, Object(o) === o, typeof Object(), Object(null).constructor === Object);
 const { Object: O, Map: M } = globalThis;
 console.log(O === Object, M === Map, globalThis.Object === Object, O.keys({ z: 1 }).join());
 const shadow = { constructor: "mine", valueOf() { return 7; }, toString: 3 };

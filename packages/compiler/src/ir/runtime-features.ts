@@ -343,7 +343,10 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn === "dyn.arrayProtoCall" ||
         fn === "dyn.arrayPrototype" ||
         fn === "dyn.functionApply" ||
-        fn === "dyn.builtinMethod"
+        fn === "dyn.builtinMethod" ||
+        fn === "dyn.globalConstructor" ||
+        fn === "dyn.objectTag" ||
+        fn === "dyn.builtinFunction"
       )
         features.dynInvoke = true;
       if (DYN_ASYNC_LIB_FNS.has(fn)) features.dynAsync = true;
@@ -464,6 +467,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
           break;
         case "dynInvoke":
           features.dynInvoke = true;
+          break;
+        case "dynKeyGet":
+          // Constant-key reads of Object.prototype member names answer the
+          // inherited member through scr_dyn_invoke.c.
+          if (node.key.kind === "strLit" && INHERITED_MEMBER_NAMES.has(node.key.value))
+            features.dynInvoke = true;
           break;
         case "awaitExpr":
           if (node.type.kind === "dyn") features.dynAsync = true;
@@ -862,3 +871,13 @@ export function moduleUsesTls(mod: IrModule): boolean {
 export function moduleUsesTlsCa(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "tlsCa").tlsCa;
 }
+
+/** Mirrors expr-dynamic.ts INHERITED_OBJECT_MEMBERS (the IR layer does not
+ * import the backend). */
+const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
+  "constructor",
+  "valueOf",
+  "toString",
+  "hasOwnProperty",
+  "propertyIsEnumerable",
+]);

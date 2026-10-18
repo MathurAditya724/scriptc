@@ -2183,6 +2183,7 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
       "date.nativeNew",
       "date.newLocal",
       "date.nativeNewFields",
+      "date.nativeNewValue",
     ],
     note: "zero arguments, one milliseconds/date-string argument, or local-time year/month fields; values are the read-only TimeClip scalar slice",
   },

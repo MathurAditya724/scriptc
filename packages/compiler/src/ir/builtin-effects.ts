@@ -469,6 +469,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "json.stringifyValue",
   "date.nativeNew",
   "date.nativeNewFields",
+  "date.nativeNewValue",
   "date.checkedValue",
   "util.parseArgs",
   "util.parseEnv",

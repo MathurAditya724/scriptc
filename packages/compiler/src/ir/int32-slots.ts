@@ -348,6 +348,7 @@ const DYN_READ_ONLY = new Set<string>([
   "arrayBuffer.viewU8C",
   "date.nativeNew",
   "date.nativeNewFields",
+  "date.nativeNewValue",
   // The dynamic operators run the ToPrimitive and coercion helpers of
   // dyn.compare, dyn.numberConstructor and dyn.toStringCoerce, then build a
   // fresh number, string or bigint. dyn.increment steps dyn.toNumeric's result.

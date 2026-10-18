@@ -5,6 +5,7 @@
 // so every input is parsed under several zones, including DST transitions.
 const fixed = [
   "Mon, 01 Jan 2024 00:00:00 GMT",
+  "Wed, 21 Oct 2015 07:28:00 GMT",
   "Sun, 06 Nov 1994 08:49:37 GMT",
   "Sunday, 06-Nov-94 08:49:37 GMT",
   "Sun Nov  6 08:49:37 1994",

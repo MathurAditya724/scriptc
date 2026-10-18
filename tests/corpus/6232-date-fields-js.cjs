@@ -28,3 +28,23 @@ console.log(isFresh({ "if-modified-since": "Sun, 31 Dec 2023 00:00:00 GMT" }, { 
 console.log(isFresh({ "if-modified-since": "not a date" }, { "last-modified": "Mon, 01 Jan 2024 00:00:00 GMT" }));
 const stamps = ["Tue, 15 Nov 1994 08:12:31 GMT", "Tuesday, 15-Nov-94 08:12:31 GMT", "Tue Nov 15 08:12:31 1994", "2024-03-31 02:30"];
 for (const s of stamps) console.log(s, Date.parse(s), new Date(s).getTime());
+// Date#toUTCString's IMF-fixdate (cookie Expires, Last-Modified) round-trips
+// through the parser. Where toUTCString has no native lowering yet the same
+// string comes from fields; `same` checks that string against Node's.
+const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const pad = (n, w) => String(n).padStart(w, "0");
+function imf(d) {
+  const y = d.getUTCFullYear();
+  const year = y < 0 ? "-" + pad(-y, 4) : pad(y, 4);
+  return days[d.getUTCDay()] + ", " + pad(d.getUTCDate(), 2) + " " + months[d.getUTCMonth()] + " " + year + " " +
+    pad(d.getUTCHours(), 2) + ":" + pad(d.getUTCMinutes(), 2) + ":" + pad(d.getUTCSeconds(), 2) + " GMT";
+}
+const stampsMs = [0, 1445412480000, 951782400000, -1, -62135596800000, -61851600000000, -59011459200000, 253402300799000, 1709251199999, -2208988800001, 8640000000000000, -8640000000000000];
+for (const ms of stampsMs) {
+  const d = new Date(ms);
+  const method = d[["toUTC", "String"].join("")];
+  const s = typeof method === "function" ? method.call(d) : imf(d);
+  console.log(JSON.stringify(s), Date.parse(s), Date.parse(s) === ms - (ms % 1000 + 1000) % 1000, s === imf(d));
+}
+console.log(Date.parse("Wed, 21 Oct 2015 07:28:00 GMT"), new Date("Wed, 21 Oct 2015 07:28:00 GMT").getTime());
