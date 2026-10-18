@@ -4454,13 +4454,38 @@ static bool sf_start_hop(SfTransfer *t) {
   }
   if (connection_close) sf_push_header_text(headers, "connection", "close", 5);
   else sf_push_header_text(headers, "connection", "keep-alive", 10);
+  /* Headers keeps each Set-Cookie value separately, but undici sends its
+   * header list's combined value: one line, the values joined by ", ",
+   * at the position of the first one. */
+  bool set_cookie_sent = false;
   for (size_t i = 0; i + 1 < user_len; i += 2) {
     ScrStr *name = scr_arr_get_ref(t->headers, (double)i);
     ScrStr *value = scr_arr_get_ref(t->headers, (double)(i + 1));
-    if (sf_eq_ci(name, "host") || sf_eq_ci(name, "connection")) {
+    if (sf_eq_ci(name, "host") || sf_eq_ci(name, "connection") ||
+        (set_cookie_sent && sf_eq_ci(name, "set-cookie"))) {
       scr_str_release(name);
       scr_str_release(value);
       continue;
+    }
+    if (sf_eq_ci(name, "set-cookie")) {
+      set_cookie_sent = true;
+      for (size_t j = i + 2; j + 1 < user_len; j += 2) {
+        ScrStr *later = scr_arr_get_ref(t->headers, (double)j);
+        bool match = sf_eq_ci(later, "set-cookie");
+        scr_str_release(later);
+        if (!match) continue;
+        ScrStr *next = scr_arr_get_ref(t->headers, (double)(j + 1));
+        size_t joined_len = value->len + 2 + next->len;
+        char *joined = malloc(joined_len ? joined_len : 1);
+        if (!joined) sf_oom();
+        memcpy(joined, value->data, value->len);
+        memcpy(joined + value->len, ", ", 2);
+        memcpy(joined + value->len + 2, next->data, next->len);
+        scr_str_release(next);
+        scr_str_release(value);
+        value = scr_str_new(joined, joined_len);
+        free(joined);
+      }
     }
     scr_arr_push_ref(headers, name);
     scr_arr_push_ref(headers, value);
