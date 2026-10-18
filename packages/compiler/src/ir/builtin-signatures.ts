@@ -3235,6 +3235,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * `await using`. Both throw Node's TypeErrors or the method's error. */
   "dyn.usingMethod": { argTypes: [DYN, BOOL], result: DYN },
   "dyn.usingDispose": { argTypes: [DYN, DYN], result: DYN },
+  /** DisposableStack (scr_symbol.c): a new stack handle; whether a value is
+   * one; and `stack.use(value)` for a class instance, registering the
+   * compiler's disposal function for it. The last throws Node's
+   * ReferenceError on a disposed stack. */
+  "disposable.stackNew": { argTypes: [], result: DYN },
+  "disposable.stackIs": { argTypes: [DYN], result: BOOL },
+  "disposable.stackUseCallback": { argTypes: [DYN, DYN, DYN], result: BOOL },
   "dyn.reflectSet": { argTypes: [DYN, DYN, DYN, DYN], result: BOOL },
   "dyn.reflectDefine": { argTypes: [DYN, DYN, DYN], result: BOOL },
   "dyn.abstractEq": { argTypes: [DYN, DYN], result: BOOL },
@@ -3767,11 +3774,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "insp.jsonDyn": { argTypes: [DYN], result: STRING },
   "insp.str": { argTypes: [STRING], result: STRING },
   "insp.regex": { argTypes: [REGEX], result: STRING },
+  /** A Date's inspect text: toISOString(), or "Invalid Date". */
+  "insp.date": { argTypes: [DATE_T], result: STRING },
   "insp.buffer": { argTypes: [BYTES_U8], result: STRING },
+  /** A numeric typed array that is not a Buffer (any element kind). */
+  "insp.typedArray": { argTypes: [null, F64, F64], result: STRING },
   "insp.error": { argTypes: [null, F64, F64], result: STRING },
   "insp.dyn": { argTypes: [DYN, F64, F64], result: STRING },
   "insp.dynS": { argTypes: [DYN, F64], result: STRING },
   "insp.begin": { argTypes: [F64], result: VOID },
+  /** util.inspect's breakLength, compact (0 for false) and sorted for the
+   * renders that follow; the call site restores 80, 3 and false afterwards. */
+  "insp.layout": { argTypes: [F64, F64, BOOL], result: VOID },
   "insp.entry": { argTypes: [STRING, BOOL], result: VOID },
   // Circular references: the receiver slot is program-dependent (any
   // cycle-capable record/array/map/class type — the insp.error precedent).

@@ -851,9 +851,9 @@
       "apiEntries": 109,
       "static": {
         "supported": 0,
-        "partial": 53,
+        "partial": 72,
         "refused": 0,
-        "not-implemented": 56,
+        "not-implemented": 37,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -19141,6 +19141,7 @@
           "tests/corpus/5097-console-table.ts",
           "tests/corpus/5098-console-time-warnings.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
+          "tests/corpus/5884-inspect-layout-options.ts",
           "tests/corpus/console-native-value.js",
           "tests/harness/npm-static.test.ts"
         ]
@@ -19297,7 +19298,8 @@
         "evidence": "compiler-dedicated:console.assert",
         "tests": [
           "tests/corpus/5096-console-assert-dir.ts",
-          "tests/corpus/5099-console-methods-dynamic.cjs"
+          "tests/corpus/5099-console-methods-dynamic.cjs",
+          "tests/corpus/5884-inspect-layout-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -19436,7 +19438,8 @@
         "evidence": "compiler-dedicated:console.dir",
         "tests": [
           "tests/corpus/5096-console-assert-dir.ts",
-          "tests/corpus/5099-console-methods-dynamic.cjs"
+          "tests/corpus/5099-console-methods-dynamic.cjs",
+          "tests/corpus/5884-inspect-layout-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -19463,7 +19466,8 @@
         "evidence": "compiler-dedicated:console.dirxml",
         "tests": [
           "tests/corpus/5096-console-assert-dir.ts",
-          "tests/corpus/5099-console-methods-dynamic.cjs"
+          "tests/corpus/5099-console-methods-dynamic.cjs",
+          "tests/corpus/5884-inspect-layout-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -100898,6 +100902,12 @@
           "packages/compiler/test/deep-equality.test.ts",
           "tests/corpus/1473-promisify-execfile.ts",
           "tests/corpus/1573-promisify-execfile-env-spread.ts",
+          "tests/corpus/1630-inspect-scalars.ts",
+          "tests/corpus/1632-inspect-records.ts",
+          "tests/corpus/1636-util-format.ts",
+          "tests/corpus/1637-inspect-dyn.ts",
+          "tests/corpus/2440-console-inspect-args.ts",
+          "tests/corpus/2485-inspect-circular-refs.ts",
           "tests/corpus/2678-util-parseargs.ts",
           "tests/corpus/2912-promisify-fs-readfile.ts",
           "tests/corpus/3133-text-decoder-streaming.ts",
@@ -100920,6 +100930,10 @@
           "tests/corpus/5628-promisify-timers.ts",
           "tests/corpus/5629-promisify-stream.ts",
           "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5835-util-format-integer-specifiers.ts",
+          "tests/corpus/5884-inspect-layout-options.ts",
           "tests/corpus/node24-deep-equality-properties.js",
           "tests/corpus/node24-deep-equality.cjs",
           "tests/corpus/node24-deep-equality.ts",
@@ -102016,8 +102030,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.format",
+        "tests": [
+          "tests/corpus/1636-util-format.ts",
+          "tests/corpus/2440-console-inspect-args.ts",
+          "tests/corpus/5835-util-format-integer-specifiers.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -102039,8 +102058,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.formatWithOptions",
+        "tests": [
+          "tests/corpus/1636-util-format.ts",
+          "tests/corpus/2440-console-inspect-args.ts",
+          "tests/corpus/5835-util-format-integer-specifiers.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -102223,8 +102247,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.inspect",
+        "tests": [
+          "tests/corpus/1630-inspect-scalars.ts",
+          "tests/corpus/1632-inspect-records.ts",
+          "tests/corpus/1637-inspect-dyn.ts",
+          "tests/corpus/2485-inspect-circular-refs.ts",
+          "tests/corpus/5884-inspect-layout-options.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -102987,8 +103018,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isBigInt64Array",
+        "tests": [
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103010,8 +103049,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isBigIntObject",
+        "tests": [
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103033,8 +103080,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isBigUint64Array",
+        "tests": [
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103056,8 +103111,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isBooleanObject",
+        "tests": [
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103079,8 +103142,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isBoxedPrimitive",
+        "tests": [
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103102,8 +103173,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isCryptoKey",
+        "tests": [
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103154,8 +103233,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isDate",
+        "tests": [
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103177,8 +103264,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isExternal",
+        "tests": [
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103200,8 +103295,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isFloat16Array",
+        "tests": [
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103426,8 +103529,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isKeyObject",
+        "tests": [
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103478,8 +103589,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isMapIterator",
+        "tests": [
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103553,8 +103672,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isNumberObject",
+        "tests": [
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103692,8 +103819,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isSetIterator",
+        "tests": [
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103715,8 +103850,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isSharedArrayBuffer",
+        "tests": [
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103738,8 +103881,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isStringObject",
+        "tests": [
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103761,8 +103912,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isSymbolObject",
+        "tests": [
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },

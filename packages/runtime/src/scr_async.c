@@ -4862,6 +4862,13 @@ struct ScrGen {
   ScrExcCell async_error;
   bool settle_queued;
   bool success_hop_done;
+  /* A return() request at a yield: the queued job resumes the body after
+   * the return value's await (return_queued), and the body's completion,
+   * on that request or a later one, settles without another turn
+   * (return_awaited). An explicit `return x` during the unwind clears it,
+   * since that return takes its own turn to await x. */
+  bool return_queued;
+  bool return_awaited;
 #ifdef SCR_WORKERS
   bool context_abandoned;
 #endif
@@ -5263,6 +5270,8 @@ void scr_coro_yield_ref(ScrFiber *self, void *v, void (*release)(void *)) {
   scr_gen_slot_ref(&self->gen->out, v, release);
 }
 
+void scr_async_gen_return_awaits(void) { scr_gen_self()->return_awaited = false; }
+
 void scr_async_gen_hop_done(void) {
   ScrGen *g = scr_gen_self();
   if (!g->is_async) {
@@ -5542,6 +5551,21 @@ static void scr_async_gen_capture_caller_error(ScrGen *g) {
   if (cell->kind != SCR_EXC_NONE) scr_gen_exc_move(&g->async_error, cell);
 }
 
+/* Whether the body's latest stop settles its request without a further
+ * turn: a yield whose await already supplied the value, or a completion
+ * after a return() request's await. */
+static bool scr_async_gen_settles_now(ScrGen *g) {
+  if (g->success_hop_done) {
+    g->success_hop_done = false;
+    return true;
+  }
+  if (g->return_awaited && g->state == SCR_GEN_DONE) {
+    g->return_awaited = false;
+    return true;
+  }
+  return false;
+}
+
 static void scr_async_gen_run_active(ScrGen *g, ScrAsyncGenRequest *req) {
   const bool was_done = g->state == SCR_GEN_DONE;
   if (req->mode == SCR_AG_NEXT) {
@@ -5553,6 +5577,13 @@ static void scr_async_gen_run_active(ScrGen *g, ScrAsyncGenRequest *req) {
     scr_gen_slot_reset(&g->ret);
     g->ret = req->arg;
     memset(&req->arg, 0, sizeof req->arg);
+    if (g->state == SCR_GEN_SUSPENDED) {
+      /* At a yield, AsyncGeneratorYield awaits the return value before
+       * the body resumes, so finally blocks run one turn later. */
+      g->return_queued = true;
+      scr_async_gen_schedule_settle(g);
+      return;
+    }
     scr_gen_resume_return(g);
   } else {
     scr_gen_exc_move(scr_exc_current_cell(), &req->thrown);
@@ -5567,16 +5598,37 @@ static void scr_async_gen_run_active(ScrGen *g, ScrAsyncGenRequest *req) {
   if (g->state == SCR_GEN_AWAITING) return;
 
   /* next() on an already-completed generator produces its undefined done
-   * result immediately. Yield, body return, and return(value) all pass
-   * through AsyncGeneratorYield's successful Await step. */
+   * result immediately. A yield and return(value) on an unstarted or
+   * completed generator pass through an Await step; a body that falls off
+   * its end, or whose `return x` already awaited x, marks its completion
+   * as settled. */
   if (was_done && req->mode == SCR_AG_NEXT) {
     scr_async_gen_finish_active(g, false);
-  } else if (g->success_hop_done) {
-    g->success_hop_done = false;
+  } else if (scr_async_gen_settles_now(g)) {
     scr_async_gen_finish_active(g, false);
   } else {
     scr_async_gen_schedule_settle(g);
   }
+}
+
+/* The return() request's await has taken its turn: resume the body with
+ * the return completion. */
+static void scr_async_gen_resume_returning(ScrGen *g) {
+  g->return_queued = false;
+  g->return_awaited = true;
+  scr_gen_resume_return(g);
+  scr_async_gen_capture_caller_error(g);
+  if (g->async_error.kind != SCR_EXC_NONE) {
+    scr_async_gen_finish_active(g, true);
+  } else if (g->state == SCR_GEN_AWAITING) {
+    return;
+  } else if (scr_async_gen_settles_now(g)) {
+    scr_async_gen_finish_active(g, false);
+  } else {
+    scr_async_gen_schedule_settle(g);
+    return;
+  }
+  scr_async_gen_start_queued(g);
 }
 
 static void scr_async_gen_start_queued(ScrGen *g) {
@@ -5689,6 +5741,12 @@ static void scr_async_gen_job(ScrGen *g) {
     fputs("scriptc: internal error: invalid async generator settlement job\n", stderr);
     abort();
   }
+  if (g->return_queued) {
+    scr_gen_retain(g);
+    scr_async_gen_resume_returning(g);
+    scr_gen_release(g);
+    return;
+  }
   scr_async_gen_finish_active(g, false);
   scr_async_gen_start_queued(g);
 }
@@ -5706,8 +5764,7 @@ static void scr_async_gen_resume_ready(ScrGen *g) {
     scr_async_gen_finish_active(g, true);
     scr_async_gen_start_queued(g);
   } else if (g->state != SCR_GEN_AWAITING) {
-    if (g->success_hop_done) {
-      g->success_hop_done = false;
+    if (scr_async_gen_settles_now(g)) {
       scr_async_gen_finish_active(g, false);
       scr_async_gen_start_queued(g);
     } else {
