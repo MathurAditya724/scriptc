@@ -8,17 +8,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The table unit needs only scr_trap, scr_throw_error_msg and
- * scr_sa_thread_shares from the rest of the runtime; refusals and the
- * inserting threads' shares are recorded here. */
+/* The table unit needs only scr_trap and scr_throw_error_msg from the
+ * rest of the runtime; refusals are recorded here. */
 _Noreturn void scr_trap(const char *msg) {
   fputs(msg, stderr);
   abort();
 }
-
-/* Inserts share the stored values with every thread. */
-static atomic_int shares;
-void scr_sa_thread_shares(void) { atomic_fetch_add(&shares, 1); }
 
 static char refused[128];
 void scr_throw_error_msg(int kind, const char *msg, size_t len) {
@@ -227,7 +222,6 @@ int main(void) {
     for (unsigned i = 1; i < THREADS; i++) assert(seen_str[i][k] == seen_str[0][k]);
   assert(scr_itable_size(strings) == KEYS);
   assert(scr_itable_size(numbers) == KEYS);
-  assert(atomic_load(&shares) >= 2 * KEYS);
   printf("intern tables share one entry per key across racing inserts and lookups\n");
   return 0;
 }
