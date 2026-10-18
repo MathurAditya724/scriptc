@@ -288,7 +288,12 @@ export function collectClassMethodMutations(
           ts.isMethodDeclaration(node) ||
           ts.isGetAccessorDeclaration(node) ||
           ts.isSetAccessorDeclaration(node)) &&
-        ts.isComputedPropertyName(node.name)
+        ts.isComputedPropertyName(node.name) &&
+        // A computed key in an object literal defines a property of the new
+        // object, which is not a class instance. Literals passed to
+        // Object.assign or Object.defineProperties are judged with their
+        // receiver below.
+        !ts.isObjectLiteralExpression(node.parent)
       ) {
         markKey(node.name.expression, node);
       }
