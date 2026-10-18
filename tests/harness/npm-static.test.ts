@@ -787,9 +787,55 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         package: "ms",
         status: "refused",
         detail: "it ships no own .d.ts declaration surface",
+        hint: "to compile it anyway, name it with --npm-static=ms (or --npm-static=ms... to include its dependencies)",
       },
     ]);
   }, 120_000);
+
+  // Types-first resolution answers @types/twinned, but the refusal names the
+  // package that has the code and the flag that compiles it.
+  test("an @types-typed package is refused under its runtime name with the opt-in remedy", () => {
+    const { coverage } = analyze(join(pilotRoot, "twinned-cli.ts"));
+    expect(coverage.npmStatic).toEqual([
+      {
+        package: "twinned",
+        status: "refused",
+        detail:
+          "its declared types come from the separate @types/twinned package, not the package itself",
+        hint: "to compile it anyway, name it with --npm-static=twinned (or --npm-static=twinned... to include its dependencies)",
+      },
+    ]);
+    const diagnostic = coverage.diagnostics.find((d) => d.code === "SC2013");
+    expect(diagnostic?.message).toContain("'twinned'");
+    expect(diagnostic?.hint).toContain("--npm-static=twinned");
+  }, 120_000);
+
+  test("a named package's untyped dependency points at the transitive opt-in", () => {
+    const { coverage } = analyze(join(pilotRoot, "twinned-cli.ts"), { npmStatic: ["twinned"] });
+    expect(coverage.npmStatic).toContainEqual({
+      package: "ms",
+      status: "refused",
+      detail: "it ships no own .d.ts declaration surface",
+      hint: "to compile it anyway, name it with --npm-static=ms, or use --npm-static=twinned... to include all of twinned's dependencies",
+    });
+  }, 120_000);
+
+  test("--npm-static=pkg... compiles the package's dependency closure", async () => {
+    const entry = join(pilotRoot, "twinned-cli.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["twinned..."] });
+    expect(coverage.npmStatic).toEqual([
+      { package: "twinned", status: "static" },
+      { package: "ms", status: "static" },
+    ]);
+    expect(coverage.preflightFailed).toBe(false);
+    const binary = await buildStatic(entry, ["twinned..."]);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
 
   test("type-only imports select no package", async () => {
     const entry = join(pilotRoot, "type-only-cli.ts");
@@ -937,6 +983,7 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         package: "typegapped",
         status: "refused",
         detail: "it ships no own .d.ts declaration surface",
+        hint: "to compile it anyway, name it with --npm-static=typegapped (or --npm-static=typegapped... to include its dependencies)",
       },
       { package: "escape-string-regexp", status: "static" },
     ]);
