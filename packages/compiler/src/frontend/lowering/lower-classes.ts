@@ -2680,7 +2680,7 @@ export function collectClassShapeInner(
             type.kind === "void" ||
             (type.kind === "dyn" &&
               !isJsSourceFile(member.getSourceFile()) &&
-              !lowerer.classImplementedProtocol(inferred))
+              !lowerer.classFieldStoresDyn(inferred))
           )
             lowerer.badType(member, inferred);
           if (isJsSourceFile(member.getSourceFile())) {

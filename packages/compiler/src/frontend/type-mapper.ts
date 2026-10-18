@@ -1313,6 +1313,40 @@ export function isWorkerHandleType(
   return handle;
 }
 
+/** The native fetch handles (Headers, Request, Response), optionally in
+ * arrays or with null/undefined: checked-dynamic handles wherever they are
+ * stored, like the worker handles above. */
+export function isFetchHandleType(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  const members = type.isUnionType() ? ts.constituentTypes(type) : [type];
+  let handle = false;
+  for (const member of members) {
+    if (member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) continue;
+    if (ctx.checker.isArrayType(member)) {
+      const element = ctx.checker.getTypeArguments(member as ts.TypeReference)[0];
+      if (element === undefined || !isFetchHandleType(element, ctx)) return false;
+    } else {
+      const symbol = member.getSymbol();
+      if (
+        !symbol ||
+        (symbol.name !== "Headers" && symbol.name !== "Request" && symbol.name !== "Response") ||
+        !ctx.checker
+          .declarationsOf(symbol)
+          .some(
+            (d) =>
+              (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+              ctx.isStdlibFile(d.getSourceFile()),
+          )
+      )
+        return false;
+    }
+    handle = true;
+  }
+  return handle;
+}
+
 export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (mapTypeDepth >= MAP_TYPE_MAX_DEPTH) return null;
   // These intrinsic domains cannot depend on generic bindings, declaration
