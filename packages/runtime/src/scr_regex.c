@@ -1358,7 +1358,7 @@ ScrStr *scr_regex_replace_callback(ScrStr *s, ScrRegex *re, ScrDyn *callback, bo
   for (size_t i = 0; i < count; i++) scr_dyn_release(matches[i].arguments);
   free(matches);
   if (scr_exc_pending()) {
-    free(output.data);
+    scr_jb_abandon(&output);
     scr_regex_input_dispose(&input);
     return NULL;
   }

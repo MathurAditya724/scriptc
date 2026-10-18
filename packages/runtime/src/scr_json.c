@@ -212,6 +212,8 @@ static void scr_jb_dispose(ScrJsonBuf *b) {
   scr_jb_init(b);
 }
 
+void scr_jb_abandon(ScrJsonBuf *b) { scr_jb_dispose(b); }
+
 void scr_jb_putc(ScrJsonBuf *b, char c) {
   scr_jb_grow(b, 1);
   b->data[b->len++] = c;
