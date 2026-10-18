@@ -11111,6 +11111,7 @@ export class LlEmitter {
     resultType: IrType,
     overflowOnly: boolean,
     loc?: SrcLoc,
+    missNaN = false,
   ): void {
     return keyedRecordReadInto(
       this,
@@ -11122,6 +11123,7 @@ export class LlEmitter {
       resultType,
       overflowOnly,
       loc,
+      missNaN,
     );
   }
 

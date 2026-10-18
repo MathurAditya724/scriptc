@@ -2825,18 +2825,20 @@ export function lowerBindingPattern(
       // An UNDECLARED key of an INDEX-SIGNATURE shape (`const { m, n, p }
       // = ....groups` over `{ [key: string]: string }` — the groups
       // record, `Record<string, T>` tables generally): the overflow-map
-      // read, exactly the dot access's recordKeyGet — a missing key
-      // traps when the value type carries no undefined arm (the checker
-      // claimed V), or binds the undefined arm (where a default applies
-      // like any field's).
+      // read, exactly the dot access's recordKeyGet — a missing key binds
+      // the undefined arm (where a default applies like any field's).
       const loc = locOf(el);
+      const readType =
+        shape.indexValue.kind === "dyn"
+          ? shape.indexValue
+          : (lowerer.withUndefinedArmOf(shape.indexValue) ?? shape.indexValue);
       let value: IrExpr = {
         kind: "recordKeyGet",
         obj: srcRef(),
         shapeId: srcType.shapeId,
         key: { kind: "strLit", value: propName, type: STRING, loc },
         overflowOnly: true,
-        type: shape.indexValue,
+        type: readType,
         loc,
       };
       if (el.initializer) value = applyBindingDefault(lowerer, el, value);
