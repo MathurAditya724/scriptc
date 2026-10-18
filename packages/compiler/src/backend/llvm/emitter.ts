@@ -555,9 +555,34 @@ const AWAIT_SUSPENSIONS = /@(?:scr_await_(?:void|f64|bool|str|ref|hop)\b|sc_a[wd
  * own fiber and promise. */
 const COROUTINE_SUSPENDS =
   /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_(?!self\b|promise\b))|sc_a[wd]_)/;
+/** Captured bindings (boxes a body declares or receives) from which a
+ * function compiles without LLVM optimization (see boxSlotCount). */
+const UNOPTIMIZED_BOX_SLOTS = 512;
 /** ScrExcKind tags of a generator slot holding a number or a boolean. */
 const SCR_EXC_F64 = 1;
 const SCR_EXC_BOOL = 2;
+
+/** The capture boxes `fn` holds: its boxed bindings and the bindings its
+ * environment brings in. Each box pointer is a value from its binding (or
+ * function entry) to its last use, and every one of them crosses the calls
+ * in between. With thousands of them in one body, as in a factory whose
+ * returned methods share a large environment, LLVM's inliner, instruction
+ * selection and register allocation grow quadratically and take minutes.
+ * Past UNOPTIMIZED_BOX_SLOTS, which ordinary functions stay far below, the
+ * body is compiled `optnone` (nothing inlines into it and code generation
+ * takes its fast paths) and its box slots are accessed volatile, so no
+ * pass promotes them to values even where a pipeline runs IR passes over
+ * optnone bodies, as the native helper's does. Each use reloads its box
+ * pointer and code generation stays linear. Semantics, boxes and
+ * environments are unchanged; only that body's machine code is slower. */
+function boxSlotCount(fn: IrFunction): number {
+  const captured = new Set<string>();
+  for (const capture of fn.captures ?? []) captured.add(capture.localId);
+  for (const capture of fn.classCaptures ?? []) captured.add(capture.localId);
+  let count = 0;
+  for (const local of fn.locals) if (local.boxed === true || captured.has(local.id)) count++;
+  return count;
+}
 
 /** Whether any node of `e` names the local (reads, writes, declarations,
  * captures). */
@@ -6914,6 +6939,15 @@ export class LlEmitter {
         B.line(`store ptr null, ptr %${mangleLocal(local.id)}`);
       }
     }
+    // A body holding thousands of capture boxes compiles unoptimized, its
+    // box pointers kept in their slots (see boxSlotCount).
+    const unoptimized = this.currentCoro === null && boxSlotCount(fn) >= UNOPTIMIZED_BOX_SLOTS;
+    if (unoptimized) {
+      const slots = new Set<string>();
+      for (const local of this.currentLocals.values())
+        if (local.boxed || this.captureIds.has(local.id)) slots.add(`%${mangleLocal(local.id)}`);
+      B.volatileSlots = slots;
+    }
     // Captured bindings come in through the environment — borrowed for the
     // whole call (the closure owns them): bound here, never released here.
     (fn.captures ?? []).forEach((c, i) => {
@@ -7117,6 +7151,7 @@ export class LlEmitter {
     if (fn.name.startsWith("%dyn.class.protocol.fallback.")) attrs = `noinline ${attrs}`;
     else if (fn.name.startsWith("%dyn.class.protocol.")) attrs = `inlinehint ${attrs}`;
     if (fn.name.startsWith(RESULT_ENTRY_PREFIX)) attrs = `inlinehint ${attrs}`;
+    if (unoptimized && attrs === FN_ATTRS) attrs = `noinline optnone ${attrs}`;
     const debug = this.debugScope === null ? "" : ` !dbg ${this.debugScope}`;
     const symbol = borrowed ? mangleBorrowedFunction(fn.name) : mangleFunction(fn.name);
     this.privateGlobalSlots.clear();
