@@ -10,6 +10,7 @@ import { InternalCompilerError } from "../../errors.js";
  * flow (if/while/for/for-of/do, switch, try/catch, abrupt completions),
  * explicit resource management, and blocked-binding poisoning. */
 import * as ts from "../ts7/adapter.js";
+import { processDataMemberValue } from "./builtins/process.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -3131,6 +3132,9 @@ function stdlibGlobalTokenDestructure(
     token: string;
     alias: string | null;
     g: IrGlobal | undefined;
+    /** A data member's value (`const { env } = process`), bound instead
+     * of a token. */
+    value?: IrExpr;
   }[] = [];
   for (const el of decl.name.elements) {
     if (el.name === undefined) continue;
@@ -3166,8 +3170,9 @@ function stdlibGlobalTokenDestructure(
         "destructuring with computed keys that do not fold to one property name",
       );
     }
-    let token: string;
+    let token = "";
     let alias: string | null = null;
+    let value: IrExpr | null = null;
     if (globalName === "globalThis") {
       // The member must BE a stdlib global (user script vars are
       // properties of `typeof globalThis` too — their values are real
@@ -3187,6 +3192,13 @@ function stdlibGlobalTokenDestructure(
       token = `[builtin console.${propName}]`;
     } else if (TOKEN_OPAQUE_GLOBALS.has(globalName)) {
       token = `[builtin ${globalName}.${propName}]`;
+    } else if (
+      globalName === "process" &&
+      ts.isIdentifier(el.name) &&
+      (value = processDataMemberValue(lowerer, propName, el.name, locOf(el))) !== null
+    ) {
+      // A data member reads its value once, exactly like the spelled
+      // `process.<member>` read the destructuring performs.
     } else {
       lowerer.unsupported(
         "SC1031",
@@ -3203,6 +3215,10 @@ function stdlibGlobalTokenDestructure(
       );
     }
     const g = lowerer.globalsBySymbol.get(symbol);
+    if (value !== null) {
+      binds.push({ name: el.name, token, alias, g, value });
+      continue;
+    }
     if (g !== undefined && g.type.kind !== "string" && g.type.kind !== "dyn") {
       lowerer.unsupported(
         "SC1031",
@@ -3215,6 +3231,21 @@ function stdlibGlobalTokenDestructure(
   const out: IrStmt[] = [];
   for (const b of binds) {
     const loc = locOf(b.name);
+    if (b.value !== undefined) {
+      if (b.g !== undefined) {
+        out.push({
+          kind: "assign",
+          localId: b.g.id,
+          value: lowerer.coerceInto(b.name, b.value, b.g.type),
+          ...(b.g.tdz ? { initializes: true as const } : {}),
+          loc,
+        });
+      } else {
+        const local = lowerer.declareLocal(b.name, b.name.text, b.value.type, isLet);
+        out.push({ kind: "varDecl", localId: local.id, init: b.value, loc });
+      }
+      continue;
+    }
     const token: IrExpr = { kind: "strLit", value: b.token, type: STRING, loc };
     if (b.alias !== null) {
       const symbol = lowerer.checker.getSymbolAtLocation(b.name);

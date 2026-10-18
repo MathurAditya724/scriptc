@@ -1,3 +1,4 @@
+import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { lowerReadlineUiNew } from "./builtins/readline.js";
@@ -8422,6 +8423,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       undefined,
       lowerer.checker.getSymbolAtLocation(expr.expression),
     );
+  const valueReturning = lowerValueReturningConstructorNew(lowerer, expr);
+  if (valueReturning) return valueReturning;
   const instanceConstructor = lowerInstanceConstructorNew(lowerer, expr);
   if (instanceConstructor) return instanceConstructor;
   const objectFactory = lowerObjectFactoryNew(lowerer, expr);
