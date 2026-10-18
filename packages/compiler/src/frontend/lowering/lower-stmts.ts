@@ -16,6 +16,19 @@ import { isJsonRequireDecl } from "./json-require.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
 import {
+  cjsExportValueByName,
+  cjsNamespaceDestructureOf,
+  cjsTableMethodEntry,
+  inlineProgramRequireOf,
+  requireNestedPatternsOf,
+} from "./cjs-inline-require.js";
+import {
+  cjsExportMemberWriteGlobalOf,
+  isCjsExportsIdentifier,
+  isFreshExportsReset,
+} from "./cjs-exports-object.js";
+import { isDeadTscHelperDecl, tscInteropBindingOfDecl } from "./cjs-tsc-interop.js";
+import {
   arrayValueRead,
   arrayValueStore,
   arrayValueType,
@@ -60,6 +73,7 @@ import {
 import { enforceLibBoundary, lowerSurplusCalls } from "./lib-boundary.js";
 import {
   cjsExportAssignmentOf,
+  cjsExportChainOf,
   cjsExportDiscardReason,
   cjsExportTargetLiteral,
   isCjsJsFile,
@@ -1553,6 +1567,16 @@ function lowerVarDeclarator(
     const init = lowerer.requireInitStmt(target.spec, decl);
     return init ? [init] : [];
   }
+  // tsc's interop bindings (`const x_1 = __importDefault(require("./m"))`)
+  // are require bindings (cjs-tsc-interop.ts): the module's %init here.
+  if (ts.isSourceFile(stmt.parent)) {
+    const interop = tscInteropBindingOfDecl(lowerer, decl);
+    if (interop !== null) {
+      const init = lowerer.requireInitStmt(interop.spec, decl);
+      return init ? [init] : [];
+    }
+    if (isDeadTscHelperDecl(lowerer, stmt)) return [];
+  }
   // CommonJS require declarations (JS files): at the module's top
   // level the BINDINGS are alias plumbing (no storage;
   // resolveValueSymbol routes the reads), but the require itself is
@@ -1573,7 +1597,21 @@ function lowerVarDeclarator(
     if (lowerer.externalTypes.has(spec)) lowerer.externalHostFence(spec, decl, false);
     if (ts.isSourceFile(stmt.parent)) {
       const init = lowerer.requireInitStmt(spec, decl);
-      return init ? [init] : [];
+      const out: IrStmt[] = init ? [init] : [];
+      // Nested patterns destructure the named export's value right after
+      // the module evaluated (`const { codes: { ERR_X } } = require(...)`).
+      for (const element of requireNestedPatternsOf(decl)) {
+        const key = element.propertyName as ts.Identifier;
+        const value = lowerer.lowerExpr(key);
+        lowerer.lowerBindingPattern(
+          element.name as ts.ObjectBindingPattern,
+          () => lowerer.lowerExpr(key),
+          value.type,
+          isLet,
+          out,
+        );
+      }
+      return out;
     }
     // A nested BUILTIN require (`get inFreeBSDJail() { const { execSync }
     // = require('child_process'); ... }` — test/common's lazy-getter
@@ -1600,6 +1638,35 @@ function lowerVarDeclarator(
     // `const { createSign } = crypto` over a builtin NAMESPACE binding:
     // alias plumbing (builtinImportOf routes the reads) — no statement.
     if (builtinNamespaceDestructureModuleOf(lowerer, decl) !== null) return [];
+    // `const { A, B } = ns` over a CommonJS module binding: each name
+    // snapshots the named export's value here (cjs-inline-require.ts).
+    {
+      const nsDestructure = cjsNamespaceDestructureOf(lowerer, decl);
+      if (nsDestructure !== null) {
+        const out: IrStmt[] = [];
+        for (const element of nsDestructure.elements) {
+          const target = lowerer.globalOf(element.name);
+          const value = cjsExportValueByName(lowerer, nsDestructure.dep, element.key, element.name);
+          if (target === null || value === null) {
+            lowerer.unsupported(
+              "SC1090",
+              element.name,
+              `destructuring the export '${element.key}' of a CommonJS module binding (it has no static value)`,
+            );
+          }
+          out.push({
+            kind: "assign",
+            localId: target.id,
+            value: typeEquals(value.type, target.type)
+              ? value
+              : lowerer.coerceInto(element.name, value, target.type),
+            loc: locOf(element.name),
+            ...("tdz" in target && target.tdz ? { initializes: true as const } : {}),
+          });
+        }
+        return out;
+      }
+    }
     return lowerer.lowerDestructuringDecl(decl, isLet);
   }
   // STORED protocol values with statically closed representations:
@@ -6049,6 +6116,49 @@ function lowerCjsExportStatement(
       if (whole?.kind !== "table" || cjsExportDiscardReason(stmt) !== null) continue;
       root = lowerer.globalsByDeclNode.get(whole.expr);
     }
+    // A CHAIN `exports.a = exports.b = value`: Node evaluates the value
+    // once, assigns the innermost member first, and every member holds
+    // the same value. Each member is its own export global
+    // (collectGlobals registers the inner ones too).
+    {
+      const chain = cjsExportChainOf(cjs.expr);
+      if (chain !== null && root?.type.kind !== "dyn") {
+        const globalOfName = (nameNode: ts.Identifier): IrGlobal => {
+          const symbol =
+            lowerer.checker.getSymbolAtLocation(nameNode) ??
+            lowerer.cjsModuleExportSymbol(sf, nameNode.text);
+          const g = symbol ? lowerer.globalsBySymbol.get(symbol) : undefined;
+          if (!g) {
+            lowerer.lowerExpr(chain.value);
+            lowerer.badType(chain.value, lowerer.typeOf(chain.value));
+          }
+          return g;
+        };
+        const inner = chain.names[chain.names.length - 1]!;
+        const innerG = globalOfName(inner);
+        const body: IrStmt[] = [
+          {
+            kind: "assign",
+            localId: innerG.id,
+            value: lowerer.lowerExprExpecting(chain.value, innerG.type),
+            loc: locOf(chain.value),
+          },
+        ];
+        for (let i = chain.names.length - 2; i >= 0; i--) {
+          const g = globalOfName(chain.names[i]!);
+          const read: IrExpr = { kind: "varRef", localId: innerG.id, type: innerG.type, loc };
+          body.push({
+            kind: "assign",
+            localId: g.id,
+            value: typeEquals(g.type, innerG.type)
+              ? read
+              : lowerer.coerceInto(chain.value, read, g.type),
+            loc,
+          });
+        }
+        return { kind: "block", body, loc };
+      }
+    }
     return assignExport(cjs.name, cjs.value, root);
   }
   let tableObj = cjs.obj;
@@ -6114,6 +6224,30 @@ function lowerCjsExportStatement(
       body.push(assignExport(prop.name, prop.initializer));
       continue;
     }
+    // METHOD entries: the export global holds the method's function,
+    // created at this statement like a function-expression entry. Node
+    // calls it with `this` bound to the table, which the static export
+    // table cannot represent, so a body that uses `this` keeps a fence.
+    {
+      const method = cjsTableMethodEntry(prop);
+      if (method !== null && !resolvedTarget) {
+        lowerer.rejectThisInObjectMethod(method.body);
+        const symbol =
+          lowerer.checker.getSymbolAtLocation(method.name) ??
+          lowerer.cjsModuleExportSymbol(cjs.expr.getSourceFile(), method.name.text);
+        const g = symbol ? lowerer.globalsBySymbol.get(symbol) : undefined;
+        if (g) {
+          const fn = lowerer.lowerLambda(method);
+          body.push({
+            kind: "assign",
+            localId: g.id,
+            value: typeEquals(fn.type, g.type) ? fn : lowerer.coerceInto(method, fn, g.type),
+            loc: locOf(method),
+          });
+          continue;
+        }
+      }
+    }
     // ACCESSOR entries: no storage and no code here — reads lift the
     // getter as a module-level function and call it per read
     // (cjsExportAccessorRead); writes through the setter keep their
@@ -6129,7 +6263,15 @@ function lowerCjsExportStatement(
     if (ts.isSpreadAssignment(prop)) {
       let inner: ts.Expression = prop.expression;
       while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
-      if (requireSpecOf(inner) !== null) continue;
+      if (requireSpecOf(inner) !== null) {
+        // The spread still EVALUATES the module, at its place among the
+        // table's entries (a program module joins the graph through this
+        // inline require; cjs-inline-require.ts).
+        const req = inlineProgramRequireOf(lowerer, inner);
+        const init = req !== null ? lowerer.requireInitStmt(req.spec, req.call) : null;
+        if (init !== null && !resolvedTarget) body.push(init);
+        continue;
+      }
     }
     lowerer.unsupported(
       "SC1090",
@@ -6162,6 +6304,16 @@ function lowerCjsSingleValueExport(
 ): IrStmt | null {
   let rhs: ts.Expression = expr.right;
   while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+  // `module.exports = require("./x")`: the module re-exports x's exports.
+  // Requirers resolve through the checker's alias to x's own export
+  // machinery; this statement is x's evaluation at this position.
+  {
+    const req = inlineProgramRequireOf(lowerer, rhs);
+    // With later member exports (`module.exports.extra = …`) the module
+    // extends that object, so it keeps the factory root registration.
+    if (req !== null && !lowerer.globalsByDeclNode.has(expr))
+      return lowerer.requireInitStmt(req.spec, req.call) ?? { kind: "block", body: [], loc };
+  }
   if (ts.isIdentifier(rhs)) {
     const sym = lowerer.resolveValueSymbol(rhs);
     if (!sym) return null;
@@ -6169,6 +6321,17 @@ function lowerCjsSingleValueExport(
       lowerer.classBySymbol.has(sym) ||
       lowerer.fnSigsBySymbol.has(sym) ||
       lowerer.genericFnsBySymbol.has(sym)
+    ) {
+      return { kind: "block", body: [], loc };
+    }
+    // A require binding (`const x = require("./x"); module.exports = x`)
+    // re-exports that module exactly like the inline form (the binding's
+    // own statement already evaluated it), and a builtin global
+    // (`module.exports = TypeError`) is the global itself: requirer
+    // bindings alias straight through to it, so nothing is stored.
+    if (
+      lowerer.checker.declarationsOf(sym).some((d) => ts.isSourceFile(d)) ||
+      lowerer.isStdlibSymbol(sym)
     ) {
       return { kind: "block", body: [], loc };
     }
@@ -6393,6 +6556,21 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
     );
   }
   if (topLevelJs && ts.isExpressionStatement(stmtNode)) {
+    if (isFreshExportsReset(lowerer, stmtNode))
+      return { kind: "block", body: [], loc: locOf(expr) };
+    // Any other `exports = …` rebinds the wrapper's exports binding: the
+    // members later attached through it belong to the new value.
+    if (
+      ts.isBinaryExpression(expr) &&
+      expr.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      isCjsExportsIdentifier(lowerer, expr.left)
+    ) {
+      lowerer.unsupported(
+        "SC1090",
+        expr.left,
+        "rebinding 'exports' (exports = module.exports = value): members attached through 'exports' afterwards are properties of that value, which the static export table does not model — write module.exports.<name> = … and module.exports = value",
+      );
+    }
     const cjs = cjsExportAssignmentOf(stmtNode);
     if (cjs) return lowerCjsExportStatement(lowerer, cjs);
     // The tsc CJS interop stamp — `Object.defineProperty(exports,
@@ -6933,6 +7111,19 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         // full supported-forms contract.
         const parts = lowerDestructuringAssignParts(lowerer, expr.left, expr.right, locOf(expr));
         return { kind: "block", body: parts.stmts, loc: locOf(expr) };
+      }
+      // `exports.x = v` inside a function updates the member's export
+      // global (cjs-exports-object.ts).
+      if (ts.isPropertyAccessExpression(expr.left)) {
+        const g = cjsExportMemberWriteGlobalOf(lowerer, expr.left);
+        if (g) {
+          return {
+            kind: "assign",
+            localId: g.id,
+            value: lowerer.lowerExprExpecting(expr.right, g.type),
+            loc: locOf(expr),
+          };
+        }
       }
       if (!ts.isIdentifier(expr.left)) {
         lowerer.unsupported("SC1090", expr.left, "assignment to non-variables");

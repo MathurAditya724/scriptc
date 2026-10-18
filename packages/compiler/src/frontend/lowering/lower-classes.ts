@@ -13,6 +13,7 @@ import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
 import type { FnCtx, Lowerer } from "./lowerer.js";
+import { inlineNamespaceRequireOf, lowerWithInlineRequireInit } from "./cjs-inline-require.js";
 import {
   BOOL,
   DATE_T,
@@ -8445,6 +8446,14 @@ function assignedThisFieldType(lowerer: Lowerer, expr: ts.NewExpression): IrType
 
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
+  // `new (require("./x").C)()`: the module's %init at the require's
+  // position, then construction through the member as for a binding.
+  if (ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken) {
+    const req = inlineNamespaceRequireOf(lowerer, expr.expression.expression);
+    if (req !== null && !lowerer.inlineRequireInitDone.has(req.call)) {
+      return lowerWithInlineRequireInit(lowerer, req, () => lowerNew(lowerer, expr));
+    }
+  }
   const worker = lowerWorkerNew(lowerer, expr);
   if (worker) return worker;
   const readlineUi = lowerReadlineUiNew(lowerer, expr);

@@ -272,6 +272,13 @@ import {
   appendWorkerModules,
 } from "./lower-modules.js";
 import { prepareCjsModuleGraph, usesCjsTopLevelThis } from "./lower-node-module.js";
+import {
+  cjsNamespaceModule,
+  inlineNamespaceRequireOf,
+  inlineProgramRequireOf,
+} from "./cjs-inline-require.js";
+import { tscInteropModuleOf } from "./cjs-tsc-interop.js";
+import { usesCjsExportsIdentity } from "./cjs-exports-object.js";
 import { registerBuiltinEventTargetClasses } from "./lower-event-target.js";
 import {
   type ClassInfo,
@@ -1863,6 +1870,9 @@ export class Lowerer {
   /** Per CommonJS file using top-level `this`: the global holding the
    * object that stands for its original exports (lowerCjsTopLevelThis). */
   readonly cjsExportsThis = new Map<ts.SourceFile, IrGlobal>();
+  /** Inline program-module require calls whose %init the enclosing member
+   * read or member call is already sequencing (cjs-inline-require.ts). */
+  readonly inlineRequireInitDone = new Set<ts.CallExpression>();
   /** Bindings whose unchecked string arithmetic can produce either a number
    * (NaN for an absent read) or a string. Preserve that result union at bare
    * reads instead of applying the checker-bare string narrowing adapter. */
@@ -3093,8 +3103,10 @@ export class Lowerer {
       ident.parent.name === ident
     ) {
       const recv = ident.parent.expression;
-      if (ts.isIdentifier(recv) && this.cjsLocalModuleBindingOf(recv)) {
-        const dep = this.localModuleBindingDepOf(recv);
+      if (this.cjsLocalModuleBindingOf(recv)) {
+        const dep = ts.isIdentifier(recv)
+          ? this.localModuleBindingDepOf(recv)
+          : this.cjsModuleRefDepOf(recv);
         const exported = dep ? this.cjsModuleExportSymbol(dep, ident.text) : undefined;
         // A createRequire call is typed as `any`, so tsgo can manufacture a
         // transient property symbol with no relation to the target module.
@@ -3486,6 +3498,21 @@ export class Lowerer {
     return dep;
   }
 
+  /** The table module a non-identifier module reference names: an inline
+   * `require("./x")` (cjs-inline-require.ts) or tsc's unstamped
+   * `x_1.default` interop read (cjs-tsc-interop.ts). */
+  cjsModuleRefDepOf(expr: ts.Expression): ts.SourceFile | null {
+    const inline = inlineNamespaceRequireOf(this, expr);
+    if (inline !== null) return inline.dep;
+    const interop = tscInteropModuleOf(this, expr);
+    return interop !== null && cjsNamespaceModule(this, interop.dep) ? interop.dep : null;
+  }
+
+  /** The table module a CommonJS module binding identifier names. */
+  cjsModuleBindingDepOf(expr: ts.Identifier): ts.SourceFile | null {
+    return this.localModuleBindingDepOf(expr);
+  }
+
   /** The compiled module behind a require-like namespace binding: an
    * ordinary CommonJS require declaration, a canonical createRequire
    * declaration, or an ESM default import of CommonJS. One resolver keeps
@@ -3498,6 +3525,10 @@ export class Lowerer {
     if (ts.isImportClause(decl)) return this.cjsDefaultImportDepOf(decl);
     if (!ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name) || !decl.initializer)
       return null;
+    {
+      const interop = tscInteropModuleOf(this, expr);
+      if (interop !== null) return cjsNamespaceModule(this, interop.dep) ? interop.dep : null;
+    }
     const directSpec = requireSpecOf(decl.initializer);
     if (directSpec !== null) {
       if (isJsonRequireDecl(this, decl)) return null;
@@ -3544,6 +3575,10 @@ export class Lowerer {
     if (wholeAssignment === undefined) return null;
     let rhs: ts.Expression = wholeAssignment.right;
     while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+    // A pure re-export (`module.exports = require("./core")`) is the inner
+    // module's export table, read like any namespace binding.
+    if (inlineProgramRequireOf(this, rhs) !== null && !this.globalsByDeclNode.has(wholeAssignment))
+      return null;
     if (ts.isIdentifier(rhs)) {
       const value = this.checker.getSymbolAtLocation(rhs);
       if (value) {
@@ -3596,7 +3631,9 @@ export class Lowerer {
    * symbols → resolveValueSymbol); the bare value keeps the
    * namespace-object fence, like ESM namespace imports of builtins. */
   cjsLocalModuleBindingOf(expr: ts.Expression): boolean {
-    if (!ts.isIdentifier(expr)) return false;
+    // An inline `require("./x")` over a table module reads its members like
+    // a binding (cjs-inline-require.ts sequences the module's %init).
+    if (!ts.isIdentifier(expr)) return this.cjsModuleRefDepOf(expr) !== null;
     const sym = this.checker.getSymbolAtLocation(expr);
     if (this.localModuleBindingDepOf(expr) === null) return false;
     if (this.createRequireWholeExportSymbolOf(expr) !== null) return false;
@@ -3609,6 +3646,8 @@ export class Lowerer {
     // the object literal) keep the namespace reading — member accesses
     // resolve through the table's property symbols.
     if (sym && sym.flags & ts.SymbolFlags.Alias) {
+      // `module.exports = TypeError`: the binding IS the builtin global.
+      if (this.isStdlibSymbol(this.checker.getAliasedSymbol(sym))) return false;
       const d = this.checker.declarationsOf(this.checker.getAliasedSymbol(sym))[0];
       if (d && (ts.isClassDeclaration(d) || ts.isFunctionDeclaration(d))) return false;
       if (d && ts.isVariableDeclaration(d)) {
@@ -3706,7 +3745,7 @@ export class Lowerer {
       const id = `%g.${tag}%loaded`;
       this.moduleGuardOf.set(fp.sf, id);
       this.globalsList.push({ id, name: "%loaded", type: BOOL, mutable: true });
-      if (usesCjsTopLevelThis(this, fp.sf)) {
+      if (usesCjsTopLevelThis(this, fp.sf) || usesCjsExportsIdentity(this, fp.sf)) {
         const exportsThis: IrGlobal = {
           id: `%g.${tag}%exportsThis`,
           name: "%exportsThis",
