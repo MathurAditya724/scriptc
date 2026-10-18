@@ -1065,3 +1065,52 @@ console.log(new Wrap({ a: 1 }));
     );
   });
 });
+
+describe("module exports that read this, called through the module binding (JS lane)", () => {
+  test("a require binding's member call is a named deferred fence", async () => {
+    // Node passes the exports object as `this` to `m.hello()`; the direct
+    // call has none to pass, so it refuses instead of reading another one.
+    const r = await compileAndRun(
+      "require-member-this",
+      `'use strict';
+const m = require('./lib.cjs');
+console.log(m.plain(21));
+console.log(m.hello());
+`,
+      "cjs",
+      {
+        "lib.cjs": `'use strict';
+exports.name = 'lib';
+exports.hello = function () { return 'hi from ' + this.name; };
+exports.plain = function (x) { return x * 2; };
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("42\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: calling a module export that reads 'this' through its module binding \('hello': .*\) is not supported yet \[SC1090 at .*require-member-this\.cjs:4\]\n$/,
+    );
+  });
+
+  test("a namespace import's member call is a named deferred fence", async () => {
+    const r = await compileAndRun(
+      "namespace-member-this",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.who());
+`,
+      "mjs",
+      {
+        "lib.mjs": `export function who() { return typeof this; }
+export function plain(x) { return x + 1; }
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("2\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: calling a module export that reads 'this' through its module binding \('who': .*\) is not supported yet \[SC1090 at .*namespace-member-this\.mjs:3\]\n$/,
+    );
+  });
+});
