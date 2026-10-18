@@ -652,6 +652,9 @@ ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*r
 ScrDyn *scr_dyn_new_str(ScrStr *s);
 ScrDyn *scr_dyn_new_arr(void);
 ScrDyn *scr_dyn_array_constructor(void);
+/* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
+ * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
+ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
 bool scr_dyn_arr_has_index(const ScrDyn *arr, size_t index);
 void scr_dyn_arr_push_hole(ScrDyn *arr);
 ScrDyn *scr_dyn_new_obj(void);

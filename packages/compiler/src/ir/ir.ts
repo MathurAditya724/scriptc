@@ -3214,9 +3214,10 @@ export type IrExpr =
   /** Keyed read on a dyn value — `pkg.name` / `pkg["k"]` / the
    * `pkg?.scripts` chain step on a JSON.parse result. `key` is
    * string-typed (a strLit for the dot form); `type` is always dyn. An
-   * OBJ receiver answers the member (+1) or the undefined singleton (the
-   * own-property answer — prototype members like `toString` answer
-   * undefined, SEMANTICS.md); ARR answers `length` and canonical
+   * OBJ receiver answers the member (+1), an inherited Object.prototype
+   * member (the Object constructor and the interned valueOf/toString/
+   * hasOwnProperty/propertyIsEnumerable values), or the undefined singleton;
+   * ARR answers `length` and canonical
    * in-range indices, STR answers `length` (UTF-16-exact), both
    * undefined otherwise; NUM/BOOL/BYTES answer undefined. An
    * undefined/null receiver THROWS the catchable Node-shaped TypeError

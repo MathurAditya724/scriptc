@@ -1450,8 +1450,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     {
       const sym = lowerer.checker.getSymbolAtLocation(expr);
       if (lowerer.isStdlibSymbol(sym) || expr.text === "globalThis") {
+        const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;
+        // Builtin constructors have real function values in both source
+        // languages (TypeScript reads them as dynamic values).
+        const constructorValue = builtinGlobalValue(canonical, loc);
+        if (constructorValue !== null) return constructorValue;
         if (isJsSourceFile(expr.getSourceFile())) {
-          const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;
           return { kind: "strLit", value: `[builtin ${canonical}]`, type: STRING, loc };
         }
         // The families with a WHY: each hint states what makes the
@@ -2349,7 +2353,14 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
             type: DYN,
             loc,
           };
-        return { kind: "strLit", value: `[builtin ${canonical}]`, type: STRING, loc };
+        return (
+          builtinGlobalValue(canonical, loc) ?? {
+            kind: "strLit",
+            value: `[builtin ${canonical}]`,
+            type: STRING,
+            loc,
+          }
+        );
       }
     }
     // A JS receiver whose CHECKER type has no mapping (`mustCallChecks
@@ -2423,6 +2434,45 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           kind: "dynKeyGet",
           value: lowerer.coerceToExpected(receiver, DYN),
           key: { kind: "strLit", value: "constructor", type: STRING, loc },
+          type: DYN,
+          loc,
+        };
+      }
+    }
+    // A plain record's inherited Object.prototype members READ as values
+    // (`o.constructor`, `o.valueOf`, `({}).toString`, the isPlainObject and
+    // deep-equal idioms): the record boxes into its dynamic view, whose
+    // read answers the interned Object constructor and Object.prototype
+    // methods — the same values `Object` and `Object.prototype.valueOf`
+    // read, so identity comparisons are exact. Calls keep their own
+    // lowerings; a record declaring the name reads its field.
+    if (
+      OBJECT_PROTOTYPE_VALUE_READS.has(expr.name.text) &&
+      !isCalleeOf(expr) &&
+      // `X.prototype.toString` keeps the builtin prototype-method lowering.
+      !(ts.isPropertyAccessExpression(expr.expression) && expr.expression.name.text === "prototype")
+    ) {
+      const receiver = tryLowerExpression(lowerer, expr.expression);
+      const name = expr.name.text;
+      const shape =
+        receiver?.type.kind === "record" ? lowerer.shapes.get(receiver.type.shapeId) : undefined;
+      const info =
+        receiver?.type.kind === "object" ? lowerer.classes.get(receiver.type.className) : undefined;
+      const inherits =
+        receiver?.type.kind === "dyn" ||
+        (shape !== undefined &&
+          !shape.tuple &&
+          !shape.fields.some((field) => field.name === name)) ||
+        (info !== undefined &&
+          name !== "constructor" &&
+          !info.fields.has(name) &&
+          !lowerer.findMethodOn(info, name) &&
+          !lowerer.findMethodOn(info, `get:${name}`));
+      if (receiver !== null && receiver !== undefined && inherits) {
+        return {
+          kind: "dynKeyGet",
+          value: lowerer.coerceToExpected(receiver, DYN),
+          key: { kind: "strLit", value: name, type: STRING, loc },
           type: DYN,
           loc,
         };
@@ -16261,5 +16311,58 @@ function isBuiltinModuleValueDecl(decl: ts.Node): boolean {
     (ts.isFunctionDeclaration(decl) ||
       ts.isClassDeclaration(decl) ||
       ts.isVariableDeclaration(decl))
+  );
+}
+
+/** The builtin constructors JavaScript sources read as real function
+ * values rather than identity tokens: the runtime interns one function per
+ * constructor, and dynamic values answer `.constructor` with the same one,
+ * so `o.constructor === Object` is an exact identity test. */
+const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
+  "Object",
+  "Function",
+  "Date",
+  "RegExp",
+  "Map",
+  "Set",
+  "Promise",
+  "WeakMap",
+  "WeakSet",
+]);
+
+/** The value a JavaScript source reads for the stdlib global `canonical`,
+ * or null when it stays an identity token. */
+export function builtinGlobalValue(canonical: string, loc: SrcLoc): IrExpr | null {
+  if (GLOBAL_CONSTRUCTOR_VALUES.has(canonical)) {
+    return {
+      kind: "libCall",
+      fn: "dyn.globalConstructor",
+      args: [{ kind: "strLit", value: canonical, type: STRING, loc }],
+      type: DYN,
+      loc,
+    };
+  }
+  return null;
+}
+
+/** Object.prototype members a plain record inherits, read as values. */
+const OBJECT_PROTOTYPE_VALUE_READS: ReadonlySet<string> = new Set([
+  "constructor",
+  "valueOf",
+  "toString",
+  "hasOwnProperty",
+  "propertyIsEnumerable",
+]);
+
+/** Whether `expr` is the callee of a call (`o.toString()`), which keeps its
+ * call lowering rather than reading the member as a value. */
+function isCalleeOf(expr: ts.PropertyAccessExpression): boolean {
+  let node: ts.Node = expr;
+  while (node.parent !== undefined && ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  return (
+    parent !== undefined &&
+    (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+    parent.expression === node
   );
 }

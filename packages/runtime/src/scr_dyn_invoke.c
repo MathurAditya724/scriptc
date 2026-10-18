@@ -1712,6 +1712,12 @@ static ScrDyn *dyn_builtin_method_call(ScrClosure *closure, ScrDyn *const *args,
 }
 
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method) {
+  /* Object.prototype's shared methods: the interned values dynamic reads
+   * of inherited members answer too. */
+  if (!strcmp(prototype->data, "Object")) {
+    ScrDyn *shared = scr_dyn_object_proto_method(method->data);
+    if (shared) return shared;
+  }
   if (!dyn_builtin_methods) {
     dyn_builtin_methods = scr_dyn_new_obj_null_proto();
     scr_atexit(dyn_builtin_methods_cleanup);

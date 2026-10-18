@@ -205,6 +205,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeUrlIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeDateIs": { argTypes: [DYN], result: BOOL },
+  /** A builtin constructor (`Object`, `Date`, `RegExp`, `Map`, `Set`,
+   * `Promise`, `WeakMap`, `WeakSet`) read as a JavaScript value: one
+   * interned function per name, the same one dynamic values answer for
+   * `.constructor`. The name is a compiler-chosen literal. */
+  "dyn.globalConstructor": { argTypes: [STRING], result: DYN },
   "date.nativeNew": { argTypes: [DYN], result: DYN },
   /** `new Date(year, monthIndex, ...)` in JavaScript: the argument array's
    * first seven values pass through ToNumber in order (later ones are
