@@ -2419,12 +2419,29 @@ export function collectClassShapeInner(
           ts.isPropertyDeclaration(member) &&
           !member.modifiers?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword)
         ) {
-          if (!isJsSourceFile(member.getSourceFile()))
-            lowerer.unsupported(
-              "SC1090",
-              memberName,
-              "redeclaring Error.cause (pass the cause in the Error constructor options)",
-            );
+          // A TypeScript redeclaration is the JavaScript field: Node
+          // defines the Error's own `cause` (undefined without an
+          // initializer) after super() returns. `declare` and `abstract`
+          // declarations are erased and define nothing. Every `.cause`
+          // read of an Error-rooted class is the checked-dynamic property
+          // (fieldTarget's errorCause container), so only types that read
+          // back unchanged from it are accepted.
+          if (!isJsSourceFile(member.getSourceFile())) {
+            if (
+              modifiers?.some(
+                (m) =>
+                  m.kind === ts.SyntaxKind.DeclareKeyword ||
+                  m.kind === ts.SyntaxKind.AbstractKeyword,
+              )
+            )
+              continue;
+            if (!lowerer.classFieldStoresDyn(lowerer.typeOf(member.name)))
+              lowerer.unsupported(
+                "SC1090",
+                memberName,
+                "redeclaring Error.cause with a type other than 'unknown' or 'object' (declare it 'cause?: unknown' and narrow at the read)",
+              );
+          }
           fieldOrder.push({
             name: "cause",
             type: DYN,
@@ -2914,7 +2931,7 @@ export function collectClassShapeInner(
             lowerer.unsupported(
               "SC1090",
               p.name,
-              "redeclaring Error.cause (pass the cause in the Error constructor options)",
+              "redeclaring Error.cause as a parameter property (declare 'cause?: unknown' and assign it in the constructor)",
             );
           }
           const shape = lowerer.paramShape(p);
