@@ -3163,13 +3163,11 @@ bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (PROBE("isMapIterator")) return scr_native_iterator_over(value, 2);
   if (PROBE("isSetIterator")) return scr_native_iterator_over(value, 3);
   if (PROBE("isKeyObject")) return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_KEY_OBJECT;
-  /* Boxed primitives, BigInt64Array, BigUint64Array, Float16Array, CryptoKey
-   * and external values cannot be created here, so no value has these
-   * brands. */
+  /* Boxed primitives, BigInt64Array, BigUint64Array, CryptoKey and external
+   * values cannot be created here, so no value has these brands. */
   if (PROBE("isNumberObject") || PROBE("isStringObject") || PROBE("isBooleanObject") ||
       PROBE("isBigIntObject") || PROBE("isSymbolObject") || PROBE("isBoxedPrimitive") ||
-      PROBE("isBigInt64Array") || PROBE("isBigUint64Array") || PROBE("isFloat16Array") ||
-      PROBE("isCryptoKey") || PROBE("isExternal"))
+      PROBE("isBigInt64Array") || PROBE("isBigUint64Array") || PROBE("isCryptoKey") || PROBE("isExternal"))
     return false;
   if (PROBE("isNativeError")) {
     ScrError *error = scr_errdyn_err_of(value);

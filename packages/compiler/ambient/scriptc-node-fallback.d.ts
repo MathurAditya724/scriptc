@@ -3280,7 +3280,6 @@ declare module "util/types" {
   export function isBoxedPrimitive(value: unknown): boolean;
   export function isBigInt64Array(value: unknown): value is BigInt64Array;
   export function isBigUint64Array(value: unknown): value is BigUint64Array;
-  export function isFloat16Array(value: unknown): boolean;
   export function isCryptoKey(value: unknown): boolean;
   export function isExternal(value: unknown): boolean;
 }
