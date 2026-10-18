@@ -24,6 +24,13 @@ import {
   lowerZlibStreamMethodCall,
 } from "./builtins/compression.js";
 import type { Lowerer } from "./lowerer.js";
+import {
+  inlineNamespaceRequireOf,
+  lowerInlineRequireValue,
+  lowerUncompiledRequireCall,
+  lowerWithInlineRequireInit,
+} from "./cjs-inline-require.js";
+import { cjsExportCallIgnoresThis, cjsInFileExportGlobalOf } from "./cjs-exports-object.js";
 import { lowerGenMethodCall } from "./lower-generators.js";
 import { lowerClassSymbolMethodCall } from "./symbol-methods.js";
 import { errorToStringCall } from "./error-methods.js";
@@ -238,6 +245,32 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const json = lowerJsonRequireCall(lowerer, expr);
   if (json) return json;
 
+  // Inline require() of a program module (cjs-inline-require.ts): a
+  // member call over its export table resolves like a binding's member
+  // call after the module's %init at this position; the require itself
+  // as a value answers the module's whole-export value.
+  if (ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken) {
+    const req = inlineNamespaceRequireOf(lowerer, expr.expression.expression);
+    if (req !== null && !lowerer.inlineRequireInitDone.has(req.call)) {
+      // Node calls the member with `this` bound to the module's exports.
+      if (
+        ts.isIdentifier(expr.expression.name) &&
+        !cjsExportCallIgnoresThis(lowerer, req.dep, expr.expression.name.text)
+      ) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          `calling '${expr.expression.name.text}' through require(${JSON.stringify(req.spec)}) when the function may read 'this' (Node binds it to the module's exports object, which compiles to a static table — bind the module and call a local function instead)`,
+        );
+      }
+      return lowerWithInlineRequireInit(lowerer, req, () => lowerCall(lowerer, expr));
+    }
+  }
+  {
+    const inlineValue = lowerInlineRequireValue(lowerer, expr);
+    if (inlineValue) return inlineValue;
+  }
+
   // A call whose chain ROOTS at an ambient-undefined name (`declare
   // const value: Y | undefined; value?.foo("a")`, `declare function
   // chain...; chain(o).mapValues(f).value()`, a trap binding's read):
@@ -313,6 +346,12 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const resolved =
       lowerImportMetaResolveCall(lowerer, expr) ?? lowerRequireResolveCall(lowerer, expr);
     if (resolved) return resolved;
+  }
+  // Any other require() call of the CommonJS global: MODULE_NOT_FOUND for
+  // packages nothing installed resolves, a named refusal otherwise.
+  {
+    const uncompiled = lowerUncompiledRequireCall(lowerer, expr);
+    if (uncompiled) return uncompiled;
   }
 
   // `process.getuid?.()` — intercepted BEFORE the optional-chain
@@ -1277,6 +1316,32 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.badType(expr.expression, lowerer.typeOf(expr.expression));
     const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
     return { kind: "callValue", callee, args, type: callee.type.ret, loc };
+  }
+  // `exports.f(x)` / `module.exports.f(x)` inside the module: a call of
+  // the member's export global (cjs-exports-object.ts), the value every
+  // `exports.f =` statement assigns.
+  if (ts.isPropertyAccessExpression(expr.expression) && !expr.questionDotToken) {
+    const g = cjsInFileExportGlobalOf(lowerer, expr.expression);
+    if (
+      g &&
+      (g.type.kind === "func" || g.type.kind === "dyn") &&
+      !cjsExportCallIgnoresThis(lowerer, expr.getSourceFile(), expr.expression.name.text)
+    ) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `calling '${expr.expression.getText()}' through the module's exports object when the function may read 'this' (Node binds it to the exports object, which compiles to a static table — call a local function instead)`,
+      );
+    }
+    if (g && (g.type.kind === "func" || g.type.kind === "dyn")) {
+      const callee: IrExpr = { kind: "varRef", localId: g.id, type: g.type, loc };
+      const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
+      if (checked) return checked;
+      if (callee.type.kind === "func") {
+        const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
+        return { kind: "callValue", callee, args, type: callee.type.ret, loc };
+      }
+    }
   }
   if (ts.isPropertyAccessExpression(expr.expression)) {
     const intrinsic =
