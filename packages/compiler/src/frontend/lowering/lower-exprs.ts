@@ -5332,6 +5332,27 @@ export function lowerIntrinsicProperty(
         loc: locOf(expr),
       };
     }
+    // The flag getters answer whether `flags` holds the flag's letter.
+    const flag = REGEX_FLAG_GETTERS.get(name);
+    if (flag !== undefined) {
+      const loc = locOf(expr);
+      const flags: IrExpr = {
+        kind: "regexIntrinsic",
+        method: "flags",
+        receiver: strictReceiver({ kind: "regex" }),
+        args: [],
+        type: STRING,
+        loc,
+      };
+      return {
+        kind: "strIntrinsic",
+        method: "includes",
+        receiver: flags,
+        args: [{ kind: "strLit", value: flag, type: STRING, loc }],
+        type: BOOL,
+        loc,
+      };
+    }
     if (name === "test") {
       lowerer.unsupported("SC1090", expr, "regex methods as values (call 'test' directly)");
     }
@@ -13251,10 +13272,22 @@ function lowerRuntimeKeyIn(
   return { kind: "call", callee: helper, args: [keyIr, recv], type: BOOL, loc };
 }
 
+/** RegExp.prototype's flag getters and the flag each one reads. */
+const REGEX_FLAG_GETTERS: ReadonlyMap<string, string> = new Map([
+  ["hasIndices", "d"],
+  ["global", "g"],
+  ["ignoreCase", "i"],
+  ["multiline", "m"],
+  ["dotAll", "s"],
+  ["unicode", "u"],
+  ["unicodeSets", "v"],
+  ["sticky", "y"],
+]);
+
 /** A regex literal `/ab+c/gi` → regexLit (fresh state per evaluation,
  * shared bytecode per (pattern, flags) pair). The TS parser has already syntax-checked the literal;
- * what remains here is the flag-alphabet fence (d and v are
- * declared-valid TS flags outside this slice). Named capture groups
+ * what remains here is the flag-alphabet fence (d is a
+ * declared-valid TS flag outside this slice). Named capture groups
  * `(?<name>...)` and `\k<name>` backreferences compile — libregexp
  * executes them natively, replace templates resolve `$<name>` at
  * runtime, and `.groups` reads desugar at their access sites
@@ -13265,20 +13298,19 @@ export function lowerRegexLiteral(lowerer: Lowerer, expr: ts.RegularExpressionLi
   const text = expr.text;
   const lastSlash = text.lastIndexOf("/");
   const pattern = text.slice(1, lastSlash);
-  const flags = text.slice(lastSlash + 1);
-  for (const f of flags) {
-    if (!"gimsuy".includes(f)) {
+  const written = text.slice(lastSlash + 1);
+  for (const f of written) {
+    if (!"gimsuvy".includes(f)) {
       lowerer.unsupported(
         "SC1120",
         expr,
-        f === "d"
-          ? "the regex 'd' flag (match indices)"
-          : f === "v"
-            ? "the regex 'v' flag (unicode sets)"
-            : `the regex '${f}' flag`,
+        f === "d" ? "the regex 'd' flag (match indices)" : `the regex '${f}' flag`,
       );
     }
   }
+  // `flags`, `toString()` and inspection list the flags in getter order,
+  // whatever order the literal spells them in.
+  const flags = [..."gimsuvy"].filter((f) => written.includes(f)).join("");
   return { kind: "regexLit", pattern, flags, type: REGEX, loc: locOf(expr) };
 }
 
