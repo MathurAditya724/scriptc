@@ -232,6 +232,21 @@ export function compareArtifact(kind, baseline, candidate) {
 
 /* ── executables ───────────────────────────────────────────────────────── */
 
+/** The output of `nm` for `binary`, from its spawnSync result. Throws when
+ * nm could not start, was killed by a signal, or exited with a non-zero
+ * status, because the symbol checks would otherwise read an empty list. */
+export function nmOutput(binary, result) {
+  if (result.error) throw new Error(`nm ${binary}: ${result.error.message}`);
+  if (result.signal) throw new Error(`nm ${binary}: killed by ${result.signal}`);
+  if (result.status !== 0) {
+    const detail = typeof result.stderr === "string" ? result.stderr.trim() : "";
+    throw new Error(
+      `nm ${binary}: exited with status ${result.status}${detail ? `: ${detail}` : ""}`,
+    );
+  }
+  return result.stdout;
+}
+
 /** Defined symbols from `nm -S` output (GNU/LLVM nm, address size type
  * name) or `nm` output without sizes (Apple, address type name). */
 export function parseNm(text) {

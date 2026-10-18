@@ -34,6 +34,7 @@ import {
   compareExecutables,
   dynamicTierSymbols,
   median,
+  nmOutput,
   parseNm,
   programVerdict,
   timeRatio,
@@ -300,7 +301,7 @@ function nm(binary) {
     encoding: "utf8",
     maxBuffer: 256 * 1024 * 1024,
   });
-  const text = result.status === 0 ? result.stdout : "";
+  const text = nmOutput(binary, result);
   nmCache.set(binary, text);
   return text;
 }

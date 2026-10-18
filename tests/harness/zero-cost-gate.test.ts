@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { expect, test } from "vitest";
 import {
   cachegrindCounts,
@@ -5,6 +6,7 @@ import {
   compareCounts,
   compareExecutables,
   dynamicTierSymbols,
+  nmOutput,
   programVerdict,
 } from "../../scripts/zero-cost-compare.mjs";
 
@@ -110,6 +112,19 @@ test("the zero-cost gate compares executables and instruction counts per functio
     total: { baseline: 110, candidate: 114 },
     deltas: [{ name: "main", delta: 4 }],
   });
+});
+
+test("the zero-cost gate throws when nm does not list a binary's symbols", () => {
+  const ok = { status: 0, signal: null, stdout: "0000000000001000 T main\n", stderr: "" };
+  expect(nmOutput("prog", ok)).toBe(ok.stdout);
+  const missing = spawnSync("scriptc-missing-nm", ["prog"], { encoding: "utf8" });
+  expect(() => nmOutput("prog", missing)).toThrow(/^nm prog: .*ENOENT/);
+  expect(() =>
+    nmOutput("prog", { status: null, signal: "SIGKILL", stdout: "", stderr: "" }),
+  ).toThrow("nm prog: killed by SIGKILL");
+  expect(() =>
+    nmOutput("prog", { status: 1, signal: null, stdout: "", stderr: "nm: prog: no symbols\n" }),
+  ).toThrow("nm prog: exited with status 1: nm: prog: no symbols");
 });
 
 test("the zero-cost gate recognizes dynamic-tier runtime symbols", () => {
