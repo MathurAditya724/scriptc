@@ -78,7 +78,7 @@ import {
   stdlibGlobalNameOf,
 } from "./surfaces.js";
 import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
-import { isProvenanceSourceFile } from "../provenance-registry.js";
+import { isSourceOverlayFile } from "../source-overlays.js";
 import {
   ambientUndefVarRootOf,
   lowerImportEquals,
@@ -603,7 +603,7 @@ function pureAnnotatedDeadConst(stmt: ts.Statement, sf: ts.SourceFile): boolean 
  * shape. */
 export function provenanceElidedConstDecl(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
   const sf = decl.getSourceFile();
-  if (!isProvenanceSourceFile(sf.fileName)) return false;
+  if (!isSourceOverlayFile(sf.fileName)) return false;
   const stmt = decl.parent?.parent;
   if (!ts.isVariableStatement(stmt) || !pureAnnotatedDeadConst(stmt, sf)) return false;
   const diagsBefore = lowerer.diags.length;

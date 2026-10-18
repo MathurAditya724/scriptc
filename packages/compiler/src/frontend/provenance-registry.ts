@@ -1,3 +1,7 @@
+import { realpathSync } from "node:fs";
+import { relative } from "node:path";
+import { installSourceOverlays, type SourceOverlayInstance } from "./source-overlays.js";
+
 export interface ProvenancePackageSource {
   /** Package name ("cookie"). */
   name: string;
@@ -15,6 +19,8 @@ export interface ProvenancePackageSource {
   /** Absolute path of the package's directory inside the cached source
    * tree (== the tree root except in monorepos). */
   dir: string;
+  /** The installed (published) package directory the sources replace. */
+  installedDir: string;
   /** specifier → absolute mapped source file ("cookie" → …/src/index.ts). */
   entries: Record<string, string>;
 }
@@ -26,64 +32,56 @@ export interface ProvenanceSources {
   notes: string[];
 }
 
-interface RegistryState {
-  bySpecifier: Map<string, string>;
-  packageDirs: string[];
-  sources: ProvenanceSources;
-}
-
-let state: RegistryState | null = null;
-
-/** Installs the resolved provenance sources for the current compile.
- * Passing null (or an empty set) clears the registry. */
+/** Installs the pilot's resolved provenance sources for the current
+ * compile as a source-overlay set (source-overlays.ts) — the pilot is one
+ * more overlay producer, keyed like a manifest by each package's installed
+ * directory. Passing null clears the overlay registry. The set never joins
+ * a build cache: the pilot resolves sources from the network. */
 export function setProvenanceSources(sources: ProvenanceSources | null): void {
-  if (sources === null || sources.packages.length === 0) {
-    state = sources === null ? null : { bySpecifier: new Map(), packageDirs: [], sources };
+  if (sources === null) {
+    installSourceOverlays(null);
     return;
   }
-  const bySpecifier = new Map<string, string>();
-  const packageDirs: string[] = [];
+  const instances: SourceOverlayInstance[] = [];
+  const notes = [...sources.notes];
   for (const pkg of sources.packages) {
-    packageDirs.push(pkg.dir.endsWith("/") ? pkg.dir : `${pkg.dir}/`);
-    for (const [spec, file] of Object.entries(pkg.entries)) {
-      bySpecifier.set(spec, file);
+    const key = realDirOrNull(pkg.installedDir);
+    const overlayDir = realDirOrNull(pkg.dir);
+    if (key === null || overlayDir === null) {
+      notes.push(`${pkg.name}: installed or source directory missing; published package used`);
+      continue;
     }
+    const exports: Record<string, string> = {};
+    const nameLen = pkg.name.split("/").length;
+    for (const [spec, file] of Object.entries(pkg.entries)) {
+      const parts = spec.split("/");
+      const subpath = parts.length === nameLen ? "." : `./${parts.slice(nameLen).join("/")}`;
+      exports[subpath] = `./${relative(overlayDir, realpathSync(file)).split("\\").join("/")}`;
+    }
+    instances.push({
+      key,
+      name: pkg.name,
+      version: pkg.version,
+      overlayDir,
+      exports,
+      origin: `${pkg.repo
+        .replace(/^git\+/, "")
+        .replace(/^https:\/\//, "")
+        .replace(/@refs\/.*$/, "")} @ ${pkg.commit.slice(0, 12)}`,
+    });
   }
-  state = { bySpecifier, packageDirs, sources };
+  installSourceOverlays({
+    origin: "--provenance-sources",
+    cacheIdentity: null,
+    instances,
+    notes,
+  });
 }
 
-/** The active sources (for reports), or null when the flag is off. */
-export function provenanceSources(): ProvenanceSources | null {
-  return state?.sources ?? null;
-}
-
-/** The mapped source entry for a bare specifier, or null. */
-export function provenanceEntryFor(specifier: string): string | null {
-  return state?.bySpecifier.get(specifier) ?? null;
-}
-
-/** True when any provenance package is registered. */
-export function provenanceActive(): boolean {
-  return state !== null && state.bySpecifier.size > 0;
-}
-
-/** True when `fileName` lives inside a registered package's source tree —
- * the gate for the third-party-source policies (the pure-annotated
- * dead-const elision, the per-file statement attribution). */
-export function isProvenanceSourceFile(fileName: string): boolean {
-  if (state === null) return false;
-  for (const dir of state.packageDirs) {
-    if (fileName.startsWith(dir)) return true;
+function realDirOrNull(path: string): string | null {
+  try {
+    return realpathSync(path).split("\\").join("/").replace(/\/+$/, "");
+  } catch {
+    return null;
   }
-  return false;
-}
-
-/** tsconfig "paths" for the registered entries — loadProgram feeds these
- * to tsgo so the checker resolves registered bare specifiers to the same
- * source files the preflight resolver answers. */
-export function provenancePaths(): Record<string, string[]> | null {
-  if (state === null || state.bySpecifier.size === 0) return null;
-  const paths: Record<string, string[]> = {};
-  for (const [spec, file] of state.bySpecifier) paths[spec] = [file];
-  return paths;
 }

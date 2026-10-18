@@ -13,10 +13,16 @@ import { buildEnvelope } from "../diagnostics/envelope.js";
 import { renderWarnings } from "../diagnostics/render.js";
 import { isNativeOptimization } from "../backend/optimization.js";
 import { setProvenanceSources } from "../frontend/provenance-registry.js";
+import {
+  findSourceManifest,
+  installSourceOverlays,
+  loadSourceManifest,
+  sourceOverlayFallbacks,
+} from "../frontend/source-overlays.js";
 import type { CliHost, NativeCacheWarmProfile } from "./host.js";
 import { resolveOutputOptions } from "./output-options.js";
 import { selectOutputPaths } from "./paths.js";
-import { CLI_OPTIONS, USAGE } from "./usage.js";
+import { CLI_OPTIONS, normalizeCliArgs, USAGE } from "./usage.js";
 
 /* The exit discipline: NEVER process.exit() after writing output. stdout/
  * stderr to a PIPE are async streams — process.exit() drops whatever libuv
@@ -46,7 +52,12 @@ function parseCli(
   typeof parseArgs<{ options: typeof CLI_OPTIONS; allowPositionals: true; allowNegative: true }>
 > {
   try {
-    return parseArgs({ args, options: CLI_OPTIONS, allowPositionals: true, allowNegative: true });
+    return parseArgs({
+      args: normalizeCliArgs(args),
+      options: CLI_OPTIONS,
+      allowPositionals: true,
+      allowNegative: true,
+    });
   } catch (err) {
     // parseArgs appends a paragraph about `--` and positionals to the
     // unknown-option message; the first sentence is the part that names
@@ -54,6 +65,34 @@ function parseCli(
     const raw = err instanceof Error ? err.message : String(err);
     const msg = raw.split("\n")[0]!.split(". ")[0]!;
     fail(`scriptc: ${msg}\n\n${USAGE}`);
+  }
+}
+
+/** --sources: reads the manifest (the given path, or the nearest
+ * `.scriptc-pm/manifest.json` above `anchor`) and installs its overlays
+ * for the compile. Without the flag, any previous set is cleared. */
+function installSourcesFlag(value: string | undefined, anchor: string): void {
+  installSourceOverlays(null);
+  if (value === undefined) return;
+  const manifestPath = value !== "" ? resolve(value) : findSourceManifest(anchor);
+  if (manifestPath === null) {
+    fail(
+      `scriptc: --sources found no .scriptc-pm/manifest.json above ${dirname(anchor)} (run scriptc-pm sync, or pass --sources=<manifest>)`,
+    );
+  }
+  try {
+    installSourceOverlays(loadSourceManifest(manifestPath));
+  } catch (e) {
+    fail(`scriptc: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** One stderr line per overlay instance the build fell back on. */
+function reportSourceFallbacks(): void {
+  for (const f of sourceOverlayFallbacks()) {
+    process.stderr.write(
+      `scriptc: sources: ${f.name}@${f.version} compiles from published JS (source overlay dropped: ${f.reason})\n`,
+    );
   }
 }
 
@@ -72,6 +111,9 @@ async function main(args: string[], host: CliHost): Promise<number> {
   }
 
   const [command, inputArg] = positionals;
+  if (values.sources !== undefined && values["provenance-sources"]) {
+    fail(`--sources and --provenance-sources are alternatives\n\n${USAGE}`);
+  }
   if (command === "cache") {
     if (inputArg !== "warm")
       fail(`unknown cache command "${inputArg ?? ""}" (supported: warm)\n\n${USAGE}`);
@@ -88,6 +130,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values["detached-exit"] ||
       (values["npm-static"] ?? []).length > 0 ||
       values["provenance-sources"] ||
+      values.sources !== undefined ||
       externalTypeArgs.length > 0 ||
       values.out !== undefined ||
       values["emit-ir"] ||
@@ -159,6 +202,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       );
     }
     const profilePath = resolve(profileArg);
+    installSourcesFlag(values.sources, profilePath);
     const libOutDir = values.out
       ? dirname(resolve(values.out))
       : join(dirname(profilePath), ".scriptc");
@@ -169,6 +213,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       emitIr: values["emit-ir"],
       sanitize: values.sanitize,
     });
+    reportSourceFallbacks();
     if (!result.ok) {
       const color = process.stderr.isTTY ?? false;
       process.stderr.write(
@@ -322,6 +367,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
   // source "paths" at creation): attestations and source trees fetch (or
   // ride the content-addressed cache / the offline manifest), the registry
   // installs, and every fallback prints as a note — never a failure.
+  installSourcesFlag(values.sources, input);
   const provenance = values["provenance-sources"]
     ? await host.resolveProvenanceSources(input)
     : null;
@@ -387,6 +433,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(printNativeLinkInfo ? { nativeLinkInfo: true } : {}),
     });
+    if (command === "build") reportSourceFallbacks();
     if (!result.ok) {
       if (printDiagnostics) {
         const envelope = buildEnvelope({

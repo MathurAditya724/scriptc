@@ -19,6 +19,7 @@ import {
   frontendInputsStillMatch,
   type FrontendInputSnapshot,
 } from "../frontend/input-tracker.js";
+import { sourceOverlayCacheIdentity } from "../frontend/source-overlays.js";
 
 const SCHEMA = "scriptc.coverage-verdict.v2";
 
@@ -97,6 +98,10 @@ export function verdictKey(
       return null;
     }
   }
+  // --sources: the overlay set's identity joins the key; a set that cannot
+  // be cached (the network-fetching pilot) never replays.
+  const overlays = sourceOverlayCacheIdentity();
+  if (overlays === null) return null;
   const npmStatic =
     opts.npmStatic === undefined
       ? ""
@@ -120,13 +125,14 @@ export function verdictKey(
       opts.ffiProfilePath ?? "",
       ffi,
       external.join("\n"),
+      ...(overlays !== undefined ? [`sources:${overlays}`] : []),
     ].join("\0"),
   );
 }
 
 function cacheable(coverage: AnalyzeResult["coverage"]): CachedCoverage | null {
   if (
-    coverage.provenance !== undefined ||
+    coverage.sourceOverlays !== undefined ||
     coverage.statsByFile !== undefined ||
     coverage.provenanceElided !== undefined
   )

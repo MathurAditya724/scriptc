@@ -1,0 +1,1 @@
+{"name":"spm-fixture","private":true,"type":"module","dependencies":{"@openfeature/core":"1.9.2","@openfeature/server-sdk":"1.18.0","mitt":"3.0.1","path-to-regexp":"6.3.0"}}

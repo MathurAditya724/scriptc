@@ -84,6 +84,7 @@ test.each([
     sourceTexts: () => new Map(),
     npmStatic: [],
     npmImportSites: new Map(),
+    sourceOverlays: () => null,
     dispose: () => {},
     lower: () => ({
       module,
@@ -222,6 +223,7 @@ test.each([false, true])(
       sourceTexts: () => new Map(),
       npmStatic: [],
       npmImportSites: new Map(),
+      sourceOverlays: () => null,
       dispose,
       lower: () => ({
         module,

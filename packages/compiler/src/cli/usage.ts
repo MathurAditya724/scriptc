@@ -59,6 +59,13 @@ Options:
                      direct import: own .d.ts, unminified JS, no build-transform
                      markers). Packages that fail preflight are refused with a
                      diagnostic. Eligible dependencies compile automatically.
+      --sources[=<manifest>]
+                     EXPERIMENTAL: compile augmented npm package instances
+                     from the TypeScript source overlays a scriptc-pm
+                     manifest describes (default: the nearest
+                     .scriptc-pm/manifest.json above the entry). An overlay
+                     that does not compile falls back to the package's
+                     published JS
       --provenance-sources
                      EXPERIMENTAL: compile npm dependencies from their
                      provenance-attested SOURCE (fetched at the attested
@@ -72,6 +79,22 @@ Options:
   -h, --help         show this help
   -v, --version      print the version
 `;
+
+/** `--sources` takes an optional value (`--sources` or `--sources=<path>`),
+ * which parseArgs cannot express: the bare flag becomes an empty value,
+ * meaning "find the manifest". A separate `--sources <path>` argument is
+ * not accepted, so a following positional is never swallowed. */
+export function normalizeCliArgs(args: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const arg of args) {
+    if (arg === "--") {
+      out.push(...args.slice(out.length));
+      break;
+    }
+    out.push(arg === "--sources" ? "--sources=" : arg);
+  }
+  return out;
+}
 
 export const CLI_OPTIONS = {
   out: { type: "string", short: "o" },
@@ -89,6 +112,7 @@ export const CLI_OPTIONS = {
   ffi: { type: "string" },
   "npm-static": { type: "string", multiple: true },
   "provenance-sources": { type: "boolean", default: false },
+  sources: { type: "string" },
   "external-types": { type: "string", multiple: true },
   lib: { type: "boolean", default: false },
   profile: { type: "string" },

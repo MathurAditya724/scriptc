@@ -2,7 +2,6 @@ import { packageNameOfSpecifier } from "./workspace-registry.js";
 import { npmStaticRefusalDiag } from "../diagnostics/diagnostic.js";
 import type { AnalyzeOptions, AnalyzeResult } from "../compile-types.js";
 import { loadFfiProfile, type FfiProfile } from "../ffi/ffi-manifest.js";
-import { provenanceSources } from "./provenance-registry.js";
 import type { FrontendFactory } from "./pipeline.js";
 
 /** Analysis without codegen: how much of the program compiles statically.
@@ -91,7 +90,7 @@ export function analyzeWithFrontend(
       targetPlatform: buildPlatform,
       ...(ffi !== null ? { ffiImports: ffi.functions } : {}),
     });
-    const provenance = provenanceSources();
+    const sourceOverlays = fe.sourceOverlays();
     return {
       coverage: {
         file: entryPath,
@@ -104,9 +103,9 @@ export function analyzeWithFrontend(
         ...(lowered.divergences !== undefined ? { divergences: lowered.divergences } : {}),
         ...(lowered.unreached ? { unreached: lowered.unreached } : {}),
         ...(fe.npmStatic.length > 0 ? { npmStatic: fe.npmStatic } : {}),
-        // --provenance-sources: the per-package attribution inputs (the
-        // report aggregates statsByFile under each package's source dir).
-        ...(provenance !== null ? { provenance } : {}),
+        // --sources: the per-package attribution inputs (the report
+        // aggregates statsByFile under each overlay dir).
+        ...(sourceOverlays !== null ? { sourceOverlays } : {}),
         ...(lowered.statsByFile ? { statsByFile: lowered.statsByFile } : {}),
         ...(lowered.provenanceElided ? { provenanceElided: lowered.provenanceElided } : {}),
         preflightFailed: false,

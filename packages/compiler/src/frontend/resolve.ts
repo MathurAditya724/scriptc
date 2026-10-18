@@ -21,7 +21,12 @@ import {
   npmStaticPackageOfPath,
   npmStaticTransformPkgJson,
 } from "./npm-static.js";
-import { provenanceEntryFor } from "./provenance-registry.js";
+import {
+  activeSourceOverlayAt,
+  activeSourceOverlays,
+  noteSourceOverlayProblem,
+  sourceOverlayNameActive,
+} from "./source-overlays.js";
 import {
   trackedAccessibleEntries,
   trackedDirectoryExists,
@@ -599,13 +604,6 @@ export function nearestInvalidPackageJsonPath(fromFile: string): string | null {
  * Relative specifiers, real node_modules packages, and builtins are other
  * resolvers' business; callers try those first. */
 export function resolveProjectImport(fromFile: string, specifier: string): string | null {
-  // --provenance-sources (flag-gated; the registry is empty otherwise): a
-  // registered bare specifier answers its attested SOURCE entry — the one
-  // chokepoint that makes preflight's user-module edges, the module
-  // order, and the CJS link check all agree the package compiles as
-
-  const provenance = provenanceEntryFor(specifier);
-  if (provenance !== null) return normalizeResolvedPath(provenance);
   const viaPaths = resolveViaProjectPaths(specifier);
   if (viaPaths !== null) return normalizeResolvedPath(viaPaths);
   const pkgDir = nearestPkgDir(dirname(resolve(fromFile)));
@@ -653,6 +651,11 @@ export function resolveProjectModule(fromFile: string, specifier: string): strin
   }
   if (specifier.startsWith("node:")) return null;
   return (
+    // --sources: an import landing in an augmented instance answers the
+    // instance's SOURCE entry — the one chokepoint that makes preflight's
+    // user-module edges, the module order, and the CJS link check agree
+    // the package compiles as program modules.
+    resolveSourceOverlayModule(fromFile, specifier) ??
     resolveProjectImport(fromFile, specifier) ??
     resolveWorkspaceSourceModule(fromFile, specifier)?.typesFile ??
     null
@@ -956,6 +959,105 @@ export function resolveBareModule(
   if (mode === "runtime-source") return passOnce("source");
   if (mode === "runtime-js") return passOnce("js");
   return npmStatic ? passOnce("js") : (passOnce("types") ?? passOnce("js"));
+}
+
+/** The conditions an overlay's exports resolve with. Overlays point every
+ * condition at source, so "types" is accepted alongside Node's runtime
+ * conditions for the edge kind. */
+const OVERLAY_IMPORT_CONDITIONS = new Set(["types", "import", "node", "default"]);
+const OVERLAY_REQUIRE_CONDITIONS = new Set(["types", "require", "node", "default"]);
+
+/** --sources: resolves a bare specifier to an augmented package
+ * instance's SOURCE file, or null. Node's node_modules walk from the
+ * importing file finds the package directory; when its realpath is an
+ * active instance, the subpath resolves against the instance's exports
+ * inside its overlay directory. Problems that would make the checker and
+ * this resolver disagree (a missing export, a second installed copy the
+ * checker's global "paths" would also redirect) are noted for the
+ * frontend, which drops the instance and reloads. */
+export function resolveSourceOverlayModule(
+  fromFile: string,
+  specifier: string,
+  resolutionKind: "import" | "require" = "import",
+): string | null {
+  if (
+    isRelativeSpecifier(specifier) ||
+    isAbsolute(specifier) ||
+    specifier.startsWith("node:") ||
+    specifier.startsWith("#")
+  ) {
+    return null;
+  }
+  const pkgName = packageNameOfSpecifier(specifier);
+  if (!sourceOverlayNameActive(pkgName)) return null;
+  const rest = specifier.slice(pkgName.length).replace(/^\//, "");
+  const subpath = rest === "" ? "." : `./${rest}`;
+  for (let dir = dirname(resolve(fromFile)); ;) {
+    const candidate = join(dir, "node_modules", pkgName);
+    if (isDirectory(candidate)) {
+      const real = realpathOr(candidate);
+      const instance = activeSourceOverlayAt(real);
+      if (instance === null) {
+        for (const other of activeSourceOverlays()) {
+          if (other.name !== pkgName) continue;
+          noteSourceOverlayProblem(
+            other.key,
+            `ambiguous-name: another installed copy of ${pkgName} (${real}) is imported from ${fromFile}`,
+          );
+        }
+        return null;
+      }
+      const target = resolveExports(
+        instance.exports,
+        subpath,
+        resolutionKind === "require" ? OVERLAY_REQUIRE_CONDITIONS : OVERLAY_IMPORT_CONDITIONS,
+      );
+      if (target === null) {
+        noteSourceOverlayProblem(instance.key, `'${specifier}' is not exported by the overlay`);
+        return null;
+      }
+      const file = join(instance.overlayDir, target);
+      if (!isFile(file)) {
+        noteSourceOverlayProblem(
+          instance.key,
+          `'${specifier}' maps to ${target}, which does not exist in the overlay`,
+        );
+        return null;
+      }
+      return normalizeResolvedPath(file);
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/** tsconfig "paths" for the active overlays: each exported subpath of an
+ * instance maps its bare specifier to the instance's source file, so the
+ * checker resolves the same files resolveSourceOverlayModule answers.
+ * Global by name, which is why names with several augmented instances
+ * start dropped (source-overlays.ts). */
+export function sourceOverlayPaths(): Record<string, string[]> | null {
+  const active = activeSourceOverlays();
+  if (active.length === 0) return null;
+  const paths: Record<string, string[]> = {};
+  for (const instance of active) {
+    const ex = instance.exports;
+    const keys =
+      ex !== null &&
+      typeof ex === "object" &&
+      !Array.isArray(ex) &&
+      Object.keys(ex).every((k) => k.startsWith("."))
+        ? Object.keys(ex)
+        : ["."];
+    for (const key of keys) {
+      const target = resolveExports(ex, key, OVERLAY_IMPORT_CONDITIONS);
+      if (target === null) continue;
+      const specifier = key === "." ? instance.name : `${instance.name}/${key.slice(2)}`;
+      paths[specifier] = [normalizeResolvedPath(join(instance.overlayDir, target))];
+    }
+  }
+  return paths;
 }
 
 export function resolveWorkspaceSourceModule(

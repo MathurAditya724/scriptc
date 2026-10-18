@@ -22,7 +22,7 @@ import {
   type FrontendInputExclusions,
   trackedReadFile,
 } from "../frontend/input-tracker.js";
-import { provenanceSources } from "../frontend/provenance-registry.js";
+import { sourceOverlayCacheIdentity } from "../frontend/source-overlays.js";
 import { prepareLibrary } from "../library/prepare.js";
 import type { LibraryProfile } from "../library/library-profile.js";
 import type { IrModule } from "../ir/ir.js";
@@ -234,13 +234,15 @@ export function prepareNativeExecutable(
   const exclusions = { outputPaths, outputDirectories: [...directories] };
   const irInput = process.env[BOOTSTRAP_IR_INPUT] ?? "";
   let key: string | null = null;
-  if (cache !== null && irInput === "" && provenanceSources() === null) {
+  const sources = sourceOverlayCacheIdentity();
+  if (cache !== null && irInput === "" && sources !== null) {
     try {
       key = contentDigest(
         JSON.stringify({
           schema: 1,
           entry,
           options,
+          ...(sources !== undefined ? { sources } : {}),
           ffi,
           implementation: implementationIdentity(toolchain),
           target: toolchain.target.name,
@@ -345,12 +347,14 @@ export function prepareNativeLibrary(
   }
   const exclusions: FrontendInputExclusions = { outputPaths, outputDirectories: [...directories] };
   let key: string | null = null;
-  if (cache !== null && provenanceSources() === null) {
+  const sources = sourceOverlayCacheIdentity();
+  if (cache !== null && sources !== null) {
     try {
       key = contentDigest(
         JSON.stringify({
           schema: 1,
           kind: "library",
+          ...(sources !== undefined ? { sources } : {}),
           entry: profile.entry,
           profile: profile.profileBytes,
           options,
