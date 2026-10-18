@@ -24,7 +24,7 @@ import {
 import { streamTypedRefEligible } from "../../ir/analysis.js";
 import { everyStmtList, transformExpr, transformStmtList } from "../../ir/traverse.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
-import { implicitDefaultInstance } from "./generic-functions.js";
+import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
 import { type ParamShape } from "./call-signatures.js";
 import {
   accessorCall,
@@ -67,6 +67,7 @@ import { ClassConstructionDispatch } from "./class-construction.js";
 import { emitterRooted } from "./lower-event-emitter.js";
 import { protocolArm, protocolFieldArm } from "./class-protocol-dispatch.js";
 import { STREAM_OPERATORS } from "./lower-stream.js";
+import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 
 const STREAM_METHODS = new Set([
   "on",
@@ -157,17 +158,18 @@ interface Dispatch {
   classes: Set<string>;
 }
 
-type ToPrimitiveHint = "number" | "string";
+type ToPrimitiveHint = "default" | "number" | "string";
+type ConversionMethod = "valueOf" | "toString" | "sym:toPrimitive";
+const CONVERSION_CALL_PREFIX = "%conversionCall.";
 type Hoisted = { stmts: IrStmt[]; value: IrExpr };
 const TO_PRIMITIVE_PREFIX = "%dyn.class.toPrimitive.";
 
-/** Operations that convert their dynamic operands with ToPrimitive: the
- * arithmetic, bitwise, relational and numeric conversions take the number
- * hint (`+` and `==` take the default hint, which is the number hint for
- * class instances), and the string conversions take the string hint. */
+/** Operations that convert their dynamic operands with ToPrimitive: `+`
+ * and `==` take the default hint, the arithmetic, bitwise, relational and
+ * numeric conversions the number hint, and the string conversions the
+ * string hint. */
+const DEFAULT_HINT_CALLS = new Set<string>(["dyn.abstractEq", "dyn.add"]);
 const NUMBER_HINT_CALLS = new Set<string>([
-  "dyn.abstractEq",
-  "dyn.add",
   "dyn.arithmetic",
   "dyn.bigintConstructor",
   "dyn.bitwise",
@@ -193,6 +195,7 @@ function toPrimitiveHint(expr: IrExpr): ToPrimitiveHint | null {
   if (expr.kind === "toString") return expr.operand.type.kind === "dyn" ? "string" : null;
   if (expr.kind === "dynKeyGet") return expr.key.type.kind === "dyn" ? "string" : null;
   if (expr.kind !== "libCall") return null;
+  if (DEFAULT_HINT_CALLS.has(expr.fn)) return "default";
   if (NUMBER_HINT_CALLS.has(expr.fn)) return "number";
   if (STRING_HINT_CALLS.has(expr.fn) || KEY_CALLS.has(expr.fn)) return "string";
   return null;
@@ -217,12 +220,8 @@ const PRIMITIVE_KINDS = new Set<string>([
   "nullT",
 ]);
 
-/** A declared `valueOf` or `toString` method, own or inherited. */
-function conversionMethod(
-  lowerer: Lowerer,
-  info: ClassInfo,
-  method: "valueOf" | "toString",
-): boolean {
+/** A declared conversion method, own or inherited. */
+function conversionMethod(lowerer: Lowerer, info: ClassInfo, method: ConversionMethod): boolean {
   if (info.fields.has(method)) return false;
   const found = findMethodOn(lowerer, info, method);
   return !!found && !found.declarer.builtinError;
@@ -671,6 +670,9 @@ export class ClassDynamicDispatch {
   private readonly generatorDispatch = new GeneratorDynamicDispatch();
   private readonly caughtDispatch = new CaughtValueDispatch();
   private readonly constructionDispatch = new ClassConstructionDispatch();
+  /** Property names a delete can remove (null: any name), for the field
+   * creation tracking decision. */
+  private deletedNames: Set<string> | null | undefined;
   private readonly boxed = new Set<string>();
   private readonly boxedConstructors = new Set<string>();
   private readonly dispatches = new Map<string, Dispatch>();
@@ -725,6 +727,12 @@ export class ClassDynamicDispatch {
     { fn: IrFunction; classes: Set<string> }
   >();
   private readonly toPrimitiveCalls = new Map<string, IrFunction>();
+  /** `value.valueOf()` and `value.toString()` on a dynamic receiver: a test
+   * for boxed instances of classes declaring the method, and the call. */
+  private readonly conversionCalls = new Map<
+    "valueOf" | "toString",
+    { test: IrFunction; call: IrFunction; classes: Set<string> }
+  >();
 
   process(lowerer: Lowerer, functions: readonly IrFunction[]): boolean {
     // Dispatch tables grow between worklist waves. Keep their normalization
@@ -784,7 +792,11 @@ export class ClassDynamicDispatch {
           ) {
             this.serializesClasses = true;
           }
-          if (toPrimitiveHint(expr) !== null) toPrimitiveSites.add(fn);
+          if (
+            toPrimitiveHint(expr) !== null ||
+            (expr.kind === "libCall" && (expr.fn === "dyn.valueOf" || expr.fn === "dyn.toString"))
+          )
+            toPrimitiveSites.add(fn);
           switch (expr.kind) {
             case "dynFrom":
               discover(expr.value.type);
@@ -839,7 +851,8 @@ export class ClassDynamicDispatch {
       });
     if (this.boxed.size === 0 && rewrite.size === 0) return changed;
     const converting = this.convertingHints(lowerer);
-    if (converting.size) for (const fn of toPrimitiveSites) rewrite.add(fn);
+    const calling = this.calledConversions(lowerer);
+    if (converting.size || calling.size) for (const fn of toPrimitiveSites) rewrite.add(fn);
     for (const fn of functions) {
       if (
         !fn.name.startsWith("%dyn.class.instanceof:") &&
@@ -1164,8 +1177,11 @@ export class ClassDynamicDispatch {
           current.def.tracksOwnFields = true;
           current.subclasses.forEach(track);
         };
-        // Runtime-owned roots keep their dedicated property contracts.
-        if (!root.base?.def.runtime) track(root);
+        // Runtime-owned roots keep their dedicated property contracts. A
+        // family whose fields all exist from construction and are never
+        // deleted keeps a fixed layout, as TypeScript classes do.
+        this.deletedNames ??= deletedPropertyNames(lowerer.moduleOrder);
+        if (!root.base?.def.runtime && !fixedFieldFamily(root, this.deletedNames)) track(root);
       }
       const loc = this.propertyBag.loc;
       const { receiver, condition } = this.propertyReceiver(plan, loc);
@@ -1277,6 +1293,11 @@ export class ClassDynamicDispatch {
       fn.body = transformStmtList(fn.body, {
         stmt: (stmt) => stmt,
         expr: (expr) => {
+          const called = calling.size ? this.convertMethodCall(lowerer, fn, expr, calling) : null;
+          if (called) {
+            changed = true;
+            return called;
+          }
           const converted = converting.size
             ? this.convertOperands(lowerer, fn, expr, converting)
             : null;
@@ -2488,6 +2509,47 @@ export class ClassDynamicDispatch {
         changed = true;
       }
     }
+    for (const [method, conversion] of this.conversionCalls) {
+      for (const plan of this.propertyReceivers(lowerer)) {
+        if (conversion.classes.has(plan.key)) continue;
+        conversion.classes.add(plan.key);
+        if (!conversionMethod(lowerer, plan.info, method)) continue;
+        const loc = conversion.call.loc;
+        const { condition } = this.propertyReceiver(plan, loc);
+        const value = varRef("p.0", DYN, loc);
+        const result: IrExpr = {
+          kind: "call",
+          callee: this.toPrimitiveCall(lowerer, plan, method, method === "toString" ? 1 : 0, loc),
+          args: method === "toString" ? [value, varRef("p.1", DYN, loc)] : [value],
+          type: DYN,
+          loc,
+        };
+        conversion.test.body.unshift({
+          kind: "if",
+          cond: condition,
+          then: [{ kind: "return", value: { kind: "boolLit", value: true, type: BOOL, loc }, loc }],
+          else_: null,
+          loc,
+        });
+        conversion.call.body.unshift({
+          kind: "if",
+          cond: condition,
+          then: [
+            {
+              kind: "return",
+              value:
+                method === "toString"
+                  ? { kind: "dynCheck", value: result, type: STRING, loc }
+                  : result,
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        });
+        changed = true;
+      }
+    }
     for (const [hint, conversion] of this.toPrimitives) {
       for (const plan of this.propertyReceivers(lowerer)) {
         if (conversion.classes.has(plan.key)) continue;
@@ -3215,14 +3277,22 @@ export class ClassDynamicDispatch {
 
   /** The hints for which some boxed class declares a conversion method. A
    * string conversion calls toString first, so without a declared toString
-   * it answers Object.prototype.toString's "[object Object]" as before. */
+   * or Symbol.toPrimitive it answers Object.prototype.toString's
+   * "[object Object]" as before. */
   private convertingHints(lowerer: Lowerer): Set<ToPrimitiveHint> {
     const hints = new Set<ToPrimitiveHint>();
     for (const { info } of this.propertyReceivers(lowerer)) {
-      if (conversionMethod(lowerer, info, "toString")) {
+      if (
+        conversionMethod(lowerer, info, "sym:toPrimitive") ||
+        conversionMethod(lowerer, info, "toString")
+      ) {
         hints.add("string");
         hints.add("number");
-      } else if (conversionMethod(lowerer, info, "valueOf")) hints.add("number");
+        hints.add("default");
+      } else if (conversionMethod(lowerer, info, "valueOf")) {
+        hints.add("number");
+        hints.add("default");
+      }
     }
     return hints;
   }
@@ -3359,10 +3429,138 @@ export class ClassDynamicDispatch {
     };
   }
 
+  /** The methods some boxed class declares among valueOf and toString. */
+  private calledConversions(lowerer: Lowerer): Set<"valueOf" | "toString"> {
+    const methods = new Set<"valueOf" | "toString">();
+    for (const { info } of this.propertyReceivers(lowerer)) {
+      if (conversionMethod(lowerer, info, "valueOf")) methods.add("valueOf");
+      if (conversionMethod(lowerer, info, "toString")) methods.add("toString");
+    }
+    return methods;
+  }
+
+  /** `value.valueOf()` or `value.toString(argument)` on a dynamic receiver:
+   * a boxed instance of a class declaring the method calls it, any other
+   * value keeps the runtime method call. The toString result must be a
+   * string, as for the runtime's own-member call. */
+  private convertMethodCall(
+    lowerer: Lowerer,
+    fn: IrFunction,
+    expr: IrExpr,
+    calling: Set<"valueOf" | "toString">,
+  ): IrExpr | null {
+    if (expr.kind !== "libCall" || (expr.fn !== "dyn.valueOf" && expr.fn !== "dyn.toString"))
+      return null;
+    const method = expr.fn === "dyn.valueOf" ? "valueOf" : "toString";
+    const receiver = expr.args[0]!;
+    if (!calling.has(method)) return null;
+    if (receiver.kind === "varRef" && receiver.localId.startsWith(CONVERSION_CALL_PREFIX))
+      return null;
+    const loc = expr.loc;
+    const operands = this.hoistOperands(
+      fn,
+      method === "toString" ? [receiver, expr.args[1]!] : [receiver],
+      loc,
+      CONVERSION_CALL_PREFIX,
+    );
+    const values = operands.map((operand) => operand.value);
+    const helpers = this.conversionCallHelpers(lowerer, method, loc);
+    return {
+      kind: "seqExpr",
+      stmts: operands.flatMap((operand) => operand.stmts),
+      result: {
+        kind: "ternary",
+        cond: { kind: "call", callee: helpers.test.name, args: [values[0]!], type: BOOL, loc },
+        then: { kind: "call", callee: helpers.call.name, args: values, type: expr.type, loc },
+        else_: { ...expr, args: [...values, ...expr.args.slice(values.length)] },
+        type: expr.type,
+        loc,
+      },
+      type: expr.type,
+      loc,
+    };
+  }
+
+  private conversionCallHelpers(
+    lowerer: Lowerer,
+    method: "valueOf" | "toString",
+    loc: SrcLoc,
+  ): { test: IrFunction; call: IrFunction } {
+    let helpers = this.conversionCalls.get(method);
+    if (!helpers) {
+      const at = helperLoc(loc);
+      const params: IrParam[] = [
+        { localId: "p.0", name: "value", type: DYN },
+        ...(method === "toString" ? [{ localId: "p.1", name: "argument", type: DYN }] : []),
+      ];
+      const locals = params.map((param) => ({
+        id: param.localId,
+        name: param.name,
+        type: param.type,
+        mutable: false,
+      }));
+      const name = { kind: "strLit" as const, value: method, type: STRING, loc: at };
+      const test: IrFunction = {
+        name: `${TO_PRIMITIVE_PREFIX}${method}.test`,
+        params: params.slice(0, 1),
+        locals: locals.slice(0, 1),
+        returnType: BOOL,
+        body: [
+          {
+            kind: "return",
+            value: { kind: "boolLit", value: false, type: BOOL, loc: at },
+            loc: at,
+          },
+        ],
+        loc: at,
+      };
+      const call: IrFunction = {
+        name: `${TO_PRIMITIVE_PREFIX}${method}.call`,
+        params,
+        locals,
+        returnType: method === "toString" ? STRING : DYN,
+        body: [
+          {
+            kind: "return",
+            value:
+              method === "toString"
+                ? {
+                    kind: "libCall",
+                    fn: "dyn.toString",
+                    args: [varRef("p.0", DYN, at), varRef("p.1", DYN, at), name],
+                    type: STRING,
+                    loc: at,
+                  }
+                : {
+                    kind: "libCall",
+                    fn: "dyn.valueOf",
+                    args: [varRef("p.0", DYN, at), name],
+                    type: DYN,
+                    loc: at,
+                  },
+            loc: at,
+          },
+        ],
+        loc: at,
+      };
+      helpers = { test, call, classes: new Set() };
+      this.conversionCalls.set(method, helpers);
+      this.generated.add(test);
+      this.generated.add(call);
+      lowerer.liftedFns.push(test, call);
+    }
+    return helpers;
+  }
+
   /** Evaluates each operand into a fresh local, in order. */
-  private hoistOperands(fn: IrFunction, operands: readonly IrExpr[], loc: SrcLoc): Hoisted[] {
+  private hoistOperands(
+    fn: IrFunction,
+    operands: readonly IrExpr[],
+    loc: SrcLoc,
+    prefix = "%toPrimitive.operand.",
+  ): Hoisted[] {
     return operands.map((operand) => {
-      const id = `%toPrimitive.operand.${fn.locals.length}`;
+      const id = `${prefix}${fn.locals.length}`;
       fn.locals.push({ id, name: "operand", type: operand.type, mutable: false });
       const stmts: IrStmt[] = [{ kind: "varDecl", localId: id, init: operand, loc }];
       return { stmts, value: varRef(id, operand.type, loc) };
@@ -3404,11 +3602,50 @@ export class ClassDynamicDispatch {
   ): IrStmt | null {
     const { info } = plan;
     const loc = helper.loc;
+    const { condition } = this.propertyReceiver(plan, loc);
+    if (conversionMethod(lowerer, info, "sym:toPrimitive")) {
+      // A Symbol.toPrimitive method decides alone: its result must be a
+      // primitive.
+      const result = `%toPrimitive.exotic.${helper.locals.length}`;
+      helper.locals.push({ id: result, name: "exotic", type: DYN, mutable: false });
+      const hintValue: IrExpr = {
+        kind: "dynFrom",
+        value: { kind: "strLit", value: hint, type: STRING, loc },
+        type: DYN,
+        loc,
+      };
+      const body: IrStmt[] = [
+        {
+          kind: "varDecl",
+          localId: result,
+          init: {
+            kind: "call",
+            callee: this.toPrimitiveCall(lowerer, plan, "sym:toPrimitive", 1, loc),
+            args: [varRef("p.0", DYN, loc), hintValue],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "if",
+          cond: isPrimitive(varRef(result, DYN, loc), loc),
+          then: [{ kind: "return", value: varRef(result, DYN, loc), loc }],
+          else_: null,
+          loc,
+        },
+        {
+          kind: "return",
+          value: nodeThrowExpr(1, "", "Cannot convert object to primitive value", DYN, loc),
+          loc,
+        },
+      ];
+      return { kind: "if", cond: condition, then: body, else_: null, loc };
+    }
     const order: ("valueOf" | "toString")[] =
       hint === "string" ? ["toString", "valueOf"] : ["valueOf", "toString"];
     if (!order.some((method) => conversionMethod(lowerer, info, method))) return null;
     if (hint === "string" && !conversionMethod(lowerer, info, "toString")) return null;
-    const { condition } = this.propertyReceiver(plan, loc);
     const body: IrStmt[] = [];
     let settled = false;
     for (const method of order) {
@@ -3437,7 +3674,7 @@ export class ClassDynamicDispatch {
           localId: result,
           init: {
             kind: "call",
-            callee: this.toPrimitiveCall(lowerer, plan, method, loc),
+            callee: this.toPrimitiveCall(lowerer, plan, method, 0, loc),
             args: [varRef("p.0", DYN, loc)],
             type: DYN,
             loc,
@@ -3462,26 +3699,28 @@ export class ClassDynamicDispatch {
     return { kind: "if", cond: condition, then: body, else_: null, loc };
   }
 
-  /** A function calling `method` on a boxed instance of `plan`'s class, as a
-   * dynamic method call would: an own replacement on the instance answers
-   * first for methods the program can replace. */
+  /** A function calling `method` with `arity` arguments on a boxed instance
+   * of `plan`'s class, as a dynamic method call would: an own replacement on
+   * the instance answers first for methods the program can replace. */
   private toPrimitiveCall(
     lowerer: Lowerer,
     plan: PropertyReceiver,
-    method: "valueOf" | "toString",
+    method: ConversionMethod,
+    arity: number,
     loc: SrcLoc,
   ): string {
-    const key = JSON.stringify([plan.key, method]);
+    const key = JSON.stringify([plan.key, method, arity]);
     const existing = this.toPrimitiveCalls.get(key);
     if (existing) return existing.name;
     const { info } = plan;
     const { receiver } = this.propertyReceiver(plan, loc);
+    const args = Array.from({ length: arity }, (_, i) => varRef(`p.${i + 1}`, DYN, loc));
     const source: Invoke = {
       kind: "dynInvoke",
       recv: varRef("p.0", DYN, loc),
       method,
-      calleeName: `value.${method}`,
-      args: [],
+      calleeName: method === "sym:toPrimitive" ? "value[Symbol.toPrimitive]" : `value.${method}`,
+      args,
       type: DYN,
       loc,
     };
@@ -3524,11 +3763,20 @@ export class ClassDynamicDispatch {
         loc,
       };
     }
+    const params: IrParam[] = [
+      { localId: "p.0", name: "value", type: DYN },
+      ...args.map((_, i) => ({ localId: `p.${i + 1}`, name: `p${i + 1}`, type: DYN })),
+    ];
     const fn: IrFunction = {
       name: `${TO_PRIMITIVE_PREFIX}call.${this.toPrimitiveCalls.size}`,
-      params: [{ localId: "p.0", name: "value", type: DYN }],
+      params,
       locals: [
-        { id: "p.0", name: "value", type: DYN, mutable: false },
+        ...params.map((param) => ({
+          id: param.localId,
+          name: param.name,
+          type: param.type,
+          mutable: false,
+        })),
         { id: "p.callback", name: "callback", type: DYN, mutable: false },
         { id: "p.calleeName", name: "calleeName", type: STRING, mutable: false },
       ],
@@ -4668,6 +4916,8 @@ export class ClassDynamicDispatch {
     let callee: string;
     let virtual = false;
     let owner: ClassInfo;
+    /** Erased instances of subclasses that redeclare a generic method. */
+    const overrides: { cls: ClassInfo; callee: string }[] = [];
     if (methodInfo) {
       owner = methodInfo.declarer;
       params = methodInfo.sig.params;
@@ -4689,6 +4939,44 @@ export class ClassDynamicDispatch {
       params = instance.params;
       result = instance.returnType;
       callee = instance.name;
+    } else if (
+      generic &&
+      !generic.info.implicitParams &&
+      generic.info.typeParams.length > 0 &&
+      generic.declarer.decl &&
+      !lowerer.overrideBelow(info, method)
+    ) {
+      // A generic method called by name runs its erased instance; a
+      // subclass that redeclares it runs its own, selected by the
+      // receiver's runtime class (most derived first).
+      owner = generic.declarer;
+      const instance = erasedGenericInstance(lowerer, generic.declarer.decl, generic.info);
+      params = instance.params;
+      result = instance.returnType;
+      callee = instance.name;
+      if (genericOverrideBelow(info, method)) {
+        const subclasses: ClassInfo[] = [];
+        const collect = (c: ClassInfo): void => {
+          for (const sub of c.subclasses) {
+            collect(sub);
+            if (sub.genericMethods?.has(method) && lowerer.classCanBeConstructed(sub))
+              subclasses.push(sub);
+          }
+        };
+        collect(info);
+        for (const sub of subclasses) {
+          const own = sub.genericMethods!.get(method)!;
+          if (!sub.decl || own.implicitParams || own.typeParams.length === 0) return fence();
+          const subInstance = erasedGenericInstance(lowerer, sub.decl, own);
+          if (
+            subInstance.params.length !== params.length ||
+            subInstance.params.some((p, i) => !typeEquals(p.type, params[i]!.type)) ||
+            !typeEquals(subInstance.returnType, result)
+          )
+            return fence();
+          overrides.push({ cls: sub, callee: subInstance.name });
+        }
+      }
     } else return fence();
     const incoming = dispatch.source.args.map((_, i) => varRef(`p.${i + 1}`, DYN, loc));
     const args: IrExpr[] = [];
@@ -4720,7 +5008,7 @@ export class ClassDynamicDispatch {
       if (!typeEquals(converted.type, param.type)) return fence();
       args.push(converted);
     }
-    const call: IrExpr = virtual
+    let call: IrExpr = virtual
       ? {
           kind: "virtualCall",
           className: owner.def.name,
@@ -4736,6 +5024,29 @@ export class ClassDynamicDispatch {
           type: result,
           loc,
         };
+    for (const override of overrides.toReversed()) {
+      const subType: IrType = { kind: "object", className: override.cls.def.name };
+      call = {
+        kind: "ternary",
+        cond: {
+          kind: "instanceOf",
+          value: receiver,
+          className: override.cls.def.name,
+          type: BOOL,
+          loc,
+        },
+        then: {
+          kind: "call",
+          callee: override.callee,
+          args: [{ kind: "downcast", value: receiver, type: subType, loc }, ...args],
+          type: result,
+          loc,
+        },
+        else_: call,
+        type: result,
+        loc,
+      };
+    }
     let body: IrStmt[];
     if (result.kind === "void")
       body = [

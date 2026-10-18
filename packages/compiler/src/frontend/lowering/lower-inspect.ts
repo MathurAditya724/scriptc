@@ -1486,6 +1486,10 @@ export function lowerConsoleInspectArg(
       `${surface} of a void call result (call it as its own statement, then ${surface}(undefined))`,
     );
   }
+  // A read that always throws (an ambient name, a binding whose
+  // initializer threw) never produces a value to render.
+  if (value.kind === "libCall" && value.fn === "global.undefRead")
+    return formatValueExpr(lowerer, DYN, { ...value, type: DYN }, 2, loc);
   const walk = { recursive: false };
   const reason = inspectSupport(lowerer, t, new Set(), walk);
   if (reason !== null) {

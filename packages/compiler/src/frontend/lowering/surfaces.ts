@@ -1889,13 +1889,25 @@ export const BUILTIN_MODULE_FNS: Record<
   // module-qualified with the pointed hint below.
   "stream/consumers": {},
   // node:timers/promises — the delay-only setTimeout and bare setImmediate
-  // (void promises the shared timer heap settles). The arity completion
-  // (omitted delay = Node's 1ms) and the value/options fences are
-  // special-cased in lowerBuiltinModuleCall; these entries carry the
-  // canonical shapes and route the dispatch.
+  // (void promises the shared timer heap settles), and scheduler.wait /
+  // scheduler.yield, which Node defines as setTimeout(delay, undefined,
+  // options) and setImmediate(). The arity completion (omitted delay =
+  // Node's 1ms) and the value/options fences are special-cased in
+  // lowerBuiltinModuleCall; these entries carry the canonical shapes and
+  // route the dispatch.
   "timers/promises": {
     setTimeout: { fn: "tp.setTimeout", params: [F64], result: { kind: "promise", inner: VOID } },
     setImmediate: { fn: "tp.setImmediate", params: [], result: { kind: "promise", inner: VOID } },
+    "scheduler.wait": {
+      fn: "tp.setTimeout",
+      params: [F64],
+      result: { kind: "promise", inner: VOID },
+    },
+    "scheduler.yield": {
+      fn: "tp.setImmediate",
+      params: [],
+      result: { kind: "promise", inner: VOID },
+    },
   },
   // node:diagnostics_channel — the pub/sub core. channel() answers an f64
   // handle (type-mapper.ts maps Channel to F64); the subscriber arguments box

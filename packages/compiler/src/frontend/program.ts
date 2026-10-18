@@ -237,6 +237,7 @@ function adoptProjectConfig7(
   diags: ScrDiagnostic[];
   projectLib?: readonly string[];
   forcedStrictNullChecks?: boolean;
+  checkJs?: boolean;
 } {
   const configFile = ts.findConfigFile(dirname(entryPath), ts.sys.fileExists) ?? null;
   if (!configFile) {
@@ -300,6 +301,7 @@ function adoptProjectConfig7(
     diags,
     ...(projectLib === undefined ? {} : { projectLib }),
     forcedStrictNullChecks,
+    checkJs: parsed.options["checkJs"] === true,
   };
 }
 
@@ -318,6 +320,9 @@ export interface TypeWorldDifferences {
   projectLib: readonly string[] | null;
   /** The project disables strictNullChecks; scriptc forces it on. */
   forcedStrictNullChecks: boolean;
+  /** The project's tsconfig sets `checkJs` (scriptc's own checker always
+   * reads JavaScript files; this records whether the project's does). */
+  projectCheckJs: boolean;
 }
 
 export interface LoadResult {
@@ -734,6 +739,7 @@ function loadProgram7(
         nodeFallback: nodeTypes === null,
         projectLib: config.projectLib ?? null,
         forcedStrictNullChecks: config.forcedStrictNullChecks ?? false,
+        projectCheckJs: config.checkJs ?? false,
       },
       externalTypes,
       externalTypeSpecifiersByFile,
@@ -987,6 +993,14 @@ export function checkPreflight<T extends LoadResult>(load: T): ScrDiagnostic[] {
 // retains only their call signature after a factory return. Heritage
 // lowering separately verifies the actual constructor implementation.
 const TS7_JS_RELAXED_EXTRA: ReadonlySet<number> = new Set([2309, 2323, 2507]);
+
+/** Relaxed JavaScript codes that checked JavaScript files keep: values of
+ * another type in a typed slot (2322 and its elaborations 2740/2741/2559,
+ * 2345, 2769), call arity (2554-2556) and incompatible subclass members
+ * (2415). */
+const CHECKED_JS_ENFORCED_CODES: ReadonlySet<number> = new Set([
+  2322, 2345, 2415, 2554, 2555, 2556, 2559, 2740, 2741, 2769,
+]);
 
 function suppressedJsStrictness7(d: ts.Diagnostic): boolean {
   const file = d.fileName;
@@ -3492,6 +3506,16 @@ function preflight7(load: LoadResult): {
       : spec.split("/")[0]!;
     return isWorkspacePackageName(prefix);
   };
+  // A JavaScript file that TypeScript checks keeps the type errors that
+  // protect its JSDoc types: a value of another type reaching a typed slot,
+  // a call with the wrong arity, and a subclass member that does not
+  // match its base.
+  const projectCheckJs = load.typeWorld?.projectCheckJs ?? false;
+  const enforcedInCheckedJs = (p: ts.Program, d: ts.Diagnostic): boolean => {
+    if (!CHECKED_JS_ENFORCED_CODES.has(d.code) || d.fileName === undefined) return false;
+    const sf = p.getSourceFile(d.fileName);
+    return sf !== undefined && isCheckedJsSourceFile(sf, projectCheckJs);
+  };
   const errorsOf = (p: ts.Program): ts.Diagnostic[] => {
     const all = ts.getPreEmitDiagnostics(p);
     // First pass: every comment-side 2300's (file, name) — the partners
@@ -3508,7 +3532,7 @@ function preflight7(load: LoadResult): {
     return all.filter(
       (d) =>
         d.category === ts.DiagnosticCategory.Error &&
-        !suppressedJsStrictness7(d) &&
+        (!suppressedJsStrictness7(d) || enforcedInCheckedJs(p, d)) &&
         !npmStaticFileSuppressed(d) &&
         !nodeModulesJsSuppressed(d) &&
         !namespaceCalleeSuppressed(p, d) &&
@@ -4913,6 +4937,21 @@ export {
  * declare fields by constructor assignment. */
 export function isJsSourceFile(sf: ts.SourceFile): boolean {
   return isJsSourceFileName(sf.fileName);
+}
+
+/** True for a JavaScript file of the program that TypeScript type-checks:
+ * one with a `// @ts-check` comment before its first statement, or any
+ * file of a project whose tsconfig sets `checkJs` unless the file has a
+ * `// @ts-nocheck` comment. Files under node_modules are never checked. */
+export function isCheckedJsSourceFile(sf: ts.SourceFile, projectCheckJs: boolean): boolean {
+  if (!isJsSourceFile(sf) || isNodeModulesPath(sf.fileName)) return false;
+  let checked = projectCheckJs;
+  const head = sf.text.slice(0, sf.statements[0]?.getStart(sf) ?? sf.text.length);
+  for (const line of head.split("\n")) {
+    const directive = /^\s*\/\/\s*@ts-(no)?check\b/.exec(line);
+    if (directive) checked = directive[1] === undefined;
+  }
+  return checked;
 }
 
 /** `import type …` declarations and named clauses whose every element is
