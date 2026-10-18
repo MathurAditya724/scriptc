@@ -1471,6 +1471,32 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   },
   "test.ctxMockRestoreAll": { argTypes: [TESTCTX_T], result: VOID },
   "test.ctxMockReset": { argTypes: [TESTCTX_T], result: VOID },
+  // mock.timers on the module's `mock` and on t.mock. enable takes one
+  // code per listed API ('T' setTimeout, 'I' setInterval), the `now`
+  // value and its flags (1 given, 2 from a Date). enable, tick, runAll and
+  // setTime throw Node's errors; tick and runAll run timer callbacks.
+  // t.assert.snapshot and fileSnapshot: the escaped, wrapped serialized
+  // value, and the stored value it is compared with (snapshot: the test,
+  // the value, the snapshot file; fileSnapshot: the value, the path).
+  // Both read or, in update mode, record; missing and unreadable
+  // snapshots throw Node's ERR_INVALID_STATE.
+  "test.snapshotValue": { argTypes: [STRING], result: STRING },
+  "test.ctxSnapshot": { argTypes: [TESTCTX_T, STRING, STRING], result: STRING },
+  "test.fileSnapshot": { argTypes: [STRING, STRING], result: STRING },
+  // Node's serializeValue over a dyn array of serializers (undefined for
+  // the default JSON.stringify(value, null, 2)); a throw becomes Node's
+  // "The provided serializers did not generate a string." ERR_INVALID_STATE.
+  "test.snapshotSerialize": { argTypes: [DYN, DYN], result: DYN },
+  "test.mockTimersEnable": { argTypes: [STRING, F64, F64], result: VOID },
+  "test.mockTimersTick": { argTypes: [F64], result: VOID },
+  "test.mockTimersRunAll": { argTypes: [], result: VOID },
+  "test.mockTimersReset": { argTypes: [], result: VOID },
+  "test.mockTimersSetTime": { argTypes: [F64], result: VOID },
+  "test.ctxMockTimersEnable": { argTypes: [TESTCTX_T, STRING, F64, F64], result: VOID },
+  "test.ctxMockTimersTick": { argTypes: [TESTCTX_T, F64], result: VOID },
+  "test.ctxMockTimersRunAll": { argTypes: [TESTCTX_T], result: VOID },
+  "test.ctxMockTimersReset": { argTypes: [TESTCTX_T], result: VOID },
+  "test.ctxMockTimersSetTime": { argTypes: [TESTCTX_T, F64], result: VOID },
   // node:http (scr_http.c over scr_net.c). The handler and the data
   // listeners are program-dependent closures (null slots, checked in the
   // libCall case); reqHeader's result is the interned string|undefined
@@ -2873,6 +2899,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   },
   "fileHandle.stat": { argTypes: [FILEHANDLE_T], result: { kind: "promise", inner: STATS_T } },
   "process.argv": { argTypes: [], result: arrayOf(STRING) },
+  // The Node runtime flag a node:test binary took out of process.argv
+  // (--test-update-snapshots), or [] — a fresh array per read.
+  "process.execArgv": { argTypes: [], result: arrayOf(STRING) },
   "process.platform": { argTypes: [], result: STRING },
   // The one libCall whose result type is program-dependent (union ids are
   // per-module): the `result` here is a placeholder — the libCall case
@@ -3937,6 +3966,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * through the immediate queue (fires before due timers of later loop
    * turns, Node's check phase). Neither throws. */
   "tp.setTimeout": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
+  // scheduler.wait(delay): tp.setTimeout's promise. It throws Node's
+  // ERR_INVALID_THIS once mock.timers has restored the real scheduler.wait.
+  "tp.schedulerWait": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
   "tp.setImmediate": { argTypes: [], result: { kind: "promise", inner: VOID } },
   /** events.once (scr_events_emitter.c): [emitter, name, boxer,
    * errorBoxer, listenForError] → a pending promise of any[]; the boxers
@@ -3953,6 +3985,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * AbortError (scr_event_target.c). */
   "tp.setTimeoutSignal": { argTypes: [F64, null, BOOL, DYN], result: VOID },
   "tp.setImmediateSignal": { argTypes: [null, BOOL, DYN], result: VOID },
+  /** scheduler.wait(delay, options): tp.setTimeoutValue's and
+   * tp.setTimeoutSignal's shapes, with tp.schedulerWait's throws. */
+  "tp.schedulerWaitValue": { argTypes: [F64, null, BOOL], result: VOID },
+  "tp.schedulerWaitSignal": { argTypes: [F64, null, BOOL, DYN], result: VOID },
   /** node:diagnostics_channel (scr_dc.c, linked when any dc.* appears —
    * the zlib gating precedent): a process-global name→channel registry;
    * channel values are f64 handles (type-mapper.ts maps Channel to F64, the

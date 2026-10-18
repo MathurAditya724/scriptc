@@ -1937,6 +1937,21 @@ ScrPromise *scr_tp_set_timeout_signal(double ms, ScrPromise *value, bool ref, Sc
   return scr_tp_signal(ms, value, ref, signal, false);
 }
 
+ScrPromise *scr_tp_scheduler_wait_signal(double ms, ScrPromise *value, bool ref, ScrDyn *signal) {
+  if (scr_mt_wait_state == 2) {
+    static const char msg[] = "Value of \"this\" must be of type Scheduler";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_THIS");
+    return NULL;
+  }
+  if (scr_mt_wait_state == 1) {
+    static const char msg[] =
+        "scheduler.wait with a signal while mock.timers mocks it has no lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    return NULL;
+  }
+  return scr_tp_signal(ms, value, ref, signal, false);
+}
+
 ScrPromise *scr_tp_set_immediate_signal(ScrPromise *value, bool ref, ScrDyn *signal) {
   return scr_tp_signal(0, value, ref, signal, true);
 }

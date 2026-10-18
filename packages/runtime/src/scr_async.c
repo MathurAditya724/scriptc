@@ -994,6 +994,9 @@ double scr_set_interval(ScrClosure *cb, double ms) {
   return (double)id;
 }
 
+SCR_TL void (*scr_mt_abort_timeout_arm)(ScrClosure *cb, double ms) = NULL;
+SCR_TL int scr_mt_wait_state = 0;
+
 double scr_set_timeout_handle(ScrClosure *cb, double ms) {
   ms = scr_timer_coerce_ms(ms);
   unsigned long id = scr_interval_next_id++;

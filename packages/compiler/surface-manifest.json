@@ -1945,6 +1945,12 @@
       "note": "reads, writes, deletes, and enumeration of the process environment (the process global)"
     },
     {
+      "id": "node-builtin.process.execArgv",
+      "kind": "node-builtin",
+      "name": "process.execArgv",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.process.execPath",
       "kind": "node-builtin",
       "name": "process.execPath",

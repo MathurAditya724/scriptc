@@ -46,6 +46,13 @@ ScrArr *scr_module_cache_keys(void);
 
 int scr_lib_arg_count(void);
 const char *scr_lib_arg(int i);
+/* Takes a leading `flag` argument out of process.argv, as Node keeps its
+ * runtime flags out of it, and reports it in process.execArgv. Called
+ * right after scr_lib_init, before process.argv is first read. True when
+ * the flag was there. */
+bool scr_lib_take_flag(const char *flag);
+/* process.execArgv: the flag scr_lib_take_flag took, or [] (+1, fresh). */
+ScrArr *scr_process_exec_argv(void);
 /* Private self-reexec marker parsed and removed from process.argv by
  * scr_lib_init. False in an ordinary parent invocation. */
 bool scr_lib_fork_info(double *target, uintptr_t *read_handle,

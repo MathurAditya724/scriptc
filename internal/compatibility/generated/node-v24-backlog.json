@@ -7,8 +7,8 @@
     "tierItemCount": 3456,
     "tiers": {
       "static": {
-        "audit-partial": 1134,
-        "verify-gap": 2195,
+        "audit-partial": 1142,
+        "verify-gap": 2187,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -66679,12 +66679,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.timers.enable",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-timers.ts",
+            "tests/fixtures/node-test/cases/mock-timers-date.ts",
+            "tests/corpus/5813-mock-timers-module.ts",
+            "tests/corpus/5814-mock-timers-date.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66704,12 +66710,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.timers.reset",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-timers.ts",
+            "tests/fixtures/node-test/cases/mock-timers-date.ts",
+            "tests/corpus/5813-mock-timers-module.ts",
+            "tests/corpus/5814-mock-timers-date.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66729,12 +66741,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.timers",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-timers-date.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66754,12 +66769,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.timers.tick",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-timers.ts",
+            "tests/fixtures/node-test/cases/mock-timers-date.ts",
+            "tests/corpus/5813-mock-timers-module.ts",
+            "tests/corpus/5814-mock-timers-date.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66779,12 +66800,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.timers.runAll",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-timers.ts",
+            "tests/fixtures/node-test/cases/mock-timers-date.ts",
+            "tests/corpus/5813-mock-timers-module.ts",
+            "tests/corpus/5814-mock-timers-date.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66804,12 +66831,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.timers.setTime",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-timers.ts",
+            "tests/fixtures/node-test/cases/mock-timers-date.ts",
+            "tests/corpus/5813-mock-timers-module.ts",
+            "tests/corpus/5814-mock-timers-date.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67634,12 +67667,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.assert.fileSnapshot",
+          "tests": [
+            "tests/fixtures/node-test/cases/snapshot.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67659,12 +67695,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.assert.snapshot",
+          "tests": [
+            "tests/fixtures/node-test/cases/snapshot.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },

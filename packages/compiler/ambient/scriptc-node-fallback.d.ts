@@ -3338,7 +3338,12 @@ declare module "node:test" {
     beforeEach(fn: HookFn): void;
     afterEach(fn: HookFn): void;
   }
+  interface AssertSnapshotOptions {
+    readonly serializers?: ReadonlyArray<(value: any) => any> | undefined;
+  }
   interface TestContextAssert {
+    snapshot(value: any, options?: AssertSnapshotOptions): void;
+    fileSnapshot(value: any, path: string, options?: AssertSnapshotOptions): void;
     ok(value: unknown, message?: string): void;
     strictEqual(actual: unknown, expected: unknown, message?: string): void;
     notStrictEqual(actual: unknown, expected: unknown, message?: string): void;
@@ -3429,6 +3434,19 @@ declare module "node:test" {
       : never;
     reset(): void;
     restoreAll(): void;
+    readonly timers: MockTimers;
+  }
+  interface MockTimersOptions {
+    apis: ReadonlyArray<"setInterval" | "setTimeout" | "setImmediate" | "Date">;
+    now?: number | Date | undefined;
+  }
+  interface MockTimers {
+    enable(options?: MockTimersOptions): void;
+    setTime(milliseconds?: number): void;
+    reset(): void;
+    tick(milliseconds?: number): void;
+    runAll(): void;
+    [Symbol.dispose](): void;
   }
   const mock: MockTracker;
   /* Declared for typechecking only — every use fences (no lowering).
@@ -3456,6 +3474,8 @@ declare module "node:test" {
     MockFunctionContext,
     MockFunctionCall,
     MockTracker,
+    MockTimers,
+    MockTimersOptions,
   };
   export default test;
 }

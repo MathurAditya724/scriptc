@@ -502,6 +502,7 @@ typedef struct ScrJsonSeenEnt {
   const void *ptr;
   bool is_array;
   const char *prop;       /* static property edge (emitted C literal) */
+  size_t prop_len;        /* its length, or SIZE_MAX for a NUL-terminated name */
   const ScrStr *prop_str; /* overflow-key edge (borrowed for the write) */
   size_t index;           /* array/tuple index edge */
 } ScrJsonSeenEnt;
@@ -509,7 +510,7 @@ typedef struct ScrJsonSeenEnt {
 static void scr_jb_put_edge(ScrJsonBuf *m, const ScrJsonSeenEnt *e) {
   if (e->prop || e->prop_str) {
     scr_jb_puts(m, "property '");
-    if (e->prop) scr_jb_puts(m, e->prop);
+    if (e->prop) scr_jb_write(m, e->prop, e->prop_len == SIZE_MAX ? strlen(e->prop) : e->prop_len);
     else scr_jb_write(m, e->prop_str->data, e->prop_str->len);
     scr_jb_putc(m, '\'');
     return;
@@ -559,6 +560,7 @@ bool scr_jb_enter(ScrJsonBuf *b, const void *v, bool is_array) {
   e->ptr = v;
   e->is_array = is_array;
   e->prop = NULL;
+  e->prop_len = SIZE_MAX;
   e->prop_str = NULL;
   e->index = 0;
   return true;
@@ -571,6 +573,16 @@ void scr_jb_leave(ScrJsonBuf *b) {
 void scr_jb_edge_prop(ScrJsonBuf *b, const char *name) {
   ScrJsonSeenEnt *e = &b->seen[b->seen_len - 1];
   e->prop = name;
+  e->prop_len = SIZE_MAX;
+  e->prop_str = NULL;
+}
+
+/* A property edge whose name is not NUL-terminated (a declared field name
+ * from a record source's strided table). */
+static void scr_jb_edge_span(ScrJsonBuf *b, const char *name, size_t len) {
+  ScrJsonSeenEnt *e = &b->seen[b->seen_len - 1];
+  e->prop = name;
+  e->prop_len = len;
   e->prop_str = NULL;
 }
 
@@ -2666,54 +2678,116 @@ ScrDyn *scr_record_source_apply(ScrDyn *snapshot, const void *rec) {
   return merged;
 }
 
+static ScrDyn *scr_json_member(const ScrDyn *holder, const ScrStr *key);
+static bool scr_jb_try_pure_member(ScrJsonBuf *b, const char *key, size_t key_len,
+                                   const ScrStr *key_str, const ScrDyn *value, bool *first);
+static bool scr_jb_put_member(ScrJsonBuf *b, const ScrStr *key, ScrDyn *value, bool *first,
+                              void *rec);
+
 /* JSON for a record that kept a source: the view's own-key order, declared
  * fields through the compiled writer (`field` writes the separator, key
  * and value of field `index` unless the record lacks it, and answers
- * whether it wrote), every other enumerable property through the dyn
- * writer with JSON.stringify's member rules, then declared fields the view
- * had not seen. May leave an exception pending (a BigInt property). */
+ * whether it wrote), every other enumerable property with JSON.stringify's
+ * member rules (accessors read, toJSON called with the key, undefined,
+ * function and symbol results dropped, circular structures rejected), then
+ * declared fields the view had not seen. May leave an exception pending
+ * (a BigInt property, a throwing toJSON or getter, a circular structure). */
 void scr_jb_put_record_source(ScrJsonBuf *b, void *rec,
                               bool (*field)(ScrJsonBuf *, void *, size_t, bool)) {
   if (!scr_jb_try_record_source(b, rec, field)) scr_jb_puts(b, "{}");
+}
+
+/* Writes declared field `index`; when the record is on the circular-
+ * structure stack, the field's name becomes its edge first. */
+static bool scr_jb_put_source_field(ScrJsonBuf *b, void *rec, const ScrRecordSource *source,
+                                    size_t index, bool first, bool on_stack,
+                                    bool (*field)(ScrJsonBuf *, void *, size_t, bool)) {
+  if (on_stack) {
+    size_t len;
+    memcpy(&len, source->lens + index * source->len_stride, sizeof len);
+    const char *name;
+    memcpy(&name, source->names + index * source->name_stride, sizeof name);
+    scr_jb_edge_span(b, name, len);
+  }
+  return field(b, rec, index, first);
 }
 
 /* The same in one lookup: writes the record and answers true when it kept
  * a source, otherwise writes nothing and answers false. */
 bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
                               bool (*field)(ScrJsonBuf *, void *, size_t, bool)) {
-  ScrRecordSource *source = scr_record_source_find(rec);
-  if (!source) return false;
+  ScrRecordSource *found = scr_record_source_find(rec);
+  if (!found) return false;
+  /* Program code run by a member can add record sources and move the
+   * table's entries, so the walk keeps its own copy. */
+  const ScrRecordSource source = *found;
+  /* Walkers over cycle-capable shapes have pushed the record already.
+   * Others push it before the first member that needs the protocol walk,
+   * so a member leading back to the record closes the circle at the
+   * record. */
+  bool on_stack = b->seen_len && b->seen[b->seen_len - 1].ptr == rec;
+  bool entered = false;
+  ScrDyn *view = scr_dyn_retain(source.view);
   scr_jb_putc(b, '{');
   bool first = true;
-  {
-    size_t count = source->count;
-    bool small[64] = { false };
-    bool *seen = count <= 64 ? small : calloc(count, sizeof *seen);
-    if (!seen) scr_json_oom();
-    const ScrDyn *view = source->view;
-    for (size_t i = 0; i < view->v.obj.len && !scr_exc_pending(); i++) {
-      const ScrDynEntry *entry = &view->v.obj.entries[i];
-      size_t index = scr_record_source_index(source, entry->key, entry->key_len);
+  size_t count = source.count;
+  bool small[64] = { false };
+  bool *seen = count <= 64 ? small : calloc(count, sizeof *seen);
+  if (!seen) scr_json_oom();
+  /* Members whose writing cannot run program code are written in place.
+   * The first member that can (an accessor, a toJSON method, a getter below
+   * it) ends that loop: the remaining keys are taken first, as
+   * SerializeJSONObject takes them before reading any value. */
+  size_t i = 0;
+  for (; i < view->v.obj.len && !scr_exc_pending(); i++) {
+    const ScrDynEntry *entry = &view->v.obj.entries[i];
+    size_t index = scr_record_source_index(&source, entry->key, entry->key_len);
+    if (index < count) {
+      if (!seen[index] && scr_jb_put_source_field(b, rec, &source, index, first, on_stack, field))
+        first = false;
+      seen[index] = true;
+      continue;
+    }
+    if (!entry->enumerable) continue;
+    if (entry->accessor ||
+        !scr_jb_try_pure_member(b, entry->key, entry->key_len, NULL, entry->value, &first))
+      break;
+  }
+  if (i < view->v.obj.len && !scr_exc_pending() && !on_stack) {
+    entered = scr_jb_enter(b, rec, false);
+    on_stack = entered;
+  }
+  if (i < view->v.obj.len && !scr_exc_pending()) {
+    ScrDyn *rest = scr_dyn_new_arr();
+    for (size_t j = i; j < view->v.obj.len; j++) {
+      const ScrDynEntry *entry = &view->v.obj.entries[j];
+      if (!entry->enumerable && !scr_record_source_declared(&source, entry->key, entry->key_len)) continue;
+      ScrStr *name = scr_str_new(entry->key, entry->key_len);
+      scr_dyn_arr_push(rest, scr_dyn_new_str(name));
+      scr_str_release(name);
+    }
+    for (size_t j = 0; j < rest->v.arr.len && !scr_exc_pending(); j++) {
+      const ScrStr *key = rest->v.arr.items[j]->v.str;
+      size_t index = scr_record_source_index(&source, key->data, key->len);
       if (index < count) {
-        if (!seen[index] && field(b, rec, index, first)) first = false;
+        if (!seen[index] && scr_jb_put_source_field(b, rec, &source, index, first, on_stack, field))
+        first = false;
         seen[index] = true;
         continue;
       }
-      if (!entry->enumerable || entry->accessor) continue;
-      ScrDynKind kind = entry->value->kind;
-      if (kind == SCR_DYN_UNDEF || kind == SCR_DYN_FUNC || kind == SCR_DYN_SYMBOL) continue;
-      if (!first) scr_jb_putc(b, ',');
-      first = false;
-      scr_jb_put_json_span(b, entry->key, entry->key_len);
-      scr_jb_putc(b, ':');
-      scr_jb_put_dyn(b, entry->value);
+      ScrDyn *value = scr_json_member(view, key);
+      if (!value || !scr_jb_put_member(b, key, value, &first, NULL)) break;
     }
-    for (size_t index = 0; index < count && !scr_exc_pending(); index++) {
-      if (!seen[index] && field(b, rec, index, first)) first = false;
-    }
-    if (seen != small) free(seen);
+    scr_dyn_release(rest);
   }
+  for (size_t index = 0; index < count && !scr_exc_pending(); index++) {
+    if (!seen[index] && scr_jb_put_source_field(b, rec, &source, index, first, on_stack, field))
+      first = false;
+  }
+  if (seen != small) free(seen);
+  scr_dyn_release(view);
   scr_jb_putc(b, '}');
+  if (entered) scr_jb_leave(b);
   return true;
 }
 
@@ -7156,99 +7230,6 @@ void scr_dyn_key_set_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value) {
   scr_str_release(name);
 }
 
-/* Node's JSON.stringify over a dyn: object members holding undefined DROP,
- * array slots holding undefined print null. A bare undefined never arrives
- * (the record serializer drops the entry first); print null defensively. */
-void scr_jb_put_dyn(ScrJsonBuf *b, const ScrDyn *d) {
-  if (d->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("JSON.stringify"); return; }
-  switch (d->kind) {
-  case SCR_DYN_NULL:
-  case SCR_DYN_UNDEF:
-  case SCR_DYN_SYMBOL:
-  case SCR_DYN_FUNC: /* JSON.stringify: functions serialize like undefined */
-    scr_jb_puts(b, "null");
-    return;
-  case SCR_DYN_BOOL:
-    scr_jb_puts(b, d->v.b ? "true" : "false");
-    return;
-  case SCR_DYN_BIGINT: {
-    static const char message[] = "Do not know how to serialize a BigInt";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-    return;
-  }
-  case SCR_DYN_NUM:
-    scr_jb_put_f64(b, d->v.num);
-    return;
-  case SCR_DYN_STR:
-    scr_jb_put_json_str(b, d->v.str);
-    return;
-  case SCR_DYN_BYTES: {
-    /* Node's JSON.stringify over a typed array: the index-keyed object
-     * form — {"0":1,"1":2}, using each view's numeric element kind. */
-    scr_jb_putc(b, '{');
-    for (size_t i = 0; i < d->v.bytes->len; i++) {
-      if (i > 0) scr_jb_putc(b, ',');
-      char idx[32];
-      snprintf(idx, sizeof idx, "\"%zu\":", i);
-      scr_jb_puts(b, idx);
-      scr_jb_put_f64(b, scr_bytes_get(d->v.bytes, (double)i));
-    }
-    scr_jb_putc(b, '}');
-    return;
-  }
-  case SCR_DYN_ARR:
-    scr_jb_putc(b, '[');
-    for (size_t i = 0; i < d->v.arr.len; i++) {
-      if (i > 0) scr_jb_putc(b, ',');
-      scr_jb_put_dyn(b, d->v.arr.items[i]);
-    }
-    scr_jb_putc(b, ']');
-    return;
-  case SCR_DYN_PROMISE:
-    /* No own enumerable properties — Node stringifies a promise as {}. */
-    scr_jb_puts(b, "{}");
-    return;
-  case SCR_DYN_HANDLE: {
-    /* Node's JSON.stringify over these classes throws the circular-
-     * structure TypeError with a V8 path dump we cannot reproduce —
-     * throw "not supported yet" instead of a wrong shape (SEMANTICS.md). */
-    ScrJsonBuf m;
-    scr_jb_init(&m);
-    scr_jb_puts(&m, "JSON.stringify of a dynamic ");
-    scr_jb_puts(&m, scr_dyn_handle_cls(d));
-    scr_jb_puts(&m, " is not supported yet");
-    scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&m));
-    scr_jb_puts(b, "null"); /* the buffer never surfaces: the pending throw wins */
-    return;
-  }
-
-  case SCR_DYN_TYPED_REF: {
-    ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
-    scr_jb_put_dyn(b, materialized);
-    scr_dyn_release(materialized);
-    return;
-  }
-  case SCR_DYN_OBJ: {
-    scr_jb_putc(b, '{');
-    bool first = true;
-    for (size_t i = 0; i < d->v.obj.len; i++) {
-      const ScrDynEntry *e = &d->v.obj.entries[i];
-      if (!e->enumerable) continue;
-      if (e->value->kind == SCR_DYN_UNDEF || e->value->kind == SCR_DYN_FUNC || e->value->kind == SCR_DYN_SYMBOL) continue; /* dropped, like Node */
-       /* engine functions drop too */
-      if (!first) scr_jb_putc(b, ',');
-      first = false;
-      scr_jb_put_json_span(b, e->key, e->key_len);
-      scr_jb_putc(b, ':');
-      scr_jb_put_dyn(b, e->value);
-    }
-    scr_jb_putc(b, '}');
-    return;
-  }
-  }
-  scr_trap("scriptc: internal error: invalid dyn kind\n");
-}
-
 /* ── dynCheck failure path ─────────────────────────────────────────────── */
 
 static void scr_dyn_path_render(ScrJsonBuf *b, const ScrDynPath *p) {
@@ -9033,9 +9014,12 @@ static bool scr_json_live_container(const ScrDyn *value, bool inspect) {
   return true;
 }
 
-static ScrDyn *scr_json_replace(const ScrDyn *holder, const ScrStr *key, const ScrDyn *replacer) {
-  ScrDyn *value = scr_json_member(holder, key);
-  if (!value) return NULL;
+/* SerializeJSONProperty's toJSON step over a member value (consumed): Date,
+ * URL and net handles convert through their toJSON, a Buffer through its
+ * { type, data } view, and an object with a callable toJSON through that
+ * method, called with the key. Returns the value to serialize (+1), or NULL
+ * with an exception pending. */
+static ScrDyn *scr_json_to_json(ScrDyn *value, const ScrStr *key) {
   /* Inspect a typed reference without replacing its live identity. Later
    * members must read the source again after a callback mutates it. A live
    * array, or a live record without a `toJSON` field, needs no conversion. */
@@ -9070,6 +9054,13 @@ static ScrDyn *scr_json_replace(const ScrDyn *holder, const ScrStr *key, const S
     } else scr_dyn_release(method);
   }
   scr_dyn_release(view);
+  return value;
+}
+
+static ScrDyn *scr_json_replace(const ScrDyn *holder, const ScrStr *key, const ScrDyn *replacer) {
+  ScrDyn *value = scr_json_member(holder, key);
+  if (!value) return NULL;
+  value = scr_json_to_json(value, key);
   if (!value) return NULL;
   ScrDyn *result = scr_json_callback(replacer, holder, key, value);
   scr_dyn_release(value);
@@ -9363,6 +9354,197 @@ ScrStr *scr_util_format_j(const ScrDyn *d) {
 ScrStr *scr_util_format_j_text(ScrStr *text) {
   if (!scr_exc_pending()) return scr_str_retain(text);
   return scr_json_circular_or_rethrow();
+}
+
+/* The gap of a compact walk; the walks read only its length. */
+static const ScrStr scr_json_compact_gap = { .rc = SIZE_MAX, .len = 0 };
+
+#define SCR_JSON_PURE_DEPTH 32
+
+/* Writes `value` when writing it runs no program code and meets no cycle:
+ * JSON primitives, and objects and dense arrays with the default prototype
+ * whose members are such values, where objects hold only data properties
+ * under names that are neither array indexes nor "toJSON" (so their own
+ * key order is their insertion order and no toJSON step applies). Answers
+ * false, having written part of the value, for anything else, including
+ * nesting deeper than SCR_JSON_PURE_DEPTH; the caller then truncates the
+ * buffer and runs the protocol walk. */
+static bool scr_jb_put_pure(ScrJsonBuf *b, const ScrDyn *value, size_t depth) {
+  switch (value->kind) {
+  case SCR_DYN_NULL: scr_jb_puts(b, "null"); return true;
+  case SCR_DYN_BOOL: scr_jb_puts(b, value->v.b ? "true" : "false"); return true;
+  case SCR_DYN_NUM: scr_jb_put_f64(b, value->v.num); return true;
+  case SCR_DYN_STR: scr_jb_put_json_str(b, value->v.str); return true;
+  case SCR_DYN_ARR:
+    if (value->prototype || value->v.arr.presence || value->v.arr.properties ||
+        depth == SCR_JSON_PURE_DEPTH)
+      return false;
+    scr_jb_putc(b, '[');
+    for (size_t i = 0; i < value->v.arr.len; i++) {
+      if (i > 0) scr_jb_putc(b, ',');
+      const ScrDyn *item = value->v.arr.items[i];
+      if (scr_json_omitted(item)) scr_jb_puts(b, "null");
+      else if (!scr_jb_put_pure(b, item, depth + 1)) return false;
+    }
+    scr_jb_putc(b, ']');
+    return true;
+  case SCR_DYN_OBJ: {
+    if (value->prototype || depth == SCR_JSON_PURE_DEPTH) return false;
+    scr_jb_putc(b, '{');
+    bool first = true;
+    for (size_t i = 0; i < value->v.obj.len; i++) {
+      const ScrDynEntry *entry = &value->v.obj.entries[i];
+      if (!entry->enumerable) continue;
+      double index;
+      if (entry->accessor || (entry->key_len == 6 && memcmp(entry->key, "toJSON", 6) == 0) ||
+          (entry->key_len && (unsigned char)(entry->key[0] - '0') < 10 &&
+           scr_dyn_key_is_index(entry->key, entry->key_len, &index)))
+        return false;
+      if (scr_json_omitted(entry->value)) continue;
+      if (!first) scr_jb_putc(b, ',');
+      first = false;
+      scr_jb_put_json_span(b, entry->key, entry->key_len);
+      scr_jb_putc(b, ':');
+      if (!scr_jb_put_pure(b, entry->value, depth + 1)) return false;
+    }
+    scr_jb_putc(b, '}');
+    return true;
+  }
+  default:
+    return false;
+  }
+}
+
+/* Writes the separator, key and value of an object member whose value
+ * scr_jb_put_pure can write, or drops a member holding undefined, a
+ * function or a symbol. `key_str`, when not NULL, is the key as a string.
+ * Answers false, with the buffer and `first` as they were, for a value
+ * that needs the protocol walk. */
+static inline __attribute__((always_inline)) bool scr_jb_try_pure_member(
+    ScrJsonBuf *b, const char *key, size_t key_len, const ScrStr *key_str, const ScrDyn *value,
+    bool *first) {
+  if (scr_json_omitted(value)) return true;
+  size_t mark = b->len;
+  if (!*first) scr_jb_putc(b, ',');
+  if (key_str) scr_jb_put_json_str(b, key_str);
+  else scr_jb_put_json_span(b, key, key_len);
+  scr_jb_putc(b, ':');
+  if (scr_jb_put_pure(b, value, 0)) {
+    *first = false;
+    return true;
+  }
+  b->len = mark;
+  return false;
+}
+
+/* Writes one object member of a typed container: `value` (consumed) goes
+ * through its toJSON step, an undefined, function or symbol result drops
+ * the member, and any other result is written after the separator and the
+ * key through the protocol walk, whose circular-structure checks share the
+ * buffer's stack. The container is the top of that stack, or `rec` is
+ * pushed for the walk when it is not; the key becomes the container's
+ * edge. Answers false with an exception pending. */
+static bool scr_jb_put_member_walk(ScrJsonBuf *b, const ScrStr *key, ScrDyn *value,
+                                   bool *first, void *rec) {
+  ScrDyn *child = scr_json_to_json(value, key);
+  if (!child) return false;
+  if (scr_json_omitted(child)) {
+    scr_dyn_release(child);
+    return true;
+  }
+  bool entered = rec && !(b->seen_len && b->seen[b->seen_len - 1].ptr == rec);
+  if (entered && !scr_jb_enter(b, rec, false)) {
+    scr_dyn_release(child);
+    return false;
+  }
+  if (!*first) scr_jb_putc(b, ',');
+  *first = false;
+  scr_jb_put_json_str(b, key);
+  scr_jb_putc(b, ':');
+  scr_jb_edge_key(b, key);
+  bool ok = scr_json_replaced_write(b, child, scr_dyn_undefined(), NULL, &scr_json_compact_gap,
+                                    b->seen_len);
+  if (entered) scr_jb_leave(b);
+  scr_dyn_release(child);
+  return ok;
+}
+
+/* scr_jb_put_member_walk, writing the member directly when scr_jb_put_pure
+ * can write its value. */
+static bool scr_jb_put_member(ScrJsonBuf *b, const ScrStr *key, ScrDyn *value, bool *first,
+                              void *rec) {
+  if (scr_jb_try_pure_member(b, key->data, key->len, key, value, first)) {
+    scr_dyn_release(value);
+    return true;
+  }
+  return scr_jb_put_member_walk(b, key, value, first, rec);
+}
+
+/* An entry of a record's `unknown` index signature, written after the
+ * record's earlier members with JSON.stringify's member rules
+ * (scr_jb_put_member). Walkers over cycle-capable shapes have pushed the
+ * record already; others push it for an entry that needs the protocol
+ * walk. May leave an exception pending. */
+static void scr_jb_put_dyn_entry(ScrJsonBuf *b, void *rec, const ScrStr *key,
+                                 const ScrDyn *value, bool *first) {
+  if (scr_jb_try_pure_member(b, key->data, key->len, key, value, first)) return;
+  scr_jb_put_member_walk(b, key, scr_dyn_retain((ScrDyn *)value), first, rec);
+}
+
+/* The entries of record `rec`'s `unknown` index signature (`map`: string
+ * keys, checked-dynamic values) in JS own-key order, each with
+ * scr_jb_put_dyn_entry's rules. Without array-index keys that order is the
+ * map's insertion order, walked in place: the walk holds the map's
+ * iteration count so no compaction moves entries, rereads each entry by
+ * position, and stops at the entries present when it started, so a toJSON
+ * call that adds or deletes entries sees Node's result (keys taken first,
+ * deleted ones read as undefined). With array-index keys the walk takes the
+ * ordered key list first. May leave an exception pending. */
+void scr_jb_put_dyn_entries(ScrJsonBuf *b, void *rec, ScrMap *map, bool *first) {
+  uint32_t count = map->nentries;
+  bool indexed = false;
+  for (uint32_t i = 0; i < count && !indexed; i++) {
+    if (!map->entries[i].hash) continue;
+    const ScrStr *key = (const ScrStr *)(uintptr_t)map->entries[i].key;
+    uint32_t index;
+    indexed = scr_key_array_index(key->data, key->len, &index);
+  }
+  if (indexed) {
+    ScrArr *keys = scr_map_keys_js_order(map);
+    for (size_t i = 0; i < keys->len && !scr_exc_pending(); i++) {
+      ScrStr *key = scr_arr_get_ref(keys, (double)i);
+      ScrDyn *value = scr_map_get_str_ref(map, key);
+      if (value) {
+        scr_jb_put_dyn_entry(b, rec, key, value, first);
+        scr_dyn_release(value);
+      }
+      scr_str_release(key);
+    }
+    scr_arr_release(keys);
+    return;
+  }
+  map->iter_depth++;
+  for (uint32_t i = 0; i < count && !scr_exc_pending(); i++) {
+    const ScrMapEntry *entry = &map->entries[i];
+    if (!entry->hash) continue;
+    const ScrStr *key = (const ScrStr *)(uintptr_t)entry->key;
+    const ScrDyn *value = (const ScrDyn *)(uintptr_t)entry->val;
+    if (scr_jb_try_pure_member(b, key->data, key->len, key, value, first)) continue;
+    /* The walk can run program code, which may replace this entry. */
+    ScrStr *held_key = scr_str_retain((ScrStr *)key);
+    scr_jb_put_member_walk(b, held_key, scr_dyn_retain((ScrDyn *)value), first, rec);
+    scr_str_release(held_key);
+  }
+  map->iter_depth--;
+}
+
+/* Writes a dyn value whose toJSON step has run through the protocol walk:
+ * undefined, functions and symbols as null (an array slot's rule), and
+ * containers with toJSON, accessor and circular-structure handling. May
+ * leave an exception pending. */
+void scr_jb_put_dyn(ScrJsonBuf *b, const ScrDyn *d) {
+  if (scr_json_omitted(d)) scr_jb_puts(b, "null");
+  else scr_json_replaced_write(b, d, scr_dyn_undefined(), NULL, &scr_json_compact_gap, b->seen_len);
 }
 
 /* Untyped RC adapters (box/promise/exception-cell currency). */
@@ -10709,6 +10891,7 @@ static ScrArr *scr_record_shared_keys(const ScrDynTypedRecordOps *record) {
 #ifdef SCR_RC_AUDIT
     scr_arr_live_forget(); /* immortal: outside the exit-time RC audit */
 #endif
+    scr_sa_thread_shares(); /* every thread reads the array */
     return built;
   }
   built->rc = 1;

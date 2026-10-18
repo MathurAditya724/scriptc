@@ -2457,6 +2457,12 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     fns: ["process.argv0"],
   },
   {
+    id: "node-builtin.process.execArgv",
+    kind: "node-builtin",
+    name: "process.execArgv",
+    fns: ["process.execArgv"],
+  },
+  {
     id: "node-builtin.process.execPath",
     kind: "node-builtin",
     name: "process.execPath",
