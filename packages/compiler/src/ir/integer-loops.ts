@@ -3,6 +3,7 @@ import type { IntegerRange, IntegerRanges } from "./integer-ranges.js";
 
 import { everyExprChild, everyStmtChild, everyStmtList } from "./traverse.js";
 import { byteNumberAccess } from "./byte-numbers.js";
+import { preservesArrayLength } from "./array-length-stability.js";
 
 /** A canonical byte loop whose induction variable is mathematically an
  * unsigned integer for every body entry. Backends may keep this binding in
@@ -47,15 +48,17 @@ function constantStep(update: IrStmt | null, id: string): number | null {
 }
 
 /** Pure initial values may be evaluated again on a fallback path. Bounds
- * additionally have to remain invariant throughout the loop. Array length
- * is allowed only in the initializer; its mutable value is never hoisted
- * from a condition. Typed-array lengths are fixed for a given receiver. */
+ * additionally have to remain invariant throughout the loop. An array length
+ * is hoisted from a condition only when `stableLength` proves the loop never
+ * changes it; otherwise it is allowed only in the initializer. Typed-array
+ * lengths are fixed for a given receiver. */
 function stableLoopValue(
   value: IrExpr,
   locals: ReadonlyMap<string, IrLocal>,
   body: IrStmt[],
   invariant: boolean,
   counter: string,
+  stableLength: (receiver: string) => boolean = () => false,
 ): boolean {
   switch (value.kind) {
     case "numLit":
@@ -77,16 +80,16 @@ function stableLoopValue(
           value.op === "&" ||
           value.op === ">>>" ||
           value.op === "|") &&
-        stableLoopValue(value.left, locals, body, invariant, counter) &&
-        stableLoopValue(value.right, locals, body, invariant, counter)
+        stableLoopValue(value.left, locals, body, invariant, counter, stableLength) &&
+        stableLoopValue(value.right, locals, body, invariant, counter, stableLength)
       );
     case "bytesIntrinsic":
     case "arrIntrinsic":
       return (
         (value.method === "length" ||
           (value.kind === "bytesIntrinsic" && value.method === "byteLength")) &&
-        (value.kind === "bytesIntrinsic" || !invariant) &&
         value.receiver.kind === "varRef" &&
+        (value.kind === "bytesIntrinsic" || !invariant || stableLength(value.receiver.localId)) &&
         stableLoopValue(value.receiver, locals, body, invariant, counter)
       );
     default:
@@ -103,6 +106,7 @@ export function matchIntegerCountedForLoop(
   stmt: IrStmt & { kind: "for" },
   locals: ReadonlyMap<string, IrLocal>,
   ranges: IntegerRanges = new Map(),
+  unaliased: ReadonlySet<string> | null = null,
 ): IntegerCountedForLoop | null {
   const init = stmt.init;
   if (init?.kind !== "varDecl" || !init.init) return null;
@@ -135,7 +139,38 @@ export function matchIntegerCountedForLoop(
     op = ({ "<": ">", "<=": ">=", ">": "<", ">=": "<=" } as Record<string, string>)[op] ?? "";
   }
   if (step > 0 ? op !== "<" && op !== "<=" : op !== ">" && op !== ">=") return null;
-  if (!stableLoopValue(limit, locals, stmt.body, true, local.id)) return null;
+  // An ascending counter compared below `a.length - c` holds an index below
+  // the length on every pass while that length is unchanged.
+  const belowLength = (receiver: string): boolean => {
+    let offset = 0,
+      length = limit;
+    if (
+      length.kind === "bin" &&
+      length.op === "-" &&
+      length.right.kind === "numLit" &&
+      Number.isFinite(length.right.value)
+    ) {
+      offset = length.right.value;
+      length = length.left;
+    }
+    return (
+      step > 0 &&
+      length.kind === "arrIntrinsic" &&
+      length.method === "length" &&
+      length.receiver.kind === "varRef" &&
+      length.receiver.localId === receiver &&
+      (op === "<" ? offset >= 0 : offset >= 1)
+    );
+  };
+  const stableLength = (receiver: string): boolean =>
+    unaliased !== null &&
+    preservesArrayLength(
+      [cond, ...stmt.body],
+      { receiver, inRange: belowLength(receiver) ? local.id : null },
+      locals,
+      unaliased,
+    );
+  if (!stableLoopValue(limit, locals, stmt.body, true, local.id, stableLength)) return null;
   const inclusive = op === "<=" || op === ">=";
   const guardLimit = step > 0 ? 2 ** 53 - (inclusive ? 1 : 0) : -(2 ** 53) + (inclusive ? 1 : 0);
   const boundRange =
@@ -178,10 +213,19 @@ export function matchIntegerCountedForLoop(
     // A string read at the counter indexes with the integer directly.
     if (e.kind === "strIntrinsic" && e.method === "charCodeAt" && e.args[0] && counter(e.args[0]))
       useful = true;
+    // So does an array element read; only a loop that needs no versioned
+    // copy takes the integer counter for it.
+    if (
+      !guarded &&
+      ((e.kind === "arrayGet" && counter(e.index)) ||
+        (e.kind === "arrIntrinsic" && e.method === "getNumber" && e.args[0] && counter(e.args[0])))
+    )
+      useful = true;
     return (!guarded || ++cost <= 80) && everyExprChild(e, expr, bodyStmt);
   };
   const bodyStmt = (s: IrStmt): boolean => {
     if (s.kind === "bytesSet" && counter(s.index)) useful = true;
+    if (!guarded && s.kind === "arraySet" && counter(s.index)) useful = true;
     if (
       guarded &&
       (s.kind === "for" || s.kind === "forOf" || s.kind === "while" || s.kind === "doWhile")

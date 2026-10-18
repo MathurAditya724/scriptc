@@ -87,3 +87,30 @@ test("an asserted string key keeps checked dispatch", async () => {
   );
   expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
 });
+
+const tally = `
+class Tally {
+  n = 0;
+  add(): void { this.n++; }
+}
+function entry(target: object, key: string, value: number): TYPE {
+  return LITERAL;
+}
+const tally = new Tally();
+tally.add();
+console.log(tally.n, Object.keys(entry(tally, String(tally.n), 2)));
+`;
+
+test("a computed key in an object literal leaves method calls direct", async () => {
+  const source = tally
+    .replace("TYPE", "Record<string, number>")
+    .replace("LITERAL", "{ [key]: value }");
+  expect(await callersOf(source, "%dyn.class.properties")).toEqual([]);
+});
+
+test("a computed key in an Object.assign source keeps checked dispatch", async () => {
+  const source = tally
+    .replace("TYPE", "object")
+    .replace("LITERAL", "Object.assign(target, { [key]: value })");
+  expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
+});

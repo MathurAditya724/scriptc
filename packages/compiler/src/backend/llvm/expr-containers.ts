@@ -42,7 +42,7 @@ import {
 } from "./map-number-lookup.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { emitFusedMapSet, rememberMapEntry } from "./map-entry-fusion.js";
-import { emitStringSliceRead } from "./string-slices.js";
+import { emitScratchStringSlice, emitStringSliceRead } from "./string-slices.js";
 import {
   STRING_CHAR_CODE_AT_DECL,
   STRING_CHAR_CODE_AT_INT_MARKER,
@@ -395,6 +395,7 @@ export function emitStrIntrinsic(
             false,
           );
     case "slice":
+      if (host.scratchStringSlices.has(e)) return emitScratchStringSlice(host, e, r, args);
       return call(
         "scr_str_slice",
         "ptr (ptr, double, double)",
@@ -403,6 +404,7 @@ export function emitStrIntrinsic(
         true,
       );
     case "substring":
+      if (host.scratchStringSlices.has(e)) return emitScratchStringSlice(host, e, r, args);
       return call(
         "scr_str_substring",
         "ptr (ptr, double, double)",
@@ -575,7 +577,16 @@ export function emitArrIntrinsic(
           ? host.constantNumericTables.get(e.receiver.localId)
           : undefined;
       if (!table && elem.kind === "f64")
-        return { name: emitDenseArrayNumber(host, r.name, index, e.args[0]), type: e.type };
+        return {
+          name: emitDenseArrayNumber(
+            host,
+            r.name,
+            index,
+            e.args[0],
+            host.provenDenseIndex(e.receiver, e.args[0]!),
+          ),
+          type: e.type,
+        };
       host.declare(`declare double @scr_arr_get_number(ptr, double)`);
       const t = B.tmp();
       B.line(

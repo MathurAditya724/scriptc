@@ -3174,6 +3174,69 @@ declare module "util" {
   export function promisify(
     fn: typeof import("node:stream").finished,
   ): typeof import("node:stream/promises").finished;
+  /* The crypto callback functions: the promise settles with the callback's
+   * value. */
+  export function promisify(
+    fn: typeof import("node:crypto").randomBytes,
+  ): (size: number) => Promise<Buffer>;
+  export function promisify(
+    fn: typeof import("node:crypto").pbkdf2,
+  ): (
+    password: string | Uint8Array,
+    salt: string | Uint8Array,
+    iterations: number,
+    keylen: number,
+    digest: string,
+  ) => Promise<Buffer>;
+  export function promisify(
+    fn: typeof import("node:crypto").scrypt,
+  ): (
+    password: import("node:crypto").BinaryLike,
+    salt: import("node:crypto").BinaryLike,
+    keylen: number,
+    options?: import("node:crypto").ScryptOptions,
+  ) => Promise<Buffer>;
+  export function promisify(
+    fn: typeof import("node:crypto").hkdf,
+  ): (
+    digest: string,
+    ikm: import("node:crypto").BinaryLike | import("node:crypto").KeyObject,
+    salt: import("node:crypto").BinaryLike,
+    info: import("node:crypto").BinaryLike,
+    keylen: number,
+  ) => Promise<ArrayBuffer>;
+  export function promisify(
+    fn: typeof import("node:crypto").randomFill,
+  ): <T extends ArrayBufferView | ArrayBufferLike>(
+    buffer: T,
+    offset?: number,
+    size?: number,
+  ) => Promise<T>;
+  export function promisify(fn: typeof import("node:crypto").randomInt): {
+    (max: number): Promise<number>;
+    (min: number, max: number): Promise<number>;
+  };
+  export function promisify(
+    fn: typeof import("node:crypto").generateKey,
+  ): (
+    type: "hmac" | "aes",
+    options: { length: number },
+  ) => Promise<import("node:crypto").KeyObject>;
+  /* dns.lookup's promise settles with { address, family } (the address
+   * array with options.all), and lookupService's with { hostname, service }. */
+  export function promisify(fn: typeof import("node:dns").lookup): {
+    (
+      hostname: string,
+      options: import("node:dns").LookupAllOptions,
+    ): Promise<import("node:dns").LookupAddress[]>;
+    (
+      hostname: string,
+      options?: number | import("node:dns").LookupOneOptions,
+    ): Promise<import("node:dns").LookupAddress>;
+  };
+  export function promisify(
+    fn: typeof import("node:dns").lookupService,
+  ): (address: string, port: number) => Promise<{ hostname: string; service: string }>;
   /* Declared surface without full lowering (the type-level tolerance
    * story: guarded/diagnostic-path code must TYPECHECK; a reached use
    * without a lowering fences at its site). inspect's options carry the
@@ -3312,8 +3375,18 @@ declare module "node:util/types" {
  * suites typecheck but fence at their use sites (no lowering). */
 declare module "node:test" {
   type TestFn = (t: TestContext) => void | Promise<void>;
-  type SuiteFn = () => void;
-  type HookFn = () => void | Promise<void>;
+  type SuiteFn = (s: SuiteContext) => void;
+  type HookFn = (c: TestContext | SuiteContext) => void | Promise<void>;
+  /* The describe/suite callback's context, and the before/after hook
+   * context of a suite. */
+  interface SuiteContext {
+    readonly name: string;
+    readonly fullName: string;
+    readonly filePath: string | undefined;
+    readonly attempt: number;
+    readonly passed: boolean;
+    diagnostic(message: string): void;
+  }
   interface TestOptions {
     skip?: boolean | string;
     todo?: boolean | string;
@@ -3325,6 +3398,11 @@ declare module "node:test" {
   interface TestContext {
     readonly name: string;
     readonly fullName: string;
+    readonly filePath: string | undefined;
+    readonly attempt: number;
+    readonly passed: boolean;
+    readonly workerId: number | undefined;
+    readonly tags: readonly string[];
     readonly assert: TestContextAssert;
     readonly mock: MockTracker;
     test(name: string, fn?: TestFn): Promise<void>;
@@ -3469,6 +3547,7 @@ declare module "node:test" {
     run,
     snapshot,
     TestContext,
+    SuiteContext,
     TestOptions,
     Mock,
     MockFunctionContext,
