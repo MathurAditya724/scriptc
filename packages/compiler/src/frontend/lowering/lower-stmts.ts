@@ -2700,6 +2700,14 @@ export function lowerBindingPattern(
     }
     return;
   }
+  if (
+    srcType.kind === "array" &&
+    isMatchSliceType(lowerer, srcType) &&
+    isRegexMatchResultPattern(lowerer, pattern)
+  ) {
+    lowerMatchResultObjectPattern(lowerer, pattern, srcRef, srcType, isLet, out);
+    return;
+  }
   if (srcType.kind !== "record") {
     lowerer.unsupported(
       "SC1031",
@@ -2966,6 +2974,124 @@ function patternKeyNameOf(lowerer: Lowerer, prop: ts.PropertyName): string | nul
     return lowerer.foldedStringKeyOf(prop);
   }
   return null;
+}
+
+/** True when an object pattern destructures a regex match result: the
+ * checker types its source as the standard library's RegExpExecArray or
+ * RegExpMatchArray. */
+function isRegexMatchResultPattern(lowerer: Lowerer, pattern: ts.ObjectBindingPattern): boolean {
+  const parent = pattern.parent;
+  const source =
+    ts.isVariableDeclaration(parent) && parent.initializer !== undefined
+      ? lowerer.typeOf(parent.initializer)
+      : lowerer.typeOf(pattern);
+  const type = lowerer.checker.getNonNullableType(source);
+  const symbol = type.getAliasSymbol() ?? type.getSymbol();
+  return (
+    symbol !== undefined &&
+    (symbol.name === "RegExpExecArray" || symbol.name === "RegExpMatchArray") &&
+    lowerer.isStdlibSymbol(symbol)
+  );
+}
+
+/** `const { 0: whole, 1: first, index, input, groups } = re.exec(s)!`: an
+ * object pattern over a regex match result. The result is an honest
+ * string[] slice whose `index` and `input` are the special-form reads that
+ * `m.index` and `m.input` lower to; numeric keys are the positional reads
+ * of the equivalent array pattern, and `groups` is the projection `m.groups`
+ * builds when the regex is statically known. Rest elements, defaults on
+ * the special properties, and every other key keep a named fence. */
+function lowerMatchResultObjectPattern(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+  srcRef: () => IrExpr,
+  srcType: IrType & { kind: "array" },
+  isLet: boolean,
+  out: IrStmt[],
+): void {
+  let groups: { name: string; index: number }[] | null | undefined;
+  for (const el of pattern.elements) {
+    if (el.name === undefined) continue;
+    const loc = locOf(el);
+    if (el.dotDotDotToken) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        "rest bindings over regex match results (the rest copies the positions and the index, input and groups properties — destructure them by name)",
+      );
+    }
+    const prop = el.propertyName ?? el.name;
+    const propName =
+      ts.isIdentifier(prop) ||
+      ts.isComputedPropertyName(prop) ||
+      ts.isStringLiteralLike(prop) ||
+      ts.isNumericLiteral(prop)
+        ? patternKeyNameOf(lowerer, prop as ts.PropertyName)
+        : null;
+    if (propName === null) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        "destructuring with computed keys that do not fold to one property name",
+      );
+    }
+    let value: IrExpr;
+    if (/^(?:0|[1-9]\d{0,8})$/.test(propName)) {
+      const index = Number(propName);
+      const position: IrExpr = { kind: "numLit", value: index, type: F64, loc };
+      value = lowerSafeIndexRead(lowerer, srcRef(), position, loc) ?? {
+        kind: "arrayGet",
+        arr: srcRef(),
+        index: position,
+        type: srcType.elem,
+        loc,
+      };
+      if (el.initializer) {
+        value = arrayPositionDefault(lowerer, el, value, srcRef, index, srcType.elem, out);
+      }
+    } else if (propName === "index" || propName === "input") {
+      if (el.initializer) {
+        lowerer.unsupported(
+          "SC1031",
+          el,
+          `binding defaults on the '${propName}' of a regex match result`,
+        );
+      }
+      value = lowerer.maybeNarrow(
+        {
+          kind: "dynKeyGet",
+          value: lowerer.coerceToExpected(srcRef(), DYN),
+          key: { kind: "strLit", value: propName, type: STRING, loc },
+          type: DYN,
+          loc,
+        },
+        el.name,
+      );
+    } else if (propName === "groups") {
+      if (groups === undefined) {
+        const parent = pattern.parent;
+        groups =
+          ts.isVariableDeclaration(parent) && parent.initializer !== undefined
+            ? matchResultNamedGroupsOf(lowerer, parent.initializer)
+            : null;
+      }
+      if (groups === null || groups.length === 0 || el.initializer) {
+        lowerer.unsupported(
+          "SC1031",
+          el,
+          "destructuring 'groups' from this regex match result (it lowers when the regex is statically known and has named groups, without a default)",
+        );
+      }
+      value = lowerGroupsProjection(lowerer, srcRef(), groups, loc);
+    } else {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        `destructuring the property '${propName}' of a regex match result (numeric positions, index, input and groups compile)`,
+      );
+    }
+    lowerer.bindPatternTarget(el.name, value, isLet, out);
+  }
 }
 
 /** Decode one non-rest object-assignment property into its static source
