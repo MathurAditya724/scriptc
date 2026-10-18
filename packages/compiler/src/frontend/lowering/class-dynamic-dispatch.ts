@@ -698,6 +698,8 @@ export class ClassDynamicDispatch {
   private readonly bagClasses = new Set<string>();
   private readonly bagInitializers = new Map<string, Extract<IrStmt, { kind: "fieldSet" }>[]>();
   private readonly typedPropertyBags = new Map<string, IrFunction>();
+  /** Per-class prototype selection for new property bags (bagPrototypeHelper). */
+  private readonly bagPrototypeHelpers = new Map<string, IrFunction>();
   private readonly readPropertyBags: {
     helper: IrFunction;
     initialize: Extract<IrStmt, { kind: "fieldSet" }>;
@@ -1127,38 +1129,8 @@ export class ClassDynamicDispatch {
         current.subclasses.some(
           (child) => lowerer.classCanBeConstructed(child) && needsPrototype(child),
         );
-      const prototypeFor = (current: ClassInfo, receiver: IrExpr, loc: SrcLoc): IrExpr | null => {
-        const currentReceiver: IrExpr =
-          receiver.type.kind === "object" && receiver.type.className !== current.def.name
-            ? {
-                kind: "downcast",
-                value: receiver,
-                type: { kind: "object", className: current.def.name },
-                loc,
-              }
-            : receiver;
-        let result = classPrototypeData(lowerer, current, loc, currentReceiver);
-        for (const child of current.subclasses) {
-          if (!lowerer.classCanBeConstructed(child)) continue;
-          const selected = prototypeFor(child, receiver, loc);
-          if (selected && result)
-            result = {
-              kind: "ternary",
-              cond: {
-                kind: "instanceOf",
-                value: receiver,
-                className: child.def.name,
-                type: BOOL,
-                loc,
-              },
-              then: selected,
-              else_: result,
-              type: DYN,
-              loc,
-            };
-        }
-        return result;
-      };
+      const prototypeFor = (current: ClassInfo, receiver: IrExpr, loc: SrcLoc): IrExpr | null =>
+        this.bagPrototype(lowerer, current, receiver, loc);
       for (const existingInit of this.bagInitializers.get(className) ?? []) {
         if (existingInit.value.kind === "dynObjLit" && needsPrototype(info)) {
           const prototype = prototypeFor(info, existingInit.obj, existingInit.loc);
@@ -3922,10 +3894,20 @@ export class ClassDynamicDispatch {
       obj: receiver,
       value: transformExpr(initializers[0]!.value, {
         stmt: (stmt) => stmt,
-        expr: (expr) =>
-          expr.kind === "dynCheck" && expr.value.kind === "varRef" && expr.value.localId === "p.0"
-            ? receiver
-            : expr,
+        expr: (expr) => {
+          const checked = (e: IrExpr): boolean =>
+            e.kind === "dynCheck" && e.value.kind === "varRef" && e.value.localId === "p.0";
+          // The checked receiver, possibly cast to this class (the prototype
+          // helper's argument), is the typed parameter itself.
+          if (
+            expr.kind === "downcast" &&
+            checked(expr.value) &&
+            expr.type.kind === "object" &&
+            expr.type.className === type.className
+          )
+            return receiver;
+          return checked(expr) ? receiver : expr;
+        },
       }),
       loc,
     };
@@ -3951,6 +3933,79 @@ export class ClassDynamicDispatch {
     if (readOnly) this.readPropertyBags.push({ helper, initialize });
     this.generated.add(helper);
     lowerer.liftedFns.push(helper);
+    return helper;
+  }
+
+  /** The prototype a new property bag of `current` (or of the subclass the
+   * receiver is) starts from, or null when `current` has no prototype data.
+   * A class with constructible subclasses that have prototype data selects
+   * it through its `%class.bagPrototype` helper; any other class reads its
+   * own prototype data. */
+  private bagPrototype(
+    lowerer: Lowerer,
+    current: ClassInfo,
+    receiver: IrExpr,
+    loc: SrcLoc,
+  ): IrExpr | null {
+    const arg: IrExpr =
+      receiver.type.kind === "object" && receiver.type.className !== current.def.name
+        ? {
+            kind: "downcast",
+            value: receiver,
+            type: { kind: "object", className: current.def.name },
+            loc,
+          }
+        : receiver;
+    const helper = this.bagPrototypeHelper(lowerer, current, loc);
+    return helper
+      ? { kind: "call", callee: helper.name, args: [arg], type: DYN, loc }
+      : classPrototypeData(lowerer, current, loc, arg);
+  }
+
+  /** `%class.bagPrototype:<class>(this)`: the prototype data of the most
+   * derived constructible class `this` is an instance of, tested from the
+   * last subclass to the first and then the class itself. One helper per
+   * class, calling its subclasses' helpers, keeps every property-bag branch
+   * a single call: a whole hierarchy inlined into each branch grows with the
+   * square of its depth. Null when the class has no prototype data, in which
+   * case its subclasses are not tested either, or while no constructible
+   * subclass has any. The body is rebuilt on each use, as classes become
+   * constructible. */
+  private bagPrototypeHelper(lowerer: Lowerer, current: ClassInfo, loc: SrcLoc): IrFunction | null {
+    const type: IrType = { kind: "object", className: current.def.name };
+    const self = varRef("this", type, loc);
+    const own = classPrototypeData(lowerer, current, loc, self);
+    if (!own) return null;
+    const body: IrStmt[] = [];
+    const children = current.subclasses.filter((child) => lowerer.classCanBeConstructed(child));
+    for (const child of children.reverse()) {
+      const selected = this.bagPrototype(lowerer, child, self, loc);
+      if (!selected) continue;
+      body.push({
+        kind: "if",
+        cond: { kind: "instanceOf", value: self, className: child.def.name, type: BOOL, loc },
+        then: [{ kind: "return", value: selected, loc }],
+        else_: null,
+        loc,
+      });
+    }
+    let helper = this.bagPrototypeHelpers.get(current.def.name);
+    if (!helper && body.length === 0) return null;
+    body.push({ kind: "return", value: own, loc });
+    if (!helper) {
+      helper = {
+        name: `%class.bagPrototype:${current.def.name}`,
+        params: [{ localId: "this", name: "this", type }],
+        returnType: DYN,
+        locals: [{ id: "this", name: "this", type, mutable: false }],
+        body,
+        loc,
+      };
+      this.bagPrototypeHelpers.set(current.def.name, helper);
+      this.generated.add(helper);
+      lowerer.liftedFns.push(helper);
+    }
+    helper.body = body;
     return helper;
   }
 
