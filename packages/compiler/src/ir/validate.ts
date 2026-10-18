@@ -5695,6 +5695,8 @@ function validateFunction(
       e.fn !== "emitter.setDefaultMax" &&
       e.fn !== "emitter.setDefaultMaxChk" &&
       e.fn !== "emitter.getDefaultMax" &&
+      e.fn !== "emitter.esmDefaultMax" &&
+      e.fn !== "emitter.esmSync" &&
       e.fn !== "emitter.errorMonitor" &&
       e.fn !== "emitter.checkListener"
     ) {

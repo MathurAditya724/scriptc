@@ -3411,6 +3411,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "emitter.getMax": { argTypes: [null], result: F64 },
   "emitter.setDefaultMax": { argTypes: [F64], result: VOID },
   "emitter.getDefaultMax": { argTypes: [], result: F64 },
+  // The ES module namespace's copy of defaultMaxListeners, and
+  // module.syncBuiltinESMExports() refreshing it.
+  "emitter.esmDefaultMax": { argTypes: [], result: F64 },
+  "emitter.esmSync": { argTypes: [], result: VOID },
   /** The events.errorMonitor event key: an immortal string the runtime
    * registry matches by identity, so no string event name reaches it. */
   "emitter.errorMonitor": { argTypes: [], result: STRING },

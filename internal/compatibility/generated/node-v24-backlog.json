@@ -25009,7 +25009,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.getEventListeners",
           "tests": [
-            "tests/corpus/5885-events-max-listener-helpers.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts",
+            "tests/corpus/5846-events-esm-default-max.ts",
+            "tests/corpus/5847-events-cjs-default-max.cjs"
           ]
         }
       }
@@ -25036,7 +25038,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.getMaxListeners",
           "tests": [
-            "tests/corpus/5885-events-max-listener-helpers.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts",
+            "tests/corpus/5846-events-esm-default-max.ts",
+            "tests/corpus/5847-events-cjs-default-max.cjs"
           ]
         }
       }
@@ -25091,7 +25095,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.listenerCount",
           "tests": [
-            "tests/corpus/5885-events-max-listener-helpers.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts",
+            "tests/corpus/5846-events-esm-default-max.ts",
+            "tests/corpus/5847-events-cjs-default-max.cjs"
           ]
         }
       }
@@ -25143,7 +25149,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.setMaxListeners",
           "tests": [
-            "tests/corpus/5885-events-max-listener-helpers.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts",
+            "tests/corpus/5846-events-esm-default-max.ts",
+            "tests/corpus/5847-events-cjs-default-max.cjs"
           ]
         }
       }
@@ -25197,7 +25205,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.defaultMaxListeners",
           "tests": [
-            "tests/corpus/5885-events-max-listener-helpers.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts",
+            "tests/corpus/5846-events-esm-default-max.ts",
+            "tests/corpus/5847-events-cjs-default-max.cjs"
           ]
         }
       }
@@ -48430,7 +48440,8 @@
           "confidence": "high",
           "source": "compiler-feature:module.module.isBuiltin",
           "tests": [
-            "tests/corpus/2932-create-require-program/main.ts"
+            "tests/corpus/2932-create-require-program/main.ts",
+            "tests/corpus/5846-events-esm-default-max.ts"
           ]
         }
       }
@@ -48527,7 +48538,8 @@
           "confidence": "high",
           "source": "compiler-feature:module.module.syncBuiltinESMExports",
           "tests": [
-            "tests/corpus/2932-create-require-program/main.ts"
+            "tests/corpus/2932-create-require-program/main.ts",
+            "tests/corpus/5846-events-esm-default-max.ts"
           ]
         }
       }

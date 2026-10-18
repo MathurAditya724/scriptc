@@ -1367,7 +1367,7 @@
       "name": "module.syncBuiltinESMExports",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the direct zero-argument call is a no-op because compiled builtin exports are immutable and cannot become stale"
+      "note": "the direct zero-argument call statement refreshes the ES module namespace copy of events.defaultMaxListeners, the one builtin export a program can change"
     },
     {
       "id": "node-builtin.net",
