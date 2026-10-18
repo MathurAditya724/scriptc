@@ -2791,7 +2791,16 @@ export function lowerFileInit(
       const wrapped =
         g.type.kind === "dyn" ? dynUndefinedExpr(loc0) : lowerer.unassignedSlotInit(g.type, loc0);
       if (wrapped) {
-        header.push({ kind: "assign", localId: g.id, value: wrapped, loc: loc0 });
+        // A let global whose early reads are checked (initFlag) only
+        // gets its storage filled here: this is not the source write, so
+        // it must neither run the TDZ check nor set the flag.
+        header.push({
+          kind: "assign",
+          localId: g.id,
+          value: wrapped,
+          ...(g.initFlag !== undefined ? { initializes: true as const } : {}),
+          loc: loc0,
+        });
       }
     }
     const prelude = lowerer.jsonInitActions.get(sf) ?? [];
