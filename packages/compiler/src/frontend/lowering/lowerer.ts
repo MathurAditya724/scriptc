@@ -9872,27 +9872,21 @@ export class Lowerer {
    * instance type. Collection and body lowering own a refusal of that
    * class: the poison reaches the declaration or statement that asked, as
    * before. A speculative whole-program analysis owns none, so there the
-   * class is unmappable for the query and its diagnostics are dropped;
-   * lowering the class's own declaration collects it again and reports
-   * them if the program reaches it. */
+   * refusal stays reported (the build fails with it, as it did where such
+   * an analysis already caught the poison) and the class is unmappable for
+   * the query instead of the poison escaping the compiler. */
   collectLocalClassForType(decl: ts.ClassLikeDeclaration): boolean {
     if (this.speculativeTypeQueryDepth === 0 || this.fnStack.length > 0) {
       this.lowerClassExpressionInfo(decl);
       return true;
     }
-    const sink: ScrDiagnostic[] = [];
-    const previousSink = this.diagSink;
-    this.diagSink = sink;
     try {
       this.lowerClassExpressionInfo(decl);
+      return true;
     } catch (e) {
       if (e instanceof PoisonError) return false;
       throw e;
-    } finally {
-      this.diagSink = previousSink;
     }
-    for (const d of sink) this.pushDiag(d);
-    return true;
   }
 
   lowerClassExpression(expr: ts.ClassLikeDeclaration): IrExpr {
