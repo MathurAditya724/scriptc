@@ -15,6 +15,7 @@ import {
   F64,
   type IrExpr,
   type IrLibFn,
+  type IrType,
   type IrStmt,
   STRING,
   type SrcLoc,
@@ -1106,5 +1107,178 @@ export function lowerCryptoHashMethodCall(
       ? "update(), digest(), and copy() are supported"
       : "update() and digest() are supported",
     lowerer.checker.getSymbolAtLocation(access.name),
+  );
+}
+
+/** The crypto callback functions util.promisify converts. */
+const PROMISIFIED_CRYPTO_ARITY: Readonly<Record<string, readonly [number, number] | undefined>> = {
+  randomBytes: [1, 1],
+  pbkdf2: [5, 5],
+  scrypt: [3, 4],
+  hkdf: [5, 5],
+  randomFill: [1, 3],
+  randomInt: [1, 2],
+  generateKey: [1, 2],
+};
+
+export function isPromisifiedCryptoMember(member: string): boolean {
+  return PROMISIFIED_CRYPTO_ARITY[member] !== undefined;
+}
+
+/** A call through `promisify(crypto.randomBytes)` and the other callback
+ * functions: the callback form runs with a callback that settles the
+ * returned promise, so the value or error arrives where the callback
+ * would run. An argument error rejects the promise instead of throwing,
+ * as the throw inside Node's promisify wrapper does. The promise's value
+ * type follows the declared result: a Buffer or the filled view, or a
+ * checked-dynamic value where the declarations give `unknown`. */
+export function lowerPromisifiedCryptoCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: string,
+  loc: SrcLoc,
+): IrExpr {
+  const args = expr.arguments;
+  if (args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`the promisified crypto.${member} with spread arguments`, expr);
+  }
+  const [min, max] = PROMISIFIED_CRYPTO_ARITY[member]!;
+  if (args.length < min || args.length > max) {
+    lowerer.noLowering(
+      `the promisified crypto.${member} with ${args.length} arguments`,
+      expr,
+      `the promisified form takes the callback form's arguments without the callback`,
+    );
+  }
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const inner = declared?.kind === "promise" ? declared.inner : null;
+  const promise = (
+    fn: IrLibFn,
+    values: IrExpr[],
+    accepts: (t: IrType) => boolean,
+    what: string,
+  ): IrExpr => {
+    if (inner === null || !accepts(inner)) {
+      lowerer.noLowering(
+        `the promisified crypto.${member} with a '${declared ? lowerer.fmt(declared) : "?"}' result`,
+        expr,
+        `the promise's value type must be ${what} or unknown`,
+      );
+    }
+    return { kind: "libCall", fn, args: values, type: { kind: "promise", inner }, loc };
+  };
+  const bufferOrDyn = (t: IrType) => t.kind === "dyn" || (t.kind === "bytes" && t.elem === "u8");
+  if (member === "randomBytes") {
+    return promise(
+      "crypto.randomBytesPromise",
+      [lowerer.lowerExprExpecting(args[0]!, F64)],
+      bufferOrDyn,
+      "Buffer",
+    );
+  }
+  if (member === "pbkdf2") {
+    return promise(
+      "crypto.pbkdf2Promise",
+      [
+        lowerBuiltinByteInput(lowerer, args[0]!, locOf(args[0]!), "crypto"),
+        lowerBuiltinByteInput(lowerer, args[1]!, locOf(args[1]!), "crypto"),
+        lowerer.lowerExprExpecting(args[2]!, F64),
+        lowerer.lowerExprExpecting(args[3]!, F64),
+        cryptoAlgorithm(lowerer, args[4]!),
+      ],
+      bufferOrDyn,
+      "Buffer",
+    );
+  }
+  if (member === "scrypt") {
+    return promise(
+      "crypto.scryptPromise",
+      [
+        cryptoKdfInput(lowerer, args[0]!),
+        cryptoKdfInput(lowerer, args[1]!),
+        lowerer.lowerExprExpecting(args[2]!, F64),
+        args[3]
+          ? lowerer.coerceInto(args[3], lowerer.lowerExpr(args[3]), DYN)
+          : dynUndefinedExpr(loc),
+      ],
+      bufferOrDyn,
+      "Buffer",
+    );
+  }
+  if (member === "hkdf") {
+    return promise(
+      "crypto.hkdfPromise",
+      [
+        cryptoAlgorithm(lowerer, args[0]!),
+        isKeyObjectValue(lowerer, args[1]!)
+          ? {
+              kind: "libCall",
+              fn: "crypto.keyObjectInput",
+              args: [lowerer.lowerExprExpecting(args[1]!, DYN)],
+              type: BYTES_U8,
+              loc,
+            }
+          : cryptoKdfInput(lowerer, args[1]!),
+        cryptoKdfInput(lowerer, args[2]!),
+        cryptoKdfInput(lowerer, args[3]!),
+        lowerer.lowerExprExpecting(args[4]!, F64),
+      ],
+      (t) => t.kind === "dyn",
+      "ArrayBuffer",
+    );
+  }
+  if (member === "randomFill") {
+    // Node's randomFill counts the arguments before the callback.
+    const form: IrExpr = { kind: "numLit", value: args.length, type: F64, loc };
+    const buffer = lowerer.lowerExpr(args[0]!);
+    if (buffer.type.kind === "bytes" && cryptoNumberArgs(lowerer, args.slice(1))) {
+      const view = buffer.type;
+      return promise(
+        "crypto.randomFillPromise",
+        [
+          buffer,
+          args.length >= 2
+            ? lowerer.lowerExprExpecting(args[1]!, F64)
+            : { kind: "numLit", value: 0, type: F64, loc },
+          args.length === 3
+            ? lowerer.lowerExprExpecting(args[2]!, F64)
+            : { kind: "numLit", value: 0, type: F64, loc },
+          form,
+        ],
+        (t) => t.kind === "dyn" || (t.kind === "bytes" && t.elem === view.elem),
+        "the buffer's own view",
+      );
+    }
+    return promise(
+      "crypto.randomFillPromiseDyn",
+      [
+        lowerer.coerceInto(args[0]!, buffer, DYN),
+        dynArg(lowerer, args[1], loc),
+        dynArg(lowerer, args[2], loc),
+        form,
+      ],
+      (t) => t.kind === "dyn",
+      "the buffer's own type",
+    );
+  }
+  if (member === "randomInt") {
+    return promise(
+      "crypto.randomIntPromise",
+      [
+        args.length === 2
+          ? lowerer.lowerExprExpecting(args[0]!, F64)
+          : { kind: "numLit", value: 0, type: F64, loc },
+        lowerer.lowerExprExpecting(args[args.length - 1]!, F64),
+        { kind: "numLit", value: args.length === 2 ? 1 : 0, type: F64, loc },
+      ],
+      (t) => t.kind === "dyn" || t.kind === "f64",
+      "number",
+    );
+  }
+  return promise(
+    "crypto.generateKeyPromise",
+    [lowerer.lowerExprExpecting(args[0]!, DYN), dynArg(lowerer, args[1], loc)],
+    (t) => t.kind === "dyn",
+    "KeyObject",
   );
 }

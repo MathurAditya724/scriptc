@@ -848,6 +848,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fetch.abortAny": "scr_fetch_abort_any",
   "fetch.webIs": "scr_fetch_web_is",
   "fetch.streamIs": "scr_fetch_stream_is",
+  "zlib.streamIs": "scr_zlib_stream_is",
   "fetch.streamNew": "scr_fetch_stream_new",
   "fetch.streamFrom": "scr_fetch_stream_from",
   "fetch.readerRead": "scr_fetch_reader_read",
