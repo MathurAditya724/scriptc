@@ -4055,6 +4055,7 @@ function canBoxDynCompositeAt(
     case "regex":
     case "url":
     case "searchParams":
+    case "date":
       return true;
     case "func":
       return canBoxFuncIntoDyn(t, getRecord, getUnion, visiting);

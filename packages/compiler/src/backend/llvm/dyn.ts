@@ -2418,6 +2418,15 @@ export class LlDyn {
     const B = new BlockBuilder();
     let sourceAccessor: { name: string; release: string } | null = null;
     switch (t.kind) {
+      case "date": {
+        // A Date handle holding the same time value; native Dates are
+        // immutable values, and so is the handle.
+        host.declare(`declare ptr @scr_dyn_native_date_from_ms(double)`);
+        const r = B.tmp();
+        B.line(`${r} = call ptr @scr_dyn_native_date_from_ms(double %v)`);
+        B.terminate(`ret ptr ${r}`);
+        break;
+      }
       case "url":
       case "searchParams": {
         const native = t.kind === "url" ? "url" : "search_params";

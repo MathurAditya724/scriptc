@@ -10576,7 +10576,14 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           loc,
         };
       if (bothStr) return { kind: "strCmp", op: cmpOp, left, right, type: BOOL, loc };
-      if (lowerer.dynConvertible(left.type) && lowerer.dynConvertible(right.type)) {
+      // A Date converts to a new checked-dynamic Date on each crossing, so
+      // comparisons keep their Date fence instead of comparing copies.
+      if (
+        left.type.kind !== "date" &&
+        right.type.kind !== "date" &&
+        lowerer.dynConvertible(left.type) &&
+        lowerer.dynConvertible(right.type)
+      ) {
         return {
           kind: "libCall",
           fn: "dyn.compare",
@@ -10826,7 +10833,14 @@ export function lowerStrictEquality(
       loc,
     };
   }
-  if (lowerer.dynConvertible(idLeft.type) && lowerer.dynConvertible(idRight.type)) {
+  // A Date converts to a new checked-dynamic Date on each crossing; its
+  // identity has no representation, so equality keeps the fence.
+  if (
+    idLeft.type.kind !== "date" &&
+    idRight.type.kind !== "date" &&
+    lowerer.dynConvertible(idLeft.type) &&
+    lowerer.dynConvertible(idRight.type)
+  ) {
     return {
       kind: "dynScalarEq",
       left: lowerer.coerceToExpected(idLeft, DYN),
