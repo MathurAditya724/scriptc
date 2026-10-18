@@ -285,7 +285,8 @@ export class LlWalkers {
       throw new InternalCompilerError(
         `llvm emitter bug: jsonStringify of unknown shape ${shapeId}`,
       );
-    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+    const fieldBase = this.host.nullableUnions.fieldBase(shapeId);
+    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + fieldBase]));
     if (recordMayKeepSource(shape)) this.emitRecordSourceWriter(B, shapeId);
     // CYCLE-CAPABLE shapes bracket the walk with the circular-detection
     // stack; edge labels stamp before members whose walk can re-enter —
@@ -456,7 +457,8 @@ export class LlWalkers {
       throw new InternalCompilerError(`llvm emitter bug: field writer of unknown shape ${shapeId}`);
     const name = `sc_jwf_${this.recordFieldWriters.size}`;
     this.recordFieldWriters.set(shapeId, name);
-    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+    const fieldBase = this.host.nullableUnions.fieldBase(shapeId);
+    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + fieldBase]));
     const byName = new Map(shape.fields.map((f) => [f.name, f]));
     const cyclic = traceAdapter(this.host, { kind: "record", shapeId }) !== null;
     const order = recordSourceFieldOrder(shape);
@@ -553,7 +555,7 @@ export class LlWalkers {
     const ovfp = B.tmp();
     const ovf = B.tmp();
     B.line(
-      `${ovfp} = getelementptr inbounds %${mangleRecordStruct(shape.id)}, ptr %v, i64 0, i32 ${shape.fields.length + 1}`,
+      `${ovfp} = getelementptr inbounds %${mangleRecordStruct(shape.id)}, ptr %v, i64 0, i32 ${shape.fields.length + this.host.nullableUnions.fieldBase(shape.id)}`,
     );
     B.line(`${ovf} = load ptr, ptr ${ovfp} ; overflow map`);
     if (iv.kind === "dyn") {

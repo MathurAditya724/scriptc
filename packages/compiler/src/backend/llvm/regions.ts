@@ -101,8 +101,8 @@ export class LifetimeRegions {
   /** Can a value of type `t` hold (or own something that holds) a
    * reference to a ProgramLifetime instance the walk can explain? */
   private reaches(t: IrType): boolean {
-    const arm = this.host.nullableUnions.of(t)?.arm;
-    if (arm !== undefined) return this.reaches(arm);
+    const nullable = this.host.nullableUnions.of(t);
+    if (nullable?.repr === "single") return this.reaches(nullable.arm);
     switch (t.kind) {
       case "object":
         return this.isLifetime(t.className) || this.reach.get(`object:${t.className}`) === true;
@@ -287,7 +287,8 @@ export class LifetimeRegions {
    * ProgramLifetime instance). */
   private reportLines(struct: string, f: Field, i: number): string[] {
     if (!isRefCounted(f.type) || !this.reaches(f.type)) return [];
-    const arm = this.host.nullableUnions.of(f.type)?.arm ?? f.type;
+    const nullable = this.host.nullableUnions.of(f.type);
+    const arm = nullable?.repr === "single" ? nullable.arm : f.type;
     const load = [
       `  %f${i} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f.index}`,
       `  %v${i} = load ptr, ptr %f${i}`,
@@ -411,7 +412,7 @@ export class LifetimeRegions {
         ...this.reportBody(
           `define internal void ${walk}(ptr %o, ptr %w) ${FN_ATTRS} { ; region walk record ${shape.id}`,
           mangleRecordStruct(shape.id),
-          rcMembers(shape, this.host.inlineUnions),
+          rcMembers(shape, this.host.inlineUnions, this.host.nullableUnions.fieldBase(shape.id)),
         ),
       );
       rows.push(`{ ptr, ptr } { ptr @${mangleRecordRelease(shape.id)}, ptr ${walk} }`);

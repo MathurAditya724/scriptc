@@ -824,6 +824,26 @@ static void scr_node_debug_capture(const ScrStr *name) {
   if (name->len == 10 && memcmp(name->data, "NODE_DEBUG", 10) == 0) (void)scr_node_debug_initial();
 }
 
+/* Counts writes and deletes of process.env.TZ. The local-time getters keep
+ * their last conversion for the generation it was made in. */
+#ifdef SCR_WORKERS
+static atomic_uint scr_date_tz_generation;
+#else
+static unsigned scr_date_tz_generation;
+#endif
+
+/* After a write or delete of the process's TZ, local time follows the new
+ * value, as in Node: tzset(3) rereads it for later localtime calls. */
+static void scr_env_tz_changed(const ScrStr *name) {
+  /* Compared by character: a string literal would join the merged
+   * read-only strings of every program that links this file. */
+  if (name->len != 2 || name->data[0] != 'T' || name->data[1] != 'Z') return;
+#if !defined(_WIN32) && !defined(__wasi__)
+  tzset();
+#endif
+  scr_date_tz_generation++;
+}
+
 /* process.env.NAME = v — setenv(3): later scr_env_get reads and spawned
  * children (posix_spawn inherits environ) observe the write, like Node.
  * Both args borrowed (NUL-terminated ScrStr data); setenv copies. */
@@ -842,6 +862,7 @@ void scr_env_set(const ScrStr *name, const ScrStr *value) {
 #else
   setenv(k, v, 1);
 #endif
+  scr_env_tz_changed(name);
 #ifdef SCR_WORKERS
 done:
 #endif
@@ -861,6 +882,7 @@ void scr_env_unset(const ScrStr *name) {
 #else
   unsetenv(name->data);
 #endif
+  scr_env_tz_changed(name);
 }
 
 static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file, size_t *ascii);
@@ -10475,9 +10497,14 @@ typedef struct ScrDateParts {
  * endpoint. The checked wrapper is the public UTC-getter gate; the inner
  * walk accepts those bounded local-time values too. */
 static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
-  double dayd = floor(t / 86400000.0);
-  long long msday = (long long)(t - dayd * 86400000.0);
-  long long z = (long long)dayd + 719468;
+  /* t is an integral number of milliseconds within about 2^53. */
+  long long tms = (long long)t;
+  long long day = tms / 86400000, msday = tms % 86400000;
+  if (msday < 0) {
+    msday += 86400000;
+    day--;
+  }
+  long long z = day + 719468;
   long long era = (z >= 0 ? z : z - 146096) / 146097;
   unsigned long long doe = (unsigned long long)(z - era * 146097);
   unsigned long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
@@ -10487,7 +10514,7 @@ static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
   unsigned long long d = doy - (153 * mp + 2) / 5 + 1;
   unsigned long long m = mp < 10 ? mp + 3 : mp - 9;
   if (m <= 2) y++;
-  long long wday = ((long long)dayd + 4) % 7;
+  long long wday = (day + 4) % 7;
   if (wday < 0) wday += 7;
   out->year = y;
   out->month = (int)m - 1;
@@ -10516,10 +10543,39 @@ static bool scr_date_localtime(double secd, struct tm *out) {
 #endif
 }
 
+/* The thread's last local conversion: reading several local fields of one
+ * Date (getFullYear, getMonth, getDate, getHours, ...) converts it once.
+ * A change of process.env.TZ starts a new generation. */
+typedef struct {
+  bool valid;
+  unsigned generation;
+  double ms;
+  ScrDateParts parts;
+} ScrDateLocalCache;
+static SCR_TL ScrDateLocalCache scr_date_local_cache;
+
+static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out);
+
 static bool scr_date_local_parts(double ms, ScrDateParts *out) {
   if (!isfinite(ms) || fabs(ms) > 8640000000000000.0) return false;
   double clipped = trunc(ms);
-  double secd = floor(clipped / 1000.0);
+  ScrDateLocalCache *c = &scr_date_local_cache;
+  unsigned generation = scr_date_tz_generation;
+  if (c->valid && c->ms == clipped && c->generation == generation) {
+    *out = c->parts;
+    return true;
+  }
+  if (!scr_date_local_parts_uncached(clipped, out)) return false;
+  c->valid = true;
+  c->generation = generation;
+  c->ms = clipped;
+  c->parts = *out;
+  return true;
+}
+
+static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out) {
+  long long cms = (long long)clipped;
+  double secd = (double)(cms / 1000 - (cms % 1000 < 0));
   struct tm tmv;
   double basis_secd = secd;
   if (!scr_date_localtime(basis_secd, &tmv)) {
