@@ -2508,6 +2508,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.util.types.isFloat16Array",
+      "kind": "node-builtin",
+      "name": "util/types.isFloat16Array",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.types.isFloat32Array",
       "kind": "node-builtin",
       "name": "util/types.isFloat32Array",
@@ -4497,6 +4503,13 @@
       "id": "stdlib.math.expm1",
       "kind": "stdlib",
       "name": "Math.expm1",
+      "status": "static",
+      "note": "compiles statically at arity 1; other declared call shapes are refused with SC2012"
+    },
+    {
+      "id": "stdlib.math.f16round",
+      "kind": "stdlib",
+      "name": "Math.f16round",
       "status": "static",
       "note": "compiles statically at arity 1; other declared call shapes are refused with SC2012"
     },
