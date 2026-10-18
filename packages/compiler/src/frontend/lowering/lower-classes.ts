@@ -3465,7 +3465,17 @@ export function collectClassShapeInner(
         }
         let sig: { params: ParamShape[]; ret: IrType };
         if (isGet) {
-          const ret = lowerer.declaredReturnType(member, member.name);
+          let ret = lowerer.declaredReturnType(member, member.name);
+          // A getter that never returns a value: typed `never` (it only
+          // throws, Next.js's removed `page`/`ua` getters) or, unannotated
+          // with no return statement, inferred `void`. A read answers
+          // undefined or throws, so the property takes the checked-dynamic
+          // slot instead of VOID.
+          if (
+            ret.kind === "void" &&
+            (lowerer.typeOf(member.name).flags & (ts.TypeFlags.Never | ts.TypeFlags.Void)) !== 0
+          )
+            ret = DYN;
           if (ret.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
           sig = { params: [], ret };
         } else {
