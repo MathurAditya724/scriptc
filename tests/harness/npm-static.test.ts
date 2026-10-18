@@ -878,6 +878,24 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
+  // Real CommonJS packages whose require() placement (a binding required
+  // below code that only reaches it after the require ran) or JSON
+  // require preflight refused before.
+  test("export-first CommonJS packages and JSON requires compile statically", () => {
+    const { coverage } = analyze(join(pilotRoot, "cjs-interop-cli.ts"), {
+      npmStatic: ["fs.realpath", "on-finished", "ee-first", "statuses"],
+    });
+    expect(coverage.preflightFailed).toBe(false);
+    expect(
+      [...(coverage.npmStatic ?? [])].sort((a, b) => a.package.localeCompare(b.package)),
+    ).toEqual([
+      { package: "ee-first", status: "static" },
+      { package: "fs.realpath", status: "static" },
+      { package: "on-finished", status: "static" },
+      { package: "statuses", status: "static" },
+    ]);
+  }, 120_000);
+
   // A package preflight failure stays visible as a package-specific refusal.
   test("a preflight-refused package reports its native refusal", () => {
     const { coverage } = analyze(join(fixturesRoot, "npm/divergent/lazybuiltin.ts"), {

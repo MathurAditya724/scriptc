@@ -1477,11 +1477,13 @@ export function requireBindingEarlyUse7(
     isWrapperName(e, "exports") ||
     isModuleThis(e) ||
     (isModuleExportsAccess(e) && isWrapperName(e.expression, "module"));
+  const replacesExports = stmts.some((st) => cjsExportAssignmentOf(st)?.kind === "table");
   // Published values: by export name ("*" for a whole replacement), and by
   // the stored callable whose properties hold them.
   const exportLinks = new Map<string, ts.Node[]>();
   const ownerLinks = new Map<ts.Symbol, ts.Node[]>();
   const reachedKeys = new Set<string>();
+  const writtenKeys = new Set<string>();
   const reachedUnits = new Set<ts.Node>();
   const work: ts.Node[] = [];
   let hit: ts.Identifier | null = null;
@@ -1521,6 +1523,24 @@ export function requireBindingEarlyUse7(
     }
     if (ts.isTypeOfExpression(parent)) return;
     if (ts.isPropertyAccessExpression(parent) && parent.expression === use) {
+      let target: ts.Node = parent;
+      while (ts.isParenthesizedExpression(target.parent)) target = target.parent;
+      const assignment = target.parent;
+      if (
+        ts.isBinaryExpression(assignment) &&
+        assignment.left === target &&
+        assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        // A plain write reads no member. It can still run a setter: one
+        // published for that name (now or later), or a static one of a
+        // replacing class.
+        writtenKeys.add(parent.name.text);
+        for (const node of exportLinks.get(parent.name.text) ?? []) reachUnit(node);
+        for (const node of exportLinks.get("*") ?? []) {
+          if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) reachUnit(node);
+        }
+        return;
+      }
       reachKey(parent.name.text);
       return;
     }
@@ -1566,6 +1586,8 @@ export function requireBindingEarlyUse7(
       ) {
         return undefined;
       }
+      // A declaration's own name reads nothing.
+      if (named !== undefined && declaredName7(named) === n) return undefined;
       if (cjs && isWrapperName(n, "exports")) {
         exportRead(n);
         return undefined;
@@ -1674,7 +1696,13 @@ export function requireBindingEarlyUse7(
       } else break;
     }
     if (names.length === 0) return null;
-    if (isExportObject(e)) return { kind: "key", key: names[0]! };
+    if (isExportObject(e)) {
+      // __proto__ and the interop marker are not plain data slots, and a
+      // member of a replaced export may be a read-only function property:
+      // those writes keep the conservative scan.
+      if (names[0] === "__proto__" || names[0] === "__esModule" || replacesExports) return null;
+      return { kind: "key", key: names[0]! };
+    }
     if (ts.isIdentifier(e)) {
       const sym = symbolOf(e);
       if (sym !== undefined && units.has(sym) && !bindings.has(sym))
@@ -1684,7 +1712,13 @@ export function requireBindingEarlyUse7(
   };
   const linkTo = (target: Target, node: ts.Node): void => {
     if (target.kind === "key") {
-      if (keyReached(target.key)) reachUnit(node);
+      const replacingClass =
+        target.key === "*" &&
+        writtenKeys.size > 0 &&
+        (ts.isClassDeclaration(node) || ts.isClassExpression(node));
+      if (keyReached(target.key) || writtenKeys.has(target.key) || replacingClass) {
+        reachUnit(node);
+      }
       const list = exportLinks.get(target.key);
       if (list) list.push(node);
       else exportLinks.set(target.key, [node]);
@@ -2777,8 +2811,19 @@ export function makeCycleAdmission(
     bindingUses.set(sf, uses);
     return uses;
   };
+  // The CommonJS cluster verdict, same keying (cjsCycleRefusal7).
+  const cjsVerdict = new Map<ts.SourceFile[], string | null>();
   return (importer: ts.SourceFile, e: CycleEdge): string | null => {
-    if (e.stmt === undefined) return "the cycle closes through a require() edge";
+    if (e.stmt === undefined) {
+      if (!index.has(importer)) strongconnect(importer);
+      const comp = sccOf.get(e.dep);
+      if (comp === undefined || comp.length < 2 || !comp.includes(importer)) {
+        return "the cycle closes through a require() edge";
+      }
+      if (!cjsVerdict.has(comp)) cjsVerdict.set(comp, cjsCycleRefusal7(program, comp, lineOf));
+      const reason = cjsVerdict.get(comp) ?? null;
+      return reason === null ? null : `the cycle closes through a require() edge: ${reason}`;
+    }
     // Cheap per-edge admission: nothing readable binds through the edge.
     if (ts.isImportDeclaration(e.stmt)) {
       const clause = e.stmt.importClause;
@@ -2822,6 +2867,211 @@ export function makeCycleAdmission(
     }
     return exactVerdict.get(comp) ?? null;
   };
+}
+
+/** The reason a strongly-connected cluster of CommonJS modules cannot be
+ * initialized exactly through its require() cycle, or null when it can.
+ * Node answers a require of a module that is still evaluating with that
+ * module's exports object as it stands, while the compiled bindings alias
+ * the exporter's final declarations. The two agree when:
+ *  - every member settles its exports before anything can enter the
+ *    cycle: all of its export statements come before its first top-level
+ *    statement that can run another module's code (a require, or anything
+ *    but literals, plain reads, function and class values, and
+ *    standard-library globals called with literal arguments), and every
+ *    other use of its export object is a plain member read; and
+ *  - no member's top-level code can reach its binding of another member,
+ *    so no member runs another member's code while the cluster is still
+ *    initializing. Each module then initializes exactly as it would
+ *    outside the cycle, and its own require bindings keep the acyclic
+ *    analysis (requireEarlyReference).
+ * Other cycles keep the SC1016 fence. */
+function cjsCycleRefusal7(
+  program: ts.Program,
+  comp: readonly ts.SourceFile[],
+  lineOf: (node: ts.Node) => string,
+): string | null {
+  const members = new Set(comp);
+  const builtinRoot = (e: ts.Expression): boolean => {
+    while (ts.isPropertyAccessExpression(e)) e = e.expression;
+    return ts.isIdentifier(e) && !sourceBinding7(program, e);
+  };
+  const literal = (e: ts.Node): boolean =>
+    ts.isStringLiteralLike(e) ||
+    ts.isNumericLiteral(e) ||
+    ts.isRegularExpressionLiteral(e) ||
+    e.kind === ts.SyntaxKind.TrueKeyword ||
+    e.kind === ts.SyntaxKind.FalseKeyword ||
+    e.kind === ts.SyntaxKind.NullKeyword;
+  /** An expression whose evaluation runs no user code and requires
+   * nothing: literals, plain reads, function and class values, literal
+   * containers of those, and standard-library globals called with
+   * literal arguments. */
+  const inertExpr = (e: ts.Node): boolean => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (literal(e) || ts.isIdentifier(e)) return true;
+    if (ts.isFunctionExpression(e) || ts.isArrowFunction(e)) return true;
+    if (ts.isClassExpression(e)) return classSyncParts7(e).every(inertPart);
+    if (ts.isObjectLiteralExpression(e)) {
+      return e.properties.every((p) =>
+        ts.isShorthandPropertyAssignment(p)
+          ? true
+          : ts.isPropertyAssignment(p)
+            ? !ts.isComputedPropertyName(p.name) && inertExpr(p.initializer)
+            : (ts.isMethodDeclaration(p) ||
+                ts.isGetAccessorDeclaration(p) ||
+                ts.isSetAccessorDeclaration(p)) &&
+              !ts.isComputedPropertyName(p.name),
+      );
+    }
+    if (ts.isArrayLiteralExpression(e)) {
+      return e.elements.every((el) => !ts.isSpreadElement(el) && inertExpr(el));
+    }
+    if (ts.isPropertyAccessExpression(e)) return builtinRoot(e);
+    if (ts.isVoidExpression(e)) return literal(e.expression);
+    if (ts.isCallExpression(e) || ts.isNewExpression(e)) {
+      return (
+        requireSpecOf7(e) === null &&
+        builtinRoot(e.expression) &&
+        (e.arguments ?? []).every(literal)
+      );
+    }
+    return false;
+  };
+  const inertPart = (part: ts.Node): boolean => {
+    if (ts.isHeritageClause(part)) return part.types.every((t) => inertExpr(t.expression));
+    if (ts.isComputedPropertyName(part)) return inertExpr(part.expression);
+    return ts.isExpression(part) && inertExpr(part);
+  };
+  const exportObject = (e: ts.Expression): boolean =>
+    (ts.isIdentifier(e) && e.text === "exports" && !sourceBinding7(program, e)) ||
+    (isModuleExportsAccess(e) &&
+      ts.isIdentifier(e.expression) &&
+      !sourceBinding7(program, e.expression));
+  /** A top-level statement that only publishes inert values. */
+  const exportStatement = (stmt: ts.Statement): boolean => {
+    if (!ts.isExpressionStatement(stmt)) return false;
+    if (isEsModuleStamp(stmt.expression)) return true;
+    const cjs = cjsExportAssignmentOf(stmt);
+    if (cjs !== null) {
+      let value: ts.Expression = cjs.expr;
+      while (
+        ts.isBinaryExpression(value) &&
+        value.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        const left = value.left;
+        if (
+          !isModuleExportsAccess(left) &&
+          !(ts.isPropertyAccessExpression(left) && exportObject(left.expression))
+        )
+          return false;
+        value = value.right;
+      }
+      return inertExpr(value);
+    }
+    const call = stmt.expression;
+    return (
+      ts.isCallExpression(call) &&
+      ts.isPropertyAccessExpression(call.expression) &&
+      ts.isIdentifier(call.expression.expression) &&
+      call.expression.expression.text === "Object" &&
+      !sourceBinding7(program, call.expression.expression) &&
+      call.expression.name.text === "defineProperty" &&
+      call.arguments.length === 3 &&
+      exportObject(call.arguments[0]!) &&
+      ts.isStringLiteralLike(call.arguments[1]!) &&
+      inertExpr(call.arguments[2]!)
+    );
+  };
+  for (const m of comp) {
+    if (!isCjsJsFile7(m, program)) {
+      return `${m.fileName} is not a CommonJS module — require cycles are admitted between CommonJS modules only`;
+    }
+    const stmts = m.statements;
+    // The first statement that can run another module's code.
+    let firstEntry = stmts.length;
+    for (let i = 0; i < stmts.length; i++) {
+      const st = stmts[i]!;
+      const inert =
+        ts.isFunctionDeclaration(st) ||
+        ts.isEmptyStatement(st) ||
+        (ts.isExpressionStatement(st) && ts.isStringLiteral(st.expression)) ||
+        (ts.isClassDeclaration(st) && classSyncParts7(st).every(inertPart)) ||
+        (ts.isVariableStatement(st) &&
+          st.declarationList.declarations.every(
+            (d) =>
+              ts.isIdentifier(d.name) && (d.initializer === undefined || inertExpr(d.initializer)),
+          )) ||
+        exportStatement(st);
+      if (!inert) {
+        firstEntry = i;
+        break;
+      }
+    }
+    // Every other use of the export object must be a plain member read:
+    // anything else can change what a module of the cycle observes.
+    let stray: ts.Node | null = null;
+    const settled = new Set(stmts.slice(0, firstEntry).filter(exportStatement));
+    ts.walkPreorder(m, (n) => {
+      if (stray !== null) return "stop";
+      if (ts.isStatement(n) && settled.has(n)) return "skip";
+      let use: ts.Expression | null = null;
+      if (n.kind === ts.SyntaxKind.ThisKeyword) {
+        let moduleThis = true;
+        for (let p = n.parent; p !== undefined && !ts.isSourceFile(p); p = p.parent) {
+          if (
+            (ts.isFunctionLike(p) && !ts.isArrowFunction(p)) ||
+            ts.isClassDeclaration(p) ||
+            ts.isClassExpression(p)
+          ) {
+            moduleThis = false;
+            break;
+          }
+        }
+        if (moduleThis) use = n as ts.Expression;
+      } else if (
+        ts.isIdentifier(n) &&
+        (n.text === "exports" || n.text === "module") &&
+        !(ts.isPropertyAccessExpression(n.parent) && n.parent.name === n) &&
+        !sourceBinding7(program, n)
+      ) {
+        if (n.text === "exports") use = n;
+        else if (!ts.isPropertyAccessExpression(n.parent) || n.parent.expression !== n) stray = n;
+        else if (n.parent.name.text === "exports") use = n.parent;
+      }
+      if (use === null) return undefined;
+      const parent = use.parent;
+      const read =
+        ts.isPropertyAccessExpression(parent) &&
+        parent.expression === use &&
+        !(
+          ts.isBinaryExpression(parent.parent) &&
+          parent.parent.left === parent &&
+          parent.parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+          parent.parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+        ) &&
+        !(ts.isCallExpression(parent.parent) && parent.parent.expression === parent) &&
+        !ts.isDeleteExpression(parent.parent);
+      if (!read) stray = use;
+      return undefined;
+    });
+    if (stray !== null) {
+      return `${m.fileName} uses its exports at ${lineOf(stray)} outside the export statements that precede its first require, so a module of the cycle can observe them before they settle`;
+    }
+    // Bindings of other members must stay unreachable from top-level code.
+    for (const st of stmts) {
+      for (const req of requiresOf7(st)) {
+        if (req.decl === null) continue;
+        const dep = resolveImport7(program, m, req.spec, "require");
+        if (dep === null || !members.has(dep)) continue;
+        const reached = requireBindingEarlyUse7(program, m, stmts.length, req.decl, []);
+        if (reached !== null) {
+          return `the top-level code of ${m.fileName} can use its binding '${reached.text}' of a module of the cycle (${lineOf(reached)}) while the cycle initializes`;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 /* ── exact cyclic initialization ─────────────────────────────────────────
