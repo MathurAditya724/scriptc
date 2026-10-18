@@ -1513,6 +1513,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.os.setPriority",
+      "kind": "node-builtin",
+      "name": "os.setPriority",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.os.tmpdir",
       "kind": "node-builtin",
       "name": "os.tmpdir",

@@ -2109,6 +2109,8 @@ declare module "os" {
   export function version(): string;
   export function endianness(): "BE" | "LE";
   export function getPriority(pid?: number): number;
+  export function setPriority(priority: number): void;
+  export function setPriority(pid: number, priority: number): void;
   /* The TARGET platform's null device ("\\\\.\\nul" under a win32 triple). */
   export const devNull: string;
   /* The platform's constants: null-prototype objects with read-only
@@ -3634,7 +3636,8 @@ declare module "querystring" {
       | string
       | number
       | boolean
-      | ReadonlyArray<string | number | boolean>
+      | bigint
+      | ReadonlyArray<string | number | boolean | bigint>
       | null
       | undefined;
   }

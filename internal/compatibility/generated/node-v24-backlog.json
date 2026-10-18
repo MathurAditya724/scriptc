@@ -7,8 +7,8 @@
     "tierItemCount": 3456,
     "tiers": {
       "static": {
-        "audit-partial": 1110,
-        "verify-gap": 2219,
+        "audit-partial": 1114,
+        "verify-gap": 2215,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -51742,12 +51742,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.os.setPriority",
+          "tests": [
+            "tests/corpus/5883-os-set-priority.ts"
+          ]
         }
       }
     },
@@ -65620,7 +65622,8 @@
           "source": "compiler-dedicated:StringDecoder",
           "tests": [
             "tests/corpus/1662-string-decoder-encodings.ts",
-            "tests/corpus/node24-string-decoder.ts"
+            "tests/corpus/node24-string-decoder.ts",
+            "tests/corpus/5882-string-decoder-runtime-encoding.ts"
           ]
         }
       }
@@ -65648,7 +65651,8 @@
           "source": "compiler-dedicated:stringDecoder.end",
           "tests": [
             "tests/corpus/1662-string-decoder-encodings.ts",
-            "tests/corpus/node24-string-decoder.ts"
+            "tests/corpus/node24-string-decoder.ts",
+            "tests/corpus/5882-string-decoder-runtime-encoding.ts"
           ]
         }
       }
@@ -65676,7 +65680,8 @@
           "source": "compiler-dedicated:stringDecoder.write",
           "tests": [
             "tests/corpus/1662-string-decoder-encodings.ts",
-            "tests/corpus/node24-string-decoder.ts"
+            "tests/corpus/node24-string-decoder.ts",
+            "tests/corpus/5882-string-decoder-runtime-encoding.ts"
           ]
         }
       }
@@ -73458,12 +73463,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlSearchParams.entries",
+          "tests": [
+            "tests/corpus/5833-url-search-params-iterators.ts",
+            "tests/corpus/5834-url-search-params-iterators-dynamic.mjs"
+          ]
         }
       }
     },
@@ -73583,12 +73591,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlSearchParams.keys",
+          "tests": [
+            "tests/corpus/5833-url-search-params-iterators.ts",
+            "tests/corpus/5834-url-search-params-iterators-dynamic.mjs"
+          ]
         }
       }
     },
@@ -73683,12 +73694,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlSearchParams.values",
+          "tests": [
+            "tests/corpus/5833-url-search-params-iterators.ts",
+            "tests/corpus/5834-url-search-params-iterators-dynamic.mjs"
+          ]
         }
       }
     },
