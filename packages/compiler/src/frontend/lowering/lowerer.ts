@@ -4353,7 +4353,11 @@ export class Lowerer {
     const addUndefined = (t: IrType): IrType => {
       if (t.kind === "union")
         return this.armTag(t.unionId, UNDEFINED_T) >= 0 ? t : (this.withUndefinedArmOf(t) ?? t);
-      if (t.kind === "void" || t.kind === "dyn" || t.kind === "generator") return t;
+      // A Date has no undefined-armed union (it is not a union arm kind):
+      // like a generator it keeps its type, and the site that would store
+      // undefined into it keeps its own diagnostic.
+      if (t.kind === "void" || t.kind === "dyn" || t.kind === "generator" || t.kind === "date")
+        return t;
       return this.withUndefinedArm(t);
     };
     const fieldName = (node: ts.PropertyAccessExpression): string => node.name.text;
