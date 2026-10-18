@@ -2075,6 +2075,42 @@ export class Lowerer {
     };
   }
 
+  /** True when `node`'s lowered value can hold a hidden `undefined` the
+   * checker type does not admit: an unchecked element or member read, a call
+   * whose lowered return admits undefined, or a binding whose storage the
+   * optional-read analysis marked. Whether the value actually carries the
+   * undefined arm is only known once it is lowered
+   * (runtimeOptionalSourceValue); this is the syntactic precondition. */
+  isRuntimeOptionalOrigin(node: ts.Expression): boolean {
+    let origin: ts.Expression = node;
+    while (ts.isParenthesizedExpression(origin)) origin = origin.expression;
+    if (ts.isElementAccessExpression(origin) || ts.isPropertyAccessExpression(origin)) return true;
+    if (ts.isCallExpression(origin)) {
+      const name = ts.isPropertyAccessExpression(origin.expression)
+        ? origin.expression.name
+        : origin.expression;
+      const symbol = ts.isIdentifier(name) ? this.resolveValueSymbol(name) : undefined;
+      const signature = symbol ? this.fnSigsBySymbol.get(symbol) : undefined;
+      return (
+        this.runtimeOptionalFunctionReturns.has(origin) ||
+        (signature?.returnType.kind === "union" &&
+          this.armTag(signature.returnType.unionId, UNDEFINED_T) >= 0)
+      );
+    }
+    if (ts.isIdentifier(origin)) {
+      const local = this.resolveLocal(origin);
+      const root = local ? this.runtimeOptionalRootOf(local) : null;
+      const global = this.globalOf(origin);
+      return (
+        (!!root && this.runtimeOptionalStorageLocals.has(root)) ||
+        (!!global &&
+          (this.isRuntimeOptionalGlobal(global) ||
+            (global.type.kind === "union" && this.armTag(global.type.unionId, UNDEFINED_T) >= 0)))
+      );
+    }
+    return false;
+  }
+
   /** Recover the original optional union when a checked single-arm helper
    * was installed before a strict property consumer could name its member.
    * Recovery covers member reads and storage roots marked by the
@@ -2083,32 +2119,7 @@ export class Lowerer {
   runtimeOptionalSourceValue(node: ts.Expression, value: IrExpr): IrExpr | null {
     const slot = this.deferredFieldSlot(value);
     if (slot) return slot;
-    let origin: ts.Expression = node;
-    while (ts.isParenthesizedExpression(origin)) origin = origin.expression;
-    let optionalOrigin =
-      ts.isElementAccessExpression(origin) || ts.isPropertyAccessExpression(origin);
-    if (ts.isCallExpression(origin)) {
-      const name = ts.isPropertyAccessExpression(origin.expression)
-        ? origin.expression.name
-        : origin.expression;
-      const symbol = ts.isIdentifier(name) ? this.resolveValueSymbol(name) : undefined;
-      const signature = symbol ? this.fnSigsBySymbol.get(symbol) : undefined;
-      optionalOrigin =
-        this.runtimeOptionalFunctionReturns.has(origin) ||
-        (signature?.returnType.kind === "union" &&
-          this.armTag(signature.returnType.unionId, UNDEFINED_T) >= 0);
-    }
-    if (ts.isIdentifier(origin)) {
-      const local = this.resolveLocal(origin);
-      const root = local ? this.runtimeOptionalRootOf(local) : null;
-      const global = this.globalOf(origin);
-      optionalOrigin =
-        (!!root && this.runtimeOptionalStorageLocals.has(root)) ||
-        (!!global &&
-          (this.isRuntimeOptionalGlobal(global) ||
-            (global.type.kind === "union" && this.armTag(global.type.unionId, UNDEFINED_T) >= 0)));
-    }
-    if (!optionalOrigin) return null;
+    if (!this.isRuntimeOptionalOrigin(node)) return null;
 
     // A checked JavaScript indexed read can already be boxed. The checker
     // calls the element present, but that inference is not a runtime guard.
