@@ -1973,6 +1973,26 @@ export class Lowerer {
     return fallback ?? null;
   }
 
+  /** The index value of a keyed read of a record's index signature that
+   * can answer undefined for a missing key while its checker type does not
+   * admit undefined, or null. A literal key naming a declared field is a
+   * field read. */
+  optionalIndexSignatureRead(e: ts.ElementAccessExpression): IrType | null {
+    const receiver = panicSafe(() => this.mapTypeOf(this.typeOf(e.expression)), null);
+    if (receiver?.kind !== "record") return null;
+    const shape = this.shapes.get(receiver.shapeId);
+    if (!shape || shape.tuple || !shape.indexValue || shape.indexValue.kind === "dyn") return null;
+    const key = e.argumentExpression;
+    if (
+      (ts.isStringLiteral(key) || ts.isNumericLiteral(key)) &&
+      shape.fields.some((field) => field.name === key.text)
+    )
+      return null;
+    const read = panicSafe(() => this.mapTypeOf(this.typeOf(e)), null);
+    if (read?.kind === "union" && this.armTag(read.unionId, UNDEFINED_T) >= 0) return null;
+    return shape.indexValue;
+  }
+
   runtimeOptionalIdentifierValue(
     node: ts.Expression,
   ): { value: IrExpr; present: IrType; unionId: string } | null {
@@ -2056,6 +2076,7 @@ export class Lowerer {
     value: IrExpr,
     expected: IrType,
     member: string,
+    action: "read" | "set" = "read",
   ): IrExpr | null {
     const source = this.runtimeOptionalSourceValue(node, value);
     if (source?.type.kind !== "union") return null;
@@ -2098,7 +2119,7 @@ export class Lowerer {
         then: nodeThrowExpr(
           1,
           "",
-          `Cannot read properties of ${unit} (reading '${member}')`,
+          `Cannot ${action} properties of ${unit} (${action === "read" ? "reading" : "setting"} '${member}')`,
           expected,
           loc,
         ),
@@ -4126,6 +4147,7 @@ export class Lowerer {
           const t = mappedOrNull(receiver);
           return t?.kind === "bytes" ? t.elem : null;
         },
+        isNumberRecordRead: (read) => this.optionalIndexSignatureRead(read)?.kind === "f64",
         isNumber: (node) => mappedOrNull(node)?.kind === "f64",
         isString: (node) => mappedOrNull(node)?.kind === "string",
         hasLength: (node) => {
@@ -4261,7 +4283,25 @@ export class Lowerer {
       // Typed-array reads answer undefined for an invalid index too, unless
       // every consumer treats undefined like NaN.
       if (kind === "bytes") return !nanCoded.isNumericRead(e);
+      if (kind === "record")
+        return this.optionalIndexSignatureRead(e) !== null && !nanCoded.isNumericRead(e);
       return kind === "array";
+    };
+    /** `r.name` where the name resolves to the receiver's index signature. */
+    const isRecordIndexPropertyRead = (e: ts.PropertyAccessExpression): boolean => {
+      // A name that resolves to a declared member is not an index read, and
+      // only a receiver with an index signature maps to an indexed record.
+      if (symbolOf(e.name)) return false;
+      const receiverType = this.typeOf(e.expression);
+      if (this.checker.getIndexInfosOfType(receiverType).length === 0) return false;
+      const receiver = this.mapTypeOf(receiverType);
+      if (receiver?.kind !== "record") return false;
+      const shape = this.shapes.get(receiver.shapeId);
+      if (!shape || shape.tuple || !shape.indexValue || shape.indexValue.kind === "dyn")
+        return false;
+      if (shape.fields.some((field) => field.name === e.name.text)) return false;
+      const read = this.mapTypeOf(this.typeOf(e));
+      return !(read?.kind === "union" && this.armTag(read.unionId, UNDEFINED_T) >= 0);
     };
     const isDynamicObjectEntryRead = (node: ts.Expression): boolean => {
       const read = peel(node);
@@ -4351,6 +4391,7 @@ export class Lowerer {
       if (assertsDefined(node)) return false;
       const e = peel(node);
       if (isIndexedRead(e)) return true;
+      if (ts.isPropertyAccessExpression(e) && isRecordIndexPropertyRead(e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOptionalProcessStreamProperty(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isSettledIteratorValueRead(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOsConstantsSymbol(symbolOf(e.expression), this))
@@ -4575,6 +4616,7 @@ export class Lowerer {
       return out;
     };
     const scanPattern = (name: ts.BindingName, init: ts.Expression): boolean => {
+      if (ts.isObjectBindingPattern(name)) return scanRecordPattern(name, init);
       if (!ts.isArrayBindingPattern(name)) return false;
       const sourceType = this.mapTypeOf(this.typeOf(init));
       if (sourceType?.kind !== "array") return false;
@@ -4608,6 +4650,40 @@ export class Lowerer {
           }
         }
       });
+      return changed;
+    };
+    /** `const { a, b } = table` over an index-signature record: a name that
+     * is not a declared field reads the index signature and can be
+     * missing. */
+    const scanRecordPattern = (name: ts.ObjectBindingPattern, init: ts.Expression): boolean => {
+      const sourceType = this.mapTypeOf(this.typeOf(init));
+      if (sourceType?.kind !== "record") return false;
+      const shape = this.shapes.get(sourceType.shapeId);
+      const indexValue = shape?.indexValue;
+      if (!shape || shape.tuple || !indexValue || indexValue.kind === "dyn") return false;
+      let changed = false;
+      for (const el of name.elements) {
+        if (el.dotDotDotToken || el.initializer || !ts.isIdentifier(el.name)) continue;
+        const key = el.propertyName ?? el.name;
+        if (!ts.isIdentifier(key) && !ts.isStringLiteral(key) && !ts.isNumericLiteral(key))
+          continue;
+        if (shape.fields.some((field) => field.name === key.text)) continue;
+        const symbol = symbolOf(el.name);
+        if (!symbol || optionalSymbols.has(symbol)) continue;
+        const read = this.mapTypeOf(this.typeOf(el.name));
+        if (read?.kind === "union" && this.armTag(read.unionId, UNDEFINED_T) >= 0) continue;
+        const widened = this.withUndefinedArmOf(indexValue);
+        if (!widened) continue;
+        optionalSymbols.add(symbol);
+        provenance?.note("pattern-binding", el.name, init);
+        this.runtimeOptionalBindingTypes.set(symbol, widened);
+        const global = this.globalsBySymbol.get(symbol);
+        if (global) {
+          global.type = widened;
+          this.runtimeOptionalGlobals.add(global);
+        }
+        changed = true;
+      }
       return changed;
     };
     const hofCallbackIndices = (name: string, hasInitialValue: boolean): number[] | null => {
@@ -8598,9 +8674,18 @@ export class Lowerer {
     // initial contextual layout was chosen. Its known discriminator still
     // selects the destination arm; validate that payload before wrapping.
     // Work with the already lowered value so property effects run once.
+    // A type assertion keeps the literal's own record layout, which can
+    // equal another arm's layout (`{ kind: "return", value, loc } as Stmt`
+    // when a `throw` arm has the same fields), so assertions are looked
+    // through as well.
     if (expr.type.kind === "record" && expected.kind === "union") {
       let literal = node;
-      while (ts.isParenthesizedExpression(literal) || ts.isSatisfiesExpression(literal))
+      while (
+        ts.isParenthesizedExpression(literal) ||
+        ts.isSatisfiesExpression(literal) ||
+        ts.isAsExpression(literal) ||
+        ts.isTypeAssertion(literal)
+      )
         literal = literal.expression;
       const def = this.unions.get(expected.unionId);
       if (def?.discriminant && ts.isObjectLiteralExpression(literal)) {

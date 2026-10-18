@@ -1436,11 +1436,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [STRING, F64, STRING, F64, STRING, F64, F64, F64],
     result: VOID,
   },
-  "test.suite": {
-    argTypes: [STRING, F64, STRING, { kind: "func", params: [], ret: VOID }, STRING, F64, F64],
-    result: VOID,
-  },
-  "test.hook": { argTypes: [F64, null, F64], result: VOID },
+  // The suite body takes no parameters or its SuiteContext (flag 2).
+  "test.suite": { argTypes: [STRING, F64, STRING, null, STRING, F64, F64], result: VOID },
+  // The trailing string is the hook call's "file:line:col".
+  "test.hook": { argTypes: [F64, null, F64, STRING], result: VOID },
   "test.sub": {
     argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64, F64],
     result: { kind: "promise", inner: VOID },
