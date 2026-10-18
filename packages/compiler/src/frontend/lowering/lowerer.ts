@@ -8581,9 +8581,18 @@ export class Lowerer {
     // initial contextual layout was chosen. Its known discriminator still
     // selects the destination arm; validate that payload before wrapping.
     // Work with the already lowered value so property effects run once.
+    // A type assertion keeps the literal's own record layout, which can
+    // equal another arm's layout (`{ kind: "return", value, loc } as Stmt`
+    // when a `throw` arm has the same fields), so assertions are looked
+    // through as well.
     if (expr.type.kind === "record" && expected.kind === "union") {
       let literal = node;
-      while (ts.isParenthesizedExpression(literal) || ts.isSatisfiesExpression(literal))
+      while (
+        ts.isParenthesizedExpression(literal) ||
+        ts.isSatisfiesExpression(literal) ||
+        ts.isAsExpression(literal) ||
+        ts.isTypeAssertion(literal)
+      )
         literal = literal.expression;
       const def = this.unions.get(expected.unionId);
       if (def?.discriminant && ts.isObjectLiteralExpression(literal)) {
