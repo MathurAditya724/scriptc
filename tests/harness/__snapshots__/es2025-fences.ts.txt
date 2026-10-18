@@ -97,14 +97,14 @@ es2025-fences.ts:32:12 - error SC2020: 'Iterator.from' is part of the standard l
 
   hint: first-class iterator objects have no lowering — iterator helpers compile as one chain on an array iterator, consumed in place: arr.values().map(f).take(n).toArray()
 
-es2025-fences.ts:35:15 - error SC2020: 'Promise.try with 3 arguments' is part of the standard library types but has no scriptc lowering yet
+es2025-fences.ts:35:27 - error SC2020: 'Promise.try over a callback of type '(a: number, b?: number | undefined) => number' with 1 argument' is part of the standard library types but has no scriptc lowering yet
 
-  34 | // Promise.try's ...args form (close over the values instead).
-  35 | const tried = Promise.try((a: number, b: number) => a + b, 1, 2);
-     |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  34 | // Promise.try with fewer arguments than the callback's parameters.
+  35 | const tried = Promise.try((a: number, b?: number) => a + (b ?? 0), 1);
+     |                           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   36 | 
 
-  hint: the ...args form has no lowering — close over the values: Promise.try(() => f(a, b))
+  hint: pass one argument per callback parameter: Promise.try((a, b) => a + b, 1, 2)
 
 es2025-fences.ts:38:17 - error SC2020: 'Object.groupBy at this result type' is part of the standard library types but has no scriptc lowering yet
 

@@ -4112,8 +4112,13 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "tp.setTimeoutValue" || e.fn === "tp.setImmediateValue") {
-      const value = e.args[e.fn === "tp.setTimeoutValue" ? 1 : 0];
+    if (
+      e.fn === "tp.setTimeoutValue" ||
+      e.fn === "tp.setImmediateValue" ||
+      e.fn === "tp.setTimeoutSignal" ||
+      e.fn === "tp.setImmediateSignal"
+    ) {
+      const value = e.args[e.fn === "tp.setTimeoutValue" || e.fn === "tp.setTimeoutSignal" ? 1 : 0];
       if (value?.type.kind !== "promise" || !typeEquals(e.type, value.type)) {
         err(`libCall ${e.fn} must be the value's promise type`, e.loc);
       }

@@ -1026,7 +1026,7 @@ declare module "node:timers/promises" {
     options?: unknown,
   ): AsyncGenerator<T, void, undefined>;
   export const scheduler: {
-    wait(delay?: number): Promise<void>;
+    wait(delay?: number, options?: TimerOptions): Promise<void>;
     yield(): Promise<void>;
   };
 }
@@ -4436,6 +4436,48 @@ declare module "net" {
     remoteFamily?: string;
   }
   export type AddressInfo = import("node:dgram").AddressInfo;
+  export type IPVersion = "ipv4" | "ipv6";
+  export interface SocketAddressInitOptions {
+    address?: string;
+    family?: IPVersion;
+    flowlabel?: number;
+    port?: number;
+  }
+  /* A native handle (scr_net.c); the getters read its parsed address. */
+  export class SocketAddress {
+    constructor(options?: SocketAddressInitOptions);
+    readonly address: string;
+    readonly family: IPVersion;
+    readonly port: number;
+    readonly flowlabel: number;
+    toJSON(): { address: string; port: number; family: IPVersion; flowlabel: number };
+    /* undefined when the input is not "<ip>[:<port>]" */
+    static parse(input: string): SocketAddress | undefined;
+    static isSocketAddress(value: unknown): value is SocketAddress;
+  }
+  /* Address, range and subnet rules; check() matches IPv4 addresses
+   * against IPv6 rules through their IPv4-mapped form, as Node does. */
+  export class BlockList {
+    constructor();
+    readonly rules: readonly string[];
+    readonly size: number;
+    addAddress(address: string | SocketAddress, type?: IPVersion): void;
+    addAddresses(addresses: readonly (string | SocketAddress)[], type?: IPVersion): void;
+    addRange(start: string | SocketAddress, end: string | SocketAddress, type?: IPVersion): void;
+    addSubnet(net: string | SocketAddress, prefix: number, type?: IPVersion): void;
+    addCIDR(cidr: string): void;
+    addCIDRs(cidrs: readonly string[]): void;
+    removeAddress(address: string | SocketAddress, type?: IPVersion): void;
+    removeRange(start: string | SocketAddress, end: string | SocketAddress, type?: IPVersion): void;
+    removeSubnet(net: string | SocketAddress, prefix: number, type?: IPVersion): void;
+    removeCIDR(cidr: string): void;
+    clear(): void;
+    check(address: string | SocketAddress, type?: IPVersion): boolean;
+    toJSON(): string[];
+    fromJSON(data: string | readonly string[]): void;
+    static isBlockList(value: unknown): value is BlockList;
+    static readonly PRIVATE_RANGES: readonly string[];
+  }
   /* Node's IPv4Reg and IPv6Reg tests: 4, 6, or 0 for isIP. */
   export function isIP(input: string): number;
   export function isIPv4(input: string): boolean;
@@ -5963,6 +6005,12 @@ declare module "events" {
       eventName: string,
       options?: { signal?: AbortSignal },
     ): Promise<unknown[]>;
+    /* The emitter's own listenerCount/getMaxListeners/setMaxListeners/
+     * listeners, over EventEmitter instances. */
+    export function listenerCount(emitter: EventEmitter, eventName: string | symbol): number;
+    export function getMaxListeners(emitter: EventEmitter): number;
+    export function setMaxListeners(n?: number, ...eventTargets: EventEmitter[]): void;
+    export function getEventListeners(emitter: EventEmitter, name: string): Array<() => void>;
   }
   export = EventEmitter;
 }

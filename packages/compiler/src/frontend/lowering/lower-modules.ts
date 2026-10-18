@@ -129,6 +129,7 @@ import { forkTargetPaths } from "../fork-target.js";
 import { workerTargetPaths } from "../worker-target.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { handleEventReaderPrelude } from "./lower-event-target.js";
+import { jsHoldsDynObject } from "./lower-exprs.js";
 
 /** One file's declarations, split for collection and init-body lowering. */
 export interface FileParts {
@@ -1990,6 +1991,36 @@ export function collectGlobals(
               };
               lowerer.globalsBySymbol.set(symbol, g);
               lowerer.globalsList.push(g);
+            }
+            continue;
+          }
+          // A JS file-scope ARRAY LITERAL holding an existing checked-dynamic
+          // object (a file-scope object literal binding above, directly or
+          // in a nested literal): the literal builds as a checked-dynamic
+          // array (lowerArrayLiteral), and the binding holds it, so the
+          // element keeps its identity.
+          if (
+            isJsSourceFile(sf) &&
+            ts.isIdentifier(decl.name) &&
+            nameNode === decl.name &&
+            !decl.type &&
+            !hasJsTypeAnnotation(decl) &&
+            decl.initializer !== undefined &&
+            ts.isArrayLiteralExpression(decl.initializer) &&
+            jsHoldsDynObject(lowerer, decl.initializer)
+          ) {
+            const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+            if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
+              const g: IrGlobal = {
+                id: `%g.${tag}${nsPrefix}${nameNode.text}`,
+                name: nameNode.text,
+                type: DYN,
+                mutable: isLet,
+                source: bindingSource(nameNode),
+              };
+              lowerer.globalsBySymbol.set(symbol, g);
+              lowerer.globalsList.push(g);
+              if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
             }
             continue;
           }

@@ -635,6 +635,7 @@ function runtimePackDiagnostic(error: RuntimePackError, entryPath: string): ScrD
     error.code === "unsupported" ? "SC3002" : "SC3003",
     error.message,
     entryPath,
+    error.hint,
   );
 }
 

@@ -323,7 +323,11 @@ export class LlWalkers {
       );
     }
     const byName = new Map(shape.fields.map((f) => [f.name, f]));
-    const emitFields = order.map((n) => byName.get(n)).filter((f) => f !== undefined);
+    // Function-valued properties are omitted, as JSON.stringify omits them.
+    const emitFields = order
+      .map((n) => byName.get(n))
+      .filter((f) => f !== undefined)
+      .filter((f) => f.type.kind !== "func");
     const droppable =
       emitFields.some((f) => undefinedArmTag(f.type, this.host.unionsById) >= 0) ||
       !!shape.indexValue;
@@ -449,7 +453,8 @@ export class LlWalkers {
     order.forEach((fieldName, i) => {
       B.startBlock(labels[i]!);
       const f = byName.get(fieldName)!;
-      if (fieldName.startsWith("%")) {
+      // Internal fields stay hidden; function-valued properties are omitted.
+      if (fieldName.startsWith("%") || f.type.kind === "func") {
         B.terminate("ret i1 false");
         return;
       }

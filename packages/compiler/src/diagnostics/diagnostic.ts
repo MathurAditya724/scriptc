@@ -97,14 +97,18 @@ export function nativeCodegenDiag(
   code: "SC3002" | "SC3003" | "SC3004",
   message: string,
   file: string,
+  hint?: string,
 ): ScrDiagnostic {
+  const shown =
+    hint ??
+    (code === "SC3003"
+      ? "reinstall scriptc with optional dependencies enabled for this host"
+      : undefined);
   return {
     code,
     message,
     loc: { file, start: 0, end: 0 },
-    ...(code === "SC3003"
-      ? { hint: "reinstall scriptc with optional dependencies enabled for this host" }
-      : {}),
+    ...(shown !== undefined ? { hint: shown } : {}),
   };
 }
 

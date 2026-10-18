@@ -1781,6 +1781,18 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
 }
 
 ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
+  /* A primitive receiver is returned unchanged when the prototype is null or
+   * any object or function; nothing is mutated, so the prototype's kind is the
+   * only check. */
+  if (object->kind == SCR_DYN_BOOL || object->kind == SCR_DYN_NUM || object->kind == SCR_DYN_STR ||
+      object->kind == SCR_DYN_BIGINT || object->kind == SCR_DYN_SYMBOL) {
+    bool valid = scr_dyn_is_object(prototype) || scr_dyn_is_callable(prototype);
+    if (scr_exc_pending()) return NULL;
+    if (valid) return scr_dyn_retain(object);
+    static const char message[] = "Object prototype may only be an Object or null";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
   if (scr_dyn_class_reflection_fence(object) || scr_dyn_class_reflection_fence(prototype)) return NULL;
   if (object->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
@@ -1811,16 +1823,12 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
   }
   bool typed = scr_dyn_typed_ref_prototype(prototype);
   if (scr_exc_pending()) return NULL;
-  bool primitive = object->kind == SCR_DYN_BOOL || object->kind == SCR_DYN_NUM || object->kind == SCR_DYN_STR ||
-    object->kind == SCR_DYN_BIGINT || object->kind == SCR_DYN_SYMBOL;
-  if ((object->kind != SCR_DYN_OBJ && object->kind != SCR_DYN_ARR && !primitive) ||
+  if ((object->kind != SCR_DYN_OBJ && object->kind != SCR_DYN_ARR) ||
       (prototype->kind != SCR_DYN_OBJ && prototype->kind != SCR_DYN_ARR && prototype->kind != SCR_DYN_FUNC && prototype->kind != SCR_DYN_NULL && !typed)) {
     static const char message[] = "Object prototype may only be an Object or null";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
   }
-  /* A primitive receiver is returned unchanged once the prototype is valid. */
-  if (primitive) return scr_dyn_retain(object);
   for (const ScrDyn *current = scr_dyn_chain_link(prototype); current;) {
     if (current->kind == SCR_DYN_FUNC) {
       ScrDyn *table = scr_dyn_fn_properties(current);
@@ -3931,6 +3939,14 @@ void *scr_dyn_handle_unbox(const ScrDyn *d, ScrDynHandleTag tag, const ScrDynPat
   return scr_dyn_handle_ops(tag)->retain(d->v.handle.ptr);
 }
 
+SCR_TL ScrDyn *(*scr_dyn_promise_member_fn)(const char *key, size_t len) = NULL;
+
+ScrDyn *scr_dyn_promise_key_get(const ScrDyn *d, const ScrStr *k) {
+  (void)d;
+  ScrDyn *method = scr_dyn_promise_member_fn ? scr_dyn_promise_member_fn(k->data, k->len) : NULL;
+  return method ? method : scr_dyn_retain(scr_dyn_undefined());
+}
+
 ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
   const ScrDynHandleOps *ops = scr_dyn_handle_ops(d->v.handle.tag);
   ScrDyn *r = ops->get(d->v.handle.ptr, k->data, k->len);
@@ -6014,6 +6030,52 @@ ScrStr *scr_dyn_to_string_argument(const ScrDyn *d, const ScrDyn *argument, cons
   return scr_dyn_to_string_method(d, NULL, what);
 }
 
+/* The METHOD-CALL spelling `d.valueOf()`: a primitive answers itself (the
+ * primitive prototypes' valueOf), a Date its time value, an object with a
+ * valueOf member the member's result with the object as receiver, and any
+ * other object itself (Object.prototype.valueOf). A null-prototype
+ * dictionary has no valueOf; it throws "<spelling> is not a function", and
+ * null and undefined throw Node's property-read TypeError. `what` carries
+ * the source spelling. Returns +1. */
+ScrDyn *scr_dyn_value_of(const ScrDyn *d, const ScrStr *what) {
+  if (d->kind == SCR_DYN_NULL || d->kind == SCR_DYN_UNDEF) {
+    static const char msg[] = "Cannot read properties of undefined (reading 'valueOf')";
+    static const char msgn[] = "Cannot read properties of null (reading 'valueOf')";
+    if (d->kind == SCR_DYN_NULL) scr_throw_error_msg(SCR_ERR_TYPE, msgn, sizeof msgn - 1);
+    else scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  if (d->kind == SCR_DYN_PROXY) {
+    scr_dyn_proxy_unsupported("valueOf");
+    return NULL;
+  }
+  if (d->kind == SCR_DYN_HANDLE && d->v.handle.tag == SCR_DYNH_DATE) {
+    const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(d);
+    return ops->invoke(d->v.handle.ptr, (ScrDyn *)d, "valueOf", NULL, 0, "valueOf");
+  }
+  if (d->kind == SCR_DYN_OBJ && scr_dyn_property_owner(d, "valueOf", 7)) {
+    ScrDyn *member = scr_dyn_obj_read(d, "valueOf", 7);
+    if (!member) return NULL;
+    if (member->kind != SCR_DYN_FUNC) {
+      scr_dyn_release(member);
+    } else {
+      scr_dyn_this_push_dyn(d);
+      ScrDyn *value = scr_dyn_call(member, NULL, 0, what->data);
+      scr_dyn_this_pop();
+      scr_dyn_release(member);
+      return value;
+    }
+  } else if (d->kind != SCR_DYN_OBJ || scr_dyn_has_object_prototype(d)) {
+    return scr_dyn_retain((ScrDyn *)d);
+  }
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_write(&b, what->data, what->len);
+  scr_jb_puts(&b, " is not a function");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return NULL;
+}
+
 /* JS String() over the dyn kind — the WebIDL ToString the web globals
  * (atob/btoa, DOMException's name resolution) run on their arguments:
  * the unit kinds RENDER ("null"/"undefined") where the .toString() twin
@@ -6667,6 +6729,13 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
   if (v->kind == SCR_DYN_ARR) {
     if (v->prototype) return scr_dyn_in(v->prototype, key);
     return !v->null_proto && (scr_dyn_array_proto_name(key) || scr_dyn_object_proto_name(key));
+  }
+  if (v->kind == SCR_DYN_PROMISE) {
+    /* Promise.prototype's methods, then Object.prototype's names. */
+    static const char *const names[] = {"then", "catch", "finally"};
+    for (size_t i = 0; i < 3; i++)
+      if (strlen(names[i]) == key->len && memcmp(names[i], key->data, key->len) == 0) return true;
+    return scr_dyn_object_proto_name(key);
   }
   return false;
 }
@@ -7998,7 +8067,10 @@ ScrDyn *scr_json_parse(ScrStr *text) {
  * layout the compiler describes in a ScrJsonSchema. It accepts only input
  * for which the checked-dynamic route (scr_json_parse + the generated
  * dynCheck builder) would succeed with the same value: every declared key
- * present exactly once with a value of its declared kind; undeclared keys,
+ * present exactly once with a value of its declared kind, except that a
+ * missing undefined-armed union member takes its ABSENT state (the checked
+ * route's missing key reads undefined: parsed objects have no prototype
+ * chain to inherit from); undeclared keys,
  * or declared keys out of declaration order, are kept beside the record in
  * source order (scr_record_source_note's contract). Anything else — a
  * syntax error, a kind mismatch, a missing or repeated key, excessive
@@ -8123,6 +8195,101 @@ static inline __attribute__((always_inline)) bool scr_jschema_member(ScrJsonP *p
   return scr_jschema_scalar(p, type->kind, out);
 }
 
+/* An inline union field slot (INLINE_UNION_FIELD in the backend). */
+typedef struct {
+  uint32_t tag;
+  uint64_t bits;
+} ScrJsonInlineUnion;
+
+static void scr_jschema_inline_store(char *slot, size_t tag, uint64_t bits) {
+  ScrJsonInlineUnion pair = { (uint32_t)tag, bits };
+  memcpy(slot, &pair, sizeof pair);
+}
+
+/* A union member value written into its field slot. Each JSON value kind
+ * selects at most one arm (the compiler admits no two arms one kind could
+ * both match), so the checked route's first full match is that arm, and
+ * any other value declines. */
+static __attribute__((noinline)) bool scr_jschema_union(ScrJsonP *p, const ScrJsonUnion *u,
+                                                         char *slot) {
+  scr_json_ws(p);
+  if (p->pos >= p->len) return false;
+  char c = p->s[p->pos];
+  size_t arm;
+  if (c == 'n') arm = SCR_JARM_NULL;
+  else if (c == '"') arm = SCR_JARM_STR;
+  else if (c == '{') arm = SCR_JARM_OBJ;
+  else if (c == '[') arm = SCR_JARM_ARR;
+  else if (c == 't' || c == 'f') arm = SCR_JARM_BOOL;
+  else if (c == '-' || (c >= '0' && c <= '9')) arm = SCR_JARM_NUM;
+  else return false;
+  size_t tag = u->tags[arm];
+  if (tag == SCR_JSCHEMA_NO_ARM) return false;
+  if (arm == SCR_JARM_NULL) {
+    if (!scr_json_lit(p, "null", 4)) return false;
+    if (u->repr == SCR_JUNION_INLINE) scr_jschema_inline_store(slot, tag, 0);
+    else memcpy(slot, &u->null_value, sizeof u->null_value); /* immortal */
+    return true;
+  }
+  ScrJsonSlot v;
+  if (!scr_jschema_read(p, u->arms[arm], &v)) return false;
+  uint64_t bits = 0;
+  if (arm == SCR_JARM_NUM) memcpy(&bits, &v.f, sizeof bits);
+  else if (arm == SCR_JARM_BOOL) bits = v.b ? 1 : 0;
+  else bits = (uint64_t)(uintptr_t)v.ptr;
+  switch (u->repr) {
+  case SCR_JUNION_NULLABLE: memcpy(slot, &v.ptr, sizeof v.ptr); break; /* moves in */
+  case SCR_JUNION_INLINE: scr_jschema_inline_store(slot, tag, bits); break;
+  default: {
+    void *box = u->box((uint32_t)tag, bits); /* the payload moves in */
+    memcpy(slot, &box, sizeof box);
+  }
+  }
+  return true;
+}
+
+/* A declared member value written into its (zeroed) slot of `rec`. */
+static inline __attribute__((always_inline)) bool scr_jschema_field(ScrJsonP *p,
+                                                                    const ScrJsonSchemaField *f,
+                                                                    char *rec) {
+  char *slot = rec + f->offset;
+  const size_t kind = f->type->kind;
+  ScrJsonSlot v;
+  if (scr_jschema_is_scalar(kind)) {
+    scr_json_ws(p);
+    if (p->pos >= p->len || !scr_jschema_scalar(p, kind, &v)) return false;
+    switch (kind) {
+    case SCR_JSCHEMA_F64: memcpy(slot, &v.f, sizeof v.f); break;
+    case SCR_JSCHEMA_BOOL: *(uint8_t *)slot = v.b ? 1 : 0; break;
+    default: memcpy(slot, &v.ptr, sizeof v.ptr); break; /* zeroed slot; moves in */
+    }
+    return true;
+  }
+  if (kind == SCR_JSCHEMA_UNION) return scr_jschema_union(p, f->type->uni, slot);
+  if (!scr_jschema_read(p, f->type, &v)) return false;
+  memcpy(slot, &v.ptr, sizeof v.ptr); /* zeroed slot; moves in */
+  return true;
+}
+
+/* The declared members a record's text omitted (`missing`, by field
+ * index): each undefined-armed union member takes its ABSENT state, as the
+ * checked route's missing key does. Any other omitted member declines. */
+static __attribute__((noinline)) bool scr_jschema_absent(const ScrJsonSchema *s, char *rec,
+                                                          uint64_t missing) {
+  while (missing) {
+    const ScrJsonSchemaField *f = &s->fields[__builtin_ctzll(missing)];
+    missing &= missing - 1;
+    if (f->type->kind != SCR_JSCHEMA_UNION) return false;
+    const ScrJsonUnion *u = f->type->uni;
+    size_t tag = u->tags[SCR_JARM_ABSENT];
+    if (tag == SCR_JSCHEMA_NO_ARM) return false;
+    char *slot = rec + f->offset;
+    if (u->repr == SCR_JUNION_INLINE) scr_jschema_inline_store(slot, tag, 1); /* ABSENT_FIELD_PAYLOAD */
+    else memcpy(slot, &u->absent_value, sizeof u->absent_value); /* immortal */
+  }
+  return true;
+}
+
 /* The quoted key at p->pos when it is exactly `f`'s name, written without
  * escapes: the bytes consumed (name length + 2), else 0. Names of more
  * than eight bytes, and names holding a byte JSON text would escape,
@@ -8143,6 +8310,32 @@ static inline size_t scr_jschema_key_direct(const ScrJsonP *p, const ScrJsonSche
                      ((word - ones * 0x20) & ~word);
   uint64_t bytes = len >= 4 ? ~UINT64_C(0) : UINT64_C(0xffffff);
   return (special & high & bytes) ? 0 : len + 2;
+}
+
+/* An undeclared member of a record with an index signature, after its
+ * key: the value, read as the index value type, joins the overflow map in
+ * source order, as the checked route copies the parsed object's entries.
+ * A repeated key (last value, first position) and `__proto__` decline. */
+static __attribute__((noinline)) bool scr_jschema_overflow(ScrJsonP *p, const ScrJsonSchema *s,
+                                                            char *rec, const char *key,
+                                                            size_t key_len) {
+  scr_json_ws(p);
+  if (p->pos >= p->len || p->s[p->pos] != ':') return false;
+  p->pos++;
+  if (key_len == 9 && memcmp(key, "__proto__", 9) == 0) return false;
+  ScrJsonSlot v;
+  if (!scr_jschema_member(p, s->elem, &v)) return false;
+  ScrMap *map;
+  memcpy(&map, rec + s->ovf_offset, sizeof map);
+  uint32_t before = map->nlive;
+  ScrStr *name = scr_str_new(key, key_len);
+  switch (s->elem->kind) {
+  case SCR_JSCHEMA_F64: scr_map_set_str_f64(map, name, v.f); break;
+  case SCR_JSCHEMA_BOOL: scr_map_set_str_bool(map, name, v.b); break;
+  default: scr_map_set_str_ref(map, name, v.ptr); break; /* moves in */
+  }
+  scr_str_release(name);
+  return map->nlive != before;
 }
 
 /* A record's own-key view, started at the first member that leaves the
@@ -8179,14 +8372,7 @@ static __attribute__((noinline, cold)) bool scr_jschema_record_kept(
       if (seen & bit) goto fail; /* duplicate: last-wins stays on the checked route */
       seen |= bit;
       guess = idx + 1;
-      ScrJsonSlot v;
-      if (!scr_jschema_member(p, f->type, &v)) goto fail;
-      char *slot = rec + f->offset;
-      switch (f->type->kind) {
-      case SCR_JSCHEMA_F64: memcpy(slot, &v.f, sizeof v.f); break;
-      case SCR_JSCHEMA_BOOL: *(uint8_t *)slot = v.b ? 1 : 0; break;
-      default: memcpy(slot, &v.ptr, sizeof v.ptr); break; /* zeroed slot; moves in */
-      }
+      if (!scr_jschema_field(p, f, rec)) goto fail;
       scr_dyn_obj_set(view, key, key_len, scr_dyn_retain(scr_dyn_undefined()));
     } else {
       /* A repeated undeclared key stays on the checked route too. */
@@ -8230,7 +8416,7 @@ static __attribute__((noinline, cold)) bool scr_jschema_record_kept(
       }
     }
   }
-  if (seen != all) goto fail;
+  if (seen != all && !scr_jschema_absent(s, rec, all & ~seen)) goto fail;
   ScrRecordSource entry = { rec, view, (const char *)&s->fields[0].name,
                             (const char *)&s->fields[0].name_len, sizeof *s->fields,
                             sizeof *s->fields, n };
@@ -8285,9 +8471,19 @@ static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot 
         }
       }
       /* An undeclared member, or one before the previous match, keeps the
-       * source beside the record: the rest of the object parses there. */
-      if (idx == n || idx + 1 < guess)
+       * source beside the record: the rest of the object parses there.
+       * Records with an index signature keep no source; their undeclared
+       * members join the overflow map. */
+      if (s->elem) {
+        if (idx == n) {
+          bool joined = scr_jschema_overflow(p, s, rec, key, key_len);
+          scr_str_release(decoded);
+          if (!joined) goto fail;
+          goto separator;
+        }
+      } else if (idx == n || idx + 1 < guess) {
         return scr_jschema_record_kept(p, s, out, rec, seen, guess, idx, key, key_len, decoded);
+      }
       scr_str_release(decoded);
     }
     scr_json_ws(p);
@@ -8299,15 +8495,9 @@ static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot 
       if (seen & bit) goto fail; /* duplicate: last-wins stays on the checked route */
       seen |= bit;
       guess = idx + 1;
-      ScrJsonSlot v;
-      if (!scr_jschema_member(p, f->type, &v)) goto fail;
-      char *slot = rec + f->offset;
-      switch (f->type->kind) {
-      case SCR_JSCHEMA_F64: memcpy(slot, &v.f, sizeof v.f); break;
-      case SCR_JSCHEMA_BOOL: *(uint8_t *)slot = v.b ? 1 : 0; break;
-      default: memcpy(slot, &v.ptr, sizeof v.ptr); break; /* zeroed slot; moves in */
-      }
+      if (!scr_jschema_field(p, f, rec)) goto fail;
     }
+  separator:
     scr_json_ws(p);
     if (p->pos >= p->len) goto fail;
     if (p->s[p->pos] == ',') {
@@ -8319,7 +8509,7 @@ static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot 
     break;
   }
 close:
-  if (seen != all) goto fail;
+  if (seen != all && !scr_jschema_absent(s, rec, all & ~seen)) goto fail;
   out->ptr = rec;
   return true;
 fail:
@@ -8674,7 +8864,9 @@ static ScrDyn *scr_json_replace(const ScrDyn *holder, const ScrStr *key, const S
       ? scr_dyn_typed_ref_materialize(value) : NULL;
   const ScrDyn *inspected = view ? view : value;
   if (scr_exc_pending()) { scr_dyn_release(view); scr_dyn_release(value); return NULL; }
-  if (inspected->kind == SCR_DYN_HANDLE && (inspected->v.handle.tag == SCR_DYNH_DATE || inspected->v.handle.tag == SCR_DYNH_URL)) {
+  if (inspected->kind == SCR_DYN_HANDLE && (inspected->v.handle.tag == SCR_DYNH_DATE || inspected->v.handle.tag == SCR_DYNH_URL ||
+                                             inspected->v.handle.tag == SCR_DYNH_NET_SOCKET_ADDRESS ||
+                                             inspected->v.handle.tag == SCR_DYNH_NET_BLOCK_LIST)) {
     const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(inspected);
     ScrDyn *converted = ops->invoke(inspected->v.handle.ptr, value, "toJSON", NULL, 0, "toJSON");
     scr_dyn_release(value);

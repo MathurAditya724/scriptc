@@ -249,6 +249,15 @@ ScrDyn *scr_net_sock_address(ScrNetSocket *s);       /* +1: socket.address() */
 /* socket.resetAndDestroy(): RST close (deferred to 'connect' while
  * connecting); throws ERR_INVALID_HANDLE_TYPE on TLS. +1: chaining. */
 ScrNetSocket *scr_net_sock_reset_and_destroy(ScrNetSocket *s);
+/* net.SocketAddress and net.BlockList: native handles. The constructors
+ * take the argument array; parse answers undefined when the input is not
+ * a socket address. All +1, borrowed arguments; may throw. */
+ScrDyn *scr_net_socket_address_new(const ScrDyn *args);
+ScrDyn *scr_net_socket_address_parse(const ScrDyn *input);
+bool scr_net_is_socket_address(const ScrDyn *value);
+ScrDyn *scr_net_block_list_new(const ScrDyn *args);
+bool scr_net_is_block_list(const ScrDyn *value);
+ScrDyn *scr_net_block_list_private_ranges(void);
 /* server.dropMaxConnection: a stored value (+1 get, borrowed set). */
 ScrDyn *scr_net_server_drop_max_connection_get(ScrNetServer *s);
 void scr_net_server_drop_max_connection_set(ScrNetServer *s, const ScrDyn *value);
@@ -332,6 +341,18 @@ typedef struct ScrNetTransportOps {
   void (*free)(void *tctx);
 } ScrNetTransportOps;
 void scr_net_sock_set_transport(ScrNetSocket *s, const ScrNetTransportOps *ops, void *tctx);
+/* Routes a client socket through an HTTP CONNECT proxy. Call it right
+ * after the dial (scr_net_connect to the proxy) and before any transport
+ * is set: once TCP is up, `request` (the CONNECT head, copied) is sent
+ * and the proxy's response head is read. A 200 status starts the
+ * transport handshake, or fires 'connect'; any other status fails the
+ * socket with "Proxy response (<status>) !== 200 when HTTP Tunneling". */
+void scr_net_sock_set_tunnel(ScrNetSocket *s, const char *request, size_t len);
+/* The status code of a CONNECT response head (head[0..len) ends with the
+ * blank line), or -1 when it does not start with an HTTP/1.x status
+ * line; and undici's message for a status other than 200 (or -1). */
+int scr_net_tunnel_status(const char *head, size_t len);
+void scr_net_tunnel_failure(int status, char *msg, size_t cap);
 int scr_net_sock_fd(ScrNetSocket *s);
 /* Drain up to n bytes of the socket's receive buffer (peeked/unshifted
  * bytes — the demux path); consumers call it before the fd. */

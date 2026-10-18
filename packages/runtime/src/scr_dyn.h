@@ -166,6 +166,8 @@ typedef enum {
   SCR_DYNH_DIR,            /* fs.Dir (scr_lib.c) */
   SCR_DYNH_CIPHER,         /* node:crypto Cipheriv (scr_cipher.c) */
   SCR_DYNH_DECIPHER,       /* node:crypto Decipheriv (scr_cipher.c) */
+  SCR_DYNH_NET_SOCKET_ADDRESS, /* net.SocketAddress (scr_net.c) */
+  SCR_DYNH_NET_BLOCK_LIST, /* net.BlockList (scr_net.c) */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
@@ -871,6 +873,7 @@ ScrDyn *scr_dyn_apply_array_like(const ScrDyn *target, const ScrDyn *receiver, c
 bool scr_dyn_same_value(const ScrDyn *left, const ScrDyn *right);
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method);
 ScrStr *scr_dyn_to_string_argument(const ScrDyn *d, const ScrDyn *argument, const ScrStr *what);
+ScrDyn *scr_dyn_value_of(const ScrDyn *d, const ScrStr *what);
 ScrStr *scr_num_to_string_radix(double value, const ScrDyn *radix);
 /* JS String() over the dyn kind (units render "null"/"undefined" where
  * scr_dyn_to_string throws) — the web globals' WebIDL ToString. +1. */
@@ -1147,6 +1150,13 @@ ScrDyn *scr_dyn_new_promise_adapting(ScrPromise *src,
                                      void (*adapt)(ScrPromise *dst, ScrPromise *src));
 /* BORROWED peek at the boxed promise; NULL when d is not a promise box. */
 ScrPromise *scr_dyn_promise_of(const ScrDyn *d);
+/* A property read of a promise box (+1): Promise.prototype.then, catch
+ * and finally as function values, and undefined for every other key
+ * (promises have no own properties). The method values come from the
+ * gated async unit, which installs scr_dyn_promise_member_fn when it boxes
+ * a promise. */
+ScrDyn *scr_dyn_promise_key_get(const ScrDyn *d, const ScrStr *k);
+extern SCR_TL ScrDyn *(*scr_dyn_promise_member_fn)(const char *key, size_t len);
 /* Promise.all / allSettled / any over a spread dyn array (borrowed);
  * `reader` (borrowed) reads a program class instance's `then`. +1. */
 ScrPromise *scr_dyn_promise_all(const ScrDyn *entries, const ScrDyn *reader);
