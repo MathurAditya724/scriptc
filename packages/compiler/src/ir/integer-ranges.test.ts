@@ -800,11 +800,25 @@ test("an array length bounds while and for counters even when the body resizes t
   // let i = 0; while (i < items.length) { observe(i); items.push(i); i++; } observe(i);
   const ARR = { kind: "array", elem: F64 } as const;
   const items: IrExpr = { loc, kind: "varRef", localId: "items", type: ARR };
-  const length: IrExpr = { loc, kind: "arrIntrinsic", method: "length", receiver: items, args: [], type: F64 };
+  const length: IrExpr = {
+    loc,
+    kind: "arrIntrinsic",
+    method: "length",
+    receiver: items,
+    args: [],
+    type: F64,
+  };
   const push: IrStmt = {
     loc,
     kind: "exprStmt",
-    expr: { loc, kind: "arrIntrinsic", method: "push", receiver: items, args: [ref("i")], type: F64 },
+    expr: {
+      loc,
+      kind: "arrIntrinsic",
+      method: "push",
+      receiver: items,
+      args: [ref("i")],
+      type: F64,
+    },
   };
   const bump: IrStmt = {
     loc,
@@ -815,7 +829,12 @@ test("an array length bounds while and for counters even when the body resizes t
     after = ref("i");
   const f = fn([
     { loc, kind: "assign", localId: "i", value: num(0) },
-    { loc, kind: "while", cond: condition("<", ref("i"), length), body: [observe(inside), push, bump] },
+    {
+      loc,
+      kind: "while",
+      cond: condition("<", ref("i"), length),
+      body: [observe(inside), push, bump],
+    },
     observe(after),
   ]);
   f.locals.push(

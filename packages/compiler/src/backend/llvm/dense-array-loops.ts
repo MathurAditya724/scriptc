@@ -137,10 +137,7 @@ export function matchDenseArrayLoop(
     if (s.kind === "assign" || s.kind === "varDecl") disturbed.add(s.localId);
     if (s.kind === "arraySet") {
       access(s.arr, s.index);
-      if (
-        s.arr.kind === "varRef" &&
-        (s.index.kind !== "varRef" || s.index.localId !== counter)
-      )
+      if (s.arr.kind === "varRef" && (s.index.kind !== "varRef" || s.index.localId !== counter))
         disturbed.add(s.arr.localId);
     }
     return everyStmtChild(s, expr, stmt);

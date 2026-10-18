@@ -1,6 +1,14 @@
 import { expect, test } from "vitest";
 import { findUnaliasedLocalArrays, preservesArrayLength } from "./array-length-stability.js";
-import { BOOL, F64, arrayOf, type IrExpr, type IrFunction, type IrLocal, type IrStmt } from "./ir.js";
+import {
+  BOOL,
+  F64,
+  arrayOf,
+  type IrExpr,
+  type IrFunction,
+  type IrLocal,
+  type IrStmt,
+} from "./ir.js";
 
 const loc = { file: "array-length-stability.ts", start: 0, end: 0 };
 const ARR = arrayOf(F64);
@@ -11,7 +19,14 @@ const method = (
   receiver: string,
   name: Extract<IrExpr, { kind: "arrIntrinsic" }>["method"],
   args: IrExpr[] = [],
-): IrExpr => ({ kind: "arrIntrinsic", method: name, receiver: arr(receiver), args, type: F64, loc });
+): IrExpr => ({
+  kind: "arrIntrinsic",
+  method: name,
+  receiver: arr(receiver),
+  args,
+  type: F64,
+  loc,
+});
 const length = (receiver: string): IrExpr => method(receiver, "length");
 const read = (receiver: string, index: IrExpr): IrExpr => method(receiver, "getNumber", [index]);
 const plus = (left: IrExpr, right: IrExpr): IrExpr => ({
@@ -74,9 +89,9 @@ test("resizing methods, length stores, calls and escapes refuse the proof", () =
   expect(preserves([{ kind: "arraySetLength", arr: arr("a"), length: num(0), loc }])).toBe(false);
   expect(preserves([{ kind: "arrayDelete", arr: arr("a"), index: ref("i"), loc }])).toBe(false);
   expect(preserves([stmt({ kind: "call", callee: "f", args: [], type: F64, loc })])).toBe(false);
-  expect(
-    preserves([stmt({ kind: "call", callee: "f", args: [arr("a")], type: F64, loc })]),
-  ).toBe(false);
+  expect(preserves([stmt({ kind: "call", callee: "f", args: [arr("a")], type: F64, loc })])).toBe(
+    false,
+  );
   expect(preserves([{ kind: "varDecl", localId: "b", init: arr("a"), loc }])).toBe(false);
   expect(preserves([{ kind: "assign", localId: "a", value: arr("b"), loc }])).toBe(false);
 });
@@ -119,10 +134,7 @@ test("fresh local arrays read only as receivers have no alias", () => {
   expect(findUnaliasedLocalArrays(fn(body, ["out"])).size).toBe(0);
   const copied = [...body, { kind: "varDecl", localId: "b", init: arr("out"), loc } as IrStmt];
   expect(findUnaliasedLocalArrays(fn(copied)).has("out")).toBe(false);
-  const passed = [
-    ...body,
-    stmt({ kind: "call", callee: "g", args: [arr("out")], type: F64, loc }),
-  ];
+  const passed = [...body, stmt({ kind: "call", callee: "g", args: [arr("out")], type: F64, loc })];
   expect(findUnaliasedLocalArrays(fn(passed)).has("out")).toBe(false);
   const rebound = [...body, { kind: "assign", localId: "out", value: arr("a"), loc } as IrStmt];
   expect(findUnaliasedLocalArrays(fn(rebound)).has("out")).toBe(false);

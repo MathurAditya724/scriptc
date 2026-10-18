@@ -1,6 +1,10 @@
 import { expect, test } from "vitest";
 import { BOOL, F64, arrayOf, type IrExpr, type IrLocal, type IrStmt } from "../../ir/ir.js";
-import { countedDenseShape, matchDenseArrayLoop, type DenseLoopShape } from "./dense-array-loops.js";
+import {
+  countedDenseShape,
+  matchDenseArrayLoop,
+  type DenseLoopShape,
+} from "./dense-array-loops.js";
 
 const loc = { file: "dense-array-loops.ts", start: 0, end: 0 };
 const ARR = arrayOf(F64);
@@ -16,9 +20,15 @@ const method = (
   receiver: string,
   name: Extract<IrExpr, { kind: "arrIntrinsic" }>["method"],
   args: IrExpr[] = [],
-): IrExpr => ({ kind: "arrIntrinsic", method: name, receiver: arr(receiver), args, type: F64, loc });
-const read = (receiver: string, index = ref("i")): IrExpr =>
-  method(receiver, "getNumber", [index]);
+): IrExpr => ({
+  kind: "arrIntrinsic",
+  method: name,
+  receiver: arr(receiver),
+  args,
+  type: F64,
+  loc,
+});
+const read = (receiver: string, index = ref("i")): IrExpr => method(receiver, "getNumber", [index]);
 const write = (receiver: string, value: IrExpr, index = ref("i")): IrStmt => ({
   kind: "arraySet",
   arr: arr(receiver),
@@ -49,7 +59,11 @@ function loop(body: IrStmt[]): IrStmt & { kind: "for" } {
     body,
   };
 }
-const shape: DenseLoopShape = { counter: "i", length: arr("a"), range: { min: 0, max: 4294967294 } };
+const shape: DenseLoopShape = {
+  counter: "i",
+  length: arr("a"),
+  range: { min: 0, max: 4294967294 },
+};
 const match = (body: IrStmt[], initialized = new Set(["a", "b"])) =>
   matchDenseArrayLoop(loop(body), shape, locals, new Set(), initialized);
 
@@ -73,7 +87,9 @@ test("loops that may resize, rebind or move storage keep the ordinary copy only"
   expect(match([{ kind: "exprStmt", expr: method("a", "push", [num(1)]), loc }])).toBeNull();
   expect(match([write("a", num(0), ref("unknown"))])).toBeNull();
   expect(
-    match([{ kind: "exprStmt", expr: { kind: "call", callee: "f", args: [], type: F64, loc }, loc }]),
+    match([
+      { kind: "exprStmt", expr: { kind: "call", callee: "f", args: [], type: F64, loc }, loc },
+    ]),
   ).toBeNull();
   // A nested loop would be duplicated too.
   expect(match([{ kind: "exprStmt", expr: read("a"), loc }, loop([])])).toBeNull();
