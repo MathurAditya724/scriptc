@@ -5037,6 +5037,23 @@ function jsObjectBindingExpands(
     ) {
       const name = property(node.left);
       if (name === null || (name !== undefined && !names.has(name))) expands = true;
+      // `state = { _tag: "Done", right }` stores an object with properties
+      // the initializer's shape lacks; later reads of them must see them.
+      const target = unwrap(node.left);
+      const value = unwrap(node.right);
+      const targetSymbol = ts.isIdentifier(target) ? lowerer.resolveValueSymbol(target) : undefined;
+      if (
+        targetSymbol &&
+        aliases.has(targetSymbol) &&
+        ts.isObjectLiteralExpression(value) &&
+        value.properties.some(
+          (field) =>
+            !(ts.isPropertyAssignment(field) || ts.isShorthandPropertyAssignment(field)) ||
+            !(ts.isIdentifier(field.name) || ts.isStringLiteral(field.name)) ||
+            !names.has(field.name.text),
+        )
+      )
+        expands = true;
     }
     if (ts.isDeleteExpression(node) && property(node.expression) !== undefined) expands = true;
     if (
