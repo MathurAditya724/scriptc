@@ -66,6 +66,14 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
       return finishRuntimeCall(host, e, "scr_test_ctx_mock_restore_all", a);
     case "test.ctxMockReset":
       return finishRuntimeCall(host, e, "scr_test_ctx_mock_reset", a);
+    case "test.snapshotValue":
+      return finishRuntimeCall(host, e, "scr_test_snapshot_value", a);
+    case "test.ctxSnapshot":
+      return finishRuntimeCall(host, e, "scr_test_ctx_snapshot", a);
+    case "test.fileSnapshot":
+      return finishRuntimeCall(host, e, "scr_test_file_snapshot", a);
+    case "test.snapshotSerialize":
+      return finishRuntimeCall(host, e, "scr_test_snapshot_serialize", a);
     case "test.mockTimersEnable":
       return finishRuntimeCall(host, e, "scr_test_mock_timers_enable", a);
     case "test.mockTimersTick":

@@ -200,6 +200,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "os.userHomedir": "scr_os_user_homedir",
   "os.tmpdir": "scr_os_tmpdir",
   "process.argv": "scr_process_argv",
+  "process.execArgv": "scr_process_exec_argv",
   "process.platform": "scr_process_platform",
   "process.cwd": "scr_process_cwd",
   "process.pid": "scr_process_pid",

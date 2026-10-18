@@ -166,6 +166,13 @@ static SCR_TL char **scr_lib_argv_owned = NULL;
 static SCR_TL char *scr_lib_argv_utf8 = NULL;
 #endif
 static SCR_TL bool scr_lib_has_fork = false;
+/* A leading Node runtime flag taken out of process.argv (scr_lib_take_flag),
+ * which process.execArgv reports; NULL without one. */
+static SCR_TL const char *scr_lib_exec_flag = NULL;
+#if defined(_WIN32) && !defined(SCR_LIB)
+/* The flag's index in the original Windows command line, -1 without one. */
+static SCR_TL int scr_lib_exec_flag_index = -1;
+#endif
 #if !defined(_WIN32) && !defined(__wasi__) && !defined(SCR_LIB)
 static void scr_title_init(int argc, char **argv);
 #endif
@@ -321,6 +328,7 @@ static void scr_lib_prepare_utf8_argv(void) {
     // scr_lib_init already consumed this private ASCII fork marker. Do not
     // reintroduce it when replacing the narrow argument storage.
     if (i == 1 && scr_lib_has_fork) continue;
+    if (i == scr_lib_exec_flag_index) continue;
     int size = WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, NULL, 0, NULL, NULL);
     if (size == 0 || WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, next, size, NULL, NULL) != size) {
       free(text); free(args); LocalFree(wide);
@@ -563,6 +571,31 @@ const char *scr_lib_arg(int i) {
   scr_lib_prepare_utf8_argv();
 #endif
   return scr_lib_argv[i];
+}
+
+bool scr_lib_take_flag(const char *flag) {
+  if (scr_lib_argc < 2 || strcmp(scr_lib_argv[1], flag) != 0) return false;
+  char **args = malloc((size_t)scr_lib_argc * sizeof(char *));
+  if (!args) scr_trap("out of memory");
+  args[0] = scr_lib_argv[0];
+  for (int i = 2; i < scr_lib_argc; i++) args[i - 1] = scr_lib_argv[i];
+  args[scr_lib_argc - 1] = NULL;
+  free(scr_lib_argv_owned);
+  scr_lib_argv_owned = args;
+  scr_lib_argv = args;
+  scr_lib_argc--;
+#if defined(_WIN32) && !defined(SCR_LIB)
+  scr_lib_exec_flag_index = scr_lib_has_fork ? 2 : 1;
+#endif
+  scr_lib_exec_flag = flag;
+  return true;
+}
+
+ScrArr *scr_process_exec_argv(void) {
+  ScrArr *arr = scr_arr_new(SCR_ELEM_STR, 1);
+  if (scr_lib_exec_flag)
+    scr_arr_push_ref(arr, scr_str_new(scr_lib_exec_flag, strlen(scr_lib_exec_flag)));
+  return arr;
 }
 
 bool scr_lib_fork_info(double *target, uintptr_t *read_handle,

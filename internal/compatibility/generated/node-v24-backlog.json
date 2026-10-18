@@ -7,8 +7,8 @@
     "tierItemCount": 3456,
     "tiers": {
       "static": {
-        "audit-partial": 1140,
-        "verify-gap": 2189,
+        "audit-partial": 1142,
+        "verify-gap": 2187,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -67667,12 +67667,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.assert.fileSnapshot",
+          "tests": [
+            "tests/fixtures/node-test/cases/snapshot.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67692,12 +67695,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.assert.snapshot",
+          "tests": [
+            "tests/fixtures/node-test/cases/snapshot.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },

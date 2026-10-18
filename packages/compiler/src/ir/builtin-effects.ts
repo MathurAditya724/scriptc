@@ -18,6 +18,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "test.suite",
   // mock.timers: Node's ERR_INVALID_STATE and ERR_INVALID_ARG_VALUE, and
   // the throws of the timer callbacks tick and runAll run.
+  "test.ctxSnapshot",
+  "test.fileSnapshot",
+  "test.snapshotSerialize",
   "test.mockTimersEnable",
   "test.mockTimersTick",
   "test.mockTimersRunAll",

@@ -3338,7 +3338,12 @@ declare module "node:test" {
     beforeEach(fn: HookFn): void;
     afterEach(fn: HookFn): void;
   }
+  interface AssertSnapshotOptions {
+    readonly serializers?: ReadonlyArray<(value: any) => any> | undefined;
+  }
   interface TestContextAssert {
+    snapshot(value: any, options?: AssertSnapshotOptions): void;
+    fileSnapshot(value: any, path: string, options?: AssertSnapshotOptions): void;
     ok(value: unknown, message?: string): void;
     strictEqual(actual: unknown, expected: unknown, message?: string): void;
     notStrictEqual(actual: unknown, expected: unknown, message?: string): void;
