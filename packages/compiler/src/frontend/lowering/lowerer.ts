@@ -1,3 +1,4 @@
+import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
 import {
   lifetimeRegionType,
   lowerLifetimeRegionCall,
@@ -2916,6 +2917,8 @@ export class Lowerer {
       this.fileTag.set(sf, sf === entry ? "" : `%m${i}.`);
     });
     if (this.moduleOrder.length === 0) this.fileTag.set(entry, "");
+    const jsDynamic = jsDynamicDeclarations(this.moduleOrder, this.checker);
+    if (jsDynamic.size > 0) this.typeCtx.jsDynamicDeclaration = (decl) => jsDynamic.has(decl);
     this.registerBuiltinErrorClasses();
     registerBuiltinEmitterClass(this);
     registerBuiltinStreamClasses(this);
@@ -3990,18 +3993,6 @@ export class Lowerer {
       if (!s) return null;
       return s.flags & ts.SymbolFlags.Alias ? this.checker.getAliasedSymbol(s) : s;
     };
-    // Fields that can be read before their assignment hold undefined then;
-    // their reads are runtime-optional values like missing array reads.
-    for (const info of this.classes.values()) {
-      if (!info.earlyReadFields || !info.decl?.name) continue;
-      const classSymbol = symbolOf(info.decl.name);
-      if (!classSymbol) continue;
-      const instance = this.checker.getDeclaredTypeOfSymbol(classSymbol);
-      for (const name of info.earlyReadFields) {
-        const property = this.checker.getPropertyOfType(instance, name);
-        if (property) optionalSymbols.add(property);
-      }
-    }
     const signatureOf = (node: ts.Identifier): FnSig | null => {
       const symbol = symbolOf(node);
       if (!symbol) return null;
