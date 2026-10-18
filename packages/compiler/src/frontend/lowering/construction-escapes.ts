@@ -124,6 +124,15 @@ export function constructionEscape(inputs: ConstructionInputs): ConstructionEsca
         continue;
       }
       if (ts.isExpressionStatement(stmt) && !exposes(stmt.expression, depth)) continue;
+      // A check that only reads assigned fields and throws or does nothing
+      // with the receiver (`if (this.size < 0) throw new RangeError()`)
+      // does not expose the instance; assignments in its branches are not
+      // definite and still count as exposures.
+      if (
+        (ts.isIfStatement(stmt) || ts.isThrowStatement(stmt) || ts.isBlock(stmt)) &&
+        !exposes(stmt, depth)
+      )
+        continue;
       return false;
     }
     return true;

@@ -59,6 +59,7 @@ import {
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
+import { lowerJsonRequireCall } from "./json-require.js";
 import { lowerAssertInstanceCall } from "./assert-instances.js";
 import { isGenericCallableMemberType, typeKey } from "../type-mapper.js";
 import { dynFallbackType, jsFuncNameOf, newFnCtx, staticImportNamespaceType } from "./lowerer.js";
@@ -105,8 +106,13 @@ import {
   lowerImportMetaResolveCall,
   lowerRequireResolveCall,
 } from "./builtins/module-resolution.js";
-import { lowerCipherMethodCall, lowerCryptoHashMethodCall } from "./builtins/crypto.js";
+import {
+  lowerCipherMethodCall,
+  lowerCryptoHashMethodCall,
+  lowerPromisifiedCryptoCall,
+} from "./builtins/crypto.js";
 import { lowerErrorIsErrorCall } from "./builtins/errors.js";
+import { lowerPromisifiedDnsCall } from "./lower-dgram.js";
 import { lowerDisposableStackUseCall } from "./builtins/disposable-stack.js";
 import {
   lowerDirentMethodCall,
@@ -222,6 +228,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const object = lowerObjectConstructor(lowerer, expr.arguments, loc);
     if (object) return object;
   }
+
+  // require() of a JSON document: the shared parsed object.
+  const json = lowerJsonRequireCall(lowerer, expr);
+  if (json) return json;
 
   // A call whose chain ROOTS at an ambient-undefined name (`declare
   // const value: Y | undefined; value?.foo("a")`, `declare function
@@ -800,6 +810,12 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       }
       if (projection?.kind === "promisified-zlib") {
         return lowerPromisifiedZlibCall(lowerer, expr, projection.member, loc);
+      }
+      if (projection?.kind === "promisified-crypto") {
+        return lowerPromisifiedCryptoCall(lowerer, expr, projection.member, loc);
+      }
+      if (projection?.kind === "promisified-dns") {
+        return lowerPromisifiedDnsCall(lowerer, expr, projection.member, loc);
       }
       if (projection?.kind === "promisified-builtin") {
         return lowerBuiltinCall(

@@ -114,6 +114,23 @@ void scr_crypto_hkdf_async(ScrStr *digest, ScrBytes *ikm, ScrBytes *salt,
                            ScrBytes *info, double keylen, ScrClosure *cb, ScrCryptoBytesFn fn);
 void scr_crypto_scrypt_async(ScrBytes *password, ScrBytes *salt, double keylen,
                              ScrDyn *options, ScrClosure *cb, ScrCryptoBytesFn fn);
+/* util.promisify over the callback forms: scr_crypto_promise_callback
+ * returns a callback closure (+1) that owns the promise, and the settle
+ * adapters fulfill it with the value as a Buffer or view (_bytes), a
+ * checked-dynamic Buffer, view or ArrayBuffer, a checked-dynamic value
+ * (_dyn), or a number, or reject it with the callback's error. After the
+ * callback form returns, scr_crypto_promise_reject_thrown moves a pending
+ * argument error into the promise as its rejection. */
+typedef struct ScrPromise ScrPromise;
+ScrClosure *scr_crypto_promise_callback(ScrPromise *promise);
+void scr_crypto_promise_reject_thrown(ScrPromise *promise);
+void scr_crypto_promise_settle_bytes(ScrClosure *cb, ScrError *error, ScrBytes *value);
+void scr_crypto_promise_settle_buffer_dyn(ScrClosure *cb, ScrError *error, ScrBytes *value);
+void scr_crypto_promise_settle_view_dyn(ScrClosure *cb, ScrError *error, ScrBytes *value);
+void scr_crypto_promise_settle_array_buffer(ScrClosure *cb, ScrError *error, ScrBytes *value);
+void scr_crypto_promise_settle_dyn(ScrClosure *cb, ScrError *error, ScrBytes *value);
+void scr_crypto_promise_settle_number(ScrClosure *cb, double value);
+void scr_crypto_promise_settle_number_dyn(ScrClosure *cb, double value);
 
 /* The digest primitives beyond MD5/SHA-1/SHA-2 (scr_hash.c). Each final
  * reads a copy of its context. */

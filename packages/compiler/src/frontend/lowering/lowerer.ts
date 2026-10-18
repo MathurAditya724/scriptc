@@ -11,6 +11,12 @@ import {
   refuseUncheckedCycleReads,
   type CycleInitFlag,
 } from "./cycle-initialization.js";
+import { isJsonRequireDecl, type JsonRequireModule } from "./json-require.js";
+import {
+  checkRequireBindingAccesses,
+  type EarlyReference,
+  type RequireInitFlag,
+} from "./require-initialization.js";
 import { identityPreservingWidening } from "./coercions/identity.js";
 import { scanDivergences } from "./divergences.js";
 import { checkedClassAssertion } from "./class-assertions.js";
@@ -603,7 +609,9 @@ export type StaticCallableProjection =
   | { kind: "promisified-exec-file" }
   | { kind: "promisified-exec" }
   | { kind: "promisified-builtin"; module: string; member: string }
-  | { kind: "promisified-zlib"; member: string };
+  | { kind: "promisified-zlib"; member: string }
+  | { kind: "promisified-crypto"; member: string }
+  | { kind: "promisified-dns"; member: string };
 
 /** Own-property lookup for the surface tables. They are plain object
  * literals, so a bare `table[name]` would also find Object.prototype
@@ -1797,6 +1805,11 @@ export class Lowerer {
    * typeParamBindings — the checker has no `T` to substitute, so the
    * binding rides the node-type accessor instead of mapType. */
   implicitParamTypes: Map<ts.Symbol, ts.Type> | null = null;
+  /** Immutable bindings that name a zlib stream class (`const C =
+   * zlib.Gzip`), keyed by the binding's symbol: the class's
+   * node_zlib_mode. No runtime slot exists: new, typeof, .name and ===
+   * resolve at compile time, and instanceof checks the stream's mode. */
+  readonly zlibClassAliases = new Map<ts.Symbol, number>();
   /** Whether some net.Socket in this program may get an encoding: a
    * setEncoding call whose receiver is a socket or an untyped value.
    * Computed once on first use (null until then). */
@@ -2444,6 +2457,10 @@ export class Lowerer {
    * prepended by lowerFileInit so the bindings are live before any
    * top-level statement runs. */
   readonly jsonInitActions = new Map<ts.SourceFile, IrStmt[]>();
+  /** CommonJS require() of JSON documents: the shared object per document
+   * and the calls reading it (json-require.ts). */
+  readonly jsonRequireModules = new Map<string, JsonRequireModule>();
+  readonly jsonRequireCalls = new Map<ts.CallExpression, JsonRequireModule>();
   /** Dynamic `import("literal")` resolutions, keyed
    * `fileName\u0000specifier` (collectDynamicImports fills it during npm
    * collection; lowerDynamicImportCall reads it per site). */
@@ -2620,6 +2637,10 @@ export class Lowerer {
    * by class name (cycle-initialization.ts). */
   readonly classInitFlags = new Map<string, CycleInitFlag>();
   readonly cycleInitDeclarations = new Map<ts.Statement, CycleInitFlag[]>();
+  /** CommonJS require declarations whose bindings code running before the
+   * require can read, and those references (require-initialization.ts). */
+  readonly requireInitFlags = new Map<ts.VariableDeclaration, RequireInitFlag>();
+  readonly requireEarlyReferences: EarlyReference[] = [];
 
   get ctx(): FnCtx {
     const top = this.fnStack[this.fnStack.length - 1];
@@ -3464,6 +3485,7 @@ export class Lowerer {
       return null;
     const directSpec = requireSpecOf(decl.initializer);
     if (directSpec !== null) {
+      if (isJsonRequireDecl(this, decl)) return null;
       return (
         resolveImport(this.program, decl.getSourceFile(), directSpec, "require") ??
         npmStaticDepSf7(this.program, decl.getSourceFile(), directSpec, "require")
@@ -3947,6 +3969,18 @@ export class Lowerer {
       if (!s) return null;
       return s.flags & ts.SymbolFlags.Alias ? this.checker.getAliasedSymbol(s) : s;
     };
+    // Fields that can be read before their assignment hold undefined then;
+    // their reads are runtime-optional values like missing array reads.
+    for (const info of this.classes.values()) {
+      if (!info.earlyReadFields || !info.decl?.name) continue;
+      const classSymbol = symbolOf(info.decl.name);
+      if (!classSymbol) continue;
+      const instance = this.checker.getDeclaredTypeOfSymbol(classSymbol);
+      for (const name of info.earlyReadFields) {
+        const property = this.checker.getPropertyOfType(instance, name);
+        if (property) optionalSymbols.add(property);
+      }
+    }
     const signatureOf = (node: ts.Identifier): FnSig | null => {
       const symbol = symbolOf(node);
       if (!symbol) return null;
@@ -5865,24 +5899,60 @@ export class Lowerer {
       addClassFields(recordFlows.bindingClass(symbol), fields);
     for (const [symbol, fields] of returnFields)
       addClassFields(recordFlows.returnClass(symbol), fields);
+    // A record field that flows into other slots (`fill(args, state.parsed)`)
+    // widens with its owner's class: every member takes the field's widened
+    // layout, so the field and the slots it reaches share one record.
+    const nestedFields = new Map<number, Map<string, number>>();
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const { owner, name, classId } of recordFlows.fields()) {
+        if (nestedFields.get(owner)?.has(name)) continue;
+        if (!(classFields.has(classId) || nestedFields.has(classId))) continue;
+        if (!recordFlows.closed(classId)) continue;
+        const byName = nestedFields.get(owner) ?? new Map<string, number>();
+        byName.set(name, classId);
+        nestedFields.set(owner, byName);
+        changed = true;
+      }
+    }
     const settledFields = (
       id: number | null,
       own: ReadonlySet<string> | undefined,
     ): ReadonlySet<string> | undefined =>
       id === null
         ? own
-        : classFields.has(id) && recordFlows.closed(id)
-          ? classFields.get(id)
+        : (classFields.has(id) || nestedFields.has(id)) && recordFlows.closed(id)
+          ? (classFields.get(id) ?? new Set<string>())
           : undefined;
-    const widenRecordFields = (type: IrType, fields: ReadonlySet<string>): IrType => {
+    const widenRecordFields = (
+      type: IrType,
+      fields: ReadonlySet<string>,
+      id: number | null = null,
+      seen: ReadonlySet<number> = new Set(),
+    ): IrType => {
       let promoted = type;
+      const fieldOf = (name: string) =>
+        promoted.kind === "record"
+          ? this.shapes.get(promoted.shapeId)?.fields.find((f) => f.name === name)
+          : undefined;
       for (const field of fields) {
-        const source =
-          promoted.kind === "record"
-            ? this.shapes.get(promoted.shapeId)?.fields.find((f) => f.name === field)
-            : undefined;
+        const source = fieldOf(field);
         if (source)
           promoted = this.runtimeOptionalRecordField(promoted, field, addUndefined(source.type));
+      }
+      if (id === null || seen.has(id)) return promoted;
+      const nested = nestedFields.get(id);
+      if (!nested) return promoted;
+      for (const [field, inner] of nested) {
+        const source = fieldOf(field);
+        if (source?.type.kind !== "record") continue;
+        const widened = widenRecordFields(
+          source.type,
+          classFields.get(inner) ?? new Set<string>(),
+          inner,
+          new Set([...seen, id]),
+        );
+        promoted = this.runtimeOptionalRecordField(promoted, field, widened);
       }
       return promoted;
     };
@@ -5898,9 +5968,10 @@ export class Lowerer {
     for (const [bound, { target, index }] of recordParameterSlots) {
       const shape = signatureBySymbol.get(target)?.params[index];
       if (!shape || shape.type.kind !== "record") continue;
-      const fields = settledFields(recordFlows.bindingClass(bound), optionalFields.get(bound));
+      const id = recordFlows.bindingClass(bound);
+      const fields = settledFields(id, optionalFields.get(bound));
       if (!fields) continue;
-      const promoted = widenRecordFields(shape.type, fields);
+      const promoted = widenRecordFields(shape.type, fields, id);
       if (typeEquals(promoted, shape.type)) continue;
       shape.type = promoted;
       this.runtimeOptionalBindingTypes.set(bound, promoted);
@@ -5909,7 +5980,7 @@ export class Lowerer {
       const id = recordFlows.returnClass(symbol);
       const fields = id === null ? undefined : settledFields(id, undefined);
       if (fields && sig.returnType.kind === "record") {
-        const next = widenRecordFields(sig.returnType, fields);
+        const next = widenRecordFields(sig.returnType, fields, id);
         sig.returnType = next;
         if (sig.top) sig.top.returnType = next;
         if (sig.method) sig.method.ret = next;
@@ -5995,7 +6066,8 @@ export class Lowerer {
             if (global) global.type = promoted;
           }
         }
-        const fields = settledFields(recordFlows.bindingClass(symbol), optionalFields.get(symbol));
+        const flowClass = recordFlows.bindingClass(symbol);
+        const fields = settledFields(flowClass, optionalFields.get(symbol));
         if (!dynamicObjectEntryRows.has(symbol) && !optionalSymbols.has(symbol) && !fields) return;
         const current = this.mapTypeOf(this.typeOf(node.name));
         if (!current) return;
@@ -6012,7 +6084,8 @@ export class Lowerer {
             };
           }
         }
-        if (fields && promoted.kind === "record") promoted = widenRecordFields(promoted, fields);
+        if (fields && promoted.kind === "record")
+          promoted = widenRecordFields(promoted, fields, flowClass);
         if (!typeEquals(promoted, current)) {
           this.runtimeOptionalBindingTypes.set(symbol, promoted);
           const global = ts.isIdentifier(node.name)
@@ -6303,6 +6376,7 @@ export class Lowerer {
     // slots), uniformly across params/locals/globals/fields/body types so
     // every producer and consumer agrees. Programs with no unregistered
     // reference are untouched — byte-stability holds.
+    checkRequireBindingAccesses(this, functions);
     const module: IrModule | null =
       this.diags.length > 0
         ? null
@@ -11739,8 +11813,8 @@ export class Lowerer {
     return lowerSpawnCall(this, expr, loc);
   }
 
-  lowerExecFileCall(expr: ts.CallExpression, loc: SrcLoc): IrExpr {
-    return lowerExecFileCall(this, expr, loc);
+  lowerExecFileCall(expr: ts.CallExpression, loc: SrcLoc, shell = false): IrExpr {
+    return lowerExecFileCall(this, expr, loc, shell);
   }
 
   lowerExecSyncCall(expr: ts.CallExpression, shell: boolean, loc: SrcLoc): IrExpr {

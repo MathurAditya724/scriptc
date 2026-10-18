@@ -1389,6 +1389,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "object", className: "%Error" };
   }
+  // child_process.ExecException, exec's callback error, is an interface
+  // extending Error with optional metadata members; the value is one
+  // ordinary Error as well.
+  const execException = type.getSymbol();
+  if (
+    execException?.name === "ExecException" &&
+    checker
+      .declarationsOf(execException)
+      .some(
+        (decl) =>
+          ts.isInterfaceDeclaration(decl) &&
+          ctx.isStdlibFile(decl.getSourceFile()) &&
+          isDeclaredInAmbientModule(decl, "child_process"),
+      )
+  ) {
+    return { kind: "object", className: "%Error" };
+  }
   if (isOsConstantsType(type, ctx) || isLegacyUrlType(type, ctx)) return DYN;
   // Immutable<T> (@scriptc/types) is a deep-readonly view: the value is
   // still the T it maps.
@@ -3551,12 +3568,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ),
     };
   }
-  // The promisified exec/execFile result `{ stdout: string; stderr: string }`:
-  // an anonymous type literal (@types/node's __promisify__ overloads in
-  // child_process, the shipped fallback's promisify overloads in util),
-  // so it maps by provenance and exact shape, interned as the
-  // %execFileAsync/%execAsync helpers build it. Node builds the object as
-  // { stdout, stderr }. The Buffer-typed literals do not match and stay
+  // The promisified exec/execFile result `{ stdout: string; stderr: string }`
+  // and the promisified dns.lookupService result `{ hostname: string;
+  // service: string }`: anonymous type literals (@types/node's
+  // __promisify__ overloads in child_process and dns, the shipped
+  // fallback's promisify overloads in util), so they map by provenance and
+  // exact shape. The exec result is interned as the %execFileAsync/
+  // %execAsync helpers build it; Node builds { stdout, stderr } and
+  // { hostname, service }. The Buffer-typed literals do not match and stay
   // unmapped.
   if (
     psym &&
@@ -3566,21 +3585,38 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         (d) =>
           ts.isTypeLiteralNode(d) &&
           ctx.isStdlibFile(d.getSourceFile()) &&
-          (isDeclaredInAmbientModule(d, "child_process") || isDeclaredInAmbientModule(d, "util")),
+          (isDeclaredInAmbientModule(d, "child_process") ||
+            isDeclaredInAmbientModule(d, "util") ||
+            isDeclaredInAmbientModule(d, "dns")),
       )
   ) {
     const props = checker.getPropertiesOfType(widened);
-    if (
+    const names =
       props.length === 2 &&
       props.every(
         (p) =>
-          (p.name === "stdout" || p.name === "stderr") &&
           (p.flags & ts.SymbolFlags.Optional) === 0 &&
           (checker.getTypeOfSymbol(p).flags & ts.TypeFlags.String) !== 0,
-      ) &&
-      props[0]!.name !== props[1]!.name
-    ) {
-      return { kind: "record", shapeId: execResultShape(ctx.shapes) };
+      )
+        ? props
+            .map((p) => p.name)
+            .sort()
+            .join(",")
+        : "";
+    if (names === "stderr,stdout") return { kind: "record", shapeId: execResultShape(ctx.shapes) };
+    if (names === "hostname,service") {
+      return {
+        kind: "record",
+        shapeId: ctx.shapes.intern(
+          [
+            { name: "hostname", type: STRING },
+            { name: "service", type: STRING },
+          ],
+          false,
+          undefined,
+          ["hostname", "service"],
+        ),
+      };
     }
   }
   // crypto.X509Certificate — the Dirent-style data record: THREE visible
