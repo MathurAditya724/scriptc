@@ -756,6 +756,7 @@ export class ClassDynamicDispatch {
     const seenTypes = new Set<string>();
     const rewrite = new Set<IrFunction>();
     const toPrimitiveSites = new Set<IrFunction>();
+    const hasKeySites = new Set<IrFunction>();
     const discover = (type: IrType): void => {
       const key = typeKey(type);
       if (seenTypes.has(key)) return;
@@ -818,6 +819,9 @@ export class ClassDynamicDispatch {
               )
                 rewrite.add(fn);
               break;
+            case "dynHasKey":
+              hasKeySites.add(fn);
+              break;
             case "dynKeyGet":
             case "dynInvoke":
               rewrite.add(fn);
@@ -854,6 +858,8 @@ export class ClassDynamicDispatch {
     const converting = this.convertingHints(lowerer);
     const calling = this.calledConversions(lowerer);
     if (converting.size || calling.size) for (const fn of toPrimitiveSites) rewrite.add(fn);
+    const prototypeMembers = this.prototypeMemberNames(lowerer);
+    if (prototypeMembers.size) for (const fn of hasKeySites) rewrite.add(fn);
     for (const fn of functions) {
       if (
         !fn.name.startsWith("%dyn.class.instanceof:") &&
@@ -1294,6 +1300,38 @@ export class ClassDynamicDispatch {
       fn.body = transformStmtList(fn.body, {
         stmt: (stmt) => stmt,
         expr: (expr) => {
+          if (expr.kind === "dynHasKey" && prototypeMembers.has(expr.key)) {
+            // A class instance's snapshot can carry its class's prototype
+            // data, which holds only the methods the program reads through
+            // the prototype. The computed-key form answers methods and
+            // accessors from the class itself.
+            const loc = expr.loc;
+            const test: IrExpr = {
+              kind: "libCall",
+              fn: "dyn.hasKeyComputed",
+              args: [
+                expr.value,
+                {
+                  kind: "dynFrom",
+                  value: { kind: "strLit", value: expr.key, type: STRING, loc },
+                  type: DYN,
+                  loc,
+                },
+              ],
+              type: BOOL,
+              loc,
+            };
+            changed = true;
+            return {
+              kind: "seqExpr",
+              stmts: [],
+              result: expr.negated
+                ? { kind: "unary", op: "!", operand: test, type: BOOL, loc }
+                : test,
+              type: BOOL,
+              loc,
+            };
+          }
           const called = calling.size ? this.convertMethodCall(lowerer, fn, expr, calling) : null;
           if (called) {
             changed = true;
@@ -3433,6 +3471,19 @@ export class ClassDynamicDispatch {
       type: expr.type,
       loc,
     };
+  }
+
+  /** The method and accessor names of boxed classes whose instances can
+   * carry their class's prototype data. */
+  private prototypeMemberNames(lowerer: Lowerer): Set<string> {
+    const names = new Set<string>();
+    for (const { info } of this.propertyReceivers(lowerer)) {
+      if (!hasClassPrototypeData(info)) continue;
+      for (let c: ClassInfo | null = info; c; c = c.base)
+        for (const name of c.methods.keys())
+          names.add(name.startsWith("get:") || name.startsWith("set:") ? name.slice(4) : name);
+    }
+    return names;
   }
 
   /** The methods some boxed class declares among valueOf and toString. */
