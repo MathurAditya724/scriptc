@@ -4464,7 +4464,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       }
       scr_firing_id = 0;
       if (scr_exc_pending()) return false; /* uncaught throw in a callback: main handles it */
-      if (scr_ready_len > 0 || scr_nt_head != NULL) break; /* drain ticks and microtasks before more timers */
+      /* Drain ticks and microtasks, and report the rejections the callback
+       * left, before more timers (Node's runNextTicks between timers). */
+      if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) break;
     }
     /* The check phase: immediates queued BEFORE this phase started run
      * now, FIFO; ones a callback queues wait for the next turn (the end
@@ -4474,7 +4476,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * every macrotask; pending ticks or a woken fiber restart the turn
      * first (the timer loop's break above), so the phase only runs on a
      * drained checkpoint. */
-    if (scr_ready_len == 0 && scr_nt_head == NULL && scr_pending_immediates > 0) {
+    if (scr_ready_len == 0 && scr_nt_head == NULL && scr_nunhandled == 0 && scr_pending_immediates > 0) {
       size_t end = scr_nimmediates;
       while (scr_immediates_head < end) {
         size_t i = scr_immediates_head++;
@@ -4490,6 +4492,13 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         scr_closure_release(cb);
         if (scr_exc_pending()) return false; /* uncaught throw: main handles it */
         if (!scr_loop_run_checkpoint()) return false;
+        /* Node's runNextTicks between immediates also reports the
+         * rejections the callback left before the next one runs; a
+         * listener's jobs drain before the next report. */
+        while (scr_nunhandled > 0 && (top_level == NULL || top_level->state != SCR_PROM_REJECTED)) {
+          if (scr_report_unhandled_rejections()) return true;
+          if (!scr_loop_run_checkpoint()) return false;
+        }
         if (top_level != NULL && top_level->state == SCR_PROM_REJECTED) break;
       }
       /* Fully drained: reset the cursor so the array reuses its slots. */
