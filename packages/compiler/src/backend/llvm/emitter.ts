@@ -1395,13 +1395,25 @@ export class LlEmitter {
     this.tracedUnions = traced.unions;
     // A shape union's value is whichever record it holds, and the collector
     // visits it as that record: when one arm carries a collector header,
-    // every arm must (nullable-unions.ts).
-    for (const union of this.nullableUnions.allShapeUnions())
-      if (
-        this.tracedUnions.has(union.unionId) ||
-        union.arms.some((arm) => this.tracedShapes.has(`record:${arm.shapeId}`))
-      )
-        for (const arm of union.arms) this.tracedShapes.add(`record:${arm.shapeId}`);
+    // every arm must (nullable-unions.ts). Unions that share an arm pass a
+    // header on to each other's arms, so repeat until no union adds one.
+    const shapeUnions = this.nullableUnions.allShapeUnions();
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const union of shapeUnions) {
+        if (
+          !this.tracedUnions.has(union.unionId) &&
+          !union.arms.some((arm) => this.tracedShapes.has(`record:${arm.shapeId}`))
+        )
+          continue;
+        for (const arm of union.arms) {
+          const key = `record:${arm.shapeId}`;
+          if (this.tracedShapes.has(key)) continue;
+          this.tracedShapes.add(key);
+          changed = true;
+        }
+      }
+    }
     this.shapeHost = {
       sizeType: this.sizeType,
       cycleBufOffset: this.cycleBufOffset,
