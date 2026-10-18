@@ -188,7 +188,7 @@ static void scr_pub_slot(ScrPub *ctx, uint64_t slot, ScrPubFn fn) {
 
 void scr_pub_arr(void *v, ScrPub *ctx, ScrPubFn elem) {
   ScrArr *a = v;
-  if (a->ext && (a->ext->props || a->ext->metadata)) {
+  if (a->ext && (a->ext->props || a->ext->metadata || a->ext->match_source)) {
     scr_pub_refuse(ctx, "Cannot publish an array with non-index properties");
     return;
   }

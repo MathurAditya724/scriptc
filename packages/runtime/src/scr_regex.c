@@ -610,6 +610,124 @@ static ScrStr *scr_regex_span(const ScrRegexInput *input, int start, int end) {
   return scr_str_new((const char *)input->data + start, (size_t)(end - start));
 }
 
+/* ── match metadata ───────────────────────────────────────────────────── */
+
+/* Results of one exec or matchAll call share their subject and regex.
+ * Each result records the source and its start index; the metadata
+ * object (index, input, groups) is built when a result is first
+ * converted to a dynamic value, so results read only through their
+ * elements never allocate it. */
+typedef struct ScrRegexMatchSource {
+  size_t rc;
+  ScrStr *input;
+  ScrRegex *re;
+  ScrDyn *input_value; /* `input` as a dynamic value, built on first use */
+} ScrRegexMatchSource;
+
+static void scr_regex_materialize_metadata(ScrArr *a);
+static bool scr_regex_copy_pending_metadata(ScrArr *a, ScrDyn *target);
+
+static ScrRegexMatchSource *scr_regex_source_new(ScrStr *s, ScrRegex *re) {
+  ScrRegexMatchSource *src = malloc(sizeof *src);
+  if (!src) scr_regex_oom();
+  src->rc = 1;
+  src->input = scr_str_retain(s);
+  src->re = scr_regex_retain(re);
+  src->input_value = NULL;
+  return src;
+}
+
+static void scr_regex_source_release(ScrRegexMatchSource *src) {
+  if (!src || --src->rc != 0) return;
+  scr_str_release(src->input);
+  scr_regex_release(src->re);
+  scr_dyn_release(src->input_value);
+  free(src);
+}
+
+/* Records the match at UTF-16 `index` of `src` as the row's pending
+ * metadata. */
+static void scr_regex_defer_metadata(ScrArr *row, ScrRegexMatchSource *src, int index) {
+  static const ScrArrMatchHooks hooks = { scr_regex_source_release, scr_regex_copy_pending_metadata };
+  scr_arr_match_hooks = &hooks;
+  ScrArrExt *x = scr_arr_ext(row);
+  src->rc++;
+  x->match_source = src;
+  x->match_index = (double)index;
+}
+
+/* The subject as a dynamic value, shared by the source's results. +1. */
+static ScrDyn *scr_regex_source_input(ScrRegexMatchSource *src) {
+  if (!src->input_value) src->input_value = scr_dyn_new_str(src->input);
+  return scr_dyn_retain(src->input_value);
+}
+
+ScrDyn *scr_regex_result_prop(ScrArr *a, ScrStr *key) {
+  ScrArrExt *x = a->ext;
+  if (x && x->match_source && !x->metadata) {
+    if (key->len == 5 && memcmp(key->data, "index", 5) == 0)
+      return scr_dyn_new_num(x->match_index);
+    if (key->len == 5 && memcmp(key->data, "input", 5) == 0)
+      return scr_regex_source_input(x->match_source);
+    scr_regex_materialize_metadata(a);
+  }
+  ScrDyn *value = x && x->metadata ? scr_dyn_obj_get(x->metadata, key->data, key->len) : NULL;
+  return scr_dyn_retain(value ? value : scr_dyn_undefined());
+}
+
+/* groups is a null-prototype object mapping each group name to its first
+ * participating capture (the row's own string, shared) or undefined, and
+ * undefined itself for a pattern without named groups. The row holds each
+ * capture as a string or a present undefined. +1. */
+static ScrDyn *scr_regex_groups_of(const ScrArr *a, uint8_t *bc) {
+  const char *groupnames = lre_get_groupnames(bc);
+  if (!groupnames) return scr_dyn_retain(scr_dyn_undefined());
+  int capture_count = lre_get_capture_count(bc);
+  ScrDyn *groups = scr_dyn_new_obj_null_proto();
+  const char *name = groupnames;
+  for (int k = 1; k < capture_count; k++) {
+    size_t length = strlen(name);
+    bool matched = (size_t)k < a->len && (size_t)k < a->cap && a->present[k] == SCR_ARR_VALUE;
+    /* ES2025 duplicates sit in distinct alternatives: at most one
+     * participates, and it wins over an earlier undefined. */
+    if (length && (matched || !scr_dyn_obj_get(groups, name, length)))
+      scr_dyn_obj_set(groups, name, length,
+                      matched ? scr_dyn_new_str((ScrStr *)(uintptr_t)a->data[k])
+                              : scr_dyn_retain(scr_dyn_undefined()));
+    name += length + LRE_GROUP_NAME_TRAILER_LEN;
+  }
+  return groups;
+}
+
+static void scr_regex_materialize_metadata(ScrArr *a) {
+  ScrArrExt *x = scr_arr_ext(a);
+  ScrRegexMatchSource *src = x->match_source;
+  if (!src) return;
+  x->match_source = NULL;
+  if (!x->metadata) {
+    ScrDyn *props = scr_dyn_new_obj();
+    x->metadata = props;
+    scr_dyn_obj_set(props, "index", 5, scr_dyn_new_num(x->match_index));
+    scr_dyn_obj_set(props, "input", 5, scr_regex_source_input(src));
+    scr_dyn_obj_set(props, "groups", 6, scr_regex_groups_of(a, scr_regex_bc(src->re)));
+  }
+  scr_regex_source_release(src);
+}
+
+static bool scr_regex_copy_pending_metadata(ScrArr *a, ScrDyn *target) {
+  ScrArrExt *x = scr_arr_ext(a);
+  ScrRegexMatchSource *src = x->match_source;
+  if (target->kind != SCR_DYN_ARR || target->v.arr.properties || target->non_extensible ||
+      target->v.arr.frozen) {
+    scr_regex_materialize_metadata(a);
+    return false;
+  }
+  scr_dyn_arr_named_put(target, "index", 5, scr_dyn_new_num(x->match_index));
+  scr_dyn_arr_named_put(target, "input", 5, scr_regex_source_input(src));
+  scr_dyn_arr_named_put(target, "groups", 6, scr_regex_groups_of(a, scr_regex_bc(src->re)));
+  return true;
+}
+
 /* ECMA-262 AdvanceStringIndex: past a whole surrogate pair under /u, one
  * code unit otherwise. ASCII cannot contain a surrogate pair. */
 static int scr_advance(const ScrRegexInput *input, int i, bool unicode) {
@@ -713,12 +831,6 @@ static ScrArr *scr_regex_exec_core(ScrStr *s, ScrRegex *re, uint64_t mask, bool 
     int count = lre_get_capture_count(bc);
     bool spans = lazy != 0 && !input.wide && (count >= 64 || ((mask | lazy) >> count) == 0);
     out = scr_arr_new_inline(SCR_ELEM_STR, (size_t)count + spans);
-    if (metadata) {
-      ScrDyn *props = scr_dyn_new_obj();
-      scr_arr_ext(out)->metadata = props;
-      scr_dyn_obj_set(props, "index", 5, scr_dyn_new_num((double)scr_capture_index(&input, capture[0])));
-      scr_dyn_obj_set(props, "input", 5, scr_dyn_new_str(s));
-    }
     /* A fresh dense array: every slot is written directly, then the
      * hole-free prefix is the run of materialized captures from 0. Its
      * storage pointers are fixed (the inline block never moves here), so
@@ -750,6 +862,11 @@ static ScrArr *scr_regex_exec_core(ScrStr *s, ScrRegex *re, uint64_t mask, bool 
     while (filled < n && present[filled] == SCR_ARR_VALUE) filled++;
     out->filled = (uint32_t)filled;
     out->len = n;
+    if (metadata) {
+      ScrRegexMatchSource *src = scr_regex_source_new(s, re);
+      scr_regex_defer_metadata(out, src, scr_capture_index(&input, capture[0]));
+      scr_regex_source_release(src);
+    }
   }
   scr_regex_input_dispose(&input);
   return out; /* +1, or NULL (no match) */
@@ -883,8 +1000,11 @@ double scr_regex_search(ScrStr *s, ScrRegex *re) {
  * Node's exact TypeError (catchable — replaceAll's stance). Empty matches
  * advance one unit, unicode-aware (AdvanceStringIndex). `indices`, when
  * non-NULL, receives each match's UTF-16 start index (the row's .index —
- * the companion array the for-of-over-matchAll desugar reads). */
-static ScrArr *scr_regex_match_all_core(ScrStr *s, ScrRegex *re, ScrArr *indices) {
+ * the companion array the for-of-over-matchAll desugar reads). With
+ * `metadata`, each row records the match source for its index, input and
+ * groups properties. */
+static ScrArr *scr_regex_match_all_core(ScrStr *s, ScrRegex *re, ScrArr *indices,
+                                        bool metadata) {
   uint8_t *bc = scr_regex_bc(re);
   int re_flags = lre_get_flags(bc);
   if (!(re_flags & LRE_FLAG_GLOBAL)) {
@@ -895,6 +1015,7 @@ static ScrArr *scr_regex_match_all_core(ScrStr *s, ScrRegex *re, ScrArr *indices
   }
   bool unicode = (re_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0;
   int capture_count = lre_get_capture_count(bc);
+  ScrRegexMatchSource *src = metadata ? scr_regex_source_new(s, re) : NULL;
   ScrRegexInput input;
   scr_regex_input_init(&input, re, bc, s);
   int len = input.len;
@@ -906,30 +1027,51 @@ static ScrArr *scr_regex_match_all_core(ScrStr *s, ScrRegex *re, ScrArr *indices
     if (scr_exec(&input, bc, pos) != 1) break;
     int start = scr_capture_index(&input, capture[0]);
     int end = scr_capture_index(&input, capture[1]);
-    ScrArr *row = scr_arr_new(SCR_ELEM_STR, (size_t)capture_count);
+    /* One allocation per row, like an exec result: every slot is written
+     * directly, then the hole-free prefix is the run of captures from 0. */
+    ScrArr *row = scr_arr_new_inline(SCR_ELEM_STR, (size_t)capture_count);
+    uint64_t *data = row->data;
+    uint8_t *present = row->present;
     for (int k = 0; k < capture_count; k++) {
       const uint8_t *cs = capture[2 * k], *ce = capture[2 * k + 1];
       if (cs == NULL || ce == NULL) {
-        scr_arr_set_undefined(row, (double)row->len);
+        data[k] = 0;
+        present[k] = SCR_ARR_UNDEFINED;
       } else {
-        scr_arr_push_ref(
-            row, scr_regex_span(&input, scr_capture_index(&input, cs), scr_capture_index(&input, ce)));
+        ScrStr *text =
+            scr_regex_span(&input, scr_capture_index(&input, cs), scr_capture_index(&input, ce));
+        data[k] = (uint64_t)(uintptr_t)text;
+        present[k] = SCR_ARR_VALUE;
       }
     }
+    size_t filled = 0;
+    while (filled < (size_t)capture_count && present[filled] == SCR_ARR_VALUE) filled++;
+    row->filled = (uint32_t)filled;
+    row->len = (size_t)capture_count;
+    if (src) scr_regex_defer_metadata(row, src, start);
     scr_arr_push_ref(out, row);
     if (indices != NULL) scr_arr_push_f64(indices, (double)start);
     pos = end == start ? scr_advance(&input, end, unicode) : end;
   }
+  scr_regex_source_release(src);
   scr_regex_input_dispose(&input);
   return out; /* +1 (possibly empty — Node's no-match drain is []) */
 }
 
 ScrArr *scr_regex_match_all(ScrStr *s, ScrRegex *re) {
-  return scr_regex_match_all_core(s, re, NULL);
+  return scr_regex_match_all_core(s, re, NULL, true);
+}
+
+ScrArr *scr_regex_match_all_captures(ScrStr *s, ScrRegex *re) {
+  return scr_regex_match_all_core(s, re, NULL, false);
 }
 
 ScrArr *scr_regex_match_all_into(ScrStr *s, ScrRegex *re, ScrArr *indices) {
-  return scr_regex_match_all_core(s, re, indices);
+  return scr_regex_match_all_core(s, re, indices, true);
+}
+
+ScrArr *scr_regex_match_all_captures_into(ScrStr *s, ScrRegex *re, ScrArr *indices) {
+  return scr_regex_match_all_core(s, re, indices, false);
 }
 
 /* ── replace / replaceAll ─────────────────────────────────────────────── */

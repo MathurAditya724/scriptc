@@ -88,11 +88,23 @@ ScrStr *scr_regex_replace_all(ScrStr *s, ScrRegex *re, ScrStr *rep);
 ScrArr *scr_regex_split(ScrStr *s, ScrRegex *re);
 ScrArr *scr_regex_split_limit(ScrStr *s, ScrRegex *re, double limit);
 /* matchAll drained eagerly: +1 string[][] of honest match slices; throws
- * Node's TypeError on a non-global regex (catchable). */
+ * Node's TypeError on a non-global regex (catchable). Each row carries its
+ * index, input and groups properties. */
 ScrArr *scr_regex_match_all(ScrStr *s, ScrRegex *re);
+/* scr_regex_match_all for rows read only through their elements: the rows
+ * carry no index, input or groups properties. */
+ScrArr *scr_regex_match_all_captures(ScrStr *s, ScrRegex *re);
 /* matchAll + the companion-index drain: also pushes each match's UTF-16
  * start index (f64) onto `indices` — the .index the for-of-over-matchAll
  * desugar reads. Same throw/result contract as scr_regex_match_all. */
 ScrArr *scr_regex_match_all_into(ScrStr *s, ScrRegex *re, ScrArr *indices);
+/* scr_regex_match_all_into for rows read only through their elements and
+ * the companion index: the rows carry no index, input or groups
+ * properties. */
+ScrArr *scr_regex_match_all_captures_into(ScrStr *s, ScrRegex *re, ScrArr *indices);
+/* `.index` / `.input` of a match result: its pending match source or its
+ * metadata answers, without building the metadata object; undefined when
+ * neither has the key. Borrows both; +1. */
+struct ScrDyn *scr_regex_result_prop(ScrArr *a, ScrStr *key);
 
 #endif /* SCR_REGEX_H */

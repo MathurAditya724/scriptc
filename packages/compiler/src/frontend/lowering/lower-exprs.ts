@@ -2053,13 +2053,11 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         (lowerer.isStdlibMember(expr) || isJsSourceFile(expr.getSourceFile()))
       ) {
         const recv = represented;
-        const read: IrExpr = {
-          kind: "dynKeyGet",
-          value: lowerer.coerceToExpected(recv, DYN),
-          key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
-          type: DYN,
-          loc,
-        };
+        const key: IrExpr = { kind: "strLit", value: expr.name.text, type: STRING, loc };
+        // A plain slice answers from its match source without a dynamic copy.
+        const read: IrExpr = typeEquals(recv.type, arrayOf(STRING))
+          ? { kind: "libCall", fn: "regex.resultProp", args: [recv, key], type: DYN, loc }
+          : { kind: "dynKeyGet", value: lowerer.coerceToExpected(recv, DYN), key, type: DYN, loc };
         return lowerer.maybeNarrow(read, expr);
       }
     }
