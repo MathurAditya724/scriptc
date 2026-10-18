@@ -664,6 +664,7 @@ export const STDLIB_SURFACE = {
       cosh: ISL_N1,
       exp: ISL_N1,
       expm1: ISL_N1,
+      f16round: ISL_N1,
       fround: ISL_N1,
       hypot: ISL_N2,
       imul: ISL_N2,
@@ -751,6 +752,7 @@ export const STATIC_MATH_FNS: Record<string, { fn: IrLibFn; arity: number } | un
   sign: { fn: "math.sign", arity: 1 },
   exp: { fn: "math.exp", arity: 1 },
   expm1: { fn: "math.expm1", arity: 1 },
+  f16round: { fn: "math.f16round", arity: 1 },
   fround: { fn: "math.fround", arity: 1 },
   sqrt: { fn: "math.sqrt", arity: 1 },
   log: { fn: "math.log", arity: 1 },
@@ -1485,6 +1487,9 @@ export const BUILTIN_MODULE_FNS: Record<
       result: F64,
       valueParams: [{ mode: "optional", type: F64, defaultValue: 0 }],
     },
+    // A one-argument call is setPriority(0, priority)
+    // (lowerOsSetPriorityCall completes it).
+    setPriority: { fn: "os.setPriority", params: [F64, F64], result: VOID },
     // Special-cased (lowerOsCpusCall): the call site's CpuInfo[] assembles
     // from one uv_cpu_info snapshot.
     cpus: { fn: "os.cpusTake", params: [], result: VOID },
@@ -1758,6 +1763,22 @@ export const BUILTIN_MODULE_FNS: Record<
     isAsyncFunction: { fn: "util.typeIs", params: [DYN], result: BOOL },
     isGeneratorFunction: { fn: "util.typeIs", params: [DYN], result: BOOL },
     isGeneratorObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isDate: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isSharedArrayBuffer: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isMapIterator: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isSetIterator: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isKeyObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isNumberObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isStringObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isBooleanObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isBigIntObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isSymbolObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isBoxedPrimitive: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isBigInt64Array: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isBigUint64Array: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isFloat16Array: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isCryptoKey: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isExternal: { fn: "util.typeIs", params: [DYN], result: BOOL },
   },
   buffer: {
     isAscii: { fn: "buffer.isAscii", params: [DYN], result: BOOL },
@@ -2081,7 +2102,14 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     id: "node-builtin.worker_threads.metadata",
     kind: "node-builtin",
     name: "worker_threads metadata",
-    fns: ["worker.isMainThread", "worker.threadId", "worker.data", "worker.parentPort"],
+    fns: [
+      "worker.isMainThread",
+      "worker.threadId",
+      "worker.data",
+      "worker.parentPort",
+      "worker.resourceLimits",
+      "worker.threadName",
+    ],
     note: "current-thread metadata and the worker's parent message port",
   },
   {
@@ -2427,6 +2455,12 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     kind: "node-builtin",
     name: "process.argv0",
     fns: ["process.argv0"],
+  },
+  {
+    id: "node-builtin.process.execArgv",
+    kind: "node-builtin",
+    name: "process.execArgv",
+    fns: ["process.execArgv"],
   },
   {
     id: "node-builtin.process.execPath",
@@ -2856,7 +2890,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
     isBuiltin:
       "the lowered call checks a string against the baked Node v24 list, including bare/node: aliases and prefix-only builtins",
     syncBuiltinESMExports:
-      "the direct zero-argument call is a no-op because compiled builtin exports are immutable and cannot become stale",
+      "the direct zero-argument call statement refreshes the ES module namespace copy of events.defaultMaxListeners, the one builtin export a program can change",
   },
   child_process: {
     execFile:

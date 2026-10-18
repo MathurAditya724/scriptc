@@ -7,8 +7,8 @@
     "tierItemCount": 3456,
     "tiers": {
       "static": {
-        "audit-partial": 1091,
-        "verify-gap": 2238,
+        "audit-partial": 1144,
+        "verify-gap": 2185,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -3941,12 +3941,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:child_process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:child_process.child_process.exec",
+          "tests": [
+            "tests/corpus/5627-exec-callback.ts",
+            "tests/fixtures/node-types/child-exec.ts",
+            "tests/harness/project-config.test.ts"
+          ]
         }
       }
     },
@@ -5885,7 +5889,8 @@
           "source": "compiler-dedicated:console.assert",
           "tests": [
             "tests/corpus/5096-console-assert-dir.ts",
-            "tests/corpus/5099-console-methods-dynamic.cjs"
+            "tests/corpus/5099-console-methods-dynamic.cjs",
+            "tests/corpus/5884-inspect-layout-options.ts"
           ]
         }
       }
@@ -6029,7 +6034,8 @@
           "source": "compiler-dedicated:console.dir",
           "tests": [
             "tests/corpus/5096-console-assert-dir.ts",
-            "tests/corpus/5099-console-methods-dynamic.cjs"
+            "tests/corpus/5099-console-methods-dynamic.cjs",
+            "tests/corpus/5884-inspect-layout-options.ts"
           ]
         }
       }
@@ -6057,7 +6063,8 @@
           "source": "compiler-dedicated:console.dirxml",
           "tests": [
             "tests/corpus/5096-console-assert-dir.ts",
-            "tests/corpus/5099-console-methods-dynamic.cjs"
+            "tests/corpus/5099-console-methods-dynamic.cjs",
+            "tests/corpus/5884-inspect-layout-options.ts"
           ]
         }
       }
@@ -25006,7 +25013,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.getEventListeners",
           "tests": [
-            "tests/corpus/5885-events-max-listener-helpers.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts",
+            "tests/corpus/5846-events-esm-default-max.ts",
+            "tests/corpus/5847-events-cjs-default-max.cjs"
           ]
         }
       }
@@ -25033,7 +25042,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.getMaxListeners",
           "tests": [
-            "tests/corpus/5885-events-max-listener-helpers.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts",
+            "tests/corpus/5846-events-esm-default-max.ts",
+            "tests/corpus/5847-events-cjs-default-max.cjs"
           ]
         }
       }
@@ -25088,7 +25099,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.listenerCount",
           "tests": [
-            "tests/corpus/5885-events-max-listener-helpers.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts",
+            "tests/corpus/5846-events-esm-default-max.ts",
+            "tests/corpus/5847-events-cjs-default-max.cjs"
           ]
         }
       }
@@ -25140,7 +25153,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.setMaxListeners",
           "tests": [
-            "tests/corpus/5885-events-max-listener-helpers.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts",
+            "tests/corpus/5846-events-esm-default-max.ts",
+            "tests/corpus/5847-events-cjs-default-max.cjs"
           ]
         }
       }
@@ -25194,7 +25209,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.defaultMaxListeners",
           "tests": [
-            "tests/corpus/5885-events-max-listener-helpers.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts",
+            "tests/corpus/5846-events-esm-default-max.ts",
+            "tests/corpus/5847-events-cjs-default-max.cjs"
           ]
         }
       }
@@ -48427,7 +48444,8 @@
           "confidence": "high",
           "source": "compiler-feature:module.module.isBuiltin",
           "tests": [
-            "tests/corpus/2932-create-require-program/main.ts"
+            "tests/corpus/2932-create-require-program/main.ts",
+            "tests/corpus/5846-events-esm-default-max.ts"
           ]
         }
       }
@@ -48524,7 +48542,8 @@
           "confidence": "high",
           "source": "compiler-feature:module.module.syncBuiltinESMExports",
           "tests": [
-            "tests/corpus/2932-create-require-program/main.ts"
+            "tests/corpus/2932-create-require-program/main.ts",
+            "tests/corpus/5846-events-esm-default-max.ts"
           ]
         }
       }
@@ -51739,12 +51758,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.os.setPriority",
+          "tests": [
+            "tests/corpus/5883-os-set-priority.ts"
+          ]
         }
       }
     },
@@ -57502,12 +57523,15 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.process.execArgv",
+          "tests": [
+            "tests/corpus/990-process-basics.ts",
+            "tests/corpus/2314-process-introspection.ts"
+          ]
         }
       }
     },
@@ -57551,6 +57575,7 @@
           "confidence": "high",
           "source": "surface-manifest:node-builtin.process.exitCode",
           "tests": [
+            "tests/corpus/5809-process-exit-and-rejections.cjs",
             "tests/corpus/2941-process-exit-code.ts",
             "tests/corpus/2942-process-exit-code-override.ts",
             "tests/corpus/2943-process-exit-code-invalid.ts",
@@ -65617,7 +65642,8 @@
           "source": "compiler-dedicated:StringDecoder",
           "tests": [
             "tests/corpus/1662-string-decoder-encodings.ts",
-            "tests/corpus/node24-string-decoder.ts"
+            "tests/corpus/node24-string-decoder.ts",
+            "tests/corpus/5882-string-decoder-runtime-encoding.ts"
           ]
         }
       }
@@ -65645,7 +65671,8 @@
           "source": "compiler-dedicated:stringDecoder.end",
           "tests": [
             "tests/corpus/1662-string-decoder-encodings.ts",
-            "tests/corpus/node24-string-decoder.ts"
+            "tests/corpus/node24-string-decoder.ts",
+            "tests/corpus/5882-string-decoder-runtime-encoding.ts"
           ]
         }
       }
@@ -65673,7 +65700,8 @@
           "source": "compiler-dedicated:stringDecoder.write",
           "tests": [
             "tests/corpus/1662-string-decoder-encodings.ts",
-            "tests/corpus/node24-string-decoder.ts"
+            "tests/corpus/node24-string-decoder.ts",
+            "tests/corpus/5882-string-decoder-runtime-encoding.ts"
           ]
         }
       }
@@ -66670,12 +66698,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.timers.enable",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-timers.ts",
+            "tests/fixtures/node-test/cases/mock-timers-date.ts",
+            "tests/corpus/5813-mock-timers-module.ts",
+            "tests/corpus/5814-mock-timers-date.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66695,12 +66729,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.timers.reset",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-timers.ts",
+            "tests/fixtures/node-test/cases/mock-timers-date.ts",
+            "tests/corpus/5813-mock-timers-module.ts",
+            "tests/corpus/5814-mock-timers-date.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66720,12 +66760,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.timers",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-timers-date.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66745,12 +66788,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.timers.tick",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-timers.ts",
+            "tests/fixtures/node-test/cases/mock-timers-date.ts",
+            "tests/corpus/5813-mock-timers-module.ts",
+            "tests/corpus/5814-mock-timers-date.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66770,12 +66819,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.timers.runAll",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-timers.ts",
+            "tests/fixtures/node-test/cases/mock-timers-date.ts",
+            "tests/corpus/5813-mock-timers-module.ts",
+            "tests/corpus/5814-mock-timers-date.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -66795,12 +66850,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.timers.setTime",
+          "tests": [
+            "tests/fixtures/node-test/cases/mock-timers.ts",
+            "tests/fixtures/node-test/cases/mock-timers-date.ts",
+            "tests/corpus/5813-mock-timers-module.ts",
+            "tests/corpus/5814-mock-timers-date.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67625,12 +67686,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.assert.fileSnapshot",
+          "tests": [
+            "tests/fixtures/node-test/cases/snapshot.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67650,12 +67714,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.assert.snapshot",
+          "tests": [
+            "tests/fixtures/node-test/cases/snapshot.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -73455,12 +73522,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlSearchParams.entries",
+          "tests": [
+            "tests/corpus/5833-url-search-params-iterators.ts",
+            "tests/corpus/5834-url-search-params-iterators-dynamic.mjs"
+          ]
         }
       }
     },
@@ -73580,12 +73650,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlSearchParams.keys",
+          "tests": [
+            "tests/corpus/5833-url-search-params-iterators.ts",
+            "tests/corpus/5834-url-search-params-iterators-dynamic.mjs"
+          ]
         }
       }
     },
@@ -73680,12 +73753,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.urlSearchParams.values",
+          "tests": [
+            "tests/corpus/5833-url-search-params-iterators.ts",
+            "tests/corpus/5834-url-search-params-iterators-dynamic.mjs"
+          ]
         }
       }
     },
@@ -75499,12 +75575,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.format",
+          "tests": [
+            "tests/corpus/1636-util-format.ts",
+            "tests/corpus/2440-console-inspect-args.ts",
+            "tests/corpus/5835-util-format-integer-specifiers.ts"
+          ]
         }
       }
     },
@@ -75524,12 +75604,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.formatWithOptions",
+          "tests": [
+            "tests/corpus/1636-util-format.ts",
+            "tests/corpus/2440-console-inspect-args.ts",
+            "tests/corpus/5835-util-format-integer-specifiers.ts"
+          ]
         }
       }
     },
@@ -75718,12 +75802,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.inspect",
+          "tests": [
+            "tests/corpus/1630-inspect-scalars.ts",
+            "tests/corpus/1632-inspect-records.ts",
+            "tests/corpus/1637-inspect-dyn.ts",
+            "tests/corpus/2485-inspect-circular-refs.ts",
+            "tests/corpus/5884-inspect-layout-options.ts"
+          ]
         }
       }
     },
@@ -76402,12 +76492,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isBigInt64Array",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76427,12 +76524,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isBigIntObject",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76452,12 +76556,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isBigUint64Array",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76477,12 +76588,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isBooleanObject",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76502,12 +76620,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isBoxedPrimitive",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76527,12 +76652,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isCryptoKey",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76582,12 +76714,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isDate",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76607,12 +76746,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isExternal",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76632,12 +76778,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isFloat16Array",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76867,12 +77020,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isKeyObject",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -76922,12 +77082,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isMapIterator",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -77002,12 +77169,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isNumberObject",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -77147,12 +77321,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isSetIterator",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -77172,12 +77353,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isSharedArrayBuffer",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -77197,12 +77385,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isStringObject",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -77222,12 +77417,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:util.util.types.isSymbolObject",
+          "tests": [
+            "tests/corpus/5831-util-types-brands.ts",
+            "tests/corpus/5832-util-types-brands-dynamic.js",
+            "tests/corpus/node24-util-types.ts",
+            "tests/corpus/node24-util-types.js",
+            "tests/corpus/node24-util-types.cjs",
+            "tests/fixtures/node-types/util-types.ts"
+          ]
         }
       }
     },
@@ -83656,12 +83858,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.BroadcastChannel extends EventTarget",
+          "tests": [
+            "tests/corpus/5800-broadcast-channel.ts",
+            "tests/corpus/5801-broadcast-channel.cjs",
+            "tests/corpus/5802-broadcast-channel-workers.ts"
+          ]
         }
       }
     },
@@ -83681,12 +83887,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.broadcastChannel.close",
+          "tests": [
+            "tests/corpus/5800-broadcast-channel.ts",
+            "tests/corpus/5801-broadcast-channel.cjs",
+            "tests/corpus/5802-broadcast-channel-workers.ts"
+          ]
         }
       }
     },
@@ -83706,12 +83916,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.broadcastChannel.postMessage",
+          "tests": [
+            "tests/corpus/5800-broadcast-channel.ts",
+            "tests/corpus/5801-broadcast-channel.cjs",
+            "tests/corpus/5802-broadcast-channel-workers.ts"
+          ]
         }
       }
     },
@@ -83731,12 +83945,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.broadcastChannel.ref",
+          "tests": [
+            "tests/corpus/5800-broadcast-channel.ts",
+            "tests/corpus/5801-broadcast-channel.cjs",
+            "tests/corpus/5802-broadcast-channel-workers.ts"
+          ]
         }
       }
     },
@@ -83756,12 +83974,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.broadcastChannel.unref",
+          "tests": [
+            "tests/corpus/5800-broadcast-channel.ts",
+            "tests/corpus/5801-broadcast-channel.cjs",
+            "tests/corpus/5802-broadcast-channel-workers.ts"
+          ]
         }
       }
     },
@@ -83781,12 +84003,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.onmessage",
+          "tests": [
+            "tests/corpus/5800-broadcast-channel.ts",
+            "tests/corpus/5801-broadcast-channel.cjs",
+            "tests/corpus/5802-broadcast-channel-workers.ts"
+          ]
         }
       }
     },
@@ -83839,7 +84065,8 @@
           "tests": [
             "tests/corpus/5793-worker-message-channel.ts",
             "tests/corpus/5796-worker-message-channel.cjs",
-            "tests/corpus/5797-worker-message-port-transfer.ts"
+            "tests/corpus/5797-worker-message-port-transfer.ts",
+            "tests/corpus/5805-worker-receive-message-parent-port.ts"
           ]
         }
       }
@@ -84404,12 +84631,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.worker",
+          "tests": [
+            "tests/corpus/5991-worker-async-dispose.mjs"
+          ]
         }
       }
     },
@@ -84479,12 +84708,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.resourceLimits",
+          "tests": [
+            "tests/corpus/5806-worker-resource-limits.ts"
+          ]
         }
       }
     },
@@ -84504,12 +84735,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.stderr",
+          "tests": [
+            "tests/corpus/5874-worker-stdio-streams.ts",
+            "tests/corpus/5875-worker-stdout-pipe.cjs",
+            "tests/corpus/5879-worker-stdin.ts"
+          ]
         }
       }
     },
@@ -84529,12 +84764,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.stdin",
+          "tests": [
+            "tests/corpus/5874-worker-stdio-streams.ts",
+            "tests/corpus/5875-worker-stdout-pipe.cjs",
+            "tests/corpus/5879-worker-stdin.ts"
+          ]
         }
       }
     },
@@ -84554,12 +84793,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.stdout",
+          "tests": [
+            "tests/corpus/5874-worker-stdio-streams.ts",
+            "tests/corpus/5875-worker-stdout-pipe.cjs",
+            "tests/corpus/5879-worker-stdin.ts"
+          ]
         }
       }
     },
@@ -84608,12 +84851,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.threadName",
+          "tests": [
+            "tests/corpus/5870-worker-thread-names.ts",
+            "tests/corpus/5871-worker-untransferable.cjs"
+          ]
         }
       }
     },
@@ -84641,7 +84887,9 @@
           "tests": [
             "tests/corpus/native-worker-references.ts",
             "tests/corpus/native-worker-error.ts",
-            "tests/corpus/native-worker-exit-listeners.ts"
+            "tests/corpus/native-worker-exit-listeners.ts",
+            "tests/corpus/5807-worker-error-values.ts",
+            "tests/corpus/5808-worker-unhandled-rejections.ts"
           ]
         }
       }
@@ -84670,7 +84918,9 @@
           "tests": [
             "tests/corpus/native-worker-references.ts",
             "tests/corpus/native-worker-error.ts",
-            "tests/corpus/native-worker-exit-listeners.ts"
+            "tests/corpus/native-worker-exit-listeners.ts",
+            "tests/corpus/5807-worker-error-values.ts",
+            "tests/corpus/5808-worker-unhandled-rejections.ts"
           ]
         }
       }
@@ -84699,7 +84949,9 @@
           "tests": [
             "tests/corpus/native-worker-references.ts",
             "tests/corpus/native-worker-error.ts",
-            "tests/corpus/native-worker-exit-listeners.ts"
+            "tests/corpus/native-worker-exit-listeners.ts",
+            "tests/corpus/5807-worker-error-values.ts",
+            "tests/corpus/5808-worker-unhandled-rejections.ts"
           ]
         }
       }
@@ -84753,7 +85005,9 @@
           "tests": [
             "tests/corpus/native-worker-references.ts",
             "tests/corpus/native-worker-error.ts",
-            "tests/corpus/native-worker-exit-listeners.ts"
+            "tests/corpus/native-worker-exit-listeners.ts",
+            "tests/corpus/5807-worker-error-values.ts",
+            "tests/corpus/5808-worker-unhandled-rejections.ts"
           ]
         }
       }
@@ -84774,12 +85028,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.worker_threads.getEnvironmentData",
+          "tests": [
+            "tests/corpus/5803-worker-environment-data.ts",
+            "tests/corpus/5804-worker-environment-data.cjs"
+          ]
         }
       }
     },
@@ -84799,12 +85056,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.worker_threads.markAsUntransferable",
+          "tests": [
+            "tests/corpus/5870-worker-thread-names.ts",
+            "tests/corpus/5871-worker-untransferable.cjs"
+          ]
         }
       }
     },
@@ -84824,12 +85084,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.worker_threads.isMarkedAsUntransferable",
+          "tests": [
+            "tests/corpus/5870-worker-thread-names.ts",
+            "tests/corpus/5871-worker-untransferable.cjs"
+          ]
         }
       }
     },
@@ -84849,12 +85112,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.worker_threads.markAsUncloneable",
+          "tests": [
+            "tests/corpus/5990-worker-uncloneable.mjs"
+          ]
         }
       }
     },
@@ -84932,7 +85197,8 @@
           "tests": [
             "tests/corpus/5793-worker-message-channel.ts",
             "tests/corpus/5796-worker-message-channel.cjs",
-            "tests/corpus/5797-worker-message-port-transfer.ts"
+            "tests/corpus/5797-worker-message-port-transfer.ts",
+            "tests/corpus/5805-worker-receive-message-parent-port.ts"
           ]
         }
       }
@@ -84953,12 +85219,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.worker_threads.setEnvironmentData",
+          "tests": [
+            "tests/corpus/5803-worker-environment-data.ts",
+            "tests/corpus/5804-worker-environment-data.cjs"
+          ]
         }
       }
     },
@@ -84978,12 +85247,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.isInternalThread",
+          "tests": [
+            "tests/corpus/5990-worker-uncloneable.mjs"
+          ]
         }
       }
     },
@@ -85061,12 +85332,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.resourceLimits",
+          "tests": [
+            "tests/corpus/5806-worker-resource-limits.ts"
+          ]
         }
       }
     },
@@ -85140,12 +85413,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.threadName",
+          "tests": [
+            "tests/corpus/5870-worker-thread-names.ts",
+            "tests/corpus/5871-worker-untransferable.cjs"
+          ]
         }
       }
     },

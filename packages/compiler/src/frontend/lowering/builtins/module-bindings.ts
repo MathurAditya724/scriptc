@@ -34,21 +34,48 @@ export function builtinImportOf(
   // binding (`const { readFileSync } = require("fs")`, renames via
   // `{ readFileSync: rf }`) keys the same tables.
   if (ts.isBindingElement(decl) && decl.name !== undefined && ts.isIdentifier(decl.name)) {
-    const varDecl = decl.parent?.parent;
+    // A NESTED pattern names a member of a sub-module (`const { types: {
+    // isPromise } } = require("util")`): util.types IS the util/types
+    // module object, so each level composes the module name.
+    const path: string[] = [];
+    let pattern: ts.Node | undefined = decl.parent;
+    let varDecl = pattern?.parent;
+    while (
+      pattern !== undefined &&
+      ts.isObjectBindingPattern(pattern) &&
+      varDecl !== undefined &&
+      ts.isBindingElement(varDecl)
+    ) {
+      const key = varDecl.propertyName;
+      if (varDecl.initializer !== undefined || key === undefined || !ts.isIdentifier(key)) {
+        return null;
+      }
+      path.unshift(key.text);
+      pattern = varDecl.parent;
+      varDecl = pattern?.parent;
+    }
     if (
-      ts.isObjectBindingPattern(decl.parent) &&
+      pattern !== undefined &&
+      ts.isObjectBindingPattern(pattern) &&
+      varDecl !== undefined &&
       ts.isVariableDeclaration(varDecl) &&
       varDecl.initializer !== undefined
     ) {
       const spec = requireSpecOf(varDecl.initializer);
-      const module =
+      let module =
         spec !== null
           ? canonicalBuiltinModule(spec)
-          : // The one-hop alias twin: `const crypto = require('crypto');
-            // const { createSign } = crypto;` — test/common's idiom. The
-            // destructure re-binds module members under local names, so the
-            // bindings key the same tables as the direct-require form.
-            builtinNamespaceDestructureModuleOf(lowerer, varDecl);
+          : path.length > 0
+            ? null
+            : // The one-hop alias twin: `const crypto = require('crypto');
+              // const { createSign } = crypto;` — test/common's idiom. The
+              // destructure re-binds module members under local names, so the
+              // bindings key the same tables as the direct-require form.
+              builtinNamespaceDestructureModuleOf(lowerer, varDecl);
+      for (const key of path) {
+        if (module === null) break;
+        module = canonicalBuiltinModule(`${module}/${key}`);
+      }
       if (module === null) return null;
       const member =
         decl.propertyName && ts.isIdentifier(decl.propertyName)
@@ -112,6 +139,24 @@ export function builtinImportOf(
     }
   }
   return null;
+}
+
+/** The ES module binding kind of `ident`: "namespace" for a namespace
+ * import (`import * as events from "node:events"`), "named" for a named
+ * import (`import { defaultMaxListeners } from "node:events"`, also through
+ * a re-exporting module), null otherwise. Namespace members and named
+ * imports of a builtin read its ES module namespace, which holds copies of
+ * the module's exports (module.syncBuiltinESMExports refreshes them), where
+ * default imports and CommonJS bindings read the module object itself. */
+export function esmImportBindingKind(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+): "namespace" | "named" | null {
+  const symbol = lowerer.checker.getSymbolAtLocation(ident);
+  const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
+  if (decl === undefined) return null;
+  if (ts.isNamespaceImport(decl)) return "namespace";
+  return ts.isImportSpecifier(decl) ? "named" : null;
 }
 
 /** True for `const <name> = require("<builtin>").<member>` — the

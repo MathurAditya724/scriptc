@@ -147,7 +147,10 @@ export function emitCallExpr(
               return emitScalarOptional(host, a);
             if (a.kind === "call" && host.scalarResultCall(a))
               return emitCallExpr(host, a, false, true);
-            if (host.stackObjects && canStackObject(host, a)) return emitStackObject(host, a);
+            if (host.stackObjects && canStackObject(host, a))
+              return emitStackObject(host, a, (fields) => {
+                for (const field of fields) host.ownSlot(field.ptr, field.type);
+              });
             if (host.nullableFieldGet(a))
               return { name: host.emitOwnedNullableStack(a).box, type: a.type };
             // An inline union field read copies its tag and bits.
@@ -331,6 +334,16 @@ export function emitCallExpr(
               );
               natTypes.push("ptr", host.sizeType);
               natArgs.push(`ptr ${data}`, `${host.sizeType} ${len}`);
+              break;
+            }
+            case "cstring": {
+              // The string's own NUL-terminated data, after the check that
+              // it holds no U+0000 (a C string cannot carry one).
+              host.declare(`declare ptr @scr_library_cstr_arg(ptr)`);
+              const data = B.tmp();
+              B.line(`${data} = call ptr @scr_library_cstr_arg(ptr ${arg.name})`);
+              natTypes.push("ptr");
+              natArgs.push(`ptr ${data}`);
               break;
             }
             case "bytes": {

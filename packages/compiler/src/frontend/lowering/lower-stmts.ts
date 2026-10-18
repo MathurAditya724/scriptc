@@ -10,6 +10,8 @@ import { InternalCompilerError } from "../../errors.js";
  * flow (if/while/for/for-of/do, switch, try/catch, abrupt completions),
  * explicit resource management, and blocked-binding poisoning. */
 import * as ts from "../ts7/adapter.js";
+import { requireInitFlagStmt } from "./require-initialization.js";
+import { isJsonRequireDecl } from "./json-require.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -1512,81 +1514,96 @@ export function lowerVarStatement(lowerer: Lowerer, stmt: ts.VariableStatement):
   const isLet =
     (list.flags & ts.NodeFlags.Let) !== 0 || (list.flags & ts.NodeFlags.BlockScoped) === 0;
   return list.declarations.flatMap((decl) => {
-    // The canonical ESM bridge to a compiled program module. Like a
-    // top-level CommonJS require declaration, the binding is alias
-    // plumbing while the dependency evaluates at this statement's
-    // exact position through its run-once initializer.
-    if (isConst && createRequireProgramModuleDecl(lowerer, decl.name, decl.initializer)) {
-      if (!ts.isSourceFile(stmt.parent)) {
-        lowerer.unsupported(
-          "SC1090",
-          decl,
-          "createRequire program-module bindings outside the module's top level (move the binding to the top of the file; side-effect-only requires may remain nested)",
-        );
-      }
-      const target = createRequireProgramModuleOf(lowerer, decl.initializer)!;
-      const init = lowerer.requireInitStmt(target.spec, decl);
-      return init ? [init] : [];
-    }
-    // CommonJS require declarations (JS files): at the module's top
-    // level the BINDINGS are alias plumbing (no storage;
-    // resolveValueSymbol routes the reads), but the require itself is
-    // Node's inline module evaluation — a relative require lowers to the
-    // required module's guarded %init call at exactly this position
-    // (first require runs the body, later ones are cache hits; builtins
-    // load nothing). Binding requires anywhere else would need lazily-
-    // initialized alias storage this model doesn't represent; named
-    // fence.
-    if (
-      decl.initializer !== undefined &&
-      requireSpecOf(decl.initializer) !== null &&
-      !isNativeFfiRequire(lowerer, decl.initializer) &&
-      isJsSourceFile(decl.getSourceFile())
-    ) {
-      const spec = requireSpecOf(decl.initializer)!;
-      if (lowerer.externalTypes.has(spec)) lowerer.externalHostFence(spec, decl, false);
-      if (ts.isSourceFile(stmt.parent)) {
-        const init = lowerer.requireInitStmt(spec, decl);
-        return init ? [init] : [];
-      }
-      // A nested BUILTIN require (`get inFreeBSDJail() { const { execSync }
-      // = require('child_process'); ... }` — test/common's lazy-getter
-      // idiom): builtins load nothing, so the statement is PURE alias
-      // plumbing wherever it sits — the bindings resolve through the
-      // same routing top-level requires use, and no statement remains.
-      // Relative requires keep the fence: their module-init-at-position
-      // semantics needs storage this model doesn't represent.
-      if (canonicalBuiltinModule(spec) !== null) {
-        return [];
-      }
+    const lowered = lowerVarDeclarator(lowerer, stmt, decl, isConst, isLet);
+    // A require binding earlier code can read is initialized from here on
+    // (require-initialization.ts).
+    const initialized = requireInitFlagStmt(lowerer, decl);
+    return initialized ? [...lowered, initialized] : lowered;
+  });
+}
+
+function lowerVarDeclarator(
+  lowerer: Lowerer,
+  stmt: ts.VariableStatement,
+  decl: ts.VariableDeclaration,
+  isConst: boolean,
+  isLet: boolean,
+): IrStmt[] {
+  // The canonical ESM bridge to a compiled program module. Like a
+  // top-level CommonJS require declaration, the binding is alias
+  // plumbing while the dependency evaluates at this statement's
+  // exact position through its run-once initializer.
+  if (isConst && createRequireProgramModuleDecl(lowerer, decl.name, decl.initializer)) {
+    if (!ts.isSourceFile(stmt.parent)) {
       lowerer.unsupported(
         "SC1090",
         decl,
-        "require() with bindings outside the module's top level (move it to the top of the file)",
+        "createRequire program-module bindings outside the module's top level (move the binding to the top of the file; side-effect-only requires may remain nested)",
       );
     }
-    // `const { NGHTTP2_CANCEL } = http2.constants` — a destructure over
-    // the baked constants table: alias plumbing, no storage (uses read
-    // their literals via builtinConstantBindingOf; collectGlobals skipped
-    // the globals by the same test).
-    if (lowerer.builtinConstantsDestructureDecl(decl.name, decl.initializer)) return [];
-    if (ts.isArrayBindingPattern(decl.name) || ts.isObjectBindingPattern(decl.name)) {
-      // `const { createSign } = crypto` over a builtin NAMESPACE binding:
-      // alias plumbing (builtinImportOf routes the reads) — no statement.
-      if (builtinNamespaceDestructureModuleOf(lowerer, decl) !== null) return [];
-      return lowerer.lowerDestructuringDecl(decl, isLet);
+    const target = createRequireProgramModuleOf(lowerer, decl.initializer)!;
+    const init = lowerer.requireInitStmt(target.spec, decl);
+    return init ? [init] : [];
+  }
+  // CommonJS require declarations (JS files): at the module's top
+  // level the BINDINGS are alias plumbing (no storage;
+  // resolveValueSymbol routes the reads), but the require itself is
+  // Node's inline module evaluation — a relative require lowers to the
+  // required module's guarded %init call at exactly this position
+  // (first require runs the body, later ones are cache hits; builtins
+  // load nothing). Binding requires anywhere else would need lazily-
+  // initialized alias storage this model doesn't represent; named
+  // fence.
+  if (
+    decl.initializer !== undefined &&
+    requireSpecOf(decl.initializer) !== null &&
+    !isNativeFfiRequire(lowerer, decl.initializer) &&
+    !isJsonRequireDecl(lowerer, decl) &&
+    isJsSourceFile(decl.getSourceFile())
+  ) {
+    const spec = requireSpecOf(decl.initializer)!;
+    if (lowerer.externalTypes.has(spec)) lowerer.externalHostFence(spec, decl, false);
+    if (ts.isSourceFile(stmt.parent)) {
+      const init = lowerer.requireInitStmt(spec, decl);
+      return init ? [init] : [];
     }
-    // STORED protocol values with statically closed representations:
-    // numeric value iterators retain source/cursor/done hidden locals; a
-    // matchAll drain retains its companion index array so a later
-    // for-of can serve `m.index`. Both are const-only interceptions.
-    const numericIterator = lowerNumericIteratorDecl(lowerer, decl, isConst);
-    if (numericIterator) return numericIterator;
-    const drained = lowerMatchAllDrainDecl(lowerer, decl, isConst);
-    if (drained) return drained;
-    const lowered = lowerer.lowerVarDecl(decl, isLet);
-    return lowered ? [lowered] : [];
-  });
+    // A nested BUILTIN require (`get inFreeBSDJail() { const { execSync }
+    // = require('child_process'); ... }` — test/common's lazy-getter
+    // idiom): builtins load nothing, so the statement is PURE alias
+    // plumbing wherever it sits — the bindings resolve through the
+    // same routing top-level requires use, and no statement remains.
+    // Relative requires keep the fence: their module-init-at-position
+    // semantics needs storage this model doesn't represent.
+    if (canonicalBuiltinModule(spec) !== null) {
+      return [];
+    }
+    lowerer.unsupported(
+      "SC1090",
+      decl,
+      "require() with bindings outside the module's top level (move it to the top of the file)",
+    );
+  }
+  // `const { NGHTTP2_CANCEL } = http2.constants` — a destructure over
+  // the baked constants table: alias plumbing, no storage (uses read
+  // their literals via builtinConstantBindingOf; collectGlobals skipped
+  // the globals by the same test).
+  if (lowerer.builtinConstantsDestructureDecl(decl.name, decl.initializer)) return [];
+  if (ts.isArrayBindingPattern(decl.name) || ts.isObjectBindingPattern(decl.name)) {
+    // `const { createSign } = crypto` over a builtin NAMESPACE binding:
+    // alias plumbing (builtinImportOf routes the reads) — no statement.
+    if (builtinNamespaceDestructureModuleOf(lowerer, decl) !== null) return [];
+    return lowerer.lowerDestructuringDecl(decl, isLet);
+  }
+  // STORED protocol values with statically closed representations:
+  // numeric value iterators retain source/cursor/done hidden locals; a
+  // matchAll drain retains its companion index array so a later
+  // for-of can serve `m.index`. Both are const-only interceptions.
+  const numericIterator = lowerNumericIteratorDecl(lowerer, decl, isConst);
+  if (numericIterator) return numericIterator;
+  const drained = lowerMatchAllDrainDecl(lowerer, decl, isConst);
+  if (drained) return drained;
+  const lowered = lowerer.lowerVarDecl(decl, isLet);
+  return lowered ? [lowered] : [];
 }
 
 /** The numeric indexed source of a built-in value-iterator expression:
@@ -1914,44 +1931,14 @@ export function lowerDestructuringDecl(
       init = { kind: "unionNarrow", unionId: init.type.unionId, tag, value: uref, type: arm, loc };
     }
   }
-  // `const { groups } = re.exec(s)!` / `const { groups: { year } } = m`
-  // — every pattern element binds `groups` off a MATCH SLICE whose
-  // regex is statically known: the slice has no record shape of its
-  // own, so the groups projection (lowerGroupsProjection — the same
-  // record `m.groups` reads produce) wraps one level in a synthesized
-  // `{ groups: ... }` record and the ordinary record destructure below
-  // serves the pattern — aliases and nested patterns included. Only
-  // named-group regexes take the wrap: a group-less regex destructures
-  // `groups: undefined` in Node (a nested pattern then throws), which
-  // the fence reports honestly instead.
-  if (
-    ts.isObjectBindingPattern(decl.name) &&
-    decl.name.elements.length > 0 &&
-    isMatchSliceType(lowerer, init.type) &&
-    decl.name.elements.every((el) => {
-      if (el.dotDotDotToken !== undefined || el.name === undefined) return false;
-      const prop = el.propertyName;
-      if (prop === undefined) return ts.isIdentifier(el.name) && el.name.text === "groups";
-      return (ts.isIdentifier(prop) || ts.isStringLiteral(prop)) && prop.text === "groups";
-    })
-  ) {
-    const groups = matchResultNamedGroupsOf(lowerer, decl.initializer!);
-    if (groups !== null && groups.length > 0) {
-      const proj = lowerGroupsProjection(lowerer, init, groups, loc);
-      const outerShape = lowerer.shapes.intern(
-        [{ name: "groups", type: proj.type }],
-        false,
-        undefined,
-        ["groups"],
-      );
-      init = {
-        kind: "recordLit",
-        fields: [{ name: "groups", value: proj }],
-        type: { kind: "record", shapeId: outerShape },
-        loc,
-      };
-    }
-  }
+  const groupsSource = matchGroupsPatternSource(
+    lowerer,
+    decl.name,
+    init,
+    () => matchResultNamedGroupsOf(lowerer, decl.initializer!),
+    loc,
+  );
+  if (groupsSource !== null) init = groupsSource;
   const tmp = lowerer.declareHiddenLocal("%destr", init.type);
   out.push({ kind: "varDecl", localId: tmp.id, init, loc });
   // V8's destructuring TypeError spells STATIC sources: an identifier
@@ -1976,6 +1963,55 @@ export function lowerDestructuringDecl(
     parseArgsDynObject,
   );
   return out;
+}
+
+/** `const { groups } = re.exec(s)!` / `const { groups: { year } } = m`
+ * — every pattern element binds `groups` off a match row whose regex is
+ * statically known. The slice (or a JavaScript callback's dynamic row)
+ * has no record shape of its own, so the groups projection
+ * (lowerGroupsProjection — the same record `m.groups` reads produce)
+ * wraps one level in a synthesized `{ groups: ... }` record and the
+ * ordinary record destructure serves the pattern — aliases and nested
+ * patterns included. Only named-group regexes take the wrap: a
+ * group-less regex destructures `groups: undefined` in Node (a nested
+ * pattern then throws), which the fence reports honestly instead. Null
+ * when the pattern or the row does not qualify. */
+export function matchGroupsPatternSource(
+  lowerer: Lowerer,
+  pattern: ts.BindingName,
+  row: IrExpr,
+  groupsOf: () => { name: string; index: number }[] | null,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (
+    !ts.isObjectBindingPattern(pattern) ||
+    pattern.elements.length === 0 ||
+    !(row.type.kind === "dyn"
+      ? isJsSourceFile(pattern.getSourceFile())
+      : isMatchSliceType(lowerer, row.type)) ||
+    !pattern.elements.every((el) => {
+      if (el.dotDotDotToken !== undefined || el.name === undefined) return false;
+      const prop = el.propertyName;
+      if (prop === undefined) return ts.isIdentifier(el.name) && el.name.text === "groups";
+      return (ts.isIdentifier(prop) || ts.isStringLiteral(prop)) && prop.text === "groups";
+    })
+  )
+    return null;
+  const groups = groupsOf();
+  if (groups === null || groups.length === 0) return null;
+  const proj = lowerGroupsProjection(lowerer, row, groups, loc);
+  const outerShape = lowerer.shapes.intern(
+    [{ name: "groups", type: proj.type }],
+    false,
+    undefined,
+    ["groups"],
+  );
+  return {
+    kind: "recordLit",
+    fields: [{ name: "groups", value: proj }],
+    type: { kind: "record", shapeId: outerShape },
+    loc,
+  };
 }
 
 /** One pattern level: emits a declaration (or global assignment) per
@@ -5037,6 +5073,23 @@ function jsObjectBindingExpands(
     ) {
       const name = property(node.left);
       if (name === null || (name !== undefined && !names.has(name))) expands = true;
+      // `state = { _tag: "Done", right }` stores an object with properties
+      // the initializer's shape lacks; later reads of them must see them.
+      const target = unwrap(node.left);
+      const value = unwrap(node.right);
+      const targetSymbol = ts.isIdentifier(target) ? lowerer.resolveValueSymbol(target) : undefined;
+      if (
+        targetSymbol &&
+        aliases.has(targetSymbol) &&
+        ts.isObjectLiteralExpression(value) &&
+        value.properties.some(
+          (field) =>
+            !(ts.isPropertyAssignment(field) || ts.isShorthandPropertyAssignment(field)) ||
+            !(ts.isIdentifier(field.name) || ts.isStringLiteral(field.name)) ||
+            !names.has(field.name.text),
+        )
+      )
+        expands = true;
     }
     if (ts.isDeleteExpression(node) && property(node.expression) !== undefined) expands = true;
     if (
@@ -5266,7 +5319,7 @@ function lowerDynSwitch(
         loc: locOf(expression),
       };
     }
-    if (!lowerer.dynConvertible(test.type)) {
+    if (test.type.kind === "date" || !lowerer.dynConvertible(test.type)) {
       lowerer.unsupported(
         "SC1100",
         expression,
@@ -6019,16 +6072,22 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       );
     }
     // syncBuiltinESMExports() is the other compiler-only statement: the
-    // call validates its zero-argument shape, then emits no code because
-    // the static builtin surface is immutable.
+    // call validates its zero-argument shape, then refreshes the events
+    // module's ES module namespace copy of defaultMaxListeners, the one
+    // builtin export a program can change.
     const bi = ts.isIdentifier(expr.expression)
       ? lowerer.builtinImportOf(expr.expression)
       : ts.isPropertyAccessExpression(expr.expression)
         ? lowerer.builtinMemberOf(expr.expression)
         : null;
     if (bi?.module === "module" && bi.member === "syncBuiltinESMExports") {
-      lowerNodeModuleCall(lowerer, expr, bi, locOf(expr));
-      return { kind: "block", body: [], loc: locOf(expr) };
+      const loc = locOf(expr);
+      lowerNodeModuleCall(lowerer, expr, bi, loc);
+      return {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "emitter.esmSync", args: [], type: VOID, loc },
+        loc,
+      };
     }
   }
   if (

@@ -219,6 +219,7 @@ const BORROW_SAFE_MATH = new Set<IrLibFn>([
   "math.sign",
   "math.exp",
   "math.expm1",
+  "math.f16round",
   "math.fround",
   "math.log",
   "math.log1p",

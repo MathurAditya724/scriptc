@@ -56,9 +56,10 @@ Each checkout must have a built CLI (packages/cli/dist/bootstrap.js) and native
 artifacts for this host. Without --baseline, reports absolute times only. Node is
 timed in the same interleaved loop as the reference to beat (--no-node skips it).
 
---layouts=N (macOS/Linux) links every executable N times, shifting the program
-object by 0, 16, 32, ... bytes of padding, and spreads the timed runs evenly over
-those layouts, so verdicts cover code-placement luck instead of one placement.
+--layouts=N (macOS/Linux) links every executable N times, shifting the runtime
+and program code by 0, 16, 32, ... bytes of padding, and spreads the timed runs
+evenly over those layouts, so verdicts cover code-placement luck instead of one
+placement.
 Use it for small codegen changes (e.g. --layouts=4 --runs=16).
 
 Workload names are listed in benchmarks/runtime/workloads.json; for example
@@ -103,10 +104,11 @@ const work = mkdtempSync(
 );
 
 /* ── code-layout perturbation ──────────────────────────────────────────── */
-// Layout k > 0 links a retained k*16-byte padding object directly before the
-// program object, through a SCRIPTC_LINKER wrapper that forwards to clang (the
-// default linker driver on macOS and Linux). Code after that point moves as if
-// earlier code had grown; any checkout's compiler can be perturbed this way.
+// Layout k > 0 links a retained k*16-byte padding object before every other
+// input, through a SCRIPTC_LINKER wrapper that forwards to clang (the default
+// linker driver on macOS and Linux). The runtime is linked before the program
+// object, so both move as if earlier code had grown; any checkout's compiler can
+// be perturbed this way.
 function layoutTooling() {
   if (layouts === 1) return null;
   const root = join(work, "layouts");
@@ -137,12 +139,11 @@ const args = process.argv.slice(2);
 const pad = process.env.SCRIPTC_BENCH_LAYOUT_PAD;
 let out = args;
 if (pad && !args.some((a) => a.startsWith("-print-prog-name"))) {
-  const at = args.findIndex((a) => basename(a).startsWith(".scriptc-native-program-object-"));
-  if (at < 0) {
+  if (!args.some((a) => basename(a).startsWith(".scriptc-native-program-object-"))) {
     process.stderr.write("bench layout wrapper: no program object on the link line\\n");
     process.exit(2);
   }
-  out = ["-Wl,-u,${symbol}", ...args.slice(0, at), pad, ...args.slice(at)];
+  out = ["-Wl,-u,${symbol}", pad, ...args];
 }
 const result = spawnSync("clang", out, { stdio: "inherit" });
 process.exit(result.status ?? 1);

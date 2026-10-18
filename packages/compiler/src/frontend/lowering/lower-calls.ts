@@ -13,6 +13,7 @@ import {
   lowerTimersMemberCall,
   TIMER_MODULE_MEMBERS,
 } from "./lower-timers.js";
+import { lowerMockTimersElementCall } from "./lower-test.js";
 import { objectEnumerationReceiver } from "./object-enumeration-receiver.js";
 import { InternalCompilerError } from "../../errors.js";
 import { isFsStreamMember, lowerFsStreamMethodCall } from "./builtins/fs-streams.js";
@@ -58,6 +59,7 @@ import {
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
+import { lowerJsonRequireCall } from "./json-require.js";
 import { lowerAssertInstanceCall } from "./assert-instances.js";
 import { isGenericCallableMemberType, typeKey } from "../type-mapper.js";
 import { dynFallbackType, jsFuncNameOf, newFnCtx, staticImportNamespaceType } from "./lowerer.js";
@@ -106,6 +108,7 @@ import {
 } from "./builtins/module-resolution.js";
 import { lowerCipherMethodCall, lowerCryptoHashMethodCall } from "./builtins/crypto.js";
 import { lowerErrorIsErrorCall } from "./builtins/errors.js";
+import { lowerDisposableStackUseCall } from "./builtins/disposable-stack.js";
 import {
   lowerDirentMethodCall,
   lowerFileHandleMethodCall,
@@ -220,6 +223,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const object = lowerObjectConstructor(lowerer, expr.arguments, loc);
     if (object) return object;
   }
+
+  // require() of a JSON document: the shared parsed object.
+  const json = lowerJsonRequireCall(lowerer, expr);
+  if (json) return json;
 
   // A call whose chain ROOTS at an ambient-undefined name (`declare
   // const value: Y | undefined; value?.foo("a")`, `declare function
@@ -1379,6 +1386,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.fenceStaticResponseMember(expr.expression, "call") ??
       lowerer.fenceStaticHeadersMember(expr.expression, "call") ??
       lowerer.fenceStaticReadableStreamMember(expr.expression, "call") ??
+      lowerDisposableStackUseCall(lowerer, expr, expr.expression) ??
       lowerer.lowerStdlibMethodCall(expr, expr.expression) ??
       // Dyn receivers (JSON.parse-derived `unknown`/`any` values) —
 
@@ -1519,6 +1527,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // The element spelling of an unsupported native Web method must fence
   // before lowering the callee into a checked-dynamic keyed read.
   if (ts.isElementAccessExpression(expr.expression)) {
+    const timersDispose = lowerMockTimersElementCall(lowerer, expr, expr.expression);
+    if (timersDispose) return timersDispose;
     const symbolMethod = lowerClassSymbolMethodCall(lowerer, expr);
     if (symbolMethod) return symbolMethod;
     lowerer.fenceUnsupportedFetchConstructorMember(expr.expression);

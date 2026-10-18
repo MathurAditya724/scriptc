@@ -550,6 +550,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** os.getPriority(pid): validateInt32 (RangeError ERR_OUT_OF_RANGE),
    * then the priority; a failure throws Node's SystemError. */
   "os.getPriority": { argTypes: [F64], result: F64 },
+  /** os.setPriority(pid, priority): validateInt32 for both (priority in
+   * -20..19, RangeError ERR_OUT_OF_RANGE), then the priority; a failure
+   * throws Node's SystemError. */
+  "os.setPriority": { argTypes: [F64, F64], result: VOID },
   /** os.cpus(): cpusTake snapshots every CPU and answers the count;
    * cpusModel(i) and cpusField(i, k) (k: 0 speed, 1 user, 2 nice, 3 sys,
    * 4 idle, 5 irq) read the snapshot. Never throw. */
@@ -644,6 +648,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "math.sign": { argTypes: [F64], result: F64 },
   "math.exp": { argTypes: [F64], result: F64 },
   "math.expm1": { argTypes: [F64], result: F64 },
+  "math.f16round": { argTypes: [F64], result: F64 },
   "math.fround": { argTypes: [F64], result: F64 },
   "math.sqrt": { argTypes: [F64], result: F64 },
   "math.log": { argTypes: [F64], result: F64 },
@@ -1109,10 +1114,33 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "worker.root": { argTypes: [], result: F64 },
   "worker.data": { argTypes: [], result: DYN },
   "worker.parentPort": { argTypes: [], result: DYN },
+  /** worker_threads.resourceLimits: {} in the main thread; a refusal in a
+   * worker (scr_worker_events.c). */
+  "worker.resourceLimits": { argTypes: [], result: DYN },
+  /** worker_threads.threadName: the Worker's name in a worker, "" in the
+   * main thread (scr_worker.c). */
+  "worker.threadName": { argTypes: [], result: DYN },
   /** new MessageChannel() ({ port1, port2 }) and receiveMessageOnPort(port)
    * (scr_worker_events.c; the latter may throw). */
   "worker.channel": { argTypes: [], result: DYN },
   "worker.receiveMessageOnPort": { argTypes: [DYN], result: DYN },
+  /** setEnvironmentData(key, value) and getEnvironmentData(key)
+   * (scr_worker_events.c; arguments borrowed). */
+  "worker.setEnvironmentData": { argTypes: [DYN, DYN], result: VOID },
+  "worker.getEnvironmentData": { argTypes: [DYN], result: DYN },
+  /** markAsUntransferable(value) and isMarkedAsUntransferable(value)
+   * (scr_worker_events.c; the value borrowed). */
+  "worker.markUntransferable": { argTypes: [DYN], result: VOID },
+  "worker.isMarkedUntransferable": { argTypes: [DYN], result: BOOL },
+  /** markAsUncloneable(value) (scr_json.c; the value borrowed). */
+  "dyn.markUncloneable": { argTypes: [DYN], result: VOID },
+  /** before new Worker() with the stdout or stderr option: links the stream
+   * unit that worker.stdout and worker.stderr read through (scr_stream.c). */
+  "stream.workerStdio": { argTypes: [], result: VOID },
+  /** new BroadcastChannel(...args) (scr_worker_events.c; may throw), after
+   * event.broadcastInstall, which installs its EventTarget side. */
+  "worker.broadcastChannel": { argTypes: [DYN], result: DYN },
+  "event.broadcastInstall": { argTypes: [], result: VOID },
   /** child_process.spawnSync (scr_child.c): posix_spawn + waitpid + piped
    * utf8 capture — cmd borrowed, args one borrowed string[] (the frontend
    * completes an omitted list to an empty literal), result an owned (+1)
@@ -1443,6 +1471,32 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   },
   "test.ctxMockRestoreAll": { argTypes: [TESTCTX_T], result: VOID },
   "test.ctxMockReset": { argTypes: [TESTCTX_T], result: VOID },
+  // mock.timers on the module's `mock` and on t.mock. enable takes one
+  // code per listed API ('T' setTimeout, 'I' setInterval), the `now`
+  // value and its flags (1 given, 2 from a Date). enable, tick, runAll and
+  // setTime throw Node's errors; tick and runAll run timer callbacks.
+  // t.assert.snapshot and fileSnapshot: the escaped, wrapped serialized
+  // value, and the stored value it is compared with (snapshot: the test,
+  // the value, the snapshot file; fileSnapshot: the value, the path).
+  // Both read or, in update mode, record; missing and unreadable
+  // snapshots throw Node's ERR_INVALID_STATE.
+  "test.snapshotValue": { argTypes: [STRING], result: STRING },
+  "test.ctxSnapshot": { argTypes: [TESTCTX_T, STRING, STRING], result: STRING },
+  "test.fileSnapshot": { argTypes: [STRING, STRING], result: STRING },
+  // Node's serializeValue over a dyn array of serializers (undefined for
+  // the default JSON.stringify(value, null, 2)); a throw becomes Node's
+  // "The provided serializers did not generate a string." ERR_INVALID_STATE.
+  "test.snapshotSerialize": { argTypes: [DYN, DYN], result: DYN },
+  "test.mockTimersEnable": { argTypes: [STRING, F64, F64], result: VOID },
+  "test.mockTimersTick": { argTypes: [F64], result: VOID },
+  "test.mockTimersRunAll": { argTypes: [], result: VOID },
+  "test.mockTimersReset": { argTypes: [], result: VOID },
+  "test.mockTimersSetTime": { argTypes: [F64], result: VOID },
+  "test.ctxMockTimersEnable": { argTypes: [TESTCTX_T, STRING, F64, F64], result: VOID },
+  "test.ctxMockTimersTick": { argTypes: [TESTCTX_T, F64], result: VOID },
+  "test.ctxMockTimersRunAll": { argTypes: [TESTCTX_T], result: VOID },
+  "test.ctxMockTimersReset": { argTypes: [TESTCTX_T], result: VOID },
+  "test.ctxMockTimersSetTime": { argTypes: [TESTCTX_T, F64], result: VOID },
   // node:http (scr_http.c over scr_net.c). The handler and the data
   // listeners are program-dependent closures (null slots, checked in the
   // libCall case); reqHeader's result is the interned string|undefined
@@ -2289,8 +2343,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** child_process.execFile's callback slice: starts an all-piped child,
    * captures stdout/stderr, and moves the error-first callback into the
    * child registry. The callback shape is program-dependent and checked
-   * by the validator/backends. */
-  "cp.execFile": { argTypes: [STRING, arrayOf(STRING), null], result: CHILD_T },
+   * by the validator/backends. The last argument is exec's shell flag:
+   * the argv is ["-c", command] and failure messages show the command. */
+  "cp.execFile": { argTypes: [STRING, arrayOf(STRING), null, BOOL], result: CHILD_T },
   // spawn's options form: per-slot stdio modes (0 ignore / 1 inherit /
   // 2 fd) with the out/err fds for mode 2, detached, env replacement
   // pairs, cwd ("" = inherit).
@@ -2843,6 +2898,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   },
   "fileHandle.stat": { argTypes: [FILEHANDLE_T], result: { kind: "promise", inner: STATS_T } },
   "process.argv": { argTypes: [], result: arrayOf(STRING) },
+  // The Node runtime flag a node:test binary took out of process.argv
+  // (--test-update-snapshots), or [] — a fresh array per read.
+  "process.execArgv": { argTypes: [], result: arrayOf(STRING) },
   "process.platform": { argTypes: [], result: STRING },
   // The one libCall whose result type is program-dependent (union ids are
   // per-module): the `result` here is a placeholder — the libCall case
@@ -3159,6 +3217,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "arrayBuffer.viewU8": { argTypes: [DYN, DYN, DYN], result: BYTES_U8 },
   "arrayBuffer.viewU32": { argTypes: [DYN, DYN, DYN], result: bytesOf("u32") },
   "arrayBuffer.viewI32": { argTypes: [DYN, DYN, DYN], result: bytesOf("i32") },
+  "arrayBuffer.viewF16": { argTypes: [DYN, DYN, DYN], result: bytesOf("f16") },
   "arrayBuffer.viewF32": { argTypes: [DYN, DYN, DYN], result: bytesOf("f32") },
   "arrayBuffer.viewF64": { argTypes: [DYN, DYN, DYN], result: bytesOf("f64") },
   "arrayBuffer.viewDV": { argTypes: [DYN, DYN, DYN], result: BYTES_U8 },
@@ -3210,6 +3269,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * `await using`. Both throw Node's TypeErrors or the method's error. */
   "dyn.usingMethod": { argTypes: [DYN, BOOL], result: DYN },
   "dyn.usingDispose": { argTypes: [DYN, DYN], result: DYN },
+  /** DisposableStack (scr_symbol.c): a new stack handle; whether a value is
+   * one; and `stack.use(value)` for a class instance, registering the
+   * compiler's disposal function for it. The last throws Node's
+   * ReferenceError on a disposed stack. */
+  "disposable.stackNew": { argTypes: [], result: DYN },
+  "disposable.stackIs": { argTypes: [DYN], result: BOOL },
+  "disposable.stackUseCallback": { argTypes: [DYN, DYN, DYN], result: BOOL },
   "dyn.reflectSet": { argTypes: [DYN, DYN, DYN, DYN], result: BOOL },
   "dyn.reflectDefine": { argTypes: [DYN, DYN, DYN], result: BOOL },
   "dyn.abstractEq": { argTypes: [DYN, DYN], result: BOOL },
@@ -3346,6 +3412,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "emitter.getMax": { argTypes: [null], result: F64 },
   "emitter.setDefaultMax": { argTypes: [F64], result: VOID },
   "emitter.getDefaultMax": { argTypes: [], result: F64 },
+  // The ES module namespace's copy of defaultMaxListeners, and
+  // module.syncBuiltinESMExports() refreshing it.
+  "emitter.esmDefaultMax": { argTypes: [], result: F64 },
+  "emitter.esmSync": { argTypes: [], result: VOID },
   /** The events.errorMonitor event key: an immortal string the runtime
    * registry matches by identity, so no string event name reaches it. */
   "emitter.errorMonitor": { argTypes: [], result: STRING },
@@ -3742,11 +3812,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "insp.jsonDyn": { argTypes: [DYN], result: STRING },
   "insp.str": { argTypes: [STRING], result: STRING },
   "insp.regex": { argTypes: [REGEX], result: STRING },
+  /** A Date's inspect text: toISOString(), or "Invalid Date". */
+  "insp.date": { argTypes: [DATE_T], result: STRING },
   "insp.buffer": { argTypes: [BYTES_U8], result: STRING },
+  /** A numeric typed array that is not a Buffer (any element kind). */
+  "insp.typedArray": { argTypes: [null, F64, F64], result: STRING },
   "insp.error": { argTypes: [null, F64, F64], result: STRING },
   "insp.dyn": { argTypes: [DYN, F64, F64], result: STRING },
   "insp.dynS": { argTypes: [DYN, F64], result: STRING },
   "insp.begin": { argTypes: [F64], result: VOID },
+  /** util.inspect's breakLength, compact (0 for false) and sorted for the
+   * renders that follow; the call site restores 80, 3 and false afterwards. */
+  "insp.layout": { argTypes: [F64, F64, BOOL], result: VOID },
   "insp.entry": { argTypes: [STRING, BOOL], result: VOID },
   // Circular references: the receiver slot is program-dependent (any
   // cycle-capable record/array/map/class type — the insp.error precedent).
@@ -3785,6 +3862,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "strdec.write": { argTypes: [STRING, F64, BYTES_U8], result: STRING },
   "strdec.next": { argTypes: [STRING, F64, BYTES_U8], result: F64 },
   "strdec.end": { argTypes: [STRING, F64], result: STRING },
+  /** A runtime encoding argument's canonical name (Node's normalizeEncoding:
+   * nullish and "" are utf8); an unknown name throws ERR_UNKNOWN_ENCODING. */
+  "strdec.encoding": { argTypes: [DYN], result: STRING },
   // node:readline: the interface handle is f64; the callbacks' func types
   // are program-dependent (the emitter picks the adapter by parameter
   // count), so those slots are null like child.onExit's.
@@ -3889,6 +3969,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * through the immediate queue (fires before due timers of later loop
    * turns, Node's check phase). Neither throws. */
   "tp.setTimeout": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
+  // scheduler.wait(delay): tp.setTimeout's promise. It throws Node's
+  // ERR_INVALID_THIS once mock.timers has restored the real scheduler.wait.
+  "tp.schedulerWait": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
   "tp.setImmediate": { argTypes: [], result: { kind: "promise", inner: VOID } },
   /** events.once (scr_events_emitter.c): [emitter, name, boxer,
    * errorBoxer, listenForError] → a pending promise of any[]; the boxers
@@ -3905,6 +3988,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * AbortError (scr_event_target.c). */
   "tp.setTimeoutSignal": { argTypes: [F64, null, BOOL, DYN], result: VOID },
   "tp.setImmediateSignal": { argTypes: [null, BOOL, DYN], result: VOID },
+  /** scheduler.wait(delay, options): tp.setTimeoutValue's and
+   * tp.setTimeoutSignal's shapes, with tp.schedulerWait's throws. */
+  "tp.schedulerWaitValue": { argTypes: [F64, null, BOOL], result: VOID },
+  "tp.schedulerWaitSignal": { argTypes: [F64, null, BOOL, DYN], result: VOID },
   /** node:diagnostics_channel (scr_dc.c, linked when any dc.* appears —
    * the zlib gating precedent): a process-global name→channel registry;
    * channel values are f64 handles (type-mapper.ts maps Channel to F64, the

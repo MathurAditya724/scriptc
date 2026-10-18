@@ -66,6 +66,11 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["worker.new", "native worker threads"],
   ["worker.channel", "native worker threads"],
   ["worker.receiveMessageOnPort", "native worker threads"],
+  ["worker.setEnvironmentData", "native worker threads"],
+  ["worker.getEnvironmentData", "native worker threads"],
+  ["worker.markUntransferable", "native worker threads"],
+  ["worker.isMarkedUntransferable", "native worker threads"],
+  ["worker.broadcastChannel", "native worker threads"],
 ];
 
 /** Value/type kinds whose mere presence means an excluded unit's code (or
@@ -191,6 +196,7 @@ export const LIB_NONDETERMINISTIC_PREFIXES: readonly [string, string][] = [
   ["blob.fileNew", "the live clock (File lastModified)"],
   ["process.env", "environment reads"],
   ["process.argv", "process.argv"],
+  ["process.execArgv", "process.execArgv"],
   ["process.cwd", "process.cwd"],
   ["process.chdir", "process.chdir"],
   ["process.pid", "process identity"],

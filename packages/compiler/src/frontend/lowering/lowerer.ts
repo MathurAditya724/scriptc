@@ -10,6 +10,12 @@ import {
   refuseUncheckedCycleReads,
   type CycleInitFlag,
 } from "./cycle-initialization.js";
+import { isJsonRequireDecl, type JsonRequireModule } from "./json-require.js";
+import {
+  checkRequireBindingAccesses,
+  type EarlyReference,
+  type RequireInitFlag,
+} from "./require-initialization.js";
 import { identityPreservingWidening } from "./coercions/identity.js";
 import { scanDivergences } from "./divergences.js";
 import { checkedClassAssertion } from "./class-assertions.js";
@@ -388,6 +394,7 @@ import {
   createRequireProgramModuleOf,
   createRequireSpecOf,
   fencedBuiltinImportOf,
+  esmImportBindingKind,
 } from "./builtins/module-bindings.js";
 import { stripTypeCasts } from "./builtins/arguments.js";
 import { lowerBuiltinModuleCall } from "./builtins/module-calls.js";
@@ -417,6 +424,7 @@ import {
   lowerTracingChannelMethodCall,
   lowerTracingChannelProperty,
 } from "./builtins/async-context.js";
+import { lowerDisposableStackNew } from "./builtins/disposable-stack.js";
 import { lowerErrorCodeProperty } from "./builtins/errors.js";
 import {
   lowerProcessProperty,
@@ -433,7 +441,7 @@ import {
 } from "./builtins/console.js";
 import { lowerConsoleNew } from "./lower-console.js";
 import { lowerNumberStaticCall, lowerNumberStaticProperty } from "./builtins/numbers.js";
-import { lowerDateCall } from "./builtins/dates.js";
+import { dateJsonType, isDateJsonSource, lowerDateCall } from "./builtins/dates.js";
 import {
   lowerFsConstantsProperty,
   lowerBuiltinConstantsProperty,
@@ -523,6 +531,7 @@ import {
   lowerExprStatement,
   lowerForOf,
   lowerForStatement,
+  matchGroupsPatternSource,
 } from "./lower-stmts.js";
 import {
   type FieldTarget,
@@ -557,6 +566,7 @@ import {
   fieldSetStmt,
   lowerFieldCompound,
   uniqueSymbolKeyOf,
+  matchCallbackParamGroupsOf,
 } from "./lower-exprs.js";
 import {
   finishOptionalChain,
@@ -1876,6 +1886,8 @@ export class Lowerer {
   /** Record fields promoted to an undefined-armed union by an indexed-read
    * value. The key is the concrete emitted shape and field name. */
   readonly runtimeOptionalFields = new Set<string>();
+  /** Bindings initialized by a Date's `toJSON()` (analyzeDateJsonResults). */
+  readonly dateJsonBindings = new Set<ts.Symbol>();
   /** Record bindings whose flow class reaches storage outside the class:
    * they keep the declared layout, so an initializer from unchecked reads
    * converts once instead of the binding adopting the widened variant. */
@@ -2437,6 +2449,10 @@ export class Lowerer {
    * prepended by lowerFileInit so the bindings are live before any
    * top-level statement runs. */
   readonly jsonInitActions = new Map<ts.SourceFile, IrStmt[]>();
+  /** CommonJS require() of JSON documents: the shared object per document
+   * and the calls reading it (json-require.ts). */
+  readonly jsonRequireModules = new Map<string, JsonRequireModule>();
+  readonly jsonRequireCalls = new Map<ts.CallExpression, JsonRequireModule>();
   /** Dynamic `import("literal")` resolutions, keyed
    * `fileName\u0000specifier` (collectDynamicImports fills it during npm
    * collection; lowerDynamicImportCall reads it per site). */
@@ -2604,6 +2620,10 @@ export class Lowerer {
    * by class name (cycle-initialization.ts). */
   readonly classInitFlags = new Map<string, CycleInitFlag>();
   readonly cycleInitDeclarations = new Map<ts.Statement, CycleInitFlag[]>();
+  /** CommonJS require declarations whose bindings code running before the
+   * require can read, and those references (require-initialization.ts). */
+  readonly requireInitFlags = new Map<ts.VariableDeclaration, RequireInitFlag>();
+  readonly requireEarlyReferences: EarlyReference[] = [];
 
   get ctx(): FnCtx {
     const top = this.fnStack[this.fnStack.length - 1];
@@ -3444,6 +3464,7 @@ export class Lowerer {
       return null;
     const directSpec = requireSpecOf(decl.initializer);
     if (directSpec !== null) {
+      if (isJsonRequireDecl(this, decl)) return null;
       return (
         resolveImport(this.program, decl.getSourceFile(), directSpec, "require") ??
         npmStaticDepSf7(this.program, decl.getSourceFile(), directSpec, "require")
@@ -3847,6 +3868,62 @@ export class Lowerer {
    * TypeScript's default indexed-access type is a useful source annotation,
    * but it is not a runtime proof; promoting only the affected slots keeps
    * the rest of the dense ABI unchanged. */
+  /** A Date's `toJSON()` answers null for an invalid date while the lib
+   * types say `string`: unannotated bindings initialized by such a call,
+   * and object-literal fields holding one, keep `string | null`. */
+  analyzeDateJsonResults(parts: FileParts[]): void {
+    const nullable = dateJsonType(this);
+    for (const { sf } of parts) {
+      if (!sf.text.includes("toJSON")) continue;
+      ts.walkPreorder(sf, (node) => {
+        // `x = d.toJSON()`: the checker narrows x to string after the
+        // assignment, so its reads must stay checked.
+        if (
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isIdentifier(node.left) &&
+          isDateJsonSource(this, node.right)
+        ) {
+          const symbol = this.checker.getSymbolAtLocation(node.left);
+          if (symbol) this.dateJsonBindings.add(symbol);
+          return undefined;
+        }
+        if (!ts.isVariableDeclaration(node) || !node.initializer) return undefined;
+        if (!ts.isIdentifier(node.name)) return undefined;
+        const symbol = this.checker.getSymbolAtLocation(node.name);
+        if (!symbol) return undefined;
+        let init: ts.Expression = node.initializer;
+        while (ts.isParenthesizedExpression(init)) init = init.expression;
+        if (isDateJsonSource(this, init)) {
+          this.dateJsonBindings.add(symbol);
+          // An annotation keeps its declared storage.
+          if (!node.type) this.runtimeOptionalBindingTypes.set(symbol, nullable);
+          return undefined;
+        }
+        if (node.type) return undefined;
+        if (!ts.isObjectLiteralExpression(init)) return undefined;
+        const declared = this.mapTypeOf(this.typeOf(node.name));
+        if (declared?.kind !== "record") return undefined;
+        let widened: IrType = declared;
+        for (const property of init.properties) {
+          const value = ts.isPropertyAssignment(property)
+            ? property.initializer
+            : ts.isShorthandPropertyAssignment(property)
+              ? property.name
+              : null;
+          const name =
+            property.name && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name))
+              ? property.name.text
+              : null;
+          if (value && name !== null && isDateJsonSource(this, value))
+            widened = this.runtimeOptionalRecordField(widened, name, nullable);
+        }
+        if (widened !== declared) this.runtimeOptionalBindingTypes.set(symbol, widened);
+        return undefined;
+      });
+    }
+  }
+
   analyzeRuntimeOptionalArrayReads(parts: FileParts[]): void {
     const provenance = RuntimeOptionalProvenance.fromEnvironment();
     // The site whose value the current promotion follows (debug only).
@@ -3871,6 +3948,18 @@ export class Lowerer {
       if (!s) return null;
       return s.flags & ts.SymbolFlags.Alias ? this.checker.getAliasedSymbol(s) : s;
     };
+    // Fields that can be read before their assignment hold undefined then;
+    // their reads are runtime-optional values like missing array reads.
+    for (const info of this.classes.values()) {
+      if (!info.earlyReadFields || !info.decl?.name) continue;
+      const classSymbol = symbolOf(info.decl.name);
+      if (!classSymbol) continue;
+      const instance = this.checker.getDeclaredTypeOfSymbol(classSymbol);
+      for (const name of info.earlyReadFields) {
+        const property = this.checker.getPropertyOfType(instance, name);
+        if (property) optionalSymbols.add(property);
+      }
+    }
     const signatureOf = (node: ts.Identifier): FnSig | null => {
       const symbol = symbolOf(node);
       if (!symbol) return null;
@@ -5996,6 +6085,7 @@ export class Lowerer {
     }
     this.collectProgram(parts);
     this.analyzeRuntimeOptionalArrayReads(parts);
+    this.analyzeDateJsonResults(parts);
     // Decorated classes analyze AFTER the whole collection pass: a
     // decorator's return type may name a subclass declared below the
     // class, and reference lowering needs each class's rebindability
@@ -6226,6 +6316,7 @@ export class Lowerer {
     // slots), uniformly across params/locals/globals/fields/body types so
     // every producer and consumer agrees. Programs with no unregistered
     // reference are untouched — byte-stability holds.
+    checkRequireBindingAccesses(this, functions);
     const module: IrModule | null =
       this.diags.length > 0
         ? null
@@ -6380,6 +6471,7 @@ export class Lowerer {
     };
     this.collectProgram(parts);
     this.analyzeRuntimeOptionalArrayReads(parts);
+    this.analyzeDateJsonResults(parts);
     // Decorated classes analyze post-collection here too: the %init seeds
     // lower the decoration calls, whose edges (decorator bodies, construct
     // thunks) reachable emit must see.
@@ -9983,6 +10075,22 @@ export class Lowerer {
           const pickedT = shape.bodyType;
           srcType = pickedT;
           srcRef = () => ({ kind: "varRef", localId: src.id, type: pickedT, loc });
+        } else {
+          // `({ groups }) => ...` over matchAll rows.
+          const groupsSource = matchGroupsPatternSource(
+            this,
+            decl.name,
+            srcRef(),
+            () => matchCallbackParamGroupsOf(this, decl),
+            loc,
+          );
+          if (groupsSource !== null) {
+            const src = this.declareHiddenLocal("%psrc", groupsSource.type);
+            prologue.push({ kind: "varDecl", localId: src.id, init: groupsSource, loc });
+            const groupsT = groupsSource.type;
+            srcType = groupsT;
+            srcRef = () => ({ kind: "varRef", localId: src.id, type: groupsT, loc });
+          }
         }
         this.lowerBindingPattern(decl.name, srcRef, srcType, true, prologue);
         return;
@@ -11063,6 +11171,7 @@ export class Lowerer {
       lowerLifetimeRegionNew(this, expr) ??
       lowerInternTableNew(this, expr) ??
       lowerAbortControllerNew(this, expr) ??
+      lowerDisposableStackNew(this, expr) ??
       lowerEventTargetNew(this, expr) ??
       lowerFetchWebNew(this, expr) ??
       lowerResponseNew(this, expr) ??
@@ -11382,9 +11491,19 @@ export class Lowerer {
       return pathModuleValue(this, `path/${bi.member}`, loc);
     }
     // events.defaultMaxListeners READS the process-wide default (its
-    // write twin routes through emitter.setDefaultMaxChk).
+    // write twin routes through emitter.setDefaultMaxChk). Through an ES
+    // module namespace it reads the namespace's copy instead.
     if (bi.module === "events" && bi.member === "defaultMaxListeners") {
-      return { kind: "libCall", fn: "emitter.getDefaultMax", args: [], type: F64, loc };
+      const esm =
+        ts.isIdentifier(expr.expression) &&
+        esmImportBindingKind(this, expr.expression) === "namespace";
+      return {
+        kind: "libCall",
+        fn: esm ? "emitter.esmDefaultMax" : "emitter.getDefaultMax",
+        args: [],
+        type: F64,
+        loc,
+      };
     }
     if (bi.module === "worker_threads") {
       const value = lowerWorkerMetadata(bi.member, loc);
@@ -11629,8 +11748,8 @@ export class Lowerer {
     return lowerSpawnCall(this, expr, loc);
   }
 
-  lowerExecFileCall(expr: ts.CallExpression, loc: SrcLoc): IrExpr {
-    return lowerExecFileCall(this, expr, loc);
+  lowerExecFileCall(expr: ts.CallExpression, loc: SrcLoc, shell = false): IrExpr {
+    return lowerExecFileCall(this, expr, loc, shell);
   }
 
   lowerExecSyncCall(expr: ts.CallExpression, shell: boolean, loc: SrcLoc): IrExpr {

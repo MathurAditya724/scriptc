@@ -1115,3 +1115,11 @@ void scr_emitter_set_default_max(double n) {
   scr_emitter_default_max = n;
 }
 double scr_emitter_get_default_max(void) { return scr_emitter_default_max; }
+
+/* The events module's ES module namespace holds a copy of
+ * defaultMaxListeners, taken when the program starts; ESM namespace
+ * and named-import reads answer it. module.syncBuiltinESMExports() copies
+ * the current value into it. */
+static SCR_TL double scr_emitter_esm_default_max = 10;
+double scr_emitter_esm_default_max_get(void) { return scr_emitter_esm_default_max; }
+void scr_emitter_esm_sync(void) { scr_emitter_esm_default_max = scr_emitter_default_max; }

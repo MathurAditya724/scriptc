@@ -299,11 +299,54 @@ function tolerantClearNoop(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLo
   return null;
 }
 
+const MOCKABLE_TIMER_FNS: ReadonlySet<string> = new Set([
+  "timers.setTimeout",
+  "timers.setTimeoutHandle",
+  "timers.setInterval",
+  "timers.clearTimeout",
+  "timers.clearInterval",
+  "timers.setImmediate",
+  "timers.clearImmediate",
+]);
+
+/** Whether a timer call's callee is an ESM named or namespace import of
+ * node:timers (destructured bindings included): Node's mock.timers leaves
+ * those bindings alone and replaces the globals. */
+function isRealTimerCallee(lowerer: Lowerer, callee: ts.Expression): boolean {
+  if (ts.isIdentifier(callee)) return lowerer.builtinImportOf(callee)?.module === "timers";
+  if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
+    const sym = lowerer.checker.getSymbolAtLocation(callee.expression);
+    const decl = sym ? lowerer.checker.declarationsOf(sym)[0] : undefined;
+    return decl !== undefined && ts.isNamespaceImport(decl);
+  }
+  return false;
+}
+
+/** Marks a lowered timer call `realTimer` when its callee is a binding
+ * mock.timers does not replace. */
+function markRealTimerCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  lowered: IrExpr | null,
+): IrExpr | null {
+  if (lowered?.kind !== "libCall" || !MOCKABLE_TIMER_FNS.has(lowered.fn)) return lowered;
+  return isRealTimerCallee(lowerer, expr.expression) ? { ...lowered, realTimer: true } : lowered;
+}
+
 /** One timer call by MEMBER NAME — the shared lowering behind the ambient
  * globals, the node:timers named/destructured imports, and the namespace
  * form (`timers.setTimeout(...)`). Null when the member isn't a lowered
  * timer function (the caller's fence machinery takes over). */
 export function lowerTimersMemberCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: string,
+  loc: SrcLoc,
+): IrExpr | null {
+  return markRealTimerCall(lowerer, expr, lowerTimerCall(lowerer, expr, member, loc));
+}
+
+function lowerTimerCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   member: string,
@@ -328,10 +371,12 @@ export function lowerTimersMemberCall(
             expr.arguments[0]!,
             loc,
           );
+    // An omitted delay is NaN, Node's undefined: the loop clamps it to
+    // 1ms, and mock.timers queues it to run at the next tick.
     const ms: IrExpr =
       expr.arguments.length >= 2
         ? lowerer.lowerExpr(expr.arguments[1]!)
-        : { kind: "numLit", value: 1, type: F64, loc };
+        : { kind: "numLit", value: NaN, type: F64, loc };
     if (member === "setInterval") {
       return { kind: "libCall", fn: "timers.setInterval", args: [cb, ms], type: F64, loc };
     }

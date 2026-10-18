@@ -216,8 +216,13 @@ export function computeCycleMutability(
     escapePoints.set(name, point);
     return point;
   };
-  const escapes = (name: string): boolean =>
-    escapePoint(name) < (fnByName.get(`%${name}.constructor`)?.body.length ?? 1);
+  const escapes = (name: string): boolean => {
+    const fn = fnByName.get(`%${name}.constructor`);
+    // A program class without a constructor function runs no code at construction. Generic
+    // classes are such bases: their instantiations name them as their base.
+    if (fn === undefined && classByName.get(name)?.runtime !== true) return false;
+    return escapePoint(name) < (fn?.body.length ?? 1);
+  };
   const ancestorEscaped = (name: string): boolean => {
     for (let c = classByName.get(name)?.base; c !== undefined; c = classByName.get(c)?.base)
       if (escapes(c)) return true;
