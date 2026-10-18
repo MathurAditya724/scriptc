@@ -1,7 +1,12 @@
 import * as ts from "../ts7/adapter.js";
-import { type IrExpr, type IrFunction, type IrType, typeEquals } from "../../ir/ir.js";
+import {
+  type IrExpr,
+  type IrFunction,
+  type IrType,
+  callSiteReturnType,
+  typeEquals,
+} from "../../ir/ir.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
-import { callSiteReturnType } from "../../ir/validate.js";
 import type { ClassInfo } from "./lower-classes.js";
 import type { Lowerer } from "./lowerer.js";
 

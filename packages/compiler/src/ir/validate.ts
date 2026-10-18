@@ -56,7 +56,7 @@ import {
   unionContainerArmsOk,
   VOID,
 } from "./ir.js";
-import { DYN_CLASS_PROPERTIES } from "./ir.js";
+import { DYN_CLASS_PROPERTIES, callSiteReturnType } from "./ir.js";
 import { unionWideningTags } from "./analysis.js";
 import { alwaysReturns } from "./control-flow.js";
 import { dynamicOperationOf, functionTier } from "./tiers.js";
@@ -83,33 +83,6 @@ function isBuiltinErrorObject(t: IrType): boolean {
 export interface IrValidationError {
   message: string;
   loc: SrcLoc;
-}
-
-/** The type a CALL SITE (or function value) receives from a module
- * function: an async body's returnType is the promise's INNER type, so
- * calls and closures over it see Promise<T>; a generator body's is the
- * TReturn channel, so call sites see the generator type. The one place
- * the body/call-site split is spelled out in the validator. */
-export function callSiteReturnType(fn: IrFunction): IrType {
-  if (fn.async && fn.generator !== undefined) {
-    return {
-      kind: "generator",
-      async: true,
-      yieldT: fn.generator.yieldT,
-      retT: fn.returnType,
-      nextT: fn.generator.nextT,
-    };
-  }
-  if (fn.async) return { kind: "promise", inner: fn.returnType };
-  if (fn.generator !== undefined) {
-    return {
-      kind: "generator",
-      yieldT: fn.generator.yieldT,
-      retT: fn.returnType,
-      nextT: fn.generator.nextT,
-    };
-  }
-  return fn.returnType;
 }
 
 interface VirtualCallInfo {
