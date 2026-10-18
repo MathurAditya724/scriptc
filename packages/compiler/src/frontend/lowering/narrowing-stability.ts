@@ -834,6 +834,7 @@ const INERT_CONSTRUCTORS = new Set([
   "Int16Array",
   "Uint32Array",
   "Int32Array",
+  "Float16Array",
   "Float32Array",
   "Float64Array",
   "BigInt64Array",

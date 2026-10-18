@@ -159,6 +159,7 @@ export const BYTES_ELEM_NUM: Record<IrBytesElem, number> = {
   u16: 6,
   i16: 7,
   u8c: 8,
+  f16: 9,
 };
 
 /** The payload marker of an ABSENT record field slot (IR fieldAbsent): the

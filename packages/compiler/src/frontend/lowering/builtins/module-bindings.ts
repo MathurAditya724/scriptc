@@ -141,6 +141,24 @@ export function builtinImportOf(
   return null;
 }
 
+/** The ES module binding kind of `ident`: "namespace" for a namespace
+ * import (`import * as events from "node:events"`), "named" for a named
+ * import (`import { defaultMaxListeners } from "node:events"`, also through
+ * a re-exporting module), null otherwise. Namespace members and named
+ * imports of a builtin read its ES module namespace, which holds copies of
+ * the module's exports (module.syncBuiltinESMExports refreshes them), where
+ * default imports and CommonJS bindings read the module object itself. */
+export function esmImportBindingKind(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+): "namespace" | "named" | null {
+  const symbol = lowerer.checker.getSymbolAtLocation(ident);
+  const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
+  if (decl === undefined) return null;
+  if (ts.isNamespaceImport(decl)) return "namespace";
+  return ts.isImportSpecifier(decl) ? "named" : null;
+}
+
 /** True for `const <name> = require("<builtin>").<member>` — the
  * member-binding require import builtinImportOf resolves. Both
  * declaration walks (lowerVarDecl, collectGlobals) skip these: like a

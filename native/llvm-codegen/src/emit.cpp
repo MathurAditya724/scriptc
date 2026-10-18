@@ -10,9 +10,15 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Analysis/RuntimeLibcallInfo.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/Bitcode/BitcodeWriterPass.h"
+#include "llvm/CodeGen/MachineDominators.h"
+#include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineFunctionPass.h"
+#include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/LegacyPassManager.h"
@@ -20,6 +26,9 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/LTO/LTO.h"
+#include "llvm/Pass.h"
+#include "llvm/PassInfo.h"
+#include "llvm/PassRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/Caching.h"
 #include "llvm/Support/FileSystem.h"
@@ -140,6 +149,138 @@ std::optional<EmitFailure> verify(Module &M, StringRef Code) {
   return std::nullopt;
 }
 
+// Runs WebAssembly's pass that gives multiple-entry loops a single entry only
+// on functions that have such a loop. The pass first records, for every
+// block, every block it can reach, so its time and memory grow with the
+// square of the block count even when it changes nothing: a module
+// initializer of 40,000 blocks took four minutes and 22 GB in it. It changes
+// a function only when two loop entries can reach each other, which a
+// reducible control flow graph never has, so skipping reducible functions
+// leaves the output unchanged.
+class IrreducibleControlFlowOnly final : public MachineFunctionPass {
+public:
+  static char ID;
+
+  explicit IrreducibleControlFlowOnly(FunctionPass *Fix)
+      : MachineFunctionPass(ID), Fix(Fix) {}
+
+  StringRef getPassName() const override { return Fix->getPassName(); }
+
+  bool doInitialization(Module &M) override {
+    MachineFunctionPass::doInitialization(M);
+    return Fix->doInitialization(M);
+  }
+
+  bool doFinalization(Module &M) override { return Fix->doFinalization(M); }
+
+  void getAnalysisUsage(AnalysisUsage &Usage) const override {
+    Fix->getAnalysisUsage(Usage);
+  }
+
+  bool runOnMachineFunction(MachineFunction &MF) override {
+    if (isReducible(MF))
+      return false;
+    // The wrapped pass reads the machine function through the module's
+    // machine code analysis, which this pass requires on its behalf.
+    if (Fix->getResolver() == nullptr) {
+      auto *Resolver = new AnalysisResolver(getResolver()->getPMDataManager());
+      Resolver->addAnalysisImplsPair(
+          &MachineModuleInfoWrapperPass::ID,
+          &getAnalysis<MachineModuleInfoWrapperPass>());
+      Fix->setResolver(Resolver);
+    }
+    return Fix->runOnFunction(MF.getFunction());
+  }
+
+private:
+  // A graph is reducible when every edge that a depth-first search finds
+  // going back to a block on its stack targets a block that dominates the
+  // edge's source. Blocks the entry cannot reach count as irreducible, since
+  // the wrapped pass also examines them.
+  static bool isReducible(MachineFunction &MF) {
+    MachineDominatorTree Dominators(MF);
+    enum class State : unsigned char { New, Active, Done };
+    std::vector<State> States(MF.getNumBlockIDs(), State::New);
+    SmallVector<std::pair<MachineBasicBlock *,
+                          MachineBasicBlock::succ_iterator>,
+                32>
+        Stack;
+    size_t Visited = 1;
+    MachineBasicBlock *Entry = &MF.front();
+    States[Entry->getNumber()] = State::Active;
+    Stack.push_back({Entry, Entry->succ_begin()});
+    while (!Stack.empty()) {
+      auto &[Block, Next] = Stack.back();
+      if (Next == Block->succ_end()) {
+        States[Block->getNumber()] = State::Done;
+        Stack.pop_back();
+        continue;
+      }
+      MachineBasicBlock *Successor = *Next++;
+      State &Seen = States[Successor->getNumber()];
+      if (Seen == State::Active) {
+        if (!Dominators.dominates(Successor, Block))
+          return false;
+      } else if (Seen == State::New) {
+        Seen = State::Active;
+        ++Visited;
+        Stack.push_back({Successor, Successor->succ_begin()});
+      }
+    }
+    return Visited == MF.size();
+  }
+
+  std::unique_ptr<FunctionPass> Fix;
+};
+
+char IrreducibleControlFlowOnly::ID = 0;
+
+// The code generation pipeline for one module, with two changes for
+// WebAssembly. The irreducible control flow pass runs only where it can
+// change the function (see IrreducibleControlFlowOnly). Object emission also
+// leaves out the last machine pass, a module pass that records the external
+// symbols every function uses so that assembly output can declare them
+// before the first function. A module pass in the middle of the pipeline
+// keeps the machine code of every function alive until all of them are
+// compiled. Object files do not contain those declarations, and the printer
+// creates each symbol when it lowers the first use, so without the pass each
+// function's machine code is freed once it is printed.
+class CodeGenPasses final : public legacy::PassManagerBase {
+public:
+  CodeGenPasses(const TargetMachine &Machine, CodeGenFileType Type)
+      : Wasm(Machine.getTargetTriple().isWasm()),
+        Object(Type == CodeGenFileType::ObjectFile) {}
+
+  void add(Pass *P) override {
+    if (Wasm) {
+      StringRef Argument = passArgument(*P);
+      if (Argument == "wasm-fix-irreducible-control-flow") {
+        Passes.add(
+            new IrreducibleControlFlowOnly(static_cast<FunctionPass *>(P)));
+        return;
+      }
+      if (Object && Argument == "wasm-mclower-prepass") {
+        delete P;
+        return;
+      }
+    }
+    Passes.add(P);
+  }
+
+  void run(Module &M) { Passes.run(M); }
+
+private:
+  static StringRef passArgument(const Pass &P) {
+    const PassInfo *Info =
+        PassRegistry::getPassRegistry()->getPassInfo(P.getPassID());
+    return Info == nullptr ? StringRef() : Info->getPassArgument();
+  }
+
+  bool Wasm;
+  bool Object;
+  legacy::PassManager Passes;
+};
+
 // Writes code for an optimized module to a unique sibling of OutputPath,
 // which is appended to Temporaries once it exists.
 std::optional<EmitFailure>
@@ -153,7 +294,7 @@ generateCode(Module &M, TargetMachine &Machine, CodeGenFileType Type,
     return EmitFailure{"output_open_failed", EC.message()};
   Temporaries.push_back(TemporaryPath);
   raw_fd_ostream Output(TemporaryFd, true);
-  legacy::PassManager CodeGeneration;
+  CodeGenPasses CodeGeneration(Machine, Type);
   if (Machine.addPassesToEmitFile(CodeGeneration, Output, nullptr, Type))
     return EmitFailure{"emission_not_supported",
                        "target does not support the requested file type"};
@@ -325,7 +466,7 @@ compileUnoptimizedPartitions(const EmitOptions &Options,
     P.PB.buildPerModuleDefaultPipeline(OptimizationLevel::O0)
         .run(**Mod, P.MAM);
     raw_svector_ostream Output(Objects[I]);
-    legacy::PassManager CodeGeneration;
+    CodeGenPasses CodeGeneration(*Machine, CodeGenFileType::ObjectFile);
     if (Machine->addPassesToEmitFile(CodeGeneration, Output, nullptr,
                                      CodeGenFileType::ObjectFile))
       return Failures.set({"emission_not_supported",
@@ -436,6 +577,44 @@ compileOptimizedPartitions(const EmitOptions &Options,
     ObjectKeys[I] = std::move(Key);
     return true;
   };
+
+  // The backend's own code generation cannot use CodeGenPasses, so
+  // WebAssembly partitions are compiled here with the passes it would add,
+  // and returning false skips it.
+  if (TargetTriple.isWasm())
+    Config.PreCodeGenModuleHook = [&](unsigned Task, const Module &Optimized) {
+      size_t I = Task - 1;
+      if (I >= Count)
+        return true;
+      std::string LookupError;
+      std::unique_ptr<TargetMachine> Machine =
+          createTargetMachine(Options.Target, Options.OptLevel, LookupError);
+      if (!Machine) {
+        Failures.set({"target_machine_failed", LookupError});
+        return false;
+      }
+      // The backend passes the module it owns; only the hook's signature is
+      // const.
+      Module &Mod = const_cast<Module &>(Optimized);
+      Objects[I].clear();
+      raw_svector_ostream Output(Objects[I]);
+      CodeGenPasses CodeGeneration(*Machine, CodeGenFileType::ObjectFile);
+      TargetLibraryInfoImpl LibraryInfo(Mod.getTargetTriple(),
+                                        Machine->Options.VecLib);
+      CodeGeneration.add(new TargetLibraryInfoWrapperPass(LibraryInfo));
+      CodeGeneration.add(new RuntimeLibraryInfoWrapper(
+          Mod.getTargetTriple(), Machine->Options.ExceptionModel,
+          Machine->Options.FloatABIType, Machine->Options.EABIVersion,
+          Machine->Options.MCOptions.ABIName, Machine->Options.VecLib));
+      if (Machine->addPassesToEmitFile(CodeGeneration, Output, nullptr,
+                                       CodeGenFileType::ObjectFile)) {
+        Failures.set({"emission_not_supported",
+                      "target does not support object emission"});
+        return false;
+      }
+      CodeGeneration.run(Mod);
+      return false;
+    };
 
   // The link refers to module identifiers for its whole lifetime.
   std::vector<std::string> Names(Count);

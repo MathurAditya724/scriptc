@@ -79,11 +79,15 @@ import { isAssertClassNew } from "./assert-instances.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-methods.js";
 import { lowerObjectConstructor } from "./containers/indexed-objects.js";
-import { bufEncoding } from "./containers/bytes.js";
+import { knownBufEncoding } from "./containers/bytes.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { lowerSearchParamsNew } from "./builtins/url.js";
 import { lowerTextCodecNew } from "./builtins/text-codecs.js";
-import { lowerMessageChannelNew, lowerWorkerNew } from "./builtins/workers.js";
+import {
+  lowerBroadcastChannelNew,
+  lowerMessageChannelNew,
+  lowerWorkerNew,
+} from "./builtins/workers.js";
 import {
   unsupportedPackageValueDiag,
   unsupportedDiag,
@@ -7857,7 +7861,6 @@ export function superCallStmt(
   args: IrExpr[],
   loc: SrcLoc,
 ): IrStmt {
-  const base = superBaseOf(info)!;
   const thisRef: IrExpr = {
     kind: "varRef",
     localId: thisLocal.id,
@@ -7902,6 +7905,8 @@ export function superCallStmt(
       },
       loc,
     };
+  // A callable base has no class info, so the base is read after that case.
+  const base = superBaseOf(info)!;
   if (base.builtinError) {
     // super(message) into the runtime-provided Error constructor: stamps
     // name/message on the (already-allocated) object. Receiver + message
@@ -8398,7 +8403,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   if (worker) return worker;
   const readlineUi = lowerReadlineUiNew(lowerer, expr);
   if (readlineUi) return readlineUi;
-  const channel = lowerMessageChannelNew(lowerer, expr);
+  const channel = lowerMessageChannelNew(lowerer, expr) ?? lowerBroadcastChannelNew(lowerer, expr);
   if (channel) return channel;
   let intlConstructor = expr.expression;
   if (ts.isIdentifier(intlConstructor)) {
@@ -8890,20 +8895,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       };
       const pattern = strArg(args[0], "pattern");
       const flags = strArg(args[1], "flags argument");
-      // Node accepts the 'd' and 'v' flags the engine does not have; a
-      // literal flags string refuses here like the literal regex form.
-      if (flags.kind === "strLit" && args[1] !== undefined) {
-        for (const f of ["d", "v"]) {
-          if (flags.value.includes(f)) {
-            lowerer.unsupported(
-              "SC1120",
-              args[1],
-              f === "d"
-                ? "the regex 'd' flag (match indices)"
-                : "the regex 'v' flag (unicode sets)",
-            );
-          }
-        }
+      // Node accepts the 'd' flag the engine does not have; a literal
+      // flags string refuses here like the literal regex form.
+      if (flags.kind === "strLit" && args[1] !== undefined && flags.value.includes("d")) {
+        lowerer.unsupported("SC1120", args[1], "the regex 'd' flag (match indices)");
       }
       return {
         kind: "libCall",
@@ -8972,24 +8967,41 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       );
     }
     // `new StringDecoder(encoding?)` (node:string_decoder): the decoder
-    // is a two-field record — the CANONICAL encoding name (aliases fold
-    // at compile time, exactly what `.encoding` answers in Node) and
-    // the packed-f64 pending state starting at 0 (nothing buffered).
-    // The encoding must be a literal (Node's alias set); omitted means
-    // utf8, Node's default.
+    // is a two-field record — the CANONICAL encoding name (exactly what
+    // `.encoding` answers in Node) and the packed-f64 pending state
+    // starting at 0 (nothing buffered). A literal Buffer encoding folds
+    // its alias at compile time; any other encoding argument is
+    // normalized at run time (Node's normalizeEncoding, which throws
+    // ERR_UNKNOWN_ENCODING for an unknown name). Omitted means utf8,
+    // Node's default.
     if (symbol && symbol.name === "StringDecoder" && lowerer.isStdlibSymbol(symbol)) {
       const args = expr.arguments ?? [];
       if (args.length > 1) {
         lowerer.noLowering("new StringDecoder with 2 arguments", expr, undefined, symbol);
       }
-      const encName =
-        args.length === 1 ? bufEncoding(lowerer, "new StringDecoder", args[0]!) : "utf8";
+      const encNode = args[0];
+      const encT = encNode ? lowerer.typeOf(encNode) : undefined;
+      const encName = !encNode
+        ? "utf8"
+        : encT!.isStringLiteralType()
+          ? knownBufEncoding(encT!.value)
+          : undefined;
+      const encoding: IrExpr =
+        encName !== undefined
+          ? { kind: "strLit", value: encName, type: STRING, loc }
+          : {
+              kind: "libCall",
+              fn: "strdec.encoding",
+              args: [lowerer.lowerExprExpecting(encNode!, DYN)],
+              type: STRING,
+              loc,
+            };
       const decT = lowerer.mapTypeOf(lowerer.typeOf(expr));
       if (decT?.kind !== "record") lowerer.badType(expr, lowerer.typeOf(expr));
       return {
         kind: "recordLit",
         fields: [
-          { name: "%enc", value: { kind: "strLit", value: encName, type: STRING, loc } },
+          { name: "%enc", value: encoding },
           { name: "%pending", value: { kind: "numLit", value: 0, type: F64, loc } },
         ],
         type: decT,

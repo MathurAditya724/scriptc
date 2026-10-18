@@ -618,6 +618,40 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     },
   );
 
+  test.each(["release", "dev"] as const)(
+    "a factory that destructures its base class from an options object builds static subclasses (%s)",
+    async (optimization) => {
+      const entry = join(pilotRoot, "class-options-cli.ts");
+      const outDir = join(cacheDir, `class-options-${optimization}-${sanitize ? "san" : "plain"}`);
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic: ["class-options"],
+        sanitize,
+        optimization,
+        outDir,
+        outPath: join(outDir, "program"),
+        emitIr: true,
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(reference.exitCode).toBe(0);
+      expect(native.stdout).toEqual(reference.stdout);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.exitCode).toBe(reference.exitCode);
+      // One makeClass instance per distinct base (Root, Animal, Dog) plus
+      // the generic one a class's own `extend` passing itself back reuses.
+      const ir = JSON.parse(readFileSync(result.irPath!, "utf8")) as {
+        functions: { name: string }[];
+      };
+      const instances = ir.functions.filter((fn) => /^%[\w.]*makeClass%\d+$/.test(fn.name));
+      expect(instances.length).toBeLessThanOrEqual(4);
+    },
+  );
+
   test.for([
     ["escape-string-regexp", "escape-cli.ts"],
     ["slash", "slash-cli.ts"],
