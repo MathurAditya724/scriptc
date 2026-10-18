@@ -26,16 +26,19 @@
  *   count was already given up (which would over-decrement and free live
  *   data).
  *
- * The main graph phases keep a bounded depth-first walk and defer deeper
- * traces to reusable worklists. Ordinary RC destruction and cross-generation
- * releases are separate paths. White candidates are recorded during scan
- * and filtered after outside roots settle, avoiding a separate gather walk.
- * markGray also records the objects it grays and counts those still
- * externally referenced (rc > 0 after the trial decrements), per pass and
- * per component: the objects first reached from one candidate. A component
- * with none is garbage, which is what scan would find, so the pass dooms it
- * at once; scan runs only when some component is externally referenced,
- * and only from there (see scr_cyc_pass).
+ * The graph phases keep a bounded depth-first walk and defer deeper traces
+ * to reusable worklists. Ordinary RC destruction and cross-generation
+ * releases are separate paths. markGray records the objects it grays (up
+ * to SCR_CYC_GRAY_LIST_MAX) and counts those still externally referenced
+ * (rc > 0 after the trial decrements), per pass and per component: the
+ * objects first reached from one candidate. A component with none is
+ * garbage, which is what scan would find, so the pass dooms it at once.
+ * For the others, scan blackens from each recorded object that is still
+ * externally referenced, which restores exactly the survivors, and what
+ * stays gray is the garbage: no walk whitens it. Only a pass too large to
+ * record walks scan from the candidates, whitening as it goes, and then
+ * filters the white set after outside roots settle, avoiding a separate
+ * gather walk.
  *
  * ── generations ──────────────────────────────────────────────────────
  * A pass costs O(objects reachable from its candidates), and a candidate
@@ -379,7 +382,6 @@ static SCR_TL ScrVec scr_promote;
 static SCR_TL ScrVec scr_pending;
 static SCR_TL ScrVec scr_restore_pending;
 #endif
-#define SCR_CYC_WALK_DEPTH 64
 
 /* The gathered white set (freed after the walk completes). */
 #ifndef SCR_WORKERS
@@ -933,18 +935,53 @@ void scr_cyc_on_release(void *obj) {
   ((child) == NULL || SCR_RC(child) == SIZE_MAX \
    || scr_cyc_gen(scr_cyc_hdr(child)) > scr_gen_limit)
 
-/* Trace callbacks forward an integer depth through their opaque context;
- * it is never dereferenced. The ABI already carries it through every edge. */
+/* The walks are depth-first and recursive up to SCR_CYC_WALK_DEPTH, where
+ * an object is queued instead (scr_pending, or scr_restore_pending for the
+ * restoration, which can run inside scan) and traced from the queue. Trace
+ * callbacks forward that integer depth through their opaque context; it is
+ * never dereferenced. */
+#define SCR_CYC_WALK_DEPTH 64
+
+/* A walk visits a dense cycle-capable array's children itself: the present
+ * dense elements, which are all scr_arr_trace_v visits when the array has
+ * no sparse entries, properties or metadata (no `ext`). Each walk gets its
+ * own copy, out of line, so the per-edge visitors stay small. */
+#define SCR_CYC_ARRAY_WALK(name, visit)                                  \
+  static __attribute__((noinline)) void name(const ScrArr *arr, void *ctx) { \
+    size_t end = arr->len < arr->cap ? arr->len : arr->cap;               \
+    size_t filled = arr->filled < end ? arr->filled : end;                \
+    for (size_t i = 0; i < filled; i++) visit((void *)(uintptr_t)arr->data[i], ctx); \
+    for (size_t i = filled; i < end; i++)                                 \
+      if (arr->present[i] == SCR_ARR_VALUE) visit((void *)(uintptr_t)arr->data[i], ctx); \
+  }
+
+/* Visit every child of `obj` with VISIT, through ARRAY_WALK for a dense
+ * cycle-capable array and through the type's trace otherwise. */
+#define SCR_CYC_CHILDREN(obj, type, ARRAY_WALK, VISIT, depth)                         \
+  do {                                                                               \
+    if ((type)->kind == SCR_CYC_KIND_ARRAY && ((const ScrArr *)(obj))->ext == NULL)   \
+      ARRAY_WALK((const ScrArr *)(obj), (void *)(depth));                            \
+    else                                                                             \
+      (type)->trace((obj), (VISIT), (void *)(depth));                                \
+  } while (0)
+
+static void scr_mg_visit(void *child, void *ctx);
+static void scr_sb_visit(void *child, void *ctx);
+static void scr_scan_visit(void *child, void *ctx);
+SCR_CYC_ARRAY_WALK(scr_mg_array, scr_mg_visit)
+SCR_CYC_ARRAY_WALK(scr_sb_array, scr_sb_visit)
+SCR_CYC_ARRAY_WALK(scr_scan_array, scr_scan_visit)
+
 static inline __attribute__((always_inline)) void scr_mark_gray(void *obj, uintptr_t depth);
 static void scr_mg_visit(void *child, void *ctx) {
   if (child == NULL || SCR_RC(child) == SIZE_MAX) return;
-  if (scr_cyc_gen(scr_cyc_hdr(child)) > scr_gen_limit) {
+  ScrCycHdr *h = scr_cyc_hdr(child);
+  if (scr_cyc_gen(h) > scr_gen_limit) {
     scr_cyc_push_work(&scr_xgen_edges, scr_gray_holder);
     scr_cyc_push_work(&scr_xgen_edges, child);
     return;
   }
   size_t rc = --SCR_RC(child);
-  ScrCycHdr *h = scr_cyc_hdr(child);
   if (scr_cyc_color(h) == SCR_CYC_GRAY) {
     if (rc == 0) {
       scr_gray_referenced--;
@@ -954,9 +991,11 @@ static void scr_mg_visit(void *child, void *ctx) {
   }
   scr_mark_gray(child, (uintptr_t)ctx);
 }
+/* markGray reaches `obj` (its count already trial-decremented): gray it,
+ * number it with the walk's component, record it, count it while it is
+ * externally referenced, and walk its children. */
 static inline __attribute__((always_inline)) void scr_mark_gray(void *obj, uintptr_t depth) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
-  if (scr_cyc_color(h) == SCR_CYC_GRAY) return;
   scr_cyc_set_color(h, SCR_CYC_GRAY);
   /* A limited pass can gray candidates it did not take; they keep their
    * buffer position and are simply never counted as members. */
@@ -972,10 +1011,24 @@ static inline __attribute__((always_inline)) void scr_mark_gray(void *obj, uintp
   }
   void *holder = scr_gray_holder;
   scr_gray_holder = obj;
-  scr_cyc_type(h)->trace(obj, scr_mg_visit, (void *)(depth + 1));
+  const ScrCycType *type = scr_cyc_type(h);
+  SCR_CYC_CHILDREN(obj, type, scr_mg_array, scr_mg_visit, depth + 1);
   scr_gray_holder = holder;
 }
+/* markGray from one (black) candidate, through the queue. */
+static void scr_mark_gray_from(void *root) {
+  scr_mark_gray(root, 0);
+  while (scr_pending.n) {
+    void *obj = scr_pending.v[--scr_pending.n];
+    const ScrCycType *type = scr_cyc_type(scr_cyc_hdr(obj));
+    scr_gray_holder = obj;
+    SCR_CYC_CHILDREN(obj, type, scr_mg_array, scr_mg_visit, 1);
+  }
+}
 
+/* scan's restoration: blacken an externally referenced object and
+ * everything it reaches that is not black yet, giving back the trial
+ * decrements of the edges it follows. */
 static void scr_scan_black(void *obj, uintptr_t depth);
 static void scr_sb_visit(void *child, void *ctx) {
   if (SCR_CYC_SKIP(child)) return;
@@ -994,9 +1047,21 @@ static void scr_scan_black(void *obj, uintptr_t depth) {
     scr_cyc_push_work(&scr_restore_pending, obj);
     return;
   }
-  scr_cyc_type(h)->trace(obj, scr_sb_visit, (void *)(depth + 1));
+  const ScrCycType *type = scr_cyc_type(h);
+  SCR_CYC_CHILDREN(obj, type, scr_sb_array, scr_sb_visit, depth + 1);
+}
+static void scr_restore_from(void *root) {
+  scr_scan_black(root, 0);
+  while (scr_restore_pending.n) {
+    void *obj = scr_restore_pending.v[--scr_restore_pending.n];
+    const ScrCycType *type = scr_cyc_type(scr_cyc_hdr(obj));
+    SCR_CYC_CHILDREN(obj, type, scr_sb_array, scr_sb_visit, 1);
+  }
 }
 
+/* scan, walking: restore a gray object that is externally referenced, else
+ * whiten it, record it once (a later outside root can still restore it;
+ * settle filters the list) and walk its children. */
 static void scr_scan(void *obj, uintptr_t depth);
 static void scr_scan_visit(void *child, void *ctx) {
   if (SCR_CYC_SKIP(child)) return;
@@ -1006,22 +1071,17 @@ static void scr_scan(void *obj, uintptr_t depth) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
   if (scr_cyc_color(h) != SCR_CYC_GRAY) return;
   if (SCR_RC(obj) > 0) {
-    scr_scan_black(obj, 0);
-    while (scr_restore_pending.n) {
-      void *next = scr_restore_pending.v[--scr_restore_pending.n];
-      scr_cyc_type(scr_cyc_hdr(next))->trace(next, scr_sb_visit, NULL);
-    }
+    scr_restore_from(obj);
     return;
   }
   scr_cyc_set_color(h, SCR_CYC_WHITE);
-  /* Record each whitened object once. A later outside root can restore it;
-   * filter the list only after every scan finishes. No gather trace needed. */
   scr_cyc_push_work(&scr_white, obj);
   if (depth == SCR_CYC_WALK_DEPTH) {
     scr_cyc_push_work(&scr_pending, obj);
     return;
   }
-  scr_cyc_type(h)->trace(obj, scr_scan_visit, (void *)(depth + 1));
+  const ScrCycType *type = scr_cyc_type(h);
+  SCR_CYC_CHILDREN(obj, type, scr_scan_array, scr_scan_visit, depth + 1);
 }
 
 /* ── cross-generation edges ───────────────────────────────────────────── */
@@ -1337,12 +1397,7 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
     size_t start = scr_white.n;
     scr_gray_comp = split ? ++comp : 0;
     scr_comp_referenced = 0;
-    scr_mark_gray(obj, 0);
-    while (scr_pending.n) {
-      void *next = scr_pending.v[--scr_pending.n];
-      scr_gray_holder = next;
-      scr_cyc_type(scr_cyc_hdr(next))->trace(next, scr_mg_visit, NULL);
-    }
+    scr_mark_gray_from(obj);
     if (!split) continue;
     size_t end = scr_white.n;
     if (scr_comp_referenced == 0 && end < SCR_CYC_GRAY_LIST_MAX) {
@@ -1361,8 +1416,39 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
   if (scr_gray_referenced == 0 && scr_white.n < SCR_CYC_GRAY_LIST_MAX)
     return scr_cyc_pass_done(scr_cyc_settle(gen_limit, split && scr_live_ranges.n == 0));
 
-  /* Keep only the doomed components' entries; scan appends what it
-   * whitens. */
+  /* scan, from the recorded set when markGray recorded every gray object:
+   * the survivors are exactly what the externally referenced gray objects
+   * reach, so blackening from each of them in turn leaves the garbage gray
+   * without walking it again, and settle dooms what is still gray. Only
+   * the referenced components' entries need looking at; the doomed ones
+   * are settled already. */
+  if (scr_white.n < SCR_CYC_GRAY_LIST_MAX) {
+    /* One sweep over the list, keeping the doomed components' entries and,
+     * of the referenced components', only those still gray: a survivor
+     * leaves the list as soon as it is seen black, and an object kept here
+     * that a later restoration blackens is skipped by settle. */
+    size_t kept = 0, from = 0;
+    size_t nranges = split ? scr_live_ranges.n : 2;
+    for (size_t k = 0; k < nranges; k += 2) {
+      size_t start = split ? (uintptr_t)scr_live_ranges.v[k] : 0;
+      size_t end = split ? (uintptr_t)scr_live_ranges.v[k + 1] : scr_white.n;
+      if (start > from) memmove(scr_white.v + kept, scr_white.v + from, (start - from) * sizeof *scr_white.v);
+      kept += start - from;
+      for (size_t j = start; j < end; j++) {
+        void *obj = scr_white.v[j];
+        if (scr_cyc_color(scr_cyc_hdr(obj)) != SCR_CYC_GRAY) continue;
+        if (SCR_RC(obj) > 0) scr_restore_from(obj);
+        else scr_white.v[kept++] = obj;
+      }
+      from = end;
+    }
+    if (scr_white.n > from) memmove(scr_white.v + kept, scr_white.v + from, (scr_white.n - from) * sizeof *scr_white.v);
+    scr_white.n = kept + (scr_white.n - from);
+    return scr_cyc_pass_done(scr_cyc_settle(gen_limit, false));
+  }
+
+  /* Otherwise scan walks from the candidates. Keep only the doomed
+   * components' entries; scan appends what it whitens. */
   if (!split) {
     scr_white.n = 0;
   } else if (scr_live_ranges.n) {
@@ -1376,16 +1462,24 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
     memmove(scr_white.v + kept, scr_white.v + from, (scr_white.n - from) * sizeof *scr_white.v);
     scr_white.n = kept + (scr_white.n - from);
   }
+  /* Externally referenced candidates first: what they restore is never
+   * whitened only to be restored again. */
+  for (size_t i = 0; i < scr_cands.n; i++) {
+    void *obj = scr_cands.v[i];
+    if (scr_cyc_color(scr_cyc_hdr(obj)) == SCR_CYC_GRAY && SCR_RC(obj) > 0) scr_restore_from(obj);
+  }
   for (size_t i = 0; i < scr_cands.n; i++) {
     void *obj = scr_cands.v[i];
     if (scr_cyc_color(scr_cyc_hdr(obj)) == SCR_CYC_GRAY) scr_scan(obj, 0);
   }
   while (scr_pending.n) {
     void *obj = scr_pending.v[--scr_pending.n];
-    /* A later outside root may have restored this deferred white node and
-     * its descendants already. Never scan a black node's edges again. */
-    if (scr_cyc_color(scr_cyc_hdr(obj)) == SCR_CYC_WHITE)
-      scr_cyc_type(scr_cyc_hdr(obj))->trace(obj, scr_scan_visit, NULL);
+    /* A later outside root may have restored this deferred white object and
+     * its descendants already. Never scan a black object's edges again. */
+    ScrCycHdr *h = scr_cyc_hdr(obj);
+    if (scr_cyc_color(h) != SCR_CYC_WHITE) continue;
+    const ScrCycType *type = scr_cyc_type(h);
+    SCR_CYC_CHILDREN(obj, type, scr_scan_array, scr_scan_visit, 1);
   }
 
   return scr_cyc_pass_done(scr_cyc_settle(gen_limit, false));

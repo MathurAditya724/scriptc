@@ -92,6 +92,9 @@ typedef struct ScrCycType {
  * SCR_CYC_KIND_EMITTED (llvm/alloc.ts FIRST_EMITTED_CYC_KIND). */
 enum {
   SCR_CYC_KIND_NONE = 0,
+  /* Also how the collector recognizes a cycle-capable ScrArr, whose dense
+   * elements it visits inline (scr_cycle.c SCR_CYC_CHILDREN): reserved for
+   * scr_array.c's descriptor. */
   SCR_CYC_KIND_ARRAY,
   SCR_CYC_KIND_PROMISE,
   SCR_CYC_KIND_BOX,
