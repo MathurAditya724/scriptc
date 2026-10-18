@@ -612,11 +612,13 @@ static ScrStr *scr_regex_span(const ScrRegexInput *input, int start, int end) {
 
 /* ── match metadata ───────────────────────────────────────────────────── */
 
-/* Results of one exec or matchAll call share their subject and regex.
- * Each result records the source and its start index; the metadata
- * object (index, input, groups) is built when a result is first
- * converted to a dynamic value, so results read only through their
- * elements never allocate it. */
+/* Results of one exec or matchAll call share their subject and regex
+ * through one match source handle, which each result's metadata slot
+ * holds with its start index until the metadata object (index, input,
+ * groups) is first needed: when the result is converted to a dynamic
+ * value or its groups are read. Results read only through their elements
+ * never allocate it, and releasing a result releases the handle with the
+ * rest of its metadata. */
 typedef struct ScrRegexMatchSource {
   size_t rc;
   ScrStr *input;
@@ -624,55 +626,57 @@ typedef struct ScrRegexMatchSource {
   ScrDyn *input_value; /* `input` as a dynamic value, built on first use */
 } ScrRegexMatchSource;
 
-static void scr_regex_materialize_metadata(ScrArr *a);
 static bool scr_regex_copy_pending_metadata(ScrArr *a, ScrDyn *target);
 
-static ScrRegexMatchSource *scr_regex_source_new(ScrStr *s, ScrRegex *re) {
-  ScrRegexMatchSource *src = malloc(sizeof *src);
-  if (!src) scr_regex_oom();
-  src->rc = 1;
-  src->input = scr_str_retain(s);
-  src->re = scr_regex_retain(re);
-  src->input_value = NULL;
-  return src;
+static void *scr_regex_source_retain_v(void *p) {
+  ((ScrRegexMatchSource *)p)->rc++;
+  return p;
 }
 
-static void scr_regex_source_release(ScrRegexMatchSource *src) {
-  if (!src || --src->rc != 0) return;
+static void scr_regex_source_release_v(void *p) {
+  ScrRegexMatchSource *src = p;
+  if (--src->rc != 0) return;
   scr_str_release(src->input);
   scr_regex_release(src->re);
   scr_dyn_release(src->input_value);
   free(src);
 }
 
-/* Records the match at UTF-16 `index` of `src` as the row's pending
- * metadata. */
-static void scr_regex_defer_metadata(ScrArr *row, ScrRegexMatchSource *src, int index) {
-  static const ScrArrMatchHooks hooks = { scr_regex_source_release, scr_regex_copy_pending_metadata };
-  scr_arr_match_hooks = &hooks;
+/* The +1 match source handle of one exec or matchAll call. */
+static ScrDyn *scr_regex_source_new(ScrStr *s, ScrRegex *re) {
+  static const ScrDynHandleOps ops = {
+    "MatchSource", &scr_regex_source_retain_v, &scr_regex_source_release_v, NULL, NULL, NULL, NULL,
+  };
+  scr_dyn_handle_install(SCR_DYNH_MATCH_SOURCE, &ops);
+  scr_arr_match_copy = &scr_regex_copy_pending_metadata;
+  ScrRegexMatchSource *src = malloc(sizeof *src);
+  if (!src) scr_regex_oom();
+  src->rc = 0;
+  src->input = scr_str_retain(s);
+  src->re = scr_regex_retain(re);
+  src->input_value = NULL;
+  return scr_dyn_new_handle(src, SCR_DYNH_MATCH_SOURCE);
+}
+
+/* Records the match at UTF-16 `index` as the row's pending metadata. */
+static void scr_regex_defer_metadata(ScrArr *row, ScrDyn *source, int index) {
   ScrArrExt *x = scr_arr_ext(row);
-  src->rc++;
-  x->match_source = src;
+  x->metadata = scr_dyn_retain(source);
   x->match_index = (double)index;
+}
+
+/* The pending match source of a result, or NULL once its metadata exists. */
+static ScrRegexMatchSource *scr_regex_pending(const ScrArr *a) {
+  const ScrDyn *metadata = a->ext ? a->ext->metadata : NULL;
+  if (!metadata || metadata->kind != SCR_DYN_HANDLE || metadata->v.handle.tag != SCR_DYNH_MATCH_SOURCE)
+    return NULL;
+  return metadata->v.handle.ptr;
 }
 
 /* The subject as a dynamic value, shared by the source's results. +1. */
 static ScrDyn *scr_regex_source_input(ScrRegexMatchSource *src) {
   if (!src->input_value) src->input_value = scr_dyn_new_str(src->input);
   return scr_dyn_retain(src->input_value);
-}
-
-ScrDyn *scr_regex_result_prop(ScrArr *a, ScrStr *key) {
-  ScrArrExt *x = a->ext;
-  if (x && x->match_source && !x->metadata) {
-    if (key->len == 5 && memcmp(key->data, "index", 5) == 0)
-      return scr_dyn_new_num(x->match_index);
-    if (key->len == 5 && memcmp(key->data, "input", 5) == 0)
-      return scr_regex_source_input(x->match_source);
-    scr_regex_materialize_metadata(a);
-  }
-  ScrDyn *value = x && x->metadata ? scr_dyn_obj_get(x->metadata, key->data, key->len) : NULL;
-  return scr_dyn_retain(value ? value : scr_dyn_undefined());
 }
 
 /* groups is a null-prototype object mapping each group name to its first
@@ -700,32 +704,42 @@ static ScrDyn *scr_regex_groups_of(const ScrArr *a, uint8_t *bc) {
 }
 
 static void scr_regex_materialize_metadata(ScrArr *a) {
-  ScrArrExt *x = scr_arr_ext(a);
-  ScrRegexMatchSource *src = x->match_source;
+  ScrRegexMatchSource *src = scr_regex_pending(a);
   if (!src) return;
-  x->match_source = NULL;
-  if (!x->metadata) {
-    ScrDyn *props = scr_dyn_new_obj();
-    x->metadata = props;
-    scr_dyn_obj_set(props, "index", 5, scr_dyn_new_num(x->match_index));
-    scr_dyn_obj_set(props, "input", 5, scr_regex_source_input(src));
-    scr_dyn_obj_set(props, "groups", 6, scr_regex_groups_of(a, scr_regex_bc(src->re)));
-  }
-  scr_regex_source_release(src);
+  ScrArrExt *x = a->ext;
+  ScrDyn *source = x->metadata;
+  ScrDyn *props = scr_dyn_new_obj();
+  scr_dyn_obj_set(props, "index", 5, scr_dyn_new_num(x->match_index));
+  scr_dyn_obj_set(props, "input", 5, scr_regex_source_input(src));
+  scr_dyn_obj_set(props, "groups", 6, scr_regex_groups_of(a, scr_regex_bc(src->re)));
+  x->metadata = props;
+  scr_dyn_release(source);
 }
 
 static bool scr_regex_copy_pending_metadata(ScrArr *a, ScrDyn *target) {
-  ScrArrExt *x = scr_arr_ext(a);
-  ScrRegexMatchSource *src = x->match_source;
+  ScrRegexMatchSource *src = scr_regex_pending(a);
   if (target->kind != SCR_DYN_ARR || target->v.arr.properties || target->non_extensible ||
       target->v.arr.frozen) {
     scr_regex_materialize_metadata(a);
     return false;
   }
-  scr_dyn_arr_named_put(target, "index", 5, scr_dyn_new_num(x->match_index));
+  scr_dyn_arr_named_put(target, "index", 5, scr_dyn_new_num(a->ext->match_index));
   scr_dyn_arr_named_put(target, "input", 5, scr_regex_source_input(src));
   scr_dyn_arr_named_put(target, "groups", 6, scr_regex_groups_of(a, scr_regex_bc(src->re)));
   return true;
+}
+
+ScrDyn *scr_regex_result_prop(ScrArr *a, ScrStr *key) {
+  ScrRegexMatchSource *src = scr_regex_pending(a);
+  if (src) {
+    if (key->len == 5 && memcmp(key->data, "index", 5) == 0)
+      return scr_dyn_new_num(a->ext->match_index);
+    if (key->len == 5 && memcmp(key->data, "input", 5) == 0) return scr_regex_source_input(src);
+    scr_regex_materialize_metadata(a);
+  }
+  ScrDyn *metadata = a->ext ? a->ext->metadata : NULL;
+  ScrDyn *value = metadata ? scr_dyn_obj_get(metadata, key->data, key->len) : NULL;
+  return scr_dyn_retain(value ? value : scr_dyn_undefined());
 }
 
 /* ECMA-262 AdvanceStringIndex: past a whole surrogate pair under /u, one
@@ -863,9 +877,9 @@ static ScrArr *scr_regex_exec_core(ScrStr *s, ScrRegex *re, uint64_t mask, bool 
     out->filled = (uint32_t)filled;
     out->len = n;
     if (metadata) {
-      ScrRegexMatchSource *src = scr_regex_source_new(s, re);
-      scr_regex_defer_metadata(out, src, scr_capture_index(&input, capture[0]));
-      scr_regex_source_release(src);
+      ScrDyn *source = scr_regex_source_new(s, re);
+      scr_regex_defer_metadata(out, source, scr_capture_index(&input, capture[0]));
+      scr_dyn_release(source);
     }
   }
   scr_regex_input_dispose(&input);
@@ -1015,7 +1029,7 @@ static ScrArr *scr_regex_match_all_core(ScrStr *s, ScrRegex *re, ScrArr *indices
   }
   bool unicode = (re_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0;
   int capture_count = lre_get_capture_count(bc);
-  ScrRegexMatchSource *src = metadata ? scr_regex_source_new(s, re) : NULL;
+  ScrDyn *source = metadata ? scr_regex_source_new(s, re) : NULL;
   ScrRegexInput input;
   scr_regex_input_init(&input, re, bc, s);
   int len = input.len;
@@ -1048,12 +1062,12 @@ static ScrArr *scr_regex_match_all_core(ScrStr *s, ScrRegex *re, ScrArr *indices
     while (filled < (size_t)capture_count && present[filled] == SCR_ARR_VALUE) filled++;
     row->filled = (uint32_t)filled;
     row->len = (size_t)capture_count;
-    if (src) scr_regex_defer_metadata(row, src, start);
+    if (source) scr_regex_defer_metadata(row, source, start);
     scr_arr_push_ref(out, row);
     if (indices != NULL) scr_arr_push_f64(indices, (double)start);
     pos = end == start ? scr_advance(&input, end, unicode) : end;
   }
-  scr_regex_source_release(src);
+  scr_dyn_release(source);
   scr_regex_input_dispose(&input);
   return out; /* +1 (possibly empty — Node's no-match drain is []) */
 }

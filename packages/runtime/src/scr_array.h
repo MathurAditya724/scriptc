@@ -105,11 +105,11 @@ typedef struct ScrArrExt {
   struct ScrArrProp *props; /* noncanonical numeric properties */
   size_t prop_len;
   size_t prop_cap;
-  struct ScrDyn *metadata; /* heterogeneous named properties of match results */
-  /* A match result's metadata before its first use: the match's shared
-   * subject and regex (scr_regex.c builds `metadata` from them) and its
-   * UTF-16 start index. */
-  struct ScrRegexMatchSource *match_source;
+  /* Heterogeneous named properties of match results. Until a result's
+   * metadata is first needed, this is the match source handle that the
+   * results of one exec or matchAll call share (SCR_DYNH_MATCH_SOURCE,
+   * scr_regex.c), and match_index is the result's UTF-16 start index. */
+  struct ScrDyn *metadata;
   double match_index;
 } ScrArrExt;
 /* The LLVM backend mirrors ScrArr as %ScrArr: its inline retain/release read
@@ -212,15 +212,11 @@ static inline ScrArr *scr_arr_retain(ScrArr *a) {
  * the candidate-root buffer like every headered type. */
 void scr_arr_release(ScrArr *a);
 void scr_arr_copy_metadata(ScrArr *a, struct ScrDyn *target);
-/* The match-source operations, installed by scr_regex.c when it records a
- * pending match source (ScrArrExt.match_source); this unit links without
- * the regex runtime. copy_metadata writes the pending metadata into the
- * dynamic copy or materializes it, answering whether it wrote. */
-typedef struct ScrArrMatchHooks {
-  void (*release)(struct ScrRegexMatchSource *src);
-  bool (*copy_metadata)(ScrArr *a, struct ScrDyn *target);
-} ScrArrMatchHooks;
-extern SCR_TL const ScrArrMatchHooks *scr_arr_match_hooks;
+/* Installed by scr_regex.c when it records a pending match source; this
+ * unit links without the regex runtime. Writes the pending metadata of
+ * `a` into its dynamic copy or materializes it, answering whether it
+ * wrote. */
+extern SCR_TL bool (*scr_arr_match_copy)(ScrArr *a, struct ScrDyn *target);
 /* The array's out-of-line storage, allocated (zeroed) on first use. */
 ScrArrExt *scr_arr_ext(ScrArr *a);
 /* Moves inline dense slots (kept in the header block of a small array) to

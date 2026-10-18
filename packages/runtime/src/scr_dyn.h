@@ -171,6 +171,7 @@ typedef enum {
   SCR_DYNH_DISPOSABLE_STACK, /* DisposableStack (scr_symbol.c) */
   SCR_DYNH_MESSAGE_EVENT,  /* ScrEvent with data — BroadcastChannel's 'message' */
   SCR_DYNH_BROADCAST_CHANNEL, /* worker_threads BroadcastChannel (scr_worker_events.c) */
+  SCR_DYNH_MATCH_SOURCE,   /* a match result's pending metadata (scr_regex.c) */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
