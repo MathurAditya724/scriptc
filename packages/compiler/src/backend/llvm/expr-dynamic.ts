@@ -1,4 +1,9 @@
 import { classMembershipIntervals } from "./classes.js";
+import {
+  emitCaughtInstanceof,
+  emitCaughtNarrowGuard,
+  emitUnionNarrowGuard,
+} from "./narrow-guards.js";
 import { borrowableInputs, emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { preservesDynTest } from "./checked-value-lifetimes.js";
 import { typedRefConstructor } from "./shapes.js";
@@ -295,13 +300,14 @@ export function emitDynamicExpr(
       return host.own({ name: host.unionNewOwned(e.unionId, e.tag, v), type: e.type });
     }
     case "unionNarrow": {
-      // Tag-UNCHECKED payload extraction: the frontend emits this only
-      // where tsc's control-flow narrowing proved the tag. Ref payloads
-      // come out +1. The receiver is consumed before any later expression.
+      // Payload extraction where tsc's control-flow narrowing proved the
+      // tag; the guard verifies it (narrow-guards.ts). Ref payloads come
+      // out +1. The receiver is consumed before any later expression.
       const u = host.emitUnionProjection(e.value);
       const arm = e.type;
       if (isUnitType(arm))
         throw new InternalCompilerError(`llvm emitter bug: unionNarrow to unit arm ${arm.kind}`);
+      emitUnionNarrowGuard(host, u.name, e.unionId, e.tag);
       const v = host.unionExtract(u.name, e.unionId, arm);
       return host.own({ name: v, type: arm });
     }
@@ -974,56 +980,7 @@ export function emitDynamicExpr(
       // borrowed. SCR_EXC_STR = 3, SCR_EXC_F64 = 1, SCR_EXC_BOOL = 2.
       const c = host.emitReadReceiver(e.value);
       if (e.test === "instanceof") {
-        const target = host.classMetaOf(e.className!);
-        if (!target.hierarchy) {
-          // Standalone class payloads have no vtable word. Their retain
-          // adapter identifies the exact native layout in the snapshot.
-          const adapterSlot = B.tmp();
-          const adapter = B.tmp();
-          B.line(`${adapterSlot} = getelementptr inbounds %ScrCaught, ptr ${c.name}, i64 0, i32 5`);
-          B.line(`${adapter} = load ptr, ptr ${adapterSlot}`);
-          let result: string | undefined;
-          const intervals = classMembershipIntervals(host.classMeta, target.def.name);
-          for (const candidate of host.classMeta.values()) {
-            if (
-              candidate.hierarchy ||
-              !intervals.some((range) => range.pre <= candidate.pre && candidate.pre <= range.post)
-            )
-              continue;
-            const rc = vAdapters(host.shapeHost, { kind: "object", className: candidate.def.name });
-            const matches = B.tmp();
-            B.line(`${matches} = icmp eq ptr ${adapter}, ${rc.retain}`);
-            if (result === undefined) result = matches;
-            else {
-              const joined = B.tmp();
-              B.line(`${joined} = or i1 ${result}, ${matches}`);
-              result = joined;
-            }
-          }
-          if (result === undefined)
-            throw new InternalCompilerError("empty standalone class membership");
-          if (e.negated !== true) return { name: result, type: e.type };
-          const negated = B.tmp();
-          B.line(`${negated} = xor i1 ${result}, true`);
-          return { name: negated, type: e.type };
-        }
-        host.declare(
-          `declare zeroext i1 @scr_caught_instanceof(ptr, ${host.sizeType}, ${host.sizeType})`,
-        );
-        let t: string | undefined;
-        for (const interval of classMembershipIntervals(host.classMeta, target.def.name)) {
-          const test = B.tmp();
-          B.line(
-            `${test} = call zeroext i1 @scr_caught_instanceof(ptr ${c.name}, ${host.sizeType} ${interval.pre}, ${host.sizeType} ${interval.post})`,
-          );
-          if (t === undefined) t = test;
-          else {
-            const combined = B.tmp();
-            B.line(`${combined} = or i1 ${t}, ${test}`);
-            t = combined;
-          }
-        }
-        if (t === undefined) throw new InternalCompilerError("empty class membership");
+        const t = emitCaughtInstanceof(host, c.name, e.className!);
         if (e.negated !== true) return { name: t, type: e.type };
         const n = B.tmp();
         B.line(`${n} = xor i1 ${t}, true`);
@@ -1097,10 +1054,18 @@ export function emitDynamicExpr(
       return out;
     }
     case "caughtNarrow": {
-      // Checker-trusted extraction (the matching caughtTest was proven
-      // by tsc's narrowing): scalars read the snapshot's slots,
-      // refcounted payloads come out retained (+1). Box borrowed.
+      // Extraction where tsc's narrowing proved the matching caughtTest;
+      // the guard verifies it (narrow-guards.ts). Scalars read the
+      // snapshot's slots, refcounted payloads come out retained (+1). Box
+      // borrowed.
       const c = host.emitReadReceiver(e.value);
+      if (
+        e.type.kind === "f64" ||
+        e.type.kind === "bool" ||
+        e.type.kind === "string" ||
+        e.type.kind === "object"
+      )
+        emitCaughtNarrowGuard(host, c.name, e.type);
       if (e.type.kind === "f64") {
         const p = B.tmp();
         const v = B.tmp();

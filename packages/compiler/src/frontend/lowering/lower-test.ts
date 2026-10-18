@@ -66,7 +66,7 @@ function lowerMockTrackerMember(
 
 const TEST_FN_HINT = "test bodies take () or (t: TestContext) and return void or Promise<void>";
 const TESTCTX_SURFACE_HINT =
-  "t.test, t.skip, t.todo, t.diagnostic, t.plan, t.before, t.after, t.beforeEach, t.afterEach, t.name, t.fullName, and t.assert.* are the supported TestContext members";
+  "t.test, t.skip, t.todo, t.diagnostic, t.plan, t.before, t.after, t.beforeEach, t.afterEach, t.name, t.fullName, t.filePath, t.attempt, t.passed, t.workerId, t.tags, and t.assert.* are the supported TestContext members";
 
 /** Registration calls return Node's Promise<void>, but the promise only
  * resolves through the runner — consuming it outside `await t.test(...)`
@@ -409,11 +409,16 @@ function lowerSuite(
   }
   if (methodMode === 1 || methodMode === 2) opts.mode = methodMode;
   const cb = lowerer.lowerExpr(fnNode);
-  if (cb.type.kind !== "func" || cb.type.params.length !== 0) {
+  // The body may take the SuiteContext (flag 2, as test bodies take theirs).
+  if (
+    cb.type.kind !== "func" ||
+    cb.type.params.length > 1 ||
+    (cb.type.params.length === 1 && cb.type.params[0]!.kind !== "testCtx")
+  ) {
     lowerer.noLowering(
-      `${what} whose body is not a zero-parameter function`,
+      `${what} whose body is not a function of the SuiteContext`,
       fnNode,
-      "suite bodies take no parameters (they run at registration)",
+      "suite bodies take no parameters or the SuiteContext (they run at registration)",
     );
   }
   if (cb.type.ret.kind !== "void" && !isUnitType(cb.type.ret)) {
@@ -427,7 +432,10 @@ function lowerSuite(
   const mode = numLit(opts.mode, loc);
   const msg = opts.msg ?? strLit("", loc);
   // describe.only and { only: true } mark the suite (flag 4, as for tests).
-  const flags = numLit(optionFlags(opts) | (methodMode === 3 ? 4 : 0), loc);
+  const flags = numLit(
+    optionFlags(opts) | (methodMode === 3 ? 4 : 0) | (cb.type.params.length === 1 ? 2 : 0),
+    loc,
+  );
   return withOptionValues(
     {
       kind: "libCall",
@@ -456,10 +464,12 @@ function lowerHook(
     lowerer.noLowering(
       `${what} with ${args.length} arguments`,
       expr,
-      "the supported form is one zero-parameter function (hook options have no lowering)",
+      "the supported form is one function (hook options have no lowering)",
     );
   }
-  const { cb, flags } = lowerBodyArg(lowerer, args[0]!, what, false);
+  // A hook may take its context: the suite's for before/after, the test's
+  // for beforeEach/afterEach.
+  const { cb, flags } = lowerBodyArg(lowerer, args[0]!, what, true);
   return {
     kind: "libCall",
     fn: "test.hook",
@@ -919,7 +929,8 @@ export function lowerTestMethodCall(
       );
     }
     const receiver = lowerer.lowerExpr(access.expression);
-    const { cb, flags } = lowerBodyArg(lowerer, args[0]!, what, false);
+    // The hook may take the test's context.
+    const { cb, flags } = lowerBodyArg(lowerer, args[0]!, what, true);
     return {
       kind: "libCall",
       fn: "test.ctxHook",
@@ -962,6 +973,78 @@ export function lowerTestMethodCall(
   );
 }
 
+/** t.filePath (the entry file, as Node's entryFile), t.attempt (0: tests
+ * run once), t.passed, t.workerId (Number(NODE_TEST_WORKER_ID) ||
+ * undefined) and t.tags ([]: the tags option has no lowering), each
+ * coerced to the member's declared type. */
+function lowerTestCtxValue(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  member: "filePath" | "attempt" | "passed" | "workerId" | "tags",
+): IrExpr {
+  const loc = locOf(expr);
+  const receiver = lowerer.lowerExpr(expr.expression);
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (!declared) {
+    lowerer.noLowering(`TestContext.${member} of this type`, expr, TESTCTX_SURFACE_HINT);
+  }
+  const after = (value: IrExpr): IrExpr => ({
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+    result: lowerer.coerceToExpected(value, declared),
+    type: declared,
+    loc,
+  });
+  switch (member) {
+    case "filePath":
+      return after(strLit(lowerer.entry.fileName, loc));
+    case "attempt":
+      return after(numLit(0, loc));
+    case "tags":
+      return after({ kind: "arrayLit", elems: [], type: declared, loc });
+    case "passed":
+      return lowerer.coerceToExpected(
+        { kind: "libCall", fn: "test.ctxPassed", args: [receiver], type: BOOL, loc },
+        declared,
+      );
+    case "workerId": {
+      const id = lowerer.declareHiddenLocal("%workerId", F64);
+      const missing = lowerer.wrappedUndefined(declared, loc);
+      if (!missing)
+        lowerer.noLowering("TestContext.workerId of this type", expr, TESTCTX_SURFACE_HINT);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "exprStmt", expr: receiver, loc },
+          {
+            kind: "varDecl",
+            localId: id.id,
+            init: { kind: "libCall", fn: "test.workerId", args: [], type: F64, loc },
+            loc,
+          },
+        ],
+        result: {
+          kind: "ternary",
+          cond: {
+            kind: "bin",
+            op: "!==",
+            left: varRef(id.id, F64, loc),
+            right: numLit(0, loc),
+            type: BOOL,
+            loc,
+          },
+          then: lowerer.coerceToExpected(varRef(id.id, F64, loc), declared),
+          else_: missing,
+          type: declared,
+          loc,
+        },
+        type: declared,
+        loc,
+      };
+    }
+  }
+}
+
 /** `t.name` as a VALUE — one entry in lower-exprs' property chain. Null
  * for other receivers/members (the chain keeps trying); unlowered
  * TestContext members fence member-qualified. */
@@ -985,7 +1068,17 @@ export function lowerTestCtxProperty(
       loc,
     };
   }
-  if (expr.name.text === "assert") return null; // claimed by the call path
+  const member = expr.name.text;
+  if (
+    member === "filePath" ||
+    member === "attempt" ||
+    member === "passed" ||
+    member === "workerId" ||
+    member === "tags"
+  ) {
+    return lowerTestCtxValue(lowerer, expr, member);
+  }
+  if (member === "assert") return null; // claimed by the call path
   lowerer.noLowering(
     `TestContext.${expr.name.text}`,
     expr,

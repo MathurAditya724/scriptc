@@ -46,6 +46,9 @@ void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb, double flags
 void scr_test_ctx_plan(ScrTestCtx *t, double count);
 void scr_test_ctx_count(ScrTestCtx *t);
 ScrStr *scr_test_ctx_full_name(ScrTestCtx *t);
+/* t.passed, and t.workerId as a number with 0 for undefined. */
+bool scr_test_ctx_passed(ScrTestCtx *t);
+double scr_test_worker_id(void);
 ScrStr *scr_test_ctx_name(ScrTestCtx *t); /* +1 */
 /* Mock trackers: the module's `mock` and each test's t.mock. track keeps
  * the closure that restores one mock; restore_all calls them in creation

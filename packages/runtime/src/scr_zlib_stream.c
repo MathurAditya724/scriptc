@@ -496,6 +496,11 @@ static ScrZlibStream *scr_zs_from_stream(ScrStream *s) {
   return zs;
 }
 
+bool scr_zlib_stream_is(ScrStream *s, double mode) {
+  const ScrZlibStream *zs = scr_stream_native(s, &scr_zs_release_v);
+  return zs != NULL && zs->mode == (int)mode;
+}
+
 double scr_zlib_stream_bytes_written(ScrStream *s) {
   ScrZlibStream *zs = scr_zs_from_stream(s);
   return zs ? zs->bytes_written : 0;
