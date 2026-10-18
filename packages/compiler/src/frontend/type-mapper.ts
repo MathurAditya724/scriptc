@@ -1709,16 +1709,38 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Declaration-only package types have no compiled implementation.
   // Primitive and container types retain their structural mappings; types
   // owned by the standard library or explicit host mappings are handled
-  // by their dedicated native rules.
-  const npmSym = widened.getAliasSymbol() ?? widened.getSymbol();
-  const npmDecls = npmSym ? checker.declarationsOf(npmSym) : undefined;
+  // by their dedicated native rules. Pure type shapes — interfaces, type
+  // aliases, and object or mapped type literals with no value declaration
+  // merged in — describe data, not an implementation: a program value of
+  // such a type is one the program built itself (`import type` from a
+  // types-only package), so it maps structurally like a local declaration.
+  // Values the package itself would produce stay refused at their import.
+  const packageOnly = (sym: ts.Symbol | undefined): readonly ts.Node[] | null => {
+    const decls = sym ? checker.declarationsOf(sym) : undefined;
+    return decls &&
+      decls.length > 0 &&
+      decls.every((d) => {
+        const sf = d.getSourceFile();
+        return sf.isDeclarationFile && !ctx.isStdlibFile(sf) && !ctx.isExternalTypeFile(sf);
+      })
+      ? decls
+      : null;
+  };
+  const pureTypeShape = (decls: readonly ts.Node[] | null): boolean =>
+    decls === null ||
+    decls.every(
+      (d) =>
+        packageTypeFile(d.getSourceFile(), ctx) &&
+        (ts.isInterfaceDeclaration(d) ||
+          ts.isTypeAliasDeclaration(d) ||
+          ts.isTypeLiteralNode(d) ||
+          ts.isMappedTypeNode(d)),
+    );
+  const aliasDecls = packageOnly(widened.getAliasSymbol());
+  const ownDecls = packageOnly(widened.getSymbol());
   if (
-    npmDecls &&
-    npmDecls.length > 0 &&
-    npmDecls.every((d) => {
-      const sf = d.getSourceFile();
-      return sf.isDeclarationFile && !ctx.isStdlibFile(sf) && !ctx.isExternalTypeFile(sf);
-    })
+    (aliasDecls !== null || (widened.getAliasSymbol() === undefined && ownDecls !== null)) &&
+    !(pureTypeShape(aliasDecls) && pureTypeShape(ownDecls))
   ) {
     return null;
   }
@@ -5429,6 +5451,17 @@ function isMappedShape(t: ts.Type): boolean {
   );
 }
 
+/** A declaration file an installed package ships (its own or an @types
+ * twin), outside the standard library and @types/node: the type surface
+ * of a package the program does not compile. Its pure type shapes —
+ * interfaces, aliases, type literals — describe data a program can build
+ * itself (`import type` from a types-only package such as type-fest). */
+function packageTypeFile(sf: ts.SourceFile, ctx: Pick<TypeMapperCtx, "isStdlibFile">): boolean {
+  return (
+    sf.isDeclarationFile && /[\\/]node_modules[\\/]/.test(sf.fileName) && !ctx.isStdlibFile(sf)
+  );
+}
+
 /** The record path's provenance fence. Declared shapes (object literals,
  * interfaces, type literals) must come from user code or an explicitly
  * mapped external type surface, never an arbitrary .d.ts — the empty
@@ -5467,13 +5500,14 @@ function recordProvenanceOk(t: ts.Type, ctx: TypeMapperCtx): boolean {
           .every(
             (decl) =>
               !decl.getSourceFile().isDeclarationFile ||
-              ctx.isExternalTypeFile(decl.getSourceFile()),
+              ctx.isExternalTypeFile(decl.getSourceFile()) ||
+              packageTypeFile(decl.getSourceFile(), ctx),
           ),
       );
   }
   return !decls.some((d) => {
     const sf = d.getSourceFile();
-    return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf);
+    return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf) && !packageTypeFile(sf, ctx);
   });
 }
 
@@ -5930,7 +5964,7 @@ function mapRecordTypeInner(
         computed &&
         checker.declarationsOf(p).some((d) => {
           const sf = d.getSourceFile();
-          return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf);
+          return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf) && !packageTypeFile(sf, ctx);
         })
       ) {
         return null;
@@ -6257,7 +6291,7 @@ export function describeRecordMemberBlocker(widened: ts.Type, ctx: TypeMapperCtx
       computed &&
       checker.declarationsOf(p).some((d) => {
         const sf = d.getSourceFile();
-        return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf);
+        return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf) && !packageTypeFile(sf, ctx);
       })
     ) {
       return null;

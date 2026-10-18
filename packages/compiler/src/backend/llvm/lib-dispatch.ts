@@ -774,6 +774,8 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "blob":
     case "record":
     case "disposable":
+    case "punycode":
+    case "constants":
       return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);

@@ -36,10 +36,12 @@ import {
   isZlibStreamMember,
   lowerZlibInstanceOf,
   lowerZlibStreamBytesWritten,
-  zlibClassAliasOf,
-  zlibClassModeOfExpr,
-  zlibClassName,
 } from "./builtins/compression.js";
+import {
+  builtinClassAliasOwnsNoSlot,
+  builtinClassRefOf,
+  sameBuiltinClass,
+} from "./builtins/class-values.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { dirname } from "node:path";
 import * as posix from "node:path/posix";
@@ -204,6 +206,7 @@ import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import {
   fenceNodeModuleMutation,
   isNodeModuleValue,
+  lowerCjsTopLevelThis,
   lowerNodeModuleIdentifier,
   lowerNodeModuleProperty,
   lowerRequireCacheElement,
@@ -228,6 +231,7 @@ import {
 } from "./class-prototypes.js";
 import { isClassCallback } from "./class-callbacks.js";
 import {
+  builtinConstantsObject,
   builtinPrototypeMethod,
   lowerArrayIsArrayValue,
   lowerCheckedPredicateValue,
@@ -616,8 +620,9 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     if (isNodeModuleValue(lowerer, expr.expression)) {
       return { kind: "strLit", value: "object", type: STRING, loc };
     }
-    // `typeof zlib.Gzip`, `typeof C` over a zlib class alias.
-    if (zlibClassModeOfExpr(lowerer, expr.expression) !== null) {
+    // `typeof EventEmitter`, `typeof zlib.Gzip`, `typeof C` over a
+    // builtin class alias.
+    if (builtinClassRefOf(lowerer, expr.expression) !== null) {
       return { kind: "strLit", value: "function", type: STRING, loc };
     }
     if (ts.isPropertyAccessExpression(expr.expression)) {
@@ -690,6 +695,30 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       const sym = lowerer.checker.getSymbolAtLocation(tested);
       if (!sym) {
         return { kind: "strLit", value: "undefined", type: STRING, loc };
+      }
+      // `const { inspect } = require("util")` / `import { inspect } from
+      // "node:util"`: a binding of a builtin module's exported function,
+      // class or object. JavaScript sources represent such a value without
+      // its own lowering as an identity token (a string), so the operand's
+      // representation cannot answer. Node's answer follows the export's
+      // kind, and the binding read has no effects.
+      const imported = isJsSourceFile(tested.getSourceFile())
+        ? lowerer.builtinImportOf(tested)
+        : null;
+      if (
+        imported &&
+        builtinModuleConstOf(lowerer, imported.module, imported.member) === undefined
+      ) {
+        const t = lowerer.typeOf(tested);
+        if (
+          lowerer.checker.getCallSignatures(t).length > 0 ||
+          lowerer.checker.getConstructSignatures(t).length > 0
+        ) {
+          return { kind: "strLit", value: "function", type: STRING, loc };
+        }
+        if ((t.flags & ts.TypeFlags.Object) !== 0) {
+          return { kind: "strLit", value: "object", type: STRING, loc };
+        }
       }
       if (lowerer.isStdlibSymbol(sym)) {
         const t = lowerer.typeOf(expr.expression);
@@ -878,13 +907,13 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           `a builtin function alias as an escaping value (call '${expr.text}' directly)`,
         );
       }
-      // `const C = zlib.Gzip` owns no runtime slot: construction,
+      // `const E = EventEmitter` owns no runtime slot: construction,
       // instanceof, typeof and .name lower at their use sites.
-      if (sym && zlibClassAliasOf(lowerer, sym) !== null) {
+      if (sym && builtinClassAliasOwnsNoSlot(lowerer, sym)) {
         lowerer.unsupported(
           "SC1090",
           expr,
-          `a zlib class alias as an escaping value (use '${expr.text}' with new, instanceof, typeof or .name)`,
+          `a builtin class alias as an escaping value (use '${expr.text}' with new, instanceof, typeof or .name)`,
         );
       }
     }
@@ -1235,6 +1264,17 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         if (bi.module === "os" && bi.member === "constants") {
           return { kind: "libCall", fn: "os.constants", args: [], type: DYN, loc };
         }
+        // `import { O_RDONLY } from "constants"`: the member of the frozen
+        // module object.
+        if (bi.module === "constants") {
+          return {
+            kind: "dynKeyGet",
+            value: builtinConstantsObject(lowerer, loc),
+            key: { kind: "strLit", value: bi.member, type: STRING, loc },
+            type: DYN,
+            loc,
+          };
+        }
         // tls.rootCertificates: a runtime-valued module constant (the
         // cached bundled-CA array) — the one member read that lowers
         // to a libCall instead of a baked literal.
@@ -1277,6 +1317,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // their access sites only. The CommonJS namespace binding
     // (`const lib = require("./lib.js")`) gets the same fence.
     const builtinNamespace = lowerer.builtinNamespaceModuleOf(expr);
+    if (builtinNamespace === "constants") return builtinConstantsObject(lowerer, loc);
     if (builtinNamespace !== null) {
       const type: IrType = { kind: "moduleNs", moduleId: `builtin:${builtinNamespace}` };
       return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc };
@@ -1566,6 +1607,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         return { kind: "moduleNsRef", moduleId: moduleNs.moduleId, type: moduleNs, loc };
       }
       const builtinNs = lowerer.builtinNamespaceModuleOf(expr);
+      if (builtinNs === "constants") return builtinConstantsObject(lowerer, loc);
       if (builtinNs !== null) {
         const type: IrType = { kind: "moduleNs", moduleId: `builtin:${builtinNs}` };
         return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc };
@@ -1668,6 +1710,9 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // constant. TypeScript keeps the fence (noImplicitThis makes it a
     // compile-time story there).
     if (isJsSourceFile(expr.getSourceFile())) {
+      // Module scope of a CommonJS file: `this` is module.exports.
+      const exportsThis = lowerCjsTopLevelThis(lowerer, expr);
+      if (exportsThis) return exportsThis;
       return { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc };
     }
     lowerer.unsupported("SC1080", expr);
@@ -1829,10 +1874,11 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       if (table) return table;
     }
     lowerThreadSlotsProperty(lowerer, expr);
-    // `zlib.Gzip.name`, `C.name` over a zlib class alias.
+    // `EventEmitter.name`, `zlib.Gzip.name`, `C.name` over a builtin
+    // class alias.
     if (expr.name.text === "name" && !expr.questionDotToken) {
-      const mode = zlibClassModeOfExpr(lowerer, expr.expression);
-      if (mode !== null) return { kind: "strLit", value: zlibClassName(mode), type: STRING, loc };
+      const ref = builtinClassRefOf(lowerer, expr.expression);
+      if (ref !== null) return { kind: "strLit", value: ref.name, type: STRING, loc };
     }
     // Expando statics may still be absent even when JS inference sees
     // the eventual assignment's scalar type. Preserve the checked value.
@@ -10246,17 +10292,18 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       lowerUnionTypeofTest(lowerer, expr, loc);
     if (test) return test;
   }
-  // `C === zlib.Gzip` between two zlib class references: the classes
-  // are compile-time values, so the answer folds.
+  // `C === EventEmitter` between two builtin class references: the
+  // classes are compile-time values, so the answer folds.
   if (
     op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
     op === ts.SyntaxKind.ExclamationEqualsEqualsToken
   ) {
-    const leftClass = zlibClassModeOfExpr(lowerer, expr.left);
-    const rightClass = leftClass === null ? null : zlibClassModeOfExpr(lowerer, expr.right);
+    const leftClass = builtinClassRefOf(lowerer, expr.left);
+    const rightClass = leftClass === null ? null : builtinClassRefOf(lowerer, expr.right);
     if (leftClass !== null && rightClass !== null) {
       const negated = op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
-      return { kind: "boolLit", value: (leftClass === rightClass) !== negated, type: BOOL, loc };
+      const same = sameBuiltinClass(leftClass, rightClass);
+      return { kind: "boolLit", value: same !== negated, type: BOOL, loc };
     }
   }
 
@@ -12332,11 +12379,11 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // h2 compat 'connect' narrowing (lower-server.ts): a union tag test.
   const sockTest = lowerSocketInstanceOf(lowerer, expr, loc);
   if (sockTest !== null) return sockTest;
-  const zlibMode = zlibClassModeOfExpr(lowerer, expr.right);
-  if (zlibMode !== null) return lowerZlibInstanceOf(lowerer, expr, zlibMode, loc);
+  const rightClass = builtinClassRefOf(lowerer, expr.right);
+  if (rightClass?.kind === "zlib") return lowerZlibInstanceOf(lowerer, expr, rightClass.mode, loc);
 
-  if (lowerer.isStdlibGlobal(expr.right, "Set") || lowerer.isStdlibGlobal(expr.right, "Map")) {
-    const collection = lowerer.isStdlibGlobal(expr.right, "Map") ? "map" : "set";
+  if (rightClass?.kind === "collection") {
+    const collection = rightClass.which === "Map" ? "map" : "set";
     const value = lowerer.lowerExpr(expr.left);
     if (value.type.kind === "union") {
       const union = lowerer.unions.get(value.type.unionId);

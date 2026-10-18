@@ -611,9 +611,9 @@
       "apiEntries": 9,
       "static": {
         "supported": 0,
-        "partial": 0,
+        "partial": 8,
         "refused": 0,
-        "not-implemented": 9,
+        "not-implemented": 1,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -81945,8 +81945,13 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "derived:descendants"
+        "status": "partial",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/corpus/6122-punycode-conversions.ts",
+          "tests/corpus/6124-punycode-require-warnings.cjs",
+          "tests/corpus/6126-punycode-dependency/main.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -81968,8 +81973,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:punycode"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.punycode.decode",
+        "tests": [
+          "tests/corpus/6122-punycode-conversions.ts",
+          "tests/corpus/6124-punycode-require-warnings.cjs",
+          "tests/corpus/6126-punycode-dependency/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -81991,8 +82001,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:punycode"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.punycode.encode",
+        "tests": [
+          "tests/corpus/6122-punycode-conversions.ts",
+          "tests/corpus/6124-punycode-require-warnings.cjs",
+          "tests/corpus/6126-punycode-dependency/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82014,8 +82029,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:punycode"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.punycode.toASCII",
+        "tests": [
+          "tests/corpus/6122-punycode-conversions.ts",
+          "tests/corpus/6124-punycode-require-warnings.cjs",
+          "tests/corpus/6126-punycode-dependency/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82037,8 +82057,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:punycode"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.punycode.toUnicode",
+        "tests": [
+          "tests/corpus/6122-punycode-conversions.ts",
+          "tests/corpus/6124-punycode-require-warnings.cjs",
+          "tests/corpus/6126-punycode-dependency/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82083,8 +82108,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:punycode"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.punycode.ucs2.decode",
+        "tests": [
+          "tests/corpus/6122-punycode-conversions.ts",
+          "tests/corpus/6124-punycode-require-warnings.cjs",
+          "tests/corpus/6126-punycode-dependency/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82106,8 +82136,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:punycode"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.punycode.ucs2.encode",
+        "tests": [
+          "tests/corpus/6122-punycode-conversions.ts",
+          "tests/corpus/6124-punycode-require-warnings.cjs",
+          "tests/corpus/6126-punycode-dependency/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82129,8 +82164,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:punycode"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.punycode.version",
+        "tests": [
+          "tests/corpus/6122-punycode-conversions.ts",
+          "tests/corpus/6124-punycode-require-warnings.cjs",
+          "tests/corpus/6126-punycode-dependency/main.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },

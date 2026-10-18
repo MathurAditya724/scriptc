@@ -20,6 +20,7 @@ import {
   type IrUnionDef,
 } from "./ir.js";
 import { deserializeModule, serializeModule } from "./serialize.js";
+import { assignLegacyTiers } from "./tiers.js";
 import { validateModule } from "./validate.js";
 
 const loc = { file: "numeric-read.ts", start: 0, end: 0 };
@@ -399,7 +400,7 @@ test.each(["sortPrimitive", "toSortedPrimitive"] as const)(
 );
 
 function expressionModule(expr: IrExpr, unions: IrUnionDef[]): IrModule {
-  return {
+  const mod: IrModule = {
     irVersion: 16,
     sourceFile: loc.file,
     entry: "main",
@@ -415,6 +416,9 @@ function expressionModule(expr: IrExpr, unions: IrUnionDef[]): IrModule {
       },
     ],
   };
+  // Lowering assigns tiers from function bodies (ir/tiers.ts).
+  assignLegacyTiers(mod.functions);
+  return mod;
 }
 
 test("numeric byte tokens and DataView stores validate their storage before emission", () => {

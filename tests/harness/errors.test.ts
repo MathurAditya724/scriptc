@@ -960,3 +960,56 @@ for (const input of [ciphertext, Buffer.from("forged data"), Buffer.alloc(0)]) {
     expect(r.stderr).toBe("");
   });
 });
+
+// Function expressions the frontend lowers speculatively (the receiver of
+// `.call`/`.apply`, a computed class base) keep their refused statements as
+// runtime fences. They used to vanish: the capture buffer held the refusal,
+// the candidate was kept, and the statement was simply missing from it.
+describe("refused statements in speculatively lowered JavaScript functions", () => {
+  test.each([
+    [
+      "speculative-call-this",
+      `(function () {
+  var root = this;
+  console.log("before");
+  console.log(root === module.exports);
+  console.log("after");
+}).call(this);
+`,
+      "before\n",
+      4,
+    ],
+    [
+      "speculative-apply",
+      `(function () {
+  console.log("before");
+  console.log(typeof module.exports);
+}).apply(null, []);
+`,
+      "before\n",
+      3,
+    ],
+    [
+      "speculative-class-base",
+      `class Base {}
+class Derived extends (function () {
+  console.log("before");
+  console.log(typeof module.exports);
+  return Base;
+})() {}
+console.log(typeof Derived);
+`,
+      "before\n",
+      4,
+    ],
+  ] as const)("%s", async (name, source, stdout, line) => {
+    const r = await compileAndRun(name, source, "cjs");
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe(stdout);
+    expect(r.stderr).toMatch(
+      new RegExp(
+        `^Uncaught Error: 'module\\.exports' is part of the standard library types but has no scriptc lowering yet \\[SC2020 at .*${name}\\.cjs:${line}\\]\\n$`,
+      ),
+    );
+  });
+});
