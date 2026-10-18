@@ -1035,7 +1035,7 @@ export interface TypeMapperCtx {
    * inside members, self-referential member types), null outside any
    * mixin context (the type alone cannot name a call site). */
   mixinClassInstance?: (decl: ts.ClassLikeDeclaration) => IrType | null;
-  localClassInstance?: (decl: ts.ClassLikeDeclaration) => IrType | null;
+  localClassInstance?: (decl: ts.ClassLikeDeclaration, instanceType?: ts.Type) => IrType | null;
   /** Live class protocols retain identity and receiver dispatch rather than
    * copying an instance into an unrelated record layout. */
   classImplementedProtocol?: (type: ts.Type) => boolean;
@@ -1950,7 +1950,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       }
     }
     if (classExprNeedsContext(classDecl)) {
-      const local = ctx.localClassInstance?.(classDecl);
+      const local = ctx.localClassInstance?.(classDecl, widened);
       if (local) contextResolutions++;
       return local ?? null;
     }
@@ -1989,7 +1989,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       }
     }
     if (classExprNeedsContext(classDecl)) {
-      const local = ctx.localClassInstance?.(classDecl);
+      const ctorSigs = checker.getConstructSignatures(widened);
+      const local = ctx.localClassInstance?.(
+        classDecl,
+        ctorSigs.length === 1 ? checker.getReturnTypeOfSignature(ctorSigs[0]!) : undefined,
+      );
       if (local?.kind === "object") {
         contextResolutions++;
         return { kind: "classval", className: local.className };

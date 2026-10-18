@@ -369,6 +369,7 @@ import {
   lowerGenericFnValue,
   inferTypeParamBindings,
   lowerGenericInstance,
+  genericLocalClassBinding,
 } from "./generic-functions.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
 import type { InstantiationPath } from "./instantiation-path.js";
@@ -1849,6 +1850,9 @@ export class Lowerer {
    * and erased instances). */
   erasingDepth = 0;
   localClassInstantiations: { owner: ts.FunctionLikeDeclaration; name: string }[] = [];
+  /** Instance types (by checker type id) of the local classes generic
+   * factory calls return, and the per-instance class each names. */
+  readonly localClassInstanceTypes = new Map<number, string>();
   /** The ts-level twin of typeParamBindings, non-null while a CALL-keyed
    * instance body lowers: type-parameter symbol → the bound CHECKER type,
    * consulted where the mapped IrType has already widened away information
@@ -2882,7 +2886,11 @@ export class Lowerer {
         this.mixinTypeContext && this.mixinTypeContext.classNode === decl
           ? { kind: "object", className: this.mixinTypeContext.className }
           : null,
-      localClassInstance: (decl) => {
+      localClassInstance: (decl, instanceType) => {
+        // A generic factory's local class, by the instance type a call of
+        // the factory produced (localClassResultInstance).
+        const instanceClass = instanceType && this.localClassInstanceTypes.get(instanceType.id);
+        if (instanceClass) return { kind: "object", className: instanceClass };
         // Computed heritage can close over parameters of its factory.
         // A speculative checker query outside that factory must not lower
         // the extends expression in the caller's lexical scope.
@@ -7962,6 +7970,8 @@ export class Lowerer {
     if (!mapped) {
       const argumentsType = jsArgumentsFunctionType(this, t);
       if (argumentsType !== null) return argumentsType;
+      const localClass = genericLocalClassBinding(this, node);
+      if (localClass !== null) return localClass;
       // The checked-dynamic declaration fallback (dynFallbackType): a
       // JAVASCRIPT binding of any inference residue, or a TypeScript
       // binding of genuine checker-`any`, becomes the checked-dynamic

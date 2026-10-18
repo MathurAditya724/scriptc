@@ -50,6 +50,7 @@ import {
   implicitAnyParamSymbolsOf,
   implicitCallInstance,
   implicitMonoFile,
+  genericLocalClassResult,
   type GenericFnInfo,
 } from "./generic-functions.js";
 import {
@@ -227,6 +228,11 @@ export function storedClassValueType(
       const value = storedClassValueType(lowerer, declaration.initializer, visiting);
       if (value?.kind === "classval") return value;
     }
+  }
+  // A generic factory's own local class has one class per instance.
+  if (ts.isCallExpression(expression)) {
+    const local = genericLocalClassResult(lowerer, expression);
+    if (local?.kind === "classval") return local;
   }
   const type = lowerer.typeOf(expression);
   const mapped = lowerer.mapTypeOf(type);

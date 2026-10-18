@@ -107,6 +107,7 @@ import {
   implicitLocalFnInfoOf,
   implicitLocalFnNodeOf,
   implicitMethodCallInfersReturn,
+  genericLocalClassBinding,
 } from "./generic-functions.js";
 import {
   bindingNeverReassigned,
@@ -4913,6 +4914,9 @@ export function lowerVarDecl(
   ) {
     type = init.type;
   }
+  // `const B = factory(1)` inside a generic instance: the factory's local
+  // class for the instance the call names.
+  if (!type && !isLet) type = genericLocalClassBinding(lowerer, decl.name);
   if (!type) {
     // The JS declaration fallback (irTypeOf's story): the binding holds
     // the checked-dynamic kind when even the initializer's type has no
