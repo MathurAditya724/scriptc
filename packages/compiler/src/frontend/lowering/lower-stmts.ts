@@ -3337,7 +3337,7 @@ function stdlibGlobalTokenDestructure(
       alias = canonical;
       // Builtin constructors read as their interned function values, the
       // same values the bare and `globalThis.X` spellings read.
-      value = builtinGlobalValue(canonical, locOf(el));
+      value = builtinGlobalValue(canonical, locOf(el), true);
     } else if (globalName === "console" && !CONSOLE_CALL_MEMBERS.has(propName)) {
       token = `[builtin console.${propName}]`;
     } else if (TOKEN_OPAQUE_GLOBALS.has(globalName)) {

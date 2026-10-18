@@ -210,6 +210,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * interned function per name, the same one dynamic values answer for
    * `.constructor`. The name is a compiler-chosen literal. */
   "dyn.globalConstructor": { argTypes: [STRING], result: DYN },
+  /** A builtin global function (setTimeout, setInterval, setImmediate,
+   * the clear functions, queueMicrotask, process.nextTick) read as a
+   * JavaScript value: one interned function per name whose calls run the
+   * timer APIs (it pulls in the event loop). The name is a compiler-chosen
+   * literal. */
+  "dyn.builtinFunction": { argTypes: [STRING], result: DYN },
   "date.nativeNew": { argTypes: [DYN], result: DYN },
   /** `new Date(year, monthIndex, ...)` in JavaScript: the argument array's
    * first seven values pass through ToNumber in order (later ones are

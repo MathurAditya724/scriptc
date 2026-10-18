@@ -1453,8 +1453,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;
         // Builtin constructors have real function values in both source
         // languages (TypeScript reads them as dynamic values).
-        const constructorValue = builtinGlobalValue(canonical, loc);
-        if (constructorValue !== null) return constructorValue;
+        const builtinValue = builtinGlobalValue(
+          canonical,
+          loc,
+          isJsSourceFile(expr.getSourceFile()),
+        );
+        if (builtinValue !== null) return builtinValue;
         if (isJsSourceFile(expr.getSourceFile())) {
           return { kind: "strLit", value: `[builtin ${canonical}]`, type: STRING, loc };
         }
@@ -2354,7 +2358,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
             loc,
           };
         return (
-          builtinGlobalValue(canonical, loc) ?? {
+          builtinGlobalValue(canonical, loc, true) ?? {
             kind: "strLit",
             value: `[builtin ${canonical}]`,
             type: STRING,
@@ -16330,9 +16334,36 @@ const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "WeakSet",
 ]);
 
-/** The value a JavaScript source reads for the stdlib global `canonical`,
- * or null when it stays an identity token. */
-export function builtinGlobalValue(canonical: string, loc: SrcLoc): IrExpr | null {
+/** The builtin global functions JavaScript sources read as interned
+ * function values (the `cond ? setImmediate : process.nextTick` feature
+ * probe of bcryptjs and async libraries): typeof answers "function",
+ * identity holds across spellings, and calls run the timer APIs. */
+const GLOBAL_FUNCTION_VALUES: ReadonlySet<string> = new Set([
+  "setTimeout",
+  "setInterval",
+  "setImmediate",
+  "clearTimeout",
+  "clearInterval",
+  "clearImmediate",
+  "queueMicrotask",
+]);
+
+/** A builtin function value: one interned runtime function per name. */
+export function builtinFunctionValue(name: string, loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "dyn.builtinFunction",
+    args: [{ kind: "strLit", value: name, type: STRING, loc }],
+    type: DYN,
+    loc,
+  };
+}
+
+/** The value a source reads for the stdlib global `canonical` (builtin
+ * constructors in both languages, builtin functions in JavaScript), or
+ * null when it stays an identity token (JavaScript) or fenced. */
+export function builtinGlobalValue(canonical: string, loc: SrcLoc, js = false): IrExpr | null {
+  if (js && GLOBAL_FUNCTION_VALUES.has(canonical)) return builtinFunctionValue(canonical, loc);
   if (GLOBAL_CONSTRUCTOR_VALUES.has(canonical)) {
     return {
       kind: "libCall",

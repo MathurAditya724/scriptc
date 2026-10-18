@@ -655,6 +655,12 @@ ScrDyn *scr_dyn_array_constructor(void);
 /* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
  * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
 ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
+/* A builtin global function (setTimeout, setImmediate, process.nextTick, ...)
+ * as an interned dynamic function value: +1. */
+ScrDyn *scr_dyn_builtin_function(const ScrStr *name);
+/* Object.prototype's valueOf/toString/hasOwnProperty/propertyIsEnumerable as
+ * interned function values (+1), or NULL for other names. */
+ScrDyn *scr_dyn_object_proto_method(const char *name);
 bool scr_dyn_arr_has_index(const ScrDyn *arr, size_t index);
 void scr_dyn_arr_push_hole(ScrDyn *arr);
 ScrDyn *scr_dyn_new_obj(void);

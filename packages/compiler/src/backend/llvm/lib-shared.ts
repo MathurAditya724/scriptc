@@ -900,6 +900,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.nativeUrlIs": "scr_dyn_native_url_is",
   "dyn.nativeDateIs": "scr_dyn_native_date_is",
   "dyn.globalConstructor": "scr_dyn_global_constructor",
+  "dyn.builtinFunction": "scr_dyn_builtin_function",
   "date.nativeNew": "scr_dyn_native_date_new",
   "date.nativeNewFields": "scr_dyn_native_date_new_fields",
   "date.checkedValue": "scr_dyn_native_date_value",
@@ -1612,4 +1613,5 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "timers.queueMicrotaskDyn",
   "timers.setImmediateFnValue",
   "timers.immediatePromise",
+  "dyn.builtinFunction",
 ]);

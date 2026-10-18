@@ -26,6 +26,7 @@ import {
   funcOf,
 } from "../../../ir/ir.js";
 import { lowerBuiltinLoaderValue } from "../lower-builtin-values.js";
+import { builtinFunctionValue } from "../lower-exprs.js";
 import { lowerProcessIpcSend, ipcMessageListener, ipcDisconnectListener } from "./ipc.js";
 import { lowerDiagnosticsSubscriber, lowerTracingArguments } from "./async-context.js";
 
@@ -384,6 +385,11 @@ export function lowerProcessProperty(
   }
   if (member === "hrtime") {
     return { kind: "libCall", fn: "process.hrtimeValue", args: [], type: DYN, loc };
+  }
+  // A stored process.nextTick in JavaScript (`cond ? setImmediate :
+  // process.nextTick`): the interned builtin function value.
+  if (member === "nextTick" && isJsSourceFile(expr.getSourceFile())) {
+    return builtinFunctionValue("process.nextTick", loc);
   }
   if (member === "getBuiltinModule") {
     // Keep the native loader's argument validation when the function is
