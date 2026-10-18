@@ -35,6 +35,8 @@ import {
   withClassInitFlag,
   withCycleInitFlags,
 } from "./cycle-initialization.js";
+import { markRequireEarlyBindings } from "./require-initialization.js";
+import { collectJsonRequires, isJsonRequireDecl } from "./json-require.js";
 import {
   invalidJsonModuleDiag,
   unsupportedPackageImportDiag,
@@ -409,6 +411,7 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
       for (const fp of parts) lowerer.collectGlobals(fp.sf, fp.topStmts);
       lowerer.collectNpmImports(parts);
       lowerer.collectJsonImports(parts);
+      collectJsonRequires(lowerer, parts);
     } finally {
       lowerer.diagSink = null;
     }
@@ -416,6 +419,7 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
     for (const fp of parts) lowerer.collectGlobals(fp.sf, fp.topStmts);
     lowerer.collectNpmImports(parts);
     lowerer.collectJsonImports(parts);
+    collectJsonRequires(lowerer, parts);
   }
   for (const decl of computed) {
     const symbol = declSymbolOf(lowerer, decl);
@@ -493,6 +497,7 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
     lowerer.collecting = wasCollecting;
   }
   markCycleEarlyBindings(lowerer);
+  markRequireEarlyBindings(lowerer);
 }
 
 export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
@@ -1532,8 +1537,9 @@ export function collectGlobals(
       isRequireStatement(stmt) &&
       !(
         ts.isVariableStatement(stmt) &&
-        stmt.declarationList.declarations.some((decl) =>
-          isNativeFfiRequire(lowerer, decl.initializer),
+        stmt.declarationList.declarations.some(
+          (decl) =>
+            isNativeFfiRequire(lowerer, decl.initializer) || isJsonRequireDecl(lowerer, decl),
         )
       )
     ) {

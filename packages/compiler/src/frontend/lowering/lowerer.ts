@@ -10,6 +10,12 @@ import {
   refuseUncheckedCycleReads,
   type CycleInitFlag,
 } from "./cycle-initialization.js";
+import { isJsonRequireDecl, type JsonRequireModule } from "./json-require.js";
+import {
+  checkRequireBindingAccesses,
+  type EarlyReference,
+  type RequireInitFlag,
+} from "./require-initialization.js";
 import { identityPreservingWidening } from "./coercions/identity.js";
 import { scanDivergences } from "./divergences.js";
 import { checkedClassAssertion } from "./class-assertions.js";
@@ -2445,6 +2451,10 @@ export class Lowerer {
    * prepended by lowerFileInit so the bindings are live before any
    * top-level statement runs. */
   readonly jsonInitActions = new Map<ts.SourceFile, IrStmt[]>();
+  /** CommonJS require() of JSON documents: the shared object per document
+   * and the calls reading it (json-require.ts). */
+  readonly jsonRequireModules = new Map<string, JsonRequireModule>();
+  readonly jsonRequireCalls = new Map<ts.CallExpression, JsonRequireModule>();
   /** Dynamic `import("literal")` resolutions, keyed
    * `fileName\u0000specifier` (collectDynamicImports fills it during npm
    * collection; lowerDynamicImportCall reads it per site). */
@@ -2612,6 +2622,10 @@ export class Lowerer {
    * by class name (cycle-initialization.ts). */
   readonly classInitFlags = new Map<string, CycleInitFlag>();
   readonly cycleInitDeclarations = new Map<ts.Statement, CycleInitFlag[]>();
+  /** CommonJS require declarations whose bindings code running before the
+   * require can read, and those references (require-initialization.ts). */
+  readonly requireInitFlags = new Map<ts.VariableDeclaration, RequireInitFlag>();
+  readonly requireEarlyReferences: EarlyReference[] = [];
 
   get ctx(): FnCtx {
     const top = this.fnStack[this.fnStack.length - 1];
@@ -3452,6 +3466,7 @@ export class Lowerer {
       return null;
     const directSpec = requireSpecOf(decl.initializer);
     if (directSpec !== null) {
+      if (isJsonRequireDecl(this, decl)) return null;
       return (
         resolveImport(this.program, decl.getSourceFile(), directSpec, "require") ??
         npmStaticDepSf7(this.program, decl.getSourceFile(), directSpec, "require")
@@ -6291,6 +6306,7 @@ export class Lowerer {
     // slots), uniformly across params/locals/globals/fields/body types so
     // every producer and consumer agrees. Programs with no unregistered
     // reference are untouched — byte-stability holds.
+    checkRequireBindingAccesses(this, functions);
     const module: IrModule | null =
       this.diags.length > 0
         ? null
@@ -11722,8 +11738,8 @@ export class Lowerer {
     return lowerSpawnCall(this, expr, loc);
   }
 
-  lowerExecFileCall(expr: ts.CallExpression, loc: SrcLoc): IrExpr {
-    return lowerExecFileCall(this, expr, loc);
+  lowerExecFileCall(expr: ts.CallExpression, loc: SrcLoc, shell = false): IrExpr {
+    return lowerExecFileCall(this, expr, loc, shell);
   }
 
   lowerExecSyncCall(expr: ts.CallExpression, shell: boolean, loc: SrcLoc): IrExpr {
