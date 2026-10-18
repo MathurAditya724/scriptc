@@ -149,6 +149,18 @@ export function lowerProcessStreamProperty(
         loc: locOf(expr),
       };
   }
+  // `if (process.stdin.setRawMode)`: Node's stdin has the method only
+  // when it is a TTY. The runtime's stream object answers the same
+  // presence (the method or undefined); calls keep their direct lowering.
+  if (direct === "stdin" && member === "setRawMode") {
+    return {
+      kind: "dynKeyGet",
+      value: lowerer.lowerExpr(expr.expression),
+      key: strLit(member, locOf(expr.name)),
+      type: DYN,
+      loc: locOf(expr),
+    };
+  }
   if (member !== "isTTY" && member !== "columns" && member !== "rows") return null;
   let recv: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(recv) || ts.isAsExpression(recv) || ts.isTypeAssertion(recv))
@@ -633,6 +645,73 @@ export function lowerProcessMethodCall(
     }
     return { kind: "libCall", fn: "process.stdinSetRawMode", args: [mode], type: VOID, loc };
   }
+  // process.stdout.on("resize", cb) (and once/off/removeListener/
+  // addListener, stderr too): the terminal resize event, registered on the
+  // runtime's process stream object (a SIGWINCH listener that emits when a
+  // TTY's size changed; it never keeps the loop alive). Statement position:
+  // Node returns the stream.
+  if (
+    ["on", "once", "off", "removeListener", "addListener"].includes(access.name.text) &&
+    ts.isPropertyAccessExpression(access.expression) &&
+    call.arguments.length === 2 &&
+    !call.arguments.some(ts.isSpreadElement) &&
+    ts.isExpressionStatement(call.parent)
+  ) {
+    const stream = lowerer.stdlibGlobalMember(access.expression, "process");
+    const evT = lowerer.typeOf(call.arguments[0]!);
+    if (
+      (stream === "stdout" || stream === "stderr") &&
+      evT.isStringLiteralType() &&
+      evT.value === "resize"
+    ) {
+      const loc = locOf(call);
+      const receiverLocal = lowerer.declareHiddenLocal("%stdioReceiver", DYN);
+      const receiver = varRef(receiverLocal.id, DYN, loc);
+      const method =
+        access.name.text === "off"
+          ? "removeListener"
+          : access.name.text === "addListener"
+            ? "on"
+            : access.name.text;
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: receiverLocal.id,
+            init: {
+              kind: "libCall",
+              fn: "process.stdio",
+              args: [numLit(stream === "stdout" ? 1 : 2, loc)],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ],
+        result: {
+          kind: "dynCall",
+          callee: {
+            kind: "dynKeyGet",
+            value: receiver,
+            key: strLit(method, locOf(access.name)),
+            type: DYN,
+            loc,
+          },
+          receiver,
+          calleeName: access.getText(),
+          args: [
+            lowerer.lowerExprExpecting(call.arguments[0]!, DYN),
+            lowerer.lowerExprExpecting(call.arguments[1]!, DYN),
+          ],
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      };
+    }
+  }
   // process.stdin.on/once("data" | "end" | "error", cb): the piped-stdin
   // event slice. A 'data' listener keeps the event loop alive until EOF
   // (Node's flowing stdin); 'end'/'error' listeners alone do not. `once`
@@ -681,11 +760,18 @@ export function lowerProcessMethodCall(
     const param = cb.type.params[0];
     const onceArg: IrExpr = { kind: "boolLit", value: once, type: BOOL, loc };
     if (event === "data") {
-      if (param !== undefined && !(param.kind === "bytes" && param.elem === "u8")) {
+      // A string parameter receives the chunks process.stdin.setEncoding
+      // decodes (pi-tui's terminal input); the runtime refuses a delivery
+      // while no encoding is set, where Node would pass a Buffer.
+      if (
+        param !== undefined &&
+        !(param.kind === "bytes" && param.elem === "u8") &&
+        param.kind !== "string"
+      ) {
         lowerer.unsupported(
           "SC1090",
           call.arguments[1]!,
-          `data listeners whose parameter is not 'Uint8Array' (got '${lowerer.fmt(param)}')`,
+          `data listeners whose parameter is not 'Uint8Array' or 'string' (got '${lowerer.fmt(param)}')`,
         );
       }
       return { kind: "libCall", fn: "stdin.onData", args: [cb, onceArg], type: VOID, loc };

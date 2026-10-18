@@ -544,15 +544,24 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       B.line(`call void @scr_stdin_on_end(ptr ${cb.name}, i1 ${once.name})`);
       return { name: "", type: e.type };
     }
+    // A string listener takes the setEncoding-decoded chunk.
+    const stringData = e.fn === "stdin.onData" && cbT.params[0]?.kind === "string";
     const adapter =
       e.fn === "stdin.onData"
         ? cbT.params.length === 0
           ? "scr_stdin_data_thunk0"
-          : "scr_stdin_data_thunk_bytes"
+          : stringData
+            ? "scr_stdin_data_thunk_str"
+            : "scr_stdin_data_thunk_bytes"
         : cbT.params.length === 0
           ? "scr_child_err_thunk0"
           : "scr_child_err_thunk_error";
-    const sym = e.fn === "stdin.onData" ? "scr_stdin_on_data" : "scr_stdin_on_error";
+    const sym =
+      e.fn === "stdin.onData"
+        ? stringData
+          ? "scr_stdin_on_data_str"
+          : "scr_stdin_on_data"
+        : "scr_stdin_on_error";
     host.declare(`declare void @${adapter}(ptr, ptr)`);
     host.declare(`declare void @${sym}(ptr, ptr, i1 zeroext)`);
     B.line(`call void @${sym}(ptr ${cb.name}, ptr @${adapter}, i1 ${once.name})`);

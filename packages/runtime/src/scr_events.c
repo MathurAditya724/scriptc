@@ -345,9 +345,18 @@ static void scr_signals_drain(void) {
  * listener it is treated as EOF (piped fd 0 read errors are not
  * meaningfully reachable). */
 
+/* What a 'data' listener receives: raw chunks (typed Buffer listeners and
+ * the runtime's own consumers), the decoded string (typed string
+ * listeners, which need setEncoding), or whichever Node delivers
+ * (checked-dynamic listeners: the string once an encoding is set, else
+ * the Buffer). */
+enum { SCR_STDIN_DATA_BYTES, SCR_STDIN_DATA_STRING, SCR_STDIN_DATA_DYN };
+
 typedef struct {
   ScrClosure *cb; /* owned */
   void (*fn)(ScrClosure *cb, ScrBytes *chunk); /* adapter: chunk borrowed */
+  void (*str_fn)(ScrClosure *cb, ScrStr *text); /* STRING/DYN: text borrowed */
+  unsigned char kind;
   bool once;
 } ScrStdinDataL;
 
@@ -376,9 +385,16 @@ static SCR_TL bool scr_stdin_resumed = false;
 static SCR_TL bool scr_stdin_read_eof = false;
 static SCR_TL ScrBytes *scr_stdin_buffer;
 static SCR_TL size_t scr_stdin_read_demand;
+/* process.stdin.setEncoding(enc): the canonical encoding name (NULL until
+ * set) and the StringDecoder's packed pending partial sequence, so a
+ * multibyte character split across reads decodes whole, as Node's
+ * decoder does. */
+static SCR_TL ScrStr *scr_stdin_encoding = NULL;
+static SCR_TL double scr_stdin_dec_pending = 0;
 
-void scr_stdin_on_data(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, ScrBytes *),
-                        bool once) {
+static void scr_stdin_add_data(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, ScrBytes *),
+                               void (*str_fn)(ScrClosure *, ScrStr *), unsigned char kind,
+                               bool once) {
   if (scr_stdin_eof || scr_stdin_destroyed) {
     scr_closure_release(cb); /* never fires again, like Node post-'end' */
     return;
@@ -390,8 +406,33 @@ void scr_stdin_on_data(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, ScrByt
   }
   scr_stdin_data[scr_stdin_ndata].cb = cb;
   scr_stdin_data[scr_stdin_ndata].fn = fn;
+  scr_stdin_data[scr_stdin_ndata].str_fn = str_fn;
+  scr_stdin_data[scr_stdin_ndata].kind = kind;
   scr_stdin_data[scr_stdin_ndata].once = once;
   scr_stdin_ndata++;
+}
+
+void scr_stdin_on_data(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, ScrBytes *),
+                        bool once) {
+  scr_stdin_add_data(cb, fn, NULL, SCR_STDIN_DATA_BYTES, once);
+}
+
+void scr_stdin_on_data_str(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, ScrStr *),
+                            bool once) {
+  scr_stdin_add_data(cb, NULL, fn, SCR_STDIN_DATA_STRING, once);
+}
+
+static void scr_stdin_encoding_teardown(void) {
+  scr_str_release(scr_stdin_encoding);
+  scr_stdin_encoding = NULL;
+}
+
+void scr_stdin_set_encoding(ScrStr *enc) {
+  if (scr_stdin_encoding == NULL) scr_atexit(scr_stdin_encoding_teardown);
+  ScrStr *previous = scr_stdin_encoding;
+  scr_stdin_encoding = scr_str_retain(enc);
+  scr_str_release(previous);
+  scr_stdin_dec_pending = 0;
 }
 
 void scr_stdin_on_end(ScrClosure *cb /*moves*/, bool once) {
@@ -484,10 +525,20 @@ static void scr_stdin_settle_done(void) {
   scr_promise_release(p);
 }
 
+static void scr_stdin_deliver_parts(ScrBytes *chunk, ScrStr *text);
+
 /* EOF/teardown shared tail: 'end' fires (snapshot; once semantics are
  * moot — everything drops right after), the parked promise settles done,
  * and every listener is released. */
 static void scr_stdin_finish(bool fire_end) {
+  if (fire_end && scr_stdin_encoding != NULL && scr_stdin_ndata > 0) {
+    /* The decoder's end() flush reaches the string listeners before 'end'. */
+    ScrStr *tail = scr_strdec_end(scr_stdin_encoding, scr_stdin_dec_pending);
+    scr_stdin_dec_pending = 0;
+    if (tail->len > 0) scr_stdin_deliver_parts(NULL, tail);
+    scr_str_release(tail);
+    if (scr_exc_pending()) fire_end = false;
+  }
   scr_stdin_eof = true;
   if (fire_end) {
     size_t n = scr_stdin_nend;
@@ -658,6 +709,20 @@ static void scr_stdin_service(void) {
 }
 
 static void scr_stdin_deliver(ScrBytes *chunk) {
+  if (scr_stdin_ndata > 0 && scr_stdin_encoding != NULL) {
+    /* Node's readable decodes once, in the stream: every listener sees
+     * the same string, and a read holding only a partial sequence emits
+     * nothing. */
+    ScrStr *text = scr_strdec_write(scr_stdin_encoding, scr_stdin_dec_pending, chunk);
+    scr_stdin_dec_pending = scr_strdec_next(scr_stdin_encoding, scr_stdin_dec_pending, chunk);
+    if (text->len > 0) scr_stdin_deliver_parts(chunk, text);
+    scr_str_release(text);
+    return;
+  }
+  scr_stdin_deliver_parts(chunk, NULL);
+}
+
+static void scr_stdin_deliver_parts(ScrBytes *chunk, ScrStr *text) {
   if (scr_stdin_ndata > 0) {
     size_t nd = scr_stdin_ndata;
     ScrStdinDataL *snap = malloc(nd * sizeof *snap);
@@ -678,11 +743,23 @@ static void scr_stdin_deliver(ScrBytes *chunk) {
           }
         }
       }
-      if (!scr_exc_pending()) snap[i].fn(snap[i].cb, chunk);
+      if (!scr_exc_pending()) {
+        if (snap[i].kind == SCR_STDIN_DATA_BYTES) {
+          if (chunk != NULL) snap[i].fn(snap[i].cb, chunk);
+        } else if (text != NULL) {
+          snap[i].str_fn(snap[i].cb, text);
+        } else if (snap[i].kind == SCR_STDIN_DATA_DYN) {
+          if (chunk != NULL) snap[i].fn(snap[i].cb, chunk);
+        } else {
+          static const char msg[] =
+              "stdin data listener type does not match setEncoding state";
+          scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+        }
+      }
       scr_closure_release(snap[i].cb);
     }
     free(snap);
-  } else if (scr_stdin_waiter) {
+  } else if (scr_stdin_waiter && chunk != NULL) {
     ScrPromise *p = scr_stdin_waiter;
     scr_stdin_waiter = NULL;
     scr_promise_fulfill_ref(p, scr_bytes_retain(chunk), scr_bytes_retain_v,
@@ -701,13 +778,20 @@ typedef struct {
   bool *error_once;
   size_t nerrors;
   ScrDyn *write_error;
+  /* 'resize' listeners (stdout/stderr) and the size they last saw. */
+  ScrDyn **resizes;
+  bool *resize_once;
+  size_t nresizes;
+  double columns, rows;
 } ScrStdio;
 
 static SCR_TL ScrStdio scr_stdio_streams[3] = {{.fd = 0}, {.fd = 1}, {.fd = 2}};
 enum { STDIO_WRITE, STDIO_ON, STDIO_ONCE, STDIO_OFF, STDIO_PAUSE, STDIO_RESUME,
-       STDIO_IS_PAUSED, STDIO_READ, STDIO_RAW, STDIO_DESTROY, STDIO_WINDOW_SIZE, STDIO_METHOD_COUNT };
+       STDIO_IS_PAUSED, STDIO_READ, STDIO_RAW, STDIO_DESTROY, STDIO_WINDOW_SIZE,
+       STDIO_SET_ENCODING, STDIO_METHOD_COUNT };
 static const char *const scr_stdio_names[] = {
-  "write", "on", "once", "removeListener", "pause", "resume", "isPaused", "read", "setRawMode", "destroy", "getWindowSize"
+  "write", "on", "once", "removeListener", "pause", "resume", "isPaused", "read", "setRawMode", "destroy", "getWindowSize",
+  "setEncoding"
 };
 static SCR_TL ScrDyn *scr_stdio_methods[STDIO_METHOD_COUNT];
 static SCR_TL bool scr_stdio_initialized;
@@ -733,6 +817,11 @@ static void scr_stdio_fire(ScrClosure *cb, ScrDyn *arg, size_t argc) {
 
 static void scr_stdio_data(ScrClosure *cb, ScrBytes *bytes) {
   ScrDyn *chunk = scr_dyn_new_chunk(bytes);
+  scr_stdio_fire(cb, chunk, 1);
+  scr_dyn_release(chunk);
+}
+static void scr_stdio_data_text(ScrClosure *cb, ScrStr *text) {
+  ScrDyn *chunk = scr_dyn_new_str(text);
   scr_stdio_fire(cb, chunk, 1);
   scr_dyn_release(chunk);
 }
@@ -861,6 +950,93 @@ static ScrDyn *scr_stdio_read(ScrDyn *size) {
   return result;
 }
 
+/* 'resize' on a TTY stdout/stderr: Node's tty.WriteStream listens for
+ * SIGWINCH and emits 'resize' when the window size changed. The signal
+ * listener does not keep the loop alive, and a non-TTY stream never
+ * emits. */
+static SCR_TL ScrDyn *scr_stdio_winch = NULL;
+
+static void scr_stdio_resize_emit(ScrStdio *stream) {
+  size_t n = stream->nresizes;
+  if (n == 0) return;
+  ScrDyn **snap = malloc(n * sizeof *snap);
+  bool *once = malloc(n * sizeof *once);
+  if (!snap || !once) scr_events_oom();
+  for (size_t i = 0; i < n; i++) {
+    snap[i] = scr_dyn_retain(stream->resizes[i]);
+    once[i] = stream->resize_once[i];
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (once[i]) {
+      for (size_t j = 0; j < stream->nresizes; j++) {
+        if (stream->resizes[j] == snap[i]) {
+          scr_dyn_release(stream->resizes[j]);
+          memmove(stream->resizes + j, stream->resizes + j + 1, (stream->nresizes - j - 1) * sizeof *stream->resizes);
+          memmove(stream->resize_once + j, stream->resize_once + j + 1, (stream->nresizes - j - 1) * sizeof *stream->resize_once);
+          stream->nresizes--;
+          break;
+        }
+      }
+    }
+    if (!scr_exc_pending()) {
+      scr_dyn_this_push(stream, SCR_DYNH_STDIO);
+      ScrDyn *r = scr_dyn_call(snap[i], NULL, 0, "listener");
+      scr_dyn_this_pop();
+      scr_dyn_release(r);
+    }
+    scr_dyn_release(snap[i]);
+  }
+  free(snap);
+  free(once);
+}
+
+static ScrDyn *scr_stdio_winch_fire(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  (void)cb; (void)args; (void)argc;
+  for (int fd = 1; fd <= 2 && !scr_exc_pending(); fd++) {
+    ScrStdio *stream = &scr_stdio_streams[fd];
+    if (stream->nresizes == 0 || !scr_process_is_tty(fd)) continue;
+    double columns = scr_process_columns(fd), rows = scr_process_rows(fd);
+    if (columns == stream->columns && rows == stream->rows) continue;
+    stream->columns = columns;
+    stream->rows = rows;
+    scr_stdio_resize_emit(stream);
+  }
+  return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+}
+
+static void scr_stdio_resize_listener(ScrStdio *stream, ScrDyn *listener, bool remove, bool once) {
+  if (remove) {
+    for (size_t i = stream->nresizes; i > 0; i--) {
+      if (scr_dyn_strict_eq(stream->resizes[i - 1], listener)) {
+        scr_dyn_release(stream->resizes[i - 1]);
+        memmove(stream->resizes + i - 1, stream->resizes + i, (stream->nresizes - i) * sizeof *stream->resizes);
+        memmove(stream->resize_once + i - 1, stream->resize_once + i, (stream->nresizes - i) * sizeof *stream->resize_once);
+        stream->nresizes--;
+        break;
+      }
+    }
+    return;
+  }
+  if (stream->nresizes == 0) {
+    stream->columns = scr_process_columns(stream->fd);
+    stream->rows = scr_process_rows(stream->fd);
+  }
+  stream->resizes = realloc(stream->resizes, (stream->nresizes + 1) * sizeof *stream->resizes);
+  stream->resize_once = realloc(stream->resize_once, (stream->nresizes + 1) * sizeof *stream->resize_once);
+  if (!stream->resizes || !stream->resize_once) scr_events_oom();
+  stream->resizes[stream->nresizes] = scr_dyn_retain(listener);
+  stream->resize_once[stream->nresizes++] = once;
+#if !defined(_WIN32) && !defined(__wasi__)
+  if (scr_stdio_winch == NULL && scr_context_is_main()) {
+    ScrClosure *cb = scr_closure_new(NULL, 0);
+    scr_stdio_winch = scr_dyn_new_func(cb, scr_stdio_winch_fire, 0, "", "refreshSize");
+    ScrStr *name = scr_str_new("SIGWINCH", 8);
+    scr_signal_on(name, scr_stdio_winch, false);
+    scr_str_release(name);
+  }
+#endif
+}
+
 static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
   int method = (int)scr_box_get_f64(cb->caps[0]);
   ScrDyn *self = scr_dyn_this_get();
@@ -920,14 +1096,20 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
     bool data = arg->kind == SCR_DYN_STR && arg->v.str->len == 4 && memcmp(event, "data", 4) == 0;
     bool end = arg->kind == SCR_DYN_STR && arg->v.str->len == 3 && memcmp(event, "end", 3) == 0;
     bool error = arg->kind == SCR_DYN_STR && arg->v.str->len == 5 && memcmp(event, "error", 5) == 0;
-    if ((!data && !end && !error) || (stream->fd != 0 && !error)) {
+    bool resize = stream->fd != 0 && arg->kind == SCR_DYN_STR && arg->v.str->len == 6 &&
+                  memcmp(event, "resize", 6) == 0;
+    if ((!data && !end && !error && !resize) || (stream->fd != 0 && !error && !resize)) {
       result = scr_stdio_refusal("event");
       goto done;
     }
     bool remove = method == STDIO_OFF, once = method == STDIO_ONCE;
-    if (stream->fd == 0) {
+    if (resize) {
+      scr_stdio_resize_listener(stream, listener, remove, once);
+    } else if (stream->fd == 0) {
       if (!remove) {
-        if (data) scr_stdin_on_data(scr_stdio_callback(listener, (void *)scr_stdio_data), scr_stdio_data, once);
+        if (data)
+          scr_stdin_add_data(scr_stdio_callback(listener, (void *)scr_stdio_data), scr_stdio_data,
+                             scr_stdio_data_text, SCR_STDIN_DATA_DYN, once);
         if (end) scr_stdin_on_end(scr_stdio_callback(listener, (void *)scr_stdio_end), once);
         if (error) scr_stdin_on_error(scr_stdio_callback(listener, (void *)scr_stdio_error), scr_stdio_error, once);
       } else {
@@ -972,6 +1154,13 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
   } else if (stream->fd == 0 && method == STDIO_RAW) {
     scr_process_stdin_set_raw_mode(scr_dyn_truthy(arg));
     if (!scr_exc_pending()) { scr_stdio_raw = scr_dyn_truthy(arg); result = scr_dyn_retain(self); }
+  } else if (stream->fd == 0 && method == STDIO_SET_ENCODING) {
+    ScrStr *enc = scr_strdec_encoding(arg);
+    if (enc) {
+      scr_stdin_set_encoding(enc);
+      scr_str_release(enc);
+      result = scr_dyn_retain(self);
+    }
   } else if (stream->fd == 0 && method == STDIO_DESTROY && argc == 0) {
     scr_stdin_destroy();
     result = scr_dyn_retain(self);
@@ -1069,7 +1258,12 @@ static void scr_stdio_cleanup(void) {
     for (size_t j = 0; j < stream->nerrors; j++) scr_dyn_release(stream->errors[j]);
     free(stream->errors); free(stream->error_once);
     stream->errors = NULL; stream->error_once = NULL; stream->nerrors = 0;
+    for (size_t j = 0; j < stream->nresizes; j++) scr_dyn_release(stream->resizes[j]);
+    free(stream->resizes); free(stream->resize_once);
+    stream->resizes = NULL; stream->resize_once = NULL; stream->nresizes = 0;
   }
+  scr_dyn_release(scr_stdio_winch);
+  scr_stdio_winch = NULL;
   for (int i = 0; i < STDIO_METHOD_COUNT; i++) {
     scr_dyn_release(scr_stdio_methods[i]);
     scr_stdio_methods[i] = NULL;
@@ -1212,6 +1406,9 @@ void scr_stdin_data_thunk0(ScrClosure *cb, ScrBytes *chunk) {
 void scr_stdin_data_thunk_bytes(ScrClosure *cb, ScrBytes *chunk) {
   /* The listener owns its +1 param per the universal convention. */
   ((void (*)(ScrClosure *, ScrBytes *))cb->fn)(cb, scr_bytes_retain(chunk));
+}
+void scr_stdin_data_thunk_str(ScrClosure *cb, ScrStr *text) {
+  ((void (*)(ScrClosure *, ScrStr *))cb->fn)(cb, scr_str_retain(text));
 }
 
 
