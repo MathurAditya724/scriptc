@@ -94,6 +94,25 @@
  *                  objects that are not garbage. A pass that frees almost
  *                  nothing therefore doubles this fraction, and a productive
  *                  one restores it.
+ *   full, death    live objects have died outside passes since the last
+ *                  full pass (the live count fell between passes, by at
+ *                  least 1/32 of the heap that pass left) and have stopped
+ *                  dying, and the heap has grown the base fraction since.
+ *                  Growth alone cannot tell a heap that keeps live data
+ *                  from one that keeps garbage, and once full passes stop
+ *                  finding anything the fraction widens to the cap. A
+ *                  program that drops a large structure and builds another
+ *                  (a compiler rebuilding in watch mode) would then hold
+ *                  the dead structures' cyclic parts until the heap had
+ *                  grown to the cap. The acyclic parts of such a structure
+ *                  go by reference counting, which shows as the fall. One
+ *                  that finds fewer older objects than had died doubles the
+ *                  fall the next one needs, and a productive one restores
+ *                  it. Like every full pass the growth rule did not choose
+ *                  (backlog, scheduled age), it can raise the levels'
+ *                  growth baselines but not lower them: the heap regrowing
+ *                  to where it was before such a pass reclaimed a dropped
+ *                  structure is a rebuild, not growth.
  *   mature         the same two rules one level down: a growth fraction
  *                  measured from the last mature-or-full pass and scheduled
  *                  by everything mature passes free, and a backlog rule over
@@ -196,6 +215,12 @@ typedef struct {
   unsigned char growth_shift[SCR_CYC_NGENS];
   unsigned char growth_streak[SCR_CYC_NGENS];
   unsigned backlog_shift[SCR_CYC_NGENS];
+  size_t fallen;
+  size_t live_seen;
+  size_t full_after;
+  unsigned char death_shift;
+  bool falling;
+  bool keep_base;
   size_t nbuffered;
   size_t trigger;
   size_t alloc_trigger;
@@ -234,6 +259,12 @@ static _Thread_local ScrCycThread scr_cyc_thread = {.gen_limit = SCR_CYC_OLD};
 #define scr_cyc_scheduled_mature_age (scr_cyc_thread.scheduled_mature_age)
 #define scr_xg_freed (scr_cyc_thread.xg_freed)
 #define scr_cyc_mature_dead (scr_cyc_thread.mature_dead)
+#define scr_cyc_fallen (scr_cyc_thread.fallen)
+#define scr_cyc_live_seen (scr_cyc_thread.live_seen)
+#define scr_cyc_full_after (scr_cyc_thread.full_after)
+#define scr_cyc_death_shift (scr_cyc_thread.death_shift)
+#define scr_cyc_falling (scr_cyc_thread.falling)
+#define scr_cyc_keep_base (scr_cyc_thread.keep_base)
 #define scr_cyc_kinds (scr_cyc_thread.kinds)
 #define scr_cyc_kinds_cap (scr_cyc_thread.kinds_cap)
 #endif
@@ -475,6 +506,22 @@ static SCR_TL unsigned scr_cyc_backlog_shift[SCR_CYC_NGENS];
 static SCR_TL size_t scr_cyc_mature_dead = 0;
 #endif
 
+/* The death rule (see the scheduling notes above). `fallen`: how far the
+ * live count fell between passes since the last full pass; `live_seen`: the
+ * live count at the end of the last pass or check; `full_after`: the live
+ * count after the last full pass; `falling`: whether it fell since the
+ * previous check; `death_shift`: doublings of the fall a pass needs, earned
+ * by passes that found less than had died; `keep_base`: the pass running
+ * is a full pass the growth rule did not choose, which may raise the
+ * levels' growth baselines but not lower them. */
+#define SCR_CYC_DEATH_DIV 32
+#define SCR_CYC_DEATH_MAX_SHIFT 8
+#ifndef SCR_WORKERS
+static SCR_TL size_t scr_cyc_fallen = 0, scr_cyc_live_seen = 0, scr_cyc_full_after = 0;
+static SCR_TL unsigned char scr_cyc_death_shift = 0;
+static SCR_TL bool scr_cyc_falling = false, scr_cyc_keep_base = false;
+#endif
+
 static size_t scr_cyc_nursery_threshold(void) {
   static SCR_TL size_t cached = 0;
   if (cached == 0) {
@@ -621,6 +668,27 @@ static void scr_cyc_adapt_growth(unsigned gen, size_t growth,
   }
 }
 
+/* How far the live count fell since the last check: what died outside
+ * passes, less what was allocated meanwhile. Every pass ends with a fresh
+ * reading, so what passes free does not count. */
+static void scr_cyc_note_fall(void) {
+  scr_cyc_falling = scr_cyc_live < scr_cyc_live_seen;
+  if (scr_cyc_falling) scr_cyc_fallen += scr_cyc_live_seen - scr_cyc_live;
+  scr_cyc_live_seen = scr_cyc_live;
+}
+
+/* The death rule: enough has died since the last full pass, it has stopped
+ * dying (a structure torn down by reference counting falls over several
+ * checks, and a pass in the middle would find its rest still referenced),
+ * and the heap has grown the base fraction since. */
+static SCR_CYC_SCHEDULING bool scr_cyc_died(void) {
+  if (scr_cyc_falling) return false;
+  size_t base = scr_cyc_growth_base(scr_cyc_full_after);
+  size_t need = base / SCR_CYC_DEATH_DIV;
+  need = need > (SIZE_MAX >> scr_cyc_death_shift) ? SIZE_MAX : need << scr_cyc_death_shift;
+  return scr_cyc_fallen >= need && scr_cyc_live > base + base / SCR_CYC_GROWTH_DIV;
+}
+
 /* One scheduled pass at `gen`. A mature or old pass adapts that level's
  * backlog threshold to its yield; the explicit sweep (scr_collect_cycles) is
  * not a scheduling decision and leaves the thresholds alone. Productive means
@@ -630,11 +698,14 @@ static void scr_cyc_adapt_growth(unsigned gen, size_t growth,
  *
  * Every level shares this one body, so a program that links the collector
  * carries a single copy of the scheduling logic. */
-static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_growth) {
+static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_growth, bool by_death) {
   size_t base = scr_cyc_growth_base(scr_cyc_live_after[gen]);
   size_t growth = scr_cyc_live > base ? scr_cyc_live - base : 0;
+  size_t fallen = scr_cyc_fallen;
   size_t old_freed_before = scr_cyc_old_freed;
+  scr_cyc_keep_base = gen == SCR_CYC_OLD && !by_growth;
   size_t freed = scr_cyc_pass(gen);
+  scr_cyc_keep_base = false;
   size_t old_reclaimed = scr_cyc_old_freed - old_freed_before + scr_cyc_mature_dead;
   if (gen == SCR_CYC_NURSERY) return;
   if (scr_cands.n != 0) {
@@ -643,7 +714,10 @@ static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_grow
     else if (scr_cyc_backlog_shift[gen] < SCR_CYC_BACKLOG_MAX_SHIFT)
       scr_cyc_backlog_shift[gen]++;
   }
-  if (by_growth)
+  if (by_death) {
+    if (old_reclaimed >= fallen) scr_cyc_death_shift = 0;
+    else if (scr_cyc_death_shift < SCR_CYC_DEATH_MAX_SHIFT) scr_cyc_death_shift++;
+  } else if (by_growth)
     scr_cyc_adapt_growth(gen, growth,
                          gen == SCR_CYC_OLD ? old_reclaimed : freed);
 }
@@ -652,15 +726,17 @@ static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_grow
  * per pass, so it is kept out of line and built for size, which leaves the
  * hot buffering path in scr_cyc_on_release small. */
 static SCR_CYC_SCHEDULING void scr_cyc_collect_due(void) {
+  scr_cyc_note_fall();
   unsigned gen = SCR_CYC_OLD;
   bool by_growth = scr_cyc_grown(SCR_CYC_OLD);
-  if (!by_growth && scr_roots[SCR_CYC_OLD].n < scr_cyc_backlog_threshold(SCR_CYC_OLD)) {
+  bool by_death = !by_growth && scr_cyc_died();
+  if (!by_growth && !by_death && scr_roots[SCR_CYC_OLD].n < scr_cyc_backlog_threshold(SCR_CYC_OLD)) {
     gen = SCR_CYC_MATURE;
     by_growth = scr_cyc_grown(SCR_CYC_MATURE);
     if (!by_growth && scr_roots[SCR_CYC_MATURE].n < scr_cyc_backlog_threshold(SCR_CYC_MATURE))
       gen = SCR_CYC_NURSERY;
   }
-  scr_cyc_scheduled_pass(gen, by_growth);
+  scr_cyc_scheduled_pass(gen, by_growth, by_death);
 }
 
 /* One scheduled pass, for callers that reach a natural collection point
@@ -669,6 +745,7 @@ static SCR_CYC_SCHEDULING void scr_cyc_collect_due(void) {
  * per turn would walk the whole live heap every turn — which is exactly the
  * cost the generations exist to avoid. */
 void scr_cyc_collect_scheduled(void) {
+  scr_cyc_note_fall();
   if (scr_cyc_buffered() == 0) {
     scr_cyc_scheduled_mature_age = 0;
     return;
@@ -677,7 +754,7 @@ void scr_cyc_collect_scheduled(void) {
     scr_cyc_scheduled_mature_age = 0;
   } else if (++scr_cyc_scheduled_mature_age
              >= scr_cyc_nursery_threshold()) {
-    scr_cyc_scheduled_pass(SCR_CYC_OLD, false);
+    scr_cyc_scheduled_pass(SCR_CYC_OLD, false, false);
     return;
   }
   scr_cyc_collect_due();
@@ -1167,11 +1244,20 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit) {
 
   /* A limited pass walked only some of the candidates: the schedule's
    * baselines stay those of the last pass over them all. */
+  scr_cyc_live_seen = scr_cyc_live;
   if (scr_cyc_take == NULL) {
-    if (gen_limit >= SCR_CYC_MATURE) scr_cyc_live_after[SCR_CYC_MATURE] = scr_cyc_live;
+    /* A full pass the growth rule did not choose (death, backlog, scheduled
+     * age) may raise the growth baselines but not lower them. After it
+     * reclaims a dropped structure, the heap regrowing to where it was is
+     * the program rebuilding what it had, not growth: from the low point,
+     * the next growth passes would walk the rebuilt live heap for nothing,
+     * at both levels. */
+    for (unsigned g = SCR_CYC_MATURE; g <= gen_limit; g++)
+      if (!scr_cyc_keep_base || scr_cyc_live > scr_cyc_live_after[g]) scr_cyc_live_after[g] = scr_cyc_live;
     if (gen_limit >= SCR_CYC_OLD) {
-      scr_cyc_live_after[SCR_CYC_OLD] = scr_cyc_live;
       scr_cyc_scheduled_mature_age = 0;
+      scr_cyc_fallen = 0;
+      scr_cyc_full_after = scr_cyc_live;
     }
   }
   /* markRoots drained buffers in bulk and teardowns moved the count around;
