@@ -32,7 +32,7 @@ export type GenType = IrType & { kind: "generator" };
 
 /** The interned IteratorResult record of a generator type (never null for
  * a MAPPED generator — mapType required it to intern). */
-function resultRecordOf(lowerer: Lowerer, genT: GenType): IrType & { kind: "record" } {
+export function resultRecordOf(lowerer: Lowerer, genT: GenType): IrType & { kind: "record" } {
   const rec = genResultRecord(genT.yieldT, genT.retT, lowerer.shapes, lowerer.unions);
   if (!rec)
     throw new InternalCompilerError("lowerer bug: mapped generator without a result record");

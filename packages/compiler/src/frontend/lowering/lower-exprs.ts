@@ -3,6 +3,7 @@ import { guardNullProto, nullProtoRecordShape, recordNullProtoTest } from "./nul
 import { lowerProtocolPropertyRead } from "./class-protocol-dispatch.js";
 import { generatorDrain } from "./iterator-adapters.js";
 import { lowerEventObjectProperty, lowerEventObjectPropertyWrite } from "./lower-event-target.js";
+import { lowerDisposableStackInstanceOf } from "./builtins/disposable-stack.js";
 import { lowerEventStaticProperty } from "./builtins/numbers.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
@@ -12001,6 +12002,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
     return { kind: "libCall", fn: "dyn.nativeUrlIs", args: [value], type: BOOL, loc };
   }
+  {
+    const stack = lowerDisposableStackInstanceOf(lowerer, expr);
+    if (stack) return stack;
+  }
   if (lowerer.isStdlibGlobal(expr.right, "DataView")) {
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
     return { kind: "libCall", fn: "dyn.dataViewIs", args: [value], type: BOOL, loc };
@@ -14023,6 +14028,28 @@ export function lowerUnionProperty(
       };
     }
     return null;
+  }
+  // A class instance the checker sees through a wider union (`(concrete
+  // as A | B).value`): the value is that class's instance, so read its
+  // field directly.
+  if (value.type.kind === "object") {
+    const className = value.type.className;
+    const info = lowerer.classes.get(className) ?? null;
+    const field = expr.name.text;
+    const fieldType = info?.fields.get(field);
+    if (fieldType !== undefined)
+      return lowerer.fieldGetExpr(
+        { container: "class", obj: value, className, field, fieldType },
+        locOf(expr),
+        expr,
+      );
+    const getter = lowerer.findMethodOn(info, `get:${field}`);
+    if (getter)
+      return lowerer.fieldGetExpr(
+        { container: "accessor", obj: value, className, field, fieldType: getter.sig.ret },
+        locOf(expr),
+        expr,
+      );
   }
   if (value.type.kind !== "union") {
     lowerer.unsupported(

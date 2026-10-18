@@ -40,6 +40,7 @@ import {
 import {
   classPrototypeData,
   hasClassPrototypeData,
+  observedPrototypeMethod,
   reflectClassPrototype,
 } from "./class-prototypes.js";
 import {
@@ -2438,8 +2439,13 @@ export class ClassDynamicDispatch {
         const value = varRef("p.0", DYN, loc);
         const { receiver, condition } = this.propertyReceiver(plan, loc);
         if (isClassCallback(lowerer, info, dispatch.source.method)) {
-          const prototypeMethod = lowerer.prototypeMethodAccesses.has(dispatch.source.method);
-          if (prototypeMethod) classPrototypeData(lowerer, info, loc);
+          const prototypeMethod = observedPrototypeMethod(
+            lowerer,
+            info,
+            dispatch.source.method,
+            loc,
+            receiver,
+          );
           const bag = this.readPropertyBagOrEmpty(lowerer, value, loc);
           dispatch.callback.body.unshift({
             kind: "if",
@@ -2786,7 +2792,8 @@ export class ClassDynamicDispatch {
             return dispatch.reflect
               ? this.reflectPropertyBody(lowerer, { ...dispatch, name }, info, receiver)
               : this.propertyBody(lowerer, { ...dispatch, name }, info, receiver);
-          const prototypeMethod = lowerer.prototypeMethodAccesses.has(name);
+          const prototypeMethod =
+            !info.fields.has(name) && observedPrototypeMethod(lowerer, info, name, loc, receiver);
           if (info.fields.has(name) || (dispatch.probe === "in" && !prototypeMethod)) {
             if (info.fields.has(name) && info.def.tracksOwnFields) {
               const bag = this.readPropertyBagOrEmpty(
@@ -2819,7 +2826,6 @@ export class ClassDynamicDispatch {
               { kind: "return", value: { kind: "boolLit", value: true, type: BOOL, loc }, loc },
             ];
           }
-          if (prototypeMethod) classPrototypeData(lowerer, info, loc, receiver);
           const bag = this.readPropertyBagOrEmpty(
             lowerer,
             lowerer.coerceToExpected(receiver, DYN),
@@ -4496,8 +4502,7 @@ export class ClassDynamicDispatch {
           const body: IrStmt[] = [];
           const symbol = symbolMemberKey(lowerer, info, name, loc);
           if (symbol || (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:"))) {
-            const prototypeMethod = lowerer.prototypeMethodAccesses.has(name);
-            if (prototypeMethod) classPrototypeData(lowerer, info, loc, receiver);
+            const prototypeMethod = observedPrototypeMethod(lowerer, info, name, loc, receiver);
             // Selecting the method must not give the object own storage.
             const bag = this.readPropertyBag(lowerer, receiver, loc);
             const key: IrExpr = symbol ?? { kind: "strLit", value: name, type: STRING, loc };
