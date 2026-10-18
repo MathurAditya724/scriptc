@@ -4210,8 +4210,15 @@ function lowerUnionToStringCall(
       (a.kind === "bytes" && a.elem === "u8"),
   );
   if (!stringable) return null;
-  const operand = lowerer.lowerExpr(access.expression);
+  let operand = lowerer.lowerExpr(access.expression);
   if (operand.type.kind !== "union") return null;
+  // A flow-narrowed read keeps its wider storage union (`string | number`
+  // after `!Array.isArray(h.host)` over a `string | number | string[]`
+  // slot): retag it to the proven union before the per-union helper.
+  if (operand.type.unionId !== recvT.unionId) {
+    operand = lowerer.coerceInto(access.expression, operand, recvT);
+    if (operand.type.kind !== "union" || operand.type.unionId !== recvT.unionId) return null;
+  }
   return { kind: "toString", operand, type: STRING, loc: locOf(call) };
 }
 
