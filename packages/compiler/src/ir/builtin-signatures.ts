@@ -2771,6 +2771,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * receivers are borrowed. */
   "zlib.streamNew": { argTypes: [F64, DYN], result: VOID },
   "zlib.streamBytesWritten": { argTypes: [null], result: F64 },
+  /** `stream instanceof zlib.Gzip`: the borrowed stream and the class's
+   * node_zlib_mode; true when the stream is a zlib stream of that mode. */
+  "zlib.streamIs": { argTypes: [null, F64], result: BOOL },
   "zlib.streamFlush": { argTypes: [null, DYN], result: VOID },
   "zlib.streamFlushCb": { argTypes: [null, DYN, null], result: VOID },
   "zlib.streamParams": { argTypes: [null, DYN, DYN], result: VOID },
