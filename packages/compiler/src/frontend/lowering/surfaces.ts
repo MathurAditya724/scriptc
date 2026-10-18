@@ -2047,8 +2047,13 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
   crypto: {
     // The composed randomBytes(n).toString(enc) chain keeps its one-libCall
     // lowering (lowerCryptoComposedCall), while the callback overload has
-    // its own adapter spelling. Both remain the randomBytes surface.
-    randomBytes: ["crypto.randomBytesToString", "crypto.randomBytesCb"],
+    // its own adapter spelling. Both remain the randomBytes surface, as does
+    // the util.promisify form.
+    randomBytes: [
+      "crypto.randomBytesToString",
+      "crypto.randomBytesCb",
+      "crypto.randomBytesPromise",
+    ],
     // Omitting size fills from offset through the rest of the Buffer and
     // uses a separate runtime entry point for Node's exact bounds checks.
     // Views of every kind return themselves; other buffers take the Dyn form.
@@ -2058,9 +2063,13 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "crypto.randomFillViewRest",
       "crypto.randomFillSyncDyn",
     ],
-    randomFill: ["crypto.randomFillCbDyn"],
+    randomFill: [
+      "crypto.randomFillCbDyn",
+      "crypto.randomFillPromise",
+      "crypto.randomFillPromiseDyn",
+    ],
     timingSafeEqual: ["crypto.timingSafeEqualDyn"],
-    randomInt: ["crypto.randomIntMax", "crypto.randomIntCb"],
+    randomInt: ["crypto.randomIntMax", "crypto.randomIntCb", "crypto.randomIntPromise"],
     randomUUID: ["crypto.randomUUIDOpts"],
   },
   os: {
@@ -2455,6 +2464,12 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     kind: "node-builtin",
     name: "process.argv0",
     fns: ["process.argv0"],
+  },
+  {
+    id: "node-builtin.process.execArgv",
+    kind: "node-builtin",
+    name: "process.execArgv",
+    fns: ["process.execArgv"],
   },
   {
     id: "node-builtin.process.execPath",
@@ -2868,7 +2883,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   util: {
     promisify:
-      "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots and the fs callback functions with an fs/promises counterpart; call the bound function directly",
+      "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart; call the bound function directly",
   },
   "stream/consumers": {
     blob:
@@ -2884,7 +2899,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
     isBuiltin:
       "the lowered call checks a string against the baked Node v24 list, including bare/node: aliases and prefix-only builtins",
     syncBuiltinESMExports:
-      "the direct zero-argument call is a no-op because compiled builtin exports are immutable and cannot become stale",
+      "the direct zero-argument call statement refreshes the ES module namespace copy of events.defaultMaxListeners, the one builtin export a program can change",
   },
   child_process: {
     execFile:
@@ -3031,8 +3046,8 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
     hint =
       "'.groups' lowers when the match's regex is STATICALLY known — a regex literal, or a " +
       "const initialized with one (the group-name table is built at compile time) — and the " +
-      "read is not an optional-chain step: narrow the match instead (if (m) { m.groups } or " +
-      "m!.groups)";
+      "match comes from exec, match, a for-of over matchAll, or the element parameter of an " +
+      "array-method callback over matchAll rows";
   } else if (recvIr?.kind === "array" && member === "flat") {
     hint =
       "flat has no lowering (flatMap does) — flatten into an accumulator instead: " +

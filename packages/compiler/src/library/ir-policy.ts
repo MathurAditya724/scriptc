@@ -196,6 +196,7 @@ export const LIB_NONDETERMINISTIC_PREFIXES: readonly [string, string][] = [
   ["blob.fileNew", "the live clock (File lastModified)"],
   ["process.env", "environment reads"],
   ["process.argv", "process.argv"],
+  ["process.execArgv", "process.execArgv"],
   ["process.cwd", "process.cwd"],
   ["process.chdir", "process.chdir"],
   ["process.pid", "process identity"],

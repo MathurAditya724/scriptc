@@ -42,9 +42,10 @@ import { stripTypeCasts } from "./arguments.js";
 /** node:module's two compiler-only calls. isBuiltin compares one evaluated
  * string against the pinned Node 24 list (bare builtins also accept their
  * node: spelling; prefix-only entries do not gain a bare alias).
- * syncBuiltinESMExports is observably a no-op inside the static surface:
- * builtin exports cannot be mutated, so its only supported behavior is
- * evaluating no arguments and returning undefined. */
+ * syncBuiltinESMExports takes no arguments and returns undefined; as a
+ * statement it refreshes the events module's ES module namespace copy of
+ * defaultMaxListeners (lowerExprStatement), the one builtin export a program
+ * can change. */
 export function lowerNodeModuleCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -64,7 +65,7 @@ export function lowerNodeModuleCall(
       lowerer.noLowering(
         "module.syncBuiltinESMExports used as a value",
         expr,
-        "call syncBuiltinESMExports() as its own statement; the supported static effect is a no-op",
+        "call syncBuiltinESMExports() as its own statement",
       );
     }
     return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc };

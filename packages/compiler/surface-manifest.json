@@ -1367,7 +1367,7 @@
       "name": "module.syncBuiltinESMExports",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the direct zero-argument call is a no-op because compiled builtin exports are immutable and cannot become stale"
+      "note": "the direct zero-argument call statement refreshes the ES module namespace copy of events.defaultMaxListeners, the one builtin export a program can change"
     },
     {
       "id": "node-builtin.net",
@@ -1945,6 +1945,12 @@
       "note": "reads, writes, deletes, and enumeration of the process environment (the process global)"
     },
     {
+      "id": "node-builtin.process.execArgv",
+      "kind": "node-builtin",
+      "name": "process.execArgv",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.process.execPath",
       "kind": "node-builtin",
       "name": "process.execPath",
@@ -2456,7 +2462,7 @@
       "name": "util.promisify",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots and the fs callback functions with an fs/promises counterpart; call the bound function directly"
+      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart; call the bound function directly"
     },
     {
       "id": "node-builtin.util.stripVTControlCharacters",

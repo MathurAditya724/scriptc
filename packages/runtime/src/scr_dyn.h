@@ -601,6 +601,7 @@ ScrDyn *scr_dyn_native_search_params(ScrSearchParams *value);
 bool scr_dyn_native_search_params_is(const ScrDyn *value);
 bool scr_dyn_native_date_is(const ScrDyn *value);
 ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments);
+ScrDyn *scr_dyn_native_date_from_ms(double ms);
 double scr_dyn_native_date_value(const ScrDyn *value);
 ScrDyn *scr_dyn_native_regex(ScrRegex *value);
 bool scr_dyn_native_regex_is(const ScrDyn *value);

@@ -1,3 +1,4 @@
+import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 import { countedFor, numLit, varRef } from "../../../ir/build.js";
 import { objectEnumerationReceiver } from "../object-enumeration-receiver.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -852,50 +853,57 @@ export function lowerRecordOvfCaptureHelper(
     lift === "dyn"
       ? { kind: "dynFrom", value: v, type: DYN, loc }
       : lowerer.applyWidthLift(lift, v, tIv, loc);
-  const body: IrStmt[] = [
-    {
-      kind: "varDecl",
-      localId: "out.0",
-      init: {
-        kind: "recordLit",
-        fields: inits.map((d) => ({
-          name: d.name,
-          value:
-            d.kind === "direct"
-              ? lowerer.presenceKeepingCopy(
-                  sRef,
-                  fromId,
-                  d.name,
-                  lowerer.applyWidthLift(
-                    d.lift,
-                    {
-                      kind: "recordGet",
-                      obj: sRef,
-                      shapeId: fromId,
-                      field: d.name,
-                      type: d.src,
-                      loc,
-                    },
-                    to.fields.find((f) => f.name === d.name)!.type,
-                    loc,
-                  ),
+  const fresh: IrExpr & { kind: "recordLit" } = {
+    kind: "recordLit",
+    fields: inits.map((d) => ({
+      name: d.name,
+      value:
+        d.kind === "direct"
+          ? lowerer.presenceKeepingCopy(
+              sRef,
+              fromId,
+              d.name,
+              lowerer.applyWidthLift(
+                d.lift,
+                {
+                  kind: "recordGet",
+                  obj: sRef,
+                  shapeId: fromId,
+                  field: d.name,
+                  type: d.src,
                   loc,
-                )
-              : ({
-                  // No source property of this name: the field starts
-                  // absent (an overflow write below can supply it).
-                  kind: "fieldAbsent",
-                  unionId: d.unionId,
-                  type: to.fields.find((f) => f.name === d.name)!.type,
-                  loc,
-                } satisfies IrExpr),
-        })),
-        type: toT,
-        loc,
-      },
-      loc,
-    },
-  ];
+                },
+                to.fields.find((f) => f.name === d.name)!.type,
+                loc,
+              ),
+              loc,
+            )
+          : ({
+              // No source property of this name: the field starts
+              // absent (an overflow write below can supply it).
+              kind: "fieldAbsent",
+              unionId: d.unionId,
+              type: to.fields.find((f) => f.name === d.name)!.type,
+              loc,
+            } satisfies IrExpr),
+    })),
+    type: toT,
+    loc,
+  };
+  // The source and its reshape are one object in JavaScript, so a
+  // null-prototype source (a match's groups, Object.groupBy) keeps it.
+  const init: IrExpr =
+    nullProtoRecordShape(lowerer, fromT) && nullProtoRecordShape(lowerer, toT)
+      ? {
+          kind: "ternary",
+          cond: recordNullProtoTest(sRef, fromId, loc),
+          then: { ...fresh, nullProto: true },
+          else_: fresh,
+          type: toT,
+          loc,
+        }
+      : fresh;
+  const body: IrStmt[] = [{ kind: "varDecl", localId: "out.0", init, loc }];
   const fieldStmts = new Map<string, IrStmt>();
   // Source declared fields in declaration order, skipping unset
   // optionals (stance 37) and the direct-initialized (consumed) names.
