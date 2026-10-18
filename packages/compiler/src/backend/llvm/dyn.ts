@@ -1106,6 +1106,10 @@ export class LlDyn {
   private readonly jsonSchemas = new Map<string, string>();
   private readonly jsonParsers = new Map<string, string>();
   private readonly recordNameTables = new Map<string, { names: string; lens: string }>();
+  /** Some emitted helper can keep a record's undeclared source: a checked
+   * record builder that notes it, or a JSON schema of a closed record
+   * (alloc.ts RECORD_SOURCES_GATE). */
+  keepsRecordSources = false;
 
   /** Targets the one-pass parser (scr_json_parse_schema) can build
    * directly: number, boolean and string leaves inside arrays and records
@@ -1220,6 +1224,7 @@ export class LlDyn {
         const index = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
         // The runtime names kept-source keys by this index (record-sources.ts).
         const order = recordSourceFieldOrder(shape);
+        if (recordMayKeepSource(shape)) this.keepsRecordSources = true;
         const fieldTy = `{ ptr, ${S}, ${S}, ptr }`;
         const entries = order.map((fieldName) => {
           const field = shape.fields[index.get(fieldName)! - 1]!;
@@ -1978,6 +1983,7 @@ export class LlDyn {
         // that has them stays beside the record so its reflective
         // surfaces still observe them (scr_record_source_note).
         if (recordMayKeepSource(shape)) {
+          this.keepsRecordSources = true;
           const names = this.recordNameTable(t.shapeId, shape);
           host.declare(
             `declare void @scr_record_source_note(ptr, ptr, ptr, ptr, ${host.sizeType})`,

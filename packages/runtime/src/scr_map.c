@@ -696,7 +696,7 @@ static void scr_map_trace(void *o, ScrTraceVisit visit, void *ctx) {
 static void scr_map_gcfree(void *o) {
   ScrMap *m = (ScrMap *)o;
   bool keys = m->traced & SCR_MAP_TRACED_KEY, vals = m->traced & SCR_MAP_TRACED_VAL;
-  scr_weak_dispose(m);
+  scr_weak_dispose_inline(m);
   for (size_t e = 0; e < m->nentries; e++) {
     if (!m->entries[e].hash) continue;
     if (!keys) scr_map_release_key(m, m->entries[e].key);
@@ -751,7 +751,7 @@ ScrMap *scr_map_retain(ScrMap *m) {
 
 static void scr_map_destroy(void *object) {
   ScrMap *m = object;
-  scr_weak_dispose(m);
+  scr_weak_dispose_inline(m);
   for (size_t e = 0; e < m->nentries; e++) {
     if (!m->entries[e].hash) continue;
     scr_map_release_key(m, m->entries[e].key);

@@ -38,6 +38,7 @@ import {
   stackUnionBox,
   type InlineUnionFields,
 } from "./inline-unions.js";
+import { recordMayKeepSource } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
 /** What the tables need from the emitter: the extern-declaration ledger
@@ -1404,7 +1405,9 @@ export function emitRecordShapes(
       }
       t++;
     }
-    freeBody.push(...emitObjectFree(host, traced));
+    // Closed layouts can carry a kept record source (record-sources.ts).
+    const observers = recordMayKeepSource(shape) ? "weak-or-source" : "weak";
+    freeBody.push(...emitObjectFree(host, traced, observers));
     defs.push(
       ...releaseBody(
         host,
@@ -1514,7 +1517,7 @@ export function emitRecordShapes(
           `  call void ${releaseSym(host, m.type)}(ptr %v${i}) ; ${llvmCommentText(m.name)} (acyclic)`,
         );
       });
-      gf.push(...emitObjectFree(host, true), `  ret void`, `}`, ``);
+      gf.push(...emitObjectFree(host, true, observers), `  ret void`, `}`, ``);
       defs.push(...gf);
     }
   }
