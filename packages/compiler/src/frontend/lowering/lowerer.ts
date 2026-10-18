@@ -2434,6 +2434,8 @@ export class Lowerer {
    * so named imports, namespace reads, CommonJS bindings, and alias chains
    * all reuse one immortal zero-capture closure. */
   readonly builtinCallableValueFns = new Map<string, string>();
+  /** Each builtin function-value adapter's Node name, for boxed values. */
+  readonly builtinCallableValueNames = new Map<string, string>();
   /** Optional-chain lowering state. While a chain body lowers, the guarded
    * receiver NODE reads as a chainRecv (typed by the narrowed arm) instead
    * of re-lowering, its checker type reads non-nullish (typeOf), and the
@@ -8217,12 +8219,17 @@ export class Lowerer {
           liveReference(expr.type) ||
           (expr.type.kind === "union" &&
             (this.unions.get(expr.type.unionId)?.arms.some(liveReference) ?? false));
+        // A builtin function's adapter boxes under the builtin's name, the
+        // name Node's function carries (`[Function: randomUUID]`).
+        const builtinName =
+          expr.kind === "closure" ? this.builtinCallableValueNames.get(expr.fnName) : undefined;
         return {
           kind: "dynFrom",
           value: expr,
           type: DYN,
           loc: expr.loc,
           ...(liveRef ? { liveRef: true as const } : {}),
+          ...(builtinName !== undefined ? { fnName: builtinName } : {}),
         };
       }
       return expr;
@@ -11923,11 +11930,12 @@ export class Lowerer {
         param.mode === "optional" ? `${param.mode}:${param.defaultValue}` : param.mode,
       )
       .join(",");
-    const key = `${fn.fn}:${typeKey(funcType)}:${adapterShape}`;
+    const key = `${fn.valueFn ?? fn.fn}:${typeKey(funcType)}:${adapterShape}`;
     let fnName = this.builtinCallableValueFns.get(key);
     if (!fnName) {
-      fnName = `%builtin.value.${fn.fn}.${this.builtinCallableValueFns.size}`;
+      fnName = `%builtin.value.${fn.valueFn ?? fn.fn}.${this.builtinCallableValueFns.size}`;
       this.builtinCallableValueFns.set(key, fnName);
+      this.builtinCallableValueNames.set(fnName, display.slice(display.lastIndexOf(".") + 1));
       const params = funcType.params.map((type, index) => ({
         localId: `arg.${index}`,
         name: `arg${index}`,
@@ -11992,7 +12000,7 @@ export class Lowerer {
           loc,
         };
       });
-      const call: IrExpr = { kind: "libCall", fn: fn.fn, args, type: fn.result, loc };
+      const call: IrExpr = { kind: "libCall", fn: fn.valueFn ?? fn.fn, args, type: fn.result, loc };
       const body: IrStmt[] =
         fn.result.kind === "void"
           ? [

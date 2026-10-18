@@ -31,6 +31,7 @@ import { literalUnionArm } from "../union-discriminants.js";
  * (FieldTarget). */
 import { isFsStreamMember, lowerFsStreamProperty } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
+import { builtinFunctionFenceValue } from "./builtin-function-fences.js";
 import {
   isZlibStreamMember,
   lowerZlibInstanceOf,
@@ -1271,6 +1272,9 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         // the same identity-token story as stdlib globals above (the
         // harness adds worker_threads.Worker to its identity Set).
         if (isJsSourceFile(expr.getSourceFile())) {
+          // A function member is a function value that fences when called.
+          if (builtinModuleFnOf(lowerer, bi.module, bi.member))
+            return builtinFunctionFenceValue(lowerer, bi, expr, loc);
           return {
             kind: "strLit",
             value: `[builtin ${bi.module}.${bi.member}]`,

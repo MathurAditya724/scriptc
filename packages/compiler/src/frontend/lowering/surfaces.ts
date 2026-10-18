@@ -793,6 +793,10 @@ export interface BuiltinModuleFn {
    * omission or explicit undefined; rest parameters pack into one typed
    * array slot. Entries with call-site-specific validation remain absent. */
   valueParams?: BuiltinValueParam[];
+  /** The libCall a function value's adapter makes when it differs from the
+   * direct-call row's `fn` (a direct call picks an arity-specific entry
+   * point; the value accepts every arity through one). */
+  valueFn?: IrLibFn;
 }
 
 export type BuiltinValueParam =
@@ -1502,7 +1506,15 @@ export const BUILTIN_MODULE_FNS: Record<
     userInfo: { fn: "os.userName", params: [], result: VOID },
   },
   crypto: {
-    randomUUID: { fn: "crypto.randomUUID", params: [], result: STRING },
+    randomUUID: {
+      fn: "crypto.randomUUID",
+      params: [],
+      result: STRING,
+      // As a value (uuid's `export default { randomUUID }`), the optional
+      // options argument goes through the validating entry point.
+      valueFn: "crypto.randomUUIDOpts",
+      valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+    },
     // A real Buffer result. The composed randomBytes(n).toString(enc)
     // form KEEPS its one-libCall lowering (lowerCryptoComposedCall runs
     // first and the Buffer never materializes there); this entry covers
@@ -1523,7 +1535,12 @@ export const BUILTIN_MODULE_FNS: Record<
     randomFillSync: { fn: "crypto.randomFill", params: [BYTES_U8, F64, F64], result: BYTES_U8 },
     randomInt: { fn: "crypto.randomInt", params: [F64, F64], result: F64 },
     randomFill: { fn: "crypto.randomFillCb", params: [], result: VOID },
-    randomUUIDv7: { fn: "crypto.randomUUIDv7", params: [DYN], result: STRING },
+    randomUUIDv7: {
+      fn: "crypto.randomUUIDv7",
+      params: [DYN],
+      result: STRING,
+      valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+    },
     createSecretKey: { fn: "crypto.createSecretKey", params: [DYN, DYN], result: DYN },
     generateKeySync: { fn: "crypto.generateKeySync", params: [DYN, DYN], result: DYN },
     generateKey: { fn: "crypto.generateKeyCb", params: [], result: VOID },
