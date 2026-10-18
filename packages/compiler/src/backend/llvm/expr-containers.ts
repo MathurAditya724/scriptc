@@ -575,7 +575,16 @@ export function emitArrIntrinsic(
           ? host.constantNumericTables.get(e.receiver.localId)
           : undefined;
       if (!table && elem.kind === "f64")
-        return { name: emitDenseArrayNumber(host, r.name, index, e.args[0]), type: e.type };
+        return {
+          name: emitDenseArrayNumber(
+            host,
+            r.name,
+            index,
+            e.args[0],
+            host.provenDenseIndex(e.receiver, e.args[0]!),
+          ),
+          type: e.type,
+        };
       host.declare(`declare double @scr_arr_get_number(ptr, double)`);
       const t = B.tmp();
       B.line(
