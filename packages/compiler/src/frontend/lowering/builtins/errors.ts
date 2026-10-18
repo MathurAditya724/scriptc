@@ -11,6 +11,28 @@ const ASSERTION_ERROR_PROPERTIES: ReadonlySet<string> = new Set([
   "diff",
 ]);
 
+/** True for child_process.ExecException, exec's callback error. Its
+ * `code` is the child's numeric exit status (null after a signal), which
+ * the runtime error's string code slot does not hold, so reads, `in` tests
+ * and typeof tests of `code` refuse instead of answering from the slot. */
+export function isExecExceptionType(lowerer: Lowerer, t: ts.Type): boolean {
+  const sym = t.getSymbol();
+  return (
+    sym?.name === "ExecException" &&
+    lowerer.checker
+      .declarationsOf(sym)
+      .some((d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()))
+  );
+}
+
+export function refuseExecExceptionCode(lowerer: Lowerer, node: ts.Node): never {
+  return lowerer.noLowering(
+    "ExecException.code",
+    node,
+    "spawn reports the exit status through its 'close' event",
+  );
+}
+
 /** `.code` and `.cause` on an error-hierarchy receiver. The latter reads
  * the hidden dyn slot installed by constructor options. The former is NodeJS.ErrnoException's
  * member (the fallback declares the same shape): the runtime Error's
@@ -122,6 +144,9 @@ export function lowerErrorCodeProperty(
     !(recvT.className === "%Error" && lowerer.typeOf(expr.expression).isIntersectionType())
   )
     return null;
+  if (expr.name.text === "code" && isExecExceptionType(lowerer, lowerer.typeOf(expr.expression))) {
+    refuseExecExceptionCode(lowerer, expr);
+  }
   const rawReceiver = lowerer.lowerExpr(expr.expression);
   const receiver =
     rawReceiver.type.kind === "dyn"

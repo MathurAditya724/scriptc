@@ -13,6 +13,7 @@ import { lowerReadlineProperty } from "./builtins/readline.js";
 import { lowerBlobInstanceof } from "./builtins/blob.js";
 import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
 import { lowerNetAddressInstanceof, lowerNetAddressStaticRead } from "./builtins/net-address.js";
+import { isExecExceptionType, refuseExecExceptionCode } from "./builtins/errors.js";
 import { STATS_TYPE_TESTS } from "./builtins/filesystem.js";
 import { threadsImportOf } from "../threads-import.js";
 import { experimentalImportOf, lifetimeRegionMemberOf } from "../experimental-import.js";
@@ -3133,6 +3134,51 @@ export function lowerTernary(
  * the same union (unnarrowed use), to a SUB-union (partial narrowing —
  * unrepresentable without a re-tag), or to nothing (`never` in an
  * exhaustive default) leaves the expression union-typed. */
+/** Uses that read an early-read field's value as Node does when it is
+ * undefined: printing, templates, operators, tests, member access, calls of
+ * program functions (whose parameters the optional-value analysis widens),
+ * and stores into bindings, fields and returns. Other uses, such as library
+ * arguments, extract the declared type with a check. */
+function observesEarlyRead(node: ts.Node): boolean {
+  let child = node;
+  let parent = node.parent;
+  while (parent && ts.isParenthesizedExpression(parent)) {
+    child = parent;
+    parent = parent.parent;
+  }
+  if (!parent) return false;
+  if (
+    ts.isTemplateSpan(parent) ||
+    ts.isBinaryExpression(parent) ||
+    ts.isPrefixUnaryExpression(parent) ||
+    ts.isPostfixUnaryExpression(parent) ||
+    ts.isTypeOfExpression(parent) ||
+    ts.isConditionalExpression(parent) ||
+    ts.isIfStatement(parent) ||
+    ts.isWhileStatement(parent) ||
+    ts.isReturnStatement(parent) ||
+    ts.isVariableDeclaration(parent) ||
+    ts.isPropertyAssignment(parent) ||
+    ts.isArrayLiteralExpression(parent) ||
+    (ts.isPropertyAccessExpression(parent) && parent.expression === child) ||
+    (ts.isElementAccessExpression(parent) && parent.expression === child)
+  )
+    return true;
+  if (ts.isCallExpression(parent) && parent.arguments.includes(child as ts.Expression)) {
+    const callee = parent.expression;
+    if (
+      ts.isPropertyAccessExpression(callee) &&
+      ts.isIdentifier(callee.expression) &&
+      callee.expression.text === "console"
+    )
+      return true;
+    return (
+      !ts.isPropertyAccessExpression(callee) || callee.expression.kind === ts.SyntaxKind.ThisKeyword
+    );
+  }
+  return false;
+}
+
 export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrExpr {
   if (
     (expr.type.kind === "union" || expr.type.kind === "dyn") &&
@@ -3343,6 +3389,25 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
   if (expr.type.kind !== "union") return expr;
   if (ts.isPropertyAccessExpression(node) && isOptionalProcessStreamProperty(lowerer, node))
     return expr;
+  // A field read before its assignment holds undefined although its
+  // declared type omits it; the declared type is no narrowing proof. A flow
+  // narrowing past the declared type (`if (this.x !== null)`) extracts the
+  // narrowed arm with a check, since the slot may still hold undefined.
+  if (
+    expr.kind === "fieldGet" &&
+    lowerer.classes.get(expr.className)?.earlyReadFields?.has(expr.field) === true
+  ) {
+    const symbol = ts.isPropertyAccessExpression(node)
+      ? lowerer.checker.getSymbolAtLocation(node.name)
+      : undefined;
+    const declared = symbol ? lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(symbol)) : null;
+    const narrowedArm = lowerer.mapTypeOf(lowerer.typeOf(node));
+    if (narrowedArm === null || narrowedArm.kind === "union") return expr;
+    if (declared !== null && typeEquals(declared, narrowedArm) && observesEarlyRead(node))
+      return expr;
+    const helper = lowerer.narrowedArmHelper(expr.type.unionId, narrowedArm, expr.loc);
+    return helper ? lowerer.checkedNarrowCall(helper, expr, narrowedArm, expr.loc) : expr;
+  }
 
   // Represented fields and index values can include undefined even when
   // checker inference or lib.d.ts declares strings (RegExp captures).
@@ -11326,6 +11391,7 @@ function lowerErrorCodeTypeofTest(
       recv = recv.expression;
     const errT = errorRootedObjectOf(lowerer, lowerer.typeOf(recv));
     if (!errT) continue;
+    if (isExecExceptionType(lowerer, lowerer.typeOf(recv))) refuseExecExceptionCode(lowerer, prop);
     const caught = lowerer.caughtLocalOf(recv);
     let receiver: IrExpr;
     if (caught) {
@@ -12927,6 +12993,9 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
       type: BOOL,
       loc,
     };
+  }
+  if (key === "code" && isExecExceptionType(lowerer, lowerer.typeOf(expr.right))) {
+    refuseExecExceptionCode(lowerer, expr);
   }
   let recv = lowerer.lowerExpr(expr.right);
   const classInfo =
@@ -15103,6 +15172,20 @@ export function fieldGetExpr(
       const helper = lowerer.deferredReadHelper(target.fieldType.unionId, inner, loc);
       if (helper) return { kind: "call", callee: helper, args: [read], type: inner, loc };
     }
+    // An early-read field (ClassInfo.earlyReadFields) yields its undefined
+    // where the use reads it as Node does; elsewhere the declared type is
+    // extracted with a check.
+    if (
+      target.fieldType.kind === "union" &&
+      lowerer.classes.get(target.className)?.earlyReadFields?.has(target.field) === true &&
+      !observesEarlyRead(blame)
+    ) {
+      const declared = lowerer.mapTypeOf(lowerer.typeOf(blame));
+      if (declared && declared.kind !== "union") {
+        const helper = lowerer.narrowedArmHelper(target.fieldType.unionId, declared, loc);
+        if (helper) return lowerer.checkedNarrowCall(helper, read, declared, loc);
+      }
+    }
     return read;
   }
   return {
@@ -15643,6 +15726,22 @@ function lowerFieldCompoundValue(
   if (op === "+" && read.type.kind === "string") {
     appended = lowerer.ensureString(rhs, rhsNode ?? access);
     value = { kind: "strConcat", left: read, right: appended, type: STRING, loc };
+  } else if (
+    op === "+" &&
+    read.type.kind === "union" &&
+    lowerer.stripUndefinedArm(read.type).kind === "string" &&
+    target.container === "class" &&
+    lowerer.classes.get(target.className)?.earlyReadFields?.has(target.field) === true
+  ) {
+    // A string field read before its assignment holds undefined, which
+    // concatenates as "undefined".
+    value = {
+      kind: "strConcat",
+      left: lowerer.ensureString(read, access),
+      right: lowerer.ensureString(rhs, rhsNode ?? access),
+      type: STRING,
+      loc,
+    };
   } else if (numericRead.type.kind === "f64" && numericRhs.type.kind === "f64") {
     value = { kind: "bin", op, left: numericRead, right: numericRhs, type: F64, loc };
   } else if (bigintValue) {
