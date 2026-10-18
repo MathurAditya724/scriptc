@@ -261,6 +261,7 @@ import {
   stdlibGlobalMember,
   nodeTypesOnlySymbol,
 } from "./surfaces.js";
+import { type BuiltinClassRef, builtinClassAliasOf } from "./builtins/class-values.js";
 import {
   type FileParts,
   splitFiles,
@@ -1858,11 +1859,11 @@ export class Lowerer {
    * typeParamBindings — the checker has no `T` to substitute, so the
    * binding rides the node-type accessor instead of mapType. */
   implicitParamTypes: Map<ts.Symbol, ts.Type> | null = null;
-  /** Immutable bindings that name a zlib stream class (`const C =
-   * zlib.Gzip`), keyed by the binding's symbol: the class's
-   * node_zlib_mode. No runtime slot exists: new, typeof, .name and ===
-   * resolve at compile time, and instanceof checks the stream's mode. */
-  readonly zlibClassAliases = new Map<ts.Symbol, number>();
+  /** The builtin class each binding names (`const E = EventEmitter`,
+   * `const C = zlib.Gzip`), keyed by the binding's symbol; null for
+   * bindings that name none (builtinClassAliasOf). new, instanceof,
+   * typeof, .name and === resolve at compile time. */
+  readonly builtinClassAliases = new Map<ts.Symbol, BuiltinClassRef | null>();
   /** Whether some net.Socket in this program may get an encoding: a
    * setEncoding call whose receiver is a socket or an untyped value.
    * Computed once on first use (null until then). */
@@ -3071,6 +3072,10 @@ export class Lowerer {
 
   builtinStreamInfoOf(symbol: ts.Symbol | null | undefined): ClassInfo | null {
     return builtinStreamInfoOf(this, symbol);
+  }
+
+  builtinClassAliasOf(symbol: ts.Symbol): BuiltinClassRef | null {
+    return builtinClassAliasOf(this, symbol);
   }
 
   /** Program-wide qualified name for a top-level declaration. */
