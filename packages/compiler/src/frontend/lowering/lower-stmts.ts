@@ -162,7 +162,7 @@ import {
 } from "./builtins/module-bindings.js";
 import { lowerNodeModuleCall } from "./builtins/module-resolution.js";
 import { registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
-import { registerZlibClassAlias } from "./builtins/compression.js";
+import { builtinClassAliasOwnsNoSlot, registerBuiltinClassAlias } from "./builtins/class-values.js";
 import { lowerEnumDeclaration } from "./lower-enums.js";
 import {
   abstractPropertyDeclOf,
@@ -867,6 +867,9 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
   if (!decl.initializer) return false;
   const flags = ts.getCombinedNodeFlags(decl);
   if ((flags & ts.NodeFlags.BlockScoped) === 0 || (flags & ts.NodeFlags.Using) !== 0) return false;
+  // `const E = EventEmitter` has no storage to box: uses resolve at
+  // compile time (builtinClassAliasOf).
+  if (builtinClassAliasOwnsNoSlot(lowerer, symbol)) return false;
   // MODULE-scope bindings are pre-registered globals (collectGlobals):
   // references resolve through globalOf after the local search fails, so
   // a TDZ box here would SHADOW the global and never fill (the top-level
@@ -1621,7 +1624,9 @@ function lowerVarDeclarator(
     // Relative requires keep the fence: their module-init-at-position
     // semantics needs storage this model doesn't represent.
     if (canonicalBuiltinModule(spec) !== null) {
-      return [];
+      return canonicalBuiltinModule(spec) === "punycode"
+        ? [lowerer.punycodeRequireWarning(decl)]
+        : [];
     }
     lowerer.unsupported(
       "SC1090",
@@ -4496,7 +4501,7 @@ export function lowerVarDecl(
   // reads reuse its interned closure identity.
   if (!isLet && registerOverloadedCallableAlias(lowerer, decl)) return null;
   if (!isLet && registerBuiltinCallableAlias(lowerer, decl.name, decl.initializer)) return null;
-  if (registerZlibClassAlias(lowerer, decl.name, decl.initializer)) return null;
+  if (registerBuiltinClassAlias(lowerer, decl.name, decl.initializer)) return null;
 
   // `const knownBy = (cmd) => ...` — an IMPLICIT-ANY function-value
   // binding in npm-static JS (function-scope bindings register here, in

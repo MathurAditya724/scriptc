@@ -420,7 +420,22 @@ void scr_zlib_options_drop(ScrZlibOptions *o) {
   o->dict = NULL;
 }
 
+static bool scr_zlib_options_parse_object(int mode, const ScrDyn *opts, ScrZlibOptions *out);
+
+/* A typed options object (a record that crossed into a checked-dynamic
+ * slot by reference) is read through its materialized view, as a plain
+ * object is. */
 bool scr_zlib_options_parse(int mode, const ScrDyn *opts, ScrZlibOptions *out) {
+  if (opts == NULL || opts->kind != SCR_DYN_TYPED_REF) return scr_zlib_options_parse_object(mode, opts, out);
+  ScrDyn *view = scr_dyn_typed_ref_materialize(opts);
+  bool ok = false;
+  if (scr_exc_pending()) memset(out, 0, sizeof *out);
+  else ok = scr_zlib_options_parse_object(mode, view, out);
+  scr_dyn_release(view);
+  return ok;
+}
+
+static bool scr_zlib_options_parse_object(int mode, const ScrDyn *opts, ScrZlibOptions *out) {
   memset(out, 0, sizeof *out);
   out->window_bits = 15;
   out->level = Z_DEFAULT_COMPRESSION;

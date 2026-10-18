@@ -1989,3 +1989,342 @@ ScrBytes *scr_url_checked_to_path_buffer(const ScrDyn *value, const ScrDyn *opti
   scr_url_release(url);
   return result;
 }
+
+/* ── node:punycode (deprecated, DEP0040) ───────────────────────────────
+ * A port of the punycode.js 2.1.0 that Node 24 bundles as lib/punycode.js.
+ * It works on UTF-16 code units: ucs2.decode pairs surrogates and keeps
+ * lone ones, which is exactly a code-point walk over WTF-8 storage.
+ * Errors throw the module's RangeErrors ("Overflow: ...", "Illegal input
+ * >= 0x80 ...", "Invalid input"); decoded code points past U+10FFFF throw
+ * String.fromCodePoint's "Invalid code point N". All inputs are borrowed;
+ * results are +1, or NULL with the error pending. The DEP0040 report is
+ * scr_punycode_warn (scr_async_dyn.c). */
+
+enum {
+  PC_MAX_INT = 2147483647,
+  PC_BASE = 36,
+  PC_TMIN = 1,
+  PC_TMAX = 26,
+  PC_SKEW = 38,
+  PC_DAMP = 700,
+  PC_INITIAL_BIAS = 72,
+  PC_INITIAL_N = 128
+};
+
+static void pc_error(const char *message) {
+  scr_throw_error_msg(SCR_ERR_RANGE, message, strlen(message));
+}
+#define PC_OVERFLOW "Overflow: input needs wider integers to process"
+#define PC_NOT_BASIC "Illegal input >= 0x80 (not a basic code point)"
+#define PC_INVALID "Invalid input"
+
+typedef struct {
+  uint32_t *data;
+  size_t len, cap;
+} PcPoints;
+
+static void pc_push(PcPoints *p, uint32_t cp) {
+  if (p->len == p->cap) {
+    size_t cap = p->cap ? p->cap * 2 : 16;
+    uint32_t *grown = realloc(p->data, cap * sizeof *grown);
+    if (!grown) scr_trap("scriptc: out of memory\n");
+    p->data = grown;
+    p->cap = cap;
+  }
+  p->data[p->len++] = cp;
+}
+
+/* ucs2decode over WTF-8 storage: a pair is one 4-byte sequence, a lone
+ * surrogate one 3-byte sequence carrying its own value. */
+static void pc_code_points(const char *s, size_t n, PcPoints *out) {
+  const unsigned char *b = (const unsigned char *)s;
+  for (size_t i = 0; i < n;) {
+    uint32_t c = b[i];
+    if (c < 0x80) {
+      i += 1;
+    } else if (c < 0xE0 && i + 1 < n) {
+      c = ((c & 0x1F) << 6) | (b[i + 1] & 0x3F);
+      i += 2;
+    } else if (c < 0xF0 && i + 2 < n) {
+      c = ((c & 0x0F) << 12) | ((uint32_t)(b[i + 1] & 0x3F) << 6) | (b[i + 2] & 0x3F);
+      i += 3;
+    } else if (i + 3 < n) {
+      c = ((c & 0x07) << 18) | ((uint32_t)(b[i + 1] & 0x3F) << 12) |
+          ((uint32_t)(b[i + 2] & 0x3F) << 6) | (b[i + 3] & 0x3F);
+      i += 4;
+    } else {
+      i += 1;
+    }
+    pc_push(out, c);
+  }
+}
+
+static int64_t pc_adapt(int64_t delta, int64_t points, bool first) {
+  int64_t k = 0;
+  delta = first ? delta / PC_DAMP : delta >> 1;
+  delta += delta / points;
+  for (; delta > ((PC_BASE - PC_TMIN) * PC_TMAX) >> 1; k += PC_BASE) delta /= PC_BASE - PC_TMIN;
+  return k + (PC_BASE - PC_TMIN + 1) * delta / (delta + PC_SKEW);
+}
+
+static int64_t pc_basic_to_digit(unsigned char c) {
+  if (c >= 0x30 && c < 0x3A) return 26 + (c - 0x30);
+  if (c >= 0x41 && c < 0x5B) return c - 0x41;
+  if (c >= 0x61 && c < 0x7B) return c - 0x61;
+  return PC_BASE;
+}
+
+static char pc_digit_to_basic(int64_t digit) {
+  return (char)(digit + 22 + 75 * (digit < 26));
+}
+
+/* String.fromCodePoint(...points). */
+static ScrStr *pc_from_points(const PcPoints *p) {
+  for (size_t i = 0; i < p->len; i++) {
+    if (p->data[i] > 0x10FFFF) {
+      char message[48];
+      int size = snprintf(message, sizeof message, "Invalid code point %u", (unsigned)p->data[i]);
+      scr_throw_error_msg(SCR_ERR_RANGE, message, (size_t)size);
+      return NULL;
+    }
+  }
+  char *out = malloc(p->len * 4 + 1);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  size_t offset = 0;
+  for (size_t i = 0; i < p->len; i++) {
+    uint32_t point = p->data[i];
+    if (point >= 0xD800 && point <= 0xDBFF && i + 1 < p->len && p->data[i + 1] >= 0xDC00 &&
+        p->data[i + 1] <= 0xDFFF) {
+      point = 0x10000 + ((point - 0xD800) << 10) + (p->data[i + 1] - 0xDC00);
+      i++;
+    }
+    offset += scr_wtf8_put(out + offset, point);
+  }
+  ScrStr *result = scr_str_new(out, offset);
+  free(out);
+  return result;
+}
+
+/* punycode.decode over the bytes of one label. Any non-ASCII byte fails
+ * where its first code unit would: before the last delimiter it is not
+ * basic, after it it is no digit — so byte positions stand in for code
+ * unit positions until the first error. */
+static ScrStr *pc_decode(const char *s, size_t n) {
+  PcPoints output = {0};
+  size_t basic = 0;
+  for (size_t k = n; k > 0; k--) {
+    if (s[k - 1] == '-') {
+      basic = k - 1;
+      break;
+    }
+  }
+  ScrStr *result = NULL;
+  for (size_t j = 0; j < basic; j++) {
+    if ((unsigned char)s[j] >= 0x80) {
+      pc_error(PC_NOT_BASIC);
+      goto done;
+    }
+    pc_push(&output, (unsigned char)s[j]);
+  }
+  int64_t i = 0, cp = PC_INITIAL_N, bias = PC_INITIAL_BIAS;
+  for (size_t index = basic > 0 ? basic + 1 : 0; index < n;) {
+    int64_t old = i;
+    for (int64_t w = 1, k = PC_BASE;; k += PC_BASE) {
+      if (index >= n) {
+        pc_error(PC_INVALID);
+        goto done;
+      }
+      int64_t digit = pc_basic_to_digit((unsigned char)s[index++]);
+      if (digit >= PC_BASE) {
+        pc_error(PC_INVALID);
+        goto done;
+      }
+      if (digit > (PC_MAX_INT - i) / w) {
+        pc_error(PC_OVERFLOW);
+        goto done;
+      }
+      i += digit * w;
+      int64_t t = k <= bias ? PC_TMIN : (k >= bias + PC_TMAX ? PC_TMAX : k - bias);
+      if (digit < t) break;
+      if (w > PC_MAX_INT / (PC_BASE - t)) {
+        pc_error(PC_OVERFLOW);
+        goto done;
+      }
+      w *= PC_BASE - t;
+    }
+    int64_t out = (int64_t)output.len + 1;
+    bias = pc_adapt(i - old, out, old == 0);
+    if (i / out > PC_MAX_INT - cp) {
+      pc_error(PC_OVERFLOW);
+      goto done;
+    }
+    cp += i / out;
+    i %= out;
+    pc_push(&output, 0);
+    memmove(output.data + i + 1, output.data + i, (output.len - 1 - (size_t)i) * sizeof *output.data);
+    output.data[i++] = (uint32_t)cp;
+  }
+  result = pc_from_points(&output);
+done:
+  free(output.data);
+  return result;
+}
+
+/* punycode.encode of one label's code points, appended to buf. */
+static bool pc_encode(const PcPoints *input, ScrJsonBuf *buf) {
+  int64_t cp = PC_INITIAL_N, delta = 0, bias = PC_INITIAL_BIAS;
+  size_t basic_length = 0;
+  for (size_t k = 0; k < input->len; k++) {
+    if (input->data[k] < 0x80) {
+      scr_jb_putc(buf, (char)input->data[k]);
+      basic_length++;
+    }
+  }
+  size_t handled = basic_length;
+  if (basic_length) scr_jb_putc(buf, '-');
+  while (handled < input->len) {
+    int64_t m = PC_MAX_INT;
+    for (size_t k = 0; k < input->len; k++)
+      if (input->data[k] >= cp && input->data[k] < m) m = input->data[k];
+    int64_t handled_plus_one = (int64_t)handled + 1;
+    if (m - cp > (PC_MAX_INT - delta) / handled_plus_one) {
+      pc_error(PC_OVERFLOW);
+      return false;
+    }
+    delta += (m - cp) * handled_plus_one;
+    cp = m;
+    for (size_t k = 0; k < input->len; k++) {
+      int64_t current = input->data[k];
+      if (current < cp && ++delta > PC_MAX_INT) {
+        pc_error(PC_OVERFLOW);
+        return false;
+      }
+      if (current == cp) {
+        int64_t q = delta;
+        for (int64_t j = PC_BASE;; j += PC_BASE) {
+          int64_t t = j <= bias ? PC_TMIN : (j >= bias + PC_TMAX ? PC_TMAX : j - bias);
+          if (q < t) break;
+          scr_jb_putc(buf, pc_digit_to_basic(t + (q - t) % (PC_BASE - t)));
+          q = (q - t) / (PC_BASE - t);
+        }
+        scr_jb_putc(buf, pc_digit_to_basic(q));
+        bias = pc_adapt(delta, handled_plus_one, handled == basic_length);
+        delta = 0;
+        handled++;
+      }
+    }
+    delta++;
+    cp++;
+  }
+  return true;
+}
+
+ScrStr *scr_punycode_decode(const ScrStr *input) { return pc_decode(input->data, input->len); }
+
+ScrStr *scr_punycode_encode(const ScrStr *input) {
+  PcPoints points = {0};
+  pc_code_points(input->data, input->len, &points);
+  ScrJsonBuf buf;
+  scr_jb_init(&buf);
+  bool ok = pc_encode(&points, &buf);
+  free(points.data);
+  ScrStr *result = scr_jb_finish(&buf);
+  if (ok) return result;
+  scr_str_release(result);
+  return NULL;
+}
+
+ScrArr *scr_punycode_ucs2_decode(const ScrStr *input) {
+  PcPoints points = {0};
+  pc_code_points(input->data, input->len, &points);
+  ScrArr *out = scr_arr_new(SCR_ELEM_F64, points.len);
+  for (size_t i = 0; i < points.len; i++) scr_arr_push_f64(out, (double)points.data[i]);
+  free(points.data);
+  return out;
+}
+
+/* mapDomain: only the part after the first '@' maps (and only up to a
+ * second one — punycode.js keeps parts[0] and parts[1]); the RFC 3490
+ * separators U+002E, U+3002, U+FF0E and U+FF61 all split labels, and the
+ * labels rejoin with '.'. */
+static ScrStr *pc_map_domain(const ScrStr *input, bool to_ascii) {
+  const char *s = input->data;
+  size_t n = input->len;
+  ScrJsonBuf buf;
+  scr_jb_init(&buf);
+  const char *at = memchr(s, '@', n);
+  if (at) {
+    scr_jb_write(&buf, s, (size_t)(at - s) + 1);
+    const char *rest = at + 1;
+    const char *second = memchr(rest, '@', n - (size_t)(rest - s));
+    n = (second ? (size_t)(second - rest) : n - (size_t)(rest - s));
+    s = rest;
+  }
+  size_t start = 0;
+  bool ok = true;
+  for (size_t i = 0; ok && i <= n;) {
+    size_t sep = 0;
+    if (i == n) sep = 1;
+    else if (s[i] == '.') sep = 1;
+    else if (i + 2 < n && (unsigned char)s[i] == 0xE3 && (unsigned char)s[i + 1] == 0x80 &&
+             (unsigned char)s[i + 2] == 0x82)
+      sep = 3;
+    else if (i + 2 < n && (unsigned char)s[i] == 0xEF &&
+             (((unsigned char)s[i + 1] == 0xBC && (unsigned char)s[i + 2] == 0x8E) ||
+              ((unsigned char)s[i + 1] == 0xBD && (unsigned char)s[i + 2] == 0xA1)))
+      sep = 3;
+    if (!sep) {
+      i++;
+      continue;
+    }
+    const char *label = s + start;
+    size_t len = i - start;
+    bool ascii = true;
+    for (size_t k = 0; k < len; k++) ascii = ascii && (unsigned char)label[k] < 0x80;
+    if (to_ascii && !ascii) {
+      PcPoints points = {0};
+      pc_code_points(label, len, &points);
+      scr_jb_puts(&buf, "xn--");
+      ok = pc_encode(&points, &buf);
+      free(points.data);
+    } else if (!to_ascii && len >= 4 && memcmp(label, "xn--", 4) == 0) {
+      /* string.slice(4).toLowerCase(): ASCII letters fold; the one other
+       * code point whose lowercase is ASCII is KELVIN SIGN (U+212A → k).
+       * Any other non-ASCII stays non-ASCII and fails in decode either
+       * way, at the same position. */
+      ScrJsonBuf lower;
+      scr_jb_init(&lower);
+      for (size_t k = 4; k < len; k++) {
+        unsigned char c = (unsigned char)label[k];
+        if (c == 0xE2 && k + 2 < len && (unsigned char)label[k + 1] == 0x84 &&
+            (unsigned char)label[k + 2] == 0xAA) {
+          scr_jb_putc(&lower, 'k');
+          k += 2;
+        } else {
+          scr_jb_putc(&lower, (char)(c >= 'A' && c <= 'Z' ? c + 32 : c));
+        }
+      }
+      ScrStr *folded = scr_jb_finish(&lower);
+      ScrStr *decoded = pc_decode(folded->data, folded->len);
+      scr_str_release(folded);
+      if (decoded) {
+        scr_jb_put_str(&buf, decoded);
+        scr_str_release(decoded);
+      } else {
+        ok = false;
+      }
+    } else {
+      scr_jb_write(&buf, label, len);
+    }
+    if (ok && i < n) scr_jb_putc(&buf, '.');
+    i += sep;
+    start = i;
+  }
+  ScrStr *result = scr_jb_finish(&buf);
+  if (ok) return result;
+  scr_str_release(result);
+  return NULL;
+}
+
+ScrStr *scr_punycode_to_ascii(const ScrStr *input) { return pc_map_domain(input, true); }
+ScrStr *scr_punycode_to_unicode(const ScrStr *input) { return pc_map_domain(input, false); }
