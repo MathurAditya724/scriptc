@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   type AllocHost,
+  disposeHookLoadLines,
   emitObjectAlloc,
   emitObjectFree,
   inlineAllocSupported,
@@ -195,5 +196,12 @@ describe("emitted object allocation", () => {
       "  br i1 %sf.obs, label %sf.hooked, label %sf.block",
     ]);
     expect(records).toContain("  call void %sf.hook(ptr %o)");
+  });
+
+  test("loads the dispose hook from emitted code only with the inline allocator", () => {
+    expect(disposeHookLoadLines(host(false), "%t1")).toBeNull();
+    expect(disposeHookLoadLines(host(true), "%t1")).toEqual([
+      "  %t1 = load ptr, ptr @scr_weak_dispose_hook",
+    ]);
   });
 });

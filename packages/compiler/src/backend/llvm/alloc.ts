@@ -79,6 +79,17 @@ function threadLocalState(host: AllocHost, prefix: string, lines: string[]): str
   return [...preamble, ...text.split("\n")];
 }
 
+/** Lines that load the runtime's dispose hook into `dest`, or null on
+ * targets without the inline allocator, where the hook's storage is not
+ * addressed from emitted code. The hook is NULL until a weak collection
+ * or a kept record source installs it, and then never NULL again. */
+export function disposeHookLoadLines(host: AllocHost, dest: string): string[] | null {
+  if (host.inlineAlloc !== true) return null;
+  declareGlobal(host, `@scr_weak_dispose_hook = external global ptr`);
+  const prefix = dest.replace(/^%/, "").replace(/[^-$._A-Za-z0-9]/g, "_");
+  return threadLocalState(host, prefix, [`  ${dest} = load ptr, ptr @scr_weak_dispose_hook`]);
+}
+
 /** Worker executables: the calling script thread's ScrThreadHot block into
  * `dest`. Its address also identifies the thread (the owner word of a
  * lifetime-region chunk; llvm/regions.ts). */
