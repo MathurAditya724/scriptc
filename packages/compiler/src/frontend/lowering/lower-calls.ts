@@ -4561,6 +4561,24 @@ function reconcileOverloadReturn(
   ) {
     call = lowerer.maybeNarrow(call, expr);
   }
+  // An override narrowed to part of its base's union return shares the
+  // union ABI; a call resolved to that override narrows the result back.
+  if (
+    call.type.kind === "union" &&
+    rsig &&
+    rdecl &&
+    ts.isMethodDeclaration(rdecl) &&
+    lowerer.unionReturnOverrides.has(rdecl)
+  ) {
+    const declared = lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(rsig));
+    if (declared && !typeEquals(declared, call.type)) {
+      if (declared.kind !== "union") {
+        const helper = lowerer.narrowedArmHelper(call.type.unionId, declared, call.loc);
+        if (helper) return lowerer.checkedNarrowCall(helper, call, declared, call.loc);
+      }
+      return lowerer.coerceInto(expr, call, declared);
+    }
+  }
   const resolvedOverload =
     rsig &&
     rdecl &&
