@@ -336,6 +336,7 @@ const BOUNDARY_KINDS = new Set<IrExpr["kind"]>([
  * property, except literal-keyed `dyn.keySet`/`dyn.keyDelete`. */
 const DYN_READ_ONLY = new Set<string>([
   "arrayBuffer.new",
+  "arrayBuffer.viewF16",
   "arrayBuffer.viewF32",
   "arrayBuffer.viewF64",
   "arrayBuffer.viewI16",

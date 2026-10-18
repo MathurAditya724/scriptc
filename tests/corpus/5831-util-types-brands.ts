@@ -1,9 +1,9 @@
 // util.types brand checks over typed values: isDate, isSharedArrayBuffer,
 // isMapIterator, isSetIterator and isKeyObject answer from the value's
 // internal brand, and isBoxedPrimitive (with the per-kind boxed checks),
-// isBigInt64Array, isBigUint64Array, isFloat16Array, isCryptoKey and
-// isExternal answer false for every value a program here can create. A
-// Date-typed argument answers from its static type.
+// isBigInt64Array, isBigUint64Array, isCryptoKey and isExternal answer
+// false for every value a program here can create. A Date-typed argument
+// answers from its static type.
 import { types } from "node:util";
 import * as direct from "node:util/types";
 import { createSecretKey } from "node:crypto";

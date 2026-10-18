@@ -4603,6 +4603,13 @@
       "note": "compiles statically at arity 1; other declared call shapes are refused with SC2012"
     },
     {
+      "id": "stdlib.math.f16round",
+      "kind": "stdlib",
+      "name": "Math.f16round",
+      "status": "static",
+      "note": "compiles statically at arity 1; other declared call shapes are refused with SC2012"
+    },
+    {
       "id": "stdlib.math.floor",
       "kind": "stdlib",
       "name": "Math.floor",

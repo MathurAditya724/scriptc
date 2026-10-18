@@ -3146,6 +3146,7 @@ bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (PROBE("isInt8Array")) return scr_dyn_typed_array_is(value, SCR_BYTES_I8);
   if (PROBE("isInt16Array")) return scr_dyn_typed_array_is(value, SCR_BYTES_I16);
   if (PROBE("isInt32Array")) return scr_dyn_typed_array_is(value, SCR_BYTES_I32);
+  if (PROBE("isFloat16Array")) return scr_dyn_typed_array_is(value, SCR_BYTES_F16);
   if (PROBE("isFloat32Array")) return scr_dyn_typed_array_is(value, SCR_BYTES_F32);
   if (PROBE("isFloat64Array")) return scr_dyn_typed_array_is(value, SCR_BYTES_F64);
   if (PROBE("isMap")) return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_MAP;
@@ -3162,13 +3163,11 @@ bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (PROBE("isMapIterator")) return scr_native_iterator_over(value, 2);
   if (PROBE("isSetIterator")) return scr_native_iterator_over(value, 3);
   if (PROBE("isKeyObject")) return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_KEY_OBJECT;
-  /* Boxed primitives, BigInt64Array, BigUint64Array, Float16Array, CryptoKey
-   * and external values cannot be created here, so no value has these
-   * brands. */
+  /* Boxed primitives, BigInt64Array, BigUint64Array, CryptoKey and external
+   * values cannot be created here, so no value has these brands. */
   if (PROBE("isNumberObject") || PROBE("isStringObject") || PROBE("isBooleanObject") ||
       PROBE("isBigIntObject") || PROBE("isSymbolObject") || PROBE("isBoxedPrimitive") ||
-      PROBE("isBigInt64Array") || PROBE("isBigUint64Array") || PROBE("isFloat16Array") ||
-      PROBE("isCryptoKey") || PROBE("isExternal"))
+      PROBE("isBigInt64Array") || PROBE("isBigUint64Array") || PROBE("isCryptoKey") || PROBE("isExternal"))
     return false;
   if (PROBE("isNativeError")) {
     ScrError *error = scr_errdyn_err_of(value);
@@ -3184,7 +3183,7 @@ bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
  * anonymous with length zero. Keep their native closure identity intact. */
 ScrDyn *scr_dyn_util_type_value(const ScrDyn *value, const ScrStr *probe) {
   static const char *const named[] = { "isDataView", "isTypedArray", "isUint8Array", "isUint8ClampedArray", "isUint16Array", "isUint32Array",
-    "isInt8Array", "isInt16Array", "isInt32Array", "isFloat32Array", "isFloat64Array" };
+    "isInt8Array", "isInt16Array", "isInt32Array", "isFloat16Array", "isFloat32Array", "isFloat64Array" };
   const char *name = "";
   if (probe->len == 17 && memcmp(probe->data, "isArrayBufferView", 17) == 0) name = "isView";
   for (size_t i = 0; i < sizeof named / sizeof named[0]; i++)
@@ -3203,16 +3202,16 @@ ScrBytes *scr_dyn_bytes_unbox(const ScrDyn *d) {
 /* Numeric typed-array constructor values share native function identity.
  * The cache owns one reference until runtime cleanup; arbitrary strings or
  * functions cannot impersonate one of these constructors. */
-static SCR_TL ScrDyn *scr_bytes_ctors[9];
+static SCR_TL ScrDyn *scr_bytes_ctors[SCR_BYTES_ELEM_COUNT];
 static void scr_bytes_ctors_cleanup(void) {
-  for (size_t i = 0; i < 9; i++) {
+  for (size_t i = 0; i < SCR_BYTES_ELEM_COUNT; i++) {
     scr_dyn_release(scr_bytes_ctors[i]);
     scr_bytes_ctors[i] = NULL;
   }
 }
 static ScrDyn *scr_bytes_ctor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)args; (void)argc;
-  for (size_t i = 0; i < 9; i++) {
+  for (size_t i = 0; i < SCR_BYTES_ELEM_COUNT; i++) {
     if (!scr_bytes_ctors[i] || scr_bytes_ctors[i]->v.fn.clo != closure) continue;
     ScrJsonBuf message;
     scr_jb_init(&message);
@@ -3228,7 +3227,7 @@ static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function);
 static ScrDyn *scr_bytes_constructor_for(ScrBytesElem elem) {
   if (!scr_bytes_ctors[elem]) {
     bool initialized = false;
-    for (size_t i = 0; i < 9; i++) if (scr_bytes_ctors[i]) initialized = true;
+    for (size_t i = 0; i < SCR_BYTES_ELEM_COUNT; i++) if (scr_bytes_ctors[i]) initialized = true;
     if (!initialized) scr_atexit(scr_bytes_ctors_cleanup);
     scr_bytes_ctors[elem] = scr_dyn_new_func(scr_closure_new(NULL, 0),
         scr_bytes_ctor_call, 3, "typed-array-constructor", scr_bytes_elem_name(elem));
@@ -3241,7 +3240,7 @@ static ScrDyn *scr_bytes_constructor_for(ScrBytesElem elem) {
   return scr_dyn_retain(scr_bytes_ctors[elem]);
 }
 ScrDyn *scr_bytes_constructor(const ScrStr *name) {
-  for (size_t i = 0; i < 9; i++) {
+  for (size_t i = 0; i < SCR_BYTES_ELEM_COUNT; i++) {
     const char *candidate = scr_bytes_elem_name((ScrBytesElem)i);
     if (strlen(candidate) == name->len && memcmp(candidate, name->data, name->len) == 0)
       return scr_bytes_constructor_for((ScrBytesElem)i);
@@ -3308,7 +3307,7 @@ bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
   }
   if (scr_array_buffer_ctor && callee->v.fn.clo == scr_array_buffer_ctor->v.fn.clo) return scr_array_buffer_is(value);
   if (scr_array_ctor && callee->v.fn.clo == scr_array_ctor->v.fn.clo) return value->kind == SCR_DYN_ARR || scr_dyn_ref_is_array(value);
-  for (size_t i = 0; i < 9; i++) {
+  for (size_t i = 0; i < SCR_BYTES_ELEM_COUNT; i++) {
     if (scr_bytes_ctors[i] && callee->v.fn.clo == scr_bytes_ctors[i]->v.fn.clo)
       return scr_dyn_typed_array_is(value, (int)i);
   }
@@ -3321,7 +3320,7 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
     return scr_array_ctor_call(callee->v.fn.clo, args->v.arr.items, args->v.arr.len);
   if (callee->kind == SCR_DYN_FUNC && scr_array_buffer_ctor && callee->v.fn.clo == scr_array_buffer_ctor->v.fn.clo)
     return scr_array_buffer_new(args->v.arr.len ? args->v.arr.items[0] : scr_dyn_undefined());
-  for (size_t i = 0; i < 9; i++) {
+  for (size_t i = 0; i < SCR_BYTES_ELEM_COUNT; i++) {
     if (callee->kind != SCR_DYN_FUNC || !scr_bytes_ctors[i] || callee->v.fn.clo != scr_bytes_ctors[i]->v.fn.clo) continue;
     const ScrDyn *input = args->v.arr.len > 0 ? args->v.arr.items[0] : scr_dyn_undefined();
     const ScrDyn *offset = args->v.arr.len > 1 ? args->v.arr.items[1] : scr_dyn_undefined();
@@ -12377,6 +12376,7 @@ SCR_ARRAY_BUFFER_VIEW(i16, SCR_BYTES_I16)
 SCR_ARRAY_BUFFER_VIEW(u8, SCR_BYTES_U8)
 SCR_ARRAY_BUFFER_VIEW(u32, SCR_BYTES_U32)
 SCR_ARRAY_BUFFER_VIEW(i32, SCR_BYTES_I32)
+SCR_ARRAY_BUFFER_VIEW(f16, SCR_BYTES_F16)
 SCR_ARRAY_BUFFER_VIEW(f32, SCR_BYTES_F32)
 SCR_ARRAY_BUFFER_VIEW(f64, SCR_BYTES_F64)
 #undef SCR_ARRAY_BUFFER_VIEW

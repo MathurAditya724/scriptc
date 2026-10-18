@@ -3252,6 +3252,7 @@ declare module "util/types" {
   export function isInt8Array(value: unknown): value is Int8Array;
   export function isInt16Array(value: unknown): value is Int16Array;
   export function isInt32Array(value: unknown): value is Int32Array;
+  export function isFloat16Array(value: unknown): value is Float16Array;
   export function isFloat32Array(value: unknown): value is Float32Array;
   export function isFloat64Array(value: unknown): value is Float64Array;
   export function isMap(value: unknown): value is Map<unknown, unknown>;
@@ -3279,7 +3280,6 @@ declare module "util/types" {
   export function isBoxedPrimitive(value: unknown): boolean;
   export function isBigInt64Array(value: unknown): value is BigInt64Array;
   export function isBigUint64Array(value: unknown): value is BigUint64Array;
-  export function isFloat16Array(value: unknown): boolean;
   export function isCryptoKey(value: unknown): boolean;
   export function isExternal(value: unknown): boolean;
 }

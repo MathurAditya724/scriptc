@@ -2521,6 +2521,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // ToInt32-wrap) — the Atomics.wait sleep idiom constructs one over a
   // SharedArrayBuffer, and the i32 semantics hold for every other use.
   if (isStdlibInterface("Int32Array")) return bytesOf("i32");
+  if (isStdlibInterface("Float16Array")) return bytesOf("f16");
   if (isStdlibInterface("Float32Array")) return bytesOf("f32");
   if (isStdlibInterface("Float64Array")) return bytesOf("f64");
   // DataView: the ONE view kind — a u8 bytes value whose runtime

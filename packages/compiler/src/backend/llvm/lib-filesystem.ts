@@ -1039,6 +1039,16 @@ export function emitPrimitiveLibCall(host: LlvmEmitterContext, e: LibCallExpr): 
     B.line(`${t} = sitofp i32 ${product} to double`);
     return { name: t, type: e.type, uint32: product };
   }
+  if (e.fn === "math.f16round") {
+    const v = host.emitExpr(e.args[0]!);
+    host.declare(`declare zeroext i16 @scr_f16_from_f64(double)`);
+    host.declare(`declare double @scr_f16_to_f64(i16 zeroext)`);
+    const narrowed = B.tmp();
+    const t = B.tmp();
+    B.line(`${narrowed} = call zeroext i16 @scr_f16_from_f64(double ${v.name})`);
+    B.line(`${t} = call double @scr_f16_to_f64(i16 zeroext ${narrowed})`);
+    return { name: t, type: e.type };
+  }
   if (e.fn === "math.fround") {
     const v = host.emitExpr(e.args[0]!);
     const narrowed = B.tmp();
