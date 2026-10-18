@@ -2712,6 +2712,13 @@ export class Lowerer {
   /** Each class's constructor return plan by class name
    * (constructor-returns.ts); null when no return can yield an object. */
   readonly constructorReturnPlans = new Map<string, ConstructorReturnPlan | null>();
+  /** Pointer-guarded (`tdz`) module bindings declared without an
+   * initializer (`let f: T;`): an initialization flag tracks their
+   * declaration (markCycleEarlyBindings). */
+  readonly uninitializedLexicalGlobals = new Map<
+    string,
+    { name: ts.Identifier; module: ts.SourceFile; symbol: ts.Symbol }
+  >();
   /** CommonJS require declarations whose bindings code running before the
    * require can read, and those references (require-initialization.ts). */
   readonly requireInitFlags = new Map<ts.VariableDeclaration, RequireInitFlag>();
