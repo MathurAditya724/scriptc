@@ -197,6 +197,7 @@ import {
   cjsExportAssignmentOf,
   cjsExportDiscardReason,
   fallbackDtsPath,
+  isCheckedJsSourceFile,
   isCjsExportTableLiteral,
   isCjsJsFile,
   isJsSourceFile,
@@ -694,6 +695,8 @@ export interface LowerResult {
 export interface LowerOptions {
   /** Parser/checker services owned by the load; required for npm graph analysis. */
   frontendServices?: FrontendServices | undefined;
+  /** The project's tsconfig sets `checkJs` (see isCheckedJsSourceFile). */
+  projectCheckJs?: boolean;
   /** Coverage: additionally lower the unreached remainder (bodies nothing
    * on the entry path reaches) in a throwaway pass and report its
    * diagnostics and stats under `unreached` — the whole-program analysis
@@ -779,6 +782,7 @@ type RuntimeFenceTarget =
 /** The Lowerer's pass configuration (see lowerToIr). */
 export interface LowererMode {
   frontendServices?: FrontendServices | undefined;
+  projectCheckJs?: boolean;
   /** Names of bodies a prior reachability pass reached; null lowers everything. */
   reachable?: ReadonlySet<string> | null;
   /** Coverage remainder: lower ONLY bodies outside `reachable`, skip the
@@ -903,6 +907,7 @@ export function lowerToIr(
     options.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(externalTypes);
   const validation = new Lowerer(program, entry, moduleOrder, {
     frontendServices: options.frontendServices,
+    projectCheckJs: options.projectCheckJs ?? false,
     targetPlatform,
     startupCrash,
     ffiImports,
@@ -924,6 +929,7 @@ export function lowerToIr(
       ? validation
       : new Lowerer(program, entry, moduleOrder, {
           frontendServices: options.frontendServices,
+          projectCheckJs: options.projectCheckJs ?? false,
           targetPlatform,
           startupCrash,
           ffiImports,
@@ -951,6 +957,7 @@ export function lowerToIr(
   if (reachableEmit.requiresHistoricalOrderRelower) {
     const emit = new Lowerer(program, entry, moduleOrder, {
       frontendServices: options.frontendServices,
+      projectCheckJs: options.projectCheckJs ?? false,
       reachable,
       targetPlatform,
       startupCrash,
@@ -1007,6 +1014,7 @@ export function lowerToIr(
   if (options.coverage !== true) return result;
   const remainder = new Lowerer(program, entry, moduleOrder, {
     frontendServices: options.frontendServices,
+    projectCheckJs: options.projectCheckJs ?? false,
     reachable,
     remainder: true,
     alreadyFlushed: resultLowerer.flushedSymbols,
@@ -2623,6 +2631,9 @@ export class Lowerer {
   readonly targetPlatform: string;
   /** LowererMode.startupCrash — buildMain opens %main with the throw. */
   readonly startupCrash: StartupCrash | null;
+  /** The project's tsconfig sets `checkJs`. */
+  readonly projectCheckJs: boolean;
+  private readonly checkedJsFiles = new Map<ts.SourceFile, boolean>();
   /** Outbound native bindings by their source-level ambient name. */
   readonly ffiImports: readonly IrFfiImport[];
   readonly libraryCallbacks: boolean;
@@ -2685,6 +2696,7 @@ export class Lowerer {
     this.alreadyFlushed = mode.alreadyFlushed ?? new Set();
     this.targetPlatform = mode.targetPlatform ?? process.platform;
     this.startupCrash = mode.startupCrash ?? null;
+    this.projectCheckJs = mode.projectCheckJs ?? false;
     this.ffiImports = mode.ffiImports ?? [];
     this.libraryCallbacks = mode.libraryCallbacks ?? false;
     this.workerTargets = mode.workerTargets ?? [];
@@ -2808,6 +2820,18 @@ export class Lowerer {
     registerBuiltinEmitterClass(this);
     registerBuiltinStreamClasses(this);
     registerBuiltinEventTargetClasses(this);
+  }
+
+  /** A JavaScript file TypeScript type-checks (`// @ts-check`, or the
+   * project's `checkJs`). Its JSDoc types are enforced like TypeScript
+   * annotations, so its classes use them as a TypeScript file would. */
+  checkedJsFile(sf: ts.SourceFile): boolean {
+    let checked = this.checkedJsFiles.get(sf);
+    if (checked === undefined) {
+      checked = isCheckedJsSourceFile(sf, this.projectCheckJs);
+      this.checkedJsFiles.set(sf, checked);
+    }
+    return checked;
   }
 
   registerBuiltinErrorClasses(): void {

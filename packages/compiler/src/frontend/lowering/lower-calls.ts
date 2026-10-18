@@ -3201,6 +3201,13 @@ function lowerDynReceiverMethodCall(
       const info = lowerer.classes.get(probed.type.className);
       if (info) return lowerStaticMethodCall(lowerer, call, access);
     }
+    // A possibly missing element of a class-typed array (`items[i]`) is
+    // the receiver's class or undefined. The class method call checks for
+    // undefined itself, as it does in TypeScript.
+    const presentArm =
+      probed?.type.kind === "union" ? lowerer.stripUndefinedArm(probed.type) : null;
+    if (presentArm?.kind === "object" && typeEquals(presentArm, lowerer.mapTypeOf(recvTs) ?? DYN))
+      return null;
     if (
       probed?.type.kind === "union" &&
       isJsSourceFile(call.getSourceFile()) &&

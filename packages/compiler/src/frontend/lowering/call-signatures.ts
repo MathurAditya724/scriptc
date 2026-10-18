@@ -123,6 +123,24 @@ export function generatorMeta(
   return { yieldT: type.yieldT, nextT: type.nextT, resultType };
 }
 
+/** A parameter with a type annotation or a JSDoc `@param`/`@type` tag. */
+export function documentedParameter(param: ts.ParameterDeclaration): boolean {
+  return (
+    param.type !== undefined ||
+    /@(?:param|type)\b/.test(
+      param.getSourceFile().text.slice(param.parent?.pos ?? param.pos, param.getStart()),
+    )
+  );
+}
+
+/** A documented parameter in a JavaScript file TypeScript checks. */
+export function checkedJsDocumentedParameter(
+  lowerer: Lowerer,
+  param: ts.ParameterDeclaration,
+): boolean {
+  return lowerer.checkedJsFile(param.getSourceFile()) && documentedParameter(param);
+}
+
 /** One parameter's ParamShape — the shared signature-shaped collection
  * point for function declarations, methods, constructors, and lambdas
  * (generic declarations defer to their call sites, where the resolved
@@ -147,11 +165,14 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
   if (
     isJsSourceFile(param.getSourceFile()) &&
     ts.isConstructorDeclaration(param.parent) &&
-    !param.dotDotDotToken
+    !param.dotDotDotToken &&
+    !checkedJsDocumentedParameter(lowerer, param)
   ) {
     // Reflective JavaScript construction can supply values outside the
     // constructor's documented usual types. Retain the actual arguments
     // and apply checked conversions only at operations that need them.
+    // In a file TypeScript checks, documented types are enforced like
+    // TypeScript annotations.
     return param.initializer
       ? { type: DYN, mode: "omittable", bodyType: DYN }
       : { type: DYN, mode: param.questionToken ? "omittable" : "required" };

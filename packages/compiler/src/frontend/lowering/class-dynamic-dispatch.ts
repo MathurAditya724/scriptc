@@ -67,6 +67,7 @@ import { ClassConstructionDispatch } from "./class-construction.js";
 import { emitterRooted } from "./lower-event-emitter.js";
 import { protocolArm, protocolFieldArm } from "./class-protocol-dispatch.js";
 import { STREAM_OPERATORS } from "./lower-stream.js";
+import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 
 const STREAM_METHODS = new Set([
   "on",
@@ -671,6 +672,9 @@ export class ClassDynamicDispatch {
   private readonly generatorDispatch = new GeneratorDynamicDispatch();
   private readonly caughtDispatch = new CaughtValueDispatch();
   private readonly constructionDispatch = new ClassConstructionDispatch();
+  /** Property names a delete can remove (null: any name), for the field
+   * creation tracking decision. */
+  private deletedNames: Set<string> | null | undefined;
   private readonly boxed = new Set<string>();
   private readonly boxedConstructors = new Set<string>();
   private readonly dispatches = new Map<string, Dispatch>();
@@ -1164,8 +1168,11 @@ export class ClassDynamicDispatch {
           current.def.tracksOwnFields = true;
           current.subclasses.forEach(track);
         };
-        // Runtime-owned roots keep their dedicated property contracts.
-        if (!root.base?.def.runtime) track(root);
+        // Runtime-owned roots keep their dedicated property contracts. A
+        // family whose fields all exist from construction and are never
+        // deleted keeps a fixed layout, as TypeScript classes do.
+        this.deletedNames ??= deletedPropertyNames(lowerer.moduleOrder);
+        if (!root.base?.def.runtime && !fixedFieldFamily(root, this.deletedNames)) track(root);
       }
       const loc = this.propertyBag.loc;
       const { receiver, condition } = this.propertyReceiver(plan, loc);

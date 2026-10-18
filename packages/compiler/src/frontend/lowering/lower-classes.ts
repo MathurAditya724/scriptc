@@ -53,7 +53,12 @@ import {
 } from "./instantiation-path.js";
 import { appendImplicitUndefinedReturn, hasExplicitJsDocReturn } from "./function-returns.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
-import { generatorMeta, type ParamShape } from "./call-signatures.js";
+import {
+  checkedJsDocumentedParameter,
+  documentedParameter,
+  generatorMeta,
+  type ParamShape,
+} from "./call-signatures.js";
 import { omittedArgFor } from "./call-arguments.js";
 import {
   isGenericCallableMemberType,
@@ -129,6 +134,7 @@ import { hasLexicalPrivateReference, hasStaticThis, rejectStaticThis } from "./s
 import { lowerUrlNew } from "./lower-url.js";
 import { isNativeProxyInitializer, lowerNativeProxy } from "./expressions/native-proxy.js";
 import { classStaticDataFor } from "./class-static-data.js";
+import { construction, constructionPrefix } from "./js-class-fields.js";
 import { lowerObjectFactoryNew } from "./object-factory-new.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerInstanceConstructorNew } from "./class-instance-constructor.js";
@@ -975,7 +981,8 @@ function jsFieldInitializerType(lowerer: Lowerer, type: IrType, expression: ts.E
         .some(
           (decl) =>
             ts.isParameter(decl) &&
-            (ts.isConstructorDeclaration(decl.parent) ||
+            ((ts.isConstructorDeclaration(decl.parent) &&
+              !checkedJsDocumentedParameter(lowerer, decl)) ||
               (lowerer.typeOf(expression).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0),
         )
     )
@@ -3656,6 +3663,19 @@ export function collectClassShapeInner(
         const keySym = lateBoundKeySymOf(lowerer, p);
         if (keySym) lateBoundByKey.set(keySym, p);
       }
+      // A subclass field created before anything can observe the instance
+      // keeps its type: super() cannot run code that reads it earlier.
+      const baseConstruction =
+        base && ![...methods.keys()].some((m) => m.startsWith("get:") || m.startsWith("set:"))
+          ? construction(base)
+          : null;
+      const sealedPrefix = baseConstruction
+        ? constructionPrefix(
+            decl,
+            baseConstruction,
+            (name) => !hasAccessor(name) && !methods.has(name) && !lowerer.findMethodOn(base, name),
+          )
+        : null;
       if (ctor?.body) {
         for (const stmt of ctor.body.statements) {
           const lhs =
@@ -3726,7 +3746,8 @@ export function collectClassShapeInner(
             type = inheritedJsFieldType(lowerer, decl, name, type);
             // super() can invoke a subclass setter or method before its
             // constructor assignments run. These slots start undefined.
-            if (base && lowerer.dynConvertible(type)) type = DYN;
+            if (base && lowerer.dynConvertible(type) && !sealedPrefix?.created.has(name))
+              type = DYN;
             fields.set(name, type);
             fieldOrder.push({ name, type, initializer: undefined });
             continue;
@@ -6400,7 +6421,8 @@ export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.Sou
               for (const declaration of property ? lowerer.checker.declarationsOf(property) : []) {
                 if (
                   ts.isMethodDeclaration(declaration) &&
-                  isJsSourceFile(declaration.getSourceFile())
+                  isJsSourceFile(declaration.getSourceFile()) &&
+                  !checkedJsOverride(lowerer, declaration, member)
                 ) {
                   lowerer.virtualJsMethods.add(declaration);
                   if (
@@ -6468,6 +6490,21 @@ export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.Sou
         }
     }
   }
+}
+
+/** An override whose base and overriding methods are in files TypeScript
+ * checks and document every parameter: TypeScript checks the override
+ * against its base, so both keep their declared signatures, as in
+ * TypeScript classes. */
+function checkedJsOverride(
+  lowerer: Lowerer,
+  base: ts.MethodDeclaration,
+  member: ts.MethodDeclaration,
+): boolean {
+  return [base, member].every(
+    (method) =>
+      lowerer.checkedJsFile(method.getSourceFile()) && method.parameters.every(documentedParameter),
+  );
 }
 
 /** The receiver's EXACT runtime class, when the expression proves it: a

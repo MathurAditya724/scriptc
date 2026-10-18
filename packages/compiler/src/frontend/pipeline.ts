@@ -476,6 +476,7 @@ function loadFrontend(
         ...opts,
         frontendServices: finalLoad.services,
         startupCrash: finalLoad.startupCrash ?? null,
+        projectCheckJs: finalLoad.typeWorld?.projectCheckJs ?? false,
         externalTypes: finalLoad.externalTypes,
         externalTypeSpecifiersByFile: finalLoad.externalTypeSpecifiersByFile,
       }),
