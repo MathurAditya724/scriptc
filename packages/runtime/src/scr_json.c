@@ -108,6 +108,26 @@ static void scr_async_iterator_symbol_cleanup(void) {
   scr_async_iterator_symbol = NULL;
 }
 
+static SCR_TL ScrDyn *scr_async_dispose_symbol;
+
+static void scr_async_dispose_symbol_cleanup(void) {
+  scr_dyn_release(scr_async_dispose_symbol);
+  scr_async_dispose_symbol = NULL;
+}
+
+/* Symbol.asyncDispose, registered by the symbol unit when the program
+ * first names it, for handle classes outside that unit (a Worker). */
+void scr_dyn_install_async_dispose_symbol(ScrDyn *key) {
+  if (scr_async_dispose_symbol) return;
+  scr_async_dispose_symbol = scr_dyn_retain(key);
+  scr_atexit(scr_async_dispose_symbol_cleanup);
+}
+
+bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key) {
+  return scr_async_dispose_symbol && key->kind == SCR_DYN_SYMBOL &&
+         key->v.symbol.value == scr_async_dispose_symbol->v.symbol.value;
+}
+
 static void scr_to_primitive_symbol_cleanup(void) {
   scr_dyn_release(scr_to_primitive_symbol);
   scr_to_primitive_symbol = NULL;
@@ -9489,6 +9509,61 @@ void scr_sc_validate_options(const ScrDyn *options) {
   scr_dyn_release(transferView);
 }
 
+/* ── markAsUncloneable ─────────────────────────────────────────────── */
+
+/* The plain objects, errors and class instances marked with
+ * markAsUncloneable (node:worker_threads): structuredClone and
+ * postMessage throw DataCloneError for them. Node's mark has no effect on
+ * primitives, arrays, Maps, Sets, Dates, typed arrays and ArrayBuffers.
+ * The marked values are retained until the thread exits, so an identity
+ * is never reused while marked. */
+static SCR_TL ScrDyn **scr_uncloneable;
+SCR_TL size_t scr_uncloneable_count;
+static SCR_TL size_t scr_uncloneable_capacity;
+
+static void scr_uncloneable_cleanup(void) {
+  for (size_t i = 0; i < scr_uncloneable_count; i++) scr_dyn_release(scr_uncloneable[i]);
+  free(scr_uncloneable);
+  scr_uncloneable = NULL;
+  scr_uncloneable_count = scr_uncloneable_capacity = 0;
+}
+
+/* The identity a mark is kept under: a class instance's or a record's
+ * object, or a plain object's source (its own box otherwise); NULL for
+ * values Node does not mark. */
+static const void *scr_uncloneable_identity(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_TYPED_REF &&
+      ((value->v.typed_ref.type_key_len > 7 && !memcmp(value->v.typed_ref.type_key, "object:", 7)) ||
+       (value->v.typed_ref.type_key_len > 7 && !memcmp(value->v.typed_ref.type_key, "record:", 7))))
+    return value->v.typed_ref.ptr;
+  if (value->kind == SCR_DYN_OBJ)
+    return value->v.obj.source_identity ? value->v.obj.source_identity : (const void *)value;
+  return NULL;
+}
+
+void scr_mark_uncloneable(ScrDyn *value) {
+  const void *identity = scr_uncloneable_identity(value);
+  if (!identity || scr_uncloneable_marked(value)) return;
+  if (scr_uncloneable_count == scr_uncloneable_capacity) {
+    if (!scr_uncloneable_capacity) scr_atexit(scr_uncloneable_cleanup);
+    size_t capacity = scr_uncloneable_capacity ? scr_uncloneable_capacity * 2 : 8;
+    ScrDyn **values = realloc(scr_uncloneable, capacity * sizeof *values);
+    if (!values) scr_trap("scriptc: out of memory\n");
+    scr_uncloneable = values;
+    scr_uncloneable_capacity = capacity;
+  }
+  scr_uncloneable[scr_uncloneable_count++] = scr_dyn_retain(value);
+}
+
+bool scr_uncloneable_marked(const ScrDyn *value) {
+  if (scr_uncloneable_count == 0) return false;
+  const void *identity = scr_uncloneable_identity(value);
+  if (!identity) return false;
+  for (size_t i = 0; i < scr_uncloneable_count; i++)
+    if (scr_uncloneable_identity(scr_uncloneable[i]) == identity) return true;
+  return false;
+}
+
 /* The parent chain rides the C stack: a revisit is a cycle. */
 typedef struct ScrScParent {
   const ScrDyn *node;
@@ -9499,6 +9574,10 @@ typedef struct ScrScParent {
  * throw), so it is tagged like a parse result (ScrDynRegion); a leaf the
  * region may not hold clears it. */
 static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion *region) {
+  if (scr_uncloneable_count && scr_uncloneable_marked(v)) {
+    scr_throw_domex("DataCloneError", "Cannot clone object of unsupported type.");
+    return NULL;
+  }
   if (v->kind == SCR_DYN_PROXY) {
     scr_throw_domex("DataCloneError", "#<Object> could not be cloned.");
     return NULL;

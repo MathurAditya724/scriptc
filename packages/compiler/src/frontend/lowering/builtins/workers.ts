@@ -328,6 +328,25 @@ export function lowerEnvironmentData(
   };
 }
 
+/** markAsUncloneable(value): structuredClone and postMessage then throw
+ * DataCloneError for the value (scr_json.c). It needs no worker runtime. */
+export function lowerUncloneable(lowerer: Lowerer, call: ts.CallExpression): IrExpr {
+  const args = call.arguments;
+  if (args.length > 1 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`markAsUncloneable with ${args.length} arguments`, call);
+  }
+  const loc = locOf(call);
+  const value: IrExpr = args[0]
+    ? lowerer.lowerExprExpecting(args[0], DYN)
+    : {
+        kind: "dynFrom",
+        value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        type: DYN,
+        loc,
+      };
+  return { kind: "libCall", fn: "dyn.markUncloneable", args: [value], type: VOID, loc };
+}
+
 /** markAsUntransferable(value) and isMarkedAsUntransferable(value): marks
  * kept by this thread (an ArrayBuffer's on its storage). */
 export function lowerUntransferable(

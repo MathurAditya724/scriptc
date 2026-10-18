@@ -265,6 +265,10 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
   case SCR_DYN_HANDLE: identity = input->v.handle.ptr; domain = 4; break;
   default: break;
   }
+  if (scr_uncloneable_count && scr_uncloneable_marked(input)) {
+    scr_throw_domex("DataCloneError", "Cannot clone object of unsupported type.");
+    return SIZE_MAX;
+  }
   size_t found = scr_message_find(encoder, identity, domain);
   if (found != SIZE_MAX) return found;
   size_t id = scr_message_node(encoder);

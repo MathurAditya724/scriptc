@@ -2,6 +2,7 @@ import { lowerReadlineCursorCall } from "./builtins/readline.js";
 import {
   lowerEnvironmentData,
   lowerReceiveMessageOnPort,
+  lowerUncloneable,
   lowerUntransferable,
 } from "./builtins/workers.js";
 import * as ts from "../ts7/adapter.js";
@@ -116,6 +117,9 @@ export function lowerBuiltinCall(
     (bi.member === "markAsUntransferable" || bi.member === "isMarkedAsUntransferable")
   ) {
     return lowerUntransferable(lowerer, expr, bi.member);
+  }
+  if (bi.module === "worker_threads" && bi.member === "markAsUncloneable") {
+    return lowerUncloneable(lowerer, expr);
   }
   const builtinFn = builtinModuleFnOf(lowerer, bi.module, bi.member);
   if (!builtinFn) {
