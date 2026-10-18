@@ -593,7 +593,27 @@ struct ScrNetSocket {
   bool t_want_write; /* a handshake send hit EAGAIN: arm the write filter */
   bool in_registry;
   struct ScrNetSocket *next;
+  /* an HTTP CONNECT tunnel (scr_net_sock_set_tunnel), set from the dial
+   * until the proxy answers 200: writes buffer and the transport
+   * handshake waits until the tunnel is up */
+  struct ScrNetTunnel *tunnel;
 };
+
+/* The CONNECT head still being sent from out_off, and the proxy's
+ * response head as it arrives. */
+typedef struct ScrNetTunnel {
+  char *out;
+  size_t out_len, out_off;
+  char *in;
+  size_t in_len;
+} ScrNetTunnel;
+
+static void scr_net_tunnel_free(ScrNetTunnel *t) {
+  if (t == NULL) return;
+  free(t->out);
+  free(t->in);
+  free(t);
+}
 
 #ifdef SCR_RC_AUDIT
 static SCR_TL long scr_net_live = 0;
@@ -665,6 +685,7 @@ void scr_net_sock_release(ScrNetSocket *s) {
     free(s->dial_ips);
     scr_str_release(s->dial_err);
     scr_str_release(s->dial_host);
+    scr_net_tunnel_free(s->tunnel);
     free(s->wbuf);
     free(s->rbuf);
     if (s->pipe_dst) scr_net_sock_release(s->pipe_dst);
@@ -910,6 +931,7 @@ static ScrNetSocket *scr_net_sock_new(void) {
 static void scr_net_sock_update_read(ScrNetSocket *s) {
   bool want = s->fd >= 0 && !s->connecting && !s->rd_eof && !s->user_paused &&
               (s->data_ls.n > 0 || s->pipe_dst != NULL || s->native_data != NULL ||
+               s->tunnel != NULL /* the proxy's CONNECT answer */ ||
                s->flowing /* resume(): flow (and discard sans listeners) */ ||
                s->readable_ls.n > 0 /* paused-mode consumer: bytes buffer */ ||
                s->tops != NULL /* a transport is ALWAYS a consumer: the TLS
@@ -935,7 +957,9 @@ static void scr_net_sock_update_read(ScrNetSocket *s) {
 }
 
 static void scr_net_sock_update_write(ScrNetSocket *s) {
-  bool want = s->fd >= 0 && (s->connecting || s->wlen > s->whead || s->t_want_write);
+  bool want = s->fd >= 0 &&
+              (s->connecting || (s->tunnel != NULL ? s->tunnel->out_off < s->tunnel->out_len
+                                              : s->wlen > s->whead || s->t_want_write));
   if (want && !s->write_armed) {
     scr_net_watch_write(s->fd, s, true);
     s->write_armed = true;
@@ -960,7 +984,7 @@ static void scr_net_sock_close_fd(ScrNetSocket *s) {
 /* The FIN half: called when the write half is ENDING and the buffer just
  * drained (or was empty). Full close once the read half is done too. */
 static void scr_net_sock_maybe_finish_write(ScrNetSocket *s) {
-  if (s->fd < 0 || !s->wr_ending || s->wr_done || s->wlen > s->whead) return;
+  if (s->fd < 0 || !s->wr_ending || s->wr_done || s->wlen > s->whead || s->tunnel != NULL) return;
   /* a transport says goodbye first (TLS close_notify), best-effort */
   if (s->tops && s->t_est) s->tops->shutdown_write(s->tctx);
   shutdown(s->fd, SHUT_WR);
@@ -1009,7 +1033,8 @@ static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len
   if (!pre_dial && (s->fd < 0 || s->wr_ending || s->close_emitted)) return;
   if (len == 0) return;
   s->bytes_written += len; /* accepted bytes (Node counts buffered ones too) */
-  if (pre_dial || s->connecting || s->wlen > s->whead || (s->tops && !s->t_est)) {
+  if (pre_dial || s->connecting || s->tunnel != NULL || s->wlen > s->whead ||
+      (s->tops && !s->t_est)) {
     /* mid-connect and mid-handshake bytes buffer; the flush after
      * 'connect'/establishment sends them */
     scr_net_sock_buffer(s, data, len);
@@ -1053,7 +1078,7 @@ void scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size
   int cnt = 0;
   size_t total = 0;
   bool immediate = n <= 8 && s->fd >= 0 && !s->wr_ending && !s->close_emitted &&
-                   !s->connecting && s->wlen == s->whead && !s->tops;
+                   !s->connecting && s->tunnel == NULL && s->wlen == s->whead && !s->tops;
   if (immediate) {
     for (size_t i = 0; i < n; i++) {
       if (slices[i].len == 0) continue;
@@ -1106,6 +1131,7 @@ void scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size
 
 /* Flush on write-readiness; drives the FIN when ENDING. */
 static void scr_net_sock_flush(ScrNetSocket *s) {
+  if (s->tunnel != NULL) return; /* nothing moves until the proxy answers */
   if (s->tops && !s->t_est) return; /* nothing moves until the handshake ends */
   while (s->fd >= 0 && s->wlen > s->whead) {
     ssize_t sent = s->tops ? s->tops->xwrite(s->tctx, s->wbuf + s->whead, s->wlen - s->whead)
@@ -1206,6 +1232,7 @@ static void scr_net_sock_transport_pump(ScrNetSocket *s);
 
 static void scr_net_sock_read(ScrNetSocket *s) {
   size_t reads_left = 32; /* at most 2 MiB with the 64 KiB read buffer */
+  if (s->tunnel != NULL) return; /* readiness feeds the tunnel pump instead */
   if (s->tops && !s->t_est) return; /* readiness feeds the handshake pump instead */
   for (;;) {
     if (s->fd < 0 || s->user_paused) return;
@@ -1298,6 +1325,8 @@ static void scr_net_sock_read(ScrNetSocket *s) {
 static void scr_net_sock_transport_pump(ScrNetSocket *s);
 
 static void scr_net_sock_dial_next(ScrNetSocket *s);
+static void scr_net_sock_connected(ScrNetSocket *s);
+static void scr_net_sock_tunnel_pump(ScrNetSocket *s);
 
 /* Connect completion (write-readiness while connecting). */
 static void scr_net_sock_connect_done(ScrNetSocket *s) {
@@ -1342,6 +1371,19 @@ static void scr_net_sock_connect_done(ScrNetSocket *s) {
     scr_str_release(s->dial_err);
     s->dial_err = NULL;
   }
+  if (s->tunnel != NULL) {
+    /* TCP to the proxy is up: the CONNECT exchange runs first */
+    scr_net_sock_touch(s);
+    scr_net_sock_tunnel_pump(s);
+    return;
+  }
+  scr_net_sock_connected(s);
+}
+
+/* The connection is usable (TCP up, and the proxy tunnel when there is
+ * one): the transport handshake starts, or 'connect' fires and buffered
+ * writes flush. */
+static void scr_net_sock_connected(ScrNetSocket *s) {
   scr_net_sock_update_write(s); /* keeps the filter iff bytes are buffered */
   scr_net_sock_update_read(s);
   scr_net_sock_touch(s);
@@ -1363,6 +1405,106 @@ static void scr_net_sock_connect_done(ScrNetSocket *s) {
   scr_net_sock_flush(s);
 }
 
+/* Fails a tunnel being set up: the message is the socket's 'error'. */
+static void scr_net_sock_tunnel_fail(ScrNetSocket *s, const char *msg) {
+  if (!s->pending_err) s->pending_err = scr_str_new(msg, strlen(msg));
+  s->had_error = true;
+  scr_net_sock_close_fd(s);
+}
+
+int scr_net_tunnel_status(const char *head, size_t len) {
+  if (len >= 12 && memcmp(head, "HTTP/1.", 7) == 0 && head[8] == ' ' &&
+      isdigit((unsigned char)head[9]) && isdigit((unsigned char)head[10]) &&
+      isdigit((unsigned char)head[11])) {
+    return (head[9] - '0') * 100 + (head[10] - '0') * 10 + (head[11] - '0');
+  }
+  return -1;
+}
+
+void scr_net_tunnel_failure(int status, char *msg, size_t cap) {
+  if (status < 0) {
+    /* llhttp's message for a response that does not start with a status line */
+    snprintf(msg, cap, "Response does not match the HTTP/1.1 protocol (Expected HTTP/, RTSP/ or ICE/)");
+  } else {
+    snprintf(msg, cap, "Proxy response (%d) !== 200 when HTTP Tunneling", status);
+  }
+}
+
+/* The proxy's response head is at most this long. */
+#define SCR_NET_TUNNEL_HEAD_MAX 16384u
+
+/* Drives the CONNECT exchange off readiness: sends the request head,
+ * then reads the proxy's response head. A 200 status makes the
+ * connection usable (bytes after the head belong to the tunnel); any
+ * other status fails the socket with undici's message. */
+static void scr_net_sock_tunnel_pump(ScrNetSocket *s) {
+  ScrNetTunnel *t = s->tunnel;
+  while (s->fd >= 0 && t->out_off < t->out_len) {
+    ssize_t sent =
+        scr_net_send(s->fd, t->out + t->out_off, t->out_len - t->out_off);
+    if (sent < 0) {
+      if (errno == EINTR) continue;
+      if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+      char msg[96];
+      snprintf(msg, sizeof msg, "write %s", scr_net_errname(errno));
+      scr_net_sock_tunnel_fail(s, msg);
+      return;
+    }
+    t->out_off += (size_t)sent;
+  }
+  scr_net_sock_update_write(s);
+  if (s->fd < 0 || t->out_off < t->out_len) return;
+  for (;;) {
+    char buf[4096];
+    ssize_t n = read(s->fd, buf, sizeof buf);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        scr_net_sock_update_read(s);
+        return;
+      }
+      char msg[96];
+      snprintf(msg, sizeof msg, "read %s", scr_net_errname(errno));
+      scr_net_sock_tunnel_fail(s, msg);
+      return;
+    }
+    if (n == 0) {
+      scr_net_sock_tunnel_fail(s, "socket hang up");
+      return;
+    }
+    if (t->in_len + (size_t)n > SCR_NET_TUNNEL_HEAD_MAX) {
+      scr_net_sock_tunnel_fail(s, "Proxy response head is too large");
+      return;
+    }
+    char *grown = realloc(t->in, t->in_len + (size_t)n);
+    if (!grown) scr_net_oom();
+    t->in = grown;
+    memcpy(t->in + t->in_len, buf, (size_t)n);
+    t->in_len += (size_t)n;
+    size_t end = 0;
+    for (size_t i = 3; i < t->in_len; i++) {
+      if (memcmp(t->in + i - 3, "\r\n\r\n", 4) == 0) {
+        end = i + 1;
+        break;
+      }
+    }
+    if (end == 0) continue;
+    int status = scr_net_tunnel_status(t->in, end);
+    if (status != 200) {
+      char msg[128];
+      scr_net_tunnel_failure(status, msg, sizeof msg);
+      scr_net_sock_tunnel_fail(s, msg);
+      return;
+    }
+    scr_net_sock_append_rbuf(s, t->in + end, t->in_len - end);
+    scr_net_tunnel_free(t);
+    s->tunnel = NULL;
+    scr_net_sock_touch(s);
+    scr_net_sock_connected(s);
+    return;
+  }
+}
+
 /* Drive the transport handshake off readiness until it settles. On
  * establishment: the protocol layer attaches (https' parser), a
  * deferred server 'connection' fires ('secureConnection' timing), the
@@ -1371,7 +1513,7 @@ static void scr_net_sock_connect_done(ScrNetSocket *s) {
  * handshake flight delivers. Failure already tore the socket down via
  * scr_net_sock_transport_error. */
 static void scr_net_sock_transport_pump(ScrNetSocket *s) {
-  if (!s->tops || s->t_est || s->fd < 0 || s->connecting) return;
+  if (!s->tops || s->t_est || s->fd < 0 || s->connecting || s->tunnel != NULL) return;
   int r = s->tops->handshake(s->tctx);
   if (r == 0) {
     scr_net_sock_update_read(s);
@@ -3907,9 +4049,9 @@ ScrDyn *scr_net_sock_addr_field(ScrNetSocket *s, double field) {
 double scr_net_sock_bytes_read(ScrNetSocket *s) { return (double)s->bytes_read; }
 
 /* socket.connecting: a dial in progress (deferred, looking up, or
- * awaiting the TCP handshake). */
+ * awaiting the TCP handshake or the proxy tunnel). */
 bool scr_net_sock_connecting(ScrNetSocket *s) {
-  return s->fd >= 0 ? s->connecting : (s->dial_deferred || s->lookup_wait);
+  return s->fd >= 0 ? s->connecting || s->tunnel != NULL : (s->dial_deferred || s->lookup_wait);
 }
 
 /* socket.pending: no open handle yet (or anymore), or still connecting. */
@@ -4253,7 +4395,7 @@ void scr_net_sock_on_connect(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool onc
     scr_closure_release(cb);
     return;
   }
-  if (!s->connecting) {
+  if (!s->connecting && s->tunnel == NULL) {
     /* already connected: Node fires a late once('connect')… never — the
      * event is past. Release, like listeners after 'exit'. */
     scr_closure_release(cb);
@@ -4365,7 +4507,7 @@ bool scr_net_sock_writable(ScrNetSocket *s) {
 }
 
 bool scr_net_sock_established(ScrNetSocket *s) {
-  return s->fd >= 0 && !s->connecting && (!s->tops || s->t_est);
+  return s->fd >= 0 && !s->connecting && s->tunnel == NULL && (!s->tops || s->t_est);
 }
 
 /* The protocol layer's timeout/error hooks (scr_http.c's client and the
@@ -4392,6 +4534,17 @@ void scr_net_sock_write_native(ScrNetSocket *s, const char *buf, size_t n) {
 }
 
 /* ── the transport hooks (scr_tls.c) ─────────────────────────────────── */
+
+void scr_net_sock_set_tunnel(ScrNetSocket *s, const char *request, size_t len) {
+  if (s->fd < 0 || !s->connecting || s->tunnel != NULL) return;
+  ScrNetTunnel *t = calloc(1, sizeof *t);
+  if (!t) scr_net_oom();
+  t->out = malloc(len);
+  if (!t->out) scr_net_oom();
+  memcpy(t->out, request, len);
+  t->out_len = len;
+  s->tunnel = t;
+}
 
 void scr_net_sock_set_transport(ScrNetSocket *s, const ScrNetTransportOps *ops, void *tctx) {
   s->tops = ops;
@@ -4811,6 +4964,7 @@ static void scr_net_dispatch(void) {
          * failure may have closed. */
         if (evs[i].events & SCRP_WRITABLE) {
           if (s->connecting) scr_net_sock_connect_done(s);
+          else if (s->tunnel != NULL) scr_net_sock_tunnel_pump(s);
           else if (s->tops && !s->t_est) {
             s->t_want_write = false;
             scr_net_sock_transport_pump(s);
@@ -4821,7 +4975,8 @@ static void scr_net_dispatch(void) {
           }
         }
         if ((evs[i].events & SCRP_READABLE) && !scr_exc_pending() && s->fd >= 0) {
-          if (s->tops && !s->t_est) scr_net_sock_transport_pump(s);
+          if (s->tunnel != NULL) scr_net_sock_tunnel_pump(s);
+          else if (s->tops && !s->t_est) scr_net_sock_transport_pump(s);
           else scr_net_sock_read(s);
         }
       }
