@@ -13,6 +13,7 @@ import {
   lowerTimersMemberCall,
   TIMER_MODULE_MEMBERS,
 } from "./lower-timers.js";
+import { lowerMockTimersElementCall } from "./lower-test.js";
 import { objectEnumerationReceiver } from "./object-enumeration-receiver.js";
 import { InternalCompilerError } from "../../errors.js";
 import { isFsStreamMember, lowerFsStreamMethodCall } from "./builtins/fs-streams.js";
@@ -58,6 +59,7 @@ import {
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
+import { lowerJsonRequireCall } from "./json-require.js";
 import { lowerAssertInstanceCall } from "./assert-instances.js";
 import { isGenericCallableMemberType, typeKey } from "../type-mapper.js";
 import { dynFallbackType, jsFuncNameOf, newFnCtx, staticImportNamespaceType } from "./lowerer.js";
@@ -104,8 +106,14 @@ import {
   lowerImportMetaResolveCall,
   lowerRequireResolveCall,
 } from "./builtins/module-resolution.js";
-import { lowerCipherMethodCall, lowerCryptoHashMethodCall } from "./builtins/crypto.js";
+import {
+  lowerCipherMethodCall,
+  lowerCryptoHashMethodCall,
+  lowerPromisifiedCryptoCall,
+} from "./builtins/crypto.js";
 import { lowerErrorIsErrorCall } from "./builtins/errors.js";
+import { lowerPromisifiedDnsCall } from "./lower-dgram.js";
+import { lowerDisposableStackUseCall } from "./builtins/disposable-stack.js";
 import {
   lowerDirentMethodCall,
   lowerFileHandleMethodCall,
@@ -123,6 +131,7 @@ import { recordMayKeepSource, throughRecordSource } from "./record-sources.js";
 import { lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
+  v8CalleeText,
   lowerOptionalNumber,
   lowerPromiseAllTupleCall,
   lowerPromiseRejectCall,
@@ -220,6 +229,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const object = lowerObjectConstructor(lowerer, expr.arguments, loc);
     if (object) return object;
   }
+
+  // require() of a JSON document: the shared parsed object.
+  const json = lowerJsonRequireCall(lowerer, expr);
+  if (json) return json;
 
   // A call whose chain ROOTS at an ambient-undefined name (`declare
   // const value: Y | undefined; value?.foo("a")`, `declare function
@@ -798,6 +811,12 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       }
       if (projection?.kind === "promisified-zlib") {
         return lowerPromisifiedZlibCall(lowerer, expr, projection.member, loc);
+      }
+      if (projection?.kind === "promisified-crypto") {
+        return lowerPromisifiedCryptoCall(lowerer, expr, projection.member, loc);
+      }
+      if (projection?.kind === "promisified-dns") {
+        return lowerPromisifiedDnsCall(lowerer, expr, projection.member, loc);
       }
       if (projection?.kind === "promisified-builtin") {
         return lowerBuiltinCall(
@@ -1379,6 +1398,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.fenceStaticResponseMember(expr.expression, "call") ??
       lowerer.fenceStaticHeadersMember(expr.expression, "call") ??
       lowerer.fenceStaticReadableStreamMember(expr.expression, "call") ??
+      lowerDisposableStackUseCall(lowerer, expr, expr.expression) ??
       lowerer.lowerStdlibMethodCall(expr, expr.expression) ??
       // Dyn receivers (JSON.parse-derived `unknown`/`any` values) —
 
@@ -1430,7 +1450,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           kind: "dynCall",
           callee: staticField,
           receiver: lowerer.lowerExprExpecting(expr.expression.expression, DYN),
-          calleeName: expr.expression.getText(),
+          calleeName: v8CalleeText(expr.expression),
           args: expr.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
           type: DYN,
           loc: locOf(expr),
@@ -1449,7 +1469,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         return {
           kind: "dynCall",
           callee,
-          calleeName: expr.expression.getText(),
+          calleeName: v8CalleeText(expr.expression),
           args,
           type: DYN,
           loc: locOf(expr),
@@ -1519,6 +1539,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // The element spelling of an unsupported native Web method must fence
   // before lowering the callee into a checked-dynamic keyed read.
   if (ts.isElementAccessExpression(expr.expression)) {
+    const timersDispose = lowerMockTimersElementCall(lowerer, expr, expr.expression);
+    if (timersDispose) return timersDispose;
     const symbolMethod = lowerClassSymbolMethodCall(lowerer, expr);
     if (symbolMethod) return symbolMethod;
     lowerer.fenceUnsupportedFetchConstructorMember(expr.expression);
@@ -1700,7 +1722,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     return {
       kind: "dynCall",
       callee: lowerer.coerceToExpected(callee, DYN),
-      calleeName: expr.expression.getText(),
+      calleeName: v8CalleeText(expr.expression),
       args: expr.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
       type: DYN,
       loc,
@@ -1782,7 +1804,7 @@ function lowerCheckedCallableValue(
   return {
     kind: "dynCall",
     callee,
-    calleeName: call.expression.getText(),
+    calleeName: v8CalleeText(call.expression),
     args: call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     type: DYN,
     loc,
@@ -3458,13 +3480,41 @@ function lowerDynReceiverMethodCall(
   // its name overlaps a primitive prototype (`colors.bold(...)`): the
   // source value was compiled from that object shape, while genuinely
   // untyped/any receivers retain the runtime-kind ambiguity and fence.
-  if (DYN_PROTO_METHOD_NAMES.has(access.name.text) && !ownCallable) return null;
+  // A name only String.prototype declares (`bold`, `italics`, `link`,
+  // ...) on a checker-untyped receiver: every other dyn kind answers its
+  // own or inherited member exactly like a non-prototype name (chalk's
+  // `chalk.red.bold(...)` reads a prototype getter of a function), so
+  // only a string receiver keeps the refusal, deferred to run time.
+  const stringOnlyName =
+    checkerUntyped && !ownCallable && DYN_STRING_PROTO_ONLY_NAMES.has(access.name.text);
+  if (DYN_PROTO_METHOD_NAMES.has(access.name.text) && !ownCallable && !stringOnlyName) return null;
   // Optional forms (`obj.cb?.()`, `obj?.cb()`) belong to the chain
   // machinery's short-circuit semantics — not modeled here yet.
   if (call.questionDotToken || access.questionDotToken) return null;
   const loc = locOf(call);
   const receiverLocal = lowerer.declareHiddenLocal("%dynCallReceiver", DYN);
   const receiver: IrExpr = { kind: "varRef", localId: receiverLocal.id, type: DYN, loc };
+  // The string refusal throws in place of the member read (a seqExpr
+  // statement cannot leave the expression).
+  const stringRefusal = (read: IrExpr): IrExpr => {
+    if (!stringOnlyName) return read;
+    const sf = call.getSourceFile();
+    const line = ts.getLineAndCharacterOfPosition(sf, call.getStart(sf)).line + 1;
+    return {
+      kind: "ternary",
+      cond: { kind: "dynTest", test: "string", value: receiver, type: BOOL, loc },
+      then: nodeThrowExpr(
+        0,
+        "SC1090",
+        `method calls like '${access.getText()}' on a string are not supported yet [SC1090 at ${sf.fileName}:${line}]`,
+        DYN,
+        loc,
+      ),
+      else_: read,
+      type: DYN,
+      loc,
+    };
+  };
   const member: IrExpr = {
     kind: "dynKeyGet",
     key: { kind: "strLit", value: access.name.text, type: STRING, loc: locOf(access) },
@@ -3476,7 +3526,7 @@ function lowerDynReceiverMethodCall(
   const callee = varRef(calleeLocal.id, DYN, loc);
   const stmts: IrStmt[] = [
     { kind: "varDecl", localId: receiverLocal.id, init: recv, loc },
-    { kind: "varDecl", localId: calleeLocal.id, init: member, loc },
+    { kind: "varDecl", localId: calleeLocal.id, init: stringRefusal(member), loc },
   ];
   if (call.arguments.some(ts.isSpreadElement)) {
     const spread = lowerSpreadArgsCall(lowerer, call, callee, loc);
@@ -3583,6 +3633,31 @@ const DYN_PROTO_METHOD_NAMES = new Set([
   "toExponential",
   "toFixed",
   "toPrecision",
+]);
+
+/** The DYN_PROTO_METHOD_NAMES that only String.prototype declares among
+ * the dyn-representable kinds' prototypes. */
+const DYN_STRING_PROTO_ONLY_NAMES = new Set([
+  "anchor",
+  "big",
+  "blink",
+  "bold",
+  "codePointAt",
+  "fixed",
+  "fontcolor",
+  "fontsize",
+  "isWellFormed",
+  "italics",
+  "link",
+  "localeCompare",
+  "normalize",
+  "small",
+  "strike",
+  "sub",
+  "sup",
+  "toLocaleLowerCase",
+  "toLocaleUpperCase",
+  "toWellFormed",
 ]);
 
 /** The SHARED prototype names scr_dyn_invoke dispatches at runtime (the

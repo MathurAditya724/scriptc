@@ -82,13 +82,10 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d) {
   case SCR_DYN_OBJ: {
     const ScrDyn *marker = scr_dyn_obj_get(d, "%error", 6);
     if (marker) {
-      const ScrDyn *en = scr_dyn_obj_get(d, "name", 4);
-      const ScrDyn *em = scr_dyn_obj_get(d, "message", 7);
-      const ScrStr *ens = (en && en->kind == SCR_DYN_STR) ? en->v.str : NULL;
-      const ScrStr *ems = (em && em->kind == SCR_DYN_STR) ? em->v.str : NULL;
-      if (ens) scr_jb_write(b, ens->data, ens->len);
-      if (ens && ens->len && ems && ems->len) scr_jb_puts(b, ": ");
-      if (ems) scr_jb_write(b, ems->data, ems->len);
+      ScrStr *text = scr_dyn_error_string(d);
+      if (!text) return;
+      scr_jb_write(b, text->data, text->len);
+      scr_str_release(text);
       return;
     }
     scr_jb_puts(b, "[object Object]");
@@ -1520,7 +1517,7 @@ static ScrDyn *scr_dyn_invoke_impl(
   if (recv->kind == SCR_DYN_BYTES) {
     ScrBytes *bytes = recv->v.bytes;
     if (bytes->is_data_view) {
-      static const char *const kinds[] = { "Uint8", "Int8", "Uint16", "Int16", "Uint32", "Int32", "Float32", "Float64", "BigUint64", "BigInt64" };
+      static const char *const kinds[] = { "Uint8", "Int8", "Uint16", "Int16", "Uint32", "Int32", "Float32", "Float64", "BigUint64", "BigInt64", "Float16" };
       const bool get = !strncmp(method, "get", 3);
       const bool set = !strncmp(method, "set", 3);
       for (size_t kind = 0; (get || set) && kind < sizeof kinds / sizeof kinds[0]; kind++) {
@@ -1537,7 +1534,7 @@ static ScrDyn *scr_dyn_invoke_impl(
         }
         const bool le = argc > (get ? 1 : 2) && scr_dyn_truthy(args[get ? 1 : 2]);
         if (get) {
-          if (kind >= SCR_DV_BIGU64) {
+          if (kind == SCR_DV_BIGU64 || kind == SCR_DV_BIGI64) {
             ScrBigInt *value = scr_bigint_dataview_get(bytes, offset, kind == SCR_DV_BIGI64, le);
             if (scr_exc_pending()) return NULL;
             ScrDyn *result = scr_dyn_new_bigint(value);
@@ -1547,7 +1544,7 @@ static ScrDyn *scr_dyn_invoke_impl(
           double value = scr_dataview_get(bytes, offset, (ScrDataViewGet)kind, le);
           return scr_exc_pending() ? NULL : scr_dyn_new_num(value);
         }
-        if (kind >= SCR_DV_BIGU64) {
+        if (kind == SCR_DV_BIGU64 || kind == SCR_DV_BIGI64) {
           ScrBigInt *value = scr_dyn_bigint_coerce(argc > 1 ? args[1] : scr_dyn_undefined());
           if (scr_exc_pending()) return NULL;
           scr_bigint_dataview_set(bytes, offset, value, le);

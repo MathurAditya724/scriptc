@@ -64,9 +64,6 @@ export class LlWalkers {
   private get S(): "i32" | "i64" {
     return this.host.sizeType;
   }
-  private abiOffset(native64: number, wasm32: number): number {
-    return this.S === "i32" ? wasm32 : native64;
-  }
 
   /** The value-parameter LLVM type of a writer for `t`. */
   private valTy(t: IrType): string {
@@ -220,10 +217,10 @@ export class LlWalkers {
         B.line(`call void @scr_jb_put_json_str(ptr %b, ptr %v)`);
         break;
       case "dyn":
-        // Overflow values under an `unknown` index signature: the checked-dynamic tree
-        // serializes itself (runtime walker). Bare stringify of dyn stays
-        // frontend-fenced; this writer is reachable only through overflow
-        // entries.
+        // A checked-dynamic value serializes itself (runtime walker).
+        // Bare stringify of dyn stays frontend-fenced, and overflow
+        // entries under an `unknown` index signature go through
+        // scr_jb_put_dyn_entry, which also runs the value's toJSON.
         this.host.declare(`declare void @scr_jb_put_dyn(ptr, ptr)`);
         B.line(`call void @scr_jb_put_dyn(ptr %b, ptr %v)`);
         break;
@@ -287,7 +284,8 @@ export class LlWalkers {
       throw new InternalCompilerError(
         `llvm emitter bug: jsonStringify of unknown shape ${shapeId}`,
       );
-    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+    const fieldBase = this.host.nullableUnions.fieldBase(shapeId);
+    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + fieldBase]));
     if (recordMayKeepSource(shape)) this.emitRecordSourceWriter(B, shapeId);
     // CYCLE-CAPABLE shapes bracket the walk with the circular-detection
     // stack; edge labels stamp before members whose walk can re-enter —
@@ -440,7 +438,8 @@ export class LlWalkers {
       throw new InternalCompilerError(`llvm emitter bug: field writer of unknown shape ${shapeId}`);
     const name = `sc_jwf_${this.recordFieldWriters.size}`;
     this.recordFieldWriters.set(shapeId, name);
-    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+    const fieldBase = this.host.nullableUnions.fieldBase(shapeId);
+    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + fieldBase]));
     const byName = new Map(shape.fields.map((f) => [f.name, f]));
     const cyclic = traceAdapter(this.host, { kind: "record", shapeId }) !== null;
     const order = recordSourceFieldOrder(shape);
@@ -494,10 +493,13 @@ export class LlWalkers {
   }
 
   /** Whether the walker for `t` can leave an exception pending: cyclic
-   * values, and records serialized through a kept checked source. */
+   * values, records serialized through a kept checked source, and
+   * checked-dynamic values (toJSON methods, getters, BigInts). */
   jsonWriteMayThrow(t: IrType, seen = new Set<string>()): boolean {
     if (traceAdapter(this.host, t) !== null) return true;
     switch (t.kind) {
+      case "dyn":
+        return true;
       case "array":
         return this.jsonWriteMayThrow(t.elem, seen);
       case "union":
@@ -534,9 +536,18 @@ export class LlWalkers {
     const ovfp = B.tmp();
     const ovf = B.tmp();
     B.line(
-      `${ovfp} = getelementptr inbounds %${mangleRecordStruct(shape.id)}, ptr %v, i64 0, i32 ${shape.fields.length + 1}`,
+      `${ovfp} = getelementptr inbounds %${mangleRecordStruct(shape.id)}, ptr %v, i64 0, i32 ${shape.fields.length + this.host.nullableUnions.fieldBase(shape.id)}`,
     );
     B.line(`${ovf} = load ptr, ptr ${ovfp} ; overflow map`);
+    if (iv.kind === "dyn") {
+      // The runtime writes every entry with JSON.stringify's member rules:
+      // each value's toJSON runs with its key before the entry is dropped
+      // or written, and containers below it join the circular-structure
+      // stack. It may leave an exception pending.
+      host.declare(`declare void @scr_jb_put_dyn_entries(ptr, ptr, ptr, ptr)`);
+      B.line(`call void @scr_jb_put_dyn_entries(ptr %b, ptr %v, ptr ${ovf}, ptr ${first})`);
+      return;
+    }
     host.declare(`declare ptr @scr_map_keys_js_order(ptr)`);
     host.declare(`declare double @scr_arr_len(ptr)`);
     host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
@@ -576,23 +587,9 @@ export class LlWalkers {
         B.line(`${val} = call ptr @scr_map_get_str_ref(ptr ${ovf}, ptr ${k}) ; value (+1)`);
       }
       // Undefined-valued entries drop, exactly the optional-field rule: a
-      // dyn value whose dyn kind follows its size_t RC word (enum
-      // member 6 — scr_runtime.h's ScrDynKind), or a union holding its
-      // undefined arm.
+      // union holding its undefined arm.
       let skipUndef: string | null = null;
-      if (iv.kind === "dyn") {
-        const kp = B.tmp();
-        const kd = B.tmp();
-        const isu = B.tmp();
-        B.line(
-          `${kp} = getelementptr inbounds i8, ptr ${val}, i64 ${this.abiOffset(8, 4)} ; ->kind`,
-        );
-        B.line(`${kd} = load i32, ptr ${kp}`);
-        B.line(
-          `${isu} = icmp eq i32 ${kd}, 6 ; SCR_DYN_UNDEF (NULL is 0 — null members DO serialize)`,
-        );
-        skipUndef = isu;
-      } else if (iv.kind === "union" && undefinedArmTag(iv, this.host.unionsById) >= 0) {
+      if (iv.kind === "union" && undefinedArmTag(iv, this.host.unionsById) >= 0) {
         const tag = this.unionTag(B, val, iv.unionId);
         const isu = B.tmp();
         B.line(`${isu} = icmp eq i32 ${tag}, ${undefinedArmTag(iv, this.host.unionsById)}`);

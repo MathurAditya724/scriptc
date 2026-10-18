@@ -62,9 +62,17 @@ export function emitUnionRetype(
   const from = host.nullableUnions.get(e.fromId);
   const to = host.nullableUnions.get(e.unionId);
   if (from && to) {
-    // Equal encodings make the pointer itself the target value.
-    if (from.refTag === to.refTag && from.unitTag === to.unitTag && from.nullTag === to.nullTag)
-      return host.own({ name: value.name, type: e.type });
+    // Equal encodings make the pointer itself the target value. A shape
+    // union derives its record arms from the record, so only the unit
+    // encodings must agree.
+    const same =
+      from.repr === "single" && to.repr === "single"
+        ? from.refTag === to.refTag && from.unitTag === to.unitTag && from.nullTag === to.nullTag
+        : from.repr === "shapes" &&
+          to.repr === "shapes" &&
+          from.unitTag === to.unitTag &&
+          from.nullTag === to.nullTag;
+    if (same) return host.own({ name: value.name, type: e.type });
     return host.own({ name: rebuildRetype(host, value.name, e), type: e.type });
   }
   if (from || to) return host.own({ name: rebuildRetype(host, value.name, e), type: e.type });
@@ -339,6 +347,7 @@ export function emitRecordKeyGet(
     e.type,
     e.overflowOnly === true,
     e.loc,
+    e.missNaN === true,
   );
   B.startBlock(join);
   const t = B.tmp();
@@ -356,6 +365,7 @@ export function keyedRecordReadInto(
   resultType: IrType,
   overflowOnly: boolean,
   loc?: SrcLoc,
+  missNaN = false,
 ): void {
   const B = host.B;
   const shape = host.recordShape(shapeId);
@@ -560,6 +570,12 @@ export function keyedRecordReadInto(
   if (def !== null && resultType.kind === "union" && undefTag >= 0) {
     // The miss path: the result union's undefined arm.
     B.line(`store ptr ${host.unitInstanceRef(resultType.unionId, undefTag)}, ptr ${slot}`);
+    B.br(join);
+    return;
+  }
+  if (missNaN && resultType.kind === "f64") {
+    // A NaN-coded read: every consumer treats undefined like NaN.
+    B.line(`store double ${f64Lit(NaN)}, ptr ${slot}`);
     B.br(join);
     return;
   }

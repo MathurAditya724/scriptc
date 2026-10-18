@@ -108,6 +108,7 @@ const PURE_MATH = new Set<string>([
   "math.exp",
   "math.expm1",
   "math.floor",
+  "math.f16round",
   "math.fround",
   "math.imul",
   "math.log",

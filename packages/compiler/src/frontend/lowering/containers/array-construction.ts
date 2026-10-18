@@ -1004,6 +1004,10 @@ export function lowerArrayFromCall(
     if (src.type.kind === "dyn" && args.length === 1) {
       return lowerCheckedArrayFrom(lowerer, src, loc);
     }
+    // Array.from(sp): the checked-dynamic view's live pair iteration.
+    if (src.type.kind === "searchParams" && args.length === 1) {
+      return lowerCheckedArrayFrom(lowerer, lowerer.coerceInto(args[0]!, src, DYN), loc);
+    }
     // A generator (or an iterator adapted into one) drains in order.
     if (src.type.kind === "generator" && args.length === 1) {
       const arrT = lowerer.mapTypeOf(lowerer.typeOf(call));

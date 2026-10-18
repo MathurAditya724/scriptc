@@ -22,6 +22,7 @@ import { describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
+import { oracleEnvKey } from "./oracle-env.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -238,8 +239,8 @@ function programInputs(file: string): string[] {
 // Node's verdict for a corpus program is a pure function of the program bytes,
 // the shims, and the Node build (corpus stdout is deterministic by
 // construction — it must be identical to a non-Node native binary's output). So
-// cache it, keyed by all of those plus the invocation shape (SCRIPTC_TEST_ENV
-// and the cwd). Only the SPAWN is skipped: the native side always runs live
+// cache it, keyed by all of those plus the invocation shape (the inherited
+// environment, see oracle-env.ts, and the cwd). Only the SPAWN is skipped: the native side always runs live
 // and the comparison itself never changes. SCRIPTC_NO_CACHE=1 (or an unset
 // SCRIPTC_CACHE_DIR) disables the cache in both directions — no reads, no writes.
 // Storage shares the compile cache's root and its LRU sweep (see native-toolchain.ts).
@@ -265,7 +266,7 @@ function oracleKeyBase(): Promise<string> {
       .update(readFileSync(fileURLToPath(comptimeShim)))
       .update("\0")
       .update("\0")
-      .update(process.env["SCRIPTC_TEST_ENV"] ?? "")
+      .update(oracleEnvKey(process.env))
       .update("\0")
       .update(process.cwd())
       .update("\0")
