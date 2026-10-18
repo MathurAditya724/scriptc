@@ -7173,25 +7173,38 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
 /** A record receiver that an outer keyed read left optional
  * (`nested[a][b]`, where `nested[a]` can miss). The receiver evaluates
  * once into `stmts`; `present` is its record arm, valid only once the
- * access has tested `stable` against the undefined arm. */
+ * access has tested `stable` against the undefined (or, for reads, null)
+ * arm. */
 interface OptionalRecordReceiver {
   stmts: IrStmt[];
   stable: IrExpr;
   present: IrExpr;
   unionId: string;
   undefTag: number;
+  nullish: "undefined" | "null";
 }
 
 function optionalRecordReceiver(
   lowerer: Lowerer,
   value: IrExpr,
   loc: SrcLoc,
+  allowNull = false,
 ): OptionalRecordReceiver | null {
   if (value.type.kind !== "union") return null;
   const unionId = value.type.unionId;
-  const undefTag = lowerer.armTag(unionId, UNDEFINED_T);
-  if (undefTag < 0 || lowerer.unions.get(unionId)?.arms.length !== 2) return null;
-  const record = lowerer.stripUndefinedArm(value.type);
+  const arms = lowerer.unions.get(unionId)?.arms;
+  if (arms?.length !== 2) return null;
+  let undefTag = lowerer.armTag(unionId, UNDEFINED_T);
+  let nullish: OptionalRecordReceiver["nullish"] = "undefined";
+  // A null-initialized slot assigned a record later (iconv-lite's
+  // `encodings = null` table, filled on first use): the checker narrows
+  // the read to the record, the storage keeps the null arm.
+  if (undefTag < 0 && allowNull) {
+    undefTag = lowerer.armTag(unionId, NULL_T);
+    nullish = "null";
+  }
+  if (undefTag < 0) return null;
+  const record = arms[1 - undefTag]!;
   if (record.kind !== "record") return null;
   const stmts: IrStmt[] = [];
   const stable = stabilized(lowerer, value, "%recordReceiver", stmts);
@@ -7203,7 +7216,7 @@ function optionalRecordReceiver(
     type: record,
     loc,
   };
-  return { stmts, stable, present, unionId, undefTag };
+  return { stmts, stable, present, unionId, undefTag, nullish };
 }
 
 /** `value`, evaluated once at this point of `out`. */
@@ -7226,14 +7239,16 @@ function undefinedReceiver(receiver: OptionalRecordReceiver, loc: SrcLoc): IrExp
   };
 }
 
-/** Node's TypeError for a keyed read or write on an undefined receiver. */
+/** Node's TypeError for a keyed read or write on an undefined (or null)
+ * receiver. */
 function undefinedReceiverThrow(
   key: IrExpr,
   action: "read" | "set",
   type: IrType,
   loc: SrcLoc,
+  nullish: OptionalRecordReceiver["nullish"] = "undefined",
 ): IrExpr {
-  const head = `Cannot ${action} properties of undefined (${action === "read" ? "reading" : "setting"} '`;
+  const head = `Cannot ${action} properties of ${nullish} (${action === "read" ? "reading" : "setting"} '`;
   const message: IrExpr = {
     kind: "strConcat",
     left: {
@@ -7263,8 +7278,9 @@ function guardedRecordAccess(
   lowerer: Lowerer,
   access: ts.ElementAccessExpression,
   rawObj: IrExpr,
+  allowNull = false,
 ): { receiver: OptionalRecordReceiver; key: IrExpr; name: IrExpr } | null {
-  const receiver = optionalRecordReceiver(lowerer, rawObj, locOf(access.expression));
+  const receiver = optionalRecordReceiver(lowerer, rawObj, locOf(access.expression), allowNull);
   if (!receiver) return null;
   const keyNode = access.argumentExpression;
   const litKey = recordKeyLiteralText(keyNode) ?? recordKeyTypeLiteralText(lowerer, keyNode);
@@ -7450,7 +7466,15 @@ export function lowerRecordKeyRead(
   // evaluates the receiver before the key).
   const obj = lowerer.lowerExpr(expr.expression);
   {
-    const guarded = guardedRecordAccess(lowerer, expr, obj);
+    // A null arm is guarded only for string and number keys: other keys
+    // already take the checked-dynamic read, which handles null itself.
+    // Only a receiver with a null arm asks about the key.
+    let allowNull = false;
+    if (obj.type.kind === "union" && lowerer.armTag(obj.type.unionId, NULL_T) >= 0) {
+      const keyType = litKey !== null ? STRING : lowerer.mapTypeOf(lowerer.typeOf(keyNode));
+      allowNull = keyType?.kind === "string" || keyType?.kind === "f64";
+    }
+    const guarded = guardedRecordAccess(lowerer, expr, obj, allowNull);
     if (guarded) {
       const { receiver, key, name } = guarded;
       const read = lowerer.withExpressionOverride(expr.expression, receiver.present, () =>
@@ -7466,7 +7490,7 @@ export function lowerRecordKeyRead(
         result: {
           kind: "ternary",
           cond: undefinedReceiver(receiver, loc),
-          then: undefinedReceiverThrow(name, "read", read.type, loc),
+          then: undefinedReceiverThrow(name, "read", read.type, loc, receiver.nullish),
           else_: read,
           type: read.type,
           loc,
