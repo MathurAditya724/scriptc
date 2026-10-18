@@ -195,6 +195,7 @@ import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import {
   fenceNodeModuleMutation,
   isNodeModuleValue,
+  lowerCjsTopLevelThis,
   lowerNodeModuleIdentifier,
   lowerNodeModuleProperty,
   lowerRequireCacheElement,
@@ -1648,6 +1649,9 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // constant. TypeScript keeps the fence (noImplicitThis makes it a
     // compile-time story there).
     if (isJsSourceFile(expr.getSourceFile())) {
+      // Module scope of a CommonJS file: `this` is module.exports.
+      const exportsThis = lowerCjsTopLevelThis(lowerer, expr);
+      if (exportsThis) return exportsThis;
       return { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc };
     }
     lowerer.unsupported("SC1080", expr);
