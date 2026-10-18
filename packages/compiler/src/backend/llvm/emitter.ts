@@ -199,7 +199,12 @@ import {
   type LocalArrayRead,
 } from "./local-array-reads.js";
 import { CheckedNarrows, emitCheckedNarrowReceiver } from "./checked-narrows.js";
-import { emitDenseArrayGet, emitDenseArraySet, emitDenseSlotUnlink } from "./dense-array-access.js";
+import {
+  emitDenseArrayGet,
+  emitDenseArrayPop,
+  emitDenseArraySet,
+  emitDenseSlotUnlink,
+} from "./dense-array-access.js";
 import {
   emitStackMapRead,
   findMapReadLifetimes,
@@ -8130,6 +8135,28 @@ export class LlEmitter {
         B.line(`${same} = fcmp oeq double ${length.name}, ${lenNumber}`);
         B.condBr(same, done, resize);
         B.startBlock(resize);
+        if (s.pop === true) {
+          // A discarded pop's `length - 1` on a packed array removes the
+          // last element inline, then releases it.
+          const call = B.newLabel("arr.len.call"),
+            pop = B.newLabel("arr.len.pop");
+          const lastNumber = B.tmp(),
+            dropsLast = B.tmp();
+          B.line(`${lastNumber} = fsub double ${lenNumber}, 1.0`);
+          B.line(`${dropsLast} = fcmp oeq double ${length.name}, ${lastNumber}`);
+          B.condBr(dropsLast, pop, call);
+          B.startBlock(pop);
+          const elem = s.arr.type.elem;
+          const acc = elemAccess(elem);
+          const raw = emitDenseArrayPop(this, arr.name, acc, call, call);
+          if (acc === "ref" && isRefCounted(elem)) {
+            const old = B.tmp();
+            B.line(`${old} = inttoptr i64 ${raw} to ptr`);
+            this.releaseValue(old, elem);
+          }
+          B.br(done);
+          B.startBlock(call);
+        }
         B.line(`call void @scr_arr_set_len(ptr ${arr.name}, double ${length.name})`);
         this.emitPendingCheck();
         B.br(done);
