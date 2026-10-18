@@ -1449,6 +1449,8 @@ ScrDyn *scr_dyn_iter_pack(const ScrDyn *src, const ScrStr *msg) {
   return scr_dyn_not_iterable(src, msg);
 }
 
+static ScrDyn *scr_native_iterator_drain(const ScrDyn *src);
+
 /* The for-of-over-dyn pack accessors: the emitted index loop drives them
  * over a scr_dyn_iter_pack result (ARR by construction — the defensive
  * arms cover nothing reachable from that lowering). Never throw. */
@@ -1463,6 +1465,13 @@ ScrDyn *scr_dyn_map_seed_entries(const ScrDyn *src) {
     scr_dyn_release(view);
     if (scr_exc_pending()) return NULL;
   }
+  /* A native iterator (sp.entries(), a Map's entries()) or a handle that
+   * steps through live entries (URLSearchParams): producing its entries
+   * runs no program code, so draining them first is what the consumer
+   * observes. */
+  if (src->kind == SCR_DYN_HANDLE &&
+      (src->v.handle.tag == SCR_DYNH_ITERATOR || scr_dyn_handle_ops_of(src)->iter_step))
+    return scr_native_iterator_drain(src);
   if (src->kind == SCR_DYN_HANDLE || src->kind == SCR_DYN_TYPED_REF) {
     static const char message[] = "new Map(entries) over native non-array iterables has no lowering";
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
@@ -4574,6 +4583,33 @@ static ScrDyn *scr_native_collection_iterator(ScrDyn *source, unsigned selection
 
 ScrDyn *scr_dyn_native_handle_iterator(ScrDyn *source, unsigned selection) {
   return scr_native_collection_iterator(source, selection);
+}
+
+/* The values a native iterator (or a live-stepping handle's entries
+ * iterator) produces from its current position, into a fresh array; NULL
+ * with the exception pending. */
+static ScrDyn *scr_native_iterator_drain(const ScrDyn *src) {
+  ScrDyn *iterator = src->v.handle.tag == SCR_DYNH_ITERATOR
+                         ? scr_dyn_retain((ScrDyn *)src)
+                         : scr_dyn_native_handle_iterator((ScrDyn *)src, 2);
+  ScrDyn *out = scr_dyn_new_arr();
+  for (;;) {
+    ScrDyn *step = scr_native_iterator_next(iterator->v.handle.ptr);
+    if (!step) {
+      scr_dyn_release(out);
+      out = NULL;
+      break;
+    }
+    bool done = scr_dyn_truthy(scr_dyn_obj_get(step, "done", 4));
+    if (!done) {
+      const ScrDyn *value = scr_dyn_obj_get(step, "value", 5);
+      scr_dyn_arr_push(out, scr_dyn_retain((ScrDyn *)(value ? value : scr_dyn_undefined())));
+    }
+    scr_dyn_release(step);
+    if (done) break;
+  }
+  scr_dyn_release(iterator);
+  return out;
 }
 
 static ScrDyn *scr_builtin_iterator_checked(int kind) {

@@ -26,6 +26,7 @@ import {
 } from "../../../ir/ir.js";
 import { optionalStringTags } from "./arguments.js";
 import { type BuiltinModuleFn } from "../surfaces.js";
+import { lowerDynDispatchMethodCall } from "../lower-calls.js";
 
 /** URL component assignment captures its receiver and RHS once, and yields
  * the original RHS after the setter performs string conversion. */
@@ -255,10 +256,12 @@ export function lowerSearchParamsNew(
     return { kind: "libCall", fn: "sp.fromPairs", args: [init], type: SEARCH_PARAMS_T, loc };
   }
   if (init.type.kind === "array" && init.type.elem.kind === "record") {
+    const pairs = searchParamsFromTuples(lowerer, init, init.type.elem, loc);
+    if (pairs) return pairs;
     lowerer.unsupported(
       "SC1090",
       arg,
-      "URLSearchParams from tuple-typed pairs (type the pairs as string[][] — the tuple rows have a different layout)",
+      "URLSearchParams from tuple rows other than [string, string] (type the pairs as [string, string][] or string[][])",
     );
   }
   lowerer.unsupported(
@@ -266,6 +269,97 @@ export function lowerSearchParamsNew(
     arg,
     `URLSearchParams from '${lowerer.fmt(init.type)}' inits (a string, a string[][], another URLSearchParams, or an inline { key: value } literal — narrow unions first)`,
   );
+}
+
+/** `new URLSearchParams(pairs)` over a `[string, string][]` (an
+ * Object.entries result, for example): a helper per tuple shape appends
+ * each pair's name and value in array order. Null for other row types. */
+function searchParamsFromTuples(
+  lowerer: Lowerer,
+  init: IrExpr,
+  row: IrType & { kind: "record" },
+  loc: SrcLoc,
+): IrExpr | null {
+  const shape = lowerer.shapes.get(row.shapeId);
+  if (
+    !shape?.tuple ||
+    shape.fields.length !== 2 ||
+    !shape.fields.every(
+      (field) => (field.name === "0" || field.name === "1") && field.type.kind === "string",
+    )
+  )
+    return null;
+  const key = `sp.fromTuples:${row.shapeId}`;
+  let helper = lowerer.valueHelpers.get(key);
+  if (!helper) {
+    helper = `%sp.fromTuples.${lowerer.valueHelpers.size}`;
+    lowerer.valueHelpers.set(key, helper);
+    const pairsT = init.type;
+    const sp = (): IrExpr => varRef("sp.0", SEARCH_PARAMS_T, loc);
+    const pair = (): IrExpr => varRef("pair.0", row, loc);
+    const field = (name: "0" | "1"): IrExpr => ({
+      kind: "recordGet",
+      obj: pair(),
+      shapeId: row.shapeId,
+      field: name,
+      type: STRING,
+      loc,
+    });
+    const body: IrStmt[] = [
+      {
+        kind: "varDecl",
+        localId: "sp.0",
+        init: { kind: "libCall", fn: "sp.new", args: [], type: SEARCH_PARAMS_T, loc },
+        loc,
+      },
+      countedFor(
+        loc,
+        {
+          kind: "arrIntrinsic",
+          method: "length",
+          receiver: varRef("pairs.0", pairsT, loc),
+          args: [],
+          type: F64,
+          loc,
+        },
+        (index) => [
+          {
+            kind: "varDecl",
+            localId: "pair.0",
+            init: { kind: "arrayGet", arr: varRef("pairs.0", pairsT, loc), index, type: row, loc },
+            loc,
+          },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "sp.append",
+              args: [sp(), field("0"), field("1")],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ],
+      ),
+      { kind: "return", value: sp(), loc },
+    ];
+    const fn: IrFunction = {
+      name: helper,
+      params: [{ localId: "pairs.0", name: "pairs", type: pairsT }],
+      returnType: SEARCH_PARAMS_T,
+      locals: [
+        { id: "pairs.0", name: "pairs", type: pairsT, mutable: false },
+        { id: "sp.0", name: "sp", type: SEARCH_PARAMS_T, mutable: false },
+        { id: "i.0", name: "i", type: F64, mutable: true },
+        { id: "pair.0", name: "pair", type: row, mutable: false },
+      ],
+      body,
+      loc,
+    };
+    lowerer.liftedFns.push(fn);
+  }
+  return { kind: "call", callee: helper, args: [init], type: SEARCH_PARAMS_T, loc };
 }
 
 function lowerOptionalStringSearchParams(
@@ -534,12 +628,14 @@ export function lowerSearchParamsMethodCall(
   if (name === "forEach" && args.length === 1) {
     return lowerSpForEachCall(lowerer, call, access);
   }
-  if (name === "keys" || name === "values" || name === "entries") {
-    lowerer.unsupported(
-      "SC1090",
-      call,
-      `URLSearchParams iterator objects outside a for-of head (write \`for (const x of sp.${name}())\` directly)`,
-    );
+  if ((name === "keys" || name === "values" || name === "entries") && args.length === 0) {
+    // Outside a for-of head the iterator is a live object: the checked-
+    // dynamic view's iterator walks the pair list by index
+    // (scr_native_sp_step), so entries appended after it was created are
+    // visited, as in Node.
+    const boxed = lowerer.coerceInto(access.expression, lowerer.lowerExpr(access.expression), DYN);
+    const iterator = lowerDynDispatchMethodCall(lowerer, call, access, boxed, false);
+    if (iterator) return iterator;
   }
   lowerer.noLowering(
     `URLSearchParams.${name}`,
@@ -750,4 +846,22 @@ export function lowerLegacyUrlCall(
     args.push({ kind: "boolLit", value: warn, type: BOOL, loc });
   }
   return { kind: "libCall", fn: fn.fn, args, type: fn.result, loc };
+}
+
+/** A URLSearchParams value, or a keys()/values()/entries() call on one: an
+ * iterable whose checked-dynamic view walks the live pair list. */
+export function isSearchParamsIterable(lowerer: Lowerer, node: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "searchParams") return true;
+  if (
+    !ts.isCallExpression(node) ||
+    node.arguments.length !== 0 ||
+    !ts.isPropertyAccessExpression(node.expression)
+  )
+    return false;
+  const name = node.expression.name.text;
+  return (
+    (name === "keys" || name === "values" || name === "entries") &&
+    lowerer.mapTypeOf(lowerer.typeOf(node.expression.expression))?.kind === "searchParams"
+  );
 }
