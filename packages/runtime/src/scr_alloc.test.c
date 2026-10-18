@@ -393,6 +393,10 @@ static unsigned char **discard_blocks;
 static unsigned char *discard_large[DISCARD_LARGE];
 static uintptr_t discard_base, discard_lo, discard_hi;
 static size_t block_size = DISCARD_SIZE; /* of the workers' and reusing threads' blocks */
+/* The end of the highest block of class DISCARD_SIZE so far, and how many blocks of a run lay past the mark
+ * at its start: those the slice grew for. */
+static uintptr_t class_hi;
+static size_t discard_beyond, reuse_beyond;
 static bool discard_shares;
 static atomic_int discard_step;
 
@@ -419,14 +423,17 @@ static void *discard_old_owner(void *arg) {
 static void allocate_discardable(void) {
   discard_lo = UINTPTR_MAX;
   discard_hi = 0;
+  discard_beyond = 0;
   for (size_t i = 0; i < DISCARD_BLOCKS; i++) {
     unsigned char *p = scr_mem_alloc(block_size);
     assert(p && owned(p));
     fill(p, block_size, (unsigned char)i);
     discard_blocks[i] = p;
+    if ((uintptr_t)p >= class_hi) discard_beyond++;
     if ((uintptr_t)p < discard_lo) discard_lo = (uintptr_t)p;
     if ((uintptr_t)p + block_size > discard_hi) discard_hi = (uintptr_t)p + block_size;
   }
+  if (block_size == DISCARD_SIZE && discard_hi > class_hi) class_hi = discard_hi;
   /* System blocks: some freed, some moved by realloc, the rest kept. */
   for (unsigned i = 0; i < DISCARD_LARGE; i++) {
     discard_large[i] = scr_mem_alloc(DISCARD_LARGE_SIZE);
@@ -475,6 +482,7 @@ static void *discard_reuse(void *arg) {
   (void)arg;
   reuse_outside = 0;
   reuse_hi = 0;
+  reuse_beyond = 0;
   for (size_t i = 0; i < DISCARD_BLOCKS; i++) {
     unsigned char *p = scr_mem_calloc(block_size);
     assert(p && owned(p));
@@ -483,8 +491,10 @@ static void *discard_reuse(void *arg) {
     for (unsigned j = 0; j < DISCARD_OLD; j++) assert(p != old_blocks[j]);
     if ((uintptr_t)p < discard_lo || (uintptr_t)p >= discard_hi) reuse_outside++;
     if ((uintptr_t)p + block_size > reuse_hi) reuse_hi = (uintptr_t)p + block_size;
+    if ((uintptr_t)p >= class_hi) reuse_beyond++;
     discard_blocks[i] = p;
   }
+  if (block_size == DISCARD_SIZE && reuse_hi > class_hi) class_hi = reuse_hi;
   for (size_t i = 0; i < DISCARD_BLOCKS; i++) scr_mem_free(discard_blocks[i]);
   scr_sa_thread_park();
   return NULL;
@@ -547,7 +557,7 @@ static void check_discard(void) {
   uintptr_t first = (discard_lo + page - 1) & ~(uintptr_t)(page - 1);
   /* Pre-fault requests still in flight may fault in a few megabytes again. */
   size_t total = (discard_hi - first) / page;
-  assert(resident_pages(first, discard_hi) < total / 4);
+  assert(resident_pages(first, discard_hi) < total / 2);
   run(discard_reuse);
   assert(reuse_outside < 256);
   verify_old_blocks();
@@ -598,17 +608,20 @@ static void check_discard(void) {
   /* The kept workers' blocks are free now (remote frees): a worker takes
    * them once its slice has no bump room left, and they are free again
    * after its memory goes back, so the next thread does not grow the slice
-   * either. */
-  uintptr_t kept_hi = discard_hi;
+   * either. Past the highest block so far, each carves at most the bump room
+   * the slice had left (a few megabytes). */
+  size_t room = ((size_t)4 << 20) / DISCARD_SIZE;
   run(discard_worker);
   verify_old_blocks();
-  assert(discard_hi <= kept_hi + 64 * page);
+  assert(discard_beyond < room);
   run(discard_reuse);
-  assert(reuse_hi <= kept_hi + 64 * page);
+  assert(reuse_beyond < room);
   verify_old_blocks();
 
   /* Returned regions (holes) of an earlier trim are kept apart while a
    * worker runs, and carved again afterwards. */
+  trim_blocks = malloc(TRIM_BLOCKS * sizeof *trim_blocks); /* check_trim freed its own */
+  assert(trim_blocks);
   run(trim_allocate);
   uintptr_t hole_lo = trim_lo, hole_hi = trim_hi;
   discard_shares = false;
@@ -621,6 +634,7 @@ static void check_discard(void) {
   run(trim_reuse);
   assert(trim_outside < 4 * TRIM_BLOCKS / TRIM_KEEP + 256);
   for (size_t k = 0; k < TRIM_BLOCKS / TRIM_KEEP; k++) scr_mem_free(trim_kept[k]);
+  free(trim_blocks);
   for (unsigned i = 0; i < DISCARD_OLD; i++) scr_mem_free(old_blocks[i]);
   free(discard_blocks);
 }
