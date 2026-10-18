@@ -2,6 +2,7 @@ scriptc coverage tests/coverage-fixtures/js-sloppy-arguments.cjs
 
   statements analyzed   20
   compile statically    5  (25%)
+    in dynamic tier     3  (operate on values typed only at runtime; --explain-dynamic lists them)
   (5 functions not analyzed — signature blocked; their statements count as not static)
 
   deferred to runtime   10 sites (JS statements that throw their fence if executed)
