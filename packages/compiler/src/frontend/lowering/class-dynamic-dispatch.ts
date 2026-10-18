@@ -24,7 +24,7 @@ import {
 import { streamTypedRefEligible } from "../../ir/analysis.js";
 import { everyStmtList, transformExpr, transformStmtList } from "../../ir/traverse.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
-import { implicitDefaultInstance } from "./generic-functions.js";
+import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
 import { type ParamShape } from "./call-signatures.js";
 import {
   accessorCall,
@@ -4916,6 +4916,8 @@ export class ClassDynamicDispatch {
     let callee: string;
     let virtual = false;
     let owner: ClassInfo;
+    /** Erased instances of subclasses that redeclare a generic method. */
+    const overrides: { cls: ClassInfo; callee: string }[] = [];
     if (methodInfo) {
       owner = methodInfo.declarer;
       params = methodInfo.sig.params;
@@ -4937,6 +4939,44 @@ export class ClassDynamicDispatch {
       params = instance.params;
       result = instance.returnType;
       callee = instance.name;
+    } else if (
+      generic &&
+      !generic.info.implicitParams &&
+      generic.info.typeParams.length > 0 &&
+      generic.declarer.decl &&
+      !lowerer.overrideBelow(info, method)
+    ) {
+      // A generic method called by name runs its erased instance; a
+      // subclass that redeclares it runs its own, selected by the
+      // receiver's runtime class (most derived first).
+      owner = generic.declarer;
+      const instance = erasedGenericInstance(lowerer, generic.declarer.decl, generic.info);
+      params = instance.params;
+      result = instance.returnType;
+      callee = instance.name;
+      if (genericOverrideBelow(info, method)) {
+        const subclasses: ClassInfo[] = [];
+        const collect = (c: ClassInfo): void => {
+          for (const sub of c.subclasses) {
+            collect(sub);
+            if (sub.genericMethods?.has(method) && lowerer.classCanBeConstructed(sub))
+              subclasses.push(sub);
+          }
+        };
+        collect(info);
+        for (const sub of subclasses) {
+          const own = sub.genericMethods!.get(method)!;
+          if (!sub.decl || own.implicitParams || own.typeParams.length === 0) return fence();
+          const subInstance = erasedGenericInstance(lowerer, sub.decl, own);
+          if (
+            subInstance.params.length !== params.length ||
+            subInstance.params.some((p, i) => !typeEquals(p.type, params[i]!.type)) ||
+            !typeEquals(subInstance.returnType, result)
+          )
+            return fence();
+          overrides.push({ cls: sub, callee: subInstance.name });
+        }
+      }
     } else return fence();
     const incoming = dispatch.source.args.map((_, i) => varRef(`p.${i + 1}`, DYN, loc));
     const args: IrExpr[] = [];
@@ -4968,7 +5008,7 @@ export class ClassDynamicDispatch {
       if (!typeEquals(converted.type, param.type)) return fence();
       args.push(converted);
     }
-    const call: IrExpr = virtual
+    let call: IrExpr = virtual
       ? {
           kind: "virtualCall",
           className: owner.def.name,
@@ -4984,6 +5024,29 @@ export class ClassDynamicDispatch {
           type: result,
           loc,
         };
+    for (const override of overrides.toReversed()) {
+      const subType: IrType = { kind: "object", className: override.cls.def.name };
+      call = {
+        kind: "ternary",
+        cond: {
+          kind: "instanceOf",
+          value: receiver,
+          className: override.cls.def.name,
+          type: BOOL,
+          loc,
+        },
+        then: {
+          kind: "call",
+          callee: override.callee,
+          args: [{ kind: "downcast", value: receiver, type: subType, loc }, ...args],
+          type: result,
+          loc,
+        },
+        else_: call,
+        type: result,
+        loc,
+      };
+    }
     let body: IrStmt[];
     if (result.kind === "void")
       body = [

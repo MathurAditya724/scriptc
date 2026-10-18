@@ -1748,6 +1748,13 @@ export class Lowerer {
   /** Non-null while an instance body lowers: type-parameter symbol →
    * concrete IR type, consulted inside mapType's recursion. */
   typeParamBindings: Map<ts.Symbol, IrType> | null = null;
+  /** Generic lambdas lowering as erased values (lowerLambda): their own
+   * type parameters are bound to `unknown`, so lambdaSignature admits
+   * them. */
+  readonly erasingLambdas = new Set<ts.Node>();
+  /** Nesting depth of erased generic bodies being lowered (erased lambdas
+   * and erased instances). */
+  erasingDepth = 0;
   localClassInstantiations: { owner: ts.FunctionLikeDeclaration; name: string }[] = [];
   /** The ts-level twin of typeParamBindings, non-null while a CALL-keyed
    * instance body lowers: type-parameter symbol → the bound CHECKER type,
@@ -2720,6 +2727,7 @@ export class Lowerer {
       classNamer: this.classNamer,
       resolveTypeParam: this.typeParamResolver,
       resolveTypeParamTs: this.typeParamTsResolver,
+      isErasing: () => this.erasingDepth > 0,
       genericClassInstance: (decl, ref, mapArgument) =>
         this.genericClassInstanceType(decl, ref, mapArgument),
       mixinClassInstance: (decl) =>

@@ -8190,7 +8190,7 @@ export function lowerRecordFieldCall(
     }
   }
   const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
-  const result: IrExpr = {
+  let result: IrExpr = {
     kind: "callValue",
     callee,
     ...(receiver ? { receiver } : {}),
@@ -8198,6 +8198,10 @@ export function lowerRecordFieldCall(
     type: callee.type.ret,
     loc,
   };
+  // A generic member's field holds its erased instance: the result
+  // converts to this call's instantiated return type at the call.
+  if (isGenericCallableMemberType(lowerer.typeOf(access), lowerer.checker))
+    result = lowerer.coerceInto(call, result, lowerer.irTypeOf(call));
   return init ? { kind: "seqExpr", stmts: [init], result, type: result.type, loc } : result;
 }
 
@@ -8611,6 +8615,26 @@ function lowerObjLitGenericMethodCall(
     const onInterface = lowerer.checker
       .declarationsOf(propSym)
       .some((d) => d.parent !== undefined && ts.isInterfaceDeclaration(d.parent));
+    // A receiver held as a checked-dynamic value (a class-backed interface)
+    // dispatches by name to the runtime object's member, which a generic
+    // method answers with its erased instance; the result converts to this
+    // call's instantiated return type.
+    if (onInterface && !call.arguments.some(ts.isSpreadElement)) {
+      const receiver = lowerer.lowerExpr(access.expression);
+      if (receiver.type.kind === "dyn") {
+        const loc = locOf(call);
+        const invoked: IrExpr = {
+          kind: "dynInvoke",
+          recv: receiver,
+          method: name,
+          calleeName: access.getText(),
+          args: call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          type: DYN,
+          loc,
+        };
+        return lowerer.coerceInto(call, invoked, lowerer.irTypeOf(call));
+      }
+    }
     if (onInterface) {
       lowerer.unsupported(
         "SC1090",

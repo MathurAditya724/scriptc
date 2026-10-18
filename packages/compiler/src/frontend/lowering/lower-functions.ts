@@ -168,6 +168,27 @@ export function lowerLambda(
     | ts.SetAccessorDeclaration,
   checkedReceiver = false,
 ): IrExpr {
+  // A generic lambda used as a value has no per-call instantiation: it
+  // lowers once with its type parameters bound to `unknown`, the erased
+  // instance JavaScript itself runs.
+  if (node.typeParameters?.length && !lowerer.erasingLambdas.has(node)) {
+    const previous = lowerer.typeParamBindings;
+    const bindings = new Map(previous ?? []);
+    for (const parameter of node.typeParameters) {
+      const symbol = lowerer.checker.getSymbolAtLocation(parameter.name);
+      if (symbol) bindings.set(symbol, DYN);
+    }
+    lowerer.typeParamBindings = bindings;
+    lowerer.erasingLambdas.add(node);
+    lowerer.erasingDepth++;
+    try {
+      return lowerLambda(lowerer, node, checkedReceiver);
+    } finally {
+      lowerer.erasingDepth--;
+      lowerer.erasingLambdas.delete(node);
+      lowerer.typeParamBindings = previous;
+    }
+  }
   const prepared =
     ts.isArrowFunction(node) || ts.isFunctionExpression(node)
       ? lowerer.preparedClassFactories.get(node)
