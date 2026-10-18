@@ -342,8 +342,8 @@
       "static": {
         "supported": 0,
         "partial": 12,
-        "refused": 0,
-        "not-implemented": 80,
+        "refused": 1,
+        "not-implemented": 79,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -53521,8 +53521,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:stdlib.webassembly"
       },
       "anchorSource": "exact"
     },

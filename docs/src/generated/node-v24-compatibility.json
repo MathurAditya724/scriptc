@@ -330,8 +330,8 @@
       "static": {
         "supported": 0,
         "partial": 12,
-        "refused": 0,
-        "not-implemented": 80,
+        "refused": 1,
+        "not-implemented": 79,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -36590,9 +36590,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Explicitly rejected by a named compiler diagnostic.",
+        "verification": "explicit-refusal"
       }
     },
     {

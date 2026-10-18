@@ -5574,6 +5574,14 @@
       "note": "the lowered call form takes no arguments"
     },
     {
+      "id": "stdlib.webassembly",
+      "kind": "stdlib",
+      "name": "globalThis.WebAssembly",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "WebAssembly support is planned as translation of each module whose bytes the build can see (an inline literal, or a file read from a path the compiler resolves) into native code; 'scriptc coverage' lists the modules this program would load (https://scriptc.dev/limitations)"
+    },
+    {
       "id": "syntax.async-generators",
       "kind": "syntax",
       "name": "typed async generator functions and methods",

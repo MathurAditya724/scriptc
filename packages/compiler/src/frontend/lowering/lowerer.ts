@@ -26,6 +26,7 @@ import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
+import { refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { lowerKeyObjectCall } from "./builtins/key-object.js";
 import { hashStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
@@ -11255,6 +11256,7 @@ export class Lowerer {
     // dispatch. The general identifier-call paths have no lowering for a
     // promise-returning ambient global, and `import` is a keyword callee no
     // identifier path matches.
+    refuseWebAssemblyUse(this, expr.expression);
     return (
       lowerLifetimeRegionCall(this, expr) ??
       lowerInternTableCall(this, expr) ??
@@ -11480,6 +11482,7 @@ export class Lowerer {
   }
 
   lowerNew(expr: ts.NewExpression): IrExpr {
+    refuseWebAssemblyUse(this, expr.expression, "new ");
     const builtin =
       lowerLifetimeRegionNew(this, expr) ??
       lowerInternTableNew(this, expr) ??

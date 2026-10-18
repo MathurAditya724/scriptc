@@ -919,6 +919,24 @@ function isDeclaredInAmbientNamespace(d: ts.Declaration, name: string): boolean 
   return false;
 }
 
+/** A type declared in the shipped WebAssembly namespace (scriptc.d.ts):
+ * its modules, instances, memories, tables, globals, error classes and the
+ * Exports/Imports records. */
+export function isWebAssemblyType(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  const symbol = type.getAliasSymbol() ?? type.getSymbol();
+  if (!symbol) return false;
+  return ctx.checker
+    .declarationsOf(symbol)
+    .some(
+      (d) =>
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientNamespace(d as ts.Declaration, "WebAssembly"),
+    );
+}
+
 /** True when a type contains a record anywhere (the trigger for the
  * shape-mismatch diagnostic SC2002 — non-record mismatches are tsc's or
  * the validator's business). */
@@ -1418,6 +1436,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     return { kind: "object", className: "%Error" };
   }
   if (isOsConstantsType(type, ctx) || isLegacyUrlType(type, ctx)) return DYN;
+  // The WebAssembly API's values have the checked-dynamic representation, so
+  // declarations that merely mention them compile; each reached use of the
+  // API itself is refused at its site (builtins/webassembly.ts).
+  if (isWebAssemblyType(type, ctx)) return DYN;
+  // A union over one of them (quickjs-wasi's `BufferSource | WebAssembly.Module`
+  // option) holds that dynamic value too, so the whole union is dynamic.
+  if (type.isUnionType() && ts.constituentTypes(type).some((t) => isWebAssemblyType(t, ctx)))
+    return DYN;
   // Immutable<T> (@scriptc/types) is a deep-readonly view: the value is
   // still the T it maps.
   const immutableSource = immutableSourceType(type, ctx);
