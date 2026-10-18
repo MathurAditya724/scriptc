@@ -5497,6 +5497,31 @@ export function lowerIntrinsicProperty(
   return null;
 }
 
+/** JavaScript: whether `expr` is or holds an existing checked-dynamic
+ * object — a binding stored as a dyn value whose checker type is an
+ * object, or an array or object literal with such an element. Building
+ * the enclosing literal with a static element type would copy it. */
+export function jsHoldsDynObject(lowerer: Lowerer, expr: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (ts.isIdentifier(expr)) {
+    const stored = lowerer.peekLocal(expr)?.type ?? lowerer.globalOf(expr)?.type;
+    return stored?.kind === "dyn" && (lowerer.typeOf(expr).flags & ts.TypeFlags.Object) !== 0;
+  }
+  if (ts.isArrayLiteralExpression(expr))
+    return expr.elements.some(
+      (element) => !ts.isSpreadElement(element) && jsHoldsDynObject(lowerer, element),
+    );
+  if (ts.isObjectLiteralExpression(expr))
+    return expr.properties.some(
+      (property) =>
+        (ts.isPropertyAssignment(property) && jsHoldsDynObject(lowerer, property.initializer)) ||
+        (ts.isShorthandPropertyAssignment(property) &&
+          ts.isIdentifier(property.name) &&
+          jsHoldsDynObject(lowerer, property.name)),
+    );
+  return false;
+}
+
 /** `[a, b, c]`. The element type comes from the contextual type when tsc
  * has one (`const a: number[] = []`, arguments, nested literals) and from
  * the literal's own inferred type otherwise. A bare `[]` with no context
@@ -5665,6 +5690,18 @@ export function lowerArrayLiteral(
       (element) =>
         ts.isSpreadElement(element) &&
         tryLowerExpression(lowerer, element.expression)?.type.kind === "dyn",
+    )
+  )
+    mapped = DYN;
+  // An element that is an existing checked-dynamic object (a file-scope
+  // object literal binding, or a literal holding one) keeps its identity
+  // only in a checked-dynamic array: a static element type would copy it.
+  if (
+    !expected &&
+    isJsSourceFile(expr.getSourceFile()) &&
+    mapped?.kind !== "dyn" &&
+    expr.elements.some(
+      (element) => !ts.isSpreadElement(element) && jsHoldsDynObject(lowerer, element),
     )
   )
     mapped = DYN;
@@ -13426,7 +13463,52 @@ function matchProducerRegexOf(lowerer: Lowerer, e: ts.Expression): ts.Expression
     // A stored const match result: `const m = re.exec(s)`.
     const init = constInitializerOf(lowerer, expr);
     if (init !== null) return matchProducerRegexOf(lowerer, init);
+    // The element parameter of an array callback over matchAll rows:
+    // `[...s.matchAll(re)].map((m) => m.groups)`, and Array.from's
+    // mapping function over `s.matchAll(re)`.
+    if (decl !== undefined && ts.isParameter(decl)) return matchAllCallbackRegexOf(lowerer, decl);
   }
+  return null;
+}
+
+const MATCH_ROW_CALLBACK_METHODS = new Set([
+  "map",
+  "forEach",
+  "filter",
+  "find",
+  "findLast",
+  "some",
+  "every",
+  "flatMap",
+]);
+
+/** The regex behind `param` when it is the first parameter of an inline
+ * callback whose rows come from a matchAll drain. */
+function matchAllCallbackRegexOf(
+  lowerer: Lowerer,
+  param: ts.ParameterDeclaration,
+): ts.Expression | null {
+  const fn = param.parent;
+  if (!(ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) || fn.parameters[0] !== param)
+    return null;
+  let site: ts.Node = fn;
+  while (ts.isParenthesizedExpression(site.parent)) site = site.parent;
+  const call = site.parent;
+  if (!ts.isCallExpression(call) || !ts.isPropertyAccessExpression(call.expression)) return null;
+  const method = call.expression.name.text;
+  if (
+    MATCH_ROW_CALLBACK_METHODS.has(method) &&
+    call.arguments[0] === site &&
+    lowerer.isStdlibMember(call.expression)
+  )
+    return matchAllRegexOf(lowerer, call.expression.expression);
+  if (
+    method === "from" &&
+    call.arguments[1] === site &&
+    lowerer.isStdlibGlobal(call.expression.expression, "Array") &&
+    call.arguments[0] !== undefined
+  )
+    return matchAllRegexOf(lowerer, call.arguments[0]);
   return null;
 }
 
@@ -13508,6 +13590,10 @@ function lowerMatchGroupsRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressio
     return null;
   }
   const recv = lowerer.lowerExpr(expr.expression);
+  // A JavaScript callback parameter holds the row as a checked-dynamic
+  // value without its groups: refuse rather than read undefined.
+  if (recv.type.kind === "dyn" && isJsSourceFile(expr.getSourceFile()))
+    lowerer.stdlibMemberFence(expr);
   if (!isMatchSliceType(lowerer, recv.type)) return null;
   return lowerGroupsProjection(lowerer, recv, groups, loc);
 }

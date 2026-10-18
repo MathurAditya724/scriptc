@@ -19,7 +19,9 @@ import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 
 /** Unmodified typed methods retain direct or virtual native dispatch.
- * JavaScript notification methods keep their checked property fallback. */
+ * JavaScript notification methods keep their checked property fallback,
+ * except in files TypeScript checks, whose methods join the method census
+ * like TypeScript methods. */
 export function isClassCallback(lowerer: Lowerer, info: ClassInfo, name: string): boolean {
   if (!isClassOwnEnumerableFieldName(name) || name.startsWith("get:") || name.startsWith("set:"))
     return false;
@@ -38,6 +40,7 @@ export function isClassCallback(lowerer: Lowerer, info: ClassInfo, name: string)
     (lowerer.prototypeMethodAccesses.has(name) ||
       (info.decl !== null &&
         isJsSourceFile(info.decl.getSourceFile()) &&
+        !lowerer.checkedJsFile(info.decl.getSourceFile()) &&
         found.sig.params.length === 0 &&
         found.sig.ret.kind === "void"))
   );

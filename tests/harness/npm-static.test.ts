@@ -592,6 +592,66 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     },
   );
 
+  test.each(["release", "dev"] as const)(
+    "static methods a factory class defines build subclasses of their receiver (%s)",
+    async (optimization) => {
+      const entry = join(pilotRoot, "class-factory-cli.ts");
+      const outDir = join(cacheDir, `class-factory-${optimization}-${sanitize ? "san" : "plain"}`);
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic: ["class-factory"],
+        sanitize,
+        optimization,
+        outDir,
+        outPath: join(outDir, "program"),
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(reference.exitCode).toBe(0);
+      expect(native.stdout).toEqual(reference.stdout);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.exitCode).toBe(reference.exitCode);
+    },
+  );
+
+  test.each(["release", "dev"] as const)(
+    "a factory that destructures its base class from an options object builds static subclasses (%s)",
+    async (optimization) => {
+      const entry = join(pilotRoot, "class-options-cli.ts");
+      const outDir = join(cacheDir, `class-options-${optimization}-${sanitize ? "san" : "plain"}`);
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic: ["class-options"],
+        sanitize,
+        optimization,
+        outDir,
+        outPath: join(outDir, "program"),
+        emitIr: true,
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(reference.exitCode).toBe(0);
+      expect(native.stdout).toEqual(reference.stdout);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.exitCode).toBe(reference.exitCode);
+      // One makeClass instance per distinct base (Root, Animal, Dog) plus
+      // the generic one a class's own `extend` passing itself back reuses.
+      const ir = JSON.parse(readFileSync(result.irPath!, "utf8")) as {
+        functions: { name: string }[];
+      };
+      const instances = ir.functions.filter((fn) => /^%[\w.]*makeClass%\d+$/.test(fn.name));
+      expect(instances.length).toBeLessThanOrEqual(4);
+    },
+  );
+
   test.for([
     ["escape-string-regexp", "escape-cli.ts"],
     ["slash", "slash-cli.ts"],
@@ -687,17 +747,23 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
-  test("picocolors inherited valueOf retains the prototype-method fence", () => {
+  test("picocolors inherited valueOf matches Node", async () => {
     const entry = join(pilotRoot, "colors-prototype-cli.ts");
     const { coverage } = analyze(entry, { npmStatic: ["picocolors"] });
     expect(coverage.npmStatic).toEqual([{ package: "picocolors", status: "static" }]);
     expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics).toHaveLength(0);
     expect(coverage.runtimeFences ?? []).toHaveLength(0);
-    expect(coverage.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["SC2020"]);
-    expect(coverage.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
-      expect.stringContaining(".valueOf' is part of the standard library types"),
+
+    const binary = await buildStatic(entry, ["picocolors"]);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
     ]);
-  }, 120_000);
+    expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+    expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
 
   test("picocolors inherited hasOwnProperty matches Node", async () => {
     const entry = join(pilotRoot, "colors-hasown-cli.ts");

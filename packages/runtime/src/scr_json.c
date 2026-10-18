@@ -3939,6 +3939,14 @@ void *scr_dyn_handle_unbox(const ScrDyn *d, ScrDynHandleTag tag, const ScrDynPat
   return scr_dyn_handle_ops(tag)->retain(d->v.handle.ptr);
 }
 
+SCR_TL ScrDyn *(*scr_dyn_promise_member_fn)(const char *key, size_t len) = NULL;
+
+ScrDyn *scr_dyn_promise_key_get(const ScrDyn *d, const ScrStr *k) {
+  (void)d;
+  ScrDyn *method = scr_dyn_promise_member_fn ? scr_dyn_promise_member_fn(k->data, k->len) : NULL;
+  return method ? method : scr_dyn_retain(scr_dyn_undefined());
+}
+
 ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
   const ScrDynHandleOps *ops = scr_dyn_handle_ops(d->v.handle.tag);
   ScrDyn *r = ops->get(d->v.handle.ptr, k->data, k->len);
@@ -6022,6 +6030,52 @@ ScrStr *scr_dyn_to_string_argument(const ScrDyn *d, const ScrDyn *argument, cons
   return scr_dyn_to_string_method(d, NULL, what);
 }
 
+/* The METHOD-CALL spelling `d.valueOf()`: a primitive answers itself (the
+ * primitive prototypes' valueOf), a Date its time value, an object with a
+ * valueOf member the member's result with the object as receiver, and any
+ * other object itself (Object.prototype.valueOf). A null-prototype
+ * dictionary has no valueOf; it throws "<spelling> is not a function", and
+ * null and undefined throw Node's property-read TypeError. `what` carries
+ * the source spelling. Returns +1. */
+ScrDyn *scr_dyn_value_of(const ScrDyn *d, const ScrStr *what) {
+  if (d->kind == SCR_DYN_NULL || d->kind == SCR_DYN_UNDEF) {
+    static const char msg[] = "Cannot read properties of undefined (reading 'valueOf')";
+    static const char msgn[] = "Cannot read properties of null (reading 'valueOf')";
+    if (d->kind == SCR_DYN_NULL) scr_throw_error_msg(SCR_ERR_TYPE, msgn, sizeof msgn - 1);
+    else scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  if (d->kind == SCR_DYN_PROXY) {
+    scr_dyn_proxy_unsupported("valueOf");
+    return NULL;
+  }
+  if (d->kind == SCR_DYN_HANDLE && d->v.handle.tag == SCR_DYNH_DATE) {
+    const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(d);
+    return ops->invoke(d->v.handle.ptr, (ScrDyn *)d, "valueOf", NULL, 0, "valueOf");
+  }
+  if (d->kind == SCR_DYN_OBJ && scr_dyn_property_owner(d, "valueOf", 7)) {
+    ScrDyn *member = scr_dyn_obj_read(d, "valueOf", 7);
+    if (!member) return NULL;
+    if (member->kind != SCR_DYN_FUNC) {
+      scr_dyn_release(member);
+    } else {
+      scr_dyn_this_push_dyn(d);
+      ScrDyn *value = scr_dyn_call(member, NULL, 0, what->data);
+      scr_dyn_this_pop();
+      scr_dyn_release(member);
+      return value;
+    }
+  } else if (d->kind != SCR_DYN_OBJ || scr_dyn_has_object_prototype(d)) {
+    return scr_dyn_retain((ScrDyn *)d);
+  }
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_write(&b, what->data, what->len);
+  scr_jb_puts(&b, " is not a function");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return NULL;
+}
+
 /* JS String() over the dyn kind — the WebIDL ToString the web globals
  * (atob/btoa, DOMException's name resolution) run on their arguments:
  * the unit kinds RENDER ("null"/"undefined") where the .toString() twin
@@ -6675,6 +6729,13 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
   if (v->kind == SCR_DYN_ARR) {
     if (v->prototype) return scr_dyn_in(v->prototype, key);
     return !v->null_proto && (scr_dyn_array_proto_name(key) || scr_dyn_object_proto_name(key));
+  }
+  if (v->kind == SCR_DYN_PROMISE) {
+    /* Promise.prototype's methods, then Object.prototype's names. */
+    static const char *const names[] = {"then", "catch", "finally"};
+    for (size_t i = 0; i < 3; i++)
+      if (strlen(names[i]) == key->len && memcmp(names[i], key->data, key->len) == 0) return true;
+    return scr_dyn_object_proto_name(key);
   }
   return false;
 }

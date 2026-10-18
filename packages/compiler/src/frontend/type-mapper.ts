@@ -995,6 +995,13 @@ export type TypeParamTsResolver = (t: ts.Type) => ts.Type | null;
  * one new field here, not a new parameter at every call site. */
 export interface TypeMapperCtx {
   checker: ts.TypeChecker;
+  /** Set while mapping a generic callable member's erased type
+   * (erasedGenericMemberType): the signature's own type parameters
+   * resolve to `unknown` instead of refusing the mapping. */
+  erasingSignature?: ts.Signature;
+  /** True while an erased generic body lowers (its type parameters are
+   * bound to `unknown`). */
+  isErasing?: () => boolean;
   shapes: ShapeRegistry;
   unions: UnionRegistry;
   classNamer: ClassNamer;
@@ -1382,6 +1389,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // still the T it maps.
   const immutableSource = immutableSourceType(type, ctx);
   if (immutableSource !== null) return mapType(immutableSource, ctx);
+  // Inside an erased generic signature or body, every type that mentions
+  // an erased type parameter is `unknown` (`T[]`, `Map<string, T>`,
+  // `[A, B]`, `T[K]`, callbacks over `T`): its values cross through the
+  // checked-dynamic boundary, as JavaScript sees them. The erased
+  // signature itself maps its parameters and result this way.
+  if (
+    (ctx.erasingSignature || ctx.isErasing?.()) &&
+    !(type.flags & ts.TypeFlags.TypeParameter) &&
+    !checker.getCallSignatures(type).some((sig) => sig === ctx.erasingSignature) &&
+    !ERASURE_KEPT_CONTAINERS.has(type.getSymbol()?.name ?? "") &&
+    mentionsErasedTypeParam(type, ctx, 0)
+  ) {
+    contextResolutions++;
+    return DYN;
+  }
   if (resolveTypeParam && type.flags & ts.TypeFlags.TypeParameter) {
     const bound = resolveTypeParam(type);
     if (bound) {
@@ -3801,7 +3823,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const callSigs = checker.getCallSignatures(widened);
   if (callSigs.length === 1) {
     const sig = callSigs[0]!;
-    if (sig.getTypeParameters().length) return null;
+    if (sig.getTypeParameters().length && ctx.erasingSignature !== sig) return null;
     // A SYNTHESIZED rest param (tsc's JS inference for a function body
     // reading `arguments` — `(...args: any[]) => any` whose args symbol
     // has no declaration): the dotDotDot check below can't see it, and a
@@ -5214,6 +5236,67 @@ export function isGenericCallableMemberType(t: ts.Type, checker: ts.TypeChecker)
   );
 }
 
+/** Result containers an erased async function or generator must keep:
+ * their contents are erased instead (`Promise<T>` maps as
+ * `Promise<unknown>`). */
+const ERASURE_KEPT_CONTAINERS = new Set(["Promise", "Generator", "AsyncGenerator"]);
+
+/** The type mentions a type parameter that the active erasure binds to
+ * `unknown` (erasedGenericMemberType, erased bodies). */
+function mentionsErasedTypeParam(type: ts.Type, ctx: TypeMapperCtx, depth: number): boolean {
+  if (depth > 8) return false;
+  const { checker } = ctx;
+  if (type.flags & ts.TypeFlags.TypeParameter) return ctx.resolveTypeParam?.(type)?.kind === "dyn";
+  if (
+    type.flags &
+    (ts.TypeFlags.IndexedAccess | ts.TypeFlags.Conditional | ts.TypeFlags.Substitution)
+  )
+    return true;
+  if (type.isUnionType() || type.isIntersectionType())
+    return ts.constituentTypes(type).some((part) => mentionsErasedTypeParam(part, ctx, depth + 1));
+  if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+  if (
+    (type as ts.Type).isTypeReference() &&
+    checker
+      .getTypeArguments(type as ts.TypeReference)
+      .some((arg) => mentionsErasedTypeParam(arg, ctx, depth + 1))
+  )
+    return true;
+  for (const sig of checker.getCallSignatures(type)) {
+    if (mentionsErasedTypeParam(checker.getReturnTypeOfSignature(sig), ctx, depth + 1)) return true;
+    for (const param of sig.getParameters())
+      if (mentionsErasedTypeParam(checker.getTypeOfSymbol(param), ctx, depth + 1)) return true;
+  }
+  const symbol = type.getSymbol();
+  const anonymous =
+    symbol !== undefined &&
+    (symbol.flags & (ts.SymbolFlags.TypeLiteral | ts.SymbolFlags.ObjectLiteral)) !== 0;
+  if (anonymous)
+    for (const property of checker.getPropertiesOfType(type))
+      if (mentionsErasedTypeParam(checker.getTypeOfSymbol(property), ctx, depth + 1)) return true;
+  return false;
+}
+
+/** A generic callable member's runtime type: its one call signature with
+ * every own type parameter bound to `unknown`, the erased instance a stored
+ * or escaping definition carries (JavaScript erases type parameters the
+ * same way). Undefined when the member has overloads or the erased
+ * signature does not map: the member then stays out of the shape, and only
+ * calls on a provable definition compile. */
+export function erasedGenericMemberType(t: ts.Type, ctx: TypeMapperCtx): IrType | null | undefined {
+  const sigs = ctx.checker.getCallSignatures(t);
+  if (sigs.length !== 1) return undefined;
+  const sig = sigs[0]!;
+  const own = new Set(sig.getTypeParameters());
+  const outer = ctx.resolveTypeParam;
+  const erased = mapType(t, {
+    ...ctx,
+    erasingSignature: sig,
+    resolveTypeParam: (param) => (own.has(param) ? DYN : (outer?.(param) ?? null)),
+  });
+  return erased?.kind === "func" ? erased : undefined;
+}
+
 /** The computed pieces of a record shape mapRecordTypeInner hands back for
  * the OUTER frame to intern — or, when a back-reference minted a recursive
  * placeholder for the type mid-construction, to finalize INTO that
@@ -5595,8 +5678,10 @@ function mapRecordTypeInner(
       // can hold them — see isGenericCallableMemberType): the shape keeps
       // its data fields, and calls of the member monomorphize per call
       // site against the defining object literal's declaration.
-      if (isGenericCallableMemberType(fieldTs, checker)) continue;
-      let pt = mapType(fieldTs, ctx);
+      let pt = isGenericCallableMemberType(fieldTs, checker)
+        ? erasedGenericMemberType(fieldTs, ctx)
+        : mapType(fieldTs, ctx);
+      if (pt === undefined) continue;
       // tsgo PANICS computing `readonly []` through the symbol-type query
       // (the TupleType conversion — the facade's panic fence answers
       // `any`), which would absorb the whole shape into the dynamic tier.
@@ -5916,8 +6001,10 @@ export function describeRecordMemberBlocker(widened: ts.Type, ctx: TypeMapperCtx
       return null;
     }
     const fieldTs = checker.getTypeOfSymbol(p);
-    if (isGenericCallableMemberType(fieldTs, checker)) continue;
-    let pt = mapType(fieldTs, ctx);
+    let pt = isGenericCallableMemberType(fieldTs, checker)
+      ? erasedGenericMemberType(fieldTs, ctx)
+      : mapType(fieldTs, ctx);
+    if (pt === undefined) continue;
     if (pt?.kind === "void" && isUnitOnlyTsType(fieldTs, ctx.resolveTypeParam))
       pt = unitOnlyUnion(ctx.unions);
     if (!pt || pt.kind === "void") {

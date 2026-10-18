@@ -6,6 +6,12 @@ A WebAssembly module lets a web page or another application call functions writt
 
 You build a module in library mode, with `SCRIPTC_TARGET=wasm32-wasi` and `scriptc build --lib --profile`. The result is a WASI Preview 1 reactor: a `.wasm` file with callable exports, named imports for host callbacks, and its own memory. Your application loads the module, supplies its imports, calls its exports, and handles events, scheduling, and rendering.
 
+Module builds need [zig](https://ziglang.org) and the `@scriptc/runtime-wasm32-wasi` runtime pack in your project, at the same version as `scriptc --version`. See [Cross-compile](/docs/platforms#cross-compilation-via-zig).
+
+```console
+$ npm install --save-dev @scriptc/runtime-wasm32-wasi@0.3.5
+```
+
 ## Define the interface
 
 The library profile names the entry module and its public functions. A reachable callback call becomes a synchronous import from the <code>scriptc</code> namespace.

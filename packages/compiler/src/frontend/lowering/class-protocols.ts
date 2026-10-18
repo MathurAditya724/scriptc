@@ -1,5 +1,4 @@
 import * as ts from "../ts7/adapter.js";
-import { isGenericCallableMemberType } from "../type-mapper.js";
 
 /** Index only program classes. Ambient declarations describe APIs, not
  * compiled implementations, and must not change a protocol's storage. */
@@ -708,15 +707,6 @@ export class ClassProtocols {
     const protocols = this.index();
     const symbol = type.getSymbol();
     const properties = this.checker.getPropertiesOfType(type);
-    // Generic-only members have no single runtime callable signature. Keep
-    // their existing declaration-based specialization and refusal boundary.
-    if (
-      properties.length > 0 &&
-      properties.every((property) =>
-        isGenericCallableMemberType(this.checker.getTypeOfSymbol(property), this.checker),
-      )
-    )
-      return false;
     if (symbol && protocols.has(symbol)) return true;
     if (
       !symbol ||
@@ -731,7 +721,6 @@ export class ClassProtocols {
       return false;
     for (const property of properties) {
       const memberType = this.checker.getTypeOfSymbol(property);
-      if (isGenericCallableMemberType(memberType, this.checker)) continue;
       if (this.checker.getCallSignatures(memberType).length === 0) continue;
       for (const declaration of this.methods.get(property.name) ?? []) {
         const classSymbol = declaration.name
