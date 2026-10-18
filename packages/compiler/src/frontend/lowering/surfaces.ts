@@ -1750,7 +1750,6 @@ export const BUILTIN_MODULE_FNS: Record<
     isInt8Array: { fn: "util.typeIs", params: [DYN], result: BOOL },
     isInt16Array: { fn: "util.typeIs", params: [DYN], result: BOOL },
     isInt32Array: { fn: "util.typeIs", params: [DYN], result: BOOL },
-    isFloat16Array: { fn: "util.typeIs", params: [DYN], result: BOOL },
     isFloat32Array: { fn: "util.typeIs", params: [DYN], result: BOOL },
     isFloat64Array: { fn: "util.typeIs", params: [DYN], result: BOOL },
     isMap: { fn: "util.typeIs", params: [DYN], result: BOOL },
