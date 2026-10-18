@@ -119,7 +119,7 @@ Verifies and loads the installed precompiled runtime objects and vendored librar
   <dd>On Linux, when the program calls <code>process.exit()</code>, hand the release of its memory to a helper process so the parent sees the exit sooner. The kernel otherwise frees the whole address space before the exit is reported, which takes tens of milliseconds per gigabyte. Opt in only where the trade-offs are acceptable: for up to about 100 ms after the exit, the helper keeps the executable mapped (overwriting the binary in place fails with "text file busy"), its memory stays charged to the cgroup, and the teardown CPU time no longer appears in the parent's resource usage. Valid only for executable builds; it has no effect on other platforms.</dd>
 
   <dt><code>--npm-static &lt;pkg[,pkg…]|auto&gt;</code></dt>
-  <dd>Name npm packages to compile even if they don't ship their own type declarations (repeatable). <code>auto</code> uses the default automatic selection. Packages that can't compile produce diagnostics. See <a href="/docs/dependencies#explicit-package-selection">npm Dependencies</a>.</dd>
+  <dd>Name npm packages to compile even if they don't ship their own type declarations (repeatable). A trailing <code>...</code>, as in <code>fs-extra...</code>, also names every package that package depends on. <code>auto</code> uses the default automatic selection. Packages that can't compile produce diagnostics. See <a href="/docs/dependencies#explicit-package-selection">npm Dependencies</a>.</dd>
 
   <dt><code>--provenance-sources</code></dt>
   <dd>Experimental. Compile npm dependencies from the source at the commit their provenance attestation names. Packages without a usable attestation compile from their installed files.</dd>

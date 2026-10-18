@@ -119,6 +119,8 @@ _Static_assert(offsetof(ScrJsonBuf, data) == 0 && offsetof(ScrJsonBuf, len) == s
                "LLVM backend expects ScrJsonBuf to start with { data, len, cap }");
 
 void scr_jb_init(ScrJsonBuf *b);
+/* Release a buffer's text without finishing it (error paths). */
+void scr_jb_abandon(ScrJsonBuf *b);
 /* Append a borrowed byte span verbatim, including embedded NUL bytes. */
 void scr_jb_write(ScrJsonBuf *b, const char *s, size_t n);
 /* scr_jb_write for text that holds no lone surrogate (fixed text, JSON

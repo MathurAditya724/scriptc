@@ -73,6 +73,7 @@ bool scr_num_is_safe_integer(double x);
 ScrStr *scr_num_to_exponential(double x);
 ScrStr *scr_num_to_fixed0(double x);
 ScrStr *scr_num_to_fixed(double x, double fraction_digits);
+ScrStr *scr_num_to_string_radix_f64(double value, double radix);
 
 /* Object.is over two numbers — the spec's SameValue on doubles: NaN
  * equals NaN, +0 differs from -0, everything else is ==. Never throws. */

@@ -504,6 +504,24 @@ export function requireExactArityValue(
       ? lowerer.mapTypeOf(lowerer.typeOf(contextual))
       : null;
   if (mapped && typeEquals(mapped, funcType)) return;
+  // An object-literal METHOD has no contextual type of its own: the
+  // literal's contextual type names the member slot it fills. An
+  // overloaded member's slot holds its erased function, which spells the
+  // completed parameters of an implementation like `m(a?: string)`.
+  if (
+    contextual === null &&
+    ts.isMethodDeclaration(blame) &&
+    blame.parent !== undefined &&
+    ts.isObjectLiteralExpression(blame.parent) &&
+    (ts.isIdentifier(blame.name) || ts.isStringLiteral(blame.name))
+  ) {
+    const literalType = lowerer.checker.getContextualType(blame.parent);
+    const member = literalType
+      ? lowerer.checker.getPropertyOfType(literalType, blame.name.text)
+      : undefined;
+    const slot = member ? lowerer.memberSlotTypeOf(lowerer.checker.getTypeOfSymbol(member)) : null;
+    if (slot && typeEquals(slot, funcType)) return;
+  }
   // A union-typed slot (`runner || defaultRunner` under a
   // `CommandRunner | undefined` context): the value can only inhabit
   // the union's one func arm — judge by it.

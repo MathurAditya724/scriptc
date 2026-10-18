@@ -1,4 +1,4 @@
-zlib-class-alias-escape.ts:7:18 - error SC1090: a zlib class alias as an escaping value (use 'Gz' with new, instanceof, typeof or .name) is not supported yet
+zlib-class-alias-escape.ts:7:18 - error SC1090: a builtin class alias as an escaping value (use 'Gz' with new, instanceof, typeof or .name) is not supported yet
 
   6 | const Gz = zlib.Gzip;
   7 | const classes = [Gz];
