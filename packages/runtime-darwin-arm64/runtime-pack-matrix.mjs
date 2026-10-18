@@ -80,6 +80,8 @@ const optional = [
   ["scr_events_emitter.c", "emitter"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
   ["scr_symbol.c", "symbol"],
+  // AsyncDisposableStack calls into both scr_symbol.c and scr_async_dyn.c.
+  ["scr_async_disposable.c", all("symbol", "dynAsync")],
   ["scr_bigint_assert.c", all("assert", "bigint")],
   ["scr_qs.c", "qs"],
   // The legacy url unit lowercases and normalizes through the regex unit

@@ -3214,12 +3214,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * `await using`. Both throw Node's TypeErrors or the method's error. */
   "dyn.usingMethod": { argTypes: [DYN, BOOL], result: DYN },
   "dyn.usingDispose": { argTypes: [DYN, DYN], result: DYN },
-  /** DisposableStack (scr_symbol.c): a new stack handle; whether a value is
-   * one; and `stack.use(value)` for a class instance, registering the
-   * compiler's disposal function for it. The last throws Node's
-   * ReferenceError on a disposed stack. */
+  /** DisposableStack (scr_symbol.c) and AsyncDisposableStack
+   * (scr_async_disposable.c): a new stack handle; whether a value is one;
+   * and `stack.use(value)` for a class instance on either stack,
+   * registering the compiler's disposal function for it. The last throws
+   * Node's ReferenceError on a disposed stack. */
   "disposable.stackNew": { argTypes: [], result: DYN },
   "disposable.stackIs": { argTypes: [DYN], result: BOOL },
+  "disposable.asyncStackNew": { argTypes: [], result: DYN },
+  "disposable.asyncStackIs": { argTypes: [DYN], result: BOOL },
   "disposable.stackUseCallback": { argTypes: [DYN, DYN, DYN], result: BOOL },
   "dyn.reflectSet": { argTypes: [DYN, DYN, DYN, DYN], result: BOOL },
   "dyn.reflectDefine": { argTypes: [DYN, DYN, DYN], result: BOOL },

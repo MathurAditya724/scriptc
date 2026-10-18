@@ -43,6 +43,7 @@ export interface RuntimeFeatures {
 }
 
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "disposable.asyncStackNew",
   "fs.callbackValue",
   "fs.callbackCall",
   "fs.callbackGlob",

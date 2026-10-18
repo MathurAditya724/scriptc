@@ -538,6 +538,8 @@ export async function compileCInternal(
     // their exact size class.
     ...(opts.emitter || opts.workers || net ? [rt(join(rtDir, "scr_dyn_handle.c"))] : []),
     ...(opts.symbol ? [rt(join(rtDir, "scr_symbol.c"))] : []),
+    // AsyncDisposableStack calls into both scr_symbol.c and scr_async_dyn.c.
+    ...(opts.symbol && opts.dynAsync ? [rt(join(rtDir, "scr_async_disposable.c"))] : []),
     ...(opts.assert && opts.bigint ? [rt(join(rtDir, "scr_bigint_assert.c"))] : []),
     ...(opts.qs ? [rt(join(rtDir, "scr_qs.c"))] : []),
     // The legacy url unit references the regex, querystring and dyn-async

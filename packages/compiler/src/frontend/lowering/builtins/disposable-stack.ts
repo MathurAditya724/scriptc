@@ -5,44 +5,66 @@ import { newFnCtx } from "../function-context.js";
 import { BOOL, DYN, VOID, type IrExpr, type IrType } from "../../../ir/ir.js";
 import { varRef } from "../../../ir/build.js";
 
-/** Whether `node`'s static type is the standard library's DisposableStack. */
-function isStdlibDisposableStack(lowerer: Lowerer, node: ts.Expression): boolean {
+type StackClass = "DisposableStack" | "AsyncDisposableStack";
+
+const STACK_CLASSES: readonly StackClass[] = ["DisposableStack", "AsyncDisposableStack"];
+
+/** The standard-library stack class `node`'s static type names, or null. */
+function stdlibStackClassOf(lowerer: Lowerer, node: ts.Expression): StackClass | null {
   const type = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(node));
   for (const symbol of [type.getSymbol(), type.getAliasSymbol()]) {
-    if (symbol?.name === "DisposableStack" && lowerer.isStdlibSymbol(symbol)) return true;
+    const name = STACK_CLASSES.find((cls) => cls === symbol?.name);
+    if (name && symbol && lowerer.isStdlibSymbol(symbol)) return name;
   }
-  return false;
+  return null;
 }
 
-/** `new DisposableStack()`: a native stack handle (scr_symbol.c). Its
- * members are function values and getters of the handle, reached through
- * the checked-dynamic method and property paths. Null for other
- * constructors. */
+/** `new DisposableStack()` and `new AsyncDisposableStack()`: native stack
+ * handles (scr_symbol.c, scr_async_disposable.c). Their members are
+ * function values and getters of the handle, reached through the
+ * checked-dynamic method and property paths. Null for other constructors. */
 export function lowerDisposableStackNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
-  if (!ts.isIdentifier(expr.expression) || expr.expression.text !== "DisposableStack") return null;
+  if (!ts.isIdentifier(expr.expression)) return null;
+  const text = expr.expression.text;
+  const name = STACK_CLASSES.find((cls) => cls === text);
+  if (!name) return null;
   const symbol = lowerer.resolveValueSymbol(expr.expression);
   if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
   if ((expr.arguments ?? []).length !== 0) return null;
-  return { kind: "libCall", fn: "disposable.stackNew", args: [], type: DYN, loc: locOf(expr) };
+  return {
+    kind: "libCall",
+    fn: name === "DisposableStack" ? "disposable.stackNew" : "disposable.asyncStackNew",
+    args: [],
+    type: DYN,
+    loc: locOf(expr),
+  };
 }
 
-/** `x instanceof DisposableStack`, or null when the right side is not the
- * standard library's DisposableStack. */
+/** `x instanceof DisposableStack` and `x instanceof AsyncDisposableStack`,
+ * or null when the right side is neither standard-library class. */
 export function lowerDisposableStackInstanceOf(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
 ): IrExpr | null {
-  if (!lowerer.isStdlibGlobal(expr.right, "DisposableStack")) return null;
+  const name = STACK_CLASSES.find((cls) => lowerer.isStdlibGlobal(expr.right, cls));
+  if (!name) return null;
   const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
-  return { kind: "libCall", fn: "disposable.stackIs", args: [value], type: BOOL, loc: locOf(expr) };
+  return {
+    kind: "libCall",
+    fn: name === "DisposableStack" ? "disposable.stackIs" : "disposable.asyncStackIs",
+    args: [value],
+    type: BOOL,
+    loc: locOf(expr),
+  };
 }
 
 /** `stack.use(value)` where `value` is a class instance. The dyn view of a
  * class instance has no methods, so the stack receives a function that
- * calls the class's [Symbol.dispose] method on the value, and the call
- * answers the value at its static type. Other values take the
- * checked-dynamic method path, which reads the value's [Symbol.dispose].
- * Null when the call is not that form. */
+ * calls the class's [Symbol.dispose] method on the value (on an
+ * AsyncDisposableStack, its [Symbol.asyncDispose] method when it has one,
+ * whose promise the disposal awaits), and the call answers the value at
+ * its static type. Other values take the checked-dynamic method path,
+ * which reads the value's methods. Null when the call is not that form. */
 export function lowerDisposableStackUseCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -52,7 +74,8 @@ export function lowerDisposableStackUseCall(
   if (access.name.text !== "use" || call.arguments.length !== 1) return null;
   const argNode = call.arguments[0]!;
   if (ts.isSpreadElement(argNode)) return null;
-  if (!isStdlibDisposableStack(lowerer, access.expression)) return null;
+  const stackClass = stdlibStackClassOf(lowerer, access.expression);
+  if (!stackClass) return null;
   const valueT = lowerer.mapTypeOf(lowerer.typeOf(argNode));
   if (valueT?.kind === "union") {
     const arms = lowerer.unions.get(valueT.unionId)?.arms ?? [];
@@ -69,34 +92,41 @@ export function lowerDisposableStackUseCall(
   const className = valueT.className;
   const info = lowerer.classes.get(className);
   if (!info) lowerer.flushDeferredClass(className);
-  const found = info ? lowerer.findMethodOn(info, "sym:dispose") : null;
+  const asyncFound =
+    stackClass === "AsyncDisposableStack" && info
+      ? lowerer.findMethodOn(info, "sym:asyncDispose")
+      : null;
+  const member = asyncFound ? "sym:asyncDispose" : "sym:dispose";
+  const found = asyncFound ?? (info ? lowerer.findMethodOn(info, "sym:dispose") : null);
   if (!found) return null;
+  const memberText = asyncFound ? "[Symbol.asyncDispose]" : "[Symbol.dispose]";
   if (found.sig.params.length !== 0) {
-    lowerer.unsupported("SC1090", argNode, "[Symbol.dispose] methods with parameters");
+    lowerer.unsupported("SC1090", argNode, `${memberText} methods with parameters`);
   }
+  if (asyncFound && found.sig.ret.kind !== "promise") {
+    lowerer.unsupported("SC1090", argNode, `${memberText} methods whose result is not a Promise`);
+  }
+  const helperRet: IrType = asyncFound ? found.sig.ret : VOID;
   const stack = lowerer.lowerExpr(access.expression);
   const value = lowerer.lowerExpr(argNode);
-  const key = `disposableStack.use:${className}`;
+  const key = `disposableStack.use:${member}:${className}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
     helper = `%disposableStack.use.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, helper);
-    const context = newFnCtx(false, null, null, VOID);
+    const context = newFnCtx(false, null, null, helperRet);
     lowerer.fnStack.push(context);
     try {
       const param = lowerer.declareHiddenLocal("value", valueT);
       const self = varRef(param.id, valueT, loc);
+      const call = lowerer.accessorCall(className, member, self, [], found.sig.ret, loc);
       lowerer.liftedFns.push({
         name: helper,
         params: [{ localId: param.id, name: "value", type: valueT }],
-        returnType: VOID,
+        returnType: helperRet,
         locals: context.locals,
         body: [
-          {
-            kind: "exprStmt",
-            expr: lowerer.accessorCall(className, "sym:dispose", self, [], found.sig.ret, loc),
-            loc,
-          },
+          asyncFound ? { kind: "return", value: call, loc } : { kind: "exprStmt", expr: call, loc },
         ],
         loc,
       });
@@ -106,7 +136,7 @@ export function lowerDisposableStackUseCall(
   }
   const stackLocal = lowerer.declareHiddenLocal("%disposableStack", DYN);
   const valueLocal = lowerer.declareHiddenLocal("%disposableValue", valueT);
-  const fnT: IrType = { kind: "func", params: [valueT], ret: VOID };
+  const fnT: IrType = { kind: "func", params: [valueT], ret: helperRet };
   const dispose: IrExpr = { kind: "closure", fnName: helper, captures: [], type: fnT, loc };
   return {
     kind: "seqExpr",

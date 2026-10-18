@@ -1328,6 +1328,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.usingDispose": "scr_dyn_using_dispose",
   "disposable.stackNew": "scr_disposable_stack_new",
   "disposable.stackIs": "scr_disposable_stack_is",
+  "disposable.asyncStackNew": "scr_async_disposable_stack_new",
+  "disposable.asyncStackIs": "scr_async_disposable_stack_is",
   "disposable.stackUseCallback": "scr_disposable_stack_use_callback",
   "dyn.reflectSet": "scr_dyn_reflect_set",
   "dyn.reflectDefine": "scr_dyn_reflect_define",

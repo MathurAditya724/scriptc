@@ -169,6 +169,7 @@ typedef enum {
   SCR_DYNH_NET_SOCKET_ADDRESS, /* net.SocketAddress (scr_net.c) */
   SCR_DYNH_NET_BLOCK_LIST, /* net.BlockList (scr_net.c) */
   SCR_DYNH_DISPOSABLE_STACK, /* DisposableStack (scr_symbol.c) */
+  SCR_DYNH_ASYNC_DISPOSABLE_STACK, /* AsyncDisposableStack (scr_async_disposable.c) */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
@@ -633,6 +634,11 @@ bool scr_disposable_stack_is(const ScrDyn *value);
 bool scr_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value);
 bool scr_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *dispose);
 bool scr_disposable_stack_adopt(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *on_dispose);
+/* AsyncDisposableStack (scr_async_disposable.c): a new stack (+1) and
+ * whether a value is one. scr_disposable_stack_use_callback also registers
+ * on an AsyncDisposableStack, whose disposal awaits the function's result. */
+ScrDyn *scr_async_disposable_stack_new(void);
+bool scr_async_disposable_stack_is(const ScrDyn *value);
 void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
 void scr_dyn_symbol_key_placeholder(ScrDyn *value, ScrDyn *key);
 bool scr_dyn_has_key_computed(const ScrDyn *value, const ScrDyn *key);

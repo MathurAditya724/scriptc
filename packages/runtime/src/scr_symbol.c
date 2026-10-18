@@ -12,6 +12,7 @@
  * always after scr_init registered the RC audit, so atexit's LIFO order
  * runs it before the audit and the audited string counts stay exact. */
 #include "scr_runtime.h"
+#include "scr_disposable.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -459,31 +460,10 @@ ScrDyn *scr_dyn_using_dispose(const ScrDyn *method, const ScrDyn *value) {
 }
 
 /* ── DisposableStack ───────────────────────────────────────────────────
- * The stack is a collector-headered object behind a traced dyn handle: its
- * resources hold callbacks that can capture the stack itself. Each entry
- * records how disposal calls it: `use` calls the value's dispose method
- * with the value as `this`, `adopt` calls the callback with the value, and
- * `defer` calls the callback with no arguments. Disposal runs the entries
- * in reverse order; each later failure becomes a SuppressedError over the
- * error so far, and a single failure is rethrown as it was thrown. */
-enum { SCR_DS_USE, SCR_DS_ADOPT, SCR_DS_DEFER };
-
-typedef struct {
-  ScrDyn *value; /* the resource (use, adopt); NULL for defer */
-  ScrDyn *method;
-  unsigned kind;
-  /* Which members the last trace visited: the collector frees those
-   * itself, and gcfree must not read them afterwards. */
-  bool value_traced, method_traced;
-} ScrDisposableResource;
-
-typedef struct {
-  size_t rc;
-  bool disposed;
-  ScrDisposableResource *items;
-  size_t len, cap;
-} ScrDisposableStack;
-
+ * Storage and entries are described in scr_disposable.h. Disposal runs
+ * the entries in reverse order; each later failure becomes a
+ * SuppressedError over the error so far, and a single failure is rethrown
+ * as it was thrown. */
 static bool scr_ds_traced(const ScrDyn *value) {
   return value && value->kind > SCR_DYN_STR && value->kind != SCR_DYN_UNDEF;
 }
@@ -521,12 +501,12 @@ static void scr_ds_destroy(void *ptr) {
   scr_ds_gcfree(ptr);
 }
 
-static void *scr_ds_retain(void *ptr) {
+void *scr_ds_retain(void *ptr) {
   ((ScrDisposableStack *)ptr)->rc++;
   return ptr;
 }
 
-static void scr_ds_release(void *ptr) {
+void scr_ds_release(void *ptr) {
   ScrDisposableStack *s = ptr;
   if (!s) return;
   if (--s->rc == 0) {
@@ -535,7 +515,7 @@ static void scr_ds_release(void *ptr) {
   } else scr_cyc_released(s);
 }
 
-static void scr_ds_push(ScrDisposableStack *s, ScrDyn *value, ScrDyn *method, unsigned kind) {
+void scr_ds_push(ScrDisposableStack *s, ScrDyn *value, ScrDyn *method, unsigned kind) {
   if (s->len == s->cap) {
     size_t cap = s->cap ? s->cap * 2 : 4;
     ScrDisposableResource *items = realloc(s->items, cap * sizeof *items);
@@ -548,7 +528,7 @@ static void scr_ds_push(ScrDisposableStack *s, ScrDyn *value, ScrDyn *method, un
 
 /* V8's rendering of a value in a TypeError: primitives by ToString,
  * arrays as [object Array], other objects as #<Constructor>. */
-static void scr_ds_put_value(ScrJsonBuf *b, const ScrDyn *value) {
+void scr_ds_put_value(ScrJsonBuf *b, const ScrDyn *value) {
   switch (value->kind) {
   case SCR_DYN_UNDEF: scr_jb_puts(b, "undefined"); return;
   case SCR_DYN_NULL: scr_jb_puts(b, "null"); return;
@@ -577,22 +557,24 @@ static void scr_ds_put_value(ScrJsonBuf *b, const ScrDyn *value) {
   }
 }
 
-static ScrDisposableStack *scr_ds_of(const ScrDyn *value) {
-  return value && value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_DISPOSABLE_STACK
-    ? value->v.handle.ptr : NULL;
+static ScrDisposableStack *scr_ds_of(const ScrDyn *value, ScrDynHandleTag tag) {
+  return value && value->kind == SCR_DYN_HANDLE && value->v.handle.tag == tag ? value->v.handle.ptr : NULL;
 }
 
-bool scr_disposable_stack_is(const ScrDyn *value) { return scr_ds_of(value) != NULL; }
+bool scr_disposable_stack_is(const ScrDyn *value) {
+  return scr_ds_of(value, SCR_DYNH_DISPOSABLE_STACK) != NULL;
+}
 
-/* The receiver of DisposableStack.prototype.<name>, or NULL with Node's
- * TypeError (an incompatible receiver) or ReferenceError (a disposed
- * stack, when `live` is required) pending. */
-static ScrDisposableStack *scr_ds_receiver(const ScrDyn *self, const char *name, bool getter, bool live) {
-  ScrDisposableStack *s = scr_ds_of(self);
+ScrDisposableStack *scr_ds_receiver(const ScrDyn *self, ScrDynHandleTag tag, const char *name, bool getter,
+                                    bool live) {
+  ScrDisposableStack *s = scr_ds_of(self, tag);
+  const char *cls = tag == SCR_DYNH_DISPOSABLE_STACK ? "DisposableStack" : "AsyncDisposableStack";
   ScrJsonBuf message;
   if (!s) {
     scr_jb_init(&message);
-    scr_jb_puts(&message, getter ? "Method get DisposableStack.prototype." : "Method DisposableStack.prototype.");
+    scr_jb_puts(&message, getter ? "Method get " : "Method ");
+    scr_jb_puts(&message, cls);
+    scr_jb_puts(&message, ".prototype.");
     scr_jb_puts(&message, name);
     scr_jb_puts(&message, " called on incompatible receiver ");
     scr_ds_put_value(&message, self);
@@ -600,8 +582,11 @@ static ScrDisposableStack *scr_ds_receiver(const ScrDyn *self, const char *name,
     return NULL;
   }
   if (live && s->disposed) {
+    /* V8 names the base class at the end for both stack classes. */
     scr_jb_init(&message);
-    scr_jb_puts(&message, "Cannot call DisposableStack.prototype.");
+    scr_jb_puts(&message, "Cannot call ");
+    scr_jb_puts(&message, cls);
+    scr_jb_puts(&message, ".prototype.");
     scr_jb_puts(&message, name);
     scr_jb_puts(&message, " on an already-disposed DisposableStack");
     scr_throw_error(SCR_ERR_REFERENCE, scr_jb_finish(&message));
@@ -610,7 +595,7 @@ static ScrDisposableStack *scr_ds_receiver(const ScrDyn *self, const char *name,
   return s;
 }
 
-static bool scr_ds_callable(const ScrDyn *value) {
+bool scr_ds_callable(const ScrDyn *value) {
   if (scr_using_typeof_is(value, "function", 8)) return true;
   ScrJsonBuf message;
   scr_jb_init(&message);
@@ -621,7 +606,7 @@ static bool scr_ds_callable(const ScrDyn *value) {
 }
 
 bool scr_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value) {
-  ScrDisposableStack *s = scr_ds_receiver(stack, "use", false, true);
+  ScrDisposableStack *s = scr_ds_receiver(stack, SCR_DYNH_DISPOSABLE_STACK, "use", false, true);
   if (!s) return false;
   if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) return true;
   ScrDyn *method = scr_dyn_using_method(value, false);
@@ -631,21 +616,23 @@ bool scr_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value) {
 }
 
 bool scr_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *dispose) {
-  ScrDisposableStack *s = scr_ds_receiver(stack, "use", false, true);
+  ScrDynHandleTag tag = stack->kind == SCR_DYN_HANDLE && stack->v.handle.tag == SCR_DYNH_ASYNC_DISPOSABLE_STACK
+    ? SCR_DYNH_ASYNC_DISPOSABLE_STACK : SCR_DYNH_DISPOSABLE_STACK;
+  ScrDisposableStack *s = scr_ds_receiver(stack, tag, "use", false, true);
   if (!s) return false;
   scr_ds_push(s, scr_dyn_retain((ScrDyn *)value), scr_dyn_retain((ScrDyn *)dispose), SCR_DS_ADOPT);
   return true;
 }
 
 bool scr_disposable_stack_adopt(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *on_dispose) {
-  ScrDisposableStack *s = scr_ds_receiver(stack, "adopt", false, true);
+  ScrDisposableStack *s = scr_ds_receiver(stack, SCR_DYNH_DISPOSABLE_STACK, "adopt", false, true);
   if (!s || !scr_ds_callable(on_dispose)) return false;
   scr_ds_push(s, scr_dyn_retain((ScrDyn *)value), scr_dyn_retain((ScrDyn *)on_dispose), SCR_DS_ADOPT);
   return true;
 }
 
 static bool scr_disposable_stack_defer(const ScrDyn *stack, const ScrDyn *on_dispose) {
-  ScrDisposableStack *s = scr_ds_receiver(stack, "defer", false, true);
+  ScrDisposableStack *s = scr_ds_receiver(stack, SCR_DYNH_DISPOSABLE_STACK, "defer", false, true);
   if (!s || !scr_ds_callable(on_dispose)) return false;
   scr_ds_push(s, NULL, scr_dyn_retain((ScrDyn *)on_dispose), SCR_DS_DEFER);
   return true;
@@ -714,21 +701,16 @@ static ScrDyn *scr_ds_method_call(ScrClosure *clo, ScrDyn *const *args, size_t a
     break;
   case SCR_DS_M_MOVE: {
     /* The new stack takes the entries; this one becomes disposed. */
-    ScrDisposableStack *s = scr_ds_receiver(self, "move", false, true);
+    ScrDisposableStack *s = scr_ds_receiver(self, SCR_DYNH_DISPOSABLE_STACK, "move", false, true);
     if (!s) break;
     ScrDisposableStack *moved = scr_ds_alloc();
-    moved->items = s->items;
-    moved->len = s->len;
-    moved->cap = s->cap;
-    s->items = NULL;
-    s->len = s->cap = 0;
-    s->disposed = true;
+    scr_ds_move(moved, s);
     out = scr_ds_box(moved);
     scr_ds_release(moved);
     break;
   }
   default: {
-    ScrDisposableStack *s = scr_ds_receiver(self, "dispose", false, false);
+    ScrDisposableStack *s = scr_ds_receiver(self, SCR_DYNH_DISPOSABLE_STACK, "dispose", false, false);
     if (s) out = scr_ds_dispose(s);
     break;
   }
@@ -803,6 +785,23 @@ static const ScrDynHandleOps scr_ds_ops = {
     .symbol_get = scr_ds_symbol_get,
 };
 
+ScrDisposableStack *scr_ds_storage_new(void) {
+  static ScrCycType cyc_type = {&scr_ds_trace, &scr_ds_gcfree, SCR_CYC_KIND_NONE, 0};
+  ScrDisposableStack *s = scr_cyc_alloc(sizeof *s, &cyc_type);
+  s->rc = 1;
+  scr_obj_alloc_note();
+  return s;
+}
+
+void scr_ds_move(ScrDisposableStack *to, ScrDisposableStack *from) {
+  to->items = from->items;
+  to->len = from->len;
+  to->cap = from->cap;
+  from->items = NULL;
+  from->len = from->cap = 0;
+  from->disposed = true;
+}
+
 static ScrDisposableStack *scr_ds_alloc(void) {
   static SCR_TL bool installed;
   if (!installed) {
@@ -810,11 +809,7 @@ static ScrDisposableStack *scr_ds_alloc(void) {
     scr_dyn_handle_install(SCR_DYNH_DISPOSABLE_STACK, &scr_ds_ops);
     scr_atexit(scr_ds_teardown);
   }
-  static ScrCycType cyc_type = {&scr_ds_trace, &scr_ds_gcfree, SCR_CYC_KIND_NONE, 0};
-  ScrDisposableStack *s = scr_cyc_alloc(sizeof *s, &cyc_type);
-  s->rc = 1;
-  scr_obj_alloc_note();
-  return s;
+  return scr_ds_storage_new();
 }
 
 static ScrDyn *scr_ds_box(ScrDisposableStack *s) { return scr_dyn_new_handle(s, SCR_DYNH_DISPOSABLE_STACK); }
