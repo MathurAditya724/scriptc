@@ -53,6 +53,15 @@ ScrDyn *scr_url_legacy_parse(const ScrDyn *url, const ScrDyn *parse_query, const
 ScrStr *scr_url_legacy_format(const ScrDyn *object, const ScrDyn *options, bool warn);
 ScrStr *scr_url_legacy_resolve(const ScrDyn *from, const ScrDyn *to, bool warn);
 ScrStr *scr_url_domain_to_ascii(const ScrDyn *domain, bool missing);
+/* node:punycode (scr_url.c): punycode.js 2.1.0's encode/decode, toASCII/
+ * toUnicode (mapDomain over RFC 3490 separators) and ucs2.decode (UTF-16
+ * code points as an f64 array). Borrowed input; +1, or NULL with the
+ * module's RangeError pending. */
+ScrStr *scr_punycode_decode(const ScrStr *input);
+ScrStr *scr_punycode_encode(const ScrStr *input);
+ScrStr *scr_punycode_to_ascii(const ScrStr *input);
+ScrStr *scr_punycode_to_unicode(const ScrStr *input);
+ScrArr *scr_punycode_ucs2_decode(const ScrStr *input);
 ScrStr *scr_url_domain_to_unicode(const ScrDyn *domain, bool missing);
 ScrStr *scr_url_to_path(ScrUrl *u);      /* +1, or throws */
 ScrStr *scr_url_str_to_path(ScrStr *s);  /* +1, or throws */

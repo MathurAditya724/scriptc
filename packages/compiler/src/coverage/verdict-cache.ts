@@ -89,6 +89,9 @@ export function verdictKey(
   opts: AnalyzeOptions,
   cache: VerdictCacheOptions,
 ): string | null {
+  // The tier report carries source locations the semantic replay does not
+  // move; explaining analyses always lower.
+  if (opts.explainDynamic === true) return null;
   let ffi = "";
   if (opts.ffiProfilePath !== undefined) {
     try {
@@ -120,6 +123,8 @@ export function verdictKey(
       opts.ffiProfilePath ?? "",
       ffi,
       external.join("\n"),
+      // Demotion (stage S6) makes the tier mode part of the verdict.
+      ...(opts.tier === "static-only" ? ["tier=static-only"] : []),
     ].join("\0"),
   );
 }

@@ -58,6 +58,7 @@ export function analyzeWithFrontend(
             entry.package,
             entry.detail ?? "its static compilation was refused",
             fe.npmImportSites.get(entry.package) ?? { file: entryPath, start: 0, end: 0 },
+            entry.hint,
           ),
         ),
     ];
@@ -90,6 +91,8 @@ export function analyzeWithFrontend(
       coverage: true,
       targetPlatform: buildPlatform,
       ...(ffi !== null ? { ffiImports: ffi.functions } : {}),
+      ...(opts.tier !== undefined ? { tierMode: opts.tier } : {}),
+      ...(opts.explainDynamic === true ? { tierReport: { preflight } } : {}),
     });
     const provenance = provenanceSources();
     return {
@@ -109,6 +112,7 @@ export function analyzeWithFrontend(
         ...(provenance !== null ? { provenance } : {}),
         ...(lowered.statsByFile ? { statsByFile: lowered.statsByFile } : {}),
         ...(lowered.provenanceElided ? { provenanceElided: lowered.provenanceElided } : {}),
+        ...(lowered.tiers !== undefined ? { tiers: lowered.tiers } : {}),
         preflightFailed: false,
       },
       sourceTexts: fe.sourceTexts(),

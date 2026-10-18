@@ -118,6 +118,9 @@ export function boundedIntegerLoopFacts(
       stable(e.receiver.localId)
     )
       return { min: 0, max: Number.MAX_SAFE_INTEGER };
+    // Every evaluation of an array length lies in its range, so the
+    // condition bounds each pass even when the body resizes the array.
+    if (isArrayLength(e)) return ARRAY_LENGTH_RANGE;
     return null;
   }
   let step: IntegerRange;
@@ -134,12 +137,15 @@ export function boundedIntegerLoopFacts(
     if (step.min <= 0 || step.max > 2147483647) return result;
   }
   const limit = bound(loop.cond.right);
-  if (!limit || limit.max < start.min) return result;
-  const distance = limit.max - start.min;
+  // The counter is an integer, so a strict bound admits passes up to one
+  // below the limit.
+  const last = limit && (loop.cond.op === "<" ? limit.max - 1 : limit.max);
+  if (!limit || last === null || last < start.min) return result;
+  const distance = last - start.min;
   const iterations = Math.floor(distance / step.min) + 1;
   if (!Number.isSafeInteger(distance) || !Number.isSafeInteger(iterations)) return result;
   // Header facts also cover the failing final condition and zero iterations.
-  const maximum = Math.max(start.max, limit.max + step.max);
+  const maximum = Math.max(start.max, last + step.max);
   if (Number.isSafeInteger(maximum)) result.set(counter, { min: start.min, max: maximum });
   for (const [id, hi] of upper) {
     const range = initial.get(id);
@@ -152,6 +158,20 @@ export function boundedIntegerLoopFacts(
     if (Number.isSafeInteger(min) && Number.isSafeInteger(max)) result.set(id, { min, max });
   }
   return result;
+}
+
+/** Every length an array can have: SCR_ARR_MAX_LENGTH (scr_array.c). */
+export const ARRAY_LENGTH_RANGE: IntegerRange = { min: 0, max: 4294967295 };
+
+/** `a.length` of a typed array value (an ordinary JS array). */
+function isArrayLength(e: IrExpr): boolean {
+  return (
+    e.kind === "arrIntrinsic" &&
+    e.method === "length" &&
+    e.args.length === 0 &&
+    e.type.kind === "f64" &&
+    e.receiver.type.kind === "array"
+  );
 }
 
 /** The most UTF-16 code units a runtime string holds: SCR_STR_MAX_CAP
@@ -241,6 +261,9 @@ export function guardedLoopCounterFacts(
       stable(e.receiver.localId)
     )
       return { min: 0, max: STRING_MAX_UNITS };
+    // An array length can change on any pass, but never leaves its range,
+    // which is all a ceiling needs.
+    if (isArrayLength(e)) return ARRAY_LENGTH_RANGE;
     return null;
   };
   // The bounds a condition's conjuncts put on counters while it holds.

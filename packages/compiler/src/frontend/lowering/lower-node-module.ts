@@ -8,10 +8,11 @@ import * as win32 from "node:path/win32";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import type { FileParts } from "./lower-modules.js";
-import { isNodeEsmFile, locOf } from "../program.js";
+import { isCjsJsFile, isNodeEsmFile, locOf } from "../program.js";
 import { runtimePathForTarget } from "../runtime-resolve.js";
 import {
   BOOL,
+  DYN,
   F64,
   type IrExpr,
   type IrStmt,
@@ -224,6 +225,135 @@ function nodeModuleType(lowerer: Lowerer, node: ts.Expression): boolean {
   return rendered === "ScriptcModule" || rendered === "NodeModule" || rendered === "NodeJS.Module";
 }
 
+/** `module.exports` used only for its truthiness (the UMD test `typeof
+ * module !== "undefined" && module.exports`): the exports object starts as
+ * a fresh object, so it stays truthy unless the module replaces it with a
+ * value that can be falsy. True when every `module.exports = value` in the
+ * file assigns an object or function. */
+function moduleExportsAlwaysTruthy(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+  if (!truthinessOnly(expr)) return false;
+  const sf = expr.getSourceFile();
+  if (isNodeEsmFile(sf, lowerer.program)) return false;
+  let truthy = true;
+  ts.walkPreorder(sf, (node) => {
+    if (
+      !ts.isBinaryExpression(node) ||
+      node.operatorToken.kind < ts.SyntaxKind.FirstAssignment ||
+      node.operatorToken.kind > ts.SyntaxKind.LastAssignment
+    )
+      return undefined;
+    let target = node.left;
+    while (ts.isParenthesizedExpression(target)) target = target.expression;
+    if (
+      !ts.isPropertyAccessExpression(target) ||
+      target.name.text !== "exports" ||
+      !isCjsModuleGlobal(lowerer, target.expression)
+    )
+      return undefined;
+    const type = lowerer.typeOf(node.right);
+    const objectLike = (t: ts.Type): boolean =>
+      t.isUnionType()
+        ? ts.constituentTypes(t).every(objectLike)
+        : (t.flags & ts.TypeFlags.Object) !== 0 || (t.flags & ts.TypeFlags.NonPrimitive) !== 0;
+    if (node.operatorToken.kind !== ts.SyntaxKind.EqualsToken || !objectLike(type)) {
+      truthy = false;
+      return "stop";
+    }
+    return undefined;
+  });
+  return truthy;
+}
+
+/** Whether only the truthiness of `node` can be observed: a condition, a
+ * `!` operand, or a `&&`/`||` operand of an expression that is itself used
+ * only for its truthiness. */
+function truthinessOnly(node: ts.Expression): boolean {
+  let child: ts.Node = node;
+  for (let parent = node.parent; ; child = parent, parent = parent.parent) {
+    if (ts.isParenthesizedExpression(parent)) continue;
+    if (ts.isPrefixUnaryExpression(parent))
+      return parent.operator === ts.SyntaxKind.ExclamationToken;
+    if (
+      ts.isBinaryExpression(parent) &&
+      (parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+    )
+      continue;
+    if (ts.isIfStatement(parent) || ts.isWhileStatement(parent) || ts.isDoStatement(parent))
+      return parent.expression === child;
+    if (ts.isForStatement(parent)) return parent.condition === child;
+    if (ts.isConditionalExpression(parent)) return parent.condition === child;
+    return false;
+  }
+}
+
+/** `this` at the top level of a CommonJS module (directly, or inside
+ * arrow functions there): Node calls the module wrapper with `this` bound
+ * to the module's original exports object. */
+export function isCjsTopLevelThis(lowerer: Lowerer, node: ts.Node): boolean {
+  if (node.kind !== ts.SyntaxKind.ThisKeyword) return false;
+  for (let p: ts.Node | undefined = node.parent; p && !ts.isSourceFile(p); p = p.parent) {
+    if (ts.isArrowFunction(p)) continue;
+    if (
+      ts.isFunctionLike(p) ||
+      ts.isClassDeclaration(p) ||
+      ts.isClassExpression(p) ||
+      ts.isClassStaticBlockDeclaration(p)
+    )
+      return false;
+  }
+  return isCjsJsFile(node.getSourceFile(), lowerer.program);
+}
+
+export function usesCjsTopLevelThis(lowerer: Lowerer, sf: ts.SourceFile): boolean {
+  if (!isCjsJsFile(sf, lowerer.program)) return false;
+  let found = false;
+  ts.walkPreorder(sf, (node) => {
+    if (
+      node !== sf &&
+      !ts.isArrowFunction(node) &&
+      (ts.isFunctionLike(node) ||
+        ts.isClassDeclaration(node) ||
+        ts.isClassExpression(node) ||
+        ts.isClassStaticBlockDeclaration(node))
+    )
+      return "skip";
+    if (node.kind === ts.SyntaxKind.ThisKeyword) {
+      found = true;
+      return "stop";
+    }
+    return undefined;
+  });
+  return found;
+}
+
+/** The value of top-level `this` in a CommonJS module: the module's own
+ * object standing for its original exports, created when the module starts
+ * (lowerFileInit). Exports themselves are the static export table, so a
+ * property access through `this` would read or write an object no requirer
+ * sees; it keeps a named refusal instead. Typeof, truthiness, identity and
+ * passing the value along (the UMD wrapper `(function (root) { ... })(this)`)
+ * behave as in Node. */
+export function lowerCjsTopLevelThis(lowerer: Lowerer, expr: ts.Expression): IrExpr | null {
+  if (!isCjsTopLevelThis(lowerer, expr)) return null;
+  const global = lowerer.cjsExportsThis.get(expr.getSourceFile());
+  if (!global) return null;
+  let receiver: ts.Node = expr;
+  while (ts.isParenthesizedExpression(receiver.parent)) receiver = receiver.parent;
+  const access = receiver.parent;
+  if (
+    (ts.isPropertyAccessExpression(access) || ts.isElementAccessExpression(access)) &&
+    access.expression === receiver
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      access,
+      "property access through top-level 'this' in a CommonJS module (it is module.exports; spell exports.<name>)",
+    );
+  }
+  return varRef(global.id, DYN, locOf(expr));
+}
+
 function optionalModule(
   lowerer: Lowerer,
   node: ts.Expression,
@@ -309,6 +439,8 @@ export function lowerNodeModuleProperty(
   if (!direct && !nodeModuleType(lowerer, expr.expression)) return null;
   if (expr.questionDotToken) return null;
   const member = expr.name.text;
+  if (member === "exports" && direct && moduleExportsAlwaysTruthy(lowerer, expr))
+    return boolLit(true, locOf(expr));
   if (member === "exports" || member === "require") return null;
   let moduleRef = direct
     ? cjsModuleRef(lowerer, expr.expression)

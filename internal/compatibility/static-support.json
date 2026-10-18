@@ -147,6 +147,7 @@
     "node-builtin.process.rows": ["tests/corpus/2992-stream-rows.ts", "tests/harness/terminal-geometry.test.ts"],
     "node-builtin.process.columns": ["tests/corpus/1448-stream-columns.ts", "tests/harness/terminal-geometry.test.ts"],
     "node-builtin.process.exitCode": ["tests/corpus/5809-process-exit-and-rejections.cjs", "tests/corpus/2941-process-exit-code.ts", "tests/corpus/2942-process-exit-code-override.ts", "tests/corpus/2943-process-exit-code-invalid.ts", "tests/corpus/2944-process-exit-code-wrap.ts"],
+    "node-builtin.punycode": ["tests/corpus/6122-punycode-conversions.ts", "tests/corpus/6124-punycode-require-warnings.cjs", "tests/corpus/6126-punycode-dependency/main.cjs"],
     "node-builtin.querystring": ["tests/corpus/957-builtins-namespace.ts", "tests/corpus/2917-builtin-callable-widths.ts"],
     "node-builtin.readline": ["tests/corpus/1475-readline-closed-stdin.ts"],
     "node-builtin.stream": ["tests/corpus/1685-stream-readable-basics.ts", "tests/corpus/1746-stream-for-await.ts", "tests/corpus/1814-stream-pipeline.cjs", "tests/corpus/2629-stream-consumers.ts", "tests/corpus/2861-readable-iterator-close.ts"],
