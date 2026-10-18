@@ -7,8 +7,8 @@
     "tierItemCount": 3454,
     "tiers": {
       "static": {
-        "audit-partial": 1157,
-        "verify-gap": 2170,
+        "audit-partial": 1164,
+        "verify-gap": 2163,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -58540,12 +58540,16 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:punycode",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.punycode.decode",
+          "tests": [
+            "tests/corpus/6122-punycode-conversions.ts",
+            "tests/corpus/6124-punycode-require-warnings.cjs",
+            "tests/corpus/6126-punycode-dependency/main.cjs"
+          ]
         }
       }
     },
@@ -58565,12 +58569,16 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:punycode",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.punycode.encode",
+          "tests": [
+            "tests/corpus/6122-punycode-conversions.ts",
+            "tests/corpus/6124-punycode-require-warnings.cjs",
+            "tests/corpus/6126-punycode-dependency/main.cjs"
+          ]
         }
       }
     },
@@ -58590,12 +58598,16 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:punycode",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.punycode.toASCII",
+          "tests": [
+            "tests/corpus/6122-punycode-conversions.ts",
+            "tests/corpus/6124-punycode-require-warnings.cjs",
+            "tests/corpus/6126-punycode-dependency/main.cjs"
+          ]
         }
       }
     },
@@ -58615,12 +58627,16 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:punycode",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.punycode.toUnicode",
+          "tests": [
+            "tests/corpus/6122-punycode-conversions.ts",
+            "tests/corpus/6124-punycode-require-warnings.cjs",
+            "tests/corpus/6126-punycode-dependency/main.cjs"
+          ]
         }
       }
     },
@@ -58665,12 +58681,16 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:punycode",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.punycode.ucs2.decode",
+          "tests": [
+            "tests/corpus/6122-punycode-conversions.ts",
+            "tests/corpus/6124-punycode-require-warnings.cjs",
+            "tests/corpus/6126-punycode-dependency/main.cjs"
+          ]
         }
       }
     },
@@ -58690,12 +58710,16 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:punycode",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.punycode.ucs2.encode",
+          "tests": [
+            "tests/corpus/6122-punycode-conversions.ts",
+            "tests/corpus/6124-punycode-require-warnings.cjs",
+            "tests/corpus/6126-punycode-dependency/main.cjs"
+          ]
         }
       }
     },
@@ -58715,12 +58739,16 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:punycode",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.punycode.version",
+          "tests": [
+            "tests/corpus/6122-punycode-conversions.ts",
+            "tests/corpus/6124-punycode-require-warnings.cjs",
+            "tests/corpus/6126-punycode-dependency/main.cjs"
+          ]
         }
       }
     },

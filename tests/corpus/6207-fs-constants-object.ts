@@ -5,7 +5,10 @@
 import * as fs from "node:fs";
 import { constants } from "node:fs";
 
-console.log(JSON.stringify(Object.entries(fs.constants)));
+// libuv's Windows-only open flags (0 elsewhere) joined the object in later
+// Node 24 releases; the rest is the same in every one.
+const windowsOnly = ["UV_FS_O_TEMPORARY", "UV_FS_O_SHORT_LIVED", "UV_FS_O_SEQUENTIAL", "UV_FS_O_RANDOM"];
+console.log(JSON.stringify(Object.entries(fs.constants).filter(([k]) => !windowsOnly.includes(k))));
 console.log(fs.constants.O_RDONLY, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, constants.S_IFMT, constants.S_IFDIR);
 console.log(constants.W_OK, fs.constants.F_OK, constants.COPYFILE_EXCL, fs.constants.UV_FS_O_FILEMAP);
 const c: unknown = fs.constants;

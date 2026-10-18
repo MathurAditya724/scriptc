@@ -182,6 +182,7 @@ export function genResultThunkFor(
   sym = mangleGenResThunk(host.resolveThunks.size);
   host.resolveThunks.set(key, sym);
   const shape = host.recordsById.get(recT.shapeId);
+  const base = host.nullableUnions.fieldBase(recT.shapeId);
   const valueT = shape?.fields.find((f) => f.name === "value")?.type;
   if (!shape || !valueT)
     throw new InternalCompilerError("llvm emitter bug: genResume record lacks its value field");
@@ -242,7 +243,7 @@ export function genResultThunkFor(
       `  %r = call ptr @${mangleRecordNew(recT.shapeId)}()`,
       `  %d = call zeroext i1 @scr_gen_done(ptr %g)`,
       `  %dz = zext i1 %d to i8`,
-      `  %dp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${doneIdxD + 1}`,
+      `  %dp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${doneIdxD + base}`,
       `  store i8 %dz, ptr %dp`,
       `  %has = call zeroext i1 @scr_gen_out_has(ptr %g)`,
       `  br i1 %has, label %take, label %undefv`,
@@ -259,7 +260,7 @@ export function genResultThunkFor(
       `  br label %join`,
       `join:`,
       `  %v = load ptr, ptr %vslot`,
-      `  %vp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${valueIdxD + 1}`,
+      `  %vp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${valueIdxD + base}`,
       `  store ptr %v, ptr %vp`,
       `  ret ptr %r`,
       `}`,
@@ -293,7 +294,7 @@ export function genResultThunkFor(
     `  %r = call ptr @${mangleRecordNew(recT.shapeId)}()`,
     `  %d = call zeroext i1 @scr_gen_done(ptr %g)`,
     `  %dz = zext i1 %d to i8`,
-    `  %dp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${doneIdx + 1}`,
+    `  %dp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${doneIdx + base}`,
     `  store i8 %dz, ptr %dp`,
     `  br i1 %d, label %doneb, label %susp`,
   ];
@@ -410,7 +411,7 @@ export function genResultThunkFor(
     `  br label %join`,
     `join:`,
     `  %v = load ptr, ptr %vslot`,
-    `  %vp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${valueIdx + 1}`,
+    `  %vp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${valueIdx + base}`,
     // An inline value field copies the box's bits and drops the box.
     ...(host.inlineUnions.record(valueT)
       ? [
@@ -1092,7 +1093,8 @@ export function settledStoreFor(
     return { tag, arm };
   };
   const fieldIndex = (arm: IrType & { kind: "record" }, field: string): number =>
-    host.recordsById.get(arm.shapeId)!.fields.findIndex((f) => f.name === field) + 1;
+    host.recordsById.get(arm.shapeId)!.fields.findIndex((f) => f.name === field) +
+    host.nullableUnions.fieldBase(arm.shapeId);
   const fulfilled = armOf("value");
   const rejected = armOf("reason");
   const valueT = host.recordsById

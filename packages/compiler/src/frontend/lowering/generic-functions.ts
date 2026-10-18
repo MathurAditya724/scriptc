@@ -15,7 +15,7 @@ import { isJsSourceFile, locOf } from "../program.js";
 import { typeKey } from "../type-mapper.js";
 import { PoisonError, dynFallbackType, neverTaintedJsType, newFnCtx } from "./lowerer.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
-import { findGenericMethodOn, type ClassInfo } from "./lower-classes.js";
+import { findGenericMethodOn, storedClassValueType, type ClassInfo } from "./lower-classes.js";
 import { nsPathPrefix } from "./lower-namespaces.js";
 import { declSymbolOf } from "./lower-modules.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
@@ -292,6 +292,8 @@ export function genericCallInstance(
     (_param, i) => expr.arguments[i] ?? expr,
   );
   const retTs = lowerer.checker.getReturnTypeOfSignature(rsig);
+  const local = localClassResultInstance(lowerer, expr, info, rsig, params, retTs);
+  if (local) return local;
   const returnType = lowerer.mapTypeOf(retTs);
   if (!returnType) {
     fenceGenericSignatureResult(lowerer, expr, retTs);
@@ -329,6 +331,150 @@ export function genericCallInstance(
   return internGenericInstance(lowerer, expr, info, params, returnType, (tsBindings) =>
     lowerer.inferTypeParamBindings(expr, info, rsig, tsBindings),
   );
+}
+
+/** A generic factory whose result is one of its own local classes
+ * (`function base<T>(v: T) { return class { value: T = v }; }`). Each
+ * instance has its own class, so the instance is keyed on its bindings and
+ * the result maps inside it, where the local class takes the instance's
+ * name and bindings. */
+function localClassResultInstance(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  info: GenericFnInfo,
+  rsig: ts.Signature,
+  params: ParamShape[],
+  retTs: ts.Type,
+): GenericInstance | null {
+  if (!localClassOfResult(lowerer, info, retTs)) return null;
+  const tsBindings = new Map<ts.Symbol, ts.Type>();
+  const bindings = lowerer.inferTypeParamBindings(expr, info, rsig, tsBindings);
+  const bindingKey = info.typeParams
+    .map((tp) => {
+      const bound = bindings.get(tp);
+      return bound ? typeKey(bound) : "?";
+    })
+    .join(",");
+  const pending: IrType = { kind: "void" };
+  const inst = internGenericInstance(lowerer, expr, info, params, pending, () => bindings, {
+    extraKey: `@class<${bindingKey}>`,
+    tsBindings,
+  });
+  if (inst.returnType !== pending) return inst;
+  const returnType = withInstanceScope(lowerer, info, inst, () => lowerer.mapTypeOf(retTs));
+  if (!returnType) {
+    fenceGenericSignatureResult(lowerer, expr, retTs);
+    lowerer.badType(expr, retTs);
+  }
+  inst.returnType = returnType;
+  // Values of the class outside the factory (`const b = new B()`, `b.read()`)
+  // carry the instantiated checker type; record which class it names. A
+  // call inside another generic instance can have a type that depends on
+  // that instance's parameters, which no single class answers.
+  if (lowerer.typeParamBindings !== null) return inst;
+  const instance =
+    returnType.kind === "classval"
+      ? lowerer.checker
+          .getConstructSignatures(retTs)
+          .map((sig) => lowerer.checker.getReturnTypeOfSignature(sig))
+      : [retTs];
+  const className =
+    returnType.kind === "classval" || returnType.kind === "object" ? returnType.className : null;
+  if (className !== null)
+    for (const type of instance) lowerer.localClassInstanceTypes.set(type.id, className);
+  return inst;
+}
+
+/** The class value a call of a generic factory returns when the result is
+ * one of the factory's local classes (`class C extends base(42) {}`), or
+ * null for any other call. */
+export function genericLocalClassResult(lowerer: Lowerer, expr: ts.CallExpression): IrType | null {
+  if (!ts.isIdentifier(expr.expression)) return null;
+  const info = lowerer.genericFnOf(expr.expression);
+  if (!info || info.implicitParams) return null;
+  const rsig = lowerer.checker.getResolvedSignature(expr);
+  if (!rsig || !localClassOfResult(lowerer, info, lowerer.checker.getReturnTypeOfSignature(rsig)))
+    return null;
+  return genericCallInstance(lowerer, expr, info).returnType;
+}
+
+/** The type of a `const` binding whose initializer calls a generic factory
+ * returning one of its local classes (`const B = base(7)`), or constructs
+ * such a class (`const b = new B()`); null for any other binding. */
+export function genericLocalClassBinding(lowerer: Lowerer, node: ts.Node): IrType | null {
+  const decl = node.parent;
+  if (
+    !ts.isIdentifier(node) ||
+    !decl ||
+    !ts.isVariableDeclaration(decl) ||
+    decl.name !== node ||
+    !decl.initializer ||
+    (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) === 0
+  )
+    return null;
+  // An `any` binding keeps the checked-dynamic representation.
+  if ((lowerer.typeOf(node).flags & ts.TypeFlags.Any) !== 0) return null;
+  let init = decl.initializer;
+  while (ts.isParenthesizedExpression(init)) init = init.expression;
+  if (ts.isCallExpression(init)) return genericLocalClassResult(lowerer, init);
+  if (!ts.isNewExpression(init)) return null;
+  const constructed = storedClassValueType(lowerer, init.expression);
+  if (constructed?.kind !== "classval") return null;
+  const classDecl = lowerer.classes.get(constructed.className)?.decl;
+  return classDecl && insideGenericFunction(classDecl)
+    ? { kind: "object", className: constructed.className }
+    : null;
+}
+
+/** Whether `node` is declared inside a function with type parameters. */
+function insideGenericFunction(node: ts.Node): boolean {
+  for (let parent = node.parent; parent && !ts.isSourceFile(parent); parent = parent.parent)
+    if (ts.isFunctionLike(parent) && (parent.typeParameters?.length ?? 0) > 0) return true;
+  return false;
+}
+
+/** The class declared inside a generic function that `type` is the
+ * constructor or instance type of, or null. */
+function localClassOfResult(
+  lowerer: Lowerer,
+  info: GenericFnInfo,
+  type: ts.Type,
+): ts.ClassLikeDeclaration | null {
+  const symbol = type.getSymbol();
+  if (!symbol || !(symbol.flags & ts.SymbolFlags.Class)) return null;
+  const decl = lowerer.checker.valueDeclarationOf(symbol);
+  if (!decl || !(ts.isClassExpression(decl) || ts.isClassDeclaration(decl))) return null;
+  for (let parent = decl.parent; parent && !ts.isSourceFile(parent); parent = parent.parent)
+    if (parent === info.decl) return decl;
+  return null;
+}
+
+/** Runs `fn` under an instance's type bindings and local-class names, as
+ * its body lowers. */
+function withInstanceScope<T>(
+  lowerer: Lowerer,
+  info: GenericFnInfo,
+  inst: GenericInstance,
+  fn: () => T,
+): T {
+  const prevBindings = lowerer.typeParamBindings;
+  const prevTsBindings = lowerer.typeParamTsBindings;
+  const previousPath = lowerer.genericInstantiationPath;
+  const prevContext = lowerer.instantiationContext;
+  lowerer.typeParamBindings = inst.bindings;
+  lowerer.typeParamTsBindings = inst.tsBindings ?? null;
+  lowerer.genericInstantiationPath = inst.path;
+  lowerer.instantiationContext = `instantiating '${info.baseName}' with ${inst.typeArgsText}`;
+  lowerer.localClassInstantiations.push({ owner: info.decl, name: inst.name });
+  try {
+    return fn();
+  } finally {
+    lowerer.localClassInstantiations.pop();
+    lowerer.typeParamBindings = prevBindings;
+    lowerer.typeParamTsBindings = prevTsBindings;
+    lowerer.genericInstantiationPath = previousPath;
+    lowerer.instantiationContext = prevContext;
+  }
 }
 
 /** The one instance table both instantiation routes share: key identity IS

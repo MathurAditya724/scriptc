@@ -84,6 +84,7 @@ ScrStr *scr_num_to_fixed(double x, double fraction_digits);
  * Invalid digit counts throw V8's RangeError (NULL). Result +1. */
 ScrStr *scr_num_to_precision(double x, double precision, bool has_precision);
 ScrStr *scr_num_to_exponential_digits(double x, double fraction_digits);
+ScrStr *scr_num_to_string_radix_f64(double value, double radix);
 
 /* Object.is over two numbers — the spec's SameValue on doubles: NaN
  * equals NaN, +0 differs from -0, everything else is ==. Never throws. */

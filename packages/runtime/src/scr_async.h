@@ -212,6 +212,11 @@ void scr_process_on_warning(ScrDyn *fn);
 void scr_process_off_warning(ScrDyn *fn);
 void scr_process_emit_warning(ScrDyn *args);
 void scr_emit_warning(const char *name, const char *code, ScrStr *message);
+/* node:punycode's first load (scr_async_dyn.c): later calls are module
+ * cache hits. The first reports DEP0040 when `report` (false for a require
+ * made from node_modules) — at once for a static ES import, which Node
+ * links before any module evaluates, otherwise on the next tick. */
+void scr_punycode_warn(bool immediate, bool report);
 /* scr_emit_warning once a 'warning' listener exists (scr_lib.c; set by the
  * listener registration): units that cannot link the dyn-async unit route
  * their warnings through it, and print the default report otherwise. */
