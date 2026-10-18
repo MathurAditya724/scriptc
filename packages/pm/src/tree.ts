@@ -207,3 +207,26 @@ export function isSourceFile(rel: string): boolean {
   if (!/\.[cm]?tsx?$/.test(rel) || /\.d\.[cm]?ts$/.test(rel)) return false;
   return !/\.(test|spec|bench)\.[cm]?tsx?$/.test(rel);
 }
+
+/** The package's ambient declaration files: the `.d.ts` files among
+ * `files` (relative to the package dir) that its tsconfig `include`
+ * covers. Its build loads them as roots without importing them (module
+ * augmentations such as typescript-estree's `typings/typescript.d.ts`). */
+export function ambientDeclarationsOf(ts: TsOptions, files: string[]): string[] {
+  const roots: string[] = [];
+  for (const pattern of ts.include) {
+    let base = pattern.split("/*")[0] ?? "";
+    if (base.includes("*")) base = "";
+    if (base.startsWith("..")) continue;
+    if (!roots.includes(base)) roots.push(base);
+  }
+  return files
+    .filter(
+      (file) =>
+        /\.d\.[cm]?ts$/.test(file) &&
+        roots.some((root) =>
+          root === "" ? !file.includes("/") : file === root || file.startsWith(`${root}/`),
+        ),
+    )
+    .sort();
+}

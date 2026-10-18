@@ -48,6 +48,9 @@ export interface ManifestInstance {
   exports: ExportMap;
   publishedFormat: string;
   semanticOptions: SemanticOptions;
+  /** Additive (schema 1): ambient declaration files the package's build
+   * includes without importing them, relative to overlayDir. */
+  ambientDeclarations?: string[];
   source: SourceRef;
   verification: Verification;
 }

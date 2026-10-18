@@ -30,6 +30,7 @@ import type { RepoRef } from "./repo.js";
 import { importsOf, tokenize } from "./tokens.js";
 import type { TsOptions } from "./tree.js";
 import {
+  ambientDeclarationsOf,
   effectiveTsconfig,
   isSourceFile,
   locatePackageDir,
@@ -451,6 +452,7 @@ async function verifyAndMaterialize(
   if (mapped.unmapped.length > 0) checks.push(`unmapped ${mapped.unmapped.join(", ")}`);
   if (ts.partial) checks.push("tsconfig partial");
   const useDefine = useDefineForClassFields(ts);
+  const ambient = ambientDeclarationsOf(ts, files);
   if (!useDefine) checks.push("useDefineForClassFields=false (scriptc uses define semantics)");
   const record: ManifestInstance = {
     installedDir: instance.installedDir,
@@ -464,6 +466,7 @@ async function verifyAndMaterialize(
       experimentalDecorators: experimentalDecorators,
       esModuleInterop: optionBool(ts, "esModuleInterop") ?? false,
     },
+    ...(ambient.length > 0 ? { ambientDeclarations: ambient } : {}),
     source: { repo: loc.repo, commit: loc.commit, subdir: loc.subdir, strategy: loc.strategy },
     verification: { identity: loc.identity, content: level, surface: surface.level },
   };
