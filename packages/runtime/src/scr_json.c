@@ -1729,13 +1729,40 @@ static bool scr_dyn_typed_ref_prototype(const ScrDyn *value) {
   return view && (view->kind == SCR_DYN_OBJ || view->kind == SCR_DYN_ARR);
 }
 
+/* True when `prototype` is null or an object or function, the values
+ * Object.create and Object.setPrototypeOf accept. Otherwise throws Node's
+ * TypeError, whose message ends with the value's string form. */
+static bool scr_dyn_prototype_valid(const ScrDyn *prototype) {
+  if (scr_dyn_is_object(prototype) || scr_dyn_is_callable(prototype)) return true;
+  if (scr_exc_pending()) return false;
+  ScrStr *text = prototype->kind == SCR_DYN_SYMBOL
+    ? prototype->v.symbol.render(prototype->v.symbol.value) : scr_dyn_string_coerce_js(prototype);
+  if (!text) return false;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Object prototype may only be an Object or null: ");
+  scr_jb_put_str(&b, text);
+  scr_str_release(text);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return false;
+}
+
+/* A valid receiver or prototype whose kind this operation does not handle. */
+static void scr_dyn_prototype_unsupported(const char *operation) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, operation);
+  scr_jb_puts(&b, " with this value is not supported yet");
+  scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+}
+
 ScrDyn *scr_dyn_obj_create(ScrDyn *prototype) {
+  if (!scr_dyn_prototype_valid(prototype)) return NULL;
   if (prototype != scr_builtin_object_prototype && scr_dyn_class_reflection_fence(prototype)) return NULL;
   bool typed = scr_dyn_typed_ref_prototype(prototype);
   if (scr_exc_pending()) return NULL;
   if (prototype->kind != SCR_DYN_OBJ && prototype->kind != SCR_DYN_ARR && prototype->kind != SCR_DYN_NULL && !typed) {
-    static const char message[] = "Object prototype may only be an Object or null";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    scr_dyn_prototype_unsupported("Object.create");
     return NULL;
   }
   ScrDyn *object = prototype->kind == SCR_DYN_NULL ? scr_dyn_new_obj_null_proto() : scr_dyn_new_obj();
@@ -1786,12 +1813,7 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
    * only check. */
   if (object->kind == SCR_DYN_BOOL || object->kind == SCR_DYN_NUM || object->kind == SCR_DYN_STR ||
       object->kind == SCR_DYN_BIGINT || object->kind == SCR_DYN_SYMBOL) {
-    bool valid = scr_dyn_is_object(prototype) || scr_dyn_is_callable(prototype);
-    if (scr_exc_pending()) return NULL;
-    if (valid) return scr_dyn_retain(object);
-    static const char message[] = "Object prototype may only be an Object or null";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-    return NULL;
+    return scr_dyn_prototype_valid(prototype) ? scr_dyn_retain(object) : NULL;
   }
   if (scr_dyn_class_reflection_fence(object) || scr_dyn_class_reflection_fence(prototype)) return NULL;
   if (object->kind == SCR_DYN_TYPED_REF) {
@@ -1821,12 +1843,12 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
   }
+  if (!scr_dyn_prototype_valid(prototype)) return NULL;
   bool typed = scr_dyn_typed_ref_prototype(prototype);
   if (scr_exc_pending()) return NULL;
   if ((object->kind != SCR_DYN_OBJ && object->kind != SCR_DYN_ARR) ||
       (prototype->kind != SCR_DYN_OBJ && prototype->kind != SCR_DYN_ARR && prototype->kind != SCR_DYN_FUNC && prototype->kind != SCR_DYN_NULL && !typed)) {
-    static const char message[] = "Object prototype may only be an Object or null";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    scr_dyn_prototype_unsupported("Object.setPrototypeOf");
     return NULL;
   }
   for (const ScrDyn *current = scr_dyn_chain_link(prototype); current;) {
