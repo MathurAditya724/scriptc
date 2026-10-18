@@ -608,7 +608,9 @@ export type StaticCallableProjection =
   | { kind: "promisified-exec-file" }
   | { kind: "promisified-exec" }
   | { kind: "promisified-builtin"; module: string; member: string }
-  | { kind: "promisified-zlib"; member: string };
+  | { kind: "promisified-zlib"; member: string }
+  | { kind: "promisified-crypto"; member: string }
+  | { kind: "promisified-dns"; member: string };
 
 /** Own-property lookup for the surface tables. They are plain object
  * literals, so a bare `table[name]` would also find Object.prototype

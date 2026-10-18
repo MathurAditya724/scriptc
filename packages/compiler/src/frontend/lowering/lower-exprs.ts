@@ -842,7 +842,9 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         projection?.kind === "promisified-exec-file" ||
         projection?.kind === "promisified-exec" ||
         projection?.kind === "promisified-builtin" ||
-        projection?.kind === "promisified-zlib"
+        projection?.kind === "promisified-zlib" ||
+        projection?.kind === "promisified-crypto" ||
+        projection?.kind === "promisified-dns"
       ) {
         lowerer.unsupported(
           "SC1090",

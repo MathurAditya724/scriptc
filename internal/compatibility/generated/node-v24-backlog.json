@@ -76093,6 +76093,10 @@
             "tests/corpus/5629-promisify-stream.ts",
             "tests/corpus/5630-promisify-zlib.ts",
             "tests/fixtures/node-types/promisify-zlib.ts",
+            "tests/corpus/5631-promisify-crypto.ts",
+            "tests/fixtures/node-types/promisify-crypto.ts",
+            "tests/corpus/5632-promisify-dns.ts",
+            "tests/fixtures/node-types/promisify-dns.ts",
             "tests/harness/project-config.test.ts"
           ]
         }

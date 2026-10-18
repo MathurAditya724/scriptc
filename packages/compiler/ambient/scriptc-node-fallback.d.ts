@@ -3174,6 +3174,69 @@ declare module "util" {
   export function promisify(
     fn: typeof import("node:stream").finished,
   ): typeof import("node:stream/promises").finished;
+  /* The crypto callback functions: the promise settles with the callback's
+   * value. */
+  export function promisify(
+    fn: typeof import("node:crypto").randomBytes,
+  ): (size: number) => Promise<Buffer>;
+  export function promisify(
+    fn: typeof import("node:crypto").pbkdf2,
+  ): (
+    password: string | Uint8Array,
+    salt: string | Uint8Array,
+    iterations: number,
+    keylen: number,
+    digest: string,
+  ) => Promise<Buffer>;
+  export function promisify(
+    fn: typeof import("node:crypto").scrypt,
+  ): (
+    password: import("node:crypto").BinaryLike,
+    salt: import("node:crypto").BinaryLike,
+    keylen: number,
+    options?: import("node:crypto").ScryptOptions,
+  ) => Promise<Buffer>;
+  export function promisify(
+    fn: typeof import("node:crypto").hkdf,
+  ): (
+    digest: string,
+    ikm: import("node:crypto").BinaryLike | import("node:crypto").KeyObject,
+    salt: import("node:crypto").BinaryLike,
+    info: import("node:crypto").BinaryLike,
+    keylen: number,
+  ) => Promise<ArrayBuffer>;
+  export function promisify(
+    fn: typeof import("node:crypto").randomFill,
+  ): <T extends ArrayBufferView | ArrayBufferLike>(
+    buffer: T,
+    offset?: number,
+    size?: number,
+  ) => Promise<T>;
+  export function promisify(fn: typeof import("node:crypto").randomInt): {
+    (max: number): Promise<number>;
+    (min: number, max: number): Promise<number>;
+  };
+  export function promisify(
+    fn: typeof import("node:crypto").generateKey,
+  ): (
+    type: "hmac" | "aes",
+    options: { length: number },
+  ) => Promise<import("node:crypto").KeyObject>;
+  /* dns.lookup's promise settles with { address, family } (the address
+   * array with options.all), and lookupService's with { hostname, service }. */
+  export function promisify(fn: typeof import("node:dns").lookup): {
+    (
+      hostname: string,
+      options: import("node:dns").LookupAllOptions,
+    ): Promise<import("node:dns").LookupAddress[]>;
+    (
+      hostname: string,
+      options?: number | import("node:dns").LookupOneOptions,
+    ): Promise<import("node:dns").LookupAddress>;
+  };
+  export function promisify(
+    fn: typeof import("node:dns").lookupService,
+  ): (address: string, port: number) => Promise<{ hostname: string; service: string }>;
   /* Declared surface without full lowering (the type-level tolerance
    * story: guarded/diagnostic-path code must TYPECHECK; a reached use
    * without a lowering fences at its site). inspect's options carry the
