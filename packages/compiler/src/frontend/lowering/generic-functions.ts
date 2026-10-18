@@ -94,6 +94,11 @@ export interface GenericFnInfo {
    * checker types key an instantiation, exactly the generic machinery —
    * the untyped params ARE the type parameters (see implicitCallInstance). */
   implicitParams?: (ts.Symbol | null)[];
+  /** Implicit-any monomorphization of destructured object parameters
+   * (implicitPatternsOf): parallel to decl.parameters, the destructured
+   * names where the slot binds the call site's object type. Computed on
+   * first use. */
+  implicitPatterns?: (ImplicitPattern | null)[];
 }
 
 export interface GenericInstance {
@@ -132,6 +137,8 @@ export interface GenericInstance {
    * any-params poisoned it) — the body lowers in return-INFERENCE mode
    * (returnType holds the DYN recursion pin until the post-pass settles). */
   implicitInferReturn?: true;
+  /** An erased instance (every type parameter bound to `unknown`). */
+  erased?: true;
 }
 
 /** Defaults bind during inference; collection only resolves symbols in
@@ -716,6 +723,7 @@ export function lowerGenericInstance(
   lowerer.fnStack.push(fnCtx);
   lowerer.localClassInstantiations.push({ owner: decl, name: inst.name });
   lowerer.genericInstantiationPath = inst.path;
+  if (inst.erased) lowerer.erasingDepth++;
   try {
     // Static specializations bind lexical this only when the caller
     // proved its exact receiver. Other instances retain the fence;
@@ -818,6 +826,7 @@ export function lowerGenericInstance(
     lowerer.instantiationContext = prevContext;
     lowerer.localClassInstantiations.pop();
     lowerer.suppressStats = prevSuppress;
+    if (inst.erased) lowerer.erasingDepth--;
   }
 }
 
@@ -927,6 +936,29 @@ function runtimeOptionalHofGenericBinding(
   return { typeParam, type: lowerer.runtimeOptionalType(receiver.elem) };
 }
 
+/** The erased instance of a generic declaration: every type parameter
+ * bound to `unknown`, the function JavaScript runs for any type arguments.
+ * Values of generic methods (dynamic dispatch, interface views) call it. */
+export function erasedGenericInstance(
+  lowerer: Lowerer,
+  blame: ts.Node,
+  info: GenericFnInfo,
+): GenericInstance {
+  lowerer.erasingDepth++;
+  try {
+    const instance = genericValueInstance(
+      lowerer,
+      blame,
+      info,
+      new Map(info.typeParams.map((tp) => [tp, DYN])),
+    );
+    instance.erased = true;
+    return instance;
+  } finally {
+    lowerer.erasingDepth--;
+  }
+}
+
 /** The instance a pinned VALUE reference names: the declaration's modes
  * over the DECLARED types mapped under the bindings (mapType's resolver
  * substitutes — the instance-body trick), which is the same result the
@@ -934,7 +966,7 @@ function runtimeOptionalHofGenericBinding(
  * one instance per key. */
 function genericValueInstance(
   lowerer: Lowerer,
-  ref: ts.Expression,
+  ref: ts.Node,
   info: GenericFnInfo,
   bindings: Map<ts.Symbol, IrType>,
 ): GenericInstance {
@@ -1098,6 +1130,114 @@ function broadPromiseParam(lowerer: Lowerer, type: ts.Type): boolean {
   );
 }
 
+/** A destructured object parameter (`function f({ Base, name })`) whose
+ * names bind the call site argument's property types. */
+export interface ImplicitPattern {
+  elements: { property: string; symbol: ts.Symbol }[];
+}
+
+/** The destructured object parameters of a JS function-like that bind like
+ * implicit type parameters: every element a plain name (optionally renamed
+ * from an identifier or string key) with no default, no rest element, and
+ * no write in the body, under a broad inferred type. Parallel to
+ * decl.parameters. */
+export function implicitPatternsOf(
+  lowerer: Lowerer,
+  decl: ts.FunctionDeclaration | ts.MethodDeclaration | ts.FunctionExpression | ts.ArrowFunction,
+): (ImplicitPattern | null)[] {
+  return decl.parameters.map((param): ImplicitPattern | null => {
+    if (!ts.isObjectBindingPattern(param.name) || !decl.body) return null;
+    if (param.dotDotDotToken || param.questionToken || param.initializer) return null;
+    const elements: ImplicitPattern["elements"] = [];
+    for (const element of param.name.elements) {
+      if (element.dotDotDotToken || element.initializer || !ts.isIdentifier(element.name))
+        return null;
+      const key = element.propertyName ?? element.name;
+      if (!ts.isIdentifier(key) && !ts.isStringLiteral(key)) return null;
+      const symbol = lowerer.checker.getSymbolAtLocation(element.name);
+      if (!symbol || paramWrittenInBody(lowerer, decl.body, symbol, element.name.text)) return null;
+      // A JSDoc or contextual type names the properties: keep its ABI.
+      if ((lowerer.typeOf(element.name).flags & ts.TypeFlags.Any) === 0) return null;
+      elements.push({ property: key.text, symbol });
+    }
+    return elements.length > 0 ? { elements } : null;
+  });
+}
+
+/** The type a destructured parameter takes at one call site (the object's
+ * own representation, a record or a checked value) and the checker type
+ * each destructured name binds. An object literal argument types the names
+ * from its property expressions, which see the enclosing instance's
+ * bindings (`makeClass({ Base, name })` inside a specialized
+ * `extend(Base, name)`); any other argument uses its checker type. Null
+ * when the argument lacks a destructured property, or passes a class the
+ * callee itself defines: each such class would instantiate the callee
+ * again (a static `extend` calling `makeClass({ Base: this })`). */
+function implicitPatternBinding(
+  lowerer: Lowerer,
+  callee: ts.Node,
+  pattern: ImplicitPattern,
+  arg: ts.Expression,
+): { record: IrType; types: Map<ts.Symbol, ts.Type> } | null {
+  let literal: ts.Expression = arg;
+  while (ts.isParenthesizedExpression(literal)) literal = literal.expression;
+  const types = new Map<ts.Symbol, ts.Type>();
+  if (ts.isObjectLiteralExpression(literal)) {
+    const values = new Map<string, ts.Expression>();
+    /** Shorthand properties name the binding they read. */
+    const shorthand = new Map<string, ts.Symbol>();
+    for (const property of literal.properties) {
+      if (ts.isShorthandPropertyAssignment(property) && ts.isIdentifier(property.name)) {
+        values.set(property.name.text, property.name);
+        const read = lowerer.checker.getShorthandAssignmentValueSymbol(property);
+        if (read) shorthand.set(property.name.text, read);
+      } else if (
+        ts.isPropertyAssignment(property) &&
+        (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name))
+      )
+        values.set(property.name.text, property.initializer);
+      else return null;
+    }
+    for (const element of pattern.elements) {
+      const value = values.get(element.property);
+      if (!value) return null;
+      const read = shorthand.get(element.property);
+      const type = (read && lowerer.implicitParamTypes?.get(read)) ?? lowerer.typeOf(value);
+      types.set(element.symbol, lowerer.checker.getBaseTypeOfLiteralType(type));
+    }
+    // The object keeps the representation the call site lowers it to; the
+    // destructured names read their static types back out of it.
+    const lowered = tryLowerExpression(lowerer, literal);
+    if (lowered?.type.kind !== "record" && lowered?.type.kind !== "dyn") return null;
+    if (lowered.type.kind === "record") {
+      for (const field of lowerer.shapes.get(lowered.type.shapeId)?.fields ?? [])
+        if (field.type.kind === "classval" && classDefinedIn(lowerer, field.type.className, callee))
+          return null;
+    }
+    return { record: lowered.type, types };
+  }
+  const argType = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(arg));
+  const record = lowerer.mapTypeOf(argType);
+  if (record?.kind !== "record") return null;
+  for (const element of pattern.elements) {
+    const property = lowerer.checker.getPropertyOfType(argType, element.property);
+    if (!property) return null;
+    types.set(element.symbol, lowerer.checker.getTypeOfSymbol(property));
+  }
+  return { record, types };
+}
+
+/** The class is declared inside `scope`. */
+function classDefinedIn(lowerer: Lowerer, className: string, scope: ts.Node): boolean {
+  for (
+    let n: ts.Node | undefined = lowerer.classes.get(className)?.decl ?? undefined;
+    n;
+    n = n.parent
+  )
+    if (n === scope) return true;
+  return false;
+}
+
 /** The implicit-type-parameter slots of a JS function-like: parallel to
  * decl.parameters, the param SYMBOL where the slot is a bindable
  * implicit param (identifier-named, broad inferred/JSDoc type, not
@@ -1142,6 +1282,10 @@ export function implicitAnyParamSymbolsOf(
     hasImplicitParams = true;
     return sym;
   });
+  // Destructured object parameters monomorphize too (implicitPatternsOf);
+  // their slots stay null here.
+  if (!hasImplicitParams && isJsSourceFile(decl.getSourceFile()))
+    hasImplicitParams = implicitPatternsOf(lowerer, decl).some((pattern) => pattern !== null);
   return hasImplicitParams ? out : null;
 }
 
@@ -1413,7 +1557,27 @@ export function implicitCallInstance(
 ): GenericInstance {
   const shapes: ParamShape[] = [];
   const argTypes = new Map<ts.Symbol, ts.Type>();
+  const patterns = (info.implicitPatterns ??= implicitPatternsOf(lowerer, info.decl));
+  /** The destructured names' bound types, which the object's own
+   * representation does not always carry. */
+  const patternKey: string[] = [];
   info.decl.parameters.forEach((param, i) => {
+    const pattern = patterns[i];
+    const patternArg = call.arguments[i];
+    if (pattern && patternArg && !ts.isSpreadElement(patternArg)) {
+      // The argument's object type binds each destructured name, so a
+      // class passed as `{ Base }` keeps its static class type.
+      const bound = implicitPatternBinding(lowerer, info.decl, pattern, patternArg);
+      if (bound) {
+        for (const [symbol, type] of bound.types) {
+          argTypes.set(symbol, type);
+          const mapped = lowerer.mapTypeOf(type);
+          patternKey.push(mapped ? typeKey(mapped) : "?");
+        }
+        shapes.push({ type: bound.record, mode: "required" });
+        return;
+      }
+    }
     const sym = info.implicitParams![i];
     if (!sym) {
       shapes.push(lowerer.paramShape(param));
@@ -1551,7 +1715,7 @@ export function implicitCallInstance(
     }
     shapes.push({ type: bound, mode: "required" });
   });
-  return internImplicitInstance(lowerer, call, info, shapes, argTypes);
+  return internImplicitInstance(lowerer, call, info, shapes, argTypes, patternKey.join(","));
 }
 
 /** The all-dyn DEFAULT instance — today's compiled body exactly: what a
@@ -1584,8 +1748,9 @@ function internImplicitInstance(
   info: GenericFnInfo,
   shapes: ParamShape[],
   argTypes: Map<ts.Symbol, ts.Type>,
+  patternKey = "",
 ): GenericInstance {
-  const key = shapes.map((s) => typeKey(s.type)).join(",");
+  const key = shapes.map((s) => typeKey(s.type)).join(",") + (patternKey ? `|${patternKey}` : "");
   let inst = info.instances.get(key);
   if (inst?.implicitState === "failed")
     lowerer.unsupported("SC1090", blame, `the failed specialization of '${info.baseName}'`);

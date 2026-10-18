@@ -24,7 +24,7 @@ import {
   type ClassInfo,
 } from "./lower-classes.js";
 import { funcTypeFromParamShapes, type ParamShape } from "./call-signatures.js";
-import { implicitDefaultInstance } from "./generic-functions.js";
+import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
 import { errorToStringMethod } from "./error-methods.js";
 import { classCallbackValue, isClassCallback } from "./class-callbacks.js";
 
@@ -222,6 +222,20 @@ export function classMethodValue(
   ) {
     owner = generic.declarer;
     const instance = implicitDefaultInstance(lowerer, owner.decl!, generic.info);
+    params = instance.params;
+    ret = instance.returnType;
+    callee = instance.name;
+  } else if (
+    generic &&
+    !generic.info.implicitParams &&
+    generic.info.typeParams.length > 0 &&
+    generic.declarer.decl &&
+    !lowerer.overrideBelow(info, method) &&
+    !genericOverrideBelow(info, method)
+  ) {
+    // A generic method as a value: its erased instance.
+    owner = generic.declarer;
+    const instance = erasedGenericInstance(lowerer, blame, generic.info);
     params = instance.params;
     ret = instance.returnType;
     callee = instance.name;

@@ -1136,6 +1136,234 @@ static ScrStr *scr_tls_pool_key(ScrStr *host, bool reject_unauthorized, const ch
   return scr_jb_finish(&b);
 }
 
+/* ── the fetch tunnel through an https:// proxy ───────────────────────
+ * One transport carries three stages over the proxy socket: the TLS
+ * session to the proxy (verified against the proxy host), the CONNECT
+ * exchange inside it, then the target's TLS session (verified against
+ * the target host) inside the tunnel. An http:// target uses the
+ * tunnel's plaintext directly. */
+
+enum { SCR_TUN_OUTER = 0, SCR_TUN_SEND, SCR_TUN_HEAD, SCR_TUN_INNER, SCR_TUN_UP };
+
+typedef struct {
+  ScrTlsSock *outer; /* the session to the proxy */
+  ScrTlsSock *inner; /* the session to the target; NULL for http:// */
+  int stage;
+  char *req; /* the CONNECT head */
+  size_t req_len, req_off;
+  char *head; /* the proxy's response head as it arrives */
+  size_t head_len;
+  char *extra; /* tunnel bytes that arrived with the response head */
+  size_t extra_len, extra_off;
+} ScrTlsTunnel;
+
+static ScrTlsSock *scr_tls_cli_sock(ScrNetSocket *sock, ScrTlsCli *cli) {
+  ScrTlsSock *t = calloc(1, sizeof *t);
+  if (!t) scr_tls_oom();
+  mbedtls_ssl_init(&t->ssl);
+  if (mbedtls_ssl_setup(&t->ssl, &cli->conf) != 0) scr_tls_oom();
+  (void)mbedtls_ssl_set_hostname(&t->ssl, cli->hostname);
+  mbedtls_ssl_set_verify(&t->ssl, &scr_tls_vrfy_cb, t);
+  t->sock = sock;
+  t->cli = cli;
+  return t;
+}
+
+/* Reads tunnel plaintext: bytes that arrived with the proxy's head
+ * first, then the proxy session. mbedTLS return conventions. */
+static int scr_tls_tunnel_read(ScrTlsTunnel *tun, unsigned char *buf, size_t len) {
+  if (tun->extra_off < tun->extra_len) {
+    size_t n = tun->extra_len - tun->extra_off;
+    if (n > len) n = len;
+    memcpy(buf, tun->extra + tun->extra_off, n);
+    tun->extra_off += n;
+    return (int)n;
+  }
+  int r = mbedtls_ssl_read(&tun->outer->ssl, buf, len);
+  if (r == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) return 0;
+#if defined(MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET)
+  if (r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) return MBEDTLS_ERR_SSL_WANT_READ;
+#endif
+  return r;
+}
+
+/* The target session's BIOs: records travel inside the proxy session. */
+static int scr_tls_tunnel_bio_send(void *ctx, const unsigned char *buf, size_t len) {
+  ScrTlsTunnel *tun = (ScrTlsTunnel *)ctx;
+  return mbedtls_ssl_write(&tun->outer->ssl, buf, len);
+}
+
+static int scr_tls_tunnel_bio_recv(void *ctx, unsigned char *buf, size_t len) {
+  return scr_tls_tunnel_read((ScrTlsTunnel *)ctx, buf, len);
+}
+
+static int scr_tls_tunnel_handshake(void *tctx) {
+  ScrTlsTunnel *tun = (ScrTlsTunnel *)tctx;
+  ScrNetSocket *sock = tun->outer->sock;
+  if (tun->stage == SCR_TUN_OUTER) {
+    int r = scr_tls_handshake(tun->outer);
+    if (r <= 0) return r;
+    tun->outer->established = true;
+    tun->stage = SCR_TUN_SEND;
+  }
+  if (tun->stage == SCR_TUN_SEND) {
+    while (tun->req_off < tun->req_len) {
+      int r = mbedtls_ssl_write(&tun->outer->ssl, (const unsigned char *)tun->req + tun->req_off,
+                                tun->req_len - tun->req_off);
+      if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) return 0;
+      if (r < 0) {
+        scr_net_sock_transport_error(sock, "write EPIPE");
+        return -1;
+      }
+      tun->req_off += (size_t)r;
+    }
+    tun->stage = SCR_TUN_HEAD;
+  }
+  if (tun->stage == SCR_TUN_HEAD) {
+    for (;;) {
+      unsigned char buf[4096];
+      int r = scr_tls_tunnel_read(tun, buf, sizeof buf);
+      if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) return 0;
+      if (r < 0 && r != MBEDTLS_ERR_SSL_CONN_EOF) {
+        scr_net_sock_transport_error(sock, "read ECONNRESET");
+        return -1;
+      }
+      if (r <= 0) {
+        scr_net_sock_transport_error(sock, "socket hang up");
+        return -1;
+      }
+      if (tun->head_len + (size_t)r > 16384) {
+        scr_net_sock_transport_error(sock, "Proxy response head is too large");
+        return -1;
+      }
+      char *grown = realloc(tun->head, tun->head_len + (size_t)r);
+      if (!grown) scr_tls_oom();
+      tun->head = grown;
+      memcpy(tun->head + tun->head_len, buf, (size_t)r);
+      tun->head_len += (size_t)r;
+      size_t end = 0;
+      for (size_t i = 3; i < tun->head_len; i++) {
+        if (memcmp(tun->head + i - 3, "\r\n\r\n", 4) == 0) {
+          end = i + 1;
+          break;
+        }
+      }
+      if (end == 0) continue;
+      int status = scr_net_tunnel_status(tun->head, end);
+      if (status != 200) {
+        char msg[128];
+        scr_net_tunnel_failure(status, msg, sizeof msg);
+        scr_net_sock_transport_error(sock, msg);
+        return -1;
+      }
+      tun->extra = malloc(tun->head_len - end + 1);
+      if (!tun->extra) scr_tls_oom();
+      memcpy(tun->extra, tun->head + end, tun->head_len - end);
+      tun->extra_len = tun->head_len - end;
+      tun->extra_off = 0;
+      free(tun->head);
+      tun->head = NULL;
+      tun->head_len = 0;
+      tun->stage = tun->inner != NULL ? SCR_TUN_INNER : SCR_TUN_UP;
+      break;
+    }
+  }
+  if (tun->stage == SCR_TUN_INNER) {
+    int r = scr_tls_handshake(tun->inner);
+    if (r <= 0) return r;
+    tun->stage = SCR_TUN_UP;
+  }
+  return 1;
+}
+
+static ssize_t scr_tls_tunnel_xread(void *tctx, char *buf, size_t n) {
+  ScrTlsTunnel *tun = (ScrTlsTunnel *)tctx;
+  if (tun->inner != NULL) return scr_tls_xread(tun->inner, buf, n);
+  if (tun->extra_off < tun->extra_len) {
+    return scr_tls_tunnel_read(tun, (unsigned char *)buf, n);
+  }
+  return scr_tls_xread(tun->outer, buf, n);
+}
+
+static ssize_t scr_tls_tunnel_xwrite(void *tctx, const char *buf, size_t n) {
+  ScrTlsTunnel *tun = (ScrTlsTunnel *)tctx;
+  return scr_tls_xwrite(tun->inner != NULL ? tun->inner : tun->outer, buf, n);
+}
+
+static void scr_tls_tunnel_on_established(void *tctx) {
+  ScrTlsTunnel *tun = (ScrTlsTunnel *)tctx;
+  if (tun->inner != NULL) tun->inner->established = true;
+}
+
+static bool scr_tls_tunnel_pending(void *tctx) {
+  ScrTlsTunnel *tun = (ScrTlsTunnel *)tctx;
+  return tun->extra_off < tun->extra_len || (tun->inner != NULL && scr_tls_pending(tun->inner)) ||
+         scr_tls_pending(tun->outer);
+}
+
+static void scr_tls_tunnel_shutdown_write(void *tctx) {
+  ScrTlsTunnel *tun = (ScrTlsTunnel *)tctx;
+  if (tun->inner != NULL) scr_tls_shutdown_write(tun->inner);
+  scr_tls_shutdown_write(tun->outer);
+}
+
+static void scr_tls_tunnel_free(void *tctx) {
+  ScrTlsTunnel *tun = (ScrTlsTunnel *)tctx;
+  if (tun->inner != NULL) scr_tls_free(tun->inner);
+  scr_tls_free(tun->outer);
+  free(tun->req);
+  free(tun->head);
+  free(tun->extra);
+  free(tun);
+}
+
+static const ScrNetTransportOps SCR_TLS_TUNNEL_OPS = {
+  .xread = scr_tls_tunnel_xread,
+  .xwrite = scr_tls_tunnel_xwrite,
+  .handshake = scr_tls_tunnel_handshake,
+  .on_established = scr_tls_tunnel_on_established,
+  .pending = scr_tls_tunnel_pending,
+  .shutdown_write = scr_tls_tunnel_shutdown_write,
+  .free = scr_tls_tunnel_free,
+};
+
+typedef struct {
+  ScrTlsCli *proxy;  /* moves into the transport */
+  ScrTlsCli *target; /* NULL for an http:// target */
+  char *req;
+  size_t req_len;
+} ScrTlsTunnelCtx;
+
+void *scr_tls_fetch_tunnel_ctx(ScrStr *proxy_host /*borrowed*/, ScrStr *target_host /*borrowed, nullable*/,
+                               const char *request, size_t len) {
+  ScrTlsTunnelCtx *ctx = calloc(1, sizeof *ctx);
+  if (!ctx) scr_tls_oom();
+  ctx->proxy = scr_tls_cli_new(proxy_host, true, NULL, 0);
+  ctx->target = target_host != NULL ? scr_tls_cli_new(target_host, true, NULL, 0) : NULL;
+  ctx->req = malloc(len);
+  if (!ctx->req) scr_tls_oom();
+  memcpy(ctx->req, request, len);
+  ctx->req_len = len;
+  return ctx;
+}
+
+void scr_tls_fetch_tunnel_wrap(ScrNetSocket *sock, void *vctx) {
+  ScrTlsTunnelCtx *ctx = (ScrTlsTunnelCtx *)vctx;
+  ScrTlsTunnel *tun = calloc(1, sizeof *tun);
+  if (!tun) scr_tls_oom();
+  tun->outer = scr_tls_cli_sock(sock, ctx->proxy);
+  mbedtls_ssl_set_bio(&tun->outer->ssl, tun->outer, scr_tls_bio_send, scr_tls_bio_recv, NULL);
+  if (ctx->target != NULL) {
+    tun->inner = scr_tls_cli_sock(sock, ctx->target);
+    mbedtls_ssl_set_bio(&tun->inner->ssl, tun, scr_tls_tunnel_bio_send, scr_tls_tunnel_bio_recv,
+                        NULL);
+  }
+  tun->req = ctx->req;
+  tun->req_len = ctx->req_len;
+  free(ctx);
+  scr_net_sock_set_transport(sock, &SCR_TLS_TUNNEL_OPS, tun);
+}
+
 ScrHttpClientReq *scr_https_request(ScrStr *host /*borrowed*/, double port,
                                      ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                      double timeout_ms, ScrArr *header_pairs /*borrowed*/,
@@ -1811,6 +2039,7 @@ static void scr_tls_fire_session(ScrTlsSock *t) {
   size_t need = 0;
   (void)mbedtls_ssl_session_save(&sess, NULL, 0, &need);
   ScrBytes *buf = scr_bytes_new(SCR_BYTES_U8, (double)need);
+  buf->is_buffer = true; /* the session is a Buffer */
   size_t used = 0;
   int ok = mbedtls_ssl_session_save(&sess, buf->data, need, &used) == 0;
   mbedtls_ssl_session_free(&sess);

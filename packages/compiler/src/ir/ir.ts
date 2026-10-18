@@ -3713,6 +3713,8 @@ function isJsonSafeAt(
       if (visiting.has(t.shapeId)) return true;
       visiting.add(t.shapeId);
       for (const field of shape.fields) {
+        // Stringification omits a function-valued property of an object.
+        if (stringify && !shape.tuple && field.type.kind === "func") continue;
         if (
           !isJsonSafeAt(
             field.type,

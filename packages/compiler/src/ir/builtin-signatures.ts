@@ -213,6 +213,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * numbers, booleans, arrays, objects answer JS-exactly; undefined and
    * null throw the catchable TypeError). */
   "dyn.toString": { argTypes: [DYN, DYN, STRING], result: STRING },
+  "dyn.valueOf": { argTypes: [DYN, STRING], result: DYN },
   /** Object.defineProperties over dyn values (args: target, descriptors —
    * both borrowed dyn; result: the target, +1 — JS's return value).
    * Value descriptors become own properties on OBJ and FUNC targets;

@@ -2111,6 +2111,67 @@ function lowerNetServerMethodCall(
   );
 }
 
+/** Whether a setEncoding call can reach some net.Socket in this program:
+ * `x.setEncoding(...)` or `x["setEncoding"](...)` where `x` is a socket
+ * or an untyped value. Sockets that never get an encoding keep the Buffer
+ * chunk path; with one, Node's 'data' chunks are strings. */
+function socketEncodingReachable(lowerer: Lowerer): boolean {
+  if (lowerer.socketEncodingReachable !== null) return lowerer.socketEncodingReachable;
+  let reachable = false;
+  for (const file of lowerer.program.getSourceFiles()) {
+    if (file.isDeclarationFile || !file.text.includes("setEncoding")) continue;
+    ts.walkPreorder(file, (node) => {
+      if (reachable) return "skip";
+      if (!ts.isCallExpression(node)) return undefined;
+      const callee = node.expression;
+      const receiver =
+        ts.isPropertyAccessExpression(callee) && callee.name.text === "setEncoding"
+          ? callee.expression
+          : ts.isElementAccessExpression(callee) &&
+              ts.isStringLiteralLike(callee.argumentExpression) &&
+              callee.argumentExpression.text === "setEncoding"
+            ? callee.expression
+            : null;
+      if (receiver === null) return undefined;
+      const kind = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(receiver))?.kind;
+      if (kind === undefined || kind === "netSocket" || kind === "dyn") reachable = true;
+      return undefined;
+    });
+    if (reachable) break;
+  }
+  lowerer.socketEncodingReachable = reachable;
+  return reachable;
+}
+
+/** An inline 'data' listener whose chunk parameter is typed Buffer, for a
+ * socket that may have an encoding set: the chunk binds as a checked
+ * dynamic value, so the body sees what Node passes (a string after
+ * setEncoding, a Buffer otherwise) whatever the annotation says. Null
+ * for other listener shapes. */
+function lowerEncodedDataListener(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
+  let fn = node;
+  while (ts.isParenthesizedExpression(fn)) fn = fn.expression;
+  if (!ts.isArrowFunction(fn) && !ts.isFunctionExpression(fn)) return null;
+  if (fn.parameters.length !== 1) return null;
+  const param = fn.parameters[0]!;
+  if (!ts.isIdentifier(param.name) || param.initializer || param.dotDotDotToken) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(param.name);
+  if (symbol === undefined) return null;
+  const previousBinding = lowerer.runtimeOptionalBindingTypes.get(symbol);
+  const previousImplicit = lowerer.implicitParamTypes;
+  const implicit = new Map(previousImplicit ?? []);
+  implicit.set(symbol, lowerer.checker.getUnknownType());
+  lowerer.runtimeOptionalBindingTypes.set(symbol, DYN);
+  lowerer.implicitParamTypes = implicit;
+  try {
+    return lowerer.lowerExpr(fn);
+  } finally {
+    if (previousBinding === undefined) lowerer.runtimeOptionalBindingTypes.delete(symbol);
+    else lowerer.runtimeOptionalBindingTypes.set(symbol, previousBinding);
+    lowerer.implicitParamTypes = previousImplicit;
+  }
+}
+
 /** Method calls on net.Socket receivers: write/end/destroy/pipe and
  * on/once("data" | "end" | "close" | "error" | "connect"). Null for
  * other receivers. */
@@ -2557,6 +2618,27 @@ function lowerNetSocketMethodCall(
         // being decoded.
         const boxed = lowerSocketDynListener(lowerer, args[1]!, "data listeners");
         const cb: IrExpr = { kind: "dynCheck", value: boxed, type: funcOf([DYN], VOID), loc };
+        return {
+          kind: "libCall",
+          fn: "net.sockOnData",
+          args: [receiver, cb, once],
+          type: VOID,
+          loc,
+        };
+      }
+      if (param !== null && param.kind === "bytes" && socketEncodingReachable(lowerer)) {
+        const encoded = lowerEncodedDataListener(lowerer, args[1]!);
+        // A listener defined elsewhere keeps its Buffer parameter; it takes
+        // the chunk through the checked boundary, so a string chunk fails
+        // the check instead of arriving as a Buffer.
+        const cb: IrExpr =
+          encoded ??
+          ({
+            kind: "dynCheck",
+            value: lowerSocketDynListener(lowerer, args[1]!, "data listeners"),
+            type: funcOf([DYN], VOID),
+            loc,
+          } as IrExpr);
         return {
           kind: "libCall",
           fn: "net.sockOnData",

@@ -3201,6 +3201,13 @@ function lowerDynReceiverMethodCall(
       const info = lowerer.classes.get(probed.type.className);
       if (info) return lowerStaticMethodCall(lowerer, call, access);
     }
+    // A possibly missing element of a class-typed array (`items[i]`) is
+    // the receiver's class or undefined. The class method call checks for
+    // undefined itself, as it does in TypeScript.
+    const presentArm =
+      probed?.type.kind === "union" ? lowerer.stripUndefinedArm(probed.type) : null;
+    if (presentArm?.kind === "object" && typeEquals(presentArm, lowerer.mapTypeOf(recvTs) ?? DYN))
+      return null;
     if (
       probed?.type.kind === "union" &&
       isJsSourceFile(call.getSourceFile()) &&
@@ -3377,6 +3384,18 @@ function lowerDynReceiverMethodCall(
         { kind: "strLit", value: access.getText(), type: STRING, loc: locOf(call) },
       ],
       type: STRING,
+      loc: locOf(call),
+    };
+  }
+  // Every dyn kind's prototype chain declares valueOf, and the runtime
+  // answers each kind's own: primitives and plain objects themselves, a
+  // Date its time value, an own or inherited valueOf member its result.
+  if (access.name.text === "valueOf" && call.arguments.length === 0) {
+    return {
+      kind: "libCall",
+      fn: "dyn.valueOf",
+      args: [recv, { kind: "strLit", value: access.getText(), type: STRING, loc: locOf(call) }],
+      type: DYN,
       loc: locOf(call),
     };
   }
@@ -4560,6 +4579,24 @@ function reconcileOverloadReturn(
     (!isJsSourceFile(rdecl.getSourceFile()) || returnsOnlyThis(rdecl))
   ) {
     call = lowerer.maybeNarrow(call, expr);
+  }
+  // An override narrowed to part of its base's union return shares the
+  // union ABI; a call resolved to that override narrows the result back.
+  if (
+    call.type.kind === "union" &&
+    rsig &&
+    rdecl &&
+    ts.isMethodDeclaration(rdecl) &&
+    lowerer.unionReturnOverrides.has(rdecl)
+  ) {
+    const declared = lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(rsig));
+    if (declared && !typeEquals(declared, call.type)) {
+      if (declared.kind !== "union") {
+        const helper = lowerer.narrowedArmHelper(call.type.unionId, declared, call.loc);
+        if (helper) return lowerer.checkedNarrowCall(helper, call, declared, call.loc);
+      }
+      return lowerer.coerceInto(expr, call, declared);
+    }
   }
   const resolvedOverload =
     rsig &&
@@ -8171,7 +8208,7 @@ export function lowerRecordFieldCall(
     }
   }
   const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
-  const result: IrExpr = {
+  let result: IrExpr = {
     kind: "callValue",
     callee,
     ...(receiver ? { receiver } : {}),
@@ -8179,6 +8216,10 @@ export function lowerRecordFieldCall(
     type: callee.type.ret,
     loc,
   };
+  // A generic member's field holds its erased instance: the result
+  // converts to this call's instantiated return type at the call.
+  if (isGenericCallableMemberType(lowerer.typeOf(access), lowerer.checker))
+    result = lowerer.coerceInto(call, result, lowerer.irTypeOf(call));
   return init ? { kind: "seqExpr", stmts: [init], result, type: result.type, loc } : result;
 }
 
@@ -8592,6 +8633,26 @@ function lowerObjLitGenericMethodCall(
     const onInterface = lowerer.checker
       .declarationsOf(propSym)
       .some((d) => d.parent !== undefined && ts.isInterfaceDeclaration(d.parent));
+    // A receiver held as a checked-dynamic value (a class-backed interface)
+    // dispatches by name to the runtime object's member, which a generic
+    // method answers with its erased instance; the result converts to this
+    // call's instantiated return type.
+    if (onInterface && !call.arguments.some(ts.isSpreadElement)) {
+      const receiver = lowerer.lowerExpr(access.expression);
+      if (receiver.type.kind === "dyn") {
+        const loc = locOf(call);
+        const invoked: IrExpr = {
+          kind: "dynInvoke",
+          recv: receiver,
+          method: name,
+          calleeName: access.getText(),
+          args: call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          type: DYN,
+          loc,
+        };
+        return lowerer.coerceInto(call, invoked, lowerer.irTypeOf(call));
+      }
+    }
     if (onInterface) {
       lowerer.unsupported(
         "SC1090",
