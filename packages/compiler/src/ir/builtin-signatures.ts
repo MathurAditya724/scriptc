@@ -1436,11 +1436,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [STRING, F64, STRING, F64, STRING, F64, F64, F64],
     result: VOID,
   },
-  "test.suite": {
-    argTypes: [STRING, F64, STRING, { kind: "func", params: [], ret: VOID }, STRING, F64, F64],
-    result: VOID,
-  },
-  "test.hook": { argTypes: [F64, null, F64], result: VOID },
+  // The suite body takes no parameters or its SuiteContext (flag 2).
+  "test.suite": { argTypes: [STRING, F64, STRING, null, STRING, F64, F64], result: VOID },
+  // The trailing string is the hook call's "file:line:col".
+  "test.hook": { argTypes: [F64, null, F64, STRING], result: VOID },
   "test.sub": {
     argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64, F64],
     result: { kind: "promise", inner: VOID },
@@ -1454,6 +1453,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "test.ctxDiagnostic": { argTypes: [TESTCTX_T, STRING], result: VOID },
   "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
   "test.ctxFullName": { argTypes: [TESTCTX_T], result: STRING },
+  // t.passed, and t.workerId's Number(NODE_TEST_WORKER_ID) with 0 for
+  // undefined.
+  "test.ctxPassed": { argTypes: [TESTCTX_T], result: BOOL },
+  "test.workerId": { argTypes: [], result: F64 },
   // t.before/t.after/t.beforeEach/t.afterEach (which: 0 before, 1 after,
   // 2 beforeEach, 3 afterEach); a throwing t.before is captured on the test.
   "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
@@ -2343,8 +2346,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** child_process.execFile's callback slice: starts an all-piped child,
    * captures stdout/stderr, and moves the error-first callback into the
    * child registry. The callback shape is program-dependent and checked
-   * by the validator/backends. */
-  "cp.execFile": { argTypes: [STRING, arrayOf(STRING), null], result: CHILD_T },
+   * by the validator/backends. The last argument is exec's shell flag:
+   * the argv is ["-c", command] and failure messages show the command. */
+  "cp.execFile": { argTypes: [STRING, arrayOf(STRING), null, BOOL], result: CHILD_T },
   // spawn's options form: per-slot stdio modes (0 ignore / 1 inherit /
   // 2 fd) with the out/err fds for mode 2, detached, env replacement
   // pairs, cwd ("" = inherit).
@@ -2583,6 +2587,25 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.hkdfCb": { argTypes: [STRING, BYTES_U8, BYTES_U8, BYTES_U8, F64, null], result: VOID },
   "crypto.scrypt": { argTypes: [BYTES_U8, BYTES_U8, F64, DYN], result: BYTES_U8 },
   "crypto.scryptCb": { argTypes: [BYTES_U8, BYTES_U8, F64, DYN, null], result: VOID },
+  /** util.promisify over the callback forms: the callback form's
+   * arguments without the callback → a promise the callback form settles,
+   * or rejected with an argument error; never throws. The result's value
+   * type is the declared one (a Buffer, the filled view, a number, or a
+   * checked-dynamic value); the validator checks it. */
+  "crypto.randomBytesPromise": { argTypes: [F64], result: VOID },
+  "crypto.pbkdf2Promise": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING], result: VOID },
+  "crypto.scryptPromise": { argTypes: [BYTES_U8, BYTES_U8, F64, DYN], result: VOID },
+  "crypto.hkdfPromise": { argTypes: [STRING, BYTES_U8, BYTES_U8, BYTES_U8, F64], result: VOID },
+  "crypto.randomFillPromise": { argTypes: [null, F64, F64, F64], result: VOID },
+  "crypto.randomFillPromiseDyn": { argTypes: [DYN, DYN, DYN, F64], result: VOID },
+  "crypto.randomIntPromise": { argTypes: [F64, F64, F64], result: VOID },
+  "crypto.generateKeyPromise": { argTypes: [DYN, DYN], result: VOID },
+  /** util.promisify(dns.lookup) and util.promisify(dns.lookupService):
+   * [hostname, options] and [address, port] → a promise of the
+   * checked-dynamic result object (the address array with options.all),
+   * or rejected with the error; never throws. */
+  "dns.lookupPromise": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+  "dns.lookupServicePromise": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   // The Buffer statics and the fs/zlib Buffer forms: fixed always-u8
   // signatures (Buffer IS a Uint8Array — one bytes kind).
   /** The Buffer statics with fixed (always-u8) signatures. fromStr is
@@ -2772,6 +2795,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * receivers are borrowed. */
   "zlib.streamNew": { argTypes: [F64, DYN], result: VOID },
   "zlib.streamBytesWritten": { argTypes: [null], result: F64 },
+  /** `stream instanceof zlib.Gzip`: the borrowed stream and the class's
+   * node_zlib_mode; true when the stream is a zlib stream of that mode. */
+  "zlib.streamIs": { argTypes: [null, F64], result: BOOL },
   "zlib.streamFlush": { argTypes: [null, DYN], result: VOID },
   "zlib.streamFlushCb": { argTypes: [null, DYN, null], result: VOID },
   "zlib.streamParams": { argTypes: [null, DYN, DYN], result: VOID },
@@ -3413,6 +3439,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "emitter.getMax": { argTypes: [null], result: F64 },
   "emitter.setDefaultMax": { argTypes: [F64], result: VOID },
   "emitter.getDefaultMax": { argTypes: [], result: F64 },
+  // The ES module namespace's copy of defaultMaxListeners, and
+  // module.syncBuiltinESMExports() refreshing it.
+  "emitter.esmDefaultMax": { argTypes: [], result: F64 },
+  "emitter.esmSync": { argTypes: [], result: VOID },
   /** The events.errorMonitor event key: an immortal string the runtime
    * registry matches by identity, so no string event name reaches it. */
   "emitter.errorMonitor": { argTypes: [], result: STRING },

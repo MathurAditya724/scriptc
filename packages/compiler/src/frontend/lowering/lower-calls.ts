@@ -59,6 +59,7 @@ import {
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
+import { lowerJsonRequireCall } from "./json-require.js";
 import { lowerAssertInstanceCall } from "./assert-instances.js";
 import { isGenericCallableMemberType, typeKey } from "../type-mapper.js";
 import { dynFallbackType, jsFuncNameOf, newFnCtx, staticImportNamespaceType } from "./lowerer.js";
@@ -105,8 +106,13 @@ import {
   lowerImportMetaResolveCall,
   lowerRequireResolveCall,
 } from "./builtins/module-resolution.js";
-import { lowerCipherMethodCall, lowerCryptoHashMethodCall } from "./builtins/crypto.js";
+import {
+  lowerCipherMethodCall,
+  lowerCryptoHashMethodCall,
+  lowerPromisifiedCryptoCall,
+} from "./builtins/crypto.js";
 import { lowerErrorIsErrorCall } from "./builtins/errors.js";
+import { lowerPromisifiedDnsCall } from "./lower-dgram.js";
 import { lowerDisposableStackUseCall } from "./builtins/disposable-stack.js";
 import {
   lowerDirentMethodCall,
@@ -125,6 +131,7 @@ import { recordMayKeepSource, throughRecordSource } from "./record-sources.js";
 import { lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
+  v8CalleeText,
   lowerOptionalNumber,
   lowerPromiseAllTupleCall,
   lowerPromiseRejectCall,
@@ -222,6 +229,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const object = lowerObjectConstructor(lowerer, expr.arguments, loc);
     if (object) return object;
   }
+
+  // require() of a JSON document: the shared parsed object.
+  const json = lowerJsonRequireCall(lowerer, expr);
+  if (json) return json;
 
   // A call whose chain ROOTS at an ambient-undefined name (`declare
   // const value: Y | undefined; value?.foo("a")`, `declare function
@@ -800,6 +811,12 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       }
       if (projection?.kind === "promisified-zlib") {
         return lowerPromisifiedZlibCall(lowerer, expr, projection.member, loc);
+      }
+      if (projection?.kind === "promisified-crypto") {
+        return lowerPromisifiedCryptoCall(lowerer, expr, projection.member, loc);
+      }
+      if (projection?.kind === "promisified-dns") {
+        return lowerPromisifiedDnsCall(lowerer, expr, projection.member, loc);
       }
       if (projection?.kind === "promisified-builtin") {
         return lowerBuiltinCall(
@@ -1433,7 +1450,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           kind: "dynCall",
           callee: staticField,
           receiver: lowerer.lowerExprExpecting(expr.expression.expression, DYN),
-          calleeName: expr.expression.getText(),
+          calleeName: v8CalleeText(expr.expression),
           args: expr.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
           type: DYN,
           loc: locOf(expr),
@@ -1452,7 +1469,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         return {
           kind: "dynCall",
           callee,
-          calleeName: expr.expression.getText(),
+          calleeName: v8CalleeText(expr.expression),
           args,
           type: DYN,
           loc: locOf(expr),
@@ -1705,7 +1722,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     return {
       kind: "dynCall",
       callee: lowerer.coerceToExpected(callee, DYN),
-      calleeName: expr.expression.getText(),
+      calleeName: v8CalleeText(expr.expression),
       args: expr.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
       type: DYN,
       loc,
@@ -1787,7 +1804,7 @@ function lowerCheckedCallableValue(
   return {
     kind: "dynCall",
     callee,
-    calleeName: call.expression.getText(),
+    calleeName: v8CalleeText(call.expression),
     args: call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     type: DYN,
     loc,
