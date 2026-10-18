@@ -1,3 +1,4 @@
+import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
 import {
   lifetimeRegionType,
   lowerLifetimeRegionCall,
@@ -271,7 +272,7 @@ import {
   appendForkModules,
   appendWorkerModules,
 } from "./lower-modules.js";
-import { prepareCjsModuleGraph } from "./lower-node-module.js";
+import { prepareCjsModuleGraph, usesCjsTopLevelThis } from "./lower-node-module.js";
 import { registerBuiltinEventTargetClasses } from "./lower-event-target.js";
 import {
   type ClassInfo,
@@ -533,6 +534,7 @@ import {
   lowerForOf,
   lowerForStatement,
   matchGroupsPatternSource,
+  isGuardedRecordRead,
 } from "./lower-stmts.js";
 import {
   type FieldTarget,
@@ -1859,6 +1861,9 @@ export class Lowerer {
    * carry undefined at runtime. Identifier reads keep the union tag so
    * typeof and later boundaries observe the real value. */
   readonly runtimeOptionalGlobals = new Set<IrGlobal>();
+  /** Per CommonJS file using top-level `this`: the global holding the
+   * object that stands for its original exports (lowerCjsTopLevelThis). */
+  readonly cjsExportsThis = new Map<ts.SourceFile, IrGlobal>();
   /** Bindings whose unchecked string arithmetic can produce either a number
    * (NaN for an absent read) or a string. Preserve that result union at bare
    * reads instead of applying the checker-bare string narrowing adapter. */
@@ -2868,7 +2873,8 @@ export class Lowerer {
             return null;
         }
         const className = this.classNamer(decl);
-        if (!this.collectingExprClasses.has(decl)) this.lowerClassExpressionInfo(decl);
+        if (!this.collectingExprClasses.has(decl) && !this.collectLocalClassForType(decl))
+          return null;
         return { kind: "object", className };
       },
       mixinIntersectionInstance: (widened) => mixinIntersectionInstanceType(this, widened),
@@ -2903,6 +2909,8 @@ export class Lowerer {
       this.fileTag.set(sf, sf === entry ? "" : `%m${i}.`);
     });
     if (this.moduleOrder.length === 0) this.fileTag.set(entry, "");
+    const jsDynamic = jsDynamicDeclarations(this.moduleOrder, this.checker);
+    if (jsDynamic.size > 0) this.typeCtx.jsDynamicDeclaration = (decl) => jsDynamic.has(decl);
     this.registerBuiltinErrorClasses();
     registerBuiltinEmitterClass(this);
     registerBuiltinStreamClasses(this);
@@ -3699,6 +3707,16 @@ export class Lowerer {
       const id = `%g.${tag}%loaded`;
       this.moduleGuardOf.set(fp.sf, id);
       this.globalsList.push({ id, name: "%loaded", type: BOOL, mutable: true });
+      if (usesCjsTopLevelThis(this, fp.sf)) {
+        const exportsThis: IrGlobal = {
+          id: `%g.${tag}%exportsThis`,
+          name: "%exportsThis",
+          type: DYN,
+          mutable: true,
+        };
+        this.globalsList.push(exportsThis);
+        this.cjsExportsThis.set(fp.sf, exportsThis);
+      }
     }
 
     // A module is intrinsically async when an await/for-await occurs
@@ -4013,6 +4031,33 @@ export class Lowerer {
     }
   }
 
+  /** A file-scope get-or-create read (`let e = map[k]; if (e ===
+   * undefined) ...` over an index-signature record) keeps a missing key as
+   * undefined (isGuardedRecordRead). Its pre-registered global takes the
+   * undefined arm before any body reads it; the declaration lowers its
+   * initializer as the matching absence probe. */
+  analyzeGuardedRecordReadGlobals(parts: FileParts[]): void {
+    for (const { sf } of parts) {
+      for (const statement of sf.statements) {
+        if (!ts.isVariableStatement(statement)) continue;
+        for (const decl of statement.declarationList.declarations) {
+          if (!ts.isIdentifier(decl.name) || !isGuardedRecordRead(this, decl)) continue;
+          const global = this.globalOf(decl.name);
+          const symbol = this.resolveValueSymbol(decl.name);
+          if (!global || !symbol || global.tdz || this.runtimeOptionalBindingTypes.has(symbol))
+            continue;
+          const widened =
+            global.type.kind === "union"
+              ? this.withUndefinedArmOf(global.type)
+              : this.withUndefinedArm(global.type);
+          if (!widened || typeEquals(widened, global.type)) continue;
+          global.type = widened;
+          this.runtimeOptionalBindingTypes.set(symbol, widened);
+        }
+      }
+    }
+  }
+
   analyzeRuntimeOptionalArrayReads(parts: FileParts[]): void {
     const provenance = RuntimeOptionalProvenance.fromEnvironment();
     // The site whose value the current promotion follows (debug only).
@@ -4037,18 +4082,6 @@ export class Lowerer {
       if (!s) return null;
       return s.flags & ts.SymbolFlags.Alias ? this.checker.getAliasedSymbol(s) : s;
     };
-    // Fields that can be read before their assignment hold undefined then;
-    // their reads are runtime-optional values like missing array reads.
-    for (const info of this.classes.values()) {
-      if (!info.earlyReadFields || !info.decl?.name) continue;
-      const classSymbol = symbolOf(info.decl.name);
-      if (!classSymbol) continue;
-      const instance = this.checker.getDeclaredTypeOfSymbol(classSymbol);
-      for (const name of info.earlyReadFields) {
-        const property = this.checker.getPropertyOfType(instance, name);
-        if (property) optionalSymbols.add(property);
-      }
-    }
     const signatureOf = (node: ts.Identifier): FnSig | null => {
       const symbol = symbolOf(node);
       if (!symbol) return null;
@@ -6267,8 +6300,11 @@ export class Lowerer {
       for (const fp of parts) this.checker.prefetchSourceFile(fp.sf);
     }
     this.collectProgram(parts);
-    this.analyzeRuntimeOptionalArrayReads(parts);
-    this.analyzeDateJsonResults(parts);
+    this.speculativeTypeQueries(() => {
+      this.analyzeRuntimeOptionalArrayReads(parts);
+      this.analyzeDateJsonResults(parts);
+      this.analyzeGuardedRecordReadGlobals(parts);
+    });
     // Decorated classes analyze AFTER the whole collection pass: a
     // decorator's return type may name a subclass declared below the
     // class, and reference lowering needs each class's rebindability
@@ -6653,8 +6689,11 @@ export class Lowerer {
       collectionEdges.add(name);
     };
     this.collectProgram(parts);
-    this.analyzeRuntimeOptionalArrayReads(parts);
-    this.analyzeDateJsonResults(parts);
+    this.speculativeTypeQueries(() => {
+      this.analyzeRuntimeOptionalArrayReads(parts);
+      this.analyzeDateJsonResults(parts);
+      this.analyzeGuardedRecordReadGlobals(parts);
+    });
     // Decorated classes analyze post-collection here too: the %init seeds
     // lower the decoration calls, whose edges (decorator bodies, construct
     // thunks) reachable emit must see.
@@ -9804,6 +9843,49 @@ export class Lowerer {
 
   lowerClassExpressionInfo(expr: ts.ClassLikeDeclaration): ClassInfo {
     return lowerClassExpressionInfo(this, expr);
+  }
+
+  /** Depth of the whole-program analyses that query types across every
+   * file before reachability is known (speculativeTypeQueries). */
+  private speculativeTypeQueryDepth = 0;
+
+  /** Runs a whole-program analysis whose type queries are speculative: they
+   * visit every file, reached or not, and no statement or declaration owns
+   * a refusal they trigger (collectLocalClassForType). */
+  speculativeTypeQueries(analysis: () => void): void {
+    this.speculativeTypeQueryDepth++;
+    try {
+      analysis();
+    } finally {
+      this.speculativeTypeQueryDepth--;
+    }
+  }
+
+  /** Collects a function-local class because a type query named its
+   * instance type. Collection and body lowering own a refusal of that
+   * class: the poison reaches the declaration or statement that asked, as
+   * before. A speculative whole-program analysis owns none, so there the
+   * class is unmappable for the query and its diagnostics are dropped;
+   * lowering the class's own declaration collects it again and reports
+   * them if the program reaches it. */
+  collectLocalClassForType(decl: ts.ClassLikeDeclaration): boolean {
+    if (this.speculativeTypeQueryDepth === 0 || this.fnStack.length > 0) {
+      this.lowerClassExpressionInfo(decl);
+      return true;
+    }
+    const sink: ScrDiagnostic[] = [];
+    const previousSink = this.diagSink;
+    this.diagSink = sink;
+    try {
+      this.lowerClassExpressionInfo(decl);
+    } catch (e) {
+      if (e instanceof PoisonError) return false;
+      throw e;
+    } finally {
+      this.diagSink = previousSink;
+    }
+    for (const d of sink) this.pushDiag(d);
+    return true;
   }
 
   lowerClassExpression(expr: ts.ClassLikeDeclaration): IrExpr {

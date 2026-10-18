@@ -617,6 +617,18 @@ export function resolveProjectImport(fromFile: string, specifier: string): strin
     // Node's validity rule: only the bare "#" is never resolvable ("#/..."
     // matches "#/*"-pattern keys on current Node).
     if (specifier === "#") return null;
+    // Inside an opted-in --npm-static package, an imports entry resolves
+    // the way the tsgo host's fs shadow does: the transformed document
+    // (the "node" condition hoisted), the runtime JS conditions, and the
+    // shipped JS rather than a declaration twin (see resolveRelativeModule).
+    if (npmStaticPackageOfPath(resolve(fromFile)) !== null) {
+      const transformed = JSON.parse(JSON.stringify(pkg)) as PkgJson & Record<string, unknown>;
+      npmStaticTransformPkgJson(transformed);
+      const jsTarget = resolvePackageImports(transformed.imports, specifier, JS_ONLY_CONDITIONS);
+      if (jsTarget === null || !jsTarget.startsWith("./")) return null;
+      const jsPath = join(pkgDir, jsTarget);
+      return normalizeResolvedAnswer(loadAsJsFile(jsPath) ?? loadAsJsDirectory(jsPath));
+    }
     target = resolvePackageImports(pkg.imports, specifier, EXPORT_CONDITIONS);
     // An imports target that is not "./"-relative is PACKAGE_RESOLVE'd as
     // a bare specifier (Node's PACKAGE_IMPORTS_EXPORTS_RESOLVE): the

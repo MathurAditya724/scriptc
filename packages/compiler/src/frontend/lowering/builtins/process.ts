@@ -233,6 +233,41 @@ export function lowerProcessStreamProperty(
  * read in source order). Method members referenced without a call are
  * rejected specifically. Null for non-process receivers (the chain keeps
  * trying other property lowerings). */
+/** The value of a DATA member of the process global taken off by
+ * destructuring (`const { env, argv } = process` in JavaScript, the
+ * supports-color opening): the same values the spelled `process.env` /
+ * `process.argv` reads produce, typed by the binding. Null for members
+ * this does not cover (methods keep the destructuring fence). */
+export function processDataMemberValue(
+  lowerer: Lowerer,
+  member: string,
+  binding: ts.Node,
+  loc: SrcLoc,
+): IrExpr | null {
+  switch (member) {
+    case "env": {
+      const mapped = lowerer.mapTypeOf(lowerer.typeOf(binding));
+      if (mapped?.kind !== "record") return null;
+      const helper = envSnapshotHelper(lowerer, mapped.shapeId, loc);
+      return helper === null ? null : { kind: "call", callee: helper, args: [], type: mapped, loc };
+    }
+    case "argv":
+      return { kind: "libCall", fn: "process.argv", args: [], type: arrayOf(STRING), loc };
+    case "platform":
+      return { kind: "libCall", fn: "process.platform", args: [], type: STRING, loc };
+    case "arch":
+      return { kind: "libCall", fn: "process.arch", args: [], type: STRING, loc };
+    case "pid":
+      return { kind: "libCall", fn: "process.pid", args: [], type: F64, loc };
+    case "execPath":
+      return { kind: "libCall", fn: "process.execPath", args: [], type: STRING, loc };
+    case "versions":
+      return { kind: "libCall", fn: "process.versions", args: [], type: DYN, loc };
+    default:
+      return null;
+  }
+}
+
 export function lowerProcessProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,

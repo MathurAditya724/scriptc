@@ -473,7 +473,7 @@ function lowerHook(
   return {
     kind: "libCall",
     fn: "test.hook",
-    args: [numLit(which, loc), cb, numLit(flags, loc)],
+    args: [numLit(which, loc), cb, numLit(flags, loc), strLit(atStringOf(expr), loc)],
     type: VOID,
     loc,
   };

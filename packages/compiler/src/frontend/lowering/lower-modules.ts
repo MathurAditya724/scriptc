@@ -2665,6 +2665,17 @@ export function lowerFileInit(
       });
     }
     if (sf === lowerer.entry) header.push(...lowerer.punycodeLinkWarning());
+    // Top-level `this` of a CommonJS module: its object exists before the
+    // module's first statement (lowerCjsTopLevelThis).
+    const exportsThis = lowerer.cjsExportsThis.get(sf);
+    if (exportsThis) {
+      header.push({
+        kind: "assign",
+        localId: exportsThis.id,
+        value: { kind: "dynObjLit", fields: [], type: DYN, loc: loc0 },
+        loc: loc0,
+      });
+    }
     for (const { stmt, dep } of orderedImportsOf(lowerer.program, sf)) {
       const npm = lowerer.npmInitActions.get(sf)?.get(stmt);
       if (npm !== undefined && npm.length > 0) {
