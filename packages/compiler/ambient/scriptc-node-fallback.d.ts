@@ -5857,6 +5857,8 @@ declare module "worker_threads" {
     readonly stderr: import("stream").Readable;
     /* with the stdin option: what the worker reads from process.stdin */
     readonly stdin: import("stream").Writable | null;
+    /* terminate(), resolving with undefined once the worker exited */
+    [Symbol.asyncDispose](): Promise<void>;
     on(event: "online", listener: () => void): this;
     on(event: "message", listener: (value: any) => void): this;
     on(event: "error", listener: (error: any) => void): this;
@@ -5906,6 +5908,9 @@ declare module "worker_threads" {
   export function getEnvironmentData(key: any): any;
   /* A marked object cannot be listed in a transfer list. */
   export function markAsUntransferable(object: any): void;
+  /* structuredClone and postMessage throw DataCloneError for a marked
+   * object, error or class instance */
+  export function markAsUncloneable(object: any): void;
   export function isMarkedAsUntransferable(object: any): boolean;
   /* Delivers each message to every other open channel with the name, in
    * any thread, as a 'message' MessageEvent. */

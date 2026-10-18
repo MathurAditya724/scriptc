@@ -10,6 +10,7 @@ typedef struct ScrWorkerView {
   ScrEmitter *events;
   ScrWorkerThread *thread;
   ScrPromise *termination;
+  ScrPromise *disposal; /* worker[Symbol.asyncDispose]()'s promise */
   bool port;
   bool closed;
   bool referenced;
@@ -130,6 +131,7 @@ static void scr_worker_view_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
   ScrWorkerView *view = ptr;
   visit(view->events, ctx);
   visit(view->termination, ctx);
+  visit(view->disposal, ctx);
   for (int i = 0; i < 2; i++) {
     visit(view->stdio[i], ctx);
     visit(view->stdio_box[i], ctx);
@@ -158,6 +160,7 @@ static void scr_worker_view_destroy(void *ptr) {
   ScrWorkerView *view = ptr;
   scr_emitter_release(view->events);
   scr_promise_release(view->termination);
+  scr_promise_release(view->disposal);
   for (int i = 0; i < 2; i++) {
     if (view->stdio[i]) scr_worker_stdio_ops->release(view->stdio[i]);
     scr_dyn_release(view->stdio_box[i]);
@@ -457,6 +460,39 @@ static ScrDyn *scr_worker_method_call(ScrClosure *closure, ScrDyn *const *args, 
   return result;
 }
 
+/* worker[Symbol.asyncDispose](): Node's `await this.terminate()`, a
+ * promise of undefined once the worker exited. */
+static ScrDyn *scr_worker_async_dispose_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  (void)args;
+  (void)argc;
+  ScrDyn *self = scr_dyn_this_get();
+  ScrDyn *result = NULL;
+  if (self->kind != SCR_DYN_HANDLE || self->v.handle.tag != SCR_DYNH_WORKER) {
+    static const char message[] = "Illegal invocation";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_THIS");
+  } else {
+    ScrWorkerView *view = self->v.handle.ptr;
+    if (!view->disposal) {
+      view->disposal = scr_promise_new();
+      if (view->closed) scr_promise_fulfill_ref(view->disposal,
+        scr_dyn_retain(scr_dyn_undefined()), scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+      else if (!view->termination) scr_worker_thread_terminate(view->thread);
+    }
+    result = scr_dyn_new_promise(view->disposal);
+  }
+  scr_dyn_release(self);
+  return result;
+}
+
+/* worker[Symbol.asyncDispose] */
+static ScrDyn *scr_worker_symbol_get(void *ptr, const ScrDyn *key) {
+  (void)ptr;
+  if (!scr_dyn_is_async_dispose_symbol(key)) return NULL;
+  ScrClosure *closure = scr_closure_new((void *)&scr_worker_async_dispose_call, 0);
+  return scr_dyn_new_func(closure, &scr_worker_async_dispose_call, 0, "()", "[Symbol.asyncDispose]");
+}
+
 static ScrDyn *scr_worker_view_get(void *ptr, const char *key, size_t length) {
   ScrWorkerView *view = ptr;
   if (!view->port && length == 8 && !memcmp(key, "threadId", 8))
@@ -735,6 +771,8 @@ static void scr_worker_dispatch(void) {
     view->closed = true;
     if (view->termination) scr_promise_fulfill_ref(view->termination,
       scr_dyn_new_num(event->code), scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+    if (view->disposal) scr_promise_fulfill_ref(view->disposal,
+      scr_dyn_retain(scr_dyn_undefined()), scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
     ScrWorkerView **slot = &scr_worker_views;
     while (*slot != view) slot = &(*slot)->next;
     *slot = view->next;
@@ -819,6 +857,7 @@ static bool scr_worker_events_install(void) {
   static const ScrDynHandleOps worker_ops = {
     .cls = "Worker", .retain = scr_worker_view_retain, .release = scr_worker_view_release,
     .invoke = scr_worker_view_invoke, .get = scr_worker_view_get,
+    .symbol_get = scr_worker_symbol_get,
   };
   static const ScrDynHandleOps port_ops = {
     .cls = "MessagePort", .retain = scr_worker_view_retain, .release = scr_worker_view_release,
