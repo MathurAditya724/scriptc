@@ -1,6 +1,7 @@
 import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
+import { sloppyArgumentsRefusal } from "./sloppy-arguments.js";
 import type { Lowerer } from "./lowerer.js";
 import {
   DYN,
@@ -673,8 +674,9 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
 
 /** Arrows inherit arguments. Ordinary JS functions receive a hidden
  * array unless a declared rest parameter already owns that contract.
- * Class methods are strict; other parameterized forms require ES modules
- * because sloppy-mode arguments alias named parameters. */
+ * Class methods and ES modules are strict; other parameterized forms
+ * admit the array only where sloppy-mode aliasing between `arguments`
+ * and named parameters cannot be observed (sloppy-arguments.ts). */
 function appendArgumentsParameter(
   lowerer: Lowerer,
   node: ts.SignatureDeclaration,
@@ -697,11 +699,8 @@ function appendArgumentsParameter(
       ts.isMethodDeclaration(node) &&
       (ts.isClassDeclaration(node.parent) || ts.isClassExpression(node.parent));
     if (!classMethod && !isNodeEsmFile(node.getSourceFile(), lowerer.program)) {
-      lowerer.unsupported(
-        "SC1090",
-        node,
-        "parameterized 'arguments' outside an ES module (sloppy-mode parameter aliases)",
-      );
+      const refusal = sloppyArgumentsRefusal(lowerer, node);
+      if (refusal !== null) lowerer.unsupported("SC1090", refusal.node, refusal.reason);
     }
   }
   shapes.push({ type: DYN, mode });

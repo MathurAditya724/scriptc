@@ -1045,7 +1045,7 @@ export function implicitMonoFile(sf: ts.SourceFile): boolean {
  * parameter symbol — assignment, compound assignment, ++/--, a
  * destructuring-assignment target, or a for-in/of cursor. A written
  * param's binding could lie after the write, so it stays dyn. */
-function paramWrittenInBody(
+export function paramWrittenInBody(
   lowerer: Lowerer,
   body: ts.Node,
   sym: ts.Symbol,

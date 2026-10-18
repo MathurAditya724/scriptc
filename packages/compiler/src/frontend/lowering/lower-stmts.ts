@@ -5433,7 +5433,7 @@ export function lowerTry(lowerer: Lowerer, stmt: ts.TryStatement): IrStmt {
   };
 }
 
-function hasUseStrictDirective(statements: readonly ts.Statement[]): boolean {
+export function hasUseStrictDirective(statements: readonly ts.Statement[]): boolean {
   for (const statement of statements) {
     if (!ts.isExpressionStatement(statement) || !ts.isStringLiteral(statement.expression))
       return false;

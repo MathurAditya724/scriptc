@@ -310,6 +310,12 @@ test("JavaScript builtin aliases keep their deferred value fence", async () => {
   );
 });
 
+test("observable sloppy-mode arguments aliasing keeps a named runtime fence", async () => {
+  await expect(report(fixture("js-sloppy-arguments.cjs"))).toMatchFileSnapshot(
+    "__snapshots__/coverage-js-sloppy-arguments.txt",
+  );
+});
+
 test("any-typed checked-dynamic operators compile natively", () => {
   const file = join(repoRoot, "tests/corpus/2856-dynamic-any-local-operators.ts");
   const staticCoverage = analyze(file).coverage;

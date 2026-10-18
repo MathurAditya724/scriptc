@@ -355,6 +355,7 @@ import {
 import { bindingNeverReassigned } from "./binding-analysis.js";
 import type { InstantiationPath } from "./instantiation-path.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
+import { sloppyArgumentsRefusal } from "./sloppy-arguments.js";
 import { completeArgs, wrappedUndefined, undefinedArgFor } from "./call-arguments.js";
 import { bodyReturnType, declaredReturnType } from "./function-returns.js";
 import { lowerCall, lowerPromiseMethodCall, lowerFilterNarrowCall } from "./lower-calls.js";
@@ -1385,7 +1386,9 @@ function jsArgumentsFunctionType(lowerer: Lowerer, t: ts.Type): IrType | null {
     !hasRest &&
     (ts.isArrowFunction(decl) ||
       !bodyReadsArguments(decl) ||
-      (decl.parameters.length > 0 && !isNodeEsmFile(decl.getSourceFile(), lowerer.program)))
+      (decl.parameters.length > 0 &&
+        !isNodeEsmFile(decl.getSourceFile(), lowerer.program) &&
+        sloppyArgumentsRefusal(lowerer, decl) !== null))
   )
     return null;
   const shapes = paramShapes(lowerer, decl.parameters);

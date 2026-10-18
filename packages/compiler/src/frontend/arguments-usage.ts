@@ -33,3 +33,23 @@ export function bodyReadsArguments(fn: ts.Node): boolean {
   });
   return found;
 }
+
+/** Every identifier in this function's own body (arrows included, nested
+ * plain functions and methods excluded) that reads `arguments` — the
+ * bodyReadsArguments walk, collecting instead of stopping at the first. */
+export function argumentsReadsOf(fn: ts.Node): ts.Identifier[] {
+  const reads: ts.Identifier[] = [];
+  if (fn.body === undefined) return reads;
+  ts.walkPreorder(fn.body, (node) => {
+    if (ts.isTypeNode(node)) return "skip";
+    if (ts.isIdentifier(node) && node.text === "arguments" && isArgumentsRead(node)) {
+      reads.push(node);
+      return undefined;
+    }
+    if (ts.isFunctionLike(node) && !ts.isArrowFunction(node) && node !== fn) {
+      return "skip";
+    }
+    return undefined;
+  });
+  return reads;
+}
