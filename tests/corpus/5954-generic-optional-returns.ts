@@ -49,3 +49,18 @@ function second<T>(rows: T[][], row: number, column: number): T {
   return rows[row][column];
 }
 console.log(second([[1, 2]], 0, 1), second([[1, 2]], 0, 9), second(pairs, 0, 1));
+
+// An async generic function's promise is always present; its settled
+// value is undefined for a missing element.
+async function firstAsync<T>(items: T[]): Promise<T> {
+  return items[0];
+}
+const lookupAsync = async <T,>(table: Record<string, T>, key: string): Promise<T> => table[key];
+console.log(await firstAsync([1, 2]), await firstAsync<number>([]), (await firstAsync<string>([])) === undefined);
+console.log(await lookupAsync({ a: "A" }, "a"), await lookupAsync({ a: "A" }, "b"));
+async function settle(): Promise<void> {
+  const found = await firstAsync(["x"]);
+  const missing = await firstAsync<boolean>([]);
+  console.log(found, missing, missing ?? "none");
+}
+await settle();

@@ -298,9 +298,12 @@ export function genericCallInstance(
     lowerer.badType(expr, retTs);
   }
   // A body that can return an indexed read that misses returns undefined
-  // there, as in JavaScript, whatever the declared result says.
+  // there, as in JavaScript, whatever the declared result says. An async
+  // body's promise is always present and settles with undefined there.
   const returnType = lowerer.runtimeOptionalGenericReturns.has(info.decl)
-    ? lowerer.runtimeOptionalType(mappedReturn)
+    ? mappedReturn.kind === "promise"
+      ? { kind: "promise" as const, inner: lowerer.runtimeOptionalType(mappedReturn.inner) }
+      : lowerer.runtimeOptionalType(mappedReturn)
     : mappedReturn;
 
   // keyof-constrained type parameters (`K extends keyof T`): the bound
