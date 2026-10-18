@@ -524,4 +524,36 @@ SCR_COLD void scr_throw_published_field(const char *prop, const char *owner);
 bool scr_throw_published_array(int op, const struct ScrArr *a, double index, double n);
 SCR_COLD void scr_throw_published_collection(bool set);
 
+/* Young-in nursery (scr_cycle.c built with SCR_YIN, linked by programs
+ * compiled with SCRIPTC_YOUNG_NURSERY=1). A young object's header has
+ * generation SCR_CYC_YOUNG, above every trial-deletion level, and its
+ * nursery index in `buf` under SCR_CYC_BUFFERED_BIT, so release paths treat
+ * it as a buffered candidate (no call on a release that leaves it alive,
+ * scr_cyc_on_dead at its death). Emitted constructors of compiled classes
+ * and records call scr_yin_enter on each new object, after storing its
+ * count; the call may collect the nursery first. */
+#define SCR_CYC_YOUNG 3
+void scr_yin_enter(void *obj);
+/* The inline entry's halves: the per-registry-id countdown of allocations
+ * that skip the nursery (process-wide in executables without workers,
+ * which are the ones that inline the entry), and the append when the
+ * nursery has no room. */
+extern uint32_t scr_yin_skip[SCR_CYC_MAX_TYPES];
+void scr_yin_enter_slow(void *obj);
+/* The nursery: live young objects v[0..n), capacity cap. Its layout is an
+ * ABI: emitted constructors (llvm/shapes.ts youngEntryLines) append inline
+ * while n < lim, writing the header themselves, and call scr_yin_enter
+ * otherwise; lim stays at most the capacity and the collection size. */
+typedef struct ScrYin {
+  void **v;
+  size_t n;
+  size_t lim;
+  size_t cap;
+} ScrYin;
+extern SCR_TL ScrYin scr_yin;
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(offsetof(ScrYin, n) == 8 && offsetof(ScrYin, lim) == 16,
+               "llvm/shapes.ts appends to the nursery at these offsets");
+#endif
+
 #endif /* SCR_RC_H */

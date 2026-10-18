@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { F64, STRING, VOID, type IrModule } from "../../ir/ir.js";
+import { DYN, F64, STRING, VOID, type IrModule } from "../../ir/ir.js";
 import { buildClassGraph, classMembershipIntervals, emitClassMembershipHelper } from "./classes.js";
 import { emitLlvmModule } from "./emitter.js";
 import {
@@ -315,4 +315,53 @@ test("unconstructed narrowing layouts may omit abstract slots while live classes
     loc,
   });
   expect(() => emitLlvmModule(mod)).toThrow("no implementation of run for Dormant");
+});
+
+test("the young-in nursery flag adds the nursery entry to traced constructors only", () => {
+  const linked = { kind: "object" as const, className: "Linked" };
+  const mod: IrModule = {
+    irVersion: 16,
+    sourceFile: loc.file,
+    entry: "main",
+    functions: [{ name: "main", params: [], returnType: VOID, locals: [], body: [], loc }],
+    classes: [
+      { name: "Scalar", fields: [{ name: "value", type: F64 }], methods: [], loc },
+      // A dyn field can reach anything: the class carries a collector header.
+      {
+        name: "Linked",
+        fields: [
+          { name: "next", type: linked },
+          { name: "hook", type: DYN },
+        ],
+        methods: [],
+        loc,
+      },
+    ],
+  };
+  const helper = (llvm: string, name: string): string => {
+    const start = llvm.indexOf(`define internal ptr @${name}(`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    return llvm.slice(start, llvm.indexOf("\n}\n", start));
+  };
+  const saved = process.env["SCRIPTC_YOUNG_NURSERY"];
+  try {
+    delete process.env["SCRIPTC_YOUNG_NURSERY"];
+    const off = emitLlvmModule(mod, { pointerBits: 64 });
+    expect(off).not.toContain("scr_yin");
+
+    process.env["SCRIPTC_YOUNG_NURSERY"] = "1";
+    const on = emitLlvmModule(mod, { pointerBits: 64 });
+    const linkedNew = helper(on, mangleClassNew("Linked"));
+    expect(linkedNew).toContain("@scr_yin_skip");
+    expect(linkedNew).toContain("call void @scr_yin_enter_slow(ptr %o)");
+    expect(linkedNew).toContain("store i8 3, ptr %ye.genp");
+    // An acyclic class has no collector header and never enters.
+    expect(helper(on, mangleClassNew("Scalar"))).not.toContain("scr_yin");
+    // Targets without the inline allocator call the whole entry.
+    const narrow = emitLlvmModule(mod, { pointerBits: 32 });
+    expect(helper(narrow, mangleClassNew("Linked"))).toContain("call void @scr_yin_enter(ptr %o)");
+  } finally {
+    if (saved === undefined) delete process.env["SCRIPTC_YOUNG_NURSERY"];
+    else process.env["SCRIPTC_YOUNG_NURSERY"] = saved;
+  }
 });

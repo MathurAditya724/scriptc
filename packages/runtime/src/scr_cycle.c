@@ -409,6 +409,22 @@ static SCR_TL unsigned scr_gen_limit = SCR_CYC_OLD;
 #endif
 
 static size_t scr_cyc_pass(unsigned gen_limit);
+#ifdef SCR_YIN
+/* The young-in nursery's state (see "young-in nursery" below): the nursery
+ * itself (scr_rc.h), every live young object at the index its header
+ * records; a collection's mark worklist, dead set and deferred releases;
+ * per-object counts of references from other young objects, valid during a
+ * collection. */
+SCR_TL ScrYin scr_yin = {0};
+static SCR_TL ScrVec scr_yin_stack;
+static SCR_TL ScrVec scr_yin_dead;
+static SCR_TL ScrVec scr_yin_xrel;
+static SCR_TL uint32_t *scr_yin_counts;
+static SCR_TL size_t scr_yin_counts_cap;
+static SCR_TL bool scr_yin_busy;
+static void scr_yin_leave(ScrCycHdr *h, void *obj);
+static size_t scr_yin_collect(void);
+#endif
 /* A limited pass (scr_cyc_collect_set) takes only the candidates in this
  * set from the buffers up to `scr_cyc_take_gen`; NULL takes them all. */
 static SCR_TL const ScrCycSet *scr_cyc_take = NULL;
@@ -699,6 +715,12 @@ static SCR_CYC_SCHEDULING void scr_cyc_collect_due(void) {
  * per turn would walk the whole live heap every turn — which is exactly the
  * cost the generations exist to avoid. */
 void scr_cyc_collect_scheduled(void) {
+#ifdef SCR_YIN
+  /* A collection point also collects the nursery when anything entered it
+   * since its last collection, so young garbage does not wait for the
+   * allocation trigger in a program that has gone idle. */
+  if (scr_yin.n != 0) scr_yin_collect();
+#endif
   if (scr_cyc_buffered() == 0) {
     scr_cyc_scheduled_mature_age = 0;
     return;
@@ -834,6 +856,13 @@ static inline void scr_cyc_freed(const ScrCycType *type, unsigned gen) {
 void scr_cyc_on_dead(void *obj) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
   if (!scr_cyc_is_buffered(h)) return;
+#ifdef SCR_YIN
+  /* A young object leaves the nursery; nothing else lists it. */
+  if (scr_cyc_gen(h) == SCR_CYC_YOUNG) {
+    scr_yin_leave(h, obj);
+    return;
+  }
+#endif
   /* O(1) removal: swap the last entry into the hole. A buffered object's
    * generation never changes (promotion runs only on objects the pass has
    * already drained from the buffers), so `gen` names the right one. */
@@ -863,6 +892,18 @@ static SCR_TL ScrVec scr_pub_holes[SCR_CYC_NGENS];
 
 uint32_t scr_cyc_pub_take(void *obj) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
+#ifdef SCR_YIN
+  /* A young object (its header reads as buffered) leaves the nursery,
+   * unbuffered: young objects never become immortal in the nursery, and so
+   * never reach another thread from it. The answer UINT32_MAX makes
+   * scr_pub_mark's recorded position 0 ("not taken"), so a refused publish
+   * leaves it out of every buffer, as it was. It is reachable from the
+   * graph being published, so it needs no candidate. */
+  if (scr_cyc_gen(h) == SCR_CYC_YOUNG) {
+    scr_yin_leave(h, obj);
+    return UINT32_MAX;
+  }
+#endif
   unsigned gen = scr_cyc_gen(h);
   uint32_t index = scr_cyc_buf_index(h);
   scr_roots[gen].v[index] = NULL;
@@ -931,9 +972,19 @@ void scr_cyc_on_release(void *obj) {
  * two must agree on which edges are internal. Nothing to do for NULL
  * (unassigned slots), immortal (interned statics have no header at all), or
  * a generation this pass does not collect. */
+#ifdef SCR_YIN
+/* Trial deletion walks a young object as a nursery-level one: structures
+ * that mix young objects with families that are not young (arrays,
+ * closures) are found by the candidates of the latter, exactly as before.
+ * A young survivor stays young (scan_black promotes only below OLD) and a
+ * young member of the dead set leaves the nursery before its teardown. */
+#define SCR_CYC_WALK_GEN(h) (scr_cyc_gen(h) == SCR_CYC_YOUNG ? SCR_CYC_NURSERY : scr_cyc_gen(h))
+#else
+#define SCR_CYC_WALK_GEN(h) scr_cyc_gen(h)
+#endif
 #define SCR_CYC_SKIP(child)                     \
   ((child) == NULL || SCR_RC(child) == SIZE_MAX \
-   || scr_cyc_gen(scr_cyc_hdr(child)) > scr_gen_limit)
+   || SCR_CYC_WALK_GEN(scr_cyc_hdr(child)) > scr_gen_limit)
 
 /* The walks are depth-first and recursive up to SCR_CYC_WALK_DEPTH, where
  * an object is queued instead (scr_pending, or scr_restore_pending for the
@@ -976,7 +1027,7 @@ static inline __attribute__((always_inline)) void scr_mark_gray(void *obj, uintp
 static void scr_mg_visit(void *child, void *ctx) {
   if (child == NULL || SCR_RC(child) == SIZE_MAX) return;
   ScrCycHdr *h = scr_cyc_hdr(child);
-  if (scr_cyc_gen(h) > scr_gen_limit) {
+  if (SCR_CYC_WALK_GEN(h) > scr_gen_limit) {
     scr_cyc_push_work(&scr_xgen_edges, scr_gray_holder);
     scr_cyc_push_work(&scr_xgen_edges, child);
     return;
@@ -1148,6 +1199,333 @@ static SCR_CYC_COMPACT void scr_xg_release(void *obj) {
   scr_rc_destroy(obj, scr_xg_destroy);
 }
 
+#ifdef SCR_YIN
+/* ── young-in nursery ─────────────────────────────────────────────────── */
+
+/* Programs built with the young-in nursery (SCRIPTC_YOUNG_NURSERY=1, which
+ * links this unit built with SCR_YIN) allocate compiled class and record
+ * instances YOUNG: the emitted constructor hands each new object to
+ * scr_yin_enter, which lists it in the nursery and marks its header
+ * SCR_CYC_YOUNG with its nursery index in `buf`, under the buffered bit.
+ * The bit makes every release path treat the object as an existing
+ * candidate: a release that leaves it alive makes no call, and its death
+ * calls scr_cyc_on_dead, which takes it out of the nursery
+ * (scr_yin_leave) before the teardown runs. Young objects are never
+ * candidates, but trial deletion walks them as nursery-level objects when
+ * a candidate reaches them (SCR_CYC_WALK_GEN).
+ *
+ * Whenever the nursery holds SCR_YOUNG_NURSERY_SIZE live objects (4096 by
+ * default), at collection points and before every full sweep, the nursery
+ * is collected on its own, in time proportional to its size and without
+ * walking anything older:
+ *   count    for every young object, the references to it from traced
+ *            fields of other young objects (one trace per young object);
+ *   mark     an object whose count is below its reference count is
+ *            referenced from outside the nursery (a stack, a global, an
+ *            older object, a runtime structure, FFI, a fiber or a coroutine
+ *            frame: every one of them holds a counted reference); mark
+ *            from each such object through young edges;
+ *   sweep    what is unmarked is referenced only from unmarked young
+ *            objects, which is garbage. Marked objects join trial
+ *            deletion's nursery generation, unbuffered; dead ones are torn
+ *            down, giving up only the edges that leave the dead set (like
+ *            the white set's cross-generation edges, after every teardown).
+ * Survivors go to trial deletion's nursery rather than past it because the
+ * structures that survive are mostly held by families that are not young
+ * (arrays, closures, maps): a dead tree whose nodes are young and whose
+ * child arrays are not survives the nursery collection through the
+ * arrays, and the arrays' own candidates reach it there.
+ * Soundness rests on the two invariants trial deletion already needs: every
+ * strong reference is counted, and a trace visits exactly the counted
+ * references to headered children. The counts are recomputed at every
+ * collection, so no store barrier is needed and none can be missed.
+ *
+ * Candidates. A release of a young object never buffers it, so a structure
+ * whose last outside reference was dropped while its root was young has no
+ * candidate, and when the structure reaches beyond the nursery (a young
+ * node in an array that is not young, say), the nursery collection sees
+ * the outside edge as a root and keeps it. So every outside root a
+ * collection finds (count below the reference count) becomes a candidate
+ * as it is promoted. That suffices: every survivor is reachable from such
+ * a root, so if a survivor was already garbage, so was its root, and trial
+ * deletion reaches the survivor from the root's candidate; garbage formed
+ * after the promotion has a candidate from the release that formed it,
+ * since survivors are no longer young. */
+static void scr_cyc_trim(ScrVec *vec);
+#define SCR_YIN_DEFAULT_SIZE 4096
+#define SCR_CYC_YIN_PROMOTED SCR_CYC_NURSERY
+
+/* Pushes onto the collection's work vectors, inline. */
+static inline __attribute__((always_inline)) void scr_yin_push(ScrVec *vec, void *obj) {
+  if (__builtin_expect(vec->n == vec->cap, 0)) scr_cyc_grow(vec);
+  vec->v[vec->n++] = obj;
+  if (vec->n > vec->used) vec->used = vec->n;
+}
+#define SCR_YIN_MAX_SIZE ((size_t)1 << 30)
+
+static size_t scr_yin_size(void) {
+  static SCR_TL size_t cached = 0;
+  if (cached == 0) {
+    const char *env = scr_getenv("SCR_YOUNG_NURSERY_SIZE");
+    long v = env ? strtol(env, NULL, 10) : 0;
+    cached = v > 0 ? ((size_t)v < SCR_YIN_MAX_SIZE ? (size_t)v : SCR_YIN_MAX_SIZE)
+                   : SCR_YIN_DEFAULT_SIZE;
+  }
+  return cached;
+}
+
+/* Collections, survivors and dead objects, printed at exit with
+ * SCR_YOUNG_NURSERY_STATS=1 (measurement). */
+static SCR_TL size_t scr_yin_stat[3];
+static void scr_yin_stats_print(void) {
+  fprintf(stderr, "scriptc young nursery: %zu collections, %zu survivors, %zu dead\n",
+          scr_yin_stat[0], scr_yin_stat[1], scr_yin_stat[2]);
+}
+
+/* Types that do not die in young cycles. Only a young object that dies in
+ * a nursery collection gains anything there; every other one costs: one
+ * that dies by reference counting makes a call to leave the nursery (where
+ * it made none before), one that is published is moved out of it, and one
+ * that survives a collection is kept by it, and becomes a trial-deletion
+ * candidate when an outside reference holds it. Structures held by
+ * families that are not young (tree nodes in child arrays, objects
+ * captured by closures) survive, and plain data dies by reference counting.
+ * So each thread keeps, per registry id, how many of the type's young
+ * objects left the nursery (by a collection or otherwise) and how many of
+ * them a collection freed, and after SCR_YIN_WINDOW of them a type freed
+ * for fewer than one in SCR_YIN_RATIO is allocated as before (trial
+ * deletion's nursery) for its next SCR_YIN_PROBE allocations, then
+ * enters again for a fresh window: the same bypass-and-probe scheme as the
+ * levels' bypass above. The countdown
+ * (scr_yin_skip, an ABI: emitted constructors test and decrement it
+ * inline) only steers which objects enter the nursery. */
+#define SCR_YIN_WINDOW 1024
+#define SCR_YIN_RATIO 4
+#define SCR_YIN_PROBE (64 * SCR_YIN_WINDOW)
+#ifdef SCR_WORKERS
+static _Thread_local uint32_t *scr_yin_skip_tl;
+static uint32_t *scr_yin_skip_table(void) {
+  if (!scr_yin_skip_tl) {
+    scr_yin_skip_tl = calloc(SCR_CYC_MAX_TYPES, sizeof *scr_yin_skip_tl);
+    if (!scr_yin_skip_tl) scr_cyc_oom();
+  }
+  return scr_yin_skip_tl;
+}
+#else
+uint32_t scr_yin_skip[SCR_CYC_MAX_TYPES] = {0};
+static uint32_t *scr_yin_skip_table(void) { return scr_yin_skip; }
+#endif
+typedef struct {
+  uint32_t met, freed;
+} ScrYinType;
+/* SCR_YOUNG_NURSERY_ALL=1 keeps every type young (test lanes). */
+static bool scr_yin_all(void) {
+  static SCR_TL int cached = -1;
+  if (cached < 0) {
+    const char *env = scr_getenv("SCR_YOUNG_NURSERY_ALL");
+    cached = env != NULL && env[0] == '1';
+  }
+  return cached != 0;
+}
+static SCR_TL ScrYinType *scr_yin_types;
+
+static __attribute__((noinline, cold)) void scr_yin_decide(uint16_t id, ScrYinType *t) {
+  if (t->freed * SCR_YIN_RATIO < t->met && !scr_yin_all()) scr_yin_skip_table()[id] = SCR_YIN_PROBE;
+  t->met = t->freed = 0;
+}
+static inline __attribute__((always_inline)) void scr_yin_met(uint16_t id, bool dead) {
+  ScrYinType *t = &scr_yin_types[id];
+  t->freed += dead;
+  if (__builtin_expect(++t->met >= SCR_YIN_WINDOW, 0)) scr_yin_decide(id, t);
+}
+
+void scr_yin_enter_slow(void *obj);
+
+/* The whole nursery entry, for targets whose constructors call it. */
+void scr_yin_enter(void *obj) {
+  uint32_t *skip = &scr_yin_skip_table()[scr_cyc_hdr(obj)->id];
+  if (*skip != 0) {
+    --*skip;
+    return;
+  }
+  scr_yin_enter_slow(obj);
+}
+
+/* The slow half of the nursery entry (the emitted constructors inline the
+ * rest: skip, or append while n < lim). The nursery holds at most
+ * SCR_YOUNG_NURSERY_SIZE live young objects: the object that would exceed
+ * that collects the nursery first, then enters. */
+void scr_yin_enter_slow(void *obj) {
+  size_t size = scr_yin_size();
+  if (!scr_yin_types) {
+    scr_yin_types = calloc(SCR_CYC_MAX_TYPES, sizeof *scr_yin_types);
+    if (!scr_yin_types) scr_cyc_oom();
+  }
+  if (scr_yin.n >= size) {
+    static SCR_TL bool stats_checked = false;
+    if (!stats_checked) {
+      stats_checked = true;
+      const char *env = scr_getenv("SCR_YOUNG_NURSERY_STATS");
+      if (env && env[0] == '1') atexit(scr_yin_stats_print);
+    }
+    scr_yin_collect();
+  }
+  if (scr_yin.n == scr_yin.cap) {
+    /* Positions are 31-bit (ScrCycHdr.buf); the size is capped below. */
+    size_t cap = scr_yin.cap ? scr_yin.cap * 2 : 1024;
+    void **grown = realloc(scr_yin.v, cap * sizeof *grown);
+    if (!grown) scr_cyc_oom();
+    scr_yin.v = grown;
+    scr_yin.cap = cap;
+  }
+  scr_yin.lim = scr_yin.cap < size ? scr_yin.cap : size;
+  ScrCycHdr *h = scr_cyc_hdr(obj);
+  scr_cyc_set_gen(h, SCR_CYC_YOUNG);
+  scr_cyc_set_buffered(h, (uint32_t)scr_yin.n);
+  scr_yin.v[scr_yin.n++] = obj;
+}
+
+/* O(1) removal: the last young object takes the hole. */
+static void scr_yin_leave(ScrCycHdr *h, void *obj) {
+  size_t i = scr_cyc_buf_index(h);
+#ifdef SCR_RC_AUDIT
+  if (i >= scr_yin.n || scr_yin.v[i] != obj) scr_trap("scriptc: young object outside the nursery\n");
+#endif
+  void *last = scr_yin.v[--scr_yin.n];
+  scr_yin.v[i] = last;
+  if (last != obj) scr_cyc_set_buffered(scr_cyc_hdr(last), (uint32_t)i);
+  scr_cyc_clear_buffered(h);
+  scr_cyc_set_gen(h, SCR_CYC_NURSERY);
+  scr_yin_met(h->id, false);
+}
+
+static void scr_yin_count_visit(void *child, void *ctx) {
+  (void)ctx;
+  if (child == NULL || SCR_RC(child) == SIZE_MAX) return;
+  ScrCycHdr *h = scr_cyc_hdr(child);
+  if (scr_cyc_gen(h) == SCR_CYC_YOUNG) scr_yin_counts[scr_cyc_buf_index(h)]++;
+}
+
+/* Marked young objects are GRAY (young objects are otherwise BLACK). */
+static void scr_yin_mark_visit(void *child, void *ctx) {
+  (void)ctx;
+  if (child == NULL || SCR_RC(child) == SIZE_MAX) return;
+  ScrCycHdr *h = scr_cyc_hdr(child);
+  if (scr_cyc_gen(h) != SCR_CYC_YOUNG || scr_cyc_color(h) == SCR_CYC_GRAY) return;
+  scr_cyc_set_color(h, SCR_CYC_GRAY);
+  scr_yin_push(&scr_yin_stack, child);
+}
+
+/* A dead object's edge: young and unmarked is dead too (nothing to give
+ * up); a marked young object (promoted now or soon) or an older one keeps
+ * the count until every teardown has run. */
+static void scr_yin_dead_visit(void *child, void *ctx) {
+  (void)ctx;
+  if (child == NULL || SCR_RC(child) == SIZE_MAX) return;
+  ScrCycHdr *h = scr_cyc_hdr(child);
+  if (scr_cyc_gen(h) == SCR_CYC_YOUNG && scr_cyc_color(h) != SCR_CYC_GRAY) return;
+  scr_yin_push(&scr_yin_xrel, child);
+}
+
+/* Fully optimized, unlike trial deletion's per-pass bookkeeping: its loops
+ * run once per young object. */
+static __attribute__((noinline)) size_t scr_yin_collect(void) {
+  if (scr_yin_busy || scr_collecting) return 0;
+  size_t n = scr_yin.n;
+  if (n == 0) return 0;
+  scr_yin_busy = true;
+  /* Releases made by teardowns below buffer candidates but must not start
+   * a trial-deletion pass while the dead set is half torn down. */
+  scr_collecting = true;
+  if (n > scr_yin_counts_cap) {
+    size_t cap = scr_yin_counts_cap ? scr_yin_counts_cap * 2 : 1024;
+    while (cap < n) cap *= 2;
+    uint32_t *counts = realloc(scr_yin_counts, cap * sizeof *counts);
+    if (!counts) scr_cyc_oom();
+    scr_yin_counts = counts;
+    scr_yin_counts_cap = cap;
+  }
+  memset(scr_yin_counts, 0, n * sizeof *scr_yin_counts);
+  void **v = scr_yin.v;
+  for (size_t k = 0; k < n; k++)
+    scr_cyc_type(scr_cyc_hdr(v[k]))->trace(v[k], scr_yin_count_visit, NULL);
+#ifdef SCR_RC_AUDIT
+  /* Membership and counts: every listed object is young at its index and
+   * alive, and holds at least the references young objects make to it
+   * (fewer would mean an uncounted reference). */
+  for (size_t k = 0; k < n; k++) {
+    ScrCycHdr *h = scr_cyc_hdr(v[k]);
+    if (scr_cyc_gen(h) != SCR_CYC_YOUNG || !scr_cyc_is_buffered(h) || scr_cyc_buf_index(h) != k ||
+        scr_cyc_color(h) != SCR_CYC_BLACK)
+      scr_trap("scriptc: corrupt young nursery entry\n");
+    if (SCR_RC(v[k]) == 0 || SCR_RC(v[k]) < scr_yin_counts[k])
+      scr_trap("scriptc: young object with uncounted references\n");
+  }
+#endif
+  for (size_t k = 0; k < n; k++) {
+    void *obj = v[k];
+    ScrCycHdr *h = scr_cyc_hdr(obj);
+    if (scr_cyc_color(h) == SCR_CYC_GRAY || SCR_RC(obj) <= scr_yin_counts[k]) continue;
+    scr_cyc_set_color(h, SCR_CYC_GRAY);
+    scr_yin_push(&scr_yin_stack, obj);
+    while (scr_yin_stack.n) {
+      void *x = scr_yin_stack.v[--scr_yin_stack.n];
+      scr_cyc_type(scr_cyc_hdr(x))->trace(x, scr_yin_mark_visit, NULL);
+    }
+  }
+  /* Split: promote the marked objects; record the dead ones and their
+   * edges to survivors and older objects, which are given up after every
+   * teardown (until then each holds the count it was made with, so no
+   * teardown's releases can free a target early). Edges between dead
+   * objects need nothing: both go. No block is freed before every dead
+   * object has been traced. */
+  scr_yin_dead.n = 0;
+  scr_yin_xrel.n = 0;
+  for (size_t k = 0; k < n; k++) {
+    void *obj = v[k];
+    ScrCycHdr *h = scr_cyc_hdr(obj);
+    if (scr_cyc_color(h) == SCR_CYC_GRAY) {
+      scr_cyc_set_color(h, SCR_CYC_BLACK);
+      scr_cyc_set_gen(h, SCR_CYC_YIN_PROMOTED);
+      scr_cyc_clear_buffered(h);
+      /* An outside root becomes a candidate (see "candidates" above). */
+      if (SCR_RC(obj) > scr_yin_counts[k]) scr_cyc_on_release(obj);
+      scr_yin_met(h->id, false);
+    } else {
+      scr_yin_met(h->id, true);
+      scr_cyc_set_color(h, SCR_CYC_DOOMED);
+      scr_yin_push(&scr_yin_dead, obj);
+      scr_cyc_type(h)->trace(obj, scr_yin_dead_visit, NULL);
+    }
+  }
+  scr_yin.n = 0;
+  scr_yin_stat[0]++;
+  scr_yin_stat[1] += n - scr_yin_dead.n;
+  scr_yin_stat[2] += scr_yin_dead.n;
+  size_t freed = scr_yin_dead.n;
+  for (size_t i = 0; i < scr_yin_dead.n; i++) {
+    void *obj = scr_yin_dead.v[i];
+    scr_cyc_type(scr_cyc_hdr(obj))->free_fn(obj);
+  }
+  scr_yin_dead.n = 0;
+  scr_xg_freed = 0;
+  for (size_t i = 0; i < scr_yin_xrel.n; i++) scr_xg_release(scr_yin_xrel.v[i]);
+  freed += scr_xg_freed;
+  scr_yin_xrel.n = 0;
+  scr_cyc_trim(&scr_yin_stack);
+  scr_cyc_trim(&scr_yin_dead);
+  scr_cyc_trim(&scr_yin_xrel);
+  scr_collecting = false;
+  scr_yin_busy = false;
+  /* The candidates buffered above count toward trial deletion's trigger,
+   * which only a release checks; a program whose releases are all of
+   * young objects would otherwise never reach it. */
+  if (scr_cyc_nbuffered >= scr_cyc_trigger || scr_cyc_live >= scr_cyc_alloc_trigger)
+    scr_cyc_collect_due();
+  return freed;
+}
+#endif
+
 /* One pass over every candidate at or below `gen_limit`; returns how many
  * objects it freed. */
 /* The second half of a pass: settle the white set, promote, re-buffer,
@@ -1242,6 +1620,9 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit, bool doomed) {
     const ScrCycType *type = scr_cyc_type(h);
     if (gen_limit < SCR_CYC_OLD) scr_cyc_freed(type, gen_limit);
     else scr_cyc_mature_dead += scr_cyc_gen(h) == SCR_CYC_MATURE;
+#ifdef SCR_YIN
+    if (scr_cyc_gen(h) == SCR_CYC_YOUNG) scr_yin_leave(h, obj);
+#endif
     type->free_fn(obj);
   }
   scr_white.n = 0;
@@ -1492,9 +1873,16 @@ size_t scr_cyc_pass_at(unsigned gen) { return scr_cyc_pass(gen); }
 
 size_t scr_cyc_collect_set(const ScrCycSet *set, unsigned gen) {
   if (scr_collecting) return 0;
+#ifdef SCR_YIN
+  /* Young objects are invisible to trial deletion: collect them first, so
+   * survivors are promoted where the limited pass can walk them. */
+  size_t young = scr_yin_collect();
+#else
+  size_t young = 0;
+#endif
   scr_cyc_take = set;
   scr_cyc_take_gen = gen;
-  size_t freed = scr_cyc_pass(SCR_CYC_OLD);
+  size_t freed = young + scr_cyc_pass(SCR_CYC_OLD);
   scr_cyc_take = NULL;
   return freed;
 }
@@ -1508,6 +1896,11 @@ void scr_collect_cycles(void) {
    * can have buffered anything new, so a pass that comes up empty ends
    * this; and since each repeat needs a strictly smaller live heap to
    * continue, it terminates. */
+#ifdef SCR_YIN
+  /* The nursery first: afterwards no young object is left (a teardown
+   * never allocates one), so the passes see every object. */
+  scr_yin_collect();
+#endif
   while (scr_cyc_pass(SCR_CYC_OLD) && scr_cyc_buffered()) {
   }
 }
@@ -1526,4 +1919,22 @@ void scr_cyc_context_cleanup(void) {
   free(scr_cyc_kinds);
   scr_cyc_kinds = NULL;
   scr_cyc_kinds_cap = 0;
+#ifdef SCR_YIN
+  ScrVec *young[] = {&scr_yin_stack, &scr_yin_dead, &scr_yin_xrel};
+  for (size_t i = 0; i < sizeof young / sizeof young[0]; i++) {
+    free(young[i]->v);
+    *young[i] = (ScrVec){0};
+  }
+  free(scr_yin.v);
+  scr_yin = (ScrYin){0};
+  free(scr_yin_types);
+  scr_yin_types = NULL;
+#ifdef SCR_WORKERS
+  free(scr_yin_skip_tl);
+  scr_yin_skip_tl = NULL;
+#endif
+  free(scr_yin_counts);
+  scr_yin_counts = NULL;
+  scr_yin_counts_cap = 0;
+#endif
 }

@@ -51,6 +51,7 @@ import {
   retainBody,
   traceAdapter,
   type ShapeHost,
+  youngEntryLines,
 } from "./shapes.js";
 
 /** One virtual method slot of a hierarchy: the ROOT-MOST declaring class
@@ -803,6 +804,11 @@ export function emitClassShapes(
       );
     }
     nw.push(...undefFieldInits(host, meta, nullable));
+    // Young instances: program-owned traced classes. Classes rooted at a
+    // runtime base (errors, emitters, events, streams) carry runtime state
+    // and stay with trial deletion, like every runtime family.
+    if (traced && !lifetime && (!meta.hierarchy || meta.root.def.runtime !== true))
+      nw.push(...youngEntryLines(host));
     nw.push(`  ret ptr ${meta.hierarchy ? "%o.vt" : "%o"}`, `}`, ``);
     defs.push(...nw);
 
