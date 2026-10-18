@@ -593,6 +593,7 @@ function loadFrontend(
         ...opts,
         frontendServices: finalLoad.services,
         startupCrash: finalLoad.startupCrash ?? null,
+        inlineRequireCycleCalls: finalLoad.inlineRequireCycleCalls,
         projectCheckJs: finalLoad.typeWorld?.projectCheckJs ?? false,
         externalTypes: finalLoad.externalTypes,
         externalTypeSpecifiersByFile: finalLoad.externalTypeSpecifiersByFile,

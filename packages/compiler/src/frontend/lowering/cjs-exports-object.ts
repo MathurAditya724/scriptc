@@ -148,17 +148,16 @@ function truthinessOnly(node: ts.Expression): boolean {
 }
 
 /** Which of the module's exports bindings the file ever assigns (any
- * nesting, compound operators included). */
-const assignmentsCache = new WeakMap<ts.SourceFile, { exports: boolean; moduleExports: boolean }>();
-
+ * nesting, compound operators included), cached per file on the lowerer
+ * (Lowerer.cjsExportsAssignments). */
 function exportsAssignments(
   lowerer: Lowerer,
   sf: ts.SourceFile,
 ): { exports: boolean; moduleExports: boolean } {
-  const cached = assignmentsCache.get(sf);
+  const cached = lowerer.cjsExportsAssignments.get(sf);
   if (cached !== undefined) return cached;
   const out = { exports: false, moduleExports: false };
-  assignmentsCache.set(sf, out);
+  lowerer.cjsExportsAssignments.set(sf, out);
   ts.walkPreorder(sf, (node) => {
     // A fresh `exports = module.exports = {}` reset leaves both bindings
     // naming one (new, empty) exports object for the rest of the module.

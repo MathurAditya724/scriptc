@@ -753,6 +753,8 @@ export interface LowerOptions {
    * resolution walk and named-import link checks): the program
    * compiles to that startup crash. */
   startupCrash?: StartupCrash | null;
+  /** LoadResult.inlineRequireCycleCalls. */
+  inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** LIBRARY mode's reachability roots: the profile-mapped exports of the
    * entry module. Executable builds root at the entry's top level alone
    * (an unreferenced export dead-strips); a library's exports are called from
@@ -845,6 +847,8 @@ export interface LowererMode {
    * module init — Node refuses the whole graph before anything evaluates,
    * so nothing runs. */
   startupCrash?: StartupCrash | null;
+  /** LoadResult.inlineRequireCycleCalls. */
+  inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** The build's outbound native FFI declarations. */
   ffiImports?: readonly IrFfiImport[];
   /** LowerOptions.libraryCallbacks (see there). */
@@ -958,6 +962,7 @@ export function lowerToIr(
     projectCheckJs: options.projectCheckJs ?? false,
     targetPlatform,
     startupCrash,
+    inlineRequireCycleCalls: options.inlineRequireCycleCalls,
     ffiImports,
     libraryCallbacks,
     forkTargets,
@@ -981,6 +986,7 @@ export function lowerToIr(
           projectCheckJs: options.projectCheckJs ?? false,
           targetPlatform,
           startupCrash,
+          inlineRequireCycleCalls: options.inlineRequireCycleCalls,
           ffiImports,
           libraryCallbacks,
           forkTargets,
@@ -1011,6 +1017,7 @@ export function lowerToIr(
       reachable,
       targetPlatform,
       startupCrash,
+      inlineRequireCycleCalls: options.inlineRequireCycleCalls,
       ffiImports,
       libraryCallbacks,
       forkTargets,
@@ -1069,6 +1076,7 @@ export function lowerToIr(
     reachable,
     remainder: true,
     alreadyFlushed: resultLowerer.flushedSymbols,
+    inlineRequireCycleCalls: options.inlineRequireCycleCalls,
     targetPlatform,
     ffiImports,
     libraryCallbacks,
@@ -1628,6 +1636,15 @@ export class Lowerer {
   readonly checker: ts.TypeChecker;
   readonly diags: ScrDiagnostic[] = [];
   readonly fnSigsBySymbol = new Map<ts.Symbol, FnSig>();
+  /** Per file: whether it assigns `exports` and `module.exports`
+   * (cjs-exports-object.ts). */
+  readonly cjsExportsAssignments = new Map<
+    ts.SourceFile,
+    { exports: boolean; moduleExports: boolean }
+  >();
+  /** Inline require() calls whose module edge closes a require cycle
+   * (LoadResult.inlineRequireCycleCalls). */
+  readonly inlineRequireCycleCalls: ReadonlySet<ts.Node>;
   /** Immutable callable aliases and compiler-generated adapters. The map
    * is symbol-keyed, so shadowing and cross-module imports keep the same
    * exact binding discipline as globals/functions. */
@@ -2859,6 +2876,7 @@ export class Lowerer {
     this.alreadyFlushed = mode.alreadyFlushed ?? new Set();
     this.targetPlatform = mode.targetPlatform ?? process.platform;
     this.startupCrash = mode.startupCrash ?? null;
+    this.inlineRequireCycleCalls = mode.inlineRequireCycleCalls ?? new Set();
     this.projectCheckJs = mode.projectCheckJs ?? false;
     this.ffiImports = mode.ffiImports ?? [];
     this.libraryCallbacks = mode.libraryCallbacks ?? false;

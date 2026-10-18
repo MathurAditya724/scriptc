@@ -25,7 +25,6 @@ import {
   cjsExportTargetLiteral,
   isCjsJsFile,
   isJsSourceFile,
-  isInlineRequireCycleCall,
   isModuleExportsAccess,
   locOf,
   npmStaticDepSf7,
@@ -109,7 +108,7 @@ export function inlineNamespaceRequireOf(
 /** `value` evaluated after the required module's run-once %init (and its
  * module-registry link) at the require's own position. */
 export function withRequireInit(lowerer: Lowerer, req: InlineRequire, value: IrExpr): IrExpr {
-  if (isInlineRequireCycleCall(req.call)) {
+  if (lowerer.inlineRequireCycleCalls.has(req.call)) {
     lowerer.unsupported(
       "SC1090",
       req.call,

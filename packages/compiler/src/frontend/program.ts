@@ -338,6 +338,12 @@ export interface LoadResult {
    * last. Empty until checkPreflight runs (and empty when preflight fails
    * structurally). */
   moduleOrder: ts.SourceFile[];
+  /** Inline require() calls whose edge closes a require cycle. Node answers
+   * them with the still-evaluating module's partial exports, which the
+   * static export globals do not model; their lowering refuses them by name
+   * at run time instead of refusing the whole program. Filled by
+   * checkPreflight. */
+  inlineRequireCycleCalls?: ReadonlySet<ts.Node>;
   /** Node's startup refusal, when the graph carries an import edge Node
    * rejects before ANY module evaluates — a RESOLUTION refusal (a bare
    * specifier nothing installed resolves, an exports/imports map that
@@ -975,9 +981,10 @@ export function loadProgram(
  * preflight diagnostics. Preserve the caller's complete load shape when
  * mutating it, including its owned services and disposal callback. */
 export function checkPreflight<T extends LoadResult>(load: T): ScrDiagnostic[] {
-  const { diags, moduleOrder, startupCrash } = preflight7(load);
+  const { diags, moduleOrder, startupCrash, inlineRequireCycleCalls } = preflight7(load);
   load.moduleOrder = moduleOrder;
   load.startupCrash = startupCrash;
+  load.inlineRequireCycleCalls = inlineRequireCycleCalls;
   return diags;
 }
 
@@ -2445,17 +2452,6 @@ export interface CycleEdge {
   lazy?: true;
   /** The inline require() call behind the edge (inline edges only). */
   call?: ts.CallExpression;
-}
-
-/** Inline require() calls whose edge closes a require cycle. Node answers
- * them with the still-evaluating module's partial exports, which the static
- * export globals do not model; their lowering refuses them by name at run
- * time instead of refusing the whole program (the inline call kept its
- * runtime fence before it became a module edge). */
-const inlineRequireCycleCalls = new WeakSet<ts.Node>();
-
-export function isInlineRequireCycleCall(call: ts.Node): boolean {
-  return inlineRequireCycleCalls.has(call);
 }
 
 /** True when the reference at `node` can only evaluate AFTER the module
@@ -4133,6 +4129,7 @@ function preflight7(load: LoadResult): {
   diags: ScrDiagnostic[];
   moduleOrder: ts.SourceFile[];
   startupCrash: StartupCrash | null;
+  inlineRequireCycleCalls: ReadonlySet<ts.Node>;
 } {
   const { program, entry } = load;
   const diags: ScrDiagnostic[] = [...load.configDiags];
@@ -5118,6 +5115,7 @@ function preflight7(load: LoadResult): {
     return all.some((e) => e.call !== undefined) ? all.filter((e) => e.call === undefined) : all;
   });
   const order: ts.SourceFile[] = [];
+  const inlineRequireCycleCalls = new Set<ts.Node>();
   const state = new Map<ts.SourceFile, "visiting" | "done">();
   const stack: string[] = [];
   const visit = (sf: ts.SourceFile): void => {
@@ -5214,7 +5212,12 @@ function preflight7(load: LoadResult): {
           esmNamedImportLinkCheck(program, entry, order, diags),
         );
 
-  return { diags, moduleOrder: order, startupCrash: resolveCrash ?? linkCrash };
+  return {
+    diags,
+    moduleOrder: order,
+    startupCrash: resolveCrash ?? linkCrash,
+    inlineRequireCycleCalls,
+  };
 }
 
 /* ── the CJS named-import link check ─────────────────────────────────────
