@@ -119,6 +119,11 @@ import {
 import { trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 import { forkTargetPaths } from "./fork-target.js";
 import { workerTargetPaths } from "./worker-target.js";
+import {
+  erasedTypeOnlyImport,
+  typeOnlyNamedImport,
+  typeOnlyReachedFiles,
+} from "./type-only-imports.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 
@@ -635,9 +640,14 @@ export function entryPackageFilePredicate(entryPath: string): (file: string) => 
 }
 
 /** maxNodeModuleJsDepth can omit relative imports within an admitted
- * package. Discover its runtime sources to a fixpoint so the checker and
- * module resolver see the same graph regardless of import traversal order. */
-function entryPackageProgramRoots7(program: ts.Program, entryPath: string): string[] {
+ * package, and opted-in packages deep in the dependency graph. Discover
+ * their runtime sources to a fixpoint so the checker and module resolver
+ * see the same graph regardless of import traversal order or depth. */
+function entryPackageProgramRoots7(
+  program: ts.Program,
+  entryPath: string,
+  rootNpmStaticEdges: boolean,
+): string[] {
   const belongsToEntry = entryPackageFilePredicate(entryPath);
   const roots = new Set<string>();
   for (const sf of program.getImplementationSourceFiles()) {
@@ -656,15 +666,63 @@ function entryPackageProgramRoots7(program: ts.Program, entryPath: string): stri
         program.getSourceFile(target) === undefined
       )
         roots.add(target);
+      // An opted-in package's bare edge counts against the same depth
+      // budget: tsgo charges every node_modules JS hop, so express's
+      // body-parser → qs → side-channel → get-intrinsic chain runs out of
+      // depth before its leaves load. Root the runtime file this edge
+      // lowers to (preflight's own resolution and miss rule) so the leaf
+      // joins like a shallow one; complete programs add nothing. Only
+      // the shadowed lowering world does this (the authored world checks
+      // user code against declarations), and only from package files: a
+      // program file's own edges are never deeper than one hop.
+      // (resolveBareModule directly: resolveNpmImport7's workspace
+      // registration stays with preflight's own walk.)
+      if (
+        target === null &&
+        rootNpmStaticEdges &&
+        npmStaticPackageOfPath(sf.fileName) !== null &&
+        !isRelativeSpecifier(specifier.text)
+      ) {
+        const spec = specifier.text;
+        if (spec.startsWith("#") || canonicalBuiltinModule(spec) !== null) continue;
+        const npm = resolveBareModule(
+          sf.fileName,
+          spec,
+          undefined,
+          moduleSpecifierKind7(specifier),
+        );
+        if (
+          npm !== null &&
+          isNpmStaticPackage(npm.packageName) &&
+          (isNodeModulesPath(npm.typesFile) || npm.workspaceDir !== undefined) &&
+          isJsSourceFileName(npm.typesFile) &&
+          npmStaticProgramFile(program, npm.typesFile) === null
+        )
+          roots.add(tsgoPath(resolve(npm.typesFile)));
+      }
     }
   }
   return [...roots].sort();
+}
+
+/** "require" for a CommonJS edge (`require("x")`, `import x = require("x")`),
+ * "import" for every ESM form — the resolution kind preflight uses. */
+function moduleSpecifierKind7(specifier: ts.StringLiteralLike): "import" | "require" {
+  const parent = specifier.parent;
+  if (ts.isExternalModuleReference(parent)) return "require";
+  return ts.isCallExpression(parent) &&
+    ts.isIdentifier(parent.expression) &&
+    parent.expression.text === "require"
+    ? "require"
+    : "import";
 }
 
 function loadProgram7(
   host: ts.Ts7Host,
   entryPath: string,
   externalTypes: ReadonlyMap<string, string> = new Map(),
+  /** The --npm-static lowering world: root opted-in packages' deep edges. */
+  rootNpmStaticEdges = false,
 ): LoadResult & { disposeAll: () => void } {
   const config = adoptProjectConfig7(host, entryPath);
   const configuredPaths = config.options["paths"];
@@ -712,7 +770,7 @@ function loadProgram7(
   try {
     for (let pass = 0; pass < 32; pass++) {
       const candidates = [
-        ...entryPackageProgramRoots7(program, entryPath),
+        ...entryPackageProgramRoots7(program, entryPath, rootNpmStaticEdges),
         ...createRequireProgramRoots7(program),
         ...forkTargetPaths(program, program.getImplementationSourceFiles()),
         ...workerTargetPaths(program, program.getImplementationSourceFiles()),
@@ -926,7 +984,7 @@ export function loadProgram(
   };
   const host = services.createProgramHost({ cwd: dirname(entryPath), fsShadow });
   try {
-    const load = loadProgram7(host, entryPath, externalTypes);
+    const load = loadProgram7(host, entryPath, externalTypes, npmStaticPackages.length > 0);
     let authoredHost: ts.Ts7Host | null = null;
     let authoredLoad: ReturnType<typeof loadProgram7> | null = null;
     return {
@@ -2146,7 +2204,7 @@ function insideFunctionLike7(node: ts.Node): boolean {
 function nodeEsmSyntaxMarker7(sf: ts.SourceFile): ts.Node | null {
   for (const stmt of sf.statements) {
     if (ts.isImportDeclaration(stmt) && !erasedTypeOnlyImport(stmt)) return stmt;
-    if (ts.isExportDeclaration(stmt) && !stmt.isTypeOnly && !erasedTypeOnlyReexport(stmt)) {
+    if (ts.isExportDeclaration(stmt) && !stmt.isTypeOnly) {
       return stmt;
     }
     if (ts.isExportAssignment(stmt)) return stmt;
@@ -2829,6 +2887,7 @@ export function makeCycleAdmission(
       const clause = e.stmt.importClause;
       if (
         clause === undefined ||
+        typeOnlyNamedImport(e.stmt) ||
         (clause.name === undefined &&
           (clause.namedBindings === undefined ||
             (ts.isNamespaceImport(clause.namedBindings) &&
@@ -4006,6 +4065,24 @@ function locOf7(node: ts.Node): { file: string; start: number; end: number } {
   return { file: sf.fileName, start: node.getStart(sf), end: node.getEnd() };
 }
 
+/** The program file holding an opted-in package's resolved runtime JS:
+ * the file itself, or its same-stem TypeScript twin. */
+function npmStaticProgramFile(program: ts.Program, resolvedFile: string): ts.SourceFile | null {
+  let dep = program.getSourceFile(resolvedFile) ?? null;
+  if (dep === null) {
+    // A workspace-linked package shipping its .ts SOURCE beside the
+    // compiled .js: the checker's resolution preferred the source (it
+    // outranks the sibling .js under bundler resolution), so the program
+    // holds the .ts twin at the same stem — the same module, in its
+    // richer spelling.
+    for (const ext of [".ts", ".tsx", ".mts", ".cts"]) {
+      dep = program.getSourceFile(resolvedFile.replace(/\.(js|mjs|cjs)$/, ext)) ?? null;
+      if (dep !== null) break;
+    }
+  }
+  return dep;
+}
+
 /** The PROGRAM source file an opted-in --npm-static package's resolved
  * entry maps to, or null with the package marked an offender (resolution
  * still answering declarations, or the file missing from the type-checked
@@ -4022,18 +4099,7 @@ function npmStaticProgramDep(
     );
     return null;
   }
-  let dep = program.getSourceFile(resolvedFile) ?? null;
-  if (dep === null) {
-    // A workspace-linked package shipping its .ts SOURCE beside the
-    // compiled .js: the checker's resolution preferred the source (it
-    // outranks the sibling .js under bundler resolution), so the program
-    // holds the .ts twin at the same stem — the same module, in its
-    // richer spelling.
-    for (const ext of [".ts", ".tsx", ".mts", ".cts"]) {
-      dep = program.getSourceFile(resolvedFile.replace(/\.(js|mjs|cjs)$/, ext)) ?? null;
-      if (dep !== null) break;
-    }
-  }
+  const dep = npmStaticProgramFile(program, resolvedFile);
   if (dep === null) {
     reportNpmStaticOffender(
       packageName,
@@ -4305,21 +4371,41 @@ function preflight7(load: LoadResult): {
           npmStaticPackageOfPath(sf.fileName) !== null) &&
         !unselectedPackageJsFile(sf.fileName),
     );
+  // Files reached only through `import type` / `export type … from` are
+  // checker input, never program modules: Node does not load them, so
+  // their imports and syntax must not fence the program.
+  const resolveRuntimeEdge = (
+    sf: ts.SourceFile,
+    spec: string,
+    resolutionKind?: "import" | "require",
+  ): ts.SourceFile | null =>
+    resolveImport7(program, sf, spec, resolutionKind) ??
+    npmStaticDepSf7(program, sf, spec, resolutionKind);
+  const typeOnlyFiles = typeOnlyReachedFiles(
+    program,
+    entry,
+    programFiles,
+    () => [
+      ...forkTargetPaths(program, program.getImplementationSourceFiles()),
+      ...workerTargetPaths(program, program.getImplementationSourceFiles()),
+    ],
+    resolveRuntimeEdge,
+  );
+  const runtimeFiles =
+    typeOnlyFiles.size === 0 ? programFiles : programFiles.filter((sf) => !typeOnlyFiles.has(sf));
   const userFiles = npmStaticActive()
     ? planNpmStaticReexports(
         program,
         entry,
-        programFiles,
+        runtimeFiles,
         [
           ...createRequireProgramRoots7(program),
           ...forkTargetPaths(program, program.getImplementationSourceFiles()),
           ...workerTargetPaths(program, program.getImplementationSourceFiles()),
         ],
-        (sf, spec, resolutionKind) =>
-          resolveImport7(program, sf, spec, resolutionKind) ??
-          npmStaticDepSf7(program, sf, spec, resolutionKind),
+        resolveRuntimeEdge,
       )
-    : programFiles;
+    : runtimeFiles;
   program.getTypeChecker().prefetchSourceFileStructures(userFiles);
 
   // Unselected node_modules JS is not native program source even when
@@ -4444,8 +4530,7 @@ function preflight7(load: LoadResult): {
         continue;
       }
       if (ts.isExportDeclaration(stmt)) {
-        if (stmt.isTypeOnly || erasedTypeOnlyReexport(stmt) || isPrunedNpmReexport(program, stmt))
-          continue;
+        if (stmt.isTypeOnly || isPrunedNpmReexport(program, stmt)) continue;
         if (!stmt.moduleSpecifier) continue;
         const fromSpec = ts.isStringLiteral(stmt.moduleSpecifier) ? stmt.moduleSpecifier.text : "";
         if (load.externalTypes.has(fromSpec)) {
@@ -5714,42 +5799,6 @@ export function isCheckedJsSourceFile(sf: ts.SourceFile, projectCheckJs: boolean
   return checked;
 }
 
-/** `import type …` declarations and named clauses whose every element is
- * `type`-qualified are ERASED by tsc at emit — Node's module graph has no
- * edge there, so module order, cycle detection, init calls, and the
- * startup-refusal probe must not count them either (zod v4's core modules
- * are "cyclic" only through `import type * as ns` namespaces — 27 phantom
- * SC1016 sites against 1 real value-level cycle; and a type-only import
- * of a module Node cannot resolve is NOT a startup crash — Node never
- * resolves it). Originated as the provenance-sources pilot's flag-gated
- * prototype (SCRIPTC_TYPE_ONLY_EDGES), promoted to always-on with the
- * full-suite differential green. Side-effect imports (no clause) stay
- * real edges. */
-function erasedTypeOnlyImport(stmt: ts.ImportDeclaration): boolean {
-  const clause = stmt.importClause;
-  if (clause === undefined) return false; // side-effect import: a real edge
-  if (clause.phaseModifier === ts.SyntaxKind.TypeKeyword) return true;
-  return (
-    clause.name === undefined &&
-    clause.namedBindings !== undefined &&
-    ts.isNamedImports(clause.namedBindings) &&
-    clause.namedBindings.elements.length > 0 &&
-    clause.namedBindings.elements.every((e) => e.isTypeOnly)
-  );
-}
-
-/** The re-export twin: `export { type X } from "./m"` with every element
- * `type`-qualified erases at emit exactly like `export type { X } from`
- * (which stmt.isTypeOnly already covers) — no module edge. */
-function erasedTypeOnlyReexport(stmt: ts.ExportDeclaration): boolean {
-  return (
-    stmt.exportClause !== undefined &&
-    ts.isNamedExports(stmt.exportClause) &&
-    stmt.exportClause.elements.length > 0 &&
-    stmt.exportClause.elements.every((e) => e.isTypeOnly)
-  );
-}
-
 export function orderedImportsOf(
   program: ts.Program,
   sf: ts.SourceFile,
@@ -5757,11 +5806,7 @@ export function orderedImportsOf(
   const out: { stmt: ts.Statement; dep: ts.SourceFile | null }[] = [];
   for (const stmt of sf.statements) {
     if (ts.isExportDeclaration(stmt) && isPrunedNpmReexport(program, stmt)) continue;
-    if (
-      ts.isExportDeclaration(stmt) &&
-      (stmt.isTypeOnly || erasedTypeOnlyReexport(stmt) || !stmt.moduleSpecifier)
-    )
-      continue;
+    if (ts.isExportDeclaration(stmt) && (stmt.isTypeOnly || !stmt.moduleSpecifier)) continue;
     if (!ts.isImportDeclaration(stmt) && !ts.isExportDeclaration(stmt)) continue;
     if (ts.isImportDeclaration(stmt) && erasedTypeOnlyImport(stmt)) continue;
     if (!stmt.moduleSpecifier || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;

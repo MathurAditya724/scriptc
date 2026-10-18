@@ -80,7 +80,7 @@ import {
   createRequireProgramModuleDecl,
 } from "./builtins/module-bindings.js";
 import { isPromisifyCall, registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
-import { registerZlibClassAlias } from "./builtins/compression.js";
+import { registerBuiltinClassAlias } from "./builtins/class-values.js";
 import { stripTypeCasts } from "./builtins/arguments.js";
 import {
   bindingContextualGenericFnNodeOf,
@@ -1701,7 +1701,7 @@ export function collectGlobals(
       // resolution and value reads reuse the source's interned closure.
       if (isConst && registerOverloadedCallableAlias(lowerer, decl)) continue;
       if (isConst && registerBuiltinCallableAlias(lowerer, decl.name, decl.initializer)) continue;
-      if (registerZlibClassAlias(lowerer, decl.name, decl.initializer)) continue;
+      if (registerBuiltinClassAlias(lowerer, decl.name, decl.initializer)) continue;
       // `const f = (x) => ...` at file scope of an npm-static JS file
       // whose params are implicit-any: the implicit-monomorphization
       // twin of the generic binding above — no global exists; calls and
@@ -2664,6 +2664,7 @@ export function lowerFileInit(
         loc: loc0,
       });
     }
+    if (sf === lowerer.entry) header.push(...lowerer.punycodeLinkWarning());
     // Top-level `this` of a CommonJS module: its object exists before the
     // module's first statement (lowerCjsTopLevelThis).
     const exportsThis = lowerer.cjsExportsThis.get(sf);

@@ -1250,7 +1250,7 @@ static void scr_stdio_cleanup(void) {
   scr_stdio_write_hook = NULL;
   for (int i = 0; i < 3; i++) {
     ScrStdio *stream = &scr_stdio_streams[i];
-    scr_weak_dispose(stream);
+    scr_weak_dispose_inline(stream);
     scr_dyn_release(stream->write);
     stream->write = NULL;
     scr_dyn_release(stream->write_error);

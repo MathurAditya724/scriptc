@@ -2,7 +2,14 @@ import { type ArraySearchKind, emitArraySearchHelpers } from "./array-search.js"
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitLlvmLayouts } from "./layouts.js";
 import { compileRegexMatcher, type RegexMatcherCode } from "./regex-matchers.js";
-import { CYC_BUF, CYC_HDR, FIRST_EMITTED_CYC_KIND, inlineAllocSupported } from "./alloc.js";
+import {
+  CYC_BUF,
+  CYC_HDR,
+  FIRST_EMITTED_CYC_KIND,
+  inlineAllocSupported,
+  RECORD_SOURCES_GATE,
+  WEAK_KEYS_GATE,
+} from "./alloc.js";
 import { hasLoneSurrogate, llvmBytes as llBytes, wtf8Bytes } from "../literals.js";
 import { InternalCompilerError } from "../../errors.js";
 import { createHash } from "node:crypto";
@@ -1964,7 +1971,10 @@ export class LlEmitter {
   }
 
   emitParts(): string[] {
-    const parts = limitInlineDynReleases(this.emitModuleParts());
+    const parts = [
+      ...limitInlineDynReleases(this.emitModuleParts()),
+      ...this.disposeObserverGates(),
+    ];
     if (!this.executableTls) return parts;
     // A worker executable's thread-locals all live in the executable's own
     // TLS block: the program's internal ones, and the runtime's external
@@ -1985,6 +1995,21 @@ export class LlEmitter {
           "$1thread_local(localexec) global ",
         ),
     );
+  }
+
+  /** The dispose-observer gates the emitted frees and record writers test
+   * (alloc.ts): defined after every helper is emitted, because dynCheck
+   * builders, JSON schemas and weak collection constructors are requested
+   * lazily. */
+  private disposeObserverGates(): string[] {
+    const weak = [...this.decls].some(
+      (d) => d.includes("@scr_weak_map_new(") || d.includes("@scr_weak_set_new("),
+    );
+    return [
+      `${WEAK_KEYS_GATE} = internal constant i1 ${weak}`,
+      `${RECORD_SOURCES_GATE} = internal constant i1 ${this.dyn.keepsRecordSources}`,
+      ``,
+    ];
   }
 
   private emitModuleParts(): string[] {

@@ -132,8 +132,8 @@ export function zlibStreamModeOf(
   symbol: ts.Symbol | null | undefined,
 ): number | null {
   if (!symbol) return null;
-  const aliasMode = zlibClassAliasModeOf(lowerer, symbol, 0);
-  if (aliasMode !== undefined) return aliasMode;
+  const alias = lowerer.builtinClassAliasOf(symbol);
+  if (alias !== null) return alias.kind === "zlib" ? alias.mode : null;
   const target =
     symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
   const mode = ZLIB_STREAM_MODES.get(target.name);
@@ -499,78 +499,10 @@ export function lowerZlibModuleCall(
   throw new InternalCompilerError(`unhandled lowered zlib member ${bi.member}`);
 }
 
-/** The zlib stream class an expression names (`zlib.Gzip`, an imported
- * `Gzip`, a `const C = zlib.Gzip` alias), as its node_zlib_mode, or null. */
-export function zlibClassModeOfExpr(lowerer: Lowerer, expr: ts.Expression): number | null {
-  let e = expr;
-  while (ts.isParenthesizedExpression(e)) e = e.expression;
-  if (ts.isIdentifier(e)) return zlibStreamModeOf(lowerer, lowerer.checker.getSymbolAtLocation(e));
-  if (ts.isPropertyAccessExpression(e) && !e.questionDotToken) {
-    return zlibStreamModeOf(lowerer, lowerer.checker.getSymbolAtLocation(e.name));
-  }
-  return null;
-}
-
 /** The class name of a zlib stream mode (Node's constructor name). */
 export function zlibClassName(mode: number): string {
   for (const [name, m] of ZLIB_STREAM_MODES) if (m === mode) return name;
   return "Zlib";
-}
-
-/** The mode of a `const C = zlib.Gzip` binding (or an alias of such a
- * binding), null when the symbol is a const binding of something else,
- * undefined when it is not a const binding. Resolved from the declaration,
- * so uses lowered before the declaration statement see the same answer. */
-function zlibClassAliasModeOf(
-  lowerer: Lowerer,
-  symbol: ts.Symbol,
-  depth: number,
-): number | null | undefined {
-  const cached = lowerer.zlibClassAliases.get(symbol);
-  if (cached !== undefined) return cached;
-  if ((symbol.flags & ts.SymbolFlags.BlockScopedVariable) === 0) return undefined;
-  const decl = lowerer.checker.valueDeclarationOf(symbol);
-  if (decl === undefined || !ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) {
-    return undefined;
-  }
-  // const only: a var or let binding could be reassigned
-  const list = decl.parent;
-  if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) === 0) {
-    return undefined;
-  }
-  let init = decl.initializer;
-  while (init !== undefined && ts.isParenthesizedExpression(init)) init = init.expression;
-  if (init === undefined || depth > 16) return null;
-  let mode: number | null = null;
-  if (ts.isIdentifier(init)) {
-    const next = lowerer.checker.getSymbolAtLocation(init);
-    if (next !== undefined) {
-      const nested = zlibClassAliasModeOf(lowerer, next, depth + 1);
-      mode = nested === undefined ? zlibStreamModeOf(lowerer, next) : nested;
-    }
-  } else if (ts.isPropertyAccessExpression(init) && !init.questionDotToken) {
-    mode = zlibStreamModeOf(lowerer, lowerer.checker.getSymbolAtLocation(init.name));
-  }
-  if (mode !== null) lowerer.zlibClassAliases.set(symbol, mode);
-  return mode;
-}
-
-/** True for `const C = zlib.Gzip` (or an alias of an alias): a
- * compile-time zlib class alias that owns no runtime slot, so the
- * statement lowering skips it. */
-export function registerZlibClassAlias(
-  lowerer: Lowerer,
-  nameNode: ts.Node,
-  init: ts.Expression | undefined,
-): boolean {
-  if (!ts.isIdentifier(nameNode) || init === undefined) return false;
-  const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
-  return symbol !== undefined && zlibClassAliasOf(lowerer, symbol) !== null;
-}
-
-/** The mode of a `const C = zlib.Gzip` alias symbol, or null. */
-export function zlibClassAliasOf(lowerer: Lowerer, symbol: ts.Symbol): number | null {
-  return zlibClassAliasModeOf(lowerer, symbol, 0) ?? null;
 }
 
 /** `value instanceof zlib.Gzip` (any spelling of the class, aliases

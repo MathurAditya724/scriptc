@@ -957,6 +957,27 @@ void scr_warning_emit_deferred(ScrDyn *w) {
   scr_warning_defer(w, scr_warning_tick);
 }
 
+static SCR_TL bool scr_punycode_loaded = false;
+
+void scr_punycode_warn(bool immediate, bool report) {
+  if (scr_punycode_loaded) return;
+  scr_punycode_loaded = true;
+  if (!report) return;
+  static const char text[] =
+      "The `punycode` module is deprecated. Please use a userland alternative instead.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrStr *code = scr_str_new("DEP0040", 7);
+  ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+  if (immediate) {
+    if (!scr_process_deprecation_flag_on(0)) scr_warning_dispatch(w);
+  } else {
+    scr_warning_emit_deferred(w);
+  }
+  scr_dyn_release(w);
+  scr_str_release(code);
+  scr_str_release(message);
+}
+
 /* The console members' warnings. Node's emitWarning emits on
  * process.nextTick, so these queue in order and each rides one raw tick
  * on the shared tick queue; any left at exit are dropped with it. */
