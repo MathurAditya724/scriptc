@@ -206,6 +206,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.nativeUrlIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeDateIs": { argTypes: [DYN], result: BOOL },
   "date.nativeNew": { argTypes: [DYN], result: DYN },
+  /** `new Date(year, monthIndex, ...)` in JavaScript: the argument array's
+   * first seven values pass through ToNumber in order (later ones are
+   * evaluated, never converted), then the local-time field constructor. */
+  "date.nativeNewFields": { argTypes: [DYN], result: DYN },
   "date.checkedValue": { argTypes: [DYN], result: DATE_T },
   "dyn.nativeRegexIs": { argTypes: [DYN], result: BOOL },
   /** toString() on a checked-dynamic receiver: runtime kind dispatch
@@ -4198,6 +4202,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * map to 1900+year, out-of-range months/dates roll over, non-finite
    * parts and out-of-range results answer NaN. Never throws. */
   "date.utc": { argTypes: [F64, F64, F64, F64, F64, F64, F64], result: F64 },
+  /** `new Date(year, monthIndex[, date, hours, minutes, seconds, ms])` —
+   * the same seven-f64 completion as date.utc, but the fields are LOCAL
+   * time: V8's MakeDay/MakeTime, then UTC(t) in the host zone (DST gaps
+   * read with the offset before the transition, overlaps answer the
+   * earlier instant), then TimeClip. Never throws. */
+  "date.newLocal": { argTypes: [F64, F64, F64, F64, F64, F64, F64], result: DATE_T },
   /** WHATWG TextDecoder.decode over u8 bytes (scr_bytes.c): utf-8 with
    * default options — the same maximal-subpart replacement decode as
    * Buffer.toString("utf8"), with the leading BOM stripped (the one

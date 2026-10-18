@@ -2176,8 +2176,15 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     id: "stdlib.date.constructor",
     kind: "stdlib",
     name: "Date constructor",
-    fns: ["date.newNow", "date.newMs", "date.newString", "date.nativeNew"],
-    note: "zero arguments, or one milliseconds/date-string argument; values are the read-only TimeClip scalar slice",
+    fns: [
+      "date.newNow",
+      "date.newMs",
+      "date.newString",
+      "date.nativeNew",
+      "date.newLocal",
+      "date.nativeNewFields",
+    ],
+    note: "zero arguments, one milliseconds/date-string argument, or local-time year/month fields; values are the read-only TimeClip scalar slice",
   },
   {
     id: "stdlib.date.UTC",

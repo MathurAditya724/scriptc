@@ -10656,7 +10656,7 @@ double scr_date_get_timezone_offset(double ms) {
   return scr_date_local_parts(ms, &p) ? p.timezone_offset : NAN;
 }
 
-/* ── Local time to UTC ─────────────────────────────────────────────────
+/* ── Local time to UTC, and the year/month field constructor ───────────
  * The spec's UTC(t) over the host zone: t is a local wall-clock time
  * value. The offset in effect a day before and a day after t brackets any
  * transition (none come closer together than that in tzdata). A time in
@@ -10751,6 +10751,20 @@ static double scr_date_from_local(double day, double time) {
   double t = time + day * 86400000.0;
   if (!(t >= -8640000864000000.0 && t <= 8640000864000000.0)) return NAN;
   return scr_date_new_ms(scr_date_local_to_utc(trunc(t)));
+}
+
+/* new Date(year, monthIndex[, date[, hours[, minutes[, seconds[, ms]]]]])
+ * over already-number arguments (the frontend completes omitted trailing
+ * arguments with date 1 and time parts 0): years 0–99 map to 1900+year,
+ * fields roll over through MakeDay/MakeTime, and the local time converts
+ * to UTC in the host zone. Never throws. */
+double scr_date_new_local(double y, double mo, double d,
+                          double h, double mi, double s, double ms) {
+  if (!isnan(y)) {
+    double yi = trunc(y);
+    if (yi >= 0 && yi <= 99) y = 1900 + yi;
+  }
+  return scr_date_from_local(scr_date_v8_make_day(y, mo, d), scr_date_v8_make_time(h, mi, s, ms));
 }
 
 /* ── V8's date-string parser, the fallback ─────────────────────────────
@@ -11594,6 +11608,19 @@ ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments) {
     ms = scr_date_new_ms(ms);
   }
   return scr_dyn_native_date_from_ms(ms);
+}
+
+/* new Date(year, monthIndex, ...) in JavaScript: ToNumber over the first
+ * seven arguments in order (a throwing conversion stops there), the
+ * spec's defaults for the rest, then the local-time field constructor. */
+ScrDyn *scr_dyn_native_date_new_fields(const ScrDyn *arguments) {
+  double fields[7] = {0, 0, 1, 0, 0, 0, 0};
+  size_t n = arguments->v.arr.len < 7 ? arguments->v.arr.len : 7;
+  for (size_t i = 0; i < n; i++) {
+    if (!scr_dyn_number_coerce_js(arguments->v.arr.items[i], &fields[i])) return NULL;
+  }
+  return scr_dyn_native_date_from_ms(
+    scr_date_new_local(fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6]));
 }
 
 /* The Date.prototype methods scr_native_date_invoke answers. */

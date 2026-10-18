@@ -1,3 +1,3 @@
-String constructors and `Date.parse` use V8's date-string grammar: ECMAScript date-time strings and the legacy forms Node.js accepts, such as RFC 1123 HTTP dates (`Mon, 01 Jan 2024 00:00:00 GMT`), `Date#toString` output, and `Jan 2, 2024`. Strings without a timezone are local time.
+String constructors and `Date.parse` use V8's date-string grammar: ECMAScript date-time strings and the legacy forms Node.js accepts, such as RFC 1123 HTTP dates (`Mon, 01 Jan 2024 00:00:00 GMT`), `Date#toString` output, and `Jan 2, 2024`. Strings without a timezone, and `new Date(year, monthIndex, ...)` fields, are local time.
 
 Local calendar getters and local-time conversions use the operating system's timezone database. Historical results can differ from Node.js when timezone data differs. For valid extreme years outside a platform calendar API's range, scriptc uses a calendar-equivalent year in the 400-year Gregorian cycle to obtain the timezone rule.

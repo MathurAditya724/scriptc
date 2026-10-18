@@ -4027,7 +4027,7 @@
       "kind": "stdlib",
       "name": "Date constructor",
       "status": "static",
-      "note": "zero arguments, or one milliseconds/date-string argument; values are the read-only TimeClip scalar slice"
+      "note": "zero arguments, one milliseconds/date-string argument, or local-time year/month fields; values are the read-only TimeClip scalar slice"
     },
     {
       "id": "stdlib.date.getDate",

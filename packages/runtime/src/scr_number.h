@@ -105,6 +105,11 @@ ScrStr *scr_date_to_iso(double ms);
  * ES5 format, then its legacy grammar: RFC 1123/2822, Date#toString,
  * "Jan 2, 2024", ...). Zone-less dates are local time. Never throws. */
 double scr_date_parse_get_time(ScrStr *s);
+/* new Date(year, monthIndex, date, hours, minutes, seconds, ms) over
+ * already-number arguments: V8's MakeDay/MakeTime over LOCAL fields, then
+ * UTC(t) in the host zone and TimeClip. Never throws. */
+double scr_date_new_local(double y, double mo, double d,
+                          double h, double mi, double s, double ms);
 /* Date.UTC over already-number arguments (frontend completes the spec's
  * defaults): MakeDay/MakeTime/TimeClip exactly — 0–99 maps to 1900+year,
  * month/date rollover, NaN for non-finite parts, out-of-range results,
