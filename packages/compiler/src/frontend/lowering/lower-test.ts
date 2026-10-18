@@ -409,11 +409,16 @@ function lowerSuite(
   }
   if (methodMode === 1 || methodMode === 2) opts.mode = methodMode;
   const cb = lowerer.lowerExpr(fnNode);
-  if (cb.type.kind !== "func" || cb.type.params.length !== 0) {
+  // The body may take the SuiteContext (flag 2, as test bodies take theirs).
+  if (
+    cb.type.kind !== "func" ||
+    cb.type.params.length > 1 ||
+    (cb.type.params.length === 1 && cb.type.params[0]!.kind !== "testCtx")
+  ) {
     lowerer.noLowering(
-      `${what} whose body is not a zero-parameter function`,
+      `${what} whose body is not a function of the SuiteContext`,
       fnNode,
-      "suite bodies take no parameters (they run at registration)",
+      "suite bodies take no parameters or the SuiteContext (they run at registration)",
     );
   }
   if (cb.type.ret.kind !== "void" && !isUnitType(cb.type.ret)) {
@@ -427,7 +432,10 @@ function lowerSuite(
   const mode = numLit(opts.mode, loc);
   const msg = opts.msg ?? strLit("", loc);
   // describe.only and { only: true } mark the suite (flag 4, as for tests).
-  const flags = numLit(optionFlags(opts) | (methodMode === 3 ? 4 : 0), loc);
+  const flags = numLit(
+    optionFlags(opts) | (methodMode === 3 ? 4 : 0) | (cb.type.params.length === 1 ? 2 : 0),
+    loc,
+  );
   return withOptionValues(
     {
       kind: "libCall",
@@ -456,10 +464,12 @@ function lowerHook(
     lowerer.noLowering(
       `${what} with ${args.length} arguments`,
       expr,
-      "the supported form is one zero-parameter function (hook options have no lowering)",
+      "the supported form is one function (hook options have no lowering)",
     );
   }
-  const { cb, flags } = lowerBodyArg(lowerer, args[0]!, what, false);
+  // A hook may take its context: the suite's for before/after, the test's
+  // for beforeEach/afterEach.
+  const { cb, flags } = lowerBodyArg(lowerer, args[0]!, what, true);
   return {
     kind: "libCall",
     fn: "test.hook",
@@ -919,7 +929,8 @@ export function lowerTestMethodCall(
       );
     }
     const receiver = lowerer.lowerExpr(access.expression);
-    const { cb, flags } = lowerBodyArg(lowerer, args[0]!, what, false);
+    // The hook may take the test's context.
+    const { cb, flags } = lowerBodyArg(lowerer, args[0]!, what, true);
     return {
       kind: "libCall",
       fn: "test.ctxHook",

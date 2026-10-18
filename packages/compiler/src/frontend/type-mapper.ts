@@ -2952,11 +2952,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     return { kind: "dgramSocket" };
   }
   // node:test's TestContext — the test-body parameter (`test('x', (t) =>
-  // ...)`). @types/node's `class TestContext` and the fallback
-  // declarations' interface both live inside `declare module "node:test"`
-  // (isDeclaredInAmbientModule answers for both spellings).
+  // ...)`) — and SuiteContext, the describe-body and suite-hook parameter:
+  // both are the runner's node for the test or suite. @types/node's
+  // classes and the fallback declarations' interfaces all live inside
+  // `declare module "node:test"` (isDeclaredInAmbientModule answers for
+  // both spellings).
   if (
-    psym?.name === "TestContext" &&
+    (psym?.name === "TestContext" || psym?.name === "SuiteContext") &&
     checker
       .declarationsOf(psym)
       .some(
