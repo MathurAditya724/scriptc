@@ -10,6 +10,8 @@ import { InternalCompilerError } from "../../errors.js";
  * flow (if/while/for/for-of/do, switch, try/catch, abrupt completions),
  * explicit resource management, and blocked-binding poisoning. */
 import * as ts from "../ts7/adapter.js";
+import { requireInitFlagStmt } from "./require-initialization.js";
+import { isJsonRequireDecl } from "./json-require.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -1512,81 +1514,96 @@ export function lowerVarStatement(lowerer: Lowerer, stmt: ts.VariableStatement):
   const isLet =
     (list.flags & ts.NodeFlags.Let) !== 0 || (list.flags & ts.NodeFlags.BlockScoped) === 0;
   return list.declarations.flatMap((decl) => {
-    // The canonical ESM bridge to a compiled program module. Like a
-    // top-level CommonJS require declaration, the binding is alias
-    // plumbing while the dependency evaluates at this statement's
-    // exact position through its run-once initializer.
-    if (isConst && createRequireProgramModuleDecl(lowerer, decl.name, decl.initializer)) {
-      if (!ts.isSourceFile(stmt.parent)) {
-        lowerer.unsupported(
-          "SC1090",
-          decl,
-          "createRequire program-module bindings outside the module's top level (move the binding to the top of the file; side-effect-only requires may remain nested)",
-        );
-      }
-      const target = createRequireProgramModuleOf(lowerer, decl.initializer)!;
-      const init = lowerer.requireInitStmt(target.spec, decl);
-      return init ? [init] : [];
-    }
-    // CommonJS require declarations (JS files): at the module's top
-    // level the BINDINGS are alias plumbing (no storage;
-    // resolveValueSymbol routes the reads), but the require itself is
-    // Node's inline module evaluation — a relative require lowers to the
-    // required module's guarded %init call at exactly this position
-    // (first require runs the body, later ones are cache hits; builtins
-    // load nothing). Binding requires anywhere else would need lazily-
-    // initialized alias storage this model doesn't represent; named
-    // fence.
-    if (
-      decl.initializer !== undefined &&
-      requireSpecOf(decl.initializer) !== null &&
-      !isNativeFfiRequire(lowerer, decl.initializer) &&
-      isJsSourceFile(decl.getSourceFile())
-    ) {
-      const spec = requireSpecOf(decl.initializer)!;
-      if (lowerer.externalTypes.has(spec)) lowerer.externalHostFence(spec, decl, false);
-      if (ts.isSourceFile(stmt.parent)) {
-        const init = lowerer.requireInitStmt(spec, decl);
-        return init ? [init] : [];
-      }
-      // A nested BUILTIN require (`get inFreeBSDJail() { const { execSync }
-      // = require('child_process'); ... }` — test/common's lazy-getter
-      // idiom): builtins load nothing, so the statement is PURE alias
-      // plumbing wherever it sits — the bindings resolve through the
-      // same routing top-level requires use, and no statement remains.
-      // Relative requires keep the fence: their module-init-at-position
-      // semantics needs storage this model doesn't represent.
-      if (canonicalBuiltinModule(spec) !== null) {
-        return [];
-      }
+    const lowered = lowerVarDeclarator(lowerer, stmt, decl, isConst, isLet);
+    // A require binding earlier code can read is initialized from here on
+    // (require-initialization.ts).
+    const initialized = requireInitFlagStmt(lowerer, decl);
+    return initialized ? [...lowered, initialized] : lowered;
+  });
+}
+
+function lowerVarDeclarator(
+  lowerer: Lowerer,
+  stmt: ts.VariableStatement,
+  decl: ts.VariableDeclaration,
+  isConst: boolean,
+  isLet: boolean,
+): IrStmt[] {
+  // The canonical ESM bridge to a compiled program module. Like a
+  // top-level CommonJS require declaration, the binding is alias
+  // plumbing while the dependency evaluates at this statement's
+  // exact position through its run-once initializer.
+  if (isConst && createRequireProgramModuleDecl(lowerer, decl.name, decl.initializer)) {
+    if (!ts.isSourceFile(stmt.parent)) {
       lowerer.unsupported(
         "SC1090",
         decl,
-        "require() with bindings outside the module's top level (move it to the top of the file)",
+        "createRequire program-module bindings outside the module's top level (move the binding to the top of the file; side-effect-only requires may remain nested)",
       );
     }
-    // `const { NGHTTP2_CANCEL } = http2.constants` — a destructure over
-    // the baked constants table: alias plumbing, no storage (uses read
-    // their literals via builtinConstantBindingOf; collectGlobals skipped
-    // the globals by the same test).
-    if (lowerer.builtinConstantsDestructureDecl(decl.name, decl.initializer)) return [];
-    if (ts.isArrayBindingPattern(decl.name) || ts.isObjectBindingPattern(decl.name)) {
-      // `const { createSign } = crypto` over a builtin NAMESPACE binding:
-      // alias plumbing (builtinImportOf routes the reads) — no statement.
-      if (builtinNamespaceDestructureModuleOf(lowerer, decl) !== null) return [];
-      return lowerer.lowerDestructuringDecl(decl, isLet);
+    const target = createRequireProgramModuleOf(lowerer, decl.initializer)!;
+    const init = lowerer.requireInitStmt(target.spec, decl);
+    return init ? [init] : [];
+  }
+  // CommonJS require declarations (JS files): at the module's top
+  // level the BINDINGS are alias plumbing (no storage;
+  // resolveValueSymbol routes the reads), but the require itself is
+  // Node's inline module evaluation — a relative require lowers to the
+  // required module's guarded %init call at exactly this position
+  // (first require runs the body, later ones are cache hits; builtins
+  // load nothing). Binding requires anywhere else would need lazily-
+  // initialized alias storage this model doesn't represent; named
+  // fence.
+  if (
+    decl.initializer !== undefined &&
+    requireSpecOf(decl.initializer) !== null &&
+    !isNativeFfiRequire(lowerer, decl.initializer) &&
+    !isJsonRequireDecl(lowerer, decl) &&
+    isJsSourceFile(decl.getSourceFile())
+  ) {
+    const spec = requireSpecOf(decl.initializer)!;
+    if (lowerer.externalTypes.has(spec)) lowerer.externalHostFence(spec, decl, false);
+    if (ts.isSourceFile(stmt.parent)) {
+      const init = lowerer.requireInitStmt(spec, decl);
+      return init ? [init] : [];
     }
-    // STORED protocol values with statically closed representations:
-    // numeric value iterators retain source/cursor/done hidden locals; a
-    // matchAll drain retains its companion index array so a later
-    // for-of can serve `m.index`. Both are const-only interceptions.
-    const numericIterator = lowerNumericIteratorDecl(lowerer, decl, isConst);
-    if (numericIterator) return numericIterator;
-    const drained = lowerMatchAllDrainDecl(lowerer, decl, isConst);
-    if (drained) return drained;
-    const lowered = lowerer.lowerVarDecl(decl, isLet);
-    return lowered ? [lowered] : [];
-  });
+    // A nested BUILTIN require (`get inFreeBSDJail() { const { execSync }
+    // = require('child_process'); ... }` — test/common's lazy-getter
+    // idiom): builtins load nothing, so the statement is PURE alias
+    // plumbing wherever it sits — the bindings resolve through the
+    // same routing top-level requires use, and no statement remains.
+    // Relative requires keep the fence: their module-init-at-position
+    // semantics needs storage this model doesn't represent.
+    if (canonicalBuiltinModule(spec) !== null) {
+      return [];
+    }
+    lowerer.unsupported(
+      "SC1090",
+      decl,
+      "require() with bindings outside the module's top level (move it to the top of the file)",
+    );
+  }
+  // `const { NGHTTP2_CANCEL } = http2.constants` — a destructure over
+  // the baked constants table: alias plumbing, no storage (uses read
+  // their literals via builtinConstantBindingOf; collectGlobals skipped
+  // the globals by the same test).
+  if (lowerer.builtinConstantsDestructureDecl(decl.name, decl.initializer)) return [];
+  if (ts.isArrayBindingPattern(decl.name) || ts.isObjectBindingPattern(decl.name)) {
+    // `const { createSign } = crypto` over a builtin NAMESPACE binding:
+    // alias plumbing (builtinImportOf routes the reads) — no statement.
+    if (builtinNamespaceDestructureModuleOf(lowerer, decl) !== null) return [];
+    return lowerer.lowerDestructuringDecl(decl, isLet);
+  }
+  // STORED protocol values with statically closed representations:
+  // numeric value iterators retain source/cursor/done hidden locals; a
+  // matchAll drain retains its companion index array so a later
+  // for-of can serve `m.index`. Both are const-only interceptions.
+  const numericIterator = lowerNumericIteratorDecl(lowerer, decl, isConst);
+  if (numericIterator) return numericIterator;
+  const drained = lowerMatchAllDrainDecl(lowerer, decl, isConst);
+  if (drained) return drained;
+  const lowered = lowerer.lowerVarDecl(decl, isLet);
+  return lowered ? [lowered] : [];
 }
 
 /** The numeric indexed source of a built-in value-iterator expression:
