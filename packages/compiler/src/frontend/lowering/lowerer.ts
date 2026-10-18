@@ -341,6 +341,7 @@ import {
 } from "./call-signatures.js";
 import {
   implicitAnyParamSymbolsOf,
+  implicitLocalFnNodeOf,
   type GenericFnInfo,
   type GenericInstance,
   implicitMonoFile,
@@ -1525,6 +1526,28 @@ function panicSafe<T>(query: () => T, fallback: T): T {
   }
 }
 
+/** The function's class expressions lower once per implicit-any instance.
+ * A function whose only implicit slots are destructured options and that
+ * is bound to a variable the implicit-instance probe rejects runs as one
+ * shared body, so its classes keep a single name. */
+function monomorphizedImplicit(
+  lowerer: Lowerer,
+  fn: ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction | ts.MethodDeclaration,
+): boolean {
+  const slots = implicitAnyParamSymbolsOf(lowerer, fn);
+  if (!slots) return false;
+  if (slots.some((slot) => slot !== null)) return true;
+  let binding: ts.Node | undefined = fn.parent;
+  while (binding && ts.isParenthesizedExpression(binding)) binding = binding.parent;
+  if (
+    (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) &&
+    binding &&
+    ts.isVariableDeclaration(binding)
+  )
+    return implicitLocalFnNodeOf(lowerer, binding) !== null;
+  return true;
+}
+
 export class Lowerer {
   readonly frontendServices: FrontendServices | undefined;
   readonly checker: ts.TypeChecker;
@@ -1769,6 +1792,10 @@ export class Lowerer {
    * typeParamBindings — the checker has no `T` to substitute, so the
    * binding rides the node-type accessor instead of mapType. */
   implicitParamTypes: Map<ts.Symbol, ts.Type> | null = null;
+  /** Whether some net.Socket in this program may get an encoding: a
+   * setEncoding call whose receiver is a socket or an untyped value.
+   * Computed once on first use (null until then). */
+  socketEncodingReachable: boolean | null = null;
   /** IMPLICIT-ANY instances lowered EAGERLY at first demand (their return
    * types are inferred from the body — the call site needs them settled),
    * collected here for run()'s function list (the liftedFns discipline). */
@@ -2808,7 +2835,7 @@ export class Lowerer {
           if (this.localClassInstantiations.some((entry) => entry.owner === parent)) break;
           if (
             parent.typeParameters?.length ||
-            (implicitMonoFile(parent.getSourceFile()) && implicitAnyParamSymbolsOf(this, parent))
+            (implicitMonoFile(parent.getSourceFile()) && monomorphizedImplicit(this, parent))
           )
             return null;
         }
