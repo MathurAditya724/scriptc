@@ -14001,6 +14001,28 @@ export function lowerUnionProperty(
     }
     return null;
   }
+  // A class instance the checker sees through a wider union (`(concrete
+  // as A | B).value`): the value is that class's instance, so read its
+  // field directly.
+  if (value.type.kind === "object") {
+    const className = value.type.className;
+    const info = lowerer.classes.get(className) ?? null;
+    const field = expr.name.text;
+    const fieldType = info?.fields.get(field);
+    if (fieldType !== undefined)
+      return lowerer.fieldGetExpr(
+        { container: "class", obj: value, className, field, fieldType },
+        locOf(expr),
+        expr,
+      );
+    const getter = lowerer.findMethodOn(info, `get:${field}`);
+    if (getter)
+      return lowerer.fieldGetExpr(
+        { container: "accessor", obj: value, className, field, fieldType: getter.sig.ret },
+        locOf(expr),
+        expr,
+      );
+  }
   if (value.type.kind !== "union") {
     lowerer.unsupported(
       "SC1090",
