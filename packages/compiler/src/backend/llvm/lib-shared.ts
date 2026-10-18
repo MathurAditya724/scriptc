@@ -37,7 +37,7 @@ export const ASSERT_VERDICT_LIB_FNS: ReadonlyMap<string, number | null> = new Ma
 
 export const LIB_FN_SYMS: Record<string, string> = {
   "assert.expectsErrDyn": "scr_assert_expects_err_dyn",
-  "insp.jsonDyn": "scr_dyn_format_j",
+  "insp.jsonDyn": "scr_util_format_j",
   "http.reqH2StreamOrThrow": "scr_http_req_h2_stream_or_throw",
   "intl.segmenterNew": "scr_intl_segmenter_new",
   "weakMap.is": "scr_weak_map_is",
@@ -578,14 +578,17 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.stdoutWriteBytes": "scr_process_stdout_write_bytes",
   "process.stderrWriteBytes": "scr_process_stderr_write_bytes",
   "insp.buffer": "scr_insp_buffer",
+  "insp.typedArray": "scr_insp_typed_array",
   // util.inspect (scr_inspect.c): all args borrowed; string results +1;
   // the begin/entry/key/moreItems/end accumulator drives the emitted
   // container walks. None of these throw.
   "insp.f64": "scr_insp_f64",
   "insp.str": "scr_insp_str",
   "insp.regex": "scr_insp_regex",
+  "insp.date": "scr_insp_date",
   "insp.error": "scr_insp_error",
   "insp.begin": "scr_insp_begin",
+  "insp.layout": "scr_insp_layout",
   "insp.entry": "scr_insp_entry",
   "insp.key": "scr_insp_key",
   "insp.moreItems": "scr_insp_more_items",

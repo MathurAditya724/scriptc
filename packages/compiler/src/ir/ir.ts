@@ -3604,8 +3604,17 @@ export type IrExpr =
    * `null` and -0 as `0`, exactly like JS; a record field holding the
    * undefined arm of its union (an optional field) is DROPPED from the
    * output — Node's rule for undefined-valued properties. The value is
-   * BORROWED; the result string is owned (+1). Never throws. */
-  | { kind: "jsonStringify"; value: IrExpr; indent?: string; type: IrType; loc: SrcLoc }
+   * BORROWED; the result string is owned (+1). Never throws. `circular`
+   * is util.format's %j (Node's tryStringify): a circular structure gives
+   * the text "[Circular]" instead of the TypeError. */
+  | {
+      kind: "jsonStringify";
+      value: IrExpr;
+      indent?: string;
+      circular?: true;
+      type: IrType;
+      loc: SrcLoc;
+    }
   /** The dynamic-boundary check — a CHECKED cast `dynValue as T`: validate
    * the dyn value's JSON dyn against `type` (a non-dyn, JSON-representable
    * IR type) and BUILD the typed value (+1), or THROW a catchable
