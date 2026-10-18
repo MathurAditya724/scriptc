@@ -1021,9 +1021,20 @@ void scr_cs_chacha_start(ScCsChaCha *c, const uint8_t key[32], const uint8_t non
   c->state[12] = counter;
   for (int i = 0; i < 3; i++) c->state[13 + i] = sc_le32(nonce + 4 * i);
   c->used = 64;
+  c->blocks = (uint64_t)UINT32_MAX + 1 - counter;
 }
 
-void scr_cs_chacha_xor(ScCsChaCha *c, const uint8_t *in, uint8_t *out, size_t len) {
+bool scr_cs_chacha_xor(ScCsChaCha *c, const uint8_t *in, uint8_t *out, size_t len) {
+  /* Every block below is generated in this call, so the whole request is
+   * checked against the counter first: no block, including a lane of the
+   * eight- and sixteen-block kernels, runs past counter 2^32 - 1. */
+  uint64_t left = 64 - c->used;
+  if ((uint64_t)len > left) {
+    uint64_t rest = (uint64_t)len - left;
+    uint64_t need = rest / 64 + (rest % 64 != 0);
+    if (need > c->blocks) return false;
+    c->blocks -= need;
+  }
   while (c->used < 64 && len > 0) {
     *out++ = *in++ ^ c->stream[c->used++];
     len--;
@@ -1053,6 +1064,7 @@ void scr_cs_chacha_xor(ScCsChaCha *c, const uint8_t *in, uint8_t *out, size_t le
     for (size_t i = 0; i < len; i++) out[i] = in[i] ^ c->stream[i];
     c->used = len;
   }
+  return true;
 }
 
 #else
@@ -1090,8 +1102,9 @@ void scr_cs_gcm_finish(ScCsGcm *g, uint8_t tag[16]) { (void)g; (void)tag; }
 void scr_cs_chacha_start(ScCsChaCha *c, const uint8_t key[32], const uint8_t nonce[12], uint32_t counter) {
   (void)c; (void)key; (void)nonce; (void)counter;
 }
-void scr_cs_chacha_xor(ScCsChaCha *c, const uint8_t *in, uint8_t *out, size_t len) {
+bool scr_cs_chacha_xor(ScCsChaCha *c, const uint8_t *in, uint8_t *out, size_t len) {
   (void)c; (void)in; (void)out; (void)len;
+  return false;
 }
 void scr_cs_poly_start(ScCsPoly1305 *p, const uint8_t key[32]) { (void)p; (void)key; }
 void scr_cs_poly_update(ScCsPoly1305 *p, const uint8_t *m, size_t len) { (void)p; (void)m; (void)len; }

@@ -73,12 +73,16 @@ void scr_cs_gcm_finish(ScCsGcm *g, uint8_t tag[16]);
 typedef struct {
   uint32_t state[16];
   uint8_t stream[64];
-  size_t used; /* bytes of `stream` already used; 64 when none are left */
-  bool wide;   /* AVX-512F: sixteen blocks per step instead of eight */
+  size_t used;     /* bytes of `stream` already used; 64 when none are left */
+  uint64_t blocks; /* keystream blocks left before the counter would wrap */
+  bool wide;       /* AVX-512F: sixteen blocks per step instead of eight */
 } ScCsChaCha;
 
 void scr_cs_chacha_start(ScCsChaCha *c, const uint8_t key[32], const uint8_t nonce[12], uint32_t counter);
-void scr_cs_chacha_xor(ScCsChaCha *c, const uint8_t *in, uint8_t *out, size_t len);
+/* XORs len bytes with the keystream. Returns false, writing nothing and
+ * changing nothing, when the bytes need a block past counter 2^32 - 1,
+ * as mbedtls_chacha20_update() refuses the same input. */
+bool scr_cs_chacha_xor(ScCsChaCha *c, const uint8_t *in, uint8_t *out, size_t len);
 
 /* Poly1305 with 44-bit limbs; eight lanes with AVX-512 IFMA when available. */
 typedef struct {

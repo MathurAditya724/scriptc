@@ -69,7 +69,11 @@ const mbedtlsSources = [
 // the x86-64 kernels or mbedTLS, whichever the CPU selects), and checks
 // that a failed update() or setAAD() returns no data and leaves every
 // later call throwing, and that chacha20-poly1305 decryption without a
-// tag fails in final().
+// tag fails in final(). It also moves chacha20-poly1305 contexts next to
+// the end of the 32-bit ChaCha20 block counter and AES-GCM contexts next
+// to the wrap of the 32-bit GCM counter, on both backends, and checks
+// that the x86-64 kernels and mbedTLS give the same output, refusals and
+// tags.
 beforeAll(async () => {
   await mkdir(join(testDir, "build"), { recursive: true });
   await execFileAsync("clang", [

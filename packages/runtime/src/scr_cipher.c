@@ -753,16 +753,21 @@ static bool sc_poly_pad(ScCipher *c, uint64_t length) {
 }
 
 /* OpenSSL's chacha20-poly1305 data step: pending AAD is padded first, and
- * the ciphertext feeds Poly1305 unpadded until final(). */
+ * the ciphertext feeds Poly1305 unpadded until final(). The keystream runs
+ * first: both backends refuse, before writing any output, data that needs
+ * a block past counter 2^32 - 1 (256 GiB - 64 bytes per message, because
+ * block 0 makes the Poly1305 key), so a refused update leaves the
+ * Poly1305 state as it was. `out` is a separate buffer, so decryption
+ * still authenticates the ciphertext in `in`. */
 static bool sc_chacha_update(ScCipher *c, const unsigned char *in, size_t len, unsigned char *out) {
+  bool ok = c->simd ? scr_cs_chacha_xor(&c->simd_chacha, in, out, len)
+                    : mbedtls_chacha20_update(&c->chacha, len, in, out) == 0;
+  if (!ok) return false;
   if (c->aad_open) {
     if (!sc_poly_pad(c, c->aad_len)) return false;
     c->aad_open = false;
   }
-  if (c->decrypt && !sc_poly_update(c, in, len)) return false;
-  if (c->simd) scr_cs_chacha_xor(&c->simd_chacha, in, out, len);
-  else if (mbedtls_chacha20_update(&c->chacha, len, in, out) != 0) return false;
-  if (!c->decrypt && !sc_poly_update(c, out, len)) return false;
+  if (!sc_poly_update(c, c->decrypt ? in : out, len)) return false;
   c->text_len += len;
   return true;
 }
