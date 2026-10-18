@@ -7328,6 +7328,89 @@ function lowerGuardedRecordWrite(
   };
 }
 
+/** `b[i] = v` where the checker's flow type of `b` is a typed array but
+ * its storage is wider. A hoisted JavaScript `var` (or a field written
+ * after construction) holds `bytes | undefined`: the receiver, index and
+ * value evaluate in order, then an undefined receiver throws Node's
+ * TypeError and a present one takes the typed store. Any other storage (a
+ * `var` later reassigned a string, a checked-dynamic value) takes the
+ * checked-dynamic store, which applies whatever value the receiver holds. */
+function lowerWiderBytesWrite(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  target: ts.ElementAccessExpression,
+  recv: IrExpr,
+): IrStmt {
+  const loc = locOf(expr);
+  if (recv.type.kind === "union") {
+    const unionId = recv.type.unionId;
+    const arms = lowerer.unions.get(unionId)?.arms;
+    const undefTag = lowerer.armTag(unionId, UNDEFINED_T);
+    const bytes = arms?.length === 2 && undefTag >= 0 ? arms[1 - undefTag]! : null;
+    const keyType = lowerer.mapTypeOf(lowerer.typeOf(target.argumentExpression));
+    const index =
+      bytes?.kind === "bytes" && keyType?.kind === "f64"
+        ? lowerer.lowerExpr(target.argumentExpression)
+        : null;
+    // An index stored wider than a number (a hoisted `var` counter) keeps
+    // the checked-dynamic store below, which converts the key exactly.
+    if (bytes?.kind === "bytes" && index?.type.kind === "f64") {
+      const stmts: IrStmt[] = [];
+      const stable = stabilized(lowerer, recv, "%bytesReceiver", stmts);
+      const key = stabilized(lowerer, index, "%bytesIndex", stmts);
+      const value = stabilized(
+        lowerer,
+        lowerer.lowerExprExpecting(expr.right, F64),
+        "%bytesValue",
+        stmts,
+      );
+      const name = lowerRecordPropertyKey(lowerer, key, target.argumentExpression);
+      const present: IrExpr = {
+        kind: "unionNarrow",
+        unionId,
+        tag: 1 - undefTag,
+        value: stable,
+        type: bytes,
+        loc,
+      };
+      return {
+        kind: "block",
+        body: [
+          ...stmts,
+          {
+            kind: "if",
+            cond: {
+              kind: "unionIsTag",
+              unionId,
+              tag: undefTag,
+              negated: false,
+              value: stable,
+              type: BOOL,
+              loc,
+            },
+            then: [{ kind: "exprStmt", expr: undefinedReceiverThrow(name, "set", VOID, loc), loc }],
+            else_: [{ kind: "bytesSet", arr: present, index: key, value, loc }],
+            loc,
+          },
+        ],
+        loc,
+      };
+    }
+  }
+  if (!lowerer.dynConvertible(recv.type)) {
+    lowerer.unsupported(
+      "SC1090",
+      target.expression,
+      `typed-array element writes through '${lowerer.fmt(recv.type)}' storage`,
+    );
+  }
+  return {
+    kind: "exprStmt",
+    expr: lowerDynMemberAssignment(lowerer, expr, lowerer.coerceInto(target.expression, recv, DYN)),
+    loc,
+  };
+}
+
 /** `r[k]` over a (non-tuple) record shape. A LITERAL key naming a declared
  * field is the bracket spelling of field access (the ONLY spelling tsc
  * permits for signature-declared fields under
@@ -8374,6 +8457,8 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
   // the runtime coerces JS-exactly; invalid indices are ignored.
   if (receiverIr?.kind === "bytes") {
     const recv = lowerer.lowerExpr(target.expression);
+    // The checker's flow type is a typed array, but the storage is wider.
+    if (recv.type.kind !== "bytes") return lowerWiderBytesWrite(lowerer, expr, target, recv);
     const index = lowerer.lowerExpr(target.argumentExpression);
     if (index.type.kind === "dyn" && recv.type.kind === "bytes") {
       return {
