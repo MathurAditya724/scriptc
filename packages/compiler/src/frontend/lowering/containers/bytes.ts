@@ -1511,11 +1511,23 @@ function lowerBufferStaticValue(
     } else {
       list = lowerer.lowerExpr(argNode);
       if (!typeEquals(list.type, arrayOf(BYTES_U8))) {
-        lowerer.noLowering(
-          `Buffer.concat of '${lowerer.fmt(list.type)}' values`,
-          argNode,
-          "one Uint8Array[]/Buffer[] value (or literal) is the lowered list shape",
-        );
+        // Any other list (JavaScript's untyped `const chunks = []`, or a
+        // union of arrays): the runtime checks it as Node does (an Array of
+        // Uint8Arrays, the ERR_INVALID_ARG_TYPE errors otherwise) before
+        // concatenating.
+        const value: IrExpr =
+          list.type.kind === "dyn" ? list : { kind: "dynFrom", value: list, type: DYN, loc };
+        if (args.length === 2) {
+          const total = lowerer.lowerExprExpecting(args[1]!, F64);
+          return {
+            kind: "libCall",
+            fn: "buffer.concatLenDyn",
+            args: [value, total],
+            type: BYTES_U8,
+            loc,
+          };
+        }
+        return { kind: "libCall", fn: "buffer.concatDyn", args: [value], type: BYTES_U8, loc };
       }
     }
     if (args.length === 2) {

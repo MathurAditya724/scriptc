@@ -404,6 +404,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.fromDyn": "scr_buffer_from_dyn",
   "buffer.concat": "scr_buffer_concat",
   "buffer.concatLen": "scr_buffer_concat_len",
+  "buffer.concatDyn": "scr_buffer_concat_dyn",
+  "buffer.concatLenDyn": "scr_buffer_concat_len_dyn",
   "buffer.alloc": "scr_buffer_alloc",
   "buffer.allocUnsafe": "scr_buffer_alloc_unsafe",
   "buffer.allocUnsafeSlow": "scr_buffer_alloc_unsafe_slow",
