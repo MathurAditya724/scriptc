@@ -51,7 +51,7 @@ scriptc finds packages in `node_modules` with Node.js's resolution rules, includ
 scriptc compiles a package automatically when it:
 
 - ships its own type declarations, and
-- ships readable, unminified JavaScript.
+- ships readable, unminified JavaScript. A minified entry point qualifies when the package also ships the per-file build it was bundled from, and their source maps show the same sources with the same contents, including any dependencies the bundle inlined. scriptc then compiles the per-file build.
 
 A package that doesn't meet these requirements, or that uses something scriptc can't compile, gets a package-specific diagnostic that explains why. The usual fixes are to switch to a version or alternative package that compiles, or to replace the call with code you write yourself.
 

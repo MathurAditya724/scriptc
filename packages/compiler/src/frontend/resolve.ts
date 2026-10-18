@@ -19,6 +19,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   isNpmStaticPackage,
   npmStaticPackageOfPath,
+  npmStaticRespellMinifiedText,
   npmStaticTransformPkgJson,
 } from "./npm-static.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
@@ -901,7 +902,9 @@ export function resolveBareModule(
     const pkg =
       npmStatic && rawPkg !== null
         ? (() => {
-            const clone = JSON.parse(JSON.stringify(rawPkg)) as PkgJson & Record<string, unknown>;
+            const clone = JSON.parse(
+              npmStaticRespellMinifiedText(JSON.stringify(rawPkg), nmPkgDir),
+            ) as PkgJson & Record<string, unknown>;
             npmStaticTransformPkgJson(clone);
             return clone;
           })()
