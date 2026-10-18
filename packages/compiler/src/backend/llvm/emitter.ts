@@ -57,6 +57,7 @@ import {
   VOID,
 } from "../../ir/ir.js";
 import { moduleRuntimeFeatures, moduleUsesMockTimers } from "../../ir/runtime-features.js";
+import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import {
   matchIntegerArrayForLoop,
   matchIntegerBytesForLoop,
@@ -1179,18 +1180,14 @@ export class LlEmitter {
   readonly chainSlots = new Map<string, LlValue>();
   logArgSlots = 0;
   private readonly stackTraces: boolean;
+  /** Stack-trace mode: functions no capture can include (no frame push). */
+  private readonly unframedFunctions: ReadonlySet<string>;
 
   constructor(
     readonly mod: IrModule,
     options: LlvmTargetOptions,
   ) {
-    this.stackTraces = mod.functions.some(
-      (fn) =>
-        !everyStmtList(fn.body, {
-          stmt: () => true,
-          expr: (expr) => !(expr.kind === "libCall" && expr.fn === "error.stack"),
-        }),
-    );
+    this.stackTraces = observesStacks(mod);
     this.nullableUnions = new NullableUnions(mod, options.debugSources === undefined);
     this.mockTimers = moduleUsesMockTimers(mod);
     this.debug =
@@ -1272,6 +1269,9 @@ export class LlEmitter {
     // which Windows lacks.
     this.stacklessAsyncAllowed = this.stacklessGenerators && mod.lib === undefined && !windows;
     this.publishedTypes = computePublishedTypes(mod);
+    this.unframedFunctions = this.stackTraces
+      ? captureFreeFunctions(mod, this.stackChecks, this.publishedTypes)
+      : new Set();
     this.immutableFields = computeImmutableFields(mod);
     this.constructorFunctions = new Set((mod.classes ?? []).map((c) => `%${c.name}.constructor`));
     this.indirectMayThrow = mt.indirect || mod.workers === true;
@@ -7150,13 +7150,39 @@ export class LlEmitter {
     // Stackful native fibers and native coroutine frames retain these frames
     // while suspended. The active exception context owns the chain, so
     // concurrent fibers isolate it.
-    if (this.stackTraces && !this.wasi && fn.sourceName !== undefined) {
-      this.declare(`declare void @scr_stack_enter(ptr, ptr)`);
-      this.declare(`declare void @scr_stack_leave(ptr)`);
+    if (
+      this.stackTraces &&
+      !this.wasi &&
+      fn.sourceName !== undefined &&
+      !this.unframedFunctions.has(fn.name)
+    ) {
       B.entryAllocas.push(`%source_frame = alloca { ptr, ptr }`);
-      const frame = `    at ${fn.sourceName} (${fn.loc.file})`;
-      B.line(`call void @scr_stack_enter(ptr %source_frame, ptr ${this.cstr(frame)})`);
-      B.returnEpilogue = `call void @scr_stack_leave(ptr %source_frame)`;
+      const frame = this.cstr(`    at ${fn.sourceName} (${fn.loc.file})`);
+      if (
+        B.excCellInvariant &&
+        this.mod.lib === undefined &&
+        this.mod.workers !== true &&
+        this.sizeType === "i64"
+      ) {
+        // Executables link the active-cell pointer as a plain global, and a
+        // synchronous body sees one cell from entry to every return: push
+        // and pop the frame inline (ScrExcCell.stack is at byte 56 on
+        // 64-bit targets) instead of calling the runtime twice per call.
+        this.declare(`@scr_exc_active = external global ptr`);
+        B.line(`%source_frame.cell = load ptr, ptr @scr_exc_active`);
+        B.line(`%source_frame.chain = getelementptr inbounds i8, ptr %source_frame.cell, i64 56`);
+        B.line(`%source_frame.previous = load ptr, ptr %source_frame.chain`);
+        B.line(`store ptr %source_frame.previous, ptr %source_frame`);
+        B.line(`%source_frame.text = getelementptr inbounds i8, ptr %source_frame, i64 8`);
+        B.line(`store ptr ${frame}, ptr %source_frame.text`);
+        B.line(`store ptr %source_frame, ptr %source_frame.chain`);
+        B.returnEpilogue = `store ptr %source_frame.previous, ptr %source_frame.chain`;
+      } else {
+        this.declare(`declare void @scr_stack_enter(ptr, ptr)`);
+        this.declare(`declare void @scr_stack_leave(ptr)`);
+        B.line(`call void @scr_stack_enter(ptr %source_frame, ptr ${frame})`);
+        B.returnEpilogue = `call void @scr_stack_leave(ptr %source_frame)`;
+      }
     }
     if (this.stackChecks?.has(fn.name)) this.emitStackCheck();
     if (this.workerEntryPolls?.has(fn.name)) this.emitPendingCheck(undefined, true);

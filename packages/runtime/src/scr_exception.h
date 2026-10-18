@@ -84,6 +84,10 @@ typedef struct ScrExcCell {
   ScrTraceFn trace_fn;
   ScrStackFrame *stack; /* execution state; never moves with an exception */
 } ScrExcCell;
+/* Executables push and pop source frames inline (emitter.ts, stack-trace
+ * mode) at this offset on 64-bit targets. */
+_Static_assert(sizeof(void *) != 8 || offsetof(ScrExcCell, stack) == 56,
+               "ScrExcCell.stack moved: update the emitter's inline frame push");
 
 /* Runtime-internal (fiber machinery in scr_async.c) — never emitted. */
 ScrExcCell *scr_exc_swap_cell(ScrExcCell *cell); /* NULL = main's cell */
