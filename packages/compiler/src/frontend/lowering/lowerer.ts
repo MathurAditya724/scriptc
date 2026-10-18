@@ -1091,7 +1091,7 @@ export function lowerToIr(
   // Unreached JS statements whose fences deferred to runtime count as
   // failed statements in the remainder's stats, so their diagnostics must
   // travel with them: a failed statement is never left unexplained.
-  return {
+  const covered: LowerResult = {
     ...result,
     stats: { ...result.stats, statementsDynamic },
     unreached: {
@@ -1099,8 +1099,9 @@ export function lowerToIr(
       stats: rem.stats,
       ...(rem.runtimeFences.length > 0 ? { runtimeFences: rem.runtimeFences } : {}),
     },
-    ...(tiers !== undefined ? { tiers } : {}),
   };
+  if (tiers !== undefined) covered.tiers = tiers;
+  return covered;
 }
 
 /** The native namespace type produced by a literal static import() of a
