@@ -1322,6 +1322,510 @@ export function bindingEarlyUse7(
   return hit;
 }
 
+/** The first reference to a top-level require declaration's bindings that
+ * code running before the require completes can reach, or null when no
+ * earlier code can run or reach one. Memoized per program: preflight
+ * decides the fence and the lowering places the initialization checks
+ * from the same answer. */
+function requireEarlyReference7(
+  program: ts.Program,
+  decl: ts.VariableDeclaration,
+): ts.Identifier | null {
+  const memo = program.analysis.requireEarlyReferences;
+  const cached = memo.get(decl);
+  if (cached !== undefined) return cached;
+  let found: ts.Identifier | null = null;
+  const stmt = decl.parent?.parent;
+  const sf = decl.getSourceFile();
+  if (stmt !== undefined && ts.isVariableStatement(stmt) && ts.isSourceFile(stmt.parent)) {
+    const stmts = sf.statements;
+    const k = stmts.indexOf(stmt);
+    const declarations = stmt.declarationList.declarations;
+    // Earlier declarators run too: `const x = read(), dep = require('./dep')`.
+    const precedingDecls = declarations.slice(0, declarations.indexOf(decl));
+    let firstRunnable = program.analysis.requireFirstRunnable.get(sf);
+    if (firstRunnable === undefined) {
+      firstRunnable = stmts.findIndex((s) => !purePrefixStmt7(program, s));
+      program.analysis.requireFirstRunnable.set(sf, firstRunnable);
+    }
+    const prefixCanRun =
+      (firstRunnable >= 0 && firstRunnable < k) || precedingDecls.some((d) => !purePrefixDecl7(d));
+    if (prefixCanRun) found = requireBindingEarlyUse7(program, sf, k, decl, precedingDecls);
+  }
+  memo.set(decl, found);
+  return found;
+}
+
+/** The CommonJS twin of bindingEarlyUse7 for a top-level require binding:
+ * the first reference to one of `decl`'s bindings that code running before
+ * the require completes can reach, or null. It follows Node's evaluation
+ * order instead of the conservative "every earlier statement" scan:
+ *  - hoisted functions and classes, and the function and class values a
+ *    var stored before the require, run only when reachable code names
+ *    them; a class statement runs only its heritage, computed keys,
+ *    decorators and static initializers;
+ *  - callbacks handed to timers, microtasks and promise reactions run after
+ *    the module body, hence after the require;
+ *  - publishing a value (`module.exports = f`, `exports.n = f`,
+ *    `Object.defineProperty(exports, "n", { get })`, `F.prototype.m = f`)
+ *    runs nothing. The published value becomes reachable only when
+ *    reachable code reads it back: an `exports.n` read reaches the values
+ *    published as `n`, any other read of the export object reaches all of
+ *    them, and naming `F` reaches what was stored on `F`. No other module
+ *    can read this module's exports before its body completes: require
+ *    cycles keep their SC1016 fence and a compiled module graph has no
+ *    reflective exports object.
+ * Every other function-like met in reachable code counts as reachable
+ * because it may be handed to a callee. */
+export function requireBindingEarlyUse7(
+  program: ts.Program,
+  sf: ts.SourceFile,
+  k: number,
+  decl: ts.VariableDeclaration,
+  precedingDecls: readonly ts.VariableDeclaration[],
+): ts.Identifier | null {
+  const checker = program.getTypeChecker();
+  const bindings = new Set<ts.Symbol>();
+  for (const id of boundNames7(decl.name)) {
+    const sym = checker.getSymbolAtLocation(id);
+    if (sym) bindings.add(sym);
+  }
+  if (bindings.size === 0) return null;
+  const stmts = sf.statements;
+  const cjs = isCjsJsFile7(sf, program);
+  const symbolOf = (id: ts.Identifier): ts.Symbol | undefined => {
+    const parent = id.parent;
+    if (parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === id) {
+      return checker.getShorthandAssignmentValueSymbol(parent);
+    }
+    return checker.getSymbolAtLocation(id);
+  };
+  // Stored callables and the scans that skip them.
+  const units = new Map<ts.Symbol, ts.Node[]>();
+  const stored = new Set<ts.Node>();
+  const addUnit = (name: ts.Identifier, node: ts.Node): void => {
+    const sym = checker.getSymbolAtLocation(name);
+    if (sym === undefined) return;
+    stored.add(node);
+    const list = units.get(sym);
+    if (list) list.push(node);
+    else units.set(sym, [node]);
+  };
+  const storedCallables = (e: ts.Expression, out: ts.Node[]): void => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (ts.isArrowFunction(e) || ts.isFunctionExpression(e) || ts.isClassExpression(e)) {
+      out.push(e);
+    } else if (ts.isObjectLiteralExpression(e)) {
+      for (const p of e.properties) {
+        if (
+          (ts.isMethodDeclaration(p) ||
+            ts.isGetAccessorDeclaration(p) ||
+            ts.isSetAccessorDeclaration(p)) &&
+          !ts.isComputedPropertyName(p.name)
+        ) {
+          out.push(p);
+        } else if (ts.isPropertyAssignment(p) && !ts.isComputedPropertyName(p.name)) {
+          storedCallables(p.initializer, out);
+        }
+      }
+    }
+  };
+  stmts.forEach((s, i) => {
+    if ((ts.isFunctionDeclaration(s) || ts.isClassDeclaration(s)) && s.name !== undefined) {
+      addUnit(s.name, s);
+    } else if (i < k && ts.isVariableStatement(s)) {
+      for (const d of s.declarationList.declarations) {
+        if (!ts.isIdentifier(d.name) || d.initializer === undefined) continue;
+        const out: ts.Node[] = [];
+        storedCallables(d.initializer, out);
+        for (const node of out) addUnit(d.name, node);
+      }
+    }
+  });
+  // Callbacks that only run as later jobs never run before the require:
+  // the timers, microtasks and promise reactions. (Event listeners can run
+  // synchronously from an emit, so they keep the conservative rule.)
+  const laterJob = (callee: ts.Expression): boolean => {
+    while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+    const name = ts.isIdentifier(callee)
+      ? callee.text
+      : ts.isPropertyAccessExpression(callee)
+        ? callee.name.text
+        : null;
+    return (
+      name !== null &&
+      (LATER_JOB_BUILTINS7.has(name) || name === "nextTick") &&
+      laterJobCallee7(checker, callee)
+    );
+  };
+  if (!hasTopLevelAwait7(sf)) {
+    const callbacks = (e: ts.Expression): void => {
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+      if (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) stored.add(e);
+    };
+    for (const s of stmts.slice(0, k)) {
+      ts.walkPreorder(s, (node) => {
+        if ((ts.isCallExpression(node) || ts.isNewExpression(node)) && laterJob(node.expression)) {
+          for (const arg of node.arguments ?? []) callbacks(arg);
+        }
+        return undefined;
+      });
+    }
+  }
+  const isWrapperName = (e: ts.Node, name: string): e is ts.Identifier =>
+    ts.isIdentifier(e) && e.text === name && !sourceBinding7(program, e);
+  /** `this` at the module's top level: the original export object. */
+  const isModuleThis = (e: ts.Node): boolean => {
+    if (e.kind !== ts.SyntaxKind.ThisKeyword) return false;
+    for (let p = e.parent; p !== undefined && !ts.isSourceFile(p); p = p.parent) {
+      if (ts.isFunctionLike(p) && !ts.isArrowFunction(p)) return false;
+      if (ts.isClassExpression(p) || ts.isClassDeclaration(p)) return false;
+    }
+    return true;
+  };
+  const isExportObject = (e: ts.Expression): boolean =>
+    isWrapperName(e, "exports") ||
+    isModuleThis(e) ||
+    (isModuleExportsAccess(e) && isWrapperName(e.expression, "module"));
+  const replacesExports = stmts.some((st) => cjsExportAssignmentOf(st)?.kind === "table");
+  // Published values: by export name ("*" for a whole replacement), and by
+  // the stored callable whose properties hold them.
+  const exportLinks = new Map<string, ts.Node[]>();
+  const ownerLinks = new Map<ts.Symbol, ts.Node[]>();
+  const reachedKeys = new Set<string>();
+  const writtenKeys = new Set<string>();
+  const reachedUnits = new Set<ts.Node>();
+  const work: ts.Node[] = [];
+  let hit: ts.Identifier | null = null;
+  const reachUnit = (node: ts.Node): void => {
+    if (reachedUnits.has(node)) return;
+    reachedUnits.add(node);
+    work.push(node);
+  };
+  const reachSymbol = (sym: ts.Symbol): void => {
+    for (const node of units.get(sym) ?? []) reachUnit(node);
+    for (const node of ownerLinks.get(sym) ?? []) reachUnit(node);
+  };
+  let allReached = false;
+  const reachKey = (key: string | null): void => {
+    if (key === null) {
+      allReached = true;
+      for (const list of exportLinks.values()) for (const node of list) reachUnit(node);
+      return;
+    }
+    reachedKeys.add(key);
+    for (const name of [key, "*"]) for (const node of exportLinks.get(name) ?? []) reachUnit(node);
+  };
+  const keyReached = (key: string): boolean =>
+    allReached || reachedKeys.has(key) || (key === "*" && reachedKeys.size > 0);
+  /** A read of the export object: which published names it can observe. */
+  const exportRead = (node: ts.Expression): void => {
+    let use: ts.Node = node;
+    while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+    const parent = use.parent;
+    // A truthiness test reads no member (tsc's `this && this.__helper`).
+    if (
+      ts.isBinaryExpression(parent) &&
+      parent.left === use &&
+      parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+    ) {
+      return;
+    }
+    if (ts.isTypeOfExpression(parent)) return;
+    if (ts.isPropertyAccessExpression(parent) && parent.expression === use) {
+      let target: ts.Node = parent;
+      while (ts.isParenthesizedExpression(target.parent)) target = target.parent;
+      const assignment = target.parent;
+      if (
+        ts.isBinaryExpression(assignment) &&
+        assignment.left === target &&
+        assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        // A plain write reads no member. It can still run a setter: one
+        // published for that name (now or later), or a static one of a
+        // replacing class.
+        writtenKeys.add(parent.name.text);
+        for (const node of exportLinks.get(parent.name.text) ?? []) reachUnit(node);
+        for (const node of exportLinks.get("*") ?? []) {
+          if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) reachUnit(node);
+        }
+        return;
+      }
+      reachKey(parent.name.text);
+      return;
+    }
+    if (
+      ts.isElementAccessExpression(parent) &&
+      parent.expression === use &&
+      ts.isStringLiteralLike(parent.argumentExpression)
+    ) {
+      reachKey(parent.argumentExpression.text);
+      return;
+    }
+    reachKey(null);
+  };
+  const scan = (root: ts.Node): void => {
+    ts.walkPreorder(root, (n) => {
+      if (hit !== null) return "stop";
+      if (n !== root && stored.has(n)) {
+        if (ts.isClassExpression(n) || ts.isClassDeclaration(n)) {
+          for (const part of classSyncParts7(n)) scan(part);
+        }
+        return "skip";
+      }
+      // A self-require answers this module's partially built exports.
+      if (cjs && ts.isCallExpression(n)) {
+        const spec = requireSpecOf7(n);
+        if (spec !== null && resolveImport7(program, sf, spec, "require") === sf) reachKey(null);
+      }
+      if (cjs && n.kind === ts.SyntaxKind.ThisKeyword && isModuleThis(n)) {
+        exportRead(n as ts.Expression);
+        return undefined;
+      }
+      if (!ts.isIdentifier(n)) return undefined;
+      if (inTypePosition7(n)) return undefined;
+      const named = n.parent;
+      if (
+        (ts.isPropertyAccessExpression(named) ||
+          ts.isPropertyAssignment(named) ||
+          ts.isMethodDeclaration(named) ||
+          ts.isGetAccessorDeclaration(named) ||
+          ts.isSetAccessorDeclaration(named) ||
+          ts.isPropertyDeclaration(named)) &&
+        named.name === n
+      ) {
+        return undefined;
+      }
+      // A declaration's own name reads nothing.
+      if (named !== undefined && declaredName7(named) === n) return undefined;
+      if (cjs && isWrapperName(n, "exports")) {
+        exportRead(n);
+        return undefined;
+      }
+      if (cjs && isWrapperName(n, "module")) {
+        const parent = n.parent;
+        if (ts.isPropertyAccessExpression(parent) && parent.expression === n) {
+          if (parent.name.text === "exports") exportRead(parent);
+          return "skip";
+        }
+        reachKey(null);
+        return undefined;
+      }
+      const sym = symbolOf(n);
+      if (sym === undefined) return undefined;
+      if (bindings.has(sym)) {
+        hit = n;
+        return "stop";
+      }
+      reachSymbol(sym);
+      return undefined;
+    });
+  };
+  /** Links a published value: evaluating it reads identifiers, but the
+   * callables it names run only once they are read back. */
+  const publish = (value: ts.Expression, link: (node: ts.Node) => void): void => {
+    while (ts.isParenthesizedExpression(value)) value = value.expression;
+    if (ts.isIdentifier(value)) {
+      const sym = symbolOf(value);
+      if (sym !== undefined && bindings.has(sym)) {
+        hit = value;
+        return;
+      }
+      if (sym !== undefined) {
+        // What was stored on the value stays reachable through it.
+        for (const node of [...(units.get(sym) ?? []), ...(ownerLinks.get(sym) ?? [])]) link(node);
+      }
+      return;
+    }
+    if (ts.isFunctionExpression(value) || ts.isArrowFunction(value)) {
+      link(value);
+      return;
+    }
+    if (ts.isClassExpression(value)) {
+      for (const part of classSyncParts7(value)) scan(part);
+      link(value);
+      return;
+    }
+    if (ts.isObjectLiteralExpression(value)) {
+      for (const p of value.properties) {
+        if (ts.isShorthandPropertyAssignment(p)) {
+          const sym = checker.getShorthandAssignmentValueSymbol(p);
+          if (sym !== undefined && bindings.has(sym)) hit = p.name as ts.Identifier;
+          else if (sym !== undefined) {
+            for (const node of [...(units.get(sym) ?? []), ...(ownerLinks.get(sym) ?? [])]) {
+              link(node);
+            }
+          }
+        } else if (ts.isPropertyAssignment(p) && !ts.isComputedPropertyName(p.name)) {
+          publish(p.initializer, link);
+        } else if (
+          (ts.isMethodDeclaration(p) ||
+            ts.isGetAccessorDeclaration(p) ||
+            ts.isSetAccessorDeclaration(p)) &&
+          !ts.isComputedPropertyName(p.name)
+        ) {
+          link(p);
+        } else scan(p);
+      }
+      return;
+    }
+    if (
+      ts.isStringLiteralLike(value) ||
+      ts.isNumericLiteral(value) ||
+      value.kind === ts.SyntaxKind.TrueKeyword ||
+      value.kind === ts.SyntaxKind.FalseKeyword ||
+      value.kind === ts.SyntaxKind.NullKeyword ||
+      (ts.isVoidExpression(value) && ts.isNumericLiteral(value.expression))
+    ) {
+      return;
+    }
+    scan(value);
+    // Whatever an arbitrary expression evaluates to is opaque: treat it as
+    // reachable through the target too (scan already reached its parts).
+  };
+  /** Where a publication stores: an export name, or a stored callable. */
+  type Target = { kind: "key"; key: string } | { kind: "owner"; owner: ts.Symbol };
+  const targetOf = (left: ts.Expression): Target | null => {
+    if (isModuleExportsAccess(left) && isWrapperName(left.expression, "module")) {
+      return { kind: "key", key: "*" };
+    }
+    const names: string[] = [];
+    let e: ts.Expression = left;
+    for (;;) {
+      if (ts.isPropertyAccessExpression(e) && !e.questionDotToken) {
+        if (isExportObject(e)) break;
+        names.unshift(e.name.text);
+        e = e.expression;
+      } else if (
+        ts.isElementAccessExpression(e) &&
+        !e.questionDotToken &&
+        ts.isStringLiteralLike(e.argumentExpression)
+      ) {
+        names.unshift(e.argumentExpression.text);
+        e = e.expression;
+      } else break;
+    }
+    if (names.length === 0) return null;
+    if (isExportObject(e)) {
+      // __proto__ and the interop marker are not plain data slots, and a
+      // member of a replaced export may be a read-only function property:
+      // those writes keep the conservative scan.
+      if (names[0] === "__proto__" || names[0] === "__esModule" || replacesExports) return null;
+      return { kind: "key", key: names[0]! };
+    }
+    if (ts.isIdentifier(e)) {
+      const sym = symbolOf(e);
+      if (sym !== undefined && units.has(sym) && !bindings.has(sym))
+        return { kind: "owner", owner: sym };
+    }
+    return null;
+  };
+  const linkTo = (target: Target, node: ts.Node): void => {
+    if (target.kind === "key") {
+      const replacingClass =
+        target.key === "*" &&
+        writtenKeys.size > 0 &&
+        (ts.isClassDeclaration(node) || ts.isClassExpression(node));
+      if (keyReached(target.key) || writtenKeys.has(target.key) || replacingClass) {
+        reachUnit(node);
+      }
+      const list = exportLinks.get(target.key);
+      if (list) list.push(node);
+      else exportLinks.set(target.key, [node]);
+    } else {
+      if ((units.get(target.owner) ?? []).some((u) => reachedUnits.has(u))) reachUnit(node);
+      if ((units.get(target.owner) ?? []).includes(node)) return;
+      const list = ownerLinks.get(target.owner);
+      if (list === undefined) ownerLinks.set(target.owner, [node]);
+      else if (!list.includes(node)) list.push(node);
+    }
+  };
+  /** A top-level publication statement, handled in place; false for any
+   * other statement. */
+  const publication = (s: ts.Statement): boolean => {
+    if (!cjs || !ts.isExpressionStatement(s)) return false;
+    const e = s.expression;
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const targets: Target[] = [];
+      let value: ts.Expression = e;
+      while (
+        ts.isBinaryExpression(value) &&
+        value.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        const target = targetOf(value.left);
+        if (target === null) return false;
+        targets.push(target);
+        value = value.right;
+      }
+      publish(value, (node) => {
+        for (const t of targets) linkTo(t, node);
+      });
+      return true;
+    }
+    // Object.defineProperty(exports, "name", { get() {...}, value: f, ... })
+    if (
+      ts.isCallExpression(e) &&
+      ts.isPropertyAccessExpression(e.expression) &&
+      isWrapperName(e.expression.expression, "Object") &&
+      e.expression.name.text === "defineProperty" &&
+      e.arguments.length === 3
+    ) {
+      const [recv, key, desc] = e.arguments as unknown as [
+        ts.Expression,
+        ts.Expression,
+        ts.Expression,
+      ];
+      if (!isExportObject(recv) || !ts.isStringLiteralLike(key)) return false;
+      if (!ts.isObjectLiteralExpression(desc)) return false;
+      const keyTarget: Target = { kind: "key", key: key.text };
+      const link = (node: ts.Node): void => linkTo(keyTarget, node);
+      for (const p of desc.properties) {
+        if (
+          (ts.isMethodDeclaration(p) || ts.isPropertyAssignment(p)) &&
+          ts.isIdentifier(p.name) &&
+          (p.name.text === "get" || p.name.text === "set")
+        ) {
+          if (ts.isMethodDeclaration(p)) link(p);
+          else publish(p.initializer, link);
+        } else if (
+          ts.isPropertyAssignment(p) &&
+          ts.isIdentifier(p.name) &&
+          p.name.text === "value"
+        ) {
+          publish(p.initializer, link);
+        } else scan(p);
+      }
+      return true;
+    }
+    return false;
+  };
+  const drain = (): void => {
+    while (hit === null && work.length > 0) {
+      const unit = work.pop()!;
+      checker.prefetchSymbolRoots([unit]);
+      scan(unit);
+    }
+  };
+  const roots = stmts.slice(0, k);
+  checker.prefetchSymbolRoots([...roots, ...precedingDecls]);
+  for (const s of roots) {
+    if (hit !== null) break;
+    if (ts.isFunctionDeclaration(s)) continue;
+    if (ts.isClassDeclaration(s)) {
+      for (const part of classSyncParts7(s)) scan(part);
+    } else if (!publication(s)) {
+      scan(s);
+    }
+    drain();
+  }
+  for (const d of precedingDecls) {
+    if (hit !== null) break;
+    scan(d);
+    drain();
+  }
+  return hit;
+}
+
 /** Bare `require("...")` EXPRESSION STATEMENTS anywhere below the top
  * level of a file — inside top-level ifs/blocks/loops and inside function
  * bodies (the lazy-require idiom). No bindings, pure side-effect loads. */
@@ -2317,8 +2821,19 @@ export function makeCycleAdmission(
     bindingUses.set(sf, uses);
     return uses;
   };
+  // The CommonJS cluster verdict, same keying (cjsCycleRefusal7).
+  const cjsVerdict = new Map<ts.SourceFile[], string | null>();
   return (importer: ts.SourceFile, e: CycleEdge): string | null => {
-    if (e.stmt === undefined) return "the cycle closes through a require() edge";
+    if (e.stmt === undefined) {
+      if (!index.has(importer)) strongconnect(importer);
+      const comp = sccOf.get(e.dep);
+      if (comp === undefined || comp.length < 2 || !comp.includes(importer)) {
+        return "the cycle closes through a require() edge";
+      }
+      if (!cjsVerdict.has(comp)) cjsVerdict.set(comp, cjsCycleRefusal7(program, comp, lineOf));
+      const reason = cjsVerdict.get(comp) ?? null;
+      return reason === null ? null : `the cycle closes through a require() edge: ${reason}`;
+    }
     // Cheap per-edge admission: nothing readable binds through the edge.
     if (ts.isImportDeclaration(e.stmt)) {
       const clause = e.stmt.importClause;
@@ -2362,6 +2877,211 @@ export function makeCycleAdmission(
     }
     return exactVerdict.get(comp) ?? null;
   };
+}
+
+/** The reason a strongly-connected cluster of CommonJS modules cannot be
+ * initialized exactly through its require() cycle, or null when it can.
+ * Node answers a require of a module that is still evaluating with that
+ * module's exports object as it stands, while the compiled bindings alias
+ * the exporter's final declarations. The two agree when:
+ *  - every member settles its exports before anything can enter the
+ *    cycle: all of its export statements come before its first top-level
+ *    statement that can run another module's code (a require, or anything
+ *    but literals, plain reads, function and class values, and
+ *    standard-library globals called with literal arguments), and every
+ *    other use of its export object is a plain member read; and
+ *  - no member's top-level code can reach its binding of another member,
+ *    so no member runs another member's code while the cluster is still
+ *    initializing. Each module then initializes exactly as it would
+ *    outside the cycle, and its own require bindings keep the acyclic
+ *    analysis (requireEarlyReference).
+ * Other cycles keep the SC1016 fence. */
+function cjsCycleRefusal7(
+  program: ts.Program,
+  comp: readonly ts.SourceFile[],
+  lineOf: (node: ts.Node) => string,
+): string | null {
+  const members = new Set(comp);
+  const builtinRoot = (e: ts.Expression): boolean => {
+    while (ts.isPropertyAccessExpression(e)) e = e.expression;
+    return ts.isIdentifier(e) && !sourceBinding7(program, e);
+  };
+  const literal = (e: ts.Node): boolean =>
+    ts.isStringLiteralLike(e) ||
+    ts.isNumericLiteral(e) ||
+    ts.isRegularExpressionLiteral(e) ||
+    e.kind === ts.SyntaxKind.TrueKeyword ||
+    e.kind === ts.SyntaxKind.FalseKeyword ||
+    e.kind === ts.SyntaxKind.NullKeyword;
+  /** An expression whose evaluation runs no user code and requires
+   * nothing: literals, plain reads, function and class values, literal
+   * containers of those, and standard-library globals called with
+   * literal arguments. */
+  const inertExpr = (e: ts.Node): boolean => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (literal(e) || ts.isIdentifier(e)) return true;
+    if (ts.isFunctionExpression(e) || ts.isArrowFunction(e)) return true;
+    if (ts.isClassExpression(e)) return classSyncParts7(e).every(inertPart);
+    if (ts.isObjectLiteralExpression(e)) {
+      return e.properties.every((p) =>
+        ts.isShorthandPropertyAssignment(p)
+          ? true
+          : ts.isPropertyAssignment(p)
+            ? !ts.isComputedPropertyName(p.name) && inertExpr(p.initializer)
+            : (ts.isMethodDeclaration(p) ||
+                ts.isGetAccessorDeclaration(p) ||
+                ts.isSetAccessorDeclaration(p)) &&
+              !ts.isComputedPropertyName(p.name),
+      );
+    }
+    if (ts.isArrayLiteralExpression(e)) {
+      return e.elements.every((el) => !ts.isSpreadElement(el) && inertExpr(el));
+    }
+    if (ts.isPropertyAccessExpression(e)) return builtinRoot(e);
+    if (ts.isVoidExpression(e)) return literal(e.expression);
+    if (ts.isCallExpression(e) || ts.isNewExpression(e)) {
+      return (
+        requireSpecOf7(e) === null &&
+        builtinRoot(e.expression) &&
+        (e.arguments ?? []).every(literal)
+      );
+    }
+    return false;
+  };
+  const inertPart = (part: ts.Node): boolean => {
+    if (ts.isHeritageClause(part)) return part.types.every((t) => inertExpr(t.expression));
+    if (ts.isComputedPropertyName(part)) return inertExpr(part.expression);
+    return ts.isExpression(part) && inertExpr(part);
+  };
+  const exportObject = (e: ts.Expression): boolean =>
+    (ts.isIdentifier(e) && e.text === "exports" && !sourceBinding7(program, e)) ||
+    (isModuleExportsAccess(e) &&
+      ts.isIdentifier(e.expression) &&
+      !sourceBinding7(program, e.expression));
+  /** A top-level statement that only publishes inert values. */
+  const exportStatement = (stmt: ts.Statement): boolean => {
+    if (!ts.isExpressionStatement(stmt)) return false;
+    if (isEsModuleStamp(stmt.expression)) return true;
+    const cjs = cjsExportAssignmentOf(stmt);
+    if (cjs !== null) {
+      let value: ts.Expression = cjs.expr;
+      while (
+        ts.isBinaryExpression(value) &&
+        value.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        const left = value.left;
+        if (
+          !isModuleExportsAccess(left) &&
+          !(ts.isPropertyAccessExpression(left) && exportObject(left.expression))
+        )
+          return false;
+        value = value.right;
+      }
+      return inertExpr(value);
+    }
+    const call = stmt.expression;
+    return (
+      ts.isCallExpression(call) &&
+      ts.isPropertyAccessExpression(call.expression) &&
+      ts.isIdentifier(call.expression.expression) &&
+      call.expression.expression.text === "Object" &&
+      !sourceBinding7(program, call.expression.expression) &&
+      call.expression.name.text === "defineProperty" &&
+      call.arguments.length === 3 &&
+      exportObject(call.arguments[0]!) &&
+      ts.isStringLiteralLike(call.arguments[1]!) &&
+      inertExpr(call.arguments[2]!)
+    );
+  };
+  for (const m of comp) {
+    if (!isCjsJsFile7(m, program)) {
+      return `${m.fileName} is not a CommonJS module — require cycles are admitted between CommonJS modules only`;
+    }
+    const stmts = m.statements;
+    // The first statement that can run another module's code.
+    let firstEntry = stmts.length;
+    for (let i = 0; i < stmts.length; i++) {
+      const st = stmts[i]!;
+      const inert =
+        ts.isFunctionDeclaration(st) ||
+        ts.isEmptyStatement(st) ||
+        (ts.isExpressionStatement(st) && ts.isStringLiteral(st.expression)) ||
+        (ts.isClassDeclaration(st) && classSyncParts7(st).every(inertPart)) ||
+        (ts.isVariableStatement(st) &&
+          st.declarationList.declarations.every(
+            (d) =>
+              ts.isIdentifier(d.name) && (d.initializer === undefined || inertExpr(d.initializer)),
+          )) ||
+        exportStatement(st);
+      if (!inert) {
+        firstEntry = i;
+        break;
+      }
+    }
+    // Every other use of the export object must be a plain member read:
+    // anything else can change what a module of the cycle observes.
+    let stray: ts.Node | null = null;
+    const settled = new Set(stmts.slice(0, firstEntry).filter(exportStatement));
+    ts.walkPreorder(m, (n) => {
+      if (stray !== null) return "stop";
+      if (ts.isStatement(n) && settled.has(n)) return "skip";
+      let use: ts.Expression | null = null;
+      if (n.kind === ts.SyntaxKind.ThisKeyword) {
+        let moduleThis = true;
+        for (let p = n.parent; p !== undefined && !ts.isSourceFile(p); p = p.parent) {
+          if (
+            (ts.isFunctionLike(p) && !ts.isArrowFunction(p)) ||
+            ts.isClassDeclaration(p) ||
+            ts.isClassExpression(p)
+          ) {
+            moduleThis = false;
+            break;
+          }
+        }
+        if (moduleThis) use = n as ts.Expression;
+      } else if (
+        ts.isIdentifier(n) &&
+        (n.text === "exports" || n.text === "module") &&
+        !(ts.isPropertyAccessExpression(n.parent) && n.parent.name === n) &&
+        !sourceBinding7(program, n)
+      ) {
+        if (n.text === "exports") use = n;
+        else if (!ts.isPropertyAccessExpression(n.parent) || n.parent.expression !== n) stray = n;
+        else if (n.parent.name.text === "exports") use = n.parent;
+      }
+      if (use === null) return undefined;
+      const parent = use.parent;
+      const read =
+        ts.isPropertyAccessExpression(parent) &&
+        parent.expression === use &&
+        !(
+          ts.isBinaryExpression(parent.parent) &&
+          parent.parent.left === parent &&
+          parent.parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+          parent.parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+        ) &&
+        !(ts.isCallExpression(parent.parent) && parent.parent.expression === parent) &&
+        !ts.isDeleteExpression(parent.parent);
+      if (!read) stray = use;
+      return undefined;
+    });
+    if (stray !== null) {
+      return `${m.fileName} uses its exports at ${lineOf(stray)} outside the export statements that precede its first require, so a module of the cycle can observe them before they settle`;
+    }
+    // Bindings of other members must stay unreachable from top-level code.
+    for (const st of stmts) {
+      for (const req of requiresOf7(st)) {
+        if (req.decl === null) continue;
+        const dep = resolveImport7(program, m, req.spec, "require");
+        if (dep === null || !members.has(dep)) continue;
+        const reached = requireBindingEarlyUse7(program, m, stmts.length, req.decl, []);
+        if (reached !== null) {
+          return `the top-level code of ${m.fileName} can use its binding '${reached.text}' of a module of the cycle (${lineOf(reached)}) while the cycle initializes`;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 /* ── exact cyclic initialization ─────────────────────────────────────────
@@ -4059,10 +4779,37 @@ function preflight7(load: LoadResult): {
     {
       const jsRequireFile = isJsSourceFileName(sf.fileName);
       const stmts = sf.statements;
-      let firstRunnable = -1;
-      stmts.forEach((s, i) => {
-        if (firstRunnable < 0 && !purePrefixStmt7(program, s)) firstRunnable = i;
-      });
+      // A binding that code running before the require can reach. Node
+      // initializes it AT the require: a const/let read earlier throws
+      // ReferenceError, which the lowering reproduces with an
+      // initialization check at every reference that can run early
+      // (require-initialization.ts). A var reads undefined there, which
+      // module aliases cannot represent; createRequire bindings have no
+      // checked form either.
+      const earlyRequireFence = (
+        req: { decl: ts.VariableDeclaration | null },
+        bindingKind: RequireCallBindingKind7,
+        loc: { file: string; start: number; end: number },
+      ): boolean => {
+        const early = req.decl !== null ? requireEarlyReference7(program, req.decl) : null;
+        if (
+          early === null ||
+          (bindingKind !== "createRequire" &&
+            ((req.decl!.parent?.flags ?? 0) & (ts.NodeFlags.Const | ts.NodeFlags.Let)) !== 0)
+        ) {
+          return false;
+        }
+        diags.push(
+          unsupportedDiag(
+            "SC1013",
+            loc,
+            bindingKind === "createRequire"
+              ? `createRequire() binding '${early.text}' below code that can reach it (Node throws ReferenceError on any earlier access, which is not modeled — move the require above the code that can run first)`
+              : `var require() binding '${early.text}' below code that can reach it (Node reads undefined before the require runs, which is not modeled — declare it with const or let, or move the require above the code that can run first)`,
+          ),
+        );
+        return true;
+      };
       for (let k = 0; k < stmts.length; k++) {
         const stmt = stmts[k]!;
         for (const req of requiresOf7(stmt)) {
@@ -4082,24 +4829,62 @@ function preflight7(load: LoadResult): {
           if (load.externalTypes.has(req.spec)) {
             continue;
           }
+          // A JSON document: the require answers its cached parsed object
+          // (json-require.ts), an ordinary value the binding stores, so
+          // every destructuring form lowers as usual. No module edge.
+          const jsonDep = resolveImport7(program, sf, req.spec, "require");
+          if (jsonDep !== null && jsonDep.fileName.endsWith(".json")) {
+            if (bindingKind === "createRequire") continue;
+            if (ts.isVariableStatement(stmt) && requiresOf7(stmt).length > 1) {
+              const others = requiresOf7(stmt).some((r) => {
+                const d = resolveImport7(program, sf, r.spec, "require");
+                return d === null || !d.fileName.endsWith(".json");
+              });
+              if (others) {
+                diags.push(
+                  unsupportedDiag(
+                    "SC1012",
+                    loc,
+                    "require() of a JSON module declared together with other require() bindings",
+                  ),
+                );
+                continue;
+              }
+            }
+            earlyRequireFence(req, bindingKind, loc);
+            continue;
+          }
           if (req.decl && ts.isArrayBindingPattern(req.decl.name)) {
             diags.push(unsupportedDiag("SC1012", loc, "array-destructuring require() bindings"));
             continue;
           }
           if (req.decl && ts.isObjectBindingPattern(req.decl.name)) {
-            const bad = req.decl.name.elements.find(
-              (e) =>
-                e.name === undefined ||
-                !ts.isIdentifier(e.name) ||
-                e.initializer !== undefined ||
-                e.dotDotDotToken !== undefined,
-            );
-            if (bad) {
+            // A nested pattern of a builtin binds members of the sub-module
+            // its key names (`const { types: { isPromise } } =
+            // require("util")` — util.types IS util/types).
+            const builtin = canonicalBuiltinModule(req.spec);
+            const plainElements = (
+              pattern: ts.ObjectBindingPattern,
+              module: string | null,
+            ): boolean =>
+              pattern.elements.every((e) => {
+                if (e.initializer !== undefined || e.dotDotDotToken !== undefined) return false;
+                if (e.name !== undefined && ts.isIdentifier(e.name)) return true;
+                if (module === null || e.name === undefined || !ts.isObjectBindingPattern(e.name))
+                  return false;
+                const key = e.propertyName;
+                if (key === undefined || !ts.isIdentifier(key)) return false;
+                const sub = canonicalBuiltinModule(`${module}/${key.text}`);
+                return sub !== null && plainElements(e.name, sub);
+              });
+            if (!plainElements(req.decl.name, builtin)) {
               diags.push(
                 unsupportedDiag(
                   "SC1012",
                   loc,
-                  "require() destructuring with defaults, rest, or nested patterns",
+                  builtin !== null
+                    ? "require() destructuring with defaults, rest, or nested patterns other than builtin sub-modules"
+                    : "require() destructuring with defaults, rest, or nested patterns of program modules (JSON documents and builtin sub-modules destructure fully)",
                 ),
               );
               continue;
@@ -4142,38 +4927,7 @@ function preflight7(load: LoadResult): {
               continue;
             }
           }
-          if (dep && dep.fileName.endsWith(".json")) {
-            if (bindingKind === "createRequire") continue;
-            diags.push(unsupportedDiag("SC1012", loc, "require() of JSON modules"));
-            continue;
-          }
-          // Earlier declarators run too: `const x = read(), dep =
-          // require('./dep')` must not lose the guard merely because both
-          // initializers share one VariableStatement.
-          const precedingDecls =
-            req.decl && ts.isVariableStatement(stmt)
-              ? stmt.declarationList.declarations.slice(
-                  0,
-                  stmt.declarationList.declarations.indexOf(req.decl),
-                )
-              : [];
-          const prefixCanRun =
-            (firstRunnable >= 0 && firstRunnable < k) ||
-            precedingDecls.some((decl) => !purePrefixDecl7(decl));
-          const tdzName =
-            prefixCanRun && req.decl
-              ? bindingEarlyUse7(program, sf, k, req.decl, precedingDecls)
-              : null;
-          if (tdzName !== null) {
-            diags.push(
-              unsupportedDiag(
-                "SC1013",
-                loc,
-                `require() below code that can reach its binding '${tdzName}' (Node initializes the binding AT the require and throws ReferenceError on any earlier access, which is not modeled — move the require above the code that can run first)`,
-              ),
-            );
-            continue;
-          }
+          if (earlyRequireFence(req, bindingKind, loc)) continue;
           if (dep) deps.push({ dep });
         }
       }
@@ -4201,11 +4955,9 @@ function preflight7(load: LoadResult): {
         }
         const projectDep = resolveImport7(program, sf, spec, "require");
         if (projectDep !== null) {
-          if (projectDep.fileName.endsWith(".json")) {
-            if (bindingKind === "createRequire") continue;
-            diags.push(unsupportedDiag("SC1012", loc, "require() of JSON modules"));
-            continue;
-          }
+          // A bare require of a JSON document only parses it: nothing to
+          // evaluate (json-require.ts creates the cached object).
+          if (projectDep.fileName.endsWith(".json")) continue;
           deps.push({ dep: projectDep });
           continue;
         }
@@ -4940,6 +5692,8 @@ export {
   resolveImport7 as resolveImport,
   resolveNpmImport7 as resolveNpmImport,
   locOf7 as locOf,
+  requireEarlyReference7 as requireEarlyReference,
+  inDeferredPosition7 as inDeferredPosition,
 };
 
 /** True for JavaScript source files (.js/.mjs/.cjs) — the files whose

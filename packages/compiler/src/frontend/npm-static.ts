@@ -192,6 +192,10 @@ export function npmStaticTransformPkgJson(pkg: Record<string, unknown>): void {
     for (const value of Object.values(obj)) transform(value);
   };
   if (pkg["exports"] !== undefined) transform(pkg["exports"]);
+  // The "imports" field maps "#" specifiers with the same condition objects
+  // (chalk 5's `"#supports-color": { node, default }`), so Node's "node"
+  // target hoists there too.
+  if (pkg["imports"] !== undefined) transform(pkg["imports"]);
 }
 
 /** Both resolution worlds' minified-entry step, over the package.json TEXT

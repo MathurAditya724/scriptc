@@ -1,4 +1,9 @@
-import type { ExportDeclaration, SourceFile, VariableDeclaration } from "./ts7/ast-types.js";
+import type {
+  ExportDeclaration,
+  Identifier,
+  SourceFile,
+  VariableDeclaration,
+} from "./ts7/ast-types.js";
 import type { ModuleSourceCandidates } from "./module-source-candidates.js";
 import type { CycleEarlyBinding } from "./program.js";
 
@@ -20,6 +25,11 @@ export class ProgramAnalysis {
   readonly exactCycleMembers = new Set<SourceFile>();
   cycleEarlyBindings: EarlyBindingsMemo | null = null;
   moduleEarlyBindings: EarlyBindingsMemo | null = null;
+  /** Top-level require declarations: the first reference to their bindings
+   * that code running before the require can reach (requireEarlyReference). */
+  readonly requireEarlyReferences = new Map<VariableDeclaration, Identifier | null>();
+  /** Per file: the first top-level statement that can run user code. */
+  readonly requireFirstRunnable = new Map<SourceFile, number>();
 
   clear(): void {
     this.createRequireReasons.clear();
@@ -29,5 +39,7 @@ export class ProgramAnalysis {
     this.exactCycleMembers.clear();
     this.cycleEarlyBindings = null;
     this.moduleEarlyBindings = null;
+    this.requireEarlyReferences.clear();
+    this.requireFirstRunnable.clear();
   }
 }

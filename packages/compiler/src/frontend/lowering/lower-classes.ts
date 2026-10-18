@@ -1,3 +1,4 @@
+import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { lowerReadlineUiNew } from "./builtins/readline.js";
@@ -10,7 +11,7 @@ import { InternalCompilerError } from "../../errors.js";
  * hierarchy registration. */
 import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
-import { lowerZlibStreamNew, zlibStreamModeOf } from "./builtins/compression.js";
+import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
 import type { FnCtx, Lowerer } from "./lowerer.js";
 import {
   BOOL,
@@ -2344,7 +2345,11 @@ export function collectClassShapeInner(
             (member.type !== undefined ||
               (lowerer.typeOf(member.name).flags & ts.TypeFlags.Any) === 0)
           ) {
-            lowerer.unsupported("SC1090", member.name, "'unknown'-typed static fields");
+            lowerer.unsupported(
+              "SC1090",
+              member.name,
+              `${dynFieldTypeSpelling(lowerer, member.name)}-typed static fields`,
+            );
           }
           staticFields.push({
             name: member.name.text,
@@ -2419,12 +2424,29 @@ export function collectClassShapeInner(
           ts.isPropertyDeclaration(member) &&
           !member.modifiers?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword)
         ) {
-          if (!isJsSourceFile(member.getSourceFile()))
-            lowerer.unsupported(
-              "SC1090",
-              memberName,
-              "redeclaring Error.cause (pass the cause in the Error constructor options)",
-            );
+          // A TypeScript redeclaration is the JavaScript field: Node
+          // defines the Error's own `cause` (undefined without an
+          // initializer) after super() returns. `declare` and `abstract`
+          // declarations are erased and define nothing. Every `.cause`
+          // read of an Error-rooted class is the checked-dynamic property
+          // (fieldTarget's errorCause container), so only types that read
+          // back unchanged from it are accepted.
+          if (!isJsSourceFile(member.getSourceFile())) {
+            if (
+              modifiers?.some(
+                (m) =>
+                  m.kind === ts.SyntaxKind.DeclareKeyword ||
+                  m.kind === ts.SyntaxKind.AbstractKeyword,
+              )
+            )
+              continue;
+            if (!lowerer.classFieldStoresDyn(lowerer.typeOf(member.name)))
+              lowerer.unsupported(
+                "SC1090",
+                memberName,
+                "redeclaring Error.cause with a type other than 'unknown' or 'object' (declare it 'cause?: unknown' and narrow at the read)",
+              );
+          }
           fieldOrder.push({
             name: "cause",
             type: DYN,
@@ -2788,7 +2810,11 @@ export function collectClassShapeInner(
           !isJsSourceFile(member.getSourceFile()) &&
           !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name))
         ) {
-          lowerer.unsupported("SC1090", member.name, "'unknown'-typed class fields");
+          lowerer.unsupported(
+            "SC1090",
+            member.name,
+            `${dynFieldTypeSpelling(lowerer, member.name)}-typed class fields`,
+          );
         }
         const undefinedInitializer =
           type.kind === "dyn" && !member.initializer ? locOf(member) : undefined;
@@ -2914,7 +2940,7 @@ export function collectClassShapeInner(
             lowerer.unsupported(
               "SC1090",
               p.name,
-              "redeclaring Error.cause (pass the cause in the Error constructor options)",
+              "redeclaring Error.cause as a parameter property (declare 'cause?: unknown' and assign it in the constructor)",
             );
           }
           const shape = lowerer.paramShape(p);
@@ -2922,7 +2948,11 @@ export function collectClassShapeInner(
           if (type.kind === "void") lowerer.badType(p.name, lowerer.typeOf(p.name));
           // The class-field dyn rule verbatim (KEEP NARROW).
           if (type.kind === "dyn" && !lowerer.classFieldStoresDyn(lowerer.typeOf(p))) {
-            lowerer.unsupported("SC1090", p.name, "'unknown'-typed class fields");
+            lowerer.unsupported(
+              "SC1090",
+              p.name,
+              `${dynFieldTypeSpelling(lowerer, p)}-typed class fields`,
+            );
           }
           // `override x` (and any same-named inherited member) would
           // redeclare a base slot — the declared-field rule verbatim.
@@ -6385,7 +6415,7 @@ export function collectInheritedJsFieldWrites(
  * hierarchy identifies the original declarations through aliases as well. */
 export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.SourceFile[]): void {
   const families: [ts.MethodDeclaration, ts.MethodDeclaration][] = [];
-  collectClassMethodMutations(lowerer, files);
+  lowerer.speculativeTypeQueries(() => collectClassMethodMutations(lowerer, files));
   const visit = (node: ts.Node): void => {
     if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
       const accessors = node.members.filter(
@@ -7527,6 +7557,14 @@ export function throwingSetterFn(lowerer: Lowerer, info: ClassInfo, prop: string
   };
 }
 
+/** The declared type a refused checked-dynamic class field names in its
+ * diagnostic (`'any'`, `'WeakMap<object, string>'`): `unknown` and
+ * `object` fields store checked-dynamic values, so the refusal is about
+ * whatever else the declaration spells. */
+function dynFieldTypeSpelling(lowerer: Lowerer, node: ts.Node): string {
+  return `'${lowerer.checker.typeToString(lowerer.typeOf(node))}'`;
+}
+
 /** The base a constructor chain actually CALLS into: generic FAMILIES are
  * never constructed (no `%<family>.constructor` exists), so an
  * instantiation's construction-relevant base is the family's own base —
@@ -8422,6 +8460,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       undefined,
       lowerer.checker.getSymbolAtLocation(expr.expression),
     );
+  const valueReturning = lowerValueReturningConstructorNew(lowerer, expr);
+  if (valueReturning) return valueReturning;
   const instanceConstructor = lowerInstanceConstructorNew(lowerer, expr);
   if (instanceConstructor) return instanceConstructor;
   const objectFactory = lowerObjectFactoryNew(lowerer, expr);
@@ -8572,7 +8612,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // `new zlib.Gzip(options?)` — the zlib stream classes.
     const zlibModeNs = zlibStreamModeOf(lowerer, resolved);
     if (zlibModeNs !== null) {
-      const what = `new zlib.${expr.expression.name.text}`;
+      const what = `new zlib.${zlibClassName(zlibModeNs)}`;
       return lowerZlibStreamNew(lowerer, expr.arguments ?? [], zlibModeNs, what, expr, loc);
     }
     // `new N.C(...)` / `new a.Point(...)` — construction through a
@@ -8830,7 +8870,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     if (streamInfo) return lowerStreamNew(lowerer, expr, streamInfo);
     const zlibMode = zlibStreamModeOf(lowerer, symbol);
     if (zlibMode !== null) {
-      const what = `new zlib.${symbol!.name}`;
+      const what = `new zlib.${zlibClassName(zlibMode)}`;
       return lowerZlibStreamNew(lowerer, expr.arguments ?? [], zlibMode, what, expr, loc);
     }
     // `new URL(input)`: the WHATWG URL class (stdlib/@types provenance —
