@@ -23,6 +23,10 @@ export type StackObjectSource = IrExpr & { kind: "recordLit" | "new" | "call" };
  * (record-results.ts). The caller proves that every use of the value only
  * projects it. */
 export function canStackObject(host: LlvmEmitterContext, e: IrExpr): e is StackObjectSource {
+  // A ThreadSlots key keeps its slot index for its lifetime and has its
+  // values released when it is freed: it lives on the heap.
+  if (e.type.kind === "object" && host.classMeta.get(e.type.className)?.threadSlot === true)
+    return false;
   // A producer with a result-slot entry builds its fresh result in the
   // caller's storage.
   if (e.kind === "call") return host.fnByName.has(resultEntryName(e.callee));

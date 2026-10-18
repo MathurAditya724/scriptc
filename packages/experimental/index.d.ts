@@ -52,3 +52,24 @@ export declare class InternTable<
    * call it. */
   getOrInsertComputed(key: K, callback: (key: K) => V): V;
 }
+
+/** A named family of per-thread values keyed by objects, like a WeakMap
+ * that each thread has its own copy of. Every construction with one name
+ * opens the same family. A value set on one thread is visible only to that
+ * thread, including for keys that every thread shares (published objects,
+ * @scriptc/threads), and setting one never writes the key. scriptc requires
+ * the name to be a string literal, every construction of one name to use
+ * the same type arguments, the key type to be a class, and the slots to be
+ * called through a module-level const initialized with `new ThreadSlots`. */
+export declare class ThreadSlots<K extends object, V extends object> {
+  /** Opens the family called `name`. */
+  constructor(name: string);
+  /** This thread's value for `key`, or undefined. */
+  get(key: K): V | undefined;
+  /** Whether this thread has a value for `key`. */
+  has(key: K): boolean;
+  /** Sets this thread's value for `key`. Returns the slots. */
+  set(key: K, value: V): this;
+  /** Removes this thread's value for `key`. Returns whether there was one. */
+  delete(key: K): boolean;
+}

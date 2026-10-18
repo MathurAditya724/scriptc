@@ -504,6 +504,9 @@ export interface ClassInfo {
   /** The synthetic InternTable class (@scriptc/experimental,
    * intern-tables.ts): synthesized like lifetimeRegion. */
   internTable?: true;
+  /** The synthetic ThreadSlots class (@scriptc/experimental,
+   * thread-slots.ts): synthesized like lifetimeRegion. */
+  threadSlots?: true;
   /** This class's own `emit` override in the FORWARDING SHAPE (the one
    * EventEmitter member a subclass may re-declare): never in `methods` —
    * emit calls keep routing through the emitter spoke, which lowers the

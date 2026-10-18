@@ -1075,6 +1075,9 @@ export interface TypeMapperCtx {
   /** The InternTable instance type (@scriptc/experimental), when `decl` is
    * that package's class declaration (lowering/intern-tables.ts). */
   internTableClass?: (decl: ts.ClassDeclaration) => IrType | null;
+  /** The ThreadSlots instance type (@scriptc/experimental), when `decl` is
+   * that package's class declaration (lowering/thread-slots.ts). */
+  threadSlotsClass?: (decl: ts.ClassDeclaration) => IrType | null;
 }
 /** A generator type's normalized value channels (Generator<T, TReturn,
  * TNext> and the IteratorResult alias share this):
@@ -1653,16 +1656,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       return hasStr ? STRING : F64;
     }
   }
-  // @scriptc/experimental's LifetimeRegion and InternTable: synthetic
-  // program classes, provenance-checked by the package's declaration file.
+  // @scriptc/experimental's LifetimeRegion, InternTable and ThreadSlots:
+  // synthetic program classes, provenance-checked by the package's
+  // declaration file.
   {
     const classSym = widened.getSymbol();
     const name = classSym?.name;
-    if (name === "LifetimeRegion" || name === "InternTable") {
+    if (name === "LifetimeRegion" || name === "InternTable" || name === "ThreadSlots") {
       for (const d of checker.declarationsOf(classSym!)) {
         if (!ts.isClassDeclaration(d)) continue;
         const synthetic =
-          name === "LifetimeRegion" ? ctx.lifetimeRegionClass?.(d) : ctx.internTableClass?.(d);
+          name === "LifetimeRegion"
+            ? ctx.lifetimeRegionClass?.(d)
+            : name === "InternTable"
+              ? ctx.internTableClass?.(d)
+              : ctx.threadSlotsClass?.(d);
         if (synthetic) return synthetic;
       }
     }

@@ -296,6 +296,22 @@
       {
         "text": "Memory",
         "id": "memory"
+      },
+      {
+        "text": "ThreadSlots",
+        "id": "threadslots"
+      },
+      {
+        "text": "Slot methods",
+        "id": "slot-methods"
+      },
+      {
+        "text": "Keys and values",
+        "id": "keys-and-values"
+      },
+      {
+        "text": "Slot cost",
+        "id": "slot-cost"
       }
     ]
   },
