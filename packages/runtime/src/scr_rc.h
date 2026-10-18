@@ -336,11 +336,18 @@ void scr_sa_thread_park(void);
 /* Waits until the arenas of exited threads are trimmed (tests). */
 void scr_sa_wait_trims(void);
 /* Called first on a new worker thread: prepares the thread's system-
- * allocator heap (scr_alloc.c). */
+ * allocator heap, and lets the thread's memory go back when it exits
+ * (scr_alloc.c). */
 void scr_sa_thread_starting(void);
+/* The calling thread made objects it allocated reachable from other
+ * threads: a message or an intern table shares a published graph by
+ * pointer, or a process-wide cache keeps an immortal object. Its memory
+ * then stays when it exits (scr_alloc.c). */
+void scr_sa_thread_shares(void);
 #define SCR_SA_FREE_FOREIGN(p) scr_sa_free_foreign(p)
 #else
 #define SCR_SA_FREE_FOREIGN(p) free(p)
+#define scr_sa_thread_shares() ((void)0)
 #endif
 
 #if SCR_SMALL_ALLOC
