@@ -168,6 +168,7 @@ typedef enum {
   SCR_DYNH_DECIPHER,       /* node:crypto Decipheriv (scr_cipher.c) */
   SCR_DYNH_NET_SOCKET_ADDRESS, /* net.SocketAddress (scr_net.c) */
   SCR_DYNH_NET_BLOCK_LIST, /* net.BlockList (scr_net.c) */
+  SCR_DYNH_DISPOSABLE_STACK, /* DisposableStack (scr_symbol.c) */
   SCR_DYNH_HASH,           /* node:crypto Hash (scr_lib.c) */
   SCR_DYNH_HMAC,           /* node:crypto Hmac (scr_lib.c) */
   SCR_DYNH_COUNT,
@@ -621,6 +622,19 @@ ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool opti
  * and return NULL with the exception pending. */
 ScrDyn *scr_dyn_using_method(const ScrDyn *value, bool async);
 ScrDyn *scr_dyn_using_dispose(const ScrDyn *method, const ScrDyn *value);
+/* DisposableStack (scr_symbol.c). scr_disposable_stack_new answers a new
+ * stack (+1). The use, adopt and defer calls borrow their operands, throw
+ * Node's ReferenceError on a disposed stack and Node's TypeError on an
+ * invalid resource or callback, and return false with the exception
+ * pending. scr_disposable_stack_use_callback registers `dispose(value)`
+ * with the error texts of use(); the compiler passes it the disposal of a
+ * class instance, whose dyn view has no methods. The stack's other members
+ * are function values and getters of its dyn handle. */
+ScrDyn *scr_disposable_stack_new(void);
+bool scr_disposable_stack_is(const ScrDyn *value);
+bool scr_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value);
+bool scr_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *dispose);
+bool scr_disposable_stack_adopt(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *on_dispose);
 void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
 void scr_dyn_symbol_key_placeholder(ScrDyn *value, ScrDyn *key);
 bool scr_dyn_has_key_computed(const ScrDyn *value, const ScrDyn *key);
@@ -1131,6 +1145,10 @@ typedef struct ScrDynHandleOps {
   /* The view has no properties, so util.inspect prints it in full at any
    * depth, as Node prints `{}`. */
   bool inspect_view_empty;
+  /* A symbol-keyed READ (`stack[Symbol.dispose]`, the `using` method
+   * lookup): +1 value, or NULL when the class has no member for `key`
+   * (the read answers undefined). NULL hook = no symbol-keyed members. */
+  ScrDyn *(*symbol_get)(void *h, const ScrDyn *key);
 } ScrDynHandleOps;
 ScrDyn *scr_dyn_native_handle_iterator(ScrDyn *source, unsigned selection);
 
@@ -1220,11 +1238,18 @@ ScrDyn *scr_gen_receiver(void);
 void scr_dyn_chunk_enc(bool utf8);
 ScrDyn *scr_dyn_new_chunk(const ScrBytes *b);
 
-/* util.format's %j over a dyn value: the JSON.stringify text (+1),
+/* The JSON text of a dyn value: the JSON.stringify text (+1),
  * "undefined" when the root drops (undefined/function), or NULL with a
  * pending exception (a runtime handle inside the tree throws the "not
  * supported yet" Error). */
 ScrStr *scr_dyn_format_j(const ScrDyn *d);
+/* util.format's %j (Node's tryStringify), +1: over a dyn value, the
+ * JSON.stringify(d) text, or "undefined" when it returns undefined; over
+ * the text of a typed serializer that may have thrown, the text itself.
+ * A circular-structure TypeError becomes "[Circular]"; any other
+ * exception stays pending and the result is NULL. */
+ScrStr *scr_util_format_j(const ScrDyn *d);
+ScrStr *scr_util_format_j_text(ScrStr *text); /* borrows text */
 /* Node's ERR_INVALID_ARG_TYPE listener gate over a dyn value — shared by
  * the emitter unit's checked-dynamic registrations and the handle
  * dispatchers' .on(...) paths (both render errors.js's

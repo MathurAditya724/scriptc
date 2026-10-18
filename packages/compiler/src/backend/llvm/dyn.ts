@@ -84,8 +84,8 @@ const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   child: 16,
   fileHandle: 17,
   dir: 44,
-  cryptoHash: 49,
-  cryptoHmac: 50,
+  cryptoHash: 50,
+  cryptoHmac: 51,
 };
 
 /** Handle kinds whose runtime unit boxes them through its own function,
