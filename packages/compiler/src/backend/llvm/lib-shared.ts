@@ -65,6 +65,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "arrayBuffer.viewU8": "scr_array_buffer_view_u8",
   "arrayBuffer.viewU32": "scr_array_buffer_view_u32",
   "arrayBuffer.viewI32": "scr_array_buffer_view_i32",
+  "arrayBuffer.viewF16": "scr_array_buffer_view_f16",
   "arrayBuffer.viewF32": "scr_array_buffer_view_f32",
   "arrayBuffer.viewF64": "scr_array_buffer_view_f64",
   "arrayBuffer.viewDV": "scr_array_buffer_view_dv",
