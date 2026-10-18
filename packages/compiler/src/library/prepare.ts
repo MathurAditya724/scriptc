@@ -65,6 +65,7 @@ function libClassFits(cls: string, t: IrType): boolean {
     case "bool":
       return t.kind === "bool";
     case "string":
+    case "cstring":
       return t.kind === "string";
     case "bytes":
       return t.kind === "bytes" && t.elem === "u8";
@@ -173,6 +174,18 @@ function resolveLibrarySection(
         resolvedExport.inboundBytesTrap = assembleTrapTeaching(
           profileTeaching(profile, LIB_INBOUND_BYTES_TRAP_CODE) ??
             "scriptc: library inbound bytes length out of range\n",
+          LIB_INBOUND_BYTES_TRAP_CODE,
+          e.symbol,
+          profileRemediation(profile, LIB_INBOUND_BYTES_TRAP_CODE),
+        );
+      }
+      if (e.params.includes("cstring")) {
+        // The host-contract trap for a NULL cstring parameter: a C string
+        // argument is a pointer to NUL-terminated text, never NULL. Same
+        // code and assembly-once discipline as the bytes and integer traps.
+        resolvedExport.inboundCstringTrap = assembleTrapTeaching(
+          profileTeaching(profile, LIB_INBOUND_BYTES_TRAP_CODE) ??
+            "scriptc: library inbound cstring parameter is NULL\n",
           LIB_INBOUND_BYTES_TRAP_CODE,
           e.symbol,
           profileRemediation(profile, LIB_INBOUND_BYTES_TRAP_CODE),
@@ -524,10 +537,12 @@ export function prepareLibrary(
     // SC4024 diagnostics, unused channels legal, undeclared references
     // refused with the callback teaching. The library lane never loads a
     // native-FFI manifest, so the channel set owns the surface outright.
+    // A cstring channel parameter is a string on the TypeScript side; the
+    // channel's own classes (lib.callbacks) drive the marshalling.
     const cbImports: IrFfiImport[] = profile.callbacks.map((cb) => ({
       name: cb.name,
       symbol: cb.name,
-      params: [...cb.params],
+      params: cb.params.map((cls) => (cls === "cstring" ? "string" : cls)),
       returns: cb.returns,
     }));
     const integerSlotRoots: string[] = [];

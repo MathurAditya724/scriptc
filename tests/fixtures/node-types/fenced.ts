@@ -33,10 +33,10 @@ ReadableStream.from(new Set([1, 2]));
  * typecheck under @types/node and fence with the module-qualified name —
  * calls and value reads alike. */
 import { watchFile } from "fs";
-import { setPriority } from "node:os";
+import { EventEmitter, on } from "node:events";
 import { win32 } from "path";
 watchFile("x", () => {});
-setPriority(0);
+on(new EventEmitter(), "tick");
 console.log(win32.sep);
 /* URL getters and serialization lower under @types/node, but object-URL
  * registry operations still fence by member name with the supported
