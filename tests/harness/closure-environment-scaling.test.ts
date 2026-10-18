@@ -14,6 +14,8 @@ import { expect, test } from "vitest";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
+// Sanitized builds compile the runtime with each uncached build, which
+// dwarfs both sizes; the growth this test bounds is the same in every lane.
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 
 /** `n` number bindings plus n/20 objects and strings, all captured by a
@@ -83,14 +85,7 @@ async function compileTime(dir: string, n: number): Promise<number> {
   writeFileSync(entry, source);
   const { stderr } = await execFileAsync(
     process.execPath,
-    [
-      join(repoRoot, "packages/cli/dist/main.js"),
-      "build",
-      entry,
-      "-o",
-      binary,
-      ...(sanitize ? ["--sanitize"] : []),
-    ],
+    [join(repoRoot, "packages/cli/dist/main.js"), "build", entry, "-o", binary],
     {
       env: { ...process.env, SCRIPTC_TIMING: "1", SCRIPTC_NO_CACHE: "1" },
       maxBuffer: 16 * 1024 * 1024,
@@ -113,16 +108,20 @@ async function compileTime(dir: string, n: number): Promise<number> {
   return complete - loaded;
 }
 
-test("compile time grows linearly with a shared closure environment", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "scriptc-closure-scaling-"));
-  try {
-    const small = await compileTime(dir, 500);
-    const large = await compileTime(dir, 4000);
-    // Eight times the bindings. Linear growth stays at or below 8x (fixed
-    // costs keep it near 5x); the quadratic analyses and code generation
-    // measured 24x at these sizes, and every doubling beyond adds 4x.
-    expect(large / small, `${small.toFixed(0)} ms -> ${large.toFixed(0)} ms`).toBeLessThan(16);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}, 300_000);
+test.skipIf(sanitize)(
+  "compile time grows linearly with a shared closure environment",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scriptc-closure-scaling-"));
+    try {
+      const small = await compileTime(dir, 500);
+      const large = await compileTime(dir, 4000);
+      // Eight times the bindings. Linear growth stays at or below 8x (fixed
+      // costs keep it near 5x); the quadratic analyses and code generation
+      // measured 24x at these sizes, and every doubling beyond adds 4x.
+      expect(large / small, `${small.toFixed(0)} ms -> ${large.toFixed(0)} ms`).toBeLessThan(16);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  300_000,
+);
