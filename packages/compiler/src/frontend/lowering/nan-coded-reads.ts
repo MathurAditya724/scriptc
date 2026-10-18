@@ -43,6 +43,9 @@ export interface NanCodedHost {
   declarationOf(symbol: ts.Symbol): ts.Node | undefined;
   /** The element kind of a typed-array receiver, or null. */
   bytesElemOf(receiver: ts.Expression): IrBytesElem | null;
+  /** The read is a keyed read of a record's `number` index signature,
+   * which answers undefined for a missing key. */
+  isNumberRecordRead(read: ts.ElementAccessExpression): boolean;
   /** The static IR type of the node is a plain number. */
   isNumber(node: ts.Node): boolean;
   isString(node: ts.Expression): boolean;
@@ -314,7 +317,10 @@ export class NanCodedReads {
           return;
         }
         if (ts.isElementAccessExpression(node) && this.isReadCandidate(node)) {
-          const elem = this.host.bytesElemOf(node.expression);
+          // A record's number values may hold a genuine NaN, like f64 elements.
+          const elem =
+            this.host.bytesElemOf(node.expression) ??
+            (this.host.isNumberRecordRead(node) ? "f64" : null);
           if (elem) candidates.set(node, elem);
         }
       });
@@ -392,7 +398,13 @@ export class NanCodedReads {
     // native build of the compiler.
     const cached = this.symbolCache.get(node);
     if (cached !== undefined) return cached;
-    const symbol = this.host.symbolOf(node);
+    let symbol = this.host.symbolOf(node);
+    // A method read through an instance (`h.get`) can resolve to another
+    // symbol than its declaration name; slots and call sites key on the
+    // declaration's own symbol.
+    const decl = symbol ? this.host.declarationOf(symbol) : undefined;
+    if (decl && ts.isMethodDeclaration(decl) && decl.name !== node && ts.isIdentifier(decl.name))
+      symbol = this.symbolOf(decl.name) ?? symbol;
     this.symbolCache.set(node, symbol);
     return symbol;
   }

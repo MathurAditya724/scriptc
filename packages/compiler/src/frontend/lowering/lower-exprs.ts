@@ -3512,6 +3512,22 @@ function checkedStaleArm(
   return helper ? lowerer.checkedNarrowCall(helper, value, arm, value.loc) : null;
 }
 
+/** V8's spelling of a callee in "is not a function": a string-literal
+ * element key reads as a property name (`o["a"]` is `o.a`), other keys
+ * keep their brackets. */
+export function v8CalleeText(node: ts.Node): string {
+  if (ts.isElementAccessExpression(node)) {
+    const key = node.argumentExpression;
+    const object = v8CalleeText(node.expression);
+    return ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)
+      ? `${object}.${key.text}`
+      : `${object}[${key.getText()}]`;
+  }
+  if (ts.isPropertyAccessExpression(node) && !node.questionDotToken)
+    return `${v8CalleeText(node.expression)}.${node.name.text}`;
+  return node.getText();
+}
+
 /** Node's TypeError for the operation consuming `node` when it holds a
  * value of type `found`, or null where Node would not throw. */
 function staleReadMessage(node: ts.Node, found: IrType): string | null {
@@ -3522,7 +3538,7 @@ function staleReadMessage(node: ts.Node, found: IrType): string | null {
     parent = parent.parent;
   }
   if (ts.isCallExpression(parent) && parent.expression === child && !parent.questionDotToken) {
-    return found.kind === "func" ? null : `${node.getText()} is not a function`;
+    return found.kind === "func" ? null : `${v8CalleeText(node)} is not a function`;
   }
   const unit = found.kind === "undefinedT" ? "undefined" : found.kind === "nullT" ? "null" : null;
   if (unit === null) return null;
@@ -6963,15 +6979,173 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   return lowerer.maybeNarrow({ kind: "arrayGet", arr, index, type: elemT, loc: locOf(expr) }, expr);
 }
 
+/** A record receiver that an outer keyed read left optional
+ * (`nested[a][b]`, where `nested[a]` can miss). The receiver evaluates
+ * once into `stmts`; `present` is its record arm, valid only once the
+ * access has tested `stable` against the undefined arm. */
+interface OptionalRecordReceiver {
+  stmts: IrStmt[];
+  stable: IrExpr;
+  present: IrExpr;
+  unionId: string;
+  undefTag: number;
+}
+
+function optionalRecordReceiver(
+  lowerer: Lowerer,
+  value: IrExpr,
+  loc: SrcLoc,
+): OptionalRecordReceiver | null {
+  if (value.type.kind !== "union") return null;
+  const unionId = value.type.unionId;
+  const undefTag = lowerer.armTag(unionId, UNDEFINED_T);
+  if (undefTag < 0 || lowerer.unions.get(unionId)?.arms.length !== 2) return null;
+  const record = lowerer.stripUndefinedArm(value.type);
+  if (record.kind !== "record") return null;
+  const stmts: IrStmt[] = [];
+  const stable = stabilized(lowerer, value, "%recordReceiver", stmts);
+  const present: IrExpr = {
+    kind: "unionNarrow",
+    unionId,
+    tag: lowerer.armTag(unionId, record),
+    value: stable,
+    type: record,
+    loc,
+  };
+  return { stmts, stable, present, unionId, undefTag };
+}
+
+/** `value`, evaluated once at this point of `out`. */
+function stabilized(lowerer: Lowerer, value: IrExpr, name: string, out: IrStmt[]): IrExpr {
+  if (isSafeToRepeat(value)) return value;
+  const tmp = lowerer.declareHiddenLocal(name, value.type);
+  out.push({ kind: "varDecl", localId: tmp.id, init: value, loc: value.loc });
+  return varRef(tmp.id, value.type, value.loc);
+}
+
+function undefinedReceiver(receiver: OptionalRecordReceiver, loc: SrcLoc): IrExpr {
+  return {
+    kind: "unionIsTag",
+    unionId: receiver.unionId,
+    tag: receiver.undefTag,
+    negated: false,
+    value: receiver.stable,
+    type: BOOL,
+    loc,
+  };
+}
+
+/** Node's TypeError for a keyed read or write on an undefined receiver. */
+function undefinedReceiverThrow(
+  key: IrExpr,
+  action: "read" | "set",
+  type: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  const head = `Cannot ${action} properties of undefined (${action === "read" ? "reading" : "setting"} '`;
+  const message: IrExpr = {
+    kind: "strConcat",
+    left: {
+      kind: "strConcat",
+      left: { kind: "strLit", value: head, type: STRING, loc },
+      right: key,
+      type: STRING,
+      loc,
+    },
+    right: { kind: "strLit", value: "')", type: STRING, loc },
+    type: STRING,
+    loc,
+  };
+  return {
+    kind: "libCall",
+    fn: "error.nodeThrow",
+    args: [numLit(1, loc), { kind: "strLit", value: "", type: STRING, loc }, message],
+    type,
+    loc,
+  };
+}
+
+/** The receiver and key of a keyed access whose receiver can be undefined,
+ * evaluated in order into `stmts`, with the receiver's record arm and the
+ * key's property-name string. Null when the receiver is not optional. */
+function guardedRecordAccess(
+  lowerer: Lowerer,
+  access: ts.ElementAccessExpression,
+  rawObj: IrExpr,
+): { receiver: OptionalRecordReceiver; key: IrExpr; name: IrExpr } | null {
+  const receiver = optionalRecordReceiver(lowerer, rawObj, locOf(access.expression));
+  if (!receiver) return null;
+  const keyNode = access.argumentExpression;
+  const litKey = recordKeyLiteralText(keyNode) ?? recordKeyTypeLiteralText(lowerer, keyNode);
+  const key =
+    litKey !== null
+      ? ({ kind: "strLit", value: litKey, type: STRING, loc: locOf(keyNode) } satisfies IrExpr)
+      : stabilized(lowerer, lowerer.lowerExpr(keyNode), "%recordKey", receiver.stmts);
+  // A symbol key names no string property; its message spelling is not
+  // modeled.
+  const name =
+    key.type.kind === "symbol"
+      ? ({ kind: "strLit", value: "Symbol()", type: STRING, loc: locOf(keyNode) } satisfies IrExpr)
+      : lowerRecordPropertyKey(lowerer, key, keyNode);
+  return { receiver, key, name };
+}
+
+/** `nested[a][b] = v` where `nested[a]` can miss: the receiver, the key and
+ * the value evaluate in order, then an undefined receiver throws Node's
+ * TypeError and a present one takes the write. Only member and identifier
+ * receivers are probed, since a probe that finds no optional receiver
+ * lowers the receiver again. */
+function lowerGuardedRecordWrite(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  target: ts.ElementAccessExpression,
+): IrStmt | null {
+  let receiverNode: ts.Expression = target.expression;
+  while (ts.isParenthesizedExpression(receiverNode)) receiverNode = receiverNode.expression;
+  if (
+    lowerer.chainRecvByNode.has(target.expression) ||
+    !(
+      ts.isElementAccessExpression(receiverNode) ||
+      ts.isPropertyAccessExpression(receiverNode) ||
+      ts.isIdentifier(receiverNode)
+    )
+  )
+    return null;
+  const guarded = guardedRecordAccess(lowerer, target, lowerer.lowerExpr(target.expression));
+  if (!guarded) return null;
+  const { receiver, key, name } = guarded;
+  const loc = locOf(expr);
+  const value = stabilized(lowerer, lowerer.lowerExpr(expr.right), "%recordValue", receiver.stmts);
+  const write = lowerer.withExpressionOverride(target.expression, receiver.present, () =>
+    lowerer.withExpressionOverride(target.argumentExpression, key, () =>
+      lowerer.withExpressionOverride(expr.right, value, () => lowerElementWrite(lowerer, expr)),
+    ),
+  );
+  return {
+    kind: "block",
+    body: [
+      ...receiver.stmts,
+      {
+        kind: "if",
+        cond: undefinedReceiver(receiver, loc),
+        then: [{ kind: "exprStmt", expr: undefinedReceiverThrow(name, "set", VOID, loc), loc }],
+        else_: [write],
+        loc,
+      },
+    ],
+    loc,
+  };
+}
+
 /** `r[k]` over a (non-tuple) record shape. A LITERAL key naming a declared
  * field is the bracket spelling of field access (the ONLY spelling tsc
  * permits for signature-declared fields under
  * noPropertyAccessFromIndexSignature) — an ordinary recordGet. Everything
  * else is a runtime-keyed read (recordKeyGet): declared fields answer
  * first via an emitted string-switch, index-signature shapes fall through
- * to the overflow map. The result type is the CHECKER's for the access —
- * the index signature's value type (dyn for `unknown`), or its
- * undefined-armed union under noUncheckedIndexedAccess. Every declared
+ * to the overflow map. The result type is the index signature's value type
+ * armed with undefined (dyn for `unknown`): a missing key reads undefined,
+ * as in JavaScript, whatever noUncheckedIndexedAccess says. Every declared
  * field must be able to SURFACE as that type (equal, an arm of it, or —
  * for dyn results — JSON-safe for the dyn conversion); shapes mixing in
  * fields outside that stay fenced. Declared-only shapes support reads
@@ -6995,9 +7169,39 @@ export function lowerRecordKeyRead(
   // a generic instance) is the same static read — identifier evaluation
   // is pure, so skipping it matches JS exactly.
   const litKey = recordKeyLiteralText(keyNode) ?? recordKeyTypeLiteralText(lowerer, keyNode);
+  // An outer keyed read can leave the receiver undefined: evaluate the
+  // receiver and the key, then throw Node's TypeError or read the present
+  // record.
   // The receiver lowers FIRST (both branches below read it, and JS
   // evaluates the receiver before the key).
   const obj = lowerer.lowerExpr(expr.expression);
+  {
+    const guarded = guardedRecordAccess(lowerer, expr, obj);
+    if (guarded) {
+      const { receiver, key, name } = guarded;
+      const read = lowerer.withExpressionOverride(expr.expression, receiver.present, () =>
+        litKey !== null
+          ? lowerRecordKeyRead(lowerer, expr, shapeId, shape, includeUndefined)
+          : lowerer.withExpressionOverride(keyNode, key, () =>
+              lowerRecordKeyRead(lowerer, expr, shapeId, shape, includeUndefined),
+            ),
+      );
+      return {
+        kind: "seqExpr",
+        stmts: receiver.stmts,
+        result: {
+          kind: "ternary",
+          cond: undefinedReceiver(receiver, loc),
+          then: undefinedReceiverThrow(name, "read", read.type, loc),
+          else_: read,
+          type: read.type,
+          loc,
+        },
+        type: read.type,
+        loc,
+      };
+    }
+  }
   // A record-mapped CHECKER type over a VALUE living in the checked-dynamic tree (a JS
   // file-scope object-literal global): the checked-dynamic keyed read —
   // dynKeyGet against the runtime keys (a missing key answers the checked-dynamic tree
@@ -7111,21 +7315,29 @@ export function lowerRecordKeyRead(
       loc,
     };
   }
-  // The DECLARED result type of the access — the index signature's value
-  // type (armed with undefined under noUncheckedIndexedAccess), or the
-  // declared fields' one common type on signature-free shapes (tsc's
-  // keyof check proved membership; a smuggled miss traps). The checker
-  // may have NARROWED this occurrence (assignment CFA on literal keys) —
-  // maybeNarrow bridges to the narrowed arm exactly like a field read.
+  // The result type of the access — the index signature's value type
+  // armed with undefined, or the declared fields' one common type on
+  // signature-free shapes (tsc's keyof check proved membership; a
+  // smuggled miss traps). On signature-free shapes the checker may have
+  // NARROWED this occurrence (assignment CFA on literal keys) — maybeNarrow
+  // bridges to the narrowed arm exactly like a field read.
   let declared: IrType | null = null;
+  // An index-signature read is a JavaScript property read: a missing key
+  // answers undefined even without noUncheckedIndexedAccess. The read keeps
+  // that explicit optional union, as an ordinary array read does.
+  let optionalRead = false;
+  // A read whose every consumer treats undefined like NaN (see
+  // nan-coded-reads.ts) is a plain number that is NaN for a missing key.
+  const nanCoded =
+    !includeUndefined &&
+    shape.indexValue?.kind === "f64" &&
+    lowerer.nanCodedReads?.isNumericRead(expr) === true;
   if (shape.indexValue) {
     declared = shape.indexValue;
-    if (
-      declared.kind !== "dyn" &&
-      (includeUndefined || lowerer.program.getCompilerOptions().noUncheckedIndexedAccess)
-    ) {
+    if (declared.kind !== "dyn" && !nanCoded) {
       declared = lowerer.withUndefinedArmOf(declared);
       if (!declared) lowerer.badType(expr, lowerer.typeOf(expr));
+      optionalRead = true;
     }
   } else if (
     shape.fields.length > 0 &&
@@ -7158,10 +7370,12 @@ export function lowerRecordKeyRead(
     shapeId,
     key,
     ...(overflowOnly ? { overflowOnly: true as const } : {}),
+    ...(nanCoded ? { missNaN: true as const } : {}),
     type: declared,
     loc,
   };
-  return includeUndefined ? read : lowerer.maybeNarrow(read, expr);
+  if (nanCoded) return read;
+  return includeUndefined || optionalRead ? read : lowerer.maybeNarrow(read, expr);
 }
 
 /** ToPropertyKey for represented record keys. Missing array-derived string
@@ -7269,7 +7483,8 @@ export function lowerPresenceOperand(lowerer: Lowerer, node: ts.Expression): IrE
  * side of `||`/`??`). JavaScript answers undefined for missing record keys
  * and array indices even when noUncheckedIndexedAccess is disabled. Keep
  * that value in an explicit union until the surrounding guard/default has
- * consumed it; ordinary unchecked reads retain the typed trap. Assertions
+ * consumed it, including class-field and declared-only reads that otherwise
+ * keep their typed storage. Assertions
  * around the read are erased here because this context handles the missing
  * arm instead of consuming it as the asserted type. */
 export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
@@ -8067,6 +8282,8 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
     // the field's type through the emitted helper (a mismatch throws the
     // catchable TypeError — SEMANTICS.md).
     if (shape && !shape.tuple) {
+      const guarded = lowerGuardedRecordWrite(lowerer, expr, target);
+      if (guarded) return guarded;
       // Literal keys — string literals AND numeric literals in their
       // canonical string spelling (`b[1] = v` writes field/key "1", JS's
       // own key derivation) — name declared fields directly. A key
@@ -14476,19 +14693,35 @@ export function fieldTarget(
       // all-unknown-fields cast — `(err as { code?: unknown }).code`):
       // decline, and the dyn keyed-read fallback answers.
       if (obj.type.kind === "union" && lowerer.armTag(obj.type.unionId, UNDEFINED_T) >= 0) {
-        // A nested property read such as `rows[i].value` has the same
-        // unchecked outer array-read issue as tuple indexing. Validate
-        // the record arm before fieldGet/recordGet so a missing outer
-        // value raises a catchable TypeError rather than reaching the
-        // backend with a union receiver.
+        // A nested property read such as `rows[i].value` or
+        // `table[k].value`: the outer read can miss. Validate the record
+        // arm before fieldGet/recordGet so a missing outer value raises
+        // Node's TypeError rather than reaching the backend with a union
+        // receiver.
         const present = lowerer.stripUndefinedArm(obj.type);
+        const parent = access.parent;
+        const written =
+          parent !== undefined &&
+          ts.isBinaryExpression(parent) &&
+          parent.left === access &&
+          parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
         const helper =
           present.kind === "record"
             ? lowerer.narrowedArmHelper(obj.type.unionId, present, locOf(access.expression))
             : null;
-        obj = helper
-          ? lowerer.checkedNarrowCall(helper, obj, present, locOf(access.expression))
-          : lowerer.maybeNarrow(obj, access.expression);
+        obj =
+          (present.kind === "record"
+            ? lowerer.runtimeOptionalPropertyReceiver(
+                access.expression,
+                obj,
+                present,
+                access.name.text,
+                written ? "set" : "read",
+              )
+            : null) ??
+          (helper
+            ? lowerer.checkedNarrowCall(helper, obj, present, locOf(access.expression))
+            : lowerer.maybeNarrow(obj, access.expression));
       }
       if (obj.type.kind !== "record") return null;
       const actualShape = lowerer.shapes.get(obj.type.shapeId);
@@ -14806,8 +15039,8 @@ export function fieldGetExpr(
   }
   // Overflow dot reads: exactly the bracket read with a literal key —
   // recordKeyGet, overflowOnly (the name declares no field by
-  // construction), typed as the index value armed with undefined under
-  // noUncheckedIndexedAccess (mirroring lowerRecordKeyRead).
+  // construction), typed as the index value armed with undefined
+  // (mirroring lowerRecordKeyRead).
   if (target.container === "recordOvf") {
     let obj = target.obj;
     if (obj.type.kind === "union" && ts.isPropertyAccessExpression(blame)) {
@@ -14833,7 +15066,7 @@ export function fieldGetExpr(
         `reading '${target.field}' on a record without an index signature`,
       );
     let t: IrType = shape.indexValue;
-    if (lowerer.program.getCompilerOptions().noUncheckedIndexedAccess) {
+    if (t.kind !== "dyn") {
       const armed = lowerer.withUndefinedArmOf(t);
       if (!armed) lowerer.badType(blame, lowerer.typeOf(blame));
       t = armed;
