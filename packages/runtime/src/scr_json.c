@@ -9518,7 +9518,7 @@ void scr_sc_validate_options(const ScrDyn *options) {
  * The marked values are retained until the thread exits, so an identity
  * is never reused while marked. */
 static SCR_TL ScrDyn **scr_uncloneable;
-SCR_TL size_t scr_uncloneable_count;
+SCR_TL size_t scr_uncloneable_count = 0;
 static SCR_TL size_t scr_uncloneable_capacity;
 
 static void scr_uncloneable_cleanup(void) {
