@@ -111,6 +111,13 @@ import { ClassDynamicDispatch, trackClassFieldCreation } from "./class-dynamic-d
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
+import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
+import {
+  analyzeTiers,
+  dynamicStatementCount,
+  type TierMode,
+  type TierReport,
+} from "../tier-analysis.js";
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import { finalizeClassMethodValues } from "./class-method-values.js";
 import type { ClassSymbolKey } from "./symbol-fields.js";
@@ -631,6 +638,9 @@ export interface LowerStats {
 
   /** Functions whose signature couldn't be analyzed (bodies not counted). */
   functionsSkipped: number;
+  /** Coverage only: reached statements that compile into dynamic-tier
+   * functions (tier-analysis.ts), a subset of the compiled statements. */
+  statementsDynamic?: number;
 }
 
 /** Every identifier a binding name binds: the identifier itself, or all
@@ -705,6 +715,11 @@ export interface LowerResult {
   /** Compile-time-detectable behavior differences from Node (SC6xxx
    * divergence warnings) in the program's own modules. Never failures. */
   divergences?: ScrDiagnostic[];
+  /** Functions lowering placed in the dynamic tier (ir/tiers.ts), present
+   * when there are any. */
+  dynamicFunctions?: DynamicFunction[];
+  /** LowerOptions.tierReport: the report-only tier assignment. */
+  tiers?: TierReport;
 }
 
 export interface LowerOptions {
@@ -754,6 +769,12 @@ export interface LowerOptions {
   /** The mapped entries plus relative declaration dependencies, attributed
    * to their owning external specifier. */
   externalTypeSpecifiersByFile?: ReadonlyMap<string, readonly string[]>;
+  /** `--tier` (tier-analysis.ts); "auto" when absent. */
+  tierMode?: TierMode;
+  /** Coverage only: compute the tier-assignment report (`--explain-dynamic`).
+   * `preflight` holds the import and package refusals coverage reports
+   * beside the lowering's own blockers; they request module demotions. */
+  tierReport?: { preflight: readonly ScrDiagnostic[] };
 }
 
 interface RuntimeFenceFallback {
@@ -829,6 +850,8 @@ export interface LowererMode {
   externalTypes?: ReadonlyMap<string, string>;
   /** LowerOptions.externalTypeSpecifiersByFile, shared by every pass. */
   externalTypeSpecifiersByFile?: ReadonlyMap<string, readonly string[]>;
+  /** LowerOptions.tierMode, shared by every pass. */
+  tierMode?: TierMode;
 }
 
 function directExternalTypeSpecifiersByFile(
@@ -920,6 +943,7 @@ export function lowerToIr(
   const externalTypes = options.externalTypes ?? new Map<string, string>();
   const externalTypeSpecifiersByFile =
     options.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(externalTypes);
+  const tierMode = options.tierMode ?? "auto";
   const validation = new Lowerer(program, entry, moduleOrder, {
     frontendServices: options.frontendServices,
     projectCheckJs: options.projectCheckJs ?? false,
@@ -931,6 +955,7 @@ export function lowerToIr(
     workerTargets,
     externalTypes,
     externalTypeSpecifiersByFile,
+    tierMode,
   });
   const ffiValidation = validateFfiImports(validation);
   timing("ffi-validate");
@@ -953,6 +978,7 @@ export function lowerToIr(
           workerTargets,
           externalTypes,
           externalTypeSpecifiersByFile,
+          tierMode,
           ffiBindingSymbols: ffiValidation.symbolsByName,
         });
   for (const d of extraModuleCycleDiags) reachableEmit.pushDiag(d);
@@ -983,6 +1009,7 @@ export function lowerToIr(
       ffiBindingSymbols: ffiValidation.symbolsByName,
       externalTypes,
       externalTypeSpecifiersByFile,
+      tierMode,
     });
     for (const d of extraModuleCycleDiags) emit.pushDiag(d);
     for (const d of ffiValidation.diagnostics) emit.pushDiag(d);
@@ -1041,19 +1068,44 @@ export function lowerToIr(
     ffiBindingSymbols: ffiValidation.symbolsByName,
     externalTypes,
     externalTypeSpecifiersByFile,
+    tierMode,
   });
   const rem = remainder.run();
+  timing("coverage-remainder");
+  // Tiers (tier-analysis.ts): reached statements in dynamic-tier functions,
+  // and with tierReport the report-only demotion analysis.
+  const dynamicFunctions = resultLowerer.dynamicBodies;
+  const tiers =
+    options.tierReport === undefined
+      ? undefined
+      : analyzeTiers(program, {
+          mode: tierMode,
+          dynamicFunctions,
+          reached: [...options.tierReport.preflight, ...result.diagnostics],
+          deferred: result.runtimeFences,
+          unreached: [...rem.diagnostics, ...rem.runtimeFences],
+        });
+  // A dynamic function's own statements can include ones that failed.
+  const statementsDynamic = Math.min(
+    tiers?.statementsDynamic ?? dynamicStatementCount(program, dynamicFunctions),
+    result.stats.statementsTotal - result.stats.statementsFailed,
+  );
+  if (tiers !== undefined) tiers.statementsDynamic = statementsDynamic;
+  timing("tier-analysis", { dynamic: dynamicFunctions.length });
   // Unreached JS statements whose fences deferred to runtime count as
   // failed statements in the remainder's stats, so their diagnostics must
   // travel with them: a failed statement is never left unexplained.
-  return {
+  const covered: LowerResult = {
     ...result,
+    stats: { ...result.stats, statementsDynamic },
     unreached: {
       diagnostics: rem.diagnostics,
       stats: rem.stats,
       ...(rem.runtimeFences.length > 0 ? { runtimeFences: rem.runtimeFences } : {}),
     },
   };
+  if (tiers !== undefined) covered.tiers = tiers;
+  return covered;
 }
 
 /** The native namespace type produced by a literal static import() of a
@@ -2697,6 +2749,14 @@ export class Lowerer {
   /** Coverage remainder mode: the reachability gate inverts (see wantBody)
    * and no module is built. */
   readonly remainder: boolean;
+  /** `--tier` (tier-analysis.ts). Stage S2 is report-only: both modes
+   * refuse and fence exactly as before. Stage S6 demotes the units of
+   * committed refusals in "auto" and keeps them refusals in "static-only". */
+  readonly tierMode: TierMode;
+  /** Functions finishModule placed in the dynamic tier (ir/tiers.ts). */
+  dynamicFunctions: DynamicFunction[] = [];
+  /** Their IR, for coverage's dynamic statement count. */
+  dynamicBodies: IrFunction[] = [];
   /** Deferred collection diagnostics (failed signatures/class shapes) by
    * declaration symbol: an unreached declaration must not fail the build,
    * so its diagnostics wait until a reference makes them relevant. */
@@ -2783,6 +2843,7 @@ export class Lowerer {
     this.frontendServices = mode.frontendServices;
     this.reachable = mode.reachable ?? null;
     this.remainder = mode.remainder ?? false;
+    this.tierMode = mode.tierMode ?? "auto";
     this.alreadyFlushed = mode.alreadyFlushed ?? new Set();
     this.targetPlatform = mode.targetPlatform ?? process.platform;
     this.startupCrash = mode.startupCrash ?? null;
@@ -6494,11 +6555,18 @@ export class Lowerer {
           };
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
     if (module) checkCycleBindingAccesses(this, module);
+    // Execution tiers from the final bodies (ir/tiers.ts). Assigned with or
+    // without a module: coverage reports the dynamic tier of programs that
+    // still have blockers.
+    this.dynamicFunctions = assignLegacyTiers(functions);
+    if (this.dynamicFunctions.length > 0)
+      this.dynamicBodies = functions.filter((fn) => fn.tier === "dynamic");
     return {
       module,
       diagnostics: this.diags,
       runtimeFences: this.runtimeFences,
       stats: this.stats,
+      ...(this.dynamicFunctions.length > 0 ? { dynamicFunctions: this.dynamicFunctions } : {}),
       ...(this.statsByFile.size > 0 ? { statsByFile: this.statsByFile } : {}),
       ...(this.provenanceElided.length > 0 ? { provenanceElided: this.provenanceElided } : {}),
     };
