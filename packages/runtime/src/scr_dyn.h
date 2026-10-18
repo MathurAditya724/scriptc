@@ -174,6 +174,17 @@ typedef enum {
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
+/* Every per-tag table (scr_dynh_ops in scr_json.c, the message clone hooks
+ * in scr_message.c) is sized by this fixed capacity, never by
+ * SCR_DYNH_COUNT. Appending a tag for a link-gated unit therefore changes
+ * no always-linked storage or code: a program that never boxes the new
+ * handle links byte-identical objects. Raising the capacity is a
+ * program-wide layout change; do it in a change of its own, measured as
+ * neutral, and only when the enum outgrows it. */
+#define SCR_DYNH_CAPACITY 128
+_Static_assert(SCR_DYNH_COUNT <= SCR_DYNH_CAPACITY,
+               "ScrDynHandleTag outgrew SCR_DYNH_CAPACITY: raise it in its own change");
+
 typedef struct ScrDyn ScrDyn;
 typedef struct ScrBytes ScrBytes; /* full definition below (C11 repeat) */
 typedef struct ScrClosure ScrClosure; /* full definition below (C11 repeat) */
@@ -1162,7 +1173,25 @@ typedef struct ScrDynHandleOps {
    * lookup): +1 value, or NULL when the class has no member for `key`
    * (the read answers undefined). NULL hook = no symbol-keyed members. */
   ScrDyn *(*symbol_get)(void *h, const ScrDyn *key);
+  /* Cross-thread structured clone (postMessage, workerData); NULL =
+   * DataCloneError. See ScrDynHandleTransfer. */
+  const struct ScrDynHandleTransfer *transfer;
 } ScrDynHandleOps;
+
+/* How a handle crosses threads, supplied by the handle's owning unit so the
+ * message encoder (scr_message.c) needs no reference to gated units and no
+ * per-tag registry. share runs on the sending thread: it answers a payload
+ * that any thread may use, +1, or NULL when this handle cannot be cloned
+ * (with an exception pending, or DataCloneError is thrown). adopt runs on
+ * the receiving thread and answers a fresh box over the payload (+1; the
+ * message keeps its payload reference). drop releases the payload when the
+ * message is freed, whether or not it was delivered. All three must be
+ * callable from any thread. */
+typedef struct ScrDynHandleTransfer {
+  void *(*share)(void *h);
+  ScrDyn *(*adopt)(void *payload);
+  void (*drop)(void *payload);
+} ScrDynHandleTransfer;
 ScrDyn *scr_dyn_native_handle_iterator(ScrDyn *source, unsigned selection);
 
 /* ── promises in the checked-dynamic tree (SCR_DYN_PROMISE) ────────────────────────────
