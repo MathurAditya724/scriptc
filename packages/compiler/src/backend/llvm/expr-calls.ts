@@ -32,7 +32,6 @@ import {
   mangleVtStruct,
 } from "../mangle.js";
 import {
-  classMembershipIntervals,
   classEnvironmentIndex,
   classStructSym,
   vtEntriesFor,
@@ -52,6 +51,7 @@ import {
   inputSuffixWrites,
 } from "./borrowed-inputs.js";
 import type { Writes } from "./reference-writes.js";
+import { emitClassMembership, emitDowncastGuard } from "./narrow-guards.js";
 
 export function emitCallExpr(
   host: LlvmEmitterContext,
@@ -147,7 +147,10 @@ export function emitCallExpr(
               return emitScalarOptional(host, a);
             if (a.kind === "call" && host.scalarResultCall(a))
               return emitCallExpr(host, a, false, true);
-            if (host.stackObjects && canStackObject(host, a)) return emitStackObject(host, a);
+            if (host.stackObjects && canStackObject(host, a))
+              return emitStackObject(host, a, (fields) => {
+                for (const field of fields) host.ownSlot(field.ptr, field.type);
+              });
             if (host.nullableFieldGet(a))
               return { name: host.emitOwnedNullableStack(a).box, type: a.type };
             // An inline union field read copies its tag and bits.
@@ -331,6 +334,16 @@ export function emitCallExpr(
               );
               natTypes.push("ptr", host.sizeType);
               natArgs.push(`ptr ${data}`, `${host.sizeType} ${len}`);
+              break;
+            }
+            case "cstring": {
+              // The string's own NUL-terminated data, after the check that
+              // it holds no U+0000 (a C string cannot carry one).
+              host.declare(`declare ptr @scr_library_cstr_arg(ptr)`);
+              const data = B.tmp();
+              B.line(`${data} = call ptr @scr_library_cstr_arg(ptr ${arg.name})`);
+              natTypes.push("ptr");
+              natArgs.push(`ptr ${data}`);
               break;
             }
             case "bytes": {
@@ -1116,8 +1129,11 @@ export function emitCallExpr(
       // Prefix layout: both directions are reinterprets of the SAME
       // pointer — no RC traffic, ownership transfers from the operand
       // temp to the result temp (struck so the one +1 releases exactly
-      // once, under the RESULT type's release).
+      // once, under the RESULT type's release). A downcast verifies the
+      // class tsc's narrowing proved (narrow-guards.ts).
       const v = host.emitExpr(e.value);
+      if (e.kind === "downcast" && e.type.kind === "object" && v.type.kind === "object")
+        emitDowncastGuard(host, v.name, v.type.className, e.type.className);
       if (isRefCounted(v.type)) host.moveTemp(v);
       return host.own({ name: v.name, type: e.type });
     }
@@ -1129,24 +1145,14 @@ export function emitCallExpr(
       // The test only reads the vtable word: a borrowable operand needs no
       // retain/release pair around it.
       const v = emitBorrowedInputs(host, [e.value])[0]!;
-      const target = host.classMetaOf(e.className);
-      const pre = host.loadVtPre(v.name, e.value.type.className);
-      let result: string | undefined;
-      for (const interval of classMembershipIntervals(host.classMeta, target.def.name)) {
-        const ge = B.tmp(),
-          le = B.tmp(),
-          test = B.tmp();
-        B.line(`${ge} = icmp uge ${host.sizeType} ${pre}, ${interval.pre}`);
-        B.line(`${le} = icmp ule ${host.sizeType} ${pre}, ${interval.post}`);
-        B.line(`${test} = and i1 ${ge}, ${le} ; instanceof ${e.className}`);
-        if (result === undefined) result = test;
-        else {
-          const combined = B.tmp();
-          B.line(`${combined} = or i1 ${result}, ${test}`);
-          result = combined;
-        }
-      }
-      return { name: result!, type: e.type };
+      const result = emitClassMembership(
+        host,
+        v.name,
+        e.value.type.className,
+        e.className,
+        `instanceof ${e.className}`,
+      );
+      return { name: result, type: e.type };
     }
     case "virtualCall": {
       // Dispatch through the receiver's vtable: the slot lives on the

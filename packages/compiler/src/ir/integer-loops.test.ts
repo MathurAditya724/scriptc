@@ -208,3 +208,111 @@ test("a string read at the counter is an integer consumer", () => {
   s.body = [read(ref("limit"))];
   expect(matchIntegerCountedForLoop(s, withText)).toBeNull();
 });
+
+test("a stable array length bounds a counted loop; a resizing body keeps it a condition", () => {
+  const ARR = arrayOf(F64);
+  const array = (localId: string): IrExpr => ({ kind: "varRef", localId, type: ARR, loc });
+  const length: IrExpr = {
+    kind: "arrIntrinsic",
+    method: "length",
+    receiver: array("a"),
+    args: [],
+    type: F64,
+    loc,
+  };
+  const read = (index: IrExpr): IrExpr => ({
+    kind: "arrIntrinsic",
+    method: "getNumber",
+    receiver: array("a"),
+    args: [index],
+    type: F64,
+    loc,
+  });
+  // for (let i = 0; i < a.length; i += 2) a[i];
+  const strided = (body: IrStmt[]): IrStmt & { kind: "for" } => {
+    const s = counted(length);
+    s.update = {
+      kind: "assign",
+      localId: "i",
+      value: { kind: "bin", op: "+", left: ref("i"), right: number(2), type: F64, loc },
+      loc,
+    };
+    s.body = [{ kind: "exprStmt", expr: read(ref("i")), loc }, ...body];
+    return s;
+  };
+  const ranges = new Map([[length, { min: 0, max: 4294967295 }]]);
+  expect(matchIntegerCountedForLoop(strided([]), locals, ranges, new Set())).toMatchObject({
+    localId: "i",
+    guarded: false,
+    range: { min: 0, max: 4294967294 },
+  });
+  // Without the alias facts there is no stability proof.
+  expect(matchIntegerCountedForLoop(strided([]), locals, ranges)).toBeNull();
+  const push: IrStmt = {
+    kind: "exprStmt",
+    expr: {
+      kind: "arrIntrinsic",
+      method: "push",
+      receiver: array("a"),
+      args: [number(1)],
+      type: F64,
+      loc,
+    },
+    loc,
+  };
+  expect(matchIntegerCountedForLoop(strided([push]), locals, ranges, new Set())).toBeNull();
+  // An element write at the counter stays below the length; one past it can grow the array.
+  const write = (index: IrExpr): IrStmt => ({
+    kind: "arraySet",
+    arr: array("a"),
+    index,
+    value: number(0),
+    loc,
+  });
+  expect(
+    matchIntegerCountedForLoop(strided([write(ref("i"))]), locals, ranges, new Set()),
+  ).not.toBeNull();
+  const past = { kind: "bin", op: "+", left: ref("i"), right: number(1), type: F64, loc } as const;
+  expect(matchIntegerCountedForLoop(strided([write(past)]), locals, ranges, new Set())).toBeNull();
+});
+
+test("a descending loop from an array's last index takes an integer counter for its reads", () => {
+  const ARR = arrayOf(F64);
+  const length: IrExpr = {
+    kind: "arrIntrinsic",
+    method: "length",
+    receiver: { kind: "varRef", localId: "a", type: ARR, loc },
+    args: [],
+    type: F64,
+    loc,
+  };
+  const start: IrExpr = { kind: "bin", op: "-", left: length, right: number(1), type: F64, loc };
+  const s = loop(start);
+  s.cond = { kind: "bin", op: ">=", left: ref("i"), right: number(0), type: BOOL, loc };
+  s.update = {
+    kind: "assign",
+    localId: "i",
+    value: { kind: "bin", op: "-", left: ref("i"), right: number(1), type: F64, loc },
+    loc,
+  };
+  s.body = [
+    {
+      kind: "exprStmt",
+      expr: {
+        kind: "arrIntrinsic",
+        method: "getNumber",
+        receiver: { kind: "varRef", localId: "a", type: ARR, loc },
+        args: [ref("i")],
+        type: F64,
+        loc,
+      },
+      loc,
+    },
+  ];
+  const ranges = new Map([[start, { min: -1, max: 4294967294 }]]);
+  expect(matchIntegerCountedForLoop(s, locals, ranges)).toMatchObject({
+    step: -1,
+    guarded: false,
+    range: { min: 0, max: 4294967294 },
+  });
+});

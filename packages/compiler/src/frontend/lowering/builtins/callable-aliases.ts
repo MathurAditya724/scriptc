@@ -4,6 +4,8 @@ import { isJsSourceFile } from "../../program.js";
 import { builtinModuleFnOf } from "../surfaces.js";
 import { registerHttpClientFnBinding } from "../lower-server.js";
 import { isPromisifiedZlibMember } from "./compression.js";
+import { isPromisifiedCryptoMember } from "./crypto.js";
+import { isPromisifiedDnsMember } from "../lower-dgram.js";
 
 /** Compile-time util.promisify projections. The immutable result binding
  * owns no runtime slot: calls rewrite to the target's promise lowering,
@@ -157,12 +159,16 @@ export function registerPromisifiedBuiltinDecl(
                 }
               : target?.module === "zlib" && isPromisifiedZlibMember(target.member)
                 ? { kind: "promisified-zlib" as const, member: target.member }
-                : null;
+                : target?.module === "crypto" && isPromisifiedCryptoMember(target.member)
+                  ? { kind: "promisified-crypto" as const, member: target.member }
+                  : target?.module === "dns" && isPromisifiedDnsMember(target.member)
+                    ? { kind: "promisified-dns" as const, member: target.member }
+                    : null;
   if (!projection) {
     lowerer.noLowering(
       "util.promisify of this target",
       argNode ?? e,
-      "child_process.exec, child_process.execFile, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots and the fs callback functions with an fs/promises counterpart are the supported targets",
+      "child_process.exec, child_process.execFile, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions (randomBytes, pbkdf2, scrypt, hkdf, randomFill, randomInt, generateKey), dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart are the supported targets",
     );
   }
   const symbol = lowerer.checker.getSymbolAtLocation(nameNode);

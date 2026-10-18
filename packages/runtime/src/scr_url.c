@@ -1686,9 +1686,10 @@ static ScrDyn *scr_native_sp_step(void *ptr, double *index, unsigned selection) 
     } else value = scr_dyn_new_str(selection == 1 ? key : text);
     scr_str_release(key); scr_str_release(text);
   }
+  /* { value, done }, in the iterator result's own key order. */
   ScrDyn *result = scr_dyn_new_obj();
-  scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(done));
   scr_dyn_obj_set(result, "value", 5, value);
+  scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(done));
   return result;
 }
 

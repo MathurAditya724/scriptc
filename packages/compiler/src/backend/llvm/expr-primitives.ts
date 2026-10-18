@@ -64,16 +64,25 @@ export function emitLiteralExpr(
         const integer = B.tmp();
         const number = B.tmp();
         B.line(`${integer} = load ${integerSlot.type}, ptr ${integerSlot.slot}`);
-        // A 64-bit induction value is a safe integer, so its sign bit is
-        // clear and the signed conversion is exact: one cvtsi2sd instead of
-        // x86-64's multi-instruction unsigned 64-bit conversion.
-        const signedConversion = integerSlot.signed === true || integerSlot.type === "i64";
-        B.line(
-          `${number} = ${signedConversion ? "sitofp" : "uitofp"} ${integerSlot.type} ${integer} to double`,
-        );
         const uint32 = integerSlot.type === "i32" ? integer : B.tmp();
         if (integerSlot.type !== "i32")
           B.line(`${uint32} = trunc ${integerSlot.type} ${integer} to i32`);
+        // An int32 counter (a dense array loop's) converts from its low half,
+        // so LLVM folds a later `fptosi` of the double (an inlined callee's
+        // index) back to the integer. Otherwise a 64-bit induction value is
+        // a safe integer, so its sign bit is clear and the signed conversion
+        // is exact: one cvtsi2sd instead of x86-64's multi-instruction
+        // unsigned 64-bit conversion. (A uint32 counter would fold through
+        // `uitofp i32` too, but the zero extension it adds on x86-64 cost
+        // more in loops that never convert the double than it saved.)
+        const range = integerSlot.range;
+        const signedConversion = integerSlot.signed === true || integerSlot.type === "i64";
+        if (range && range.min >= -2147483648 && range.max <= 2147483647)
+          B.line(`${number} = sitofp i32 ${uint32} to double`);
+        else
+          B.line(
+            `${number} = ${signedConversion ? "sitofp" : "uitofp"} ${integerSlot.type} ${integer} to double`,
+          );
         return {
           name: number,
           type: e.type,
@@ -851,6 +860,7 @@ export function emitContainerExpr(
         elem,
         `scr_arr_get_${acc}`,
         true,
+        host.provenDenseIndex(e.arr, e.index),
       );
       return host.own({ name: t, type: e.type });
     }

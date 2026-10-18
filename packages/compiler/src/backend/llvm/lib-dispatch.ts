@@ -11,7 +11,12 @@ import { InternalCompilerError } from "../../errors.js";
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
-import { ASSERT_VERDICT_LIB_FNS, LIB_FN_SYMS, USES_TIMERS_LIB_FNS } from "./lib-shared.js";
+import {
+  ASSERT_VERDICT_LIB_FNS,
+  LIB_FN_SYMS,
+  mockTimerSym,
+  USES_TIMERS_LIB_FNS,
+} from "./lib-shared.js";
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import { DYN_KIND } from "./dyn.js";
 import { rawBytes } from "./lib-abi.js";
@@ -322,6 +327,94 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitPendingCheck();
     return { name: "", type: e.type };
   }
+  if (e.fn.startsWith("crypto.") && e.fn.includes("Promise")) {
+    // util.promisify over the callback forms: the callback form runs with
+    // a runtime callback that owns the +1 promise and settles it in the
+    // promise's value representation; an argument error the callback form
+    // threw moves into the promise as its rejection.
+    host.usesTimers = true;
+    if (e.type.kind !== "promise")
+      throw new InternalCompilerError("llvm emitter bug: crypto promise result not a promise");
+    const inner = e.type.inner;
+    const dyn = inner.kind === "dyn";
+    const args = e.args.map((arg) => host.emitExpr(arg));
+    const settle =
+      e.fn === "crypto.randomIntPromise"
+        ? dyn
+          ? "scr_crypto_promise_settle_number_dyn"
+          : "scr_crypto_promise_settle_number"
+        : e.fn === "crypto.hkdfPromise"
+          ? "scr_crypto_promise_settle_array_buffer"
+          : e.fn === "crypto.generateKeyPromise" || e.fn === "crypto.randomFillPromiseDyn"
+            ? "scr_crypto_promise_settle_dyn"
+            : !dyn
+              ? "scr_crypto_promise_settle_bytes"
+              : e.fn === "crypto.randomFillPromise"
+                ? "scr_crypto_promise_settle_view_dyn"
+                : "scr_crypto_promise_settle_buffer_dyn";
+    host.declare(`declare ptr @scr_promise_new()`);
+    host.declare(`declare ptr @scr_crypto_promise_callback(ptr)`);
+    host.declare(`declare void @scr_crypto_promise_reject_thrown(ptr)`);
+    host.declare(
+      e.fn === "crypto.randomIntPromise"
+        ? `declare void @${settle}(ptr, double)`
+        : `declare void @${settle}(ptr, ptr, ptr)`,
+    );
+    const promise = B.tmp();
+    const cb = B.tmp();
+    B.line(`${promise} = call ptr @scr_promise_new()`);
+    B.line(`${cb} = call ptr @scr_crypto_promise_callback(ptr ${promise})`);
+    const a = (i: number, type = "ptr") => `${type} ${args[i]!.name}`;
+    const call = (symbol: string, params: string[], values: string[]) => {
+      host.declare(`declare void @${symbol}(${[...params, "ptr", "ptr"].join(", ")})`);
+      B.line(`call void @${symbol}(${[...values, `ptr ${cb}`, `ptr @${settle}`].join(", ")})`);
+    };
+    if (e.fn === "crypto.randomBytesPromise") {
+      call("scr_crypto_random_bytes_async", ["double"], [a(0, "double")]);
+    } else if (e.fn === "crypto.pbkdf2Promise") {
+      call(
+        "scr_crypto_pbkdf2_async",
+        ["ptr", "ptr", "double", "double", "ptr"],
+        [a(0), a(1), a(2, "double"), a(3, "double"), a(4)],
+      );
+    } else if (e.fn === "crypto.scryptPromise") {
+      call(
+        "scr_crypto_scrypt_async",
+        ["ptr", "ptr", "double", "ptr"],
+        [a(0), a(1), a(2, "double"), a(3)],
+      );
+    } else if (e.fn === "crypto.hkdfPromise") {
+      call(
+        "scr_crypto_hkdf_async",
+        ["ptr", "ptr", "ptr", "ptr", "double"],
+        [a(0), a(1), a(2), a(3), a(4, "double")],
+      );
+    } else if (e.fn === "crypto.randomFillPromise") {
+      call(
+        "scr_crypto_random_fill_async",
+        ["ptr", "double", "double", "double"],
+        [a(0), a(1, "double"), a(2, "double"), a(3, "double")],
+      );
+    } else if (e.fn === "crypto.randomFillPromiseDyn") {
+      call(
+        "scr_crypto_random_fill_async_dyn",
+        ["ptr", "ptr", "ptr", "double"],
+        [a(0), a(1), a(2), a(3, "double")],
+      );
+    } else if (e.fn === "crypto.randomIntPromise") {
+      call(
+        "scr_crypto_random_int_async",
+        ["double", "double", "double"],
+        [a(0, "double"), a(1, "double"), a(2, "double")],
+      );
+    } else if (e.fn === "crypto.generateKeyPromise") {
+      call("scr_crypto_generate_key_async", ["ptr", "ptr"], [a(0), a(1)]);
+    } else {
+      throw new InternalCompilerError(`llvm emitter bug: unknown crypto promise ${e.fn}`);
+    }
+    B.line(`call void @scr_crypto_promise_reject_thrown(ptr ${promise})`);
+    return host.own({ name: promise, type: e.type });
+  }
   if (
     e.fn === "crypto.randomBytesCb" ||
     e.fn === "crypto.pbkdf2Cb" ||
@@ -431,7 +524,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   if (MAY_THROW_LIB_FNS.has(e.fn) && LIB_FN_SYMS[e.fn] === undefined) {
     throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   }
-  const sym = LIB_FN_SYMS[e.fn];
+  const sym = mockTimerSym(host, e) ?? LIB_FN_SYMS[e.fn];
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   const args = READ_ONLY_STRING_LIB_FNS.has(e.fn)
     ? emitBorrowedInputs(host, e.args)
@@ -680,6 +773,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "events":
     case "blob":
     case "record":
+    case "disposable":
     case "punycode":
     case "constants":
       return host.emitGenericLibCall(e);

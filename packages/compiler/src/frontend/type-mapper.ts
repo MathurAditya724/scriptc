@@ -130,6 +130,7 @@ export const FETCH_AMBIENT_TYPES = [
   "RequestInit",
   "Event",
   "CustomEvent",
+  "MessageEvent",
   "EventTarget",
   "AddEventListenerOptions",
   "EventListenerOptions",
@@ -1243,7 +1244,8 @@ function isWorkerHandleSymbol(
   return (
     (symbol?.name === "Worker" ||
       symbol?.name === "MessagePort" ||
-      symbol?.name === "MessageChannel") &&
+      symbol?.name === "MessageChannel" ||
+      symbol?.name === "BroadcastChannel") &&
     ctx.checker
       .declarationsOf(symbol)
       .some(
@@ -1384,6 +1386,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "object", className: "%Error" };
   }
+  // child_process.ExecException, exec's callback error, is an interface
+  // extending Error with optional metadata members; the value is one
+  // ordinary Error as well.
+  const execException = type.getSymbol();
+  if (
+    execException?.name === "ExecException" &&
+    checker
+      .declarationsOf(execException)
+      .some(
+        (decl) =>
+          ts.isInterfaceDeclaration(decl) &&
+          ctx.isStdlibFile(decl.getSourceFile()) &&
+          isDeclaredInAmbientModule(decl, "child_process"),
+      )
+  ) {
+    return { kind: "object", className: "%Error" };
+  }
   if (isOsConstantsType(type, ctx) || isLegacyUrlType(type, ctx)) return DYN;
   // Immutable<T> (@scriptc/types) is a deep-readonly view: the value is
   // still the T it maps.
@@ -1441,6 +1460,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (viaIndexed !== null) {
       contextResolutions++;
       return viaIndexed;
+    }
+    // A conditional type over a bound parameter (`Infer<S["left"]>`, a
+    // mapped type's member): evaluate it against the bindings.
+    if (type.isConditionalType()) {
+      const evaluated = evalMappedTemplate(type, new Map(), new Map(), ctx);
+      if (evaluated && evaluated !== type) {
+        const viaConditional = mapType(evaluated, ctx);
+        if (viaConditional !== null) {
+          contextResolutions++;
+          return viaConditional;
+        }
+      }
     }
   }
   const widened = checker.getBaseTypeOfLiteralType(type);
@@ -2399,9 +2430,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // representation and consumed by the console method lowerings. The
   // stdlib Disposable (events.addAbortListener's result) and
   // AsyncDisposable are checked objects carrying their Symbol.dispose or
-  // Symbol.asyncDispose method.
+  // Symbol.asyncDispose method. A DisposableStack is a native handle whose
+  // methods are function values of its checked-dynamic view.
   if (
-    (psym?.name === "Console" || psym?.name === "Disposable" || psym?.name === "AsyncDisposable") &&
+    (psym?.name === "Console" ||
+      psym?.name === "Disposable" ||
+      psym?.name === "AsyncDisposable" ||
+      psym?.name === "DisposableStack") &&
     checker
       .declarationsOf(psym)
       .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
@@ -2527,6 +2562,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // ToInt32-wrap) — the Atomics.wait sleep idiom constructs one over a
   // SharedArrayBuffer, and the i32 semantics hold for every other use.
   if (isStdlibInterface("Int32Array")) return bytesOf("i32");
+  if (isStdlibInterface("Float16Array")) return bytesOf("f16");
   if (isStdlibInterface("Float32Array")) return bytesOf("f32");
   if (isStdlibInterface("Float64Array")) return bytesOf("f64");
   // DataView: the ONE view kind — a u8 bytes value whose runtime
@@ -2938,11 +2974,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     return { kind: "dgramSocket" };
   }
   // node:test's TestContext — the test-body parameter (`test('x', (t) =>
-  // ...)`). @types/node's `class TestContext` and the fallback
-  // declarations' interface both live inside `declare module "node:test"`
-  // (isDeclaredInAmbientModule answers for both spellings).
+  // ...)`) — and SuiteContext, the describe-body and suite-hook parameter:
+  // both are the runner's node for the test or suite. @types/node's
+  // classes and the fallback declarations' interfaces all live inside
+  // `declare module "node:test"` (isDeclaredInAmbientModule answers for
+  // both spellings).
   if (
-    psym?.name === "TestContext" &&
+    (psym?.name === "TestContext" || psym?.name === "SuiteContext") &&
     checker
       .declarationsOf(psym)
       .some(
@@ -3546,12 +3584,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ),
     };
   }
-  // The promisified exec/execFile result `{ stdout: string; stderr: string }`:
-  // an anonymous type literal (@types/node's __promisify__ overloads in
-  // child_process, the shipped fallback's promisify overloads in util),
-  // so it maps by provenance and exact shape, interned as the
-  // %execFileAsync/%execAsync helpers build it. Node builds the object as
-  // { stdout, stderr }. The Buffer-typed literals do not match and stay
+  // The promisified exec/execFile result `{ stdout: string; stderr: string }`
+  // and the promisified dns.lookupService result `{ hostname: string;
+  // service: string }`: anonymous type literals (@types/node's
+  // __promisify__ overloads in child_process and dns, the shipped
+  // fallback's promisify overloads in util), so they map by provenance and
+  // exact shape. The exec result is interned as the %execFileAsync/
+  // %execAsync helpers build it; Node builds { stdout, stderr } and
+  // { hostname, service }. The Buffer-typed literals do not match and stay
   // unmapped.
   if (
     psym &&
@@ -3561,21 +3601,38 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         (d) =>
           ts.isTypeLiteralNode(d) &&
           ctx.isStdlibFile(d.getSourceFile()) &&
-          (isDeclaredInAmbientModule(d, "child_process") || isDeclaredInAmbientModule(d, "util")),
+          (isDeclaredInAmbientModule(d, "child_process") ||
+            isDeclaredInAmbientModule(d, "util") ||
+            isDeclaredInAmbientModule(d, "dns")),
       )
   ) {
     const props = checker.getPropertiesOfType(widened);
-    if (
+    const names =
       props.length === 2 &&
       props.every(
         (p) =>
-          (p.name === "stdout" || p.name === "stderr") &&
           (p.flags & ts.SymbolFlags.Optional) === 0 &&
           (checker.getTypeOfSymbol(p).flags & ts.TypeFlags.String) !== 0,
-      ) &&
-      props[0]!.name !== props[1]!.name
-    ) {
-      return { kind: "record", shapeId: execResultShape(ctx.shapes) };
+      )
+        ? props
+            .map((p) => p.name)
+            .sort()
+            .join(",")
+        : "";
+    if (names === "stderr,stdout") return { kind: "record", shapeId: execResultShape(ctx.shapes) };
+    if (names === "hostname,service") {
+      return {
+        kind: "record",
+        shapeId: ctx.shapes.intern(
+          [
+            { name: "hostname", type: STRING },
+            { name: "service", type: STRING },
+          ],
+          false,
+          undefined,
+          ["hostname", "service"],
+        ),
+      };
     }
   }
   // crypto.X509Certificate — the Dirent-style data record: THREE visible
@@ -4108,6 +4165,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (childShaped && core >= 2) return CHILD_T;
   }
   if (flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection) && callSigs.length === 0) {
+    const viaMapped = mapBoundMappedType(widened, ctx);
+    if (viaMapped) return viaMapped;
     const viaAlias = mapGenericUtilityAlias(widened, ctx);
     if (viaAlias) return viaAlias;
     const record = mapRecordType(widened, ctx);
@@ -4745,6 +4804,187 @@ function mapGenericIndexedAccess(type: ts.Type, ctx: TypeMapperCtx): IrType | nu
   if (!covered || covered.length === 0) return null;
   const first = covered[0]!;
   return covered.every((t) => typeEquals(t, first)) ? first : null;
+}
+
+/** A mapped type over a type parameter of the instance being lowered (`{
+ * [K in keyof S]: S[K] }`, `{ [K in keyof S]: Infer<S[K]> }`): the checker
+ * keeps it symbolic inside the generic body, but the instance binds `S`,
+ * so each property of the bound type maps through the template evaluated
+ * with `K` set to that property's key. Optionality follows the `?`
+ * modifier, or the bound property's own for a homomorphic mapping. Null
+ * when the shape is anything else or a template form does not evaluate. */
+function mapBoundMappedType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const { checker, resolveTypeParamTs, shapes, unions } = ctx;
+  if (!resolveTypeParamTs || !isMappedShape(widened)) return null;
+  const symbol = widened.getSymbol();
+  const node = symbol
+    ? checker.declarationsOf(symbol).find((d): d is ts.MappedTypeNode => ts.isMappedTypeNode(d))
+    : undefined;
+  const constraint = node?.typeParameter.constraint;
+  if (
+    !node?.type ||
+    !constraint ||
+    !ts.isTypeOperatorNode(constraint) ||
+    constraint.operator !== ts.SyntaxKind.KeyOfKeyword
+  )
+    return null;
+  const source = checker.getTypeFromTypeNode(constraint.type);
+  if (!(source.flags & ts.TypeFlags.TypeParameter)) return null;
+  const bound = resolveTypeParamTs(source);
+  const key = checker.getSymbolAtLocation(node.typeParameter.name);
+  if (!bound || !key) return null;
+  const template = checker.getTypeFromTypeNode(node.type);
+  const modifier = node.questionToken?.kind;
+  const fields: { name: string; type: IrType }[] = [];
+  const order: string[] = [];
+  for (const property of checker.getPropertiesOfType(bound)) {
+    const name = property.name;
+    const evaluated = evalMappedTemplate(template, new Map([[key, name]]), new Map(), ctx);
+    let type = evaluated ? mapType(evaluated, ctx) : null;
+    if (!type) return null;
+    const optional =
+      modifier === ts.SyntaxKind.MinusToken
+        ? false
+        : modifier !== undefined || (property.flags & ts.SymbolFlags.Optional) !== 0;
+    if (optional) {
+      const armed = withUndefinedArm(type, unions);
+      if (!armed) return null;
+      type = armed;
+    }
+    fields.push({ name, type });
+    order.push(name);
+  }
+  fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return { kind: "record", shapeId: shapes.intern(fields, false, undefined, order) };
+}
+
+/** The checker type a mapped type's template stands for at one key:
+ * `keys` binds the mapped type parameter to a property name, `aliases`
+ * binds type-alias and `infer` parameters met on the way. Handles type
+ * parameters (through the instance's bindings), indexed accesses
+ * (`S[K]`, `S[K]["_output"]`) and conditional types whose `extends` side
+ * is a reference to the same generic type as the checked type
+ * (`S extends Schema<infer T> ? T : never`); answers the type itself
+ * when it mentions none of the bound parameters, null otherwise. */
+function evalMappedTemplate(
+  type: ts.Type,
+  keys: Map<ts.Symbol, string>,
+  aliases: Map<ts.Symbol, ts.Type>,
+  ctx: TypeMapperCtx,
+): ts.Type | null {
+  const { checker, resolveTypeParamTs } = ctx;
+  if (type.flags & ts.TypeFlags.TypeParameter) {
+    const symbol = type.getSymbol();
+    if (symbol && keys.has(symbol)) return null;
+    if (symbol && aliases.has(symbol)) return aliases.get(symbol)!;
+    return resolveTypeParamTs?.(type) ?? null;
+  }
+  if (type.isIndexedAccessType()) {
+    const object = type.getObjectType();
+    const index = type.getIndexType();
+    if (!object || !index) return null;
+    const receiver = evalMappedTemplate(object, keys, aliases, ctx);
+    const indexSymbol = index.flags & ts.TypeFlags.TypeParameter ? index.getSymbol() : undefined;
+    const name =
+      indexSymbol && keys.has(indexSymbol)
+        ? keys.get(indexSymbol)!
+        : index.isStringLiteralType()
+          ? index.value
+          : index.isNumberLiteralType()
+            ? String(index.value)
+            : null;
+    if (!receiver || name === null) return null;
+    const property = checker.getPropertyOfType(receiver, name);
+    return property ? checker.getTypeOfSymbol(property) : null;
+  }
+  if (type.isConditionalType()) {
+    // A conditional reached through an alias (`Infer<S[K]>`) checks the
+    // alias's own parameters: bind them to the evaluated arguments.
+    let scope = aliases;
+    const alias = type.getAliasSymbol();
+    const aliasArgs = type.getAliasTypeArguments();
+    const aliasDecl = alias
+      ? checker
+          .declarationsOf(alias)
+          .find((d): d is ts.TypeAliasDeclaration => ts.isTypeAliasDeclaration(d))
+      : undefined;
+    if (aliasDecl?.typeParameters && aliasArgs.length === aliasDecl.typeParameters.length) {
+      scope = new Map(aliases);
+      for (let i = 0; i < aliasArgs.length; i++) {
+        const param = checker.getSymbolAtLocation(aliasDecl.typeParameters[i]!.name);
+        const arg = evalMappedTemplate(aliasArgs[i]!, keys, aliases, ctx);
+        if (!param || !arg) return null;
+        scope.set(param, arg);
+      }
+    }
+    const checkType = type.getCheckType();
+    const extendsType = type.getExtendsType();
+    if (!checkType || !extendsType) return null;
+    const checked = evalMappedTemplate(checkType, keys, scope, ctx);
+    if (!checked) return null;
+    const inferred = matchInferReference(checked, extendsType, ctx);
+    if (inferred === undefined) return null;
+    const branch = inferred ? type.getTrueType() : type.getFalseType();
+    const branchScope = inferred ? new Map([...scope, ...inferred]) : scope;
+    return evalMappedTemplate(branch, keys, branchScope, ctx);
+  }
+  return mentionsMappedParams(type, keys, aliases) ? null : type;
+}
+
+/** `checked extends G<..., infer T, ...>`: the infer bindings when
+ * `checked` is a reference to the same generic `G` (its arguments bind the
+ * infer positions; other positions must be the same types), false when it
+ * is a reference to another type or a primitive, undefined when the match
+ * cannot be decided this way. */
+function matchInferReference(
+  checked: ts.Type,
+  extendsType: ts.Type,
+  ctx: TypeMapperCtx,
+): Map<ts.Symbol, ts.Type> | false | undefined {
+  const { checker } = ctx;
+  const target = (t: ts.Type): ts.Type | undefined =>
+    t.isTypeReference?.() ? (t as ts.TypeReference).getTarget?.() : undefined;
+  const wantTarget = target(extendsType) ?? extendsType.getAliasSymbol();
+  if (!wantTarget) return undefined;
+  const gotTarget = target(checked) ?? checked.getAliasSymbol();
+  if (!gotTarget) return checked.flags & ts.TypeFlags.Object ? undefined : false;
+  if (gotTarget !== wantTarget) return undefined;
+  const wantArgs = target(extendsType)
+    ? checker.getTypeArguments(extendsType as ts.TypeReference)
+    : extendsType.getAliasTypeArguments();
+  const gotArgs = target(checked)
+    ? checker.getTypeArguments(checked as ts.TypeReference)
+    : checked.getAliasTypeArguments();
+  if (wantArgs.length !== gotArgs.length) return undefined;
+  const inferred = new Map<ts.Symbol, ts.Type>();
+  for (let i = 0; i < wantArgs.length; i++) {
+    const want = wantArgs[i]!;
+    const symbol = want.flags & ts.TypeFlags.TypeParameter ? want.getSymbol() : undefined;
+    const isInfer = symbol
+      ? checker
+          .declarationsOf(symbol)
+          .some((d) => d.parent !== undefined && ts.isInferTypeNode(d.parent))
+      : false;
+    if (isInfer && symbol) inferred.set(symbol, gotArgs[i]!);
+    else if (want !== gotArgs[i]) return undefined;
+  }
+  return inferred;
+}
+
+/** The type mentions a mapped key or bound alias parameter (a template
+ * shape evalMappedTemplate does not reduce). */
+function mentionsMappedParams(
+  type: ts.Type,
+  keys: Map<ts.Symbol, string>,
+  aliases: Map<ts.Symbol, ts.Type>,
+): boolean {
+  if (type.flags & ts.TypeFlags.TypeParameter) {
+    const symbol = type.getSymbol();
+    return symbol !== undefined && (keys.has(symbol) || aliases.has(symbol));
+  }
+  if (type.isUnionType() || type.isIntersectionType())
+    return ts.constituentTypes(type).some((part) => mentionsMappedParams(part, keys, aliases));
+  return false;
 }
 
 function mapGenericUtilityAlias(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {

@@ -49,7 +49,11 @@ import {
   STRING_UTF16_LEN_DECL,
 } from "./string-reads.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
-import { emitDenseArrayNumber, emitDenseArrayPush } from "./dense-array-access.js";
+import {
+  emitDenseArrayNumber,
+  emitDenseArrayPop,
+  emitDenseArrayPush,
+} from "./dense-array-access.js";
 import { emitUnionWiden } from "./expr-records.js";
 
 export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string {
@@ -571,7 +575,16 @@ export function emitArrIntrinsic(
           ? host.constantNumericTables.get(e.receiver.localId)
           : undefined;
       if (!table && elem.kind === "f64")
-        return { name: emitDenseArrayNumber(host, r.name, index, e.args[0]), type: e.type };
+        return {
+          name: emitDenseArrayNumber(
+            host,
+            r.name,
+            index,
+            e.args[0],
+            host.provenDenseIndex(e.receiver, e.args[0]!),
+          ),
+          type: e.type,
+        };
       host.declare(`declare double @scr_arr_get_number(ptr, double)`);
       const t = B.tmp();
       B.line(
@@ -667,19 +680,38 @@ export function emitArrIntrinsic(
       const rawSlot = B.slot();
       const resultSlot = B.slot();
       B.entryAllocas.push(`${rawSlot} = alloca i64`, `${resultSlot} = alloca ptr`);
-      B.line(`store i64 0, ptr ${rawSlot}`);
-      const state = B.tmp();
-      const has = B.tmp();
-      B.line(`${state} = call zeroext i8 @scr_arr_${method}_state(ptr ${r.name}, ptr ${rawSlot})`);
-      B.line(`${has} = icmp eq i8 ${state}, 1`);
       const lp = B.newLabel("remove.p");
       const la = B.newLabel("remove.a");
       const lj = B.newLabel("remove.j");
+      // pop answers an empty or packed array inline; shift and every other
+      // pop take the runtime call.
+      let denseRaw: string | null = null;
+      let denseLabel = "";
+      let slowLabel = "";
+      if (method === "pop") {
+        slowLabel = B.newLabel("remove.slow");
+        denseRaw = emitDenseArrayPop(host, r.name, acc, la, slowLabel);
+        denseLabel = B.currentLabel();
+        B.br(lp);
+        B.startBlock(slowLabel);
+      }
+      B.line(`store i64 0, ptr ${rawSlot}`);
+      const state = B.tmp();
+      const has = B.tmp();
+      const slowRaw = B.tmp();
+      B.line(
+        `${state} = call zeroext i8 @scr_arr_${method}_state(ptr ${r.name}, ptr ${rawSlot})${denseRaw === null ? "" : " cold"}`,
+      );
+      B.line(`${slowRaw} = load i64, ptr ${rawSlot}`);
+      B.line(`${has} = icmp eq i8 ${state}, 1`);
       B.condBr(has, lp, la);
       B.startBlock(lp);
-      const raw = B.tmp();
+      let raw = slowRaw;
       const value = B.tmp();
-      B.line(`${raw} = load i64, ptr ${rawSlot}`);
+      if (denseRaw !== null) {
+        raw = B.tmp();
+        B.line(`${raw} = phi i64 [ ${denseRaw}, %${denseLabel} ], [ ${slowRaw}, %${slowLabel} ]`);
+      }
       if (into) {
         // Slot bits for f64; a canonical 0/1 for bool, like scr_union_new_bool.
         let bits = raw;

@@ -10,6 +10,12 @@ import {
   refuseUncheckedCycleReads,
   type CycleInitFlag,
 } from "./cycle-initialization.js";
+import { isJsonRequireDecl, type JsonRequireModule } from "./json-require.js";
+import {
+  checkRequireBindingAccesses,
+  type EarlyReference,
+  type RequireInitFlag,
+} from "./require-initialization.js";
 import { identityPreservingWidening } from "./coercions/identity.js";
 import { scanDivergences } from "./divergences.js";
 import { checkedClassAssertion } from "./class-assertions.js";
@@ -342,6 +348,7 @@ import {
 } from "./call-signatures.js";
 import {
   implicitAnyParamSymbolsOf,
+  implicitLocalFnNodeOf,
   type GenericFnInfo,
   type GenericInstance,
   implicitMonoFile,
@@ -388,6 +395,7 @@ import {
   createRequireProgramModuleOf,
   createRequireSpecOf,
   fencedBuiltinImportOf,
+  esmImportBindingKind,
 } from "./builtins/module-bindings.js";
 import { stripTypeCasts } from "./builtins/arguments.js";
 import { lowerBuiltinModuleCall } from "./builtins/module-calls.js";
@@ -417,6 +425,7 @@ import {
   lowerTracingChannelMethodCall,
   lowerTracingChannelProperty,
 } from "./builtins/async-context.js";
+import { lowerDisposableStackNew } from "./builtins/disposable-stack.js";
 import { lowerErrorCodeProperty } from "./builtins/errors.js";
 import {
   lowerProcessProperty,
@@ -433,7 +442,7 @@ import {
 } from "./builtins/console.js";
 import { lowerConsoleNew } from "./lower-console.js";
 import { lowerNumberStaticCall, lowerNumberStaticProperty } from "./builtins/numbers.js";
-import { lowerDateCall } from "./builtins/dates.js";
+import { dateJsonType, isDateJsonSource, lowerDateCall } from "./builtins/dates.js";
 import {
   lowerFsConstantsProperty,
   lowerBuiltinConstantsProperty,
@@ -523,6 +532,7 @@ import {
   lowerExprStatement,
   lowerForOf,
   lowerForStatement,
+  matchGroupsPatternSource,
 } from "./lower-stmts.js";
 import {
   type FieldTarget,
@@ -557,6 +567,7 @@ import {
   fieldSetStmt,
   lowerFieldCompound,
   uniqueSymbolKeyOf,
+  matchCallbackParamGroupsOf,
 } from "./lower-exprs.js";
 import {
   finishOptionalChain,
@@ -598,7 +609,9 @@ export type StaticCallableProjection =
   | { kind: "promisified-exec-file" }
   | { kind: "promisified-exec" }
   | { kind: "promisified-builtin"; module: string; member: string }
-  | { kind: "promisified-zlib"; member: string };
+  | { kind: "promisified-zlib"; member: string }
+  | { kind: "promisified-crypto"; member: string }
+  | { kind: "promisified-dns"; member: string };
 
 /** Own-property lookup for the surface tables. They are plain object
  * literals, so a bare `table[name]` would also find Object.prototype
@@ -1526,6 +1539,28 @@ function panicSafe<T>(query: () => T, fallback: T): T {
   }
 }
 
+/** The function's class expressions lower once per implicit-any instance.
+ * A function whose only implicit slots are destructured options and that
+ * is bound to a variable the implicit-instance probe rejects runs as one
+ * shared body, so its classes keep a single name. */
+function monomorphizedImplicit(
+  lowerer: Lowerer,
+  fn: ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction | ts.MethodDeclaration,
+): boolean {
+  const slots = implicitAnyParamSymbolsOf(lowerer, fn);
+  if (!slots) return false;
+  if (slots.some((slot) => slot !== null)) return true;
+  let binding: ts.Node | undefined = fn.parent;
+  while (binding && ts.isParenthesizedExpression(binding)) binding = binding.parent;
+  if (
+    (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) &&
+    binding &&
+    ts.isVariableDeclaration(binding)
+  )
+    return implicitLocalFnNodeOf(lowerer, binding) !== null;
+  return true;
+}
+
 export class Lowerer {
   readonly frontendServices: FrontendServices | undefined;
   readonly checker: ts.TypeChecker;
@@ -1770,6 +1805,11 @@ export class Lowerer {
    * typeParamBindings — the checker has no `T` to substitute, so the
    * binding rides the node-type accessor instead of mapType. */
   implicitParamTypes: Map<ts.Symbol, ts.Type> | null = null;
+  /** Immutable bindings that name a zlib stream class (`const C =
+   * zlib.Gzip`), keyed by the binding's symbol: the class's
+   * node_zlib_mode. No runtime slot exists: new, typeof, .name and ===
+   * resolve at compile time, and instanceof checks the stream's mode. */
+  readonly zlibClassAliases = new Map<ts.Symbol, number>();
   /** Whether some net.Socket in this program may get an encoding: a
    * setEncoding call whose receiver is a socket or an untyped value.
    * Computed once on first use (null until then). */
@@ -1854,6 +1894,8 @@ export class Lowerer {
   /** Record fields promoted to an undefined-armed union by an indexed-read
    * value. The key is the concrete emitted shape and field name. */
   readonly runtimeOptionalFields = new Set<string>();
+  /** Bindings initialized by a Date's `toJSON()` (analyzeDateJsonResults). */
+  readonly dateJsonBindings = new Set<ts.Symbol>();
   /** Record bindings whose flow class reaches storage outside the class:
    * they keep the declared layout, so an initializer from unchecked reads
    * converts once instead of the binding adopting the widened variant. */
@@ -1929,6 +1971,26 @@ export class Lowerer {
       }
     }
     return fallback ?? null;
+  }
+
+  /** The index value of a keyed read of a record's index signature that
+   * can answer undefined for a missing key while its checker type does not
+   * admit undefined, or null. A literal key naming a declared field is a
+   * field read. */
+  optionalIndexSignatureRead(e: ts.ElementAccessExpression): IrType | null {
+    const receiver = panicSafe(() => this.mapTypeOf(this.typeOf(e.expression)), null);
+    if (receiver?.kind !== "record") return null;
+    const shape = this.shapes.get(receiver.shapeId);
+    if (!shape || shape.tuple || !shape.indexValue || shape.indexValue.kind === "dyn") return null;
+    const key = e.argumentExpression;
+    if (
+      (ts.isStringLiteral(key) || ts.isNumericLiteral(key)) &&
+      shape.fields.some((field) => field.name === key.text)
+    )
+      return null;
+    const read = panicSafe(() => this.mapTypeOf(this.typeOf(e)), null);
+    if (read?.kind === "union" && this.armTag(read.unionId, UNDEFINED_T) >= 0) return null;
+    return shape.indexValue;
   }
 
   runtimeOptionalIdentifierValue(
@@ -2014,6 +2076,7 @@ export class Lowerer {
     value: IrExpr,
     expected: IrType,
     member: string,
+    action: "read" | "set" = "read",
   ): IrExpr | null {
     const source = this.runtimeOptionalSourceValue(node, value);
     if (source?.type.kind !== "union") return null;
@@ -2056,7 +2119,7 @@ export class Lowerer {
         then: nodeThrowExpr(
           1,
           "",
-          `Cannot read properties of ${unit} (reading '${member}')`,
+          `Cannot ${action} properties of ${unit} (${action === "read" ? "reading" : "setting"} '${member}')`,
           expected,
           loc,
         ),
@@ -2415,6 +2478,10 @@ export class Lowerer {
    * prepended by lowerFileInit so the bindings are live before any
    * top-level statement runs. */
   readonly jsonInitActions = new Map<ts.SourceFile, IrStmt[]>();
+  /** CommonJS require() of JSON documents: the shared object per document
+   * and the calls reading it (json-require.ts). */
+  readonly jsonRequireModules = new Map<string, JsonRequireModule>();
+  readonly jsonRequireCalls = new Map<ts.CallExpression, JsonRequireModule>();
   /** Dynamic `import("literal")` resolutions, keyed
    * `fileName\u0000specifier` (collectDynamicImports fills it during npm
    * collection; lowerDynamicImportCall reads it per site). */
@@ -2582,6 +2649,10 @@ export class Lowerer {
    * by class name (cycle-initialization.ts). */
   readonly classInitFlags = new Map<string, CycleInitFlag>();
   readonly cycleInitDeclarations = new Map<ts.Statement, CycleInitFlag[]>();
+  /** CommonJS require declarations whose bindings code running before the
+   * require can read, and those references (require-initialization.ts). */
+  readonly requireInitFlags = new Map<ts.VariableDeclaration, RequireInitFlag>();
+  readonly requireEarlyReferences: EarlyReference[] = [];
 
   get ctx(): FnCtx {
     const top = this.fnStack[this.fnStack.length - 1];
@@ -2792,7 +2863,7 @@ export class Lowerer {
           if (this.localClassInstantiations.some((entry) => entry.owner === parent)) break;
           if (
             parent.typeParameters?.length ||
-            (implicitMonoFile(parent.getSourceFile()) && implicitAnyParamSymbolsOf(this, parent))
+            (implicitMonoFile(parent.getSourceFile()) && monomorphizedImplicit(this, parent))
           )
             return null;
         }
@@ -3422,6 +3493,7 @@ export class Lowerer {
       return null;
     const directSpec = requireSpecOf(decl.initializer);
     if (directSpec !== null) {
+      if (isJsonRequireDecl(this, decl)) return null;
       return (
         resolveImport(this.program, decl.getSourceFile(), directSpec, "require") ??
         npmStaticDepSf7(this.program, decl.getSourceFile(), directSpec, "require")
@@ -3885,6 +3957,62 @@ export class Lowerer {
    * TypeScript's default indexed-access type is a useful source annotation,
    * but it is not a runtime proof; promoting only the affected slots keeps
    * the rest of the dense ABI unchanged. */
+  /** A Date's `toJSON()` answers null for an invalid date while the lib
+   * types say `string`: unannotated bindings initialized by such a call,
+   * and object-literal fields holding one, keep `string | null`. */
+  analyzeDateJsonResults(parts: FileParts[]): void {
+    const nullable = dateJsonType(this);
+    for (const { sf } of parts) {
+      if (!sf.text.includes("toJSON")) continue;
+      ts.walkPreorder(sf, (node) => {
+        // `x = d.toJSON()`: the checker narrows x to string after the
+        // assignment, so its reads must stay checked.
+        if (
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isIdentifier(node.left) &&
+          isDateJsonSource(this, node.right)
+        ) {
+          const symbol = this.checker.getSymbolAtLocation(node.left);
+          if (symbol) this.dateJsonBindings.add(symbol);
+          return undefined;
+        }
+        if (!ts.isVariableDeclaration(node) || !node.initializer) return undefined;
+        if (!ts.isIdentifier(node.name)) return undefined;
+        const symbol = this.checker.getSymbolAtLocation(node.name);
+        if (!symbol) return undefined;
+        let init: ts.Expression = node.initializer;
+        while (ts.isParenthesizedExpression(init)) init = init.expression;
+        if (isDateJsonSource(this, init)) {
+          this.dateJsonBindings.add(symbol);
+          // An annotation keeps its declared storage.
+          if (!node.type) this.runtimeOptionalBindingTypes.set(symbol, nullable);
+          return undefined;
+        }
+        if (node.type) return undefined;
+        if (!ts.isObjectLiteralExpression(init)) return undefined;
+        const declared = this.mapTypeOf(this.typeOf(node.name));
+        if (declared?.kind !== "record") return undefined;
+        let widened: IrType = declared;
+        for (const property of init.properties) {
+          const value = ts.isPropertyAssignment(property)
+            ? property.initializer
+            : ts.isShorthandPropertyAssignment(property)
+              ? property.name
+              : null;
+          const name =
+            property.name && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name))
+              ? property.name.text
+              : null;
+          if (value && name !== null && isDateJsonSource(this, value))
+            widened = this.runtimeOptionalRecordField(widened, name, nullable);
+        }
+        if (widened !== declared) this.runtimeOptionalBindingTypes.set(symbol, widened);
+        return undefined;
+      });
+    }
+  }
+
   analyzeRuntimeOptionalArrayReads(parts: FileParts[]): void {
     const provenance = RuntimeOptionalProvenance.fromEnvironment();
     // The site whose value the current promotion follows (debug only).
@@ -3909,6 +4037,18 @@ export class Lowerer {
       if (!s) return null;
       return s.flags & ts.SymbolFlags.Alias ? this.checker.getAliasedSymbol(s) : s;
     };
+    // Fields that can be read before their assignment hold undefined then;
+    // their reads are runtime-optional values like missing array reads.
+    for (const info of this.classes.values()) {
+      if (!info.earlyReadFields || !info.decl?.name) continue;
+      const classSymbol = symbolOf(info.decl.name);
+      if (!classSymbol) continue;
+      const instance = this.checker.getDeclaredTypeOfSymbol(classSymbol);
+      for (const name of info.earlyReadFields) {
+        const property = this.checker.getPropertyOfType(instance, name);
+        if (property) optionalSymbols.add(property);
+      }
+    }
     const signatureOf = (node: ts.Identifier): FnSig | null => {
       const symbol = symbolOf(node);
       if (!symbol) return null;
@@ -4054,6 +4194,7 @@ export class Lowerer {
           const t = mappedOrNull(receiver);
           return t?.kind === "bytes" ? t.elem : null;
         },
+        isNumberRecordRead: (read) => this.optionalIndexSignatureRead(read)?.kind === "f64",
         isNumber: (node) => mappedOrNull(node)?.kind === "f64",
         isString: (node) => mappedOrNull(node)?.kind === "string",
         hasLength: (node) => {
@@ -4189,7 +4330,25 @@ export class Lowerer {
       // Typed-array reads answer undefined for an invalid index too, unless
       // every consumer treats undefined like NaN.
       if (kind === "bytes") return !nanCoded.isNumericRead(e);
+      if (kind === "record")
+        return this.optionalIndexSignatureRead(e) !== null && !nanCoded.isNumericRead(e);
       return kind === "array";
+    };
+    /** `r.name` where the name resolves to the receiver's index signature. */
+    const isRecordIndexPropertyRead = (e: ts.PropertyAccessExpression): boolean => {
+      // A name that resolves to a declared member is not an index read, and
+      // only a receiver with an index signature maps to an indexed record.
+      if (symbolOf(e.name)) return false;
+      const receiverType = this.typeOf(e.expression);
+      if (this.checker.getIndexInfosOfType(receiverType).length === 0) return false;
+      const receiver = this.mapTypeOf(receiverType);
+      if (receiver?.kind !== "record") return false;
+      const shape = this.shapes.get(receiver.shapeId);
+      if (!shape || shape.tuple || !shape.indexValue || shape.indexValue.kind === "dyn")
+        return false;
+      if (shape.fields.some((field) => field.name === e.name.text)) return false;
+      const read = this.mapTypeOf(this.typeOf(e));
+      return !(read?.kind === "union" && this.armTag(read.unionId, UNDEFINED_T) >= 0);
     };
     const isDynamicObjectEntryRead = (node: ts.Expression): boolean => {
       const read = peel(node);
@@ -4279,6 +4438,7 @@ export class Lowerer {
       if (assertsDefined(node)) return false;
       const e = peel(node);
       if (isIndexedRead(e)) return true;
+      if (ts.isPropertyAccessExpression(e) && isRecordIndexPropertyRead(e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOptionalProcessStreamProperty(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isSettledIteratorValueRead(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOsConstantsSymbol(symbolOf(e.expression), this))
@@ -4503,6 +4663,7 @@ export class Lowerer {
       return out;
     };
     const scanPattern = (name: ts.BindingName, init: ts.Expression): boolean => {
+      if (ts.isObjectBindingPattern(name)) return scanRecordPattern(name, init);
       if (!ts.isArrayBindingPattern(name)) return false;
       const sourceType = this.mapTypeOf(this.typeOf(init));
       if (sourceType?.kind !== "array") return false;
@@ -4536,6 +4697,40 @@ export class Lowerer {
           }
         }
       });
+      return changed;
+    };
+    /** `const { a, b } = table` over an index-signature record: a name that
+     * is not a declared field reads the index signature and can be
+     * missing. */
+    const scanRecordPattern = (name: ts.ObjectBindingPattern, init: ts.Expression): boolean => {
+      const sourceType = this.mapTypeOf(this.typeOf(init));
+      if (sourceType?.kind !== "record") return false;
+      const shape = this.shapes.get(sourceType.shapeId);
+      const indexValue = shape?.indexValue;
+      if (!shape || shape.tuple || !indexValue || indexValue.kind === "dyn") return false;
+      let changed = false;
+      for (const el of name.elements) {
+        if (el.dotDotDotToken || el.initializer || !ts.isIdentifier(el.name)) continue;
+        const key = el.propertyName ?? el.name;
+        if (!ts.isIdentifier(key) && !ts.isStringLiteral(key) && !ts.isNumericLiteral(key))
+          continue;
+        if (shape.fields.some((field) => field.name === key.text)) continue;
+        const symbol = symbolOf(el.name);
+        if (!symbol || optionalSymbols.has(symbol)) continue;
+        const read = this.mapTypeOf(this.typeOf(el.name));
+        if (read?.kind === "union" && this.armTag(read.unionId, UNDEFINED_T) >= 0) continue;
+        const widened = this.withUndefinedArmOf(indexValue);
+        if (!widened) continue;
+        optionalSymbols.add(symbol);
+        provenance?.note("pattern-binding", el.name, init);
+        this.runtimeOptionalBindingTypes.set(symbol, widened);
+        const global = this.globalsBySymbol.get(symbol);
+        if (global) {
+          global.type = widened;
+          this.runtimeOptionalGlobals.add(global);
+        }
+        changed = true;
+      }
       return changed;
     };
     const hofCallbackIndices = (name: string, hasInitialValue: boolean): number[] | null => {
@@ -5827,24 +6022,60 @@ export class Lowerer {
       addClassFields(recordFlows.bindingClass(symbol), fields);
     for (const [symbol, fields] of returnFields)
       addClassFields(recordFlows.returnClass(symbol), fields);
+    // A record field that flows into other slots (`fill(args, state.parsed)`)
+    // widens with its owner's class: every member takes the field's widened
+    // layout, so the field and the slots it reaches share one record.
+    const nestedFields = new Map<number, Map<string, number>>();
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const { owner, name, classId } of recordFlows.fields()) {
+        if (nestedFields.get(owner)?.has(name)) continue;
+        if (!(classFields.has(classId) || nestedFields.has(classId))) continue;
+        if (!recordFlows.closed(classId)) continue;
+        const byName = nestedFields.get(owner) ?? new Map<string, number>();
+        byName.set(name, classId);
+        nestedFields.set(owner, byName);
+        changed = true;
+      }
+    }
     const settledFields = (
       id: number | null,
       own: ReadonlySet<string> | undefined,
     ): ReadonlySet<string> | undefined =>
       id === null
         ? own
-        : classFields.has(id) && recordFlows.closed(id)
-          ? classFields.get(id)
+        : (classFields.has(id) || nestedFields.has(id)) && recordFlows.closed(id)
+          ? (classFields.get(id) ?? new Set<string>())
           : undefined;
-    const widenRecordFields = (type: IrType, fields: ReadonlySet<string>): IrType => {
+    const widenRecordFields = (
+      type: IrType,
+      fields: ReadonlySet<string>,
+      id: number | null = null,
+      seen: ReadonlySet<number> = new Set(),
+    ): IrType => {
       let promoted = type;
+      const fieldOf = (name: string) =>
+        promoted.kind === "record"
+          ? this.shapes.get(promoted.shapeId)?.fields.find((f) => f.name === name)
+          : undefined;
       for (const field of fields) {
-        const source =
-          promoted.kind === "record"
-            ? this.shapes.get(promoted.shapeId)?.fields.find((f) => f.name === field)
-            : undefined;
+        const source = fieldOf(field);
         if (source)
           promoted = this.runtimeOptionalRecordField(promoted, field, addUndefined(source.type));
+      }
+      if (id === null || seen.has(id)) return promoted;
+      const nested = nestedFields.get(id);
+      if (!nested) return promoted;
+      for (const [field, inner] of nested) {
+        const source = fieldOf(field);
+        if (source?.type.kind !== "record") continue;
+        const widened = widenRecordFields(
+          source.type,
+          classFields.get(inner) ?? new Set<string>(),
+          inner,
+          new Set([...seen, id]),
+        );
+        promoted = this.runtimeOptionalRecordField(promoted, field, widened);
       }
       return promoted;
     };
@@ -5860,9 +6091,10 @@ export class Lowerer {
     for (const [bound, { target, index }] of recordParameterSlots) {
       const shape = signatureBySymbol.get(target)?.params[index];
       if (!shape || shape.type.kind !== "record") continue;
-      const fields = settledFields(recordFlows.bindingClass(bound), optionalFields.get(bound));
+      const id = recordFlows.bindingClass(bound);
+      const fields = settledFields(id, optionalFields.get(bound));
       if (!fields) continue;
-      const promoted = widenRecordFields(shape.type, fields);
+      const promoted = widenRecordFields(shape.type, fields, id);
       if (typeEquals(promoted, shape.type)) continue;
       shape.type = promoted;
       this.runtimeOptionalBindingTypes.set(bound, promoted);
@@ -5871,7 +6103,7 @@ export class Lowerer {
       const id = recordFlows.returnClass(symbol);
       const fields = id === null ? undefined : settledFields(id, undefined);
       if (fields && sig.returnType.kind === "record") {
-        const next = widenRecordFields(sig.returnType, fields);
+        const next = widenRecordFields(sig.returnType, fields, id);
         sig.returnType = next;
         if (sig.top) sig.top.returnType = next;
         if (sig.method) sig.method.ret = next;
@@ -5957,7 +6189,8 @@ export class Lowerer {
             if (global) global.type = promoted;
           }
         }
-        const fields = settledFields(recordFlows.bindingClass(symbol), optionalFields.get(symbol));
+        const flowClass = recordFlows.bindingClass(symbol);
+        const fields = settledFields(flowClass, optionalFields.get(symbol));
         if (!dynamicObjectEntryRows.has(symbol) && !optionalSymbols.has(symbol) && !fields) return;
         const current = this.mapTypeOf(this.typeOf(node.name));
         if (!current) return;
@@ -5974,7 +6207,8 @@ export class Lowerer {
             };
           }
         }
-        if (fields && promoted.kind === "record") promoted = widenRecordFields(promoted, fields);
+        if (fields && promoted.kind === "record")
+          promoted = widenRecordFields(promoted, fields, flowClass);
         if (!typeEquals(promoted, current)) {
           this.runtimeOptionalBindingTypes.set(symbol, promoted);
           const global = ts.isIdentifier(node.name)
@@ -6034,6 +6268,7 @@ export class Lowerer {
     }
     this.collectProgram(parts);
     this.analyzeRuntimeOptionalArrayReads(parts);
+    this.analyzeDateJsonResults(parts);
     // Decorated classes analyze AFTER the whole collection pass: a
     // decorator's return type may name a subclass declared below the
     // class, and reference lowering needs each class's rebindability
@@ -6264,6 +6499,7 @@ export class Lowerer {
     // slots), uniformly across params/locals/globals/fields/body types so
     // every producer and consumer agrees. Programs with no unregistered
     // reference are untouched — byte-stability holds.
+    checkRequireBindingAccesses(this, functions);
     const module: IrModule | null =
       this.diags.length > 0
         ? null
@@ -6418,6 +6654,7 @@ export class Lowerer {
     };
     this.collectProgram(parts);
     this.analyzeRuntimeOptionalArrayReads(parts);
+    this.analyzeDateJsonResults(parts);
     // Decorated classes analyze post-collection here too: the %init seeds
     // lower the decoration calls, whose edges (decorator bodies, construct
     // thunks) reachable emit must see.
@@ -8481,9 +8718,18 @@ export class Lowerer {
     // initial contextual layout was chosen. Its known discriminator still
     // selects the destination arm; validate that payload before wrapping.
     // Work with the already lowered value so property effects run once.
+    // A type assertion keeps the literal's own record layout, which can
+    // equal another arm's layout (`{ kind: "return", value, loc } as Stmt`
+    // when a `throw` arm has the same fields), so assertions are looked
+    // through as well.
     if (expr.type.kind === "record" && expected.kind === "union") {
       let literal = node;
-      while (ts.isParenthesizedExpression(literal) || ts.isSatisfiesExpression(literal))
+      while (
+        ts.isParenthesizedExpression(literal) ||
+        ts.isSatisfiesExpression(literal) ||
+        ts.isAsExpression(literal) ||
+        ts.isTypeAssertion(literal)
+      )
         literal = literal.expression;
       const def = this.unions.get(expected.unionId);
       if (def?.discriminant && ts.isObjectLiteralExpression(literal)) {
@@ -10021,6 +10267,22 @@ export class Lowerer {
           const pickedT = shape.bodyType;
           srcType = pickedT;
           srcRef = () => ({ kind: "varRef", localId: src.id, type: pickedT, loc });
+        } else {
+          // `({ groups }) => ...` over matchAll rows.
+          const groupsSource = matchGroupsPatternSource(
+            this,
+            decl.name,
+            srcRef(),
+            () => matchCallbackParamGroupsOf(this, decl),
+            loc,
+          );
+          if (groupsSource !== null) {
+            const src = this.declareHiddenLocal("%psrc", groupsSource.type);
+            prologue.push({ kind: "varDecl", localId: src.id, init: groupsSource, loc });
+            const groupsT = groupsSource.type;
+            srcType = groupsT;
+            srcRef = () => ({ kind: "varRef", localId: src.id, type: groupsT, loc });
+          }
         }
         this.lowerBindingPattern(decl.name, srcRef, srcType, true, prologue);
         return;
@@ -11101,6 +11363,7 @@ export class Lowerer {
       lowerLifetimeRegionNew(this, expr) ??
       lowerInternTableNew(this, expr) ??
       lowerAbortControllerNew(this, expr) ??
+      lowerDisposableStackNew(this, expr) ??
       lowerEventTargetNew(this, expr) ??
       lowerFetchWebNew(this, expr) ??
       lowerResponseNew(this, expr) ??
@@ -11436,9 +11699,19 @@ export class Lowerer {
       return pathModuleValue(this, `path/${bi.member}`, loc);
     }
     // events.defaultMaxListeners READS the process-wide default (its
-    // write twin routes through emitter.setDefaultMaxChk).
+    // write twin routes through emitter.setDefaultMaxChk). Through an ES
+    // module namespace it reads the namespace's copy instead.
     if (bi.module === "events" && bi.member === "defaultMaxListeners") {
-      return { kind: "libCall", fn: "emitter.getDefaultMax", args: [], type: F64, loc };
+      const esm =
+        ts.isIdentifier(expr.expression) &&
+        esmImportBindingKind(this, expr.expression) === "namespace";
+      return {
+        kind: "libCall",
+        fn: esm ? "emitter.esmDefaultMax" : "emitter.getDefaultMax",
+        args: [],
+        type: F64,
+        loc,
+      };
     }
     if (bi.module === "worker_threads") {
       const value = lowerWorkerMetadata(bi.member, loc);
@@ -11683,8 +11956,8 @@ export class Lowerer {
     return lowerSpawnCall(this, expr, loc);
   }
 
-  lowerExecFileCall(expr: ts.CallExpression, loc: SrcLoc): IrExpr {
-    return lowerExecFileCall(this, expr, loc);
+  lowerExecFileCall(expr: ts.CallExpression, loc: SrcLoc, shell = false): IrExpr {
+    return lowerExecFileCall(this, expr, loc, shell);
   }
 
   lowerExecSyncCall(expr: ts.CallExpression, shell: boolean, loc: SrcLoc): IrExpr {

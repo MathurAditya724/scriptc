@@ -298,21 +298,25 @@ static void scr_os_system_error(const char *syscall, int uv_code) {
   if (cell->kind == SCR_EXC_OBJ) scr_error_set_code((ScrError *)cell->payload, "ERR_SYSTEM_ERROR");
 }
 
-static bool scr_os_validate_int32(const char *name, double value) {
+static bool scr_os_validate_int32_in(const char *name, double value, int min, int max) {
   if (isfinite(value) && trunc(value) == value) {
-    if (value >= -2147483648.0 && value <= 2147483647.0) return true;
+    if (value >= (double)min && value <= (double)max) return true;
   }
   char received[48];
   scr_num_received(value, received);
   char text[192];
   int n = isfinite(value) && trunc(value) == value
     ? snprintf(text, sizeof text,
-               "The value of \"%s\" is out of range. It must be >= -2147483648 && <= 2147483647. Received %s",
-               name, received)
+               "The value of \"%s\" is out of range. It must be >= %d && <= %d. Received %s",
+               name, min, max, received)
     : snprintf(text, sizeof text, "The value of \"%s\" is out of range. It must be an integer. Received %s",
                name, received);
   scr_throw_error_msg_code(SCR_ERR_RANGE, text, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
   return false;
+}
+
+static bool scr_os_validate_int32(const char *name, double value) {
+  return scr_os_validate_int32_in(name, value, INT32_MIN, INT32_MAX);
 }
 
 double scr_os_get_priority(double pid) {
@@ -350,6 +354,48 @@ double scr_os_get_priority(double pid) {
     return 0;
   }
   return r;
+#endif
+}
+
+/* ── setPriority ──────────────────────────────────────────────────────
+ * validateInt32(pid, 'pid') and validateInt32(priority, 'priority', -20,
+ * 19) (a one-argument call passes pid 0), then uv_os_setpriority; a
+ * failure is Node's ERR_SYSTEM_ERROR. */
+
+void scr_os_set_priority(double pid, double priority) {
+  if (!scr_os_validate_int32("pid", pid)) return;
+  if (!scr_os_validate_int32_in("priority", priority, SCR_OS_PRIORITY_HIGHEST, SCR_OS_PRIORITY_LOW)) return;
+  int value = (int)priority;
+#ifdef _WIN32
+  /* libuv's mapping of nice values to Windows priority classes. */
+  DWORD klass = value < SCR_OS_PRIORITY_HIGH           ? REALTIME_PRIORITY_CLASS
+                : value < SCR_OS_PRIORITY_ABOVE_NORMAL ? HIGH_PRIORITY_CLASS
+                : value < SCR_OS_PRIORITY_NORMAL       ? ABOVE_NORMAL_PRIORITY_CLASS
+                : value < SCR_OS_PRIORITY_BELOW_NORMAL ? NORMAL_PRIORITY_CLASS
+                : value < SCR_OS_PRIORITY_LOW          ? BELOW_NORMAL_PRIORITY_CLASS
+                                                       : IDLE_PRIORITY_CLASS;
+  HANDLE handle = pid == 0 ? GetCurrentProcess()
+                           : OpenProcess(PROCESS_SET_INFORMATION, FALSE, (DWORD)(int)pid);
+  if (handle == NULL) {
+    DWORD err = GetLastError();
+    scr_os_system_error("uv_os_setpriority", err == ERROR_ACCESS_DENIED ? SCR_NODE_UV__EPERM
+                                             : err == ERROR_INVALID_PARAMETER ? SCR_NODE_UV__EINVAL
+                                                                              : SCR_NODE_UV__UNKNOWN);
+    return;
+  }
+  BOOL ok = SetPriorityClass(handle, klass);
+  DWORD err = ok ? 0 : GetLastError();
+  if (pid != 0) CloseHandle(handle);
+  if (!ok) {
+    scr_os_system_error("uv_os_setpriority", err == ERROR_ACCESS_DENIED ? SCR_NODE_UV__EPERM
+                                                                        : SCR_NODE_UV__UNKNOWN);
+  }
+#elif defined(__wasi__)
+  (void)value;
+  scr_os_system_error("uv_os_setpriority", SCR_NODE_UV__ENOSYS);
+#else
+  if (setpriority(PRIO_PROCESS, (id_t)(int)pid, value) != 0)
+    scr_os_system_error("uv_os_setpriority", SCR_NODE_UV__ERR(errno));
 #endif
 }
 
