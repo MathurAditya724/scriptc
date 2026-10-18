@@ -10730,6 +10730,137 @@ ScrStr *scr_num_to_fixed(double x, double fraction_digits) {
   return scr_str_new(out, len);
 }
 
+/* String.prototype.substr (Annex B.2.2.1) over substring's UTF-16
+ * clamp: -Infinity and other starts below -size clamp to 0, an Infinity
+ * length to the end. Comparisons only (no floating-point literal other
+ * than zero, which would join the constant pool every binary links).
+ * Nothing on an existing path calls this. */
+ScrStr *scr_str_substr(ScrStr *s, double start, double length, bool has_length) {
+  double size = scr_str_utf16_len(s);
+  double first = isnan(start) ? 0 : trunc(start);
+  if (first < 0) {
+    first = size + first;
+    if (first < 0) first = 0;
+  } else if (first > size) {
+    first = size;
+  }
+  double count = has_length ? (isnan(length) ? 0 : trunc(length)) : size;
+  if (count < 0) count = 0;
+  double end = first + count;
+  if (end > size) end = size;
+  return scr_str_substring(s, first, end);
+}
+
+/* The exponent suffix of toPrecision/toExponential: "e+5", "e-7". */
+static size_t scr_num_exp_suffix(char *o, int e) {
+  size_t n = 0;
+  o[n++] = 'e';
+  o[n++] = e < 0 ? '-' : '+';
+  int a = e < 0 ? -e : e;
+  char rev[8];
+  int k = 0;
+  do {
+    rev[k++] = (char)('0' + a % 10);
+    a /= 10;
+  } while (a != 0);
+  while (k > 0) o[n++] = rev[--k];
+  return n;
+}
+
+/* Number.prototype.toPrecision(precision) (ECMA-262 §21.1.3.5): undefined
+ * precision is ToString(x); ToIntegerOrInfinity runs (in the caller's
+ * coercion) before the non-finite arm, which precedes the 1..100 range
+ * check. Digits are the exact-value, ties-up n of
+ * scr_f64_precision_digits; exponential form when e < -6 or e >= p.
+ * Nothing on an existing path calls this. */
+ScrStr *scr_num_to_precision(double x, double precision, bool has_precision) {
+  if (!has_precision || !isfinite(x)) return scr_f64_to_scrstr(x);
+  double p = isnan(precision) ? 0 : trunc(precision);
+  if (!(p >= 1 && p <= 100)) {
+    static const char msg[] = "toPrecision() argument must be between 1 and 100";
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  int digits_count = (int)p;
+  char out[160];
+  size_t o = 0;
+  double a = x;
+  if (x < 0) {
+    out[o++] = '-';
+    a = -x;
+  }
+  char d[104];
+  int e = 0;
+  if (a == 0) {
+    memset(d, '0', (size_t)digits_count);
+    d[digits_count] = '\0';
+  } else {
+    scr_f64_precision_digits(a, digits_count, d, &e);
+  }
+  if (e < -6 || e >= digits_count) {
+    out[o++] = d[0];
+    if (digits_count != 1) {
+      out[o++] = '.';
+      memcpy(out + o, d + 1, (size_t)(digits_count - 1));
+      o += (size_t)(digits_count - 1);
+    }
+    o += scr_num_exp_suffix(out + o, e);
+  } else if (e >= 0) {
+    memcpy(out + o, d, (size_t)(e + 1));
+    o += (size_t)(e + 1);
+    if (e + 1 < digits_count) {
+      out[o++] = '.';
+      memcpy(out + o, d + e + 1, (size_t)(digits_count - e - 1));
+      o += (size_t)(digits_count - e - 1);
+    }
+  } else {
+    out[o++] = '0';
+    out[o++] = '.';
+    for (int i = 0; i < -(e + 1); i++) out[o++] = '0';
+    memcpy(out + o, d, (size_t)digits_count);
+    o += (size_t)digits_count;
+  }
+  return scr_str_new(out, o);
+}
+
+/* Number.prototype.toExponential(fractionDigits) with a DEFINED argument
+ * (the undefined form is scr_num_to_exponential's shortest mantissa):
+ * f + 1 exact-value, ties-up digits, "d.ddde±X". Nothing on an existing
+ * path calls this. */
+ScrStr *scr_num_to_exponential_digits(double x, double fraction_digits) {
+  if (!isfinite(x)) return scr_f64_to_scrstr(x);
+  double f = isnan(fraction_digits) ? 0 : trunc(fraction_digits);
+  if (!(f >= 0 && f <= 100)) {
+    static const char msg[] = "toExponential() argument must be between 0 and 100";
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  int count = (int)f + 1;
+  char out[160];
+  size_t o = 0;
+  double a = x;
+  if (x < 0) {
+    out[o++] = '-';
+    a = -x;
+  }
+  char d[104];
+  int e = 0;
+  if (a == 0) {
+    memset(d, '0', (size_t)count);
+    d[count] = '\0';
+  } else {
+    scr_f64_precision_digits(a, count, d, &e);
+  }
+  out[o++] = d[0];
+  if (count != 1) {
+    out[o++] = '.';
+    memcpy(out + o, d + 1, (size_t)(count - 1));
+    o += (size_t)(count - 1);
+  }
+  o += scr_num_exp_suffix(out + o, e);
+  return scr_str_new(out, o);
+}
+
 /* Increment a decimal digit string in place. Returns true on overflow —
  * the value becomes 1 followed by len zeros (the caller folds the zeros
  * into its scale); an EMPTY string increments to "1" the same way (the

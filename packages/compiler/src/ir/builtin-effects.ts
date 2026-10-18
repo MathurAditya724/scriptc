@@ -136,6 +136,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fetch.streamNew",
   "fetch.streamFrom",
   "num.toFixed",
+  "num.toPrecision",
+  "num.toExponentialDigits",
+  "str.localeCase",
   "num.toStringRadix",
   "insp.jsonDyn",
   // diagnostics_channel: publish runs subscribers synchronously (a throw

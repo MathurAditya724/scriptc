@@ -686,6 +686,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** `a.localeCompare(b)`: -1/0/1 in Node's root-locale collation for
    * Latin-script text (scr_str_locale_compare). Never throws. */
   "str.localeCompare": { argTypes: [STRING, STRING], result: F64 },
+  /** Annex B substr(start, length) with start ToNumber'd and length's
+   * presence; never throws. */
+  "str.substr": { argTypes: [STRING, F64, F64, BOOL], result: STRING },
+  /** toLocaleLowerCase/toLocaleUpperCase (scr_regex.c): the locales value
+   * as written, upper=true for toLocaleUpperCase. Throws for null and for
+   * locale forms with no native rules. */
+  "str.localeCase": { argTypes: [STRING, DYN, BOOL], result: STRING },
   "str.replaceLiteral": { argTypes: [STRING, STRING, STRING, BOOL], result: STRING },
   // (subject, characters, NUL-separated replacement texts): the fused
   // chain of global one-character replacements.
@@ -750,6 +757,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "num.toExponential": { argTypes: [F64], result: STRING },
   "num.toFixed0": { argTypes: [F64], result: STRING },
   "num.toFixed": { argTypes: [F64, F64], result: STRING },
+  /** toPrecision(precision) with the argument ToNumber'd and its presence
+   * (undefined answers ToString); toExponential with a DEFINED
+   * fractionDigits. Both throw V8's RangeError for out-of-range digits. */
+  "num.toPrecision": { argTypes: [F64, F64, BOOL], result: STRING },
+  "num.toExponentialDigits": { argTypes: [F64, F64], result: STRING },
   "num.toStringRadix": { argTypes: [F64, DYN], result: STRING },
   /** Object.is over two numbers — the spec's SameValue on doubles: NaN
    * equals NaN, +0 differs from -0, everything else is `===`. Plain bool
