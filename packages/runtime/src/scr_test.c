@@ -122,6 +122,7 @@ struct ScrTestCtx {
   ScrPromise *done;    /* owned; settles when a concurrent subtest finishes */
   ScrPromise *slot;    /* owned; the parent waiting for its next subtest to finish */
   struct ScrMockTimers *mock_timers; /* t.mock.timers, made on first use; freed at exit */
+  bool passed; /* t.passed: set when the body passes, as Node's pass() does */
 };
 
 static SCR_TL ScrTestCtx *scr_test_root = NULL;
@@ -405,9 +406,12 @@ static void scr_test_mocks_restore(ScrTestHooks *mocks, bool forget) {
 /* Run `which` hooks up (beforeEach: outermost suite first) or down
  * (afterEach: innermost first) the ancestor chain. A hook throw fails the
  * test with the hook's error (Node cancels harder — SEMANTICS.md). */
-static void scr_test_run_hooks_of(ScrTestCtx *owner, int which) {
+/* `ctx` is the context a hook that takes one receives: the suite or test
+ * for its own before/after hooks, the test for the beforeEach/afterEach
+ * chain. */
+static void scr_test_run_hooks_of(ScrTestCtx *owner, int which, ScrTestCtx *ctx) {
   for (size_t i = 0; i < owner->hooks[which].n && !scr_exc_pending(); i++) {
-    scr_test_call(owner->hooks[which].v[i].cb, owner->hooks[which].v[i].flags, NULL, NULL);
+    scr_test_call(owner->hooks[which].v[i].cb, owner->hooks[which].v[i].flags, ctx, NULL);
   }
 }
 
@@ -421,9 +425,9 @@ static bool scr_test_run_each_hooks(ScrTestCtx *t, int which, bool outermost_fir
     if (p->hooks[which].n > 0) any = true;
   }
   if (outermost_first) {
-    for (int i = n - 1; i >= 0; i--) scr_test_run_hooks_of(chain[i], which);
+    for (int i = n - 1; i >= 0; i--) scr_test_run_hooks_of(chain[i], which, t);
   } else {
-    for (int i = 0; i < n; i++) scr_test_run_hooks_of(chain[i], which);
+    for (int i = 0; i < n; i++) scr_test_run_hooks_of(chain[i], which, t);
   }
   return any;
 }
@@ -586,6 +590,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
   if (t->mode == SCR_TEST_SKIP) {
     t->dur_ms = scr_now_ms() - start;
     t->state = SCR_TS_SKIPPED;
+    t->passed = true;
     scr_test_report_result(t);
     return;
   }
@@ -593,7 +598,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
     /* The body already ran at registration (children collected). A hook
      * throw fails the SUITE with that error — before-failures skip the
      * children (Node cancels them; SEMANTICS.md numbers the difference). */
-    scr_test_run_hooks_of(t, SCR_HOOK_BEFORE);
+    scr_test_run_hooks_of(t, SCR_HOOK_BEFORE, t);
     if (scr_exc_pending()) {
       t->err = scr_exc_take();
     } else {
@@ -604,7 +609,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
       } else {
         scr_test_run_children(t);
       }
-      scr_test_run_hooks_of(t, SCR_HOOK_AFTER);
+      scr_test_run_hooks_of(t, SCR_HOOK_AFTER, t);
       if (scr_exc_pending()) t->err = scr_exc_take();
     }
     t->dur_ms = scr_now_ms() - start;
@@ -617,6 +622,8 @@ static void scr_test_run_node(ScrTestCtx *t) {
                  : scr_test_subtree_failed(t) ? SCR_TS_CHILDFAIL
                                               : SCR_TS_PASS;
     }
+    /* Node's suite pass() comes after its after hooks. */
+    t->passed = t->state == SCR_TS_PASS || t->state == SCR_TS_TODO_PASS;
     scr_test_report_result(t);
     return;
   }
@@ -664,6 +671,8 @@ static void scr_test_run_node(ScrTestCtx *t) {
     t->err = scr_exc_take();
     failed = true;
   }
+  /* Node's pass()/fail(): afterEach hooks already see the outcome. */
+  t->passed = !failed;
   scr_test_run_each_hooks(t, SCR_HOOK_AFTER_EACH, false);
   if (scr_exc_pending()) {
     if (!failed && !t->err) {
@@ -674,7 +683,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
     }
   }
   /* t.after hooks run once the test and its afterEach chain finish. */
-  scr_test_run_hooks_of(t, SCR_HOOK_AFTER);
+  scr_test_run_hooks_of(t, SCR_HOOK_AFTER, t);
   if (scr_exc_pending()) {
     if (!failed && !t->err) {
       t->err = scr_exc_take();
@@ -686,6 +695,10 @@ static void scr_test_run_node(ScrTestCtx *t) {
   /* Then t.mock is reset: its mocks are restored and its timers reset. */
   scr_test_mocks_restore(&t->mocks, true);
   scr_mt_reset(t->mock_timers);
+  /* Its t.before/t.after/t.beforeEach/t.afterEach hooks have all run, and
+   * nothing runs them again: dropping them releases closures that capture
+   * the context, which would otherwise keep it alive in a cycle. */
+  for (int k = 0; k < 4; k++) scr_test_hooks_free(&t->hooks[k]);
   scr_test_parent_set(prev_parent);
   t->dur_ms = scr_now_ms() - start;
   if (t->mode == SCR_TEST_SKIP) {
@@ -1511,7 +1524,11 @@ void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrow
   if (cb && (int)mode != SCR_TEST_SKIP) {
     ScrTestCtx *prev = scr_test_parent_get();
     scr_test_parent_set(t);
-    ((void (*)(ScrClosure *))cb->fn)(cb);
+    /* flag 2: the body takes its SuiteContext (+1, as test bodies do). */
+    if ((int)flags & SCR_TEST_F_CTX)
+      ((void (*)(ScrClosure *, ScrTestCtx *))cb->fn)(cb, scr_testctx_retain(t));
+    else
+      ((void (*)(ScrClosure *))cb->fn)(cb);
     scr_test_parent_set(prev);
   }
   scr_closure_release(cb);
@@ -1589,7 +1606,7 @@ void scr_test_ctx_todo(ScrTestCtx *t, ScrStr *msg /*borrowed*/) {
  * each descendant subtest, and after runs once the test finishes. */
 void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb /*moves*/, double flags) {
   if ((int)which == SCR_HOOK_BEFORE) {
-    scr_test_call(cb, (int)flags, NULL, NULL);
+    scr_test_call(cb, (int)flags, t, NULL);
     scr_closure_release(cb);
     if (scr_exc_pending() && !t->before_err) t->before_err = scr_exc_take();
     else if (scr_exc_pending()) scr_exc_clear();
@@ -2160,6 +2177,19 @@ ScrStr *scr_test_ctx_name(ScrTestCtx *t) {
 
 /* t.fullName: the names from the outermost suite or test down to this one,
  * joined with " > ". */
+bool scr_test_ctx_passed(ScrTestCtx *t) { return t->passed; }
+
+/* t.workerId: Number(process.env.NODE_TEST_WORKER_ID) || undefined, with 0
+ * standing for undefined. */
+double scr_test_worker_id(void) {
+  const char *env = getenv("NODE_TEST_WORKER_ID");
+  if (!env) return 0;
+  ScrStr *s = scr_str_new(env, strlen(env));
+  double n = scr_string_to_number(s);
+  scr_str_release(s);
+  return isnan(n) ? 0 : n;
+}
+
 ScrStr *scr_test_ctx_full_name(ScrTestCtx *t) {
   const ScrTestCtx *chain[64];
   int n = 0;

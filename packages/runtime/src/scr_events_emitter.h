@@ -143,6 +143,8 @@ ScrEmitter *scr_emitter_set_max(ScrEmitter *em, double n);   /* returns em +1 */
 double scr_emitter_get_max(ScrEmitter *em);
 void scr_emitter_set_default_max(double n);
 double scr_emitter_get_default_max(void);
+double scr_emitter_esm_default_max_get(void);
+void scr_emitter_esm_sync(void);
 /* True when the emitter has at least one listener for `name` — the
  * stream unit's registration probe (and anyone else's). */
 bool scr_emitter_has(ScrEmitter *em, const char *name);

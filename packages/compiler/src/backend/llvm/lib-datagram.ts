@@ -121,6 +121,8 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
     "dgram.getSendQueueSize": "scr_dgram_get_send_queue_size",
     "dgram.getSendQueueCount": "scr_dgram_get_send_queue_count",
     "dgram.disconnect": "scr_dgram_disconnect",
+    "dns.lookupPromise": "scr_dns_lookup_promise",
+    "dns.lookupServicePromise": "scr_dns_lookup_service_promise",
   };
   const symbol = direct[e.fn];
   if (symbol !== undefined) return finishRuntimeCall(host, e, symbol, a);

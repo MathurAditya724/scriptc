@@ -347,6 +347,7 @@ export function emitRecordKeyGet(
     e.type,
     e.overflowOnly === true,
     e.loc,
+    e.missNaN === true,
   );
   B.startBlock(join);
   const t = B.tmp();
@@ -364,6 +365,7 @@ export function keyedRecordReadInto(
   resultType: IrType,
   overflowOnly: boolean,
   loc?: SrcLoc,
+  missNaN = false,
 ): void {
   const B = host.B;
   const shape = host.recordShape(shapeId);
@@ -568,6 +570,12 @@ export function keyedRecordReadInto(
   if (def !== null && resultType.kind === "union" && undefTag >= 0) {
     // The miss path: the result union's undefined arm.
     B.line(`store ptr ${host.unitInstanceRef(resultType.unionId, undefTag)}, ptr ${slot}`);
+    B.br(join);
+    return;
+  }
+  if (missNaN && resultType.kind === "f64") {
+    // A NaN-coded read: every consumer treats undefined like NaN.
+    B.line(`store double ${f64Lit(NaN)}, ptr ${slot}`);
     B.br(join);
     return;
   }
