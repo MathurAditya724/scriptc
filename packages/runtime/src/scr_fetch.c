@@ -312,6 +312,31 @@ static ScrDyn *sf_type_reason(const char *message, ScrError **error_out) {
   return d;
 }
 
+/* Request's URL parse failure: with the URL parser's TypeError pending,
+ * replace it by undici's TypeError "Failed to parse URL from <input>"
+ * whose (non-enumerable) cause is the parser error. */
+static void sf_throw_url_parse_failure(const ScrStr *input) {
+  ScrCaught *caught = scr_exc_take();
+  ScrDyn *cause = scr_caught_to_dyn(caught);
+  scr_caught_release(caught);
+  /* Sized without the NUL so it stays out of the unit's shared mergeable
+   * string section (which every program linking this unit carries). */
+  static const char prefix[25] = "Failed to parse URL from ";
+  size_t message_len = sizeof prefix + input->len;
+  char *message = malloc(message_len);
+  if (!message) sf_oom();
+  memcpy(message, prefix, sizeof prefix);
+  memcpy(message + sizeof prefix, input->data, input->len);
+  ScrStr *text = scr_str_new(message, message_len);
+  free(message);
+  ScrError *e = scr_error_new(SCR_ERR_TYPE, text);
+  scr_str_release(text);
+  scr_error_set_cause(e, cause);
+  e->cause_enumerable = false;
+  scr_dyn_release(cause);
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
 /* ── AbortSignal ─────────────────────────────────────────────────── */
 
 static void sf_signal_track_reason(SfSignal *s) {
@@ -4873,6 +4898,7 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
   ScrStr *url_text = source ? scr_str_retain(source->url) : scr_dyn_string_coerce_js(input);
   if (!url_text) return NULL;
   ScrUrl *url = scr_url_new(url_text);
+  if (!url) sf_throw_url_parse_failure(url_text);
   scr_str_release(url_text);
   if (!url) return NULL;
   if (url->userinfo->len) { scr_url_release(url); sf_type_error("Request cannot be constructed from a URL that includes credentials"); return NULL; }
@@ -5182,6 +5208,7 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
 
   ScrUrl *u = scr_url_new(url);
   if (!u) {
+    sf_throw_url_parse_failure(url);
     scr_dyn_release(coerced_body);
     scr_arr_release(headers);
     scr_str_release(method);
