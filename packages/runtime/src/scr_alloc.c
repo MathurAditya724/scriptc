@@ -1527,6 +1527,92 @@ void scr_mem_prefault(void *lo, void *hi) {
 #endif
 }
 
+/* Free order. Free lists are LIFO, so blocks freed in descending address
+ * order come back in ascending order, the order the bump pointers carve
+ * fresh memory in, and the order the program then touches them in. The
+ * order within a page matters as much as across pages: blocks of a page
+ * handed out in no particular order defeat the hardware prefetcher.
+ *
+ * The pointers are marked in a bitmap of block indices per class, over the
+ * range of blocks they span, and read back from the highest block down.
+ * That takes one bit per block in that range, at most one per block in
+ * use, and reading the bitmaps back costs a step per word; a set spread so
+ * thinly that they would take more than SCR_SA_ORDER_SPARSE words per
+ * pointer is left as it is. Pointers outside the reservation, not at
+ * `offset` in a block, or repeated, come first, in the order they had. */
+#define SCR_SA_ORDER_SPARSE 8
+
+#if SCR_SMALL_ALLOC
+/* The class and block index of a pointer `off` bytes past the reservation
+ * base plus the block offset, if it is at that offset in a block. Slices
+ * span at most 1 << 30 bytes, so an offset within one fits in 32 bits. */
+static inline bool scr_sa_order_block(uintptr_t off, uintptr_t span, unsigned shift,
+                                      const uint32_t *size, unsigned *c, uint32_t *idx) {
+  if (off >= span) return false;
+  *c = (unsigned)(off >> shift);
+  uint32_t in = (uint32_t)(off & (((uintptr_t)1 << shift) - 1));
+  *idx = in / size[*c];
+  return in == *idx * size[*c];
+}
+#endif
+
+void scr_mem_order_for_free(void **ptrs, size_t n, size_t offset) {
+#if SCR_SMALL_ALLOC
+  if (n < 2 || !scr_sa.span) return;
+  uintptr_t base = scr_sa.base + offset, span = scr_sa.span;
+  unsigned shift = scr_sa.shift, c;
+  uint32_t idx;
+  uint32_t size[SCR_SA_NCLASS], lo[SCR_SA_NCLASS], hi[SCR_SA_NCLASS];
+  size_t at[SCR_SA_NCLASS], words = 0;
+  for (c = 0; c < SCR_SA_NCLASS; c++) {
+    size[c] = (uint32_t)scr_sa_class_size(c);
+    lo[c] = UINT32_MAX;
+    hi[c] = 0;
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (!scr_sa_order_block((uintptr_t)ptrs[i] - base, span, shift, size, &c, &idx)) continue;
+    if (idx < lo[c]) lo[c] = idx;
+    if (idx > hi[c]) hi[c] = idx;
+  }
+  for (c = 0; c < SCR_SA_NCLASS; c++) {
+    at[c] = words;
+    if (lo[c] <= hi[c]) words += hi[c] / 64 - lo[c] / 64 + 1;
+  }
+  if (words == 0 || words / SCR_SA_ORDER_SPARSE > n) return;
+  uint64_t *bits = calloc(words, sizeof *bits);
+  if (!bits) return; /* the order only affects performance */
+  size_t k = 0;
+  for (size_t i = 0; i < n; i++) {
+    void *p = ptrs[i];
+    if (scr_sa_order_block((uintptr_t)p - base, span, shift, size, &c, &idx)) {
+      uint64_t *word = &bits[at[c] + idx / 64 - lo[c] / 64], bit = (uint64_t)1 << (idx % 64);
+      if (!(*word & bit)) {
+        *word |= bit;
+        continue;
+      }
+    }
+    ptrs[k++] = p;
+  }
+  for (c = 0; c < SCR_SA_NCLASS; c++) {
+    if (lo[c] > hi[c]) continue;
+    char *first = (char *)base + ((uintptr_t)c << shift) + (size_t)(lo[c] / 64) * 64 * size[c];
+    for (size_t w = hi[c] / 64 - lo[c] / 64 + 1; w-- > 0;) {
+      uint64_t word = bits[at[c] + w];
+      while (word) {
+        unsigned b = 63 - (unsigned)__builtin_clzll(word);
+        word &= ~((uint64_t)1 << b);
+        ptrs[k++] = first + (w * 64 + b) * size[c];
+      }
+    }
+  }
+  free(bits);
+#else
+  (void)ptrs;
+  (void)n;
+  (void)offset;
+#endif
+}
+
 #if defined(__SANITIZE_ADDRESS__)
 #define SCR_HEAP_SANITIZER 1
 #elif defined(__has_feature)
