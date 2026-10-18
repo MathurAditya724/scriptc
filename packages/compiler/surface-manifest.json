@@ -2228,6 +2228,18 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.timers.promises.scheduler.wait",
+      "kind": "node-builtin",
+      "name": "timers/promises.scheduler.wait",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.timers.promises.scheduler.yield",
+      "kind": "node-builtin",
+      "name": "timers/promises.scheduler.yield",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.timers.promises.setImmediate",
       "kind": "node-builtin",
       "name": "timers/promises.setImmediate",

@@ -48,9 +48,10 @@ export function collectClassMethodMutations(
   let unknownOwnField = false;
   // JavaScript method inference and dynamic class factories keep their
   // existing dispatch contract. The native-call proof applies to typed
-  // declarations, while writes in either source language can invalidate it.
+  // declarations (including JavaScript files TypeScript checks), while
+  // writes in either source language can invalidate it.
   for (const file of files) {
-    if (isJsSourceFile(file)) continue;
+    if (isJsSourceFile(file) && !lowerer.checkedJsFile(file)) continue;
     ts.walkPreorder(file, (node) => {
       if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) typedClasses.push(node);
       if (

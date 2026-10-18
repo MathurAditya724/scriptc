@@ -17,6 +17,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#elif defined(__ARM_NEON) && defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 
 static bool scr_td_label_space(unsigned char c) {
   return c == 9 || c == 10 || c == 12 || c == 13 || c == 32;
@@ -3318,13 +3323,30 @@ double scr_bytes_write_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
     while (i < s->len && budget - written >= width) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
       /* utf16le of an ASCII run: zero-extend each byte to a little-endian
-       * unit, eight per step with two word stores (the generic loop below
-       * stores byte by byte, because the source and destination may alias
-       * as far as the compiler knows). */
+       * unit, sixteen per step with vector unpacks where the target has them
+       * and eight per step with two word stores otherwise (the generic loop
+       * below stores byte by byte, because the source and destination may
+       * alias as far as the compiler knows). */
       if (utf16) {
         uint8_t *d = b->data + o + written;
         size_t n = 0, room = (budget - written) / 16, left = (s->len - i) / 8;
         size_t steps = room < left ? room : left;
+#if defined(__SSE2__)
+        const __m128i zero = _mm_setzero_si128();
+        for (; n + 2 <= steps; n += 2) {
+          __m128i v = _mm_loadu_si128((const __m128i *)(s->data + i + 8 * n));
+          if (_mm_movemask_epi8(v)) break;
+          _mm_storeu_si128((__m128i *)(d + 16 * n), _mm_unpacklo_epi8(v, zero));
+          _mm_storeu_si128((__m128i *)(d + 16 * n + 16), _mm_unpackhi_epi8(v, zero));
+        }
+#elif defined(__ARM_NEON) && defined(__aarch64__)
+        for (; n + 2 <= steps; n += 2) {
+          uint8x16_t v = vld1q_u8((const uint8_t *)s->data + i + 8 * n);
+          if (vmaxvq_u8(v) & 0x80) break;
+          vst1q_u8(d + 16 * n, vreinterpretq_u8_u16(vmovl_u8(vget_low_u8(v))));
+          vst1q_u8(d + 16 * n + 16, vreinterpretq_u8_u16(vmovl_high_u8(v)));
+        }
+#endif
         for (; n < steps; n++) {
           uint64_t w;
           memcpy(&w, s->data + i + 8 * n, 8);

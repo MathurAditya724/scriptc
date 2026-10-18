@@ -197,6 +197,7 @@ import {
   cjsExportAssignmentOf,
   cjsExportDiscardReason,
   fallbackDtsPath,
+  isCheckedJsSourceFile,
   isCjsExportTableLiteral,
   isCjsJsFile,
   isJsSourceFile,
@@ -694,6 +695,8 @@ export interface LowerResult {
 export interface LowerOptions {
   /** Parser/checker services owned by the load; required for npm graph analysis. */
   frontendServices?: FrontendServices | undefined;
+  /** The project's tsconfig sets `checkJs` (see isCheckedJsSourceFile). */
+  projectCheckJs?: boolean;
   /** Coverage: additionally lower the unreached remainder (bodies nothing
    * on the entry path reaches) in a throwaway pass and report its
    * diagnostics and stats under `unreached` — the whole-program analysis
@@ -779,6 +782,7 @@ type RuntimeFenceTarget =
 /** The Lowerer's pass configuration (see lowerToIr). */
 export interface LowererMode {
   frontendServices?: FrontendServices | undefined;
+  projectCheckJs?: boolean;
   /** Names of bodies a prior reachability pass reached; null lowers everything. */
   reachable?: ReadonlySet<string> | null;
   /** Coverage remainder: lower ONLY bodies outside `reachable`, skip the
@@ -903,6 +907,7 @@ export function lowerToIr(
     options.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(externalTypes);
   const validation = new Lowerer(program, entry, moduleOrder, {
     frontendServices: options.frontendServices,
+    projectCheckJs: options.projectCheckJs ?? false,
     targetPlatform,
     startupCrash,
     ffiImports,
@@ -924,6 +929,7 @@ export function lowerToIr(
       ? validation
       : new Lowerer(program, entry, moduleOrder, {
           frontendServices: options.frontendServices,
+          projectCheckJs: options.projectCheckJs ?? false,
           targetPlatform,
           startupCrash,
           ffiImports,
@@ -951,6 +957,7 @@ export function lowerToIr(
   if (reachableEmit.requiresHistoricalOrderRelower) {
     const emit = new Lowerer(program, entry, moduleOrder, {
       frontendServices: options.frontendServices,
+      projectCheckJs: options.projectCheckJs ?? false,
       reachable,
       targetPlatform,
       startupCrash,
@@ -1007,6 +1014,7 @@ export function lowerToIr(
   if (options.coverage !== true) return result;
   const remainder = new Lowerer(program, entry, moduleOrder, {
     frontendServices: options.frontendServices,
+    projectCheckJs: options.projectCheckJs ?? false,
     reachable,
     remainder: true,
     alreadyFlushed: resultLowerer.flushedSymbols,
@@ -1740,6 +1748,13 @@ export class Lowerer {
   /** Non-null while an instance body lowers: type-parameter symbol →
    * concrete IR type, consulted inside mapType's recursion. */
   typeParamBindings: Map<ts.Symbol, IrType> | null = null;
+  /** Generic lambdas lowering as erased values (lowerLambda): their own
+   * type parameters are bound to `unknown`, so lambdaSignature admits
+   * them. */
+  readonly erasingLambdas = new Set<ts.Node>();
+  /** Nesting depth of erased generic bodies being lowered (erased lambdas
+   * and erased instances). */
+  erasingDepth = 0;
   localClassInstantiations: { owner: ts.FunctionLikeDeclaration; name: string }[] = [];
   /** The ts-level twin of typeParamBindings, non-null while a CALL-keyed
    * instance body lowers: type-parameter symbol → the bound CHECKER type,
@@ -2366,6 +2381,9 @@ export class Lowerer {
    * base vtable signature is collected. Unused checked slots carry undefined. */
   readonly virtualJsMethodArity = new Map<ts.MethodDeclaration, number>();
   readonly checkedVirtualJsMethods = new Set<ts.MethodDeclaration>();
+  /** Overrides whose return narrows part of the base's union return; they
+   * return through the base's union ABI (overrideReturnAbi). */
+  readonly unionReturnOverrides = new Set<ts.MethodDeclaration>();
   readonly checkedVirtualJsAccessors = new Set<
     ts.GetAccessorDeclaration | ts.SetAccessorDeclaration
   >();
@@ -2623,6 +2641,9 @@ export class Lowerer {
   readonly targetPlatform: string;
   /** LowererMode.startupCrash — buildMain opens %main with the throw. */
   readonly startupCrash: StartupCrash | null;
+  /** The project's tsconfig sets `checkJs`. */
+  readonly projectCheckJs: boolean;
+  private readonly checkedJsFiles = new Map<ts.SourceFile, boolean>();
   /** Outbound native bindings by their source-level ambient name. */
   readonly ffiImports: readonly IrFfiImport[];
   readonly libraryCallbacks: boolean;
@@ -2685,6 +2706,7 @@ export class Lowerer {
     this.alreadyFlushed = mode.alreadyFlushed ?? new Set();
     this.targetPlatform = mode.targetPlatform ?? process.platform;
     this.startupCrash = mode.startupCrash ?? null;
+    this.projectCheckJs = mode.projectCheckJs ?? false;
     this.ffiImports = mode.ffiImports ?? [];
     this.libraryCallbacks = mode.libraryCallbacks ?? false;
     this.workerTargets = mode.workerTargets ?? [];
@@ -2708,6 +2730,7 @@ export class Lowerer {
       classNamer: this.classNamer,
       resolveTypeParam: this.typeParamResolver,
       resolveTypeParamTs: this.typeParamTsResolver,
+      isErasing: () => this.erasingDepth > 0,
       genericClassInstance: (decl, ref, mapArgument) =>
         this.genericClassInstanceType(decl, ref, mapArgument),
       mixinClassInstance: (decl) =>
@@ -2808,6 +2831,18 @@ export class Lowerer {
     registerBuiltinEmitterClass(this);
     registerBuiltinStreamClasses(this);
     registerBuiltinEventTargetClasses(this);
+  }
+
+  /** A JavaScript file TypeScript type-checks (`// @ts-check`, or the
+   * project's `checkJs`). Its JSDoc types are enforced like TypeScript
+   * annotations, so its classes use them as a TypeScript file would. */
+  checkedJsFile(sf: ts.SourceFile): boolean {
+    let checked = this.checkedJsFiles.get(sf);
+    if (checked === undefined) {
+      checked = isCheckedJsSourceFile(sf, this.projectCheckJs);
+      this.checkedJsFiles.set(sf, checked);
+    }
+    return checked;
   }
 
   registerBuiltinErrorClasses(): void {
@@ -11234,8 +11269,29 @@ export class Lowerer {
         return { module: "fs", member: "realpathSync.native" };
       }
     }
+    // timers/promises scheduler.wait / scheduler.yield: methods of the
+    // module's scheduler object, dispatched as module members.
+    if (access.name.text === "wait" || access.name.text === "yield") {
+      const owner = access.expression;
+      const imported = ts.isIdentifier(owner)
+        ? this.builtinImportOf(owner)
+        : ts.isPropertyAccessExpression(owner)
+          ? this.builtinMemberOf(owner)
+          : null;
+      if (imported?.module === "timers/promises" && imported.member === "scheduler") {
+        return { module: "timers/promises", member: `scheduler.${access.name.text}` };
+      }
+    }
     const module = this.builtinNamespaceModuleOf(access.expression);
     if (module !== null) return { module, member: access.name.text };
+    // The events module object IS the EventEmitter class, so the class's
+    // defaultMaxListeners is the module property.
+    if (access.name.text === "defaultMaxListeners" && ts.isIdentifier(access.expression)) {
+      const imported = this.builtinImportOf(access.expression);
+      if (imported?.module === "events" && imported.member === "EventEmitter") {
+        return { module: "events", member: "defaultMaxListeners" };
+      }
+    }
     // The RE-EXPORT FACADE's namespace spelling: `import * as assert from
     // "./facade.js"` over `export { ok } from "node:assert"` (the formatter idiom's
     // universal/assert). The member's symbol is the facade's

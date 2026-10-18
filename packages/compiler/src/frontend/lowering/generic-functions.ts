@@ -132,6 +132,8 @@ export interface GenericInstance {
    * any-params poisoned it) — the body lowers in return-INFERENCE mode
    * (returnType holds the DYN recursion pin until the post-pass settles). */
   implicitInferReturn?: true;
+  /** An erased instance (every type parameter bound to `unknown`). */
+  erased?: true;
 }
 
 /** Defaults bind during inference; collection only resolves symbols in
@@ -716,6 +718,7 @@ export function lowerGenericInstance(
   lowerer.fnStack.push(fnCtx);
   lowerer.localClassInstantiations.push({ owner: decl, name: inst.name });
   lowerer.genericInstantiationPath = inst.path;
+  if (inst.erased) lowerer.erasingDepth++;
   try {
     // Static specializations bind lexical this only when the caller
     // proved its exact receiver. Other instances retain the fence;
@@ -818,6 +821,7 @@ export function lowerGenericInstance(
     lowerer.instantiationContext = prevContext;
     lowerer.localClassInstantiations.pop();
     lowerer.suppressStats = prevSuppress;
+    if (inst.erased) lowerer.erasingDepth--;
   }
 }
 
@@ -927,6 +931,29 @@ function runtimeOptionalHofGenericBinding(
   return { typeParam, type: lowerer.runtimeOptionalType(receiver.elem) };
 }
 
+/** The erased instance of a generic declaration: every type parameter
+ * bound to `unknown`, the function JavaScript runs for any type arguments.
+ * Values of generic methods (dynamic dispatch, interface views) call it. */
+export function erasedGenericInstance(
+  lowerer: Lowerer,
+  blame: ts.Node,
+  info: GenericFnInfo,
+): GenericInstance {
+  lowerer.erasingDepth++;
+  try {
+    const instance = genericValueInstance(
+      lowerer,
+      blame,
+      info,
+      new Map(info.typeParams.map((tp) => [tp, DYN])),
+    );
+    instance.erased = true;
+    return instance;
+  } finally {
+    lowerer.erasingDepth--;
+  }
+}
+
 /** The instance a pinned VALUE reference names: the declaration's modes
  * over the DECLARED types mapped under the bindings (mapType's resolver
  * substitutes — the instance-body trick), which is the same result the
@@ -934,7 +961,7 @@ function runtimeOptionalHofGenericBinding(
  * one instance per key. */
 function genericValueInstance(
   lowerer: Lowerer,
-  ref: ts.Expression,
+  ref: ts.Node,
   info: GenericFnInfo,
   bindings: Map<ts.Symbol, IrType>,
 ): GenericInstance {

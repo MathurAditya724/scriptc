@@ -2733,6 +2733,7 @@ static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n) {
   bool piped = r->pipe_res != NULL || r->pipe_client != NULL || r->pipe_sock != NULL;
   if (r->data_ls.n == 0 && !piped) return;
   ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
+  chunk->is_buffer = true; /* Node delivers a Buffer */
   memcpy(chunk->data, data, n);
   if (r->data_ls.n > 0) {
     ScrNetL *snap;
@@ -2931,6 +2932,7 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
       return true;
     }
     ScrBytes *head = scr_bytes_new(SCR_BYTES_U8, (double)conn->len);
+    head->is_buffer = true; /* the upgrade head is a Buffer */
     if (conn->len > 0) memcpy(head->data, conn->buf, conn->len);
     conn->len = 0;
     scr_net_sock_clear_native_reader(conn->sock);
@@ -2966,6 +2968,7 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
       return true;
     }
     ScrBytes *head = scr_bytes_new(SCR_BYTES_U8, (double)conn->len);
+    head->is_buffer = true; /* the upgrade head is a Buffer */
     if (conn->len > 0) memcpy(head->data, conn->buf, conn->len);
     conn->len = 0;
     scr_net_sock_clear_native_reader(conn->sock);
@@ -4659,6 +4662,7 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len) {
       return true;
     }
     ScrBytes *head = scr_bytes_new(SCR_BYTES_U8, (double)conn->len);
+    head->is_buffer = true; /* the upgrade head is a Buffer */
     if (conn->len > 0) memcpy(head->data, conn->buf, conn->len);
     conn->len = 0;
     scr_net_sock_clear_native_reader(conn->sock);

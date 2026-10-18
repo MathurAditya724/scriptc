@@ -53,7 +53,12 @@ import {
 } from "./instantiation-path.js";
 import { appendImplicitUndefinedReturn, hasExplicitJsDocReturn } from "./function-returns.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
-import { generatorMeta, type ParamShape } from "./call-signatures.js";
+import {
+  checkedJsDocumentedParameter,
+  documentedParameter,
+  generatorMeta,
+  type ParamShape,
+} from "./call-signatures.js";
 import { omittedArgFor } from "./call-arguments.js";
 import {
   isGenericCallableMemberType,
@@ -129,6 +134,7 @@ import { hasLexicalPrivateReference, hasStaticThis, rejectStaticThis } from "./s
 import { lowerUrlNew } from "./lower-url.js";
 import { isNativeProxyInitializer, lowerNativeProxy } from "./expressions/native-proxy.js";
 import { classStaticDataFor } from "./class-static-data.js";
+import { construction, constructionPrefix } from "./js-class-fields.js";
 import { lowerObjectFactoryNew } from "./object-factory-new.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerInstanceConstructorNew } from "./class-instance-constructor.js";
@@ -975,7 +981,8 @@ function jsFieldInitializerType(lowerer: Lowerer, type: IrType, expression: ts.E
         .some(
           (decl) =>
             ts.isParameter(decl) &&
-            (ts.isConstructorDeclaration(decl.parent) ||
+            ((ts.isConstructorDeclaration(decl.parent) &&
+              !checkedJsDocumentedParameter(lowerer, decl)) ||
               (lowerer.typeOf(expression).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0),
         )
     )
@@ -2992,7 +2999,14 @@ export function collectClassShapeInner(
               "overriding a method with a different signature (parameter types must match the base declaration exactly; returns may narrow to a subclass)",
             );
           }
-          methods.set(mName, { params: shapes, ret, abstract: true });
+          const unionReturn =
+            overridden?.sig.ret.kind === "union" && !typeEquals(ret, overridden.sig.ret);
+          if (unionReturn) lowerer.unionReturnOverrides.add(member);
+          methods.set(mName, {
+            params: shapes,
+            ret: unionReturn ? overridden.sig.ret : ret,
+            abstract: true,
+          });
           continue;
         }
         // A body-less method is an OVERLOAD SIGNATURE (abstract methods
@@ -3258,6 +3272,12 @@ export function collectClassShapeInner(
               "overriding a method with a different signature (parameter types must match the base declaration exactly; returns may narrow to a subclass)",
             );
           }
+        }
+        // A return narrowed to part of an inherited union returns through
+        // the union ABI; call sites narrow it back to the declared type.
+        if (overridden?.sig.ret.kind === "union" && !typeEquals(ft.ret, overridden.sig.ret)) {
+          ft.ret = overridden.sig.ret;
+          lowerer.unionReturnOverrides.add(member);
         }
         const asyncMember =
           member.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
@@ -3656,6 +3676,19 @@ export function collectClassShapeInner(
         const keySym = lateBoundKeySymOf(lowerer, p);
         if (keySym) lateBoundByKey.set(keySym, p);
       }
+      // A subclass field created before anything can observe the instance
+      // keeps its type: super() cannot run code that reads it earlier.
+      const baseConstruction =
+        base && ![...methods.keys()].some((m) => m.startsWith("get:") || m.startsWith("set:"))
+          ? construction(base)
+          : null;
+      const sealedPrefix = baseConstruction
+        ? constructionPrefix(
+            decl,
+            baseConstruction,
+            (name) => !hasAccessor(name) && !methods.has(name) && !lowerer.findMethodOn(base, name),
+          )
+        : null;
       if (ctor?.body) {
         for (const stmt of ctor.body.statements) {
           const lhs =
@@ -3726,7 +3759,8 @@ export function collectClassShapeInner(
             type = inheritedJsFieldType(lowerer, decl, name, type);
             // super() can invoke a subclass setter or method before its
             // constructor assignments run. These slots start undefined.
-            if (base && lowerer.dynConvertible(type)) type = DYN;
+            if (base && lowerer.dynConvertible(type) && !sealedPrefix?.created.has(name))
+              type = DYN;
             fields.set(name, type);
             fieldOrder.push({ name, type, initializer: undefined });
             continue;
@@ -6133,6 +6167,22 @@ function overrideReturnAbi(
   className: string,
   base: ClassInfo | null,
 ): IrType {
+  // A return narrowed to part of an inherited union (`Meta` for
+  // `Meta | undefined`) keeps the union ABI; returns convert into it.
+  if (inherited.kind === "union" && !typeEquals(declared, inherited)) {
+    const arms = lowerer.unions.get(inherited.unionId)?.arms ?? [];
+    const fits = (type: IrType): boolean =>
+      arms.some(
+        (arm) =>
+          typeEquals(arm, type) ||
+          (arm.kind === "object" &&
+            type.kind === "object" &&
+            lowerer.isSubclassOf(type.className, arm.className)),
+      );
+    const parts =
+      declared.kind === "union" ? (lowerer.unions.get(declared.unionId)?.arms ?? []) : [declared];
+    return parts.length > 0 && parts.every(fits) ? inherited : declared;
+  }
   if (declared.kind !== "object" || inherited.kind !== "object") return declared;
   if (
     lowerer.isSubclassOf(declared.className, inherited.className) ||
@@ -6400,7 +6450,8 @@ export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.Sou
               for (const declaration of property ? lowerer.checker.declarationsOf(property) : []) {
                 if (
                   ts.isMethodDeclaration(declaration) &&
-                  isJsSourceFile(declaration.getSourceFile())
+                  isJsSourceFile(declaration.getSourceFile()) &&
+                  !checkedJsOverride(lowerer, declaration, member)
                 ) {
                   lowerer.virtualJsMethods.add(declaration);
                   if (
@@ -6468,6 +6519,21 @@ export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.Sou
         }
     }
   }
+}
+
+/** An override whose base and overriding methods are in files TypeScript
+ * checks and document every parameter: TypeScript checks the override
+ * against its base, so both keep their declared signatures, as in
+ * TypeScript classes. */
+function checkedJsOverride(
+  lowerer: Lowerer,
+  base: ts.MethodDeclaration,
+  member: ts.MethodDeclaration,
+): boolean {
+  return [base, member].every(
+    (method) =>
+      lowerer.checkedJsFile(method.getSourceFile()) && method.parameters.every(documentedParameter),
+  );
 }
 
 /** The receiver's EXACT runtime class, when the expression proves it: a
@@ -6918,7 +6984,8 @@ export function classMemberNameOf(lowerer: Lowerer, name: ts.PropertyName): stri
       member === "iterator" ||
       member === "asyncIterator" ||
       member === "dispose" ||
-      member === "asyncDispose"
+      member === "asyncDispose" ||
+      member === "toPrimitive"
     ) {
       return `sym:${member}`;
     }
