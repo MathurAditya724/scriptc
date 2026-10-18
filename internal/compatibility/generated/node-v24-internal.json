@@ -746,9 +746,9 @@
       "apiEntries": 117,
       "static": {
         "supported": 0,
-        "partial": 51,
+        "partial": 53,
         "refused": 0,
-        "not-implemented": 66,
+        "not-implemented": 64,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -90951,6 +90951,7 @@
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/snapshot.ts",
           "tests/fixtures/node-test/cases/suite-variants.ts",
           "tests/fixtures/node-test/cases/todo-suites.ts",
           "tests/harness/node-test.test.ts"
@@ -93602,8 +93603,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.assert.fileSnapshot",
+        "tests": [
+          "tests/fixtures/node-test/cases/snapshot.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93625,8 +93630,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.assert.snapshot",
+        "tests": [
+          "tests/fixtures/node-test/cases/snapshot.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },

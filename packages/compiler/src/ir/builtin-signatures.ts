@@ -1475,6 +1475,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // code per listed API ('T' setTimeout, 'I' setInterval), the `now`
   // value and its flags (1 given, 2 from a Date). enable, tick, runAll and
   // setTime throw Node's errors; tick and runAll run timer callbacks.
+  // t.assert.snapshot and fileSnapshot: the escaped, wrapped serialized
+  // value, and the stored value it is compared with (snapshot: the test,
+  // the value, the snapshot file; fileSnapshot: the value, the path).
+  // Both read or, in update mode, record; missing and unreadable
+  // snapshots throw Node's ERR_INVALID_STATE.
+  "test.snapshotValue": { argTypes: [STRING], result: STRING },
+  "test.ctxSnapshot": { argTypes: [TESTCTX_T, STRING, STRING], result: STRING },
+  "test.fileSnapshot": { argTypes: [STRING, STRING], result: STRING },
+  // Node's serializeValue over a dyn array of serializers (undefined for
+  // the default JSON.stringify(value, null, 2)); a throw becomes Node's
+  // "The provided serializers did not generate a string." ERR_INVALID_STATE.
+  "test.snapshotSerialize": { argTypes: [DYN, DYN], result: DYN },
   "test.mockTimersEnable": { argTypes: [STRING, F64, F64], result: VOID },
   "test.mockTimersTick": { argTypes: [F64], result: VOID },
   "test.mockTimersRunAll": { argTypes: [], result: VOID },
@@ -2885,6 +2897,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   },
   "fileHandle.stat": { argTypes: [FILEHANDLE_T], result: { kind: "promise", inner: STATS_T } },
   "process.argv": { argTypes: [], result: arrayOf(STRING) },
+  // The Node runtime flag a node:test binary took out of process.argv
+  // (--test-update-snapshots), or [] — a fresh array per read.
+  "process.execArgv": { argTypes: [], result: arrayOf(STRING) },
   "process.platform": { argTypes: [], result: STRING },
   // The one libCall whose result type is program-dependent (union ids are
   // per-module): the `result` here is a placeholder — the libCall case
