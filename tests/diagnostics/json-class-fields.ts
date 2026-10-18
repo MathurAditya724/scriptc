@@ -1,15 +1,22 @@
 // JSON.stringify reads class instances through their checked-dynamic
-// property view. A class whose declared field has no representation in
-// that view is refused at compile time, naming the field.
-class Schedule {
-  name = "weekly";
-  next = new Date(Date.UTC(2024, 0, 1));
+// property view. A class whose declared field holds a RegExp or a Promise,
+// which the runtime JSON traversal cannot write, is refused at compile
+// time, naming the field.
+class Pattern {
+  name = "digits";
+  source = /\d+/g;
 }
 
-class Calendar {
+class Job {
+  title = "fetch";
+  pending = Promise.resolve(1);
+}
+
+class Catalog {
   title = "team";
-  schedules: Schedule[] = [new Schedule()];
+  patterns: Pattern[] = [new Pattern()];
 }
 
-console.log(JSON.stringify(new Schedule()));
-console.log(JSON.stringify({ calendar: new Calendar() }));
+console.log(JSON.stringify(new Pattern()));
+console.log(JSON.stringify(new Job()));
+console.log(JSON.stringify({ catalog: new Catalog() }));

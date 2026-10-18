@@ -168,7 +168,7 @@ export function lowerJsonMethodCall(
           argNode,
           `JSON.stringify of '${lowerer.fmt(value.type)}' values (field '${unreadable.field}' of class ` +
             `'${unreadable.className}' has type '${lowerer.fmt(unreadable.type)}', which the runtime JSON ` +
-            `traversal cannot read)`,
+            `traversal cannot ${unreadable.reason})`,
         );
       }
       // Keep the original containers live while the runtime visits them:
@@ -290,15 +290,47 @@ function lowerOptionalStringifyRoot(
   return { kind: "call", callee: helper, args: [value], type: resultT, loc };
 }
 
+/** True when a class field type holds a RegExp or a Promise outside a
+ * nested class instance (whose own fields are checked separately): Node
+ * writes both as {}, and the runtime JSON traversal has no writer for them. */
+function holdsUnwritable(lowerer: Lowerer, t: IrType, visiting: Set<string>): boolean {
+  switch (t.kind) {
+    case "regex":
+    case "promise":
+      return true;
+    case "array":
+      return holdsUnwritable(lowerer, t.elem, visiting);
+    case "record": {
+      if (visiting.has(t.shapeId)) return false;
+      visiting.add(t.shapeId);
+      const shape = lowerer.shapes.get(t.shapeId);
+      return (
+        (shape?.fields ?? []).some((field) => holdsUnwritable(lowerer, field.type, visiting)) ||
+        (shape?.indexValue !== undefined && holdsUnwritable(lowerer, shape.indexValue, visiting))
+      );
+    }
+    case "union": {
+      if (visiting.has(t.unionId)) return false;
+      visiting.add(t.unionId);
+      return (lowerer.unions.get(t.unionId)?.arms ?? []).some((arm) =>
+        holdsUnwritable(lowerer, arm, visiting),
+      );
+    }
+    default:
+      return false;
+  }
+}
+
 /** The first class field reachable from a stringify input that the class's
- * checked-dynamic property view cannot represent. The runtime JSON traversal
+ * checked-dynamic property view cannot represent, or that holds a RegExp or
+ * a Promise, which the runtime JSON traversal cannot write. The traversal
  * reads class instances through that view, so such a class is refused at
- * compile time instead of throwing when the view is built. */
+ * compile time instead of throwing when the view is built or written. */
 function classFieldWithoutJsonView(
   lowerer: Lowerer,
   t: IrType,
   visiting: Set<string>,
-): { className: string; field: string; type: IrType } | null {
+): { className: string; field: string; type: IrType; reason: "read" | "write" } | null {
   const getRecord = (id: string) => lowerer.shapes.get(id);
   const getUnion = (id: string) => lowerer.unions.get(id);
   switch (t.kind) {
@@ -331,10 +363,16 @@ function classFieldWithoutJsonView(
       const info = lowerer.classes.get(t.className);
       for (const field of info?.def.fields ?? []) {
         if (!isClassOwnEnumerableFieldName(field.name)) continue;
-        if (!classDynViewSupported([field], getRecord, getUnion)) {
+        const unreadable = !classDynViewSupported([field], getRecord, getUnion);
+        if (unreadable || holdsUnwritable(lowerer, field.type, new Set())) {
           const className =
             info?.def.jsName ?? info?.decl?.name?.text ?? t.className.replace(/^%/, "");
-          return { className, field: field.name, type: field.type };
+          return {
+            className,
+            field: field.name,
+            type: field.type,
+            reason: unreadable ? "read" : "write",
+          };
         }
         const found = classFieldWithoutJsonView(lowerer, field.type, visiting);
         if (found) return found;

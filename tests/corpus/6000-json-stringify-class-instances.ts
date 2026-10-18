@@ -129,3 +129,15 @@ h.payload = 7;
 console.log(JSON.stringify({ handlers: [h] }));
 const u: unknown = new Map([["a", 1]]);
 console.log(JSON.stringify(new Tagged()), JSON.stringify(u));
+
+// Date fields write their toJSON text, also in nested instances.
+class Schedule {
+  name = "weekly";
+  next = new Date(Date.UTC(2024, 0, 1));
+}
+class Calendar {
+  title = "team";
+  schedules: Schedule[] = [new Schedule()];
+}
+console.log(JSON.stringify(new Schedule()));
+console.log(JSON.stringify({ calendar: new Calendar() }));
