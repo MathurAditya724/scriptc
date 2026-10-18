@@ -137,6 +137,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fetch.streamFrom",
   "num.toFixed",
   "num.toStringRadix",
+  "num.toStringRadixF64",
   "insp.jsonDyn",
   // diagnostics_channel: publish runs subscribers synchronously (a throw
   // propagates — the documented divergence from triggerUncaughtException);
