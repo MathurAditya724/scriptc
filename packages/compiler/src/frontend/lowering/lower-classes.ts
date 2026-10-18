@@ -8894,20 +8894,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       };
       const pattern = strArg(args[0], "pattern");
       const flags = strArg(args[1], "flags argument");
-      // Node accepts the 'd' and 'v' flags the engine does not have; a
-      // literal flags string refuses here like the literal regex form.
-      if (flags.kind === "strLit" && args[1] !== undefined) {
-        for (const f of ["d", "v"]) {
-          if (flags.value.includes(f)) {
-            lowerer.unsupported(
-              "SC1120",
-              args[1],
-              f === "d"
-                ? "the regex 'd' flag (match indices)"
-                : "the regex 'v' flag (unicode sets)",
-            );
-          }
-        }
+      // Node accepts the 'd' flag the engine does not have; a literal
+      // flags string refuses here like the literal regex form.
+      if (flags.kind === "strLit" && args[1] !== undefined && flags.value.includes("d")) {
+        lowerer.unsupported("SC1120", args[1], "the regex 'd' flag (match indices)");
       }
       return {
         kind: "libCall",

@@ -1932,8 +1932,8 @@ function validateFunction(
       }
       case "regexLit": {
         if (e.type.kind !== "regex") err("regexLit must be regex-typed", e.loc);
-        if (!/^[gimsuy]*$/.test(e.flags)) {
-          err(`regexLit flags "${e.flags}" outside the supported alphabet (gimsuy)`, e.loc);
+        if (!/^[gimsuvy]*$/.test(e.flags)) {
+          err(`regexLit flags "${e.flags}" outside the supported alphabet (gimsuvy)`, e.loc);
         }
         if (new Set(e.flags).size !== e.flags.length) {
           err(`regexLit flags "${e.flags}" contain a duplicate`, e.loc);

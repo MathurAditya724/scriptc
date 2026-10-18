@@ -941,9 +941,9 @@
       "apiEntries": 66,
       "static": {
         "supported": 0,
-        "partial": 43,
+        "partial": 46,
         "refused": 0,
-        "not-implemented": 23,
+        "not-implemented": 20,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -113088,6 +113088,8 @@
           "tests/corpus/5874-worker-stdio-streams.ts",
           "tests/corpus/5875-worker-stdout-pipe.cjs",
           "tests/corpus/5879-worker-stdin.ts",
+          "tests/corpus/5990-worker-uncloneable.mjs",
+          "tests/corpus/5991-worker-async-dispose.mjs",
           "tests/corpus/native-worker-clone-errors.ts",
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-delayed-messages.ts",
@@ -113979,8 +113981,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker",
+        "tests": [
+          "tests/corpus/5991-worker-async-dispose.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114437,8 +114442,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker_threads.markAsUncloneable",
+        "tests": [
+          "tests/corpus/5990-worker-uncloneable.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114562,8 +114570,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.isInternalThread",
+        "tests": [
+          "tests/corpus/5990-worker-uncloneable.mjs"
+        ]
       },
       "anchorSource": "chapter"
     },

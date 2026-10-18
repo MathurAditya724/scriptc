@@ -669,6 +669,10 @@ ScrDyn *scr_dyn_from_iterator(const ScrDyn *value, int *kind);
 ScrDyn *scr_dyn_iterator_result_get(const ScrDyn *result, const char *key, size_t len);
 void scr_dyn_install_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key);
+void scr_dyn_install_async_dispose_symbol(ScrDyn *key);
+/* True when key is Symbol.asyncDispose (registered by the symbol unit when
+ * the program names it); handle symbol_get ops outside that unit use it. */
+bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key);
 ScrDyn *scr_dyn_array_values_function(void);
 ScrDyn *scr_dyn_array_from_iterator(const ScrDyn *value);
 ScrDyn *scr_dyn_iterator_result(ScrDyn *value);
@@ -890,6 +894,7 @@ bool scr_dyn_same_value(const ScrDyn *left, const ScrDyn *right);
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method);
 ScrStr *scr_dyn_to_string_argument(const ScrDyn *d, const ScrDyn *argument, const ScrStr *what);
 ScrDyn *scr_dyn_value_of(const ScrDyn *d, const ScrStr *what);
+ScrStr *scr_dyn_error_string(const ScrDyn *d);
 ScrStr *scr_num_to_string_radix(double value, const ScrDyn *radix);
 /* JS String() over the dyn kind (units render "null"/"undefined" where
  * scr_dyn_to_string throws) — the web globals' WebIDL ToString. +1. */
@@ -956,6 +961,13 @@ ScrDyn *scr_structured_clone_transfer_fail_with(const ScrDyn *first);
 /* Validates a structuredClone options dyn value (throws on failure —
  * callers must check scr_exc_pending). Borrowed, NULL-tolerant. */
 void scr_sc_validate_options(const ScrDyn *options);
+/* markAsUncloneable(value) and the check structuredClone and postMessage
+ * make (scr_json.c); both borrow the value. scr_uncloneable_count is the
+ * number of marked values, so the clone paths test it inline and call
+ * scr_uncloneable_marked only once something is marked. */
+void scr_mark_uncloneable(ScrDyn *value);
+bool scr_uncloneable_marked(const ScrDyn *value);
+extern SCR_TL size_t scr_uncloneable_count;
 /* An %Error as the boundary's dyn shape ({name, message[, code]}).
  * Borrows; +1. */
 ScrDyn *scr_dyn_from_error(const ScrError *e);

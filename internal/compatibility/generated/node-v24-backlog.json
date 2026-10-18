@@ -7,8 +7,8 @@
     "tierItemCount": 3456,
     "tiers": {
       "static": {
-        "audit-partial": 1137,
-        "verify-gap": 2192,
+        "audit-partial": 1140,
+        "verify-gap": 2189,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -84606,12 +84606,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.worker",
+          "tests": [
+            "tests/corpus/5991-worker-async-dispose.mjs"
+          ]
         }
       }
     },
@@ -85085,12 +85087,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.worker_threads.markAsUncloneable",
+          "tests": [
+            "tests/corpus/5990-worker-uncloneable.mjs"
+          ]
         }
       }
     },
@@ -85218,12 +85222,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.isInternalThread",
+          "tests": [
+            "tests/corpus/5990-worker-uncloneable.mjs"
+          ]
         }
       }
     },

@@ -1132,6 +1132,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * (scr_worker_events.c; the value borrowed). */
   "worker.markUntransferable": { argTypes: [DYN], result: VOID },
   "worker.isMarkedUntransferable": { argTypes: [DYN], result: BOOL },
+  /** markAsUncloneable(value) (scr_json.c; the value borrowed). */
+  "dyn.markUncloneable": { argTypes: [DYN], result: VOID },
   /** before new Worker() with the stdout or stderr option: links the stream
    * unit that worker.stdout and worker.stderr read through (scr_stream.c). */
   "stream.workerStdio": { argTypes: [], result: VOID },
