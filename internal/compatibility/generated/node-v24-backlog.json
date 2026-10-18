@@ -7,8 +7,8 @@
     "tierItemCount": 3456,
     "tiers": {
       "static": {
-        "audit-partial": 1140,
-        "verify-gap": 2189,
+        "audit-partial": 1143,
+        "verify-gap": 2186,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -25033,7 +25033,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.getEventListeners",
           "tests": [
-            "tests/corpus/5885-events-max-listener-helpers.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts",
+            "tests/corpus/5846-events-esm-default-max.ts",
+            "tests/corpus/5847-events-cjs-default-max.cjs"
           ]
         }
       }
@@ -25060,7 +25062,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.getMaxListeners",
           "tests": [
-            "tests/corpus/5885-events-max-listener-helpers.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts",
+            "tests/corpus/5846-events-esm-default-max.ts",
+            "tests/corpus/5847-events-cjs-default-max.cjs"
           ]
         }
       }
@@ -25115,7 +25119,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.listenerCount",
           "tests": [
-            "tests/corpus/5885-events-max-listener-helpers.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts",
+            "tests/corpus/5846-events-esm-default-max.ts",
+            "tests/corpus/5847-events-cjs-default-max.cjs"
           ]
         }
       }
@@ -25167,7 +25173,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.setMaxListeners",
           "tests": [
-            "tests/corpus/5885-events-max-listener-helpers.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts",
+            "tests/corpus/5846-events-esm-default-max.ts",
+            "tests/corpus/5847-events-cjs-default-max.cjs"
           ]
         }
       }
@@ -25221,7 +25229,9 @@
           "confidence": "high",
           "source": "compiler-dedicated:events.defaultMaxListeners",
           "tests": [
-            "tests/corpus/5885-events-max-listener-helpers.ts"
+            "tests/corpus/5885-events-max-listener-helpers.ts",
+            "tests/corpus/5846-events-esm-default-max.ts",
+            "tests/corpus/5847-events-cjs-default-max.cjs"
           ]
         }
       }
@@ -48454,7 +48464,8 @@
           "confidence": "high",
           "source": "compiler-feature:module.module.isBuiltin",
           "tests": [
-            "tests/corpus/2932-create-require-program/main.ts"
+            "tests/corpus/2932-create-require-program/main.ts",
+            "tests/corpus/5846-events-esm-default-max.ts"
           ]
         }
       }
@@ -48551,7 +48562,8 @@
           "confidence": "high",
           "source": "compiler-feature:module.module.syncBuiltinESMExports",
           "tests": [
-            "tests/corpus/2932-create-require-program/main.ts"
+            "tests/corpus/2932-create-require-program/main.ts",
+            "tests/corpus/5846-events-esm-default-max.ts"
           ]
         }
       }
@@ -57531,12 +57543,15 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.process.execArgv",
+          "tests": [
+            "tests/corpus/990-process-basics.ts",
+            "tests/corpus/2314-process-introspection.ts"
+          ]
         }
       }
     },
@@ -67691,12 +67706,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.assert.fileSnapshot",
+          "tests": [
+            "tests/fixtures/node-test/cases/snapshot.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67716,12 +67734,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.assert.snapshot",
+          "tests": [
+            "tests/fixtures/node-test/cases/snapshot.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },

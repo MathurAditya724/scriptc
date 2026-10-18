@@ -5302,7 +5302,7 @@ function lowerDynSwitch(
         loc: locOf(expression),
       };
     }
-    if (!lowerer.dynConvertible(test.type)) {
+    if (test.type.kind === "date" || !lowerer.dynConvertible(test.type)) {
       lowerer.unsupported(
         "SC1100",
         expression,
@@ -6055,16 +6055,22 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       );
     }
     // syncBuiltinESMExports() is the other compiler-only statement: the
-    // call validates its zero-argument shape, then emits no code because
-    // the static builtin surface is immutable.
+    // call validates its zero-argument shape, then refreshes the events
+    // module's ES module namespace copy of defaultMaxListeners, the one
+    // builtin export a program can change.
     const bi = ts.isIdentifier(expr.expression)
       ? lowerer.builtinImportOf(expr.expression)
       : ts.isPropertyAccessExpression(expr.expression)
         ? lowerer.builtinMemberOf(expr.expression)
         : null;
     if (bi?.module === "module" && bi.member === "syncBuiltinESMExports") {
-      lowerNodeModuleCall(lowerer, expr, bi, locOf(expr));
-      return { kind: "block", body: [], loc: locOf(expr) };
+      const loc = locOf(expr);
+      lowerNodeModuleCall(lowerer, expr, bi, loc);
+      return {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "emitter.esmSync", args: [], type: VOID, loc },
+        loc,
+      };
     }
   }
   if (

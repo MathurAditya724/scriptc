@@ -166,6 +166,13 @@ static SCR_TL char **scr_lib_argv_owned = NULL;
 static SCR_TL char *scr_lib_argv_utf8 = NULL;
 #endif
 static SCR_TL bool scr_lib_has_fork = false;
+/* A leading Node runtime flag taken out of process.argv (scr_lib_take_flag),
+ * which process.execArgv reports; NULL without one. */
+static SCR_TL const char *scr_lib_exec_flag = NULL;
+#if defined(_WIN32) && !defined(SCR_LIB)
+/* The flag's index in the original Windows command line, -1 without one. */
+static SCR_TL int scr_lib_exec_flag_index = -1;
+#endif
 #if !defined(_WIN32) && !defined(__wasi__) && !defined(SCR_LIB)
 static void scr_title_init(int argc, char **argv);
 #endif
@@ -321,6 +328,7 @@ static void scr_lib_prepare_utf8_argv(void) {
     // scr_lib_init already consumed this private ASCII fork marker. Do not
     // reintroduce it when replacing the narrow argument storage.
     if (i == 1 && scr_lib_has_fork) continue;
+    if (i == scr_lib_exec_flag_index) continue;
     int size = WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, NULL, 0, NULL, NULL);
     if (size == 0 || WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, next, size, NULL, NULL) != size) {
       free(text); free(args); LocalFree(wide);
@@ -563,6 +571,31 @@ const char *scr_lib_arg(int i) {
   scr_lib_prepare_utf8_argv();
 #endif
   return scr_lib_argv[i];
+}
+
+bool scr_lib_take_flag(const char *flag) {
+  if (scr_lib_argc < 2 || strcmp(scr_lib_argv[1], flag) != 0) return false;
+  char **args = malloc((size_t)scr_lib_argc * sizeof(char *));
+  if (!args) scr_trap("out of memory");
+  args[0] = scr_lib_argv[0];
+  for (int i = 2; i < scr_lib_argc; i++) args[i - 1] = scr_lib_argv[i];
+  args[scr_lib_argc - 1] = NULL;
+  free(scr_lib_argv_owned);
+  scr_lib_argv_owned = args;
+  scr_lib_argv = args;
+  scr_lib_argc--;
+#if defined(_WIN32) && !defined(SCR_LIB)
+  scr_lib_exec_flag_index = scr_lib_has_fork ? 2 : 1;
+#endif
+  scr_lib_exec_flag = flag;
+  return true;
+}
+
+ScrArr *scr_process_exec_argv(void) {
+  ScrArr *arr = scr_arr_new(SCR_ELEM_STR, 1);
+  if (scr_lib_exec_flag)
+    scr_arr_push_ref(arr, scr_str_new(scr_lib_exec_flag, strlen(scr_lib_exec_flag)));
+  return arr;
 }
 
 bool scr_lib_fork_info(double *target, uintptr_t *read_handle,
@@ -11070,9 +11103,69 @@ ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments) {
     else if (!scr_dyn_number_coerce_js(value, &ms)) return NULL;
     ms = scr_date_new_ms(ms);
   }
+  return scr_dyn_native_date_from_ms(ms);
+}
+
+/* The Date.prototype methods scr_native_date_invoke answers. */
+static const char *const scr_native_date_methods[] = {
+  "getTime", "valueOf", "toISOString", "toJSON", "getFullYear", "getUTCFullYear", "getMonth",
+  "getUTCMonth", "getDate", "getUTCDate", "getDay", "getUTCDay", "getHours", "getUTCHours",
+  "getMinutes", "getUTCMinutes", "getSeconds", "getUTCSeconds", "getMilliseconds",
+  "getUTCMilliseconds", "getTimezoneOffset",
+};
+#define SCR_NATIVE_DATE_METHODS (sizeof scr_native_date_methods / sizeof scr_native_date_methods[0])
+static SCR_TL ScrDyn *scr_native_date_method_values[SCR_NATIVE_DATE_METHODS];
+static SCR_TL bool scr_native_date_methods_registered;
+
+static void scr_native_date_methods_cleanup(void) {
+  for (size_t i = 0; i < SCR_NATIVE_DATE_METHODS; i++) {
+    ScrDyn *function = scr_native_date_method_values[i];
+    scr_native_date_method_values[i] = NULL;
+    scr_dyn_release(function);
+  }
+}
+
+/* A Date method read as a value and called later: the closure's function
+ * slot holds the method's name, and the receiver must be a Date. */
+static ScrDyn *scr_native_date_method_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  const char *method = closure->fn;
+  ScrDyn *self = scr_dyn_this_get();
+  ScrDyn *result = NULL;
+  if (scr_dyn_native_date_is(self)) {
+    result = scr_native_date_invoke(self->v.handle.ptr, self, method, args, argc, method);
+  } else {
+    static const char message[] = "this is not a Date object.";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  }
+  scr_dyn_release(self);
+  return result;
+}
+
+/* Property reads of a Date: its methods as function values, one per name
+ * and thread, and NULL (undefined) for other names. */
+static ScrDyn *scr_native_date_get(void *ptr, const char *key, size_t key_len) {
+  (void)ptr;
+  for (size_t i = 0; i < SCR_NATIVE_DATE_METHODS; i++) {
+    const char *name = scr_native_date_methods[i];
+    if (strlen(name) != key_len || memcmp(name, key, key_len) != 0) continue;
+    if (!scr_native_date_methods_registered) {
+      scr_native_date_methods_registered = true;
+      scr_atexit(scr_native_date_methods_cleanup);
+    }
+    if (!scr_native_date_method_values[i]) {
+      scr_native_date_method_values[i] = scr_dyn_new_func(
+          scr_closure_new((void *)name, 0), scr_native_date_method_call, 0, "native:Date", name);
+    }
+    return scr_dyn_retain(scr_native_date_method_values[i]);
+  }
+  return NULL;
+}
+
+/* A Date handle holding the time value `ms` (already TimeClip'd). */
+ScrDyn *scr_dyn_native_date_from_ms(double ms) {
   static const ScrDynHandleOps ops = {
     "Date", &scr_native_date_retain, &scr_native_date_release, &scr_native_date_invoke,
-    NULL, NULL, NULL, NULL,
+    &scr_native_date_get, NULL, NULL, NULL,
   };
   scr_dyn_handle_install(SCR_DYNH_DATE, &ops);
   ScrNativeDate *date = malloc(sizeof *date);

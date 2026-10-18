@@ -57,6 +57,20 @@ void scr_test_mock_reset(void);
 void scr_test_ctx_mock_track(ScrTestCtx *t, ScrClosure *restore);
 void scr_test_ctx_mock_restore_all(ScrTestCtx *t);
 void scr_test_ctx_mock_reset(ScrTestCtx *t);
+/* Called by node:test programs right after scr_lib_init: a leading
+ * --test-update-snapshots argument, Node's flag, turns on snapshot update
+ * mode and moves from process.argv to process.execArgv. */
+void scr_test_init(void);
+/* t.assert.snapshot and t.assert.fileSnapshot. snapshot_value escapes
+ * and wraps a serialized value (+1); ctx_snapshot returns the stored value
+ * for the test's next snapshot id in `file` and file_snapshot the
+ * contents of `path` (+1), or the recorded value in update mode. Both
+ * throw Node's ERR_INVALID_STATE for missing or unreadable snapshots and
+ * return NULL then. */
+ScrStr *scr_test_snapshot_value(ScrStr *serialized);
+ScrDyn *scr_test_snapshot_serialize(ScrDyn *value, ScrDyn *serializers);
+ScrStr *scr_test_ctx_snapshot(ScrTestCtx *t, ScrStr *value, ScrStr *file);
+ScrStr *scr_test_file_snapshot(ScrStr *value, ScrStr *path);
 /* mock.timers on the module's `mock` and on t.mock: enable({ apis, now })
  * (`apis` one code per listed API: 'T' setTimeout, 'I' setInterval, 'M'
  * setImmediate, 'D' Date, 'W' scheduler.wait, 'A' AbortSignal.timeout;

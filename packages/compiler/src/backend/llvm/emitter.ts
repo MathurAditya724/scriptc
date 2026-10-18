@@ -88,7 +88,7 @@ import {
   type StringSplit,
 } from "./split-loops.js";
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
-import { RESULT_ENTRY_PREFIX, addRecordResultEntries } from "./record-results.js";
+import { RESULT_DST_ID, RESULT_ENTRY_PREFIX, addRecordResultEntries } from "./record-results.js";
 import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
@@ -166,7 +166,9 @@ import {
   emitStackObject,
   findLocalStackObjects,
   findReassignedStackObjects,
+  stackObjectFields,
   stackObjectStruct,
+  type StackObjectField,
   type StackObjectSource,
 } from "./stack-objects.js";
 import {
@@ -199,7 +201,12 @@ import {
   type LocalArrayRead,
 } from "./local-array-reads.js";
 import { CheckedNarrows, emitCheckedNarrowReceiver } from "./checked-narrows.js";
-import { emitDenseArrayGet, emitDenseArraySet, emitDenseSlotUnlink } from "./dense-array-access.js";
+import {
+  emitDenseArrayGet,
+  emitDenseArrayPop,
+  emitDenseArraySet,
+  emitDenseSlotUnlink,
+} from "./dense-array-access.js";
 import {
   emitStackMapRead,
   findMapReadLifetimes,
@@ -595,6 +602,9 @@ export class LlEmitter {
   private reassignedStackObjects = new Set<string>();
   /** The binding slot of each reassigned stack-object local. */
   private stackObjectSlots = new Map<string, string>();
+  /** Entry-block pointers to the reference fields of each frame object
+   * slot (stack-objects.ts stackObjectFields). */
+  stackObjectFieldPtrs = new Map<string, readonly StackObjectField[]>();
   private localUnionStorageProofs = new Map<string, LocalUnionStorageProof>();
   private localUnionStorage = new Map<string, LocalUnionStorage>();
   integerArrayBindings = new Set<string>();
@@ -2066,7 +2076,10 @@ export class LlEmitter {
     if (usesHttp) this.declare(`declare void @scr_http_dyn_install()`);
     if (usesFetch) this.declare(`declare void @scr_fetch_install()`);
 
-    if (usesNodeTest) this.declare(`declare i32 @scr_test_exit_code()`);
+    if (usesNodeTest) {
+      this.declare(`declare i32 @scr_test_exit_code()`);
+      this.declare(`declare void @scr_test_init()`);
+    }
     if (snapshotsTlsCa) {
       this.declare(`declare void @scr_tls_ca_install()`);
     }
@@ -2666,6 +2679,8 @@ export class LlEmitter {
       ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),
       ...(usesStream ? [`  call void @scr_stream_install()`] : []),
       `  call void @scr_lib_init(i32 %argc, ptr %argv)`,
+      // node:test takes Node's --test-update-snapshots out of argv first.
+      ...(usesNodeTest ? [`  call void @scr_test_init()`] : []),
       ...(asyncEntry
         ? [`  %top = call ptr @${mangleAsyncSpawn(this.mod.entry)}()`]
         : [`  call void @${mangleFunction(this.mod.entry)}()`]),
@@ -4756,6 +4771,30 @@ export class LlEmitter {
     if (isRefCounted(type)) this.currentFrame().push({ name: slot, type, slot: true });
   }
 
+  /** The innermost lexical scope releases a frame object's reference
+   * fields when it exits, as it releases its bindings. */
+  ownScopeFields(fields: readonly StackObjectField[]): void {
+    const scope = this.scopes[this.scopes.length - 1]!;
+    for (const field of fields) scope.push({ slot: field.ptr, type: field.type });
+  }
+
+  /** Strike frame-owned slots (ownSlot) from their statement frames: their
+   * contents are moving to another owner. */
+  disownSlots(slots: readonly { ptr: string }[]): void {
+    for (const { ptr } of slots) {
+      let found = false;
+      for (let i = this.frames.length - 1; i >= 0 && !found; i--) {
+        const idx = this.frames[i]!.findIndex((e) => e.slot === true && e.name === ptr);
+        if (idx >= 0) {
+          this.frames[i]!.splice(idx, 1);
+          found = true;
+        }
+      }
+      if (!found)
+        throw new InternalCompilerError(`llvm emitter bug: disowned slot ${ptr} not in a frame`);
+    }
+  }
+
   /** Strike a refcounted temp from its frame: ownership is being moved. */
   moveTemp(v: LlValue): void {
     if (!isRefCounted(v.type) || this.isImmortal(v.name)) return;
@@ -6696,6 +6735,7 @@ export class LlEmitter {
       ? findReassignedStackObjects(this, fn, this.callLifetimes)
       : new Set();
     this.stackObjectSlots = new Map();
+    this.stackObjectFieldPtrs = new Map();
     this.localUnionStorageProofs = findLocalUnionStorage(fn, this.callLifetimes, this.unionSources);
     this.localUnionStorage = new Map();
     this.walkBorrows = this.walkBorrowsByFunction.get(fn.name) ?? new Set();
@@ -7821,12 +7861,18 @@ export class LlEmitter {
         }
         const stackObject = this.localStackObjects.get(s.localId);
         if (stackObject) {
-          B.line(`store ptr ${emitStackObject(this, stackObject).name}, ptr ${b.slot}`);
+          const value = emitStackObject(this, stackObject, (fields) => this.ownScopeFields(fields));
+          B.line(`store ptr ${value.name}, ptr ${b.slot}`);
           break;
         }
         if (s.init && this.reassignedStackObjects.has(s.localId)) {
           const slot = this.stackObjectSlot(s.localId, s.init.type);
-          emitStackObject(this, s.init as StackObjectSource, slot);
+          emitStackObject(
+            this,
+            s.init as StackObjectSource,
+            (fields) => this.ownScopeFields(fields),
+            slot,
+          );
           B.line(`store ptr ${slot}, ptr ${b.slot}`);
           break;
         }
@@ -7999,12 +8045,28 @@ export class LlEmitter {
           break;
         }
         if (this.reassignedStackObjects.has(s.localId)) {
-          // The new value may read the old one: build it apart, then copy.
+          // The new value may read the old one: build it apart (its
+          // reference fields owned by this statement until it completes),
+          // then copy it over the binding's slot. The binding takes over the
+          // new fields; the old ones are released after the slot no longer
+          // holds them.
           const struct = stackObjectStruct(s.value.type);
-          const value = emitStackObject(this, s.value as StackObjectSource);
+          let owned: readonly StackObjectField[] = [];
+          const value = emitStackObject(this, s.value as StackObjectSource, (fields) => {
+            owned = fields;
+            for (const field of fields) this.ownSlot(field.ptr, field.type);
+          });
+          const target = this.stackObjectSlot(s.localId, s.value.type);
+          const old = stackObjectFields(this, s.value.type, target).map((field) => {
+            const t = B.tmp();
+            B.line(`${t} = load ptr, ptr ${field.ptr}`);
+            return { name: t, type: field.type };
+          });
           const bits = B.tmp();
           B.line(`${bits} = load ${struct}, ptr ${value.name}`);
-          B.line(`store ${struct} ${bits}, ptr ${this.stackObjectSlot(s.localId, s.value.type)}`);
+          B.line(`store ${struct} ${bits}, ptr ${target}`);
+          this.disownSlots(owned);
+          for (const field of old) this.releaseValue(field.name, field.type);
           break;
         }
         const localStorage = this.localUnionStorage.get(s.localId);
@@ -8125,6 +8187,28 @@ export class LlEmitter {
         B.line(`${same} = fcmp oeq double ${length.name}, ${lenNumber}`);
         B.condBr(same, done, resize);
         B.startBlock(resize);
+        if (s.pop === true) {
+          // A discarded pop's `length - 1` on a packed array removes the
+          // last element inline, then releases it.
+          const call = B.newLabel("arr.len.call"),
+            pop = B.newLabel("arr.len.pop");
+          const lastNumber = B.tmp(),
+            dropsLast = B.tmp();
+          B.line(`${lastNumber} = fsub double ${lenNumber}, 1.0`);
+          B.line(`${dropsLast} = fcmp oeq double ${length.name}, ${lastNumber}`);
+          B.condBr(dropsLast, pop, call);
+          B.startBlock(pop);
+          const elem = s.arr.type.elem;
+          const acc = elemAccess(elem);
+          const raw = emitDenseArrayPop(this, arr.name, acc, call, call);
+          if (acc === "ref" && isRefCounted(elem)) {
+            const old = B.tmp();
+            B.line(`${old} = inttoptr i64 ${raw} to ptr`);
+            this.releaseValue(old, elem);
+          }
+          B.br(done);
+          B.startBlock(call);
+        }
         B.line(`call void @scr_arr_set_len(ptr ${arr.name}, double ${length.name})`);
         this.emitPendingCheck();
         B.br(done);
@@ -8214,7 +8298,15 @@ export class LlEmitter {
           s.kind === "fieldSet"
             ? this.classFieldPtr(obj.name, s.className, s.field)
             : this.recordFieldPtr(obj.name, s.shapeId, s.field);
-        this.replaceField(ptr, type, inline, v);
+        // A result-slot entry fills zeroed caller storage, each field once.
+        if (
+          s.kind === "recordSet" &&
+          s.obj.kind === "varRef" &&
+          s.obj.localId === RESULT_DST_ID &&
+          this.currentFunctionName.startsWith(RESULT_ENTRY_PREFIX)
+        )
+          this.initField(ptr, type, inline, v);
+        else this.replaceField(ptr, type, inline, v);
         if (
           s.kind === "fieldSet" &&
           s.field === "name" &&

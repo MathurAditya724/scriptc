@@ -1,4 +1,4 @@
-`process.argv[0]` is `"scriptc"`, `process.argv[1]` is the binary's path, and program arguments begin at index 2. `process.version` and `process.versions.node` report the Node.js release the runtime is verified against.
+`process.argv[0]` is `"scriptc"`, `process.argv[1]` is the binary's path, and program arguments begin at index 2. In programs that use `node:test`, a leading `--test-update-snapshots` argument is Node's snapshot update flag: it is kept out of `process.argv` and appears in `process.execArgv`, which is otherwise `[]`. `process.version` and `process.versions.node` report the Node.js release the runtime is verified against.
 
 Uncaught exceptions print `Uncaught <value>` to stderr instead of Node.js's source excerpt and stack-trace block; thrown strings and numbers print their value. Exit codes and output written before the exception are preserved. Runtime errors expose `message` and Node's `code`, but not `errno`, `syscall`, or `path`.
 
