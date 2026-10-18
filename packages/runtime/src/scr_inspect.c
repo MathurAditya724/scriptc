@@ -6,9 +6,10 @@
  * escapes, the 10000-char string cap and the per-line ` +` continuation
  * form), Buffer's <Buffer aa bb> hex form, and the LAYOUT engine — a
  * frame stack reproducing reduceToSingleString, isBelowBreakLength, and
- * groupArrayElements from Node v24's lib/internal/util/inspect.js for the
- * DEFAULT options (compact: 3, breakLength: 80, maxArrayLength: 100,
- * maxStringLength: 10000; non-default options fence in the frontend).
+ * groupArrayElements from Node v24's lib/internal/util/inspect.js for
+ * maxArrayLength: 100 and maxStringLength: 10000, a numeric or false
+ * compact (default 3), any breakLength (default 80) and a boolean sorted;
+ * other non-default options fence in the frontend.
  *
  * Lengths follow Node exactly: the break-length math counts UTF-16 code
  * units (JS .length); the grid-grouping math counts DISPLAY WIDTH. Node
@@ -242,7 +243,19 @@ static SCR_TL size_t g_nframes;
 static SCR_TL size_t g_frames_cap;
 static SCR_TL size_t g_indent;       /* ctx.indentationLvl */
 static SCR_TL bool g_no_break;       /* breakLength: Infinity (console.table cells) */
+static SCR_TL double g_break_length = 80; /* ctx.breakLength */
+static SCR_TL double g_compact = 3;  /* ctx.compact: a number, 0 for false */
+static SCR_TL bool g_sorted;         /* ctx.sorted === true */
 static SCR_TL double g_cur_depth;    /* ctx.currentDepth (last-entered composite) */
+
+/* util.inspect's breakLength, compact and sorted for the renders that
+ * follow (compact false is 0); the call site restores 80, 3 and false
+ * after its render. */
+void scr_insp_layout(double break_length, double compact, bool sorted) {
+  g_break_length = break_length;
+  g_compact = compact;
+  g_sorted = sorted;
+}
 
 static InspFrame *insp_top(void) { return &g_frames[g_nframes - 1]; }
 
@@ -360,6 +373,13 @@ ScrStr *scr_insp_ref_wrap(const void *v, ScrStr *s) {
   return out;
 }
 
+/* formatRaw's Date base: toISOString(), or toString()'s "Invalid Date"
+ * when the time value is NaN (the only time value outside the ISO range). */
+ScrStr *scr_insp_date(double ms) {
+  if (isnan(ms)) return scr_str_new("Invalid Date", 12);
+  return scr_date_to_iso(ms);
+}
+
 /* remainingText: the "... N more items" tail entry. */
 ScrStr *scr_insp_more_items(double remaining) {
   char buf[64];
@@ -382,15 +402,15 @@ static void insp_group(InspFrame *f, bool trailing_more) {
     if ((double)w > max_length) max_length = (double)w;
   }
   double actual_max = max_length + 2;
-  if (actual_max * 3 + (double)g_indent < 80 &&
+  if (actual_max * 3 + (double)g_indent < g_break_length &&
       (total_length / actual_max > 5 || max_length <= 6)) {
     double approx_char_heights = 2.5;
     double average_bias = sqrt(actual_max - total_length / (double)f->len);
     double biased_max = fmax(actual_max - 3 - average_bias, 1);
     double columns_d = fmin(
         fmin(round(sqrt(approx_char_heights * biased_max * (double)output_len) / biased_max),
-             floor((80 - (double)g_indent) / actual_max)),
-        fmin(3 * 4 /* ctx.compact * 4 */, 15));
+             floor((g_break_length - (double)g_indent) / actual_max)),
+        fmin(g_compact * 4, 15));
     if (columns_d <= 1) {
       free(data_len);
       return;
@@ -458,18 +478,23 @@ static void insp_group(InspFrame *f, bool trailing_more) {
   free(data_len);
 }
 
-/* isBelowBreakLength: UTF-16 lengths against breakLength 80. */
+static int insp_item_cmp(const void *a, const void *b) {
+  return scr_str_cmp_u16(*(ScrStr *const *)a, *(ScrStr *const *)b);
+}
+
+/* isBelowBreakLength: UTF-16 lengths against ctx.breakLength. */
 static bool insp_below_break_length(InspFrame *f, size_t start, const ScrStr *base) {
   size_t total = f->len + start;
-  if (total + f->len > 80) return false;
+  if ((double)(total + f->len) > g_break_length) return false;
   for (size_t i = 0; i < f->len; i++) {
     total += insp_utf16_len(f->items[i]->data, f->items[i]->len);
-    if (total > 80) return false;
+    if ((double)total > g_break_length) return false;
   }
   return base->len == 0 || !insp_contains_byte(base->data, base->len, '\n');
 }
 
-/* reduceToSingleString for the default options (compact: 3). Pops the
+/* reduceToSingleString for a numeric or false compact (only a compact of
+ * at least 1 groups arrays and tries the single line). Pops the
  * frame. base/b0/b1 are borrowed; +1 result. `recurse` is the frame's
  * recurseTimes (the children's depth); array_extras marks kArrayExtrasType
  * (grid grouping applies); trailing_more marks a "... N more items" tail
@@ -478,10 +503,15 @@ ScrStr *scr_insp_end(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurse, bool 
                      bool trailing_more) {
   InspFrame *f = insp_top();
   g_indent -= 2;
+  /* sorted: true orders an object-type composite's entries (properties,
+   * and Map and Set entries) by their rendered text, in UTF-16 code-unit
+   * order; arrays keep their element order. */
+  if (g_sorted && !array_extras && f->len > 1) qsort(f->items, f->len, sizeof *f->items, insp_item_cmp);
   size_t entries = f->len;
-  if (array_extras && entries > 6) insp_group(f, trailing_more);
+  bool compact = g_compact >= 1;
+  if (compact && array_extras && entries > 6) insp_group(f, trailing_more);
   InspBuf out = {0};
-  if (g_cur_depth - recurse < 3 && entries == f->len) {
+  if (compact && g_cur_depth - recurse < g_compact && entries == f->len) {
     size_t start = f->len + g_indent + insp_utf16_len(b0->data, b0->len) +
                    insp_utf16_len(base->data, base->len) + 10;
     if (insp_below_break_length(f, start, base)) {
@@ -619,7 +649,7 @@ static size_t insp_utf16_offset(const char *data, size_t len, size_t units, bool
 
 /* formatPrimitive over a string value under the default options:
  * maxStringLength 10000, then the per-line ` +` continuation when the
- * (truncated) text is longer than 16 chars AND breakLength(80) -
+ * (truncated) text is longer than 16 chars AND breakLength -
  * indentationLvl - 4, split after each newline; the trailer counts the
  * cut characters. Uses the CURRENT indentation. */
 ScrStr *scr_insp_str(ScrStr *s) {
@@ -652,7 +682,8 @@ ScrStr *scr_insp_str(ScrStr *s) {
   if (surrogate_tail_len) ib_bytes(&val, surrogate_tail, surrogate_tail_len);
   size_t vlen = val.len;
   const char *v = val.data ? val.data : "";
-  if (!g_no_break && units > 16 && units > 80 - g_indent - 4 && memchr(v, '\n', vlen) != NULL) {
+  if (!g_no_break && units > 16 && (double)units > g_break_length - (double)g_indent - 4 &&
+      memchr(v, '\n', vlen) != NULL) {
     /* split after each newline; quote each chunk; join with ` +\n<indent+2>` */
     size_t chunk_start = 0;
     bool first = true;
@@ -946,6 +977,22 @@ static ScrStr *scr_insp_class_tag(const char *cls, const char *tail) {
 
 /* A native Set or Map held as a checked-dynamic value: `Set(n) { a, b }`,
  * `Map(n) { k => v }`, at most 100 entries like Node's maxArrayLength. */
+/* Node's formatWeakCollection: the entries of a WeakMap or WeakSet are not
+ * listed without showHidden, so the body is the one "<items unknown>"
+ * entry, and past the depth limit the value prints as [WeakMap]. */
+static ScrStr *scr_insp_weak_collection(const char *label, double recurse, double depth) {
+  InspBuf out = {0};
+  if (recurse > depth) {
+    ib_char(&out, '[');
+    ib_cstr(&out, label);
+    ib_char(&out, ']');
+    return ib_take(&out);
+  }
+  ib_cstr(&out, label);
+  ib_cstr(&out, " { <items unknown> }");
+  return ib_take(&out);
+}
+
 static ScrStr *scr_insp_dyn_collection(ScrDyn *d, double recurse, double depth, bool is_map) {
   ScrMap *map = d->v.handle.ptr;
   const char *label = is_map ? "Map" : "Set";
@@ -1077,6 +1124,46 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
   return out;
 }
 
+/* A numeric typed array (not a Buffer): `Uint8Array(n) [ ... ]` with
+ * Node's maxArrayLength (100) and array grid, `[Uint8Array]` past the
+ * depth limit. Borrows b; +1. */
+ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
+  char prefix[48];
+  int pn = snprintf(prefix, sizeof prefix, "%s(%zu) [", scr_bytes_elem_name(b->elem), b->len);
+  if (b->len == 0) {
+    InspBuf out = {0};
+    ib_bytes(&out, prefix, (size_t)pn);
+    ib_char(&out, ']');
+    return ib_take(&out);
+  }
+  if (recurse > depth) {
+    char tag[32];
+    int n = snprintf(tag, sizeof tag, "[%s]", scr_bytes_elem_name(b->elem));
+    return scr_str_new(tag, (size_t)n);
+  }
+  scr_insp_begin(recurse + 1);
+  size_t shown = b->len < 100 ? b->len : 100;
+  for (size_t i = 0; i < shown; i++) {
+    ScrStr *s = scr_insp_f64(scr_bytes_get(b, (double)i));
+    scr_insp_entry(s, true);
+    scr_str_release(s);
+  }
+  bool more = b->len > 100;
+  if (more) {
+    ScrStr *m = scr_insp_more_items((double)(b->len - 100));
+    scr_insp_entry(m, true);
+    scr_str_release(m);
+  }
+  ScrStr *base = scr_str_new("", 0);
+  ScrStr *b0 = scr_str_new(prefix, (size_t)pn);
+  ScrStr *b1 = scr_str_new("]", 1);
+  ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, true, more);
+  scr_str_release(base);
+  scr_str_release(b0);
+  scr_str_release(b1);
+  return out;
+}
+
 ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
   if (d->kind == SCR_DYN_PROXY) return scr_insp_dyn(d->v.proxy.target, recurse, depth);
   switch (d->kind) {
@@ -1153,6 +1240,9 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       }
       if (d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP)
         return scr_insp_dyn_collection(d, recurse, depth, d->v.handle.tag == SCR_DYNH_MAP);
+      if (d->v.handle.tag == SCR_DYNH_WEAK_MAP || d->v.handle.tag == SCR_DYNH_WEAK_SET)
+        return scr_insp_weak_collection(d->v.handle.tag == SCR_DYNH_WEAK_MAP ? "WeakMap" : "WeakSet",
+                                        recurse, depth);
       const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(d);
       if (ops->inspect_view) {
         /* Node's custom inspectors answer the bare class name beyond the
@@ -1245,40 +1335,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         /* Buffer-flavored (a stream chunk): Node's <Buffer ..> form. */
         return scr_insp_buffer(b);
       }
-      char prefix[48];
-      int pn = snprintf(prefix, sizeof prefix, "%s(%zu) [", scr_bytes_elem_name(b->elem), b->len);
-      if (b->len == 0) {
-        InspBuf out = {0};
-        ib_bytes(&out, prefix, (size_t)pn);
-        ib_char(&out, ']');
-        return ib_take(&out);
-      }
-      if (recurse > depth) {
-        char tag[32];
-        int n = snprintf(tag, sizeof tag, "[%s]", scr_bytes_elem_name(b->elem));
-        return scr_str_new(tag, (size_t)n);
-      }
-      scr_insp_begin(recurse + 1);
-      size_t shown = b->len < 100 ? b->len : 100;
-      for (size_t i = 0; i < shown; i++) {
-        ScrStr *s = scr_insp_f64(scr_bytes_get(b, (double)i));
-        scr_insp_entry(s, true);
-        scr_str_release(s);
-      }
-      bool more = b->len > 100;
-      if (more) {
-        ScrStr *m = scr_insp_more_items((double)(b->len - 100));
-        scr_insp_entry(m, true);
-        scr_str_release(m);
-      }
-      ScrStr *base = scr_str_new("", 0);
-      ScrStr *b0 = scr_str_new(prefix, (size_t)pn);
-      ScrStr *b1 = scr_str_new("]", 1);
-      ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, true, more);
-      scr_str_release(base);
-      scr_str_release(b0);
-      scr_str_release(b1);
-      return out;
+      return scr_insp_typed_array(b, recurse, depth);
     }
   }
   return scr_str_new("undefined", 9); /* unreachable */
