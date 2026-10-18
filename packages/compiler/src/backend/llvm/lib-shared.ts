@@ -314,6 +314,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "date.getUTCDate": "scr_date_get_date_utc",
   "date.getDay": "scr_date_get_day_local",
   "date.getUTCDay": "scr_date_get_day_utc",
+  "date.toUTCString": "scr_date_to_utc_string",
   "date.getHours": "scr_date_get_hours_local",
   "date.getUTCHours": "scr_date_get_hours_utc",
   "date.getMinutes": "scr_date_get_minutes_local",
