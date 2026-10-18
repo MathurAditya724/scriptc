@@ -5713,6 +5713,8 @@ void scr_dyn_throw(ScrDyn *d) {
                           scr_dyn_trace_v, scr_dyn_is_object(d));
 }
 
+static size_t scr_errdyn_find(const void *key, bool by_err);
+
 ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   if (d->kind == SCR_DYN_PROXY) {
     scr_dyn_proxy_unsupported("Symbol.toStringTag lookup");
@@ -5736,7 +5738,7 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   case SCR_DYN_NUM: tag = "[object Number]"; break;
   case SCR_DYN_STR: tag = "[object String]"; break;
   case SCR_DYN_ARR: tag = "[object Array]"; break;
-  case SCR_DYN_OBJ: tag = "[object Object]"; break;
+  case SCR_DYN_OBJ: tag = scr_errdyn_find(d, false) != SIZE_MAX ? "[object Error]" : "[object Object]"; break;
   case SCR_DYN_HANDLE:
     if ((d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
          d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_EVENT_TARGET ||
@@ -10223,6 +10225,10 @@ bool scr_dyn_err_instanceof(const ScrDyn *d, double kind) {
 static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_t key_len, const ScrDyn *receiver) {
   for (const ScrDyn *current = d; current; current = scr_dyn_proto_next(current)) {
     if (current == scr_builtin_object_prototype) {
+      /* Object.prototype's own constructor and the methods its values
+       * share read as those values; other reflection stays fenced. */
+      ScrDyn *member = scr_dyn_object_proto_inherited(key, key_len, SCR_INHERIT_ALL);
+      if (member) return member;
       scr_dyn_class_reflection_fence(current);
       return NULL;
     }
@@ -11704,6 +11710,8 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
 
 
   if (v->kind == SCR_DYN_OBJ) {
+    /* Object.prototype's own members (its value carries no entries). */
+    if (v == scr_builtin_object_prototype) return scr_dyn_object_proto_name(key);
     return scr_dyn_obj_get(v, key->data, key->len) != NULL;
   }
   if (v->kind == SCR_DYN_ARR) {
@@ -11736,6 +11744,8 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
 }
 
 bool scr_dyn_property_is_enumerable(const ScrDyn *value, const ScrStr *key) {
+  /* Object.prototype's own members are all non-enumerable. */
+  if (value == scr_builtin_object_prototype) return false;
   if (scr_dyn_class_reflection_fence(value)) return false;
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);

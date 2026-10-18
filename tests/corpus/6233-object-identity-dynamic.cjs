@@ -62,7 +62,8 @@ for (const name of Object.keys(values)) {
   console.log(name, hits.join("|") || "-", v.valueOf === Object.prototype.valueOf,
     name === "regexp" ? "-" : v.toString === Object.prototype.toString,
     v.hasOwnProperty === Object.prototype.hasOwnProperty,
-    v.propertyIsEnumerable === Object.prototype.propertyIsEnumerable);
+    v.propertyIsEnumerable === Object.prototype.propertyIsEnumerable,
+    Object.prototype.toString.call(v));
 }
 const o = { a: 1 };
 console.log(typeof Object, typeof Date, typeof Map, Object.name, Date.name, o.constructor.name, typeof o.constructor);
@@ -78,9 +79,16 @@ function isPlainObj(value) {
   const prototype = Object.getPrototypeOf(value);
   return (prototype === null || prototype === Object.prototype || Object.getPrototypeOf(prototype) === null) && !(Symbol.toStringTag in value) && !(Symbol.iterator in value);
 }
+function isPlainLodash(value) {
+  if (value == null || Object.prototype.toString.call(value) != "[object Object]") return false;
+  const proto = Object.getPrototypeOf(value);
+  if (proto === null) return true;
+  const Ctor = Object.prototype.hasOwnProperty.call(proto, "constructor") && proto.constructor;
+  return typeof Ctor == "function" && Ctor instanceof Ctor && Ctor === Object;
+}
 function isPlainCtor(value) {
   return !!value && typeof value === "object" && (value.constructor === Object || value.constructor === undefined);
 }
 for (const name of ["plain", "parsed", "array", "nullProto", "created", "instance"]) {
-  console.log(name, isPlainObj(values[name]), isPlainCtor(values[name]));
+  console.log(name, isPlainObj(values[name]), isPlainLodash(values[name]), isPlainCtor(values[name]));
 }
