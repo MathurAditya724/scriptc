@@ -13739,6 +13739,8 @@ const MATCH_ROW_CALLBACK_METHODS = new Set([
   "filter",
   "find",
   "findLast",
+  "findIndex",
+  "findLastIndex",
   "some",
   "every",
   "flatMap",
@@ -13852,7 +13854,10 @@ function matchAllRegexOf(lowerer: Lowerer, e: ts.Expression): ts.Expression | nu
  * receiver isn't a match slice or the regex isn't traceable — the
  * caller's member fence (with the groups hint) names the gap. */
 function lowerMatchGroupsRead(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
-  if (expr.name.text !== "groups" || expr.questionDotToken !== undefined) return null;
+  if (expr.name.text !== "groups") return null;
+  // `m?.groups` re-dispatches through the optional-chain machinery, which
+  // narrows the receiver to its match arm first.
+  if (expr.questionDotToken !== undefined && !lowerer.chainHandled.has(expr)) return null;
   const loc = locOf(expr);
   const strArr = arrayOf(STRING);
   const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
