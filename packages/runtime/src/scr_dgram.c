@@ -1122,6 +1122,7 @@ static void scr_dgram_read(ScrDgramSocket *s) {
       rport = ntohs(((struct sockaddr_in *)&from)->sin_port);
     }
     ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
+    chunk->is_buffer = true; /* the message is a Buffer */
     memcpy(chunk->data, buf, (size_t)n);
     ScrStr *addr = scr_str_new(ip, strlen(ip));
     ScrStr *family = scr_str_new("IPv4", 4);
@@ -1335,7 +1336,10 @@ static void scr_dns_warn_tick(ScrClosure *self) {
 #endif
     fprintf(stderr, "(node:%ld) [DEP0118] DeprecationWarning: %.*s\n", pid, (int)message->len,
             message->data);
-    fputs("(Use `node --trace-deprecation ...` to show where the warning was created)\n", stderr);
+    if (!scr_warning_trace_hint_shown) {
+      scr_warning_trace_hint_shown = true;
+      fputs("(Use `node --trace-deprecation ...` to show where the warning was created)\n", stderr);
+    }
   }
   scr_str_release(message);
 }
@@ -1630,6 +1634,66 @@ void scr_dns_lookup_service(const ScrDyn *address, const ScrDyn *port, const Scr
   scr_str_release(h);
   scr_str_release(sv);
   scr_dns_call_later(callback, args, 3, false);
+}
+
+/* util.promisify(dns.lookup) and util.promisify(dns.lookupService): the
+ * callback forms with a callback that settles the returned promise. An
+ * error rejects it; otherwise it fulfills with { address, family } (the
+ * address array with options.all) or { hostname, service }, the objects
+ * Node's custom promisified forms build. An argument error rejects the
+ * promise instead of throwing. */
+static ScrDyn *scr_dns_promise_settle(ScrClosure *clo, ScrDyn *const *args, size_t argc,
+                                      const char *first, const char *second) {
+  ScrPromise *p;
+  memcpy(&p, &clo->caps[0]->slot, sizeof p);
+  if (argc >= 1 && !scr_dyn_is_nullish(args[0])) {
+    scr_dyn_throw(scr_dyn_retain(args[0]));
+    scr_promise_reject_pending(p);
+    return scr_dyn_undefined();
+  }
+  ScrDyn *value;
+  if (argc == 2) {
+    value = scr_dyn_retain(args[1]);
+  } else {
+    value = scr_dyn_new_obj();
+    scr_dyn_obj_set(value, first, strlen(first), argc >= 2 ? scr_dyn_retain(args[1]) : scr_dyn_undefined());
+    scr_dyn_obj_set(value, second, strlen(second), argc >= 3 ? scr_dyn_retain(args[2]) : scr_dyn_undefined());
+  }
+  scr_promise_fulfill_ref(p, value, scr_dyn_retain_v, scr_dyn_release_v, NULL);
+  return scr_dyn_undefined();
+}
+
+static ScrDyn *scr_dns_lookup_settle(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  return scr_dns_promise_settle(clo, args, argc, "address", "family");
+}
+
+static ScrDyn *scr_dns_service_settle(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  return scr_dns_promise_settle(clo, args, argc, "hostname", "service");
+}
+
+static ScrDyn *scr_dns_promise_callback(ScrPromise *p, ScrDynThunk thunk) {
+  ScrClosure *clo = scr_closure_new((void *)thunk, 1);
+  clo->caps[0] = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, NULL);
+  scr_box_set_ref(clo->caps[0], scr_promise_retain(p));
+  return scr_dyn_new_func(clo, thunk, 3, "(err,a,b)", "callback");
+}
+
+ScrPromise *scr_dns_lookup_promise(const ScrDyn *hostname, const ScrDyn *options) {
+  ScrPromise *p = scr_promise_new();
+  ScrDyn *callback = scr_dns_promise_callback(p, scr_dns_lookup_settle);
+  scr_dns_lookup_dyn(hostname, options, callback, false);
+  scr_dyn_release(callback);
+  if (scr_exc_pending()) scr_promise_reject_pending(p);
+  return p;
+}
+
+ScrPromise *scr_dns_lookup_service_promise(const ScrDyn *address, const ScrDyn *port) {
+  ScrPromise *p = scr_promise_new();
+  ScrDyn *callback = scr_dns_promise_callback(p, scr_dns_service_settle);
+  scr_dns_lookup_service(address, port, callback, false);
+  scr_dyn_release(callback);
+  if (scr_exc_pending()) scr_promise_reject_pending(p);
+  return p;
 }
 
 /* dns.getServers(): the nameserver lines of /etc/resolv.conf, as c-ares

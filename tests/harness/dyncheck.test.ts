@@ -764,6 +764,38 @@ console.log("recovered");
     expect(r.stdout).toBe("TypeError true\narray: TypeError\nfunc: TypeError\nrecovered\n");
   });
 
+  test("a non-null assertion on a null object result throws at the assertion, even when the binding is never read", async () => {
+    // Node lets the null ride until a member read; the compiled program
+    // throws the stranded TypeError where `!` extracts the object.
+    const r = await compileAndRun(
+      "asserted-null-object-result",
+      `interface Info {
+  name: string;
+  base: Info | null;
+  callable: boolean;
+}
+function baseOf(info: Info): Info | null {
+  return info.base;
+}
+function describe(info: Info): string {
+  const base = baseOf(info)!;
+  if (info.callable) return info.name + ": callable base";
+  return info.name + " extends " + base.name;
+}
+const root: Info = { name: "Root", base: null, callable: false };
+console.log(describe({ name: "Child", base: root, callable: false }));
+try {
+  console.log("unreachable", describe({ name: "Wrapped", base: null, callable: true }));
+} catch (e) {
+  console.log((e as Error).name, (e as Error).message.includes("not representable in the target union"));
+}
+console.log("recovered");
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("Child extends Root\nTypeError true\nrecovered\n");
+  });
+
   test("a checker-approved function mismatch strands per piece: mismatched params compile at the flow, void results trap after the call", async () => {
     // funcCoerceAdapter's stranded dispositions. Param strand: an array
     // literal of arrows collapses to one element signature — the

@@ -133,6 +133,8 @@ void scr_gen_yield_f64(double v);
 void scr_gen_yield_bool(bool v);
 void scr_gen_yield_ref(void *v, void (*release)(void *)); /* moves */
 void scr_async_gen_hop_done(void);
+/* An async generator's `return x` whose completion turn awaits x. */
+void scr_async_gen_return_awaits(void);
 void scr_gen_out_f64(ScrGen *g, double v); /* trampoline completion stores */
 void scr_gen_out_bool(ScrGen *g, bool v);
 void scr_gen_out_ref(ScrGen *g, void *v, void (*release)(void *)); /* moves */

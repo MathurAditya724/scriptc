@@ -37,7 +37,7 @@ export const ASSERT_VERDICT_LIB_FNS: ReadonlyMap<string, number | null> = new Ma
 
 export const LIB_FN_SYMS: Record<string, string> = {
   "assert.expectsErrDyn": "scr_assert_expects_err_dyn",
-  "insp.jsonDyn": "scr_dyn_format_j",
+  "insp.jsonDyn": "scr_util_format_j",
   "http.reqH2StreamOrThrow": "scr_http_req_h2_stream_or_throw",
   "intl.segmenterNew": "scr_intl_segmenter_new",
   "weakMap.is": "scr_weak_map_is",
@@ -65,6 +65,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "arrayBuffer.viewU8": "scr_array_buffer_view_u8",
   "arrayBuffer.viewU32": "scr_array_buffer_view_u32",
   "arrayBuffer.viewI32": "scr_array_buffer_view_i32",
+  "arrayBuffer.viewF16": "scr_array_buffer_view_f16",
   "arrayBuffer.viewF32": "scr_array_buffer_view_f32",
   "arrayBuffer.viewF64": "scr_array_buffer_view_f64",
   "arrayBuffer.viewDV": "scr_array_buffer_view_dv",
@@ -188,16 +189,19 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "os.uptime": "scr_os_uptime",
   "os.loadavg": "scr_os_loadavg",
   "os.getPriority": "scr_os_get_priority",
+  "os.setPriority": "scr_os_set_priority",
   "os.cpusTake": "scr_os_cpus_take",
   "os.cpusModel": "scr_os_cpus_model",
   "os.cpusField": "scr_os_cpus_field",
   "os.constants": "scr_os_constants",
+  "constants.object": "scr_node_constants",
   "os.release": "scr_os_release",
   "os.userName": "scr_os_user_name",
   "os.userShell": "scr_os_user_shell",
   "os.userHomedir": "scr_os_user_homedir",
   "os.tmpdir": "scr_os_tmpdir",
   "process.argv": "scr_process_argv",
+  "process.execArgv": "scr_process_exec_argv",
   "process.platform": "scr_process_platform",
   "process.cwd": "scr_process_cwd",
   "process.pid": "scr_process_pid",
@@ -477,6 +481,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "strdec.write": "scr_strdec_write",
   "strdec.next": "scr_strdec_next",
   "strdec.end": "scr_strdec_end",
+  "strdec.encoding": "scr_strdec_encoding",
   "stats.isFile": "scr_stats_is_file",
   "stats.isDirectory": "scr_stats_is_dir",
   "stats.isSymbolicLink": "scr_stats_is_symlink",
@@ -575,14 +580,17 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.stdoutWriteBytes": "scr_process_stdout_write_bytes",
   "process.stderrWriteBytes": "scr_process_stderr_write_bytes",
   "insp.buffer": "scr_insp_buffer",
+  "insp.typedArray": "scr_insp_typed_array",
   // util.inspect (scr_inspect.c): all args borrowed; string results +1;
   // the begin/entry/key/moreItems/end accumulator drives the emitted
   // container walks. None of these throw.
   "insp.f64": "scr_insp_f64",
   "insp.str": "scr_insp_str",
   "insp.regex": "scr_insp_regex",
+  "insp.date": "scr_insp_date",
   "insp.error": "scr_insp_error",
   "insp.begin": "scr_insp_begin",
+  "insp.layout": "scr_insp_layout",
   "insp.entry": "scr_insp_entry",
   "insp.key": "scr_insp_key",
   "insp.moreItems": "scr_insp_more_items",
@@ -631,6 +639,13 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "url.legacyFormat": "scr_url_legacy_format",
   "url.legacyResolve": "scr_url_legacy_resolve",
   "url.domainToASCII": "scr_url_domain_to_ascii",
+  "punycode.decode": "scr_punycode_decode",
+  "punycode.encode": "scr_punycode_encode",
+  "punycode.toASCII": "scr_punycode_to_ascii",
+  "punycode.toUnicode": "scr_punycode_to_unicode",
+  "punycode.ucs2Decode": "scr_punycode_ucs2_decode",
+  "punycode.ucs2Encode": "scr_str_from_code_point",
+  "punycode.warn": "scr_punycode_warn",
   "url.domainToUnicode": "scr_url_domain_to_unicode",
   "url.pathToFileURL": "scr_url_from_path",
   "url.pathToFileURLPlatform": "scr_url_from_path_platform",
@@ -841,6 +856,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fetch.abortAny": "scr_fetch_abort_any",
   "fetch.webIs": "scr_fetch_web_is",
   "fetch.streamIs": "scr_fetch_stream_is",
+  "zlib.streamIs": "scr_zlib_stream_is",
   "fetch.streamNew": "scr_fetch_stream_new",
   "fetch.streamFrom": "scr_fetch_stream_from",
   "fetch.readerRead": "scr_fetch_reader_read",
@@ -894,6 +910,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "date.checkedValue": "scr_dyn_native_date_value",
   "dyn.nativeRegexIs": "scr_dyn_native_regex_is",
   "dyn.toString": "scr_dyn_to_string_argument",
+  "dyn.valueOf": "scr_dyn_value_of",
   "dyn.dataViewIs": "scr_dyn_data_view_is",
   "dyn.construct": "scr_dyn_construct",
   "dyn.this": "scr_dyn_this_get",
@@ -930,8 +947,18 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "worker.root": "scr_worker_root",
   "worker.data": "scr_worker_data",
   "worker.parentPort": "scr_worker_parent_port",
+  "worker.resourceLimits": "scr_worker_resource_limits",
+  "worker.threadName": "scr_worker_thread_name_current",
   "worker.channel": "scr_worker_message_channel",
   "worker.receiveMessageOnPort": "scr_worker_receive_message_on_port",
+  "worker.setEnvironmentData": "scr_worker_set_environment_data",
+  "worker.getEnvironmentData": "scr_worker_get_environment_data",
+  "worker.markUntransferable": "scr_worker_mark_untransferable",
+  "worker.isMarkedUntransferable": "scr_worker_is_marked_untransferable",
+  "dyn.markUncloneable": "scr_mark_uncloneable",
+  "stream.workerStdio": "scr_stream_worker_stdio",
+  "worker.broadcastChannel": "scr_worker_broadcast_channel",
+  "event.broadcastInstall": "scr_et_broadcast_install",
   "process.stdinDestroy": "scr_process_stdin_destroy",
   "process.stdinSetRawMode": "scr_process_stdin_set_raw_mode",
   // node:events EventEmitter (scr_events_emitter.c): receivers borrowed,
@@ -960,6 +987,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "emitter.getMax": "scr_emitter_get_max",
   "emitter.setDefaultMax": "scr_emitter_set_default_max",
   "emitter.getDefaultMax": "scr_emitter_get_default_max",
+  "emitter.esmDefaultMax": "scr_emitter_esm_default_max_get",
+  "emitter.esmSync": "scr_emitter_esm_sync",
   "emitter.errorMonitor": "scr_emitter_error_monitor",
   // node:stream (scr_stream.c): receivers borrowed, chunks borrowed,
   // chaining forms answer the receiver +1. The throwing members
@@ -1222,9 +1251,14 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // loop gate already runs) and diagnostics_channel (scr_dc.c): all
   // generic shapes; the throwing members ride the pending check.
   "tp.setTimeout": "scr_tp_set_timeout",
+  "tp.schedulerWait": "scr_tp_set_timeout",
   "tp.setImmediate": "scr_tp_set_immediate",
   "tp.setTimeoutValue": "scr_tp_set_timeout_value",
   "tp.setImmediateValue": "scr_tp_set_immediate_value",
+  "tp.setTimeoutSignal": "scr_tp_set_timeout_signal",
+  "tp.schedulerWaitValue": "scr_tp_set_timeout_value",
+  "tp.schedulerWaitSignal": "scr_tp_set_timeout_signal",
+  "tp.setImmediateSignal": "scr_tp_set_immediate_signal",
   // stream/promises' finished form (+1 promise; may-throw pending check;
   // the pipeline form needs the stream-array compound and emits below).
   "sp.finished": "scr_sp_finished",
@@ -1321,6 +1355,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.reflectGet": "scr_dyn_reflect_get",
   "dyn.usingMethod": "scr_dyn_using_method",
   "dyn.usingDispose": "scr_dyn_using_dispose",
+  "disposable.stackNew": "scr_disposable_stack_new",
+  "disposable.stackIs": "scr_disposable_stack_is",
+  "disposable.stackUseCallback": "scr_disposable_stack_use_callback",
   "dyn.reflectSet": "scr_dyn_reflect_set",
   "dyn.reflectDefine": "scr_dyn_reflect_define",
   "dyn.abstractEq": "scr_dyn_abstract_eq",
@@ -1373,6 +1410,40 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "timers.immediatePromise": "scr_immediate_promise",
 };
 
+/** The mock-aware entry points (scr_test.c) that the timer calls of a
+ * program using mock.timers emit in place of the loop's functions; each
+ * falls back to the loop's function while its API is not mocked. */
+export const MOCK_TIMER_SYMS: Readonly<Record<string, string>> = {
+  "timers.setTimeout": "scr_test_mt_set_timeout",
+  "timers.setTimeoutHandle": "scr_test_mt_set_timeout_handle",
+  "timers.setInterval": "scr_test_mt_set_interval",
+  "timers.clearTimeout": "scr_test_mt_clear_timeout",
+  "timers.clearInterval": "scr_test_mt_clear_interval",
+  "timers.unref": "scr_test_mt_unref",
+  "timers.ref": "scr_test_mt_ref",
+  "timers.refresh": "scr_test_mt_refresh",
+  "timers.hasRef": "scr_test_mt_has_ref",
+  "timers.setImmediate": "scr_test_mt_set_immediate",
+  "timers.clearImmediate": "scr_test_mt_clear_immediate",
+  "timers.immediateUnref": "scr_test_mt_immediate_unref",
+  "timers.immediateRef": "scr_test_mt_immediate_ref",
+  "timers.immediateHasRef": "scr_test_mt_immediate_has_ref",
+  "date.now": "scr_test_mt_date_now",
+  "date.newNow": "scr_test_mt_date_now",
+  "tp.schedulerWait": "scr_test_mt_scheduler_wait",
+  "tp.schedulerWaitValue": "scr_test_mt_scheduler_wait_value",
+  "tp.schedulerWaitSignal": "scr_tp_scheduler_wait_signal",
+};
+
+/** The mock-aware symbol for a timer call of a program that uses
+ * mock.timers, undefined for other calls and for `realTimer` calls. */
+export function mockTimerSym(
+  host: { readonly mockTimers: boolean },
+  e: { fn: string; realTimer?: true },
+): string | undefined {
+  return host.mockTimers && !e.realTimer ? MOCK_TIMER_SYMS[e.fn] : undefined;
+}
+
 export const USES_TIMERS_LIB_FNS = new Set<string>([
   "process.emitWarning",
   // Decipheriv.setAuthTag reports DEP0182 on the next tick.
@@ -1390,6 +1461,7 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "worker.parentPort",
   "worker.channel",
   "worker.receiveMessageOnPort",
+  "worker.broadcastChannel",
   "process.stdio",
   "fetch.start",
   "fetch.input",

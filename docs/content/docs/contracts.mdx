@@ -331,7 +331,7 @@ $ scriptc build graph.ts
 
 ## ProgramLifetime
 
-`ProgramLifetime` marks a class whose instances a program keeps until it exits, such as the nodes of a syntax tree, the symbols of a symbol table or interned types. scriptc then never reference counts, collects or frees instances of the class and of its subclasses: they are never freed, every retain and release on them compiles to nothing, and the cycle collector neither walks them nor needs to trace the objects that point to them. Node.js behavior is unchanged; only memory use differs, because an instance the program drops is never reclaimed.
+`ProgramLifetime` marks a class whose instances a program keeps until it exits, such as the nodes of a syntax tree, the symbols of a symbol table or interned types. scriptc then never reference counts, collects or frees instances of the class and of its subclasses: they are never freed, every retain and release on them compiles to nothing, and the cycle collector neither walks them nor needs to trace the objects that point to them. Node.js behavior is unchanged; only memory use differs, because an instance the program drops is never reclaimed. On Linux, the instances a worker thread creates are returned with the rest of its memory after it exits, unless the worker shared objects with other threads (see [cost](/docs/threads#cost)).
 
 ```ts:tree.ts
 import type { ProgramLifetime } from "@scriptc/types";

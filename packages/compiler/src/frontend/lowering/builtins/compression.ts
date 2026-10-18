@@ -1,11 +1,12 @@
 import { lowerBuiltinByteInput, errorFirstBytesCallback } from "./arguments.js";
-import { dynUndefinedExpr, numLit } from "../../../ir/build.js";
+import { dynUndefinedExpr, numLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { isNodeTypesPath } from "../../dts-paths.js";
 import {
+  BOOL,
   BYTES_U8,
   DYN,
   F64,
@@ -39,7 +40,8 @@ const ZLIB_CALLBACK_FNS: Readonly<Record<string, IrLibFn | undefined>> = {
   unzip: "zlib.unzipCb",
 };
 
-const ZLIB_STREAM_T: IrType = { kind: "object", className: "%Transform" };
+const ZLIB_STREAM_CLASS = "%Transform";
+const ZLIB_STREAM_T: IrType = { kind: "object", className: ZLIB_STREAM_CLASS };
 
 /** A zlib data argument, lowered once: Buffer/Uint8Array bytes, a string
  * (UTF-8 encoded here), or a checked-dynamic value (the JS lane's untyped
@@ -130,6 +132,8 @@ export function zlibStreamModeOf(
   symbol: ts.Symbol | null | undefined,
 ): number | null {
   if (!symbol) return null;
+  const alias = lowerer.builtinClassAliasOf(symbol);
+  if (alias !== null) return alias.kind === "zlib" ? alias.mode : null;
   const target =
     symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
   const mode = ZLIB_STREAM_MODES.get(target.name);
@@ -493,4 +497,78 @@ export function lowerZlibModuleCall(
     };
   }
   throw new InternalCompilerError(`unhandled lowered zlib member ${bi.member}`);
+}
+
+/** The class name of a zlib stream mode (Node's constructor name). */
+export function zlibClassName(mode: number): string {
+  for (const [name, m] of ZLIB_STREAM_MODES) if (m === mode) return name;
+  return "Zlib";
+}
+
+/** `value instanceof zlib.Gzip` (any spelling of the class, aliases
+ * included). zlib streams are runtime Transforms: a Transform operand asks
+ * the runtime for the stream's mode, and an operand typed as one of
+ * Transform's bases (Duplex, Readable, EventEmitter) is first tested for a
+ * Transform. Any other static type answers false after the operand
+ * evaluates. */
+export function lowerZlibInstanceOf(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  mode: number,
+  loc: SrcLoc,
+): IrExpr {
+  const value = lowerer.lowerExpr(expr.left);
+  const type = value.type;
+  const holdsStream = (className: string): boolean =>
+    className === ZLIB_STREAM_CLASS || lowerer.isSubclassOf(ZLIB_STREAM_CLASS, className);
+  const arms = type.kind === "union" ? lowerer.unions.get(type.unionId)?.arms : undefined;
+  if (
+    type.kind === "dyn" ||
+    arms?.some((arm) => arm.kind === "object" && holdsStream(arm.className))
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `'instanceof zlib.${zlibClassName(mode)}' on an untyped or union value (give the operand a stream type first)`,
+    );
+  }
+  if (type.kind === "object" && holdsStream(type.className)) {
+    const isMode = (stream: IrExpr): IrExpr => ({
+      kind: "libCall",
+      fn: "zlib.streamIs",
+      args: [stream, numLit(mode, loc)],
+      type: BOOL,
+      loc,
+    });
+    if (type.className === ZLIB_STREAM_CLASS) return isMode(value);
+    const local = lowerer.declareHiddenLocal("%zlibTest", type);
+    const ref = varRef(local.id, type, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+      result: {
+        kind: "logical",
+        op: "&&",
+        left: {
+          kind: "instanceOf",
+          value: ref,
+          className: ZLIB_STREAM_CLASS,
+          type: BOOL,
+          loc,
+        },
+        right: isMode({ kind: "downcast", value: ref, type: ZLIB_STREAM_T, loc }),
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: value, loc }],
+    result: { kind: "boolLit", value: false, type: BOOL, loc },
+    type: BOOL,
+    loc,
+  };
 }

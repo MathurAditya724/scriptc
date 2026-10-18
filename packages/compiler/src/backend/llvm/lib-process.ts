@@ -4,6 +4,7 @@ import { undefinedArmTag } from "../../ir/analysis.js";
 import { F64, RUNTIME_ERROR_CLASSES, STRING } from "../../ir/ir.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
+import { mockTimerSym } from "./lib-shared.js";
 
 export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -18,12 +19,13 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const argv = host.emitExpr(e.args[1]!);
     const cb = host.emitExpr(callbackArg);
     host.moveTemp(cb);
+    const shell = host.emitExpr(e.args[3]!);
     const adapter = host.execFileThunkFor(cbT);
     host.usesTimers = true;
-    host.declare(`declare ptr @scr_exec_file(ptr, ptr, ptr, ptr)`);
+    host.declare(`declare ptr @scr_exec_file(ptr, ptr, ptr, ptr, i1)`);
     const out = B.tmp();
     B.line(
-      `${out} = call ptr @scr_exec_file(ptr ${cmd.name}, ptr ${argv.name}, ptr ${cb.name}, ptr @${adapter})`,
+      `${out} = call ptr @scr_exec_file(ptr ${cmd.name}, ptr ${argv.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${shell.name})`,
     );
     return host.own({ name: out, type: e.type });
   }
@@ -372,14 +374,16 @@ export function emitAsyncContextLibCall(host: LlvmEmitterContext, e: LibCallExpr
     host.usesTimers = true;
     const cb = host.emitExpr(e.args[0]!);
     host.moveTemp(cb);
-    const sym = {
-      "timers.setTimeout": "scr_set_timeout",
-      "timers.setInterval": "scr_set_interval",
-      "timers.setTimeoutHandle": "scr_set_timeout_handle",
-      "timers.setImmediate": "scr_set_immediate",
-      "process.nextTick": "scr_next_tick",
-      "timers.queueMicrotask": "scr_queue_microtask",
-    }[e.fn];
+    const sym =
+      mockTimerSym(host, e) ??
+      {
+        "timers.setTimeout": "scr_set_timeout",
+        "timers.setInterval": "scr_set_interval",
+        "timers.setTimeoutHandle": "scr_set_timeout_handle",
+        "timers.setImmediate": "scr_set_immediate",
+        "process.nextTick": "scr_next_tick",
+        "timers.queueMicrotask": "scr_queue_microtask",
+      }[e.fn];
     const rest = e.args.slice(1).map((a) => host.emitExpr(a));
     const argList = [`ptr ${cb.name}`, ...rest.map((a) => `${host.llType(a.type)} ${a.name}`)].join(
       ", ",
@@ -405,21 +409,24 @@ export function emitAsyncContextLibCall(host: LlvmEmitterContext, e: LibCallExpr
     // The chaining forms: bookkeep, then yield the handle itself (the
     // C comma expressions).
     const h = host.emitExpr(e.args[0]!);
-    const sym = {
-      "timers.unref": "scr_timer_unref",
-      "timers.ref": "scr_timer_ref",
-      "timers.refresh": "scr_timer_refresh",
-      "timers.immediateUnref": "scr_immediate_unref",
-      "timers.immediateRef": "scr_immediate_ref",
-    }[e.fn];
+    const sym =
+      mockTimerSym(host, e) ??
+      {
+        "timers.unref": "scr_timer_unref",
+        "timers.ref": "scr_timer_ref",
+        "timers.refresh": "scr_timer_refresh",
+        "timers.immediateUnref": "scr_immediate_unref",
+        "timers.immediateRef": "scr_immediate_ref",
+      }[e.fn];
     host.declare(`declare void @${sym}(double)`);
     B.line(`call void @${sym}(double ${h.name})`);
     return { name: h.name, type: e.type };
   }
   if (e.fn === "timers.clearTimeout" || e.fn === "timers.clearInterval") {
     const h = host.emitExpr(e.args[0]!);
-    host.declare(`declare void @scr_clear_interval(double)`);
-    B.line(`call void @scr_clear_interval(double ${h.name})`);
+    const sym = mockTimerSym(host, e) ?? "scr_clear_interval";
+    host.declare(`declare void @${sym}(double)`);
+    B.line(`call void @${sym}(double ${h.name})`);
     return { name: "", type: e.type };
   }
   if (e.fn === "timers.clearNoop") {

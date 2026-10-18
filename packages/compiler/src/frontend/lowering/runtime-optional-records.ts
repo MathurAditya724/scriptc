@@ -85,6 +85,20 @@ export class RecordFlowClasses {
   /** Names written as shorthand properties (`{ p }`): the checker resolves
    * those to the property, so a binding of that name stays open. */
   private readonly shorthandNames = new Set<string>();
+  /** Record fields of tracked bindings that flow between slots
+   * (`fill(args, state.parsed)`), by owner symbol and field name. A field
+   * slot widens only with its owner, whose layout holds it. */
+  private readonly fieldSlots = new Map<ts.Symbol, Map<string, number>>();
+  /** The owner binding slot of each field slot. */
+  private readonly fieldOwners = new Map<number, number>();
+  /** Object literals entering each slot; their property values enter the
+   * class's field slots. */
+  private readonly literalSources: { slot: number; literal: ts.ObjectLiteralExpression }[] = [];
+  /** Slots whose field values are copied out whole (a spread, a
+   * destructuring, `Object.values`), so a nested record would convert. */
+  private readonly copiedOut = new Set<number>();
+  /** Counts merges and openings, so field joins run until stable. */
+  private changes = 0;
 
   constructor(
     private readonly files: readonly ts.SourceFile[],
@@ -94,6 +108,7 @@ export class RecordFlowClasses {
     this.collectFunctions();
     this.collectSlots();
     this.connect();
+    this.connectFields();
   }
 
   /** The class id of a binding or parameter slot, or null when the symbol
@@ -160,7 +175,25 @@ export class RecordFlowClasses {
       shape = own;
     }
     this.shapeChecked.set(root, uniform);
+    // A field slot takes a widened layout only with its owner's class.
+    for (const [slot, owner] of this.fieldOwners) {
+      if (!uniform) break;
+      if (this.find(slot) === root && !this.closed(owner)) uniform = false;
+    }
+    this.shapeChecked.set(root, uniform);
     return uniform;
+  }
+
+  /** Every field slot: its owner's class, the field name and its class. */
+  fields(): { owner: number; name: string; classId: number }[] {
+    const out: { owner: number; name: string; classId: number }[] = [];
+    for (const byName of this.fieldSlots.values()) {
+      for (const [name, slot] of byName) {
+        const owner = this.fieldOwners.get(slot)!;
+        out.push({ owner: this.find(owner), name, classId: this.find(slot) });
+      }
+    }
+    return out;
   }
 
   private newSlot(node: ts.Node, isReturn = false): number {
@@ -189,10 +222,109 @@ export class RecordFlowClasses {
     if (ra === rb) return;
     this.parent[rb] = ra;
     this.open[ra] = this.open[ra]! || this.open[rb]!;
+    this.changes++;
   }
 
   private markOpen(slot: number): void {
-    this.open[this.find(slot)] = true;
+    const root = this.find(slot);
+    if (!this.open[root]) this.changes++;
+    this.open[root] = true;
+  }
+
+  /** The slot of a tracked binding's record field, created on first use. */
+  private fieldSlot(owner: ts.Symbol, name: string, node: ts.Node): number | undefined {
+    const ownerSlot = this.bindingSlots.get(owner);
+    if (ownerSlot === undefined) return undefined;
+    let byName = this.fieldSlots.get(owner);
+    if (!byName) {
+      byName = new Map();
+      this.fieldSlots.set(owner, byName);
+    }
+    let slot = byName.get(name);
+    if (slot === undefined) {
+      slot = this.newSlot(node);
+      byName.set(name, slot);
+      this.fieldOwners.set(slot, ownerSlot);
+      this.changes++;
+    }
+    return slot;
+  }
+
+  /** `binding.name` where the binding is a tracked slot. */
+  private fieldAccess(node: ts.Node): { owner: ts.Symbol; name: string } | null {
+    if (!ts.isPropertyAccessExpression(node) || !ts.isIdentifier(node.expression)) return null;
+    if (!ts.isIdentifier(node.name)) return null;
+    const owner = this.host.symbolOf(node.expression);
+    return owner && this.bindingSlots.has(owner) ? { owner, name: node.name.text } : null;
+  }
+
+  /** Joins each field slot with the same field of every member of its
+   * owner's class, gives it the values that literals and assignments store
+   * in the field, and opens it with its owner, until no class changes. */
+  private connectFields(): void {
+    const visitedUses = new Set<string>();
+    const visitedLiterals = new Set<string>();
+    for (let before = -1; before !== this.changes;) {
+      before = this.changes;
+      // Grouped once per pass; joins made during a pass show in the next.
+      const members = new Map<number, ts.Symbol[]>();
+      for (const [symbol, slot] of this.bindingSlots) addTo(members, this.find(slot), symbol);
+      const literals = new Map<number, number[]>();
+      this.literalSources.forEach(({ slot }, i) => addTo(literals, this.find(slot), i));
+      const copied = new Set([...this.copiedOut].map((slot) => this.find(slot)));
+      for (const [symbol, byName] of [...this.fieldSlots]) {
+        const root = this.find(this.bindingSlots.get(symbol)!);
+        for (const [name, field] of [...byName]) {
+          for (const member of members.get(root) ?? []) {
+            const peer = this.fieldSlot(member, name, this.slotNodes[field]!)!;
+            this.union(field, peer);
+            const key = `${this.bindingSlots.get(member)}:${name}`;
+            if (visitedUses.has(key)) continue;
+            visitedUses.add(key);
+            for (const reference of this.referencesOf(member)) this.fieldUse(reference, name, peer);
+          }
+          for (const i of literals.get(root) ?? []) {
+            const key = `${i}:${name}`;
+            if (visitedLiterals.has(key)) continue;
+            visitedLiterals.add(key);
+            for (const property of this.literalSources[i]!.literal.properties) {
+              if (ts.isSpreadAssignment(property)) {
+                this.markOpen(field);
+                continue;
+              }
+              const propertyName = property.name;
+              if (
+                !propertyName ||
+                !(ts.isIdentifier(propertyName) || ts.isStringLiteral(propertyName)) ||
+                propertyName.text !== name
+              )
+                continue;
+              if (ts.isPropertyAssignment(property)) this.source(property.initializer, field);
+              else if (ts.isShorthandPropertyAssignment(property))
+                this.source(property.name as ts.Identifier, field);
+              else this.markOpen(field);
+            }
+          }
+          if (this.open[this.find(root)] || copied.has(root)) this.markOpen(field);
+        }
+      }
+    }
+  }
+
+  /** Checks one reference to a field slot's owner: a read of the field
+   * (`owner.name`, `owner["name"]`) must be a member use, and a computed
+   * key can reach the field too. */
+  private fieldUse(reference: ts.Identifier, name: string, field: number): void {
+    const access = reference.parent;
+    if (!access || (access as { expression?: ts.Node }).expression !== reference) return;
+    if (ts.isPropertyAccessExpression(access)) {
+      if (access.name.text === name && !this.use(access, field)) this.markOpen(field);
+      return;
+    }
+    if (!ts.isElementAccessExpression(access)) return;
+    const key = peel(access.argumentExpression);
+    if (!ts.isStringLiteral(key) && !ts.isNoSubstitutionTemplateLiteral(key)) this.markOpen(field);
+    else if (key.text === name && !this.use(access, field)) this.markOpen(field);
   }
 
   private index(): void {
@@ -473,7 +605,15 @@ export class RecordFlowClasses {
    * when the value can be an object some other storage already holds. */
   private source(node: ts.Expression, slot: number): void {
     const e = peel(node);
-    if (ts.isObjectLiteralExpression(e)) return;
+    if (ts.isObjectLiteralExpression(e)) {
+      this.literalSources.push({ slot, literal: e });
+      return;
+    }
+    const access = this.fieldAccess(e);
+    if (access) {
+      this.union(slot, this.fieldSlot(access.owner, access.name, e)!);
+      return;
+    }
     if (ts.isIdentifier(e)) {
       const symbol = this.host.symbolOf(e);
       const other = symbol ? this.bindingSlots.get(symbol) : undefined;
@@ -519,7 +659,7 @@ export class RecordFlowClasses {
   /** True when this reference to a member only reads or writes its fields,
    * passes the record to another member (a flow `source` joins), or
    * inspects it without keeping or converting it. */
-  private use(reference: ts.Identifier, slot: number): boolean {
+  private use(reference: ts.Expression, slot: number): boolean {
     let value: ts.Node = reference;
     for (;;) {
       const user = value.parent;
@@ -536,7 +676,10 @@ export class RecordFlowClasses {
       }
       if (ts.isPropertyAccessExpression(user) && user.expression === value) return true;
       if (ts.isElementAccessExpression(user) && user.expression === value) return true;
-      if (ts.isSpreadAssignment(user)) return true;
+      if (ts.isSpreadAssignment(user)) {
+        this.copiedOut.add(slot);
+        return true;
+      }
       if (ts.isTemplateSpan(user) || ts.isTypeOfExpression(user)) return true;
       if (ts.isExpressionStatement(user)) return true;
       if (ts.isPrefixUnaryExpression(user) && user.operator === ts.SyntaxKind.ExclamationToken)
@@ -588,7 +731,8 @@ export class RecordFlowClasses {
           op === ts.SyntaxKind.AmpersandAmpersandEqualsToken;
         // A record assigned to a member joins it when the member's own
         // reference is visited, below.
-        if (assigns && user.right === value) return this.isMember(user.left);
+        if (assigns && user.right === value)
+          return this.isMember(user.left) || this.isFieldMember(user.left);
         if (assigns && user.left === value && value === reference) {
           this.source(user.right, slot);
           return true;
@@ -597,7 +741,10 @@ export class RecordFlowClasses {
         return false;
       }
       if (ts.isVariableDeclaration(user) && user.initializer === value) {
-        if (ts.isObjectBindingPattern(user.name)) return true;
+        if (ts.isObjectBindingPattern(user.name)) {
+          this.copiedOut.add(slot);
+          return true;
+        }
         return this.isMember(user.name);
       }
       if (ts.isReturnStatement(user)) {
@@ -629,11 +776,13 @@ export class RecordFlowClasses {
         }
         if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
           const methods = READING_CALLS.get(callee.expression.text);
-          return (
+          const reads =
             !!methods &&
             methods.has(callee.name.text) &&
-            this.host.isGlobal(callee.expression, callee.expression.text)
-          );
+            this.host.isGlobal(callee.expression, callee.expression.text);
+          if (reads && (callee.name.text === "values" || callee.name.text === "entries"))
+            this.copiedOut.add(slot);
+          return reads;
         }
         return false;
       }
@@ -646,6 +795,19 @@ export class RecordFlowClasses {
     const symbol = this.host.symbolOf(node);
     return !!symbol && this.bindingSlots.has(symbol);
   }
+
+  /** A tracked binding's field as an assignment target: the stored record
+   * joins the field slot when the field's uses are visited. */
+  private isFieldMember(node: ts.Node): boolean {
+    const access = this.fieldAccess(node);
+    return !!access && this.fieldSlot(access.owner, access.name, node) !== undefined;
+  }
+}
+
+function addTo<T>(map: Map<number, T[]>, key: number, value: T): void {
+  const list = map.get(key);
+  if (list) list.push(value);
+  else map.set(key, [value]);
 }
 
 /** The return expressions of a function body, excluding nested functions. */

@@ -85,6 +85,7 @@ static int scr_lre_flags(const ScrStr *flags) {
       case 's': mask |= LRE_FLAG_DOTALL; break;
       case 'u': mask |= LRE_FLAG_UNICODE; break;
       case 'y': mask |= LRE_FLAG_STICKY; break;
+      case 'v': mask |= LRE_FLAG_UNICODE_SETS; break;
       default:
         scr_trap_fmt("scriptc: internal error: unexpected regex flag '%c'\n",
                      flags->data[i]);
@@ -201,7 +202,7 @@ static uint8_t *scr_regex_bc(ScrRegex *re) {
   const char *pat = re->source->data;
   size_t pat_len = re->source->len;
   char *cesu = NULL;
-  if (!(flags & LRE_FLAG_UNICODE)) {
+  if (!(flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS))) {
     cesu = scr_pattern_cesu8(re->source, &pat_len);
     if (cesu) pat = cesu;
   }
@@ -2042,11 +2043,9 @@ ScrRegex *scr_regex_new(ScrStr *pattern, ScrStr *flags) {
   }
   /* Valid in Node, absent from the engine: name the gap rather than
    * report a flag Node accepts as invalid. */
-  if (seen_flags & ((1u << 6) | (1u << 7))) {
+  if (seen_flags & (1u << 6)) {
     static const char d_msg[] = "the regex 'd' flag (match indices) is not supported yet [SC1120]";
-    static const char v_msg[] = "the regex 'v' flag (unicode sets) is not supported yet [SC1120]";
-    if (seen_flags & (1u << 6)) scr_throw_error_msg(SCR_ERR_ERROR, d_msg, sizeof d_msg - 1);
-    else scr_throw_error_msg(SCR_ERR_ERROR, v_msg, sizeof v_msg - 1);
+    scr_throw_error_msg(SCR_ERR_ERROR, d_msg, sizeof d_msg - 1);
     return NULL;
   }
   ScrRegex *re = calloc(1, sizeof *re);
@@ -2057,11 +2056,11 @@ ScrRegex *scr_regex_new(ScrStr *pattern, ScrStr *flags) {
   re->source = pattern->len > 0 ? scr_str_retain(pattern) : scr_str_new("(?:)", 4);
   /* Public flags use getter order, independently of constructor spelling.
    * Validate first so duplicates and invalid flags retain their errors. */
-  char canonical[6];
+  char canonical[8];
   size_t flag_count = 0;
-  const char *order = "gimsuy";
-  for (unsigned i = 0; i < 6; i++) {
-    if (seen_flags & (1u << i)) canonical[flag_count++] = order[i];
+  static const unsigned order_bits[] = {0, 1, 2, 3, 4, 7, 5};
+  for (unsigned i = 0; i < sizeof order_bits / sizeof order_bits[0]; i++) {
+    if (seen_flags & (1u << order_bits[i])) canonical[flag_count++] = "gimsuvy"[i];
   }
   re->flags = flag_count == flags->len && memcmp(canonical, flags->data, flag_count) == 0
     ? scr_str_retain(flags) : scr_str_new(canonical, flag_count);
@@ -2078,7 +2077,7 @@ ScrRegex *scr_regex_new(ScrStr *pattern, ScrStr *flags) {
   const char *pat = re->source->data;
   size_t pat_len = re->source->len;
   char *cesu = NULL;
-  if (!(lre_flags & LRE_FLAG_UNICODE)) {
+  if (!(lre_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS))) {
     cesu = scr_pattern_cesu8(re->source, &pat_len);
     if (cesu) pat = cesu;
   }

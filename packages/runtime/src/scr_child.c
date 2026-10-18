@@ -1552,6 +1552,7 @@ static bool scr_child_stream_pump(ScrChildStream *s) {
     scr_child_stream_capture_append(s, buf, (size_t)got);
     if (s->n_data == 0) continue;
     ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)got);
+    chunk->is_buffer = true; /* Node delivers a Buffer */
     memcpy(chunk->data, buf, (size_t)got);
     ScrStr *text = NULL;
     if (s->encoding != NULL) {
@@ -2265,14 +2266,14 @@ static void scr_exec_file_fire(ScrChild *c) {
 }
 
 ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb,
-                        ScrExecFileFn fn) {
+                        ScrExecFileFn fn, bool shell) {
   ScrStr *empty = scr_str_new("", 0);
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false,
                                NULL, empty);
   scr_str_release(empty);
   c->exec_cb = cb;
   c->exec_fn = fn;
-  char *display = scr_exec_display(cmd, args, false);
+  char *display = scr_exec_display(cmd, args, shell);
   c->exec_display = scr_str_new(display, strlen(display));
   free(display);
   scr_child_stream_capture_begin(c->out_stream);
@@ -4068,6 +4069,7 @@ static bool scr_child_stream_pump(ScrChildStream *s) {
     scr_child_stream_capture_append(s, buf, (size_t)n);
     if (s->n_data == 0) continue;
     ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
+    chunk->is_buffer = true; /* Node delivers a Buffer */
     memcpy(chunk->data, buf, (size_t)n);
     ScrStr *text = NULL;
     if (s->encoding != NULL) {
@@ -4909,14 +4911,14 @@ static void scr_exec_file_fire(ScrChild *c) {
 }
 
 ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb,
-                        ScrExecFileFn fn) {
+                        ScrExecFileFn fn, bool shell) {
   ScrStr *empty = scr_str_new("", 0);
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false,
                                NULL, empty);
   scr_str_release(empty);
   c->exec_cb = cb;
   c->exec_fn = fn;
-  char *display = scr_exec_display(cmd, args, false);
+  char *display = scr_exec_display(cmd, args, shell);
   c->exec_display = scr_str_new(display, strlen(display));
   free(display);
   scr_child_stream_capture_begin(c->out_stream);

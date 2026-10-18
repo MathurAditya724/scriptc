@@ -86,10 +86,3 @@ generic-value-bindings.ts:51:15 - error SC1090: calls of the generic method 'm' 
   51 |   console.log(a.m(4));
      |               ^~~~~~
   52 | }
-
-generic-value-bindings.ts:56:14 - error SC1090: generic arrow/function expressions outside a never-reassigned module-scope binding (only `const f = <T>(x: T) => ...` bindings and top-level generic function declarations monomorphize) is not supported yet
-
-  55 | // A generic lambda outside any monomorphizable home (an IIFE).
-  56 | console.log((<T>(x: T): T => x)(5));
-     |              ^~~~~~~~~~~~~~~~~
-  57 | 

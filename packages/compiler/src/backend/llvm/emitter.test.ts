@@ -126,6 +126,61 @@ test("the shared indexed-read helpers carry an inline hint", () => {
   expect(define("plain")).not.toContain("inlinehint");
 });
 
+test("bodies holding thousands of capture boxes compile unoptimized with boxes in memory", () => {
+  const number = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+  const read = (localId: string): IrExpr => ({ kind: "varRef", localId, type: F64, loc });
+  // A declaring body with `count` boxed bindings, and a closure body that
+  // receives `count` of them through its environment.
+  const declaring = (name: string, count: number): IrFunction => {
+    const ids = Array.from({ length: count }, (_, i) => `${name}${i}`);
+    return {
+      name,
+      params: [],
+      returnType: F64,
+      locals: ids.map((id) => ({ id, name: id, type: F64, mutable: true, boxed: true as const })),
+      body: [
+        ...ids.map((id, i): IrStmt => ({ kind: "varDecl", localId: id, init: number(i), loc })),
+        { kind: "return", value: read(ids[count - 1]!), loc },
+      ],
+      loc,
+    };
+  };
+  const receiving = (name: string, count: number): IrFunction => {
+    const ids = Array.from({ length: count }, (_, i) => `${name}${i}`);
+    return {
+      name,
+      params: [],
+      returnType: F64,
+      captures: ids.map((id) => ({ localId: id, name: id, type: F64 })),
+      locals: ids.map((id) => ({ id, name: id, type: F64, mutable: true, boxed: true as const })),
+      body: [{ kind: "return", value: read(ids[0]!), loc }],
+      loc,
+    };
+  };
+  const module = moduleFor([]);
+  const llvm = emitLlvmModule({
+    ...module,
+    functions: [
+      ...module.functions,
+      declaring("wide", 512),
+      declaring("narrow", 511),
+      receiving("env", 512),
+    ],
+  });
+  const body = (name: string): string => {
+    const start = llvm.split("\n").findIndex((line) => line.endsWith(`{ ; ${name}`));
+    const lines = llvm.split("\n").slice(start);
+    return lines.slice(0, lines.indexOf("}")).join("\n");
+  };
+  expect(body("wide")).toMatch(/\) noinline optnone #0 \{/);
+  expect(body("wide")).toMatch(/store volatile ptr %[st]\d+, ptr %sc_l_wide0\b/);
+  expect(body("wide")).toMatch(/= load volatile ptr, ptr %sc_l_wide511\b/);
+  expect(body("env")).toMatch(/\) noinline optnone #0 \{/);
+  expect(body("env")).toMatch(/store volatile ptr %t\d+, ptr %sc_l_env0 ; captured env0/);
+  expect(body("narrow")).not.toContain("optnone");
+  expect(body("narrow")).not.toContain("volatile");
+});
+
 test("throwing-call count does not multiply identical scope cleanup", () => {
   for (const boxed of [false, true]) {
     const small = emitLlvmModule(moduleFor(Array.from({ length: 4 }, call), { boxed }));

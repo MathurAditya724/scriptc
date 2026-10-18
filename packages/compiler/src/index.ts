@@ -172,11 +172,22 @@ export {
 } from "./diagnostics/render.js";
 export {
   renderCoverage,
+  renderExplainDynamic,
   coverageEnvelope,
   coveragePasses,
   type CoverageInput,
   type CoverageFailOn,
 } from "./coverage/report.js";
+export {
+  TIER_MODES,
+  type DemotedUnit,
+  type DemotionRequest,
+  type DemotionSeed,
+  type DemotionUnit,
+  type DemotionUnitKind,
+  type TierMode,
+  type TierReport,
+} from "./frontend/tier-analysis.js";
 export {
   buildEnvelope,
   DIAGNOSTICS_SCHEMA_VERSION,
@@ -208,6 +219,13 @@ export {
 } from "./compat/fetch-profile.js";
 export { LIB_FN_SIGS } from "./ir/builtin-signatures.js";
 export { validateModule } from "./ir/validate.js";
+export {
+  assignLegacyTiers,
+  dynamicOperationOf,
+  functionTier,
+  type DynamicFunction,
+  type IrTier,
+} from "./ir/tiers.js";
 export {
   deserializeModule,
   deserializeModuleBytes,
@@ -635,6 +653,7 @@ function runtimePackDiagnostic(error: RuntimePackError, entryPath: string): ScrD
     error.code === "unsupported" ? "SC3002" : "SC3003",
     error.message,
     entryPath,
+    error.hint,
   );
 }
 

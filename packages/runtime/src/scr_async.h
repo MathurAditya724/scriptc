@@ -212,10 +212,19 @@ void scr_process_on_warning(ScrDyn *fn);
 void scr_process_off_warning(ScrDyn *fn);
 void scr_process_emit_warning(ScrDyn *args);
 void scr_emit_warning(const char *name, const char *code, ScrStr *message);
+/* node:punycode's first load (scr_async_dyn.c): later calls are module
+ * cache hits. The first reports DEP0040 when `report` (false for a require
+ * made from node_modules) — at once for a static ES import, which Node
+ * links before any module evaluates, otherwise on the next tick. */
+void scr_punycode_warn(bool immediate, bool report);
 /* scr_emit_warning once a 'warning' listener exists (scr_lib.c; set by the
  * listener registration): units that cannot link the dyn-async unit route
  * their warnings through it, and print the default report otherwise. */
 extern SCR_TL void (*scr_warning_emit_hook)(const char *name, const char *code, ScrStr *message);
+/* Node's traceWarningHelperShown: the "(Use `node --trace-warnings ...`"
+ * hint follows only the first warning report of the process, whichever
+ * unit prints it (scr_lib.c). */
+extern SCR_TL bool scr_warning_trace_hint_shown;
 /* process.noDeprecation (which 0) and process.throwDeprecation (which 1):
  * the stored value (+1; undefined until assigned), the assignment
  * (borrowed), and the truthiness the warning paths test. */
@@ -363,6 +372,14 @@ ScrPromise *scr_immediate_promise(void);
 void scr_clear_interval(double handle);
 
 double scr_set_timeout_handle(ScrClosure *cb, double ms); /* cb ownership moves in */
+/* Queues `cb` (moved) on the MockTimers that mocks AbortSignal.timeout
+ * (scr_test.c), NULL while it is not mocked. AbortSignal.timeout then
+ * aborts its signal from that queue instead of arming a loop timer. */
+extern SCR_TL void (*scr_mt_abort_timeout_arm)(ScrClosure *cb, double ms);
+/* scheduler.wait's mock.timers state (scr_test.c): 0 real, 1 mocked, 2 the
+ * real one restored after a reset, which throws ERR_INVALID_THIS in Node.
+ * scr_tp_scheduler_wait_signal reads it. */
+extern SCR_TL int scr_mt_wait_state;
 void scr_timers_teardown(void);
 /* Timeout.unref()/ref()/hasRef(): loop-liveness bookkeeping over the timer
  * handle (setTimeout/setInterval's id). unref drops the timer from the

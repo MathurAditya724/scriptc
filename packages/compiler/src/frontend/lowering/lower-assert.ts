@@ -2364,6 +2364,7 @@ const BYTES_BRANDS: ReadonlySet<string> = new Set([
   "Int8Array",
   "Int16Array",
   "Int32Array",
+  "Float16Array",
   "Float32Array",
   "Float64Array",
   "BigInt64Array",

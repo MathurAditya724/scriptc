@@ -92,6 +92,9 @@ typedef struct ScrCycType {
  * SCR_CYC_KIND_EMITTED (llvm/alloc.ts FIRST_EMITTED_CYC_KIND). */
 enum {
   SCR_CYC_KIND_NONE = 0,
+  /* Also how the collector recognizes a cycle-capable ScrArr, whose dense
+   * elements it visits inline (scr_cycle.c SCR_CYC_CHILDREN): reserved for
+   * scr_array.c's descriptor. */
   SCR_CYC_KIND_ARRAY,
   SCR_CYC_KIND_PROMISE,
   SCR_CYC_KIND_BOX,
@@ -235,6 +238,11 @@ void scr_rt_free(void *p);
  * of [lo, hi), aligned to 256 KiB, in ahead of use; builds without the
  * helper ignore it. */
 void scr_mem_prefault(void *lo, void *hi);
+/* Reorders ptrs, distinct pointers `offset` bytes into blocks that are
+ * about to be freed in array order, so that the free lists hand the blocks
+ * back in ascending address order (scr_alloc.c). Builds without the
+ * small-object allocator leave the array as it is. */
+void scr_mem_order_for_free(void **ptrs, size_t n, size_t offset);
 
 /* Size classes: requests up to 128 bytes take a class per 8-byte step
  * (small objects often sit just under a 16-byte boundary), larger ones a
@@ -336,11 +344,18 @@ void scr_sa_thread_park(void);
 /* Waits until the arenas of exited threads are trimmed (tests). */
 void scr_sa_wait_trims(void);
 /* Called first on a new worker thread: prepares the thread's system-
- * allocator heap (scr_alloc.c). */
+ * allocator heap, and lets the thread's memory go back when it exits
+ * (scr_alloc.c). */
 void scr_sa_thread_starting(void);
+/* The calling thread made objects it allocated reachable from other
+ * threads: a message or an intern table shares a published graph by
+ * pointer, or a process-wide cache keeps an immortal object. Its memory
+ * then stays when it exits (scr_alloc.c). */
+void scr_sa_thread_shares(void);
 #define SCR_SA_FREE_FOREIGN(p) scr_sa_free_foreign(p)
 #else
 #define SCR_SA_FREE_FOREIGN(p) free(p)
+#define scr_sa_thread_shares() ((void)0)
 #endif
 
 #if SCR_SMALL_ALLOC

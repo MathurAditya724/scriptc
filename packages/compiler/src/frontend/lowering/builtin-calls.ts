@@ -1,9 +1,14 @@
 import { lowerReadlineCursorCall } from "./builtins/readline.js";
-import { lowerReceiveMessageOnPort } from "./builtins/workers.js";
+import {
+  lowerEnvironmentData,
+  lowerReceiveMessageOnPort,
+  lowerUncloneable,
+  lowerUntransferable,
+} from "./builtins/workers.js";
 import * as ts from "../ts7/adapter.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { DYN, type IrExpr, type SrcLoc } from "../../ir/ir.js";
-import { lowerEventsOnce } from "./lower-event-emitter.js";
+import { lowerEventsEmitterHelper, lowerEventsOnce } from "./lower-event-emitter.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerTimersMemberCall } from "./lower-timers.js";
 import { lowerStreamModuleCall } from "./lower-stream.js";
@@ -57,13 +62,17 @@ export function lowerBuiltinCall(
   loc: SrcLoc,
   namespaceMember?: ts.MemberName,
 ): IrExpr {
-  if (bi.module === "child_process" && bi.member === "execFile") {
-    return lowerer.lowerExecFileCall(expr, loc);
+  if (bi.module === "child_process" && (bi.member === "execFile" || bi.member === "exec")) {
+    return lowerer.lowerExecFileCall(expr, loc, bi.member === "exec");
   }
   if (bi.module === "events" && bi.member === "addAbortListener") {
     return lowerAddAbortListener(lowerer, expr, loc);
   }
   if (bi.module === "events" && bi.member === "once") return lowerEventsOnce(lowerer, expr, loc);
+  if (bi.module === "events") {
+    const helper = lowerEventsEmitterHelper(lowerer, expr, bi.member, loc);
+    if (helper) return helper;
+  }
   if (bi.module === "timers") {
     const timersServed = lowerTimersMemberCall(lowerer, expr, bi.member, loc);
     if (timersServed) return timersServed;
@@ -96,6 +105,21 @@ export function lowerBuiltinCall(
   }
   if (bi.module === "worker_threads" && bi.member === "receiveMessageOnPort") {
     return lowerReceiveMessageOnPort(lowerer, expr);
+  }
+  if (
+    bi.module === "worker_threads" &&
+    (bi.member === "setEnvironmentData" || bi.member === "getEnvironmentData")
+  ) {
+    return lowerEnvironmentData(lowerer, expr, bi.member);
+  }
+  if (
+    bi.module === "worker_threads" &&
+    (bi.member === "markAsUntransferable" || bi.member === "isMarkedAsUntransferable")
+  ) {
+    return lowerUntransferable(lowerer, expr, bi.member);
+  }
+  if (bi.module === "worker_threads" && bi.member === "markAsUncloneable") {
+    return lowerUncloneable(lowerer, expr);
   }
   const builtinFn = builtinModuleFnOf(lowerer, bi.module, bi.member);
   if (!builtinFn) {

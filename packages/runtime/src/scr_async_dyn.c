@@ -341,9 +341,100 @@ void scr_process_off_uncaught_exception(ScrDyn *fn, bool monitor) {
   scr_uncaught_sync_hook();
 }
 
+/* V8's side-effect-free string of a value, which Node's
+ * UnhandledPromiseRejection message quotes: primitives as String() gives
+ * them, a symbol as Symbol(description), an array as [object Array], an
+ * object with its own toString as [object Object], and other objects as
+ * #<Constructor>. */
+static bool scr_rejection_custom_to_string(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrStr *key = scr_str_new("toString", 8);
+    bool found = scr_dyn_typed_ref_class_has(value, key);
+    scr_str_release(key);
+    return found;
+  }
+  for (const ScrDyn *p = value; p; p = p->prototype)
+    if (p->kind == SCR_DYN_OBJ && scr_dyn_obj_get(p, "toString", 8)) return true;
+  return false;
+}
+
+static ScrStr *scr_rejection_reason_text(const ScrDyn *reason, const ScrDyn *view) {
+  switch (view->kind) {
+  case SCR_DYN_UNDEF: return scr_str_new("undefined", 9);
+  case SCR_DYN_NULL: return scr_str_new("null", 4);
+  case SCR_DYN_SYMBOL: return reason->v.symbol.render(reason->v.symbol.value);
+  case SCR_DYN_ARR: return scr_str_new("[object Array]", 14);
+  case SCR_DYN_PROMISE: return scr_str_new("#<Promise>", 10);
+  case SCR_DYN_OBJ: {
+    if (scr_rejection_custom_to_string(reason) || scr_rejection_custom_to_string(view))
+      return scr_str_new("[object Object]", 15);
+    const char *name = reason->kind == SCR_DYN_OBJ ? scr_dyn_class_name(reason) : NULL;
+    const ScrStr *typed = reason->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_class_name(reason) : NULL;
+    ScrStr *parts[3] = {
+      scr_str_new("#<", 2),
+      typed ? scr_str_new(typed->data, typed->len) : scr_str_new(name ? name : "Object", name ? strlen(name) : 6),
+      scr_str_new(">", 1),
+    };
+    ScrStr *text = scr_str_concat_parts(parts, 3);
+    for (size_t i = 0; i < 3; i++) scr_str_release(parts[i]);
+    return text;
+  }
+  default: return scr_dyn_to_string(view, NULL);
+  }
+}
+
+ScrDyn *scr_unhandled_rejection_error(ScrDyn *reason) {
+  ScrError *error = scr_errdyn_err_of(reason);
+  ScrDyn *view = reason->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(reason) : scr_dyn_retain(reason);
+  if (!view || scr_exc_pending()) {
+    scr_error_release(error);
+    scr_dyn_release(view);
+    return NULL;
+  }
+  ScrStr *stack = scr_str_new("stack", 5);
+  bool error_like = error || (view->kind == SCR_DYN_OBJ && scr_dyn_has_own(view, stack));
+  scr_str_release(stack);
+  if (error_like) {
+    scr_error_release(error);
+    scr_dyn_release(view);
+    return scr_dyn_retain(reason);
+  }
+  ScrStr *text = scr_rejection_reason_text(reason, view);
+  scr_dyn_release(view);
+  if (!text || scr_exc_pending()) {
+    scr_str_release(text);
+    return NULL;
+  }
+  static const char head[] = "This error originated either by throwing inside of an async function without a "
+                             "catch block, or by rejecting a promise which was not handled with .catch(). The "
+                             "promise rejected with the reason \"";
+  ScrStr *parts[3] = {scr_str_new(head, sizeof head - 1), text, scr_str_new("\".", 2)};
+  ScrStr *message = scr_str_concat_parts(parts, 3);
+  for (size_t i = 0; i < 3; i++) scr_str_release(parts[i]);
+  error = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_str_release(error->name);
+  error->name = scr_str_new("UnhandledPromiseRejection", 25);
+  error->code = scr_str_new("ERR_UNHANDLED_REJECTION", 23);
+  ScrDyn *value = scr_dyn_from_error(error);
+  /* Node's class fields: code, then name, both own and enumerable */
+  scr_dyn_obj_set(value, "name", 4, scr_dyn_new_str(error->name));
+  scr_error_release(error);
+  return value;
+}
+
 static int scr_uncaught_dispatch(bool from_promise) {
   ScrCaught *caught = scr_exc_take();
   ScrDyn *error = scr_caught_to_dyn(caught);
+  if (from_promise) {
+    ScrDyn *wrapped = scr_unhandled_rejection_error(error);
+    scr_dyn_release(error);
+    if (!wrapped) {
+      scr_caught_release(caught);
+      return -1;
+    }
+    error = wrapped;
+  }
   const char *origin = from_promise ? "unhandledRejection" : "uncaughtException";
   ScrStr *text = scr_str_new(origin, strlen(origin));
   ScrDyn *args[2] = {error, scr_dyn_new_str(text)};
@@ -738,9 +829,8 @@ static void scr_warning_dispatch(ScrDyn *w) {
   }
   /* Node's one-time trace hint, after the first report; deprecations
    * name their own trace flag. */
-  static SCR_TL bool hinted = false;
-  if (!hinted) {
-    hinted = true;
+  if (!scr_warning_trace_hint_shown) {
+    scr_warning_trace_hint_shown = true;
     scr_jb_puts(&report, deprecation
                              ? "\n(Use `node --trace-deprecation ...` to show where the warning was created)"
                              : "\n(Use `node --trace-warnings ...` to show where the warning was created)");
@@ -812,6 +902,27 @@ void scr_warning_emit_deferred(ScrDyn *w) {
     }
   }
   scr_warning_defer(w, scr_warning_tick);
+}
+
+static SCR_TL bool scr_punycode_loaded = false;
+
+void scr_punycode_warn(bool immediate, bool report) {
+  if (scr_punycode_loaded) return;
+  scr_punycode_loaded = true;
+  if (!report) return;
+  static const char text[] =
+      "The `punycode` module is deprecated. Please use a userland alternative instead.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrStr *code = scr_str_new("DEP0040", 7);
+  ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+  if (immediate) {
+    if (!scr_process_deprecation_flag_on(0)) scr_warning_dispatch(w);
+  } else {
+    scr_warning_emit_deferred(w);
+  }
+  scr_dyn_release(w);
+  scr_str_release(code);
+  scr_str_release(message);
 }
 
 /* The console members' warnings. Node's emitWarning emits on
@@ -1024,8 +1135,82 @@ ScrDyn *scr_promise_reason_dyn(const ScrPromise *p) {
 
 SCR_TL extern bool (*scr_dyn_promise_identity_fn)(ScrPromise *, ScrPromise *);
 
+/* Promise.prototype.then, catch and finally as function values: one FUNC
+ * box per method and thread. A call reads its receiver from the ambient
+ * binding (`p.then.call(p, f)`, or the method read off the promise and
+ * called on it); a receiver that is not a promise throws Node's
+ * incompatible-receiver TypeError. */
+static const char *const scr_dyn_promise_method_names[3] = {"then", "catch", "finally"};
+static SCR_TL ScrDyn *scr_dyn_promise_methods[3];
+
+static void scr_dyn_promise_methods_cleanup(void) {
+  for (size_t i = 0; i < 3; i++) {
+    if (scr_dyn_promise_methods[i]) scr_dyn_release(scr_dyn_promise_methods[i]);
+    scr_dyn_promise_methods[i] = NULL;
+  }
+}
+
+static void scr_dyn_throw_incompatible_receiver(const char *method, const ScrDyn *self) {
+  char shown[64];
+  const char *text = "#<Object>";
+  if (scr_dyn_is_nullish(self)) {
+    text = self->kind == SCR_DYN_NULL ? "null" : "undefined";
+  } else if (self->kind == SCR_DYN_BOOL) {
+    text = self->v.b ? "true" : "false";
+  } else if (self->kind == SCR_DYN_STR) {
+    snprintf(shown, sizeof shown, "%.*s", (int)(self->v.str->len < 48 ? self->v.str->len : 48), self->v.str->data);
+    text = shown;
+  } else if (self->kind == SCR_DYN_NUM) {
+    ScrStr *s = scr_f64_to_scrstr(self->v.num);
+    snprintf(shown, sizeof shown, "%.*s", (int)s->len, s->data);
+    scr_str_release(s);
+    text = shown;
+  }
+  char message[160];
+  int len = snprintf(message, sizeof message,
+                     "Method Promise.prototype.%s called on incompatible receiver %s", method, text);
+  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)len);
+}
+
+static ScrDyn *scr_dyn_promise_method_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  size_t which = (size_t)scr_box_get_f64(closure->caps[0]);
+  ScrDyn *self = scr_dyn_this_get();
+  ScrPromise *promise = scr_dyn_promise_of(self);
+  if (!promise) {
+    scr_dyn_throw_incompatible_receiver(scr_dyn_promise_method_names[which], self);
+    scr_dyn_release(self);
+    return NULL;
+  }
+  ScrDyn *first = argc >= 1 ? args[0] : NULL;
+  ScrDyn *result = which == 0   ? scr_dyn_promise_then(promise, first, argc >= 2 ? args[1] : NULL, NULL)
+                   : which == 1 ? scr_dyn_promise_then(promise, NULL, first, NULL)
+                                : scr_dyn_promise_then(promise, NULL, NULL, first);
+  scr_dyn_release(self);
+  return result;
+}
+
+static ScrDyn *scr_dyn_promise_member(const char *key, size_t len) {
+  for (size_t i = 0; i < 3; i++) {
+    const char *name = scr_dyn_promise_method_names[i];
+    if (strlen(name) != len || memcmp(name, key, len) != 0) continue;
+    if (!scr_dyn_promise_methods[i]) {
+      if (!scr_dyn_promise_methods[0] && !scr_dyn_promise_methods[1] &&
+          !scr_dyn_promise_methods[2])
+        scr_atexit(scr_dyn_promise_methods_cleanup);
+      ScrClosure *closure = scr_closure_new(NULL, 1);
+      closure->caps[0] = scr_box_new(SCR_BOX_F64);
+      scr_box_set_f64(closure->caps[0], (double)i);
+      scr_dyn_promise_methods[i] =
+          scr_dyn_new_func(closure, scr_dyn_promise_method_call, i == 0 ? 2 : 1, "", name);
+    }
+    return scr_dyn_retain(scr_dyn_promise_methods[i]);
+  }
+  return NULL;
+}
+
 ScrDyn *scr_dyn_new_promise(ScrPromise *p) {
   scr_dyn_promise_identity_fn = scr_promise_identity_equal;
+  scr_dyn_promise_member_fn = scr_dyn_promise_member;
   ScrDyn *d = scr_dyn_alloc_promise(scr_promise_release);
   d->v.promise = scr_promise_retain(p);
   return d;
@@ -1042,6 +1227,7 @@ ScrDyn *scr_dyn_new_promise_adapting(ScrPromise *src,
   ScrPromise *dst = scr_promise_new();
   scr_promise_share_identity(dst, src);
   scr_dyn_promise_identity_fn = scr_promise_identity_equal;
+  scr_dyn_promise_member_fn = scr_dyn_promise_member;
   scr_promise_race_add(dst, src, adapt);
   ScrDyn *d = scr_dyn_alloc_promise(scr_promise_release);
   d->v.promise = dst; /* the constructor's +1 moves in */

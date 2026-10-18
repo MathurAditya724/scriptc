@@ -746,6 +746,8 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const dict = B.tmp();
     B.line(`${dict} = call ptr @${mangleRecordNew(e.type.shapeId)}()`);
     const out = host.own({ name: dict, type: e.type });
+    // Node builds the result with a null prototype.
+    B.line(`store i8 1, ptr ${host.recordMapFlagsPtr(dict, e.type.shapeId)}`);
     const ovf = host.recordOvfPtr(dict, e.type.shapeId);
     B.line(
       `call void @scr_qs_parse_into(ptr ${ovf}, ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, double ${args[3]!.name}, i32 ${strTag}, i32 ${arrTag})`,
@@ -910,11 +912,8 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
           scopeid.inline,
         );
       }
-      const rc = vAdapters(host.shapeHost, t);
-      const rowU = B.tmp();
-      B.line(
-        `${rowU} = call ptr @scr_union_new_ref(i32 ${tag}, ptr ${r}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, t)})`,
-      );
+      // The row (+1) moves into its union arm (a shape union is the row).
+      const rowU = host.unionNewOwned(infoT.unionId, tag, { name: r, type: t });
       B.line(`store ptr ${rowU}, ptr ${rowSlot}`);
       B.br(lRow);
     };
@@ -1036,6 +1035,16 @@ export function emitPrimitiveLibCall(host: LlvmEmitterContext, e: LibCallExpr): 
     B.line(`${product} = mul i32 ${lhs}, ${rhs}`);
     B.line(`${t} = sitofp i32 ${product} to double`);
     return { name: t, type: e.type, uint32: product };
+  }
+  if (e.fn === "math.f16round") {
+    const v = host.emitExpr(e.args[0]!);
+    host.declare(`declare zeroext i16 @scr_f16_from_f64(double)`);
+    host.declare(`declare double @scr_f16_to_f64(i16 zeroext)`);
+    const narrowed = B.tmp();
+    const t = B.tmp();
+    B.line(`${narrowed} = call zeroext i16 @scr_f16_from_f64(double ${v.name})`);
+    B.line(`${t} = call double @scr_f16_to_f64(i16 zeroext ${narrowed})`);
+    return { name: t, type: e.type };
   }
   if (e.fn === "math.fround") {
     const v = host.emitExpr(e.args[0]!);

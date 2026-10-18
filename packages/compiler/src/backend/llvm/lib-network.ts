@@ -168,7 +168,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       const i = shape.fields.findIndex((f) => f.name === name);
       if (i < 0)
         throw new InternalCompilerError(`llvm emitter bug: net.serverAddress record lacks ${name}`);
-      return i + 1;
+      return i + host.nullableUnions.fieldBase(recT.shapeId);
     };
     const store = (name: string, ty: string, v: string): void => {
       const p = B.tmp();

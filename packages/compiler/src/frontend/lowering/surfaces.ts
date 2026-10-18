@@ -664,6 +664,7 @@ export const STDLIB_SURFACE = {
       cosh: ISL_N1,
       exp: ISL_N1,
       expm1: ISL_N1,
+      f16round: ISL_N1,
       fround: ISL_N1,
       hypot: ISL_N2,
       imul: ISL_N2,
@@ -751,6 +752,7 @@ export const STATIC_MATH_FNS: Record<string, { fn: IrLibFn; arity: number } | un
   sign: { fn: "math.sign", arity: 1 },
   exp: { fn: "math.exp", arity: 1 },
   expm1: { fn: "math.expm1", arity: 1 },
+  f16round: { fn: "math.f16round", arity: 1 },
   fround: { fn: "math.fround", arity: 1 },
   sqrt: { fn: "math.sqrt", arity: 1 },
   log: { fn: "math.log", arity: 1 },
@@ -1485,6 +1487,9 @@ export const BUILTIN_MODULE_FNS: Record<
       result: F64,
       valueParams: [{ mode: "optional", type: F64, defaultValue: 0 }],
     },
+    // A one-argument call is setPriority(0, priority)
+    // (lowerOsSetPriorityCall completes it).
+    setPriority: { fn: "os.setPriority", params: [F64, F64], result: VOID },
     // Special-cased (lowerOsCpusCall): the call site's CpuInfo[] assembles
     // from one uv_cpu_info snapshot.
     cpus: { fn: "os.cpusTake", params: [], result: VOID },
@@ -1758,6 +1763,22 @@ export const BUILTIN_MODULE_FNS: Record<
     isAsyncFunction: { fn: "util.typeIs", params: [DYN], result: BOOL },
     isGeneratorFunction: { fn: "util.typeIs", params: [DYN], result: BOOL },
     isGeneratorObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isDate: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isSharedArrayBuffer: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isMapIterator: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isSetIterator: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isKeyObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isNumberObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isStringObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isBooleanObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isBigIntObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isSymbolObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isBoxedPrimitive: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isBigInt64Array: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isBigUint64Array: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isFloat16Array: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isCryptoKey: { fn: "util.typeIs", params: [DYN], result: BOOL },
+    isExternal: { fn: "util.typeIs", params: [DYN], result: BOOL },
   },
   buffer: {
     isAscii: { fn: "buffer.isAscii", params: [DYN], result: BOOL },
@@ -1801,6 +1822,22 @@ export const BUILTIN_MODULE_FNS: Record<
       valueParams: [{ mode: "required", type: STRING }],
     },
   },
+  // node:punycode (deprecated): punycode.js 2.1.0's conversions over
+  // strings (scr_url.c). ucs2.decode/encode are members of the module's
+  // ucs2 object, dispatched as module members (builtinMemberOf). The
+  // DEP0040 report rides the module's load sites (punycodeLoadWarning).
+  punycode: {
+    decode: { fn: "punycode.decode", params: [STRING], result: STRING },
+    encode: { fn: "punycode.encode", params: [STRING], result: STRING },
+    toASCII: { fn: "punycode.toASCII", params: [STRING], result: STRING },
+    toUnicode: { fn: "punycode.toUnicode", params: [STRING], result: STRING },
+    "ucs2.decode": { fn: "punycode.ucs2Decode", params: [STRING], result: arrayOf(F64) },
+    "ucs2.encode": { fn: "punycode.ucs2Encode", params: [arrayOf(F64)], result: STRING },
+  },
+  // node:constants (deprecated) is one frozen object (Object.assign of
+  // os.constants' groups, fs.constants and crypto.constants): bindings of
+  // the module read it as a checked-dynamic value (builtinConstantsObject).
+  constants: {},
   // node:readline: createInterface's options are entirely special-cased
   // (exactly { input: process.stdin, output?: process.stdout } — see
   // lowerBuiltinModuleCall); the entry carries the canonical shape. The
@@ -1873,13 +1910,25 @@ export const BUILTIN_MODULE_FNS: Record<
   // module-qualified with the pointed hint below.
   "stream/consumers": {},
   // node:timers/promises — the delay-only setTimeout and bare setImmediate
-  // (void promises the shared timer heap settles). The arity completion
-  // (omitted delay = Node's 1ms) and the value/options fences are
-  // special-cased in lowerBuiltinModuleCall; these entries carry the
-  // canonical shapes and route the dispatch.
+  // (void promises the shared timer heap settles), and scheduler.wait /
+  // scheduler.yield, which Node defines as setTimeout(delay, undefined,
+  // options) and setImmediate(). The arity completion (omitted delay =
+  // Node's 1ms) and the value/options fences are special-cased in
+  // lowerBuiltinModuleCall; these entries carry the canonical shapes and
+  // route the dispatch.
   "timers/promises": {
     setTimeout: { fn: "tp.setTimeout", params: [F64], result: { kind: "promise", inner: VOID } },
     setImmediate: { fn: "tp.setImmediate", params: [], result: { kind: "promise", inner: VOID } },
+    "scheduler.wait": {
+      fn: "tp.setTimeout",
+      params: [F64],
+      result: { kind: "promise", inner: VOID },
+    },
+    "scheduler.yield": {
+      fn: "tp.setImmediate",
+      params: [],
+      result: { kind: "promise", inner: VOID },
+    },
   },
   // node:diagnostics_channel — the pub/sub core. channel() answers an f64
   // handle (type-mapper.ts maps Channel to F64); the subscriber arguments box
@@ -1918,6 +1967,7 @@ export const BUILTIN_MODULE_CONSTS: Record<
   os: { EOL: "\n", devNull: "/dev/null" },
   worker_threads: { isMainThread: true, threadId: 0 },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
+  punycode: { version: "2.1.0" },
   // zlib's module-level copies of its constants (every member outside
   // BROTLI_*, Node's own loop over zlib.constants).
   zlib: Object.fromEntries(
@@ -2014,8 +2064,13 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
   crypto: {
     // The composed randomBytes(n).toString(enc) chain keeps its one-libCall
     // lowering (lowerCryptoComposedCall), while the callback overload has
-    // its own adapter spelling. Both remain the randomBytes surface.
-    randomBytes: ["crypto.randomBytesToString", "crypto.randomBytesCb"],
+    // its own adapter spelling. Both remain the randomBytes surface, as does
+    // the util.promisify form.
+    randomBytes: [
+      "crypto.randomBytesToString",
+      "crypto.randomBytesCb",
+      "crypto.randomBytesPromise",
+    ],
     // Omitting size fills from offset through the rest of the Buffer and
     // uses a separate runtime entry point for Node's exact bounds checks.
     // Views of every kind return themselves; other buffers take the Dyn form.
@@ -2025,9 +2080,13 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "crypto.randomFillViewRest",
       "crypto.randomFillSyncDyn",
     ],
-    randomFill: ["crypto.randomFillCbDyn"],
+    randomFill: [
+      "crypto.randomFillCbDyn",
+      "crypto.randomFillPromise",
+      "crypto.randomFillPromiseDyn",
+    ],
     timingSafeEqual: ["crypto.timingSafeEqualDyn"],
-    randomInt: ["crypto.randomIntMax", "crypto.randomIntCb"],
+    randomInt: ["crypto.randomIntMax", "crypto.randomIntCb", "crypto.randomIntPromise"],
     randomUUID: ["crypto.randomUUIDOpts"],
   },
   os: {
@@ -2069,7 +2128,14 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     id: "node-builtin.worker_threads.metadata",
     kind: "node-builtin",
     name: "worker_threads metadata",
-    fns: ["worker.isMainThread", "worker.threadId", "worker.data", "worker.parentPort"],
+    fns: [
+      "worker.isMainThread",
+      "worker.threadId",
+      "worker.data",
+      "worker.parentPort",
+      "worker.resourceLimits",
+      "worker.threadName",
+    ],
     note: "current-thread metadata and the worker's parent message port",
   },
   {
@@ -2415,6 +2481,12 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     kind: "node-builtin",
     name: "process.argv0",
     fns: ["process.argv0"],
+  },
+  {
+    id: "node-builtin.process.execArgv",
+    kind: "node-builtin",
+    name: "process.execArgv",
+    fns: ["process.execArgv"],
   },
   {
     id: "node-builtin.process.execPath",
@@ -2828,7 +2900,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   util: {
     promisify:
-      "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots and the fs callback functions with an fs/promises counterpart; call the bound function directly",
+      "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart; call the bound function directly",
   },
   "stream/consumers": {
     blob:
@@ -2844,7 +2916,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
     isBuiltin:
       "the lowered call checks a string against the baked Node v24 list, including bare/node: aliases and prefix-only builtins",
     syncBuiltinESMExports:
-      "the direct zero-argument call is a no-op because compiled builtin exports are immutable and cannot become stale",
+      "the direct zero-argument call statement refreshes the ES module namespace copy of events.defaultMaxListeners, the one builtin export a program can change",
   },
   child_process: {
     execFile:
@@ -2991,8 +3063,8 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
     hint =
       "'.groups' lowers when the match's regex is STATICALLY known — a regex literal, or a " +
       "const initialized with one (the group-name table is built at compile time) — and the " +
-      "read is not an optional-chain step: narrow the match instead (if (m) { m.groups } or " +
-      "m!.groups)";
+      "match comes from exec, match, a for-of over matchAll, or the element parameter of an " +
+      "array-method callback over matchAll rows";
   } else if (recvIr?.kind === "array" && member === "flat") {
     hint =
       "flat has no lowering (flatMap does) — flatten into an accumulator instead: " +
@@ -3152,7 +3224,9 @@ export function isStdlibSymbol(lowerer: Lowerer, symbol: ts.Symbol | undefined):
  *     `global.process`) — `declare var` globals ARE properties of
  *     `typeof globalThis`, same symbol either way;
  *   - a local alias binding (`const process = globalThis.process`, the
- *     tamper-guard prologue) registered in stdlibGlobalAliases. */
+ *     tamper-guard prologue) registered in stdlibGlobalAliases;
+ *   - a const binding of the Map or Set constructor (`const M = Map`,
+ *     builtinClassAliasOf). */
 export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): string | null {
   if (ts.isParenthesizedExpression(expr)) return stdlibGlobalNameOf(lowerer, expr.expression);
   if (ts.isIdentifier(expr)) {
@@ -3170,6 +3244,8 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     if (!symbol) return null;
     const alias = lowerer.stdlibGlobalAliases.get(symbol);
     if (alias !== undefined) return alias;
+    const classAlias = lowerer.builtinClassAliasOf(symbol);
+    if (classAlias?.kind === "collection") return classAlias.which;
     const decl = lowerer.checker.declarationsOf(symbol)[0];
     if (decl !== undefined && ts.isImportClause(decl) && decl.name !== undefined) {
       const importDecl = decl.parent;

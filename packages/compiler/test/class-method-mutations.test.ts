@@ -55,3 +55,62 @@ console.log(reporter.count);
 `;
   expect(await callersOf(relabeled, "%dyn.class.properties")).not.toEqual([]);
 });
+
+const counter = `
+class Counter {
+  n = 0;
+  bump(): void { this.n++; }
+}
+function clear(slots: (Counter | null)[], positions: Map<string, number>, key: string): void {
+  const at = positions.get(key);
+  if (at !== undefined || slots.length > 0) KEY;
+}
+const counter = new Counter();
+clear([counter], new Map([["a", 0]]), "a");
+counter.bump();
+console.log(counter.n);
+`;
+
+test("an asserted number key leaves method calls direct", async () => {
+  for (const write of [
+    "slots[at as number] = null",
+    "slots[at!] = null",
+    "slots[<number>at] = null",
+  ])
+    expect(await callersOf(counter.replace("KEY", write), "%dyn.class.properties")).toEqual([]);
+});
+
+test("an asserted string key keeps checked dispatch", async () => {
+  const source = counter.replace(
+    "KEY",
+    "(slots as unknown as Record<string, unknown>)[String(at) as string] = null",
+  );
+  expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
+});
+
+const tally = `
+class Tally {
+  n = 0;
+  add(): void { this.n++; }
+}
+function entry(target: object, key: string, value: number): TYPE {
+  return LITERAL;
+}
+const tally = new Tally();
+tally.add();
+console.log(tally.n, Object.keys(entry(tally, String(tally.n), 2)));
+`;
+
+test("a computed key in an object literal leaves method calls direct", async () => {
+  const source = tally
+    .replace("TYPE", "Record<string, number>")
+    .replace("LITERAL", "{ [key]: value }");
+  expect(await callersOf(source, "%dyn.class.properties")).toEqual([]);
+});
+
+test("a computed key in an Object.assign source keeps checked dispatch", async () => {
+  const source = tally
+    .replace("TYPE", "object")
+    .replace("LITERAL", "Object.assign(target, { [key]: value })");
+  expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
+});

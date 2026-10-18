@@ -10,6 +10,7 @@
   6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080
 
 #include "scr_runtime.h"
+#include "scr_system_errors.h"
 #include "scr_url_internal.h"
 
 #include <math.h>
@@ -495,6 +496,15 @@ static void sf_signal_timer_fire(ScrClosure *cb) {
   sf_signal_release(s);
 }
 
+/* The mocked AbortSignal.timeout's timer: Node's mock calls abort() on
+ * the signal's controller, so the reason is the AbortError. */
+static void sf_signal_mock_timer_fire(ScrClosure *cb) {
+  SfSignal *s = (SfSignal *)scr_box_get_ref(cb->caps[0]);
+  if (!s) return;
+  if (!s->aborted) sf_signal_abort_default(s, false);
+  sf_signal_release(s);
+}
+
 ScrDyn *scr_fetch_abort_timeout(ScrDyn *delay) {
   if (!delay || delay->kind != SCR_DYN_NUM) {
     if (delay) {
@@ -526,13 +536,19 @@ ScrDyn *scr_fetch_abort_timeout(ScrDyn *delay) {
     return NULL;
   }
   SfSignal *s = sf_signal_new();
-  ScrClosure *cb = scr_closure_new((void *)&sf_signal_timer_fire, 1);
+  bool mocked = scr_mt_abort_timeout_arm != NULL;
+  ScrClosure *cb = scr_closure_new(
+      mocked ? (void *)&sf_signal_mock_timer_fire : (void *)&sf_signal_timer_fire, 1);
   ScrBox *box =
       scr_box_new_obj(&sf_signal_retain_v, &sf_signal_release_v, NULL);
   scr_box_set_ref(box, sf_signal_retain(s));
   cb->caps[0] = box;
-  s->timer_id = scr_set_timeout_handle(cb, ms);
-  scr_timer_unref(s->timer_id);
+  if (mocked) {
+    scr_mt_abort_timeout_arm(cb, ms);
+  } else {
+    s->timer_id = scr_set_timeout_handle(cb, ms);
+    scr_timer_unref(s->timer_id);
+  }
   ScrDyn *out = scr_dyn_new_handle(s, SCR_DYNH_ABORT_SIGNAL);
   sf_signal_release(s);
   return out;
@@ -2888,14 +2904,21 @@ static int sf_hex_value(char c) {
   return -1;
 }
 
+/* EnvHttpProxyAgent sends Basic proxy authentication only when the proxy
+ * URL has both a username and a password. */
+static bool sf_proxy_has_credentials(const ScrStr *userinfo) {
+  const char *colon = memchr(userinfo->data, ':', userinfo->len);
+  return colon != NULL && colon != userinfo->data &&
+         colon + 1 < userinfo->data + userinfo->len;
+}
+
 /* EnvHttpProxyAgent derives Basic proxy authentication from the proxy URL's
  * decoded username/password. ScrUrl keeps the encoded userinfo as one string,
- * so decode it here and add the empty-password separator when necessary. */
+ * so decode it here. */
 static ScrStr *sf_proxy_authorization(const ScrStr *userinfo) {
   char *plain = malloc(userinfo->len + 1);
   if (!plain) sf_oom();
   size_t plain_len = 0;
-  bool has_separator = false;
   for (size_t i = 0; i < userinfo->len;) {
     char c = userinfo->data[i];
     if (c == '%' && i + 2 < userinfo->len) {
@@ -2907,11 +2930,9 @@ static ScrStr *sf_proxy_authorization(const ScrStr *userinfo) {
         continue;
       }
     }
-    if (c == ':') has_separator = true;
     plain[plain_len++] = c;
     i++;
   }
-  if (!has_separator) plain[plain_len++] = ':';
 
   static const char b64[] =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -4058,15 +4079,154 @@ static void sf_on_response(ScrClosure *cb, ScrHttpReq *res) {
   sf_release(t);
 }
 
+typedef struct { int value; const char *name; } SfUvError;
+#define SF_UV_ERROR(name, message) { SCR_NODE_UV__##name, #name },
+static const SfUvError sf_uv_errors[] = { SCR_NODE_UV_ERRNO_MAP(SF_UV_ERROR) };
+#undef SF_UV_ERROR
+
+/* libuv's errno value for a code name; getaddrinfo's ENOTFOUND is
+ * EAI_NONAME. 0 when the name is not a libuv code. */
+static int sf_uv_errno(const char *name) {
+  if (strcmp(name, "ENOTFOUND") == 0) return SCR_NODE_UV__EAI_NONAME;
+  for (size_t i = 0; i < sizeof sf_uv_errors / sizeof sf_uv_errors[0]; i++) {
+    if (strcmp(sf_uv_errors[i].name, name) == 0) return sf_uv_errors[i].value;
+  }
+  return 0;
+}
+
+static const char sf_tunnel_prefix[] = "Proxy response (";
+static const char sf_not_http_prefix[] = "Response does not match the HTTP/1.1 protocol";
+
+/* The cause Node's fetch gives a transport failure, built from the
+ * runtime's failure message. "<syscall> <CODE>[ <detail>]" messages
+ * become Node's system error with code, errno and syscall (plus address
+ * and port for connect, hostname for getaddrinfo). A tunnel the proxy
+ * refused becomes undici's DOMException "Request was cancelled." whose
+ * cause is the AbortError carrying the proxy status, and a proxy reply
+ * that is not HTTP becomes the HTTPParserError. NULL (no cause) for
+ * every other message. +1. */
+static ScrDyn *sf_failure_cause(const ScrStr *message) {
+  if (message->len > sizeof sf_tunnel_prefix - 1 &&
+      memcmp(message->data, sf_tunnel_prefix, sizeof sf_tunnel_prefix - 1) == 0) {
+    ScrError *aborted = scr_error_new(SCR_ERR_ERROR, (ScrStr *)message);
+    scr_str_release(aborted->name);
+    aborted->name = scr_str_new("AbortError", 10);
+    aborted->name_present = true;
+    scr_error_set_code(aborted, "UND_ERR_ABORTED");
+    ScrDyn *inner = scr_dyn_from_error(aborted);
+    scr_error_release(aborted);
+    ScrDyn *options = scr_dyn_new_obj();
+    ScrStr *name = scr_str_new("Error", 5);
+    scr_dyn_obj_set(options, "name", 4, scr_dyn_new_str(name));
+    scr_str_release(name);
+    scr_dyn_obj_set(options, "cause", 5, inner);
+    ScrStr *text = scr_str_new("Request was cancelled.", 22);
+    ScrDyn *m = scr_dyn_new_str(text);
+    scr_str_release(text);
+    ScrError *dom = scr_domex_new(m, options);
+    scr_dyn_release(m);
+    scr_dyn_release(options);
+    ScrDyn *cause = scr_dyn_from_error(dom);
+    scr_error_release(dom);
+    return cause;
+  }
+  if (message->len >= sizeof sf_not_http_prefix - 1 &&
+      memcmp(message->data, sf_not_http_prefix, sizeof sf_not_http_prefix - 1) == 0) {
+    ScrError *parser = scr_error_new(SCR_ERR_ERROR, (ScrStr *)message);
+    scr_str_release(parser->name);
+    parser->name = scr_str_new("HTTPParserError", 15);
+    parser->name_present = true;
+    ScrDyn *cause = scr_dyn_from_error(parser);
+    scr_error_release(parser);
+    return cause;
+  }
+  const char *data = message->data;
+  const char *space = memchr(data, ' ', message->len);
+  if (space == NULL || space == data) return NULL;
+  size_t syscall_len = (size_t)(space - data);
+  const char *code = space + 1;
+  const char *end = data + message->len;
+  const char *code_end = code;
+  while (code_end < end && *code_end != ' ') code_end++;
+  char code_buf[32];
+  size_t code_len = (size_t)(code_end - code);
+  if (code_len < 2 || code_len >= sizeof code_buf || code[0] != 'E') return NULL;
+  for (size_t i = 0; i < code_len; i++) {
+    char c = code[i];
+    if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) return NULL;
+  }
+  memcpy(code_buf, code, code_len);
+  code_buf[code_len] = '\0';
+  int uv = sf_uv_errno(code_buf);
+  if (uv == 0) return NULL;
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, (ScrStr *)message);
+  scr_error_set_code(e, code_buf);
+  e->system_errno = uv;
+  e->system_call = scr_str_new(data, syscall_len);
+  ScrDyn *cause = scr_dyn_from_error(e);
+  scr_error_release(e);
+  const char *detail = code_end < end ? code_end + 1 : end;
+  size_t detail_len = (size_t)(end - detail);
+  if (syscall_len == 7 && memcmp(data, "connect", 7) == 0 && detail_len > 0) {
+    const char *colon = NULL;
+    for (const char *q = detail; q < end; q++) {
+      if (*q == ':') colon = q;
+    }
+    if (colon != NULL && colon > detail && colon + 1 < end) {
+      ScrStr *address = scr_str_new(detail, (size_t)(colon - detail));
+      scr_dyn_obj_set(cause, "address", 7, scr_dyn_new_str(address));
+      scr_str_release(address);
+      scr_dyn_obj_set(cause, "port", 4, scr_dyn_new_num(strtod(colon + 1, NULL)));
+    }
+  } else if (syscall_len == 11 && memcmp(data, "getaddrinfo", 11) == 0 && detail_len > 0) {
+    ScrStr *hostname = scr_str_new(detail, detail_len);
+    scr_dyn_obj_set(cause, "hostname", 8, scr_dyn_new_str(hostname));
+    scr_str_release(hostname);
+  }
+  return cause;
+}
+
+/* A plain Error cause. +1. */
+static ScrDyn *sf_plain_cause(const char *message) {
+  ScrStr *text = scr_str_new(message, strlen(message));
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  ScrDyn *cause = scr_dyn_from_error(e);
+  scr_error_release(e);
+  return cause;
+}
+
+/* Rejects with TypeError "fetch failed" whose cause is `cause` (moves;
+ * NULL rejects without a cause). */
+static void sf_reject_cause(SfTransfer *t, ScrDyn *cause) {
+  if (t->done || cause == NULL) {
+    scr_dyn_release(cause);
+    sf_reject(t, "fetch failed");
+    return;
+  }
+  ScrError *e = NULL;
+  ScrDyn *reason = sf_type_reason("fetch failed", &e);
+  scr_error_set_cause(e, cause);
+  scr_dyn_release(cause);
+  scr_error_release(e);
+  sf_reject_reason(t, reason);
+  scr_dyn_release(reason);
+}
+
+/* Rejects with TypeError "fetch failed", with Node's cause when the
+ * failure message has one. */
+static void sf_reject_failure(SfTransfer *t, const ScrStr *message) {
+  sf_reject_cause(t, message != NULL ? sf_failure_cause(message) : NULL);
+}
+
 static void sf_on_client_error(ScrClosure *cb, ScrStr *message) {
-  (void)message;
   SfTransfer *t = sf_from(cb);
   if (!t) return;
   if (!t->done) {
     if (t->response_sent && t->response_stream) {
       sf_response_terminate(t);
     } else {
-      sf_reject(t, "fetch failed");
+      sf_reject_failure(t, message);
     }
   }
   sf_release(t);
@@ -4150,25 +4310,77 @@ static bool sf_redirect(SfTransfer *t, int status,
   return true;
 }
 
+/* A CONNECT tunnel for one request: the head sent to the proxy, and the
+ * target's TLS client context when the target is https. */
+typedef struct {
+  char *head;
+  size_t head_len;
+  void *tls_ctx;
+} SfTunnel;
+
+/* undici's CONNECT head: the target as host:port, its Host value, and
+ * the proxy credentials from the proxy URL. Returns malloc'd storage. */
+static char *sf_tunnel_head(const ScrUrl *url, int port, const char *authority,
+                            size_t authority_len, const ScrUrl *proxy, size_t *len_out) {
+  ScrStr *authorization = sf_proxy_has_credentials(proxy->userinfo)
+                              ? sf_proxy_authorization(proxy->userinfo)
+                              : NULL;
+  size_t cap = url->host->len + authority_len + 160 + (authorization ? authorization->len : 0);
+  char *head = malloc(cap);
+  if (!head) sf_oom();
+  int n = snprintf(head, cap, "CONNECT %.*s:%d HTTP/1.1\r\nhost: %.*s\r\nconnection: close\r\n",
+                   (int)url->host->len, url->host->data, port, (int)authority_len, authority);
+  if (authorization) {
+    n += snprintf(head + n, cap - (size_t)n, "proxy-authorization: %.*s\r\n",
+                  (int)authorization->len, authorization->data);
+    scr_str_release(authorization);
+  }
+  n += snprintf(head + n, cap - (size_t)n, "proxy-connection: keep-alive\r\n\r\n");
+  *len_out = (size_t)n;
+  return head;
+}
+
+static SfTunnel *sf_tunnel_new(const ScrUrl *url, int port, const char *authority,
+                               size_t authority_len, const ScrUrl *proxy, void *tls_ctx) {
+  SfTunnel *tunnel = malloc(sizeof *tunnel);
+  if (!tunnel) sf_oom();
+  tunnel->head = sf_tunnel_head(url, port, authority, authority_len, proxy, &tunnel->head_len);
+  tunnel->tls_ctx = tls_ctx;
+  return tunnel;
+}
+
+/* The client's wrap hook for a tunneled request: the CONNECT exchange
+ * runs on the proxy socket, then the target's TLS session (if any) runs
+ * inside the tunnel. */
+static void sf_tunnel_wrap(ScrNetSocket *sock, void *ctx) {
+  SfTunnel *tunnel = ctx;
+  scr_net_sock_set_tunnel(sock, tunnel->head, tunnel->head_len);
+  if (tunnel->tls_ctx) scr_tls_fetch_client_wrap(sock, tunnel->tls_ctx);
+  free(tunnel->head);
+  free(tunnel);
+}
+
 static bool sf_start_hop(SfTransfer *t) {
   ScrUrl *url = t->url;
   bool https = sf_eq_ci(url->scheme, "https");
   int default_port = https ? 443 : 80;
   int port = sf_port(url, default_port);
   if (sf_bad_port(port)) {
-    sf_reject(t, "fetch failed");
+    sf_reject_cause(t, sf_plain_cause("bad port"));
     return false;
   }
   bool invalid_proxy = false;
   ScrUrl *proxy = sf_proxy_for(url, https, port, &invalid_proxy);
   bool proxy_http = proxy && sf_eq_ci(proxy->scheme, "http");
   bool proxy_https = proxy && sf_eq_ci(proxy->scheme, "https");
-  if (invalid_proxy || (proxy && !proxy_http && !proxy_https) ||
-      (https && proxy)) {
+  if (invalid_proxy || (proxy && !proxy_http && !proxy_https)) {
     scr_url_release(proxy);
     sf_reject(t, "fetch failed");
     return false;
   }
+  /* A proxy carries every request through a CONNECT tunnel, as undici's
+   * ProxyAgent does; an https:// proxy runs the tunnel inside a TLS
+   * session to the proxy. */
   size_t user_len = (size_t)scr_arr_len(t->headers);
   ScrArr *headers = scr_arr_new(SCR_ELEM_STR, user_len + 16);
 
@@ -4214,13 +4426,6 @@ static bool sf_start_hop(SfTransfer *t) {
     scr_arr_push_ref(headers, name);
     scr_arr_push_ref(headers, value);
   }
-  if (proxy && proxy->userinfo->len > 0 &&
-      !sf_pairs_have(t->headers, "proxy-authorization")) {
-    ScrStr *authorization = sf_proxy_authorization(proxy->userinfo);
-    sf_push_header_text(headers, "proxy-authorization",
-                        authorization->data, authorization->len);
-    scr_str_release(authorization);
-  }
   if (!sf_pairs_have(t->headers, "accept")) {
     sf_push_header_text(headers, "accept", "*/*", 3);
   }
@@ -4240,17 +4445,29 @@ static bool sf_start_hop(SfTransfer *t) {
   ScrStr *bare =
       sf_bare_host(proxy ? proxy->host : url->host);
   ScrStr *dial = scr_net_blocking_lookup(bare);
-  ScrStr *path = proxy ? sf_url_serialize(url) : sf_path(url);
+  ScrStr *path = sf_path(url);
   int dial_port =
       proxy ? sf_port(proxy, proxy_https ? 443 : 80) : port;
-  ScrStr *sni =
-      https ? sf_bare_host(url->host)
-            : proxy_https ? sf_bare_host(proxy->host) : NULL;
-  void *tls_ctx =
-      sni ? scr_tls_fetch_client_ctx(sni, true) : NULL;
+  ScrStr *sni = https ? sf_bare_host(url->host) : NULL;
+  void (*wrap)(ScrNetSocket *, void *) = NULL;
+  void *wrap_ctx = NULL;
+  if (proxy_https) {
+    size_t head_len = 0;
+    char *head = sf_tunnel_head(url, port, authority, (size_t)authority_len, proxy, &head_len);
+    wrap_ctx = scr_tls_fetch_tunnel_ctx(bare, sni, head, head_len);
+    wrap = &scr_tls_fetch_tunnel_wrap;
+    free(head);
+  } else if (proxy_http) {
+    void *tls_ctx = sni ? scr_tls_fetch_client_ctx(sni, true) : NULL;
+    wrap_ctx = sf_tunnel_new(url, port, authority, (size_t)authority_len, proxy, tls_ctx);
+    wrap = &sf_tunnel_wrap;
+  } else if (sni) {
+    wrap_ctx = scr_tls_fetch_client_ctx(sni, true);
+    wrap = &scr_tls_fetch_client_wrap;
+  }
   ScrHttpClientReq *client = scr_http_request_ex(
       dial, dial_port, path, t->method, 0, headers, false, NULL, NULL,
-      default_port, sni ? &scr_tls_fetch_client_wrap : NULL, tls_ctx);
+      default_port, wrap, wrap_ctx);
   scr_arr_release(headers);
   scr_str_release(path);
   scr_str_release(dial);

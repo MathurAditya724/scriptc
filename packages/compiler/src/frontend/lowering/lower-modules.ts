@@ -35,6 +35,8 @@ import {
   withClassInitFlag,
   withCycleInitFlags,
 } from "./cycle-initialization.js";
+import { markRequireEarlyBindings } from "./require-initialization.js";
+import { collectJsonRequires, isJsonRequireDecl } from "./json-require.js";
 import {
   invalidJsonModuleDiag,
   unsupportedPackageImportDiag,
@@ -78,6 +80,7 @@ import {
   createRequireProgramModuleDecl,
 } from "./builtins/module-bindings.js";
 import { isPromisifyCall, registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
+import { registerBuiltinClassAlias } from "./builtins/class-values.js";
 import { stripTypeCasts } from "./builtins/arguments.js";
 import {
   bindingContextualGenericFnNodeOf,
@@ -129,6 +132,7 @@ import { forkTargetPaths } from "../fork-target.js";
 import { workerTargetPaths } from "../worker-target.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { handleEventReaderPrelude } from "./lower-event-target.js";
+import { jsHoldsDynObject } from "./lower-exprs.js";
 
 /** One file's declarations, split for collection and init-body lowering. */
 export interface FileParts {
@@ -408,6 +412,7 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
       for (const fp of parts) lowerer.collectGlobals(fp.sf, fp.topStmts);
       lowerer.collectNpmImports(parts);
       lowerer.collectJsonImports(parts);
+      collectJsonRequires(lowerer, parts);
     } finally {
       lowerer.diagSink = null;
     }
@@ -415,6 +420,7 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
     for (const fp of parts) lowerer.collectGlobals(fp.sf, fp.topStmts);
     lowerer.collectNpmImports(parts);
     lowerer.collectJsonImports(parts);
+    collectJsonRequires(lowerer, parts);
   }
   for (const decl of computed) {
     const symbol = declSymbolOf(lowerer, decl);
@@ -492,6 +498,7 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
     lowerer.collecting = wasCollecting;
   }
   markCycleEarlyBindings(lowerer);
+  markRequireEarlyBindings(lowerer);
 }
 
 export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
@@ -1531,8 +1538,9 @@ export function collectGlobals(
       isRequireStatement(stmt) &&
       !(
         ts.isVariableStatement(stmt) &&
-        stmt.declarationList.declarations.some((decl) =>
-          isNativeFfiRequire(lowerer, decl.initializer),
+        stmt.declarationList.declarations.some(
+          (decl) =>
+            isNativeFfiRequire(lowerer, decl.initializer) || isJsonRequireDecl(lowerer, decl),
         )
       )
     ) {
@@ -1693,6 +1701,7 @@ export function collectGlobals(
       // resolution and value reads reuse the source's interned closure.
       if (isConst && registerOverloadedCallableAlias(lowerer, decl)) continue;
       if (isConst && registerBuiltinCallableAlias(lowerer, decl.name, decl.initializer)) continue;
+      if (registerBuiltinClassAlias(lowerer, decl.name, decl.initializer)) continue;
       // `const f = (x) => ...` at file scope of an npm-static JS file
       // whose params are implicit-any: the implicit-monomorphization
       // twin of the generic binding above — no global exists; calls and
@@ -1990,6 +1999,36 @@ export function collectGlobals(
               };
               lowerer.globalsBySymbol.set(symbol, g);
               lowerer.globalsList.push(g);
+            }
+            continue;
+          }
+          // A JS file-scope ARRAY LITERAL holding an existing checked-dynamic
+          // object (a file-scope object literal binding above, directly or
+          // in a nested literal): the literal builds as a checked-dynamic
+          // array (lowerArrayLiteral), and the binding holds it, so the
+          // element keeps its identity.
+          if (
+            isJsSourceFile(sf) &&
+            ts.isIdentifier(decl.name) &&
+            nameNode === decl.name &&
+            !decl.type &&
+            !hasJsTypeAnnotation(decl) &&
+            decl.initializer !== undefined &&
+            ts.isArrayLiteralExpression(decl.initializer) &&
+            jsHoldsDynObject(lowerer, decl.initializer)
+          ) {
+            const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+            if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
+              const g: IrGlobal = {
+                id: `%g.${tag}${nsPrefix}${nameNode.text}`,
+                name: nameNode.text,
+                type: DYN,
+                mutable: isLet,
+                source: bindingSource(nameNode),
+              };
+              lowerer.globalsBySymbol.set(symbol, g);
+              lowerer.globalsList.push(g);
+              if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
             }
             continue;
           }
@@ -2622,6 +2661,18 @@ export function lowerFileInit(
         kind: "assign",
         localId: guardId,
         value: { kind: "boolLit", value: true, type: BOOL, loc: loc0 },
+        loc: loc0,
+      });
+    }
+    if (sf === lowerer.entry) header.push(...lowerer.punycodeLinkWarning());
+    // Top-level `this` of a CommonJS module: its object exists before the
+    // module's first statement (lowerCjsTopLevelThis).
+    const exportsThis = lowerer.cjsExportsThis.get(sf);
+    if (exportsThis) {
+      header.push({
+        kind: "assign",
+        localId: exportsThis.id,
+        value: { kind: "dynObjLit", fields: [], type: DYN, loc: loc0 },
         loc: loc0,
       });
     }

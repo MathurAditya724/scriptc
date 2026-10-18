@@ -97,14 +97,18 @@ export function nativeCodegenDiag(
   code: "SC3002" | "SC3003" | "SC3004",
   message: string,
   file: string,
+  hint?: string,
 ): ScrDiagnostic {
+  const shown =
+    hint ??
+    (code === "SC3003"
+      ? "reinstall scriptc with optional dependencies enabled for this host"
+      : undefined);
   return {
     code,
     message,
     loc: { file, start: 0, end: 0 },
-    ...(code === "SC3003"
-      ? { hint: "reinstall scriptc with optional dependencies enabled for this host" }
-      : {}),
+    ...(shown !== undefined ? { hint: shown } : {}),
   };
 }
 
@@ -407,7 +411,7 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   SC1120: {
     feature: "this regex feature",
     milestone: "later",
-    hint: "supported: literal regexes with the g/i/m/s/u/y flags — .test(), .exec()/.match()/.matchAll(), named capture groups (.groups, $<name> templates, \\k<name>), .source/.flags, and string replace/replaceAll/split with string replacement templates",
+    hint: "supported: literal regexes with the g/i/m/s/u/v/y flags — .test(), .exec()/.match()/.matchAll(), named capture groups (.groups, $<name> templates, \\k<name>), .source/.flags, and string replace/replaceAll/split with string replacement templates",
   },
   // SC1121 (stateful g/y regex tests) shipped — code retired, do not reuse.
 };
@@ -873,13 +877,20 @@ export function unsupportedPackageValueDiag(pkg: string, loc: SrcLoc): ScrDiagno
   );
 }
 
-export function npmStaticRefusalDiag(pkg: string, detail: string, loc: SrcLoc): ScrDiagnostic {
+export function npmStaticRefusalDiag(
+  pkg: string,
+  detail: string,
+  loc: SrcLoc,
+  hint?: string,
+): ScrDiagnostic {
   return {
     code: "SC2013",
     message: `cannot compile npm package '${pkg}' statically: ${detail}`,
     loc,
     milestone: "later",
-    hint: "use a dependency with supported source, or replace the unsupported operation; scriptc has no interpreter fallback",
+    hint:
+      hint ??
+      "use a dependency with supported source, or replace the unsupported operation; scriptc has no interpreter fallback",
   };
 }
 

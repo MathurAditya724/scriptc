@@ -592,6 +592,66 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     },
   );
 
+  test.each(["release", "dev"] as const)(
+    "static methods a factory class defines build subclasses of their receiver (%s)",
+    async (optimization) => {
+      const entry = join(pilotRoot, "class-factory-cli.ts");
+      const outDir = join(cacheDir, `class-factory-${optimization}-${sanitize ? "san" : "plain"}`);
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic: ["class-factory"],
+        sanitize,
+        optimization,
+        outDir,
+        outPath: join(outDir, "program"),
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(reference.exitCode).toBe(0);
+      expect(native.stdout).toEqual(reference.stdout);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.exitCode).toBe(reference.exitCode);
+    },
+  );
+
+  test.each(["release", "dev"] as const)(
+    "a factory that destructures its base class from an options object builds static subclasses (%s)",
+    async (optimization) => {
+      const entry = join(pilotRoot, "class-options-cli.ts");
+      const outDir = join(cacheDir, `class-options-${optimization}-${sanitize ? "san" : "plain"}`);
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic: ["class-options"],
+        sanitize,
+        optimization,
+        outDir,
+        outPath: join(outDir, "program"),
+        emitIr: true,
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(reference.exitCode).toBe(0);
+      expect(native.stdout).toEqual(reference.stdout);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.exitCode).toBe(reference.exitCode);
+      // One makeClass instance per distinct base (Root, Animal, Dog) plus
+      // the generic one a class's own `extend` passing itself back reuses.
+      const ir = JSON.parse(readFileSync(result.irPath!, "utf8")) as {
+        functions: { name: string }[];
+      };
+      const instances = ir.functions.filter((fn) => /^%[\w.]*makeClass%\d+$/.test(fn.name));
+      expect(instances.length).toBeLessThanOrEqual(4);
+    },
+  );
+
   test.for([
     ["escape-string-regexp", "escape-cli.ts"],
     ["slash", "slash-cli.ts"],
@@ -687,17 +747,23 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
-  test("picocolors inherited valueOf retains the prototype-method fence", () => {
+  test("picocolors inherited valueOf matches Node", async () => {
     const entry = join(pilotRoot, "colors-prototype-cli.ts");
     const { coverage } = analyze(entry, { npmStatic: ["picocolors"] });
     expect(coverage.npmStatic).toEqual([{ package: "picocolors", status: "static" }]);
     expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics).toHaveLength(0);
     expect(coverage.runtimeFences ?? []).toHaveLength(0);
-    expect(coverage.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["SC2020"]);
-    expect(coverage.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
-      expect.stringContaining(".valueOf' is part of the standard library types"),
+
+    const binary = await buildStatic(entry, ["picocolors"]);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
     ]);
-  }, 120_000);
+    expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+    expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
 
   test("picocolors inherited hasOwnProperty matches Node", async () => {
     const entry = join(pilotRoot, "colors-hasown-cli.ts");
@@ -755,9 +821,70 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         package: "ms",
         status: "refused",
         detail: "it ships no own .d.ts declaration surface",
+        hint: "to compile it anyway, name it with --npm-static=ms (or --npm-static=ms... to include its dependencies)",
       },
     ]);
   }, 120_000);
+
+  // Types-first resolution answers @types/twinned, but the refusal names the
+  // package that has the code and the flag that compiles it.
+  test("an @types-typed package is refused under its runtime name with the opt-in remedy", () => {
+    const { coverage } = analyze(join(pilotRoot, "twinned-cli.ts"));
+    expect(coverage.npmStatic).toEqual([
+      {
+        package: "twinned",
+        status: "refused",
+        detail:
+          "its declared types come from the separate @types/twinned package, not the package itself",
+        hint: "to compile it anyway, name it with --npm-static=twinned (or --npm-static=twinned... to include its dependencies)",
+      },
+    ]);
+    const diagnostic = coverage.diagnostics.find((d) => d.code === "SC2013");
+    expect(diagnostic?.message).toContain("'twinned'");
+    expect(diagnostic?.hint).toContain("--npm-static=twinned");
+  }, 120_000);
+
+  test("a named package's untyped dependency points at the transitive opt-in", () => {
+    const { coverage } = analyze(join(pilotRoot, "twinned-cli.ts"), { npmStatic: ["twinned"] });
+    expect(coverage.npmStatic).toContainEqual({
+      package: "ms",
+      status: "refused",
+      detail: "it ships no own .d.ts declaration surface",
+      hint: "to compile it anyway, name it with --npm-static=ms, or use --npm-static=twinned... to include all of twinned's dependencies",
+    });
+  }, 120_000);
+
+  test("--npm-static=pkg... compiles the package's dependency closure", async () => {
+    const entry = join(pilotRoot, "twinned-cli.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["twinned..."] });
+    expect(coverage.npmStatic).toEqual([
+      { package: "twinned", status: "static" },
+      { package: "ms", status: "static" },
+    ]);
+    expect(coverage.preflightFailed).toBe(false);
+    const binary = await buildStatic(entry, ["twinned..."]);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
+
+  test("type-only imports select no package", async () => {
+    const entry = join(pilotRoot, "type-only-cli.ts");
+    const { coverage } = analyze(entry);
+    expect(coverage.npmStatic ?? []).toEqual([]);
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics).toEqual([]);
+    const binary = await buildStatic(entry, []);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
 
   test("ms supports invalid duration strings without runtime fences", () => {
     const { coverage } = analyze(join(pilotRoot, "ms-invalid-cli.ts"), { npmStatic: ["ms"] });
@@ -846,6 +973,24 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
+  // Real CommonJS packages whose require() placement (a binding required
+  // below code that only reaches it after the require ran) or JSON
+  // require preflight refused before.
+  test("export-first CommonJS packages and JSON requires compile statically", () => {
+    const { coverage } = analyze(join(pilotRoot, "cjs-interop-cli.ts"), {
+      npmStatic: ["fs.realpath", "on-finished", "ee-first", "statuses"],
+    });
+    expect(coverage.preflightFailed).toBe(false);
+    expect(
+      [...(coverage.npmStatic ?? [])].sort((a, b) => a.package.localeCompare(b.package)),
+    ).toEqual([
+      { package: "ee-first", status: "static" },
+      { package: "fs.realpath", status: "static" },
+      { package: "on-finished", status: "static" },
+      { package: "statuses", status: "static" },
+    ]);
+  }, 120_000);
+
   // A package preflight failure stays visible as a package-specific refusal.
   test("a preflight-refused package reports its native refusal", () => {
     const { coverage } = analyze(join(fixturesRoot, "npm/divergent/lazybuiltin.ts"), {
@@ -890,6 +1035,7 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         package: "typegapped",
         status: "refused",
         detail: "it ships no own .d.ts declaration surface",
+        hint: "to compile it anyway, name it with --npm-static=typegapped (or --npm-static=typegapped... to include its dependencies)",
       },
       { package: "escape-string-regexp", status: "static" },
     ]);

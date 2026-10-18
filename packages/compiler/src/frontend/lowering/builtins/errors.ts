@@ -1,7 +1,7 @@
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
-import { DYN, F64, type IrExpr, STRING } from "../../../ir/ir.js";
+import { BOOL, CAUGHT, DYN, F64, type IrExpr, type IrType, STRING } from "../../../ir/ir.js";
 
 const ASSERTION_ERROR_PROPERTIES: ReadonlySet<string> = new Set([
   "actual",
@@ -10,6 +10,28 @@ const ASSERTION_ERROR_PROPERTIES: ReadonlySet<string> = new Set([
   "generatedMessage",
   "diff",
 ]);
+
+/** True for child_process.ExecException, exec's callback error. Its
+ * `code` is the child's numeric exit status (null after a signal), which
+ * the runtime error's string code slot does not hold, so reads, `in` tests
+ * and typeof tests of `code` refuse instead of answering from the slot. */
+export function isExecExceptionType(lowerer: Lowerer, t: ts.Type): boolean {
+  const sym = t.getSymbol();
+  return (
+    sym?.name === "ExecException" &&
+    lowerer.checker
+      .declarationsOf(sym)
+      .some((d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()))
+  );
+}
+
+export function refuseExecExceptionCode(lowerer: Lowerer, node: ts.Node): never {
+  return lowerer.noLowering(
+    "ExecException.code",
+    node,
+    "spawn reports the exit status through its 'close' event",
+  );
+}
 
 /** `.code` and `.cause` on an error-hierarchy receiver. The latter reads
  * the hidden dyn slot installed by constructor options. The former is NodeJS.ErrnoException's
@@ -122,6 +144,9 @@ export function lowerErrorCodeProperty(
     !(recvT.className === "%Error" && lowerer.typeOf(expr.expression).isIntersectionType())
   )
     return null;
+  if (expr.name.text === "code" && isExecExceptionType(lowerer, lowerer.typeOf(expr.expression))) {
+    refuseExecExceptionCode(lowerer, expr);
+  }
   const rawReceiver = lowerer.lowerExpr(expr.expression);
   const receiver =
     rawReceiver.type.kind === "dyn"
@@ -156,5 +181,109 @@ export function lowerErrorCodeProperty(
           ? DYN
           : lowerer.envValueType(),
     loc: locOf(expr),
+  };
+}
+
+/** Whether values of `type` are errors: class instances whose class is
+ * %Error or extends it. A subclass of a class that does not extend Error
+ * cannot be an error either, so the answer depends on the static class
+ * alone. */
+function isErrorClassType(lowerer: Lowerer, type: IrType): boolean {
+  return (
+    type.kind === "object" &&
+    (type.className === "%Error" || lowerer.isSubclassOf(type.className, "%Error"))
+  );
+}
+
+/** `Error.isError(value)`. A catch binding tests its payload against the
+ * Error class, an `unknown` value tests the checked-dynamic tree's error
+ * encoding, and a union tests its runtime tag against the arms whose class
+ * extends Error. Every other type answers statically: true for class
+ * instances whose class extends Error, false otherwise. The argument is
+ * evaluated in every case. Null when the callee is not the standard
+ * library's Error.isError. */
+export function lowerErrorIsErrorCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (call.questionDotToken || access.questionDotToken) return null;
+  if (lowerer.stdlibGlobalMember(access, "Error") !== "isError") return null;
+  if (call.arguments.length !== 1) return null;
+  const argNode = call.arguments[0]!;
+  const loc = locOf(call);
+  const caughtLocal = lowerer.caughtLocalOf(argNode);
+  if (caughtLocal) {
+    return {
+      kind: "caughtTest",
+      value: { kind: "varRef", localId: caughtLocal.id, type: CAUGHT, loc },
+      test: "instanceof",
+      className: "%Error",
+      type: BOOL,
+      loc,
+    };
+  }
+  const arg = lowerer.lowerExpr(argNode);
+  if (arg.type.kind === "dyn") {
+    return { kind: "dynTest", test: "error", value: arg, type: BOOL, loc };
+  }
+  if (arg.type.kind === "union") {
+    const union = lowerer.unions.get(arg.type.unionId);
+    if (!union || union.arms.some((a) => a.kind === "dyn" || a.kind === "caught")) {
+      lowerer.unsupported(
+        "SC1090",
+        argNode,
+        `Error.isError on '${lowerer.fmt(arg.type)}' values (narrow first, or pass the value as 'unknown')`,
+      );
+    }
+    const local = lowerer.declareHiddenLocal("%isErrorValue", arg.type);
+    const value: IrExpr = { kind: "varRef", localId: local.id, type: arg.type, loc };
+    let result: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+    union.arms.forEach((arm, tag) => {
+      if (!isErrorClassType(lowerer, arm)) return;
+      const test: IrExpr = {
+        kind: "unionIsTag",
+        unionId: union.id,
+        tag,
+        negated: false,
+        value,
+        type: BOOL,
+        loc,
+      };
+      result =
+        result.kind === "boolLit"
+          ? test
+          : { kind: "logical", op: "||", left: result, right: test, type: BOOL, loc };
+    });
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: arg, loc }],
+      result,
+      type: BOOL,
+      loc,
+    };
+  }
+  const result: IrExpr = {
+    kind: "boolLit",
+    value: isErrorClassType(lowerer, arg.type),
+    type: BOOL,
+    loc,
+  };
+  // Literals and local reads have no effects to keep, and a bare unit
+  // literal is not a statement.
+  if (
+    arg.kind === "varRef" ||
+    arg.kind === "unitLit" ||
+    arg.kind === "numLit" ||
+    arg.kind === "strLit" ||
+    arg.kind === "boolLit"
+  )
+    return result;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: arg, loc }],
+    result,
+    type: BOOL,
+    loc,
   };
 }
