@@ -11399,6 +11399,25 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
         }
       }
     }
+    // `&&` over an always-truthy plain left operand (an array, object or
+    // function value) whose result union has no arm for it: every JS
+    // object is truthy, so `list && list[0]` evaluates the left for its
+    // effects and answers the right. Coercing the left into that union
+    // would trap at run time where Node answers the right operand.
+    if (
+      op === ts.SyntaxKind.AmpersandAmpersandToken &&
+      target?.kind === "union" &&
+      REF_TRUTHY_KINDS.has(left.type.kind) &&
+      lowerer.armTag(target.unionId, left.type) < 0
+    ) {
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: left, loc }],
+        result: lowerer.coerceInto(expr.right, right, target),
+        type: target,
+        loc,
+      };
+    }
     if (target?.kind === "union") {
       // `&&` whose left does NOT fit the result union: the checker
       // built that result by DROPPING left arms which are always
