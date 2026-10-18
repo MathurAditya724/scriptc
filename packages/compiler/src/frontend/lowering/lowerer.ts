@@ -525,6 +525,7 @@ import {
   lowerForOf,
   lowerForStatement,
   matchGroupsPatternSource,
+  isGuardedRecordRead,
 } from "./lower-stmts.js";
 import {
   type FieldTarget,
@@ -3908,6 +3909,33 @@ export class Lowerer {
     }
   }
 
+  /** A file-scope get-or-create read (`let e = map[k]; if (e ===
+   * undefined) ...` over an index-signature record) keeps a missing key as
+   * undefined (isGuardedRecordRead). Its pre-registered global takes the
+   * undefined arm before any body reads it; the declaration lowers its
+   * initializer as the matching absence probe. */
+  analyzeGuardedRecordReadGlobals(parts: FileParts[]): void {
+    for (const { sf } of parts) {
+      for (const statement of sf.statements) {
+        if (!ts.isVariableStatement(statement)) continue;
+        for (const decl of statement.declarationList.declarations) {
+          if (!ts.isIdentifier(decl.name) || !isGuardedRecordRead(this, decl)) continue;
+          const global = this.globalOf(decl.name);
+          const symbol = this.resolveValueSymbol(decl.name);
+          if (!global || !symbol || global.tdz || this.runtimeOptionalBindingTypes.has(symbol))
+            continue;
+          const widened =
+            global.type.kind === "union"
+              ? this.withUndefinedArmOf(global.type)
+              : this.withUndefinedArm(global.type);
+          if (!widened || typeEquals(widened, global.type)) continue;
+          global.type = widened;
+          this.runtimeOptionalBindingTypes.set(symbol, widened);
+        }
+      }
+    }
+  }
+
   analyzeRuntimeOptionalArrayReads(parts: FileParts[]): void {
     const provenance = RuntimeOptionalProvenance.fromEnvironment();
     // The site whose value the current promotion follows (debug only).
@@ -6058,6 +6086,7 @@ export class Lowerer {
     this.collectProgram(parts);
     this.analyzeRuntimeOptionalArrayReads(parts);
     this.analyzeDateJsonResults(parts);
+    this.analyzeGuardedRecordReadGlobals(parts);
     // Decorated classes analyze AFTER the whole collection pass: a
     // decorator's return type may name a subclass declared below the
     // class, and reference lowering needs each class's rebindability
@@ -6443,6 +6472,7 @@ export class Lowerer {
     this.collectProgram(parts);
     this.analyzeRuntimeOptionalArrayReads(parts);
     this.analyzeDateJsonResults(parts);
+    this.analyzeGuardedRecordReadGlobals(parts);
     // Decorated classes analyze post-collection here too: the %init seeds
     // lower the decoration calls, whose edges (decorator bodies, construct
     // thunks) reachable emit must see.

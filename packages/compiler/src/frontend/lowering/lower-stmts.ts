@@ -4334,16 +4334,21 @@ export function lowerVarDecl(
       if (wrapped) return { kind: "assign", localId: g.id, value: wrapped, loc: locOf(decl) };
       return null;
     }
-    const raw = lowerVariableInitializer(
-      lowerer,
-      decl.initializer,
-      g.type.kind === "dyn" &&
-        (isNativeBuiltinValueInitializer(lowerer, decl.initializer) ||
-          ts.isArrayLiteralExpression(decl.initializer) ||
-          ts.isObjectLiteralExpression(decl.initializer))
-        ? DYN
-        : undefined,
-    );
+    const guardedRead = isGuardedRecordRead(lowerer, decl)
+      ? lowerAbsenceProbe(lowerer, decl.initializer)
+      : null;
+    const raw =
+      guardedRead ??
+      lowerVariableInitializer(
+        lowerer,
+        decl.initializer,
+        g.type.kind === "dyn" &&
+          (isNativeBuiltinValueInitializer(lowerer, decl.initializer) ||
+            ts.isArrayLiteralExpression(decl.initializer) ||
+            ts.isObjectLiteralExpression(decl.initializer))
+          ? DYN
+          : undefined,
+      );
     if (
       isJsSourceFile(decl.getSourceFile()) &&
       !decl.type &&
@@ -5139,29 +5144,111 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
 }
 
 function immediatelyGuardedAbsenceProbe(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
-  if (decl.type || !ts.isIdentifier(decl.name) || !decl.initializer) return false;
+  const guard = immediateAbsenceGuard(lowerer, decl);
+  // `if (!x)`: the falsy test sees a missing value.
+  if (guard === "falsy") return true;
+  // `if (x === undefined)` and its spellings compare the binding with the
+  // missing value itself, so the read must be able to produce it. Only
+  // index-signature record reads take this form: array reads already
+  // carry their undefined arm, and their ordinary lowering keeps its
+  // bounds proofs.
+  return guard === "compare" && isIndexSignatureRecordRead(lowerer, decl);
+}
+
+/** A file-scope or block-scope `let e = map[k]` over an index-signature
+ * record whose next statement guards `e` for absence (`if (e ===
+ * undefined)`, `if (!e)`, ...): the get-or-create idiom. Its read keeps the
+ * missing key as undefined even without noUncheckedIndexedAccess. */
+export function isGuardedRecordRead(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  return immediateAbsenceGuard(lowerer, decl) !== null && isIndexSignatureRecordRead(lowerer, decl);
+}
+
+function isIndexSignatureRecordRead(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  if (!decl.initializer) return false;
+  let init = decl.initializer;
+  while (ts.isParenthesizedExpression(init)) init = init.expression;
+  if (!ts.isElementAccessExpression(init)) return false;
+  // Under noUncheckedIndexedAccess the checker already spells the missing
+  // arm, and the ordinary read carries it.
+  const read = lowerer.typeOf(init);
+  if (
+    (read.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
+    (read.isUnionType() &&
+      ts.constituentTypes(read).some((t) => (t.flags & ts.TypeFlags.Undefined) !== 0))
+  )
+    return false;
+  const receiver = lowerer.mapTypeOf(lowerer.typeOf(init.expression));
+  const shape = receiver?.kind === "record" ? lowerer.shapes.get(receiver.shapeId) : undefined;
+  return !!shape && !shape.tuple && !!shape.indexValue && shape.indexValue.kind !== "dyn";
+}
+
+/** How the statement right after an unannotated declaration tests the
+ * declared binding for absence: `if (!x)` ("falsy"), or a comparison with
+ * the missing value — `x === undefined`, `x == null`, `x !== void 0`,
+ * `typeof x === "undefined"` and their mirrored and negated spellings
+ * ("compare"). Null for anything else. */
+function immediateAbsenceGuard(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+): "falsy" | "compare" | null {
+  if (decl.type || !ts.isIdentifier(decl.name) || !decl.initializer) return null;
   const statement = decl.parent?.parent;
-  if (!statement || !ts.isVariableStatement(statement)) return false;
+  if (!statement || !ts.isVariableStatement(statement)) return null;
   const container = statement.parent;
   const statements =
     ts.isBlock(container) || ts.isSourceFile(container) ? container.statements : null;
-  if (!statements) return false;
+  if (!statements) return null;
   const index = statements.indexOf(statement);
   const next = index >= 0 ? statements[index + 1] : undefined;
-  if (!next || !ts.isIfStatement(next)) return false;
-  let condition = next.expression;
-  while (ts.isParenthesizedExpression(condition)) condition = condition.expression;
-  if (
-    !ts.isPrefixUnaryExpression(condition) ||
-    condition.operator !== ts.SyntaxKind.ExclamationToken
-  )
-    return false;
-  let operand = condition.operand;
-  while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
-  return (
-    ts.isIdentifier(operand) &&
-    lowerer.resolveValueSymbol(operand) === lowerer.resolveValueSymbol(decl.name)
-  );
+  if (!next || !ts.isIfStatement(next)) return null;
+  const binding = lowerer.resolveValueSymbol(decl.name);
+  const peel = (node: ts.Expression): ts.Expression => {
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    return node;
+  };
+  const isBinding = (node: ts.Expression): boolean => {
+    const operand = peel(node);
+    return ts.isIdentifier(operand) && lowerer.resolveValueSymbol(operand) === binding;
+  };
+  const condition = peel(next.expression);
+  if (ts.isPrefixUnaryExpression(condition))
+    return condition.operator === ts.SyntaxKind.ExclamationToken && isBinding(condition.operand)
+      ? "falsy"
+      : null;
+  if (!ts.isBinaryExpression(condition)) return null;
+  const op = condition.operatorToken.kind;
+  const strict =
+    op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+    op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+  const loose =
+    op === ts.SyntaxKind.EqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken;
+  if (!strict && !loose) return null;
+  const isUndefined = (node: ts.Expression): boolean => {
+    const operand = peel(node);
+    if (ts.isVoidExpression(operand)) return true;
+    return (
+      ts.isIdentifier(operand) &&
+      operand.text === "undefined" &&
+      (lowerer.typeOf(operand).flags & ts.TypeFlags.Undefined) !== 0
+    );
+  };
+  const isNull = (node: ts.Expression): boolean => peel(node).kind === ts.SyntaxKind.NullKeyword;
+  const missing = (node: ts.Expression): boolean => isUndefined(node) || (loose && isNull(node));
+  const isTypeofBinding = (node: ts.Expression): boolean => {
+    const operand = peel(node);
+    return ts.isTypeOfExpression(operand) && isBinding(operand.expression);
+  };
+  const isUndefinedTag = (node: ts.Expression): boolean => {
+    const operand = peel(node);
+    return ts.isStringLiteralLike(operand) && operand.text === "undefined";
+  };
+  const { left, right } = condition;
+  return (isBinding(left) && missing(right)) ||
+    (missing(left) && isBinding(right)) ||
+    (isTypeofBinding(left) && isUndefinedTag(right)) ||
+    (isUndefinedTag(left) && isTypeofBinding(right))
+    ? "compare"
+    : null;
 }
 
 function falsyExitRuntimeOptionalLocals(lowerer: Lowerer, stmt: ts.IfStatement): IrLocal[] {
