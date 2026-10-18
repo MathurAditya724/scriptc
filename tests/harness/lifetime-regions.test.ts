@@ -173,6 +173,19 @@ describe.skipIf(process.platform === "win32")("lifetime regions", { timeout: 240
     keptThenFreed(stats.attempts, [10, 14]);
   });
 
+  test("regions are carried by stackless and fiber async bodies alike", async () => {
+    // Stackless coroutine bodies and a fiber body (for await) spawn and
+    // await each other inside each region; whatever resumes allocates in
+    // the region, so each one is freed on its single release attempt.
+    const stats = await run("5024-lifetime-region-await-forms.ts");
+    expect(stats.summaries).toEqual([summary(7, 7)]);
+    for (let id = 1; id <= 7; id++)
+      expect(
+        stats.attempts.filter((a) => a.startsWith(`${id} `)),
+        `region ${id}`,
+      ).toEqual([`${id} freed`]);
+  });
+
   test("weak keys of freed regions do not survive", async () => {
     const stats = await run("5016-lifetime-region-weak-keys.ts");
     expect(stats.summaries).toEqual([summary(5, 4)]);

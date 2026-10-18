@@ -9,6 +9,7 @@ import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { lowerReadlineProperty } from "./builtins/readline.js";
 import { lowerBlobInstanceof } from "./builtins/blob.js";
 import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
+import { lowerNetAddressInstanceof, lowerNetAddressStaticRead } from "./builtins/net-address.js";
 import { STATS_TYPE_TESTS } from "./builtins/filesystem.js";
 import { threadsImportOf } from "../threads-import.js";
 import { experimentalImportOf, lifetimeRegionMemberOf } from "../experimental-import.js";
@@ -4927,6 +4928,8 @@ export function lowerIntrinsicProperty(
     return lowerNumberParserValue(lowerer, numberMember, locOf(expr));
   if (lowerer.stdlibGlobalMember(expr, "Buffer") === "poolSize")
     return { kind: "libCall", fn: "buffer.poolSize", args: [], type: F64, loc: locOf(expr) };
+  const netAddressStatic = lowerNetAddressStaticRead(lowerer, expr);
+  if (netAddressStatic) return netAddressStatic;
   if (lowerer.stdlibGlobalMember(expr, "Buffer") === "isBuffer")
     return lowerCheckedPredicateValue(lowerer, "Buffer.isBuffer", "buffer", locOf(expr));
   if (lowerer.stdlibGlobalMember(expr, "Date") === "now")
@@ -5494,6 +5497,31 @@ export function lowerIntrinsicProperty(
   return null;
 }
 
+/** JavaScript: whether `expr` is or holds an existing checked-dynamic
+ * object — a binding stored as a dyn value whose checker type is an
+ * object, or an array or object literal with such an element. Building
+ * the enclosing literal with a static element type would copy it. */
+export function jsHoldsDynObject(lowerer: Lowerer, expr: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (ts.isIdentifier(expr)) {
+    const stored = lowerer.peekLocal(expr)?.type ?? lowerer.globalOf(expr)?.type;
+    return stored?.kind === "dyn" && (lowerer.typeOf(expr).flags & ts.TypeFlags.Object) !== 0;
+  }
+  if (ts.isArrayLiteralExpression(expr))
+    return expr.elements.some(
+      (element) => !ts.isSpreadElement(element) && jsHoldsDynObject(lowerer, element),
+    );
+  if (ts.isObjectLiteralExpression(expr))
+    return expr.properties.some(
+      (property) =>
+        (ts.isPropertyAssignment(property) && jsHoldsDynObject(lowerer, property.initializer)) ||
+        (ts.isShorthandPropertyAssignment(property) &&
+          ts.isIdentifier(property.name) &&
+          jsHoldsDynObject(lowerer, property.name)),
+    );
+  return false;
+}
+
 /** `[a, b, c]`. The element type comes from the contextual type when tsc
  * has one (`const a: number[] = []`, arguments, nested literals) and from
  * the literal's own inferred type otherwise. A bare `[]` with no context
@@ -5662,6 +5690,18 @@ export function lowerArrayLiteral(
       (element) =>
         ts.isSpreadElement(element) &&
         tryLowerExpression(lowerer, element.expression)?.type.kind === "dyn",
+    )
+  )
+    mapped = DYN;
+  // An element that is an existing checked-dynamic object (a file-scope
+  // object literal binding, or a literal holding one) keeps its identity
+  // only in a checked-dynamic array: a static element type would copy it.
+  if (
+    !expected &&
+    isJsSourceFile(expr.getSourceFile()) &&
+    mapped?.kind !== "dyn" &&
+    expr.elements.some(
+      (element) => !ts.isSpreadElement(element) && jsHoldsDynObject(lowerer, element),
     )
   )
     mapped = DYN;
@@ -10227,7 +10267,6 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     lowerOptionalNumber(lowerer, operand, loc, node);
   const arithmeticLeft = strictEquality ? left : arithmeticNumber(left, expr.left);
   const arithmeticRight = strictEquality ? right : arithmeticNumber(right, expr.right);
-  const plainBothNum = left.type.kind === "f64" && right.type.kind === "f64";
   const bothNum = arithmeticLeft.type.kind === "f64" && arithmeticRight.type.kind === "f64";
   const bothStr = left.type.kind === "string" && right.type.kind === "string";
 
@@ -10449,234 +10488,17 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       };
     }
     case ts.SyntaxKind.EqualsEqualsEqualsToken:
-    case ts.SyntaxKind.ExclamationEqualsEqualsToken: {
-      const negated = op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
-      const indexed = tryLowerIndexedComparison(lowerer, left, right, negated, loc);
-      if (indexed) return indexed;
-      if (plainBothNum)
-        return { kind: "bin", op: negated ? "!==" : "===", left, right, type: BOOL, loc };
-      if (bothStr) {
-        if (left.kind === "strLit" && right.kind === "strLit")
-          return {
-            kind: "boolLit",
-            value: (left.value === right.value) !== negated,
-            type: BOOL,
-            loc,
-          };
-        return { kind: "strEq", negated, left, right, type: BOOL, loc };
-      }
-      // bool === bool: a plain value compare (the config-drift checks'
-      // `desired.lanMode !== actual.lanMode` shape).
-      if (left.type.kind === "bool" && right.type.kind === "bool") {
-        return { kind: "bin", op: negated ? "!==" : "===", left, right, type: BOOL, loc };
-      }
-      const unitTest = lowerer.lowerUnitComparison(left, right, negated, loc);
-      if (unitTest) return unitTest;
-      if (left.type.kind === "union" || right.type.kind === "union") {
-        const compared = lowerUnionEquality(lowerer, left, right, negated, false, loc);
-        if (compared) return compared;
-        const aliasRefusal = (type: IrType): void => {
-          if (tagEqualityMayMissAlias(lowerer, type))
-            lowerer.unsupported(
-              "SC1090",
-              expr,
-              `comparisons of related class values beside structural union members (${NARROW_FIRST})`,
-            );
-        };
-
-        // JS strict equality of the ARM values, per union tag (a
-        // per-union helper): equal tags compare payloads (f64 ==, string
-        // bytes, bool ==, ref-arm POINTER identity), different tags are
-        // never equal. Two shapes lower: same union on both sides, and
-        // union vs plain arm value (`u === "text"` where the checker
-        // didn't narrow) — the plain side wraps into the union, which
-        // preserves payload identity. Different unions (tsc admits
-        // partially-overlapping ones) still need narrowing first.
-        const ut =
-          left.type.kind === "union" ? left.type : (right.type as IrType & { kind: "union" });
-        const bothUnion = left.type.kind === "union" && right.type.kind === "union";
-        const sameUnion = bothUnion && typeEquals(left.type, right.type);
-        const plainFunc =
-          left.type.kind === "func" ? left : right.type.kind === "func" ? right : null;
-        const unionArms = lowerer.unions.get(ut.unionId)?.arms ?? [];
-        const funcArm = unionArms.find((arm) => arm.kind === "func");
-        // `listeners()` reports original prefix callbacks, but the
-        // checker views an indexed result as function | undefined. For
-        // identity comparison, retain the original closure pointer rather
-        // than adapting it to the tuple signature.
-        if (
-          !bothUnion &&
-          plainFunc !== null &&
-          funcArm?.kind === "func" &&
-          unionArms.filter((arm) => arm.kind === "func").length === 1 &&
-          unionArms.some(isUnitType)
-        ) {
-          return {
-            kind: "unionFuncEq",
-            unionId: ut.unionId,
-            tag: lowerer.armTag(ut.unionId, funcArm),
-            union: left.type.kind === "union" ? left : right,
-            func: plainFunc,
-            negated,
-            type: BOOL,
-            loc,
-          };
-        }
-        if ((sameUnion || !bothUnion) && lowerer.eqComparableUnion(ut.unionId)) {
-          aliasRefusal(ut);
-          return {
-            kind: "unionEq",
-            unionId: ut.unionId,
-            negated,
-            sameValue: false,
-            left: lowerer.coerceInto(expr.left, left, ut),
-            right: lowerer.coerceInto(expr.right, right, ut),
-            type: BOOL,
-            loc,
-          };
-        }
-        if (left.type.kind === "union" && right.type.kind === "union") {
-          const leftDef = lowerer.unions.get(left.type.unionId);
-          const rightDef = lowerer.unions.get(right.type.unionId);
-          if (leftDef && rightDef) {
-            const leftValues = leftDef.arms.filter((arm) => !isUnitType(arm));
-            const rightValues = rightDef.arms.filter((arm) => !isUnitType(arm));
-            const sameValueArms =
-              leftValues.length === rightValues.length &&
-              leftValues.every((arm) =>
-                rightValues.some((candidate) => typeEquals(candidate, arm)),
-              );
-            if (sameValueArms) {
-              const arms = [...leftDef.arms];
-              for (const arm of rightDef.arms) {
-                if (!arms.some((candidate) => typeEquals(candidate, arm))) arms.push(arm);
-              }
-              arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
-              const common: IrType & { kind: "union" } = {
-                kind: "union",
-                unionId: lowerer.unions.intern(arms),
-              };
-              aliasRefusal(common);
-              return {
-                kind: "unionEq",
-                unionId: common.unionId,
-                negated,
-                sameValue: false,
-                left: lowerer.coerceInto(expr.left, left, common),
-                right: lowerer.coerceInto(expr.right, right, common),
-                type: BOOL,
-                loc,
-              };
-            }
-          }
-        }
-        lowerer.unsupported("SC1090", expr, `comparisons of union-typed values (${NARROW_FIRST})`);
-      }
-      // Arrays, maps, functions, class instances and records compare by
-      // reference identity (pointer compare) — JS-exact object equality.
-      // Hierarchy-related classes compare after widening the derived side
-      // (same pointer either way — prefix layout).
-      let idLeft = left;
-      let idRight = right;
-      if (left.type.kind === "object" && right.type.kind === "object") {
-        if (lowerer.isSubclassOf(left.type.className, right.type.className)) {
-          idLeft = lowerer.upcastTo(left, right.type.className);
-        } else if (lowerer.isSubclassOf(right.type.className, left.type.className)) {
-          idRight = lowerer.upcastTo(right, left.type.className);
-        }
-      }
-      // Two function values compare by identity whatever their STATIC
-      // signatures (tsc admits the comparison when one side is
-      // assignable to the other — a tuple-typed listeners() element
-      // against a prefix-declared handler): the pointer answers it.
-      if (idLeft.type.kind === "func" && idRight.type.kind === "func") {
-        return {
-          kind: "bin",
-          op: negated ? "!==" : "===",
-          left: idLeft,
-          right: idRight,
-          type: BOOL,
-          loc,
-        };
-      }
-      // Two CLASS values compare by identity whatever their static
-      // classes — one immortal object per class, one pointer compare
-      // (the function-identity rule verbatim; `X === D` through a
-      // base-typed slot answers exactly JS).
-      if (idLeft.type.kind === "classval" && idRight.type.kind === "classval") {
-        return {
-          kind: "bin",
-          op: negated ? "!==" : "===",
-          left: idLeft,
-          right: idRight,
-          type: BOOL,
-          loc,
-        };
-      }
-      if (idLeft.type.kind === "moduleNs" && idRight.type.kind === "moduleNs") {
-        return {
-          kind: "bin",
-          op: negated ? "!==" : "===",
-          left: idLeft,
-          right: idRight,
-          type: BOOL,
-          loc,
-        };
-      }
-      if (
-        (idLeft.type.kind === "array" ||
-          idLeft.type.kind === "map" ||
-          idLeft.type.kind === "set" ||
-          idLeft.type.kind === "regex" ||
-          idLeft.type.kind === "url" ||
-          idLeft.type.kind === "object" ||
-          idLeft.type.kind === "record" ||
-          // Symbols ARE identity: `Symbol('a') === Symbol('a')` is false,
-          // a symbol equals exactly itself, and Symbol.for's interned
-          // values compare equal across call sites — all one pointer
-          // compare, JS's spec without approximation.
-          idLeft.type.kind === "symbol" ||
-          // Typed arrays / Buffers ARE objects to ===: pointer identity
-          // (buf === buf.swap16() — the in-place mutators return this).
-          idLeft.type.kind === "bytes" ||
-          idLeft.type.kind === "promise") &&
-        typeEquals(idLeft.type, idRight.type)
-      ) {
-        return {
-          kind: "bin",
-          op: negated ? "!==" : "===",
-          left: idLeft,
-          right: idRight,
-          type: BOOL,
-          loc,
-        };
-      }
-      // Runtime HANDLES are objects to === too: one handle per socket/
-      // request/response, so pointer identity IS JS's object equality
-      // (`c.pause() === c` — Node's chaining assertions). */
-      if (DYN_HANDLE_KINDS.has(idLeft.type.kind) && typeEquals(idLeft.type, idRight.type)) {
-        return {
-          kind: "bin",
-          op: negated ? "!==" : "===",
-          left: idLeft,
-          right: idRight,
-          type: BOOL,
-          loc,
-        };
-      }
-      if (lowerer.dynConvertible(idLeft.type) && lowerer.dynConvertible(idRight.type)) {
-        return {
-          kind: "dynScalarEq",
-          left: lowerer.coerceToExpected(idLeft, DYN),
-          right: lowerer.coerceToExpected(idRight, DYN),
-          ...(negated ? { negated: true as const } : {}),
-          type: BOOL,
-          loc,
-        };
-      }
-      lowerer.unsupported("SC1043", expr);
-      break;
-    }
+    case ts.SyntaxKind.ExclamationEqualsEqualsToken:
+      return lowerStrictEquality(
+        lowerer,
+        expr,
+        expr.left,
+        expr.right,
+        left,
+        right,
+        op === ts.SyntaxKind.ExclamationEqualsEqualsToken,
+        loc,
+      );
     case ts.SyntaxKind.LessThanToken:
     case ts.SyntaxKind.LessThanEqualsToken:
     case ts.SyntaxKind.GreaterThanToken:
@@ -10723,6 +10545,243 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     expr,
     `operator '${ts.tokenToString(op) ?? ts.syntaxKindName(op)}'`,
   );
+}
+
+/** `left === right` (`!==` when negated) over lowered operands: JS strict
+ * equality for every pair of static kinds the program can compare.
+ * `node` anchors diagnostics, and `leftNode`/`rightNode` the coercions. */
+export function lowerStrictEquality(
+  lowerer: Lowerer,
+  node: ts.Node,
+  leftNode: ts.Node,
+  rightNode: ts.Node,
+  left: IrExpr,
+  right: IrExpr,
+  negated: boolean,
+  loc: SrcLoc,
+): IrExpr {
+  const plainBothNum = left.type.kind === "f64" && right.type.kind === "f64";
+  const bothStr = left.type.kind === "string" && right.type.kind === "string";
+  const indexed = tryLowerIndexedComparison(lowerer, left, right, negated, loc);
+  if (indexed) return indexed;
+  if (plainBothNum)
+    return { kind: "bin", op: negated ? "!==" : "===", left, right, type: BOOL, loc };
+  if (bothStr) {
+    if (left.kind === "strLit" && right.kind === "strLit")
+      return {
+        kind: "boolLit",
+        value: (left.value === right.value) !== negated,
+        type: BOOL,
+        loc,
+      };
+    return { kind: "strEq", negated, left, right, type: BOOL, loc };
+  }
+  // bool === bool: a plain value compare (the config-drift checks'
+  // `desired.lanMode !== actual.lanMode` shape).
+  if (left.type.kind === "bool" && right.type.kind === "bool") {
+    return { kind: "bin", op: negated ? "!==" : "===", left, right, type: BOOL, loc };
+  }
+  const unitTest = lowerer.lowerUnitComparison(left, right, negated, loc);
+  if (unitTest) return unitTest;
+  if (left.type.kind === "union" || right.type.kind === "union") {
+    const compared = lowerUnionEquality(lowerer, left, right, negated, false, loc);
+    if (compared) return compared;
+    const aliasRefusal = (type: IrType): void => {
+      if (tagEqualityMayMissAlias(lowerer, type))
+        lowerer.unsupported(
+          "SC1090",
+          node,
+          `comparisons of related class values beside structural union members (${NARROW_FIRST})`,
+        );
+    };
+
+    // JS strict equality of the ARM values, per union tag (a
+    // per-union helper): equal tags compare payloads (f64 ==, string
+    // bytes, bool ==, ref-arm POINTER identity), different tags are
+    // never equal. Two shapes lower: same union on both sides, and
+    // union vs plain arm value (`u === "text"` where the checker
+    // didn't narrow) — the plain side wraps into the union, which
+    // preserves payload identity. Different unions (tsc admits
+    // partially-overlapping ones) still need narrowing first.
+    const ut = left.type.kind === "union" ? left.type : (right.type as IrType & { kind: "union" });
+    const bothUnion = left.type.kind === "union" && right.type.kind === "union";
+    const sameUnion = bothUnion && typeEquals(left.type, right.type);
+    const plainFunc = left.type.kind === "func" ? left : right.type.kind === "func" ? right : null;
+    const unionArms = lowerer.unions.get(ut.unionId)?.arms ?? [];
+    const funcArm = unionArms.find((arm) => arm.kind === "func");
+    // `listeners()` reports original prefix callbacks, but the
+    // checker views an indexed result as function | undefined. For
+    // identity comparison, retain the original closure pointer rather
+    // than adapting it to the tuple signature.
+    if (
+      !bothUnion &&
+      plainFunc !== null &&
+      funcArm?.kind === "func" &&
+      unionArms.filter((arm) => arm.kind === "func").length === 1 &&
+      unionArms.some(isUnitType)
+    ) {
+      return {
+        kind: "unionFuncEq",
+        unionId: ut.unionId,
+        tag: lowerer.armTag(ut.unionId, funcArm),
+        union: left.type.kind === "union" ? left : right,
+        func: plainFunc,
+        negated,
+        type: BOOL,
+        loc,
+      };
+    }
+    if ((sameUnion || !bothUnion) && lowerer.eqComparableUnion(ut.unionId)) {
+      aliasRefusal(ut);
+      return {
+        kind: "unionEq",
+        unionId: ut.unionId,
+        negated,
+        sameValue: false,
+        left: lowerer.coerceInto(leftNode, left, ut),
+        right: lowerer.coerceInto(rightNode, right, ut),
+        type: BOOL,
+        loc,
+      };
+    }
+    if (left.type.kind === "union" && right.type.kind === "union") {
+      const leftDef = lowerer.unions.get(left.type.unionId);
+      const rightDef = lowerer.unions.get(right.type.unionId);
+      if (leftDef && rightDef) {
+        const leftValues = leftDef.arms.filter((arm) => !isUnitType(arm));
+        const rightValues = rightDef.arms.filter((arm) => !isUnitType(arm));
+        const sameValueArms =
+          leftValues.length === rightValues.length &&
+          leftValues.every((arm) => rightValues.some((candidate) => typeEquals(candidate, arm)));
+        if (sameValueArms) {
+          const arms = [...leftDef.arms];
+          for (const arm of rightDef.arms) {
+            if (!arms.some((candidate) => typeEquals(candidate, arm))) arms.push(arm);
+          }
+          arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+          const common: IrType & { kind: "union" } = {
+            kind: "union",
+            unionId: lowerer.unions.intern(arms),
+          };
+          aliasRefusal(common);
+          return {
+            kind: "unionEq",
+            unionId: common.unionId,
+            negated,
+            sameValue: false,
+            left: lowerer.coerceInto(leftNode, left, common),
+            right: lowerer.coerceInto(rightNode, right, common),
+            type: BOOL,
+            loc,
+          };
+        }
+      }
+    }
+    lowerer.unsupported("SC1090", node, `comparisons of union-typed values (${NARROW_FIRST})`);
+  }
+  // Arrays, maps, functions, class instances and records compare by
+  // reference identity (pointer compare) — JS-exact object equality.
+  // Hierarchy-related classes compare after widening the derived side
+  // (same pointer either way — prefix layout).
+  let idLeft = left;
+  let idRight = right;
+  if (left.type.kind === "object" && right.type.kind === "object") {
+    if (lowerer.isSubclassOf(left.type.className, right.type.className)) {
+      idLeft = lowerer.upcastTo(left, right.type.className);
+    } else if (lowerer.isSubclassOf(right.type.className, left.type.className)) {
+      idRight = lowerer.upcastTo(right, left.type.className);
+    }
+  }
+  // Two function values compare by identity whatever their STATIC
+  // signatures (tsc admits the comparison when one side is
+  // assignable to the other — a tuple-typed listeners() element
+  // against a prefix-declared handler): the pointer answers it.
+  if (idLeft.type.kind === "func" && idRight.type.kind === "func") {
+    return {
+      kind: "bin",
+      op: negated ? "!==" : "===",
+      left: idLeft,
+      right: idRight,
+      type: BOOL,
+      loc,
+    };
+  }
+  // Two CLASS values compare by identity whatever their static
+  // classes — one immortal object per class, one pointer compare
+  // (the function-identity rule verbatim; `X === D` through a
+  // base-typed slot answers exactly JS).
+  if (idLeft.type.kind === "classval" && idRight.type.kind === "classval") {
+    return {
+      kind: "bin",
+      op: negated ? "!==" : "===",
+      left: idLeft,
+      right: idRight,
+      type: BOOL,
+      loc,
+    };
+  }
+  if (idLeft.type.kind === "moduleNs" && idRight.type.kind === "moduleNs") {
+    return {
+      kind: "bin",
+      op: negated ? "!==" : "===",
+      left: idLeft,
+      right: idRight,
+      type: BOOL,
+      loc,
+    };
+  }
+  if (
+    (idLeft.type.kind === "array" ||
+      idLeft.type.kind === "map" ||
+      idLeft.type.kind === "set" ||
+      idLeft.type.kind === "regex" ||
+      idLeft.type.kind === "url" ||
+      idLeft.type.kind === "object" ||
+      idLeft.type.kind === "record" ||
+      // Symbols ARE identity: `Symbol('a') === Symbol('a')` is false,
+      // a symbol equals exactly itself, and Symbol.for's interned
+      // values compare equal across call sites — all one pointer
+      // compare, JS's spec without approximation.
+      idLeft.type.kind === "symbol" ||
+      // Typed arrays / Buffers ARE objects to ===: pointer identity
+      // (buf === buf.swap16() — the in-place mutators return this).
+      idLeft.type.kind === "bytes" ||
+      idLeft.type.kind === "promise") &&
+    typeEquals(idLeft.type, idRight.type)
+  ) {
+    return {
+      kind: "bin",
+      op: negated ? "!==" : "===",
+      left: idLeft,
+      right: idRight,
+      type: BOOL,
+      loc,
+    };
+  }
+  // Runtime HANDLES are objects to === too: one handle per socket/
+  // request/response, so pointer identity IS JS's object equality
+  // (`c.pause() === c` — Node's chaining assertions). */
+  if (DYN_HANDLE_KINDS.has(idLeft.type.kind) && typeEquals(idLeft.type, idRight.type)) {
+    return {
+      kind: "bin",
+      op: negated ? "!==" : "===",
+      left: idLeft,
+      right: idRight,
+      type: BOOL,
+      loc,
+    };
+  }
+  if (lowerer.dynConvertible(idLeft.type) && lowerer.dynConvertible(idRight.type)) {
+    return {
+      kind: "dynScalarEq",
+      left: lowerer.coerceToExpected(idLeft, DYN),
+      right: lowerer.coerceToExpected(idRight, DYN),
+      ...(negated ? { negated: true as const } : {}),
+      type: BOOL,
+      loc,
+    };
+  }
+  return lowerer.unsupported("SC1043", node);
 }
 
 function lowerLogicalChain(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr {
@@ -11932,6 +11991,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     if (blob) return blob;
     const keyObject = lowerKeyObjectInstanceof(lowerer, expr);
     if (keyObject) return keyObject;
+    const netAddress = lowerNetAddressInstanceof(lowerer, expr);
+    if (netAddress) return netAddress;
   }
   if (lowerer.isStdlibGlobal(expr.right, "SharedArrayBuffer")) {
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
@@ -13402,7 +13463,52 @@ function matchProducerRegexOf(lowerer: Lowerer, e: ts.Expression): ts.Expression
     // A stored const match result: `const m = re.exec(s)`.
     const init = constInitializerOf(lowerer, expr);
     if (init !== null) return matchProducerRegexOf(lowerer, init);
+    // The element parameter of an array callback over matchAll rows:
+    // `[...s.matchAll(re)].map((m) => m.groups)`, and Array.from's
+    // mapping function over `s.matchAll(re)`.
+    if (decl !== undefined && ts.isParameter(decl)) return matchAllCallbackRegexOf(lowerer, decl);
   }
+  return null;
+}
+
+const MATCH_ROW_CALLBACK_METHODS = new Set([
+  "map",
+  "forEach",
+  "filter",
+  "find",
+  "findLast",
+  "some",
+  "every",
+  "flatMap",
+]);
+
+/** The regex behind `param` when it is the first parameter of an inline
+ * callback whose rows come from a matchAll drain. */
+function matchAllCallbackRegexOf(
+  lowerer: Lowerer,
+  param: ts.ParameterDeclaration,
+): ts.Expression | null {
+  const fn = param.parent;
+  if (!(ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) || fn.parameters[0] !== param)
+    return null;
+  let site: ts.Node = fn;
+  while (ts.isParenthesizedExpression(site.parent)) site = site.parent;
+  const call = site.parent;
+  if (!ts.isCallExpression(call) || !ts.isPropertyAccessExpression(call.expression)) return null;
+  const method = call.expression.name.text;
+  if (
+    MATCH_ROW_CALLBACK_METHODS.has(method) &&
+    call.arguments[0] === site &&
+    lowerer.isStdlibMember(call.expression)
+  )
+    return matchAllRegexOf(lowerer, call.expression.expression);
+  if (
+    method === "from" &&
+    call.arguments[1] === site &&
+    lowerer.isStdlibGlobal(call.expression.expression, "Array") &&
+    call.arguments[0] !== undefined
+  )
+    return matchAllRegexOf(lowerer, call.arguments[0]);
   return null;
 }
 
@@ -13484,6 +13590,10 @@ function lowerMatchGroupsRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressio
     return null;
   }
   const recv = lowerer.lowerExpr(expr.expression);
+  // A JavaScript callback parameter holds the row as a checked-dynamic
+  // value without its groups: refuse rather than read undefined.
+  if (recv.type.kind === "dyn" && isJsSourceFile(expr.getSourceFile()))
+    lowerer.stdlibMemberFence(expr);
   if (!isMatchSliceType(lowerer, recv.type)) return null;
   return lowerGroupsProjection(lowerer, recv, groups, loc);
 }

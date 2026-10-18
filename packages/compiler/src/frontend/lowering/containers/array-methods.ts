@@ -46,6 +46,7 @@ import {
   lowerArrayFindLikeCall,
   lowerArrayFlatMapCall,
   lowerArrayReduceCall,
+  lowerTuplePredicateCall,
 } from "./array-callbacks.js";
 import {
   lowerArraySpreadItems,
@@ -1847,12 +1848,19 @@ export function lowerTupleReadMethodCall(
   if (lowerer.chainBlocked(access, call)) return null;
   const method = access.name.text;
   const search = method === "includes" || method === "indexOf" || method === "lastIndexOf";
+  const predicate =
+    method === "filter" ||
+    method === "find" ||
+    method === "findIndex" ||
+    method === "some" ||
+    method === "every";
   if (
     method !== "slice" &&
     method !== "map" &&
     method !== "flatMap" &&
     method !== "join" &&
-    !search
+    !search &&
+    !predicate
   )
     return null;
   if (!lowerer.isStdlibMember(access)) return null;
@@ -2047,6 +2055,9 @@ export function lowerTupleReadMethodCall(
       callback,
       "capture the original tuple explicitly to preserve its identity",
     );
+  }
+  if (predicate) {
+    return lowerTuplePredicateCall(lowerer, call, method, receiver, elem, fields.map(read));
   }
   const { fnArg, arity } = lowerArrayCallback(lowerer, callback, [elem], receiver.type);
   const ret = fnArg.type.ret;

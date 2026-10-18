@@ -164,7 +164,11 @@ import {
 } from "./lower-exprs.js";
 import { globalSymbolKey } from "./expressions/global-symbols.js";
 import { lowerShortCircuitAssignment } from "./expressions/nullish-assignment.js";
-import { lowerEnvironmentKey, lowerNativeFunctionAssignment } from "./lower-exprs.js";
+import {
+  lowerEnvironmentKey,
+  lowerNativeFunctionAssignment,
+  lowerStrictEquality,
+} from "./lower-exprs.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerUnionFieldWrite } from "./expressions/union-fields.js";
@@ -5156,9 +5160,21 @@ export function lowerSwitch(lowerer: Lowerer, stmt: ts.SwitchStatement): IrStmt 
       const dk = disc.type.kind;
       if (dk === "dyn") return lowerDynSwitch(lowerer, stmt, disc, labels);
       if (dk === "union") return lowerUnionSwitch(lowerer, stmt, disc, labels);
-      if (dk !== "f64" && dk !== "string" && dk !== "bool") {
-        lowerer.unsupported("SC1090", stmt.expression, "switch on non-primitive values");
-      }
+      // Objects, arrays, functions and other references match their cases
+      // with ===, which compares them by identity.
+      if (dk !== "f64" && dk !== "string" && dk !== "bool")
+        return lowerBranchSwitch(lowerer, stmt, disc, labels, (stableDisc, test, expression) =>
+          lowerStrictEquality(
+            lowerer,
+            expression,
+            stmt.expression,
+            expression,
+            stableDisc,
+            test,
+            false,
+            locOf(expression),
+          ),
+        );
       // The whole case-body sequence is ONE lexical scope in JS: a bare `let`
       // in one case is visible in later cases.
       lowerer.scopes.push(new Map());

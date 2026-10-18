@@ -6,6 +6,40 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.3.6
+
+### Features
+
+- **`node:readline` adds terminal mode, cursor helpers and `emitKeypressEvents`,** along with the `history` and `completer` options and the history members.
+- **`node:http` supports request `signal`s, `destroy(err)`, `servername`, `Expect` events and `maxHeaderSize`.**
+- **`createHash` and `createHmac` values work as streams.**
+- **`node:test` adds the `concurrency`, `plan` and `timeout` options.**
+- **`fs.cpSync`, `fs.cp` and `fs/promises` `cp` are supported.**
+- **`util.promisify` works over `setTimeout`, `setImmediate`, `stream.finished`, `stream.pipeline` and the zlib callback one-shots.**
+- **`Array.fromAsync` works over arrays,** `Readable.from` accepts Sets, iterators and class iterables, and the `Set` composition methods accept `Map` arguments.
+- **`using` disposes `Disposable`-typed values,** and `SuppressedError` exposes `error` and `suppressed`.
+
+### Performance
+
+- **Int32 class fields stay int32 next to arithmetic on dynamic operands** and in programs that register process event listeners. A large TypeScript type-checker workload runs about 12% faster with about 5% less memory.
+- **`while` loops bounded by a string's length keep int32 counters.**
+- **Worker threads reserve heap growth up front** once they allocate many large blocks, and share one prefault budget.
+- **Small runtime functions are inlined into release executables.**
+- **Integers are speculated only where the static range proof gives up.**
+- **Constant-key dynamic reads are cached per site,** and `JSON.parse` follows repeated key sequences.
+- **The zlib one-shot forms run on the stream engine,** and `statSync`'s `throwIfNoEntry` option no longer builds the error it discards.
+
+### Fixes
+
+- **Class instances keep their identity through structural record views,** including in `switch` statements and assertions.
+- **Node 24 builtin forms that ran with wrong output now match Node or are refused,** and `Object.groupBy` results have a null prototype.
+- **IPv4 hosts in special-scheme URLs parse like WHATWG URL.**
+- **fs paths with a null byte are refused as Node does.**
+- **`Object.setPrototypeOf` returns primitive receivers,** and `createHmac` without a key throws Node's error.
+- **Boxed records that hold an async function link the dynamic promise unit.**
+
+<!-- release:end -->
+
 ## 0.3.5
 
 ### Features
@@ -35,8 +69,6 @@ All notable changes to scriptc will be documented in this file.
 - **Sockets read ahead without a consumer,** so a peer's close reaches them.
 - **Publication walkers with more than ten pushes keep distinct value names,** and int32 field storage survives reflection reads through `unknown`.
 - **Native program objects use runtime ABI v22.** External object consumers must link the matching v0.3.5 runtime pack; the versioned marker rejects incompatible runtime objects at link time.
-
-<!-- release:end -->
 
 ## 0.3.4
 

@@ -84,6 +84,12 @@ extern SCR_TL ScrEventTargetCore *(*scr_et_signal_core_fn)(const ScrDyn *d, bool
 void scr_event_handle_event_reader(ScrDyn *reader);
 /* events.addAbortListener(signal, listener): +1 disposable, or NULL. */
 ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener);
+/* timers/promises setTimeout(delay, value, options) and setImmediate(value,
+ * options) with options.signal (an undefined signal takes the plain form):
+ * `value` is the already-resolved promise of the resolve value, borrowed.
+ * Never throw; +1. */
+ScrPromise *scr_tp_set_timeout_signal(double ms, ScrPromise *value, bool ref, ScrDyn *signal);
+ScrPromise *scr_tp_set_immediate_signal(ScrPromise *value, bool ref, ScrDyn *signal);
 
 /* Compiled subclasses (`class Bus extends EventTarget`, `class Ping
  * extends Event`): an instance lays out like a compiler-emitted hierarchy

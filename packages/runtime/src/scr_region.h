@@ -116,10 +116,11 @@ void scr_region_release(double id);
 void scr_region_ref(ScrRgnWalk *w, void *obj);
 void scr_region_slot(ScrRgnWalk *w, void *obj, void (*release)(void *));
 
-/* Async continuations. A fiber that runs an async function body carries
- * the region that was current when it was spawned (`capture`; NULL is the
- * default region), and the event loop makes that region current while the
- * fiber runs after an await (`resume` answers the region to restore with
+/* Async continuations. A fiber that runs an async function body, on its
+ * own stack or as a stackless coroutine, carries the region that was
+ * current when it was spawned (`capture`; NULL is the default region), and
+ * the event loop makes that region current while the fiber runs after an
+ * await (`resume` answers the region to restore with
  * `suspend`). A region is never freed while a fiber that carries it
  * exists; `drop` ends the fiber's hold. scr_region_create installs the
  * hooks (process-wide, once); until then the fiber machinery (scr_async.c)

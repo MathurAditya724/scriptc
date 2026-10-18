@@ -166,7 +166,9 @@ typedef struct {
   size_t sparse_len;
   size_t sparse_cap;
   uint8_t elem; /* the owning array's element kind: the dense slot width */
-  bool inline_slots; /* the slots live in the array's own block: never freed alone */
+  /* The dense allocation that owns the slots, or NULL when there is none to
+   * free (no slots, or inline slots in the array's own block). */
+  void *block;
 } ScrArrStorage;
 
 static uint64_t scr_arr_storage_get(const ScrArrStorage *s, size_t index) {
@@ -313,6 +315,81 @@ static void scr_arr_sparse_drop_prefix(ScrArr *a, size_t count) {
 
 static bool scr_arr_inline(const ScrArr *a) { return (a->spare & SCR_ARR_INLINE_SLOTS) != 0; }
 
+/* Head room: removing elements from the front of a dense array of 8-byte
+ * slots with its own allocation (shift, splice(0, n)) advances `data` and
+ * `present` past them and lowers `cap`, instead of moving the tail down, so
+ * draining a queue costs O(1) per element. The vacated slots stay in the
+ * allocation in front of `data` (values) and of `present` (states, all
+ * holes) until an unshift reuses them, the array empties, or growth moves
+ * the elements back to the start of the allocation (scr_arr_drop_head).
+ * `spare` records that an array may have head room; its size is implied,
+ * because the states still follow the whole value area:
+ *   present == (uint8_t *)(data + cap) + head.
+ * Every reader indexes from `data`, `present` and `cap` as before (emitted
+ * code included); only the code that frees, reallocates or swaps the
+ * allocation needs its start. Static and inline storage never has head room. */
+#define SCR_ARR_HEAD_ROOM 2u
+/* An unshift had to move every element: the next one that would have to
+ * move them again opens head room instead (scr_arr_open_head). */
+#define SCR_ARR_UNSHIFTED 4u
+/* Arrays shorter than this keep moving their elements on unshift. */
+#define SCR_ARR_HEAD_MIN ((size_t)16)
+
+static size_t scr_arr_head(const ScrArr *a) {
+  if (!(a->spare & SCR_ARR_HEAD_ROOM)) return 0;
+  return (size_t)(a->present - (uint8_t *)(a->data + a->cap));
+}
+
+/* The start of the dense allocation. */
+static void *scr_arr_block(const ScrArr *a) { return a->data - scr_arr_head(a); }
+
+/* Give the head room of an array back to its capacity: the populated dense
+ * prefix and its states move to the start of the allocation. */
+static void scr_arr_drop_head(ScrArr *a) {
+  size_t head = scr_arr_head(a);
+  a->spare &= (uint16_t)~SCR_ARR_HEAD_ROOM;
+  if (head == 0) return;
+  size_t cap = a->cap, total = cap + head, live = a->len < cap ? a->len : cap;
+  uint64_t *data = a->data - head;
+  uint8_t *present = (uint8_t *)(data + total);
+  if (live) {
+    memmove(data, a->data, live * sizeof(uint64_t));
+    memmove(present, a->present, live);
+  }
+  /* States past `live` were holes already, except the `head` that now sit
+   * where the moved states were. */
+  memset(present + live, SCR_ARR_HOLE, head);
+  a->data = data;
+  a->present = present;
+  a->cap = total;
+}
+
+/* Remove the first `count` (<= len) dense slots, whose values the caller has
+ * moved out or released, by advancing the storage pointers. Returns false
+ * for storage without head room (booleans, inline slots); the caller then
+ * moves the tail down itself. */
+static bool scr_arr_drop_front(ScrArr *a, size_t count) {
+  if (a->elem == SCR_ELEM_BOOL || scr_arr_inline(a)) return false;
+  if (count == 0) return true;
+  memset(a->present, SCR_ARR_HOLE, count);
+  memset(a->data, 0, count * sizeof(uint64_t));
+  a->data += count;
+  a->present += count;
+  a->cap -= count;
+  a->len -= count;
+  a->filled = a->filled > count ? (uint32_t)(a->filled - count) : 0;
+  a->spare |= SCR_ARR_HEAD_ROOM;
+  if (a->len == 0) {
+    /* Every state in the allocation is a hole: start over at its front. */
+    size_t head = scr_arr_head(a);
+    a->data -= head;
+    a->present -= head;
+    a->cap += head;
+    a->spare &= (uint16_t)~SCR_ARR_HEAD_ROOM;
+  }
+  return true;
+}
+
 /* Slots requested by the small constructions, rounded up to fill a block
  * on the 16-byte grid: 5 eight-byte slots (or 8 booleans) after a plain
  * header. */
@@ -399,8 +476,8 @@ static void scr_arr_grow_dense_slow(ScrArr *a, size_t need, ScrArrGrow mode);
  * paths pick the same capacity. */
 static inline void scr_arr_grow_dense_to(ScrArr *a, size_t need, ScrArrGrow mode) {
   if (need <= a->cap) return;
-  if (a->elem == SCR_ELEM_BOOL || scr_arr_inline(a) || (a->ext && a->ext->sparse_len) ||
-      need > SCR_ARR_DENSE_LIMIT) {
+  if (a->elem == SCR_ELEM_BOOL || (a->spare & (SCR_ARR_INLINE_SLOTS | SCR_ARR_HEAD_ROOM)) ||
+      (a->ext && a->ext->sparse_len) || need > SCR_ARR_DENSE_LIMIT) {
     scr_arr_grow_dense_slow(a, need, mode);
     return;
   }
@@ -425,8 +502,31 @@ static inline void scr_arr_grow_dense_to(ScrArr *a, size_t need, ScrArrGrow mode
   a->cap = cap;
 }
 
+/* Sparse entries below a raised capacity move into the packed slots. */
+static void scr_arr_absorb_sparse(ScrArr *a) {
+  size_t moved = scr_arr_sparse_lower_bound(SCR_AX(a)->sparse, SCR_AX(a)->sparse_len, a->cap);
+  for (size_t i = 0; i < moved; i++) {
+    scr_arr_dense_put(a, SCR_AX(a)->sparse[i].index, SCR_AX(a)->sparse[i].slot);
+    a->present[SCR_AX(a)->sparse[i].index] = SCR_AX(a)->sparse[i].state;
+  }
+  scr_arr_sparse_drop_prefix(a, moved);
+}
+
 static void scr_arr_grow_dense_slow(ScrArr *a, size_t need, ScrArrGrow mode) {
   if (need > SCR_ARR_MAX_LENGTH) scr_arr_oom();
+  if (a->spare & SCR_ARR_HEAD_ROOM) {
+    /* Reuse the head room when it leaves at least half the moved elements'
+     * count free after this growth, so the move costs amortized O(1) per
+     * element; otherwise grow past it like any full array. */
+    size_t live = a->len < a->cap ? a->len : a->cap;
+    scr_arr_drop_head(a);
+    scr_arr_absorb_sparse(a);
+    if (need <= a->cap) {
+      if ((a->cap - need) * 2 >= live) return;
+      need = a->cap + 1;
+      mode = SCR_ARR_GROW_APPEND;
+    }
+  }
   bool bools = a->elem == SCR_ELEM_BOOL;
   size_t width = scr_arr_slot_width(a);
   size_t unit = bools ? SCR_ARR_BOOL_SLOT_BYTES : SCR_ARR_SLOT_BYTES;
@@ -450,12 +550,7 @@ static void scr_arr_grow_dense_slow(ScrArr *a, size_t need, ScrArrGrow mode) {
   if (cap > SIZE_MAX / SCR_ARR_SLOT_BYTES) scr_arr_oom(); /* bounds both slot sizes */
   if (scr_arr_inline(a)) {
     scr_arr_move_inline(a, cap, unit);
-    size_t moved = scr_arr_sparse_lower_bound(SCR_AX(a)->sparse, SCR_AX(a)->sparse_len, cap);
-    for (size_t i = 0; i < moved; i++) {
-      scr_arr_dense_put(a, SCR_AX(a)->sparse[i].index, SCR_AX(a)->sparse[i].slot);
-      a->present[SCR_AX(a)->sparse[i].index] = SCR_AX(a)->sparse[i].state;
-    }
-    scr_arr_sparse_drop_prefix(a, moved);
+    scr_arr_absorb_sparse(a);
     return;
   }
   if (!a->data && SCR_AX(a)->sparse_len == 0) {
@@ -479,16 +574,51 @@ static void scr_arr_grow_dense_slow(ScrArr *a, size_t need, ScrArrGrow mode) {
   a->data = data;
   a->present = present;
   a->cap = cap;
-  size_t moved = scr_arr_sparse_lower_bound(SCR_AX(a)->sparse, SCR_AX(a)->sparse_len, cap);
-  for (size_t i = 0; i < moved; i++) {
-    scr_arr_dense_put(a, SCR_AX(a)->sparse[i].index, SCR_AX(a)->sparse[i].slot);
-    a->present[SCR_AX(a)->sparse[i].index] = SCR_AX(a)->sparse[i].state;
-  }
-  scr_arr_sparse_drop_prefix(a, moved);
+  scr_arr_absorb_sparse(a);
 }
 
 static void scr_arr_grow_dense(ScrArr *a, size_t need) {
   scr_arr_grow_dense_to(a, need, SCR_ARR_GROW_APPEND);
+}
+
+/* Room for `count` values in front of the first element of a dense array:
+ * moves `data` and `present` back into head room, raising `cap`; the caller
+ * stores the new first `count` slots and states. A shifted array reuses the
+ * room its shifts left. An array that unshift already had to move once moves
+ * into a new allocation with head room for half its length again, so a run
+ * of unshifts costs amortized O(1) per element; a one-off unshift keeps the
+ * array's allocation. Returns false when the caller must move the elements
+ * itself. */
+static bool scr_arr_open_head(ScrArr *a, size_t count) {
+  if (a->elem == SCR_ELEM_BOOL || scr_arr_inline(a)) return false;
+  size_t head = scr_arr_head(a);
+  if (head < count) {
+    size_t len = a->len;
+    if (!(a->spare & SCR_ARR_UNSHIFTED) || len < SCR_ARR_HEAD_MIN) {
+      a->spare |= SCR_ARR_UNSHIFTED;
+      return false;
+    }
+    /* The new allocation: head room for the new values plus half the new
+     * length, then the current dense window (its tail capacity included). */
+    size_t room = count + (len + count) / 2;
+    if (room > SCR_ARR_MAX_LENGTH || a->cap > SIZE_MAX / SCR_ARR_SLOT_BYTES - room) return false;
+    size_t total = room + a->cap;
+    uint64_t *block = scr_mem_alloc(total * SCR_ARR_SLOT_BYTES);
+    if (!block) scr_arr_oom();
+    uint8_t *states = (uint8_t *)(block + total);
+    memcpy(block + room, a->data, len * sizeof(uint64_t));
+    memset(states, SCR_ARR_HOLE, room);
+    memcpy(states + room, a->present, len);
+    memset(states + room + len, SCR_ARR_HOLE, a->cap - len);
+    scr_mem_free(scr_arr_block(a));
+    a->data = block + room;
+    a->present = states + room;
+    a->spare |= SCR_ARR_HEAD_ROOM;
+  }
+  a->data -= count;
+  a->present -= count;
+  a->cap += count;
+  return true;
 }
 
 /* Is the top of the dense prefix populated like an append or forward fill?
@@ -557,13 +687,13 @@ static bool scr_arr_slot_at_storage(const ScrArrStorage *s, size_t index,
 
 static bool scr_arr_slot_at(const ScrArr *a, size_t index, uint64_t *out) {
   ScrArrStorage s = {a->data, a->present, a->cap, SCR_AX(a)->sparse,
-                     SCR_AX(a)->sparse_len, SCR_AX(a)->sparse_cap, a->elem, false};
+                     SCR_AX(a)->sparse_len, SCR_AX(a)->sparse_cap, a->elem, NULL};
   return scr_arr_slot_at_storage(&s, index, out);
 }
 
 static uint8_t scr_arr_state_at(const ScrArr *a, size_t index, uint64_t *out) {
   ScrArrStorage s = {a->data, a->present, a->cap, SCR_AX(a)->sparse,
-                     SCR_AX(a)->sparse_len, SCR_AX(a)->sparse_cap, a->elem, false};
+                     SCR_AX(a)->sparse_len, SCR_AX(a)->sparse_cap, a->elem, NULL};
   return scr_arr_state_at_storage(&s, index, out);
 }
 
@@ -737,8 +867,8 @@ static bool scr_arr_prop_delete(ScrArr *a, double key) {
 static ScrArrStorage scr_arr_take_storage(ScrArr *a) {
   ScrArrStorage old = {a->data, a->present, a->cap, SCR_AX(a)->sparse,
                        SCR_AX(a)->sparse_len, SCR_AX(a)->sparse_cap, a->elem,
-                       scr_arr_inline(a)};
-  a->spare &= (uint16_t)~SCR_ARR_INLINE_SLOTS;
+                       scr_arr_inline(a) ? NULL : scr_arr_block(a)};
+  a->spare &= (uint16_t)~(SCR_ARR_INLINE_SLOTS | SCR_ARR_HEAD_ROOM);
   a->data = NULL;
   a->present = NULL;
   a->cap = 0;
@@ -752,7 +882,7 @@ static ScrArrStorage scr_arr_take_storage(ScrArr *a) {
 }
 
 static void scr_arr_free_storage(ScrArrStorage *s) {
-  if (!s->inline_slots) scr_mem_free(s->data);
+  scr_mem_free(s->block);
   scr_arr_sparse_free(s->sparse);
   memset(s, 0, sizeof(*s));
 }
@@ -885,6 +1015,11 @@ void scr_arr_outline(ScrArr *a) {
   if (scr_arr_inline(a))
     scr_arr_move_inline(a, a->cap,
                         a->elem == SCR_ELEM_BOOL ? SCR_ARR_BOOL_SLOT_BYTES : SCR_ARR_SLOT_BYTES);
+  /* The swapped fields do not include `spare`: no head room either. */
+  if (a->spare & SCR_ARR_HEAD_ROOM) {
+    scr_arr_drop_head(a);
+    scr_arr_absorb_sparse(a);
+  }
 }
 
 void scr_arr_swap_indexed_ext(ScrArr *a, ScrArr *b) {
@@ -942,7 +1077,7 @@ static void scr_arr_ext_free(ScrArr *a) {
 
 static void scr_arr_gc_free(void *a0) {
   ScrArr *a = (ScrArr *)a0;
-  if (!scr_arr_inline(a)) scr_mem_free(a->data);
+  if (!scr_arr_inline(a)) scr_mem_free(scr_arr_block(a));
   if (a->ext) scr_arr_ext_free(a);
 #ifdef SCR_RC_AUDIT
   scr_live_arrays--;
@@ -1039,7 +1174,7 @@ static void scr_arr_destroy(void *object) {
   if (a->cyc) {
     scr_arr_gc_free(a);
   } else {
-    if (!scr_arr_inline(a)) scr_mem_free(a->data);
+    if (!scr_arr_inline(a)) scr_mem_free(scr_arr_block(a));
     if (a->ext) scr_arr_ext_free(a);
 #ifdef SCR_RC_AUDIT
     scr_live_arrays--;
@@ -1672,6 +1807,15 @@ static double scr_arr_unshift_slot(ScrArr *a, uint64_t slot) {
     scr_arr_trap_oob(SCR_ARR_LEN_F64(a->len), a->len);
   }
   size_t old_len = a->len;
+  if (scr_arr_is_dense(a) && scr_arr_open_head(a, 1)) {
+    /* The prefix stays put in front of the new first value. */
+    size_t f = a->filled;
+    a->data[0] = slot;
+    a->present[0] = SCR_ARR_VALUE;
+    a->len++;
+    a->filled = (uint32_t)(f + 1);
+    return SCR_ARR_LEN_F64(a->len);
+  }
   if (scr_arr_is_dense(a) && scr_arr_dense_ok(a, old_len + 1, 1)) {
     scr_arr_grow_dense(a, old_len + 1);
     /* The prefix moves up behind the new first value. */
@@ -1716,6 +1860,14 @@ double scr_arr_unshift_many(ScrArr *a, size_t count, const uint64_t *slots) {
   size_t old_len = a->len;
   if (count == 0) return (double)old_len;
   if (count > SCR_ARR_MAX_LENGTH - old_len) scr_arr_oom();
+  if (scr_arr_is_dense(a) && scr_arr_open_head(a, count)) {
+    size_t f = a->filled;
+    scr_arr_put_slots(a, 0, count, slots);
+    memset(a->present, SCR_ARR_VALUE, count);
+    a->len = old_len + count;
+    a->filled = (uint32_t)(f + count);
+    return SCR_ARR_LEN_F64(a->len);
+  }
   if (scr_arr_is_dense(a) && scr_arr_dense_ok(a, old_len + count, count)) {
     scr_arr_grow_dense(a, old_len + count);
     size_t f = a->filled;
@@ -1748,6 +1900,13 @@ double scr_arr_unshift_spread(ScrArr *a, const ScrArr *src) {
   size_t add = src->len;
   if (add == 0) return (double)old_len;
   if (add > SCR_ARR_MAX_LENGTH - old_len) scr_arr_oom();
+  if (scr_arr_is_dense(a) && scr_arr_is_dense(src) && scr_arr_open_head(a, add)) {
+    /* A self-spread reads the original values behind the opened room. */
+    scr_arr_copy_dense(a, 0, src, src == a ? add : 0, add, false, true);
+    a->len += add;
+    scr_arr_refill(a);
+    return SCR_ARR_LEN_F64(a->len);
+  }
   if (scr_arr_is_dense(a) && scr_arr_is_dense(src) &&
       scr_arr_dense_ok(a, old_len + add, add)) {
     scr_arr_grow_dense(a, old_len + add);
@@ -1846,10 +2005,12 @@ bool scr_arr_pop_bool(ScrArr *a) { return scr_arr_pop_slot(a) != 0; }
 void *scr_arr_pop_ref(ScrArr *a) { return scr_slot_to_ptr(scr_arr_pop_slot(a)); }
 
 /* ── shift ─────────────────────────────────────────────────────────────
- * The first element out, tail sliding down. The EMITTER guards the empty
- * array (JS answers undefined there — the `elem | undefined` union), so
- * an empty receiver here is an internal error, pop's discipline. Ref
- * ownership moves out to the caller (no retain). */
+ * The first element out: dense storage advances past it into head room;
+ * booleans, inline slots and sparse arrays slide the tail down. The
+ * EMITTER guards the empty array (JS answers undefined there — the
+ * `elem | undefined` union), so an empty receiver here is an internal
+ * error, pop's discipline. Ref ownership moves out to the caller (no
+ * retain). */
 uint8_t scr_arr_shift_state(ScrArr *a, uint64_t *slot_out) {
   if (slot_out) *slot_out = 0;
   if (a->len == 0) return SCR_ARR_HOLE;
@@ -1857,6 +2018,8 @@ uint8_t scr_arr_shift_state(ScrArr *a, uint64_t *slot_out) {
   if (scr_arr_is_dense(a)) {
     uint8_t state = a->present[0];
     if (slot_out && state == SCR_ARR_VALUE) *slot_out = scr_arr_dense_get(a, 0);
+    /* The first slot becomes head room; the tail stays where it is. */
+    if (scr_arr_drop_front(a, 1)) return state;
     /* The prefix slides down with the tail. */
     size_t f = a->filled;
     scr_arr_move_dense(a, 0, 1, old_len - 1);
@@ -1932,6 +2095,8 @@ ScrArr *scr_arr_splice(ScrArr *a, double start, double deleteCount) {
       memcpy(out->present, a->present + from, n);
     }
     scr_arr_refill(out);
+    /* A removed prefix becomes head room. */
+    if (from == 0 && scr_arr_drop_front(a, n)) return out;
     /* The tail moves down over the removed range; values below the prefix
      * bound that stay values keep it. */
     size_t f = a->filled;
@@ -2067,6 +2232,12 @@ void scr_arr_splice_drop(ScrArr *a, double start, double deleteCount, size_t cou
     }
   }
   size_t old_len = a->len;
+  if (from == 0 && count == 0 && scr_arr_drop_front(a, n)) {
+    /* A removed prefix becomes head room. */
+    for (size_t i = 0; i < kept; i++) scr_elem_release(a, removed[i]);
+    if (removed != inline_removed) scr_mem_free(removed);
+    return;
+  }
   scr_arr_grow_dense(a, next_len);
   bool packed = a->filled == old_len;
   scr_arr_move_dense(a, from + count, from + n, old_len - from - n);

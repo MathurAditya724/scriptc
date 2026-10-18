@@ -1552,6 +1552,7 @@ static bool scr_child_stream_pump(ScrChildStream *s) {
     scr_child_stream_capture_append(s, buf, (size_t)got);
     if (s->n_data == 0) continue;
     ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)got);
+    chunk->is_buffer = true; /* Node delivers a Buffer */
     memcpy(chunk->data, buf, (size_t)got);
     ScrStr *text = NULL;
     if (s->encoding != NULL) {
@@ -4068,6 +4069,7 @@ static bool scr_child_stream_pump(ScrChildStream *s) {
     scr_child_stream_capture_append(s, buf, (size_t)n);
     if (s->n_data == 0) continue;
     ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
+    chunk->is_buffer = true; /* Node delivers a Buffer */
     memcpy(chunk->data, buf, (size_t)n);
     ScrStr *text = NULL;
     if (s->encoding != NULL) {

@@ -2,6 +2,7 @@ import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { isJsSourceFile } from "../program.js";
 import { dynFallbackType } from "./lowerer.js";
+import { isGenericCallableMemberType } from "../type-mapper.js";
 
 /** True when nothing in `sym`'s DECLARING FILE ever writes it after the
  * initializer: assignments (plain and compound, destructuring targets
@@ -199,7 +200,8 @@ export function nullishGenericBindingUnitOf(
   // (a query can even panic upstream — the 1e999 checker bug).
   const unit = nullishValueUnitOf(lowerer, sym);
   if (unit === null) return null;
-  const mapped = lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(sym));
+  const declared = lowerer.checker.getTypeOfSymbol(sym);
+  const mapped = lowerer.mapTypeOf(declared);
   if (mapped !== null) {
     // Only the EMPTY interned shape qualifies among record mappings —
     // the all-generic-signature interface (`I<A & B>`) whose struct has
@@ -210,9 +212,16 @@ export function nullishGenericBindingUnitOf(
     // so claiming the binding would fence working programs.
     if (mapped.kind !== "record") return null;
     const shape = lowerer.shapes.get(mapped.shapeId);
+    // Erased generic members are function slots, not data: an interface
+    // of generic signatures only keeps the no-storage story.
+    const onlyGenericMembers = lowerer.checker
+      .getPropertiesOfType(declared)
+      .every((property) =>
+        isGenericCallableMemberType(lowerer.checker.getTypeOfSymbol(property), lowerer.checker),
+      );
     if (
       !shape ||
-      shape.fields.length > 0 ||
+      (shape.fields.length > 0 && !onlyGenericMembers) ||
       shape.tuple !== undefined ||
       shape.indexValue !== undefined
     ) {

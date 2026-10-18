@@ -53,6 +53,7 @@ export function selectNativeRuntimePack(
     throw new RuntimePackError(
       `runtime pack for ${target.name} is not installed; install ${target.runtimePackPackage}@${compilerVersion} in your project or set SCRIPTC_RUNTIME_PACK to its directory`,
       "missing",
+      "scriptc includes the runtime pack for its own platform only; other targets need their runtime pack package in the project",
     );
   }
   const packageText = readFileSync(join(root, "package.json"), "utf8");

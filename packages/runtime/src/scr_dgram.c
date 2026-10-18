@@ -1122,6 +1122,7 @@ static void scr_dgram_read(ScrDgramSocket *s) {
       rport = ntohs(((struct sockaddr_in *)&from)->sin_port);
     }
     ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
+    chunk->is_buffer = true; /* the message is a Buffer */
     memcpy(chunk->data, buf, (size_t)n);
     ScrStr *addr = scr_str_new(ip, strlen(ip));
     ScrStr *family = scr_str_new("IPv4", 4);
@@ -1335,7 +1336,10 @@ static void scr_dns_warn_tick(ScrClosure *self) {
 #endif
     fprintf(stderr, "(node:%ld) [DEP0118] DeprecationWarning: %.*s\n", pid, (int)message->len,
             message->data);
-    fputs("(Use `node --trace-deprecation ...` to show where the warning was created)\n", stderr);
+    if (!scr_warning_trace_hint_shown) {
+      scr_warning_trace_hint_shown = true;
+      fputs("(Use `node --trace-deprecation ...` to show where the warning was created)\n", stderr);
+    }
   }
   scr_str_release(message);
 }

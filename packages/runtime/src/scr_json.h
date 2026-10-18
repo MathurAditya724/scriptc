@@ -12,16 +12,43 @@ ScrDyn *scr_json_parse(ScrStr *text);
 
 /* Compiler-emitted description of a statically known JSON.parse target
  * (`JSON.parse(text) as T`). Constant data in the program image; the LLVM
- * backend mirrors this layout ({size, size, ptr, ptr, ptr, ptr, ptr} and
- * {ptr, size, size, ptr}). Records list their declared fields (at most
- * 64), each with its byte offset in the record struct; bool fields are one
- * byte, f64 fields doubles, every other kind a +1 pointer. */
+ * backend mirrors this layout ({size, size, ptr, ptr, ptr, ptr, ptr, ptr, size},
+ * {ptr, size, size, ptr} and {size, [7 x size], [7 x ptr], ptr, ptr, ptr}).
+ * Records list their declared fields (at most 64), each with its byte
+ * offset in the record struct; bool fields are one byte, f64 fields
+ * doubles, inline union fields a {uint32 tag, uint64 bits} pair, every
+ * other kind a +1 pointer. Unions appear only as record field types. A
+ * record with an index signature names its index value type in `elem` and
+ * its overflow map's offset in `ovf_offset`. */
 enum {
   SCR_JSCHEMA_F64 = 0,
   SCR_JSCHEMA_BOOL = 1,
   SCR_JSCHEMA_STR = 2,
   SCR_JSCHEMA_REC = 3,
   SCR_JSCHEMA_ARR = 4,
+  SCR_JSCHEMA_UNION = 5,
+};
+/* A union's arms by the JSON value kind that selects them. ABSENT names
+ * the undefined arm, which no JSON value selects: a missing member takes
+ * the field's ABSENT state through it. */
+enum {
+  SCR_JARM_NULL = 0,
+  SCR_JARM_NUM = 1,
+  SCR_JARM_BOOL = 2,
+  SCR_JARM_STR = 3,
+  SCR_JARM_OBJ = 4,
+  SCR_JARM_ARR = 5,
+  SCR_JARM_ABSENT = 6,
+  SCR_JARM_COUNT = 7,
+};
+#define SCR_JSCHEMA_NO_ARM SIZE_MAX
+/* How a union field slot stores its value (the compiler's choice for the
+ * union type): the reference payload itself (nullable unions), the tag
+ * and bits in the record (scalar unions), or a tagged box. */
+enum {
+  SCR_JUNION_NULLABLE = 0,
+  SCR_JUNION_INLINE = 1,
+  SCR_JUNION_BOXED = 2,
 };
 typedef struct ScrJsonSchema ScrJsonSchema;
 typedef struct {
@@ -30,14 +57,26 @@ typedef struct {
   size_t offset;
   const ScrJsonSchema *type;
 } ScrJsonSchemaField;
+typedef struct {
+  size_t repr;
+  size_t tags[SCR_JARM_COUNT];               /* canonical arm tag, or SCR_JSCHEMA_NO_ARM */
+  const ScrJsonSchema *arms[SCR_JARM_COUNT]; /* value arms (NUM..ARR) */
+  void *null_value;                          /* nullable, boxed: the null arm's value */
+  void *absent_value;                        /* nullable, boxed: the ABSENT field state */
+  /* boxed: a +1 box of the value arm `tag`; bits hold its double, its
+   * bool, or its +1 payload pointer (moved in). */
+  void *(*box)(uint32_t tag, uint64_t bits);
+} ScrJsonUnion;
 struct ScrJsonSchema {
   size_t kind;
   size_t nfields;
   const ScrJsonSchemaField *fields; /* records */
-  const ScrJsonSchema *elem;        /* arrays */
+  const ScrJsonSchema *elem;        /* arrays; records: the index value type */
   void *(*rec_new)(void);           /* records: zeroed instance, rc 1 */
   ScrArr *(*arr_new)(size_t);       /* arrays: empty array of the element kind */
   void (*release)(void *);          /* records and arrays */
+  const ScrJsonUnion *uni;          /* unions */
+  size_t ovf_offset;                /* records with an index signature */
 };
 
 /* One-pass parse straight into the native layout. Returns the +1 record

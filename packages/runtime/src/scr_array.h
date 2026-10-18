@@ -76,6 +76,7 @@ typedef struct ScrArr {
    * ref elements and the historic element kinds keep the lean 1-word
    * header. Kept beside `elem` so the RC fast paths test it with one load. */
   uint8_t cyc;
+  /* Storage flags private to scr_array.c (inline slots, head room). */
   uint16_t spare;
   /* A lower bound on the hole-free prefix: filled <= len, filled <= cap,
    * and every dense state below it is SCR_ARR_VALUE. Element reads below
@@ -209,8 +210,9 @@ void scr_arr_copy_metadata(ScrArr *a, struct ScrDyn *target);
 /* The array's out-of-line storage, allocated (zeroed) on first use. */
 ScrArrExt *scr_arr_ext(ScrArr *a);
 /* Moves inline dense slots (kept in the header block of a small array) to
- * their own allocation, so the storage pointers may be swapped with another
- * array's. No-op for other arrays. */
+ * their own allocation, and the elements of an array with head room (left
+ * by shift) to the start of theirs, so the storage pointers may be swapped
+ * with another array's. No-op for other arrays. */
 void scr_arr_outline(ScrArr *a);
 /* Swaps the sparse slots and numeric properties of two arrays; each keeps
  * its own match metadata (refresh of a cached typed view, llvm/dyn.ts). */
@@ -376,9 +378,10 @@ bool scr_arr_pop_bool(ScrArr *a);
 void *scr_arr_pop_ref(ScrArr *a);
 uint8_t scr_arr_pop_state(ScrArr *a, uint64_t *slot_out);
 
-/* shift: the first element out, tail sliding down. The emitter guards the
- * empty array (JS's undefined — the `elem | undefined` union), so empty
- * here is an internal error; _ref transfers ownership out like pop. */
+/* shift: the first element out; the rest stay in place behind head room
+ * (amortized O(1)). The emitter guards the empty array (JS's undefined —
+ * the `elem | undefined` union), so empty here is an internal error; _ref
+ * transfers ownership out like pop. */
 double scr_arr_shift_f64(ScrArr *a);
 bool scr_arr_shift_bool(ScrArr *a);
 void *scr_arr_shift_ref(ScrArr *a);
