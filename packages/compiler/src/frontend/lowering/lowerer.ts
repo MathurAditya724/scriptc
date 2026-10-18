@@ -1769,6 +1769,10 @@ export class Lowerer {
    * typeParamBindings — the checker has no `T` to substitute, so the
    * binding rides the node-type accessor instead of mapType. */
   implicitParamTypes: Map<ts.Symbol, ts.Type> | null = null;
+  /** Whether some net.Socket in this program may get an encoding: a
+   * setEncoding call whose receiver is a socket or an untyped value.
+   * Computed once on first use (null until then). */
+  socketEncodingReachable: boolean | null = null;
   /** IMPLICIT-ANY instances lowered EAGERLY at first demand (their return
    * types are inferred from the body — the call site needs them settled),
    * collected here for run()'s function list (the liftedFns discipline). */
