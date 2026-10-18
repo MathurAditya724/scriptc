@@ -398,6 +398,7 @@ import {
 } from "./shapes.js";
 import type { ExprOf, LibCallExpr, LlStreamTypedRefAdapter, LlValue } from "./expr-context.js";
 import { INLINE_LITERAL_BYTES, literalEqualityDefinition } from "./string-literal-equality.js";
+import { emitDowncastGuard, emitUnionNarrowGuard } from "./narrow-guards.js";
 
 export { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -10356,11 +10357,16 @@ export class LlEmitter {
     if (canStackUnion(e, this.boxedUnionsById)) return emitStackUnion(this, e).value;
     if (e.kind === "unionNarrow") {
       const union = this.emitUnionProjection(e.value);
+      emitUnionNarrowGuard(this, union.name, e.unionId, e.tag);
       return { name: this.unionPeek(union.name, e.unionId), type: e.type };
     }
     if ((e.kind === "downcast" || e.kind === "upcast") && e.value.type.kind === "object") {
-      // Prefix layouts: a class cast reads the operand's own pointer.
-      return { name: this.emitReadReceiver(e.value).name, type: e.type };
+      // Prefix layouts: a class cast reads the operand's own pointer; a
+      // downcast verifies its target class (narrow-guards.ts).
+      const receiver = this.emitReadReceiver(e.value);
+      if (e.kind === "downcast" && e.type.kind === "object")
+        emitDowncastGuard(this, receiver.name, e.value.type.className, e.type.className);
+      return { name: receiver.name, type: e.type };
     }
     // A nullable-pointer field has no box to borrow. Projections use
     // emitUnionProjection; other borrowers get an owned heap box.
