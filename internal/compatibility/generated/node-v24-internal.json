@@ -746,9 +746,9 @@
       "apiEntries": 117,
       "static": {
         "supported": 0,
-        "partial": 53,
+        "partial": 58,
         "refused": 0,
-        "not-implemented": 64,
+        "not-implemented": 59,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -90972,6 +90972,7 @@
           "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
@@ -93684,8 +93685,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.filePath",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93761,8 +93766,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.passed",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -93807,8 +93816,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.attempt",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -93830,8 +93843,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.tags",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -93853,8 +93870,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.workerId",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
