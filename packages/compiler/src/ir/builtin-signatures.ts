@@ -563,6 +563,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** os.constants: the per-thread null-prototype constants object (dlopen,
    * errno, signals, priority, UV_UDP_REUSEADDR). Never throws. */
   "os.constants": { argTypes: [], result: DYN },
+  /** The deprecated node:constants object (scr_os.c): the os groups and
+   * fs.constants merged with the borrowed baked crypto.constants table,
+   * frozen, one per thread. */
+  "constants.object": { argTypes: [DYN], result: DYN },
   /** umask(2): arg < 0 reads without setting (umask has no read-only form
    * — set 0, restore); otherwise sets and answers the PREVIOUS mask.
    * Never throws. */
@@ -861,6 +865,19 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "url.legacyResolve": { argTypes: [DYN, DYN, BOOL], result: STRING },
   "url.domainToASCII": { argTypes: [DYN, BOOL], result: STRING },
   "url.domainToUnicode": { argTypes: [DYN, BOOL], result: STRING },
+  /** node:punycode (scr_url.c): punycode.js 2.1.0's string conversions;
+   * decode/toUnicode (and, past 32-bit deltas, encode/toASCII) throw the
+   * module's RangeErrors, ucs2Encode String.fromCodePoint's. warn marks the
+   * module's first load (scr_async_dyn.c) and reports DEP0040 then unless
+   * the second argument is false: at once for a static ES import, on the
+   * next tick for a require() call. */
+  "punycode.decode": { argTypes: [STRING], result: STRING },
+  "punycode.encode": { argTypes: [STRING], result: STRING },
+  "punycode.toASCII": { argTypes: [STRING], result: STRING },
+  "punycode.toUnicode": { argTypes: [STRING], result: STRING },
+  "punycode.ucs2Decode": { argTypes: [STRING], result: arrayOf(F64) },
+  "punycode.ucs2Encode": { argTypes: [arrayOf(F64)], result: STRING },
+  "punycode.warn": { argTypes: [BOOL, BOOL], result: VOID },
   "url.fileURLToPathBuffer": { argTypes: [DYN, DYN], result: BYTES_U8 },
   "url.pathToFileURLChecked": { argTypes: [DYN, DYN], result: URL_T },
   "url.fileURLToPathStr": { argTypes: [STRING], result: STRING },
@@ -1436,11 +1453,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [STRING, F64, STRING, F64, STRING, F64, F64, F64],
     result: VOID,
   },
-  "test.suite": {
-    argTypes: [STRING, F64, STRING, { kind: "func", params: [], ret: VOID }, STRING, F64, F64],
-    result: VOID,
-  },
-  "test.hook": { argTypes: [F64, null, F64], result: VOID },
+  // The suite body takes no parameters or its SuiteContext (flag 2).
+  "test.suite": { argTypes: [STRING, F64, STRING, null, STRING, F64, F64], result: VOID },
+  // The trailing string is the hook call's "file:line:col".
+  "test.hook": { argTypes: [F64, null, F64, STRING], result: VOID },
   "test.sub": {
     argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64, F64],
     result: { kind: "promise", inner: VOID },
@@ -1454,6 +1470,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "test.ctxDiagnostic": { argTypes: [TESTCTX_T, STRING], result: VOID },
   "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
   "test.ctxFullName": { argTypes: [TESTCTX_T], result: STRING },
+  // t.passed, and t.workerId's Number(NODE_TEST_WORKER_ID) with 0 for
+  // undefined.
+  "test.ctxPassed": { argTypes: [TESTCTX_T], result: BOOL },
+  "test.workerId": { argTypes: [], result: F64 },
   // t.before/t.after/t.beforeEach/t.afterEach (which: 0 before, 1 after,
   // 2 beforeEach, 3 afterEach); a throwing t.before is captured on the test.
   "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
@@ -2584,6 +2604,25 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.hkdfCb": { argTypes: [STRING, BYTES_U8, BYTES_U8, BYTES_U8, F64, null], result: VOID },
   "crypto.scrypt": { argTypes: [BYTES_U8, BYTES_U8, F64, DYN], result: BYTES_U8 },
   "crypto.scryptCb": { argTypes: [BYTES_U8, BYTES_U8, F64, DYN, null], result: VOID },
+  /** util.promisify over the callback forms: the callback form's
+   * arguments without the callback → a promise the callback form settles,
+   * or rejected with an argument error; never throws. The result's value
+   * type is the declared one (a Buffer, the filled view, a number, or a
+   * checked-dynamic value); the validator checks it. */
+  "crypto.randomBytesPromise": { argTypes: [F64], result: VOID },
+  "crypto.pbkdf2Promise": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING], result: VOID },
+  "crypto.scryptPromise": { argTypes: [BYTES_U8, BYTES_U8, F64, DYN], result: VOID },
+  "crypto.hkdfPromise": { argTypes: [STRING, BYTES_U8, BYTES_U8, BYTES_U8, F64], result: VOID },
+  "crypto.randomFillPromise": { argTypes: [null, F64, F64, F64], result: VOID },
+  "crypto.randomFillPromiseDyn": { argTypes: [DYN, DYN, DYN, F64], result: VOID },
+  "crypto.randomIntPromise": { argTypes: [F64, F64, F64], result: VOID },
+  "crypto.generateKeyPromise": { argTypes: [DYN, DYN], result: VOID },
+  /** util.promisify(dns.lookup) and util.promisify(dns.lookupService):
+   * [hostname, options] and [address, port] → a promise of the
+   * checked-dynamic result object (the address array with options.all),
+   * or rejected with the error; never throws. */
+  "dns.lookupPromise": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+  "dns.lookupServicePromise": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   // The Buffer statics and the fs/zlib Buffer forms: fixed always-u8
   // signatures (Buffer IS a Uint8Array — one bytes kind).
   /** The Buffer statics with fixed (always-u8) signatures. fromStr is
@@ -2771,6 +2810,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * receivers are borrowed. */
   "zlib.streamNew": { argTypes: [F64, DYN], result: VOID },
   "zlib.streamBytesWritten": { argTypes: [null], result: F64 },
+  /** `stream instanceof zlib.Gzip`: the borrowed stream and the class's
+   * node_zlib_mode; true when the stream is a zlib stream of that mode. */
+  "zlib.streamIs": { argTypes: [null, F64], result: BOOL },
   "zlib.streamFlush": { argTypes: [null, DYN], result: VOID },
   "zlib.streamFlushCb": { argTypes: [null, DYN, null], result: VOID },
   "zlib.streamParams": { argTypes: [null, DYN, DYN], result: VOID },

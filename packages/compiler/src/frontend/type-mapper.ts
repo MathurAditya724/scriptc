@@ -996,6 +996,10 @@ export type TypeParamTsResolver = (t: ts.Type) => ts.Type | null;
  * one new field here, not a new parameter at every call site. */
 export interface TypeMapperCtx {
   checker: ts.TypeChecker;
+  /** JavaScript declarations whose instance or object-literal types only
+   * the checked-dynamic representation holds (js-dynamic-objects.ts).
+   * Absent when the program has none: every mapping is unchanged. */
+  jsDynamicDeclaration?: (decl: ts.Node) => boolean;
   /** Set while mapping a generic callable member's erased type
    * (erasedGenericMemberType): the signature's own type parameters
    * resolve to `unknown` instead of refusing the mapping. */
@@ -1368,6 +1372,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const intrinsic = type.getSymbol();
   if (intrinsic?.name === "globalThis" && checker.declarationsOf(intrinsic).length === 0)
     return DYN;
+  if (ctx.jsDynamicDeclaration !== undefined && intrinsic !== undefined) {
+    const objectLiteral = (intrinsic.flags & ts.SymbolFlags.ObjectLiteral) !== 0;
+    const classInstance =
+      (intrinsic.flags & ts.SymbolFlags.Class) !== 0 && type.isClassOrInterface();
+    if (
+      (objectLiteral || classInstance) &&
+      checker.declarationsOf(intrinsic).some((decl) => ctx.jsDynamicDeclaration!(decl))
+    )
+      return DYN;
+  }
   {
     const moduleId = ctx.moduleNamespaceId?.(type) ?? null;
     if (moduleId !== null) return { kind: "moduleNs", moduleId };
@@ -1687,16 +1701,38 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Declaration-only package types have no compiled implementation.
   // Primitive and container types retain their structural mappings; types
   // owned by the standard library or explicit host mappings are handled
-  // by their dedicated native rules.
-  const npmSym = widened.getAliasSymbol() ?? widened.getSymbol();
-  const npmDecls = npmSym ? checker.declarationsOf(npmSym) : undefined;
+  // by their dedicated native rules. Pure type shapes — interfaces, type
+  // aliases, and object or mapped type literals with no value declaration
+  // merged in — describe data, not an implementation: a program value of
+  // such a type is one the program built itself (`import type` from a
+  // types-only package), so it maps structurally like a local declaration.
+  // Values the package itself would produce stay refused at their import.
+  const packageOnly = (sym: ts.Symbol | undefined): readonly ts.Node[] | null => {
+    const decls = sym ? checker.declarationsOf(sym) : undefined;
+    return decls &&
+      decls.length > 0 &&
+      decls.every((d) => {
+        const sf = d.getSourceFile();
+        return sf.isDeclarationFile && !ctx.isStdlibFile(sf) && !ctx.isExternalTypeFile(sf);
+      })
+      ? decls
+      : null;
+  };
+  const pureTypeShape = (decls: readonly ts.Node[] | null): boolean =>
+    decls === null ||
+    decls.every(
+      (d) =>
+        packageTypeFile(d.getSourceFile(), ctx) &&
+        (ts.isInterfaceDeclaration(d) ||
+          ts.isTypeAliasDeclaration(d) ||
+          ts.isTypeLiteralNode(d) ||
+          ts.isMappedTypeNode(d)),
+    );
+  const aliasDecls = packageOnly(widened.getAliasSymbol());
+  const ownDecls = packageOnly(widened.getSymbol());
   if (
-    npmDecls &&
-    npmDecls.length > 0 &&
-    npmDecls.every((d) => {
-      const sf = d.getSourceFile();
-      return sf.isDeclarationFile && !ctx.isStdlibFile(sf) && !ctx.isExternalTypeFile(sf);
-    })
+    (aliasDecls !== null || (widened.getAliasSymbol() === undefined && ownDecls !== null)) &&
+    !(pureTypeShape(aliasDecls) && pureTypeShape(ownDecls))
   ) {
     return null;
   }
@@ -2952,11 +2988,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     return { kind: "dgramSocket" };
   }
   // node:test's TestContext — the test-body parameter (`test('x', (t) =>
-  // ...)`). @types/node's `class TestContext` and the fallback
-  // declarations' interface both live inside `declare module "node:test"`
-  // (isDeclaredInAmbientModule answers for both spellings).
+  // ...)`) — and SuiteContext, the describe-body and suite-hook parameter:
+  // both are the runner's node for the test or suite. @types/node's
+  // classes and the fallback declarations' interfaces all live inside
+  // `declare module "node:test"` (isDeclaredInAmbientModule answers for
+  // both spellings).
   if (
-    psym?.name === "TestContext" &&
+    (psym?.name === "TestContext" || psym?.name === "SuiteContext") &&
     checker
       .declarationsOf(psym)
       .some(
@@ -3560,12 +3598,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ),
     };
   }
-  // The promisified exec/execFile result `{ stdout: string; stderr: string }`:
-  // an anonymous type literal (@types/node's __promisify__ overloads in
-  // child_process, the shipped fallback's promisify overloads in util),
-  // so it maps by provenance and exact shape, interned as the
-  // %execFileAsync/%execAsync helpers build it. Node builds the object as
-  // { stdout, stderr }. The Buffer-typed literals do not match and stay
+  // The promisified exec/execFile result `{ stdout: string; stderr: string }`
+  // and the promisified dns.lookupService result `{ hostname: string;
+  // service: string }`: anonymous type literals (@types/node's
+  // __promisify__ overloads in child_process and dns, the shipped
+  // fallback's promisify overloads in util), so they map by provenance and
+  // exact shape. The exec result is interned as the %execFileAsync/
+  // %execAsync helpers build it; Node builds { stdout, stderr } and
+  // { hostname, service }. The Buffer-typed literals do not match and stay
   // unmapped.
   if (
     psym &&
@@ -3575,21 +3615,38 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         (d) =>
           ts.isTypeLiteralNode(d) &&
           ctx.isStdlibFile(d.getSourceFile()) &&
-          (isDeclaredInAmbientModule(d, "child_process") || isDeclaredInAmbientModule(d, "util")),
+          (isDeclaredInAmbientModule(d, "child_process") ||
+            isDeclaredInAmbientModule(d, "util") ||
+            isDeclaredInAmbientModule(d, "dns")),
       )
   ) {
     const props = checker.getPropertiesOfType(widened);
-    if (
+    const names =
       props.length === 2 &&
       props.every(
         (p) =>
-          (p.name === "stdout" || p.name === "stderr") &&
           (p.flags & ts.SymbolFlags.Optional) === 0 &&
           (checker.getTypeOfSymbol(p).flags & ts.TypeFlags.String) !== 0,
-      ) &&
-      props[0]!.name !== props[1]!.name
-    ) {
-      return { kind: "record", shapeId: execResultShape(ctx.shapes) };
+      )
+        ? props
+            .map((p) => p.name)
+            .sort()
+            .join(",")
+        : "";
+    if (names === "stderr,stdout") return { kind: "record", shapeId: execResultShape(ctx.shapes) };
+    if (names === "hostname,service") {
+      return {
+        kind: "record",
+        shapeId: ctx.shapes.intern(
+          [
+            { name: "hostname", type: STRING },
+            { name: "service", type: STRING },
+          ],
+          false,
+          undefined,
+          ["hostname", "service"],
+        ),
+      };
     }
   }
   // crypto.X509Certificate — the Dirent-style data record: THREE visible
@@ -5386,6 +5443,17 @@ function isMappedShape(t: ts.Type): boolean {
   );
 }
 
+/** A declaration file an installed package ships (its own or an @types
+ * twin), outside the standard library and @types/node: the type surface
+ * of a package the program does not compile. Its pure type shapes —
+ * interfaces, aliases, type literals — describe data a program can build
+ * itself (`import type` from a types-only package such as type-fest). */
+function packageTypeFile(sf: ts.SourceFile, ctx: Pick<TypeMapperCtx, "isStdlibFile">): boolean {
+  return (
+    sf.isDeclarationFile && /[\\/]node_modules[\\/]/.test(sf.fileName) && !ctx.isStdlibFile(sf)
+  );
+}
+
 /** The record path's provenance fence. Declared shapes (object literals,
  * interfaces, type literals) must come from user code or an explicitly
  * mapped external type surface, never an arbitrary .d.ts — the empty
@@ -5424,13 +5492,14 @@ function recordProvenanceOk(t: ts.Type, ctx: TypeMapperCtx): boolean {
           .every(
             (decl) =>
               !decl.getSourceFile().isDeclarationFile ||
-              ctx.isExternalTypeFile(decl.getSourceFile()),
+              ctx.isExternalTypeFile(decl.getSourceFile()) ||
+              packageTypeFile(decl.getSourceFile(), ctx),
           ),
       );
   }
   return !decls.some((d) => {
     const sf = d.getSourceFile();
-    return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf);
+    return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf) && !packageTypeFile(sf, ctx);
   });
 }
 
@@ -5887,7 +5956,7 @@ function mapRecordTypeInner(
         computed &&
         checker.declarationsOf(p).some((d) => {
           const sf = d.getSourceFile();
-          return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf);
+          return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf) && !packageTypeFile(sf, ctx);
         })
       ) {
         return null;
@@ -6214,7 +6283,7 @@ export function describeRecordMemberBlocker(widened: ts.Type, ctx: TypeMapperCtx
       computed &&
       checker.declarationsOf(p).some((d) => {
         const sf = d.getSourceFile();
-        return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf);
+        return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf) && !packageTypeFile(sf, ctx);
       })
     ) {
       return null;

@@ -59,7 +59,20 @@ import {
 import { DYN_CLASS_PROPERTIES } from "./ir.js";
 import { unionWideningTags } from "./analysis.js";
 import { alwaysReturns } from "./control-flow.js";
+import { dynamicOperationOf, functionTier } from "./tiers.js";
 import { LIB_FN_SIGS } from "./builtin-signatures.js";
+
+/** The promisified crypto calls' value kinds besides checked-dynamic. */
+const CRYPTO_PROMISE_VALUES: Readonly<Record<string, "buffer" | "view" | "number" | "dyn">> = {
+  "crypto.randomBytesPromise": "buffer",
+  "crypto.pbkdf2Promise": "buffer",
+  "crypto.scryptPromise": "buffer",
+  "crypto.hkdfPromise": "dyn",
+  "crypto.randomFillPromise": "view",
+  "crypto.randomFillPromiseDyn": "dyn",
+  "crypto.randomIntPromise": "number",
+  "crypto.generateKeyPromise": "dyn",
+};
 import { REGEX_INTRINSIC_SIGS, STR_INTRINSIC_SIGS } from "./intrinsic-signatures.js";
 
 /** True for an object type naming a runtime-provided error class. */
@@ -1007,6 +1020,14 @@ function validateFunction(
   const locals = new Map(fn.locals.map((l) => [l.id, l]));
   const err = (message: string, loc: SrcLoc) =>
     errors.push({ message: `in ${fn.name}: ${message}`, loc });
+  // Invariant I1 (ir/tiers.ts): a static function reaches dynamic values
+  // only through boundary operations and moves.
+  const staticTier = functionTier(fn) === "static";
+  const checkTier = (e: IrExpr): void => {
+    const operation = dynamicOperationOf(e);
+    if (operation !== null)
+      err(`static-tier function performs the dynamic operation ${operation}`, e.loc);
+  };
 
   const asyncCaches = [
     ["asyncCacheGlobal", fn.asyncCacheGlobal],
@@ -1251,6 +1272,8 @@ function validateFunction(
         continue;
       }
       if (e.kind === "logical") {
+        // checkExpr already checked the root's tier.
+        if (staticTier && e !== root) checkTier(e);
         if (
           e.type.kind !== "f64" &&
           e.type.kind !== "string" &&
@@ -1294,6 +1317,7 @@ function validateFunction(
   }
 
   function checkExpr(e: IrExpr): void {
+    if (staticTier) checkTier(e);
     switch (e.kind) {
       case "numLit":
       case "strLit":
@@ -4097,6 +4121,19 @@ function validateFunction(
   }
 
   function checkLibValueCall(e: IrExpr & { kind: "libCall" }): boolean {
+    const cryptoPromise = CRYPTO_PROMISE_VALUES[e.fn];
+    if (cryptoPromise) {
+      const inner = e.type.kind === "promise" ? e.type.inner : undefined;
+      const view = e.fn === "crypto.randomFillPromise" ? e.args[0]?.type : undefined;
+      const ok =
+        inner !== undefined &&
+        (inner.kind === "dyn" ||
+          (cryptoPromise === "buffer" && inner.kind === "bytes" && inner.elem === "u8") ||
+          (cryptoPromise === "view" && view !== undefined && typeEquals(inner, view)) ||
+          (cryptoPromise === "number" && inner.kind === "f64"));
+      if (!ok) err(`libCall ${e.fn} must be a promise of its ${cryptoPromise} value`, e.loc);
+      return true;
+    }
     if (e.fn === "events.once") {
       const [recv, , boxer, errorBoxer] = e.args;
       const arrayT = e.type.kind === "promise" ? e.type.inner : null;
