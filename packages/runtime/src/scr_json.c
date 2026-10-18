@@ -3126,6 +3126,8 @@ bool scr_dyn_typed_array_is(const ScrDyn *d, int elem) {
   return d && d->kind == SCR_DYN_BYTES && !d->v.bytes->is_data_view && d->v.bytes->elem == (ScrBytesElem)elem;
 }
 
+static bool scr_native_iterator_over(const ScrDyn *value, unsigned kind);
+
 /* Node util.types reads internal brands, never user properties or prototypes. */
 bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (!value) return false;
@@ -3156,6 +3158,18 @@ bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (PROBE("isAsyncFunction")) return value->kind == SCR_DYN_FUNC && (scr_closure_identity(value->v.fn.clo)->function_kind & 2) != 0;
   if (PROBE("isGeneratorFunction")) return value->kind == SCR_DYN_FUNC && (scr_closure_identity(value->v.fn.clo)->function_kind & 1) != 0;
   if (PROBE("isGeneratorObject")) return scr_dyn_generator(value);
+  if (PROBE("isDate")) return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_DATE;
+  if (PROBE("isMapIterator")) return scr_native_iterator_over(value, 2);
+  if (PROBE("isSetIterator")) return scr_native_iterator_over(value, 3);
+  if (PROBE("isKeyObject")) return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_KEY_OBJECT;
+  /* Boxed primitives, BigInt64Array, BigUint64Array, Float16Array, CryptoKey
+   * and external values cannot be created here, so no value has these
+   * brands. */
+  if (PROBE("isNumberObject") || PROBE("isStringObject") || PROBE("isBooleanObject") ||
+      PROBE("isBigIntObject") || PROBE("isSymbolObject") || PROBE("isBoxedPrimitive") ||
+      PROBE("isBigInt64Array") || PROBE("isBigUint64Array") || PROBE("isFloat16Array") ||
+      PROBE("isCryptoKey") || PROBE("isExternal"))
+    return false;
   if (PROBE("isNativeError")) {
     ScrError *error = scr_errdyn_err_of(value);
     if (!error) return false;
@@ -3871,7 +3885,7 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag) {
   d->v.handle.ptr = scr_dyn_handle_ops(tag)->retain(h);
   d->v.handle.tag = tag;
   d->v.handle.traced = tag == SCR_DYNH_WEAK_MAP || tag == SCR_DYNH_WEAK_SET ||
-      tag == SCR_DYNH_WORKER || tag == SCR_DYNH_MESSAGE_PORT ||
+      tag == SCR_DYNH_WORKER || tag == SCR_DYNH_MESSAGE_PORT || tag == SCR_DYNH_DISPOSABLE_STACK ||
       ((tag == SCR_DYNH_SET || tag == SCR_DYNH_MAP) &&
        ((ScrMap *)h)->traced != 0);
   return d;
@@ -4324,6 +4338,13 @@ typedef struct {
 } ScrNativeIterator;
 
 static ScrDyn *scr_iterator_read(const ScrDyn *value, const char *key, size_t len);
+
+/* A Map (kind 2) or Set (kind 3) iterator: util.types.isMapIterator and
+ * isSetIterator. */
+static bool scr_native_iterator_over(const ScrDyn *value, unsigned kind) {
+  return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_ITERATOR &&
+         ((const ScrNativeIterator *)value->v.handle.ptr)->kind == kind;
+}
 
 static SCR_TL ScrDyn *scr_iterator_functions[11];
 static SCR_TL bool scr_iterator_functions_registered;
@@ -4878,6 +4899,11 @@ ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool opti
   }
   bool builtin = scr_iterator_symbol && key->v.symbol.value == scr_iterator_symbol->v.symbol.value && scr_builtin_iterable(value);
   if (builtin && value->kind != SCR_DYN_ARR) return scr_builtin_iterator_method(value);
+  if (value->kind == SCR_DYN_HANDLE) {
+    const ScrDynHandleOps *ops = scr_dyn_handle_ops(value->v.handle.tag);
+    ScrDyn *member = ops->symbol_get ? ops->symbol_get(value->v.handle.ptr, key) : NULL;
+    if (member || scr_exc_pending()) return member;
+  }
   ScrDyn *receiver = scr_dyn_symbol_receiver(value);
   if (!receiver) return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
   ScrDynEntry *entry = scr_dyn_symbol_entry(receiver, key, false);
@@ -5401,7 +5427,7 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
         d->v.handle.tag == SCR_DYNH_WEAK_MAP || d->v.handle.tag == SCR_DYNH_WEAK_SET ||
         d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP || d->v.handle.tag == SCR_DYNH_REGEXP ||
         d->v.handle.tag == SCR_DYNH_DATE || d->v.handle.tag == SCR_DYNH_BLOB ||
-        d->v.handle.tag == SCR_DYNH_FILE) {
+        d->v.handle.tag == SCR_DYNH_FILE || d->v.handle.tag == SCR_DYNH_DISPOSABLE_STACK) {
       ScrJsonBuf b;
       scr_jb_init(&b);
       scr_jb_puts(&b, "[object ");
@@ -5558,8 +5584,8 @@ static bool scr_dyn_json_write(ScrJsonBuf *b, const ScrDyn *d) {
   }
 }
 
-/* util.format's %j argument (+1): the stringify text, "undefined" for a
- * root the stringify drops, or NULL with a pending exception (a handle
+/* The JSON text of a dyn value (+1): the stringify text, "undefined" for
+ * a root the stringify drops, or NULL with a pending exception (a handle
  * inside the tree). */
 ScrStr *scr_dyn_format_j(const ScrDyn *d) {
   ScrJsonBuf b;
@@ -5986,7 +6012,8 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     if ((d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
          d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_EVENT_TARGET ||
         d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP ||
-        d->v.handle.tag == SCR_DYNH_BLOB || d->v.handle.tag == SCR_DYNH_FILE) {
+        d->v.handle.tag == SCR_DYNH_BLOB || d->v.handle.tag == SCR_DYNH_FILE ||
+        d->v.handle.tag == SCR_DYNH_DISPOSABLE_STACK) {
       ScrJsonBuf b;
       scr_jb_init(&b);
       scr_jb_puts(&b, "[object ");
@@ -9196,6 +9223,52 @@ ScrDyn *scr_json_stringify_value(const ScrDyn *value, const ScrDyn *replacer, co
   ScrDyn *result = scr_json_stringify_replacer(value, replacer->kind == SCR_DYN_FUNC || list ? replacer : scr_dyn_undefined(), gap);
   scr_str_release(gap);
   return result;
+}
+
+/* util.format's %j over a pending stringify exception (Node's
+ * tryStringify): a TypeError whose first message line is "Converting
+ * circular structure to JSON" is cleared and the result is the text
+ * "[Circular]" (+1). Any other exception is put back and the result is
+ * NULL. */
+static ScrStr *scr_json_circular_or_rethrow(void) {
+  ScrCaught *caught = scr_exc_take();
+  ScrDyn *thrown = scr_caught_to_dyn(caught);
+  ScrError *error = scr_errdyn_err_of(thrown);
+  scr_dyn_release(thrown);
+  static const char circular[] = "Converting circular structure to JSON";
+  bool is_circular = false;
+  if (error && error->name && error->message) {
+    const ScrStr *message = error->message;
+    const char *newline = memchr(message->data, '\n', message->len);
+    size_t first_line = newline ? (size_t)(newline - message->data) : message->len;
+    is_circular = error->name->len == 9 && memcmp(error->name->data, "TypeError", 9) == 0 &&
+        first_line == sizeof circular - 1 && memcmp(message->data, circular, first_line) == 0;
+  }
+  scr_error_release(error);
+  if (!is_circular) scr_rethrow(caught);
+  scr_caught_release(caught);
+  return is_circular ? scr_str_new("[Circular]", 10) : NULL;
+}
+
+/* util.format's %j over a dynamic value (+1): JSON.stringify(d), the text
+ * "undefined" when the stringify returns undefined, and "[Circular]" for a
+ * circular structure. NULL with any other exception pending. */
+ScrStr *scr_util_format_j(const ScrDyn *d) {
+  ScrStr *gap = scr_str_new("", 0);
+  ScrDyn *result = scr_json_stringify_replacer(d, scr_dyn_undefined(), gap);
+  scr_str_release(gap);
+  if (!result) return scr_exc_pending() ? scr_json_circular_or_rethrow() : NULL;
+  ScrStr *text = result->kind == SCR_DYN_STR ? scr_str_retain(result->v.str) : scr_str_new("undefined", 9);
+  scr_dyn_release(result);
+  return text;
+}
+
+/* util.format's %j over a typed value whose serializer can throw (+1): the
+ * serialized text when no exception is pending, "[Circular]" for a circular
+ * structure, NULL with any other exception pending. Borrows text. */
+ScrStr *scr_util_format_j_text(ScrStr *text) {
+  if (!scr_exc_pending()) return scr_str_retain(text);
+  return scr_json_circular_or_rethrow();
 }
 
 /* Untyped RC adapters (box/promise/exception-cell currency). */

@@ -8955,6 +8955,12 @@ export class LlEmitter {
         // own turn is the await (nothing runs in between).
         const genSettles =
           this.currentAsyncGenerator && (s.awaited === true || this.finallyStack.length > 0);
+        // A completion turn that awaits x replaces a return() request's
+        // already-taken await.
+        if (this.currentAsyncGenerator && !genSettles) {
+          this.declare(`declare void @scr_async_gen_return_awaits()`);
+          B.line(`call void @scr_async_gen_return_awaits()`);
+        }
         if (this.currentAsyncGenerator && s.awaited !== true && this.finallyStack.length > 0) {
           if (this.wasi) this.emitWasiSuspend(null);
           else {

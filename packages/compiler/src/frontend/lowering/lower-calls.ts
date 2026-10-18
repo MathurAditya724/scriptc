@@ -107,6 +107,7 @@ import {
 } from "./builtins/module-resolution.js";
 import { lowerCipherMethodCall, lowerCryptoHashMethodCall } from "./builtins/crypto.js";
 import { lowerErrorIsErrorCall } from "./builtins/errors.js";
+import { lowerDisposableStackUseCall } from "./builtins/disposable-stack.js";
 import {
   lowerDirentMethodCall,
   lowerFileHandleMethodCall,
@@ -1380,6 +1381,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.fenceStaticResponseMember(expr.expression, "call") ??
       lowerer.fenceStaticHeadersMember(expr.expression, "call") ??
       lowerer.fenceStaticReadableStreamMember(expr.expression, "call") ??
+      lowerDisposableStackUseCall(lowerer, expr, expr.expression) ??
       lowerer.lowerStdlibMethodCall(expr, expr.expression) ??
       // Dyn receivers (JSON.parse-derived `unknown`/`any` values) —
 
