@@ -159,6 +159,8 @@ ScrBytes *scr_bytes_new(ScrBytesElem elem, double n); /* +1 */
 /* Shared u8 view over exactly the source view's raw bytes. Borrows; +1. */
 ScrBytes *scr_bytes_raw_view(ScrBytes *bytes);
 ScrBytes *scr_bytes_as_buffer(ScrBytes *bytes); /* borrows; +1, Buffer factory only */
+/* Buffer.isBuffer over a typed view: the view's Buffer brand. Borrows. */
+bool scr_bytes_is_buffer(const ScrBytes *bytes);
 /* Views retain the root allocation; offsets are relative to its complete
  * byte storage, including when src is itself a subarray. */
 ScrBytes *scr_bytes_buffer_view(ScrBytes *src, ScrBytesElem elem,

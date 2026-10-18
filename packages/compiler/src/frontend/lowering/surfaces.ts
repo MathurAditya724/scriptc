@@ -22,7 +22,7 @@ import {
   VOID,
   arrayOf,
 } from "../../ir/ir.js";
-import { isNodeTypesPath, requireSpecOf } from "../program.js";
+import { isJsSourceFile, isNodeTypesPath, requireSpecOf } from "../program.js";
 import { ZLIB_CONSTANTS } from "./zlib-constants.js";
 
 /** zlib stream instances: runtime Transform streams (scr_zlib_stream.c). */
@@ -3243,7 +3243,21 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     // `Buffer` resolves to a user-file declaration and still misses.
     const resolved =
       symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
-    if (!lowerer.isStdlibSymbol(resolved)) return null;
+    if (!lowerer.isStdlibSymbol(resolved)) {
+      // A CommonJS binding of the buffer module's Buffer (`var Buffer =
+      // require('buffer').Buffer`, `const { Buffer } = require('buffer')`
+      // — safe-buffer and compression): the module member IS the global
+      // constructor.
+      if (
+        decl !== undefined &&
+        (ts.isVariableDeclaration(decl) || ts.isBindingElement(decl)) &&
+        isJsSourceFile(decl.getSourceFile())
+      ) {
+        const imported = lowerer.builtinImportOf(expr);
+        if (imported?.module === "buffer" && imported.member === "Buffer") return "Buffer";
+      }
+      return null;
+    }
     return resolved.name === "global" ? "globalThis" : resolved.name;
   }
   if (ts.isPropertyAccessExpression(expr) && !expr.questionDotToken) {
@@ -3318,7 +3332,9 @@ export function stdlibGlobalAliasNameOf(
   const name =
     requireSpec === "process" || requireSpec === "node:process"
       ? "process"
-      : stdlibGlobalNameOf(lowerer, aliasExpr);
+      : bufferNamespaceMember(lowerer, aliasExpr)
+        ? "Buffer"
+        : stdlibGlobalNameOf(lowerer, aliasExpr);
   if (name === null) return null;
   // These globals have provenance-aware call or member lowering, so a
   // stable snapshot keeps the same dispatch as the original global.
@@ -3337,6 +3353,14 @@ export function stdlibGlobalAliasNameOf(
   ].includes(name)
     ? name
     : null;
+}
+
+/** `buffer.Buffer` through a buffer-module namespace binding (`var buffer
+ * = require('buffer')`): the module's Buffer IS the global constructor. */
+export function bufferNamespaceMember(lowerer: Lowerer, expr: ts.Expression): boolean {
+  if (!ts.isPropertyAccessExpression(expr) || expr.name.text !== "Buffer") return false;
+  const member = lowerer.builtinMemberOf(expr);
+  return member?.module === "buffer" && member.member === "Buffer";
 }
 
 export function stdlibGlobalAliasDecl(

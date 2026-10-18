@@ -20,6 +20,7 @@ import {
   arrayOf,
   bytesOf,
   funcOf,
+  isUnitType,
   typeEquals,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
@@ -1408,7 +1409,14 @@ function lowerBufferStaticValue(
           }
           return { kind: "libCall", fn, args: [s, enc], type: BYTES_U8, loc };
         }
-        if (args.length === 1 && srcIr?.kind === "bytes" && srcIr.elem === "u8") {
+        // A checker type with no mapping (pako's conditional `O extends
+        // { toText: true } ? string : Uint8Array` result) whose lowered
+        // value is a u8 view copies like the typed form.
+        if (
+          args.length === 1 &&
+          ((srcIr?.kind === "bytes" && srcIr.elem === "u8") ||
+            (srcIr === null && value.type.kind === "bytes" && value.type.elem === "u8"))
+        ) {
           return {
             kind: "libCall",
             fn: "buffer.poolFromBytes",
@@ -1422,6 +1430,34 @@ function lowerBufferStaticValue(
             kind: "libCall",
             fn: "buffer.poolFromArray",
             args: [value],
+            type: BYTES_U8,
+            loc,
+          };
+        }
+        // A union of strings, u8 views and undefined/null (a JS-inferred
+        // npm result such as pako's deflate): the checked form dispatches
+        // on the runtime kind exactly as for an untyped JS value, Node's
+        // TypeError for the unit arms included.
+        if (
+          args.length === 1 &&
+          value.type.kind === "union" &&
+          lowerer.dynConvertible(value.type) &&
+          lowerer.unions
+            .get(value.type.unionId)
+            ?.arms.every(
+              (arm) =>
+                arm.kind === "string" ||
+                (arm.kind === "bytes" && arm.elem === "u8") ||
+                isUnitType(arm),
+            ) === true
+        ) {
+          return {
+            kind: "libCall",
+            fn: "buffer.poolFromDyn",
+            args: [
+              lowerer.coerceToExpected(value, DYN),
+              { kind: "strLit", value: "utf8", type: STRING, loc },
+            ],
             type: BYTES_U8,
             loc,
           };
@@ -1625,6 +1661,12 @@ function lowerBufferStaticValue(
             loc,
           };
         }
+      }
+      // A typed view of unknown provenance (a Uint8Array parameter,
+      // safe-buffer's Buffer.from result): Buffer is a brand of the view,
+      // which the runtime keeps, so the test reads it.
+      if (v.type.kind === "bytes") {
+        return { kind: "libCall", fn: "buffer.isBranded", args: [v], type: BOOL, loc };
       }
       lowerer.noLowering(
         `Buffer.isBuffer of '${lowerer.fmt(v.type)}' values`,

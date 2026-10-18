@@ -406,6 +406,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.fromStr": "scr_bytes_from_str",
   "buffer.fromStrChecked": "scr_bytes_from_str_checked",
   "buffer.brand": "scr_bytes_as_buffer",
+  "buffer.isBranded": "scr_bytes_is_buffer",
   "buffer.fromDyn": "scr_buffer_from_dyn",
   "buffer.concat": "scr_buffer_concat",
   "buffer.concatLen": "scr_buffer_concat_len",

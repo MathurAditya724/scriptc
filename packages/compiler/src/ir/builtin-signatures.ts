@@ -2634,6 +2634,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "buffer.fromStr": { argTypes: [STRING, STRING], result: BYTES_U8 },
   "buffer.fromStrChecked": { argTypes: [STRING, STRING], result: BYTES_U8 },
   "buffer.brand": { argTypes: [BYTES_U8], result: BYTES_U8 },
+  /** Buffer.isBuffer over a typed view: whether the view carries the
+   * Buffer brand (any element kind; only Buffers do). Never throws. */
+  "buffer.isBranded": { argTypes: [null], result: BOOL },
   /** Buffer.from on checked-native strings, bytes, arrays and data-only
    * array-like/Buffer-JSON objects. The encoding is a normalized literal;
    * non-string inputs ignore it. Copies the input and may throw during
