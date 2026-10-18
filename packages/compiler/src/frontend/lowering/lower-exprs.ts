@@ -1722,6 +1722,18 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         const promiseArm = def.arms[promiseTag]!;
         const inner = promiseArm.kind === "promise" ? promiseArm.inner : VOID;
         const units = def.arms.filter(isUnitType);
+        // A checked-dynamic inner: the whole operand is a dyn value (the
+        // promise boxes by reference, the unit as itself), and the dyn
+        // await adopts the promise or hops once for the unit.
+        if (inner.kind === "dyn" && lowerer.dynConvertible(value.type)) {
+          return {
+            kind: "libCall",
+            fn: "async.awaitDyn",
+            args: [lowerer.coerceToExpected(value, DYN)],
+            type: DYN,
+            loc,
+          };
+        }
         if (inner.kind === "union" || inner.kind === "dyn") {
           // A union inner would need an arm-wise re-tag into the result
 
