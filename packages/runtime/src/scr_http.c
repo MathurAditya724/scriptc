@@ -3763,6 +3763,8 @@ struct ScrHttpClientReq {
                             * fired in place of the teardown's own error */
   ScrDyn *abort_dispose;      /* options.signal: removes the abort listener (+1) */
   double timeout_ms;          /* the timeout option (0 = none), reapplied on a pooled socket */
+  size_t max_header_size;     /* the maxHeaderSize option (0 = the default), applied to
+                               * whichever parser serves the request */
   bool reused;                /* req.reusedSocket: the socket came from an agent's free list */
   bool sock_pooled;           /* the socket went back to the agent after the response */
   ScrStr *pool_key;           /* https: TLS options a pooled socket must match (+1), or NULL */
@@ -4345,7 +4347,8 @@ void scr_http_client_max_header_size(ScrHttpClientReq *c, double value) {
     scr_http_client_destroy(c);
     return;
   }
-  if (c->conn != NULL) c->conn->max_header_size = (size_t)value;
+  c->max_header_size = (size_t)value;
+  if (c->conn != NULL) c->conn->max_header_size = c->max_header_size;
 }
 
 /* req.destroy(err): tears the request down like destroy() and reports
@@ -5284,6 +5287,8 @@ static void scr_http_client_rebind(ScrHttpClientReq *c, ScrHttpAgentFree *f, boo
   c->conn = conn;
   conn->client = scr_http_client_retain(c);
   conn->pool_agent = NULL;
+  /* the pooled parser still holds the previous request's limit */
+  conn->max_header_size = c->max_header_size;
   conn->state = SCR_HTTP_HEAD;
   conn->len = 0;
   conn->body_remaining = 0;
