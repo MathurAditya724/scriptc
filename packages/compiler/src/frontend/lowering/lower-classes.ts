@@ -6385,7 +6385,7 @@ export function collectInheritedJsFieldWrites(
  * hierarchy identifies the original declarations through aliases as well. */
 export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.SourceFile[]): void {
   const families: [ts.MethodDeclaration, ts.MethodDeclaration][] = [];
-  collectClassMethodMutations(lowerer, files);
+  lowerer.speculativeTypeQueries(() => collectClassMethodMutations(lowerer, files));
   const visit = (node: ts.Node): void => {
     if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
       const accessors = node.members.filter(

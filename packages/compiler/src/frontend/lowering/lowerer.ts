@@ -2825,7 +2825,8 @@ export class Lowerer {
             return null;
         }
         const className = this.classNamer(decl);
-        if (!this.collectingExprClasses.has(decl)) this.lowerClassExpressionInfo(decl);
+        if (!this.collectingExprClasses.has(decl) && !this.collectLocalClassForType(decl))
+          return null;
         return { kind: "object", className };
       },
       mixinIntersectionInstance: (widened) => mixinIntersectionInstanceType(this, widened),
@@ -6084,9 +6085,11 @@ export class Lowerer {
       for (const fp of parts) this.checker.prefetchSourceFile(fp.sf);
     }
     this.collectProgram(parts);
-    this.analyzeRuntimeOptionalArrayReads(parts);
-    this.analyzeDateJsonResults(parts);
-    this.analyzeGuardedRecordReadGlobals(parts);
+    this.speculativeTypeQueries(() => {
+      this.analyzeRuntimeOptionalArrayReads(parts);
+      this.analyzeDateJsonResults(parts);
+      this.analyzeGuardedRecordReadGlobals(parts);
+    });
     // Decorated classes analyze AFTER the whole collection pass: a
     // decorator's return type may name a subclass declared below the
     // class, and reference lowering needs each class's rebindability
@@ -6470,9 +6473,11 @@ export class Lowerer {
       collectionEdges.add(name);
     };
     this.collectProgram(parts);
-    this.analyzeRuntimeOptionalArrayReads(parts);
-    this.analyzeDateJsonResults(parts);
-    this.analyzeGuardedRecordReadGlobals(parts);
+    this.speculativeTypeQueries(() => {
+      this.analyzeRuntimeOptionalArrayReads(parts);
+      this.analyzeDateJsonResults(parts);
+      this.analyzeGuardedRecordReadGlobals(parts);
+    });
     // Decorated classes analyze post-collection here too: the %init seeds
     // lower the decoration calls, whose edges (decorator bodies, construct
     // thunks) reachable emit must see.
@@ -9613,6 +9618,49 @@ export class Lowerer {
 
   lowerClassExpressionInfo(expr: ts.ClassLikeDeclaration): ClassInfo {
     return lowerClassExpressionInfo(this, expr);
+  }
+
+  /** Depth of the whole-program analyses that query types across every
+   * file before reachability is known (speculativeTypeQueries). */
+  private speculativeTypeQueryDepth = 0;
+
+  /** Runs a whole-program analysis whose type queries are speculative: they
+   * visit every file, reached or not, and no statement or declaration owns
+   * a refusal they trigger (collectLocalClassForType). */
+  speculativeTypeQueries(analysis: () => void): void {
+    this.speculativeTypeQueryDepth++;
+    try {
+      analysis();
+    } finally {
+      this.speculativeTypeQueryDepth--;
+    }
+  }
+
+  /** Collects a function-local class because a type query named its
+   * instance type. Collection and body lowering own a refusal of that
+   * class: the poison reaches the declaration or statement that asked, as
+   * before. A speculative whole-program analysis owns none, so there the
+   * class is unmappable for the query and its diagnostics are dropped;
+   * lowering the class's own declaration collects it again and reports
+   * them if the program reaches it. */
+  collectLocalClassForType(decl: ts.ClassLikeDeclaration): boolean {
+    if (this.speculativeTypeQueryDepth === 0 || this.fnStack.length > 0) {
+      this.lowerClassExpressionInfo(decl);
+      return true;
+    }
+    const sink: ScrDiagnostic[] = [];
+    const previousSink = this.diagSink;
+    this.diagSink = sink;
+    try {
+      this.lowerClassExpressionInfo(decl);
+    } catch (e) {
+      if (e instanceof PoisonError) return false;
+      throw e;
+    } finally {
+      this.diagSink = previousSink;
+    }
+    for (const d of sink) this.pushDiag(d);
+    return true;
   }
 
   lowerClassExpression(expr: ts.ClassLikeDeclaration): IrExpr {
