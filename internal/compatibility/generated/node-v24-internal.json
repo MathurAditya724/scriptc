@@ -131,9 +131,9 @@
       "apiEntries": 39,
       "static": {
         "supported": 0,
-        "partial": 17,
+        "partial": 18,
         "refused": 0,
-        "not-implemented": 22,
+        "not-implemented": 21,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -11663,7 +11663,10 @@
           "tests/corpus/3127-spawn-runtime-options.ts",
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
-          "tests/corpus/3132-child-generic-stream-completion.ts"
+          "tests/corpus/3132-child-generic-stream-completion.ts",
+          "tests/corpus/5627-exec-callback.ts",
+          "tests/fixtures/node-types/child-exec.ts",
+          "tests/harness/project-config.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -11732,8 +11735,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "partial",
+        "evidence": "compiler-feature:child_process.child_process.exec",
+        "tests": [
+          "tests/corpus/5627-exec-callback.ts",
+          "tests/fixtures/node-types/child-exec.ts",
+          "tests/harness/project-config.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -41819,6 +41827,8 @@
           "tests/corpus/5245-event-target-subclass-signals.ts",
           "tests/corpus/5247-event-target-subclass-lifetimes.ts",
           "tests/corpus/5248-event-target-subclass-warnings.ts",
+          "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/5847-events-cjs-default-max.cjs",
           "tests/corpus/5885-events-max-listener-helpers.ts"
         ]
       },
@@ -43739,7 +43749,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:events.getEventListeners",
         "tests": [
-          "tests/corpus/5885-events-max-listener-helpers.ts"
+          "tests/corpus/5885-events-max-listener-helpers.ts",
+          "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/5847-events-cjs-default-max.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -43765,7 +43777,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:events.getMaxListeners",
         "tests": [
-          "tests/corpus/5885-events-max-listener-helpers.ts"
+          "tests/corpus/5885-events-max-listener-helpers.ts",
+          "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/5847-events-cjs-default-max.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -43841,7 +43855,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:events.listenerCount",
         "tests": [
-          "tests/corpus/5885-events-max-listener-helpers.ts"
+          "tests/corpus/5885-events-max-listener-helpers.ts",
+          "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/5847-events-cjs-default-max.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -43890,7 +43906,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:events.setMaxListeners",
         "tests": [
-          "tests/corpus/5885-events-max-listener-helpers.ts"
+          "tests/corpus/5885-events-max-listener-helpers.ts",
+          "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/5847-events-cjs-default-max.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -43942,7 +43960,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:events.defaultMaxListeners",
         "tests": [
-          "tests/corpus/5885-events-max-listener-helpers.ts"
+          "tests/corpus/5885-events-max-listener-helpers.ts",
+          "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/5847-events-cjs-default-max.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -69416,6 +69436,7 @@
           "tests/corpus/2637-create-require-bare/main.ts",
           "tests/corpus/2675-create-require-nested-esm.js",
           "tests/corpus/2932-create-require-program/main.ts",
+          "tests/corpus/5846-events-esm-default-max.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -69503,7 +69524,8 @@
         "status": "partial",
         "evidence": "compiler-feature:module.module.isBuiltin",
         "tests": [
-          "tests/corpus/2932-create-require-program/main.ts"
+          "tests/corpus/2932-create-require-program/main.ts",
+          "tests/corpus/5846-events-esm-default-max.ts"
         ]
       },
       "anchorSource": "exact"
@@ -69593,7 +69615,8 @@
         "status": "partial",
         "evidence": "compiler-feature:module.module.syncBuiltinESMExports",
         "tests": [
-          "tests/corpus/2932-create-require-program/main.ts"
+          "tests/corpus/2932-create-require-program/main.ts",
+          "tests/corpus/5846-events-esm-default-max.ts"
         ]
       },
       "anchorSource": "exact"

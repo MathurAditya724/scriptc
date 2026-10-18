@@ -59,6 +59,7 @@ import {
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
+import { lowerJsonRequireCall } from "./json-require.js";
 import { lowerAssertInstanceCall } from "./assert-instances.js";
 import { isGenericCallableMemberType, typeKey } from "../type-mapper.js";
 import { dynFallbackType, jsFuncNameOf, newFnCtx, staticImportNamespaceType } from "./lowerer.js";
@@ -222,6 +223,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const object = lowerObjectConstructor(lowerer, expr.arguments, loc);
     if (object) return object;
   }
+
+  // require() of a JSON document: the shared parsed object.
+  const json = lowerJsonRequireCall(lowerer, expr);
+  if (json) return json;
 
   // A call whose chain ROOTS at an ambient-undefined name (`declare
   // const value: Y | undefined; value?.foo("a")`, `declare function

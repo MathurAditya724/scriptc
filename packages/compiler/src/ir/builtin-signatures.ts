@@ -2343,8 +2343,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** child_process.execFile's callback slice: starts an all-piped child,
    * captures stdout/stderr, and moves the error-first callback into the
    * child registry. The callback shape is program-dependent and checked
-   * by the validator/backends. */
-  "cp.execFile": { argTypes: [STRING, arrayOf(STRING), null], result: CHILD_T },
+   * by the validator/backends. The last argument is exec's shell flag:
+   * the argv is ["-c", command] and failure messages show the command. */
+  "cp.execFile": { argTypes: [STRING, arrayOf(STRING), null, BOOL], result: CHILD_T },
   // spawn's options form: per-slot stdio modes (0 ignore / 1 inherit /
   // 2 fd) with the out/err fds for mode 2, detached, env replacement
   // pairs, cwd ("" = inherit).
@@ -3411,6 +3412,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "emitter.getMax": { argTypes: [null], result: F64 },
   "emitter.setDefaultMax": { argTypes: [F64], result: VOID },
   "emitter.getDefaultMax": { argTypes: [], result: F64 },
+  // The ES module namespace's copy of defaultMaxListeners, and
+  // module.syncBuiltinESMExports() refreshing it.
+  "emitter.esmDefaultMax": { argTypes: [], result: F64 },
+  "emitter.esmSync": { argTypes: [], result: VOID },
   /** The events.errorMonitor event key: an immortal string the runtime
    * registry matches by identity, so no string event name reaches it. */
   "emitter.errorMonitor": { argTypes: [], result: STRING },

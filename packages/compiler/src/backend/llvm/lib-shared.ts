@@ -978,6 +978,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "emitter.getMax": "scr_emitter_get_max",
   "emitter.setDefaultMax": "scr_emitter_set_default_max",
   "emitter.getDefaultMax": "scr_emitter_get_default_max",
+  "emitter.esmDefaultMax": "scr_emitter_esm_default_max_get",
+  "emitter.esmSync": "scr_emitter_esm_sync",
   "emitter.errorMonitor": "scr_emitter_error_monitor",
   // node:stream (scr_stream.c): receivers borrowed, chunks borrowed,
   // chaining forms answer the receiver +1. The throwing members
