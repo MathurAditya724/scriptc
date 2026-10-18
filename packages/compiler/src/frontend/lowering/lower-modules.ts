@@ -2656,6 +2656,7 @@ export function lowerFileInit(
         loc: loc0,
       });
     }
+    if (sf === lowerer.entry) header.push(...lowerer.punycodeLinkWarning());
     for (const { stmt, dep } of orderedImportsOf(lowerer.program, sf)) {
       const npm = lowerer.npmInitActions.get(sf)?.get(stmt);
       if (npm !== undefined && npm.length > 0) {

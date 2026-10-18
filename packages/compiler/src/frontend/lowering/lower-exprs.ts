@@ -216,6 +216,7 @@ import {
 } from "./class-prototypes.js";
 import { isClassCallback } from "./class-callbacks.js";
 import {
+  builtinConstantsObject,
   builtinPrototypeMethod,
   lowerArrayIsArrayValue,
   lowerCheckedPredicateValue,
@@ -1164,6 +1165,17 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         if (bi.module === "os" && bi.member === "constants") {
           return { kind: "libCall", fn: "os.constants", args: [], type: DYN, loc };
         }
+        // `import { O_RDONLY } from "constants"`: the member of the frozen
+        // module object.
+        if (bi.module === "constants") {
+          return {
+            kind: "dynKeyGet",
+            value: builtinConstantsObject(lowerer, loc),
+            key: { kind: "strLit", value: bi.member, type: STRING, loc },
+            type: DYN,
+            loc,
+          };
+        }
         // tls.rootCertificates: a runtime-valued module constant (the
         // cached bundled-CA array) — the one member read that lowers
         // to a libCall instead of a baked literal.
@@ -1206,6 +1218,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // their access sites only. The CommonJS namespace binding
     // (`const lib = require("./lib.js")`) gets the same fence.
     const builtinNamespace = lowerer.builtinNamespaceModuleOf(expr);
+    if (builtinNamespace === "constants") return builtinConstantsObject(lowerer, loc);
     if (builtinNamespace !== null) {
       const type: IrType = { kind: "moduleNs", moduleId: `builtin:${builtinNamespace}` };
       return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc };
@@ -1495,6 +1508,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         return { kind: "moduleNsRef", moduleId: moduleNs.moduleId, type: moduleNs, loc };
       }
       const builtinNs = lowerer.builtinNamespaceModuleOf(expr);
+      if (builtinNs === "constants") return builtinConstantsObject(lowerer, loc);
       if (builtinNs !== null) {
         const type: IrType = { kind: "moduleNs", moduleId: `builtin:${builtinNs}` };
         return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc };

@@ -559,6 +559,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** os.constants: the per-thread null-prototype constants object (dlopen,
    * errno, signals, priority, UV_UDP_REUSEADDR). Never throws. */
   "os.constants": { argTypes: [], result: DYN },
+  /** The deprecated node:constants object (scr_os.c): the os groups and
+   * fs.constants merged with the borrowed baked crypto.constants table,
+   * frozen, one per thread. */
+  "constants.object": { argTypes: [DYN], result: DYN },
   /** umask(2): arg < 0 reads without setting (umask has no read-only form
    * — set 0, restore); otherwise sets and answers the PREVIOUS mask.
    * Never throws. */
@@ -856,6 +860,19 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "url.legacyResolve": { argTypes: [DYN, DYN, BOOL], result: STRING },
   "url.domainToASCII": { argTypes: [DYN, BOOL], result: STRING },
   "url.domainToUnicode": { argTypes: [DYN, BOOL], result: STRING },
+  /** node:punycode (scr_url.c): punycode.js 2.1.0's string conversions;
+   * decode/toUnicode (and, past 32-bit deltas, encode/toASCII) throw the
+   * module's RangeErrors, ucs2Encode String.fromCodePoint's. warn marks the
+   * module's first load (scr_async_dyn.c) and reports DEP0040 then unless
+   * the second argument is false: at once for a static ES import, on the
+   * next tick for a require() call. */
+  "punycode.decode": { argTypes: [STRING], result: STRING },
+  "punycode.encode": { argTypes: [STRING], result: STRING },
+  "punycode.toASCII": { argTypes: [STRING], result: STRING },
+  "punycode.toUnicode": { argTypes: [STRING], result: STRING },
+  "punycode.ucs2Decode": { argTypes: [STRING], result: arrayOf(F64) },
+  "punycode.ucs2Encode": { argTypes: [arrayOf(F64)], result: STRING },
+  "punycode.warn": { argTypes: [BOOL, BOOL], result: VOID },
   "url.fileURLToPathBuffer": { argTypes: [DYN, DYN], result: BYTES_U8 },
   "url.pathToFileURLChecked": { argTypes: [DYN, DYN], result: URL_T },
   "url.fileURLToPathStr": { argTypes: [STRING], result: STRING },

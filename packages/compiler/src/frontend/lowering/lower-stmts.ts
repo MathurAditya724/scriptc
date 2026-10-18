@@ -1557,7 +1557,9 @@ export function lowerVarStatement(lowerer: Lowerer, stmt: ts.VariableStatement):
       // Relative requires keep the fence: their module-init-at-position
       // semantics needs storage this model doesn't represent.
       if (canonicalBuiltinModule(spec) !== null) {
-        return [];
+        return canonicalBuiltinModule(spec) === "punycode"
+          ? [lowerer.punycodeRequireWarning(decl)]
+          : [];
       }
       lowerer.unsupported(
         "SC1090",
