@@ -10,6 +10,7 @@ import { nearestPackageType, resolveBareModule } from "./resolve.js";
 import { npmStaticPackageOfPath } from "./npm-static.js";
 import { trackedReadFile } from "./input-tracker.js";
 import { npmPackageNameOf } from "./workspace-registry.js";
+import { typeOnlyNamedImport } from "./type-only-imports.js";
 
 export function isPrunedNpmReexport(program: ts.Program, stmt: ts.ExportDeclaration): boolean {
   return program.analysis.prunedNpmReexports.has(stmt);
@@ -232,7 +233,9 @@ export function planNpmStaticReexports(
           (clause.namedBindings !== undefined &&
             (ts.isNamespaceImport(clause.namedBindings) ||
               (ts.isNamedImports(clause.namedBindings) &&
-                clause.namedBindings.elements.length === 0)))
+                clause.namedBindings.elements.length === 0))) ||
+          // `import { type A }` still loads the module, like `import {}`.
+          typeOnlyNamedImport(stmt)
         ) {
           request(dep, null);
         } else {
@@ -244,12 +247,10 @@ export function planNpmStaticReexports(
           }
         }
       } else if (ts.isExportDeclaration(stmt)) {
+        // `export { type A } from` still loads the module under Node's
+        // type stripping; only `export type … from` erases.
         if (
           stmt.isTypeOnly ||
-          (stmt.exportClause !== undefined &&
-            ts.isNamedExports(stmt.exportClause) &&
-            stmt.exportClause.elements.length > 0 &&
-            stmt.exportClause.elements.every((element) => element.isTypeOnly)) ||
           stmt.moduleSpecifier === undefined ||
           !ts.isStringLiteral(stmt.moduleSpecifier)
         )

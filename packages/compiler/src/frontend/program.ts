@@ -119,6 +119,11 @@ import {
 import { trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 import { forkTargetPaths } from "./fork-target.js";
 import { workerTargetPaths } from "./worker-target.js";
+import {
+  erasedTypeOnlyImport,
+  typeOnlyNamedImport,
+  typeOnlyReachedFiles,
+} from "./type-only-imports.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 
@@ -1642,7 +1647,7 @@ function insideFunctionLike7(node: ts.Node): boolean {
 function nodeEsmSyntaxMarker7(sf: ts.SourceFile): ts.Node | null {
   for (const stmt of sf.statements) {
     if (ts.isImportDeclaration(stmt) && !erasedTypeOnlyImport(stmt)) return stmt;
-    if (ts.isExportDeclaration(stmt) && !stmt.isTypeOnly && !erasedTypeOnlyReexport(stmt)) {
+    if (ts.isExportDeclaration(stmt) && !stmt.isTypeOnly) {
       return stmt;
     }
     if (ts.isExportAssignment(stmt)) return stmt;
@@ -2314,6 +2319,7 @@ export function makeCycleAdmission(
       const clause = e.stmt.importClause;
       if (
         clause === undefined ||
+        typeOnlyNamedImport(e.stmt) ||
         (clause.name === undefined &&
           (clause.namedBindings === undefined ||
             (ts.isNamespaceImport(clause.namedBindings) &&
@@ -3579,21 +3585,41 @@ function preflight7(load: LoadResult): {
           npmStaticPackageOfPath(sf.fileName) !== null) &&
         !unselectedPackageJsFile(sf.fileName),
     );
+  // Files reached only through `import type` / `export type … from` are
+  // checker input, never program modules: Node does not load them, so
+  // their imports and syntax must not fence the program.
+  const resolveRuntimeEdge = (
+    sf: ts.SourceFile,
+    spec: string,
+    resolutionKind?: "import" | "require",
+  ): ts.SourceFile | null =>
+    resolveImport7(program, sf, spec, resolutionKind) ??
+    npmStaticDepSf7(program, sf, spec, resolutionKind);
+  const typeOnlyFiles = typeOnlyReachedFiles(
+    program,
+    entry,
+    programFiles,
+    () => [
+      ...forkTargetPaths(program, program.getImplementationSourceFiles()),
+      ...workerTargetPaths(program, program.getImplementationSourceFiles()),
+    ],
+    resolveRuntimeEdge,
+  );
+  const runtimeFiles =
+    typeOnlyFiles.size === 0 ? programFiles : programFiles.filter((sf) => !typeOnlyFiles.has(sf));
   const userFiles = npmStaticActive()
     ? planNpmStaticReexports(
         program,
         entry,
-        programFiles,
+        runtimeFiles,
         [
           ...createRequireProgramRoots7(program),
           ...forkTargetPaths(program, program.getImplementationSourceFiles()),
           ...workerTargetPaths(program, program.getImplementationSourceFiles()),
         ],
-        (sf, spec, resolutionKind) =>
-          resolveImport7(program, sf, spec, resolutionKind) ??
-          npmStaticDepSf7(program, sf, spec, resolutionKind),
+        resolveRuntimeEdge,
       )
-    : programFiles;
+    : runtimeFiles;
   program.getTypeChecker().prefetchSourceFileStructures(userFiles);
 
   // Unselected node_modules JS is not native program source even when
@@ -3718,8 +3744,7 @@ function preflight7(load: LoadResult): {
         continue;
       }
       if (ts.isExportDeclaration(stmt)) {
-        if (stmt.isTypeOnly || erasedTypeOnlyReexport(stmt) || isPrunedNpmReexport(program, stmt))
-          continue;
+        if (stmt.isTypeOnly || isPrunedNpmReexport(program, stmt)) continue;
         if (!stmt.moduleSpecifier) continue;
         const fromSpec = ts.isStringLiteral(stmt.moduleSpecifier) ? stmt.moduleSpecifier.text : "";
         if (load.externalTypes.has(fromSpec)) {
@@ -4954,42 +4979,6 @@ export function isCheckedJsSourceFile(sf: ts.SourceFile, projectCheckJs: boolean
   return checked;
 }
 
-/** `import type …` declarations and named clauses whose every element is
- * `type`-qualified are ERASED by tsc at emit — Node's module graph has no
- * edge there, so module order, cycle detection, init calls, and the
- * startup-refusal probe must not count them either (zod v4's core modules
- * are "cyclic" only through `import type * as ns` namespaces — 27 phantom
- * SC1016 sites against 1 real value-level cycle; and a type-only import
- * of a module Node cannot resolve is NOT a startup crash — Node never
- * resolves it). Originated as the provenance-sources pilot's flag-gated
- * prototype (SCRIPTC_TYPE_ONLY_EDGES), promoted to always-on with the
- * full-suite differential green. Side-effect imports (no clause) stay
- * real edges. */
-function erasedTypeOnlyImport(stmt: ts.ImportDeclaration): boolean {
-  const clause = stmt.importClause;
-  if (clause === undefined) return false; // side-effect import: a real edge
-  if (clause.phaseModifier === ts.SyntaxKind.TypeKeyword) return true;
-  return (
-    clause.name === undefined &&
-    clause.namedBindings !== undefined &&
-    ts.isNamedImports(clause.namedBindings) &&
-    clause.namedBindings.elements.length > 0 &&
-    clause.namedBindings.elements.every((e) => e.isTypeOnly)
-  );
-}
-
-/** The re-export twin: `export { type X } from "./m"` with every element
- * `type`-qualified erases at emit exactly like `export type { X } from`
- * (which stmt.isTypeOnly already covers) — no module edge. */
-function erasedTypeOnlyReexport(stmt: ts.ExportDeclaration): boolean {
-  return (
-    stmt.exportClause !== undefined &&
-    ts.isNamedExports(stmt.exportClause) &&
-    stmt.exportClause.elements.length > 0 &&
-    stmt.exportClause.elements.every((e) => e.isTypeOnly)
-  );
-}
-
 export function orderedImportsOf(
   program: ts.Program,
   sf: ts.SourceFile,
@@ -4997,11 +4986,7 @@ export function orderedImportsOf(
   const out: { stmt: ts.Statement; dep: ts.SourceFile | null }[] = [];
   for (const stmt of sf.statements) {
     if (ts.isExportDeclaration(stmt) && isPrunedNpmReexport(program, stmt)) continue;
-    if (
-      ts.isExportDeclaration(stmt) &&
-      (stmt.isTypeOnly || erasedTypeOnlyReexport(stmt) || !stmt.moduleSpecifier)
-    )
-      continue;
+    if (ts.isExportDeclaration(stmt) && (stmt.isTypeOnly || !stmt.moduleSpecifier)) continue;
     if (!ts.isImportDeclaration(stmt) && !ts.isExportDeclaration(stmt)) continue;
     if (ts.isImportDeclaration(stmt) && erasedTypeOnlyImport(stmt)) continue;
     if (!stmt.moduleSpecifier || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;

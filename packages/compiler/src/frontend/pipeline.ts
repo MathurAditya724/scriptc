@@ -28,6 +28,7 @@ import type { FrontendServices } from "./services.js";
 import { isImportDeclaration, isExportDeclaration, isStringLiteral } from "./ts7/adapter.js";
 import { CONTRACT_TYPES_MODULE } from "./contract-types.js";
 import { THREADS_MODULE } from "./threads-import.js";
+import { erasedTypeOnlyImport } from "./type-only-imports.js";
 import { EXPERIMENTAL_MODULE } from "./experimental-import.js";
 
 export interface ProgramLoadOptions {
@@ -107,6 +108,10 @@ function detectAutoPackages(
         stmt.moduleSpecifier &&
         isStringLiteral(stmt.moduleSpecifier)
       ) {
+        // `import type` and `export type … from` erase under Node's type
+        // stripping: Node never loads the package, so it is no dependency
+        // to compile (its declarations still type the program).
+        if (isImportDeclaration(stmt) ? erasedTypeOnlyImport(stmt) : stmt.isTypeOnly) continue;
         edges.push({ spec: stmt.moduleSpecifier.text, loc: locOf(stmt) });
       } else if (mode === "lib") {
         // CJS packages spell their dep edges as top-level requires; the
