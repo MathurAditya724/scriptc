@@ -1305,7 +1305,11 @@ static void scr_mt_tick(ScrMockTimers *m, double time) {
       scr_mt_unref(timer);
       return;
     }
-    /* A callback that cleared its own timer already removed it. */
+    /* Node's tick() removes the fired entry only while it is still first
+     * in the queue: a callback that cleared its own timer already removed
+     * it, and one that queued an entry sorting before it (an immediate,
+     * due at now - 1) leaves it queued, so it runs again, as in Node. The
+     * mock-timers-date fixture checks that order against Node. */
     ScrMockTimer *after = scr_mt_peek(m);
     if (after && after->id == timer->id) {
       timer->pos = 0;
