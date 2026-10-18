@@ -53,7 +53,7 @@ import {
   STRING,
   typeEquals,
   typeKey,
-  unionContainerArmsOk,
+  maybePromiseUnionArmsOk,
   VOID,
 } from "./ir.js";
 import { DYN_CLASS_PROPERTIES } from "./ir.js";
@@ -821,7 +821,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
     u.arms.forEach((arm, i) => {
       // The unit kinds (undefinedT/nullT) are valid arms — union membership
       // is the ONLY place they may appear. Container payloads preserve
-      // identity; promise data siblings retain their separate fence.
+      // identity; a union carries at most one promise arm (maybe-promise).
       if (
         arm.kind === "void" ||
         arm.kind === "union" ||
@@ -831,9 +831,9 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       ) {
         errors.push({ message: `union ${u.id}: arm ${i} is ${arm.kind}`, loc: noLoc });
       }
-      if (arm.kind === "promise" && !unionContainerArmsOk(u.arms)) {
+      if (arm.kind === "promise" && !maybePromiseUnionArmsOk(u.arms)) {
         errors.push({
-          message: `union ${u.id}: ${arm.kind} arm ${i} beside non-unit arms`,
+          message: `union ${u.id}: ${arm.kind} arm ${i} beside another promise arm`,
           loc: noLoc,
         });
       }

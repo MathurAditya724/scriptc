@@ -1566,7 +1566,14 @@ function inferredEmptyCollectionFieldType(
   const mappedArgument = (argument: ts.Expression): IrType | null => {
     const type = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(argument));
     const mapped = lowerer.mapTypeOf(type);
-    if (!mapped || mapped.kind === "dyn" || mapped.kind === "void" || isUnitType(mapped))
+    // Inferred JS collection fields keep functions in checked slots.
+    if (
+      !mapped ||
+      mapped.kind === "dyn" ||
+      mapped.kind === "void" ||
+      mapped.kind === "func" ||
+      isUnitType(mapped)
+    )
       return null;
     return mapped;
   };
@@ -9231,7 +9238,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           "SC1090",
           expr,
           `Map values of type '${lowerer.checker.typeToString(targs[1])}' ` +
-            `(Map values must be number, string, boolean, records, class instances, ` +
+            `(Map values must be number, string, boolean, records, class instances, functions, ` +
             `typed arrays, arrays, promises, Maps, Sets, or supported unions and checked values)`,
         );
       }

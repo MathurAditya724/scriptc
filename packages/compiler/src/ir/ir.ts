@@ -667,7 +667,12 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     t.kind === "object" ||
     t.kind === "array" ||
     t.kind === "netServer" ||
-    t.kind === "symbol"
+    t.kind === "symbol" ||
+    // A function value is one closure for its whole life (top-level
+    // functions intern one immortal closure, inner closures allocate once
+    // per evaluation), so pointer identity is JS function identity.
+    // Closures are cycle-headered and traced like records.
+    t.kind === "func"
   );
 }
 
@@ -713,8 +718,8 @@ export function isSupportedSetElem(t: IrType, unionArms?: IrType[]): boolean {
   return isSupportedMapKey(t, unionArms);
 }
 
-/** The Map VALUE fence: scalars, supported native references and checked
- * values. Functions require checked-value boxing.
+/** The Map VALUE fence: scalars, supported native references, closures
+ * and checked values.
  * Record/object/union values can point back at the map holding them, which
  * is exactly why ref-valued maps are cycle-capable (see the backend's
  * cycle analysis and docs/memory.md). Shared frontend/validator. */
@@ -768,6 +773,12 @@ export function isSupportedMapValue(t: IrType): boolean {
     // a regex holds no references), map form.
     case "regex":
       return true;
+    // A closure (Map<string, (x: T) => U> — the factory/handler registry):
+    // the index-signature overflow story (scr_closure adapters; closures
+    // are cycle-headered and traced, so a handler capturing its own
+    // registry collects).
+    case "func":
+      return true;
     default:
       return false;
   }
@@ -783,7 +794,7 @@ export function isSupportedMapValue(t: IrType): boolean {
  * Nested index-signature RECORDS ride the record kind like any other.
  * Shared frontend (mapType) / validator. */
 export function isSupportedIndexValue(t: IrType): boolean {
-  return t.kind === "dyn" || t.kind === "func" || isSupportedMapValue(t);
+  return t.kind === "dyn" || isSupportedMapValue(t);
 }
 
 export function funcOf(params: IrType[], ret: IrType): IrType {
@@ -791,12 +802,23 @@ export function funcOf(params: IrType[], ret: IrType): IrType {
 }
 
 /** Maps and sets use tagged union storage and retain their native identity.
- * Promises still require nullable-only unions until their data-arm narrowing
- * and await boundary have a matching contract. */
+ * Joined unions (inferred joins of member reads and array elements) keep
+ * promises nullable-only; declared maybe-promise unions are admitted by
+ * maybePromiseUnionArmsOk. */
 export function unionContainerArmsOk(arms: IrType[]): boolean {
   return arms.every(
     (a, i) => a.kind !== "promise" || arms.every((b, j) => j === i || isUnitType(b)),
   );
+}
+
+/** The MAYBE-PROMISE union (`T | Promise<T>`, `Promise<R | void> | R |
+ * void`): at most one promise arm, beside unit or data arms. The union tag
+ * is the `instanceof Promise` test, and `await` / async `return` branch on
+ * it (the promise arm awaits or adopts, the other arms take the
+ * non-thenable path). Data arms must not be thenable; the type mapper
+ * checks that against the checker types before minting such a union. */
+export function maybePromiseUnionArmsOk(arms: IrType[]): boolean {
+  return arms.filter((a) => a.kind === "promise").length <= 1;
 }
 
 /** Canonical, injective text form of an IrType — the building block of

@@ -596,6 +596,11 @@ import { lowerRecordFieldCall, lowerObjectMethodCall } from "./lower-calls.js";
 import { fenceCrossBlockNsRef, nsPathPrefix } from "./lower-namespaces.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { lowerTernary } from "./lower-exprs.js";
+import {
+  maybePromiseReturnStmt,
+  maybePromiseUnionOf,
+  promiseArmedUnionOf,
+} from "./maybe-promise.js";
 
 /** Entry function name. '%' cannot appear in a TS identifier, so a user
  * function can never collide with it (mangling is injective per prefix). */
@@ -1275,17 +1280,20 @@ export function dynFallbackType(lowerer: Lowerer, node: ts.Node, t: ts.Type): Ir
     if (args.length === 2) {
       const key = lowerer.mapTypeOf(args[0]!);
       const value = lowerer.mapTypeOf(args[1]!);
+      // Inferred JS function types keep the checked-dynamic slot (their
+      // closures carry JS arity, not a typed closure ABI).
       return {
         kind: "map",
         key:
           key &&
+          key.kind !== "func" &&
           isSupportedMapKey(
             key,
             key.kind === "union" ? lowerer.unions.get(key.unionId)?.arms : undefined,
           )
             ? key
             : DYN,
-        value: value && isSupportedMapValue(value) ? value : DYN,
+        value: value && value.kind !== "func" && isSupportedMapValue(value) ? value : DYN,
       };
     }
   }
@@ -8204,6 +8212,18 @@ export class Lowerer {
     // undefined/null literals store the dyn unit values. Types outside the
     // dyn's domain (bytes, classes, Maps, ...) fall through to
     // requireExactShape's SC1101 fence.
+    // A promise entering a maybe-promise union whose promise arm has a
+    // wider payload (`Promise<R>` into `Promise<R | void> | R | void`)
+    // takes the payload widening below first, then wraps into that arm.
+    if (expected.kind === "union" && expr.type.kind === "promise") {
+      const mp = maybePromiseUnionOf(this, expected);
+      if (
+        mp &&
+        !typeEquals(mp.promise, expr.type) &&
+        this.promisePayloadWidens(expr.type, mp.promise)
+      )
+        expr = this.coerceToExpected(expr, mp.promise);
+    }
     // Promise payloads may widen at a checked return boundary, including
     // arrays inferred as tuple results by Promise.all. Keep both payload
     // ABIs explicit: box settlement, then validate the destination payload.
@@ -9402,6 +9422,25 @@ export class Lowerer {
     return type;
   }
 
+  /** Whether a promise of `from` converts to a promise of `to` through the
+   * checked payload widening (coerceToExpected's boxed-settlement rule,
+   * which keeps the promise's identity and settlement turn). */
+  promisePayloadWidens(
+    from: IrType & { kind: "promise" },
+    to: IrType & { kind: "promise" },
+  ): boolean {
+    if (typeEquals(from, to)) return true;
+    if (to.inner.kind === "void") return from.inner.kind !== "void";
+    return (
+      this.dynConvertible(from) &&
+      canDynCheckTo(
+        to,
+        (id) => this.shapes.get(id),
+        (id) => this.unions.get(id),
+      )
+    );
+  }
+
   /** True when a static type converts to a dyn value (the dynFrom
    * walker's domain): JSON-safe, bytes<u8> (Uint8Array/Buffer — the checked-dynamic tree's
    * bytes kind, payload copied; stdin chunks into unknown-typed helpers),
@@ -9441,16 +9480,26 @@ export class Lowerer {
     // storage directly, just like arguments and variable initializers.
     // Contextual types (such as Proxy descriptors' symbol-valued fields)
     // must not force an intermediate record with incompatible field slots.
+    if (this.returnsLiteralIntoDyn(node, expected)) return this.lowerExprExpecting(node, expected);
+    return this.asyncReturnValueOf(node, this.lowerExpr(node), expected);
+  }
+
+  /** A fresh JS object literal returned into a checked-native (dyn) result,
+   * which lowers straight into that storage. */
+  private returnsLiteralIntoDyn(node: ts.Expression, expected: IrType): boolean {
     let literal = node;
     while (ts.isParenthesizedExpression(literal)) literal = literal.expression;
-    if (
+    return (
       expected.kind === "dyn" &&
       isJsSourceFile(node.getSourceFile()) &&
       ts.isObjectLiteralExpression(literal)
-    ) {
-      return this.lowerExprExpecting(node, expected);
-    }
-    const e = this.lowerExpr(node);
+    );
+  }
+
+  /** The value of `return <e>` (already lowered untyped) in an async or
+   * void context: a promise flattens through the returned-promise await,
+   * everything else converts into the declared result. */
+  private asyncReturnValueOf(node: ts.Expression, e: IrExpr, expected: IrType): IrExpr | null {
     if (expected.kind === "void" && e.kind === "unitLit") return null;
     if (this.ctx.isAsync && e.type.kind === "promise" && expected.kind !== "promise") {
       const awaited = this.returnedPromiseAwait(e);
@@ -9516,10 +9565,32 @@ export class Lowerer {
     return s;
   }
 
+  /** `return u` of a promise-armed union (maybe-promise, or promise-or-
+   * unit) in an async function: adopt the promise arm, fulfill with the
+   * others (maybe-promise.ts). Null when the return is not that shape. */
+  maybePromiseReturn(node: ts.Expression, e: IrExpr, expected: IrType): IrStmt | null {
+    if (!this.adoptsReturnedPromise()) return null;
+    const mp = promiseArmedUnionOf(this, e.type);
+    if (!mp || promiseArmedUnionOf(this, expected)) return null;
+    const stmt = maybePromiseReturnStmt(this, e, mp, expected, (x) =>
+      this.coerceInto(node, x, expected),
+    );
+    if (stmt === null) {
+      this.unsupported(
+        "SC1090",
+        node,
+        `returning '${this.fmt(e.type)}' from an async function whose result is '${this.fmt(expected)}' (an arm does not convert to the result)`,
+      );
+    }
+    return stmt;
+  }
+
   private lowerReturnOf(node: ts.Expression, loc: SrcLoc): IrStmt {
     const expected = this.ctx.returnType;
     if (expected.kind === "void") {
       let e = this.lowerExpr(node);
+      const flattened = this.maybePromiseReturn(node, e, expected);
+      if (flattened) return flattened;
       if (this.ctx.isAsync && e.type.kind === "promise") {
         if (this.adoptsReturnedPromise()) return this.adoptingReturn(e, VOID, (x) => x);
         e = this.returnedPromiseAwait(e);
@@ -9534,6 +9605,15 @@ export class Lowerer {
         ],
         loc,
       };
+    }
+    if (this.adoptsReturnedPromise() && !this.returnsLiteralIntoDyn(node, expected)) {
+      // The async return lowers its operand untyped first (a promise
+      // adopts before its payload converts); a maybe-promise union needs
+      // the statement form, which branches between adoption and fulfillment.
+      const e = this.lowerExpr(node);
+      const flattened = this.maybePromiseReturn(node, e, expected);
+      if (flattened) return flattened;
+      return { kind: "return", value: this.asyncReturnValueOf(node, e, expected), loc };
     }
     return { kind: "return", value: this.lowerReturnValue(node), loc };
   }
