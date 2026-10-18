@@ -935,12 +935,23 @@ export function predeclareForwardFnDecl(lowerer: Lowerer, symbol: ts.Symbol): bo
     entry.ctx.hoistedFnDecls.add(decl);
     const fnTail = lowerer.fnStack.splice(depth + 1);
     const scopeTail = entry.ctx.scopes.splice(frameIdx + 1);
+    // The hoisted function is kept even when the reference lowers inside
+    // a speculative attempt (a probe's temporary diagnostic sink): lower
+    // it without that sink, so its failing JS statements keep their
+    // runtime fences instead of vanishing from a body that is kept. A
+    // declaration that fails as a whole is not kept: its diagnostics go
+    // back to the probe.
+    const previousSink = lowerer.diagSink;
+    const diagsBefore = lowerer.diags.length;
+    lowerer.diagSink = null;
     try {
       entry.out.push(lowerer.lowerNestedFunctionDecl(decl));
     } catch (e) {
       entry.ctx.hoistedFnDecls.delete(decl);
+      if (previousSink !== null) previousSink.push(...lowerer.diags.splice(diagsBefore));
       throw e;
     } finally {
+      lowerer.diagSink = previousSink;
       entry.ctx.scopes.push(...scopeTail);
       lowerer.fnStack.push(...fnTail);
     }
