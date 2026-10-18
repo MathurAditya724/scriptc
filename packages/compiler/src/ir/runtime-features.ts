@@ -245,11 +245,14 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         features.legacyTextDecoder = true;
       if (fn.startsWith("fetch.")) features.fetch = true;
       if (fn.startsWith("event.") || fn === "events.addAbortListener") features.eventTarget = true;
-      // Signal-taking readline entry points call addAbortListener.
+      // Signal-taking readline, stream and timers/promises entry points
+      // register abort listeners.
       if (
         fn === "rl.createSignal" ||
         fn === "rl.questionAsyncSignal" ||
         fn === "http.clientSignal" ||
+        fn === "tp.setTimeoutSignal" ||
+        fn === "tp.setImmediateSignal" ||
         fn === "stream.addAbortSignal" ||
         fn === "stream.addAbortSignalFn" ||
         fn === "sp.finishedOptsSignal" ||

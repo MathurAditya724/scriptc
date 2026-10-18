@@ -894,6 +894,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "date.checkedValue": "scr_dyn_native_date_value",
   "dyn.nativeRegexIs": "scr_dyn_native_regex_is",
   "dyn.toString": "scr_dyn_to_string_argument",
+  "dyn.valueOf": "scr_dyn_value_of",
   "dyn.dataViewIs": "scr_dyn_data_view_is",
   "dyn.construct": "scr_dyn_construct",
   "dyn.this": "scr_dyn_this_get",
@@ -1234,6 +1235,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "tp.setImmediate": "scr_tp_set_immediate",
   "tp.setTimeoutValue": "scr_tp_set_timeout_value",
   "tp.setImmediateValue": "scr_tp_set_immediate_value",
+  "tp.setTimeoutSignal": "scr_tp_set_timeout_signal",
+  "tp.setImmediateSignal": "scr_tp_set_immediate_signal",
   // stream/promises' finished form (+1 promise; may-throw pending check;
   // the pipeline form needs the stream-array compound and emits below).
   "sp.finished": "scr_sp_finished",

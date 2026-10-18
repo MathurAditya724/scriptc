@@ -829,9 +829,8 @@ static void scr_warning_dispatch(ScrDyn *w) {
   }
   /* Node's one-time trace hint, after the first report; deprecations
    * name their own trace flag. */
-  static SCR_TL bool hinted = false;
-  if (!hinted) {
-    hinted = true;
+  if (!scr_warning_trace_hint_shown) {
+    scr_warning_trace_hint_shown = true;
     scr_jb_puts(&report, deprecation
                              ? "\n(Use `node --trace-deprecation ...` to show where the warning was created)"
                              : "\n(Use `node --trace-warnings ...` to show where the warning was created)");

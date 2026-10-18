@@ -7,7 +7,7 @@ import {
 import * as ts from "../ts7/adapter.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { DYN, type IrExpr, type SrcLoc } from "../../ir/ir.js";
-import { lowerEventsOnce } from "./lower-event-emitter.js";
+import { lowerEventsEmitterHelper, lowerEventsOnce } from "./lower-event-emitter.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerTimersMemberCall } from "./lower-timers.js";
 import { lowerStreamModuleCall } from "./lower-stream.js";
@@ -68,6 +68,10 @@ export function lowerBuiltinCall(
     return lowerAddAbortListener(lowerer, expr, loc);
   }
   if (bi.module === "events" && bi.member === "once") return lowerEventsOnce(lowerer, expr, loc);
+  if (bi.module === "events") {
+    const helper = lowerEventsEmitterHelper(lowerer, expr, bi.member, loc);
+    if (helper) return helper;
+  }
   if (bi.module === "timers") {
     const timersServed = lowerTimersMemberCall(lowerer, expr, bi.member, loc);
     if (timersServed) return timersServed;

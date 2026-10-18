@@ -1027,7 +1027,7 @@ declare module "node:timers/promises" {
     options?: unknown,
   ): AsyncGenerator<T, void, undefined>;
   export const scheduler: {
-    wait(delay?: number): Promise<void>;
+    wait(delay?: number, options?: TimerOptions): Promise<void>;
     yield(): Promise<void>;
   };
 }
@@ -6045,6 +6045,12 @@ declare module "events" {
       eventName: string,
       options?: { signal?: AbortSignal },
     ): Promise<unknown[]>;
+    /* The emitter's own listenerCount/getMaxListeners/setMaxListeners/
+     * listeners, over EventEmitter instances. */
+    export function listenerCount(emitter: EventEmitter, eventName: string | symbol): number;
+    export function getMaxListeners(emitter: EventEmitter): number;
+    export function setMaxListeners(n?: number, ...eventTargets: EventEmitter[]): void;
+    export function getEventListeners(emitter: EventEmitter, name: string): Array<() => void>;
   }
   export = EventEmitter;
 }
