@@ -85,3 +85,23 @@ for (let i = 0; i < scaled.length; i++) {
   if (i === 2) scale = 0.5;
 }
 console.log("scaled", Array.from(scaled).join(","));
+
+// Half-precision stores observed through integer views of the same buffer
+// in the same iteration, and byte stores observed through Float16Array.
+const halfBuffer = new ArrayBuffer(32);
+const f16 = new Float16Array(halfBuffer);
+const u16 = new Uint16Array(halfBuffer);
+const halfBytes = new Uint8Array(halfBuffer);
+let bits = 0;
+for (let i = 0; i < f16.length; i++) {
+  f16[i] = (i - 8) * 0.75;
+  bits = (bits + u16[i]) | 0;
+}
+console.log("f16 then u16", bits, u16[0], u16[15]);
+let halfSum = 0;
+for (let i = 0; i < f16.length; i++) {
+  halfBytes[i * 2 + 1] = 0x3c + (i & 3);
+  halfBytes[i * 2] = i;
+  halfSum += f16[i];
+}
+console.log("u8 then f16", halfSum, f16[0], f16[15]);

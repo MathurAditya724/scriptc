@@ -208,3 +208,53 @@ test("emitted loops version the body and tag typed-array memory", () => {
   const header = /load ptr, ptr [^\n]*!tbaa !(\d+)/.exec(body)![1];
   expect(elements).not.toBe(header);
 });
+
+test("Float16Array accesses version in elements and share the element tag", () => {
+  const f16s: IrType = { kind: "bytes", elem: "f16" };
+  const withHalves = (body: IrStmt[]): IrFunction => {
+    const f = fn(body, [local("half", f16s)]);
+    return { ...f, params: [...f.params, { localId: "half", name: "half", type: f16s }] };
+  };
+  // half[i] = src[i + 1]; out[i] = half[i] * 2
+  const loop = counted([
+    set(ref("half", f16s), ref("i"), get(ref("src", f64s), bin("+", ref("i"), num(1)))),
+    set(ref("out", f64s), ref("i"), bin("*", get(ref("half", f16s), ref("i")), num(2))),
+  ]);
+  const kernel = withHalves([loop]);
+  const version = match(kernel, loop)!;
+  expect(version.bounds.size).toBe(4);
+  expect(version.receivers.map((r) => r.ref)).toEqual([
+    ref("half", f16s),
+    ref("src", f64s),
+    ref("out", f64s),
+  ]);
+  // Element offsets against the element count, whatever the element size.
+  expect(version.affine.map((c) => [c.scale, c.minOffset, c.maxEnd])).toEqual([
+    [1, 0, 0],
+    [1, 1, 1],
+    [1, 0, 0],
+  ]);
+
+  const mod: IrModule = {
+    irVersion: 16,
+    sourceFile: loc.file,
+    entry: "__main",
+    functions: [
+      { name: "__main", params: [], returnType: VOID, locals: [], body: [], loc },
+      kernel,
+    ],
+  };
+  const body = /^define internal [^\n]*@sc_bf_kernel[^]*?^}/m.exec(emitLlvmModule(mod))![0];
+  const fast = /^bytes\.version\.fast\d+:$[^]*?^bytes\.version\.done\d+:$/m.exec(body)![0];
+  expect(fast).toContain("call double @scr_f16_to_f64");
+  expect(fast).toContain("call zeroext i16 @scr_f16_from_f64");
+  expect(fast).not.toContain("bytes.index");
+  const halfStore = /store i16 [^\n]*, align 1, !tbaa !(\d+)/.exec(fast)![1];
+  const halfLoad = /load i16, ptr [^\n]*, align 1, !tbaa !(\d+)/.exec(fast)![1];
+  const doubleStore = /store double [^\n]*, align 1, !tbaa !(\d+)/.exec(fast)![1];
+  // Views of any element type may share a buffer: one element category.
+  expect(halfStore).toBe(doubleStore);
+  expect(halfLoad).toBe(doubleStore);
+  // The checked copy keeps its per-element tests.
+  expect(body.slice(0, body.indexOf(fast))).toContain("bytes.index.invalid");
+});

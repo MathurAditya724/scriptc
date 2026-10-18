@@ -251,3 +251,48 @@ for (let i = 0; i < N; i++) {
 let trace = 0;
 for (let i = 0; i < N; i++) trace += mc[i * N + i];
 console.log("matmul", trace, mc[1], mc[N * N - 1]);
+
+// Float16Array elements are two bytes; versioned loops bound them in
+// elements, and stores round to nearest-even in the unchecked copy too.
+function halves(src: Float16Array, out: Float16Array, n: number): number {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    out[i] = src[i + 1] * 1.001 + 0.1;
+    sum += src[i];
+  }
+  return sum;
+}
+const halfSrc = new Float16Array(10);
+for (let i = 0; i < halfSrc.length; i++) halfSrc[i] = i * 0.3 - 1;
+const halfOut = new Float16Array(10);
+console.log("f16 in bounds", halves(halfSrc, halfOut, 9), Array.from(halfOut).join(","));
+console.log("f16 past end", halves(halfSrc, halfOut, 12), Array.from(halfOut).join(","));
+const halfShort = new Float16Array(4);
+console.log("f16 short out", halves(halfSrc, halfShort, 9), Array.from(halfShort).join(","));
+console.log("f16 rounding", halves(new Float16Array([65519, 2049, 1e-8, 0]), new Float16Array(3), 3));
+
+function halfTable(t: Float16Array, n: number): number {
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += t[i & 7];
+  return sum;
+}
+console.log("f16 masked", halfTable(new Float16Array([0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5]), 20));
+console.log("f16 masked short", halfTable(new Float16Array([0.5, 1.5, 2.5, 3.5, 4.5]), 20));
+
+// DataView half-precision accesses are two bytes wide: the last odd offset
+// throws.
+function halfView(v: DataView, n: number): number {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    v.setFloat16(i * 2, i + 0.25, true);
+    sum += v.getFloat16(i * 2 + 1, false);
+  }
+  return sum;
+}
+const halfBytes = new DataView(new ArrayBuffer(11));
+console.log("f16 view", halfView(halfBytes, 4));
+try {
+  halfView(halfBytes, 6);
+} catch (e) {
+  console.log((e as Error).message, new Uint8Array(halfBytes.buffer).join(","));
+}
