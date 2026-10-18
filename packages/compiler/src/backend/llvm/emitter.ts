@@ -2002,7 +2002,9 @@ export class LlEmitter {
    * builders, JSON schemas and weak collection constructors are requested
    * lazily. */
   private disposeObserverGates(): string[] {
-    const weak = [...this.decls].some((d) => /@scr_weak_(?:map|set)_new\(/.test(d));
+    const weak = [...this.decls].some(
+      (d) => d.includes("@scr_weak_map_new(") || d.includes("@scr_weak_set_new("),
+    );
     return [
       `${WEAK_KEYS_GATE} = internal constant i1 ${weak}`,
       `${RECORD_SOURCES_GATE} = internal constant i1 ${this.dyn.keepsRecordSources}`,
